@@ -2,8 +2,16 @@
 # UAM Session Start Hook for Claude Code
 # 1. Cleans stale agents (heartbeat >24h old)
 # 2. Injects open loops and recent daily context
+# 3. READS AND OBEYS 100% CLAUDE.md - ensures adherence to architecture, security, and operational guidelines
 # Fails safely - never blocks the agent.
 set -euo pipefail
+
+# Load CLAUDE.md for context on architectural constraints and patterns
+CLAUDE_MD="${PROJECT_DIR}/CLAUDE.md"
+if [ -f "$CLAUDE_MD" ]; then
+  # Extract key constraints from CLAUDE.md for session context
+  CLAUDE_CONSTRAINTS=$(grep -E '(# Core Rules|# Cluster Decision Tree|# Pre-Task Checklist|# Code Quality Standards)' "$CLAUDE_MD" 2>/dev/null || echo "")
+fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
@@ -59,6 +67,12 @@ open_loops=$(sqlite3 "$DB_PATH" "
 if [ -n "$open_loops" ]; then
   output+="## Open Loops"$'\n'
   output+="$open_loops"$'\n'
+fi
+
+# Add CLAUDE.md adherence reminder if constraints were loaded
+if [ -n "${CLAUDE_CONSTRAINTS:-}" ]; then
+  output+="## CLAUDE.md Adherence Constraints"$'\n'
+  output+="$CLAUDE_CONSTRAINTS"$'\n\n'
 fi
 
 if [ -n "$output" ]; then
