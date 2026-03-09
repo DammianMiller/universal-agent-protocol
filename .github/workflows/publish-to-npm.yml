@@ -1,0 +1,107 @@
+name: Publish to npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version bump type (patch, minor, major)'
+        required: false
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: 'Dry run (test publish without actually publishing)'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  NODE_VERSION: '20'
+  NPM_REGISTRY: 'https://registry.npmjs.org/'
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  publish-npm:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: ${{ env.NPM_REGISTRY }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Get version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Check NPM_TOKEN
+        run: |
+          if [ -z "${{ secrets.NPM_TOKEN }}" ]; then
+            echo "::error::NPM_TOKEN secret is not set. Please add it in repository Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+
+      - name: Dry run
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          echo "🧪 Dry run mode - checking package configuration..."
+          npm pack --dry-run
+          echo "✅ Dry run passed"
+
+      - name: Publish to npm
+        if: github.event.inputs.dry_run != 'true'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        if: github.event.inputs.dry_run != 'true' && github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Release v${{ steps.version.outputs.version }}
+          body: |
+            Manual publish to npm
+
+            ### Version
+            ${{ steps.version.outputs.version }}
+
+            ### Triggered by
+            ${{ github.triggering_actor }}
+
+            ### Workflow
+            [View workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Output version
+        run: |
+          echo "✅ Published version ${{ steps.version.outputs.version }}"
+          echo "npm package: https://www.npmjs.com/package/universal-agent-memory/v/${{ steps.version.outputs.version }}"

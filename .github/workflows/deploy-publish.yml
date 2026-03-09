@@ -1,4 +1,4 @@
-name: Merge, Deploy & Publish
+name: Merge & Deploy
 
 on:
   push:
@@ -20,7 +20,6 @@ on:
 
 env:
   NODE_VERSION: '20'
-  NPM_REGISTRY: 'https://registry.npmjs.org/'
 
 permissions:
   contents: write
@@ -45,7 +44,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          registry-url: ${{ env.NPM_REGISTRY }}
+          registry-url: 'https://registry.npmjs.org/'
 
       - name: Install dependencies
         run: npm ci
@@ -97,39 +96,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  publish-npm:
-    name: Publish to npm
-    runs-on: ubuntu-latest
-    needs: build-test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          registry-url: ${{ env.NPM_REGISTRY }}
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Check NPM_TOKEN
-        run: |
-          if [ -z "${{ secrets.NPM_TOKEN }}" ]; then
-            echo "::error::NPM_TOKEN secret is not set. Please add it in repository Settings > Secrets and variables > Actions"
-            exit 1
-          fi
-
-      - name: Publish to npm
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
   deploy-docs:
     name: Deploy Documentation
     runs-on: ubuntu-latest
@@ -162,8 +128,7 @@ jobs:
           cp -r docs/* _site/docs/ 2>/dev/null || true
           cp README.md _site/ 2>/dev/null || true
 
-          # Create index.html
-          cat > _site/index.html << 'EOF'
+          cat > _site/index.html << 'HTMLEOF'
           <!DOCTYPE html>
           <html lang="en">
           <head>
@@ -172,62 +137,36 @@ jobs:
             <title>Universal Agent Memory - Documentation</title>
             <style>
               body {
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 max-width: 800px;
                 margin: 0 auto;
                 padding: 40px 20px;
                 line-height: 1.6;
               }
               h1 { color: #2c3e50; }
-              a { color: #3498db; text-decoration: none; }
-              a:hover { text-decoration: underline; }
+              a { color: #3498db; }
               .card {
                 background: #f8f9fa;
                 border-radius: 8px;
                 padding: 20px;
                 margin: 20px 0;
               }
-              .version {
-                background: #e8f5e9;
-                padding: 10px 15px;
-                border-radius: 4px;
-                display: inline-block;
-                margin-bottom: 20px;
-              }
             </style>
           </head>
           <body>
             <h1>Universal Agent Memory</h1>
-            <div class="version">v${{ needs.build-test.outputs.version }}</div>
-
             <div class="card">
               <h2>Documentation</h2>
               <p><a href="docs/">View full documentation</a></p>
             </div>
-
             <div class="card">
               <h2>Quick Start</h2>
-              <pre><code>npm install universal-agent-memory\nuam init</code></pre>
+              <pre><code>npm install universal-agent-memory
+uam init</code></pre>
             </div>
-
-            <div class="card">
-              <h2>Features</h2>
-              <ul>
-                <li>4-layer memory system (Working, Session, Semantic, Knowledge)</li>
-                <li>Adaptive context loading</li>
-                <li>Mandatory worktree workflow</li>
-                <li>Multi-agent coordination</li>
-                <li>Pattern-based routing</li>
-              </ul>
-            </div>
-
-            <footer style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd;">
-              <p><a href="https://github.com/DammianMiller/universal-agent-memory">View on GitHub</a> |
-                 <a href="https://www.npmjs.com/package/universal-agent-memory">npm package</a></p>
-            </footer>
           </body>
           </html>
-          EOF
+          HTMLEOF
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
@@ -237,20 +176,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
-  notify:
-    name: Send Notification
-    runs-on: ubuntu-latest
-    needs: [build-test, publish-npm, deploy-docs]
-    if: always()
-    steps:
-      - name: Check status
-        run: |
-          if [ "${{ needs.build-test.result }}" == "success" ] && \
-             [ "${{ needs.publish-npm.result }}" == "success" ] && \
-             [ "${{ needs.deploy-docs.result }}" == "success" ]; then
-            echo "All deployments completed successfully"
-          else
-            echo "Some deployments failed"
-            exit 1
-          fi
