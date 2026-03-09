@@ -1,7 +1,7 @@
 {
   "name": "universal-agent-memory",
-  "version": "6.1.1",
-  "description": "Universal AI agent memory system - CLAUDE.md templates, memory, worktrees for Claude Code, Factory.AI, VSCode, OpenCode, Forge",
+  "version": "2.2.0",
+  "description": "Universal AI agent memory system - CLAUDE.md templates, memory, worktrees for Claude Code, Factory.AI, VSCode, OpenCode",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -19,18 +19,16 @@
     "lint:fix": "eslint src --ext .ts --fix",
     "format": "prettier --write src/**/*.ts",
     "prepare": "npm run build",
-    "setup": "bash scripts/setup.sh",
     "install:web": "bash scripts/install-web.sh",
     "install:desktop": "bash scripts/install-desktop.sh",
     "install:all": "bash scripts/install.sh",
-    "postinstall": "echo '\n✨ Run: npm run setup && npx universal-agent-memory init --interactive'"
+    "postinstall": "echo '\n✨ Run: npx universal-agent-memory init --interactive'"
   },
   "keywords": [
     "claude",
     "claude-code",
     "factory-ai",
     "opencode",
-    "forge",
     "vscode",
     "ai-agent",
     "context",
@@ -87,11 +85,7 @@
   "files": [
     "dist",
     "templates",
-    "scripts",
     "README.md",
     "LICENSE"
-  ],
-  "optionalDependencies": {
-    "prettier": "^3.2.4"
-  }
+  ]
 }

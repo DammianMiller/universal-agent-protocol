@@ -164,7 +164,7 @@ async function buildContext(
   const relevantPatterns = buildRelevantPatterns(analysis);
 
   // Template version for reproducibility
-  const TEMPLATE_VERSION = '10.18-opt';
+  const TEMPLATE_VERSION = '10.16-opt';
 
   return {
     // Project basics
@@ -296,14 +296,6 @@ async function buildContext(
     
     // Relevant patterns (pruned by project type to save ~800 tokens)
     RELEVANT_PATTERNS: relevantPatterns,
-
-    // Pattern RAG (on-demand pattern retrieval via Qdrant)
-    PATTERN_RAG_ENABLED: config.memory?.patternRag?.enabled || false,
-    PATTERN_RAG_COLLECTION: config.memory?.patternRag?.collection || 'agent_patterns',
-    PATTERN_RAG_QUERY_CMD: `uam patterns query`,
-    PATTERN_RAG_INDEX_CMD: `uam patterns index`,
-    PATTERN_RAG_TOP_K: config.memory?.patternRag?.topK || 2,
-    PATTERN_RAG_THRESHOLD: config.memory?.patternRag?.scoreThreshold || 0.35,
   };
 }
 
