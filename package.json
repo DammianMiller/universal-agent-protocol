@@ -1,6 +1,6 @@
 {
   "name": "universal-agent-memory",
-  "version": "6.0.0",
+  "version": "6.1.0",
   "description": "Universal AI agent memory system - CLAUDE.md templates, memory, worktrees for Claude Code, Factory.AI, VSCode, OpenCode, Forge",
   "type": "module",
   "main": "dist/index.js",
