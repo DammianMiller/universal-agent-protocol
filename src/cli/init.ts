@@ -81,12 +81,12 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
   }
 
-  // Patterns: auto-detect from existing config if not explicitly set
+  // Patterns: default to enabled when Qdrant is available, otherwise check existing config
   const withPatterns =
     options.patterns !== undefined
       ? options.patterns
-      : existingConfig.memory?.patternRag?.enabled === true ||
-        (withMemory && existingConfig.memory?.longTerm?.provider === 'qdrant');
+      : (withMemory && existingConfig.memory?.longTerm?.provider === 'qdrant') ||
+        existingConfig.memory?.patternRag?.enabled === true;
 
   // Build configuration - merge with existing to preserve user customizations
   const config: AgentContextConfig = {
