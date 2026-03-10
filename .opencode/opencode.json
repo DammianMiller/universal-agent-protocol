@@ -41,7 +41,7 @@
   "mcp": {
     "uap-router": {
       "command": "node",
-      "args": ["./dist/mcp-router/server.js"],
+      "args": ["./dist/cli/mcp-router.js"],
       "env": {
         "UAP_PROJECT_DIR": ".",
         "UAP_MEMORY_DB": "./agents/data/memory/short_term.db",

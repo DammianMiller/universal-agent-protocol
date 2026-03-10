@@ -1,3 +1,3 @@
-version = "1.1.0"
+version = "1.2.0"
 __author__ = "Pay2U Team"
-__description__ = "Universal Agent Protocol CLI - 100% Compliance Implementation"
+__description__ = "Universal Agent Protocol CLI - 100% System Verification & MCP Fix"
