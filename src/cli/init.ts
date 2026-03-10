@@ -141,6 +141,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
                     existingConfig.memory?.patternRag?.queryScript ||
                     './agents/scripts/query_patterns.py',
                   sourceFile: existingConfig.memory?.patternRag?.sourceFile || 'CLAUDE.md',
+                  sourceFiles: existingConfig.memory?.patternRag?.sourceFiles || [],
+                  skillsDir: existingConfig.memory?.patternRag?.skillsDir,
                   maxBodyChars: existingConfig.memory?.patternRag?.maxBodyChars || 400,
                 },
               }

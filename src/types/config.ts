@@ -102,8 +102,12 @@ export const PatternRagSchema = z.object({
   // Script paths for indexing/querying
   indexScript: z.string().default('./agents/scripts/index_patterns_to_qdrant.py'),
   queryScript: z.string().default('./agents/scripts/query_patterns.py'),
-  // Source file for pattern extraction
+  // Source file for pattern extraction (backward compat)
   sourceFile: z.string().default('CLAUDE.md'),
+  // Additional source files to scan (AGENTS.md, etc.)
+  sourceFiles: z.array(z.string()).optional(),
+  // Directory containing skill files to scan (e.g. .claude/skills)
+  skillsDir: z.string().optional(),
   // Max body chars to inject per pattern (token budget control)
   maxBodyChars: z.number().default(400),
 });

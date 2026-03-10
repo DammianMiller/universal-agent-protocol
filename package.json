@@ -1,6 +1,6 @@
 {
   "name": "universal-agent-protocol",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Autonomous AI agent memory system with CLAUDE.md protocol enforcement",
   "type": "module",
   "main": "dist/index.js",
