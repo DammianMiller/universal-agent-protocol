@@ -37,7 +37,7 @@ export async function complianceCommand(action: ComplianceAction, options: Compl
   }
 }
 
-async function runComplianceCheck(cwd: string, _options: ComplianceOptions): Promise<void> {
+async function runComplianceCheck(cwd: string, options: ComplianceOptions = {}): Promise<void> {
   console.log(chalk.bold('\n=== UAP Protocol Compliance Check ===\n'));
 
   const results: CheckResult[] = [];
@@ -227,6 +227,14 @@ async function runComplianceCheck(cwd: string, _options: ComplianceOptions): Pro
   for (const r of results) {
     const icon = r.status === 'pass' ? chalk.green('✅') : r.status === 'warn' ? chalk.yellow('⚠️') : chalk.red('❌');
     console.log(`${icon} ${r.name}: ${r.message}`);
+    if (options.verbose && r.status !== 'pass') {
+      if (r.fixable) {
+        console.log(chalk.dim(`     → Auto-fixable: run 'uap compliance fix'`));
+      }
+      if (r.status === 'fail') {
+        console.log(chalk.dim(`     → This gate blocks compliance`));
+      }
+    }
   }
 
   console.log('');
@@ -250,8 +258,54 @@ async function runComplianceCheck(cwd: string, _options: ComplianceOptions): Pro
 
 async function runComplianceAudit(cwd: string, _options: ComplianceOptions): Promise<void> {
   console.log(chalk.bold('\n=== UAP Protocol Deep Audit ===\n'));
-  // Run check first with verbose
+
+  // Run check with verbose output
   await runComplianceCheck(cwd, { verbose: true });
+
+  // Additional audit-only information
+  const config = loadConfig(cwd);
+  const dbPath = config?.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
+
+  if (existsSync(dbPath)) {
+    try {
+      const db = new Database(dbPath, { readonly: true });
+
+      console.log(chalk.bold('\n--- Memory Statistics ---'));
+      const totalMemories = (db.prepare('SELECT COUNT(*) as cnt FROM memories').get() as { cnt: number }).cnt;
+      const totalSessions = (db.prepare('SELECT COUNT(*) as cnt FROM session_memories').get() as { cnt: number }).cnt;
+      const totalEntities = (db.prepare('SELECT COUNT(*) as cnt FROM entities').get() as { cnt: number }).cnt;
+      const totalRelationships = (db.prepare('SELECT COUNT(*) as cnt FROM relationships').get() as { cnt: number }).cnt;
+
+      console.log(`  Memories:      ${totalMemories}`);
+      console.log(`  Sessions:      ${totalSessions}`);
+      console.log(`  Entities:      ${totalEntities}`);
+      console.log(`  Relationships: ${totalRelationships}`);
+
+      // Memory type breakdown
+      const types = db.prepare('SELECT type, COUNT(*) as cnt FROM memories GROUP BY type ORDER BY cnt DESC').all() as Array<{ type: string; cnt: number }>;
+      if (types.length > 0) {
+        console.log(chalk.bold('\n--- Memory Type Breakdown ---'));
+        for (const t of types) {
+          console.log(`  ${t.type}: ${t.cnt}`);
+        }
+      }
+
+      // Oldest and newest memory
+      const oldest = db.prepare('SELECT timestamp FROM memories ORDER BY id ASC LIMIT 1').get() as { timestamp: string } | undefined;
+      const newest = db.prepare('SELECT timestamp FROM memories ORDER BY id DESC LIMIT 1').get() as { timestamp: string } | undefined;
+      if (oldest && newest) {
+        console.log(chalk.bold('\n--- Memory Timeline ---'));
+        console.log(`  Oldest: ${oldest.timestamp}`);
+        console.log(`  Newest: ${newest.timestamp}`);
+      }
+
+      db.close();
+    } catch {
+      // ignore audit stats errors
+    }
+  }
+
+  console.log('');
 }
 
 async function runComplianceFix(cwd: string, _options: ComplianceOptions): Promise<void> {

@@ -18,14 +18,14 @@ _Not just in one conversation—but forever._
 ## Quick Start (30 seconds)
 
 ```bash
-# Install
+# Install globally
 npm install -g universal-agent-protocol
-
-# Run complete setup (installs dependencies, git hooks, etc.)
-npm run setup
 
 # Initialize in your project
 uap init
+
+# Run full setup (memory, Qdrant, MCP router, hooks)
+uap setup -p all
 ```
 
 That's it. Your AI now has persistent memory and follows proven workflows.
@@ -40,14 +40,14 @@ For a full installation with all features:
 # Install UAP CLI
 npm install -g universal-agent-protocol
 
-# Run comprehensive setup
-npm run setup
+# Run comprehensive setup in your project
+uap setup -p all
 # This will:
-# ✓ Check and install dependencies
-# ✓ Install npm packages
-# ✓ Build TypeScript
-# ✓ Configure git hooks (pre-commit, commit-msg, pre-push)
-# ✓ Set up GitHub PR templates
+# ✓ Initialize .uap.json config
+# ✓ Create memory database (SQLite)
+# ✓ Set up Qdrant collections (if running)
+# ✓ Configure MCP Router
+# ✓ Install Python venv for embeddings
 ```
 
 ### Requirements

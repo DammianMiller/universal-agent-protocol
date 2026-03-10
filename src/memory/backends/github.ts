@@ -36,7 +36,8 @@ export class GitHubMemoryBackend implements MemoryBackend {
   }
 
   async store(entry: MemoryEntry): Promise<void> {
-    const filename = `${entry.timestamp.replace(/:/g, '-')}_${entry.id}.json`;
+    // Use double-underscore separator to avoid collision with underscores in entry.id
+    const filename = `${entry.timestamp.replace(/:/g, '-')}__${entry.id}.json`;
     const filePath = `${this.path}/${filename}`;
     const content = Buffer.from(JSON.stringify(entry, null, 2)).toString('base64');
 
@@ -54,6 +55,11 @@ export class GitHubMemoryBackend implements MemoryBackend {
     }
   }
 
+  /**
+   * Query memories by substring match (case-insensitive).
+   * Note: This is NOT semantic search — it uses simple string containment.
+   * For semantic search, use QdrantCloudBackend instead.
+   */
   async query(query: string, limit = 10): Promise<MemoryEntry[]> {
     const memories = await this.getRecent(50);
     return memories
@@ -111,7 +117,11 @@ export class GitHubMemoryBackend implements MemoryBackend {
       let deleted = 0;
       for (const file of files) {
         if (file.type === 'file' && file.name.endsWith('.json')) {
-          const timestamp = file.name.split('_')[0].replace(/-/g, ':');
+          // Split on double-underscore to get timestamp portion, then restore colons
+          // Handles both new format (double-underscore) and legacy (single underscore)
+          const parts = file.name.split('__');
+          const rawTimestamp = parts.length > 1 ? parts[0] : file.name.split('_')[0];
+          const timestamp = rawTimestamp.replace(/-/g, ':');
           if (new Date(timestamp) < olderThan) {
             await this.octokit.repos.deleteFile({
               owner: this.owner,

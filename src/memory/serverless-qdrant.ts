@@ -387,7 +387,9 @@ export class ServerlessQdrantManager {
       normB += b[i] * b[i];
     }
     
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+    if (denominator === 0) return 0;
+    return dotProduct / denominator;
   }
 
   /**

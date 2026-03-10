@@ -14,8 +14,8 @@ module.exports = {
     'no-useless-escape': 'off',
     'prefer-const': 'off',
     'no-misleading-character-class': 'off',
-    '@typescript-eslint/no-unused-vars': 'off',
-    '@typescript-eslint/ban-ts-comment': 'off',
-    '@typescript-eslint/no-explicit-any': 'off',
+    '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    '@typescript-eslint/ban-ts-comment': 'warn',
+    '@typescript-eslint/no-explicit-any': 'warn',
   },
 };

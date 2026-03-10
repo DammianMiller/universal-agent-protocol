@@ -9,5 +9,20 @@ export default defineConfig({
     ],
     exclude: ['**/.worktrees/**', 'test/benchmarks/**', 'node_modules/**'],
     watch: false,
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: [
+        'src/**/*.test.ts',
+        'src/**/index.ts',
+        'src/uap_harbor/**',
+      ],
+      thresholds: {
+        statements: 30,
+        branches: 25,
+        functions: 25,
+        lines: 30,
+      },
+    },
   },
 });

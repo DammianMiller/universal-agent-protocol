@@ -41,8 +41,12 @@ export class McpClient {
     if (this.process) return;
     
     if (this.config.url) {
-      // HTTP/SSE transport - not implemented in lightweight version
-      throw new Error(`HTTP transport not yet supported for ${this.serverName}`);
+      // HTTP/SSE transport requires a streaming HTTP client (planned for v0.9.0)
+      throw new Error(
+        `HTTP/SSE transport is not yet supported for server "${this.serverName}". ` +
+        `Use stdio transport instead by specifying "command" in the server config. ` +
+        `See: https://github.com/DammianMiller/universal-agent-protocol/issues`
+      );
     }
     
     if (!this.config.command) {

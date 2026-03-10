@@ -1,6 +1,6 @@
 {
   "name": "universal-agent-protocol",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Autonomous AI agent memory system with CLAUDE.md protocol enforcement",
   "type": "module",
   "main": "dist/index.js",
@@ -20,6 +20,7 @@
     "lint:fix": "eslint src --ext .ts --fix",
     "format": "prettier --write src/**/*.ts",
     "prepare": "npm run build",
+    "prepublishOnly": "npm run build && npm test",
     "install:web": "bash scripts/install-web.sh",
     "install:desktop": "bash scripts/install-desktop.sh",
     "install:all": "bash scripts/install.sh",

@@ -22,8 +22,7 @@ function sanitizeCollectionName(base: string, projectId?: string): string {
   const hash = createHash('sha256').update(projectId).digest('hex').slice(0, 8);
   
   // Sanitize project name (take last path component, remove special chars)
-  const projectName = projectId
-    .split(/[/\\]/).pop() || projectId
+  const projectName = (projectId.split(/[/\\]/).pop() || projectId)
     .replace(/[^a-zA-Z0-9_-]/g, '_')
     .slice(0, 32);
   
