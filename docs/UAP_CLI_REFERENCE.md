@@ -342,7 +342,7 @@ uap compliance check [options]
 ```
 === UAP COMPLIANCE CHECK ===
 [✓] CLAUDE.md present and valid
-[✓] .uam.json configuration exists
+[✓] .uap.json configuration exists
 [✓] Memory database accessible
 [✓] Worktree workflow enforced
 [✓] No direct commits to main

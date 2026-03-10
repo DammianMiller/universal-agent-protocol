@@ -37,7 +37,7 @@ That's it. Your AI now has persistent memory and follows proven workflows.
 For a full installation with all features:
 
 ```bash
-# Install UAM CLI
+# Install UAP CLI
 npm install -g universal-agent-protocol
 
 # Run comprehensive setup
@@ -109,12 +109,12 @@ npm install -g opencode
 # Configure local LLM (optional, requires llama.cpp server)
 # See: https://opencode.ai/docs/configuration
 
-# Initialize UAM in your project
+# Initialize UAP in your project
 cd your-project
 uap init
 ```
 
-The `opencode.json` configuration file automatically loads UAM plugins for:
+The `opencode.json` configuration file automatically loads UAP plugins for:
 
 - **Pattern RAG** - Context-aware pattern injection (~12K tokens saved)
 - **Session hooks** - Pre-execution setup, memory preservation
@@ -125,7 +125,7 @@ The `opencode.json` configuration file automatically loads UAM plugins for:
 | Platform        | Notes                                   |
 | --------------- | --------------------------------------- |
 | **Factory.AI**  | Works well, use `CLAUDE.md` for context |
-| **Claude Code** | Desktop app, full UAM support           |
+| **Claude Code** | Desktop app, full UAP support           |
 | **VSCode**      | Use with Claude Code extension          |
 | **claude.ai**   | Web version, limited tooling            |
 
@@ -152,7 +152,7 @@ Memory persists in SQLite databases that travel with your code:
 
 ### 🎯 Pattern Router
 
-Before every task, UAM auto-selects relevant patterns:
+Before every task, UAP auto-selects relevant patterns:
 
 ```
 === PATTERN ROUTER ===
@@ -226,7 +226,7 @@ Tasks automatically route to specialists:
 
 | Command        | Description                                      |
 | -------------- | ------------------------------------------------ |
-| `uap init`     | Initialize/update UAM (never loses data)         |
+| `uap init`     | Initialize/update UAP (never loses data)         |
 | `uap generate` | Regenerate CLAUDE.md from project analysis       |
 | `uap update`   | Update templates while preserving customizations |
 

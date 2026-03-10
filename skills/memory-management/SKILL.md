@@ -2,7 +2,7 @@
 | --- | --- |
 | memory-management | 4-layer memory system for AI coding agents. Store and retrieve lessons, decisions, and context across sessions using SQLite + vector search. Use when building agents that need persistent memory. |
 
-# UAM Memory Management
+# UAP Memory Management
 
 ## 4-Layer Architecture
 ```
@@ -15,9 +15,9 @@ L4 Knowledge| SQLite entities/rels | Relationship graph | <20ms
 ## Quick Start
 ```bash
 npm install -g universal-agent-protocol
-uam init
-uam memory start     # Start Qdrant for semantic search (optional)
-uam memory status    # Check memory health
+uap init
+uap memory start     # Start Qdrant for semantic search (optional)
+uap memory status    # Check memory health
 ```
 
 ## Store Memories
@@ -27,7 +27,7 @@ sqlite3 ./agents/data/memory/short_term.db \
   "INSERT INTO memories (timestamp,type,content) VALUES (datetime('now'),'action','...');"
 
 # Semantic memory (cross-session)
-uam memory store lesson "Learned X about Y" --tags tag1,tag2 --importance 8
+uap memory store lesson "Learned X about Y" --tags tag1,tag2 --importance 8
 
 # Session memory
 sqlite3 ./agents/data/memory/short_term.db \
@@ -36,7 +36,7 @@ sqlite3 ./agents/data/memory/short_term.db \
 
 ## Query Memories
 ```bash
-uam memory query "how to handle auth errors"   # Semantic search
+uap memory query "how to handle auth errors"   # Semantic search
 sqlite3 ./agents/data/memory/short_term.db \
   "SELECT content FROM memories WHERE type='failure_analysis' ORDER BY timestamp DESC LIMIT 5;"
 ```

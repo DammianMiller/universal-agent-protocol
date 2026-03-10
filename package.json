@@ -24,8 +24,8 @@
     "install:desktop": "bash scripts/install-desktop.sh",
     "install:all": "bash scripts/install.sh",
     "postinstall": "echo '\n✨ Run: npx universal-agent-protocol init --interactive'",
-    "update-uam": "bash scripts/update-uam-compliance.sh",
-    "verify-uam": "bash scripts/verify-compliance.sh",
+    "update-uap": "bash scripts/update-uap-compliance.sh",
+    "verify-uap": "bash scripts/verify-compliance.sh",
     "check-claude": "bash scripts/verify-compliance.sh"
   },
   "keywords": [

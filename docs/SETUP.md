@@ -1,18 +1,18 @@
-# UAM Setup Guide
+# UAP Setup Guide
 
 Complete setup instructions for Universal Agent Memory.
 
 ## Quick Setup
 
 ```bash
-# Install UAM CLI
+# Install UAP CLI
 npm install -g universal-agent-protocol
 
 # Run comprehensive setup
 npm run setup
 
 # Initialize in your project
-uam init
+uap init
 ```
 
 ## Dependencies
@@ -38,7 +38,7 @@ uam init
 # Install all dependencies
 brew install node@18 git python docker
 
-# Install UAM
+# Install UAP
 npm install -g universal-agent-protocol
 
 # Run setup
@@ -55,7 +55,7 @@ sudo apt-get install -y nodejs
 # Install other dependencies
 sudo apt-get install -y git python3 docker.io
 
-# Install UAM
+# Install UAP
 npm install -g universal-agent-protocol
 
 # Run setup
@@ -71,7 +71,7 @@ winget install Git.Git
 winget install Python.Python.3.12
 winget install Docker.DockerDesktop
 
-# Install UAM
+# Install UAP
 npm install -g universal-agent-protocol
 
 # Run setup
@@ -124,11 +124,11 @@ export QDRANT_URL=http://localhost:6333
 After setup, verify everything is working:
 
 ```bash
-# Check UAM CLI
-uam --version
+# Check UAP CLI
+uap --version
 
 # Check memory status
-uam memory status
+uap memory status
 
 # Run tests
 npm test
@@ -170,14 +170,14 @@ npm install
 
 ### Docker not available
 
-No problem! UAM will use cloud backends. You can add Docker later:
+No problem! UAP will use cloud backends. You can add Docker later:
 
 ```bash
 # Install Docker
 curl -fsSL https://get.docker.com | sh
 
 # Start Qdrant
-uam memory start
+uap memory start
 ```
 
 ## Next Steps
@@ -193,7 +193,7 @@ uam memory start
 npm uninstall -g universal-agent-protocol
 
 # Remove from your project
-rm -rf .uam.json CLAUDE.md agents/ .worktrees/
+rm -rf .uap.json CLAUDE.md agents/ .worktrees/
 ```
 
 ## Support

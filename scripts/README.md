@@ -1,6 +1,6 @@
 # Setup Scripts
 
-This directory contains automated setup and installation scripts for UAM.
+This directory contains automated setup and installation scripts for UAP.
 
 ## Scripts
 
@@ -28,7 +28,7 @@ Performs a comprehensive setup including:
 npm run install:web
 ```
 
-Installs UAM for web platform usage (claude.ai, Factory.AI):
+Installs UAP for web platform usage (claude.ai, Factory.AI):
 
 - Installs CLI globally or from GitHub
 - Initializes web platform configuration
@@ -40,7 +40,7 @@ Installs UAM for web platform usage (claude.ai, Factory.AI):
 npm run install:desktop
 ```
 
-Installs UAM for desktop usage:
+Installs UAP for desktop usage:
 
 - Installs CLI globally or from GitHub
 - Detects Docker for local Qdrant
@@ -52,14 +52,14 @@ Installs UAM for desktop usage:
 ### Quick Setup
 
 ```bash
-# Install UAM globally
+# Install UAP globally
 npm install -g universal-agent-protocol
 
 # Run comprehensive setup
 npm run setup
 
 # Initialize in your project
-uam init
+uap init
 ```
 
 ### Platform-Specific Setup
@@ -147,7 +147,7 @@ chmod +x .git/hooks/commit-msg
 
 ## Best Practices
 
-1. **Always run `npm run setup`** after cloning or updating UAM
+1. **Always run `npm run setup`** after cloning or updating UAP
 2. **Review generated hooks** before committing
 3. **Keep hooks in sync** with project requirements
 4. **Document custom hooks** in project README

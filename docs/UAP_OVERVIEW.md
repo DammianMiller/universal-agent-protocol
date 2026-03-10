@@ -146,7 +146,7 @@ cd agents && docker-compose up -d
 
 ## Configuration
 
-### `.uam.json` - Project Settings
+### `.uap.json` - Project Settings
 
 ```json
 {
@@ -210,7 +210,7 @@ UAP enforces **completion gates** before any task is considered done:
 Run compliance check:
 
 ```bash
-npm run verify-uam
+npm run verify-uap
 # or
 uap compliance check
 ```

@@ -87,10 +87,10 @@ python3 qwen_tool_call_test.py --verbose
 
 ## Installation
 
-### Option 1: Using UAM CLI (Recommended)
+### Option 1: Using UAP CLI (Recommended)
 
 ```bash
-uam tool-calls setup
+uap tool-calls setup
 ```
 
 This will:
@@ -160,7 +160,7 @@ cp tools/agents/config/chat_template.jinja ~/.opencode/agent/
 ### Check Setup
 
 ```bash
-uam tool-calls status
+uap tool-calls status
 ```
 
 ### Run Tests

@@ -222,7 +222,7 @@ jobs:
             <div class="card">
               <h2>Quick Start</h2>
               <pre><code>npm install universal-agent-protocol
-              uam init</code></pre>
+              uap init</code></pre>
             </div>
           </body>
           </html>

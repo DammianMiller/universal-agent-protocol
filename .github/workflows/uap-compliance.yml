@@ -1,4 +1,4 @@
-name: UAM Compliance Check
+name: UAP Compliance Check
 
 on:
   push:
@@ -15,17 +15,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         
-      - name: Check UAM Compliance
+      - name: Check UAP Compliance
         run: |
-          echo "=== UAM COMPLIANCE CHECK ==="
+          echo "=== UAP COMPLIANCE CHECK ==="
           
           score=0
           total=11
           
           # 1. SESSION START block
-          if grep -q "## SESSION START" CLAUDE.md && grep -q "uam task ready" CLAUDE.md; then
+          if grep -q "## SESSION START" CLAUDE.md && grep -q "uap task ready" CLAUDE.md; then
             ((score++))
-            echo "✓ SESSION START block with uam task ready"
+            echo "✓ SESSION START block with uap task ready"
           else
             echo "✗ SESSION START block MISSING"
             exit 1
@@ -122,7 +122,7 @@ jobs:
           fi
           
           echo ""
-          echo "=== UAM COMPLIANCE SCORE: $score/$total ($(( score * 100 / total ))%) ==="
+          echo "=== UAP COMPLIANCE SCORE: $score/$total ($(( score * 100 / total ))%) ==="
           
           if [ "$score" -ne "$total" ]; then
             echo "ERROR: Compliance check failed! Score: $score/$total"
