@@ -104,4 +104,4 @@ jobs:
       - name: Output version
         run: |
           echo "✅ Published version ${{ steps.version.outputs.version }}"
-          echo "npm package: https://www.npmjs.com/package/universal-agent-memory/v/${{ steps.version.outputs.version }}"
+          echo "npm package: https://www.npmjs.com/package/universal-agent-protocol/v/${{ steps.version.outputs.version }}"

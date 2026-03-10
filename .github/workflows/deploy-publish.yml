@@ -161,7 +161,7 @@ jobs:
             </div>
             <div class="card">
               <h2>Quick Start</h2>
-              <pre><code>npm install universal-agent-memory
+              <pre><code>npm install universal-agent-protocol
 uam init</code></pre>
             </div>
           </body>
