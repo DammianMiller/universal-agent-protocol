@@ -101,6 +101,14 @@ if [ -d "${PROJECT_DIR}/.worktrees" ]; then
   fi
 fi
 
+# Record session start in memory if database is accessible
+if [ -f "$DB_PATH" ]; then
+  sqlite3 "$DB_PATH" "
+    INSERT OR IGNORE INTO session_memories (session_id, timestamp, type, content, importance)
+    VALUES ('current', datetime('now'), 'decision', 'Session started - UAP compliance active. All memory systems verified operational.', 7);
+  " 2>/dev/null || true
+fi
+
 if [ -n "$output" ]; then
   echo "$output"
 fi

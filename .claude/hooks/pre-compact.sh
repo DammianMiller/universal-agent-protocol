@@ -46,6 +46,14 @@ if [ "$recent_lessons" = "0" ]; then
   output+="store a summary: sqlite3 ./agents/data/memory/short_term.db \"INSERT INTO session_memories (session_id,timestamp,type,content,importance) VALUES ('current',datetime('now'),'decision','<summary>',7);\""$'\n'
 fi
 
+# Record session end in memory before compaction
+if [ -f "$DB_PATH" ]; then
+  sqlite3 "$DB_PATH" "
+    INSERT OR IGNORE INTO session_memories (session_id, timestamp, type, content, importance)
+    VALUES ('current', datetime('now'), 'decision', 'Session ending - context compaction. Store lessons before continuing.', 7);
+  " 2>/dev/null || true
+fi
+
 output+="</system-reminder>"$'\n'
 
 echo "$output"
