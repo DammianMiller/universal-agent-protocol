@@ -44,6 +44,18 @@ FIXES = [
         "description": "Ensures thinking tags are properly closed",
         "flags": re.DOTALL,
     },
+    {
+        "name": "Fix system message validation for tool mode",
+        "pattern": r"\{%- if tools and tools is iterable and tools is not mapping %\}\s*{{- 'system\\n' }}",
+        "replacement": "{%- set has_system_message = messages[0].role == 'system' if messages else false %}\n{%- if tools and tools is iterable and tools is not mapping %}\n    {{- 'system\\n' }}",
+        "description": "Adds has_system_message check before tools block",
+    },
+    {
+        "name": "Add system message validation in else branch",
+        "pattern": r"\{%- else %\}\s*\{%- if messages\[0\]\.role == 'system' %\}",
+        "replacement": "{%- else %}\n    {%- if has_system_message %}",
+        "description": "Uses has_system_message variable instead of checking messages[0]",
+    },
 ]
 
 

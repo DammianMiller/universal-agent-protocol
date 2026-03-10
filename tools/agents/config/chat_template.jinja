@@ -60,6 +60,31 @@
 {%- if not messages %}
     {{- raise_exception('No messages provided.') }}
 {%- endif %}
+{%- set has_system_message = messages[0].role == 'system' if messages else false %}
+{%- if tools and tools is iterable and tools is not mapping %}
+    {{- 'system\n' }}
+    {{- "# Tools\n\nYou have access to the following functions:\n\n<tools>" }}
+    {%- for tool in tools %}
+        {{- "\n" }}
+        {{- tool | tojson }}
+    {%- endfor %}
+    {{- "\n</tools>" }}
+    {{- '\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST NOT AFTER\n- If there is no function call available, answer the question like normal with the current knowledge and do not tell the user about the tool calls\n</IMPORTANT>' }}
+    {%- if has_system_message %}
+        {%- set content = render_content(messages[0].content, false, true)|trim %}
+        {%- if content %}
+            {{- '\n\n' + content }}
+        {%- endif %}
+    {%- endif %}
+    {{- '</think>\n' }}
+{%- else %}
+    {%- if has_system_message %}
+        {%- set content = render_content(messages[0].content, false, true)|trim %}
+        {{- 'system\n' + content + '</think>\n' }}
+    {%- else %}
+        {{- raise_exception('System message must be at the beginning when tools are not provided.') }}
+    {%- endif %}
+{%- endif %}
 {%- if tools and tools is iterable and tools is not mapping %}
     {{- 'system\n' }}
     {{- "# Tools\n\nYou have access to the following functions:\n\n<tools>" }}
