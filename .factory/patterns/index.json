@@ -1,0 +1,183 @@
+{
+  "version": "1.0.0",
+  "collection": "agent_patterns",
+  "embedding_model": "all-MiniLM-L6-v2",
+  "patterns": [
+    {
+      "id": 12,
+      "file": "P12_output_existence.md",
+      "title": "Output Existence Verification",
+      "abbreviation": "OE-Verify",
+      "category": "Verification",
+      "keywords": ["create file", "output", "existence", "verification", "done"]
+    },
+    {
+      "id": 13,
+      "file": "P13_iterative_refinement.md",
+      "title": "Iterative Refinement Loop",
+      "abbreviation": "Iter-Ref",
+      "category": "Testing",
+      "keywords": ["test", "pytest", "iterate", "fix", "refinement", "pass"]
+    },
+    {
+      "id": 14,
+      "file": "P14_output_format.md",
+      "title": "Output Format Validation",
+      "abbreviation": "Format-Check",
+      "category": "Verification",
+      "keywords": ["format", "json", "yaml", "csv", "validation", "output"]
+    },
+    {
+      "id": 16,
+      "file": "P16_task_first.md",
+      "title": "Task-First Execution",
+      "abbreviation": "Task-First",
+      "category": "Execution",
+      "keywords": ["execute", "directly", "task", "clear", "ambiguous"]
+    },
+    {
+      "id": 17,
+      "file": "P17_constraint_extraction.md",
+      "title": "Constraint Extraction",
+      "abbreviation": "Extract-Constraints",
+      "category": "Planning",
+      "keywords": ["constraint", "exactly", "only", "must be", "no more than"]
+    },
+    {
+      "id": 19,
+      "file": "P19_impossible_refusal.md",
+      "title": "Impossible Task Refusal",
+      "abbreviation": "Refuse-Impossible",
+      "category": "Safety",
+      "keywords": ["impossible", "refuse", "cannot", "fundamentally"]
+    },
+    {
+      "id": 20,
+      "file": "P20_adversarial.md",
+      "title": "Adversarial Thinking",
+      "abbreviation": "Adversarial",
+      "category": "Security",
+      "keywords": ["bypass", "exploit", "break", "circumvent", "evade", "filter", "security"]
+    },
+    {
+      "id": 21,
+      "file": "P21_chess_engine.md",
+      "title": "Chess Engine Integration",
+      "abbreviation": "Chess-Engine",
+      "category": "Domain-Specific",
+      "keywords": ["chess", "FEN", "best move", "checkmate", "stockfish"]
+    },
+    {
+      "id": 22,
+      "file": "P22_git_recovery.md",
+      "title": "Git Recovery Forensics",
+      "abbreviation": "Git-Recovery",
+      "category": "Recovery",
+      "keywords": ["recover", "git", "reflog", "lost commit", "corrupted"]
+    },
+    {
+      "id": 23,
+      "file": "P23_compression_check.md",
+      "title": "Compression Impossibility Detection",
+      "abbreviation": "Compress-Check",
+      "category": "Verification",
+      "keywords": ["compress", "zip", "already compressed", "format"]
+    },
+    {
+      "id": 24,
+      "file": "P24_polyglot.md",
+      "title": "Polyglot Code Construction",
+      "abbreviation": "Polyglot",
+      "category": "Code-Golf",
+      "keywords": ["polyglot", "works in both", "compile as", "multiple languages"]
+    },
+    {
+      "id": 25,
+      "file": "P25_service_config.md",
+      "title": "Service Configuration Pipeline",
+      "abbreviation": "Service-Config",
+      "category": "DevOps",
+      "keywords": ["configure", "service", "daemon", "server", "reload", "validate"]
+    },
+    {
+      "id": 26,
+      "file": "P26_near_miss.md",
+      "title": "Near-Miss Iteration",
+      "abbreviation": "Near-Miss",
+      "category": "Testing",
+      "keywords": ["test", "near miss", "small gap", "tweak", "adjustment"]
+    },
+    {
+      "id": 28,
+      "file": "P28_smoke_test.md",
+      "title": "Service Smoke Test",
+      "abbreviation": "Smoke-Test",
+      "category": "Verification",
+      "keywords": ["start service", "deploy", "smoke test", "health check", "verify"]
+    },
+    {
+      "id": 30,
+      "file": "P30_performance.md",
+      "title": "Performance Threshold Tuning",
+      "abbreviation": "Perf-Threshold",
+      "category": "Optimization",
+      "keywords": ["optimize", "performance", "threshold", "percentage", "measure"]
+    },
+    {
+      "id": 31,
+      "file": "P31_round_trip.md",
+      "title": "Round-Trip Verification",
+      "abbreviation": "Round-Trip",
+      "category": "Verification",
+      "keywords": ["encode", "decode", "compress", "round trip", "verify"]
+    },
+    {
+      "id": 32,
+      "file": "P32_cli_verify.md",
+      "title": "CLI Execution Verification",
+      "abbreviation": "CLI-Verify",
+      "category": "Verification",
+      "keywords": ["CLI", "command line", "executable", "binary", "run"]
+    },
+    {
+      "id": 33,
+      "file": "P33_numerical.md",
+      "title": "Numerical Stability Testing",
+      "abbreviation": "Num-Stable",
+      "category": "Testing",
+      "keywords": ["numerical", "floating point", "optimization", "precision", "stability"]
+    },
+    {
+      "id": 34,
+      "file": "P34_image_pipeline.md",
+      "title": "Image-to-Structured Pipeline",
+      "abbreviation": "Image-Structured",
+      "category": "Domain-Specific",
+      "keywords": ["image", "OCR", "diagram", "chess board", "structured"]
+    },
+    {
+      "id": 35,
+      "file": "P35_decoder_first.md",
+      "title": "Decoder-First Analysis",
+      "abbreviation": "Decoder-First",
+      "category": "Analysis",
+      "keywords": ["decode", "parser", "format", "reverse engineer"]
+    },
+    {
+      "id": 36,
+      "file": "P36_competition.md",
+      "title": "Competition Domain Research",
+      "abbreviation": "Competition-Research",
+      "category": "Research",
+      "keywords": ["win rate", "beat", "tournament", "competition", "leaderboard"]
+    },
+    {
+      "id": "IaC",
+      "file": "IaC-Parity.md",
+      "title": "Infrastructure as Code Parity",
+      "abbreviation": "IaC-Parity",
+      "category": "Infrastructure",
+      "keywords": ["terraform", "kubernetes", "kubectl", "infrastructure", "deploy", "pipeline"]
+    }
+  ]
+}

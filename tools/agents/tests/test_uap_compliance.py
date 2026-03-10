@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-UAM Compliance Test Suite
+UAP Compliance Test Suite
 
-Tests all UAM protocol requirements to ensure 100% compliance.
+Tests all UAP protocol requirements to ensure 100% compliance.
 
 Usage:
-    tools/agents/tests/test_uam_compliance.py
+    tools/agents/tests/test_uap_compliance.py
     # or with pytest:
-    pytest tools/agents/tests/test_uam_compliance.py -v
+    pytest tools/agents/tests/test_uap_compliance.py -v
 """
 
 import sqlite3
@@ -17,8 +17,8 @@ import unittest
 from pathlib import Path
 
 
-class TestUAMCompliance(unittest.TestCase):
-    """Test suite for UAM protocol compliance."""
+class TestUAPCompliance(unittest.TestCase):
+    """Test suite for UAP protocol compliance."""
 
     def setUp(self):
         """Setup test fixtures."""
@@ -117,24 +117,24 @@ class TestUAMCompliance(unittest.TestCase):
         assert result is not None, "agent_registry table not found"
         print("✅ agent_registry table exists")
 
-    def test_09_uam_cli_command_exists(self):
+    def test_09_uap_cli_command_exists(self):
         """Test that UAP CLI command is available."""
         cli_path = Path(__file__).parent.parent / "UAP" / "cli.py"
-        assert cli_path.exists(), f"UAM CLI not found at {cli_path}"
+        assert cli_path.exists(), f"UAP CLI not found at {cli_path}"
 
         # Test CLI help
         result = subprocess.run(
             ["python3", str(cli_path), "--help"], capture_output=True, text=True
         )
 
-        assert result.returncode == 0, "UAM CLI failed to run"
+        assert result.returncode == 0, "UAP CLI failed to run"
         assert "task" in result.stdout.lower(), "CLI missing 'task' command"
         assert "memory" in result.stdout.lower(), "CLI missing 'memory' command"
         assert "worktree" in result.stdout.lower(), "CLI missing 'worktree' command"
 
-        print("✅ UAM CLI command available")
+        print("✅ UAP CLI command available")
 
-    def test_10_uam_task_ready_command(self):
+    def test_10_uap_task_ready_command(self):
         """Test that UAP task ready command works."""
         cli_path = Path(__file__).parent.parent / "UAP" / "cli.py"
 
@@ -145,7 +145,7 @@ class TestUAMCompliance(unittest.TestCase):
         assert result.returncode == 0, f"UAP task ready failed: {result.stderr}"
         print("✅ UAP task ready command works")
 
-    def test_11_uam_memory_query_command(self):
+    def test_11_uap_memory_query_command(self):
         """Test that UAP memory query command works."""
         cli_path = Path(__file__).parent.parent / "UAP" / "cli.py"
 
@@ -161,7 +161,7 @@ class TestUAMCompliance(unittest.TestCase):
         )
         print("✅ UAP memory query command works")
 
-    def test_12_uam_compliance_check_command(self):
+    def test_12_uap_compliance_check_command(self):
         """Test that UAP compliance check command works."""
         cli_path = Path(__file__).parent.parent / "UAP" / "cli.py"
 
@@ -230,7 +230,7 @@ def run_tests():
 
     # Create test suite
     loader = unittest.TestLoader()
-    suite = loader.loadTestsFromTestCase(TestUAMCompliance)
+    suite = loader.loadTestsFromTestCase(TestUAPCompliance)
 
     # Run tests
     runner = unittest.TextTestRunner(verbosity=2)

@@ -1,0 +1,11 @@
+{
+  "autoApprove": [
+    "read",
+    "write",
+    "shell"
+  ],
+  "defaultModel": "claude-sonnet-4",
+  "contextWindow": 200000,
+  "memoryPath": "./agents/data/memory/short_term.db",
+  "worktreeDirectory": ".worktrees"
+}

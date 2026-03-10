@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test coverage
+coverage/
+
+# Memory databases (local development)
+!agents/data/memory/short_term.db
+!agents/data/coordination/coordination.db
+!agents/data/memory/*.db
+!agents/data/memory/*.db-journal
+*.db
+*.db-journal
+
+# Qdrant data
+qdrant_data/
+
+# Package lock (we use package-lock.json)
+yarn.lock
+pnpm-lock.yaml
+.npmrc
+.worktrees/
+.claude/settings.local.json
+.roam/
+
+# Benchmark job data (large, ephemeral)
+jobs/
+benchmark-results/
+
+# Qdrant persistent data
+agents/qdrant_data/
+
+# Generated analysis files
+*.uap.analysis.json
+*.uam.analysis.json

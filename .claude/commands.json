@@ -1,0 +1,6 @@
+{
+  "memory": "uap memory query \"$1\"",
+  "store": "uap memory store \"$1\" --importance 7",
+  "worktree": "uap worktree create \"$1\"",
+  "status": "uap memory status"
+}

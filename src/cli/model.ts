@@ -1,0 +1,314 @@
+/**
+ * Model CLI Commands
+ * 
+ * Commands for managing and using the multi-model architecture:
+ * - uap model status - Show configured models and roles
+ * - uap model route <task> - Analyze how a task would be routed
+ * - uap model plan <task> - Create an execution plan for a task
+ * - uap model compare - Compare cost/performance of different configurations
+ */
+
+import { Command } from 'commander';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+import chalk from 'chalk';
+import {
+  createRouter,
+  createPlanner,
+  ModelPresets,
+  MultiModelConfig,
+} from '../models/index.js';
+import { AgentContextConfig, MultiModelSchema } from '../types/config.js';
+
+/**
+ * Load UAP config from project root
+ */
+function loadConfig(): AgentContextConfig | null {
+  const configPath = join(process.cwd(), '.uap.json');
+  if (!existsSync(configPath)) {
+    return null;
+  }
+  try {
+    const content = readFileSync(configPath, 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get multi-model config with defaults
+ */
+function getMultiModelConfig(config: AgentContextConfig | null): MultiModelConfig {
+  if (config?.multiModel) {
+    return MultiModelSchema.parse(config.multiModel);
+  }
+  // Return default config
+  return MultiModelSchema.parse({
+    enabled: false,
+    models: ['opus-4.5'],
+    roles: {
+      planner: 'opus-4.5',
+      executor: 'opus-4.5',
+      fallback: 'opus-4.5',
+    },
+    routingStrategy: 'balanced',
+  });
+}
+
+/**
+ * Status command - show model configuration
+ */
+async function statusCommand(): Promise<void> {
+  const config = loadConfig();
+  const mmConfig = getMultiModelConfig(config);
+  
+  console.log(chalk.bold('\n=== Multi-Model Architecture Status ===\n'));
+  
+  console.log(`Enabled: ${mmConfig.enabled ? chalk.green('Yes') : chalk.yellow('No')}`);
+  console.log(`Strategy: ${chalk.cyan(mmConfig.routingStrategy)}`);
+  console.log();
+  
+  console.log(chalk.bold('Configured Models:'));
+  const router = createRouter(mmConfig);
+  for (const model of router.getAllModels()) {
+    const costInfo = model.costPer1MInput && model.costPer1MOutput
+      ? ` ($${model.costPer1MInput}/$${model.costPer1MOutput} per 1M tokens)`
+      : '';
+    console.log(`  - ${chalk.cyan(model.id)}: ${model.name}${costInfo}`);
+    console.log(`    Provider: ${model.provider}, Context: ${model.maxContextTokens.toLocaleString()} tokens`);
+    if (model.capabilities.length > 0) {
+      console.log(`    Capabilities: ${model.capabilities.join(', ')}`);
+    }
+  }
+  console.log();
+  
+  console.log(chalk.bold('Role Assignments:'));
+  const roles = mmConfig.roles || { planner: 'opus-4.5', executor: 'glm-4.7', fallback: 'opus-4.5' };
+  console.log(`  Planner:  ${chalk.green(roles.planner || 'opus-4.5')}`);
+  console.log(`  Executor: ${chalk.blue(roles.executor || 'glm-4.7')}`);
+  console.log(`  Reviewer: ${chalk.yellow(roles.reviewer || roles.planner || 'opus-4.5')}`);
+  console.log(`  Fallback: ${chalk.red(roles.fallback || 'opus-4.5')}`);
+  console.log();
+  
+  if (mmConfig.costOptimization?.enabled) {
+    console.log(chalk.bold('Cost Optimization:'));
+    console.log(`  Target Reduction: ${mmConfig.costOptimization.targetReduction}%`);
+    console.log(`  Max Performance Degradation: ${mmConfig.costOptimization.maxPerformanceDegradation}%`);
+    console.log(`  Fallback Threshold: ${mmConfig.costOptimization.fallbackThreshold} failures`);
+    console.log();
+  }
+  
+  console.log(chalk.bold('Available Presets:'));
+  for (const [id, preset] of Object.entries(ModelPresets)) {
+    console.log(`  ${chalk.cyan(id)}: ${preset.name} (${preset.provider})`);
+  }
+}
+
+/**
+ * Route command - analyze task routing
+ */
+async function routeCommand(task: string, options: { verbose?: boolean }): Promise<void> {
+  const config = loadConfig();
+  const mmConfig = getMultiModelConfig(config);
+  const router = createRouter(mmConfig);
+  
+  console.log(chalk.bold('\n=== Task Routing Analysis ===\n'));
+  console.log(`Task: "${chalk.cyan(task)}"\n`);
+  
+  const analysis = router.analyzeRouting(task);
+  const classification = analysis.classification;
+  
+  console.log(chalk.bold('Classification:'));
+  console.log(`  Complexity: ${getComplexityColor(classification.complexity)(classification.complexity.toUpperCase())}`);
+  console.log(`  Task Type: ${chalk.blue(classification.taskType)}`);
+  console.log(`  Keywords: ${classification.keywords.slice(0, 5).join(', ')}`);
+  console.log(`  Requires Planning: ${classification.requiresPlanning ? chalk.green('Yes') : chalk.yellow('No')}`);
+  console.log();
+  
+  console.log(chalk.bold('Model Selection:'));
+  console.log(`  Selected: ${chalk.green(classification.suggestedModel)}`);
+  console.log(`  Fallback: ${chalk.yellow(classification.fallbackModel)}`);
+  console.log(`  Reasoning: ${classification.reasoning}`);
+  console.log();
+  
+  if (options.verbose) {
+    console.log(chalk.bold('Matched Rules:'));
+    for (const { rule, matched, reason } of analysis.matchedRules) {
+      if (matched) {
+        console.log(`  ${chalk.green('✓')} Priority ${rule.priority}: ${rule.targetRole} - ${reason}`);
+      }
+    }
+    console.log();
+    
+    console.log(chalk.bold('Cost Comparison (est. 10K in / 5K out):'));
+    for (const { model, cost } of analysis.costComparison) {
+      console.log(`  ${model}: $${cost.toFixed(4)}`);
+    }
+  }
+}
+
+/**
+ * Plan command - create execution plan
+ */
+async function planCommand(task: string, options: { verbose?: boolean; execute?: boolean }): Promise<void> {
+  const config = loadConfig();
+  const mmConfig = getMultiModelConfig(config);
+  const router = createRouter(mmConfig);
+  const planner = createPlanner(router, mmConfig);
+  
+  console.log(chalk.bold('\n=== Execution Plan ===\n'));
+  
+  const plan = planner.createPlan(task);
+  console.log(planner.visualizePlan(plan));
+  console.log();
+  
+  if (options.verbose) {
+    console.log(chalk.bold('Subtask Details:'));
+    for (const subtask of plan.subtasks) {
+      console.log(`\n  ${chalk.cyan(subtask.title)}`);
+      console.log(`    Type: ${subtask.type}, Complexity: ${subtask.complexity}`);
+      console.log(`    Model: ${plan.modelAssignments.get(subtask.id)}`);
+      console.log(`    Inputs: ${subtask.inputs.join(', ')}`);
+      console.log(`    Outputs: ${subtask.outputs.join(', ')}`);
+      if (subtask.constraints.length > 0) {
+        console.log(`    Constraints:`);
+        for (const c of subtask.constraints) {
+          console.log(`      - ${c}`);
+        }
+      }
+    }
+  }
+  
+  if (options.execute) {
+    console.log(chalk.yellow('\nExecution not implemented in CLI yet. Use programmatic API.'));
+  }
+}
+
+/**
+ * Compare command - compare configurations
+ */
+async function compareCommand(): Promise<void> {
+  console.log(chalk.bold('\n=== Configuration Comparison ===\n'));
+  
+  // Sample task for comparison
+  const sampleTask = 'Implement a new authentication system with OAuth2 support and JWT tokens';
+  
+  const configs: Array<{ name: string; config: MultiModelConfig }> = [
+    {
+      name: 'Performance First',
+      config: {
+        enabled: true,
+        models: ['opus-4.5'],
+        roles: { planner: 'opus-4.5', executor: 'opus-4.5', fallback: 'opus-4.5' },
+        routingStrategy: 'performance-first',
+      },
+    },
+    {
+      name: 'Cost Optimized',
+      config: {
+        enabled: true,
+        models: ['deepseek-v3.2', 'glm-4.7', 'opus-4.5'],
+        roles: { planner: 'deepseek-v3.2', executor: 'glm-4.7', fallback: 'opus-4.5' },
+        routingStrategy: 'cost-optimized',
+        costOptimization: { enabled: true, targetReduction: 90, maxPerformanceDegradation: 20, fallbackThreshold: 3 },
+      },
+    },
+    {
+      name: 'Balanced',
+      config: {
+        enabled: true,
+        models: ['opus-4.5', 'glm-4.7'],
+        roles: { planner: 'opus-4.5', executor: 'glm-4.7', fallback: 'opus-4.5' },
+        routingStrategy: 'balanced',
+      },
+    },
+  ];
+  
+  console.log(`Sample Task: "${chalk.cyan(sampleTask)}"\n`);
+  console.log('─'.repeat(80));
+  console.log(`${'Configuration'.padEnd(20)} | ${'Planner'.padEnd(15)} | ${'Executor'.padEnd(15)} | ${'Est. Cost'.padEnd(12)} | Strategy`);
+  console.log('─'.repeat(80));
+  
+  for (const { name, config } of configs) {
+    const router = createRouter(config);
+    const planner = createPlanner(router, config);
+    const plan = planner.createPlan(sampleTask);
+    
+    const plannerModel = config.roles?.planner || 'opus-4.5';
+    const executorModel = config.roles?.executor || 'glm-4.7';
+    
+    console.log(
+      `${name.padEnd(20)} | ` +
+      `${plannerModel.padEnd(15)} | ` +
+      `${executorModel.padEnd(15)} | ` +
+      `$${plan.estimatedCost.toFixed(4).padEnd(10)} | ` +
+      `${config.routingStrategy}`
+    );
+  }
+  console.log('─'.repeat(80));
+  console.log();
+  
+  // Show potential savings
+  const perfRouter = createRouter(configs[0].config);
+  const costRouter = createRouter(configs[1].config);
+  const perfPlanner = createPlanner(perfRouter, configs[0].config);
+  const costPlanner = createPlanner(costRouter, configs[1].config);
+  
+  const perfPlan = perfPlanner.createPlan(sampleTask);
+  const costPlan = costPlanner.createPlan(sampleTask);
+  
+  const savings = ((perfPlan.estimatedCost - costPlan.estimatedCost) / perfPlan.estimatedCost) * 100;
+  console.log(chalk.bold('Potential Savings:'));
+  console.log(`  Cost Optimized vs Performance First: ${chalk.green(savings.toFixed(1) + '%')}`);
+  console.log();
+  console.log(chalk.dim('Note: Actual costs depend on real API usage. These are estimates.'));
+}
+
+/**
+ * Helper to get color based on complexity
+ */
+function getComplexityColor(complexity: string): typeof chalk.red {
+  switch (complexity) {
+    case 'critical':
+      return chalk.red;
+    case 'high':
+      return chalk.yellow;
+    case 'medium':
+      return chalk.blue;
+    default:
+      return chalk.green;
+  }
+}
+
+/**
+ * Register model commands
+ */
+export function registerModelCommands(program: Command): void {
+  const model = program
+    .command('model')
+    .description('Multi-model architecture management');
+  
+  model
+    .command('status')
+    .description('Show configured models and role assignments')
+    .action(statusCommand);
+  
+  model
+    .command('route <task>')
+    .description('Analyze how a task would be routed')
+    .option('-v, --verbose', 'Show detailed routing analysis')
+    .action(routeCommand);
+  
+  model
+    .command('plan <task>')
+    .description('Create an execution plan for a task')
+    .option('-v, --verbose', 'Show detailed subtask information')
+    .option('-e, --execute', 'Execute the plan (requires API keys)')
+    .action(planCommand);
+  
+  model
+    .command('compare')
+    .description('Compare cost/performance of different configurations')
+    .action(compareCommand);
+}
