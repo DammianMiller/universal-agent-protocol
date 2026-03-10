@@ -13,9 +13,9 @@ import type { AgentContextConfig, Platform } from '../types/index.js';
 export interface InitOptions {
   platform: string[];
   web?: boolean;
-  memory?: boolean;     // --no-memory sets this to false
-  worktrees?: boolean;  // --no-worktrees sets this to false
-  patterns?: boolean;   // --patterns / --no-patterns (auto-detect by default)
+  memory?: boolean; // --no-memory sets this to false
+  worktrees?: boolean; // --no-worktrees sets this to false
+  patterns?: boolean; // --patterns / --no-patterns (auto-detect by default)
   pipelineOnly?: boolean; // --pipeline-only enables infrastructure policy
   force?: boolean;
 }
@@ -42,7 +42,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   // Determine platforms - default to all if not specified
   const platforms: Platform[] = options.platform.includes('all')
     ? ['claudeCode', 'factory', 'vscode', 'opencode']
-    : options.platform.map((p) => PLATFORM_MAP[p] || p) as Platform[];
+    : (options.platform.map((p) => PLATFORM_MAP[p] || p) as Platform[]);
 
   // Analyze project
   const spinner = ora('Analyzing project structure...').start();
@@ -60,7 +60,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   console.log(chalk.dim('\nDetected:'));
   console.log(chalk.dim(`  Languages: ${analysis.languages.join(', ') || 'none detected'}`));
   console.log(chalk.dim(`  Frameworks: ${analysis.frameworks.join(', ') || 'none detected'}`));
-  console.log(chalk.dim(`  Databases: ${analysis.databases.map((d) => d.type).join(', ') || 'none detected'}`));
+  console.log(
+    chalk.dim(`  Databases: ${analysis.databases.map((d) => d.type).join(', ') || 'none detected'}`)
+  );
 
   // Auto-enable memory and worktrees unless explicitly disabled via --no-memory/--no-worktrees
   // No prompts - just works
@@ -79,14 +81,16 @@ export async function initCommand(options: InitOptions): Promise<void> {
   }
 
   // Patterns: auto-detect from existing config if not explicitly set
-  const withPatterns = options.patterns !== undefined
-    ? options.patterns
-    : existingConfig.memory?.patternRag?.enabled === true ||
-      (withMemory && existingConfig.memory?.longTerm?.provider === 'qdrant');
+  const withPatterns =
+    options.patterns !== undefined
+      ? options.patterns
+      : existingConfig.memory?.patternRag?.enabled === true ||
+        (withMemory && existingConfig.memory?.longTerm?.provider === 'qdrant');
 
   // Build configuration - merge with existing to preserve user customizations
   const config: AgentContextConfig = {
-    $schema: 'https://raw.githubusercontent.com/DammianMiller/universal-agent-memory/main/schema.json',
+    $schema:
+      'https://raw.githubusercontent.com/DammianMiller/universal-agent-memory/main/schema.json',
     version: '1.0.0',
     project: {
       name: existingConfig.project?.name || analysis.projectName,
@@ -105,7 +109,12 @@ export async function initCommand(options: InitOptions): Promise<void> {
             enabled: true,
             path: existingConfig.memory?.shortTerm?.path || './agents/data/memory/short_term.db',
             // Only set webDatabase if --web flag is used (for web platforms like claude.ai)
-            ...(options.web ? { webDatabase: existingConfig.memory?.shortTerm?.webDatabase || 'agent_context_memory' } : {}),
+            ...(options.web
+              ? {
+                  webDatabase:
+                    existingConfig.memory?.shortTerm?.webDatabase || 'agent_context_memory',
+                }
+              : {}),
             maxEntries: existingConfig.memory?.shortTerm?.maxEntries || 50,
           },
           longTerm: {
@@ -115,20 +124,27 @@ export async function initCommand(options: InitOptions): Promise<void> {
             collection: existingConfig.memory?.longTerm?.collection || 'agent_memory',
             embeddingModel: existingConfig.memory?.longTerm?.embeddingModel || 'all-MiniLM-L6-v2',
           },
-          ...(withPatterns ? {
-            patternRag: {
-              enabled: true,
-              collection: existingConfig.memory?.patternRag?.collection || 'agent_patterns',
-              embeddingModel: existingConfig.memory?.patternRag?.embeddingModel || 'all-MiniLM-L6-v2',
-              vectorSize: existingConfig.memory?.patternRag?.vectorSize || 384,
-              scoreThreshold: existingConfig.memory?.patternRag?.scoreThreshold || 0.35,
-              topK: existingConfig.memory?.patternRag?.topK || 2,
-              indexScript: existingConfig.memory?.patternRag?.indexScript || './agents/scripts/index_patterns_to_qdrant.py',
-              queryScript: existingConfig.memory?.patternRag?.queryScript || './agents/scripts/query_patterns.py',
-              sourceFile: existingConfig.memory?.patternRag?.sourceFile || 'CLAUDE.md',
-              maxBodyChars: existingConfig.memory?.patternRag?.maxBodyChars || 400,
-            },
-          } : {}),
+          ...(withPatterns
+            ? {
+                patternRag: {
+                  enabled: true,
+                  collection: existingConfig.memory?.patternRag?.collection || 'agent_patterns',
+                  embeddingModel:
+                    existingConfig.memory?.patternRag?.embeddingModel || 'all-MiniLM-L6-v2',
+                  vectorSize: existingConfig.memory?.patternRag?.vectorSize || 384,
+                  scoreThreshold: existingConfig.memory?.patternRag?.scoreThreshold || 0.35,
+                  topK: existingConfig.memory?.patternRag?.topK || 2,
+                  indexScript:
+                    existingConfig.memory?.patternRag?.indexScript ||
+                    './agents/scripts/index_patterns_to_qdrant.py',
+                  queryScript:
+                    existingConfig.memory?.patternRag?.queryScript ||
+                    './agents/scripts/query_patterns.py',
+                  sourceFile: existingConfig.memory?.patternRag?.sourceFile || 'CLAUDE.md',
+                  maxBodyChars: existingConfig.memory?.patternRag?.maxBodyChars || 400,
+                },
+              }
+            : {}),
         }
       : existingConfig.memory,
     worktrees: withWorktrees
@@ -172,11 +188,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   // Create directory structure (never deletes existing)
   const dirsSpinner = ora('Creating directory structure...').start();
   try {
-    const dirs = [
-      'agents/data/memory',
-      'agents/data/screenshots',
-      'agents/scripts',
-    ];
+    const dirs = ['agents/data/memory', 'agents/data/screenshots', 'agents/scripts'];
 
     if (withWorktrees) {
       dirs.push('.worktrees');
@@ -224,12 +236,16 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
       // Attempt to index patterns if Qdrant is reachable
       const endpoint = config.memory?.longTerm?.endpoint || 'localhost:6333';
-      const qdrantUp = await isQdrantReachable(endpoint.startsWith('http') ? endpoint : `http://${endpoint}`);
+      const qdrantUp = await isQdrantReachable(
+        endpoint.startsWith('http') ? endpoint : `http://${endpoint}`
+      );
       if (qdrantUp) {
         const indexSpinner = ora('Indexing patterns into Qdrant...').start();
         try {
           const { execFileSync } = await import('child_process');
-          const indexScript = config.memory?.patternRag?.indexScript || './agents/scripts/index_patterns_to_qdrant.py';
+          const indexScript =
+            config.memory?.patternRag?.indexScript ||
+            './agents/scripts/index_patterns_to_qdrant.py';
           const scriptPath = join(cwd, indexScript);
           if (existsSync(scriptPath)) {
             execFileSync(pythonPath, [scriptPath], { cwd, stdio: 'pipe', timeout: 120000 });
@@ -255,10 +271,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const agentMdPath = join(cwd, 'AGENT.md');
   const claudeMdExists = existsSync(claudeMdPath);
   const agentMdExists = existsSync(agentMdPath);
-  
+
   let existingContent: string | undefined;
   let targetPath = claudeMdPath;
-  
+
   // Read existing content if present
   if (claudeMdExists) {
     existingContent = readFileSync(claudeMdPath, 'utf-8');
@@ -267,14 +283,16 @@ export async function initCommand(options: InitOptions): Promise<void> {
     existingContent = readFileSync(agentMdPath, 'utf-8');
     targetPath = agentMdPath;
   }
-  
+
   const claudeSpinner = ora(`${existingContent ? 'Updating' : 'Generating'} CLAUDE.md...`).start();
   try {
     const newClaudeMd = await generateClaudeMd(analysis, config);
     // Always merge to preserve user content - never lose information
     const claudeMd = existingContent ? mergeClaudeMd(existingContent, newClaudeMd) : newClaudeMd;
     writeFileSync(targetPath, claudeMd);
-    claudeSpinner.succeed(`${existingContent ? 'Updated' : 'Generated'} ${targetPath.endsWith('CLAUDE.md') ? 'CLAUDE.md' : 'AGENT.md'}`);
+    claudeSpinner.succeed(
+      `${existingContent ? 'Updated' : 'Generated'} ${targetPath.endsWith('CLAUDE.md') ? 'CLAUDE.md' : 'AGENT.md'}`
+    );
     if (existingContent) {
       console.log(chalk.dim('  Merged with existing content - no information lost'));
     }
@@ -297,7 +315,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // Final summary - no next steps needed, it just works
   console.log(chalk.green('\n✅ Initialization complete!\n'));
-  
+
   console.log(chalk.bold('What happens now:\n'));
   console.log('  Your AI assistant automatically reads CLAUDE.md and:');
   console.log('  • Queries memory before starting work (endless context)');
@@ -306,7 +324,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   console.log('  • Applies Code Field for better code (100% assumption stating)');
   console.log('  • Stores learnings for future sessions (knowledge accumulation)');
   console.log('');
-  
+
   if (withMemory) {
     // Check if memory DB exists
     const dbPath = config.memory?.shortTerm?.path || './agents/data/memory/short_term.db';
@@ -316,9 +334,11 @@ export async function initCommand(options: InitOptions): Promise<void> {
     } else {
       console.log(chalk.dim('Memory database will be created on first use'));
     }
-    console.log(chalk.dim('Optional: Run `uap memory start` for semantic search (requires Docker)'));
+    console.log(
+      chalk.dim('Optional: Run `uap memory start` for semantic search (requires Docker)')
+    );
   }
-  
+
   console.log('');
 }
 
@@ -329,9 +349,15 @@ async function setupPlatform(
 ): Promise<void> {
   const platformDirs: Record<Platform, string[]> = {
     claudeCode: ['.claude/agents', '.claude/commands'],
-    factory: ['.factory/droids', '.factory/commands', '.factory/skills', '.factory/scripts', '.factory/templates'],
+    factory: [
+      '.factory/droids',
+      '.factory/commands',
+      '.factory/skills',
+      '.factory/scripts',
+      '.factory/templates',
+    ],
     vscode: ['.vscode'],
-    opencode: ['.opencode/agent', '.opencode/command'],
+    opencode: ['.opencode/plugin'],
     claudeWeb: [], // Web platforms don't need local directories
     factoryWeb: [],
   };
@@ -341,6 +367,30 @@ async function setupPlatform(
     const fullPath = join(cwd, dir);
     if (!existsSync(fullPath)) {
       mkdirSync(fullPath, { recursive: true });
+    }
+  }
+
+  // OpenCode: generate plugin package.json if missing
+  if (platform === 'opencode') {
+    const pkgPath = join(cwd, '.opencode', 'package.json');
+    if (!existsSync(pkgPath)) {
+      writeFileSync(
+        pkgPath,
+        JSON.stringify(
+          {
+            dependencies: {
+              '@opencode-ai/plugin': '^1.2.24',
+            },
+          },
+          null,
+          2
+        )
+      );
+    }
+
+    const gitignorePath = join(cwd, '.opencode', '.gitignore');
+    if (!existsSync(gitignorePath)) {
+      writeFileSync(gitignorePath, 'node_modules\npackage.json\nbun.lock\n.gitignore\n');
     }
   }
 }

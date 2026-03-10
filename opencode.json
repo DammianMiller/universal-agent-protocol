@@ -32,6 +32,21 @@
     "memory": {
       "model": "llama.cpp/qwen35-a3b-iq4xs",
       "temperature": 0
+    },
+    "review": {
+      "model": "llama.cpp/qwen35-a3b-iq4xs",
+      "temperature": 0.1
+    }
+  },
+  "mcp": {
+    "uap-router": {
+      "command": "node",
+      "args": ["./dist/mcp-router/server.js"],
+      "env": {
+        "UAP_PROJECT_DIR": ".",
+        "UAP_MEMORY_DB": "./agents/data/memory/short_term.db",
+        "UAP_COORD_DB": "./agents/data/coordination/coordination.db"
+      }
     }
   }
 }

@@ -58,3 +58,4 @@ agents/qdrant_data/
 # Generated analysis files
 *.uap.analysis.json
 *.uam.analysis.json
+.factory/settings.local.json
