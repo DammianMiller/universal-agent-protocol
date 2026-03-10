@@ -4,7 +4,7 @@
   "project": {
     "name": "universal-agent-protocol",
     "description": "Universal AI agent protocol - CLAUDE.md templates, memory, worktrees for Claude Code, Factory.AI, VSCode, OpenCode",
-    "defaultBranch": "main"
+    "defaultBranch": "master"
   },
   "platforms": {
     "claudeCode": {
