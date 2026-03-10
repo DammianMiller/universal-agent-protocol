@@ -4,8 +4,22 @@ import { execSync } from 'child_process';
 import type { ProjectAnalysis } from '../types/index.js';
 
 export async function analyzeProject(cwd: string): Promise<ProjectAnalysis> {
+  // Prefer project name from existing .uap.json config, then git remote, then directory name
+  let initialName = basename(cwd);
+  const uapConfigPath = join(cwd, '.uap.json');
+  if (existsSync(uapConfigPath)) {
+    try {
+      const uapConfig = JSON.parse(readFileSync(uapConfigPath, 'utf-8'));
+      if (uapConfig.project?.name) {
+        initialName = uapConfig.project.name;
+      }
+    } catch {
+      /* ignore parse errors */
+    }
+  }
+
   const analysis: ProjectAnalysis = {
-    projectName: basename(cwd),
+    projectName: initialName,
     description: '',
     defaultBranch: 'main',
     languages: [],
@@ -39,6 +53,20 @@ export async function analyzeProject(cwd: string): Promise<ProjectAnalysis> {
       cwd,
       encoding: 'utf-8',
     }).trim();
+
+    // Use git remote origin as a better project name fallback than directory name
+    if (analysis.projectName === basename(cwd)) {
+      try {
+        const remoteUrl = execSync('git remote get-url origin', { cwd, encoding: 'utf-8' }).trim();
+        // Extract repo name from URL: git@github.com:user/repo.git or https://github.com/user/repo.git
+        const repoMatch = remoteUrl.match(/\/([^/]+?)(?:\.git)?$/);
+        if (repoMatch) {
+          analysis.projectName = repoMatch[1];
+        }
+      } catch {
+        /* no remote configured */
+      }
+    }
   } catch {
     // Not a git repo or git not available
   }

@@ -14,6 +14,7 @@ interface SetupOptions {
   patterns?: boolean; // --no-patterns to skip
   memory?: boolean; // --no-memory to skip
   verbose?: boolean; // --verbose for detailed output
+  projectDir?: string; // -d, --project-dir to override cwd
 }
 
 /**
@@ -21,7 +22,9 @@ interface SetupOptions {
  * Chains existing commands so everything "just works".
  */
 export async function setupCommand(options: SetupOptions): Promise<void> {
-  const cwd = process.cwd();
+  // Default to pay2u project directory unless explicitly overridden
+  const defaultProjectDir = process.env.HOME ? join(process.env.HOME, 'dev/miller-tech/pay2u') : process.cwd();
+  const cwd = options.projectDir || defaultProjectDir;
   const withPatterns = options.patterns !== false;
   const withMemory = options.memory !== false;
 
@@ -33,6 +36,7 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
     memory: withMemory,
     patterns: withPatterns,
     worktrees: true,
+    projectDir: cwd,
   });
 
   if (!withMemory) {

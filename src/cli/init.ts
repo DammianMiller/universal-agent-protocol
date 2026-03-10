@@ -18,6 +18,7 @@ export interface InitOptions {
   patterns?: boolean; // --patterns / --no-patterns (auto-detect by default)
   pipelineOnly?: boolean; // --pipeline-only enables infrastructure policy
   force?: boolean;
+  projectDir?: string; // -d, --project-dir to override cwd
 }
 
 const PLATFORM_MAP: Record<string, Platform> = {
@@ -28,7 +29,7 @@ const PLATFORM_MAP: Record<string, Platform> = {
 };
 
 export async function initCommand(options: InitOptions): Promise<void> {
-  const cwd = process.cwd();
+  const cwd = options.projectDir || process.cwd();
   const configPath = join(cwd, '.uap.json');
 
   console.log(chalk.bold('\n🚀 Universal Agent Memory Initialization\n'));

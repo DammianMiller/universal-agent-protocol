@@ -67,6 +67,7 @@ program
   )
   .option('--no-patterns', 'Skip pattern RAG setup')
   .option('--no-memory', 'Skip memory system setup')
+  .option('-d, --project-dir <path>', 'Target project directory (defaults to current working directory)')
   .action(setupCommand);
 
 program
