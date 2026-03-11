@@ -55,7 +55,7 @@ export function runMaintenance(
   };
 
   if (!existsSync(dbPath)) {
-    result.recommendations.push('Database not found. Run `uam init` first.');
+    result.recommendations.push('Database not found. Run `uap init` first.');
     return result;
   }
 

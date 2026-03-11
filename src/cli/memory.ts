@@ -508,7 +508,7 @@ async function storeMemory(
       maxEntries: config.memory?.shortTerm?.maxEntries || 50,
     });
 
-    await shortTermDb.store(memoryType, content);
+    await (shortTermDb as any).store(memoryType, content);
     await shortTermDb.close();
 
     console.log(chalk.green('✓ Stored in short-term memory (SQLite)'));
@@ -589,7 +589,7 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
           content: m.content,
           timestamp: m.timestamp,
         }));
-        await shortTermDb.storeBatch(entries);
+        await (shortTermDb as any).storeBatch(entries);
         await shortTermDb.close();
 
         stSpinner.succeed(`Stored ${shortTerm.length} short-term memories to SQLite`);
@@ -920,7 +920,7 @@ async function promoteFromDailyLog(cwd: string, _options: MemoryOptions): Promis
         const memType: ValidType = validTypes.includes(entry.type as ValidType)
           ? entry.type as ValidType
           : 'observation';
-        await shortTermDb.store(memType, entry.content, Math.round(entry.gateScore * 10));
+        await (shortTermDb as any).store(memType, entry.content, Math.round(entry.gateScore * 10));
         dailyLog.markPromoted(entry.id, 'working');
         promoted++;
         console.log(chalk.green(`    ✓ Promoted to working memory`));
