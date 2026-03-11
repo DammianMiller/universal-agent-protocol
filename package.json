@@ -6,10 +6,11 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
+    "uap": "./dist/bin/cli.js",
+    "uap-tool-calls": "./dist/bin/tool-calls.js",
     "qwen-tool-call-test": "./tools/agents/scripts/qwen-tool-call-test.js",
     "qwen-tool-call-wrapper": "./tools/agents/scripts/qwen-tool-call-wrapper.js",
-    "fix-qwen-template": "./tools/agents/scripts/fix-qwen-template.js",
-    "uap": "./dist/cli/uap.js"
+    "fix-qwen-template": "./tools/agents/scripts/fix-qwen-template.js"
   },
   "scripts": {
     "build": "tsc",
