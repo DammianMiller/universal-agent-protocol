@@ -105,7 +105,7 @@ function installWithCargo(): void {
 /**
  * Install RTK using curl (download pre-built binary)
  */
-function installWithCurl(): void {
+async function installWithCurl(): Promise<void> {
   console.log('   Installing via curl...');
 
   const os = detectOS();
@@ -127,7 +127,7 @@ function installWithCurl(): void {
 
   console.log(`   Downloading: ${binaryName}`);
 
-  const tempDir = require('os').tmpdir();
+  const tempDir = process.env.TMPDIR || '/tmp';
   const downloadPath = path.join(tempDir, 'rtk-install');
 
   try {
@@ -175,20 +175,8 @@ export async function installRTK(options: RTKInstallOptions = {}): Promise<void>
     console.log(`ℹ RTK is already installed: ${version}`);
     console.log('');
 
-    const rl = require('readline').createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    const answer = await new Promise<string>((resolve) => {
-      rl.question('Do you want to upgrade to the latest version? [y/N] ', (ans: string) => {
-        resolve(ans.toLowerCase());
-      });
-    });
-
-    rl.close();
-
-    if (answer !== 'y' && answer !== 'yes') {
+    if (!process.env.FORCE_INSTALL) {
+      console.log('To force upgrade, set FORCE_INSTALL=1 and re-run the install command.');
       console.log('Skipping installation.');
       return;
     }
