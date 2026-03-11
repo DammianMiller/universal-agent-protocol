@@ -1,14 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import Dexie from 'dexie';
-import type { ShortTermMemoryBackend, MemoryType } from './factory.js';
 
 interface ShortTermMemory {
   id?: number;
   timestamp: string;
-  type: MemoryType;
+  type: 'action' | 'observation' | 'thought' | 'goal';
   content: string;
-  importance?: number;
-  projectId?: string;
+  projectId?: string; // Key by project/repo URL
 }
 
 class AgentContextDB extends (Dexie as any) {
@@ -16,13 +14,13 @@ class AgentContextDB extends (Dexie as any) {
 
   constructor(dbName: string) {
     super(dbName);
-    this.version(2).stores({
-      memories: '++id, timestamp, type, projectId, importance',
+    this.version(1).stores({
+      memories: '++id, timestamp, type, projectId',
     });
   }
 }
 
-export class IndexedDBShortTermMemory implements ShortTermMemoryBackend {
+export class IndexedDBShortTermMemory {
   private db: AgentContextDB;
   private projectId: string;
   private maxEntries: number;
@@ -33,26 +31,14 @@ export class IndexedDBShortTermMemory implements ShortTermMemoryBackend {
     this.maxEntries = config.maxEntries || 50;
   }
 
-  async store(type: MemoryType, content: string, importance?: number): Promise<void> {
+  async store(type: ShortTermMemory['type'], content: string, _importance?: number): Promise<void> {
     await this.db.memories.add({
       timestamp: new Date().toISOString(),
       type,
       content,
-      importance: importance ?? 0.5,
       projectId: this.projectId,
     });
-    await this.prune();
-  }
-
-  async storeBatch(entries: Array<{ type: MemoryType; content: string; timestamp?: string; importance?: number }>): Promise<void> {
-    const records = entries.map(e => ({
-      timestamp: e.timestamp || new Date().toISOString(),
-      type: e.type,
-      content: e.content,
-      importance: e.importance ?? 0.5,
-      projectId: this.projectId,
-    }));
-    await this.db.memories.bulkAdd(records);
+    // Auto-prune if exceeds maxEntries
     await this.prune();
   }
 
@@ -68,7 +54,7 @@ export class IndexedDBShortTermMemory implements ShortTermMemoryBackend {
   async query(searchTerm: string, limit = 10): Promise<ShortTermMemory[]> {
     const all = await this.getRecent(this.maxEntries);
     return all
-      .filter((m: ShortTermMemory) => m.content.toLowerCase().includes(searchTerm.toLowerCase()))
+      .filter((m) => m.content.toLowerCase().includes(searchTerm.toLowerCase()))
       .slice(0, limit);
   }
 
@@ -76,19 +62,12 @@ export class IndexedDBShortTermMemory implements ShortTermMemoryBackend {
     const count = await this.db.memories.where('projectId').equals(this.projectId).count();
     if (count > this.maxEntries) {
       const toDelete = count - this.maxEntries;
-      // Importance-aware pruning: delete lowest importance first, then oldest
-      const all = await this.db.memories
+      const oldest = await this.db.memories
         .where('projectId')
         .equals(this.projectId)
+        .limit(toDelete)
         .toArray();
-      all.sort((a: ShortTermMemory, b: ShortTermMemory) => {
-        const impA = a.importance ?? 0.5;
-        const impB = b.importance ?? 0.5;
-        if (impA !== impB) return impA - impB; // lowest importance first
-        return (a.id ?? 0) - (b.id ?? 0); // oldest first
-      });
-      const idsToDelete = all.slice(0, toDelete).map((m: ShortTermMemory) => m.id!);
-      await this.db.memories.bulkDelete(idsToDelete);
+      await this.db.memories.bulkDelete(oldest.map((m: any) => m.id!));
     }
   }
 

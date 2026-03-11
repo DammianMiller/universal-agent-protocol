@@ -89,7 +89,7 @@ function updateGitignore(cwd: string, entries: string[]): void {
 // --- Claude Code ---
 
 async function installClaudeHooks(cwd: string): Promise<void> {
-  console.log(chalk.bold('\n  Installing UAP Hooks for Claude Code\n'));
+  console.log(chalk.bold('\n  Installing UAM Hooks for Claude Code\n'));
   if (!ensureTemplateHooksExist()) return;
 
   const claudeDir = join(cwd, '.claude');
@@ -124,7 +124,7 @@ async function installClaudeHooks(cwd: string): Promise<void> {
 // --- Factory.AI Droid ---
 
 async function installFactoryHooks(cwd: string): Promise<void> {
-  console.log(chalk.bold('\n  Installing UAP Hooks for Factory.AI Droid\n'));
+  console.log(chalk.bold('\n  Installing UAM Hooks for Factory.AI Droid\n'));
   if (!ensureTemplateHooksExist()) return;
 
   const factoryDir = join(cwd, '.factory');
@@ -159,7 +159,7 @@ async function installFactoryHooks(cwd: string): Promise<void> {
 // --- Cursor ---
 
 async function installCursorHooks(cwd: string): Promise<void> {
-  console.log(chalk.bold('\n  Installing UAP Hooks for Cursor\n'));
+  console.log(chalk.bold('\n  Installing UAM Hooks for Cursor\n'));
   if (!ensureTemplateHooksExist()) return;
 
   const cursorDir = join(cwd, '.cursor');
@@ -194,7 +194,7 @@ async function installCursorHooks(cwd: string): Promise<void> {
 // --- VSCode (uses Claude Code hooks via third-party skills) ---
 
 async function installVscodeHooks(cwd: string): Promise<void> {
-  console.log(chalk.bold('\n  Installing UAP Hooks for VSCode (via Claude Code format)\n'));
+  console.log(chalk.bold('\n  Installing UAM Hooks for VSCode (via Claude Code format)\n'));
   if (!ensureTemplateHooksExist()) return;
 
   const claudeDir = join(cwd, '.claude');
@@ -229,7 +229,7 @@ async function installVscodeHooks(cwd: string): Promise<void> {
 // --- OpenCode (plugin-based) ---
 
 async function installOpencodeHooks(cwd: string): Promise<void> {
-  console.log(chalk.bold('\n  Installing UAP Hooks for OpenCode\n'));
+  console.log(chalk.bold('\n  Installing UAM Hooks for OpenCode\n'));
 
   const pluginDir = join(cwd, '.opencode', 'plugin');
   if (!existsSync(pluginDir)) {
@@ -271,7 +271,7 @@ export const UAMSessionHooks: Plugin = async ({ client, $ }) => {
             " 2>/dev/null || true
           '\`.quiet()
           if (result.stdout.toString().trim()) {
-            console.log("[UAP] Session context loaded")
+            console.log("[UAM] Session context loaded")
           }
         } catch { /* fail safely */ }
       }
@@ -281,16 +281,16 @@ export const UAMSessionHooks: Plugin = async ({ client, $ }) => {
       try {
         const timestamp = new Date().toISOString()
         await $\`sqlite3 ${dbPath} "INSERT OR IGNORE INTO memories (timestamp, type, content) VALUES ('$\{timestamp}', 'action', '[pre-compact] Context compaction at $\{timestamp}');"\`.quiet()
-        output.context.push("<uap-context>Pre-compact marker saved to UAP memory.</uap-context>")
+        output.context.push("<uam-context>Pre-compact marker saved to UAM memory.</uam-context>")
       } catch { /* fail safely */ }
     },
   }
 }
 `;
 
-  const pluginPath = join(pluginDir, 'uap-session-hooks.ts');
+  const pluginPath = join(pluginDir, 'uam-session-hooks.ts');
   writeFileSync(pluginPath, pluginContent);
-  console.log(chalk.green('  + .opencode/plugin/uap-session-hooks.ts'));
+  console.log(chalk.green('  + .opencode/plugin/uam-session-hooks.ts'));
 
   const packageJsonPath = join(cwd, '.opencode', 'package.json');
   if (!existsSync(packageJsonPath)) {
@@ -401,10 +401,10 @@ async function showVscodeStatus(cwd: string): Promise<void> {
 
 async function showOpencodeStatus(cwd: string): Promise<void> {
   console.log(chalk.bold('\n  OpenCode Hooks Status\n'));
-  const pluginPath = join(cwd, '.opencode', 'plugin', 'uap-session-hooks.ts');
+  const pluginPath = join(cwd, '.opencode', 'plugin', 'uam-session-hooks.ts');
   const exists = existsSync(pluginPath);
   const status = exists ? chalk.green('installed') : chalk.red('missing');
-  console.log(`  ${status}  .opencode/plugin/uap-session-hooks.ts`);
+  console.log(`  ${status}  .opencode/plugin/uam-session-hooks.ts`);
   console.log(chalk.dim('          Session start + compaction hooks via plugin'));
 
   const pkgPath = join(cwd, '.opencode', 'package.json');

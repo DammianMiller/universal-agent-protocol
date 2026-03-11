@@ -1,5 +1,5 @@
 /**
- * Hybrid Adaptive Context Selector for UAP (Option 4)
+ * Hybrid Adaptive Context Selector for UAM (Option 4)
  * 
  * VERSION: 2.0.0 - 21 Model Outcome Success Optimizations
  *
@@ -59,7 +59,7 @@ export interface TaskMetadata {
 export interface HistoricalData {
   taskType: string;
   totalAttempts: number;
-  uapSuccesses: number;
+  uamSuccesses: number;
   noUamSuccesses: number;
   avgTimeWithUam: number;
   avgTimeWithoutUam: number;
@@ -122,7 +122,7 @@ const LOW_BENEFIT_CATEGORIES = new Set([
   'calendar',        // Meeting scheduling (but NOT server scheduling)
 ]);
 
-// Categories that should ALWAYS receive UAP context regardless of historical data
+// Categories that should ALWAYS receive UAM context regardless of historical data
 const ALWAYS_BENEFIT_CATEGORIES = new Set([
   'security',
   'file-ops',
@@ -663,11 +663,11 @@ export function getHistoricalBenefit(taskType: string): number {
       return 0.5;
     }
 
-    const uapRate = row.uapSuccesses / Math.max(row.totalAttempts / 2, 1);
+    const uamRate = row.uamSuccesses / Math.max(row.totalAttempts / 2, 1);
     const noUamRate = row.noUamSuccesses / Math.max(row.totalAttempts / 2, 1);
 
-    if (noUamRate === 0) return uapRate > 0 ? 1.0 : 0.5;
-    return (uapRate - noUamRate) / Math.max(uapRate, noUamRate, 0.1);
+    if (noUamRate === 0) return uamRate > 0 ? 1.0 : 0.5;
+    return (uamRate - noUamRate) / Math.max(uamRate, noUamRate, 0.1);
   } catch {
     // Fallback to defaults if DB fails
     if (LOW_BENEFIT_CATEGORIES.has(taskType)) {
@@ -921,7 +921,7 @@ export function decideContextLevel(
     return {
       level: 'none',
       sections: [],
-      reason: `Task type '${taskType}' is pure reasoning - UAP adds no benefit`,
+      reason: `Task type '${taskType}' is pure reasoning - UAM adds no benefit`,
       estimatedOverheadMs: 0,
       taskType,
       timePressure: 'low',
@@ -936,7 +936,7 @@ export function decideContextLevel(
   // Factor 3: Historical benefit (now from SQLite - OPT 1)
   const historicalBenefit = metadata.historical_uam_benefit ?? getHistoricalBenefit(taskType);
 
-  // Factor 4: Check if historical data suggests skipping UAP
+  // Factor 4: Check if historical data suggests skipping UAM
   if (historicalBenefit < BENEFIT_THRESHOLD && !ALWAYS_BENEFIT_CATEGORIES.has(taskType)) {
     return {
       level: 'none',
@@ -950,12 +950,12 @@ export function decideContextLevel(
     };
   }
 
-  // Factor 5: Critical time pressure - skip UAP
+  // Factor 5: Critical time pressure - skip UAM
   if (timePressure === 'critical') {
     return {
       level: 'none',
       sections: [],
-      reason: 'Critical time pressure - skipping UAP to avoid timeout',
+      reason: 'Critical time pressure - skipping UAM to avoid timeout',
       estimatedOverheadMs: 0,
       taskType,
       timePressure,
@@ -1036,7 +1036,7 @@ export function generateContext(decision: ContextDecision): string {
     return '';
   }
 
-  const contextParts: string[] = ['## UAP Memory Context\n'];
+  const contextParts: string[] = ['## UAM Memory Context\n'];
 
   for (const section of decision.sections) {
     const sectionConfig = CONTEXT_SECTIONS[section];

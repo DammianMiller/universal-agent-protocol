@@ -7,7 +7,7 @@ export function ensureShortTermSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS memories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('action', 'observation', 'thought', 'goal', 'lesson', 'decision')),
+      type TEXT NOT NULL CHECK(type IN ('action', 'observation', 'thought', 'goal')),
       content TEXT NOT NULL,
       project_id TEXT NOT NULL DEFAULT 'default',
       importance INTEGER NOT NULL DEFAULT 5
@@ -17,39 +17,6 @@ export function ensureShortTermSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
     CREATE INDEX IF NOT EXISTS idx_memories_project_type ON memories(project_id, type);
   `);
-
-  // Migration: widen type CHECK constraint for existing databases that only allow 4 types
-  try {
-    // SQLite doesn't support ALTER CHECK, so we recreate the constraint via a temp table
-    // Only run if the old constraint is detected (no 'lesson' type allowed)
-    const testInsert = db.prepare("INSERT INTO memories (timestamp, type, content) VALUES ('__test__', 'lesson', '__test__')");
-    try {
-      testInsert.run();
-      // If it succeeds, constraint already allows 'lesson' — clean up test row
-      db.exec("DELETE FROM memories WHERE content = '__test__' AND timestamp = '__test__'");
-    } catch {
-      // Old constraint blocks 'lesson' — need to migrate
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS memories_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          timestamp TEXT NOT NULL,
-          type TEXT NOT NULL CHECK(type IN ('action', 'observation', 'thought', 'goal', 'lesson', 'decision')),
-          content TEXT NOT NULL,
-          project_id TEXT NOT NULL DEFAULT 'default',
-          importance INTEGER NOT NULL DEFAULT 5
-        );
-        INSERT INTO memories_new SELECT * FROM memories;
-        DROP TABLE memories;
-        ALTER TABLE memories_new RENAME TO memories;
-        CREATE INDEX IF NOT EXISTS idx_memories_project_id ON memories(project_id);
-        CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
-        CREATE INDEX IF NOT EXISTS idx_memories_project_type ON memories(project_id, type);
-      `);
-    }
-  } catch {
-    // Ignore migration errors
-  }
 
   // Migration: add importance column if missing (for existing databases created before importance was added)
   try {
@@ -125,21 +92,18 @@ export function ensureKnowledgeSchema(db: Database.Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       type TEXT NOT NULL,
       name TEXT NOT NULL,
-      description TEXT,
       first_seen TEXT NOT NULL,
       last_seen TEXT NOT NULL,
       mention_count INTEGER NOT NULL DEFAULT 1,
       UNIQUE(type, name)
     );
     CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
-    CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
 
     CREATE TABLE IF NOT EXISTS relationships (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       source_id INTEGER NOT NULL,
       target_id INTEGER NOT NULL,
       relation TEXT NOT NULL,
-      strength REAL NOT NULL DEFAULT 1.0 CHECK(strength >= 0.0 AND strength <= 1.0),
       timestamp TEXT NOT NULL,
       UNIQUE(source_id, target_id, relation),
       FOREIGN KEY (source_id) REFERENCES entities(id),
@@ -148,26 +112,6 @@ export function ensureKnowledgeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(source_id);
     CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target_id);
   `);
-
-  // Migration: add description column to entities if missing
-  try {
-    const entityCols = db.prepare("PRAGMA table_info(entities)").all() as Array<{ name: string }>;
-    if (!entityCols.some(c => c.name === 'description')) {
-      db.exec(`ALTER TABLE entities ADD COLUMN description TEXT`);
-    }
-  } catch {
-    // Ignore — column may already exist
-  }
-
-  // Migration: add strength column to relationships if missing
-  try {
-    const relCols = db.prepare("PRAGMA table_info(relationships)").all() as Array<{ name: string }>;
-    if (!relCols.some(c => c.name === 'strength')) {
-      db.exec(`ALTER TABLE relationships ADD COLUMN strength REAL NOT NULL DEFAULT 1.0`);
-    }
-  } catch {
-    // Ignore — column may already exist
-  }
 }
 
 export function initializeMemoryDatabase(dbPath: string): void {

@@ -38,7 +38,7 @@ export interface CapabilityMapping {
 }
 
 /**
- * Default capability mappings for UAP droids and skills.
+ * Default capability mappings for UAM droids and skills.
  */
 export const DEFAULT_CAPABILITY_MAPPINGS: CapabilityMapping[] = [
   {

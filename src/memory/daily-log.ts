@@ -2,7 +2,7 @@
  * Daily Log - Staging area for memory writes.
  *
  * All memories land here first. Promotion to working/semantic memory
- * is a separate step controlled by the user via `uap memory promote`.
+ * is a separate step controlled by the user via `uam memory promote`.
  * Inspired by Total Recall's "daily log first, promote later" pattern.
  */
 

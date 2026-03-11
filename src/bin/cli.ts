@@ -23,6 +23,7 @@ import { patternsCommand } from '../cli/patterns.js';
 import { setupCommand } from '../cli/setup.js';
 import { setupMcpRouter } from '../cli/setup-mcp-router.js';
 import { complianceCommand } from '../cli/compliance.js';
+import { registerSchemaDiffCommand } from '../cli/schema-diff.js';
 // import { toolCallsCommand } from '../cli/tool-calls.js'; // Not used - inline implementation below
 
 // Read version from package.json
@@ -67,7 +68,10 @@ program
   )
   .option('--no-patterns', 'Skip pattern RAG setup')
   .option('--no-memory', 'Skip memory system setup')
-  .option('-d, --project-dir <path>', 'Target project directory (defaults to current working directory)')
+  .option(
+    '-d, --project-dir <path>',
+    'Target project directory (defaults to current working directory)'
+  )
   .action(setupCommand);
 
 program
@@ -532,7 +536,9 @@ program
   )
   .addCommand(
     new Command('fix')
-      .description('Auto-fix compliance issues (schema migrations, Qdrant collections, worktree cleanup)')
+      .description(
+        'Auto-fix compliance issues (schema migrations, Qdrant collections, worktree cleanup)'
+      )
       .option('-v, --verbose', 'Show detailed information')
       .action((options) => complianceCommand('fix', options))
   );
@@ -669,14 +675,14 @@ program
 const toolCallsCmd = new Command('tool-calls');
 toolCallsCmd.description('Manage Qwen3.5 tool call fixes and chat templates');
 toolCallsCmd.addCommand(
-  new Command('setup')
-    .description('Install chat templates and Python scripts')
-    .action(async () => {
-      const { execSync } = await import('child_process');
-      try {
-        execSync('node ' + join(__dirname, '../cli/tool-calls.js') + ' setup', { stdio: 'inherit' });
-      } catch { /* handled by script */ }
-    })
+  new Command('setup').description('Install chat templates and Python scripts').action(async () => {
+    const { execSync } = await import('child_process');
+    try {
+      execSync('node ' + join(__dirname, '../cli/tool-calls.js') + ' setup', { stdio: 'inherit' });
+    } catch {
+      /* handled by script */
+    }
+  })
 );
 toolCallsCmd.addCommand(
   new Command('test')
@@ -686,28 +692,30 @@ toolCallsCmd.addCommand(
       const { execSync } = await import('child_process');
       try {
         execSync('node ' + join(__dirname, '../cli/tool-calls.js') + ' test', { stdio: 'inherit' });
-      } catch { /* handled by script */ }
+      } catch {
+        /* handled by script */
+      }
     })
 );
 toolCallsCmd.addCommand(
-  new Command('status')
-    .description('Check current configuration')
-    .action(async () => {
-      const { execSync } = await import('child_process');
-      try {
-        execSync('node ' + join(__dirname, '../cli/tool-calls.js') + ' status', { stdio: 'inherit' });
-      } catch { /* handled by script */ }
-    })
+  new Command('status').description('Check current configuration').action(async () => {
+    const { execSync } = await import('child_process');
+    try {
+      execSync('node ' + join(__dirname, '../cli/tool-calls.js') + ' status', { stdio: 'inherit' });
+    } catch {
+      /* handled by script */
+    }
+  })
 );
 toolCallsCmd.addCommand(
-  new Command('fix')
-    .description('Apply template fixes to existing templates')
-    .action(async () => {
-      const { execSync } = await import('child_process');
-      try {
-        execSync('node ' + join(__dirname, '../cli/tool-calls.js') + ' fix', { stdio: 'inherit' });
-      } catch { /* handled by script */ }
-    })
+  new Command('fix').description('Apply template fixes to existing templates').action(async () => {
+    const { execSync } = await import('child_process');
+    try {
+      execSync('node ' + join(__dirname, '../cli/tool-calls.js') + ' fix', { stdio: 'inherit' });
+    } catch {
+      /* handled by script */
+    }
+  })
 );
 program.addCommand(toolCallsCmd);
 
@@ -720,5 +728,8 @@ program
   .action(async (options) => {
     await setupMcpRouter({ force: !!options.force, verbose: !!options.verbose });
   });
+
+// Register schema-diff command
+registerSchemaDiffCommand(program);
 
 program.parse();

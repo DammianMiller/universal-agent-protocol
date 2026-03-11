@@ -1,5 +1,5 @@
 /**
- * Hierarchical Memory System for UAP
+ * Hierarchical Memory System for UAM
  * 
  * Implements hot/warm/cold memory tiering with automatic promotion/demotion.
  * Based on MemGPT and R³Mem research for efficient memory management.
@@ -15,7 +15,7 @@ import { jaccardSimilarity } from '../utils/string-similarity.js';
 export interface MemoryEntry {
   id: string;
   content: string;
-  type: 'action' | 'observation' | 'thought' | 'goal' | 'lesson' | 'decision';
+  type: 'action' | 'observation' | 'thought' | 'goal';
   timestamp: string;
   importance: number;
   accessCount: number;
@@ -550,7 +550,7 @@ export function loadFromSQLite(dbPath: string): TieredMemory | null {
       tier: 'hot' | 'warm' | 'cold';
       content: string;
       compressed: string | null;
-      type: 'action' | 'observation' | 'thought' | 'goal' | 'lesson' | 'decision';
+      type: 'action' | 'observation' | 'thought' | 'goal';
       timestamp: string;
       importance: number;
       accessCount: number;

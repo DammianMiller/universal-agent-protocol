@@ -1,5 +1,5 @@
 /**
- * Memory Consolidation Service for UAP
+ * Memory Consolidation Service for UAM
  * 
  * Implements the consolidation rules from CLAUDE.md:
  * - Trigger: Every 10 working memory entries

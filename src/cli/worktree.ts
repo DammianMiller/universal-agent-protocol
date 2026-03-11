@@ -78,7 +78,7 @@ async function createWorktree(cwd: string, git: SimpleGit, slug: string): Promis
     console.log(chalk.bold('Next steps:'));
     console.log(`  cd .worktrees/${worktreeName}`);
     console.log('  # Make your changes');
-    console.log(`  uap worktree pr ${id}`);
+    console.log(`  uam worktree pr ${id}`);
   } catch (error) {
     spinner.fail('Failed to create worktree');
     console.error(chalk.red(error));
@@ -94,7 +94,7 @@ async function listWorktrees(_cwd: string, git: SimpleGit): Promise<void> {
 
     if (entries.length <= 1) {
       console.log(chalk.yellow('No additional worktrees found.'));
-      console.log(chalk.dim('Create one with: uap worktree create <slug>'));
+      console.log(chalk.dim('Create one with: uam worktree create <slug>'));
       return;
     }
 

@@ -166,14 +166,14 @@ export class ServerlessQdrantManager {
 
       // Check if container already exists
       try {
-        execSync('docker ps -a --format "{{.Names}}" | grep -q uap-qdrant', { stdio: 'pipe' });
+        execSync('docker ps -a --format "{{.Names}}" | grep -q uam-qdrant', { stdio: 'pipe' });
         // Container exists, start it
-        execSync('docker start uap-qdrant', { stdio: 'pipe' });
+        execSync('docker start uam-qdrant', { stdio: 'pipe' });
       } catch {
         // Container doesn't exist, create it
         spawn('docker', [
           'run',
-          '--name', 'uap-qdrant',
+          '--name', 'uam-qdrant',
           '-p', `${port}:6333`,
           '-v', `${process.cwd()}/${dataDir}:/qdrant/storage`,
           '-d',
@@ -205,7 +205,7 @@ export class ServerlessQdrantManager {
    */
   private async stopLocal(): Promise<void> {
     try {
-      execSync('docker stop uap-qdrant', { stdio: 'pipe' });
+      execSync('docker stop uam-qdrant', { stdio: 'pipe' });
     } catch {
       // Container may not be running
     }
@@ -244,7 +244,7 @@ export class ServerlessQdrantManager {
     // Health check
     this.healthCheckInterval = setInterval(() => {
       if (!this.isLocalRunning()) {
-        console.warn('[UAP] Qdrant health check failed, attempting restart...');
+        console.warn('[UAM] Qdrant health check failed, attempting restart...');
         this.startLocal().catch(console.error);
       }
     }, healthCheckIntervalMs);
@@ -254,7 +254,7 @@ export class ServerlessQdrantManager {
       this.idleCheckInterval = setInterval(() => {
         const idleTime = Date.now() - this.lastActivityTime;
         if (idleTime > idleTimeoutMs) {
-          console.log(`[UAP] Qdrant idle for ${idleTime}ms, stopping...`);
+          console.log(`[UAM] Qdrant idle for ${idleTime}ms, stopping...`);
           this.stopLocal().catch(console.error);
         }
       }, 60000); // Check every minute
@@ -387,9 +387,7 @@ export class ServerlessQdrantManager {
       normB += b[i] * b[i];
     }
     
-    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-    if (denominator === 0) return 0;
-    return dotProduct / denominator;
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
   }
 
   /**

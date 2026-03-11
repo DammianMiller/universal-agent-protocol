@@ -8,7 +8,7 @@ import type { ShortTermMemoryBackend } from './factory.js';
 interface ShortTermMemory {
   id?: number;
   timestamp: string;
-  type: 'action' | 'observation' | 'thought' | 'goal' | 'lesson' | 'decision';
+  type: 'action' | 'observation' | 'thought' | 'goal';
   content: string;
   projectId?: string;
   importance?: number;

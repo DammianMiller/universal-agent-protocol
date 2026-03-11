@@ -55,7 +55,7 @@ export function runMaintenance(
   };
 
   if (!existsSync(dbPath)) {
-    result.recommendations.push('Database not found. Run `uap init` first.');
+    result.recommendations.push('Database not found. Run `uam init` first.');
     return result;
   }
 
@@ -283,7 +283,7 @@ function generateRecommendations(db: Database.Database, cfg: MaintenanceConfig, 
     `).get() as { c: number }).c;
 
     if (unpromoted > 10) {
-      recs.push(`${unpromoted} unpromoted daily log entries. Run \`uap memory promote\` to review.`);
+      recs.push(`${unpromoted} unpromoted daily log entries. Run \`uam memory promote\` to review.`);
     }
   } catch {
     // Table might not exist
@@ -303,7 +303,7 @@ function generateRecommendations(db: Database.Database, cfg: MaintenanceConfig, 
   }
 
   if (staleWorktrees.length > 0) {
-    recs.push(`${staleWorktrees.length} stale worktrees found (>${cfg.archiveDaysOld} days old): ${staleWorktrees.slice(0, 5).join(', ')}${staleWorktrees.length > 5 ? '...' : ''}. Run \`uap worktree cleanup <id>\` to remove.`);
+    recs.push(`${staleWorktrees.length} stale worktrees found (>${cfg.archiveDaysOld} days old): ${staleWorktrees.slice(0, 5).join(', ')}${staleWorktrees.length > 5 ? '...' : ''}. Run \`uam worktree cleanup <id>\` to remove.`);
   }
 
   if (recs.length === 0) {

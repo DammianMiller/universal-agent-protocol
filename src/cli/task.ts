@@ -152,8 +152,8 @@ async function createTask(service: TaskService, options: TaskOptions): Promise<v
       title: options.title,
       description: options.description,
       type: (options.type as TaskType) || 'task',
-      priority: options.priority ? parseInt(options.priority, 10) as TaskPriority : 2,
-      labels: options.labels ? options.labels.split(',').map(l => l.trim()) : [],
+      priority: options.priority ? (parseInt(options.priority, 10) as TaskPriority) : 2,
+      labels: options.labels ? options.labels.split(',').map((l) => l.trim()) : [],
       parentId: options.parent,
       notes: options.notes,
     };
@@ -195,13 +195,15 @@ async function listTasks(service: TaskService, options: TaskOptions): Promise<vo
     filter.type = options.filterType.split(',') as TaskType[];
   }
   if (options.filterPriority) {
-    filter.priority = options.filterPriority.split(',').map(p => parseInt(p, 10)) as TaskPriority[];
+    filter.priority = options.filterPriority
+      .split(',')
+      .map((p) => parseInt(p, 10)) as TaskPriority[];
   }
   if (options.filterAssignee) {
     filter.assignee = options.filterAssignee;
   }
   if (options.filterLabels) {
-    filter.labels = options.filterLabels.split(',').map(l => l.trim());
+    filter.labels = options.filterLabels.split(',').map((l) => l.trim());
   }
   if (options.search) {
     filter.search = options.search;
@@ -234,7 +236,7 @@ async function listTasks(service: TaskService, options: TaskOptions): Promise<vo
 
     console.log(
       `  ${statusIcon} ${priorityColor(`P${task.priority}`)} ${typeIcon} ` +
-      `${chalk.cyan(task.id)} ${task.title}`
+        `${chalk.cyan(task.id)} ${task.title}`
     );
 
     if (options.verbose) {
@@ -271,10 +273,14 @@ async function showTask(service: TaskService, options: TaskOptions): Promise<voi
   const priorityColor = getPriorityColor(task.priority);
 
   console.log('');
-  console.log(`${statusIcon} ${priorityColor(`P${task.priority}`)} ${typeIcon} ${chalk.bold(task.title)}`);
+  console.log(
+    `${statusIcon} ${priorityColor(`P${task.priority}`)} ${typeIcon} ${chalk.bold(task.title)}`
+  );
   console.log(chalk.dim('─'.repeat(60)));
   console.log(`ID: ${chalk.cyan(task.id)}`);
-  console.log(`Status: ${task.status}${task.isBlocked ? chalk.red(' (BLOCKED)') : ''}${task.isReady ? chalk.green(' (READY)') : ''}`);
+  console.log(
+    `Status: ${task.status}${task.isBlocked ? chalk.red(' (BLOCKED)') : ''}${task.isReady ? chalk.green(' (READY)') : ''}`
+  );
   console.log(`Type: ${task.type}`);
   console.log(`Priority: ${PRIORITY_LABELS[task.priority]}`);
 
@@ -312,7 +318,9 @@ async function showTask(service: TaskService, options: TaskOptions): Promise<voi
       if (blocker) {
         const blockerStatus = STATUS_ICONS[blocker.status];
         const done = blocker.status === 'done' || blocker.status === 'wont_do';
-        console.log(`  ${blockerStatus} ${done ? chalk.dim(blockerId) : chalk.red(blockerId)}: ${blocker.title}`);
+        console.log(
+          `  ${blockerStatus} ${done ? chalk.dim(blockerId) : chalk.red(blockerId)}: ${blocker.title}`
+        );
       }
     }
   }
@@ -380,8 +388,9 @@ async function updateTask(service: TaskService, options: TaskOptions): Promise<v
   if (options.status) input.status = options.status as TaskStatus;
   if (options.priority) input.priority = parseInt(options.priority, 10) as TaskPriority;
   if (options.assignee) input.assignee = options.assignee === 'none' ? undefined : options.assignee;
-  if (options.worktree) input.worktreeBranch = options.worktree === 'none' ? undefined : options.worktree;
-  if (options.labels) input.labels = options.labels.split(',').map(l => l.trim());
+  if (options.worktree)
+    input.worktreeBranch = options.worktree === 'none' ? undefined : options.worktree;
+  if (options.labels) input.labels = options.labels.split(',').map((l) => l.trim());
   if (options.notes) input.notes = options.notes;
 
   if (Object.keys(input).length === 0) {
@@ -467,30 +476,95 @@ async function showReady(service: TaskService, options: TaskOptions): Promise<vo
     return;
   }
 
+  // Display decision loop context for each ready task
+  console.log(chalk.bold.cyan('\n=== DECISION LOOP CONTEXT ===') + '\n');
+  console.log('1. CLASSIFY -> Analyzing complexity and backup needs...');
+
   const stats = service.getStats();
   for (const line of inlineProgressSummary(stats)) console.log(line);
   console.log('');
 
   if (tasks.length === 0) {
     console.log(chalk.dim('No ready tasks'));
+
+    // Provide guidance on creating new tasks with decision loop context
+    console.log('\n' + chalk.bold.cyan('=== DECISION LOOP: CREATE NEW TASK ===') + '\n');
+    console.log(`2. PROTECT -> Backup critical files before changes`);
+    console.log(`3. MEMORY  -> Query relevant context from memory system`);
+    console.log(`4. AGENTS  -> Check for multi-agent overlaps (if applicable)`);
+    console.log(`5. SKILLS  -> Load domain-specific skills via @Skill:name.md`);
+    console.log('');
+
     return;
   }
 
   console.log(chalk.bold.green(`✓ Ready Tasks (${tasks.length})\n`));
 
+  // Enhanced output with decision loop guidance for each task
   for (const task of tasks) {
     const priorityColor = getPriorityColor(task.priority);
     const typeIcon = TYPE_ICONS[task.type];
 
+    console.log(chalk.bold('---') + '\n');
     console.log(
       `  ${priorityColor(`P${task.priority}`)} ${typeIcon} ` +
-      `${chalk.cyan(task.id)} ${task.title}`
+        `${chalk.cyan(task.id)} ${task.title}`
     );
 
-    if (task.blocks.length > 0) {
-      console.log(chalk.dim(`    Unblocks: ${task.blocks.length} task(s)`));
+    if (task.description) {
+      console.log(chalk.dim(`     Description: ${task.description.substring(0, 60)}...`));
     }
+
+    // Show dependencies and blocking info
+    if (task.blockedBy.length > 0) {
+      console.log(chalk.yellow('     Blocked by:') + ` ${task.blockedBy.join(', ')}`);
+    } else if (task.blocks.length > 0) {
+      console.log(
+        chalk.green('     Unblocks: ' + task.blocks.length + ' task(s):') +
+          chalk.dim(` ${task.blocks.slice(0, 3).join(', ')}`)
+      );
+    }
+
+    // Provide decision loop guidance specific to this task type
+    const hasDependencies = task.blockedBy.length > 0 || task.blocks.length > 0;
+
+    if (hasDependencies) {
+      console.log(chalk.dim('\n     Decision Loop Steps:'));
+      console.log(
+        `       • CLASSIFY -> Task complexity: ${task.priority >= 8 ? 'HIGH' : 'MEDIUM/LOW'}`
+      );
+      console.log('       • PROTECT   -> Backup files before changes');
+      console.log('       • MEMORY    -> Query related task history');
+      if (hasDependencies) {
+        console.log(
+          `       • AGENTS    -> Coordinate with dependents: ${task.blockedBy.length + task.blocks.length} tasks`
+        );
+      }
+    }
+
+    // Show worktree requirement reminder
+    console.log(chalk.dim('\n     MANDATORY WORKTREE REQUIRED'));
+    console.log('       → uam worktree create <description>');
+
+    if (task.labels) {
+      const labels = Array.isArray(task.labels) ? task.labels : [task.labels];
+      console.log(`       Labels: ${labels.join(', ')}`);
+    }
+
+    console.log('\n' + chalk.dim('─'.repeat(60)));
   }
+
+  // End with decision loop summary
+  console.log(chalk.bold.cyan('\n=== DECISION LOOP SUMMARY ===') + '\n');
+  console.log(`Total ready tasks: ${tasks.length}`);
+
+  // Count high priority from stats (P0-P1 are highest)
+  const p0 = (stats.byPriority[0] as number | undefined) || 0;
+  const p1 = (stats.byPriority[1] as number | undefined) || 0;
+
+  console.log(`Critical/High Priority: ${p0 + p1}`);
+  console.log('Next step: Select task → Create worktree → Begin implementation');
+  console.log('\n' + chalk.dim('(Remember to follow all DECISION_LOOP steps before coding!)'));
   console.log('');
 }
 
@@ -519,7 +593,7 @@ async function showBlocked(service: TaskService, options: TaskOptions): Promise<
 
     console.log(
       `  ${priorityColor(`P${task.priority}`)} ${typeIcon} ` +
-      `${chalk.cyan(task.id)} ${task.title}`
+        `${chalk.cyan(task.id)} ${task.title}`
     );
 
     console.log(chalk.red(`    Blocked by: ${task.blockedBy.join(', ')}`));
@@ -662,16 +736,22 @@ async function showStats(service: TaskService, options: TaskOptions): Promise<vo
 
   // Completion progress bar
   const completed = stats.byStatus.done + stats.byStatus.wont_do;
-  console.log(`  ${progressBar(completed, stats.total, 40, {
-    label: 'Completion',
-    filled: chalk.green,
-  })}`);
+  console.log(
+    `  ${progressBar(completed, stats.total, 40, {
+      label: 'Completion',
+      filled: chalk.green,
+    })}`
+  );
   console.log('');
 
   // Status stacked bar
   const segments: BarSegment[] = [
     { value: stats.byStatus.done, color: chalk.green, label: `Done ${STATUS_ICONS.done}` },
-    { value: stats.byStatus.in_progress, color: chalk.cyan, label: `In Progress ${STATUS_ICONS.in_progress}` },
+    {
+      value: stats.byStatus.in_progress,
+      color: chalk.cyan,
+      label: `In Progress ${STATUS_ICONS.in_progress}`,
+    },
     { value: stats.byStatus.open, color: chalk.white, label: `Open ${STATUS_ICONS.open}` },
     { value: stats.byStatus.blocked, color: chalk.red, label: `Blocked ${STATUS_ICONS.blocked}` },
     { value: stats.byStatus.wont_do, color: chalk.dim, label: `Won't Do ${STATUS_ICONS.wont_do}` },
@@ -682,27 +762,35 @@ async function showStats(service: TaskService, options: TaskOptions): Promise<vo
 
   // Gauges
   console.log(`  ${chalk.bold('Total    ')} ${chalk.bold(String(stats.total))}`);
-  console.log(`  ${chalk.bold('Ready    ')} ${miniGauge(stats.ready, stats.total, 15)} ${chalk.green(String(stats.ready))}`);
-  console.log(`  ${chalk.bold('Blocked  ')} ${miniGauge(stats.blocked, stats.total, 15)} ${chalk.red(String(stats.blocked))}`);
+  console.log(
+    `  ${chalk.bold('Ready    ')} ${miniGauge(stats.ready, stats.total, 15)} ${chalk.green(String(stats.ready))}`
+  );
+  console.log(
+    `  ${chalk.bold('Blocked  ')} ${miniGauge(stats.blocked, stats.total, 15)} ${chalk.red(String(stats.blocked))}`
+  );
   console.log('');
 
   // Priority chart
   console.log(sectionHeader('By Priority'));
   console.log('');
-  for (const line of horizontalBarChart([
-    { label: 'P0 Critical', value: stats.byPriority[0], color: chalk.red },
-    { label: 'P1 High', value: stats.byPriority[1], color: chalk.yellow },
-    { label: 'P2 Medium', value: stats.byPriority[2], color: chalk.blue },
-    { label: 'P3 Low', value: stats.byPriority[3], color: chalk.dim },
-    { label: 'P4 Backlog', value: stats.byPriority[4], color: chalk.dim },
-  ], { maxWidth: 30, maxLabelWidth: 14 })) {
+  for (const line of horizontalBarChart(
+    [
+      { label: 'P0 Critical', value: stats.byPriority[0], color: chalk.red },
+      { label: 'P1 High', value: stats.byPriority[1], color: chalk.yellow },
+      { label: 'P2 Medium', value: stats.byPriority[2], color: chalk.blue },
+      { label: 'P3 Low', value: stats.byPriority[3], color: chalk.dim },
+      { label: 'P4 Backlog', value: stats.byPriority[4], color: chalk.dim },
+    ],
+    { maxWidth: 30, maxLabelWidth: 14 }
+  )) {
     console.log(line);
   }
   console.log('');
 
   // Type chart
-  const typeData = (Object.entries(stats.byType) as [TaskType, number][])
-    .filter(([, count]) => count > 0);
+  const typeData = (Object.entries(stats.byType) as [TaskType, number][]).filter(
+    ([, count]) => count > 0
+  );
   if (typeData.length > 0) {
     console.log(sectionHeader('By Type'));
     console.log('');
@@ -726,7 +814,7 @@ async function syncTasks(service: TaskService, _options: TaskOptions): Promise<v
   try {
     // Import from JSONL first
     const imported = service.importFromJSONL();
-    
+
     // Then export current state
     service.saveToJSONL();
 

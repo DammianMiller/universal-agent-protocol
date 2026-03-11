@@ -1,5 +1,5 @@
 /**
- * Speculative Cache for UAP Memory System
+ * Speculative Cache for UAM Memory System
  * 
  * Pre-computes likely next queries based on task patterns.
  * Reduces latency by predicting and caching memory retrievals.

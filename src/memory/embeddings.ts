@@ -1,5 +1,5 @@
 /**
- * Embedding Service for UAP Memory System
+ * Embedding Service for UAM Memory System
  * 
  * Provides text embedding generation for semantic memory retrieval.
  * Supports multiple backends: Ollama (local), OpenAI, local transformers, or simple TF-IDF fallback.
@@ -176,45 +176,27 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
-    // Security: Write texts to a temp file to avoid shell injection.
-    // The model name is validated at construction time.
-    const { writeFileSync, unlinkSync, mkdtempSync } = await import('fs');
-    const { join } = await import('path');
-    const { tmpdir } = await import('os');
+    const escapedTexts = JSON.stringify(texts);
+    const script = `
+import json
+import sys
+from sentence_transformers import SentenceTransformer
 
-    const tmpDir = mkdtempSync(join(tmpdir(), 'uap-embed-'));
-    const inputPath = join(tmpDir, 'input.json');
-    const scriptPath = join(tmpDir, 'embed.py');
+model = SentenceTransformer('${this.model}')
+texts = json.loads('''${escapedTexts}''')
+embeddings = model.encode(texts, convert_to_numpy=True)
+print(json.dumps(embeddings.tolist()))
+`;
 
     try {
-      // Write input data as JSON file (no shell interpolation)
-      writeFileSync(inputPath, JSON.stringify(texts), 'utf-8');
-
-      // Write Python script to file (no shell interpolation)
-      const script = [
-        'import json, sys',
-        'from sentence_transformers import SentenceTransformer',
-        `model = SentenceTransformer(${JSON.stringify(this.model)})`,
-        `with open(${JSON.stringify(inputPath)}, "r") as f:`,
-        '    texts = json.load(f)',
-        'embeddings = model.encode(texts, convert_to_numpy=True)',
-        'print(json.dumps(embeddings.tolist()))',
-      ].join('\n');
-      writeFileSync(scriptPath, script, 'utf-8');
-
-      const result = execSync(`${JSON.stringify(this.pythonPath)} ${JSON.stringify(scriptPath)}`, {
+      const result = execSync(`${this.pythonPath} -c "${script.replace(/"/g, '\\"')}"`, {
         encoding: 'utf-8',
         timeout: 60000,
         maxBuffer: 50 * 1024 * 1024,
-        shell: '/bin/sh',
       });
       return JSON.parse(result.trim());
     } catch (error) {
       throw new Error(`Local embedding generation failed: ${error}`);
-    } finally {
-      try { unlinkSync(inputPath); } catch { /* cleanup */ }
-      try { unlinkSync(scriptPath); } catch { /* cleanup */ }
-      try { const { rmdirSync } = await import('fs'); rmdirSync(tmpDir); } catch { /* cleanup */ }
     }
   }
 }
@@ -407,7 +389,7 @@ export class TFIDFEmbeddingProvider implements EmbeddingProvider {
 }
 
 /**
- * Embedding Service - Main interface for UAP memory system
+ * Embedding Service - Main interface for UAM memory system
  * Automatically selects best available provider
  * 
  * Priority: Ollama (local, free) > OpenAI > Local transformers > TF-IDF fallback

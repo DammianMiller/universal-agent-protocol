@@ -1,5 +1,5 @@
 /**
- * Semantic Compression Module for UAP
+ * Semantic Compression Module for UAM
  * 
  * Implements SimpleMem-style semantic structured compression:
  * 1. Entropy-aware filtering to distill raw content into atomic facts
@@ -220,8 +220,8 @@ function extractEntities(sentence: string): string[] {
   const names = sentence.match(/\b[a-z][a-zA-Z0-9]*(?:[A-Z][a-zA-Z0-9]*)+\b/g);
   if (names) entities.push(...names);
   
-  // Commands (npm, git, uap, etc)
-  const commands = sentence.match(/\b(npm|git|uap|docker|curl|pip|python|node)\s+\w+/gi);
+  // Commands (npm, git, uam, etc)
+  const commands = sentence.match(/\b(npm|git|uam|docker|curl|pip|python|node)\s+\w+/gi);
   if (commands) entities.push(...commands.map(c => c.trim()));
   
   // Quoted strings

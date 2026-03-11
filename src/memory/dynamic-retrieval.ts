@@ -1,5 +1,5 @@
 /**
- * Dynamic Memory Retrieval System for UAP
+ * Dynamic Memory Retrieval System for UAM
  * 
  * Retrieves relevant memories based on task content, not static context.
  * Implements semantic search with fallback to keyword matching.
@@ -140,7 +140,7 @@ export async function retrieveDynamicMemoryContext(
 ): Promise<DynamicMemoryContext> {
   const { maxTokens = 2000, useSemanticCompression = true, taskMetadata } = options;
   
-  // Step 0: Adaptive context decision - skip UAP if not beneficial
+  // Step 0: Adaptive context decision - skip UAM if not beneficial
   const contextDecision = decideContextLevel(taskInstruction, taskMetadata);
   if (contextDecision.level === 'none') {
     const classification = classifyTask(taskInstruction);

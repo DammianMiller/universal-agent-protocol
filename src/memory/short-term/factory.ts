@@ -2,11 +2,9 @@ import { IndexedDBShortTermMemory } from './indexeddb.js';
 import { SQLiteShortTermMemory } from './sqlite.js';
 import type { AgentContextConfig } from '../../types/index.js';
 
-export type MemoryType = 'action' | 'observation' | 'thought' | 'goal' | 'lesson' | 'decision';
-
 export interface ShortTermMemoryBackend {
-  store(type: MemoryType, content: string, importance?: number): Promise<void>;
-  storeBatch?(entries: Array<{ type: MemoryType; content: string; timestamp?: string; importance?: number }>): Promise<void>;
+  store(type: 'action' | 'observation' | 'thought' | 'goal', content: string, importance?: number): Promise<void>;
+  storeBatch?(entries: Array<{ type: 'action' | 'observation' | 'thought' | 'goal'; content: string; timestamp?: string; importance?: number }>): Promise<void>;
   getRecent(limit?: number): Promise<Array<{ timestamp: string; type: string; content: string; importance?: number }>>;
   query(searchTerm: string, limit?: number): Promise<Array<{ timestamp: string; type: string; content: string; importance?: number }>>;
   clear(): Promise<void>;

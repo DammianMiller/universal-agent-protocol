@@ -1,5 +1,5 @@
 /**
- * Model Routing Intelligence for UAP
+ * Model Routing Intelligence for UAM
  *
  * Routes tasks to the optimal model based on:
  * - Task classification and difficulty

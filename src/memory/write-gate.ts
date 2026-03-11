@@ -1,5 +1,5 @@
 /**
- * Write Gate for UAP Memory System
+ * Write Gate for UAM Memory System
  *
  * Evaluates candidate memories against 5 criteria before persisting.
  * Inspired by Total Recall's write gate: "Does this change future behavior?"

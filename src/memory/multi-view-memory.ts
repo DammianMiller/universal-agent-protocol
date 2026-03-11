@@ -1,5 +1,5 @@
 /**
- * Multi-View Memory System for UAP
+ * Multi-View Memory System for UAM
  * 
  * Implements:
  * 1. Multi-view indexing (entity, temporal, semantic type views)
@@ -464,7 +464,7 @@ export class MultiViewMemoryManager {
     if (names) entities.push(...names);
     
     // Commands
-    const commands = content.match(/\b(npm|git|uap|docker|curl|pip|python|node)\s+\w+/gi);
+    const commands = content.match(/\b(npm|git|uam|docker|curl|pip|python|node)\s+\w+/gi);
     if (commands) entities.push(...commands.map(c => c.trim()));
     
     // Quoted strings

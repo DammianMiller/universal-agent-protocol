@@ -1,5 +1,5 @@
 /**
- * Context Compression Module for UAP
+ * Context Compression Module for UAM
  * 
  * Implements semantic compression to reduce token usage while preserving meaning.
  * Based on Acon (Agent Context Optimization) and AgentCompress research.
