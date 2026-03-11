@@ -1,6 +1,9 @@
 {
-  "version": "0.10.3",
-  "project": "/home/cogtek/dev/miller-tech/universal-agent-memory",
+  "version": "2.0.1",
+  "project": {
+    "name": "universal-agent-memory",
+    "description": "Universal Agent Protocol memory system"
+  },
   "initialized": true,
   "timestamp": "2026-03-11T09:47:09.954Z",
   "features": {

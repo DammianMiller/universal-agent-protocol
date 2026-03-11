@@ -7,10 +7,17 @@
 
 import { execSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import chalk from 'chalk';
 
-const UAM_ROOT = process.cwd();
+// Get script directory for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Calculate paths relative to this CLI script location
+const CLIDir = join(__dirname, '..');
+const UAM_ROOT = join(CLIDir, '..');
 const AGENTS_DIR = join(UAM_ROOT, 'tools', 'agents');
 const CONFIG_DIR = join(AGENTS_DIR, 'config');
 const SCRIPTS_DIR = join(AGENTS_DIR, 'scripts');
@@ -32,7 +39,7 @@ async function setup(): Promise<void> {
   // Copy chat template if not exists
   const templateSrc = join(UAM_ROOT, 'tools', 'agents', 'config', 'chat_template.jinja');
   const templateDest = join(CONFIG_DIR, 'chat_template.jinja');
-  
+
   if (existsSync(templateSrc) && !existsSync(templateDest)) {
     writeFileSync(templateDest, readFileSync(templateSrc));
     console.log(chalk.green(`✓ Copied chat template: ${templateDest}`));
@@ -50,7 +57,7 @@ async function setup(): Promise<void> {
   for (const script of pythonScripts) {
     const src = join(UAM_ROOT, 'tools', 'agents', 'scripts', script);
     const dest = join(SCRIPTS_DIR, script);
-    
+
     if (existsSync(src) && !existsSync(dest)) {
       writeFileSync(dest, readFileSync(src));
       console.log(chalk.green(`✓ Copied script: ${script}`));
@@ -75,9 +82,9 @@ async function setup(): Promise<void> {
   console.log(chalk.bold('Installed Components:'));
   console.log(`  • Chat template: ${templateDest}`);
   console.log(`  • Python scripts: ${SCRIPTS_DIR}/`);
-  
+
   if (existsSync(templateDest)) {
-    const stat = await import('fs').then(m => m.statSync(templateDest));
+    const stat = await import('fs').then((m) => m.statSync(templateDest));
     console.log(`    - Size: ${stat.size} bytes`);
   }
 
@@ -102,7 +109,7 @@ async function test(): Promise<void> {
   console.log(chalk.cyan('\n🧪 Running Qwen3.5 Tool Call Tests...\n'));
 
   const testScript = join(SCRIPTS_DIR, 'qwen_tool_call_test.py');
-  
+
   if (!existsSync(testScript)) {
     console.error(chalk.red(`❌ Test script not found: ${testScript}`));
     console.log(chalk.yellow('Run: uap tool-calls setup\n'));
@@ -172,7 +179,7 @@ async function fix(): Promise<void> {
   console.log(chalk.cyan('\n🔧 Applying Template Fixes...\n'));
 
   const fixScript = join(SCRIPTS_DIR, 'fix_qwen_chat_template.py');
-  
+
   if (!existsSync(fixScript)) {
     console.error(chalk.red(`❌ Fix script not found: ${fixScript}`));
     console.log(chalk.yellow('Run: uap tool-calls setup\n'));

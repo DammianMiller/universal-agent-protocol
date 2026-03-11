@@ -16,7 +16,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..', '..');
 
-const UAP_VERSION = '2.0.0';
+const UAP_VERSION = '2.0.1';
+
+// Import RTK integration
+import { installRTK, checkRTKStatus, showRTKHelp } from './rtk.js';
 
 class UAPCli {
   async run(args: string[]): Promise<void> {
@@ -30,8 +33,38 @@ class UAPCli {
         await this.setup(args.slice(1));
         break;
       case 'install':
+        // Check if user wants to install RTK
+        const subCommand = args[1];
+        if (subCommand === 'rtk') {
+          await installRTK({
+            force: args.includes('--force'),
+            method: args.includes('--method')
+              ? (args[args.indexOf('--method') + 1] as any)
+              : undefined,
+          });
+          return;
+        }
         await this.install(args.slice(1));
         break;
+      case 'rtk':
+        // RTK subcommand
+        const rtkSubCommand = args[1];
+        if (rtkSubCommand === 'install') {
+          await installRTK({
+            force: args.includes('--force'),
+            method: args.includes('--method')
+              ? (args[args.indexOf('--method') + 1] as any)
+              : undefined,
+          });
+        } else if (rtkSubCommand === 'status') {
+          await checkRTKStatus();
+        } else if (rtkSubCommand === 'help' || !rtkSubCommand) {
+          showRTKHelp();
+        } else {
+          console.log(`Unknown RTK command: ${rtkSubCommand}`);
+          showRTKHelp();
+        }
+        return;
       case 'uninstall':
         await this.uninstall();
         break;
@@ -65,7 +98,12 @@ USAGE:
 COMMANDS:
   init              Initialize UAP in current project
   setup [options]   Run comprehensive UAP setup
-  install <harness> Install UAP plugins for specific harness (opencode, etc.)
+  install           Install UAP plugins for specific harness (opencode, etc.)
+                    or install RTK CLI proxy with "uap install rtk"
+  rtk               Manage RTK (Rust Token Killer) integration
+    install         Install RTK CLI proxy for 60-90% token savings
+    status          Check RTK installation and token savings
+    help            Show RTK usage information
   uninstall         Remove UAP from current project
   hooks             Manage UAP hooks
   plugins           List and manage UAP plugins
@@ -82,7 +120,17 @@ EXAMPLES:
   uap init                    # Initialize UAP in current directory
   uap setup -p all           # Full setup with all components
   uap install opencode       # Install UAP plugins for opencode harness
+  uap install rtk            # Install RTK CLI proxy (60-90% token savings)
+  uap rtk status             # Check RTK installation and savings
   uap hooks list             # List available hooks
+
+INTEGRATION:
+  RTK works alongside UAP's MCP Router for maximum token savings:
+  
+  - MCP Router (~98% savings): Hides 150+ tools behind 2 meta-tools
+  - RTK (60-90% savings): Filters CLI command output before LLM sees it
+  
+  Combined: 95%+ total token reduction
 `);
   }
 
