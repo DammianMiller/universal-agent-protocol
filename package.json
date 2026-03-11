@@ -1,14 +1,14 @@
 {
   "name": "universal-agent-protocol",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Autonomous AI agent memory system with CLAUDE.md protocol enforcement",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "qwen-tool-call-test": "./tools/agents/scripts/qwen_tool_call_test.py",
-    "qwen-tool-call-wrapper": "./tools/agents/scripts/qwen_tool_call_wrapper.py",
-    "fix-qwen-template": "./tools/agents/scripts/fix_qwen_chat_template.py"
+    "qwen-tool-call-test": "./tools/agents/scripts/qwen-tool-call-test.js",
+    "qwen-tool-call-wrapper": "./tools/agents/scripts/qwen-tool-call-wrapper.js",
+    "fix-qwen-template": "./tools/agents/scripts/fix-qwen-template.js"
   },
   "scripts": {
     "build": "tsc",
