@@ -82,7 +82,7 @@ jobs:
     needs: build-test
     if: |
       needs.build-test.outputs.version_exists == 'false' &&
-      github.event_name == 'workflow_dispatch'
+      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/master')
     steps:
       - name: Debug workflow inputs
         run: |
