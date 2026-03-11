@@ -83,7 +83,6 @@ class Qwen35ToolCallClient:
     DEFAULT_CONFIG = {
         "temperature": 0.6,
         "top_p": 0.95,
-        "top_k": 20,
         "presence_penalty": 1.5,
         "max_tokens": 32768,
         "enable_thinking": False,
@@ -172,7 +171,6 @@ class Qwen35ToolCallClient:
                     "tools": tools,
                     "temperature": self.config["temperature"],
                     "top_p": self.config["top_p"],
-                    "top_k": self.config["top_k"],
                     "presence_penalty": self.config["presence_penalty"],
                     "max_tokens": self.config["max_tokens"],
                     "timeout": timeout,

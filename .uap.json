@@ -43,6 +43,7 @@
       "indexScript": "./agents/scripts/index_patterns_to_qdrant.py",
       "queryScript": "./agents/scripts/query_patterns.py",
       "sourceFile": "CLAUDE.md",
+      "sourceFiles": [],
       "maxBodyChars": 400
     }
   },

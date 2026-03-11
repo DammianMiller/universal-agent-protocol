@@ -1,0 +1,7 @@
+include README.md
+include LICENSE
+recursive-include tools/agents *.py
+recursive-include tools/agents/scripts *.py
+recursive-include tools/agents/config *.jinja
+recursive-include tools/agents/UAP *.py
+recursive-include templates *

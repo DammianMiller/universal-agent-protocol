@@ -4,10 +4,7 @@
 
 <!-- ENFORCEMENT_CHECKS: SESSION_START,DECISION_LOOP,MANDATORY_WORKTREE,PARALLEL_REVIEW,SCHEMA_DIFF,GATES,RTK_INCLUDES,PATTERN_ROUTER -->
 <!-- TEMPLATE_VERSION: 2.3.0 -->
-<!-- LAST_VALIDATED: 2026-03-10 -->
+<!-- LAST_VALIDATED: 2026-03-09 -->
 
 @hooks-session-start.md
 @PreCompact.md
-
-<!-- COMPLIANCE_VERIFICATION: Run 'bash tools/agents/UAP/compliance_verify.sh' to verify 100% UAP compliance -->
-
