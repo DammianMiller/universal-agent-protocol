@@ -82,11 +82,14 @@ jobs:
     needs: build-test
     if: |
       needs.build-test.outputs.version_exists == 'false' &&
-      (
-        (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-        (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
-      )
+      github.event_name == 'workflow_dispatch'
     steps:
+      - name: Debug workflow inputs
+        run: |
+          echo "Event name: ${{ github.event_name }}"
+          echo "Inputs publish: ${{ github.event.inputs.publish }}"
+          echo "Version from build-test: ${{ needs.build-test.outputs.version }}"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
