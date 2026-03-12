@@ -27,7 +27,7 @@
         {# Tool responses #} 
         {% if message.tool_calls is defined and loop.last == false %}{# skip next tool response #}-{% else -%}\n{{ '\n' }}{%- endif -%}
 
-    {%- {%- elif %} role == 'tool' -%} {{- "\n" }}<function_response>{{- " Tool: " ~ message.name if message.name is defined else "" }}\n\n{{- (message.content|trim) + '\n'}}{% if not loop.last %}<function>\n{%- endif %}\n    {# End of assistant/tool block #}
+    {%- elif role == 'tool' -%} {{- "\n" }}<function_response>{{- " Tool: " ~ message.name if message.name is defined else "" }}\n\n{{- (message.content|trim) + '\n'}}{% if not loop.last %}<function>\n{%- endif %}\n    {# End of assistant/tool block #}
         {% if role in ['assistant', 'tool'] and not loop.first -%}{# skip next newline #}-{% else -%}\n{{- "\n" }}{% endif -%}
 
 {# Add generation prompt for last message #} 
