@@ -1,0 +1,11 @@
+name: uap-qwen35-harbor-benchmark
+datasets:
+  - name: terminal-bench@2.0
+    tasks: [git-recovery-test]
+agents:
+  - name: uap-uam-v3.0+
+    type: installed_agent
+    import_path: tools.agents.uam_agent:UAMAgent
+trial_config: {timeout_multiplier: 1.5}
+job_settings: {n_concurrent: 1, max_retries: 2}
+output_dir: results/harbor-benchmark

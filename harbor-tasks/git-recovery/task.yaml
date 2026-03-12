@@ -1,0 +1,44 @@
+name: git-recovery-test
+description: Initialize git repo with fsck verification
+
+version: "1.0"
+
+environment:
+  image: python:3.11-slim
+  working_dir: /app
+
+setup_commands:
+  - mkdir -p /app/test_repo /app/results
+  
+instruction: |
+  You are in an isolated container at /app. Complete this Terminal-Bench task:
+  
+  Initialize a git repository at /app/test_repo with initial commit containing "test content".
+  Use 'git fsck' to verify integrity and create /app/results/git_status.txt with 'git status' output.
+
+verification_script: |
+  #!/bin/bash
+  set -e
+  
+  # Check 1: Git repo must exist
+  if [[ ! -d /app/test_repo/.git ]]; then 
+    echo "FAIL: No .git directory" >&2; exit 1
+  fi
+  
+  # Check 2: Verification file must exist  
+  if [[ ! -f /app/results/git_status.txt ]]; then 
+    echo "FAIL: No git_status.txt" >&2; exit 1
+  fi
+  
+  # Check 3: Must have at least one commit
+  cd /app/test_repo
+  if ! git log --oneline | grep -q "."; then
+    echo "FAIL: No commits found" >&2; exit 1
+  fi
+  
+  # Check 4: fsck must pass
+  if ! git fsck --full >/dev/null 2>&1; then
+    echo "FAIL: Git integrity check failed" >&2; exit 1
+  fi
+  
+  echo "PASS: Git repository correctly initialized with valid commit and verified integrity"

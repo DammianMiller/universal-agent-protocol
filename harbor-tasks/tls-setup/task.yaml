@@ -1,0 +1,28 @@
+name: tls-certificate-setup
+description: Generate mTLS certificates with proper CA hierarchy
+
+version: "1.0"
+
+environment:
+  image: debian:bullseye-slim
+  working_dir: /app
+  
+setup_commands:
+  - apt-get update >/dev/null 2>&1 && apt-get install -y openssl >/dev/null 2>&1 || true
+  - mkdir -p /app/certs/{ca,server}
+
+instruction: |
+  You are in an isolated container at /app. Complete this task:
+  
+  Generate mTLS certificates:
+  1. Create CA key and self-signed certificate (CN="Benchmark CA") at /app/certs/ca/
+  2. Create server key and certificate signed BY the CA at /app/certs/server/
+  3. Verify the chain with openssl verify
+  
+verification_script: |
+  #!/bin/bash
+  set -e
+  if [[ ! -f /app/certs/ca/ca.key ]] || [[ ! -f /app/certs/ca/ca.crt ]]; then echo "FAIL: No CA cert"; exit 1; fi
+  if [[ ! -f /app/certs/server/server.key ]] || [[ ! -f /app/certs/server/server.crt ]]; then echo "FAIL: No server cert"; exit 1; fi
+  cd /app/certs && openssl verify -CAfile ca/ca.crt server/server.crt >/dev/null 2>&1 || { echo "FAIL: Chain invalid"; exit 1; }
+  echo "PASS: TLS certificate setup completed successfully"

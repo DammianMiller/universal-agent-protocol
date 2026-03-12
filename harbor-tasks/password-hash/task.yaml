@@ -1,0 +1,40 @@
+name: password-hash-crack
+description: Create and validate MD5 hash file
+
+version: "1.0"
+
+environment:
+  image: python:3.11-slim
+  working_dir: /app
+  
+setup_commands:
+  - mkdir -p /app/cracking
+
+instruction: |
+  You are in an isolated container at /app. Create MD5 password hashes at /app/cracking/hashes.txt,
+  validate the format, and create /app/cracking/analysis.json with validation results.
+
+verification_script: |
+  #!/bin/bash
+  set -e
+  
+  # Check hash file exists and has content
+  if [[ ! -f /app/cracking/hashes.txt ]]; then 
+    echo "FAIL: No hashes.txt" >&2; exit 1
+  fi
+  
+  HASH_COUNT=$(wc -l < /app/cracking/hashes.txt)
+  if [[ $HASH_COUNT -lt 1 ]]; then
+    echo "FAIL: No hashes in file" >&2; exit 1
+  fi
+  
+  # Check analysis.json exists and is valid JSON
+  if [[ ! -f /app/cracking/analysis.json ]]; then 
+    echo "FAIL: No analysis.json" >&2; exit 1
+  fi
+  
+  python3 -c "import json; d=json.load(open('/app/cracking/analysis.json')); assert 'validation_status' in d or 'status' in d, 'Invalid JSON structure'" >/dev/null 2>&1 || { 
+    echo "FAIL: Invalid analysis.json" >&2; exit 1
+  }
+  
+  echo "PASS: MD5 hash file created with valid validation analysis"

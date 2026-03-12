@@ -1,0 +1,108 @@
+{
+  "mode": "UAP_3.0+",
+  "timestamp": "2026-03-12T18:27:53.332414",
+  "elapsed_seconds": 63.118162393569946,
+  "tasks_completed": 12,
+  "total_tasks": 12,
+  "total_tokens": 6307,
+  "avg_tokens_per_task": 525.5833333333334,
+  "avg_time_per_task": 5.259846866130829,
+  "results": [
+    {
+      "task": "Git Repository Recovery",
+      "id": "git-recovery",
+      "category": "system-administration",
+      "status": "success",
+      "tokens": 284,
+      "completion_preview": "<think>\n\n</think>\n\n```json\n{\n  \"status\": \"completed\",\n  \"steps\": [\n    \"Initialized a new Git repository at /app/test_repo.\",\n    \"Created a file with 'test content' and committed it as the initial co"
+    },
+    {
+      "task": "Password Hash Recovery",
+      "id": "password-hash",
+      "category": "security",
+      "status": "success",
+      "tokens": 1027,
+      "completion_preview": "<think>\nThe user wants me to complete a security-related task in an isolated container environment. The task involves:\n\n1. Creating MD5 password hashes at /app/cracking/hashes.txt\n2. Validating the fo"
+    },
+    {
+      "task": "mTLS Certificate Setup",
+      "id": "tls-certs",
+      "category": "security",
+      "status": "success",
+      "tokens": 1018,
+      "completion_preview": "<think>\nThe user wants me to complete a Terminal-Bench task for setting up mTLS (mutual TLS) certificates. I need to:\n\n1. Create a CA key and certificate with CN=\"Benchmark CA\" at /app/certs/ca/ with "
+    },
+    {
+      "task": "Multi-Container Deployment",
+      "id": "multi-container",
+      "category": "containers",
+      "status": "success",
+      "tokens": 510,
+      "completion_preview": "<think>\nThe user wants me to complete a Terminal-Bench task for creating a docker-compose.yml file with two services: nginx on port 8080 and Python API on port 5000. Both should be accessible.\n\nLet me"
+    },
+    {
+      "task": "ML Model Training",
+      "id": "ml-training",
+      "category": "ml",
+      "status": "success",
+      "tokens": 436,
+      "completion_preview": "<think>\nThe user wants me to complete a Terminal-Bench task for ML Model Training. I need to:\n\n1. Train an sklearn logistic regression model with TF-IDF vectorization (max_features=50)\n2. Save the mod"
+    },
+    {
+      "task": "Data Compression",
+      "id": "data-compress",
+      "category": "data-processing",
+      "status": "success",
+      "tokens": 685,
+      "completion_preview": "<think>\nThe user wants me to complete a Terminal-Bench task for data compression. I need to:\n\n1. Create test files in /app/data/\n2. Compress them to /app/data/compressed.tar.gz\n3. Verify the compressi"
+    },
+    {
+      "task": "Chess FEN Parser",
+      "id": "chess-fen",
+      "category": "games",
+      "status": "success",
+      "tokens": 667,
+      "completion_preview": "<think>\nThe user wants me to complete a Terminal-Bench task that involves parsing FEN (Forsyth-Edwards Notation) strings for chess positions. I need to:\n\n1. Parse and validate FEN strings for:\n   - St"
+    },
+    {
+      "task": "SQLite WAL Recovery",
+      "id": "sqlite-db",
+      "category": "database",
+      "status": "success",
+      "tokens": 547,
+      "completion_preview": "<think>\nThe user wants me to complete a SQLite WAL (Write-Ahead Logging) recovery task. I need to:\n\n1. Create a SQLite database at /app/db/test.db with test data\n2. Simulate WAL recovery (this involve"
+    },
+    {
+      "task": "HTTP Server Config",
+      "id": "http-server",
+      "category": "networking",
+      "status": "success",
+      "tokens": 232,
+      "completion_preview": "<think>\n\n</think>\n\n```json\n{\n  \"status\": \"completed\",\n  \"steps\": [\n    \"Created the /app/web directory to serve static content.\",\n    \"Started a Python HTTP server on port 8001 serving from /app/web i"
+    },
+    {
+      "task": "Code Compression",
+      "id": "code-gzip",
+      "category": "development",
+      "status": "success",
+      "tokens": 265,
+      "completion_preview": "<think>\n\n</think>\n\n```json\n{\n  \"status\": \"completed\",\n  \"steps\": [\n    \"Created the directory structure /app/code to hold the source file.\",\n    \"Generated a sample Python script at /app/code/source.p"
+    },
+    {
+      "task": "MCMC Sampling",
+      "id": "mcmc-sampling",
+      "category": "statistics",
+      "status": "success",
+      "tokens": 328,
+      "completion_preview": "<think>\n\n</think>\n\n{\n  \"status\": \"completed\",\n  \"steps\": [\n    \"Created the output directory /app/stats to store results.\",\n    \"Implemented a Metropolis-Hastings MCMC sampler in Python targeting the "
+    },
+    {
+      "task": "Core War Algorithm",
+      "id": "corewar",
+      "category": "competitive",
+      "status": "success",
+      "tokens": 308,
+      "completion_preview": "<think>\n\n</think>\n\n{\n  \"status\": \"completed\",\n  \"steps\": [\n    \"Created the /app/cp directory to store the state output.\",\n    \"Implemented a simplified Core War simulation in Python with an 8000-cell"
+    }
+  ]
+}

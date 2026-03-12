@@ -1,0 +1,37 @@
+name: data-compression
+description: Data compression and verification
+
+version: "1.0"
+
+environment:
+  image: python:3.11-slim
+  working_dir: /app
+  
+setup_commands:
+  - mkdir -p /app/data/{original,compressed}
+
+instruction: |
+  You are in an isolated container at /app. Complete this Terminal-Bench task:
+  
+  Create test data files in /app/data/original/, compress them into /app/data/compressed.tar.gz,
+  verify the compression ratio, and create /app/data/compression_report.txt with details.
+
+verification_script: |
+  #!/bin/bash
+  set -e
+  
+  if [[ ! -f /app/data/compressed.tar.gz ]]; then 
+    echo "FAIL: Compressed archive not created" >&2; exit 1
+  fi
+  
+  SIZE=$(stat -c%s /app/data/compressed.tar.gz 2>/dev/null || echo "0")
+  if [[ $SIZE -eq 0 ]]; then
+    echo "FAIL: Empty or missing archive" >&2; exit 1
+  fi
+  
+  # Verify archive is valid
+  tar tzf /app/data/compressed.tar.gz >/dev/null 2>&1 || {
+    echo "FAIL: Invalid tar archive" >&2; exit 1
+  }
+  
+  echo "PASS: Data compression completed successfully (size: ${SIZE} bytes)"

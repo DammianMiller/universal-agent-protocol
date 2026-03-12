@@ -1,0 +1,87 @@
+## Universal Agent Protocol (UAP) v3.0 - Task Guidance
+
+### Core Principles
+
+1. Read the full task description and any provided tests/verifiers BEFORE writing code.
+2. Create expected output files early, even as stubs.
+3. Prefer existing libraries over custom implementations for well-known algorithms.
+4. After implementation, run all available tests. If some fail, read the error, fix the specific issue, and re-run. Iterate until all pass.
+5. Use binary mode ('rb'/'wb') for all non-text file I/O.
+6. Reserve time for debugging - do not give up after the first test failure.
+
+### Git Task Guidance
+- FIRST: `cp -r .git .git.bak` before any git operation.
+- Use `git fsck --full --no-dangling`, `git reflog --all` for recovery.
+- Check `git log --all --oneline` and `git fsck --unreachable` for dangling objects.
+- Recover lost commits: `git reflog` then `git cherry-pick <hash>` or `git merge <hash>`.
+- For corrupted HEAD: `git symbolic-ref HEAD refs/heads/main`.
+- For broken index: `rm .git/index && git reset`.
+- For leaked secrets: use `git filter-repo` or BFG, not `git filter-branch`.
+- Use `git cat-file -t <hash>` and `git cat-file -p <hash>` to inspect objects.
+
+### Compression Task Guidance
+- Read the provided decoder/decompressor source FIRST - understand its expected format exactly.
+- Test round-trip at small scale before optimizing: `echo -n "A" > /tmp/t.txt && ./compress /tmp/t.txt /tmp/t.comp && ./decompress /tmp/t.comp /tmp/t.out && diff /tmp/t.txt /tmp/t.out`
+- Use binary mode for ALL file I/O. Common failure: text mode corrupts binary data.
+- If decompressor outputs garbage, your format doesn't match - re-read the decoder byte-by-byte.
+
+### Chess Task Guidance
+- Use python-chess library + Stockfish engine, not manual move generation.
+- For image-to-FEN: try board_to_fen or pytesseract, do NOT guess positions.
+- Use `multipv` parameter to find ALL valid moves, not just the best one.
+
+### Polyglot/Multi-Language Guidance
+- Search for existing polyglot examples for the target language pair FIRST.
+- Use comment syntax differences between languages to hide code sections.
+- C+Python: use `#if 0`/`#endif` to hide Python from C, `#` hides C from Python.
+- Rust+C: use `/*`/`*/` block comments and macro tricks for dual parsing.
+- Test with BOTH compilers/interpreters separately.
+- After testing, clean output directory of ALL build artifacts - keep ONLY source files.
+- `chmod +x` if executable, add proper shebang for interpreted languages.
+
+### Service/Server Task Guidance
+- After starting a service, smoke test it immediately: `curl -v http://localhost:PORT/ 2>&1 | head -20`
+- If no response: check logs, fix the issue BEFORE continuing.
+
+### Database Task Guidance
+- SQLite WAL recovery: NEVER open with sqlite3 directly -- it auto-checkpoints, destroying data.
+- Parse the WAL file directly with Python struct module: header is 32 bytes, each frame has 24-byte header.
+- WAL page size is in bytes 8-11 of the WAL header (big-endian uint32).
+- Each WAL frame: salt1(4) + salt2(4) + pgno(4) + commit(4) + checksum(8) + page_data(page_size).
+- To recover: read all frames, extract page data, reconstruct pages into a new DB.
+
+### C/Systems Programming Guidance
+- Use dynamic allocation (`malloc`) for large buffers, not stack arrays.
+- If segfault or stack smashing: increase buffer sizes 10x or use heap allocation.
+- Add bounds checking before all array writes.
+
+### XSS/HTML Filtering Guidance
+- Do NOT use bleach, BeautifulSoup, or lxml - they normalize HTML and break byte-for-byte tests.
+- Use regex-based filtering that ONLY removes dangerous content.
+- Clean HTML must pass through UNCHANGED (byte-identical).
+
+### Image/OCR Task Guidance
+- Use pytesseract + Pillow for text extraction from images.
+- Install: `apt-get install -y tesseract-ocr && pip install pytesseract pillow`
+
+### ML/PyTorch Model Recovery Guidance
+- For corrupted model files: use `torch.load(path, map_location='cpu', weights_only=False)` with error handling.
+- Try loading with `pickle.load()` directly if torch.load fails.
+- Check file magic bytes: PyTorch files start with PK (ZIP) or 0x70 0x79 (pickle).
+
+### Testing/Iteration Guidance
+- If tests partially pass (>50%), focus on the specific failing tests - do NOT rewrite passing code.
+- Read full error messages and stack traces before attempting fixes.
+- Common: "Segmentation fault" = buffer overflow, "permission denied" = chmod needed.
+
+### Statistics/R Task Guidance
+- Use FINITE bounds for sampling: `c(-10, 10)` not `c(-Inf, Inf)`.
+- Check if CRAN/PyPI packages exist before implementing from scratch.
+- For adaptive rejection sampling: use the `ars` R package or implement the Gilks & Wild (1992) algorithm.
+- Test with multiple random seeds (3+ iterations).
+
+---
+
+## YOUR TASK:
+
+{{ instruction }}

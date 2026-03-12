@@ -1,0 +1,13 @@
+{
+  "$schema": "./config.schema.json",
+  "agent": {
+    "default_model": "qwen3.5-a3b-iq4xs",
+    "api_endpoint": "http://192.168.1.165:8080/v1"
+  },
+  
+  "prompt_settings": {
+    "use_qwen35_optimized_params": true,
+    "default_mode": "thinking",
+    "settings_file": "../config/qwen35-settings.json"
+  }
+}

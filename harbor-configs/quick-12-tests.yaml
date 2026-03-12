@@ -1,0 +1,27 @@
+name: uap-qwen35-12-test-suite
+datasets:
+  - name: terminal-bench@2.0
+    tasks:
+      - git-recovery-test
+      - password-hash-crack
+      - tls-certificate-setup  
+      - multi-container-deployment
+      - ml-model-training
+      - data-compression
+      - chess-fen-parser
+      - sqlite-wal-recovery
+      - http-server-config
+      - code-compression
+      - mcmc-sampling
+      - corewar-algorithm
+agents:
+  - name: uap-uam-v3.0+
+    type: installed_agent
+    import_path: tools.agents.uam_agent:UAMAgent
+trial_config: 
+  timeout_multiplier: 2.0
+job_settings: 
+  n_concurrent: 1
+  max_retries: 2
+  disable_verification: false
+output_dir: results/harbor-benchmark/12-tests-uap

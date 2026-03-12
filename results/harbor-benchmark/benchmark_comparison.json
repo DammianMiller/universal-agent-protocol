@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-03-12T18:30:40.312924",
+  "model": "qwen3.5-a3b-iq4xs",
+  "api_endpoint": "http://192.168.1.165:8080/v1",
+  "benchmark_suite": "Terminal-Bench 2.0 Quick Tests (12 tasks)",
+  "comparison": {
+    "uap_vs_baseline": {
+      "success_rate_uap": "12/12 (100.0%)",
+      "success_rate_baseline": "12/12 (100.0%)",
+      "time_difference": "UAP: 63.1s vs Baseline: 60.5s (+2.6s)",
+      "token_difference": "UAP: 6,307 vs Baseline: 5,686 (+621 tokens)",
+      "avg_tokens_per_task": "UAP: 526 vs Baseline: 474"
+    }
+  },
+  "category_breakdown": {
+    "competitive": {
+      "uap": "1/1",
+      "baseline": "1/1"
+    },
+    "containers": {
+      "uap": "1/1",
+      "baseline": "1/1"
+    },
+    "data-processing": {
+      "uap": "1/1",
+      "baseline": "1/1"
+    },
+    "database": {
+      "uap": "1/1",
+      "baseline": "1/1"
+    },
+    "development": {
+      "uap": "1/1",
+      "baseline": "1/1"
+    },
+    "games": {
+      "uap": "1/1",
+      "baseline": "1/1"
+    },
+    "ml": {
+      "uap": "1/1",
+      "baseline": "1/1"
+    },
+    "networking": {
+      "uap": "1/1",
+      "baseline": "1/1"
+    },
+    "security": {
+      "uap": "2/2",
+      "baseline": "2/2"
+    },
+    "statistics": {
+      "uap": "1/1",
+      "baseline": "1/1"
+    },
+    "system-administration": {
+      "uap": "1/1",
+      "baseline": "1/1"
+    }
+  }
+}

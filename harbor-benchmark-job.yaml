@@ -1,0 +1,28 @@
+# Terminal-Bench 2.0 Job Configuration for UAP 3.0+ Benchmarking
+name: uap-qwen35-tbench-2.0-benchmark
+
+datasets:
+  - name: terminal-bench@2.0
+    tasks:
+      # Quick test suite - representative tasks from each category
+      - git-recovery-test        # System administration
+      - password-hash-crack      # Security  
+      - tls-certificate-setup    # Security
+      - multi-container-deployment  # Containers
+      - ml-model-training        # ML/AI
+
+agents:
+  - name: uap-uam-v3.0+
+    type: installed_agent
+    import_path: tools.agents.uam_agent:UAMAgent
+    
+trial_config: 
+  timeout_multiplier: 3.0
+  gpu_request: null  # CPU-only execution
+
+job_settings: 
+  n_concurrent: 1
+  max_retries: 2
+  disable_verification: false
+
+output_dir: results/harbor-tbench-benchmark
