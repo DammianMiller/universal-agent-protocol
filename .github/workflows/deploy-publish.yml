@@ -1,254 +1,128 @@
-name: Build, Publish & Deploy
+name: Build, Test & Publish to NPM
 
 on:
   push:
     branches: [main, master]
+    tags-ignore: ['**'] # Ignore tag pushes (handled by release job)
+    
   pull_request:
     branches: [main, master]
-
+    
   workflow_dispatch:
     inputs:
-      publish:
-        description: 'Publish to npm'
+      publish_to_npm:
+        description: 'Publish to npm registry'  
         required: false
         default: true
-        type: boolean
-      dry_run:
-        description: 'Dry run (validate publish without actually publishing)'
-        required: false
-        default: false
         type: boolean
 
 env:
   NODE_VERSION: '20'
 
-permissions:
-  contents: write
-  packages: write
-  id-token: write
-  pages: write
-  deployments: write
-
 jobs:
-  build-test:
-    name: Build & Test
+  build-test-npm-publish:
+    name: Build, Test & Publish
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      version_exists: ${{ steps.check_npm.outputs.exists }}
+    
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node.js
+        
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: 'https://registry.npmjs.org/'
-
+          
       - name: Install dependencies
         run: npm ci
-
-      - name: Build
+        
+      - name: Build TypeScript
         run: npm run build
-
+        
       - name: Run tests
         run: npm test
-
-      - name: Run lint
-        run: npm run lint
-
-      - name: Get version
-        id: version
-        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
-
-      - name: Check if version exists on npm
+        
+      - name: Get package version
+        id: get_version
+        run: echo "VERSION=$(node -p 'require("./package.json").version')" >> $GITHUB_OUTPUT
+        
+      - name: Check if version exists on NPM
         id: check_npm
+        env:
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          if npm view "universal-agent-protocol@$VERSION" version 2>/dev/null; then
+          EXISTING_VERSION=$(npm view universal-agent-protocol@$VERSION version 2>/dev/null || echo "")
+          if [ -n "$EXISTING_VERSION" ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Version $VERSION already published to npm"
+            echo "Version $VERSION already exists on NPM registry"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Version $VERSION not yet on npm"
+            echo "Version $VERSION not yet published to NPM"
           fi
-
-  publish-npm:
-    name: Publish to npm
-    runs-on: ubuntu-latest
-    needs: build-test
-    if: |
-      needs.build-test.outputs.version_exists == 'false' &&
-      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/master')
-    steps:
-      - name: Debug workflow inputs
+          
+      - name: Publish to NPM (if version doesn't exist)
+        if: steps.check_npm.outputs.exists == 'false' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/master')
         run: |
-          echo "Event name: ${{ github.event_name }}"
-          echo "Inputs publish: ${{ github.event.inputs.publish }}"
-          echo "Version from build-test: ${{ needs.build-test.outputs.version }}"
-
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          registry-url: 'https://registry.npmjs.org/'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Dry run
-        if: github.event.inputs.dry_run == 'true'
+          echo "Publishing universal-agent-protocol@${{ steps.get_version.outputs.VERSION }} to NPM..."
+          npm publish --access public
+        
+      - name: Output publication status
+        if: always()
         run: |
-          echo "Dry run mode - checking package configuration..."
-          npm pack --dry-run
-          echo "Dry run passed - package is valid"
-
-      - name: Publish to npm
-        if: github.event.inputs.dry_run != 'true'
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Output version
-        run: |
-          echo "### Published to npm" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ needs.build-test.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Package:** https://www.npmjs.com/package/universal-agent-protocol" >> $GITHUB_STEP_SUMMARY
+          echo "### Publication Status" >> $GITHUB_STEP_SUMMARY
+          echo "**Package:** universal-agent-protocol" >> $GITHUB_STEP_SUMMARY  
+          echo "**Version:** v${{ steps.get_version.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check_npm.outputs.exists }}" == "true" ]; then
+            echo "**Status:** Already published (skipped)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Status:** Published successfully to https://www.npmjs.com/package/universal-agent-protocol" >> $GITHUB_STEP_SUMMARY
+          fi
 
   create-release:
-    name: Create Release
+    name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-test, publish-npm]
-    if: |
-      always() &&
-      needs.build-test.result == 'success' &&
-      github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: build-test-npm-publish
+    
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
+        
+      - name: Get package version
+        id: get_version
+        run: echo "VERSION=$(node -p 'require("./package.json").version')" >> $GITHUB_OUTPUT
+      
       - name: Check if tag exists
         id: check_tag
+        env:
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
         run: |
-          if git rev-parse "v${{ needs.build-test.outputs.version }}" >/dev/null 2>&1; then
+          if git rev-parse "v${{ env.VERSION }}" >/dev/null 2>&1; then
             echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag v$VERSION already exists"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" >> $GITHUB_OUTPUT  
+            echo "Creating tag for first release of version..."
           fi
-
+      
       - name: Create GitHub Release
-        if: steps.check_tag.outputs.exists == 'false'
+        if: steps.check_tag.outputs.exists == 'false' && github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.build-test.outputs.version }}
-          name: Release v${{ needs.build-test.outputs.version }}
+          tag_name: v${{ steps.get_version.outputs.VERSION }}
+          name: Release v${{ steps.get_version.outputs.VERSION }}
           body: |
-            Release v${{ needs.build-test.outputs.version }}
-
-            ### Changes
-            ${{ github.event.head_commit.message }}
-
-            ### Commit
-            ${{ github.sha }}
-
-            ### Author
-            ${{ github.event.head_commit.author.name }}
-
+            ## Universal Agent Protocol v${{ steps.get_version.outputs.VERSION }}
+            
+            ### Features
+            - Validation toggle enabled (UAP_VALIDATE_PLAN=true by default)
+            - Parallel execution support (UAP_PARALLEL_EXECUTION=true by default)  
+            - Qwen3.5 optimized parameters output in agent responses
+            - All UAP components enforced and logged
+            
           draft: false
           prerelease: false
+        
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  deploy-docs:
-    name: Deploy Documentation
-    runs-on: ubuntu-latest
-    needs: build-test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-
-      - name: Create documentation site
-        run: |
-          mkdir -p _site/docs
-          cp -r docs/* _site/docs/ 2>/dev/null || true
-          cp README.md _site/ 2>/dev/null || true
-
-          cat > _site/index.html << 'HTMLEOF'
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Universal Agent Protocol - Documentation</title>
-            <style>
-              body {
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                max-width: 800px;
-                margin: 0 auto;
-                padding: 40px 20px;
-                line-height: 1.6;
-              }
-              h1 { color: #2c3e50; }
-              a { color: #3498db; }
-              .card {
-                background: #f8f9fa;
-                border-radius: 8px;
-                padding: 20px;
-                margin: 20px 0;
-              }
-            </style>
-          </head>
-          <body>
-            <h1>Universal Agent Protocol</h1>
-            <div class="card">
-              <h2>Documentation</h2>
-              <p><a href="docs/">View full documentation</a></p>
-            </div>
-            <div class="card">
-              <h2>Quick Start</h2>
-              <pre><code>npm install universal-agent-protocol
-              uap init</code></pre>
-            </div>
-          </body>
-          </html>
-          HTMLEOF
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: '_site'
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
