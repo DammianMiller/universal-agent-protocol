@@ -142,44 +142,74 @@ const MODEL_FINGERPRINTS: Record<ModelId, ModelFingerprint> = {
 
 const COMPLEXITY_RANK = { easy: 1, medium: 2, hard: 3 };
 
-// OPT 8: SQLite-backed fingerprint persistence
-let fingerprintDb: Database.Database | null = null;
+// OPT 8: SQLite-backed fingerprint persistence with connection pooling to prevent contention
+const DB_POOL_SIZE = 5;
+const dbPool: Database.Database[] = [];
+let poolInitialized = false;
 
-function getFingerprintDb(): Database.Database {
-  if (fingerprintDb) return fingerprintDb;
-  
+function initFingerprintDbPool(): void {
+  if (poolInitialized) return;
+
   const dbDir = join(__dirname, '../../agents/data/memory');
   if (!existsSync(dbDir)) {
     mkdirSync(dbDir, { recursive: true });
   }
-  
+
   const dbPath = join(dbDir, 'model_fingerprints.db');
-  fingerprintDb = new Database(dbPath);
-  fingerprintDb.pragma('journal_mode = WAL');
-  
-  // Create schema
-  fingerprintDb.exec(`
-    CREATE TABLE IF NOT EXISTS fingerprint_updates (
-      model_id TEXT NOT NULL,
-      avg_latency_ms REAL,
-      success_rate REAL,
-      updated_at INTEGER,
-      PRIMARY KEY (model_id)
-    );
-    
-    CREATE TABLE IF NOT EXISTS category_stats (
-      model_id TEXT NOT NULL,
-      category TEXT NOT NULL,
-      attempts INTEGER DEFAULT 0,
-      successes INTEGER DEFAULT 0,
-      updated_at INTEGER,
-      PRIMARY KEY (model_id, category)
-    );
-    
-    CREATE INDEX IF NOT EXISTS idx_category_stats_model ON category_stats(model_id);
-  `);
-  
-  return fingerprintDb;
+
+  for (let i = 0; i < DB_POOL_SIZE; i++) {
+    const db = new Database(dbPath);
+    db.pragma('journal_mode = WAL');
+    db.pragma('busy_timeout = 10000');
+    db.pragma('synchronous = NORMAL');
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS fingerprint_updates (
+        model_id TEXT NOT NULL,
+        avg_latency_ms REAL,
+        success_rate REAL,
+        updated_at INTEGER,
+        PRIMARY KEY (model_id)
+      );
+      
+      CREATE TABLE IF NOT EXISTS category_stats (
+        model_id TEXT NOT NULL,
+        category TEXT NOT NULL,
+        attempts INTEGER DEFAULT 0,
+        successes INTEGER DEFAULT 0,
+        updated_at INTEGER,
+        PRIMARY KEY (model_id, category)
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_category_stats_model ON category_stats(model_id);
+    `);
+
+    dbPool.push(db);
+  }
+
+  poolInitialized = true;
+}
+
+function getFingerprintDbFromPool(): Database.Database {
+  if (!poolInitialized) initFingerprintDbPool();
+  const currentIndex = Date.now() % DB_POOL_SIZE;
+  return dbPool[currentIndex];
+}
+
+export function closeAllPools(): void {
+  for (const db of dbPool) {
+    try {
+      db.close();
+    } catch (err) {
+      console.warn('Failed to close fingerprint DB pool connection:', err);
+    }
+  }
+  dbPool.length = 0;
+  poolInitialized = false;
+}
+
+export function getFingerprintDb(): Database.Database {
+  return getFingerprintDbFromPool();
 }
 
 /**
@@ -188,14 +218,14 @@ function getFingerprintDb(): Database.Database {
 function loadPersistedFingerprints(): void {
   try {
     const db = getFingerprintDb();
-    
+
     // Load global updates
     const updates = db.prepare('SELECT * FROM fingerprint_updates').all() as Array<{
       model_id: string;
       avg_latency_ms: number;
       success_rate: number;
     }>;
-    
+
     for (const update of updates) {
       const fp = MODEL_FINGERPRINTS[update.model_id as ModelId];
       if (fp) {
@@ -204,7 +234,7 @@ function loadPersistedFingerprints(): void {
         fp.successRate = fp.successRate * 0.3 + update.success_rate * 0.7;
       }
     }
-    
+
     // Load category stats
     const categoryData = db.prepare('SELECT * FROM category_stats').all() as Array<{
       model_id: string;
@@ -212,7 +242,7 @@ function loadPersistedFingerprints(): void {
       attempts: number;
       successes: number;
     }>;
-    
+
     for (const cat of categoryData) {
       const fp = MODEL_FINGERPRINTS[cat.model_id as ModelId];
       if (fp) {
@@ -239,11 +269,13 @@ function persistFingerprintUpdate(modelId: ModelId): void {
     const db = getFingerprintDb();
     const fp = MODEL_FINGERPRINTS[modelId];
     if (!fp) return;
-    
-    db.prepare(`
+
+    db.prepare(
+      `
       INSERT OR REPLACE INTO fingerprint_updates (model_id, avg_latency_ms, success_rate, updated_at)
       VALUES (?, ?, ?, ?)
-    `).run(modelId, fp.avgLatencyMs, fp.successRate, Date.now());
+    `
+    ).run(modelId, fp.avgLatencyMs, fp.successRate, Date.now());
   } catch (err) {
     console.warn('Failed to persist fingerprint update:', err);
   }
@@ -258,11 +290,13 @@ function persistCategoryStats(modelId: ModelId, category: string): void {
     const fp = MODEL_FINGERPRINTS[modelId];
     const stats = fp?.categoryStats?.[category];
     if (!stats) return;
-    
-    db.prepare(`
+
+    db.prepare(
+      `
       INSERT OR REPLACE INTO category_stats (model_id, category, attempts, successes, updated_at)
       VALUES (?, ?, ?, ?, ?)
-    `).run(modelId, category, stats.attempts, stats.successes, Date.now());
+    `
+    ).run(modelId, category, stats.attempts, stats.successes, Date.now());
   } catch (err) {
     console.warn('Failed to persist category stats:', err);
   }
@@ -274,11 +308,14 @@ loadPersistedFingerprints();
 /**
  * Failure handlers for model-specific known issues
  */
-const FAILURE_HANDLERS: Record<string, {
-  action: 'add_context' | 'reduce_context' | 'switch_model';
-  context?: string;
-  fallbackModel?: ModelId;
-}> = {
+const FAILURE_HANDLERS: Record<
+  string,
+  {
+    action: 'add_context' | 'reduce_context' | 'switch_model';
+    context?: string;
+    fallbackModel?: ModelId;
+  }
+> = {
   'gpt-5.2-codex:permission_denied': {
     action: 'add_context',
     context: 'Do not attempt file operations. Return code only.',
@@ -302,7 +339,7 @@ function scoreModel(
   model: ModelFingerprint,
   classification: TaskClassification,
   difficulty: 'easy' | 'medium' | 'hard',
-  config: RoutingConfig,
+  config: RoutingConfig
 ): number {
   let score = 0;
 
@@ -322,7 +359,7 @@ function scoreModel(
   // If we have enough data (>=3 attempts), weight category rate 2x higher than global
   const categoryRate = getCategorySuccessRate(model, classification.category);
   const categoryAttempts = model.categoryStats?.[classification.category]?.attempts || 0;
-  
+
   let effectiveSuccessRate: number;
   if (categoryRate !== null && categoryAttempts >= 3) {
     // Blend category and global rates, weighted by sample size confidence
@@ -339,7 +376,7 @@ function scoreModel(
 
   // Latency preference (0-15 points)
   if (config.preferLatency) {
-    const latencyScore = Math.max(0, 1 - (model.avgLatencyMs / 120000));
+    const latencyScore = Math.max(0, 1 - model.avgLatencyMs / 120000);
     score += latencyScore * 15;
   }
 
@@ -359,9 +396,9 @@ function scoreModel(
   }
 
   // Keyword match with model strengths - INCREASED weight
-  const taskKeywords = classification.keywords.map(k => k.toLowerCase());
+  const taskKeywords = classification.keywords.map((k) => k.toLowerCase());
   for (const strength of model.strengths) {
-    if (taskKeywords.some(kw => strength.includes(kw) || kw.includes(strength))) {
+    if (taskKeywords.some((kw) => strength.includes(kw) || kw.includes(strength))) {
       score += 8; // Increased from 5
     }
   }
@@ -385,15 +422,15 @@ function getCategorySuccessRate(model: ModelFingerprint, category: string): numb
 export function routeTask(
   instruction: string,
   difficulty: 'easy' | 'medium' | 'hard' = 'medium',
-  config: Partial<RoutingConfig> = {},
+  config: Partial<RoutingConfig> = {}
 ): RoutingDecision {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const classification = classifyTask(instruction);
 
   // Score all available models
   const scored = cfg.availableModels
-    .filter(id => MODEL_FINGERPRINTS[id])
-    .map(id => ({
+    .filter((id) => MODEL_FINGERPRINTS[id])
+    .map((id) => ({
       id,
       fingerprint: MODEL_FINGERPRINTS[id],
       score: scoreModel(MODEL_FINGERPRINTS[id], classification, difficulty, cfg),
@@ -412,7 +449,7 @@ export function routeTask(
   }
 
   const primary = scored[0];
-  const fallbacks = scored.slice(1).map(s => s.id);
+  const fallbacks = scored.slice(1).map((s) => s.id);
 
   return {
     primary: primary.id,
@@ -427,7 +464,10 @@ export function routeTask(
 /**
  * Get failure handler for a model-specific error
  */
-export function getFailureHandler(modelId: ModelId, errorType: string): typeof FAILURE_HANDLERS[string] | null {
+export function getFailureHandler(
+  modelId: ModelId,
+  errorType: string
+): (typeof FAILURE_HANDLERS)[string] | null {
   return FAILURE_HANDLERS[`${modelId}:${errorType}`] || null;
 }
 
@@ -450,7 +490,7 @@ export function getAllModelFingerprints(): Record<ModelId, ModelFingerprint> {
  */
 export function updateModelFingerprint(
   modelId: ModelId,
-  updates: Partial<Pick<ModelFingerprint, 'avgLatencyMs' | 'successRate' | 'costPerTask'>>,
+  updates: Partial<Pick<ModelFingerprint, 'avgLatencyMs' | 'successRate' | 'costPerTask'>>
 ): void {
   const fp = MODEL_FINGERPRINTS[modelId];
   if (!fp) return;
@@ -480,17 +520,17 @@ export function recordTaskOutcome(
 ): void {
   const fp = MODEL_FINGERPRINTS[modelId];
   if (!fp) return;
-  
+
   // Update global success rate using exponential moving average
   const newSuccessRate = success ? 1.0 : 0.0;
   fp.successRate = fp.successRate * 0.9 + newSuccessRate * 0.1;
-  
+
   // Update latency using exponential moving average
   fp.avgLatencyMs = fp.avgLatencyMs * 0.8 + latencyMs * 0.2;
-  
+
   // OPT 8: Persist global fingerprint update
   persistFingerprintUpdate(modelId);
-  
+
   // Update per-category stats if category provided
   if (taskCategory) {
     if (!fp.categoryStats) fp.categoryStats = {};
@@ -501,7 +541,7 @@ export function recordTaskOutcome(
     if (success) {
       fp.categoryStats[taskCategory].successes++;
     }
-    
+
     // OPT 8: Persist category stats
     persistCategoryStats(modelId, taskCategory);
   }
@@ -510,10 +550,13 @@ export function recordTaskOutcome(
 /**
  * Get routing recommendation with explanation
  */
-export function explainRouting(instruction: string, difficulty: 'easy' | 'medium' | 'hard' = 'medium'): string {
+export function explainRouting(
+  instruction: string,
+  difficulty: 'easy' | 'medium' | 'hard' = 'medium'
+): string {
   const decision = routeTask(instruction, difficulty);
   const fingerprint = MODEL_FINGERPRINTS[decision.primary];
-  
+
   const lines = [
     `Primary Model: ${decision.primary}`,
     `Reason: ${decision.reason}`,
@@ -522,18 +565,15 @@ export function explainRouting(instruction: string, difficulty: 'easy' | 'medium
     `Strengths: ${fingerprint?.strengths.slice(0, 3).join(', ') || 'N/A'}`,
     `Fallbacks: ${decision.fallback.join(' -> ') || 'None'}`,
   ];
-  
+
   return lines.join('\n');
 }
 
 /**
- * OPT 8: Close fingerprint database connection
+ * OPT 8: Close fingerprint database connection pool
  */
 export function closeFingerprintDb(): void {
-  if (fingerprintDb) {
-    fingerprintDb.close();
-    fingerprintDb = null;
-  }
+  closeAllPools();
 }
 
 /**

@@ -102,5 +102,5 @@ if [ -d "${PROJECT_DIR}/.worktrees" ]; then
 fi
 
 if [ -n "$output" ]; then
-  echo "$output"
+  echo "$output" | tee /dev/stderr
 fi

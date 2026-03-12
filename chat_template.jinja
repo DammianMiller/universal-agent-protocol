@@ -1,0 +1,28 @@
+{# Qwen3.5 Chat Template #}
+
+{% for message in messages %}  
+    {% set role = (message.role if message else '') %}
+    
+    {%- if role == 'system' and not loop.first -%}{- raise_exception('System message must be at the beginning') -{% endif %}
+{{- "\n" }}{{ role|trim }}\n
+    
+    {%- if role in ['user', 'assistant'] %}
+        {%- if message.content is string and (message.content | trim) != "" -%} {{- " " + message.content|trim -}}{% endif -%}\n\n
+
+    {-% elif role == 'tool' -%}<function_response>
+{{" Tool: " ~ (message.name if message.name else "") }}\n{{- (message.content | trim)}}\n
+        {% if not loop.last -%}<function>\n{%- endif %}
+
+    {%- elif role == 'assistant' and message.tool_calls is defined and (message.tool_calls | length) > 0 -%}\n<function_call>
+        {-% for tc in message.tool_calls -%}            <tool_name>{{- tc.function.name }}</tool_name>\n
+            <arguments>{% if tc.function.arguments is string -%}{ {{tc.function.arguments|trim}} {% else -%}{{- tc.function.arguments | tojson(indent=2) }}{% endif %}\n        {-% endfor -%}</function_call>
+
+    {%- elif role == 'assistant' and (message.content or not message.tool_calls) -%}
+        {%- if message.content is string and (message.content | trim) != "" -%} {{- " " + message.content|trim }}{% endif -%}\n\n
+
+    {%- endif -%}
+
+{%- endfor -%}
+    
+{%- if add_generation_prompt -%}<function_call>\n<tool_name>assistant</tool_name>\n{{- "\n" }}</function_call>{%- endif %}
+{%- if enable_thinking and not add_generation_prompt -%}\n</think>{% endif -%}

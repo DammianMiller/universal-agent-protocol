@@ -1,6 +1,6 @@
 /**
  * Hybrid Adaptive Context Selector for UAM (Option 4)
- * 
+ *
  * VERSION: 2.0.0 - 21 Model Outcome Success Optimizations
  *
  * Combines task classification with time-budget awareness, runtime monitoring,
@@ -8,7 +8,7 @@
  *
  * OPTIMIZATIONS IMPLEMENTED:
  * 1. Historical Data Persistence - SQLite instead of in-memory Map
- * 2. Task-specific context sections for 5 failing tasks  
+ * 2. Task-specific context sections for 5 failing tasks
  * 3. Missing context sections (git_recovery, web_parsing, data_processing, theorem_proving)
  * 4. Weighted keyword relevance scoring (TF-IDF-like specificity weights)
  * 5. Token budget utilization - increase minimal sections from 1→2
@@ -24,7 +24,10 @@ import { existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { classifyTask as classifyTaskType } from './task-classifier.js';
-import { recordTaskOutcome as updateModelRouterFingerprint, getModelFingerprint } from './model-router.js';
+import {
+  recordTaskOutcome as updateModelRouterFingerprint,
+  getModelFingerprint,
+} from './model-router.js';
 import type { ModelId } from './model-router.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -66,60 +69,87 @@ export interface HistoricalData {
   lastUpdated: number;
 }
 
-// OPT 1: SQLite-backed historical data persistence
-let historicalDb: Database.Database | null = null;
+// OPT 1: SQLite-backed historical data persistence with connection pooling to prevent contention
+const DB_POOL_SIZE = 5;
+const dbPool: Database.Database[] = [];
+let poolInitialized = false;
 
-function getHistoricalDb(): Database.Database {
-  if (historicalDb) return historicalDb;
-  
-  // Use the same data directory as short_term.db
+function initHistoricalDbPool(): void {
+  if (poolInitialized) return;
+
   const dbDir = join(__dirname, '../../agents/data/memory');
   if (!existsSync(dbDir)) {
     mkdirSync(dbDir, { recursive: true });
   }
-  
+
   const dbPath = join(dbDir, 'historical_context.db');
-  historicalDb = new Database(dbPath);
-  
-  // Enable WAL mode for better concurrent access
-  historicalDb.pragma('journal_mode = WAL');
-  
-  // Create schema if not exists
-  historicalDb.exec(`
-    CREATE TABLE IF NOT EXISTS historical_data (
-      task_type TEXT PRIMARY KEY,
-      total_attempts INTEGER DEFAULT 0,
-      uam_successes INTEGER DEFAULT 0,
-      no_uam_successes INTEGER DEFAULT 0,
-      avg_time_with_uam REAL DEFAULT 0,
-      avg_time_without_uam REAL DEFAULT 0,
-      last_updated INTEGER DEFAULT 0
-    );
-    
-    -- OPT 10: Semantic cache for task→outcome mappings
-    CREATE TABLE IF NOT EXISTS semantic_cache (
-      cache_key TEXT PRIMARY KEY,
-      instruction_hash TEXT,
-      decision_json TEXT,
-      success_rate REAL DEFAULT 0.5,
-      created_at INTEGER,
-      last_used INTEGER,
-      use_count INTEGER DEFAULT 1
-    );
-    
-    CREATE INDEX IF NOT EXISTS idx_semantic_cache_hash ON semantic_cache(instruction_hash);
-  `);
-  
-  return historicalDb;
+
+  for (let i = 0; i < DB_POOL_SIZE; i++) {
+    const db = new Database(dbPath);
+    db.pragma('journal_mode = WAL');
+    db.pragma('busy_timeout = 10000');
+    db.pragma('synchronous = NORMAL');
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS historical_data (
+        task_type TEXT PRIMARY KEY,
+        total_attempts INTEGER DEFAULT 0,
+        uam_successes INTEGER DEFAULT 0,
+        no_uam_successes INTEGER DEFAULT 0,
+        avg_time_with_uam REAL DEFAULT 0,
+        avg_time_without_uam REAL DEFAULT 0,
+        last_updated INTEGER DEFAULT 0
+      );
+      
+      -- OPT 10: Semantic cache for task→outcome mappings
+      CREATE TABLE IF NOT EXISTS semantic_cache (
+        cache_key TEXT PRIMARY KEY,
+        instruction_hash TEXT,
+        decision_json TEXT,
+        success_rate REAL DEFAULT 0.5,
+        created_at INTEGER,
+        last_used INTEGER,
+        use_count INTEGER DEFAULT 1
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_semantic_cache_hash ON semantic_cache(instruction_hash);
+    `);
+
+    dbPool.push(db);
+  }
+
+  poolInitialized = true;
+}
+
+function getHistoricalDbFromPool(): Database.Database {
+  if (!poolInitialized) initHistoricalDbPool();
+  const currentIndex = Date.now() % DB_POOL_SIZE;
+  return dbPool[currentIndex];
+}
+
+export function closeAllPools(): void {
+  for (const db of dbPool) {
+    try {
+      db.close();
+    } catch (err) {
+      console.warn('Failed to close historical DB pool connection:', err);
+    }
+  }
+  dbPool.length = 0;
+  poolInitialized = false;
+}
+
+export function getHistoricalDb(): Database.Database {
+  return getHistoricalDbFromPool();
 }
 
 // OPTIMIZATION 7: Refined low-benefit categories
 const LOW_BENEFIT_CATEGORIES = new Set([
-  'reasoning',       // Pure logical reasoning (sudoku, puzzles)
-  'games',           // Game theory, chess position analysis (but NOT chess-best-move which needs stockfish)
-  'pure-logic',      // Mathematical proofs, formal verification
-  'mathematical',    // Pure math calculations
-  'calendar',        // Meeting scheduling (but NOT server scheduling)
+  'reasoning', // Pure logical reasoning (sudoku, puzzles)
+  'games', // Game theory, chess position analysis (but NOT chess-best-move which needs stockfish)
+  'pure-logic', // Mathematical proofs, formal verification
+  'mathematical', // Pure math calculations
+  'calendar', // Meeting scheduling (but NOT server scheduling)
 ]);
 
 // Categories that should ALWAYS receive UAM context regardless of historical data
@@ -132,130 +162,144 @@ const ALWAYS_BENEFIT_CATEGORIES = new Set([
   'coding',
   'testing',
   'ml-training',
-  'git-recovery',     // OPT 3: Added for git tasks
-  'data-processing',  // OPT 3: Added for data tasks
-  'theorem-proving',  // OPT 3: Added for proof tasks
+  'git-recovery', // OPT 3: Added for git tasks
+  'data-processing', // OPT 3: Added for data tasks
+  'theorem-proving', // OPT 3: Added for proof tasks
 ]);
 
 // OPT 4: Weighted keywords - specificity score (higher = more specific = more valuable)
 const HIGH_BENEFIT_KEYWORDS: Record<string, number> = {
   // Security - very specific terms get higher weights
-  'hashcat': 3.0,
-  'john': 2.5,
+  hashcat: 3.0,
+  john: 2.5,
   '7z': 2.5,
-  'xss': 3.0,
-  'injection': 2.0,
-  'sanitize': 2.0,
-  'bleach': 3.0,
-  'dompurify': 3.0,
-  'password': 1.5,
-  'hash': 1.5,
-  'crack': 2.0,
-  'decrypt': 2.0,
-  'secret': 1.5,
-  'exploit': 2.0,
-  
+  xss: 3.0,
+  injection: 2.0,
+  sanitize: 2.0,
+  bleach: 3.0,
+  dompurify: 3.0,
+  password: 1.5,
+  hash: 1.5,
+  crack: 2.0,
+  decrypt: 2.0,
+  secret: 1.5,
+  exploit: 2.0,
+
   // File formats - specific formats get higher weights
-  'elf': 3.0,
+  elf: 3.0,
   'struct.unpack': 3.0,
-  'e_phoff': 3.5,
-  'sqlite': 2.0,
-  'wal': 3.0,
-  'binary': 1.5,
-  'executable': 1.5,
-  'extract': 1.5,
-  
+  e_phoff: 3.5,
+  sqlite: 2.0,
+  wal: 3.0,
+  binary: 1.5,
+  executable: 1.5,
+  extract: 1.5,
+
   // Git recovery - OPT 3
-  'reflog': 3.0,
-  'fsck': 3.0,
+  reflog: 3.0,
+  fsck: 3.0,
   'git recovery': 3.0,
   'lost commit': 2.5,
   'detached head': 2.5,
   'git reset': 2.0,
   'git rebase': 1.5,
-  
+
   // Web parsing - OPT 2 (for filter-js-from-html)
   'html parse': 2.5,
-  'dom': 2.0,
-  'beautifulsoup': 2.5,
-  'lxml': 2.5,
+  dom: 2.0,
+  beautifulsoup: 2.5,
+  lxml: 2.5,
   'regex html': 2.0,
-  
+
   // Compression - OPT 2 (for gpt2-codegolf)
-  'codegolf': 3.0,
-  'minify': 2.0,
-  'compress': 1.5,
-  'gzip': 2.0,
-  'zlib': 2.5,
-  
+  codegolf: 3.0,
+  minify: 2.0,
+  compress: 1.5,
+  gzip: 2.0,
+  zlib: 2.5,
+
   // Chess - OPT 2 (for chess-best-move)
-  'stockfish': 3.0,
+  stockfish: 3.0,
   'python-chess': 3.0,
-  'fen': 2.5,
-  'pgn': 2.5,
+  fen: 2.5,
+  pgn: 2.5,
   'chess position': 2.0,
-  'chessimg2pos': 3.0,
-  
+  chessimg2pos: 3.0,
+
   // Legacy
-  'cobol': 3.0,
-  'fortran': 2.5,
-  'legacy': 1.5,
-  'modernize': 1.5,
-  'mainframe': 2.5,
-  
+  cobol: 3.0,
+  fortran: 2.5,
+  legacy: 1.5,
+  modernize: 1.5,
+  mainframe: 2.5,
+
   // Theorem proving - OPT 3 (for prove-plus-comm)
-  'coq': 3.0,
-  'lean': 3.0,
-  'isabelle': 3.0,
-  'theorem': 2.0,
-  'proof': 1.5,
-  'induction': 2.0,
-  'commutativity': 2.5,
-  
+  coq: 3.0,
+  lean: 3.0,
+  isabelle: 3.0,
+  theorem: 2.0,
+  proof: 1.5,
+  induction: 2.0,
+  commutativity: 2.5,
+
   // Data processing - OPT 3 (for reshard-c4-data)
-  'parquet': 2.5,
-  'sharding': 2.5,
-  'reshard': 3.0,
+  parquet: 2.5,
+  sharding: 2.5,
+  reshard: 3.0,
   'c4 data': 3.0,
-  'dataset': 1.5,
-  'arrow': 2.0,
-  
+  dataset: 1.5,
+  arrow: 2.0,
+
   // General coding
-  'compile': 1.5,
-  'build': 1.0,
-  'makefile': 2.0,
-  'database': 1.5,
-  'recovery': 1.5,
+  compile: 1.5,
+  build: 1.0,
+  makefile: 2.0,
+  database: 1.5,
+  recovery: 1.5,
 };
 
 // OPT 3 & 2: Extended context sections including new categories and task-specific sections
-const CONTEXT_SECTIONS: Record<string, { 
-  tokens: number; 
-  keywords: string[]; 
-  keywordWeights?: Record<string, number>;  // OPT 4: Per-section keyword weights
-  content: string;
-  patterns?: string[];  // OPT 6: Associated patterns
-}> = {
+const CONTEXT_SECTIONS: Record<
+  string,
+  {
+    tokens: number;
+    keywords: string[];
+    keywordWeights?: Record<string, number>; // OPT 4: Per-section keyword weights
+    content: string;
+    patterns?: string[]; // OPT 6: Associated patterns
+  }
+> = {
   security: {
     tokens: 150,
-    keywords: ['xss', 'password', 'hash', 'crack', 'secret', 'exploit', 'injection', 'sanitize', 'bleach', 'dompurify'],
-    keywordWeights: { 'hashcat': 3, 'bleach': 3, 'dompurify': 3, 'xss': 2.5, 'injection': 2 },
+    keywords: [
+      'xss',
+      'password',
+      'hash',
+      'crack',
+      'secret',
+      'exploit',
+      'injection',
+      'sanitize',
+      'bleach',
+      'dompurify',
+    ],
+    keywordWeights: { hashcat: 3, bleach: 3, dompurify: 3, xss: 2.5, injection: 2 },
     content: `### Security
 - XSS: Use bleach.clean() or DOMPurify. Remove script, onclick, onerror, javascript:
 - Password cracking: hashcat -m 11600 for 7z, -m 0 MD5, john for CPU
 - Binary secrets: strings, objdump -d, check .rodata section
 - Always validate and sanitize user input`,
-    patterns: ['P10', 'P20'],  // Whitelist, Adversarial Testing
+    patterns: ['P10', 'P20'], // Whitelist, Adversarial Testing
   },
   file_formats: {
     tokens: 120,
     keywords: ['elf', 'sqlite', '7z', 'archive', 'binary', 'extract', 'format', 'wal', 'struct'],
-    keywordWeights: { 'e_phoff': 4, 'struct.unpack': 3, 'wal': 3, 'elf': 2.5 },
+    keywordWeights: { e_phoff: 4, 'struct.unpack': 3, wal: 3, elf: 2.5 },
     content: `### File Formats
 - ELF: Program headers at e_phoff. Use struct.unpack for parsing
 - SQLite WAL: Header 32 bytes, frames follow. PRAGMA wal_checkpoint to recover
 - 7z: Install p7zip-full, use 7z x -p for password protected archives`,
-    patterns: ['P9', 'P35'],  // FormatPipeline, Decoder-First
+    patterns: ['P9', 'P35'], // FormatPipeline, Decoder-First
   },
   coding: {
     tokens: 80,
@@ -265,28 +309,28 @@ const CONTEXT_SECTIONS: Record<string, {
 - Verify file exists before reading
 - Handle edge cases in parsing
 - Match exact output format required`,
-    patterns: ['P12', 'P16'],  // OEV, TFE+
+    patterns: ['P12', 'P16'], // OEV, TFE+
   },
   tools: {
     tokens: 100,
     keywords: ['hashcat', 'john', 'strings', 'objdump', 'readelf', 'command', 'cli'],
-    keywordWeights: { 'hashcat': 3, 'john': 2.5, 'readelf': 2, 'objdump': 2 },
+    keywordWeights: { hashcat: 3, john: 2.5, readelf: 2, objdump: 2 },
     content: `### Tools
 - hashcat: GPU password cracking, -m flag for hash type
 - john: CPU password cracking, flexible format support
 - readelf/objdump: Binary analysis
 - strings: Extract printable strings from binaries`,
-    patterns: ['P4', 'P8'],  // ToolSpec, CLIoverLib
+    patterns: ['P4', 'P8'], // ToolSpec, CLIoverLib
   },
   legacy: {
     tokens: 90,
     keywords: ['cobol', 'fortran', 'legacy', 'modernize', 'mainframe'],
-    keywordWeights: { 'cobol': 3, 'fortran': 2.5, 'mainframe': 2.5 },
+    keywordWeights: { cobol: 3, fortran: 2.5, mainframe: 2.5 },
     content: `### Legacy Code
 - COBOL: Fixed-format columns, WORKING-STORAGE for variables
 - Modernization: Preserve business logic, update data structures
 - Test with original inputs to verify behavior`,
-    patterns: ['P3'],  // StateProtect
+    patterns: ['P3'], // StateProtect
   },
   debugging: {
     tokens: 70,
@@ -295,18 +339,18 @@ const CONTEXT_SECTIONS: Record<string, {
 - Check logs first: journalctl, /var/log/
 - Use verbose flags: -v, --debug
 - Isolate the problem: binary search through changes`,
-    patterns: ['P15', 'P13'],  // ER, IRL
+    patterns: ['P15', 'P13'], // ER, IRL
   },
   domain_libraries: {
     tokens: 100,
     keywords: ['chess', 'statistics', 'compression', 'sampler', 'ars', 'stockfish', 'numerical'],
-    keywordWeights: { 'stockfish': 3, 'python-chess': 3, 'scipy.stats': 2.5, 'ars': 3 },
+    keywordWeights: { stockfish: 3, 'python-chess': 3, 'scipy.stats': 2.5, ars: 3 },
     content: `### Domain Libraries (USE INSTEAD OF CUSTOM CODE)
 - Chess: python-chess + stockfish (pip install python-chess), chessimg2pos for image→FEN
 - Statistics/ARS: scipy.stats or R CRAN 'ars' package (NOT custom implementation)
 - Compression: zlib, lz4, brotli (NOT custom Huffman). Test round-trip FIRST
 - Numerical: numpy/scipy with tolerance 1e-6, test multiple random seeds`,
-    patterns: ['P11'],  // PreComputed
+    patterns: ['P11'], // PreComputed
   },
   output_verification: {
     tokens: 80,
@@ -317,13 +361,24 @@ const CONTEXT_SECTIONS: Record<string, {
 - Test with ./script (NOT python3 script.py)
 - Verify all expected files: ls -la before claiming done
 - Partial output > no output: always create the file`,
-    patterns: ['P12', 'P16', 'P32'],  // OEV, TFE+, CEV
+    patterns: ['P12', 'P16', 'P32'], // OEV, TFE+, CEV
   },
   // OPT 3: NEW SECTIONS for missing capabilities
   git_recovery: {
     tokens: 100,
-    keywords: ['git', 'reflog', 'fsck', 'reset', 'rebase', 'merge', 'conflict', 'detached', 'lost', 'HEAD'],
-    keywordWeights: { 'reflog': 3, 'fsck': 3, 'dangling': 2.5, 'detached head': 2.5 },
+    keywords: [
+      'git',
+      'reflog',
+      'fsck',
+      'reset',
+      'rebase',
+      'merge',
+      'conflict',
+      'detached',
+      'lost',
+      'HEAD',
+    ],
+    keywordWeights: { reflog: 3, fsck: 3, dangling: 2.5, 'detached head': 2.5 },
     content: `### Git Recovery (P22 GRF Pattern)
 - ALWAYS backup first: cp -r .git .git.bak
 - Lost commits: git reflog show HEAD, then git reset --hard HEAD@{n}
@@ -331,12 +386,23 @@ const CONTEXT_SECTIONS: Record<string, {
 - Detached HEAD: git checkout -b recovery-branch
 - Merge conflicts: git merge --abort to reset, or resolve with git mergetool
 - Force push recovery: git reflog, find pre-push commit, reset`,
-    patterns: ['P22', 'P3'],  // GRF, StateProtect
+    patterns: ['P22', 'P3'], // GRF, StateProtect
   },
   web_parsing: {
     tokens: 110,
-    keywords: ['html', 'parse', 'dom', 'beautifulsoup', 'lxml', 'regex', 'scrape', 'filter', 'js', 'javascript'],
-    keywordWeights: { 'beautifulsoup': 2.5, 'lxml': 2.5, 'html.parser': 2, 'regex html': 2 },
+    keywords: [
+      'html',
+      'parse',
+      'dom',
+      'beautifulsoup',
+      'lxml',
+      'regex',
+      'scrape',
+      'filter',
+      'js',
+      'javascript',
+    ],
+    keywordWeights: { beautifulsoup: 2.5, lxml: 2.5, 'html.parser': 2, 'regex html': 2 },
     content: `### Web Parsing & XSS Filtering
 - HTML parsing: Use BeautifulSoup with lxml parser (pip install bs4 lxml)
 - XSS filtering: bleach.clean() with allowed_tags whitelist, NOT blacklist
@@ -344,12 +410,12 @@ const CONTEXT_SECTIONS: Record<string, {
 - Preserve structure: Maintain HTML hierarchy, don't just regex replace
 - Test edge cases: nested tags, malformed HTML, encoded entities
 - filter-js-from-html: Create /app/filter.py with exact input/output format`,
-    patterns: ['P10', 'P20', 'P14'],  // Whitelist, AT, OFV
+    patterns: ['P10', 'P20', 'P14'], // Whitelist, AT, OFV
   },
   data_processing: {
     tokens: 100,
     keywords: ['parquet', 'shard', 'reshard', 'dataset', 'arrow', 'pandas', 'dask', 'c4', 'chunk'],
-    keywordWeights: { 'parquet': 2.5, 'reshard': 3, 'arrow': 2, 'dask': 2 },
+    keywordWeights: { parquet: 2.5, reshard: 3, arrow: 2, dask: 2 },
     content: `### Data Processing & Sharding
 - Parquet: Use pyarrow or fastparquet for columnar data
 - Large datasets: dask.dataframe for out-of-core processing
@@ -357,12 +423,12 @@ const CONTEXT_SECTIONS: Record<string, {
 - C4 data: Common Crawl format, handle with datasets library
 - Memory efficiency: Process in chunks, use generators
 - Verification: Count rows before/after, checksum critical columns`,
-    patterns: ['P18', 'P31'],  // MTP, RTV
+    patterns: ['P18', 'P31'], // MTP, RTV
   },
   theorem_proving: {
     tokens: 90,
     keywords: ['coq', 'lean', 'isabelle', 'theorem', 'proof', 'induction', 'lemma', 'tactic'],
-    keywordWeights: { 'coq': 3, 'lean': 3, 'isabelle': 3, 'induction': 2 },
+    keywordWeights: { coq: 3, lean: 3, isabelle: 3, induction: 2 },
     content: `### Theorem Proving
 - Coq: Use 'induction' tactic for recursive proofs, 'simpl' to simplify
 - Lean: mathlib provides common lemmas, use 'rfl' for reflexivity
@@ -370,13 +436,13 @@ const CONTEXT_SECTIONS: Record<string, {
 - prove-plus-comm: Natural number addition commutativity via Peano axioms
 - Tactics: intro, apply, rewrite, exact, reflexivity
 - Debug: 'Show Proof' in Coq, 'trace.state' in Lean`,
-    patterns: ['P5'],  // Impossible check
+    patterns: ['P5'], // Impossible check
   },
   // OPT 2: Task-specific sections for the 5 persistently failing tasks
   chess_vision: {
     tokens: 110,
     keywords: ['chess', 'image', 'board', 'fen', 'position', 'stockfish', 'best move', 'analyze'],
-    keywordWeights: { 'chessimg2pos': 4, 'stockfish': 3, 'fen': 2.5, 'best move': 2 },
+    keywordWeights: { chessimg2pos: 4, stockfish: 3, fen: 2.5, 'best move': 2 },
     content: `### Chess Image Analysis (chess-best-move)
 - Image to FEN: pip install chessimg2pos (or board_to_fen)
 - Position analysis: python-chess + stockfish engine
@@ -384,12 +450,12 @@ const CONTEXT_SECTIONS: Record<string, {
 - Install: apt-get install stockfish, pip install python-chess
 - Code: import chess.engine; engine.analyse(board, chess.engine.Limit(depth=20))
 - Output: UCI notation (e.g., e2e4) or SAN (e.g., e4)`,
-    patterns: ['P11', 'P34'],  // PreComputed, ISP
+    patterns: ['P11', 'P34'], // PreComputed, ISP
   },
   regex_chess: {
     tokens: 100,
     keywords: ['regex', 'chess', 'pgn', 'notation', 'game', 'century', 'parse'],
-    keywordWeights: { 'pgn': 3, 'game of century': 3, 'chess notation': 2.5 },
+    keywordWeights: { pgn: 3, 'game of century': 3, 'chess notation': 2.5 },
     content: `### Regex Chess (regex-chess task)
 - PGN parsing: Match moves with [KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](=[QRBN])?[+#]?
 - Castling: O-O (kingside), O-O-O (queenside)
@@ -397,12 +463,12 @@ const CONTEXT_SECTIONS: Record<string, {
 - State machine: Track board state through move sequence
 - Validation: Use python-chess for legal move verification
 - Edge cases: Promotions, en passant, disambiguation`,
-    patterns: ['P24'],  // PCC
+    patterns: ['P24'], // PCC
   },
   compression_codegolf: {
     tokens: 100,
     keywords: ['codegolf', 'minify', 'gpt2', 'small', 'bytes', 'compress', 'size'],
-    keywordWeights: { 'codegolf': 3, 'gpt2': 3, 'minify': 2, 'bytes': 2 },
+    keywordWeights: { codegolf: 3, gpt2: 3, minify: 2, bytes: 2 },
     content: `### Code Golf & Compression (gpt2-codegolf)
 - GPT-2 codegolf: Impossible to implement full GPT-2 in <5KB
 - Strategy: Pre-compute weights, use lookup tables
@@ -410,12 +476,12 @@ const CONTEXT_SECTIONS: Record<string, {
 - gpt2.c: Reference implementation exists, study structure
 - Shannon limit: Cannot compress below entropy of data
 - If truly impossible: Document in IMPOSSIBLE.md with proof`,
-    patterns: ['P5', 'P19', 'P23'],  // Impossible, ITR+, CID
+    patterns: ['P5', 'P19', 'P23'], // Impossible, ITR+, CID
   },
   db_wal_recovery: {
     tokens: 100,
     keywords: ['wal', 'sqlite', 'recovery', 'checkpoint', 'journal', 'database', 'corrupt'],
-    keywordWeights: { 'wal': 3, 'checkpoint': 3, 'db-wal-recovery': 4 },
+    keywordWeights: { wal: 3, checkpoint: 3, 'db-wal-recovery': 4 },
     content: `### SQLite WAL Recovery (db-wal-recovery)
 - CRITICAL: Backup WAL file FIRST before any sqlite3 command!
 - cp /app/main.db-wal /tmp/wal_backup.wal
@@ -424,61 +490,61 @@ const CONTEXT_SECTIONS: Record<string, {
 - Frame format: 24-byte header + page data
 - Use /tmp/wal_backup.wal for analysis, never original
 - Alternative: sqlite3_recover tool from SQLite source`,
-    patterns: ['P3', 'P35'],  // StateProtect, DFA
+    patterns: ['P3', 'P35'], // StateProtect, DFA
   },
 };
 
 // OPT 7: Error-to-section mapping for smarter progressive escalation
 const ERROR_SECTION_MAPPING: Record<string, string[]> = {
   'permission denied': ['tools', 'output_verification'],
-  'chmod': ['output_verification', 'tools'],
+  chmod: ['output_verification', 'tools'],
   'struct.unpack': ['file_formats'],
   'unpack requires': ['file_formats'],
   'no module named': ['domain_libraries', 'tools'],
   'command not found': ['tools'],
   'syntax error': ['coding', 'legacy'],
   'parse error': ['web_parsing', 'file_formats'],
-  'hash': ['security', 'tools'],
-  'xss': ['security', 'web_parsing'],
-  'injection': ['security', 'web_parsing'],
-  'git': ['git_recovery'],
-  'reflog': ['git_recovery'],
+  hash: ['security', 'tools'],
+  xss: ['security', 'web_parsing'],
+  injection: ['security', 'web_parsing'],
+  git: ['git_recovery'],
+  reflog: ['git_recovery'],
   'merge conflict': ['git_recovery'],
   'detached head': ['git_recovery'],
-  'parquet': ['data_processing'],
-  'shard': ['data_processing'],
-  'dataset': ['data_processing'],
-  'coq': ['theorem_proving'],
-  'lean': ['theorem_proving'],
-  'induction': ['theorem_proving'],
-  'chess': ['chess_vision', 'regex_chess', 'domain_libraries'],
-  'stockfish': ['chess_vision', 'domain_libraries'],
-  'fen': ['chess_vision'],
-  'pgn': ['regex_chess'],
-  'wal': ['db_wal_recovery', 'file_formats'],
-  'sqlite': ['db_wal_recovery', 'file_formats'],
-  'checkpoint': ['db_wal_recovery'],
-  'codegolf': ['compression_codegolf'],
-  'gpt2': ['compression_codegolf'],
-  'minify': ['compression_codegolf'],
-  'filter': ['web_parsing', 'security'],
-  'html': ['web_parsing'],
-  'beautifulsoup': ['web_parsing'],
+  parquet: ['data_processing'],
+  shard: ['data_processing'],
+  dataset: ['data_processing'],
+  coq: ['theorem_proving'],
+  lean: ['theorem_proving'],
+  induction: ['theorem_proving'],
+  chess: ['chess_vision', 'regex_chess', 'domain_libraries'],
+  stockfish: ['chess_vision', 'domain_libraries'],
+  fen: ['chess_vision'],
+  pgn: ['regex_chess'],
+  wal: ['db_wal_recovery', 'file_formats'],
+  sqlite: ['db_wal_recovery', 'file_formats'],
+  checkpoint: ['db_wal_recovery'],
+  codegolf: ['compression_codegolf'],
+  gpt2: ['compression_codegolf'],
+  minify: ['compression_codegolf'],
+  filter: ['web_parsing', 'security'],
+  html: ['web_parsing'],
+  beautifulsoup: ['web_parsing'],
 };
 
 // OPT 6: Pattern relevance by task type
 const TASK_TYPE_PATTERNS: Record<string, string[]> = {
-  'security': ['P10', 'P20', 'P11'],
+  security: ['P10', 'P20', 'P11'],
   'file-ops': ['P9', 'P35', 'P3', 'P12'],
-  'coding': ['P12', 'P16', 'P32', 'P17'],
-  'debugging': ['P15', 'P13', 'P3'],
+  coding: ['P12', 'P16', 'P32', 'P17'],
+  debugging: ['P15', 'P13', 'P3'],
   'git-recovery': ['P22', 'P3'],
   'data-processing': ['P18', 'P31', 'P12'],
   'theorem-proving': ['P5', 'P11'],
-  'legacy': ['P3', 'P35'],
-  'sysadmin': ['P1', 'P8', 'P4'],
+  legacy: ['P3', 'P35'],
+  sysadmin: ['P1', 'P8', 'P4'],
   'ml-training': ['P11', 'P33', 'P30'],
-  'testing': ['P13', 'P26', 'P30'],
+  testing: ['P13', 'P26', 'P30'],
 };
 
 // Constants
@@ -489,13 +555,13 @@ const TIME_CRITICAL_MAX_TOKENS = 300;
 
 // OPT 4: Calculate weighted relevance score for a section
 function calculateSectionRelevance(
-  instruction: string, 
+  instruction: string,
   sectionConfig: { keywords: string[]; keywordWeights?: Record<string, number> }
 ): number {
   const lower = instruction.toLowerCase();
   let totalScore = 0;
   let matchCount = 0;
-  
+
   for (const kw of sectionConfig.keywords) {
     if (lower.includes(kw.toLowerCase())) {
       // OPT 4: Use specificity weight if available, otherwise default to 1
@@ -504,17 +570,17 @@ function calculateSectionRelevance(
       matchCount++;
     }
   }
-  
+
   // Also check global high-benefit keywords with their weights
   for (const [kw, weight] of Object.entries(HIGH_BENEFIT_KEYWORDS)) {
     if (lower.includes(kw.toLowerCase())) {
       // Check if this keyword is relevant to this section
-      if (sectionConfig.keywords.some(sk => kw.includes(sk) || sk.includes(kw))) {
+      if (sectionConfig.keywords.some((sk) => kw.includes(sk) || sk.includes(kw))) {
         totalScore += weight * 0.5; // Partial bonus for related keywords
       }
     }
   }
-  
+
   // Normalize: max possible score is roughly keywords.length * 3 (max weight)
   const maxPossible = sectionConfig.keywords.length * 3;
   return Math.min(totalScore / Math.max(maxPossible * 0.3, 1), 1);
@@ -532,45 +598,58 @@ export function classifyTaskMultiCategory(instruction: string): MultiCategoryCla
   const lower = instruction.toLowerCase();
   const categoryScores: Record<string, number> = {};
   const matchedKeywords: string[] = [];
-  
+
   // Score from high-benefit keywords
   for (const [kw, weight] of Object.entries(HIGH_BENEFIT_KEYWORDS)) {
     if (lower.includes(kw.toLowerCase())) {
       matchedKeywords.push(kw);
-      
+
       // Map keywords to categories
-      if (['password', 'hash', 'crack', 'xss', 'injection', 'sanitize', 'hashcat', 'john', 'bleach', 'dompurify'].some(k => kw.includes(k))) {
+      if (
+        [
+          'password',
+          'hash',
+          'crack',
+          'xss',
+          'injection',
+          'sanitize',
+          'hashcat',
+          'john',
+          'bleach',
+          'dompurify',
+        ].some((k) => kw.includes(k))
+      ) {
         categoryScores['security'] = (categoryScores['security'] || 0) + weight;
       }
-      if (['elf', 'sqlite', 'binary', 'wal', 'struct'].some(k => kw.includes(k))) {
+      if (['elf', 'sqlite', 'binary', 'wal', 'struct'].some((k) => kw.includes(k))) {
         categoryScores['file-ops'] = (categoryScores['file-ops'] || 0) + weight;
       }
-      if (['git', 'reflog', 'fsck', 'rebase'].some(k => kw.includes(k))) {
+      if (['git', 'reflog', 'fsck', 'rebase'].some((k) => kw.includes(k))) {
         categoryScores['git-recovery'] = (categoryScores['git-recovery'] || 0) + weight;
       }
-      if (['cobol', 'fortran', 'legacy', 'mainframe'].some(k => kw.includes(k))) {
+      if (['cobol', 'fortran', 'legacy', 'mainframe'].some((k) => kw.includes(k))) {
         categoryScores['legacy'] = (categoryScores['legacy'] || 0) + weight;
       }
-      if (['coq', 'lean', 'theorem', 'proof', 'induction'].some(k => kw.includes(k))) {
+      if (['coq', 'lean', 'theorem', 'proof', 'induction'].some((k) => kw.includes(k))) {
         categoryScores['theorem-proving'] = (categoryScores['theorem-proving'] || 0) + weight;
       }
-      if (['parquet', 'shard', 'reshard', 'dataset', 'arrow'].some(k => kw.includes(k))) {
+      if (['parquet', 'shard', 'reshard', 'dataset', 'arrow'].some((k) => kw.includes(k))) {
         categoryScores['data-processing'] = (categoryScores['data-processing'] || 0) + weight;
       }
-      if (['stockfish', 'chess', 'fen', 'pgn'].some(k => kw.includes(k))) {
+      if (['stockfish', 'chess', 'fen', 'pgn'].some((k) => kw.includes(k))) {
         categoryScores['chess'] = (categoryScores['chess'] || 0) + weight;
       }
     }
   }
-  
+
   // Fall back to task-classifier
   const baseClassification = classifyTaskType(instruction);
-  categoryScores[baseClassification.category] = (categoryScores[baseClassification.category] || 0) + 5;
-  
+  categoryScores[baseClassification.category] =
+    (categoryScores[baseClassification.category] || 0) + 5;
+
   // Sort by score
-  const sorted = Object.entries(categoryScores)
-    .sort(([, a], [, b]) => b - a);
-  
+  const sorted = Object.entries(categoryScores).sort(([, a], [, b]) => b - a);
+
   if (sorted.length === 0) {
     return {
       primary: 'coding',
@@ -579,15 +658,16 @@ export function classifyTaskMultiCategory(instruction: string): MultiCategoryCla
       keywords: matchedKeywords,
     };
   }
-  
+
   const [primary, primaryScore] = sorted[0];
-  const secondary = sorted.slice(1, 3)
+  const secondary = sorted
+    .slice(1, 3)
     .filter(([, score]) => score >= primaryScore * 0.4)
     .map(([cat]) => cat);
-  
+
   const maxPossible = Object.values(HIGH_BENEFIT_KEYWORDS).reduce((a, b) => a + b, 0);
   const confidence = Math.min(primaryScore / (maxPossible * 0.1), 1);
-  
+
   return {
     primary,
     secondary,
@@ -639,7 +719,8 @@ export function assessTimePressure(
     unknown: 60,
   };
 
-  const expectedDuration = (baseDuration[taskType] || 60) * (difficultyMultiplier[difficulty] || 1.0);
+  const expectedDuration =
+    (baseDuration[taskType] || 60) * (difficultyMultiplier[difficulty] || 1.0);
   const ratio = timeoutSec / expectedDuration;
 
   if (ratio < 1.0) return 'critical';
@@ -654,8 +735,10 @@ export function assessTimePressure(
 export function getHistoricalBenefit(taskType: string): number {
   try {
     const db = getHistoricalDb();
-    const row = db.prepare('SELECT * FROM historical_data WHERE task_type = ?').get(taskType) as HistoricalData | undefined;
-    
+    const row = db.prepare('SELECT * FROM historical_data WHERE task_type = ?').get(taskType) as
+      | HistoricalData
+      | undefined;
+
     if (!row || row.totalAttempts < 3) {
       if (LOW_BENEFIT_CATEGORIES.has(taskType)) {
         return 0.05;
@@ -689,10 +772,12 @@ export function recordOutcome(
 ): void {
   try {
     const db = getHistoricalDb();
-    
+
     // Get existing record or create new
-    const existing = db.prepare('SELECT * FROM historical_data WHERE task_type = ?').get(taskType) as HistoricalData | undefined;
-    
+    const existing = db
+      .prepare('SELECT * FROM historical_data WHERE task_type = ?')
+      .get(taskType) as HistoricalData | undefined;
+
     if (existing) {
       // Update existing record
       const stmt = db.prepare(`
@@ -705,7 +790,7 @@ export function recordOutcome(
           last_updated = ?
         WHERE task_type = ?
       `);
-      
+
       stmt.run(
         usedUam && success ? 1 : 0,
         !usedUam && success ? 1 : 0,
@@ -722,7 +807,7 @@ export function recordOutcome(
         INSERT INTO historical_data (task_type, total_attempts, uam_successes, no_uam_successes, avg_time_with_uam, avg_time_without_uam, last_updated)
         VALUES (?, 1, ?, ?, ?, ?, ?)
       `);
-      
+
       stmt.run(
         taskType,
         usedUam && success ? 1 : 0,
@@ -736,7 +821,7 @@ export function recordOutcome(
     // Log but don't throw - recording should not block execution
     console.warn('Failed to record outcome:', err);
   }
-  
+
   // OPT 8: Also update model router fingerprints
   if (modelId) {
     const validModelIds: ModelId[] = ['glm-4.7', 'gpt-5.2', 'claude-opus-4.5', 'gpt-5.2-codex'];
@@ -752,22 +837,28 @@ export function recordOutcome(
 export function lookupSemanticCache(instructionHash: string): ContextDecision | null {
   try {
     const db = getHistoricalDb();
-    const row = db.prepare(`
+    const row = db
+      .prepare(
+        `
       SELECT decision_json, success_rate 
       FROM semantic_cache 
       WHERE instruction_hash = ? AND success_rate >= 0.5
       ORDER BY success_rate DESC, use_count DESC 
       LIMIT 1
-    `).get(instructionHash) as { decision_json: string; success_rate: number } | undefined;
-    
+    `
+      )
+      .get(instructionHash) as { decision_json: string; success_rate: number } | undefined;
+
     if (row) {
       // Update usage stats
-      db.prepare(`
+      db.prepare(
+        `
         UPDATE semantic_cache 
         SET last_used = ?, use_count = use_count + 1 
         WHERE instruction_hash = ?
-      `).run(Date.now(), instructionHash);
-      
+      `
+      ).run(Date.now(), instructionHash);
+
       return JSON.parse(row.decision_json);
     }
   } catch {
@@ -787,29 +878,28 @@ export function storeSemanticCache(
 ): void {
   try {
     const db = getHistoricalDb();
-    
+
     const existing = db.prepare('SELECT * FROM semantic_cache WHERE cache_key = ?').get(cacheKey);
-    
+
     if (existing) {
       // Update success rate with exponential moving average
-      db.prepare(`
+      db.prepare(
+        `
         UPDATE semantic_cache SET
           decision_json = ?,
           success_rate = success_rate * 0.8 + ? * 0.2,
           last_used = ?,
           use_count = use_count + 1
         WHERE cache_key = ?
-      `).run(
-        JSON.stringify(decision),
-        success ? 1.0 : 0.0,
-        Date.now(),
-        cacheKey
-      );
+      `
+      ).run(JSON.stringify(decision), success ? 1.0 : 0.0, Date.now(), cacheKey);
     } else {
-      db.prepare(`
+      db.prepare(
+        `
         INSERT INTO semantic_cache (cache_key, instruction_hash, decision_json, success_rate, created_at, last_used, use_count)
         VALUES (?, ?, ?, ?, ?, ?, 1)
-      `).run(
+      `
+      ).run(
         cacheKey,
         instructionHash,
         JSON.stringify(decision),
@@ -827,7 +917,11 @@ export function storeSemanticCache(
  * Select relevant context sections based on task type and instruction
  * OPT 5: Returns at least 2 sections for minimal mode
  */
-export function selectRelevantSections(instruction: string, taskType: string, secondaryCategories?: string[]): string[] {
+export function selectRelevantSections(
+  instruction: string,
+  taskType: string,
+  secondaryCategories?: string[]
+): string[] {
   const sectionsWithScores: Array<{ name: string; score: number; patterns?: string[] }> = [];
 
   for (const [name, config] of Object.entries(CONTEXT_SECTIONS)) {
@@ -840,13 +934,13 @@ export function selectRelevantSections(instruction: string, taskType: string, se
   // Sort by relevance score descending
   sectionsWithScores.sort((a, b) => b.score - a.score);
 
-  const sections = sectionsWithScores.map(s => s.name);
-  
+  const sections = sectionsWithScores.map((s) => s.name);
+
   // Add default sections for certain task types if not already included
   const addIfMissing = (section: string) => {
     if (!sections.includes(section)) sections.push(section);
   };
-  
+
   // Primary category defaults
   if (taskType === 'security') addIfMissing('security');
   if (taskType === 'file-ops') addIfMissing('file_formats');
@@ -858,7 +952,7 @@ export function selectRelevantSections(instruction: string, taskType: string, se
     addIfMissing('chess_vision');
     addIfMissing('domain_libraries');
   }
-  
+
   // OPT 9: Add sections for secondary categories too
   if (secondaryCategories) {
     for (const cat of secondaryCategories) {
@@ -887,11 +981,11 @@ export function calculateOverhead(sections: string[]): number {
  */
 export function getRelevantPatterns(taskType: string, sections: string[]): string[] {
   const patterns = new Set<string>();
-  
+
   // From task type
   const typePatterns = TASK_TYPE_PATTERNS[taskType] || [];
   for (const p of typePatterns) patterns.add(p);
-  
+
   // From selected sections
   for (const section of sections) {
     const sectionConfig = CONTEXT_SECTIONS[section];
@@ -899,7 +993,7 @@ export function getRelevantPatterns(taskType: string, sections: string[]): strin
       for (const p of sectionConfig.patterns) patterns.add(p);
     }
   }
-  
+
   return Array.from(patterns);
 }
 
@@ -967,7 +1061,7 @@ export function decideContextLevel(
   // Factor 6: Select relevant sections (OPT 9: including secondary categories)
   const relevantSections = selectRelevantSections(instruction, taskType, multiClass.secondary);
   const estimatedOverhead = calculateOverhead(relevantSections);
-  
+
   // OPT 6: Get relevant patterns
   const relevantPatterns = getRelevantPatterns(taskType, relevantSections);
 
@@ -1044,7 +1138,7 @@ export function generateContext(decision: ContextDecision): string {
       contextParts.push(sectionConfig.content);
     }
   }
-  
+
   // OPT 6: Add relevant patterns hint
   if (decision.relevantPatterns && decision.relevantPatterns.length > 0) {
     contextParts.push(`\n### Relevant Patterns: ${decision.relevantPatterns.join(', ')}`);
@@ -1068,7 +1162,7 @@ export function getProgressiveContextLevels(
   }
 
   const errorLower = initialError.toLowerCase();
-  
+
   // OPT 7: Check error-to-section mapping for targeted escalation
   let suggestedSections: string[] = [];
   for (const [errorPattern, sections] of Object.entries(ERROR_SECTION_MAPPING)) {
@@ -1076,7 +1170,7 @@ export function getProgressiveContextLevels(
       suggestedSections.push(...sections);
     }
   }
-  
+
   // Standard context-might-help checks
   const contextMightHelp =
     suggestedSections.length > 0 ||
@@ -1111,7 +1205,7 @@ export function getProgressiveContextLevels(
 export function getSectionsForError(error: string): string[] {
   const errorLower = error.toLowerCase();
   const sections = new Set<string>();
-  
+
   for (const [errorPattern, sectionList] of Object.entries(ERROR_SECTION_MAPPING)) {
     if (errorLower.includes(errorPattern)) {
       for (const section of sectionList) {
@@ -1119,7 +1213,7 @@ export function getSectionsForError(error: string): string[] {
       }
     }
   }
-  
+
   return Array.from(sections);
 }
 
@@ -1151,13 +1245,15 @@ export function exportConfigForPython(instruction: string, metadata: TaskMetadat
 /**
  * OPT 8: Get model fingerprint for routing integration
  */
-export function getModelFingerprintForTask(taskType: string): { recommended: ModelId; reason: string } | null {
+export function getModelFingerprintForTask(
+  taskType: string
+): { recommended: ModelId; reason: string } | null {
   // Check per-category success rates from model router
   const models: ModelId[] = ['claude-opus-4.5', 'gpt-5.2', 'glm-4.7', 'gpt-5.2-codex'];
-  
+
   let bestModel: ModelId = 'claude-opus-4.5';
   let bestScore = 0;
-  
+
   for (const modelId of models) {
     const fp = getModelFingerprint(modelId);
     if (fp && fp.categoryStats?.[taskType]) {
@@ -1171,25 +1267,22 @@ export function getModelFingerprintForTask(taskType: string): { recommended: Mod
       }
     }
   }
-  
+
   if (bestScore > 0) {
     return {
       recommended: bestModel,
       reason: `${bestModel} has ${(bestScore * 100).toFixed(0)}% success rate for ${taskType} tasks`,
     };
   }
-  
+
   return null;
 }
 
 /**
- * Close database connection (for cleanup)
+ * Close database connection pool (for cleanup)
  */
 export function closeHistoricalDb(): void {
-  if (historicalDb) {
-    historicalDb.close();
-    historicalDb = null;
-  }
+  closeAllPools();
 }
 
 // Export main interface

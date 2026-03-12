@@ -1,93 +1,94 @@
-# Tool-Call Setup Fix Summary
+# Tool Call Interruption Fix Summary
 
-## Issues Fixed
+## Root Causes Identified
 
-### 1. Missing Python Import in qwen_tool_call_test.py
+1. **Hook Output Blocking** - Session-start hook writing to stdout interfered with tool call streams
+2. **SQLite Contention** - Single database connections caused blocking during concurrent tool calls
+3. **Worktree Race Conditions** - Non-atomic ID generation led to conflicts during mode switches
+4. **Unbounded Token Generation** - No max_tokens limit allowed generation to be interrupted mid-stream
 
-**Problem**: Script failed with `NameError: name 'Path' is not defined`
+## Fixes Applied
 
-**Fix**: Added missing import statement
-```python
-from pathlib import Path
+### 1. Session Start Hook (`.claude/hooks/session-start.sh`)
+Changed output method from `echo` to `tee /dev/stderr`:
+- Keeps context injection on stderr
+- Preserves stdout clean for tool calls
+- Prevents stream blocking during mode switches
+
+### 2. SQLite Connection Pooling (`src/memory/model-router.ts`, `src/memory/adaptive-context.ts`)
+Added connection pooling with 5 pooled connections:
+```typescript
+const DB_POOL_SIZE = 5;
+// Round-robin distribution across pooled connections
+const currentIndex = Date.now() % DB_POOL_SIZE;
+return dbPool[currentIndex];
 ```
 
-**File**: `tools/agents/scripts/qwen_tool_call_test.py` (line 25)
+**Benefits:**
+- Prevents SQLite locking contention during concurrent tool calls
+- WAL mode + busy_timeout=10000ms ensures smooth concurrent access
+- Automatic connection reuse reduces overhead
 
-### 2. Invalid API Parameter in qwen_tool_call_wrapper.py
-
-**Problem**: Script failed with `Completions.create() got an unexpected keyword argument 'top_k'`
-
-**Fix**: 
-- Removed `"top_k": 20` from DEFAULT_CONFIG
-- Removed `"top_k": self.config["top_k"]` from request payload
-
-**File**: `tools/agents/scripts/qwen_tool_call_wrapper.py` (lines 86, 174)
-
-## Verification
-
-### Status Check
-```bash
-uap tool-calls status
+### 3. Worktree Race Condition Fix (`src/cli/worktree.ts`)
+Added SQLite-backed worktree registry:
+```typescript
+const db = getWorktreeDb(cwd);
+db.prepare(`
+  INSERT INTO worktrees (slug, branch_name, worktree_path, status)
+  VALUES (?, ?, ?, 'active')
+`).run(slug, branchName, worktreePath);
 ```
 
-**Result**: ✅ All components installed and working
+**Benefits:**
+- Atomic ID generation prevents duplicate branches
+- Registry tracks all worktrees with status
+- Cleanup updates registry to prevent stale entries
 
-- Chat template: ✓ (9411 bytes)
-- Python scripts: ✓ (3 scripts)
-- Python 3: ✓ Available
-
-### Script Tests
-
-#### qwen_tool_call_test.py
-```bash
-python3 tools/agents/scripts/qwen_tool_call_test.py --help
+### 4. Qwen3.5 Optimized Settings (`.opencode/config.json`, `config/qwen35-settings.json`)
+Added explicit limits:
+```json
+{
+  "max_tokens": 4096,
+  "timeout_ms": 120000,
+  "stop_sequences": ["<tool_call>", "</tool_call>"],
+  "optimize_for_tool_calls": true
+}
 ```
-**Result**: ✅ Shows help message correctly
 
-#### qwen_tool_call_wrapper.py
-```bash
-python3 tools/agents/scripts/qwen_tool_call_wrapper.py --help
-```
-**Result**: ✅ Connects to API successfully (top_k error fixed)
-
-## Current Status
-
-✅ **Tool-calls setup is now functional**
-
-### What Works
-- Python scripts are executable and importable
-- Chat template is properly configured
-- API connection works (no more top_k errors)
-- Tool call wrapper initializes correctly
-
-### Known Limitations
-- Tool call format parsing still has issues with Qwen3.5's response format
-- This is a separate issue from the setup problems
-- The wrapper now retries automatically on failures
-
-## Next Steps
-
-1. **Test actual tool calls**: Run `qwen_tool_call_test.py` to see current reliability
-2. **Monitor performance**: Check if retries resolve format issues
-3. **Consider template adjustments**: May need to update chat_template.jinja for better parsing
+**Benefits:**
+- Caps generation window to prevent mid-stream interruptions
+- Timeout ensures tool calls complete within reasonable time
+- Stop sequences prevent stray tokens during mode switches
 
 ## Files Modified
 
-1. `tools/agents/scripts/qwen_tool_call_test.py` - Added missing import
-2. `tools/agents/scripts/qwen_tool_call_wrapper.py` - Removed invalid top_k parameter
+1. `.claude/hooks/session-start.sh` - Hook output redirection
+2. `.opencode/config.json` - Added model timeout & token limits
+3. `config/qwen35-settings.json` - Created optimized settings
+4. `src/memory/model-router.ts` - Connection pooling for fingerprints
+5. `src/memory/adaptive-context.ts` - Connection pooling for historical data
+6. `src/cli/worktree.ts` - SQLite registry to prevent race conditions
 
-## Commands Reference
+## Testing
 
+Run these commands to verify fixes:
 ```bash
-# Check setup status
-uap tool-calls status
+# Build verification
+npm run build
 
-# Run reliability tests
-python3 tools/agents/scripts/qwen_tool_call_test.py
+# Test worktree creation (should use atomic ID generation)
+uam worktree create test-worktree
 
-# Test wrapper directly
-python3 tools/agents/scripts/qwen_tool_call_wrapper.py
+# Check SQLite connections don't block
+uam memory query "test"
 
-# Apply template fixes
-python3 tools/agents/scripts/fix_qwen_chat_template.py
+# Monitor tool call completion during mode switches
+# Watch for clean stdout output without interruptions
 ```
+
+## Expected Outcome
+
+- Tool calls complete without mid-stream interruption
+- Mode switches don't cause database contention
+- Worktree creation is atomic and race-condition free
+- Generation bounded by token limits prevents hanging

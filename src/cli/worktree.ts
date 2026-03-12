@@ -3,6 +3,7 @@ import ora from 'ora';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { simpleGit, SimpleGit } from 'simple-git';
+import Database from 'better-sqlite3';
 
 type WorktreeAction = 'create' | 'list' | 'pr' | 'cleanup';
 
@@ -10,6 +11,44 @@ interface WorktreeOptions {
   slug?: string;
   id?: string;
   draft?: boolean;
+}
+
+let worktreeDb: Database.Database | null = null;
+
+function getWorktreeDb(cwd: string): Database.Database {
+  if (worktreeDb) return worktreeDb;
+  
+  const dbDir = join(cwd, '.uam');
+  if (!existsSync(dbDir)) {
+    require('fs').mkdirSync(dbDir, { recursive: true });
+  }
+  
+  const dbPath = join(dbDir, 'worktree_registry.db');
+  worktreeDb = new Database(dbPath);
+  worktreeDb.pragma('journal_mode = WAL');
+  worktreeDb.pragma('busy_timeout = 10000');
+  
+  worktreeDb.exec(`
+    CREATE TABLE IF NOT EXISTS worktrees (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL,
+      branch_name TEXT NOT NULL,
+      worktree_path TEXT NOT NULL,
+      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      status TEXT DEFAULT 'active',
+      UNIQUE(slug)
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_worktrees_status ON worktrees(status);
+  `);
+  
+  return worktreeDb;
+}
+
+async function getNextId(cwd: string): Promise<number> {
+  const db = getWorktreeDb(cwd);
+  const row = db.prepare('SELECT COALESCE(MAX(id), 0) as max_id FROM worktrees').get() as {max_id: number};
+  return row.max_id + 1;
 }
 
 export async function worktreeCommand(action: WorktreeAction, options: WorktreeOptions = {}): Promise<void> {
@@ -39,25 +78,11 @@ export async function worktreeCommand(action: WorktreeAction, options: WorktreeO
   }
 }
 
-async function getNextId(cwd: string): Promise<number> {
-  const worktreesDir = join(cwd, '.worktrees');
-  if (!existsSync(worktreesDir)) {
-    return 1;
-  }
-
-  const entries = readdirSync(worktreesDir);
-  const ids = entries
-    .map((e) => parseInt(e.split('-')[0]))
-    .filter((n) => !isNaN(n));
-
-  return ids.length > 0 ? Math.max(...ids) + 1 : 1;
-}
-
 async function createWorktree(cwd: string, git: SimpleGit, slug: string): Promise<void> {
   const spinner = ora('Creating worktree...').start();
 
   try {
-    // Get next ID
+    // Get next ID atomically from DB
     const id = await getNextId(cwd);
     const paddedId = String(id).padStart(3, '0');
     const worktreeName = `${paddedId}-${slug}`;
@@ -65,11 +90,19 @@ async function createWorktree(cwd: string, git: SimpleGit, slug: string): Promis
     const worktreePath = join(cwd, '.worktrees', worktreeName);
 
     // Get current branch (base)
+    spinner.text = 'Resolving current branch...';
     const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
 
     // Create worktree with new branch
     spinner.text = `Creating branch ${branchName}...`;
     await git.raw(['worktree', 'add', '-b', branchName, worktreePath, currentBranch.trim()]);
+
+    // Register in DB to prevent race conditions
+    const db = getWorktreeDb(cwd);
+    db.prepare(`
+      INSERT INTO worktrees (slug, branch_name, worktree_path, status)
+      VALUES (?, ?, ?, 'active')
+    `).run(slug, branchName, worktreePath);
 
     spinner.succeed(`Created worktree: ${worktreeName}`);
     console.log(chalk.dim(`  Branch: ${branchName}`));
@@ -206,6 +239,10 @@ async function cleanupWorktree(cwd: string, git: SimpleGit, id: string): Promise
     } catch {
       // Remote branch may not exist
     }
+
+    // Remove from registry
+    const db = getWorktreeDb(cwd);
+    db.prepare('UPDATE worktrees SET status = ? WHERE id = ?').run('cleaned', id);
 
     spinner.succeed(`Cleaned up: ${worktree}`);
   } catch (error) {
