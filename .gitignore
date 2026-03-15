@@ -99,3 +99,4 @@ __pycache__/
 
 # Screenshots (runtime)
 agents/data/screenshots/
+harbor-datasets/
