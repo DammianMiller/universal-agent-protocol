@@ -1,7 +1,7 @@
 import type { Plugin } from '@opencode-ai/plugin';
 
 /**
- * Layer 2: UAP Enforcement Plugin for OpenCode (v10.0.0)
+ * Layer 2: UAP Enforcement Plugin for OpenCode (v9.9.0)
  *
  * Provides runtime enforcement that the model cannot bypass:
  *
@@ -44,7 +44,7 @@ export const UapEnforce: Plugin = async ({ $ }) => {
   };
 
   // Write initial telemetry entry
-  await $`echo '{"event":"plugin_loaded","version":"10.0.0","ts":"'$(date -Iseconds)'"}' >> ${TELEMETRY_PATH}`
+  await $`echo '{"event":"plugin_loaded","version":"9.9.0","ts":"'$(date -Iseconds)'"}' >> ${TELEMETRY_PATH}`
     .quiet()
     .nothrow();
 

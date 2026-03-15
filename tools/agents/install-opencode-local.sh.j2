@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== Installing OpenCode for local Qwen3.5 (UAP v10.0.0 with OCR support) ==="
+echo "=== Installing OpenCode for local Qwen3.5 (UAP v9.9.0 with OCR support) ==="
 
 # Install system dependencies (expanded for Option D + OCR support)
 apt-get update
@@ -17,15 +17,23 @@ source "$HOME/.nvm/nvm.sh"
 nvm install 22
 echo "Node $(node -v), npm $(npm -v)"
 
-# Install opencode
+# Install opencode (with retry for network issues)
+for npm_attempt in 1 2 3; do
 {% if version %}
-npm i -g opencode-ai@{{ version }}
+  npm i -g opencode-ai@{{ version }} && break
 {% else %}
-npm i -g opencode-ai@latest
+  npm i -g opencode-ai@latest && break
 {% endif %}
+  echo "npm install failed (attempt ${npm_attempt}/3), retrying in 15s..."
+  sleep 15
+done
 
 # Install the OpenAI-compatible provider package (required for llama.cpp provider)
-npm i -g @ai-sdk/openai-compatible
+for npm_attempt in 1 2 3; do
+  npm i -g @ai-sdk/openai-compatible && break
+  echo "npm install @ai-sdk failed (attempt ${npm_attempt}/3), retrying in 15s..."
+  sleep 15
+done
 
 # Write opencode.json with custom llama.cpp provider
 cat > /installed-agent/opencode.json << 'OPENCODE_EOF'
@@ -76,4 +84,4 @@ echo "opencode $(opencode --version 2>/dev/null || echo 'installed')"
 echo "API endpoint: {{ api_endpoint }}"
 echo "Python: $(python3 --version 2>/dev/null || echo 'not found')"
 echo "gcc: $(gcc --version 2>/dev/null | head -1 || echo 'not found')"
-echo "=== Installation complete (UAP v10.0.0) ==="
+echo "=== Installation complete (UAP v9.9.0) ==="

@@ -1,7 +1,7 @@
 """
 OpenCode agents for Harbor Terminal-Bench benchmarking with local Qwen3.5.
 
-v10.0.0: Full Option D implementation + Layer 2 anti-loop fix + proxy budget termination
+v9.9.0: Full Option D implementation + Layer 2 anti-loop fix + proxy budget termination
   - Option A: Agentic reinforcement, PATH fix guidance, common tool pre-install
   - Option B: Classified preamble system (15 domain categories)
   - Option C: Pre-execution hooks (task-specific tools + state protection)
@@ -65,7 +65,7 @@ def _make_opencode_config(api_endpoint: str) -> dict:
 # Universal core (~150 tokens) + routed domain snippets (~50-150 tokens each)
 # =========================================================================== #
 
-UAP_CORE = """## Task Guidance (UAP v10.0.0)
+UAP_CORE = """## Task Guidance (UAP v9.9.0)
 
 1. Read the full task description and any provided tests/verifiers BEFORE writing code.
 2. Create expected output files early, even as stubs -- use mkdir -p and touch.
@@ -1262,7 +1262,7 @@ class OpenCodeUAP(BaseInstalledAgent):
             # Write classified CLAUDE.md via base64 decode (avoids heredoc issues)
             f"echo '{claude_md_b64}' | base64 -d > /app/CLAUDE.md 2>/dev/null; "
             f"echo '{claude_md_b64}' | base64 -d > ~/CLAUDE.md 2>/dev/null; "
-            "echo 'opencode.json + classified CLAUDE.md injected (UAP v10.0.0)'; "
+            "echo 'opencode.json + classified CLAUDE.md injected (UAP v9.9.0)'; "
             "echo 'Config contents:'; cat /app/opencode.json 2>/dev/null | head -20"
         )
         commands.append(ExecInput(command=inject_cmd))

@@ -1,4 +1,4 @@
-"""UAP v10.0.0 Universal Agent Protocol - Parallel Execution with Validation Toggle"""
+"""UAP v9.9.0 Universal Agent Protocol - Parallel Execution with Validation Toggle"""
 
 import os
 from pathlib import Path
@@ -7,14 +7,14 @@ from pydantic import BaseModel
 
 
 class UAPAgent(BaseInstalledAgent):
-    """Universal Agent Protocol v10.0.0 agent for Harbor benchmarking."""
+    """Universal Agent Protocol v9.9.0 agent for Harbor benchmarking."""
 
     @staticmethod
     def name() -> str:
         return "uap"
 
     def version(self) -> str | None:
-        return "10.0.0"
+        return "9.9.0"
 
     @property
     def _install_agent_template_path(self) -> Path:

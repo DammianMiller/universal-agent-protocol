@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Layer 1: tool_choice="required" HTTP Proxy (v10.0.0)
+ * Layer 1: tool_choice="required" HTTP Proxy (v9.9.0)
  *
  * Sits between opencode and llama-server, injecting tool_choice="required"
  * into every /v1/chat/completions request that includes tools.
@@ -8,7 +8,7 @@
  * This forces the model to produce tool calls via GBNF grammar constraint,
  * mechanically preventing text-only responses.
  *
- * NEW in v10.0.0:
+ * NEW in v9.9.0:
  * - Request budget: after SOFT_BUDGET requests, stops forcing tool_choice
  *   so the model can produce a text-only "done" response and end the session
  * - After HARD_BUDGET, strips tools entirely to force text-only completion
@@ -121,7 +121,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PROXY_PORT, '0.0.0.0', () => {
-  console.log(`[proxy] Layer 1: tool_choice="${FORCE_TOOL_CHOICE}" proxy (v10.0.0)`);
+  console.log(`[proxy] Layer 1: tool_choice="${FORCE_TOOL_CHOICE}" proxy (v9.9.0)`);
   console.log(`[proxy] Budget: soft=${SOFT_BUDGET}, hard=${HARD_BUDGET}`);
   console.log(`[proxy] Listening on 0.0.0.0:${PROXY_PORT}`);
   console.log(`[proxy] Forwarding to ${TARGET_URL}`);
