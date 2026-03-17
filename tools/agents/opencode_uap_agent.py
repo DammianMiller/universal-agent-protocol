@@ -1262,49 +1262,6 @@ class OpenCodeUAP(BaseInstalledAgent):
 
         return True
 
-        # Check the last command dir (the opencode run)
-        last_dir = command_dirs[-1]
-        stdout_file = last_dir / "stdout.txt"
-        if not stdout_file.exists():
-            return False
-
-        stdout = stdout_file.read_text()
-
-        # Tool-call indicators in opencode JSON output:
-        # 1. "tool_calls" in JSON response
-        # 2. "type": "tool" or "role": "tool" in messages
-        # 3. Tool execution markers from opencode
-        # 4. Telemetry file from Layer 2 plugin
-        tool_indicators = [
-            '"tool_calls"',
-            '"type":"tool"',
-            '"type": "tool"',
-            '"role":"tool"',
-            '"role": "tool"',
-            "tool_call",
-            "Tool:",  # opencode format
-            "bash(",  # opencode tool format
-            "write(",
-            "edit(",
-            "read(",
-            "glob(",
-            "grep(",
-        ]
-
-        for indicator in tool_indicators:
-            if indicator in stdout:
-                return True
-
-        # Also check stderr for tool execution traces
-        stderr_file = last_dir / "stderr.txt"
-        if stderr_file.exists():
-            stderr = stderr_file.read_text()
-            for indicator in tool_indicators:
-                if indicator in stderr:
-                    return True
-
-        return False
-
     def _build_escalated_instruction(
         self, original_instruction: str, attempt: int
     ) -> str:

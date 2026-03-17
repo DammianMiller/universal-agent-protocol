@@ -62,6 +62,17 @@
   },
   "droids": [],
   "commands": [],
+  "policy": {
+    "enabled": true,
+    "preEditBuildGate": true,
+    "mandatoryFileBackup": true,
+    "iacStateParity": true,
+    "iacPipelineEnforcement": true,
+    "kubectlVerifyBackport": true,
+    "definitionOfDoneIac": true,
+    "imageAssetVerification": false,
+    "customDir": "./policies"
+  },
   "template": {
     "extends": "default",
     "sections": {

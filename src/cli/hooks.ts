@@ -440,27 +440,37 @@ async function installOmpHooks(cwd: string): Promise<void> {
     console.log(chalk.green('  + .uap/omp/hooks/post/session-end.sh'));
   } else {
     // Generate default post-session hook
-    const dbPath = './agents/data/memory/short_term.db';
-    writeFileSync(
-      join(hooksPost, 'session-end.sh'),
-      '#!/usr/bin/env bash\n' +
-        '# UAP Post-Session Hook for Oh-My-Pi\n' +
-        'DB_PATH="${UAP_PROJECT_DIR:-.}/' +
-        dbPath.replace(/\//g, '\/') +
-        '"\n' +
-        '\n' +
-        'if [ -f "$DB_PATH" ]; then\n' +
-        '  TIMESTAMP=$(date +%Y-%m-%dT%H:%M:%S)\n' +
-        '  sqlite3 "$DB_PATH" "INSERT OR IGNORE INTO memories (timestamp, type, content) VALUES ($' +
-        'TIMESTAMP' +
-        ', $' +
-        'action' +
-        ', $' +
-        '[post-session] Session completed at $' +
-        'TIMESTAMP' +
-        '$);" 2>/dev/null || true\n' +
-        'fi\n'
-    );
+    const sessionEndContent =
+      [
+        '#!/usr/bin/env bash',
+        '# UAP Post-Session Hook for Oh-My-Pi',
+        '# Fails safely - never blocks the agent.',
+        'set -euo pipefail',
+        '',
+        'PROJECT_DIR="${UAP_PROJECT_DIR:-.}"',
+        'DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"',
+        'COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"',
+        '',
+        'if [ ! -f "$DB_PATH" ]; then',
+        '  exit 0',
+        'fi',
+        '',
+        'TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")',
+        '',
+        'sqlite3 "$DB_PATH" "',
+        '  INSERT OR IGNORE INTO memories (timestamp, type, content)',
+        "  VALUES ('$TIMESTAMP', 'action', '[post-session] Session completed at $TIMESTAMP');",
+        '" 2>/dev/null || true',
+        '',
+        '# Clean up agent registrations',
+        'if [ -f "$COORD_DB" ]; then',
+        '  sqlite3 "$COORD_DB" "',
+        "    UPDATE agent_registry SET status='completed'",
+        "      WHERE status='active' AND last_heartbeat >= datetime('now','-10 minutes');",
+        '  " 2>/dev/null || true',
+        'fi',
+      ].join('\n') + '\n';
+    writeFileSync(join(hooksPost, 'session-end.sh'), sessionEndContent);
     chmodSync(join(hooksPost, 'session-end.sh'), 0o755);
     console.log(chalk.green('  + .uap/omp/hooks/post/session-end.sh (generated)'));
   }
@@ -478,6 +488,12 @@ async function installOmpHooks(cwd: string): Promise<void> {
       hooks: {
         preSession: '.uap/omp/hooks/pre/session-start.sh',
         postSession: '.uap/omp/hooks/post/session-end.sh',
+      },
+      modelRouting: {
+        planner: 'opus-4.6',
+        executor: 'qwen35',
+        fallback: 'qwen35',
+        strategy: 'balanced',
       },
     },
   };

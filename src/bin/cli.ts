@@ -678,13 +678,15 @@ program
 // Session Hooks - automatic memory injection and pre-compaction flush
 program
   .command('hooks')
-  .description('Manage session hooks for Claude Code, Factory.AI, Cursor, VSCode, OpenCode')
+  .description(
+    'Manage session hooks for Claude Code, Factory.AI, Cursor, VSCode, OpenCode, Oh-My-Pi'
+  )
   .addCommand(
     new Command('install')
       .description('Install UAP session hooks')
       .option(
         '-t, --target <target>',
-        'Target platform: claude, factory, cursor, vscode, opencode (default: all)'
+        'Target platform: claude, factory, cursor, vscode, opencode, omp (default: all)'
       )
       .action((options) =>
         hooksCommand('install', { target: options.target as HooksTarget | undefined })
@@ -695,7 +697,7 @@ program
       .description('Show hooks installation status')
       .option(
         '-t, --target <target>',
-        'Target platform: claude, factory, cursor, vscode, opencode (default: all)'
+        'Target platform: claude, factory, cursor, vscode, opencode, omp (default: all)'
       )
       .action((options) =>
         hooksCommand('status', { target: options.target as HooksTarget | undefined })

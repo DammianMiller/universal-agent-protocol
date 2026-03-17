@@ -7,7 +7,7 @@
 # Fails safely - never blocks the agent.
 set -euo pipefail
 
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-${UAP_PROJECT_DIR:-.}}}}"
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
 COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"
 
