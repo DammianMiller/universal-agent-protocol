@@ -1,6 +1,6 @@
 {
   "name": "@miller-tech/uap",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Autonomous AI agent memory system with CLAUDE.md protocol enforcement",
   "type": "module",
   "main": "dist/index.js",
@@ -66,6 +66,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@miller-tech/uap": "^1.0.0",
     "@octokit/rest": "^20.0.2",
     "@qdrant/js-client-rest": "^1.11.0",
     "better-sqlite3": "^11.0.0",
@@ -81,6 +82,7 @@
     "ora": "^8.0.1",
     "playwright-core": "^1.58.2",
     "simple-git": "^3.22.0",
+    "ws": "^8.19.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -89,6 +91,7 @@
     "@types/inquirer": "^9.0.7",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.11.0",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^6.19.0",
     "@typescript-eslint/parser": "^6.19.0",
     "@vitest/coverage-v8": "^1.6.1",

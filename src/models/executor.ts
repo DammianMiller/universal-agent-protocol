@@ -11,6 +11,7 @@
 import { ExecutionPlan, ExecutionResult, Subtask, ModelConfig, MultiModelConfig } from './types.js';
 import { ModelRouter } from './router.js';
 import { TaskPlanner } from './planner.js';
+import { getModelAnalytics } from './analytics.js';
 
 /**
  * Model client interface for executing prompts
@@ -191,13 +192,15 @@ export class TaskExecutor {
     let lastError: string | undefined;
     let retryCount = 0;
     const baseDelay = this.options.retryDelayMs || 1000;
+    let finalResult: ExecutionResult | undefined;
 
     // Try with primary model (exponential backoff on retries)
     for (let attempt = 0; attempt <= (this.options.maxRetries || 0); attempt++) {
       try {
         const result = await this.attemptExecution(model, subtask, context);
         result.retryCount = retryCount;
-        return result;
+        finalResult = result;
+        break;
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
 
@@ -214,22 +217,49 @@ export class TaskExecutor {
       }
     }
 
-    // Try fallback if enabled
-    if (this.options.enableFallback) {
+    // Try fallback if enabled and primary didn't succeed
+    if (!finalResult && this.options.enableFallback) {
       const fallbackModel = this.router.getModelForRole('fallback');
       if (fallbackModel && fallbackModel.id !== model.id) {
         try {
           const result = await this.attemptExecution(fallbackModel, subtask, context);
           result.retryCount = retryCount;
           result.modelUsed = fallbackModel.id;
-          return result;
+          finalResult = result;
         } catch (error) {
           lastError = error instanceof Error ? error.message : String(error);
         }
       }
     }
 
-    return this.createErrorResult(plan.id, subtaskId, lastError || 'Execution failed', retryCount);
+    // If no successful result, create error result
+    if (!finalResult) {
+      finalResult = this.createErrorResult(
+        plan.id,
+        subtaskId,
+        lastError || 'Execution failed',
+        retryCount
+      );
+    }
+
+    // Record outcome for analytics
+    try {
+      const analytics = getModelAnalytics();
+      analytics.recordOutcome({
+        modelId: finalResult.modelUsed,
+        taskType: subtask.type || 'coding',
+        complexity: subtask.complexity || 'medium',
+        success: finalResult.success,
+        durationMs: finalResult.duration,
+        tokensUsed: finalResult.tokensUsed,
+        cost: finalResult.cost,
+        taskId: finalResult.subtaskId,
+      });
+    } catch {
+      /* analytics should never break execution */
+    }
+
+    return finalResult;
   }
 
   /**

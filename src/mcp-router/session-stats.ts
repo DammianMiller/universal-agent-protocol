@@ -26,12 +26,30 @@ export interface StatsSummary {
   totalRawBytes: number;
   savingsRatio: number;
   savingsPercent: string;
+  modelTokenBudget: number;
+  modelTokensConsumed: number;
+  compressionEvents: number;
   byTool: ToolBreakdown[];
 }
 
 export class SessionStats {
   private startTime = Date.now();
   private calls: ToolCallRecord[] = [];
+  private _modelTokenBudget = 0;
+  private _modelTokensConsumed = 0;
+  private _compressionEvents = 0;
+
+  setModelTokenBudget(budget: number): void {
+    this._modelTokenBudget = budget;
+  }
+
+  addModelTokensConsumed(tokens: number): void {
+    this._modelTokensConsumed += tokens;
+  }
+
+  recordCompressionEvent(): void {
+    this._compressionEvents++;
+  }
 
   record(tool: string, rawBytes: number, contextBytes: number): void {
     this.calls.push({
@@ -46,9 +64,8 @@ export class SessionStats {
     const totalRawBytes = this.calls.reduce((s, c) => s + c.rawBytes, 0);
     const totalContextBytes = this.calls.reduce((s, c) => s + c.contextBytes, 0);
     const savingsRatio = totalContextBytes > 0 ? totalRawBytes / totalContextBytes : 1;
-    const savingsPercent = totalRawBytes > 0
-      ? `${Math.round((1 - totalContextBytes / totalRawBytes) * 100)}%`
-      : '0%';
+    const savingsPercent =
+      totalRawBytes > 0 ? `${Math.round((1 - totalContextBytes / totalRawBytes) * 100)}%` : '0%';
 
     // Aggregate by tool
     const toolMap = new Map<string, { calls: number; contextBytes: number; rawBytes: number }>();
@@ -71,6 +88,9 @@ export class SessionStats {
       totalRawBytes,
       savingsRatio: Math.round(savingsRatio * 10) / 10,
       savingsPercent,
+      modelTokenBudget: this._modelTokenBudget,
+      modelTokensConsumed: this._modelTokensConsumed,
+      compressionEvents: this._compressionEvents,
       byTool,
     };
   }
@@ -78,6 +98,9 @@ export class SessionStats {
   reset(): void {
     this.startTime = Date.now();
     this.calls = [];
+    this._modelTokenBudget = 0;
+    this._modelTokensConsumed = 0;
+    this._compressionEvents = 0;
   }
 
   getCalls(): ReadonlyArray<ToolCallRecord> {

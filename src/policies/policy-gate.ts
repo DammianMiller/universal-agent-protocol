@@ -58,9 +58,10 @@ export class PolicyGate {
   async executeWithGates<T>(
     operation: string,
     args: Record<string, unknown>,
-    executor: () => Promise<T>
+    executor: () => Promise<T>,
+    stage: 'pre-exec' | 'post-exec' | 'review' | 'always' = 'pre-exec'
   ): Promise<T> {
-    const gateResult = await this.checkPolicies(operation, args);
+    const gateResult = await this.checkPolicies(operation, args, stage);
 
     // Log all checks to audit trail
     for (const check of gateResult.checks) {
@@ -93,11 +94,20 @@ export class PolicyGate {
   /**
    * Check policies without executing. Returns the gate result.
    */
-  async checkPolicies(operation: string, args: Record<string, unknown>): Promise<GateResult> {
+  async checkPolicies(
+    operation: string,
+    args: Record<string, unknown>,
+    stage: 'pre-exec' | 'post-exec' | 'review' | 'always' = 'pre-exec'
+  ): Promise<GateResult> {
     const allPolicies = await this.memory.getAllPolicies();
+    // Filter to policies matching this stage or 'always'
+    const stagePolicies = allPolicies.filter(
+      (p: any) =>
+        !p.enforcementStage || p.enforcementStage === stage || p.enforcementStage === 'always'
+    );
     const checks: PolicyCheckResult[] = [];
 
-    for (const policy of allPolicies) {
+    for (const policy of stagePolicies) {
       const check = this.evaluatePolicy(policy, operation, args);
       checks.push(check);
     }

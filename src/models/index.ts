@@ -46,3 +46,7 @@ export {
   listExecutionProfiles,
 } from './execution-profiles.js';
 export type { ExecutionProfile } from './execution-profiles.js';
+
+// Analytics
+export { ModelAnalytics, getModelAnalytics } from './analytics.js';
+export type { TaskOutcome, ModelMetrics, CostBreakdown, SessionModelUsage } from './analytics.js';

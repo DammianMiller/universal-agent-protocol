@@ -20,6 +20,7 @@ export class PolicyMemoryManager {
       name,
       category: (metadata.category as any) || 'custom',
       level: (metadata.level as any) || 'RECOMMENDED',
+      enforcementStage: metadata.enforcementStage || 'pre-exec',
       rawMarkdown,
       tags: metadata.tags || [],
       createdAt: new Date().toISOString(),
@@ -90,6 +91,24 @@ export class PolicyMemoryManager {
 
   async togglePolicy(id: string, active: boolean): Promise<void> {
     this.db.updatePolicy({ id }, { isActive: active });
+  }
+
+  async setEnforcementStage(
+    id: string,
+    stage: 'pre-exec' | 'post-exec' | 'review' | 'always'
+  ): Promise<void> {
+    this.db.updatePolicy({ id }, { enforcementStage: stage, updatedAt: new Date().toISOString() });
+  }
+
+  async setLevel(id: string, level: 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL'): Promise<void> {
+    this.db.updatePolicy({ id }, { level, updatedAt: new Date().toISOString() });
+  }
+
+  async getPoliciesByStage(
+    stage: 'pre-exec' | 'post-exec' | 'review' | 'always'
+  ): Promise<Policy[]> {
+    const results = this.db.findPolicies({ enforcementStage: stage, isActive: true });
+    return results.map((r) => PolicySchema.parse(r));
   }
 
   async searchByTags(tags: string[]): Promise<Policy[]> {

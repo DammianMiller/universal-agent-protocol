@@ -37,6 +37,12 @@ export interface ExecutionProfile {
   config: Partial<AgentExecutionConfig>;
   /** Rationale for this configuration */
   rationale: string;
+  /** Quantization hints for local models (llama.cpp) */
+  quantizationHint?: {
+    low: string; // Quant for simple tasks (faster)
+    medium: string; // Quant for standard tasks
+    high: string; // Quant for complex tasks (better accuracy)
+  };
 }
 
 /**
@@ -83,6 +89,11 @@ const SMALL_MOE_PROFILE: ExecutionProfile = {
   rationale:
     'Proven in 13 Harbor Terminal-Bench runs. Lean instructions + domain hints ' +
     'achieved 40% peak (4/10). Any conversation injection regresses to 20%.',
+  quantizationHint: {
+    low: 'iq2_xs',
+    medium: 'iq4_xs',
+    high: 'q5_k_m',
+  },
 };
 
 /**
@@ -126,6 +137,11 @@ const SMALL_DENSE_PROFILE: ExecutionProfile = {
   rationale:
     'Similar to small MoE. Dense 7-9B models have comparable effective ' +
     'reasoning to 3B-active MoE. Keep instructions lean.',
+  quantizationHint: {
+    low: 'iq2_xs',
+    medium: 'q4_k_m',
+    high: 'q5_k_m',
+  },
 };
 
 /**
@@ -173,6 +189,11 @@ const MEDIUM_PROFILE: ExecutionProfile = {
   rationale:
     'Medium models can handle reflection checkpoints and verifier hints ' +
     'without losing task context. Pre-exec research cached silently.',
+  quantizationHint: {
+    low: 'q4_k_m',
+    medium: 'q5_k_m',
+    high: 'q6_k',
+  },
 };
 
 /**

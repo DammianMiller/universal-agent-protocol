@@ -133,15 +133,15 @@ export class ModelRouter {
 
   private initializeRoles(): void {
     const roles = this.config.roles || {
-      planner: 'opus-4.5',
-      executor: 'glm-4.7',
-      fallback: 'opus-4.5',
+      planner: 'opus-4.6',
+      executor: 'qwen35',
+      fallback: 'qwen35',
     };
 
-    this.roleAssignments.set('planner', roles.planner || 'opus-4.5');
-    this.roleAssignments.set('executor', roles.executor || 'glm-4.7');
-    this.roleAssignments.set('reviewer', roles.reviewer || roles.planner || 'opus-4.5');
-    this.roleAssignments.set('fallback', roles.fallback || 'opus-4.5');
+    this.roleAssignments.set('planner', roles.planner || 'opus-4.6');
+    this.roleAssignments.set('executor', roles.executor || 'qwen35');
+    this.roleAssignments.set('reviewer', roles.reviewer || roles.planner || 'opus-4.6');
+    this.roleAssignments.set('fallback', roles.fallback || 'qwen35');
   }
 
   /**
@@ -208,7 +208,7 @@ export class ModelRouter {
       estimatedTokens,
       requiresPlanning,
       suggestedModel: selection.model.id,
-      fallbackModel: selection.fallback?.id || this.roleAssignments.get('fallback') || 'opus-4.5',
+      fallbackModel: selection.fallback?.id || this.roleAssignments.get('fallback') || 'opus-4.6',
       reasoning: selection.reasoning,
     };
   }
@@ -226,8 +226,8 @@ export class ModelRouter {
 
     // Performance-first: always use the planner (highest-capability model)
     if (strategy === 'performance-first') {
-      const plannerId = this.roleAssignments.get('planner') || 'opus-4.5';
-      const planner = this.models.get(plannerId) || ModelPresets['opus-4.5'];
+      const plannerId = this.roleAssignments.get('planner') || 'opus-4.6';
+      const planner = this.models.get(plannerId) || ModelPresets['opus-4.6'];
       if (planner) {
         return {
           model: planner,
@@ -337,8 +337,8 @@ export class ModelRouter {
 
     // For security-sensitive or critical tasks, use planner (performance)
     if (isSecuritySensitive || complexity === 'critical') {
-      const plannerId = this.roleAssignments.get('planner') || 'opus-4.5';
-      const planner = this.models.get(plannerId) || ModelPresets['opus-4.5'];
+      const plannerId = this.roleAssignments.get('planner') || 'opus-4.6';
+      const planner = this.models.get(plannerId) || ModelPresets['opus-4.6'];
       if (planner) {
         return {
           model: planner,
@@ -352,8 +352,8 @@ export class ModelRouter {
 
     // High complexity tasks → use planner (performance-focused)
     if (complexity === 'high') {
-      const plannerId = this.roleAssignments.get('planner') || 'opus-4.5';
-      const planner = this.models.get(plannerId) || ModelPresets['opus-4.5'];
+      const plannerId = this.roleAssignments.get('planner') || 'opus-4.6';
+      const planner = this.models.get(plannerId) || ModelPresets['opus-4.6'];
       if (planner) {
         return {
           model: planner,
@@ -367,8 +367,8 @@ export class ModelRouter {
 
     // Medium complexity → balanced approach (use configured executor)
     if (complexity === 'medium') {
-      const executorId = this.roleAssignments.get('executor') || 'glm-4.7';
-      const executor = this.models.get(executorId) || ModelPresets['glm-4.7'];
+      const executorId = this.roleAssignments.get('executor') || 'qwen35';
+      const executor = this.models.get(executorId) || ModelPresets['qwen35'];
       const fallbackId = this.roleAssignments.get('fallback');
       const fallback = fallbackId ? this.models.get(fallbackId) : undefined;
 
@@ -454,8 +454,8 @@ export class ModelRouter {
     }
 
     // Default to executor
-    const executorId = this.roleAssignments.get('executor') || 'glm-4.7';
-    const defaultExecutor = ModelPresets['glm-4.7'];
+    const executorId = this.roleAssignments.get('executor') || 'qwen35';
+    const defaultExecutor = ModelPresets['qwen35'];
     const executor = this.models.get(executorId) || defaultExecutor;
     const fallbackId = this.roleAssignments.get('fallback');
     const fallback = fallbackId ? this.models.get(fallbackId) : undefined;
@@ -572,6 +572,22 @@ export class ModelRouter {
       costComparison,
     };
   }
+
+  /**
+   * Get default configuration with opus-4.6 for planning and qwen35 for execution
+   */
+  public static getDefaultUAPConfig(): MultiModelConfig {
+    return {
+      enabled: true,
+      models: ['opus-4.6', 'qwen35'],
+      roles: {
+        planner: 'opus-4.6',
+        executor: 'qwen35',
+        fallback: 'qwen35',
+      },
+      routingStrategy: 'balanced',
+    };
+  }
 }
 
 /**
@@ -619,4 +635,11 @@ export function createPerformanceRouter(): ModelRouter {
     },
     routingStrategy: 'performance-first',
   });
+}
+
+/**
+ * Default UAP router with opus-4.6 for planning and qwen35 for execution
+ */
+export function createUAPRouter(): ModelRouter {
+  return new ModelRouter(ModelRouter.getDefaultUAPConfig());
 }

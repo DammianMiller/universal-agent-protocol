@@ -56,6 +56,7 @@ program
   .command('list')
   .description('List all active policies')
   .option('-c, --category <name>', 'Filter by category')
+  .option('--all', 'Show inactive policies too')
   .action(async (options) => {
     const memory = getPolicyMemoryManager();
     let policies;
@@ -65,20 +66,27 @@ program
       policies = await memory.getAllPolicies();
     }
 
-    console.log('Active Policies:\n');
-    for (const policy of policies) {
-      const icon =
-        policy.level === 'REQUIRED'
-          ? '[REQUIRED]'
-          : policy.level === 'RECOMMENDED'
-            ? '[RECOMMENDED]'
-            : '[OPTIONAL]';
-      console.log(`  ${icon} ${policy.name} (${policy.category})`);
-      console.log(`     ID: ${policy.id}`);
-      console.log(`     Tags: ${policy.tags.join(', ') || 'None'}`);
-      console.log(`     Tools: ${(policy.executableTools || []).join(', ') || 'None'}`);
-      console.log('');
+    if (policies.length === 0) {
+      console.log('No policies found.');
+      return;
     }
+
+    console.log('Policies:\n');
+    console.log(
+      `  ${'Name'.padEnd(30)} ${'Level'.padEnd(14)} ${'Stage'.padEnd(12)} ${'Category'.padEnd(12)} Status`
+    );
+    console.log(
+      `  ${'─'.repeat(30)} ${'─'.repeat(14)} ${'─'.repeat(12)} ${'─'.repeat(12)} ${'─'.repeat(8)}`
+    );
+    for (const policy of policies) {
+      const status = policy.isActive ? 'ON' : 'OFF';
+      const stage = (policy as any).enforcementStage || 'pre-exec';
+      console.log(
+        `  ${policy.name.slice(0, 30).padEnd(30)} ${policy.level.padEnd(14)} ${stage.padEnd(12)} ${policy.category.padEnd(12)} ${status}`
+      );
+      console.log(`  ${('  ID: ' + policy.id).padEnd(30)}`);
+    }
+    console.log('');
   });
 
 program
@@ -149,6 +157,63 @@ program
       if (entry.reason) console.log(`     Reason: ${entry.reason}`);
       console.log('');
     }
+  });
+
+program
+  .command('toggle <id>')
+  .description('Toggle a policy on or off')
+  .option('--on', 'Enable the policy')
+  .option('--off', 'Disable the policy')
+  .action(async (id: string, options: { on?: boolean; off?: boolean }) => {
+    const memory = getPolicyMemoryManager();
+    const policy = await memory.getPolicy(id);
+    if (!policy) {
+      console.error(`Policy ${id} not found`);
+      process.exit(1);
+    }
+    const newState = options.off ? false : options.on ? true : !policy.isActive;
+    await memory.togglePolicy(id, newState);
+    console.log(`Policy "${policy.name}" is now ${newState ? 'ACTIVE' : 'INACTIVE'}`);
+  });
+
+program
+  .command('stage <id>')
+  .description('Change the enforcement stage of a policy')
+  .requiredOption('-s, --stage <stage>', 'Enforcement stage: pre-exec, post-exec, review, always')
+  .action(async (id: string, options: { stage: string }) => {
+    const validStages = ['pre-exec', 'post-exec', 'review', 'always'];
+    if (!validStages.includes(options.stage)) {
+      console.error(`Invalid stage "${options.stage}". Must be one of: ${validStages.join(', ')}`);
+      process.exit(1);
+    }
+    const memory = getPolicyMemoryManager();
+    const policy = await memory.getPolicy(id);
+    if (!policy) {
+      console.error(`Policy ${id} not found`);
+      process.exit(1);
+    }
+    await memory.setEnforcementStage(id, options.stage as any);
+    console.log(`Policy "${policy.name}" enforcement stage set to: ${options.stage}`);
+  });
+
+program
+  .command('level <id>')
+  .description('Change the enforcement level of a policy')
+  .requiredOption('-l, --level <level>', 'Enforcement level: REQUIRED, RECOMMENDED, OPTIONAL')
+  .action(async (id: string, options: { level: string }) => {
+    const validLevels = ['REQUIRED', 'RECOMMENDED', 'OPTIONAL'];
+    if (!validLevels.includes(options.level)) {
+      console.error(`Invalid level "${options.level}". Must be one of: ${validLevels.join(', ')}`);
+      process.exit(1);
+    }
+    const memory = getPolicyMemoryManager();
+    const policy = await memory.getPolicy(id);
+    if (!policy) {
+      console.error(`Policy ${id} not found`);
+      process.exit(1);
+    }
+    await memory.setLevel(id, options.level as any);
+    console.log(`Policy "${policy.name}" enforcement level set to: ${options.level}`);
   });
 
 program.parse();

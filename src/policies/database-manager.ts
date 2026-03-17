@@ -64,6 +64,24 @@ export class DatabaseManager {
       CREATE INDEX IF NOT EXISTS idx_policy_exec_policy ON policy_executions(policyId);
       CREATE INDEX IF NOT EXISTS idx_policy_exec_time ON policy_executions(executedAt);
     `);
+
+    // Migration: add enforcementStage column if not present
+    const columns = this.db.prepare('PRAGMA table_info(policies)').all() as Array<{ name: string }>;
+    const hasEnforcementStage = columns.some((c) => c.name === 'enforcementStage');
+    if (!hasEnforcementStage) {
+      this.db.exec(
+        "ALTER TABLE policies ADD COLUMN enforcementStage TEXT NOT NULL DEFAULT 'pre-exec'"
+      );
+    }
+
+    // Migration: add taskId column to policy_executions if not present
+    const execColumns = this.db.prepare('PRAGMA table_info(policy_executions)').all() as Array<{
+      name: string;
+    }>;
+    const hasTaskId = execColumns.some((c) => c.name === 'taskId');
+    if (!hasTaskId) {
+      this.db.exec('ALTER TABLE policy_executions ADD COLUMN taskId TEXT');
+    }
   }
 
   // --- Serialization helpers ---
@@ -197,8 +215,9 @@ export class DatabaseManager {
     result: unknown;
     allowed: boolean;
     reason: string;
+    taskId?: string;
   }): void {
-    const sql = `INSERT INTO policy_executions (policyId, toolName, operation, args, result, allowed, reason, executedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+    const sql = `INSERT INTO policy_executions (policyId, toolName, operation, args, result, allowed, reason, executedAt, taskId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     this.db
       .prepare(sql)
       .run(
@@ -209,7 +228,8 @@ export class DatabaseManager {
         JSON.stringify(data.result),
         data.allowed ? 1 : 0,
         data.reason,
-        new Date().toISOString()
+        new Date().toISOString(),
+        data.taskId || null
       );
   }
 

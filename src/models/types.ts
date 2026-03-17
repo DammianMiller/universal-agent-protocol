@@ -31,6 +31,7 @@ export const ModelConfigSchemaModels = z.object({
   costPer1MInput: z.number().optional(),
   costPer1MOutput: z.number().optional(),
   capabilities: z.array(z.string()).default([]),
+  modelContextBudget: z.number().optional(), // Effective context sweet spot (may be less than maxContextTokens)
 });
 
 export type ModelConfig = z.infer<typeof ModelConfigSchemaModels>;
@@ -49,6 +50,24 @@ export const ModelPresets: Record<string, ModelConfig> = {
     costPer1MInput: 5.0,
     costPer1MOutput: 25.0,
     capabilities: ['planning', 'complex-reasoning', 'code-generation', 'review'],
+  },
+  'opus-4.6': {
+    id: 'opus-4.6',
+    name: 'Claude Opus 4.6',
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-6-20260101',
+    apiKeyEnvVar: 'ANTHROPIC_API_KEY',
+    maxContextTokens: 200000,
+    costPer1MInput: 7.5,
+    costPer1MOutput: 37.5,
+    capabilities: [
+      'planning',
+      'complex-reasoning',
+      'code-generation',
+      'review',
+      'advanced-planning',
+    ],
+    modelContextBudget: 180000,
   },
   'deepseek-v3.2': {
     id: 'deepseek-v3.2',
@@ -126,6 +145,19 @@ export const ModelPresets: Record<string, ModelConfig> = {
     costPer1MInput: 0,
     costPer1MOutput: 0,
     capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
+    modelContextBudget: 32768,
+  },
+  qwen35: {
+    id: 'qwen35',
+    name: 'Qwen 3.5',
+    provider: 'custom',
+    apiModel: 'qwen3.5',
+    endpoint: 'http://localhost:8080/v1',
+    maxContextTokens: 262144,
+    costPer1MInput: 0,
+    costPer1MOutput: 0,
+    capabilities: ['code-generation', 'execution', 'planning'],
+    modelContextBudget: 32768,
   },
 };
 
@@ -202,6 +234,17 @@ export const MultiModelConfigSchema = z.object({
       // Auto-fallback threshold (failures before escalating)
       fallbackThreshold: z.number().default(3),
     })
+    .optional(),
+
+  // Custom routing matrix override
+  routingMatrix: z
+    .record(
+      z.enum(['low', 'medium', 'high', 'critical']),
+      z.object({
+        planner: z.string(),
+        executor: z.string(),
+      })
+    )
     .optional(),
 
   // Routing behavior

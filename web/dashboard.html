@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>UAP Dashboard</title>
+    <style>
+      :root {
+        --bg: #0d1117;
+        --bg2: #161b22;
+        --bg3: #21262d;
+        --fg: #c9d1d9;
+        --fg2: #8b949e;
+        --fg3: #484f58;
+        --cyan: #58a6ff;
+        --green: #3fb950;
+        --yellow: #d29922;
+        --red: #f85149;
+        --purple: #bc8cff;
+        --orange: #d18616;
+        --border: #30363d;
+        --radius: 8px;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+        background: var(--bg);
+        color: var(--fg);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 16px;
+      }
+      header h1 {
+        font-size: 18px;
+        color: var(--cyan);
+        font-weight: 600;
+      }
+      .status-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 6px;
+      }
+      .status-dot.connected {
+        background: var(--green);
+      }
+      .status-dot.disconnected {
+        background: var(--red);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+        gap: 16px;
+      }
+      .panel {
+        background: var(--bg2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px;
+      }
+      .panel h2 {
+        font-size: 14px;
+        color: var(--cyan);
+        margin-bottom: 12px;
+        font-weight: 600;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 8px;
+      }
+      .panel h3 {
+        font-size: 12px;
+        color: var(--fg2);
+        margin: 12px 0 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .kv {
+        display: flex;
+        justify-content: space-between;
+        padding: 3px 0;
+      }
+      .kv .label {
+        color: var(--fg2);
+      }
+      .kv .value {
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .kv .value.green {
+        color: var(--green);
+      }
+      .kv .value.yellow {
+        color: var(--yellow);
+      }
+      .kv .value.red {
+        color: var(--red);
+      }
+      .kv .value.cyan {
+        color: var(--cyan);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      th {
+        text-align: left;
+        color: var(--fg2);
+        font-weight: 500;
+        padding: 4px 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      td {
+        padding: 4px 8px;
+        border-bottom: 1px solid var(--bg3);
+      }
+      .badge {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .badge.required {
+        background: rgba(248, 81, 73, 0.15);
+        color: var(--red);
+      }
+      .badge.recommended {
+        background: rgba(210, 153, 34, 0.15);
+        color: var(--yellow);
+      }
+      .badge.optional {
+        background: rgba(72, 79, 88, 0.15);
+        color: var(--fg3);
+      }
+      .badge.on {
+        background: rgba(63, 185, 80, 0.15);
+        color: var(--green);
+      }
+      .badge.off {
+        background: rgba(248, 81, 73, 0.15);
+        color: var(--red);
+      }
+      .bar-container {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 3px 0;
+      }
+      .bar-label {
+        width: 80px;
+        color: var(--fg2);
+        font-size: 12px;
+      }
+      .bar {
+        height: 14px;
+        border-radius: 3px;
+        min-width: 2px;
+        transition: width 0.3s;
+      }
+      .bar.cyan {
+        background: var(--cyan);
+      }
+      .bar.green {
+        background: var(--green);
+      }
+      .bar.yellow {
+        background: var(--yellow);
+      }
+      .bar.red {
+        background: var(--red);
+      }
+      .bar-value {
+        color: var(--fg2);
+        font-size: 11px;
+        min-width: 20px;
+      }
+      .btn {
+        background: var(--bg3);
+        border: 1px solid var(--border);
+        color: var(--fg);
+        padding: 3px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 11px;
+        font-family: inherit;
+      }
+      .btn:hover {
+        background: var(--border);
+      }
+      .btn.active {
+        background: var(--cyan);
+        color: var(--bg);
+        border-color: var(--cyan);
+      }
+      select {
+        background: var(--bg3);
+        border: 1px solid var(--border);
+        color: var(--fg);
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-family: inherit;
+      }
+      .audit-row {
+        display: flex;
+        gap: 8px;
+        padding: 3px 0;
+        font-size: 12px;
+        border-bottom: 1px solid var(--bg3);
+      }
+      .audit-time {
+        color: var(--fg3);
+        width: 140px;
+        flex-shrink: 0;
+      }
+      .audit-icon {
+        width: 40px;
+        flex-shrink: 0;
+        font-weight: 600;
+      }
+      .audit-icon.pass {
+        color: var(--green);
+      }
+      .audit-icon.block {
+        color: var(--red);
+      }
+      .audit-op {
+        color: var(--fg);
+        flex: 1;
+      }
+      .audit-reason {
+        color: var(--fg3);
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .full-width {
+        grid-column: 1 / -1;
+      }
+      .empty {
+        color: var(--fg3);
+        font-style: italic;
+        padding: 8px 0;
+      }
+      .refresh-info {
+        color: var(--fg3);
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>UAP Dashboard</h1>
+        <div>
+          <span class="status-dot disconnected" id="ws-status"></span>
+          <span class="refresh-info" id="refresh-info">Connecting...</span>
+        </div>
+      </header>
+
+      <div class="grid">
+        <!-- System -->
+        <div class="panel">
+          <h2>System</h2>
+          <div id="system-panel">
+            <div class="kv">
+              <span class="label">Version</span><span class="value" id="sys-version">-</span>
+            </div>
+            <div class="kv">
+              <span class="label">Branch</span><span class="value cyan" id="sys-branch">-</span>
+            </div>
+            <div class="kv">
+              <span class="label">Uncommitted</span><span class="value" id="sys-dirty">-</span>
+            </div>
+          </div>
+          <h3>Tasks</h3>
+          <div id="task-panel">
+            <div class="kv">
+              <span class="label">Total</span><span class="value" id="task-total">0</span>
+            </div>
+            <div class="kv">
+              <span class="label">Done</span><span class="value green" id="task-done">0</span>
+            </div>
+            <div class="kv">
+              <span class="label">In Progress</span
+              ><span class="value cyan" id="task-progress">0</span>
+            </div>
+            <div class="kv">
+              <span class="label">Blocked</span><span class="value red" id="task-blocked">0</span>
+            </div>
+            <div class="kv">
+              <span class="label">Open</span><span class="value" id="task-open">0</span>
+            </div>
+          </div>
+          <h3>Coordination</h3>
+          <div id="coord-panel">
+            <div class="kv">
+              <span class="label">Active Agents</span><span class="value" id="coord-agents">0</span>
+            </div>
+            <div class="kv">
+              <span class="label">Resource Claims</span
+              ><span class="value" id="coord-claims">0</span>
+            </div>
+            <div class="kv">
+              <span class="label">Pending Deploys</span
+              ><span class="value" id="coord-deploys">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Models -->
+        <div class="panel">
+          <h2>Models</h2>
+          <div id="model-roles"></div>
+          <h3>Session Usage</h3>
+          <div id="model-usage"></div>
+          <div
+            class="kv"
+            style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px"
+          >
+            <span class="label" style="font-weight: 600">Total Cost</span>
+            <span class="value green" id="model-cost">$0.0000</span>
+          </div>
+        </div>
+
+        <!-- Memory -->
+        <div class="panel">
+          <h2>Memory</h2>
+          <div id="memory-panel">
+            <div class="kv">
+              <span class="label">L1 Working</span><span class="value" id="mem-l1">-</span>
+            </div>
+            <div class="kv">
+              <span class="label">L2 Session</span><span class="value" id="mem-l2">-</span>
+            </div>
+            <div class="kv">
+              <span class="label">L3 Semantic</span><span class="value" id="mem-l3">-</span>
+            </div>
+            <div class="kv">
+              <span class="label">L4 Knowledge</span><span class="value" id="mem-l4">-</span>
+            </div>
+          </div>
+          <h3>Context Compression</h3>
+          <div id="compression-panel">
+            <div class="kv">
+              <span class="label">Raw</span><span class="value" id="comp-raw">0 KB</span>
+            </div>
+            <div class="kv">
+              <span class="label">Compressed</span><span class="value" id="comp-ctx">0 KB</span>
+            </div>
+            <div class="kv">
+              <span class="label">Savings</span
+              ><span class="value green" id="comp-savings">0%</span>
+            </div>
+            <div class="kv">
+              <span class="label">Tool Calls</span><span class="value" id="comp-calls">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Policies -->
+        <div class="panel full-width">
+          <h2>Policies</h2>
+          <div id="policy-table"></div>
+          <h3>Enforcement Stages</h3>
+          <div id="policy-stages"></div>
+        </div>
+
+        <!-- Audit Trail -->
+        <div class="panel full-width">
+          <h2>Audit Trail</h2>
+          <div id="audit-trail"></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const WS_URL = `ws://${location.host}`;
+      const API_URL = `http://${location.host}`;
+      let ws = null;
+      let reconnectTimer = null;
+
+      function connect() {
+        ws = new WebSocket(WS_URL);
+        ws.onopen = () => {
+          document.getElementById('ws-status').className = 'status-dot connected';
+          document.getElementById('refresh-info').textContent = 'Live';
+        };
+        ws.onmessage = (e) => {
+          try {
+            render(JSON.parse(e.data));
+          } catch {}
+          document.getElementById('refresh-info').textContent =
+            'Live - ' + new Date().toLocaleTimeString();
+        };
+        ws.onclose = () => {
+          document.getElementById('ws-status').className = 'status-dot disconnected';
+          document.getElementById('refresh-info').textContent = 'Disconnected - reconnecting...';
+          reconnectTimer = setTimeout(connect, 3000);
+        };
+        ws.onerror = () => ws.close();
+      }
+
+      function render(data) {
+        // System
+        setText('sys-version', 'v' + data.system.version);
+        setText('sys-branch', data.system.branch);
+        const dirtyEl = document.getElementById('sys-dirty');
+        dirtyEl.textContent = data.system.dirty > 0 ? data.system.dirty + ' files' : 'clean';
+        dirtyEl.className = 'value ' + (data.system.dirty > 0 ? 'yellow' : 'green');
+
+        // Tasks
+        setText('task-total', data.tasks.total);
+        setText('task-done', data.tasks.done);
+        setText('task-progress', data.tasks.inProgress);
+        setText('task-blocked', data.tasks.blocked);
+        setText('task-open', data.tasks.open);
+
+        // Coordination
+        setText('coord-agents', data.coordination.activeAgents);
+        setText('coord-claims', data.coordination.activeClaims);
+        setText('coord-deploys', data.coordination.pendingDeploys);
+
+        // Models
+        const roles = data.models.roles;
+        let rolesHtml = '';
+        for (const [role, model] of Object.entries(roles)) {
+          const color = role === 'planner' ? 'green' : role === 'executor' ? 'cyan' : '';
+          rolesHtml += `<div class="kv"><span class="label">${capitalize(role)}</span><span class="value ${color}">${model}</span></div>`;
+        }
+        rolesHtml += `<div class="kv"><span class="label">Strategy</span><span class="value cyan">${data.models.strategy}</span></div>`;
+        document.getElementById('model-roles').innerHTML = rolesHtml;
+
+        if (data.models.sessionUsage.length > 0) {
+          let usageHtml =
+            '<table><tr><th>Model</th><th>Tasks</th><th>Tokens In</th><th>Out</th><th>Cost</th><th>Success</th></tr>';
+          for (const u of data.models.sessionUsage) {
+            usageHtml += `<tr><td style="color:var(--cyan)">${u.modelId}</td><td>${u.taskCount}</td><td>${fmt(u.totalTokensIn)}</td><td>${fmt(u.totalTokensOut)}</td><td>$${u.totalCost.toFixed(4)}</td><td>${(u.successRate * 100).toFixed(0)}%</td></tr>`;
+          }
+          usageHtml += '</table>';
+          document.getElementById('model-usage').innerHTML = usageHtml;
+        } else {
+          document.getElementById('model-usage').innerHTML =
+            '<div class="empty">No usage recorded</div>';
+        }
+        setText('model-cost', '$' + data.models.totalCost.toFixed(4));
+
+        // Memory
+        setText('mem-l1', data.memory.l1.entries + ' entries (' + data.memory.l1.sizeKB + ' KB)');
+        setText('mem-l2', data.memory.l2.entries + ' entries');
+        const l3El = document.getElementById('mem-l3');
+        l3El.textContent =
+          data.memory.l3.status === 'Running' ? 'Qdrant ' + data.memory.l3.uptime : 'Stopped';
+        l3El.className = 'value ' + (data.memory.l3.status === 'Running' ? 'green' : 'yellow');
+        setText(
+          'mem-l4',
+          data.memory.l4.entities + ' entities, ' + data.memory.l4.relationships + ' rels'
+        );
+
+        // Compression
+        setText('comp-raw', Math.round(data.memory.compression.rawBytes / 1024) + ' KB');
+        setText('comp-ctx', Math.round(data.memory.compression.contextBytes / 1024) + ' KB');
+        setText('comp-savings', data.memory.compression.savingsPercent);
+        setText('comp-calls', data.memory.compression.totalCalls);
+
+        // Policies
+        if (data.policies.length > 0) {
+          let pHtml =
+            '<table><tr><th>Name</th><th>Level</th><th>Stage</th><th>Category</th><th>Status</th><th>Actions</th></tr>';
+          for (const p of data.policies) {
+            const levelClass = p.level.toLowerCase();
+            const statusClass = p.isActive ? 'on' : 'off';
+            pHtml += `<tr>
+        <td>${esc(p.name)}</td>
+        <td><span class="badge ${levelClass}">${p.level}</span></td>
+        <td>${p.enforcementStage}</td>
+        <td>${p.category}</td>
+        <td><span class="badge ${statusClass}">${p.isActive ? 'ON' : 'OFF'}</span></td>
+        <td>
+          <button class="btn" onclick="togglePolicy('${p.id}')">${p.isActive ? 'Disable' : 'Enable'}</button>
+          <select onchange="setStage('${p.id}', this.value)">
+            ${['pre-exec', 'post-exec', 'review', 'always'].map((s) => `<option value="${s}" ${s === p.enforcementStage ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+          <select onchange="setLevel('${p.id}', this.value)">
+            ${['REQUIRED', 'RECOMMENDED', 'OPTIONAL'].map((l) => `<option value="${l}" ${l === p.level ? 'selected' : ''}>${l}</option>`).join('')}
+          </select>
+        </td>
+      </tr>`;
+          }
+          pHtml += '</table>';
+          document.getElementById('policy-table').innerHTML = pHtml;
+
+          // Stage bars
+          const stages = { 'pre-exec': 0, 'post-exec': 0, review: 0, always: 0 };
+          for (const p of data.policies)
+            stages[p.enforcementStage] = (stages[p.enforcementStage] || 0) + 1;
+          const maxStage = Math.max(...Object.values(stages), 1);
+          let stageHtml = '';
+          for (const [stage, count] of Object.entries(stages)) {
+            const w = Math.round((count / maxStage) * 200);
+            stageHtml += `<div class="bar-container"><span class="bar-label">${stage}</span><div class="bar cyan" style="width:${w}px"></div><span class="bar-value">${count}</span></div>`;
+          }
+          document.getElementById('policy-stages').innerHTML = stageHtml;
+        } else {
+          document.getElementById('policy-table').innerHTML =
+            '<div class="empty">No policies configured</div>';
+          document.getElementById('policy-stages').innerHTML = '';
+        }
+
+        // Audit trail
+        if (data.auditTrail.length > 0) {
+          let aHtml = '';
+          for (const e of data.auditTrail.slice(0, 15)) {
+            const cls = e.allowed ? 'pass' : 'block';
+            const icon = e.allowed ? 'PASS' : 'BLOCK';
+            aHtml += `<div class="audit-row"><span class="audit-time">${e.executedAt.slice(0, 19)}</span><span class="audit-icon ${cls}">${icon}</span><span class="audit-op">${esc(e.operation)}</span><span class="audit-reason">${esc(e.reason)}</span></div>`;
+          }
+          document.getElementById('audit-trail').innerHTML = aHtml;
+        } else {
+          document.getElementById('audit-trail').innerHTML =
+            '<div class="empty">No audit entries</div>';
+        }
+      }
+
+      // API actions
+      async function togglePolicy(id) {
+        try {
+          await fetch(`${API_URL}/api/policy/${id}/toggle`, { method: 'POST' });
+        } catch {}
+      }
+      async function setStage(id, stage) {
+        try {
+          await fetch(`${API_URL}/api/policy/${id}/stage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ stage }),
+          });
+        } catch {}
+      }
+      async function setLevel(id, level) {
+        try {
+          await fetch(`${API_URL}/api/policy/${id}/level`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ level }),
+          });
+        } catch {}
+      }
+
+      // Helpers
+      function setText(id, val) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = String(val);
+      }
+      function fmt(n) {
+        return n >= 1000000
+          ? (n / 1000000).toFixed(1) + 'M'
+          : n >= 1000
+            ? (n / 1000).toFixed(1) + 'K'
+            : String(n);
+      }
+      function capitalize(s) {
+        return s.charAt(0).toUpperCase() + s.slice(1);
+      }
+      function esc(s) {
+        const d = document.createElement('div');
+        d.textContent = s || '';
+        return d.innerHTML;
+      }
+
+      // Start
+      connect();
+
+      // Fallback: poll if WS fails
+      setInterval(async () => {
+        if (ws && ws.readyState === WebSocket.OPEN) return;
+        try {
+          const res = await fetch(API_URL + '/api/dashboard');
+          const data = await res.json();
+          render(data);
+          document.getElementById('refresh-info').textContent =
+            'Polling - ' + new Date().toLocaleTimeString();
+        } catch {}
+      }, 5000);
+    </script>
+  </body>
+</html>

@@ -20,7 +20,13 @@ import { classifyTask, type TaskClassification } from './task-classifier.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-export type ModelId = 'glm-4.7' | 'gpt-5.2' | 'claude-opus-4.5' | 'gpt-5.2-codex';
+export type ModelId =
+  | 'glm-4.7'
+  | 'gpt-5.2'
+  | 'claude-opus-4.5'
+  | 'gpt-5.2-codex'
+  | 'claude-opus-4.6'
+  | 'qwen35';
 
 export interface CategoryStats {
   attempts: number;
@@ -61,7 +67,14 @@ const DEFAULT_CONFIG: RoutingConfig = {
   preferAccuracy: true,
   maxCostPerTask: 0.05,
   maxLatencyMs: 120000,
-  availableModels: ['glm-4.7', 'gpt-5.2', 'claude-opus-4.5', 'gpt-5.2-codex'],
+  availableModels: [
+    'glm-4.7',
+    'gpt-5.2',
+    'claude-opus-4.5',
+    'gpt-5.2-codex',
+    'claude-opus-4.6',
+    'qwen35',
+  ],
 };
 
 // OPTIMIZATION 5: Pre-seeded with benchmark data for per-category routing
@@ -136,6 +149,50 @@ const MODEL_FINGERPRINTS: Record<ModelId, ModelFingerprint> = {
       testing: { attempts: 5, successes: 5 },
       security: { attempts: 3, successes: 3 },
       'file-ops': { attempts: 3, successes: 2 },
+    },
+  },
+  'claude-opus-4.6': {
+    id: 'claude-opus-4.6',
+    strengths: [
+      'accuracy',
+      'complex-reasoning',
+      'edge-cases',
+      'error-handling',
+      'refactoring',
+      'advanced-planning',
+    ],
+    weaknesses: ['latency', 'cost'],
+    avgLatencyMs: 24000,
+    successRate: 0.9,
+    costPerTask: 0.03,
+    maxComplexity: 'hard',
+    bestCategories: ['security', 'coding', 'sysadmin', 'debugging', 'constraint-satisfaction'],
+    categoryStats: {
+      security: { attempts: 8, successes: 8 },
+      coding: { attempts: 8, successes: 7 },
+      sysadmin: { attempts: 5, successes: 5 },
+      debugging: { attempts: 5, successes: 5 },
+      'file-ops': { attempts: 5, successes: 4 },
+      'ml-training': { attempts: 3, successes: 3 },
+      'constraint-satisfaction': { attempts: 3, successes: 3 },
+    },
+  },
+  qwen35: {
+    id: 'qwen35',
+    strengths: ['speed', 'code-generation', 'simple-tasks', 'low-cost'],
+    weaknesses: ['complex-reasoning', 'long-context', 'multi-step-code'],
+    avgLatencyMs: 8000,
+    successRate: 0.6,
+    costPerTask: 0.0,
+    maxComplexity: 'medium',
+    bestCategories: ['coding', 'testing', 'file-ops'],
+    categoryStats: {
+      coding: { attempts: 8, successes: 5 },
+      testing: { attempts: 5, successes: 3 },
+      'file-ops': { attempts: 4, successes: 3 },
+      debugging: { attempts: 4, successes: 2 },
+      security: { attempts: 3, successes: 1 },
+      sysadmin: { attempts: 3, successes: 1 },
     },
   },
 };

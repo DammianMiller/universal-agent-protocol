@@ -5,6 +5,7 @@ export const PolicySchema = z.object({
   name: z.string(),
   category: z.enum(['image', 'code', 'security', 'testing', 'ui', 'automation', 'custom']),
   level: z.enum(['REQUIRED', 'RECOMMENDED', 'OPTIONAL']),
+  enforcementStage: z.enum(['pre-exec', 'post-exec', 'review', 'always']).default('pre-exec'),
   rawMarkdown: z.string(),
   convertedFormat: z.string().optional(),
   executableTools: z.array(z.string()).optional(),

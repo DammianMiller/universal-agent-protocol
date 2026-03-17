@@ -358,6 +358,12 @@ const MODELS: ModelConfig[] = [
     provider: 'openai',
     apiModel: 'gpt-5.2',
   },
+  {
+    id: 'qwen35-a3b',
+    name: 'Qwen 3.5 35B A3B',
+    provider: 'local',
+    apiModel: 'qwen35-a3b-iq4xs',
+  },
 ];
 
 // ============================================================================

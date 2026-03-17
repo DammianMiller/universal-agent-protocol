@@ -18,7 +18,7 @@ import {
   createExecutor,
   MockModelClient,
   ModelPresets,
-  MultiModelConfig,
+  type MultiModelConfig,
 } from '../models/index.js';
 import { AgentContextConfig, MultiModelSchema } from '../types/config.js';
 
@@ -47,12 +47,12 @@ function getMultiModelConfig(config: AgentContextConfig | null): MultiModelConfi
   }
   // Return default config
   return MultiModelSchema.parse({
-    enabled: false,
-    models: ['opus-4.5'],
+    enabled: true,
+    models: ['opus-4.6', 'qwen35'],
     roles: {
-      planner: 'opus-4.5',
-      executor: 'opus-4.5',
-      fallback: 'opus-4.5',
+      planner: 'opus-4.6',
+      executor: 'qwen35',
+      fallback: 'qwen35',
     },
     routingStrategy: 'balanced',
   });
@@ -90,14 +90,14 @@ async function statusCommand(): Promise<void> {
 
   console.log(chalk.bold('Role Assignments:'));
   const roles = mmConfig.roles || {
-    planner: 'opus-4.5',
-    executor: 'glm-4.7',
-    fallback: 'opus-4.5',
+    planner: 'opus-4.6',
+    executor: 'qwen35',
+    fallback: 'qwen35',
   };
-  console.log(`  Planner:  ${chalk.green(roles.planner || 'opus-4.5')}`);
-  console.log(`  Executor: ${chalk.blue(roles.executor || 'glm-4.7')}`);
-  console.log(`  Reviewer: ${chalk.yellow(roles.reviewer || roles.planner || 'opus-4.5')}`);
-  console.log(`  Fallback: ${chalk.red(roles.fallback || 'opus-4.5')}`);
+  console.log(`  Planner:  ${chalk.green(roles.planner || 'opus-4.6')}`);
+  console.log(`  Executor: ${chalk.blue(roles.executor || 'qwen35')}`);
+  console.log(`  Reviewer: ${chalk.yellow(roles.reviewer || roles.planner || 'opus-4.6')}`);
+  console.log(`  Fallback: ${chalk.red(roles.fallback || 'qwen35')}`);
   console.log();
 
   if (mmConfig.costOptimization?.enabled) {

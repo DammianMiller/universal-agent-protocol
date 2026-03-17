@@ -57,6 +57,7 @@ export interface TaskMetadata {
   historical_uap_benefit?: number;
   // OPT 10: Cache key for semantic caching
   cacheKey?: string;
+  modelContextBudget?: number;
 }
 
 export interface HistoricalData {
@@ -1074,6 +1075,10 @@ export function decideContextLevel(
   if (timeoutSec < 120) {
     const cappedSections: string[] = [];
     let tokenBudget = TIME_CRITICAL_MAX_TOKENS;
+    // Respect model context budget if provided
+    if (metadata?.modelContextBudget && metadata.modelContextBudget < tokenBudget) {
+      tokenBudget = metadata.modelContextBudget;
+    }
     for (const section of relevantSections) {
       const sectionTokens = CONTEXT_SECTIONS[section]?.tokens || 0;
       if (tokenBudget - sectionTokens >= 0) {
