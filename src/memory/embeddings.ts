@@ -13,6 +13,7 @@
 
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
+import { concurrentMap } from '../utils/concurrency-pool.js';
 
 export interface EmbeddingProvider {
   name: string;
@@ -225,9 +226,8 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
-    // Ollama doesn't have native batch, but we can parallelize
-    const results = await Promise.all(texts.map((t) => this.embed(t)));
-    return results;
+    // Ollama doesn't have native batch -- use bounded concurrency
+    return concurrentMap(texts, (t) => this.embed(t));
   }
 }
 
@@ -402,7 +402,7 @@ export class TFIDFEmbeddingProvider implements EmbeddingProvider {
   async embedBatch(texts: string[]): Promise<number[][]> {
     // Update IDF scores with new documents
     this.updateIDF(texts);
-    return Promise.all(texts.map((t) => this.embed(t)));
+    return concurrentMap(texts, (t) => this.embed(t));
   }
 
   addDocument(text: string): void {

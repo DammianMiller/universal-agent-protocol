@@ -12,6 +12,9 @@ import { ExecutionPlan, ExecutionResult, Subtask, ModelConfig, MultiModelConfig 
 import { ModelRouter } from './router.js';
 import { TaskPlanner } from './planner.js';
 import { getModelAnalytics } from './analytics.js';
+import { getMaxParallel, isParallelEnabled } from '../utils/system-resources.js';
+import { concurrentMap } from '../utils/concurrency-pool.js';
+import { getTaskEventBus } from '../tasks/event-bus.js';
 
 /**
  * Model client interface for executing prompts
@@ -60,8 +63,8 @@ const DEFAULT_OPTIONS: ExecutorOptions = {
   retryDelayMs: 1000,
   stepTimeout: 120000,
   enableFallback: true,
-  parallelExecution: true,
-  maxParallel: 3,
+  parallelExecution: isParallelEnabled(),
+  maxParallel: getMaxParallel('io'),
 };
 
 /**
@@ -142,21 +145,30 @@ export class TaskExecutor {
     inputs: Map<string, string>,
     onProgress?: (result: ExecutionResult) => void
   ): Promise<ExecutionResult[]> {
-    const maxParallel = this.options.maxParallel || 3;
-    const results: ExecutionResult[] = [];
+    const maxParallel = this.options.maxParallel || getMaxParallel('io');
 
-    // Process in batches
-    for (let i = 0; i < taskIds.length; i += maxParallel) {
-      const batch = taskIds.slice(i, i + maxParallel);
-      const batchResults = await Promise.all(
-        batch.map((taskId) => this.executeSubtask(plan, taskId, inputs))
-      );
-
-      for (const result of batchResults) {
-        results.push(result);
+    const results = await concurrentMap(
+      taskIds,
+      async (taskId) => {
+        const result = await this.executeSubtask(plan, taskId, inputs);
         onProgress?.(result);
-      }
-    }
+
+        // Emit completion event for dependency notification
+        const bus = getTaskEventBus();
+        if (result.success) {
+          await bus.emit({ type: 'task_completed', taskId });
+        } else {
+          await bus.emit({
+            type: 'task_failed',
+            taskId,
+            error: result.error || 'Unknown error',
+          });
+        }
+
+        return result;
+      },
+      { maxConcurrent: maxParallel }
+    );
 
     return results;
   }

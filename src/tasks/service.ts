@@ -21,6 +21,7 @@ import type {
 } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
+import { getTaskEventBus } from './event-bus.js';
 
 export interface TaskServiceConfig {
   dbPath?: string;
@@ -298,7 +299,79 @@ export class TaskService {
     this.recordHistory(id, 'status', task.status, 'done');
     this.recordActivity(id, 'closed', reason || 'Task completed');
 
+    // Notify dependents that may now be unblocked
+    this.notifyUnblockedDependents(id);
+
     return this.get(id);
+  }
+
+  /**
+   * Check for tasks that were blocked by the completed task and are now ready.
+   * Transitions them from 'blocked' to 'open' and emits events.
+   */
+  private notifyUnblockedDependents(completedTaskId: string): void {
+    // Find tasks that this task was blocking
+    const dependents = this.db
+      .prepare(
+        `SELECT from_task FROM task_dependencies
+       WHERE to_task = ? AND dep_type = 'blocks'`
+      )
+      .all(completedTaskId) as Array<{ from_task: string }>;
+
+    if (dependents.length === 0) return;
+
+    const bus = getTaskEventBus();
+    const newlyReady: string[] = [];
+
+    for (const dep of dependents) {
+      const dependent = this.getWithRelations(dep.from_task);
+      if (!dependent) continue;
+
+      if (dependent.isReady) {
+        // Task is now unblocked -- record activity
+        this.recordActivity(
+          dep.from_task,
+          'updated',
+          `Unblocked: dependency "${completedTaskId}" completed`
+        );
+
+        // If task was in 'blocked' status, move to 'open'
+        const raw = this.get(dep.from_task);
+        if (raw && raw.status === 'blocked') {
+          const now = new Date().toISOString();
+          this.db
+            .prepare(`UPDATE tasks SET status = 'open', updated_at = ? WHERE id = ?`)
+            .run(now, dep.from_task);
+          this.recordHistory(dep.from_task, 'status', 'blocked', 'open');
+        }
+
+        newlyReady.push(dep.from_task);
+
+        // Emit per-task unblocked event
+        bus
+          .emit({
+            type: 'task_unblocked',
+            taskId: dep.from_task,
+            unblockedBy: completedTaskId,
+          })
+          .catch(() => {
+            /* event handler errors are logged by the bus */
+          });
+      }
+    }
+
+    // Emit batch event if multiple tasks became ready
+    if (newlyReady.length > 0) {
+      bus
+        .emit({
+          type: 'tasks_ready',
+          taskIds: newlyReady,
+          triggeredBy: completedTaskId,
+        })
+        .catch(() => {
+          /* event handler errors are logged by the bus */
+        });
+    }
   }
 
   delete(id: string): boolean {

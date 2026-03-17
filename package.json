@@ -1,6 +1,6 @@
 {
   "name": "@miller-tech/uap",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Autonomous AI agent memory system with CLAUDE.md protocol enforcement",
   "type": "module",
   "main": "dist/index.js",

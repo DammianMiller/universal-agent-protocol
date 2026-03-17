@@ -9,6 +9,7 @@ import type {
   WorkOverlap,
   CollaborationSuggestion,
 } from '../types/coordination.js';
+import { getTaskEventBus, type TaskEventBus } from './event-bus.js';
 
 export interface TaskCoordinationConfig {
   taskService: TaskService;
@@ -38,23 +39,72 @@ export interface ClaimResult {
 export interface ReleaseResult {
   task: Task;
   completedAnnouncements: number;
+  /** Task IDs that became unblocked as a result of this completion */
+  unblockedTasks: string[];
 }
 
 /**
  * Coordinates task operations with the agent coordination system.
  * Handles claiming/releasing tasks, overlap detection, and multi-agent awareness.
+ *
+ * Supports auto-execution of unblocked tasks via TaskEventBus:
+ *   coordinator.enableAutoExecute(handler)
  */
 export class TaskCoordinator {
   private taskService: TaskService;
   private coordService: CoordinationService;
   private agentId: string;
   private worktreeBranch?: string;
+  private eventBus: TaskEventBus;
+  private autoExecuteUnsub?: () => void;
 
   constructor(config: TaskCoordinationConfig) {
     this.taskService = config.taskService;
     this.coordService = config.coordinationService;
     this.agentId = config.agentId;
     this.worktreeBranch = config.worktreeBranch;
+    this.eventBus = getTaskEventBus();
+  }
+
+  /**
+   * Enable auto-execution of tasks that become unblocked.
+   *
+   * When a task completes and unblocks dependents, the handler is called
+   * for each newly-ready task. The handler decides whether to claim and
+   * execute the task.
+   *
+   * @param handler - Called with each unblocked task ID. Return true to claim it.
+   * @returns Unsubscribe function
+   */
+  enableAutoExecute(
+    handler: (taskId: string, task: TaskWithRelations) => Promise<boolean>
+  ): () => void {
+    // Clean up previous subscription if any
+    this.autoExecuteUnsub?.();
+
+    this.autoExecuteUnsub = this.eventBus.on('task_unblocked', async (event) => {
+      if (event.type !== 'task_unblocked') return;
+
+      const task = this.taskService.getWithRelations(event.taskId);
+      if (!task || !task.isReady) return;
+
+      // Skip if already assigned to another agent
+      if (task.assignee && task.assignee !== this.agentId) return;
+
+      const shouldClaim = await handler(event.taskId, task);
+      if (shouldClaim) {
+        try {
+          await this.claim(event.taskId);
+        } catch (err) {
+          console.error(`[TaskCoordinator] Auto-execute claim failed for ${event.taskId}:`, err);
+        }
+      }
+    });
+
+    return () => {
+      this.autoExecuteUnsub?.();
+      this.autoExecuteUnsub = undefined;
+    };
   }
 
   /**
@@ -158,7 +208,7 @@ export class TaskCoordinator {
       return null;
     }
 
-    // Close the task
+    // Close the task (this also calls notifyUnblockedDependents internally)
     const closedTask = this.taskService.close(taskId, reason);
     if (!closedTask) {
       return null;
@@ -178,6 +228,21 @@ export class TaskCoordinator {
       },
     });
 
+    // Find newly-unblocked tasks and broadcast
+    const nowReady = this.taskService.ready().filter((t) => t.id !== taskId);
+    const unblockedTasks = nowReady.map((t) => t.id);
+
+    if (unblockedTasks.length > 0) {
+      this.coordService.broadcast(this.agentId, 'coordination', {
+        action: 'tasks_unblocked',
+        resource: taskId,
+        data: {
+          unblockedTasks: nowReady.map((t) => ({ id: t.id, title: t.title })),
+          count: unblockedTasks.length,
+        },
+      });
+    }
+
     // Record pattern outcomes in AdaptivePatternEngine for learning
     try {
       const engine = getAdaptivePatternEngine();
@@ -196,6 +261,7 @@ export class TaskCoordinator {
     return {
       task: closedTask,
       completedAnnouncements: 1,
+      unblockedTasks,
     };
   }
 

@@ -19,6 +19,8 @@ import { retrieveDynamicMemoryContext } from '../memory/dynamic-retrieval.js';
 import { executeWithMultiTurn } from './multi-turn-agent.js';
 import { buildHierarchicalPrompt } from './hierarchical-prompting.js';
 import { verifyBenchmarkTask, type VerificationResult } from './execution-verifier.js';
+import { getMaxParallel } from '../utils/system-resources.js';
+import { concurrentMap } from '../utils/concurrency-pool.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -560,7 +562,8 @@ function generateMarkdownReport(report: BenchmarkReport): string {
 // ============================================================================
 
 /**
- * Run multiple model benchmarks in parallel with configurable concurrency
+ * Run multiple model benchmarks in parallel with configurable concurrency.
+ * Uses shared concurrentMap utility with auto-detected parallelism.
  */
 async function runModelsInParallel(
   models: ModelConfig[],
@@ -574,32 +577,9 @@ async function runModelsInParallel(
   },
   concurrency: number
 ): Promise<ModelResult[]> {
-  const results: ModelResult[] = [];
-  const queue = [...models];
-  const inProgress: Promise<void>[] = [];
-
-  const runNext = async (): Promise<void> => {
-    const model = queue.shift();
-    if (!model) return;
-
-    const result = await runBenchmarkForModel(model, tasks, config);
-    results.push(result);
-
-    if (queue.length > 0) {
-      await runNext();
-    }
-  };
-
-  // Start initial batch up to concurrency limit
-  const initialBatch = Math.min(concurrency, models.length);
-  for (let i = 0; i < initialBatch; i++) {
-    inProgress.push(runNext());
-  }
-
-  await Promise.all(inProgress);
-
-  // Sort results to match original model order
-  return models.map((m) => results.find((r) => r.modelId === m.id)!).filter(Boolean);
+  return concurrentMap(models, async (model) => runBenchmarkForModel(model, tasks, config), {
+    maxConcurrent: concurrency,
+  });
 }
 
 // ============================================================================
@@ -630,7 +610,9 @@ export async function runImprovedBenchmark(
   const maxTurns = options.maxTurns ?? 2;
   const useHierarchicalPrompting = options.useHierarchicalPrompting ?? true;
   const verbose = options.verbose ?? false;
-  const parallelModels = options.parallelModels ?? 1;
+  const parallelModels =
+    (options.parallelModels ?? parseInt(process.env.UAP_BENCHMARK_PARALLEL || '', 10)) ||
+    getMaxParallel('io');
 
   // Determine effective parallelism
   const effectiveParallel = Math.min(parallelModels, modelsToTest.length);

@@ -11,6 +11,8 @@ import type {
   DeployStatus,
 } from '../types/coordination.js';
 import { execFile as execFileCb } from 'child_process';
+import { isParallelEnabled, getMaxParallel } from '../utils/system-resources.js';
+import { concurrentMapSettled } from '../utils/concurrency-pool.js';
 
 /**
  * Dynamic batch window configuration based on action type.
@@ -75,8 +77,8 @@ export class DeployBatcher {
 
     this.maxBatchSize = config.maxBatchSize || 20;
     this.dryRun = config.dryRun || false;
-    this.parallelExecution = config.parallelExecution ?? true;
-    this.maxParallelActions = config.maxParallelActions || 5;
+    this.parallelExecution = config.parallelExecution ?? isParallelEnabled();
+    this.maxParallelActions = config.maxParallelActions || getMaxParallel('io');
     this.execTimeoutMs = config.execTimeoutMs ?? 300000; // Default: 300s (5 minutes)
 
     // Validate window values
@@ -578,40 +580,38 @@ export class DeployBatcher {
 
   /**
    * Execute actions in parallel with concurrency limit.
+   * Uses shared concurrentMapSettled utility.
    */
   private async executeParallel(
     actions: DeployAction[]
   ): Promise<Array<{ action: DeployAction; success: boolean; error?: string }>> {
     const results: Array<{ action: DeployAction; success: boolean; error?: string }> = [];
 
-    // Process in chunks to respect maxParallelActions
-    for (let i = 0; i < actions.length; i += this.maxParallelActions) {
-      const chunk = actions.slice(i, i + this.maxParallelActions);
+    const settled = await concurrentMapSettled(
+      actions,
+      async (action) => {
+        await this.executeAction(action);
+        return action;
+      },
+      { maxConcurrent: this.maxParallelActions }
+    );
 
-      const chunkResults = await Promise.allSettled(
-        chunk.map(async (action) => {
-          await this.executeAction(action);
-          return action;
-        })
-      );
+    for (let j = 0; j < settled.length; j++) {
+      const result = settled[j];
+      const action = actions[j];
 
-      for (let j = 0; j < chunkResults.length; j++) {
-        const result = chunkResults[j];
-        const action = chunk[j];
-
-        if (result.status === 'fulfilled') {
-          this.updateActionStatus(action.id, 'completed');
-          results.push({ action, success: true });
-        } else {
-          const errorMsg =
-            result.reason instanceof Error ? result.reason.message : String(result.reason);
-          this.updateActionStatus(action.id, 'failed');
-          results.push({
-            action,
-            success: false,
-            error: `Action ${action.id} (${action.actionType}): ${errorMsg}`,
-          });
-        }
+      if (result.status === 'fulfilled') {
+        this.updateActionStatus(action.id, 'completed');
+        results.push({ action, success: true });
+      } else {
+        const errorMsg =
+          result.reason instanceof Error ? result.reason.message : String(result.reason);
+        this.updateActionStatus(action.id, 'failed');
+        results.push({
+          action,
+          success: false,
+          error: `Action ${action.id} (${action.actionType}): ${errorMsg}`,
+        });
       }
     }
 

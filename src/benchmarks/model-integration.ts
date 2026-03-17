@@ -28,6 +28,8 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { getMaxParallel } from '../utils/system-resources.js';
+import { concurrentMap } from '../utils/concurrency-pool.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -906,7 +908,8 @@ function generateMarkdownReport(report: BenchmarkReport): string {
 // ============================================================================
 
 /**
- * Run multiple model benchmarks in parallel with configurable concurrency
+ * Run multiple model benchmarks in parallel with configurable concurrency.
+ * Uses shared concurrentMap utility with auto-detected parallelism.
  */
 async function runModelsInParallel(
   client: DroidExecClient,
@@ -915,32 +918,11 @@ async function runModelsInParallel(
   withMemory: boolean,
   concurrency: number
 ): Promise<ModelBenchmarkResult[]> {
-  const results: ModelBenchmarkResult[] = [];
-  const queue = [...models];
-  const inProgress: Promise<void>[] = [];
-
-  const runNext = async (): Promise<void> => {
-    const model = queue.shift();
-    if (!model) return;
-
-    const result = await runBenchmarkForModel(client, model, tasks, withMemory);
-    results.push(result);
-
-    if (queue.length > 0) {
-      await runNext();
-    }
-  };
-
-  // Start initial batch up to concurrency limit
-  const initialBatch = Math.min(concurrency, models.length);
-  for (let i = 0; i < initialBatch; i++) {
-    inProgress.push(runNext());
-  }
-
-  await Promise.all(inProgress);
-
-  // Sort results to match original model order
-  return models.map((m) => results.find((r) => r.modelId === m.id)!).filter(Boolean);
+  return concurrentMap(
+    models,
+    async (model) => runBenchmarkForModel(client, model, tasks, withMemory),
+    { maxConcurrent: concurrency }
+  );
 }
 
 // ============================================================================
@@ -982,7 +964,17 @@ export async function runModelBenchmark(
     key = apiKeyOrOptions;
     models = modelIds;
     compare = compareMemory;
-    parallel = parallelModels;
+    parallel = parallelModels || 1;
+  }
+
+  // Auto-detect parallelism from env or system resources
+  if (parallel <= 1) {
+    const envParallel = parseInt(process.env.UAP_BENCHMARK_PARALLEL || '', 10);
+    if (envParallel > 0) {
+      parallel = envParallel;
+    } else {
+      parallel = getMaxParallel('io');
+    }
   }
 
   key = key || process.env.FACTORY_API_KEY || process.env.DROID_API_KEY;

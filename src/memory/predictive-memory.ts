@@ -7,6 +7,7 @@
  */
 
 import { jaccardSimilarity } from '../utils/string-similarity.js';
+import { concurrentMap } from '../utils/concurrency-pool.js';
 
 /**
  * Category-to-keywords mapping for domain-based prediction.
@@ -91,17 +92,15 @@ export class PredictiveMemoryService {
   async prefetch(predictions: string[], memoryService: MemoryService): Promise<Map<string, any[]>> {
     const results = new Map<string, any[]>();
 
-    // Run all queries in parallel
-    const entries = await Promise.all(
-      predictions.map(async (query) => {
-        try {
-          const queryResults = await memoryService.query(query);
-          return [query, queryResults] as const;
-        } catch {
-          return [query, []] as const;
-        }
-      })
-    );
+    // Run queries with bounded concurrency
+    const entries = await concurrentMap(predictions, async (query) => {
+      try {
+        const queryResults = await memoryService.query(query);
+        return [query, queryResults] as const;
+      } catch {
+        return [query, []] as const;
+      }
+    });
 
     for (const [query, queryResults] of entries) {
       results.set(query, [...queryResults]);
