@@ -1,6 +1,6 @@
 # Droids and Skills Guide Template
 
-**Version**: 1.0
+**Version**: 1.0.0
 **Last Updated**: {{STRUCTURE_DATE}}
 
 ---
@@ -11,29 +11,29 @@ Droids are specialized AI agents for specific tasks.
 
 ### Language Specialists
 
-| Droid | Purpose |
-|-------|---------|
-| `cpp-pro` | C++ development, RAII, STL, templates |
-| `python-pro` | Python, async/await, decorators |
-| `javascript-pro` | JavaScript/TypeScript, ES6+, async |
+| Droid            | Purpose                               |
+| ---------------- | ------------------------------------- |
+| `cpp-pro`        | C++ development, RAII, STL, templates |
+| `python-pro`     | Python, async/await, decorators       |
+| `javascript-pro` | JavaScript/TypeScript, ES6+, async    |
 
 ### Review Droids
 
-| Droid | Purpose | Blocks PR |
-|-------|---------|-----------|
+| Droid                    | Purpose                   | Blocks PR     |
+| ------------------------ | ------------------------- | ------------- |
 | `security-code-reviewer` | OWASP, secrets, injection | CRITICAL/HIGH |
-| `code-quality-reviewer` | Naming, complexity, style | CRITICAL only |
-| `performance-reviewer` | Algorithms, N+1, caching | Advisory |
-| `test-coverage-reviewer` | Test gaps, brittle tests | Advisory |
+| `code-quality-reviewer`  | Naming, complexity, style | CRITICAL only |
+| `performance-reviewer`   | Algorithms, N+1, caching  | Advisory      |
+| `test-coverage-reviewer` | Test gaps, brittle tests  | Advisory      |
 
 ### Utility Droids
 
-| Droid | Purpose |
-|-------|---------|
-| `worktree-manager` | Git worktree lifecycle, PR creation |
-| `git-summarizer` | Repository context for reviewers |
+| Droid                  | Purpose                             |
+| ---------------------- | ----------------------------------- |
+| `worktree-manager`     | Git worktree lifecycle, PR creation |
+| `git-summarizer`       | Repository context for reviewers    |
 | `release-notes-writer` | Generate release notes from commits |
-| `project-analyzer` | Extract project metadata |
+| `project-analyzer`     | Extract project metadata            |
 
 ---
 
@@ -49,14 +49,14 @@ Skills provide domain-specific guidance.
 
 ## Agent Routing
 
-| Task Type | Route To |
-|-----------|----------|
-| Security review | `security-code-reviewer` |
-| Performance analysis | `performance-reviewer` |
-| Code quality | `code-quality-reviewer` |
-| C++ code | `cpp-pro` |
-| Python code | `python-pro` |
-| JavaScript/TypeScript | `javascript-pro` |
+| Task Type             | Route To                 |
+| --------------------- | ------------------------ |
+| Security review       | `security-code-reviewer` |
+| Performance analysis  | `performance-reviewer`   |
+| Code quality          | `code-quality-reviewer`  |
+| C++ code              | `cpp-pro`                |
+| Python code           | `python-pro`             |
+| JavaScript/TypeScript | `javascript-pro`         |
 
 ---
 
@@ -81,12 +81,12 @@ Task(subagent_type: "code-quality-reviewer", prompt: "Review: <files>")
 uap agent overlaps --resource "<files-or-directories>"
 ```
 
-| Risk Level | Action |
-|------------|--------|
-| `none` | Proceed immediately |
-| `low` | Proceed, note merge order |
-| `medium` | Announce, coordinate sections |
-| `high`/`critical` | Wait or split work |
+| Risk Level        | Action                        |
+| ----------------- | ----------------------------- |
+| `none`            | Proceed immediately           |
+| `low`             | Proceed, note merge order     |
+| `medium`          | Announce, coordinate sections |
+| `high`/`critical` | Wait or split work            |
 
 ---
 

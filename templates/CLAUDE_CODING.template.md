@@ -1,6 +1,6 @@
 # Coding Standards Template
 
-**Version**: 1.0
+**Version**: 1.0.0
 **Last Updated**: {{STRUCTURE_DATE}}
 
 ---
@@ -28,6 +28,7 @@
 ---
 
 {{#if HAS_MULTI_TENANCY}}
+
 ## Multi-Tenancy
 
 All database queries must include organization scope.
@@ -45,6 +46,7 @@ SELECT * FROM products WHERE owner_id = $1;
 -- ❌ Cross-tenant access
 SELECT * FROM products;
 ```
+
 {{/if}}
 
 ---
@@ -60,7 +62,7 @@ Never hardcode secrets. Use environment variables.
 const dbPassword = process.env.DB_PASSWORD;
 
 // ❌ Wrong
-const dbPassword = "hardcoded_password";
+const dbPassword = 'hardcoded_password';
 ```
 
 ### Input Validation
@@ -80,9 +82,9 @@ Log with context for debugging.
 
 ```typescript
 // ✅ Correct
-logger.error('Failed to fetch', { 
-  error: error.message, 
-  correlationId: req.id 
+logger.error('Failed to fetch', {
+  error: error.message,
+  correlationId: req.id,
 });
 ```
 
@@ -108,14 +110,14 @@ logger.error('Failed to fetch', {
 
 ## Naming Conventions
 
-| Type | Convention | Example |
-|------|------------|---------|
-| Variables | camelCase | `userName` |
+| Type      | Convention           | Example           |
+| --------- | -------------------- | ----------------- |
+| Variables | camelCase            | `userName`        |
 | Constants | SCREAMING_SNAKE_CASE | `MAX_RETRY_COUNT` |
-| Functions | camelCase | `getUserById` |
-| Classes | PascalCase | `UserService` |
-| Files | kebab-case | `user-service.ts` |
-| Database | snake_case | `user_accounts` |
+| Functions | camelCase            | `getUserById`     |
+| Classes   | PascalCase           | `UserService`     |
+| Files     | kebab-case           | `user-service.ts` |
+| Database  | snake_case           | `user_accounts`   |
 
 ---
 

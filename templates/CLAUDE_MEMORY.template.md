@@ -1,18 +1,18 @@
 # Memory System Guide Template
 
-**Version**: 1.0
+**Version**: 1.0.0
 **Last Updated**: {{STRUCTURE_DATE}}
 
 ---
 
 ## Memory Layers
 
-| Layer | Storage | Capacity | Latency |
-|-------|---------|----------|---------|
-| L1 Working | SQLite `memories` | {{SHORT_TERM_LIMIT}} max | <1ms |
-| L2 Session | SQLite `session_memories` | Current session | <5ms |
-| L3 Semantic | {{LONG_TERM_BACKEND}} | Unlimited | ~50ms |
-| L4 Knowledge | SQLite `entities/rels` | Graph | <20ms |
+| Layer        | Storage                   | Capacity                 | Latency |
+| ------------ | ------------------------- | ------------------------ | ------- |
+| L1 Working   | SQLite `memories`         | {{SHORT_TERM_LIMIT}} max | <1ms    |
+| L2 Session   | SQLite `session_memories` | Current session          | <5ms    |
+| L3 Semantic  | {{LONG_TERM_BACKEND}}     | Unlimited                | ~50ms   |
+| L4 Knowledge | SQLite `entities/rels`    | Graph                    | <20ms   |
 
 **Database**: `./{{MEMORY_DB_PATH}}`
 **Vector DB**: {{LONG_TERM_BACKEND}} at `{{LONG_TERM_ENDPOINT}}`
@@ -91,6 +91,7 @@ Patterns are defined in `.factory/patterns/`:
 ```
 
 To add a new pattern:
+
 1. Create `P37_new_pattern.md` in `.factory/patterns/`
 2. Add entry to `index.json`
 3. Run `python agents/scripts/index_patterns.py`

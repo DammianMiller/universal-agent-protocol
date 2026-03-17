@@ -1,6 +1,6 @@
 # Workflows Guide Template
 
-**Version**: 1.0
+**Version**: 1.0.0
 **Last Updated**: {{STRUCTURE_DATE}}
 
 ---
