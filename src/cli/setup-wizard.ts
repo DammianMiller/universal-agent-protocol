@@ -89,6 +89,7 @@ const HARNESS_TO_HOOK_TARGET: Record<string, string> = {
   'GitHub Copilot': 'vscode',
   'JetBrains AI': 'vscode',
   'SWE-agent': 'claude',
+  'Oh-My-Pi': 'omp',
 };
 
 const HARNESS_TO_PLATFORM: Record<string, string> = {
@@ -107,6 +108,7 @@ const HARNESS_TO_PLATFORM: Record<string, string> = {
   'GitHub Copilot': 'vscode',
   'JetBrains AI': 'vscode',
   'SWE-agent': 'claude',
+  'Oh-My-Pi': 'omp',
 };
 
 // ── Banner ─────────────────────────────────────────────────────────────
@@ -159,6 +161,8 @@ async function promptHarnesses(): Promise<HarnessSelection> {
         { name: 'GitHub Copilot', value: 'GitHub Copilot' },
         { name: 'JetBrains AI', value: 'JetBrains AI' },
         { name: 'SWE-agent', value: 'SWE-agent' },
+        new inquirer.Separator(),
+        { name: 'Oh-My-Pi (omp)', value: 'Oh-My-Pi' },
       ],
     },
   ]);

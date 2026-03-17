@@ -13,7 +13,7 @@
           "name": "Qwen3.5 35B A3B (IQ4_XS)",
           "limit": {
             "context": 262144,
-            "output": 16384
+            "output": 32768
           }
         }
       }

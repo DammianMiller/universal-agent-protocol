@@ -248,8 +248,7 @@ output+="│ ${GIT_LINE}$(printf ' %.0s' $(seq 1 $((W - 1 - ${#GIT_LINE}))))│"
 output+="├$(printf '─%.0s' $(seq 1 $W))┤"$'\n'
 
 # Active policies
-POLICY_LINE="Policies: [ON] IaC Pipeline  [ON] kubectl Backport  [ON] File Backup"
-output+="│ ${POLICY_LINE}$(printf ' %.0s' $(seq 1 $((W - 1 - ${#POLICY_LINE}))))│"$'\n'
+output+="│ Policies: [ON] IaC Parity  [ON] File Backup$(printf ' %.0s' $(seq 1 $((W - 47))))│"$'\n'
 
 # Memory layers
 L3_STATUS="?"
@@ -282,12 +281,6 @@ output+=""$'\n'
 output+="### DURING WORK:"$'\n'
 output+="6. ALL file changes MUST use worktree: uap worktree create <slug>"$'\n'
 output+="7. Work in .worktrees/NNN-<slug>/ directory"$'\n'
-output+=""$'\n'
-output+="### IaC PIPELINE ENFORCEMENT (MANDATORY):"$'\n'
-output+="- NEVER run terraform plan/apply/destroy locally. ALL Terraform ops go through CI/CD pipeline."$'\n'
-output+="- kubectl MAY be used to diagnose, test, and verify fixes on clusters."$'\n'
-output+="- ANY kubectl-created resource MUST be backported to Terraform .tf files (import or delete/recreate)."$'\n'
-output+="- 100% IaC parity required. Infrastructure work is NOT DONE until pipeline apply succeeds + kubectl verifies."$'\n'
 output+=""$'\n'
 output+="### BEFORE COMMIT:"$'\n'
 output+="8. Self-review: git diff"$'\n'

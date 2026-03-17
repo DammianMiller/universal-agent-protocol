@@ -6,7 +6,14 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-export type HooksTarget = 'claude' | 'factory' | 'cursor' | 'vscode' | 'opencode' | 'forgecode';
+export type HooksTarget =
+  | 'claude'
+  | 'factory'
+  | 'cursor'
+  | 'vscode'
+  | 'opencode'
+  | 'forgecode'
+  | 'omp';
 type HooksAction = 'install' | 'status';
 
 interface HooksOptions {
@@ -21,6 +28,7 @@ const ALL_TARGETS: HooksTarget[] = [
   'vscode',
   'opencode',
   'forgecode',
+  'omp',
 ];
 
 export async function hooksCommand(action: HooksAction, options: HooksOptions = {}): Promise<void> {
@@ -261,53 +269,54 @@ async function installOpencodeHooks(cwd: string): Promise<void> {
   const dbPath = './agents/data/memory/short_term.db';
   const coordDbPath = './agents/data/coordination/coordination.db';
 
-  const pluginContent = `import type { Plugin } from "@opencode-ai/plugin"
-
-export const UAPSessionHooks: Plugin = async ({ client, $ }) => {
-  return {
-    event: async ({ event }) => {
-      if (event.type === "session.created") {
-        try {
-          const result = await $\`bash -c '
-            DB_PATH="${dbPath}"
-            COORD_DB="${coordDbPath}"
-
-            if [ ! -f "$DB_PATH" ]; then exit 0; fi
-
-            if [ -f "$COORD_DB" ]; then
-              sqlite3 "$COORD_DB" "
-                DELETE FROM work_claims WHERE agent_id IN (
-                  SELECT id FROM agent_registry
-                  WHERE status IN (\\'active\\',\\'idle\\') AND last_heartbeat < datetime(\\'now\\',\\'-24 hours\\')
-                );
-                UPDATE agent_registry SET status=\\'failed\\'
-                  WHERE status IN (\\'active\\',\\'idle\\') AND last_heartbeat < datetime(\\'now\\',\\'-24 hours\\');
-              " 2>/dev/null || true
-            fi
-
-            sqlite3 "$DB_PATH" "
-              SELECT type, content FROM memories
-              WHERE timestamp >= datetime(\\'now\\', \\'-1 day\\')
-              ORDER BY id DESC LIMIT 10;
-            " 2>/dev/null || true
-          '\`.quiet()
-          if (result.stdout.toString().trim()) {
-            console.log("[UAP] Session context loaded")
-          }
-        } catch { /* fail safely */ }
-      }
-    },
-
-    "experimental.session.compacting": async (_input, output) => {
-      try {
-        const timestamp = new Date().toISOString()
-        await $\`sqlite3 ${dbPath} "INSERT OR IGNORE INTO memories (timestamp, type, content) VALUES ('$\{timestamp}', 'action', '[pre-compact] Context compaction at $\{timestamp}');"\`.quiet()
-        output.context.push("<uap-context>Pre-compact marker saved to UAP memory.</uap-context>")
-      } catch { /* fail safely */ }
-    },
-  }
-}
-`;
+  const pluginContent = [
+    'import type { Plugin } from "@opencode-ai/plugin"',
+    '',
+    'export const UAPSessionHooks: Plugin = async ({ client, $ }) => {',
+    '  return {',
+    '    event: async ({ event }) => {',
+    '      if (event.type === "session.created") {',
+    '        try {',
+    "          const result = await `bash -c '",
+    `            DB_PATH="${dbPath}"`,
+    `            COORD_DB="${coordDbPath}"`,
+    '',
+    '            if [ ! -f "$DB_PATH" ]; then exit 0; fi',
+    '',
+    '            if [ -f "$COORD_DB" ]; then',
+    '              sqlite3 "$COORD_DB" "',
+    '                DELETE FROM work_claims WHERE agent_id IN (',
+    '                  SELECT id FROM agent_registry',
+    "                  WHERE status IN (\\'active\\',\\'idle\\') AND last_heartbeat < datetime(\\'now\\',\\'-24 hours\\')",
+    '                );',
+    "                UPDATE agent_registry SET status=\\'failed\\'",
+    "                  WHERE status IN (\\'active\\',\\'idle\\') AND last_heartbeat < datetime(\\'now\\',\\'-24 hours\\');",
+    '              " 2>/dev/null || true',
+    '            fi',
+    '',
+    '            sqlite3 "$DB_PATH" "',
+    '              SELECT type, content FROM memories',
+    "              WHERE timestamp >= datetime(\\'now\\', \\'-1 day\\')",
+    '              ORDER BY id DESC LIMIT 10;',
+    '            " 2>/dev/null || true',
+    "          '`.quiet()",
+    '          if (result.stdout.toString().trim()) {',
+    '            console.log("[UAP] Session context loaded")',
+    '          }',
+    '        } catch { /* fail safely */ }',
+    '      }',
+    '    },',
+    '',
+    '    "experimental.session.compacting": async (_input, output) => {',
+    '      try {',
+    '        const timestamp = new Date().toISOString()',
+    `        await \`sqlite3 ${dbPath} "INSERT OR IGNORE INTO memories (timestamp, type, content) VALUES ('\${timestamp}', 'action', '[pre-compact] Context compaction at \${timestamp}');"\`.quiet()`,
+    '        output.context.push("<uap-context>Pre-compact marker saved to UAP memory.</uap-context>")',
+    '      } catch { /* fail safely */ }',
+    '    },',
+    '  }',
+    '}',
+  ].join('\n');
 
   const pluginPath = join(pluginDir, 'uap-session-hooks.ts');
   writeFileSync(pluginPath, pluginContent);
@@ -365,14 +374,14 @@ async function installForgeCodeHooks(cwd: string): Promise<void> {
         '_uap_forgecode_session_start() {\n' +
         '  local PROJECT_DIR="${FORGE_UAP_PROJECT:-.}"\n' +
         '  if [ ! -f "\$PROJECT_DIR/' +
-        dbPath.replace(/\//g, '\\/') +
+        dbPath.replace(/\//g, '\/') +
         '" ]; then exit 0; fi\n' +
         '  echo "[UAP-ForgCode] Session started with UAP context injection" >&2\n' +
         '}\n' +
         '_uap_forgecode_pre_compact() {\n' +
         '  local PROJECT_DIR="${FORGE_UAP_PROJECT:-.}"\n' +
         '  if [ ! -f "\$PROJECT_DIR/' +
-        dbPath.replace(/\//g, '\\/') +
+        dbPath.replace(/\//g, '\/') +
         '" ]; then exit 0; fi\n' +
         '  echo "[UAP-ForgCode] Pre-compact marker saved" >&2\n' +
         '}\n' +
@@ -392,6 +401,100 @@ async function installForgeCodeHooks(cwd: string): Promise<void> {
       chalk.gray(' (or restart terminal)')
   );
 }
+
+// --- Oh-My-Pi (omp) ---
+
+async function installOmpHooks(cwd: string): Promise<void> {
+  console.log(chalk.bold('\n  Installing UAP Hooks for Oh-My-Pi (omp)\n'));
+
+  const uapOmpDir = join(cwd, '.uap', 'omp');
+  if (!existsSync(uapOmpDir)) {
+    mkdirSync(uapOmpDir, { recursive: true });
+    console.log(chalk.dim(`  Created ${uapOmpDir}`));
+  }
+
+  const hooksPre = join(uapOmpDir, 'hooks', 'pre');
+  const hooksPost = join(uapOmpDir, 'hooks', 'post');
+  mkdirSync(hooksPre, { recursive: true });
+  mkdirSync(hooksPost, { recursive: true });
+
+  // Copy hook scripts
+  const hookFiles = ['session-start.sh', 'pre-compact.sh'];
+  for (const file of hookFiles) {
+    const src = join(getTemplateHooksDir(), file);
+    const dest = join(hooksPre, file);
+    if (existsSync(src)) {
+      copyFileSync(src, dest);
+      chmodSync(dest, 0o755);
+      console.log(chalk.green(`  + .uap/omp/hooks/pre/${file}`));
+    } else {
+      console.log(chalk.yellow(`  - .uap/omp/hooks/pre/${file} (template not found)`));
+    }
+  }
+
+  // Copy post-session hook
+  const postHook = join(getTemplateHooksDir(), 'session-end.sh');
+  if (existsSync(postHook)) {
+    copyFileSync(postHook, join(hooksPost, 'session-end.sh'));
+    chmodSync(join(hooksPost, 'session-end.sh'), 0o755);
+    console.log(chalk.green('  + .uap/omp/hooks/post/session-end.sh'));
+  } else {
+    // Generate default post-session hook
+    const dbPath = './agents/data/memory/short_term.db';
+    writeFileSync(
+      join(hooksPost, 'session-end.sh'),
+      '#!/usr/bin/env bash\n' +
+        '# UAP Post-Session Hook for Oh-My-Pi\n' +
+        'DB_PATH="${UAP_PROJECT_DIR:-.}/' +
+        dbPath.replace(/\//g, '\/') +
+        '"\n' +
+        '\n' +
+        'if [ -f "$DB_PATH" ]; then\n' +
+        '  TIMESTAMP=$(date +%Y-%m-%dT%H:%M:%S)\n' +
+        '  sqlite3 "$DB_PATH" "INSERT OR IGNORE INTO memories (timestamp, type, content) VALUES ($' +
+        'TIMESTAMP' +
+        ', $' +
+        'action' +
+        ', $' +
+        '[post-session] Session completed at $' +
+        'TIMESTAMP' +
+        '$);" 2>/dev/null || true\n' +
+        'fi\n'
+    );
+    chmodSync(join(hooksPost, 'session-end.sh'), 0o755);
+    console.log(chalk.green('  + .uap/omp/hooks/post/session-end.sh (generated)'));
+  }
+
+  // Create settings.json for omp integration
+  const settingsPath = join(uapOmpDir, 'settings.json');
+  const settings = {
+    uapIntegration: {
+      enabled: true,
+      memoryInjection: true,
+      patternRAG: true,
+      worktreeIsolation: true,
+      taskTracking: true,
+      agentCoordination: true,
+      hooks: {
+        preSession: '.uap/omp/hooks/pre/session-start.sh',
+        postSession: '.uap/omp/hooks/post/session-end.sh',
+      },
+    },
+  };
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  console.log(chalk.green('  + .uap/omp/settings.json'));
+
+  updateGitignore(cwd, ['.uap/']);
+
+  console.log(chalk.bold.green('\n  Oh-My-Pi hooks installed successfully!'));
+  console.log(
+    chalk.dim('\nTo activate in oh-my-pi:') +
+      '\n' +
+      chalk.cyan('    Run: uap-omp install') +
+      chalk.gray(' (links hooks and dashboard to omp)')
+  );
+}
+
 // --- Dispatcher ---
 
 async function installHooksForTarget(cwd: string, target: HooksTarget): Promise<void> {
@@ -408,6 +511,8 @@ async function installHooksForTarget(cwd: string, target: HooksTarget): Promise<
       return installOpencodeHooks(cwd);
     case 'forgecode':
       return installForgeCodeHooks(cwd);
+    case 'omp':
+      return installOmpHooks(cwd);
   }
 }
 
@@ -520,6 +625,25 @@ async function showForgecodeStatus(cwd: string): Promise<void> {
   console.log('');
 }
 
+async function showOmpStatus(cwd: string): Promise<void> {
+  console.log(chalk.bold('\n  Oh-My-Pi Hooks Status\n'));
+  const uapOmpDir = join(cwd, '.uap', 'omp');
+  const hooksPre = join(uapOmpDir, 'hooks', 'pre');
+  const hooksPost = join(uapOmpDir, 'hooks', 'post');
+  const settingsPath = join(uapOmpDir, 'settings.json');
+
+  showScriptStatus(hooksPre);
+  const postHook = join(hooksPost, 'session-end.sh');
+  const postExists = existsSync(postHook);
+  const postStatus = postExists ? chalk.green('installed') : chalk.red('missing');
+  console.log(`  ${postStatus}  session-end.sh (post-session)`);
+
+  const settingsExists = existsSync(settingsPath);
+  const settingsStatus = settingsExists ? chalk.green('configured') : chalk.red('missing');
+  console.log(`  ${settingsStatus}  settings.json`);
+  console.log('');
+}
+
 async function showHooksStatusForTarget(cwd: string, target: HooksTarget): Promise<void> {
   switch (target) {
     case 'claude':
@@ -534,5 +658,7 @@ async function showHooksStatusForTarget(cwd: string, target: HooksTarget): Promi
       return showOpencodeStatus(cwd);
     case 'forgecode':
       return showForgecodeStatus(cwd);
+    case 'omp':
+      return showOmpStatus(cwd);
   }
 }
