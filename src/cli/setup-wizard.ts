@@ -35,6 +35,9 @@ interface PolicyFeatures {
   policyEngine: boolean;
   imageAssetVerification: boolean;
   iacStateParity: boolean;
+  iacPipelineEnforcement: boolean;
+  kubectlVerifyBackport: boolean;
+  definitionOfDoneIac: boolean;
   customPoliciesDir: boolean;
 }
 
@@ -295,6 +298,24 @@ async function promptPolicy(): Promise<PolicyFeatures> {
       type: 'confirm',
       name: 'iacStateParity',
       message: 'IaC State Parity policy',
+      default: true,
+    },
+    {
+      type: 'confirm',
+      name: 'iacPipelineEnforcement',
+      message: 'IaC Pipeline Enforcement policy (Terraform via CI/CD only)',
+      default: true,
+    },
+    {
+      type: 'confirm',
+      name: 'kubectlVerifyBackport',
+      message: 'kubectl Verify & Backport policy (backport kubectl changes to IaC)',
+      default: true,
+    },
+    {
+      type: 'confirm',
+      name: 'definitionOfDoneIac',
+      message: 'Definition of Done (IaC) policy (pipeline apply + kubectl verify)',
       default: true,
     },
     {
@@ -568,6 +589,9 @@ function printSummary(selections: WizardSelections): void {
   printToggle('Policy engine', selections.policy.policyEngine);
   printToggle('Image & Asset Verification', selections.policy.imageAssetVerification);
   printToggle('IaC State Parity', selections.policy.iacStateParity);
+  printToggle('IaC Pipeline Enforcement', selections.policy.iacPipelineEnforcement);
+  printToggle('kubectl Verify & Backport', selections.policy.kubectlVerifyBackport);
+  printToggle('Definition of Done (IaC)', selections.policy.definitionOfDoneIac);
   printToggle('Custom policies dir', selections.policy.customPoliciesDir);
 
   // Model
@@ -777,6 +801,9 @@ async function executeSetup(selections: WizardSelections): Promise<void> {
       enabled: selections.policy.policyEngine,
       imageAssetVerification: selections.policy.imageAssetVerification,
       iacStateParity: selections.policy.iacStateParity,
+      iacPipelineEnforcement: selections.policy.iacPipelineEnforcement,
+      kubectlVerifyBackport: selections.policy.kubectlVerifyBackport,
+      definitionOfDoneIac: selections.policy.definitionOfDoneIac,
       customDir: selections.policy.customPoliciesDir ? './policies' : undefined,
     };
 

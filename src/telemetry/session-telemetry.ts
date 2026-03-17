@@ -1099,6 +1099,9 @@ export async function backupDirectory(dirPath: string, projectRoot?: string): Pr
 export function showActivePolicies(): void {
   console.log(`\n${BOLD}${MAGENTA}Active Policies:${RESET}`);
   console.log(`  ${GREEN}[ON]${RESET}  IaC State Parity ${DIM}(REQUIRED)${RESET}`);
+  console.log(`  ${GREEN}[ON]${RESET}  IaC Pipeline Enforcement ${DIM}(REQUIRED)${RESET}`);
+  console.log(`  ${GREEN}[ON]${RESET}  kubectl Verify & Backport ${DIM}(REQUIRED)${RESET}`);
+  console.log(`  ${GREEN}[ON]${RESET}  Definition of Done (IaC) ${DIM}(REQUIRED)${RESET}`);
   console.log(`  ${GREEN}[ON]${RESET}  Mandatory File Backup ${DIM}(REQUIRED)${RESET}`);
   console.log(`  ${DIM}[OFF]${RESET} Image & Asset Verification ${DIM}(RECOMMENDED)${RESET}`);
   console.log(`  ${DIM}Use: uap-policy list | uap-policy check -o <operation>${RESET}\n`);

@@ -28,6 +28,12 @@ import {
 import { STATUS_ICONS, TYPE_ICONS, PRIORITY_LABELS } from '../tasks/types.js';
 import type { TaskType, TaskPriority } from '../tasks/types.js';
 import { globalSessionStats } from '../mcp-router/session-stats.js';
+import { getPolicyMemoryManager } from '../policies/policy-memory.js';
+import { getPolicyGate } from '../policies/policy-gate.js';
+import { ModelRouter } from '../models/router.js';
+import { ModelPresets, type MultiModelConfig } from '../models/types.js';
+import { getModelAnalytics } from '../models/analytics.js';
+import { detectExecutionProfile } from '../models/execution-profiles.js';
 
 type DashboardAction =
   | 'overview'
@@ -37,11 +43,17 @@ type DashboardAction =
   | 'progress'
   | 'stats'
   | 'session'
-  | 'benchmark';
+  | 'benchmark'
+  | 'policies'
+  | 'models'
+  | 'serve'
+  | 'export'
+  | 'history';
 
 interface DashboardOptions {
   verbose?: boolean;
   compact?: boolean;
+  taskId?: string;
 }
 
 export async function dashboardCommand(
@@ -73,6 +85,112 @@ export async function dashboardCommand(
     case 'benchmark':
       showDashboard();
       break;
+    case 'policies':
+      await showPoliciesDashboard(options);
+      break;
+    case 'models':
+      await showModelsDashboard(options);
+      break;
+    case 'serve':
+      await serveDashboard(options);
+      break;
+    case 'export':
+      await exportDashboard(options);
+      break;
+    case 'history':
+      await showHistory(options);
+      break;
+  }
+}
+
+async function serveDashboard(_options: DashboardOptions): Promise<void> {
+  const { startDashboardServer } = await import('../dashboard/server.js');
+  const server = startDashboardServer({ port: 3847 });
+
+  // Keep alive until Ctrl+C
+  process.on('SIGINT', () => {
+    console.log('\nShutting down dashboard server...');
+    server.close();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    server.close();
+    process.exit(0);
+  });
+}
+
+async function exportDashboard(options: DashboardOptions): Promise<void> {
+  const { getDashboardData } = await import('../dashboard/data-service.js');
+  const data = await getDashboardData();
+
+  if (options.verbose) {
+    // CSV-like output for key tables
+    console.log('# Policies');
+    console.log('name,level,stage,category,active');
+    for (const p of data.policies) {
+      console.log(`${p.name},${p.level},${p.enforcementStage},${p.category},${p.isActive}`);
+    }
+    console.log('');
+    console.log('# Model Usage');
+    console.log('model,tasks,tokens_in,tokens_out,cost,success_rate');
+    for (const m of data.models.sessionUsage) {
+      console.log(
+        `${m.modelId},${m.taskCount},${m.totalTokensIn},${m.totalTokensOut},${m.totalCost},${m.successRate}`
+      );
+    }
+  } else {
+    console.log(JSON.stringify(data, null, 2));
+  }
+}
+
+async function showHistory(_options: DashboardOptions): Promise<void> {
+  const cwd = process.cwd();
+  const snapshotDbPath = join(cwd, 'agents', 'data', 'memory', 'session_snapshots.db');
+
+  if (!existsSync(snapshotDbPath)) {
+    console.log(chalk.dim('No session history found. Snapshots are saved automatically.'));
+    return;
+  }
+
+  try {
+    const db = new Database(snapshotDbPath, { readonly: true });
+    const rows = db
+      .prepare(
+        'SELECT id, timestamp, duration_ms, total_cost, tasks_completed, models_used FROM session_snapshots ORDER BY timestamp DESC LIMIT 20'
+      )
+      .all() as Array<Record<string, unknown>>;
+    db.close();
+
+    if (rows.length === 0) {
+      console.log(chalk.dim('No session snapshots recorded yet.'));
+      return;
+    }
+
+    console.log('');
+    console.log(chalk.bold.cyan('  Session History'));
+    console.log(divider(70));
+    console.log('');
+    console.log(
+      `  ${'Timestamp'.padEnd(22)} ${'Duration'.padEnd(12)} ${'Cost'.padEnd(10)} ${'Tasks'.padEnd(8)} Models`
+    );
+    console.log(
+      `  ${'─'.repeat(22)} ${'─'.repeat(12)} ${'─'.repeat(10)} ${'─'.repeat(8)} ${'─'.repeat(16)}`
+    );
+
+    for (const row of rows) {
+      const ts = (row.timestamp as string).slice(0, 19);
+      const dur = row.duration_ms ? `${Math.round((row.duration_ms as number) / 1000)}s` : '?';
+      const cost = row.total_cost ? `$${(row.total_cost as number).toFixed(4)}` : '$0';
+      const tasks = String(row.tasks_completed || 0);
+      const models = row.models_used ? JSON.parse(row.models_used as string).join(', ') : '?';
+      console.log(
+        `  ${ts.padEnd(22)} ${dur.padEnd(12)} ${cost.padEnd(10)} ${tasks.padEnd(8)} ${models}`
+      );
+    }
+    console.log('');
+  } catch (error) {
+    console.error(chalk.red(error instanceof Error ? error.message : String(error)));
   }
 }
 
@@ -673,6 +791,26 @@ async function showMemoryDashboard(_options: DashboardOptions): Promise<void> {
       ],
     };
     for (const line of tree(layers)) console.log(line);
+    console.log('');
+
+    // Compression stats from session
+    console.log(sectionHeader('Context Compression'));
+    console.log('');
+    const sessionStats = globalSessionStats.getSummary();
+    if (sessionStats.totalCalls > 0) {
+      const rawKB = Math.round(sessionStats.totalRawBytes / 1024);
+      const ctxKB = Math.round(sessionStats.totalContextBytes / 1024);
+      console.log(`  ${chalk.white('Raw bytes'.padEnd(25))} ${chalk.bold(rawKB + ' KB')}`);
+      console.log(`  ${chalk.white('Context bytes'.padEnd(25))} ${chalk.bold(ctxKB + ' KB')}`);
+      console.log(
+        `  ${chalk.white('Savings'.padEnd(25))} ${chalk.green(sessionStats.savingsPercent)}`
+      );
+      console.log(
+        `  ${chalk.white('Tool calls'.padEnd(25))} ${chalk.bold(String(sessionStats.totalCalls))}`
+      );
+    } else {
+      console.log(chalk.dim('  No compression data this session'));
+    }
     console.log('');
   } catch (error) {
     spinner.fail('Failed to load memory dashboard');
@@ -1302,18 +1440,31 @@ async function showSessionDashboard(options: DashboardOptions): Promise<void> {
     }
     console.log('');
 
-    // Policies
+    // Policies (DB-driven)
     console.log(sectionHeader('Policies'));
     console.log('');
-    const policyItems: Array<{ text: string; status: 'ok' | 'warn' | 'error' | 'info' }> = [
-      { text: 'IaC State Parity', status: 'ok' },
-      { text: 'Mandatory File Backup', status: 'ok' },
-    ];
-    const imgPolicyPath = join(cwd, 'policies/image-asset-verification.md');
-    if (existsSync(imgPolicyPath)) {
-      policyItems.push({ text: 'Image & Asset Verification', status: 'info' });
+    try {
+      const policyMgr = getPolicyMemoryManager();
+      const allPolicies = await policyMgr.getAllPolicies();
+      if (allPolicies.length > 0) {
+        for (const policy of allPolicies) {
+          const stageLabel = (policy as any).enforcementStage || 'pre-exec';
+          const levelColor =
+            policy.level === 'REQUIRED'
+              ? chalk.red
+              : policy.level === 'RECOMMENDED'
+                ? chalk.yellow
+                : chalk.dim;
+          console.log(
+            `  ${levelColor(policy.level.padEnd(14))} ${policy.name.slice(0, 30).padEnd(30)} ${chalk.dim(stageLabel)}`
+          );
+        }
+      } else {
+        console.log(chalk.dim('  No policies configured. Add with: uap policy add -f <file>'));
+      }
+    } catch {
+      console.log(chalk.dim('  Policy DB not initialized'));
     }
-    for (const line of bulletList(policyItems)) console.log(line);
     console.log('');
 
     // Open loops
@@ -1341,6 +1492,315 @@ async function showSessionDashboard(options: DashboardOptions): Promise<void> {
     console.log('');
   } catch (error) {
     spinner.fail('Failed to load session dashboard');
+    console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+  }
+}
+
+async function showPoliciesDashboard(options: DashboardOptions): Promise<void> {
+  const spinner = ora('Loading policies dashboard...').start();
+
+  try {
+    const policyMgr = getPolicyMemoryManager();
+    const gate = getPolicyGate();
+    const allPolicies = await policyMgr.getAllPolicies();
+
+    spinner.stop();
+
+    console.log('');
+    console.log(chalk.bold.cyan('  UAP Policies Dashboard'));
+    console.log(divider(62));
+    console.log('');
+
+    // Active policies table
+    console.log(sectionHeader(`Active Policies (${allPolicies.length})`));
+    console.log('');
+
+    if (allPolicies.length === 0) {
+      console.log(chalk.dim('  No policies configured. Add with: uap policy add -f <file>'));
+    } else {
+      console.log(
+        `  ${'Name'.padEnd(28)} ${'Level'.padEnd(14)} ${'Stage'.padEnd(12)} ${'Category'.padEnd(10)} Status`
+      );
+      console.log(
+        `  ${'─'.repeat(28)} ${'─'.repeat(14)} ${'─'.repeat(12)} ${'─'.repeat(10)} ${'─'.repeat(6)}`
+      );
+      for (const policy of allPolicies) {
+        const stage = (policy as any).enforcementStage || 'pre-exec';
+        const status = policy.isActive ? chalk.green('ON') : chalk.red('OFF');
+        const levelColor =
+          policy.level === 'REQUIRED'
+            ? chalk.red
+            : policy.level === 'RECOMMENDED'
+              ? chalk.yellow
+              : chalk.dim;
+        console.log(
+          `  ${policy.name.slice(0, 28).padEnd(28)} ${levelColor(policy.level.padEnd(14))} ${stage.padEnd(12)} ${policy.category.padEnd(10)} ${status}`
+        );
+      }
+    }
+    console.log('');
+
+    // Enforcement stages breakdown
+    const stageGroups: Record<string, number> = {
+      'pre-exec': 0,
+      'post-exec': 0,
+      review: 0,
+      always: 0,
+    };
+    for (const p of allPolicies) {
+      const stage = (p as any).enforcementStage || 'pre-exec';
+      stageGroups[stage] = (stageGroups[stage] || 0) + 1;
+    }
+
+    console.log(sectionHeader('Enforcement Stages'));
+    console.log('');
+    for (const [stage, count] of Object.entries(stageGroups)) {
+      const barLen = Math.min(count * 5, 30);
+      const bar = chalk.cyan('\u2588'.repeat(barLen)) + chalk.dim('\u2591'.repeat(30 - barLen));
+      console.log(`  ${stage.padEnd(12)} ${bar} ${count} policies`);
+    }
+    console.log('');
+
+    // Level breakdown
+    const levelGroups: Record<string, number> = { REQUIRED: 0, RECOMMENDED: 0, OPTIONAL: 0 };
+    for (const p of allPolicies) {
+      levelGroups[p.level] = (levelGroups[p.level] || 0) + 1;
+    }
+
+    console.log(sectionHeader('Enforcement Levels'));
+    console.log('');
+    for (const [level, count] of Object.entries(levelGroups)) {
+      const color =
+        level === 'REQUIRED' ? chalk.red : level === 'RECOMMENDED' ? chalk.yellow : chalk.dim;
+      console.log(`  ${color(level.padEnd(14))} ${chalk.bold(String(count))}`);
+    }
+    console.log('');
+
+    // Audit trail
+    const auditEntries = await gate.getAuditTrail(undefined, 10);
+    if (auditEntries.length > 0) {
+      console.log(sectionHeader('Recent Audit Trail'));
+      console.log('');
+      for (const entry of auditEntries) {
+        const icon = entry.allowed ? chalk.green('PASS') : chalk.red('BLOCK');
+        const time = typeof entry.executedAt === 'string' ? entry.executedAt.slice(0, 19) : '';
+        const op = typeof entry.operation === 'string' ? entry.operation : '';
+        const reason = typeof entry.reason === 'string' ? entry.reason.slice(0, 40) : '';
+        console.log(`  ${chalk.dim(time)}  ${icon}  ${op.padEnd(20)} ${chalk.dim(reason)}`);
+      }
+    } else {
+      console.log(chalk.dim('  No audit trail entries yet'));
+    }
+    console.log('');
+
+    // Per-task filtering
+    if (options.taskId) {
+      console.log(sectionHeader(`Policy Checks for Task: ${options.taskId}`));
+      console.log('');
+      const taskAudit = await gate.getAuditTrail(undefined, 50);
+      const taskEntries = taskAudit.filter((e: any) => e.taskId === options.taskId);
+      if (taskEntries.length > 0) {
+        for (const entry of taskEntries) {
+          const icon = entry.allowed ? chalk.green('PASS') : chalk.red('BLOCK');
+          console.log(`  ${icon} ${entry.operation} - ${entry.reason || 'OK'}`);
+        }
+      } else {
+        console.log(chalk.dim('  No policy checks recorded for this task'));
+      }
+      console.log('');
+    }
+
+    // Help
+    console.log(chalk.dim('  Toggle: uap policy toggle <id> --off'));
+    console.log(chalk.dim('  Stage:  uap policy stage <id> -s post-exec'));
+    console.log(chalk.dim('  Level:  uap policy level <id> -l OPTIONAL'));
+    console.log('');
+  } catch (error) {
+    spinner.fail('Failed to load policies dashboard');
+    console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+  }
+}
+
+async function showModelsDashboard(options: DashboardOptions): Promise<void> {
+  const spinner = ora('Loading models dashboard...').start();
+
+  try {
+    // Load UAP config
+    const configPath = join(process.cwd(), '.uap.json');
+    let mmConfig: MultiModelConfig = {
+      enabled: true,
+      models: ['opus-4.6', 'qwen35'],
+      roles: { planner: 'opus-4.6', executor: 'qwen35', fallback: 'qwen35' },
+      routingStrategy: 'balanced',
+    };
+    if (existsSync(configPath)) {
+      try {
+        const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+        if (raw.multiModel) mmConfig = raw.multiModel;
+      } catch {
+        /* use defaults */
+      }
+    }
+
+    const router = new ModelRouter(mmConfig);
+    const analytics = getModelAnalytics();
+
+    spinner.stop();
+
+    console.log('');
+    console.log(chalk.bold.cyan('  UAP Model Dashboard'));
+    console.log(divider(62));
+    console.log('');
+
+    // Active configuration
+    console.log(sectionHeader('Active Configuration'));
+    console.log('');
+    const roles = mmConfig.roles || { planner: 'opus-4.6', executor: 'qwen35', fallback: 'qwen35' };
+    const plannerPreset = ModelPresets[roles.planner || 'opus-4.6'];
+    const executorPreset = ModelPresets[roles.executor || 'qwen35'];
+    const fallbackPreset = ModelPresets[roles.fallback || 'qwen35'];
+
+    const roleRows: Array<[string, string, string, string]> = [
+      [
+        'Planner',
+        roles.planner || 'opus-4.6',
+        plannerPreset?.name || '?',
+        `$${(plannerPreset?.costPer1MInput || 0).toFixed(2)}/$${(plannerPreset?.costPer1MOutput || 0).toFixed(2)}`,
+      ],
+      [
+        'Executor',
+        roles.executor || 'qwen35',
+        executorPreset?.name || '?',
+        `$${(executorPreset?.costPer1MInput || 0).toFixed(2)}/$${(executorPreset?.costPer1MOutput || 0).toFixed(2)}`,
+      ],
+      ['Reviewer', roles.reviewer || roles.planner || 'opus-4.6', plannerPreset?.name || '?', ''],
+      ['Fallback', roles.fallback || 'qwen35', fallbackPreset?.name || '?', ''],
+    ];
+    for (const [role, id, name, cost] of roleRows) {
+      const roleColor =
+        role === 'Planner' ? chalk.green : role === 'Executor' ? chalk.blue : chalk.dim;
+      console.log(
+        `  ${roleColor(role.padEnd(10))} ${chalk.cyan(id.padEnd(14))} ${name.padEnd(22)} ${chalk.dim(cost)}`
+      );
+    }
+    console.log(`  ${'Strategy'.padEnd(10)} ${chalk.cyan(mmConfig.routingStrategy)}`);
+    console.log('');
+
+    // Routing matrix
+    console.log(sectionHeader('Routing Matrix'));
+    console.log('');
+    console.log(`  ${'Complexity'.padEnd(12)} ${'Model'.padEnd(16)} ${'Est. Cost'}`);
+    console.log(`  ${'─'.repeat(12)} ${'─'.repeat(16)} ${'─'.repeat(10)}`);
+    for (const complexity of ['low', 'medium', 'high', 'critical'] as const) {
+      const result = router.classifyTask(`A ${complexity} complexity task`);
+      const model = result.suggestedModel;
+      const preset = ModelPresets[model];
+      const cost = preset ? router.estimateCost(preset, 10000, 5000) : 0;
+      const complexityColor =
+        complexity === 'critical'
+          ? chalk.red
+          : complexity === 'high'
+            ? chalk.yellow
+            : complexity === 'medium'
+              ? chalk.blue
+              : chalk.green;
+      console.log(
+        `  ${complexityColor(complexity.padEnd(12))} ${chalk.cyan(model.padEnd(16))} $${cost.toFixed(4)}`
+      );
+    }
+    console.log('');
+
+    // Session usage from analytics
+    const sessionUsage = analytics.getSessionUsage();
+    if (sessionUsage.length > 0) {
+      console.log(sectionHeader('Session Usage'));
+      console.log('');
+      console.log(
+        `  ${'Model'.padEnd(14)} ${'Tasks'.padEnd(7)} ${'Tokens In'.padEnd(12)} ${'Tokens Out'.padEnd(12)} ${'Cost'.padEnd(10)} ${'Success'}`
+      );
+      console.log(
+        `  ${'─'.repeat(14)} ${'─'.repeat(7)} ${'─'.repeat(12)} ${'─'.repeat(12)} ${'─'.repeat(10)} ${'─'.repeat(7)}`
+      );
+      for (const usage of sessionUsage) {
+        const rate = (usage.successRate * 100).toFixed(1) + '%';
+        console.log(
+          `  ${chalk.cyan(usage.modelId.padEnd(14))} ${String(usage.taskCount).padEnd(7)} ${String(usage.totalTokensIn).padEnd(12)} ${String(usage.totalTokensOut).padEnd(12)} $${usage.totalCost.toFixed(4).padEnd(9)} ${rate}`
+        );
+      }
+      console.log('');
+
+      const totalCost = analytics.getTotalCost();
+      console.log(`  ${chalk.bold('Total session cost:')} $${totalCost.toFixed(4)}`);
+      console.log('');
+    } else {
+      console.log(chalk.dim('  No model usage recorded this session'));
+      console.log('');
+    }
+
+    // Execution profile for executor
+    const executorModel = roles.executor || 'qwen35';
+    const executorApiModel = ModelPresets[executorModel]?.apiModel || executorModel;
+    const profile = detectExecutionProfile(executorApiModel);
+    console.log(sectionHeader(`Execution Profile: ${profile.name}`));
+    console.log('');
+    const profileConfig = profile.config;
+    const flagPairs: Array<[string, unknown]> = [
+      ['domainHints', profileConfig.domainHints],
+      ['webSearch', profileConfig.webSearch],
+      ['reflectionCheckpoints', profileConfig.reflectionCheckpoints],
+      ['temperature', profileConfig.temperature],
+      ['loopEscapeThreshold', profileConfig.loopEscapeThreshold],
+      ['toolChoiceForce', profileConfig.toolChoiceForce],
+      ['softBudget', profileConfig.softBudget],
+      ['hardBudget', profileConfig.hardBudget],
+    ];
+    const flagLines: string[] = [];
+    for (const [key, val] of flagPairs) {
+      const display =
+        typeof val === 'boolean'
+          ? val
+            ? chalk.green('ON')
+            : chalk.red('OFF')
+          : chalk.cyan(String(val));
+      flagLines.push(`${key}: ${display}`);
+    }
+    // Print 3 per line
+    for (let i = 0; i < flagLines.length; i += 3) {
+      const chunk = flagLines.slice(i, i + 3);
+      console.log(`  ${chunk.map((f) => f.padEnd(28)).join('')}`);
+    }
+    console.log('');
+
+    // Per-task view
+    if (options.taskId) {
+      console.log(sectionHeader(`Model Usage for Task: ${options.taskId}`));
+      console.log('');
+      const taskOutcomes = analytics.getTaskOutcomes(options.taskId);
+      if (taskOutcomes.length > 0) {
+        for (const outcome of taskOutcomes) {
+          const icon = outcome.success ? chalk.green('OK') : chalk.red('FAIL');
+          console.log(
+            `  ${icon} ${chalk.cyan(outcome.modelId)} ${outcome.taskType} ${outcome.complexity} ${outcome.durationMs}ms $${outcome.cost.toFixed(4)}`
+          );
+        }
+      } else {
+        console.log(chalk.dim('  No outcomes recorded for this task'));
+      }
+      console.log('');
+    }
+
+    // Optimal routing suggestions
+    const optimal = analytics.getOptimalRouting();
+    if (Object.keys(optimal).length > 0) {
+      console.log(sectionHeader('Optimal Routing (from history)'));
+      console.log('');
+      for (const [taskType, modelId] of Object.entries(optimal)) {
+        console.log(`  ${taskType.padEnd(16)} -> ${chalk.cyan(modelId)}`);
+      }
+      console.log('');
+    }
+  } catch (error) {
+    spinner.fail('Failed to load models dashboard');
     console.error(chalk.red(error instanceof Error ? error.message : String(error)));
   }
 }
