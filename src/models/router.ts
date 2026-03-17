@@ -124,9 +124,13 @@ export class ModelRouter {
 
     // Ensure we have at least the default models
     if (this.models.size === 0) {
-      const defaultModel = ModelPresets['opus-4.5'];
-      if (defaultModel) {
-        this.models.set('opus-4.5', defaultModel);
+      const defaultPlanner = ModelPresets['opus-4.6'];
+      const defaultExecutor = ModelPresets['qwen35'];
+      if (defaultPlanner) {
+        this.models.set('opus-4.6', defaultPlanner);
+      }
+      if (defaultExecutor) {
+        this.models.set('qwen35', defaultExecutor);
       }
     }
   }

@@ -43,7 +43,11 @@ export class EnforcedToolRouter {
    * Execute a tool through the policy gate.
    * Throws PolicyViolationError if any REQUIRED policy blocks it.
    */
-  async executeTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
+  async executeTool(
+    name: string,
+    args: Record<string, unknown> = {},
+    stage: 'pre-exec' | 'post-exec' | 'review' | 'always' = 'pre-exec'
+  ): Promise<unknown> {
     const tool = this.tools.get(name);
     if (!tool) {
       throw new Error(
@@ -51,8 +55,11 @@ export class EnforcedToolRouter {
       );
     }
 
-    return this.gate.executeWithGates(name, { ...args, _toolCategory: tool.category }, () =>
-      tool.execute(args)
+    return this.gate.executeWithGates(
+      name,
+      { ...args, _toolCategory: tool.category },
+      () => tool.execute(args),
+      stage
     );
   }
 
@@ -61,7 +68,8 @@ export class EnforcedToolRouter {
    */
   async wouldAllow(
     name: string,
-    args: Record<string, unknown> = {}
+    args: Record<string, unknown> = {},
+    stage: 'pre-exec' | 'post-exec' | 'review' | 'always' = 'pre-exec'
   ): Promise<{
     allowed: boolean;
     reasons: string[];
@@ -71,7 +79,11 @@ export class EnforcedToolRouter {
       return { allowed: false, reasons: [`Tool "${name}" not registered`] };
     }
 
-    const result = await this.gate.checkPolicies(name, { ...args, _toolCategory: tool.category });
+    const result = await this.gate.checkPolicies(
+      name,
+      { ...args, _toolCategory: tool.category },
+      stage
+    );
     return {
       allowed: result.allowed,
       reasons: result.blockedBy.map((b) => `[${b.policyName}] ${b.reason}`),

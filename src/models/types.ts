@@ -208,15 +208,15 @@ export const MultiModelConfigSchema = z.object({
         ModelConfigSchemaModels, // Full custom config
       ])
     )
-    .default(['opus-4.5']),
+    .default(['opus-4.6', 'qwen35']),
 
   // Role assignments
   roles: z
     .object({
-      planner: z.string().default('opus-4.5'),
-      executor: z.string().default('glm-4.7'),
+      planner: z.string().default('opus-4.6'),
+      executor: z.string().default('qwen35'),
       reviewer: z.string().optional(),
-      fallback: z.string().default('opus-4.5'),
+      fallback: z.string().default('qwen35'),
     })
     .optional(),
 
