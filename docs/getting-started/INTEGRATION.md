@@ -1,20 +1,18 @@
 # UAP Integration Guide
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-03-13  
+**Version:** 1.0.2  
+**Last Updated:** 2026-03-17  
 **Status:** ✅ Production Ready
 
 ---
 
 ## Executive Summary
 
-This guide provides integration instructions for all supported platforms, including opencode, ForgeCode, Claude Code, and VSCode.
+This guide provides integration instructions for all supported platforms, including opencode (with oh-my-pi), ForgeCode, Claude Code, and VSCode.
 
 ---
 
-## 1. opencode Integration
-
-### 1.1 Overview
+## 1.1 opencode with UAP
 
 **opencode** is the recommended platform for UAP, providing:
 
@@ -23,7 +21,7 @@ This guide provides integration instructions for all supported platforms, includ
 - Local LLM support (llama.cpp)
 - Built-in tooling (file operations, bash, search)
 
-### 1.2 Setup
+### 1.1.1 Setup
 
 ```bash
 # Install opencode
@@ -59,7 +57,7 @@ cd your-project
 uap init
 ```
 
-### 1.3 Plugin Configuration
+### 1.1.2 Plugin Configuration
 
 UAP plugins automatically load in opencode for:
 
@@ -67,7 +65,7 @@ UAP plugins automatically load in opencode for:
 - **Session hooks** - Pre-execution setup, memory preservation
 - **Agent coordination** - Multi-agent workflows without conflicts
 
-### 1.4 Usage
+### 1.1.3 Usage
 
 ```bash
 # Start opencode with UAP
@@ -80,11 +78,192 @@ opencode
 # - Compliance enforcement
 ```
 
+### 1.1.2 Oh-My-Pi Integration with UAP
+
+**oh-my-pi** is a powerful AI coding agent that now has **explicit UAP integration** with deep UI elements, session dashboards, and best-in-class UAP capabilities.
+
+#### 🎯 UAP-Enhanced Oh-My-Pi Features
+
+Unlike basic opencode integration, the UAP-enhanced oh-my-pi provides:
+
+| UAP Feature            | Integration                                                               |
+| ---------------------- | ------------------------------------------------------------------------- |
+| **Session Dashboard**  | `/uap-dashboard` - Real-time overview of tasks, agents, memory, worktrees |
+| **4-Layer Memory**     | Auto-injection on session start, persistent across restarts               |
+| **Worktree Isolation** | Enforced via hooks, automatic stale detection                             |
+| **Task DAG Tracking**  | `uap task` commands with status, creation, updates                        |
+| **Agent Coordination** | Multi-agent heartbeats, overlap detection, conflict prevention            |
+| **Pattern RAG**        | Auto-indexed patterns from your work (~12K token savings)                 |
+| **Memory Compaction**  | Smart cleanup preserving high-importance lessons                          |
+| **Policy Enforcement** | Pre-commit validation, worktree isolation checks                          |
+| **Telemetry**          | Tool execution logging for analytics and optimization                     |
+
+#### Installation
+
+```bash
+# Install oh-my-pi via Bun (recommended)
+bun install -g @oh-my-pi/pi-coding-agent
+
+# Install UAP integration for oh-my-pi
+cd your-project
+uap-omp install
+
+# Verify installation
+omp --version
+```
+
+#### Quick Start
+
+```bash
+# Start oh-my-pi with UAP context (hooks auto-inject)
+omp
+
+# View UAP dashboard
+uap-omp dashboard
+
+# Or use /uap-dashboard inside oh-my-pi
+/uap-dashboard
+```
+
+#### UAP Dashboard UI
+
+The UAP dashboard provides a comprehensive view of your agent session:
+
+```
+╔══════════════════════════════════════════════════════════╗
+║         UAP Dashboard for Oh-My-Pi                       ║
+╠══════════════════════════════════════════════════════════╣
+║  🧠 Memory Status                                         ║
+║    Recent: 47 lessons stored                              ║
+╠══════════════════════════════════════════════════════════╣
+║  📋 Task Status                                           ║
+║    Active tasks: 3                                        ║
+║    Pending:                                               ║
+║    • Fix authentication bug                               ║
+║    • Add unit tests for API                               ║
+║    In Progress:                                           ║
+║    • Refactor payment module                              ║
+╠══════════════════════════════════════════════════════════╣
+║  🌿 Worktrees                                             ║
+║    Active: 2 | Stale: 1 | Total: 3                       ║
+╠══════════════════════════════════════════════════════════╣
+║  🤖 Agents                                                ║
+║    Total: 4 | Running: 2                                  ║
+╠══════════════════════════════════════════════════════════╣
+║  📚 Pattern Library                                       ║
+║    Patterns indexed: 156                                  ║
+╠══════════════════════════════════════════════════════════╣
+║  📁 Current Context                                       ║
+║    Branch: feature/auth-fix                               ║
+║    Uncommitted changes: 12                                ║
+╚══════════════════════════════════════════════════════════╝
+```
+
+#### UAP CLI Commands for oh-my-pi
+
+| Command                           | Description                        |
+| --------------------------------- | ---------------------------------- |
+| `uap-omp dashboard`               | Open UAP dashboard UI              |
+| `uap memory status`               | Check memory health and statistics |
+| `uap memory query <term>`         | Search memory for relevant lessons |
+| `uap memory store <content>`      | Manually store a lesson            |
+| `uap task list`                   | List all tasks and their status    |
+| `uap task create --title <title>` | Create a new task                  |
+| `uap worktree list`               | Show active worktrees              |
+| `uap worktree create <slug>`      | Create isolated worktree           |
+| `uap patterns query <term>`       | Search pattern library             |
+| `uap compact`                     | Compact and optimize memory        |
+
+#### Memory Injection
+
+UAP automatically injects relevant memory context at session start:
+
+```
+[UAP Memory Context]
+[Importance 9]
+Category: authentication
+Content: Always validate JWT tokens on every request, use bcrypt for password hashing
+---
+[Importance 7]
+Category: testing
+Content: Write unit tests before implementing new features
 ---
 
-## 2. ForgeCode Integration
+Use this context to inform your decisions.
+```
 
-### 2.1 Overview
+#### Worktree Enforcement
+
+UAP enforces worktree isolation automatically:
+
+```
+[UAP-Enforce] You're about to modify files in the main branch (main).
+
+Per UAP compliance protocol, all changes should be made in isolated worktrees.
+
+Consider creating a worktree first:
+uap worktree create <slug>
+```
+
+#### Hooks System
+
+UAP installs hooks that automatically:
+
+- **Pre-session**: Inject memory, check task readiness, detect stale worktrees
+- **Post-session**: Save lessons, update worktree status, cleanup
+
+Hooks are located at `~/.uap/omp/hooks/` and integrate with oh-my-pi's hook system.
+
+#### Feature Parity Comparison
+
+| Capability               | Basic opencode + oh-my-pi | UAP-Enhanced oh-my-pi                |
+| ------------------------ | ------------------------- | ------------------------------------ |
+| Core Tools               | ✅ Full parity            | ✅ Full parity                       |
+| Memory Persistence       | ❌ None                   | ✅ 4-layer system                    |
+| Worktree Isolation       | ⚠️ Manual                 | ✅ Auto-enforced                     |
+| Task Tracking            | ⚠️ Manual                 | ✅ DAG with status                   |
+| Multi-agent Coordination | ❌ None                   | ✅ Heartbeats & overlap detection    |
+| Pattern RAG              | ⚠️ Manual                 | ✅ Auto-indexed (~12K token savings) |
+| Session Dashboard        | ❌ None                   | ✅ Real-time UI                      |
+| Policy Enforcement       | ❌ None                   | ✅ Pre-commit validation             |
+| Telemetry                | ❌ None                   | ✅ Tool execution logging            |
+
+#### Advanced Configuration
+
+**Enable UAP features in oh-my-pi:**
+
+Add to `~/.omp/agent/config.yml`:
+
+```yaml
+# Enable UAP memory injection
+uap:
+  enabled: true
+  memoryInjection: true
+  patternRAG: true
+  worktreeIsolation: true
+
+# Dashboard settings
+uapDashboard:
+  autoOpen: false
+  views: ['overview', 'tasks', 'agents', 'memory']
+```
+
+**Custom hook behavior:**
+
+Edit `~/.uap/omp/hooks/pre/session-start.sh` to customize memory injection:
+
+```bash
+#!/usr/bin/env bash
+# Custom pre-session hook
+export UAP_INJECT_LESSONS=5  # Only inject top 5 lessons
+export UAP_MIN_IMPORTANCE=6   # Only inject importance >= 6
+```
+
+---
+
+## 1.2 ForgeCode Integration
+
+### 1.2.1 Overview
 
 **ForgeCode** is the world's #1 coding agent (TermBench 2.0, 78.4% accuracy), providing:
 
@@ -93,7 +272,7 @@ opencode
 - Model flexibility (mix models mid-session)
 - Context engine with RAG-powered memory
 
-### 2.2 Setup
+### 1.2.2 Setup
 
 ```bash
 # Install UAP in your project
@@ -444,6 +623,6 @@ claude-code
 
 ---
 
-**Last Updated:** 2026-03-13  
-**Version:** 1.0.0  
+**Last Updated:** 2026-03-17  
+**Version:** 1.0.2  
 **Status:** ✅ Production Ready
