@@ -1,0 +1,63 @@
+{
+  "_profile": "claude-sonnet-4.6",
+  "_description": "Anthropic Claude Sonnet 4.6 (claude-sonnet-4-6-20250514). Best balance of speed, cost, and capability. Excellent tool calling, 200K context, and strong coding performance. Ideal for most agentic tasks where you want fast iteration without sacrificing quality.",
+
+  "model": "claude-sonnet-4-6-20250514",
+  "provider": "anthropic",
+  "api_base_url": "https://api.anthropic.com",
+  "max_tokens": 16384,
+  "temperature": 1.0,
+  "top_p": 1.0,
+  "timeout_ms": 120000,
+  "context_window": 200000,
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": true,
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "max_tool_calls_per_turn": 128,
+    "_comment": "Sonnet 4.6 has native parallel tool use. Excellent tool call reliability out of the box."
+  },
+
+  "extended_thinking": {
+    "enabled": true,
+    "budget_tokens": 5000,
+    "_comment": "Extended thinking available on Sonnet 4.6. Lower budget than Opus since Sonnet is faster and cheaper."
+  },
+
+  "dynamic_temperature": {
+    "enabled": false,
+    "_comment": "Anthropic API handles temperature differently. Default temp=1.0 is recommended."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "Sonnet 4.6 natively supports parallel tool calls."
+  },
+
+  "pricing": {
+    "input_per_1m": 3.0,
+    "output_per_1m": 15.0,
+    "cache_write_per_1m": 3.75,
+    "cache_read_per_1m": 0.3,
+    "currency": "USD",
+    "_comment": "As of 2025. 5x cheaper than Opus 4.6 with strong performance."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 2000,
+    "tokens_per_minute": 160000,
+    "_comment": "Default tier limits. Higher throughput than Opus."
+  },
+
+  "running_config": {
+    "description": "Anthropic hosted API. Requires ANTHROPIC_API_KEY environment variable.",
+    "env_vars": {
+      "ANTHROPIC_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "claude-sonnet-4.6"
+    }
+  }
+}

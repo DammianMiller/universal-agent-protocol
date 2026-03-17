@@ -1,0 +1,135 @@
+#!/bin/bash
+set -e
+
+# ============================================================================
+# 3-Layer Architecture:
+#   Layer 1: Task image (task data, base OS) -- from Dockerfile
+#   Layer 2: Toolchain (nvm, node, opencode, pip) -- pre-built in Docker image
+#   Layer 3: UAP (universal-agent-protocol) -- installed HERE at runtime
+#
+# To upgrade UAP: change UAP_VERSION below. No image rebuild needed.
+# To upgrade toolchain: rebuild docker images (Dockerfile.ubuntu/python)
+# ============================================================================
+
+UAP_VERSION="1.0.0"
+
+# ============================================================================
+# Layer 2: Toolchain detection
+# ============================================================================
+if [ -f /installed-agent/.toolchain-version ]; then
+    TOOLCHAIN_VER=$(cat /installed-agent/.toolchain-version)
+    echo "=== Layer 2: Toolchain detected (${TOOLCHAIN_VER}) - skipping heavy install ==="
+
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+
+    echo "  Node $(node -v 2>/dev/null || echo 'MISSING')"
+    echo "  npm $(npm -v 2>/dev/null || echo 'MISSING')"
+    echo "  opencode $(opencode --version 2>/dev/null || echo 'MISSING')"
+else
+    echo "=== Layer 2: No toolchain found - full install ==="
+
+    # System dependencies
+    apt-get update
+    apt-get install -y curl git build-essential python3-pip jq netcat-openbsd xxd \
+        tesseract-ocr tesseract-ocr-eng poppler-utils imagemagick ffmpeg \
+        libsm6 libxext6 file tmux
+
+    # Python packages
+    pip install --break-system-packages numpy pillow pytesseract \
+        opencv-python-headless python-chess 2>/dev/null || true
+
+    # Node.js via nvm
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
+    source "$HOME/.nvm/nvm.sh"
+    nvm install 22
+    echo "  Node $(node -v), npm $(npm -v)"
+
+    # opencode + AI SDK
+    for attempt in 1 2 3; do
+{% if version %}
+        npm i -g opencode-ai@{{ version }} && break
+{% else %}
+        npm i -g opencode-ai@latest && break
+{% endif %}
+        echo "  npm install failed (attempt ${attempt}/3), retrying..."
+        sleep 15
+    done
+    npm i -g @ai-sdk/openai-compatible 2>/dev/null || true
+
+    echo "  Layer 2 install complete"
+fi
+
+# ============================================================================
+# Layer 3: UAP (always runs -- fast, ~3-5s)
+# ============================================================================
+echo "=== Layer 3: Installing UAP v${UAP_VERSION} ==="
+
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+
+# Check if correct version already installed
+CURRENT_UAP=$(uap --version 2>/dev/null || echo "none")
+if [ "$CURRENT_UAP" = "$UAP_VERSION" ]; then
+    echo "  UAP v${UAP_VERSION} already installed - skipping"
+else
+    npm i -g universal-agent-protocol@${UAP_VERSION} 2>/dev/null || true
+    echo "  UAP v${UAP_VERSION} installed"
+fi
+
+# Run UAP setup for this project
+cd /app
+uap install opencode 2>/dev/null || true
+echo "  UAP setup complete"
+
+# ============================================================================
+# Config injection
+# ============================================================================
+
+# Write opencode.json with custom llama.cpp provider
+cat > /installed-agent/opencode.json << 'OPENCODE_EOF'
+{{ opencode_config }}
+OPENCODE_EOF
+
+{% if claude_md is defined and claude_md %}
+cat > /installed-agent/CLAUDE.md << 'CLAUDE_EOF'
+{{ claude_md }}
+CLAUDE_EOF
+echo "  CLAUDE.md written (UAP mode)"
+{% else %}
+echo "  No CLAUDE.md (baseline mode)"
+{% endif %}
+
+# ============================================================================
+# LLM endpoint connectivity check
+# ============================================================================
+LLM_ENDPOINT="{{ api_endpoint }}"
+echo "=== Checking LLM endpoint: ${LLM_ENDPOINT} ==="
+
+MAX_RETRIES=5
+RETRY_DELAY=10
+CONNECTED=false
+
+for attempt in $(seq 1 $MAX_RETRIES); do
+    if python3 -c "import urllib.request; urllib.request.urlopen('${LLM_ENDPOINT}/models', timeout=10)" 2>/dev/null; then
+        echo "  LLM reachable (attempt ${attempt}/${MAX_RETRIES})"
+        CONNECTED=true
+        break
+    fi
+    echo "  LLM not reachable (attempt ${attempt}/${MAX_RETRIES}), retrying in ${RETRY_DELAY}s..."
+    sleep $RETRY_DELAY
+done
+
+if [ "$CONNECTED" = false ]; then
+    echo "  WARNING: LLM endpoint not reachable after ${MAX_RETRIES} attempts"
+fi
+
+# ============================================================================
+# Summary
+# ============================================================================
+source "$HOME/.nvm/nvm.sh"
+echo "=== Install complete ==="
+echo "  Layer 2: toolchain $(cat /installed-agent/.toolchain-version 2>/dev/null || echo 'fresh')"
+echo "  Layer 3: UAP v$(uap --version 2>/dev/null || echo '?')"
+echo "  opencode $(opencode --version 2>/dev/null || echo '?')"
+echo "  API: {{ api_endpoint }}"

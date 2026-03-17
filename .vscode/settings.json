@@ -1,0 +1,11 @@
+{
+  "files.associations": {
+    "CLAUDE.md": "markdown",
+    "AGENT.md": "markdown",
+    "*.uap.json": "json"
+  },
+  "editor.formatOnSave": true,
+  "[markdown]": {
+    "editor.wordWrap": "on"
+  }
+}

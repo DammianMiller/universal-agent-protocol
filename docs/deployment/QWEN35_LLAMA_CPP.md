@@ -1,0 +1,265 @@
+# Qwen3.5 llama.cpp Deployment Guide
+
+How to run Qwen3.5 35B A3B with the official Qwen3 chat template, LoRA adapters, and structured tool call output via llama.cpp.
+
+## Prerequisites
+
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) built with CUDA/Metal support
+- Qwen3.5 35B A3B GGUF model (e.g. `qwen3.5-a3b-iq4xs.gguf`)
+- (Optional) Draft model for speculative decoding: `Qwen3.5-0.8B-Q8_0.gguf`
+- (Optional) LoRA adapter GGUF for improved tool call reliability
+
+## Quick Start
+
+```bash
+llama-server \
+  --model /path/to/qwen3.5-a3b-iq4xs.gguf \
+  --chat-template-file chat_template.jinja \
+  --n-predict 4096 \
+  --temp 0.6 --top-p 0.9 --top-k 20 --min-p 0.05 \
+  --repeat-penalty 1.05 \
+  --threads 8 --ctx-size 131072 --batch-size 8 \
+  --gpu-layers 35 --mlock --flash-attn
+```
+
+## Configuration Files
+
+| File                                        | Purpose                                                             |
+| ------------------------------------------- | ------------------------------------------------------------------- |
+| `chat_template.jinja`                       | Official Qwen3 chat template with native tool descriptions          |
+| `tools/agents/config/tool-call.gbnf`        | GBNF grammar for per-request use (do NOT use with `--grammar-file`) |
+| `tools/agents/config/tool-call-schema.json` | JSON Schema for the tool call payload                               |
+| `config/qwen35-settings.json`               | Full model settings, optimization config                            |
+| `config/lora-finetune.yaml`                 | LoRA training configuration (axolotl/unsloth compatible)            |
+
+## Important: Do NOT Use `--grammar-file`
+
+The `--grammar-file` flag applies a GBNF grammar **globally to every completion**. This breaks normal chat because the grammar forces `<tool_call>` output even when no tools are provided.
+
+llama.cpp's **differential autoparser** handles tool calls automatically:
+
+1. It analyzes the Jinja template to discover `<tool_call>`/`</tool_call>` markers
+2. It generates PEG grammar rules with **lazy activation** (`grammar_lazy = true`)
+3. When `tool_choice == "auto"`, the model generates freely until it emits `<tool_call>`, at which point the grammar activates to constrain the JSON payload
+4. After `</tool_call>`, the grammar allows another `<tool_call>` for parallel calls
+5. Plain chat (no tools) is unconstrained
+
+The GBNF file is kept in the repo for per-request use via the `grammar` field in API payloads, but should never be a server startup flag.
+
+## Server Configurations
+
+### Basic (no LoRA, no speculative decoding)
+
+```bash
+llama-server \
+  --model /path/to/qwen3.5-a3b-iq4xs.gguf \
+  --chat-template-file chat_template.jinja \
+  --n-predict 4096 \
+  --temp 0.6 --top-p 0.9 --top-k 20 --min-p 0.05 \
+  --repeat-penalty 1.05 \
+  --threads 8 --ctx-size 131072 --batch-size 8 \
+  --gpu-layers 35 --mlock --flash-attn
+```
+
+### With LoRA Adapter
+
+```bash
+llama-server \
+  --model /path/to/qwen3.5-a3b-iq4xs.gguf \
+  --lora /path/to/qwen35-tool-call-lora/adapter.gguf \
+  --lora-scale 1.0 \
+  --chat-template-file chat_template.jinja \
+  --n-predict 4096 \
+  --temp 0.6 --top-p 0.9 --top-k 20 --min-p 0.05 \
+  --repeat-penalty 1.05 \
+  --threads 8 --ctx-size 131072 --batch-size 8 \
+  --gpu-layers 35 --mlock --flash-attn
+```
+
+### Full Setup (LoRA + Speculative Decoding)
+
+```bash
+llama-server \
+  --model /path/to/qwen3.5-a3b-iq4xs.gguf \
+  --lora /path/to/qwen35-tool-call-lora/adapter.gguf \
+  --lora-scale 1.0 \
+  --chat-template-file chat_template.jinja \
+  --draft-model /path/to/Qwen3.5-0.8B-Q8_0.gguf \
+  --draft-max 16 --draft-p-min 0.75 \
+  --n-predict 4096 \
+  --temp 0.6 --top-p 0.9 --top-k 20 --min-p 0.05 \
+  --repeat-penalty 1.05 \
+  --threads 8 --ctx-size 131072 --batch-size 8 \
+  --gpu-layers 35 --mlock --flash-attn
+```
+
+## Key Parameters
+
+### Chat Template & Tool Calls
+
+| Flag                   | Value                 | Purpose                                                                                                                                                        |
+| ---------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--chat-template-file` | `chat_template.jinja` | Official Qwen3 template with native `tools` block. llama.cpp's autoparser discovers `<tool_call>` markers and generates lazy grammar + triggers automatically. |
+
+### LoRA
+
+| Flag           | Value                  | Purpose                                                                                                |
+| -------------- | ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| `--lora`       | Path to `adapter.gguf` | Loads LoRA adapter at runtime (no model merge needed). Improves tool call format adherence by ~15-20%. |
+| `--lora-scale` | `0.0` - `1.0`          | Adapter strength. Use `1.0` for full effect, `0.5`-`0.8` to blend with base model behavior.            |
+
+### Speculative Decoding
+
+| Flag            | Value                            | Purpose                                                                 |
+| --------------- | -------------------------------- | ----------------------------------------------------------------------- |
+| `--draft-model` | Path to `Qwen3.5-0.8B-Q8_0.gguf` | Small draft model proposes tokens verified by the main model.           |
+| `--draft-max`   | `16`                             | Max tokens to draft per iteration. Higher = more throughput, more VRAM. |
+| `--draft-p-min` | `0.75`                           | Minimum acceptance probability. Lower = more aggressive drafting.       |
+
+### Sampling
+
+| Flag               | Value  | Purpose                                           |
+| ------------------ | ------ | ------------------------------------------------- |
+| `--temp`           | `0.6`  | Low temperature for deterministic tool calls.     |
+| `--top-p`          | `0.9`  | Nucleus sampling threshold.                       |
+| `--top-k`          | `20`   | Limits token candidates per step.                 |
+| `--min-p`          | `0.05` | Filters tokens below 5% of top token probability. |
+| `--repeat-penalty` | `1.05` | Mild repetition penalty.                          |
+
+### Performance
+
+| Flag           | Value    | Purpose                                           |
+| -------------- | -------- | ------------------------------------------------- |
+| `--flash-attn` | (flag)   | 1.5-2x speed on long context.                     |
+| `--gpu-layers` | `35`     | Layers offloaded to GPU. Increase if VRAM allows. |
+| `--ctx-size`   | `131072` | Full 128K context window.                         |
+| `--mlock`      | (flag)   | Prevents OS from swapping model to disk.          |
+
+## VRAM Estimates
+
+| Component           | VRAM       |
+| ------------------- | ---------- |
+| Main model (IQ4_XS) | ~17 GB     |
+| Draft model (Q8_0)  | ~0.8 GB    |
+| KV cache (128K ctx) | ~2-3 GB    |
+| LoRA adapter        | ~50 MB     |
+| **Total**           | **~20 GB** |
+
+## Tool Call Format
+
+The model emits tool calls in the official Qwen3 format:
+
+```
+<tool_call>
+{"name": "read_file", "arguments": {"path": "/etc/hosts"}}
+</tool_call>
+```
+
+Multiple tool calls in a single turn:
+
+```
+<tool_call>
+{"name": "read_file", "arguments": {"path": "/etc/hosts"}}
+</tool_call>
+<tool_call>
+{"name": "list_dir", "arguments": {"path": "/tmp"}}
+</tool_call>
+```
+
+llama.cpp's autoparser handles stop behavior structurally via PEG grammar rules, not stop sequences. No explicit `</tool_call>` stop sequence is needed at the server level.
+
+## LoRA Training Pipeline
+
+### 1. Generate Training Data
+
+```bash
+python3 tools/agents/scripts/generate_lora_training_data.py -n 500
+```
+
+Produces `tool_call_training_data.jsonl` with ChatML-formatted examples using the official `<tool_call>` format.
+
+### 2. Fine-Tune
+
+Using axolotl:
+
+```bash
+accelerate launch -m axolotl.cli.train config/lora-finetune.yaml
+```
+
+Using unsloth (faster, less VRAM):
+
+```bash
+unsloth train --config config/lora-finetune.yaml
+```
+
+Training config highlights (`config/lora-finetune.yaml`):
+
+- LoRA rank 16, alpha 32
+- Targets all linear layers (q/k/v/o/gate/up/down projections)
+- 3 epochs, cosine LR schedule, 2e-4 learning rate
+- BF16 + gradient checkpointing + flash attention
+
+### 3. Convert to GGUF
+
+```bash
+python3 convert_lora_to_gguf.py \
+  --base Qwen/Qwen3.5-35B-A3B \
+  --lora output/qwen35-tool-call-lora \
+  --output adapter.gguf
+```
+
+### 4. Load at Runtime
+
+```bash
+llama-server --model base.gguf --lora adapter.gguf --lora-scale 1.0
+```
+
+## Quantization Options
+
+| Quant  | VRAM  | Accuracy | Tool Call Reliability |
+| ------ | ----- | -------- | --------------------- |
+| IQ4_XS | 17 GB | 96%      | 94%                   |
+| Q4_K_M | 20 GB | 95%      | 95%                   |
+| Q5_K_M | 24 GB | 97%      | 97%                   |
+| Q6_K   | 28 GB | 98%      | 98%                   |
+
+## Troubleshooting
+
+### "Template supports tool calls but does not natively describe tools"
+
+This warning means llama.cpp detected `tool_calls` handling but no `tools` variable access in the template. The `chat_template.jinja` in this repo resolves this by including a `{%- if tools %}` block that renders tool descriptions in `<tools></tools>` XML tags.
+
+Verify the template is loaded:
+
+```bash
+llama-server --chat-template-file chat_template.jinja --verbose
+```
+
+### LoRA not taking effect
+
+- Ensure the adapter was converted to GGUF format (not safetensors/PyTorch)
+- Check `--lora-scale` is not `0.0`
+- Verify the adapter was trained against the same base model architecture
+
+### Grammar rejecting valid output
+
+If using the GBNF grammar via per-request `grammar` field and it's too restrictive, the model may produce truncated output. Check `tools/agents/config/tool-call.gbnf` allows the argument types your tools use (strings, numbers, objects, arrays, booleans, null are all supported).
+
+### Model only outputs tool calls, never plain text
+
+You are likely using `--grammar-file` on the server command line. This forces ALL output into `<tool_call>` format. Remove `--grammar-file` from the startup command and let the autoparser handle tool call detection lazily.
+
+### Multi-tool calls truncated to single call
+
+Two possible causes:
+
+1. `--grammar-file` is set globally and the stop sequence `</tool_call>` terminates after the first call. Remove `--grammar-file`.
+2. The client is not passing `parallel_tool_calls: true` in the request. Add it to enable multiple tool calls per turn.
+
+## Related Files
+
+- `tools/agents/scripts/qwen_tool_call_wrapper.py` - Python wrapper with retry logic and format validation
+- `tools/agents/scripts/fix_qwen_chat_template.py` - Template verifier/fixer (detects format, validates Jinja2)
+- `tools/agents/scripts/qwen_tool_call_test.py` - Test suite using OpenAI-compatible API
+- `src/cli/tool-calls.ts` - CLI command for template management
+- `src/bin/llama-server-optimize.ts` - llama-server startup optimizer

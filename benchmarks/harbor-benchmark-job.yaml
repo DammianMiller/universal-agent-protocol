@@ -1,0 +1,11 @@
+# Terminal-Bench 2.0 Job Configuration for UAP 10.1.0 Benchmarking
+# 10-task suite: 2 easy, 6 medium, 2 hard across multiple categories
+# Timeout: 6.0x multiplier = ~90min per task, ~15h max for full suite (overnight)
+name: uap-qwen35-tbench-2.0-benchmark-v10.1.0
+agents:
+  - name: opencode-uap-v10.1.0
+    type: installed_agent
+    import_path: tools.agents.opencode_uap_agent:OpenCodeUAP
+trial_config: { timeout_multiplier: 6.0 }
+job_settings: { n_concurrent: 1, max_retries: 0 }
+output_dir: results/harbor-tbench-benchmark-v10.1.0

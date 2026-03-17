@@ -1,0 +1,56 @@
+name: tls-certificate-setup
+description: Generate mTLS certificates with CA hierarchy
+
+version: "1.0"
+
+environment:
+  image: debian:bullseye-slim
+  working_dir: /app
+  
+setup_commands:
+  - apt-get update >/dev/null 2>&1 && apt-get install -y openssl >/dev/null 2>&1 || true
+  - mkdir -p /app/certs/{ca,server}
+
+instruction: |
+  You are in an isolated container at /app. Generate mTLS certificates:
+  1. CA key and self-signed cert (CN="Benchmark CA") at /app/certs/ca/
+     - ca.key with permissions 600
+     - ca.crt valid for 365 days
+  2. Server cert signed BY the CA at /app/certs/server/
+     - server.key (RSA 2048-bit)
+     - server.crt with CN="benchmark.internal"
+  3. Verify the chain works
+
+verification_script: |
+  #!/bin/bash
+  set -e
+  
+  # Check CA exists
+  if [[ ! -f /app/certs/ca/ca.key ]] || [[ ! -f /app/certs/ca/ca.crt ]]; then 
+    echo "FAIL: No CA certificates" >&2; exit 1
+  fi
+  
+  # Check permissions on key
+  PERMS=$(stat -c%a /app/certs/ca/ca.key 2>/dev/null || echo "777")
+  if [[ "$PERMS" != "600" ]]; then
+    echo "FAIL: CA key permissions not 600 (got $PERMS)" >&2; exit 1
+  fi
+  
+  # Check server cert exists
+  if [[ ! -f /app/certs/server/server.key ]] || [[ ! -f /app/certs/server/server.crt ]]; then 
+    echo "FAIL: No server certificates" >&2; exit 1
+  fi
+  
+  # Verify chain (this is the CRITICAL test!)
+  cd /app/certs
+  if ! openssl verify -CAfile ca/ca.crt server/server.crt >/dev/null 2>&1; then
+    echo "FAIL: Certificate chain validation failed" >&2; exit 1
+  fi
+  
+  # Verify CN matches
+  SERVER_CN=$(openssl x509 -in server/server.crt -noout -subject | grep -o "CN.*" | head -1)
+  if [[ ! "$SERVER_CN" == *"benchmark.internal"* ]]; then
+    echo "FAIL: Server cert CN not 'benchmark.internal'" >&2; exit 1
+  fi
+  
+  echo "PASS: mTLS certificates correctly generated with valid CA-signed chain and correct CN"

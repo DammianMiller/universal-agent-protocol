@@ -1,0 +1,59 @@
+name: NPM Publish - Manual Trigger
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 4.4.0)'
+        required: true
+        default: '4.4.0'
+      force:
+        description: 'Force publish even if version exists'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  publish:
+    name: Build & Publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Set version
+        run: |
+          echo "Updating package.json version to ${{ github.event.inputs.version }}"
+          npm version ${{ github.event.inputs.version }} --no-git-tag-version
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Configure NPM
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+          chmod 600 ~/.npmrc
+
+      - name: Publish to NPM
+        run: |
+          echo "Publishing with force=${{ github.event.inputs.force }}"
+          npm publish --access public --provenance --ignore-scripts --force=${{ github.event.inputs.force }}

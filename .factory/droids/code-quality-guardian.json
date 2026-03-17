@@ -1,0 +1,10 @@
+{
+  "name": "code-quality-guardian",
+  "description": "Proactive code quality enforcer that reviews all code for maintainability, readability, correctness, and adherence to best practices. Catches issues before they become problems.",
+  "model": "inherit",
+  "coordination": {
+    "channels": ["review", "broadcast"],
+    "claims": ["exclusive"],
+    "batches_deploy": true
+  }
+}

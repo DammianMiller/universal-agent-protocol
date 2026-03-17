@@ -1,0 +1,62 @@
+{
+  "_profile": "claude-haiku-3.5",
+  "_description": "Anthropic Claude 3.5 Haiku (claude-3-5-haiku-20241022). Fastest and most cost-effective Claude model. 200K context with strong tool calling for high-throughput tasks. Best for rapid iteration, simple tool use, classification, and cost-sensitive workloads where latency matters.",
+
+  "model": "claude-3-5-haiku-20241022",
+  "provider": "anthropic",
+  "api_base_url": "https://api.anthropic.com",
+  "max_tokens": 8192,
+  "temperature": 1.0,
+  "top_p": 1.0,
+  "timeout_ms": 60000,
+  "context_window": 200000,
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": false,
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "max_tool_calls_per_turn": 128,
+    "_comment": "Haiku 3.5 supports parallel tool use with very low latency. Great for high-volume tool calling."
+  },
+
+  "extended_thinking": {
+    "enabled": false,
+    "_comment": "Extended thinking not available on Haiku 3.5. Use Sonnet 4.6 or Opus 4.6 for thinking mode."
+  },
+
+  "dynamic_temperature": {
+    "enabled": false,
+    "_comment": "Anthropic API handles temperature differently. Default temp=1.0 is recommended."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "Haiku 3.5 supports parallel tool calls with sub-second latency."
+  },
+
+  "pricing": {
+    "input_per_1m": 0.8,
+    "output_per_1m": 4.0,
+    "cache_write_per_1m": 1.0,
+    "cache_read_per_1m": 0.08,
+    "currency": "USD",
+    "_comment": "As of 2025. Extremely cost-effective. ~19x cheaper than Opus 4.6 on input."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 4000,
+    "tokens_per_minute": 400000,
+    "_comment": "Highest throughput of all Claude models. Designed for high-volume use cases."
+  },
+
+  "running_config": {
+    "description": "Anthropic hosted API. Requires ANTHROPIC_API_KEY environment variable.",
+    "env_vars": {
+      "ANTHROPIC_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "claude-haiku-3.5"
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "_profile": "generic",
+  "_description": "Generic defaults for any OpenAI-compatible model. Works out of the box with llama.cpp, vLLM, Ollama, OpenAI, or any server that speaks the /v1/chat/completions API. Conservative settings that prioritize reliability over speed.",
+
+  "model": "default",
+  "max_tokens": 4096,
+  "temperature": 0.6,
+  "top_p": 0.9,
+  "timeout_ms": 120000,
+  "context_window": 32768,
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": false,
+
+  "dynamic_temperature": {
+    "enabled": true,
+    "decay": 0.5,
+    "floor": 0.2,
+    "_comment": "On retry, temp = max(floor, base_temp * decay^attempt). Reduces randomness for structured output."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "Reduces round-trips by encouraging multi-tool emission in one turn."
+  },
+
+  "server_optimization": {
+    "flash_attention": false,
+    "kv_cache_type_k": "f16",
+    "kv_cache_type_v": "f16",
+    "prompt_cache": {
+      "enabled": false
+    },
+    "speculative_decoding": {
+      "enabled": false,
+      "_comment": "Enable and configure a draft model for 2-3x speedup. Requires a small model from the same family."
+    },
+    "_comment": "Generic defaults with no hardware-specific optimizations. Override per your GPU/CPU setup."
+  },
+
+  "running_config": {
+    "description": "Generic OpenAI-compatible server. Point TARGET_URL to your inference server.",
+    "llm_server": {
+      "description": "Any OpenAI-compatible server on port 8080",
+      "command": "llama-server --model /path/to/model.gguf --port 8080 --host 0.0.0.0 --ctx-size 32768",
+      "vram_estimate": "Depends on model size and quantization"
+    },
+    "env_vars": {
+      "TARGET_URL": "http://127.0.0.1:8080",
+      "UAP_MODEL_PROFILE": "generic"
+    }
+  }
+}

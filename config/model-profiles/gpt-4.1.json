@@ -1,0 +1,64 @@
+{
+  "_profile": "gpt-4.1",
+  "_description": "OpenAI GPT-4.1 (gpt-4.1-2025-04-14). Purpose-built for coding and instruction following. 1M token context window, superior at long-document understanding, and optimized for agentic tool use. Best OpenAI model for software engineering tasks.",
+
+  "model": "gpt-4.1-2025-04-14",
+  "provider": "openai",
+  "api_base_url": "https://api.openai.com/v1",
+  "max_tokens": 32768,
+  "temperature": 0.7,
+  "top_p": 1.0,
+  "timeout_ms": 180000,
+  "context_window": 1047576,
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": false,
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "strict_mode": true,
+    "_comment": "GPT-4.1 excels at agentic tool use with very high reliability. Parallel function calling supported."
+  },
+
+  "structured_output": {
+    "json_mode": true,
+    "strict_json_schema": true,
+    "_comment": "Supports structured outputs with guaranteed schema adherence."
+  },
+
+  "dynamic_temperature": {
+    "enabled": true,
+    "decay": 0.5,
+    "floor": 0.2,
+    "_comment": "Lower temperature on retries for more deterministic output."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response using parallel function calling.",
+    "_comment": "GPT-4.1 natively supports parallel function calls with high reliability."
+  },
+
+  "pricing": {
+    "input_per_1m": 2.0,
+    "output_per_1m": 8.0,
+    "cached_input_per_1m": 0.5,
+    "currency": "USD",
+    "_comment": "As of 2025. Cheaper than GPT-4o with better coding performance."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 5000,
+    "tokens_per_minute": 800000,
+    "_comment": "Tier 3+ limits."
+  },
+
+  "running_config": {
+    "description": "OpenAI hosted API. Requires OPENAI_API_KEY environment variable.",
+    "env_vars": {
+      "OPENAI_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "gpt-4.1"
+    }
+  }
+}

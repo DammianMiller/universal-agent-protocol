@@ -1,0 +1,78 @@
+{
+  "$schema": "https://raw.githubusercontent.com/DammianMiller/universal-agent-memory/main/schema.json",
+  "version": "1.0.0",
+  "project": {
+    "name": "universal-agent-protocol",
+    "description": "Universal Agent Protocol memory system",
+    "defaultBranch": "master"
+  },
+  "platforms": {
+    "claudeCode": {
+      "enabled": true
+    },
+    "factory": {
+      "enabled": true
+    },
+    "vscode": {
+      "enabled": true
+    },
+    "opencode": {
+      "enabled": true
+    }
+  },
+  "memory": {
+    "shortTerm": {
+      "enabled": true,
+      "path": "./agents/data/memory/short_term.db",
+      "maxEntries": 50
+    },
+    "longTerm": {
+      "enabled": true,
+      "provider": "qdrant",
+      "endpoint": "localhost:6333",
+      "collection": "agent_memory",
+      "embeddingModel": "all-MiniLM-L6-v2"
+    },
+    "patternRag": {
+      "enabled": true,
+      "collection": "agent_patterns",
+      "embeddingModel": "all-MiniLM-L6-v2",
+      "vectorSize": 384,
+      "scoreThreshold": 0.35,
+      "topK": 2,
+      "indexScript": "./agents/scripts/index_patterns_to_qdrant.py",
+      "queryScript": "./agents/scripts/query_patterns.py",
+      "sourceFile": "CLAUDE.md",
+      "sourceFiles": [],
+      "maxBodyChars": 400
+    },
+    "knowledgeGraph": {
+      "enabled": true
+    },
+    "prepopulation": {
+      "docs": true,
+      "gitHistory": true
+    }
+  },
+  "worktrees": {
+    "enabled": true,
+    "directory": ".worktrees",
+    "branchPrefix": "feature/",
+    "autoCleanup": true
+  },
+  "droids": [],
+  "commands": [],
+  "template": {
+    "extends": "default",
+    "sections": {
+      "memorySystem": true,
+      "browserUsage": true,
+      "decisionLoop": true,
+      "worktreeWorkflow": true,
+      "troubleshooting": true,
+      "augmentedCapabilities": true,
+      "pipelineOnly": false,
+      "benchmark": false
+    }
+  }
+}

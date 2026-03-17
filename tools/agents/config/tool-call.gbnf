@@ -1,0 +1,58 @@
+# GBNF Grammar for Qwen3.5 Tool Call Structured Output
+# Constrains model output to valid tool call format
+#
+# WARNING: Do NOT use this with --grammar-file on server startup.
+# Global grammar forces ALL output into <tool_call> format, breaking plain chat.
+# llama.cpp's autoparser handles tool calls lazily via the chat template.
+#
+# Use this grammar for per-request enforcement only, via the "grammar" field
+# in individual API payloads when strict format adherence is needed.
+#
+# Matches the official Qwen3 chat template format:
+#   <tool_call>
+#   {"name": "function_name", "arguments": {"key": "value"}}
+#   </tool_call>
+
+root ::= ws tool-calls ws
+
+# One or more tool calls (supports multi-tool in single turn)
+tool-calls ::= tool-call (ws tool-call)*
+
+# Single tool call block
+tool-call ::= "<tool_call>" ws "{\"name\":" ws json-string ws "," ws "\"arguments\":" ws json-object ws "}" ws "</tool_call>"
+
+# JSON object (the arguments)
+json-object ::= "{" ws json-members? ws "}"
+
+json-members ::= json-pair (ws "," ws json-pair)*
+
+json-pair ::= json-string ws ":" ws json-value
+
+json-value ::= json-string | json-number | json-object | json-array | json-bool | json-null
+
+json-string ::= "\"" json-chars "\"" | "\"\""
+
+json-chars ::= json-char+
+
+json-char ::= [^"\\] | "\\" json-escape
+
+json-escape ::= ["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]
+
+json-number ::= "-"? json-int json-frac? json-exp?
+
+json-int ::= "0" | [1-9] [0-9]*
+
+json-frac ::= "." [0-9]+
+
+json-exp ::= [eE] [+-]? [0-9]+
+
+json-array ::= "[" ws json-array-items? ws "]"
+
+json-array-items ::= json-value (ws "," ws json-value)*
+
+json-bool ::= "true" | "false"
+
+json-null ::= "null"
+
+# Whitespace
+ws ::= [ \t\n\r]*

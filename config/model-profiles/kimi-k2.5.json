@@ -1,0 +1,70 @@
+{
+  "_profile": "kimi-k2.5",
+  "_description": "Moonshot Kimi K2.5 (kimi-k2.5). Open-weight MoE model (1T total, 32B active) with agentic tool use, 128K context, and strong coding ability. Runs locally via vLLM or via Moonshot API. Competitive with GPT-4o on coding benchmarks at a fraction of the cost.",
+
+  "model": "kimi-k2.5",
+  "provider": "moonshot",
+  "api_base_url": "https://api.moonshot.cn/v1",
+  "max_tokens": 16384,
+  "temperature": 0.6,
+  "top_p": 0.9,
+  "timeout_ms": 180000,
+  "context_window": 131072,
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": true,
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "_comment": "Kimi K2.5 has native tool calling with OpenAI-compatible function calling format. Strong agentic performance."
+  },
+
+  "thinking": {
+    "enabled": true,
+    "_comment": "K2.5 supports thinking mode for complex reasoning. Can be disabled for faster responses."
+  },
+
+  "dynamic_temperature": {
+    "enabled": true,
+    "decay": 0.5,
+    "floor": 0.2,
+    "_comment": "Lower temperature on retries for more deterministic tool call output."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "K2.5 supports parallel function calls."
+  },
+
+  "local_deployment": {
+    "supported": true,
+    "framework": "vLLM",
+    "min_vram_gb": 80,
+    "recommended_vram_gb": 160,
+    "command": "vllm serve moonshotai/Kimi-K2.5 --tensor-parallel-size 4 --max-model-len 131072",
+    "_comment": "Open-weight model. 1T total params, 32B active (MoE). Requires multi-GPU setup for local deployment. Use API for single-GPU setups."
+  },
+
+  "pricing": {
+    "input_per_1m_cny": 2.0,
+    "output_per_1m_cny": 8.0,
+    "currency": "CNY",
+    "_comment": "As of 2025. Moonshot API pricing. Open weights available for self-hosting."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 500,
+    "tokens_per_minute": 500000,
+    "_comment": "Default tier limits via Moonshot API."
+  },
+
+  "running_config": {
+    "description": "Moonshot hosted API or self-hosted via vLLM. Requires MOONSHOT_API_KEY for hosted, or local vLLM setup.",
+    "env_vars": {
+      "MOONSHOT_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "kimi-k2.5"
+    }
+  }
+}

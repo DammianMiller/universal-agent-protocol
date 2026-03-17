@@ -1,0 +1,64 @@
+{
+  "_profile": "gpt-4o",
+  "_description": "OpenAI GPT-4o (gpt-4o-2025-03-27). Multimodal flagship with native tool calling, JSON mode, and 128K context. Fast, capable, and cost-effective for most tasks. Supports parallel function calling and structured outputs.",
+
+  "model": "gpt-4o-2025-03-27",
+  "provider": "openai",
+  "api_base_url": "https://api.openai.com/v1",
+  "max_tokens": 16384,
+  "temperature": 0.7,
+  "top_p": 1.0,
+  "timeout_ms": 120000,
+  "context_window": 128000,
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": false,
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "strict_mode": true,
+    "_comment": "GPT-4o has native parallel function calling. strict_mode ensures function call arguments match the schema exactly."
+  },
+
+  "structured_output": {
+    "json_mode": true,
+    "strict_json_schema": true,
+    "_comment": "GPT-4o supports structured outputs with guaranteed schema adherence via json_schema response format."
+  },
+
+  "dynamic_temperature": {
+    "enabled": true,
+    "decay": 0.5,
+    "floor": 0.2,
+    "_comment": "Lower temperature on retries for more deterministic tool call output."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response using parallel function calling.",
+    "_comment": "GPT-4o natively supports parallel function calls."
+  },
+
+  "pricing": {
+    "input_per_1m": 2.5,
+    "output_per_1m": 10.0,
+    "cached_input_per_1m": 1.25,
+    "currency": "USD",
+    "_comment": "As of 2025. Prompt caching available for 50% input discount."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 5000,
+    "tokens_per_minute": 800000,
+    "_comment": "Tier 3+ limits. Very high throughput."
+  },
+
+  "running_config": {
+    "description": "OpenAI hosted API. Requires OPENAI_API_KEY environment variable.",
+    "env_vars": {
+      "OPENAI_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "gpt-4o"
+    }
+  }
+}

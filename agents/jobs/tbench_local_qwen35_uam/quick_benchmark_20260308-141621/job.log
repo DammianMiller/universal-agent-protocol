@@ -1,0 +1,5 @@
+Trial regex-chess__M8sqq5r failed: Unknown provider llama.cpp. If you believe this provider should be supported, please contact the maintainers.
+Trial regex-chess__M8sqq5r failed with exception ValueError. Retrying in 1.00 seconds...
+Trial regex-chess__M8sqq5r failed: Unknown provider llama.cpp. If you believe this provider should be supported, please contact the maintainers.
+Not retrying trial because the maximum number of retries has been reached
+Trial path-tracing__F48xrut cancelled

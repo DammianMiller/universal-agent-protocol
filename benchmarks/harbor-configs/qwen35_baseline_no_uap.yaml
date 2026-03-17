@@ -1,0 +1,44 @@
+# Qwen3.5 BASELINE - Harbor Containerized Benchmark Config (No UAP)
+# Full Terminal-Bench Quick Suite with bare model, NO UAP integration
+
+name: qwen35-baseline-no-uap-v1
+description: 'Qwen3.5 running WITHOUT any UAP features for baseline comparison'
+
+dataset: terminal-bench@latest
+task_filter: |
+  remember-file-locations,cross-task-context,multistep-coordination,apply-eslint,add-unit-tests,optimize-imports,password-recovery,file-permissions,extract-elf,gpt2-codegolf,chess-best-move,docker-compose-setup,kubernetes-deploy
+
+agent: harbor.agents.claude_code:ClaudeCodeAgent
+model_config:
+  type: openrouter
+
+adapter_kwargs: {}
+
+run_options:
+  n_attempts_per_trial: 1
+  max_retries: 2
+  timeout_multiplier: 1.5
+  disable_verification: false
+
+# NO UAP environment variables - baseline configuration
+environment_variables:
+  USE_UAP: 'false'
+  PROJECT_ROOT: '/home/cogtek/dev/miller-tech/universal-agent-memory'
+
+resources:
+  n_cpus: 2
+  memory_mb: 4096
+  storage_mb: 1024
+
+results_dir: benchmark-results/qwen35_harbor_baseline_no_uap_quick_suite
+
+traces_config:
+  export_traces: true
+  sharegpt_export: false
+
+retry_policy:
+  retry_on_exceptions:
+    - AgentTimeoutError
+    - VerifierOutputParseError
+
+max_concurrent_trials: 2

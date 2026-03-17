@@ -1,0 +1,11 @@
+name: uap-quick-test-suite
+datasets:
+  - name: terminal-bench@2.0
+    tasks: [git-recovery-test, tls-certificate-setup, multi-container-deployment, ml-model-training]
+agents:
+  - name: uap-v3.0+
+    type: installed_agent
+    import_path: tools.agents.uap_agent:UAPAgent
+trial_config: { timeout_multiplier: 2.0 }
+job_settings: { n_concurrent: 1, max_retries: 2, disable_verification: false }
+output_dir: results/harbor-benchmark

@@ -1,0 +1,63 @@
+{
+  "_profile": "claude-opus-4.6",
+  "_description": "Anthropic Claude Opus 4.6 (claude-opus-4-6-20250616). Most capable Claude model with extended thinking, parallel tool use, and 200K context. Best for complex multi-step reasoning, large codebase navigation, and agentic workflows where accuracy matters more than speed.",
+
+  "model": "claude-opus-4-6-20250616",
+  "provider": "anthropic",
+  "api_base_url": "https://api.anthropic.com",
+  "max_tokens": 32768,
+  "temperature": 1.0,
+  "top_p": 1.0,
+  "timeout_ms": 300000,
+  "context_window": 200000,
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": true,
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "max_tool_calls_per_turn": 128,
+    "_comment": "Opus 4.6 has native parallel tool use. tool_choice='auto' is recommended; 'required' forces tool use every turn."
+  },
+
+  "extended_thinking": {
+    "enabled": true,
+    "budget_tokens": 10000,
+    "_comment": "Extended thinking gives Opus 4.6 a scratchpad for complex reasoning. Budget controls max thinking tokens per turn. Set to 0 to disable."
+  },
+
+  "dynamic_temperature": {
+    "enabled": false,
+    "_comment": "Anthropic API handles temperature differently. Default temp=1.0 is recommended by Anthropic for most use cases."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "Opus 4.6 natively supports parallel tool calls. This prompt reinforces the behavior."
+  },
+
+  "pricing": {
+    "input_per_1m": 15.0,
+    "output_per_1m": 75.0,
+    "cache_write_per_1m": 18.75,
+    "cache_read_per_1m": 1.5,
+    "currency": "USD",
+    "_comment": "As of 2025. Prompt caching gives 90% discount on cache hits."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 1000,
+    "tokens_per_minute": 80000,
+    "_comment": "Default tier limits. Higher tiers available via Anthropic."
+  },
+
+  "running_config": {
+    "description": "Anthropic hosted API. Requires ANTHROPIC_API_KEY environment variable.",
+    "env_vars": {
+      "ANTHROPIC_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "claude-opus-4.6"
+    }
+  }
+}

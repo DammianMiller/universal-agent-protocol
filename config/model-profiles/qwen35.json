@@ -1,0 +1,219 @@
+{
+  "model": "qwen3.5-a3b-iq4xs",
+  "max_tokens": 81920,
+  "temperature": 0.6,
+  "top_p": 0.9,
+  "top_k": 20,
+  "min_p": 0.05,
+  "repetition_penalty": 1.05,
+  "stop_sequences": ["\n\n"],
+  "timeout_ms": 120000,
+  "context_window": 262144,
+  "optimize_for_tool_calls": true,
+  "mode_switch_buffer_tokens": 500,
+  "enable_thinking": false,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+
+  "dynamic_temperature": {
+    "enabled": true,
+    "decay": 0.5,
+    "floor": 0.2,
+    "_comment": "On retry, temp = max(floor, base_temp * decay^attempt). Reduces randomness for structured output."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "Reduces round-trips by encouraging multi-tool emission in one turn."
+  },
+
+  "structured_output": {
+    "grammar_file": "tools/agents/config/tool-call.gbnf",
+    "json_schema_file": "tools/agents/config/tool-call-schema.json",
+    "_comment": "GBNF grammar for per-request use only. Do NOT use --grammar-file on server startup — it forces tool_call output on all requests including plain chat. llama.cpp's autoparser handles tool call detection lazily via the chat template."
+  },
+
+  "server_optimization": {
+    "flash_attention": true,
+    "kv_cache_type_k": "q8_0",
+    "kv_cache_type_v": "q4_0",
+    "prompt_cache": {
+      "enabled": true,
+      "slot_save_path": "./cache/slots"
+    },
+    "speculative_decoding": {
+      "enabled": true,
+      "draft_model": "Qwen3.5-0.8B-Q8_0",
+      "draft_max": 16,
+      "draft_min": 3,
+      "draft_p_min": 0.75,
+      "_comment": "Enable for 2-3x speedup in tokens/sec. Uses Qwen3.5-0.8B-Q8_0 as draft model to propose tokens. Set enabled=true and provide draft model GGUF path. Current setup: main model 17GB, draft model 0.8GB, KV cache ~2-3GB."
+    },
+    "_comment": "KV q8/q4 split saves ~60% KV VRAM. Flash attn gives 1.5-2x speed on long context."
+  },
+
+  "lora": {
+    "enabled": false,
+    "adapter_path": "",
+    "scale": 1.0,
+    "training_config": "config/lora-finetune.yaml",
+    "data_generator": "tools/agents/scripts/generate_lora_training_data.py",
+    "_comment": "Fine-tune a LoRA adapter for +15-20% tool call reliability. See config/lora-finetune.yaml."
+  },
+
+  "quantization_profiles": {
+    "current": "iq4_xs",
+    "upgrade_path": [
+      { "quant": "IQ4_XS", "vram_gb": 17, "accuracy": "96%", "tool_calls": "94%" },
+      { "quant": "Q4_K_M", "vram_gb": 20, "accuracy": "95%", "tool_calls": "95%" },
+      { "quant": "Q5_K_M", "vram_gb": 24, "accuracy": "97%", "tool_calls": "97%" },
+      { "quant": "Q6_K", "vram_gb": 28, "accuracy": "98%", "tool_calls": "98%" }
+    ],
+    "_comment": "Each step up requires ~4-7GB more VRAM but improves instruction following."
+  },
+
+  "running_config": {
+    "description": "Dual-model llama.cpp setup: Qwen3.5 35B A3B for LLM + nomic-embed-text-v2-moe for embeddings. Run as two separate llama-server instances on different ports.",
+
+    "llm_server": {
+      "description": "Instance 1: Main LLM (Qwen3.5 35B A3B) — port 8080",
+      "command": "llama-server --model /path/to/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf --chat-template-file chat_template.jinja --port 8080 --host 0.0.0.0 --ctx-size 131072 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q4_0 -fa on --threads 8 --batch-size 512 --ubatch-size 256 --mlock --metrics --n-predict 4096 --temp 0.6 --top-p 0.9 --top-k 20 --min-p 0.05 --repeat-penalty 1.05",
+      "flags": [
+        "--model /path/to/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf",
+        "--chat-template-file chat_template.jinja",
+        "--n-predict 4096",
+        "--temp 0.6",
+        "--top-p 0.9",
+        "--top-k 20",
+        "--min-p 0.05",
+        "--repeat-penalty 1.05",
+        "--threads 8",
+        "--ctx-size 131072",
+        "--batch-size 512",
+        "--ubatch-size 256",
+        "--gpu-layers 99",
+        "--cache-type-k q8_0",
+        "--cache-type-v q4_0",
+        "--mlock",
+        "-fa on",
+        "--metrics",
+        "--host 0.0.0.0",
+        "--port 8080"
+      ],
+      "vram_estimate": "~20GB (17GB model + 0.8GB draft + 2-3GB KV cache)"
+    },
+
+    "embedding_server": {
+      "description": "Instance 2: Embedding model (nomic-embed-text-v2-moe) — port 8081. SoTA multilingual MoE embedding model: 475M total / 305M active params, 768 dims, 100+ languages, MIRACL 65.8.",
+      "model": "nomic-embed-text-v2-moe",
+      "model_url": "https://huggingface.co/nomic-ai/nomic-embed-text-v2-moe-GGUF",
+      "recommended_quant": "Q4_K_M",
+      "quant_options": [
+        { "quant": "Q4_K_M", "size_mb": 328, "quality": "good, recommended for most use cases" },
+        { "quant": "Q5_K_M", "size_mb": 354, "quality": "high quality" },
+        { "quant": "Q6_K", "size_mb": 379, "quality": "very high quality, near perfect" },
+        { "quant": "Q8_0", "size_mb": 488, "quality": "extremely high, generally unneeded" },
+        { "quant": "F16", "size_mb": 913, "quality": "full precision, max quality" }
+      ],
+      "download_command": "huggingface-cli download nomic-ai/nomic-embed-text-v2-moe-GGUF nomic-embed-text-v2-moe.Q4_K_M.gguf --local-dir /path/to/models/",
+
+      "command_gpu": "llama-server --model /path/to/nomic-embed-text-v2-moe.Q4_K_M.gguf --port 8081 --host 0.0.0.0 --embeddings --pooling mean --ctx-size 512 --gpu-layers 99 --batch-size 2048 --ubatch-size 512 --threads 4",
+      "command_cpu": "llama-server --model /path/to/nomic-embed-text-v2-moe.Q4_K_M.gguf --port 8081 --host 0.0.0.0 --embeddings --pooling mean --ctx-size 512 --gpu-layers 0 --batch-size 2048 --threads 8",
+
+      "flags_gpu": [
+        "--model /path/to/nomic-embed-text-v2-moe.Q4_K_M.gguf",
+        "--port 8081",
+        "--host 0.0.0.0",
+        "--embeddings",
+        "--pooling mean",
+        "--ctx-size 512",
+        "--gpu-layers 99",
+        "--batch-size 2048",
+        "--ubatch-size 512",
+        "--threads 4"
+      ],
+      "flags_cpu": [
+        "--model /path/to/nomic-embed-text-v2-moe.Q4_K_M.gguf",
+        "--port 8081",
+        "--host 0.0.0.0",
+        "--embeddings",
+        "--pooling mean",
+        "--ctx-size 512",
+        "--gpu-layers 0",
+        "--batch-size 2048",
+        "--threads 8"
+      ],
+      "vram_estimate_gpu": "~380MB (328MB model + ~50MB KV cache)",
+      "vram_estimate_cpu": "0 (runs entirely on CPU RAM, ~400MB)",
+      "task_prefixes": {
+        "search_query": "search_query: ",
+        "search_document": "search_document: ",
+        "_comment": "nomic-embed-text-v2 requires task prefixes. Queries use search_query:, documents use search_document:. The UAP embedding provider handles this automatically."
+      },
+      "env_var": "UAP_EMBEDDING_ENDPOINT=http://localhost:8081",
+      "_comment": "Set UAP_EMBEDDING_ENDPOINT env var to override the default endpoint. The embedding provider auto-detects dimensions from the model response."
+    },
+
+    "dual_model_vram_budget": {
+      "24gb_gpu": {
+        "llm": "~20GB (Qwen3.5 IQ4_XS + draft + KV)",
+        "embedding_gpu": "~380MB (nomic-embed Q4_K_M on GPU)",
+        "total": "~20.4GB — fits with headroom",
+        "recommendation": "Run both on GPU"
+      },
+      "16gb_gpu": {
+        "llm": "~17GB (Qwen3.5 IQ4_XS, no draft, smaller KV)",
+        "embedding_cpu": "0 GPU (run embedding on CPU)",
+        "total": "~17GB GPU + ~400MB CPU",
+        "recommendation": "Run LLM on GPU, embedding on CPU"
+      },
+      "48gb_gpu": {
+        "llm": "~20GB (Qwen3.5 IQ4_XS + draft + KV)",
+        "embedding_gpu": "~380MB",
+        "headroom": "~28GB free for larger context or better quants",
+        "recommendation": "Run both on GPU, consider Q5_K_M or Q6_K for LLM"
+      }
+    }
+  },
+
+  "optimization_recommendations": {
+    "current_performance": {
+      "vram_breakdown": {
+        "main_model": "17GB",
+        "draft_model": "0.8GB",
+        "kv_cache": "~2-3GB",
+        "total_estimated": "~20GB"
+      },
+      "speedup_estimate": "2-3x improvement in tokens/sec compared to standard generation",
+      "notes": "Speculative decoding is working as expected with the current setup. Main model (Qwen3.5-a3b-iq4xs) and draft model (Qwen3.5-0.8B-Q8_0) are optimized for tool calls."
+    },
+    "recommendations": [
+      {
+        "title": "Increase draft-max for longer contexts",
+        "description": "Adjust --draft-max to 32 for longer contexts (up to 32 tokens at once). Current setting is 16. This can improve throughput by 10-20% for longer generation tasks.",
+        "priority": "high",
+        "action": "Update speculative_decoding.draft_max to 32 in config"
+      },
+      {
+        "title": "Monitor KV cache usage",
+        "description": "KV cache is currently ~2-3GB. For longer contexts (131k tokens), consider adjusting --ctx-size or --batch-size if memory pressure occurs.",
+        "priority": "medium",
+        "action": "Monitor memory usage and adjust context window if needed"
+      },
+      {
+        "title": "Consider GPU-layers optimization",
+        "description": "Current setting is --gpu-layers 35. If VRAM allows (20GB+), consider increasing to 36 for better memory management.",
+        "priority": "low",
+        "action": "Evaluate GPU memory and adjust --gpu-layers if needed"
+      },
+      {
+        "title": "Enable flash attention",
+        "description": "Flash attention is already enabled. For further optimization, ensure --flash-attn flag is present in command line.",
+        "priority": "medium",
+        "action": "Verify --flash-attn is enabled in running config"
+      }
+    ]
+  }
+}

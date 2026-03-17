@@ -1,0 +1,62 @@
+name: NPM Publish
+
+on:
+  push:
+    branches: [master]
+
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force publish'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  publish:
+    name: Build and Publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: 'https://registry.npmjs.org/'
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - run: npm test
+
+      - name: Configure NPM
+        run: |
+          if [ -z "${{ secrets.NPM_TOKEN }}" ]; then
+            echo "ERROR: NPM_TOKEN not configured"
+            exit 1
+          fi
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+
+      - name: Publish
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          FORCE="${{ github.event.inputs.force }}"
+
+          if [ "$FORCE" != "true" ]; then
+            EXISTING=$(npm view universal-agent-protocol@$VERSION version 2>/dev/null || echo "")
+            if [ -n "$EXISTING" ]; then
+              echo "Version $VERSION already exists"
+              exit 0
+            fi
+          fi
+
+          echo "Publishing universal-agent-protocol@$VERSION..."
+          npm publish --access public --ignore-scripts

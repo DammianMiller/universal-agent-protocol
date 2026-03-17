@@ -1,0 +1,38 @@
+# Qwen3.5 Terminal-Bench 2.0 - Quick Suite Configuration
+# This config runs a representative subset of tasks from T-Bench against UAP/OpenCode and Baseline configurations
+
+job_name: qwen35_uap_vs_baseline_quick_suite_v1
+
+dataset: terminal-bench@latest # Full dataset, will use task-name filter for quick suite
+
+agent_import_path: harbor.agents.claude_code:ClaudeCodeAgent
+model: openai/gpt-4o-mini # Will be overridden by OpenRouter/Custom model config
+
+# Only run a representative "quick" subset (15 tasks covering all major categories)
+task_name_filter: |
+  remember-file-locations,apply-pattern-memory,cross-task-context,multistep-coordination,
+  apply-eslint,add-unit-tests,test-data-generation,optimize-imports,password-recovery,crack-7z-hash,sqlite-db-truncate,extract-elf,gpt2-codegolf,chess-best-move,docker-compose-setup
+
+n_concurrent: 4 # Run up to 4 tasks in parallel
+timeout_multiplier: 1.5 # Give each task reasonable time limit (default is ~30s per easy task)
+
+results_dir: benchmark-results/qwen35_harbor_quick_suite
+
+# Track both UAP and Baseline configurations
+configurations:
+  - name: uap_3plus_opencode_qwen3.5
+    description: 'Qwen3.5 with full UAP 3.0+OpenCode integration'
+    env_vars:
+      USE_UAP: 'true'
+      PROJECT_ROOT: '.'
+      UAP_MEMORY_ENABLED: 'true'
+      UAP_PATTERNS_RAG_ENABLED: 'true'
+
+  - name: baseline_no_uap_qwen3.5
+    description: 'Qwen3.5 bare model with NO UAP integration (baseline)'
+    env_vars:
+      USE_UAP: 'false'
+
+# Retry configuration for transient failures
+max_retries: 2
+retry_include: AgentTimeoutError,VerifierOutputParseError

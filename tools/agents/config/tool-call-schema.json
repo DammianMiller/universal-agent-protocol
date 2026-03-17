@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Qwen3.5 Tool Call Output Schema",
+  "description": "JSON Schema for constraining tool call output via llama.cpp --json-schema flag. Matches the official Qwen3 <tool_call> format.",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$",
+      "description": "The tool/function name to call"
+    },
+    "arguments": {
+      "type": "object",
+      "description": "Key-value arguments for the function call"
+    }
+  },
+  "required": ["name", "arguments"],
+  "additionalProperties": false
+}

@@ -1,0 +1,51 @@
+# Qwen3.5 + UAP 3.0+OpenCode - Harbor Containerized Benchmark Config
+# Full Terminal-Bench Quick Suite (14 tasks covering all major categories)
+
+name: qwen35-uap-quick-suite-v1
+description: 'Qwen3.5 running with full UAP 3.0+OpenCode integration'
+
+dataset: terminal-bench@latest
+task_filter: |
+  remember-file-locations,apply-pattern-memory,cross-task-context,multistep-coordination,
+  apply-eslint,add-unit-tests,optimize-imports,password-recovery,file-permissions,extract-elf,gpt2-codegolf,chess-best-move,docker-compose-setup,kubernetes-deploy
+
+# Agent configuration - using Harbor's built-in agent with UAP integration
+agent: harbor.agents.claude_code:ClaudeCodeAgent
+model_config:
+  type: openrouter # or direct API call to qwen3.5 server
+
+adapter_kwargs: {}
+
+run_options:
+  n_attempts_per_trial: 1
+  max_retries: 2
+  timeout_multiplier: 1.5
+  disable_verification: false
+
+# Environment variables for UAP integration
+environment_variables:
+  USE_UAP: 'true'
+  PROJECT_ROOT: '/home/cogtek/dev/miller-tech/universal-agent-memory'
+  UAP_MEMORY_ENABLED: 'true'
+  UAP_PATTERNS_RAG_ENABLED: 'true'
+  QDRANT_ENDPOINT: 'localhost:6333'
+
+# Container resources (adjust based on your system)
+resources:
+  n_cpus: 2
+  memory_mb: 4096
+  storage_mb: 1024
+
+results_dir: benchmark-results/qwen35_harbor_uap_quick_suite
+
+traces_config:
+  export_traces: true
+  sharegpt_export: false
+
+retry_policy:
+  retry_on_exceptions:
+    - AgentTimeoutError
+    - VerifierOutputParseError
+
+max_concurrent_trials: 2 # Run fewer concurrently to avoid API rate limits on localhost model server
+

@@ -1,0 +1,29 @@
+name: baseline-qwen35-12-test-suite  
+datasets:
+  - name: terminal-bench@2.0
+    tasks:
+      - git-recovery-test
+      - password-hash-crack
+      - tls-certificate-setup  
+      - multi-container-deployment
+      - ml-model-training
+      - data-compression
+      - chess-fen-parser
+      - sqlite-wal-recovery
+      - http-server-config
+      - code-compression
+      - mcmc-sampling
+      - corewar-algorithm
+agents:
+  - name: qwen35-direct
+    type: installed_agent
+    kwargs: 
+      model: "qwen3.5-a3b-iq4xs"
+      api_endpoint: "${API_ENDPOINT:-http://192.168.1.165:8080/v1}"
+trial_config: 
+  timeout_multiplier: 2.0
+job_settings: 
+  n_concurrent: 1
+  max_retries: 2
+  disable_verification: false
+output_dir: results/harbor-benchmark/12-tests-baseline

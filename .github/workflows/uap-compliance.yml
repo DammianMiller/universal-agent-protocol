@@ -1,0 +1,133 @@
+name: UAP Compliance Check
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  compliance-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Check UAP Compliance
+        run: |
+          echo "=== UAP COMPLIANCE CHECK ==="
+          
+          score=0
+          total=11
+          
+          # 1. SESSION START block
+          if grep -q "## SESSION START" CLAUDE.md && grep -q "uap task ready" CLAUDE.md; then
+            ((score++))
+            echo "✓ SESSION START block with uap task ready"
+          else
+            echo "✗ SESSION START block MISSING"
+            exit 1
+          fi
+          
+          # 2. DECISION LOOP workflow
+          if grep -q "## DECISION LOOP" CLAUDE.md && grep -q "@Skill:name.md" CLAUDE.md; then
+            ((score++))
+            echo "✓ DECISION LOOP with skills reference"
+          else
+            echo "✗ DECISION LOOP or skills reference MISSING"
+            exit 1
+          fi
+          
+          # 3. MANDATORY worktree enforcement
+          if grep -q "WORKTREE WORKFLOW — MANDATORY\|## WORKTREE WORKFLOW.*MANDATORY" CLAUDE.md; then
+            ((score++))
+            echo "✓ MANDATORY worktree enforcement present"
+          else
+            echo "✗ MANDATORY worktree enforcement MISSING"
+            exit 1
+          fi
+          
+          # 4. PARALLEL REVIEW PROTOCOL
+          if grep -q "## PARALLEL REVIEW PROTOCOL" CLAUDE.md; then
+            ((score++))
+            echo "✓ PARALLEL REVIEW PROTOCOL present"
+          else
+            echo "✗ PARALLEL REVIEW PROTOCOL MISSING"
+            exit 1
+          fi
+          
+          # 5. Schema diff gate ordering
+          if grep -q "BLOCKING PREREQUISITES.*Schema Diff Gate\|1\. \*\*Schema Diff Gate" CLAUDE.md; then
+            ((score++))
+            echo "✓ Schema diff gate in BLOCKING PREREQUISITES"
+          else
+            echo "✗ Schema diff gate NOT in blocking prerequisites"
+            exit 1
+          fi
+          
+          # 6. VERIFIER-FIRST section
+          if grep -q "## VERIFIER-FIRST" CLAUDE.md; then
+            ((score++))
+            echo "✓ VERIFIER-FIRST section present"
+          else
+            echo "✗ VERIFIER-FIRST MISSING"
+            exit 1
+          fi
+          
+          # 7. COMPLETION GATES - MANDATORY
+          if grep -q "COMPLETION GATES.*-.*MANDATORY\|## COMPLETION GATES - MANDATORY" CLAUDE.md; then
+            ((score++))
+            echo "✓ COMPLETION GATES - MANDATORY present"
+          else
+            echo "✗ COMPLETION GATES - MANDATORY MISSING"
+            exit 1
+          fi
+          
+          # 8. Pattern Router requirement
+          if grep -q "Pattern.*Router\|pattern router" CLAUDE.md; then
+            ((score++))
+            echo "✓ Pattern Router documented"
+          else
+            echo "✗ Pattern Router MISSING"
+            exit 1
+          fi
+          
+          # 9. RTK includes
+          if grep -q "@hooks-session-start.md\|@PreCompact.md" CLAUDE.md; then
+            ((score++))
+            echo "✓ RTK includes (@hooks-session-start, @PreCompact)"
+          else
+            echo "✗ RTK includes MISSING"
+            exit 1
+          fi
+          
+          # 10. Verifier loop enforcement (min 3 runs)
+          if grep -q "MANDATORY.*minimum 3 times\|MANDATORY.*3 times" CLAUDE.md; then
+            ((score++))
+            echo "✓ Verifier loop enforced (min 3 runs)"
+          else
+            echo "✗ Verifier loop enforcement MISSING"
+            exit 1
+          fi
+          
+          # 11. Template version tracking
+          if grep -q "v2\.[2-9]\|v3\." CLAUDE.md | head -1; then
+            ((score++))
+            echo "✓ Template version tracked (v2.x+)"
+          else
+            echo "✗ Template version NOT tracked"
+            exit 1
+          fi
+          
+          echo ""
+          echo "=== UAP COMPLIANCE SCORE: $score/$total ($(( score * 100 / total ))%) ==="
+          
+          if [ "$score" -ne "$total" ]; then
+            echo "ERROR: Compliance check failed! Score: $score/$total"
+            exit 1
+          fi
+          
+          echo ""
+          echo "✓ All compliance checks passed!"

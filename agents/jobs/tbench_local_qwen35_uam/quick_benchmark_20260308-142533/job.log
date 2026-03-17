@@ -1,0 +1,5 @@
+Trial regex-chess__AtxskBk failed: Model name must be in the format provider/model_name
+Trial regex-chess__AtxskBk failed with exception ValueError. Retrying in 1.00 seconds...
+Trial regex-chess__AtxskBk failed: Model name must be in the format provider/model_name
+Not retrying trial because the maximum number of retries has been reached
+Trial path-tracing__2r45cC3 cancelled

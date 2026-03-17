@@ -1,0 +1,77 @@
+## Task Guidance
+
+### Approach
+1. Read the FULL task description and any tests/verifiers BEFORE writing code.
+2. Create expected output files early, even as stubs.
+3. Use existing libraries over custom implementations.
+4. After implementation, run all tests. If failures occur, read the error, fix the specific issue, re-run. Iterate until all pass.
+5. Use binary mode ('rb'/'wb') for all non-text file I/O.
+6. Do NOT give up after the first failure - reserve time for debugging.
+
+### Git Recovery
+- FIRST: `cp -r .git .git.bak` before any git operation.
+- Recovery tools: `git fsck --full --no-dangling`, `git reflog --all`.
+- Find lost commits: `git reflog` then `git cherry-pick <hash>`.
+- Corrupted HEAD: `git symbolic-ref HEAD refs/heads/main`.
+- Broken index: `rm .git/index && git reset`.
+- Leaked secrets: use `git filter-repo` or BFG.
+- Inspect objects: `git cat-file -t <hash>` and `git cat-file -p <hash>`.
+
+### Compression
+- Read the decoder/decompressor source FIRST - match its expected format exactly.
+- Test round-trip at small scale before optimizing.
+- Use binary mode for ALL file I/O.
+
+### Chess
+- Use python-chess + Stockfish, not manual move generation.
+- Use `multipv` to find ALL valid moves.
+
+### Polyglot
+- Search for existing polyglot examples FIRST.
+- Use comment syntax differences to hide code sections.
+- C+Python: `#if 0`/`#endif` hides Python from C, `#` hides C from Python.
+- Test with BOTH compilers/interpreters.
+- Clean build artifacts - keep ONLY source files.
+
+### Services
+- After starting a service, smoke test immediately: `curl -v http://localhost:PORT/`
+- No response = check logs, fix BEFORE continuing.
+
+### SQLite WAL Recovery
+- NEVER open with sqlite3 directly (auto-checkpoints destroy data).
+- Parse WAL directly: header 32 bytes, each frame has 24-byte header.
+- WAL page size: bytes 8-11 (big-endian uint32).
+- Frame: salt1(4)+salt2(4)+pgno(4)+commit(4)+checksum(8)+page_data(page_size).
+
+### C/Systems
+- Use `malloc` for large buffers, not stack arrays.
+- Segfault/stack smashing = increase buffer sizes or use heap.
+- Add bounds checking before all array writes.
+
+### XSS/HTML Filtering
+- Do NOT use bleach/BeautifulSoup/lxml (they normalize HTML, break byte-for-byte tests).
+- Use regex-based filtering that ONLY removes dangerous content.
+- Clean HTML must pass through UNCHANGED.
+
+### OCR
+- Use pytesseract + Pillow: `apt-get install -y tesseract-ocr && pip install pytesseract pillow`
+
+### ML/PyTorch Recovery
+- Corrupted models: `torch.load(path, map_location='cpu', weights_only=False)`.
+- Fallback: `pickle.load()` directly.
+- Magic bytes: PK (ZIP) or 0x70 0x79 (pickle).
+
+### Testing
+- If >50% tests pass, focus on specific failing tests - do NOT rewrite passing code.
+- Read full error messages before attempting fixes.
+
+### Statistics/R
+- Use FINITE bounds: `c(-10, 10)` not `c(-Inf, Inf)`.
+- Check CRAN/PyPI before implementing from scratch.
+- Test with 3+ random seeds.
+
+---
+
+## YOUR TASK:
+
+{{ instruction }}

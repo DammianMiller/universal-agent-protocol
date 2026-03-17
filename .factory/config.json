@@ -1,0 +1,13 @@
+{
+  "name": "universal-agent-protocol",
+  "version": "1.0.0",
+  "defaultBranch": "master",
+  "memory": {
+    "enabled": true,
+    "path": "./agents/data/memory/short_term.db"
+  },
+  "worktrees": {
+    "enabled": true,
+    "directory": ".worktrees"
+  }
+}

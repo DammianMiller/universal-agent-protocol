@@ -1,0 +1,55 @@
+# Layer 2: Agent toolchain for ubuntu:24.04 tasks
+# Contains: nvm, Node 22, opencode, @ai-sdk/openai-compatible, apt/pip deps
+# Does NOT contain UAP -- that is Layer 3, installed at runtime for easy upgrades
+#
+# Rebuild this image when: opencode version changes, new system deps needed
+# Do NOT rebuild for UAP version changes -- just update UAP_VERSION in install script
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NVM_DIR=/root/.nvm
+ENV NODE_VERSION=22
+
+# System dependencies (superset of all task needs)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl git build-essential python3-pip python3-dev python3-venv python3-full \
+    jq netcat-openbsd xxd \
+    tesseract-ocr tesseract-ocr-eng \
+    poppler-utils imagemagick ffmpeg \
+    libsm6 libxext6 file \
+    p7zip-full hashcat john \
+    sqlite3 libsqlite3-dev \
+    stockfish \
+    ca-certificates \
+    tmux \
+    perl libcompress-raw-lzma-perl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python packages (superset of all task needs)
+RUN pip install --break-system-packages --no-cache-dir \
+    numpy pillow pytesseract opencv-python-headless \
+    python-chess \
+    2>/dev/null || true
+
+# Install nvm + Node 22
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash \
+    && . "$NVM_DIR/nvm.sh" \
+    && nvm install $NODE_VERSION \
+    && nvm alias default $NODE_VERSION \
+    && nvm use default
+
+# Make node/npm available in PATH for non-interactive shells
+ENV PATH="/root/.nvm/versions/node/v${NODE_VERSION}/bin:${PATH}"
+
+# Install opencode + AI SDK provider (Layer 2 -- toolchain)
+RUN . "$NVM_DIR/nvm.sh" \
+    && npm i -g opencode-ai@latest \
+    && npm i -g @ai-sdk/openai-compatible
+
+# Create installed-agent directory for harbor
+RUN mkdir -p /installed-agent
+
+# Marker: toolchain version (Layer 2). UAP version is separate (Layer 3).
+RUN echo "toolchain-1.0" > /installed-agent/.toolchain-version
+
+WORKDIR /app

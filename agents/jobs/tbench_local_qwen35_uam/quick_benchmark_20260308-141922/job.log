@@ -1,0 +1,5 @@
+Trial regex-chess__mhw6GHD failed: Model name must be in the format provider/model_name
+Trial regex-chess__mhw6GHD failed with exception ValueError. Retrying in 1.00 seconds...
+Trial regex-chess__mhw6GHD failed: Model name must be in the format provider/model_name
+Not retrying trial because the maximum number of retries has been reached
+Trial path-tracing__Uqn9sFy cancelled

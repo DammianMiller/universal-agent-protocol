@@ -1,0 +1,1 @@
+../../templates/hooks/session-start.sh

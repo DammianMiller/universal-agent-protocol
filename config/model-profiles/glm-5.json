@@ -1,0 +1,61 @@
+{
+  "_profile": "glm-5",
+  "_description": "Zhipu GLM-5 (glm-5-plus). Chinese-English bilingual reasoning model with deep thinking, tool calling, and 128K context. Strong at code generation, math, and structured output. Competitive with frontier models at significantly lower cost.",
+
+  "model": "glm-5-plus",
+  "provider": "zhipu",
+  "api_base_url": "https://open.bigmodel.cn/api/paas/v4",
+  "max_tokens": 16384,
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "timeout_ms": 180000,
+  "context_window": 128000,
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": true,
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "_comment": "GLM-5 supports OpenAI-compatible function calling with parallel tool use."
+  },
+
+  "thinking": {
+    "enabled": true,
+    "_comment": "GLM-5 has deep thinking mode for complex reasoning tasks. Enabled by default."
+  },
+
+  "dynamic_temperature": {
+    "enabled": true,
+    "decay": 0.5,
+    "floor": 0.2,
+    "_comment": "Lower temperature on retries for more deterministic tool call output."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "GLM-5 supports parallel function calls."
+  },
+
+  "pricing": {
+    "input_per_1m_cny": 5.0,
+    "output_per_1m_cny": 5.0,
+    "currency": "CNY",
+    "_comment": "As of 2025. Priced in CNY. Very competitive pricing for frontier-level performance."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 300,
+    "tokens_per_minute": 300000,
+    "_comment": "Default tier limits. Higher tiers available via Zhipu."
+  },
+
+  "running_config": {
+    "description": "Zhipu AI hosted API. Requires ZHIPU_API_KEY environment variable. OpenAI-compatible endpoint.",
+    "env_vars": {
+      "ZHIPU_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "glm-5"
+    }
+  }
+}
