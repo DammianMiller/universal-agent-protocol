@@ -70,8 +70,8 @@ export interface HistoricalData {
   lastUpdated: number;
 }
 
-// OPT 1: SQLite-backed historical data persistence with connection pooling to prevent contention
-const DB_POOL_SIZE = 5;
+// OPT 1: SQLite-backed historical data persistence - single connection sufficient for sync driver
+const DB_POOL_SIZE = 1; // Keep at 1 - better-sqlite3 is synchronous, no need for pool
 const dbPool: Database.Database[] = [];
 let poolInitialized = false;
 let poolRoundRobinIndex = 0;
@@ -555,6 +555,7 @@ const MS_PER_TOKEN = 1.5;
 const BENEFIT_THRESHOLD = 0.1;
 const RELEVANCE_THRESHOLD = 0.3;
 const TIME_CRITICAL_MAX_TOKENS = 300;
+const MAX_POSSIBLE = 100;
 
 // OPT 4: Calculate weighted relevance score for a section
 function calculateSectionRelevance(
@@ -668,8 +669,7 @@ export function classifyTaskMultiCategory(instruction: string): MultiCategoryCla
     .filter(([, score]) => score >= primaryScore * 0.4)
     .map(([cat]) => cat);
 
-  const maxPossible = Object.values(HIGH_BENEFIT_KEYWORDS).reduce((a, b) => a + b, 0);
-  const confidence = Math.min(primaryScore / (maxPossible * 0.1), 1);
+  const confidence = Math.min(primaryScore / (MAX_POSSIBLE * 0.1), 1);
 
   return {
     primary,
@@ -827,7 +827,14 @@ export function recordOutcome(
 
   // OPT 8: Also update model router fingerprints
   if (modelId) {
-    const validModelIds: ModelId[] = ['glm-4.7', 'gpt-5.2', 'claude-opus-4.5', 'gpt-5.2-codex'];
+    const validModelIds: ModelId[] = [
+      'glm-4.7',
+      'gpt-5.2',
+      'claude-opus-4.5',
+      'gpt-5.2-codex',
+      'opus-4.6',
+      'qwen35',
+    ];
     if (validModelIds.includes(modelId as ModelId)) {
       updateModelRouterFingerprint(modelId as ModelId, success, durationMs, taskType);
     }

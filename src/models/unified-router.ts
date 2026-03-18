@@ -48,7 +48,7 @@ const RULE_TO_BENCHMARK_MODEL_MAP: Record<string, ModelId> = {
   'deepseek-v3.2': 'gpt-5.2', // No benchmark equivalent; map to closest general-purpose model
   'deepseek-v3.2-exp': 'gpt-5.2',
   'qwen35-a3b': 'glm-4.7',
-  'opus-4.6': 'claude-opus-4.6',
+  'opus-4.6': 'opus-4.6',
   qwen35: 'qwen35',
 };
 
