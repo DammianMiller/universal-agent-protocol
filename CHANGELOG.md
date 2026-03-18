@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.4 (2026-03-18)
+
+- fix: embeddings tests mock all fetch calls for isAvailable (health + test embed)
+- fix: version-bump script restores clean tree after test run
+- test: improve embeddings test variable naming and add batch coverage
+- fix: add missing WORKTREE WORKFLOW section and enforcement policy
+
+
 ## v1.5.3 (2026-03-18)
 
 - fix: resolve inquirer.prompt TypeError in model select command
