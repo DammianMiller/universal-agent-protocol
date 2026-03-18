@@ -54,6 +54,7 @@ interface DashboardOptions {
   verbose?: boolean;
   compact?: boolean;
   taskId?: string;
+  port?: number;
 }
 
 export async function dashboardCommand(

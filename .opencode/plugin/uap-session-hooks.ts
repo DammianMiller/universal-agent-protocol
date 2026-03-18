@@ -1,9 +1,9 @@
-import type { Plugin } from '@opencode-ai/plugin';
+import type { Plugin } from "@opencode-ai/plugin"
 
 export const UAPSessionHooks: Plugin = async ({ client, $ }) => {
   return {
-    event: async ({ event }) => {
-      if (event.type === 'session.created') {
+    event: async ({ event, output }) => {
+      if (event.type === "session.created") {
         try {
           const result = await $`bash -c '
             DB_PATH="./agents/data/memory/short_term.db"
@@ -23,26 +23,29 @@ export const UAPSessionHooks: Plugin = async ({ client, $ }) => {
             fi
 
             sqlite3 "$DB_PATH" "
-              SELECT type || \' : \'' || content FROM memories
+              SELECT type || \': \' || content FROM memories
               WHERE timestamp >= datetime(\'now\', \'-1 day\')
               ORDER BY id DESC LIMIT 10;
             " 2>/dev/null || true
-          '`.quiet();
-          const memoryContext = result.stdout.toString().trim();
-        } catch {
-          /* fail safely */
-        }
+          '`.quiet()
+          const memoryContext = result.stdout.toString().trim()
+          if (memoryContext && output && output.context) {
+            output.context.push("<uap-context>\n## UAP Session Memory (last 24h)\n" + memoryContext + "\n</uap-context>")
+            console.log("[UAP] Session context injected (" + memoryContext.split("\n").length + " memories)")
+          } else if (output && output.context) {
+            output.context.push("<uap-context>UAP active. No recent memories found.</uap-context>")
+            console.log("[UAP] Session started (no recent memories)")
+          }
+        } catch { /* fail safely */ }
       }
     },
 
-    'experimental.session.compacting': async (_input, output) => {
+    "experimental.session.compacting": async (_input, output) => {
       try {
-        const timestamp = new Date().toISOString();
-        await $`sqlite3 ./agents/data/memory/short_term.db "INSERT OR IGNORE INTO memories (timestamp, type, content) VALUES ('${timestamp}', 'action', '[pre-compact] Context compaction at ${timestamp}');"`.quiet();
-        output.context.push('<uap-context>Pre-compact marker saved to UAP memory.</uap-context>');
-      } catch {
-        /* fail safely */
-      }
+        const timestamp = new Date().toISOString()
+        await $`sqlite3 ./agents/data/memory/short_term.db "INSERT OR IGNORE INTO memories (timestamp, type, content) VALUES ('${timestamp}', 'action', '[pre-compact] Context compaction at ${timestamp}');"`.quiet()
+        output.context.push("<uap-context>Pre-compact marker saved to UAP memory.</uap-context>")
+      } catch { /* fail safely */ }
     },
-  };
-};
+  }
+}
