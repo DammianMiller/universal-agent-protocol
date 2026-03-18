@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.6 (2026-03-18)
+
+- feat: complete UAP optimization tasks P1a-P2b
+- feat: validate worktrees, model router, and adaptive knowledge seeding
+- test: improve test coverage with embeddings and unified-router tests
+
+
 ## v1.5.5 (2026-03-18)
 
 - feat: validate worktrees, model router, and adaptive knowledge seeding
