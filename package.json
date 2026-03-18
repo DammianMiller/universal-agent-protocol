@@ -34,6 +34,8 @@
     "version:patch": "bash scripts/version-bump.sh patch",
     "version:minor": "bash scripts/version-bump.sh minor",
     "version:major": "bash scripts/version-bump.sh major",
+    "install:hooks": "bash scripts/hooks/install-hooks.sh",
+    "verify:tests": "bash scripts/verify-test-count.sh",
     "update-uap": "bash scripts/update-uap-compliance.sh",
     "verify-uap": "bash scripts/verify-compliance.sh",
     "check-claude": "bash scripts/verify-compliance.sh"

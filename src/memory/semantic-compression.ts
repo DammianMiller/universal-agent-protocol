@@ -464,3 +464,22 @@ export function compressToSemanticUnits(
     serialized,
   };
 }
+
+/**
+ * SemanticCompression class alias for backward compatibility
+ */
+export class SemanticCompression {
+  constructor(private config?: Partial<SemanticCompressionConfig>) {}
+
+  compress(memories: Array<{ content: string; type: string; importance?: number }>): string {
+    const result = compressToSemanticUnits(memories, this.config);
+    return result.serialized;
+  }
+
+  static compressToSemanticUnits(
+    memories: Array<{ content: string; type: string; importance?: number }>,
+    config?: Partial<SemanticCompressionConfig>
+  ) {
+    return compressToSemanticUnits(memories, config);
+  }
+}

@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# UAP Pre-Commit Hook
+# Enforces worktree usage and basic code quality before every commit.
+#
+# Install: cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# Or run: bash scripts/hooks/install-hooks.sh
+
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+
+fail() { echo -e "${RED}[PRE-COMMIT] BLOCKED: $1${NC}"; exit 1; }
+warn() { echo -e "${YELLOW}[PRE-COMMIT] WARNING: $1${NC}"; }
+ok()   { echo -e "${GREEN}[PRE-COMMIT] $1${NC}"; }
+
+# Determine project root (follow worktree links)
+PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# ─── Gate 1: Worktree Enforcement ───────────────────────────────────────────
+# Check if worktrees are enabled in .uap.json
+UAP_CONFIG="${PROJECT_ROOT}/.uap.json"
+WORKTREE_ENABLED="true"
+
+if [[ -f "$UAP_CONFIG" ]]; then
+  # Check if worktreeWorkflow is explicitly disabled
+  if command -v python3 &>/dev/null; then
+    WORKTREE_ENABLED=$(python3 -c "
+import json, sys
+try:
+    c = json.load(open('$UAP_CONFIG'))
+    print('true' if c.get('template',{}).get('sections',{}).get('worktreeWorkflow', True) else 'false')
+except: print('true')
+" 2>/dev/null || echo "true")
+  fi
+fi
+
+if [[ "$WORKTREE_ENABLED" == "true" ]]; then
+  CURRENT_DIR="$(pwd)"
+  MAIN_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "master")
+
+  CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+
+  # Check if we're on main/master AND not inside a worktree
+  GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
+  GIT_DIR=$(git rev-parse --git-dir 2>/dev/null || echo "")
+
+  # If git-dir equals git-common-dir, we're in the main working tree (not a worktree)
+  IS_WORKTREE="false"
+  if [[ "$GIT_DIR" != "$GIT_COMMON_DIR" ]]; then
+    IS_WORKTREE="true"
+  fi
+
+  if [[ "$IS_WORKTREE" == "false" && ("$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master") ]]; then
+    # Allow version bump commits (automated by version-bump.sh)
+    COMMIT_MSG_FILE=".git/COMMIT_EDITMSG"
+    if [[ -f "$COMMIT_MSG_FILE" ]] && grep -q "^chore: bump version" "$COMMIT_MSG_FILE" 2>/dev/null; then
+      warn "Allowing version bump commit on $CURRENT_BRANCH"
+    else
+      fail "Direct commits to '$CURRENT_BRANCH' are prohibited.
+  Use a worktree: uap worktree create <slug>
+  Then work in: .worktrees/<id>-<slug>/
+  See: policies/worktree-enforcement.md"
+    fi
+  fi
+
+  ok "Worktree check passed"
+fi
+
+# ─── Gate 2: No secrets in staged files ─────────────────────────────────────
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || echo "")
+
+for file in $STAGED_FILES; do
+  case "$file" in
+    .env|.env.*|*.pem|*.key|credentials.json|*secret*|*.p12)
+      fail "Potential secret file staged: $file
+  Remove it: git reset HEAD $file"
+      ;;
+  esac
+done
+
+# Check for common secret patterns in staged content
+if [[ -n "$STAGED_FILES" ]]; then
+  SECRETS_FOUND=$(git diff --cached -U0 2>/dev/null | grep -iE '(PRIVATE_KEY|AWS_SECRET|api_key|password\s*=\s*["\x27][^"\x27]+|token\s*=\s*["\x27][^"\x27]+)' | grep '^+' | head -5 || true)
+  if [[ -n "$SECRETS_FOUND" ]]; then
+    warn "Possible secrets detected in staged changes (review carefully):
+$SECRETS_FOUND"
+  fi
+fi
+
+ok "Secret scan passed"
+
+# ─── Gate 3: No debug code ──────────────────────────────────────────────────
+TS_STAGED=$(echo "$STAGED_FILES" | grep '\.ts$' || true)
+
+if [[ -n "$TS_STAGED" ]]; then
+  DEBUG_FOUND=""
+  for file in $TS_STAGED; do
+    if [[ -f "$file" ]]; then
+      MATCHES=$(git diff --cached -U0 -- "$file" 2>/dev/null | grep '^+' | grep -n 'console\.log\|debugger;' | head -3 || true)
+      if [[ -n "$MATCHES" ]]; then
+        DEBUG_FOUND="${DEBUG_FOUND}\n  ${file}: ${MATCHES}"
+      fi
+    fi
+  done
+
+  if [[ -n "$DEBUG_FOUND" ]]; then
+    warn "Debug code detected in staged changes (remove before merge):${DEBUG_FOUND}"
+  fi
+fi
+
+ok "All pre-commit gates passed"

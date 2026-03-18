@@ -4,14 +4,14 @@ on:
   push:
     branches: [main, master]
     tags-ignore: ['**'] # Ignore tag pushes (handled by release job)
-    
+
   pull_request:
     branches: [main, master]
-    
+
   workflow_dispatch:
     inputs:
       publish_to_npm:
-        description: 'Publish to npm registry'  
+        description: 'Publish to npm registry'
         required: false
         default: true
         type: boolean
@@ -23,30 +23,50 @@ jobs:
   build-test-npm-publish:
     name: Build, Test & Publish
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        
+
       - name: Setup Node.js ${{ env.NODE_VERSION }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: 'https://registry.npmjs.org/'
-          
+
       - name: Install dependencies
         run: npm ci
-        
+
+      - name: TypeScript type-check
+        run: npx tsc --noEmit
+
       - name: Build TypeScript
         run: npm run build
-        
+
       - name: Run tests
-        run: npm test
-        
+        run: npm test -- --run
+
+      - name: Verify CLAUDE.md compliance
+        run: bash scripts/maintenance/verify-compliance.sh
+
+      - name: Verify policy files integrity
+        run: |
+          for policy in completion-gate worktree-enforcement pre-edit-build-gate semver-versioning; do
+            if [ ! -f "policies/${policy}.md" ]; then
+              echo "ERROR: Missing required policy: policies/${policy}.md"
+              exit 1
+            fi
+            if ! grep -q "\[REQUIRED\]" "policies/${policy}.md"; then
+              echo "ERROR: Policy ${policy} is not at REQUIRED level"
+              exit 1
+            fi
+            echo "✓ policies/${policy}.md [REQUIRED]"
+          done
+
       - name: Get package version
         id: get_version
         run: echo "VERSION=$(node -p 'require("./package.json").version')" >> $GITHUB_OUTPUT
-        
+
       - name: Check if version exists on NPM
         id: check_npm
         env:
@@ -60,13 +80,13 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
             echo "Version $VERSION not yet published to NPM"
           fi
-          
+
       - name: Publish to NPM (if version doesn't exist)
         if: steps.check_npm.outputs.exists == 'false' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/master')
         run: |
           echo "Publishing universal-agent-protocol@${{ steps.get_version.outputs.VERSION }} to NPM..."
           npm publish --access public
-        
+
       - name: Output publication status
         if: always()
         run: |
@@ -83,15 +103,15 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: build-test-npm-publish
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        
+
       - name: Get package version
         id: get_version
         run: echo "VERSION=$(node -p 'require("./package.json").version')" >> $GITHUB_OUTPUT
-      
+
       - name: Check if tag exists
         id: check_tag
         env:
@@ -104,7 +124,7 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT  
             echo "Creating tag for first release of version..."
           fi
-      
+
       - name: Create GitHub Release
         if: steps.check_tag.outputs.exists == 'false' && github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
@@ -113,16 +133,15 @@ jobs:
           name: Release v${{ steps.get_version.outputs.VERSION }}
           body: |
             ## Universal Agent Protocol v${{ steps.get_version.outputs.VERSION }}
-            
+
             ### Features
             - Validation toggle enabled (UAP_VALIDATE_PLAN=true by default)
             - Parallel execution support (UAP_PARALLEL_EXECUTION=true by default)  
             - Qwen3.5 optimized parameters output in agent responses
             - All UAP components enforced and logged
-            
+
           draft: false
           prerelease: false
-        
+
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

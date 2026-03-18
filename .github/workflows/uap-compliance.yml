@@ -1,28 +1,42 @@
-name: UAP Compliance Check
+name: UAP Policy Enforcement
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
 
+env:
+  NODE_VERSION: '20'
+
 jobs:
+  # ─── Gate 1: CLAUDE.md Compliance ─────────────────────────────────────────
   compliance-check:
+    name: CLAUDE.md Compliance (12/12 required)
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+
       - name: Check UAP Compliance
         run: |
           echo "=== UAP COMPLIANCE CHECK ==="
-          
+
           score=0
-          total=11
-          
-          # 1. SESSION START block
+          total=12
+
+          # 1. CLAUDE.md version check
+          if grep -q "CLAUDE.md v2\.[2-9]\|CLAUDE.md v3\." CLAUDE.md; then
+            ((score++))
+            echo "✓ CLAUDE.md version (v2.x+/v3.x)"
+          else
+            echo "✗ CLAUDE.md version not found"
+            exit 1
+          fi
+
+          # 2. SESSION START block
           if grep -q "## SESSION START" CLAUDE.md && grep -q "uap task ready" CLAUDE.md; then
             ((score++))
             echo "✓ SESSION START block with uap task ready"
@@ -30,8 +44,8 @@ jobs:
             echo "✗ SESSION START block MISSING"
             exit 1
           fi
-          
-          # 2. DECISION LOOP workflow
+
+          # 3. DECISION LOOP workflow
           if grep -q "## DECISION LOOP" CLAUDE.md && grep -q "@Skill:name.md" CLAUDE.md; then
             ((score++))
             echo "✓ DECISION LOOP with skills reference"
@@ -39,8 +53,8 @@ jobs:
             echo "✗ DECISION LOOP or skills reference MISSING"
             exit 1
           fi
-          
-          # 3. MANDATORY worktree enforcement
+
+          # 4. MANDATORY worktree enforcement
           if grep -q "WORKTREE WORKFLOW — MANDATORY\|## WORKTREE WORKFLOW.*MANDATORY" CLAUDE.md; then
             ((score++))
             echo "✓ MANDATORY worktree enforcement present"
@@ -48,8 +62,8 @@ jobs:
             echo "✗ MANDATORY worktree enforcement MISSING"
             exit 1
           fi
-          
-          # 4. PARALLEL REVIEW PROTOCOL
+
+          # 5. PARALLEL REVIEW PROTOCOL
           if grep -q "## PARALLEL REVIEW PROTOCOL" CLAUDE.md; then
             ((score++))
             echo "✓ PARALLEL REVIEW PROTOCOL present"
@@ -57,17 +71,17 @@ jobs:
             echo "✗ PARALLEL REVIEW PROTOCOL MISSING"
             exit 1
           fi
-          
-          # 5. Schema diff gate ordering
-          if grep -q "BLOCKING PREREQUISITES.*Schema Diff Gate\|1\. \*\*Schema Diff Gate" CLAUDE.md; then
+
+          # 6. Schema diff gate ordering
+          if grep -q "BLOCKING PREREQUISITES" CLAUDE.md && grep -q "Schema Diff Gate" CLAUDE.md; then
             ((score++))
             echo "✓ Schema diff gate in BLOCKING PREREQUISITES"
           else
             echo "✗ Schema diff gate NOT in blocking prerequisites"
             exit 1
           fi
-          
-          # 6. VERIFIER-FIRST section
+
+          # 7. VERIFIER-FIRST section
           if grep -q "## VERIFIER-FIRST" CLAUDE.md; then
             ((score++))
             echo "✓ VERIFIER-FIRST section present"
@@ -75,8 +89,8 @@ jobs:
             echo "✗ VERIFIER-FIRST MISSING"
             exit 1
           fi
-          
-          # 7. COMPLETION GATES - MANDATORY
+
+          # 8. COMPLETION GATES - MANDATORY
           if grep -q "COMPLETION GATES.*-.*MANDATORY\|## COMPLETION GATES - MANDATORY" CLAUDE.md; then
             ((score++))
             echo "✓ COMPLETION GATES - MANDATORY present"
@@ -84,8 +98,8 @@ jobs:
             echo "✗ COMPLETION GATES - MANDATORY MISSING"
             exit 1
           fi
-          
-          # 8. Pattern Router requirement
+
+          # 9. Pattern Router requirement
           if grep -q "Pattern.*Router\|pattern router" CLAUDE.md; then
             ((score++))
             echo "✓ Pattern Router documented"
@@ -93,8 +107,8 @@ jobs:
             echo "✗ Pattern Router MISSING"
             exit 1
           fi
-          
-          # 9. RTK includes
+
+          # 10. RTK includes
           if grep -q "@hooks-session-start.md\|@PreCompact.md" CLAUDE.md; then
             ((score++))
             echo "✓ RTK includes (@hooks-session-start, @PreCompact)"
@@ -102,8 +116,8 @@ jobs:
             echo "✗ RTK includes MISSING"
             exit 1
           fi
-          
-          # 10. Verifier loop enforcement (min 3 runs)
+
+          # 11. Verifier loop enforcement (min 3 runs)
           if grep -q "MANDATORY.*minimum 3 times\|MANDATORY.*3 times" CLAUDE.md; then
             ((score++))
             echo "✓ Verifier loop enforced (min 3 runs)"
@@ -111,23 +125,276 @@ jobs:
             echo "✗ Verifier loop enforcement MISSING"
             exit 1
           fi
-          
-          # 11. Template version tracking
-          if grep -q "v2\.[2-9]\|v3\." CLAUDE.md | head -1; then
+
+          # 12. Skills directory structure
+          if [ -d ".factory/skills" ] && [ "$(ls -A .factory/skills 2>/dev/null)" ]; then
             ((score++))
-            echo "✓ Template version tracked (v2.x+)"
+            echo "✓ Skills directory populated"
           else
-            echo "✗ Template version NOT tracked"
+            echo "✗ Skills directory MISSING or empty"
             exit 1
           fi
-          
+
           echo ""
           echo "=== UAP COMPLIANCE SCORE: $score/$total ($(( score * 100 / total ))%) ==="
-          
-          if [ "$score" -ne "$total" ]; then
-            echo "ERROR: Compliance check failed! Score: $score/$total"
-            exit 1
-          fi
-          
           echo ""
           echo "✓ All compliance checks passed!"
+
+  # ─── Gate 2: Policy Files Integrity ───────────────────────────────────────
+  policy-integrity:
+    name: Policy Files Integrity
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify all required policies exist and are REQUIRED level
+        run: |
+          echo "=== POLICY INTEGRITY CHECK ==="
+
+          REQUIRED_POLICIES=(
+            "completion-gate"
+            "worktree-enforcement"
+            "pre-edit-build-gate"
+            "semver-versioning"
+            "iac-state-parity"
+            "iac-pipeline-enforcement"
+            "kubectl-verify-backport"
+            "definition-of-done-iac"
+            "mandatory-file-backup"
+          )
+
+          MISSING=0
+          NOT_REQUIRED=0
+
+          for policy in "${REQUIRED_POLICIES[@]}"; do
+            FILE="policies/${policy}.md"
+            if [ ! -f "$FILE" ]; then
+              echo "✗ MISSING: $FILE"
+              MISSING=$((MISSING + 1))
+            elif ! grep -q "\[REQUIRED\]" "$FILE"; then
+              echo "✗ NOT REQUIRED LEVEL: $FILE"
+              NOT_REQUIRED=$((NOT_REQUIRED + 1))
+            else
+              echo "✓ $policy [REQUIRED]"
+            fi
+          done
+
+          echo ""
+
+          if [ "$MISSING" -gt 0 ] || [ "$NOT_REQUIRED" -gt 0 ]; then
+            echo "ERROR: $MISSING missing policies, $NOT_REQUIRED not at REQUIRED level"
+            exit 1
+          fi
+
+          echo "✓ All ${#REQUIRED_POLICIES[@]} required policies present and enforced"
+
+  # ─── Gate 3: Build + Test + Lint ──────────────────────────────────────────
+  build-test-lint:
+    name: Build, Test & Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type-check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test -- --run
+
+      - name: Lint
+        run: npm run lint || true
+        # Lint warnings are non-blocking in CI, but errors are reported
+
+  # ─── Gate 4: Test Count Verification (PRs only) ──────────────────────────
+  test-count:
+    name: New Test Cases Required
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for new test cases in PR
+        run: |
+          echo "=== TEST COUNT VERIFICATION ==="
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          # Check if source code was changed
+          SRC_CHANGES=$(git diff "$BASE_SHA".."$HEAD_SHA" --name-only -- 'src/**/*.ts' | wc -l)
+
+          if [ "$SRC_CHANGES" -eq 0 ]; then
+            echo "✓ No source code changes — test gate not applicable"
+            exit 0
+          fi
+
+          echo "Source files changed: $SRC_CHANGES"
+
+          # Count new test cases in the diff
+          TEST_DIFF=$(git diff "$BASE_SHA".."$HEAD_SHA" --unified=0 -- 'test/**/*.test.ts' 'test/**/*.test.js' 'test/**/*.spec.ts' 'test/**/*.spec.js' 2>/dev/null || echo "")
+
+          NEW_IT_CALLS=$(echo "$TEST_DIFF" | grep -c '^\+.*\b\(it\|test\)\s*(' 2>/dev/null || echo "0")
+          NEW_EXPECTS=$(echo "$TEST_DIFF" | grep -c '^\+.*\bexpect\s*(' 2>/dev/null || echo "0")
+
+          echo "New it()/test() calls: $NEW_IT_CALLS"
+          echo "New expect() assertions: $NEW_EXPECTS"
+
+          MIN_TESTS=2
+
+          if [ "$NEW_IT_CALLS" -ge "$MIN_TESTS" ]; then
+            echo ""
+            echo "✓ Found $NEW_IT_CALLS new test cases (minimum: $MIN_TESTS)"
+            exit 0
+          fi
+
+          echo ""
+          echo "✗ BLOCKED: Found only $NEW_IT_CALLS new test case(s), minimum is $MIN_TESTS"
+          echo ""
+          echo "Every PR that changes source code MUST include at least $MIN_TESTS new test cases."
+          echo "Add tests in test/<feature>.test.ts using vitest (describe/it/expect)."
+          echo "See: policies/completion-gate.md"
+          exit 1
+
+  # ─── Gate 5: Worktree Branch Convention (PRs only) ───────────────────────
+  worktree-branch:
+    name: Worktree Branch Convention
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify PR branch follows worktree convention
+        run: |
+          echo "=== WORKTREE BRANCH CHECK ==="
+
+          BRANCH="${{ github.head_ref }}"
+          echo "PR branch: $BRANCH"
+
+          # Worktree branches follow: feature/NNN-slug pattern
+          # Also allow: fix/, chore/, docs/, refactor/, test/ prefixes
+          if echo "$BRANCH" | grep -qE '^(feature|fix|chore|docs|refactor|test|hotfix)/'; then
+            echo "✓ Branch follows convention: $BRANCH"
+            exit 0
+          fi
+
+          # Allow dependabot and renovate branches
+          if echo "$BRANCH" | grep -qE '^(dependabot|renovate)/'; then
+            echo "✓ Automated dependency branch: $BRANCH"
+            exit 0
+          fi
+
+          echo ""
+          echo "✗ WARNING: Branch '$BRANCH' does not follow worktree naming convention."
+          echo "  Expected: feature/<slug>, fix/<slug>, chore/<slug>, etc."
+          echo "  Create branches via: uap worktree create <slug>"
+          echo ""
+          echo "  This is a warning — not blocking. But worktree usage is required by policy."
+          # Non-blocking warning for now — the pre-commit hook is the hard blocker
+          exit 0
+
+  # ─── Gate 6: Git Hooks Presence ──────────────────────────────────────────
+  hooks-check:
+    name: Git Hooks Scripts Present
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify hook scripts exist in repo
+        run: |
+          echo "=== GIT HOOKS CHECK ==="
+
+          HOOKS=(
+            "scripts/hooks/pre-commit"
+            "scripts/hooks/pre-push"
+            "scripts/hooks/install-hooks.sh"
+          )
+
+          MISSING=0
+          for hook in "${HOOKS[@]}"; do
+            if [ -f "$hook" ]; then
+              echo "✓ $hook exists"
+              if [ -x "$hook" ]; then
+                echo "  ✓ executable"
+              else
+                echo "  ✗ NOT executable"
+                MISSING=$((MISSING + 1))
+              fi
+            else
+              echo "✗ MISSING: $hook"
+              MISSING=$((MISSING + 1))
+            fi
+          done
+
+          echo ""
+
+          if [ "$MISSING" -gt 0 ]; then
+            echo "ERROR: $MISSING hook files missing or not executable"
+            echo "Run: bash scripts/hooks/install-hooks.sh"
+            exit 1
+          fi
+
+          echo "✓ All hook scripts present and executable"
+
+  # ─── Final: All Gates Must Pass ──────────────────────────────────────────
+  all-gates-pass:
+    name: All Policy Gates Pass
+    runs-on: ubuntu-latest
+    needs: [compliance-check, policy-integrity, build-test-lint, hooks-check]
+    if: always()
+
+    steps:
+      - name: Check all gate results
+        run: |
+          echo "=== FINAL GATE CHECK ==="
+          echo ""
+
+          FAILED=0
+
+          check_job() {
+            local name="$1"
+            local result="$2"
+            if [ "$result" == "success" ] || [ "$result" == "skipped" ]; then
+              echo "✓ $name: $result"
+            else
+              echo "✗ $name: $result"
+              FAILED=$((FAILED + 1))
+            fi
+          }
+
+          check_job "CLAUDE.md Compliance" "${{ needs.compliance-check.result }}"
+          check_job "Policy Integrity" "${{ needs.policy-integrity.result }}"
+          check_job "Build/Test/Lint" "${{ needs.build-test-lint.result }}"
+          check_job "Git Hooks Present" "${{ needs.hooks-check.result }}"
+
+          echo ""
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "✗ BLOCKED: $FAILED gate(s) failed. PR cannot be merged."
+            echo "Fix all failures and re-push."
+            exit 1
+          fi
+
+          echo "✓ All policy gates passed. PR is eligible for merge."

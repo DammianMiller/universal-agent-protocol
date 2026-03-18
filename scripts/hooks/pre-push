@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# UAP Pre-Push Hook
+# Enforces build, test, lint, and type-check gates before any push.
+#
+# Install: cp scripts/hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+# Or run: bash scripts/hooks/install-hooks.sh
+
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+
+fail() { echo -e "${RED}[PRE-PUSH] BLOCKED: $1${NC}"; exit 1; }
+warn() { echo -e "${YELLOW}[PRE-PUSH] $1${NC}"; }
+ok()   { echo -e "${GREEN}[PRE-PUSH] $1${NC}"; }
+
+PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# Read remote and branch info from stdin (provided by git)
+while read local_ref local_sha remote_ref remote_sha; do
+  REMOTE_BRANCH=$(echo "$remote_ref" | sed 's@refs/heads/@@')
+
+  # ─── Gate 1: Block force-push to main/master ──────────────────────────────
+  if [[ "$REMOTE_BRANCH" == "main" || "$REMOTE_BRANCH" == "master" ]]; then
+    # Check if this is a force push (non-fast-forward)
+    if [[ "$remote_sha" != "0000000000000000000000000000000000000000" ]]; then
+      IS_ANCESTOR=$(git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null && echo "yes" || echo "no")
+      if [[ "$IS_ANCESTOR" == "no" ]]; then
+        fail "Force push to '$REMOTE_BRANCH' is prohibited.
+  This would rewrite history on the protected branch."
+      fi
+    fi
+  fi
+done
+
+# ─── Gate 2: TypeScript type-check ──────────────────────────────────────────
+echo -e "${YELLOW}[PRE-PUSH] Running type check...${NC}"
+if ! npx tsc --noEmit 2>&1; then
+  fail "TypeScript type-check failed. Fix type errors before pushing."
+fi
+ok "Type check passed"
+
+# ─── Gate 3: Build ──────────────────────────────────────────────────────────
+echo -e "${YELLOW}[PRE-PUSH] Running build...${NC}"
+if ! npm run build 2>&1; then
+  fail "Build failed. Fix build errors before pushing."
+fi
+ok "Build passed"
+
+# ─── Gate 4: Tests ──────────────────────────────────────────────────────────
+echo -e "${YELLOW}[PRE-PUSH] Running tests...${NC}"
+if ! npm test -- --run 2>&1; then
+  fail "Tests failed. Fix failing tests before pushing."
+fi
+ok "Tests passed"
+
+# ─── Gate 5: Lint (non-blocking warning) ────────────────────────────────────
+if [[ -f ".eslintrc.json" || -f "eslint.config.js" || -f "eslint.config.mjs" ]]; then
+  echo -e "${YELLOW}[PRE-PUSH] Running lint...${NC}"
+  if npm run lint 2>&1; then
+    ok "Lint passed"
+  else
+    warn "Lint has warnings/errors (non-blocking for push, fix before merge)"
+  fi
+fi
+
+ok "All pre-push gates passed"
