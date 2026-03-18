@@ -202,23 +202,12 @@ export class McpClient {
       arguments: args,
     });
 
-    // MCP tools/call responses wrap content in { content: [{ type, text }] }
-    // Extract the text content if present, otherwise return the raw result
-    if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>)) {
-      const content = (result as { content: Array<{ type: string; text?: string }> }).content;
-      if (Array.isArray(content) && content.length > 0) {
-        // Concatenate all text content blocks
-        const textParts = content
-          .filter((c) => c.type === 'text' && c.text != null)
-          .map((c) => c.text);
-        if (textParts.length > 0) {
-          return textParts.join('\n');
-        }
-      }
-    }
-
-    // Return raw result, but never undefined
-    return result ?? '(no output)';
+    // Return the raw MCP result as-is. The MCP tools/call response format
+    // { content: [{ type, text }] } is the standard envelope and must be
+    // preserved for downstream consumers (execute.ts, output-compressor).
+    // Do NOT unwrap content blocks here - that would double-process when
+    // the router itself wraps results in the same format for upstream clients.
+    return result;
   }
 
   private cleanup(): void {

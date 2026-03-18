@@ -36,15 +36,14 @@ export function compressToolOutput(
   const { maxBytes = DEFAULT_MAX_BYTES, intent } = options;
 
   // Guard against null/undefined results that would produce "null"/"undefined" strings
-  // or crash Buffer.byteLength. Normalize to a meaningful empty response.
+  // or crash Buffer.byteLength. Return empty string to avoid confusing the model
+  // with placeholder text that could trigger retries.
   if (result === null || result === undefined) {
-    const placeholder = '(no output)';
-    const placeholderBytes = Buffer.byteLength(placeholder, 'utf-8');
     return {
-      output: placeholder,
+      output: '',
       stats: {
         originalBytes: 0,
-        compressedBytes: placeholderBytes,
+        compressedBytes: 0,
         savings: '0%',
         method: 'passthrough',
       },

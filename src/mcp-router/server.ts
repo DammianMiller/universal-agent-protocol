@@ -295,7 +295,10 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
         router
           .handleToolCall(name, args)
           .then((result) => {
-            const safeResult = result ?? { success: true, result: '(no output)' };
+            // Preserve the actual result structure from handleToolCall.
+            // execute.ts already returns { success, result, toolPath, ... } -
+            // do not inject synthetic objects that could confuse tool call validation.
+            const safeResult = result ?? '';
             send({
               jsonrpc: '2.0',
               id,
