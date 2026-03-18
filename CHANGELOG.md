@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.6.0 (2026-03-19)
+
+- feat: implement 4-layer worktree enforcement for 100% compliance
+- chore: version bump to 1.5.6
+- chore: fix npm publish errors
+
+
 ## v1.5.6 (2026-03-18)
 
 - feat: complete UAP optimization tasks P1a-P2b
