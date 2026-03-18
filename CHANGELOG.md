@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.2 (2026-03-18)
+
+- fix: worktree enforcement + null safety in session hooks
+- feat: add completion gate policy + model routing + policy gate improvements
+- fix: Qwen3.5 tool call optimization for 100% success rate
+- chore: bump version to 1.4.4
+- fix: v1.4.3 - fix tool-choice-proxy writeHead race condition and temperature cap
+- fix: v1.4.2 - null safety, MCP compliance, FTS5 segfault prevention, performance optimizations
+- fix: v1.4.1 - revert callTool content unwrapping that broke Qwen3.5 tool call reliability
+- feat: v1.4.0 - MCP compliance, policy enforcement, and performance optimizations
+- fix: v1.3.5 - eliminate null display across all UAP operations, fix OpenCode/OMP deep integration
+- fix: v1.3.4 - restore tool_choice=required, fix chat_template tool call regression
+
+
 ## v5.0.0 (2026-03-13)
 
 ### Security & Performance
