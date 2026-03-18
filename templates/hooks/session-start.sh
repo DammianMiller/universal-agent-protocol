@@ -5,7 +5,7 @@
 # Fails safely - never blocks the agent.
 set -euo pipefail
 
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-${UAP_PROJECT_DIR:-.}}}}"
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
 COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"
 
@@ -123,7 +123,7 @@ if [ -f "$COORD_DB" ]; then
   " 2>/dev/null || true)
 
   ACTIVE_WORK=$(sqlite3 "$COORD_DB" "
-    SELECT agent_id || ' -> ' || resources
+    SELECT agent_id || ' -> ' || resource
     FROM work_announcements
     WHERE completed_at IS NULL
     ORDER BY announced_at DESC LIMIT 5;

@@ -664,7 +664,7 @@ export class CoordinationService {
 
     const messages = rows.map((row) => ({
       ...row,
-      payload: JSON.parse(row.payload as string),
+      payload: row.payload ? JSON.parse(row.payload as string) : {},
     })) as AgentMessage[];
 
     if (markAsRead && messages.length > 0) {

@@ -91,7 +91,10 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         "model": "qwen35-a3b-iq4xs",
         "base_url": "http://127.0.0.1:8080/v1",
         "api_key": "not-needed",
-        "default_tool_choice": "required",
+        # Use "auto" so the escalation strategy (auto -> required) works.
+        # "required" forces tool calls even when the model should respond
+        # with text (e.g. after tool results), causing it to "stop".
+        "default_tool_choice": "auto",
         "parallel_tool_calls": True,
         "batch_tool_calls": True,
         "escalate_tool_choice": True,
@@ -101,11 +104,12 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         "dynamic_temp_floor": 0.2,
         # Qwen-specific: suppress thinking mode to avoid tag leakage
         "suppress_thinking": True,
+        # Match the chat template's <tool_call> format for reliable parsing
         "batch_system_prompt": (
-            "CRITICAL: You MUST emit ALL tool calls in a SINGLE response. "
-            "Each tool call must be a separate function call. "
-            "Do NOT call one tool and wait - emit ALL tool calls together NOW. "
-            "If asked to do 3 things, you must produce 3 tool calls in one response."
+            "When multiple tools are needed, emit ALL tool calls in a single response. "
+            "Each tool call must be a separate <tool_call>...</tool_call> block. "
+            "Do not call one tool and wait for a response before calling the next. "
+            "Emit all <tool_call> blocks together in sequence."
         ),
     },
     "llama": {
@@ -527,13 +531,14 @@ class ToolCallClient:
             }
         )
 
-        # Add user correction
+        # Add user correction with format guidance matching the chat template
         messages.append(
             {
                 "role": "user",
                 "content": "Please call the tool using the correct format. "
                 "You must use the tool calling interface - respond with a tool call, "
-                "not with text describing the call.",
+                "not with text describing the call. "
+                "Use <tool_call> tags with a JSON object containing 'name' and 'arguments' keys.",
             }
         )
 

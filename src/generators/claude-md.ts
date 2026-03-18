@@ -288,7 +288,24 @@ async function buildContext(
     MCP_PLUGINS: mcpPlugins,
 
     // Prepopulated knowledge
-    PREPOPULATED_KNOWLEDGE: prepopulatedKnowledge ? true : null,
+    PREPOPULATED_KNOWLEDGE: prepopulatedKnowledge
+      ? [
+          prepopulatedKnowledge.recentActivity
+            ? `### Recent Activity\n${prepopulatedKnowledge.recentActivity}`
+            : '',
+          prepopulatedKnowledge.learnedLessons
+            ? `### Learned Lessons\n${prepopulatedKnowledge.learnedLessons}`
+            : '',
+          prepopulatedKnowledge.knownGotchas
+            ? `### Known Gotchas\n${prepopulatedKnowledge.knownGotchas}`
+            : '',
+          prepopulatedKnowledge.hotSpots
+            ? `### Hot Spots\n${prepopulatedKnowledge.hotSpots}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n')
+      : null,
     RECENT_ACTIVITY: prepopulatedKnowledge?.recentActivity || null,
     LEARNED_LESSONS: prepopulatedKnowledge?.learnedLessons || null,
     KNOWN_GOTCHAS: prepopulatedKnowledge?.knownGotchas || null,

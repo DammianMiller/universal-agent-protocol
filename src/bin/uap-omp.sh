@@ -59,6 +59,8 @@ EOF
             fi
             cmd "Querying memory for: $2"
             if [[ -f "$UAP_OMP_DIR/memory/short_term.db" ]]; then
+                # Sanitize search term to prevent SQL injection
+                SEARCH_TERM="${2//\'/\'\'}"
                 sqlite3 -header -column "$UAP_OMP_DIR/memory/short_term.db" <<EOF
 SELECT 
     content,
@@ -66,7 +68,7 @@ SELECT
     importance,
     created_at
 FROM memories
-WHERE content LIKE '%${2}%' OR category LIKE '%${2}%'
+WHERE content LIKE '%${SEARCH_TERM}%' OR category LIKE '%${SEARCH_TERM}%'
 ORDER BY importance DESC, created_at DESC
 LIMIT 10;
 EOF

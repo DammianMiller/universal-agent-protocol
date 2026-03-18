@@ -84,7 +84,11 @@ const SMALL_MOE_PROFILE: ExecutionProfile = {
     cwdInjection: false,
     softBudget: 35,
     hardBudget: 50,
-    toolChoiceForce: 'required',
+    // Use "auto" so the model can respond with text after tool results.
+    // "required" forces tool calls on every turn, causing the model to
+    // get stuck in a tool-call loop instead of synthesizing answers.
+    // The retry escalation strategy (auto -> required) handles failures.
+    toolChoiceForce: 'auto',
   },
   rationale:
     'Proven in 13 Harbor Terminal-Bench runs. Lean instructions + domain hints ' +
@@ -132,7 +136,7 @@ const SMALL_DENSE_PROFILE: ExecutionProfile = {
     cwdInjection: false,
     softBudget: 35,
     hardBudget: 50,
-    toolChoiceForce: 'required',
+    toolChoiceForce: 'auto',
   },
   rationale:
     'Similar to small MoE. Dense 7-9B models have comparable effective ' +
@@ -184,7 +188,7 @@ const MEDIUM_PROFILE: ExecutionProfile = {
     cwdInjection: false, // Still breaks commands
     softBudget: 40,
     hardBudget: 60,
-    toolChoiceForce: 'required',
+    toolChoiceForce: 'auto',
   },
   rationale:
     'Medium models can handle reflection checkpoints and verifier hints ' +
@@ -452,7 +456,7 @@ export function getExecutionConfig(
     cwdInjection: false,
     softBudget: 35,
     hardBudget: 50,
-    toolChoiceForce: 'required',
+    toolChoiceForce: 'auto',
     // Apply profile
     ...profile.config,
     // Apply user overrides (highest priority)

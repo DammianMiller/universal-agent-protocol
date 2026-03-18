@@ -832,8 +832,11 @@ uapOmpCmd.addCommand(
             const uapOmpDir = process.env.HOME + '/.uap/omp';
             const dbPath = `${uapOmpDir}/memory/short_term.db`;
             if (require('fs').existsSync(dbPath)) {
+              // Sanitize search term to prevent SQL injection
+              const sanitizedSearch = search.replace(/'/g, "''");
+              const sanitizedLimit = parseInt(options.limit, 10) || 5;
               execSync(
-                `sqlite3 "${dbPath}" "SELECT content, category, importance FROM memories WHERE content LIKE '%${search}%' ORDER BY importance DESC LIMIT ${options.limit};"`,
+                `sqlite3 "${dbPath}" "SELECT content, category, importance FROM memories WHERE content LIKE '%${sanitizedSearch}%' ORDER BY importance DESC LIMIT ${sanitizedLimit};"`,
                 {
                   stdio: 'inherit',
                 }

@@ -1,13 +1,15 @@
-<!-- CLAUDE.md v2.3.1 - 34 Model Outcome Success Optimizations + Hooks Enforcement + Pre-Edit Build Gate -->
+<!-- CLAUDE.md v2.3.0 - 34 Model Outcome Success Optimizations + Hooks Enforcement -->
 <!-- Optimizations #22-27: Template Compression, Structured Iteration, Inline Domain Knowledge, Early Impossibility Exit, Conditional Context, Remove Emphasis Theater -->
 <!-- Optimizations #28-34: Mandatory Verifier Loop, Decoder-First Gate, Context Stripping, Environment Check, Schema Diff, State Protection, Conditional Domain -->
 
-<!-- ENFORCEMENT_CHECKS: SESSION_START,DECISION_LOOP,MANDATORY_WORKTREE,PARALLEL_REVIEW,SCHEMA_DIFF,GATES,RTK_INCLUDES,PATTERN_ROUTER,VALIDATE_PLAN,PRE_EDIT_BUILD_GATE -->
-<!-- TEMPLATE_VERSION: 2.3.1 -->
-<!-- LAST_VALIDATED: 2026-03-18 -->
+<!-- ENFORCEMENT_CHECKS: SESSION_START,DECISION_LOOP,MANDATORY_WORKTREE,PARALLEL_REVIEW,SCHEMA_DIFF,GATES,RTK_INCLUDES,PATTERN_ROUTER,VALIDATE_PLAN -->
+<!-- TEMPLATE_VERSION: 2.3.0 -->
+<!-- LAST_VALIDATED: 2026-03-09 -->
 
 @hooks-session-start.md
 @PreCompact.md
+
+<!-- Custom Sections (preserved from existing file) -->
 
 ## Pre-Edit Build Gate [REQUIRED]
 
