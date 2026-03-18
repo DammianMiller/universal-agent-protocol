@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.6 (2026-03-18)
+
+- feat: create missing memory module files and fix tests
+- feat: add dashboard serve command with WebSocket support
+
+
 ## v1.5.5 (2026-03-18)
 
 - feat: validate worktrees, model router, and adaptive knowledge seeding
