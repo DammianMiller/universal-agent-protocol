@@ -25,7 +25,7 @@ export type ModelId =
   | 'gpt-5.2'
   | 'claude-opus-4.5'
   | 'gpt-5.2-codex'
-  | 'claude-opus-4.6'
+  | 'opus-4.6'
   | 'qwen35';
 
 export interface CategoryStats {
@@ -67,14 +67,7 @@ const DEFAULT_CONFIG: RoutingConfig = {
   preferAccuracy: true,
   maxCostPerTask: 0.05,
   maxLatencyMs: 120000,
-  availableModels: [
-    'glm-4.7',
-    'gpt-5.2',
-    'claude-opus-4.5',
-    'gpt-5.2-codex',
-    'claude-opus-4.6',
-    'qwen35',
-  ],
+  availableModels: ['glm-4.7', 'gpt-5.2', 'claude-opus-4.5', 'gpt-5.2-codex', 'opus-4.6', 'qwen35'],
 };
 
 // OPTIMIZATION 5: Pre-seeded with benchmark data for per-category routing
@@ -151,8 +144,8 @@ const MODEL_FINGERPRINTS: Record<ModelId, ModelFingerprint> = {
       'file-ops': { attempts: 3, successes: 2 },
     },
   },
-  'claude-opus-4.6': {
-    id: 'claude-opus-4.6',
+  'opus-4.6': {
+    id: 'opus-4.6',
     strengths: [
       'accuracy',
       'complex-reasoning',
@@ -199,8 +192,8 @@ const MODEL_FINGERPRINTS: Record<ModelId, ModelFingerprint> = {
 
 const COMPLEXITY_RANK = { easy: 1, medium: 2, hard: 3 };
 
-// OPT 8: SQLite-backed fingerprint persistence with connection pooling to prevent contention
-const DB_POOL_SIZE = 5;
+// OPT 8: SQLite-backed fingerprint persistence - single connection sufficient for sync driver
+const DB_POOL_SIZE = 1; // Keep at 1 - better-sqlite3 is synchronous, no need for pool
 const dbPool: Database.Database[] = [];
 let poolInitialized = false;
 let poolRoundRobinIndex = 0;
