@@ -10,7 +10,7 @@
  * - Speculative prefetch for common patterns
  */
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import Database from 'better-sqlite3';
 import {
@@ -36,6 +36,16 @@ import {
   formatAmbiguityForContext,
   type AmbiguityResult,
 } from './ambiguity-detector.js';
+
+// ── File read cache with mtime invalidation (prevents repeated reads of rarely-changing files) ──
+interface CachedFile<T> {
+  data: T;
+  mtime: number;
+  expiresAt: number;
+}
+
+const FILE_CACHE_TTL = 60_000; // 1 minute TTL
+const fileReadCache = new Map<string, CachedFile<any>>();
 
 /**
  * Query complexity levels for adaptive retrieval
@@ -701,7 +711,38 @@ async function queryLongTermMemory(
   const memories: RetrievedMemory[] = [];
 
   try {
-    const data = JSON.parse(readFileSync(memoryPath, 'utf-8'));
+    // Use cached file read with mtime invalidation (file rarely changes)
+    let data: any;
+    const cacheKey = `long_term:${memoryPath}`;
+    const now = Date.now();
+    const cached = fileReadCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      // Check if file was modified
+      try {
+        const stat = statSync(memoryPath);
+        if (stat.mtimeMs === cached.mtime) {
+          data = cached.data;
+        } else {
+          data = JSON.parse(readFileSync(memoryPath, 'utf-8'));
+          fileReadCache.set(cacheKey, {
+            data,
+            mtime: stat.mtimeMs,
+            expiresAt: now + FILE_CACHE_TTL,
+          });
+        }
+      } catch {
+        data = JSON.parse(readFileSync(memoryPath, 'utf-8'));
+        fileReadCache.set(cacheKey, { data, mtime: 0, expiresAt: now + FILE_CACHE_TTL });
+      }
+    } else {
+      data = JSON.parse(readFileSync(memoryPath, 'utf-8'));
+      try {
+        const stat = statSync(memoryPath);
+        fileReadCache.set(cacheKey, { data, mtime: stat.mtimeMs, expiresAt: now + FILE_CACHE_TTL });
+      } catch {
+        fileReadCache.set(cacheKey, { data, mtime: 0, expiresAt: now + FILE_CACHE_TTL });
+      }
+    }
     const allMemories = data.memories || data.lessons || data || [];
 
     for (const query of queries.slice(0, 5)) {
@@ -760,7 +801,41 @@ async function queryCLAUDEMd(
   const memories: RetrievedMemory[] = [];
 
   try {
-    const content = readFileSync(claudeMdPath, 'utf-8');
+    // Use cached file read with mtime invalidation (CLAUDE.md rarely changes)
+    let content: string;
+    const cacheKey = `claude_md:${claudeMdPath}`;
+    const now = Date.now();
+    const cached = fileReadCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      try {
+        const stat = statSync(claudeMdPath);
+        if (stat.mtimeMs === cached.mtime) {
+          content = cached.data;
+        } else {
+          content = readFileSync(claudeMdPath, 'utf-8');
+          fileReadCache.set(cacheKey, {
+            data: content,
+            mtime: stat.mtimeMs,
+            expiresAt: now + FILE_CACHE_TTL,
+          });
+        }
+      } catch {
+        content = readFileSync(claudeMdPath, 'utf-8');
+        fileReadCache.set(cacheKey, { data: content, mtime: 0, expiresAt: now + FILE_CACHE_TTL });
+      }
+    } else {
+      content = readFileSync(claudeMdPath, 'utf-8');
+      try {
+        const stat = statSync(claudeMdPath);
+        fileReadCache.set(cacheKey, {
+          data: content,
+          mtime: stat.mtimeMs,
+          expiresAt: now + FILE_CACHE_TTL,
+        });
+      } catch {
+        fileReadCache.set(cacheKey, { data: content, mtime: 0, expiresAt: now + FILE_CACHE_TTL });
+      }
+    }
 
     // Extract Code Field section (always relevant)
     const codeFieldMatch = content.match(/## .*CODE FIELD.*?(?=\n## |\n---\n|$)/s);

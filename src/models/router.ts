@@ -244,6 +244,25 @@ export class ModelRouter {
   selectModel(complexity: TaskComplexity, taskType: string, keywords: string[]): ModelSelection {
     const strategy = this.config.routingStrategy || 'balanced';
 
+    // Check routingMatrix override first - user-specified per-complexity model assignments
+    if (this.config.routingMatrix?.[complexity]) {
+      const matrixEntry = this.config.routingMatrix[complexity];
+      const modelId =
+        complexity === 'critical' || complexity === 'high'
+          ? matrixEntry.planner
+          : matrixEntry.executor;
+      const model = this.models.get(modelId) || ModelPresets[modelId as keyof typeof ModelPresets];
+      if (model) {
+        return {
+          model,
+          fallback: undefined,
+          role: complexity === 'critical' || complexity === 'high' ? 'planner' : 'executor',
+          reasoning: `routingMatrix override for ${complexity} complexity: using ${model.name}`,
+          estimatedCost: this.estimateCost(model, 10000, 5000),
+        };
+      }
+    }
+
     // Performance-first: always use the planner (highest-capability model)
     if (strategy === 'performance-first') {
       const plannerId = this.roleAssignments.get('planner') || 'opus-4.6';

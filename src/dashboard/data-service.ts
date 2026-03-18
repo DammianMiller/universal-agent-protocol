@@ -11,6 +11,20 @@ import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { globalSessionStats } from '../mcp-router/session-stats.js';
 
+// ── TTL Cache for subprocess calls (git/docker don't change faster than 30s) ──
+interface CachedSubprocessResult<T> {
+  data: T;
+  expiresAt: number;
+}
+
+const SUBPROCESS_CACHE_TTL = 30_000; // 30 seconds
+let cachedGitData: CachedSubprocessResult<{ branch: string; dirty: number }> | null = null;
+let cachedQdrantStatus: CachedSubprocessResult<{ status: string; uptime: string }> | null = null;
+
+// ── DB Connection Pool for memory database (prevents opening/closing on every refresh) ──
+const MEMORY_DB_CACHE_TTL = 5_000; // 5 seconds
+let cachedMemoryDb: { db: Database.Database; expiresAt: number } | null = null;
+
 // ── Types ──
 
 export interface PolicyData {
@@ -122,8 +136,14 @@ function getSystemData(cwd: string): SystemData {
     /* ignore */
   }
 
+  // Use TTL cache for git data (doesn't change faster than 30s during normal operation)
   let branch = '?';
   let dirty = 0;
+  const now = Date.now();
+  if (cachedGitData && cachedGitData.expiresAt > now) {
+    return { version, branch: cachedGitData.data.branch, dirty: cachedGitData.data.dirty };
+  }
+
   try {
     branch = execSync('git branch --show-current', {
       encoding: 'utf-8',
@@ -138,6 +158,8 @@ function getSystemData(cwd: string): SystemData {
       .trim()
       .split('\n')
       .filter(Boolean).length;
+
+    cachedGitData = { data: { branch, dirty }, expiresAt: now + SUBPROCESS_CACHE_TTL };
   } catch {
     /* ignore */
   }
@@ -217,7 +239,17 @@ function getMemoryData(cwd: string): MemoryData {
   if (existsSync(memDbPath)) {
     try {
       l1SizeKB = Math.round(statSync(memDbPath).size / 1024);
-      const db = new Database(memDbPath, { readonly: true });
+      const now = Date.now();
+
+      // Reuse DB connection if still valid (prevents open/close overhead on rapid refreshes)
+      let db: Database.Database | null = null;
+      if (cachedMemoryDb && cachedMemoryDb.expiresAt > now) {
+        db = cachedMemoryDb.db;
+      } else {
+        db = new Database(memDbPath, { readonly: true });
+        cachedMemoryDb = { db, expiresAt: now + MEMORY_DB_CACHE_TTL };
+      }
+
       const hasMem = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories'")
         .all();
@@ -246,14 +278,34 @@ function getMemoryData(cwd: string): MemoryData {
           db.prepare('SELECT COUNT(*) as c FROM relationships').get() as { c: number }
         ).c;
       }
-      db.close();
+      // Don't close - keep connection cached for next refresh
     } catch {
       /* ignore */
     }
   }
 
+  // Get compression stats first (needed for both cached and fresh paths)
+  const stats = globalSessionStats.getSummary();
+
+  // Use TTL cache for Qdrant status (Docker doesn't change faster than 30s)
   let l3Status = 'Stopped';
   let l3Uptime = '';
+  const now = Date.now();
+  if (cachedQdrantStatus && cachedQdrantStatus.expiresAt > now) {
+    return {
+      l1: { entries: l1Entries, sizeKB: l1SizeKB },
+      l2: { entries: l2Entries },
+      l3: { status: cachedQdrantStatus.data.status, uptime: cachedQdrantStatus.data.uptime },
+      l4: { entities: l4Entities, relationships: l4Relationships },
+      compression: {
+        rawBytes: stats.totalRawBytes,
+        contextBytes: stats.totalContextBytes,
+        savingsPercent: stats.savingsPercent,
+        totalCalls: stats.totalCalls,
+      },
+    };
+  }
+
   try {
     const out = execSync('docker ps --filter name=qdrant --format "{{.Status}}"', {
       encoding: 'utf-8',
@@ -262,12 +314,14 @@ function getMemoryData(cwd: string): MemoryData {
     if (out) {
       l3Status = 'Running';
       l3Uptime = out;
+      cachedQdrantStatus = {
+        data: { status: l3Status, uptime: l3Uptime },
+        expiresAt: now + SUBPROCESS_CACHE_TTL,
+      };
     }
   } catch {
     /* ignore */
   }
-
-  const stats = globalSessionStats.getSummary();
 
   return {
     l1: { entries: l1Entries, sizeKB: l1SizeKB },
