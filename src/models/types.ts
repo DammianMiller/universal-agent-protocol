@@ -12,7 +12,7 @@ import { z } from 'zod';
 export type ModelProvider = 'anthropic' | 'deepseek' | 'openai' | 'zhipu' | 'ollama' | 'custom';
 
 // Model role in the architecture
-export type ModelRole = 'planner' | 'executor' | 'reviewer' | 'fallback';
+export type ModelRole = 'planner' | 'executor' | 'reviewer' | 'fallback' | 'task';
 
 // Task complexity levels for routing
 export type TaskComplexity = 'low' | 'medium' | 'high' | 'critical';

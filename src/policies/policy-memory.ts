@@ -14,15 +14,17 @@ export class PolicyMemoryManager {
   async storeRawPolicy(rawMarkdown: string, metadata: Partial<Policy> = {}): Promise<string> {
     const policyId = crypto.randomUUID();
     const name = this.extractPolicyName(rawMarkdown);
+    const extractedMetadata = this.extractPolicyMetadata(rawMarkdown);
 
     const policy: Policy = {
       id: policyId,
       name,
-      category: (metadata.category as any) || 'custom',
-      level: (metadata.level as any) || 'RECOMMENDED',
-      enforcementStage: metadata.enforcementStage || 'pre-exec',
+      category: (metadata.category as any) || extractedMetadata.category || 'custom',
+      level: (metadata.level as any) || extractedMetadata.level || 'RECOMMENDED',
+      enforcementStage:
+        metadata.enforcementStage || extractedMetadata.enforcementStage || 'pre-exec',
       rawMarkdown,
-      tags: metadata.tags || [],
+      tags: metadata.tags || extractedMetadata.tags || [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       version: 1,
@@ -32,6 +34,50 @@ export class PolicyMemoryManager {
 
     this.db.upsertPolicy(policy as unknown as Record<string, unknown>);
     return policyId;
+  }
+
+  private extractPolicyMetadata(markdown: string): {
+    category?: string;
+    level?: 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL';
+    enforcementStage?: 'pre-exec' | 'post-exec' | 'review' | 'always';
+    tags?: string[];
+  } {
+    const metadata: {
+      category?: string;
+      level?: 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL';
+      enforcementStage?: 'pre-exec' | 'post-exec' | 'review' | 'always';
+      tags?: string[];
+    } = {};
+
+    // Extract from YAML-style header at the top of the file
+    const categoryMatch = markdown.match(/\*\*Category\*\*:\s*(\w+)/);
+    if (categoryMatch) {
+      metadata.category = categoryMatch[1];
+    }
+
+    const levelMatch = markdown.match(/\*\*Level\*\*:\s*(REQUIRED|RECOMMENDED|OPTIONAL)/i);
+    if (levelMatch) {
+      metadata.level = levelMatch[1].toUpperCase() as 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL';
+    }
+
+    const stageMatch = markdown.match(/\*\*Enforcement Stage\*\*:\s*(\w+)/);
+    if (stageMatch) {
+      const stage = stageMatch[1] as 'pre-exec' | 'post-exec' | 'review' | 'always';
+      if (['pre-exec', 'post-exec', 'review', 'always'].includes(stage)) {
+        metadata.enforcementStage = stage;
+      }
+    }
+
+    // Extract tags from line like: **Tags**: tag1, tag2, tag3
+    const tagsMatch = markdown.match(/\*\*Tags\*\*:\s*(.+)/);
+    if (tagsMatch) {
+      metadata.tags = tagsMatch[1]
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
+    }
+
+    return metadata;
   }
 
   async storeExecutablePolicy(

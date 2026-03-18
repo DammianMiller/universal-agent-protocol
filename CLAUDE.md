@@ -21,3 +21,57 @@ If the build fails, fix the error before making any further edits.
 - Always read the target region + surrounding context before editing to ensure unique anchors
 - Never leave the project in a broken build state between edits
 - Validation: `bash scripts/validate-build.sh` or `npm run build`
+
+## Completion Gate [REQUIRED]
+
+Claiming DONE, COMPLETE, or CLOSED is prohibited until ALL of the following pass:
+
+1. **Testing** — `npm test` passes with no failures. Coverage must not regress.
+2. **Build** — `npm run build` succeeds with zero errors.
+3. **Lint & Type-check** — `npm run lint` (if available) and `tsc --noEmit` pass cleanly.
+4. **Deployment verification** — If the change touches deployable artifacts, deployment to staging/preview must succeed and smoke tests must pass.
+5. **Self-review** — Diff has been reviewed for correctness, no debug code, no secrets, no unresolved TODOs.
+
+### Mandatory Policy Enforcement [REQUIRED]
+
+**Policy**: `mandatory-testing-deployment` (REQUIRED level)
+
+Before claiming task completion, you MUST verify:
+
+- ✅ All unit tests passing (`npm test` or equivalent)
+- ✅ Test coverage maintained or improved (no regression)
+- ✅ Code linting passes (`npm run lint`)
+- ✅ TypeScript type checking passes (`tsc --noEmit`)
+- ✅ Deployment to staging/preview successful (if applicable)
+- ✅ Smoke tests passed in target environment (if applicable)
+- ✅ No new security vulnerabilities detected
+- ✅ Documentation updated (README, CHANGELOG, API docs)
+- ✅ Breaking changes documented
+
+### Enforcement Rules
+
+**DO NOT** mark tasks as DONE when:
+
+- ❌ Tests are failing or skipped
+- ❌ Deployment hasn't been verified
+- ❌ Code quality gates are bypassed
+- ❌ Documentation is missing or outdated
+- ❌ Critical bugs remain open
+- ❌ Security warnings are ignored
+
+**DO** verify completion by running:
+
+```bash
+# Check policy status
+uap policy list
+
+# Run all compliance checks
+uap compliance check
+
+# Verify build and tests pass
+npm run build && npm test
+```
+
+If any gate fails, fix the issue and re-run ALL gates before claiming completion.
+Skipping or deferring any gate is a policy violation.
+See `policies/completion-gate.md` for full enforcement details.

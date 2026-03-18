@@ -7,7 +7,7 @@ export const PolicySchema = z.object({
   level: z.enum(['REQUIRED', 'RECOMMENDED', 'OPTIONAL']),
   enforcementStage: z.enum(['pre-exec', 'post-exec', 'review', 'always']).default('pre-exec'),
   rawMarkdown: z.string(),
-  convertedFormat: z.string().optional(),
+  convertedFormat: z.string().nullable().optional(),
   executableTools: z.array(z.string()).optional(),
   tags: z.array(z.string()),
   createdAt: z.string().refine((d) => !Number.isNaN(Date.parse(d)), {

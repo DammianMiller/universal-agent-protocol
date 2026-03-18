@@ -94,6 +94,40 @@ export class PolicyGate {
   }
 
   /**
+   * Detect if an operation is related to task completion.
+   */
+  private isTaskCompletionOperation(operation: string, args: Record<string, unknown>): boolean {
+    const opLower = operation.toLowerCase();
+    // Check operation name
+    if (
+      opLower.includes('complete') ||
+      opLower.includes('done') ||
+      opLower.includes('finish') ||
+      opLower.includes('close') ||
+      opLower.includes('resolve') ||
+      opLower.includes('merge') ||
+      opLower.includes('deploy') ||
+      opLower.includes('release')
+    ) {
+      return true;
+    }
+    // Check args for completion status changes
+    if (args && typeof args === 'object') {
+      const argsStr = JSON.stringify(args).toLowerCase();
+      if (
+        argsStr.includes('status') &&
+        (argsStr.includes('done') ||
+          argsStr.includes('complete') ||
+          argsStr.includes('closed') ||
+          argsStr.includes('resolved'))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Check all policies before allowing an operation.
    * Throws PolicyViolationError if any REQUIRED policy blocks it.
    */
@@ -103,6 +137,23 @@ export class PolicyGate {
     executor: () => Promise<T>,
     stage: 'pre-exec' | 'post-exec' | 'review' | 'always' = 'pre-exec'
   ): Promise<T> {
+    // Auto-detect task completion operations and enforce review-stage policies
+    const isTaskCompletion = this.isTaskCompletionOperation(operation, args);
+    if (isTaskCompletion && stage !== 'review') {
+      // Force review stage for task completion to ensure testing/deployment checks
+      const reviewResult = await this.checkPolicies(operation, args, 'review');
+      if (!reviewResult.allowed) {
+        const blockedNames = reviewResult.blockedBy.map((b) => b.policyName).join(', ');
+        const reasons = reviewResult.blockedBy
+          .map((b) => `[${b.policyName}] ${b.reason}`)
+          .join('; ');
+        throw new PolicyViolationError(
+          `Task completion blocked by policy: ${blockedNames}. Reasons: ${reasons}`,
+          reviewResult.blockedBy
+        );
+      }
+    }
+
     const gateResult = await this.checkPolicies(operation, args, stage);
 
     // Log all checks to audit trail (pre-execution, result not yet available)

@@ -9,7 +9,7 @@
  */
 
 import { Command } from 'commander';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import chalk from 'chalk';
 import {
@@ -333,6 +333,232 @@ function getComplexityColor(complexity: string): typeof chalk.red {
 }
 
 /**
+ * Presets command - list all available model presets
+ */
+async function presetsCommand(): Promise<void> {
+  console.log(chalk.bold('\n=== Available Model Presets ===\n'));
+
+  const presets = Object.entries(ModelPresets);
+  for (const [id, _preset] of presets) {
+    const preset = _preset;
+    const costInfo =
+      preset.costPer1MInput && preset.costPer1MOutput
+        ? `($${preset.costPer1MInput}/$${preset.costPer1MOutput} per 1M)`
+        : '(free/local)';
+
+    console.log(chalk.cyan(`  ${id}:`));
+    console.log(`    Name: ${chalk.white(preset.name)}`);
+    console.log(`    Provider: ${chalk.yellow(preset.provider)}`);
+    console.log(`    Context: ${preset.maxContextTokens.toLocaleString()} tokens`);
+    console.log(`    Cost: ${costInfo}`);
+    if (preset.capabilities.length > 0) {
+      console.log(`    Capabilities: ${preset.capabilities.map((c) => chalk.green(c)).join(', ')}`);
+    }
+    console.log();
+  }
+}
+
+/**
+ * Select command - interactively select models for each role
+ */
+async function selectCommand(options: { save?: boolean }): Promise<void> {
+  const config = loadConfig();
+  const mmConfig = getMultiModelConfig(config);
+
+  console.log(chalk.bold('\n=== Interactive Model Selection ===\n'));
+
+  // Show current configuration
+  console.log('Current Configuration:');
+  const roles = mmConfig.roles || {
+    planner: 'opus-4.6',
+    executor: 'qwen35',
+    fallback: 'qwen35',
+  };
+  console.log(`  Planner:  ${chalk.green(roles.planner)}`);
+  console.log(`  Executor: ${chalk.blue(roles.executor)}`);
+  console.log(`  Reviewer: ${chalk.yellow(roles.reviewer || roles.planner || 'opus-4.6')}`);
+  console.log(`  Fallback: ${chalk.red(roles.fallback || 'qwen35')}`);
+  console.log();
+
+  // Show available presets
+  console.log(chalk.bold('Available Presets:'));
+  const presetIds = Object.keys(ModelPresets);
+  for (let i = 0; i < presetIds.length; i++) {
+    const id = presetIds[i];
+    const name = ModelPresets[id].name;
+    console.log(`  ${chalk.cyan(String(i + 1).padStart(2))} ${id.padEnd(20)} ${name}`);
+  }
+  console.log();
+
+  const inquirerModule = await import('inquirer');
+  const inquirer = inquirerModule as any;
+
+  const answers: Record<string, string> = {};
+
+  for (const role of ['planner', 'executor', 'reviewer', 'fallback'] as const) {
+    const currentRole = roles[role] || 'opus-4.6';
+    const answer = await inquirer.prompt([
+      {
+        type: 'list',
+        name: role,
+        message: `Select model for ${chalk.cyan(role)} role (current: ${currentRole}):`,
+        choices: [
+          ...presetIds.map((id, _idx) => ({
+            name: `${id} (${ModelPresets[id].name})`,
+            value: id,
+            short: id,
+          })),
+          {
+            name: `Keep current: ${currentRole}`,
+            value: currentRole,
+            short: currentRole,
+          },
+        ],
+      },
+    ]);
+
+    answers[role] = answer[role];
+  }
+
+  // Ask for routing strategy
+  const strategyAnswer = await inquirer.default.prompt([
+    {
+      type: 'list',
+      name: 'strategy',
+      message: 'Select routing strategy:',
+      choices: [
+        { name: 'balanced (default)', value: 'balanced' },
+        { name: 'cost-optimized (cheapest capable)', value: 'cost-optimized' },
+        { name: 'performance-first (best model)', value: 'performance-first' },
+        { name: 'adaptive (learn from results)', value: 'adaptive' },
+      ],
+    },
+  ]);
+
+  answers.strategy = strategyAnswer.strategy;
+
+  // Show preview of new configuration
+  console.log();
+  console.log(chalk.bold('\nNew Configuration Preview:'));
+  console.log(`  Planner:  ${chalk.green(answers.planner)}`);
+  console.log(`  Executor: ${chalk.blue(answers.executor)}`);
+  console.log(`  Reviewer: ${chalk.yellow(answers.reviewer || answers.planner)}`);
+  console.log(`  Fallback: ${chalk.red(answers.fallback)}`);
+  console.log(`  Strategy: ${chalk.cyan(answers.strategy)}`);
+  console.log();
+
+  // Ask for confirmation
+  const confirm = await inquirer.default.prompt([
+    {
+      type: 'confirm',
+      name: 'confirm',
+      message: 'Save this configuration?',
+      default: false,
+    },
+  ]);
+
+  if (confirm.confirm) {
+    // Update config
+    const updatedConfig: MultiModelConfig = {
+      ...mmConfig,
+      roles: {
+        planner: answers.planner,
+        executor: answers.executor,
+        reviewer: answers.reviewer || answers.planner,
+        fallback: answers.fallback,
+      },
+      routingStrategy: answers.strategy as any,
+    };
+
+    // Save to .uap.json if requested
+    if (options.save) {
+      try {
+        const uapConfigPath = join(process.cwd(), '.uap.json');
+        if (existsSync(uapConfigPath)) {
+          const uapConfig = JSON.parse(readFileSync(uapConfigPath, 'utf-8'));
+          uapConfig.multiModel = updatedConfig;
+          writeFileSync(uapConfigPath, JSON.stringify(uapConfig, null, 2));
+          console.log(chalk.green('\n✓ Configuration saved to .uap.json'));
+        } else {
+          console.warn('No .uap.json found. Use --save flag after init.');
+        }
+      } catch (err) {
+        console.error(chalk.red(`Error saving config: ${err}`));
+      }
+    } else {
+      console.log(chalk.yellow('\nConfiguration preview only. Use --save to persist.'));
+    }
+  } else {
+    console.log(chalk.yellow('Configuration not saved.'));
+  }
+}
+
+/**
+ * Export command - export current configuration
+ */
+async function exportCommand(options: { format?: 'json' | 'yaml' }): Promise<void> {
+  const config = loadConfig();
+  const mmConfig = getMultiModelConfig(config);
+
+  let output: string;
+
+  if (options.format === 'yaml') {
+    const yaml = await import('js-yaml');
+    output = yaml.default.dump(mmConfig, { indent: 2 });
+  } else {
+    output = JSON.stringify(mmConfig, null, 2);
+  }
+
+  console.log(output);
+}
+
+/**
+ * Health check command
+ */
+async function healthCommand(): Promise<void> {
+  const config = loadConfig();
+  const mmConfig = getMultiModelConfig(config);
+  const router = createRouter(mmConfig);
+
+  console.log(chalk.bold('\n=== Model Health Check ===\n'));
+
+  let hasErrors = false;
+
+  // Check assigned models exist
+  const roles = mmConfig.roles || {};
+  for (const [role, modelId] of Object.entries(roles) as Array<[string, string]>) {
+    if (!router.getModel(modelId)) {
+      console.error(`❌ ${chalk.red(role)}: Model '${modelId}' not found in configured models`);
+      hasErrors = true;
+    } else {
+      const model = router.getModel(modelId)!;
+      console.log(`✓ ${chalk.green(role)}: ${modelId} (${model.name}) - OK`);
+    }
+  }
+
+  // Check models are configured
+  console.log();
+  console.log(chalk.bold('Configured Models:'));
+  const allModels = router.getAllModels();
+  if (allModels.length === 0) {
+    console.error(`❌ No models configured!`);
+    hasErrors = true;
+  } else {
+    for (const model of allModels) {
+      console.log(`  ✓ ${model.id}: ${model.name}`);
+    }
+  }
+
+  console.log();
+  if (hasErrors) {
+    console.log(chalk.red('\n⚠️ Health check failed. Fix configuration issues.'));
+    process.exitCode = 1;
+  } else {
+    console.log(chalk.green('\n✓ All models configured correctly!'));
+  }
+}
+
+/**
  * Register model commands
  */
 export function registerModelCommands(program: Command): void {
@@ -360,4 +586,23 @@ export function registerModelCommands(program: Command): void {
     .command('compare')
     .description('Compare cost/performance of different configurations')
     .action(compareCommand);
+
+  model.command('presets').description('List all available model presets').action(presetsCommand);
+
+  model
+    .command('select')
+    .description('Interactively select models for each role')
+    .option('--save', 'Save configuration to .uap.json')
+    .action(selectCommand);
+
+  model
+    .command('export')
+    .description('Export current configuration')
+    .option('-f, --format <format>', 'Output format (json, yaml)', 'json')
+    .action(exportCommand);
+
+  model
+    .command('health')
+    .description('Check model health and configuration validity')
+    .action(healthCommand);
 }

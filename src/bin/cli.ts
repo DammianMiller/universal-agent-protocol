@@ -30,6 +30,7 @@ const lazy = {
   schemaDiff: () => import('../cli/schema-diff.js').then((m) => m.registerSchemaDiffCommand),
   rtk: () => import('../cli/rtk.js'),
   toolCalls: () => import('../cli/tool-calls.js').then((m) => m.toolCallsCommand),
+  policy: () => import('../cli/policy.js').then((m) => m.registerPolicyCommands),
 };
 
 // Type alias for hooks target (used in action handlers)
@@ -942,6 +943,10 @@ program
 // Register schema-diff command lazily
 const registerSchemaDiffFn = await lazy.schemaDiff();
 registerSchemaDiffFn(program);
+
+// Register policy commands lazily
+const registerPolicyFn = await lazy.policy();
+registerPolicyFn(program);
 
 // UAP for Oh-My-Pi - dashboard and controls for omp users
 const uapOmpCmd = new Command('uap-omp');

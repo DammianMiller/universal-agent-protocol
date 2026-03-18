@@ -106,6 +106,9 @@ export class ModelRouter {
 
     // Initialize role assignments
     this.initializeRoles();
+
+    // Validate role assignments
+    this.validateRoleAssignments();
   }
 
   private initializeModels(): void {
@@ -115,6 +118,8 @@ export class ModelRouter {
         const preset = ModelPresets[modelDef];
         if (preset) {
           this.models.set(modelDef, preset);
+        } else {
+          console.warn(`Model preset '${modelDef}' not found, skipping`);
         }
       } else {
         // It's a custom config
@@ -146,6 +151,17 @@ export class ModelRouter {
     this.roleAssignments.set('executor', roles.executor || 'qwen35');
     this.roleAssignments.set('reviewer', roles.reviewer || roles.planner || 'opus-4.6');
     this.roleAssignments.set('fallback', roles.fallback || 'qwen35');
+  }
+
+  private validateRoleAssignments(): void {
+    const roles = this.config.roles || {};
+    for (const [role, modelId] of Object.entries(roles) as Array<[string, string]>) {
+      if (!this.models.has(modelId)) {
+        console.warn(
+          `⚠️ Role '${role}' assigned to non-existent model '${modelId}'. Using fallback.`
+        );
+      }
+    }
   }
 
   /**
