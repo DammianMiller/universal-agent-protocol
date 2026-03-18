@@ -63,14 +63,14 @@ export class PolicyGate {
   ): Promise<T> {
     const gateResult = await this.checkPolicies(operation, args, stage);
 
-    // Log all checks to audit trail
+    // Log all checks to audit trail (pre-execution, result not yet available)
     for (const check of gateResult.checks) {
       this.db.logExecution({
         policyId: check.policyId,
         toolName: operation,
         operation,
         args,
-        result: null,
+        result: 'pending',
         allowed: check.allowed,
         reason: check.reason,
       });
@@ -86,9 +86,43 @@ export class PolicyGate {
     }
 
     // All gates passed - execute
-    const result = await executor();
+    const startTime = Date.now();
+    let executionResult: T;
+    let executionError: Error | null = null;
 
-    return result;
+    try {
+      executionResult = await executor();
+    } catch (error) {
+      executionError = error instanceof Error ? error : new Error(String(error));
+      // Log post-execution failure to audit trail
+      for (const check of gateResult.checks) {
+        this.db.logExecution({
+          policyId: check.policyId,
+          toolName: operation,
+          operation,
+          args,
+          result: `error: ${executionError.message}`,
+          allowed: check.allowed,
+          reason: `Post-exec (${Date.now() - startTime}ms): ${executionError.message}`,
+        });
+      }
+      throw executionError;
+    }
+
+    // Log post-execution success to audit trail
+    for (const check of gateResult.checks) {
+      this.db.logExecution({
+        policyId: check.policyId,
+        toolName: operation,
+        operation,
+        args,
+        result: 'completed',
+        allowed: check.allowed,
+        reason: `Post-exec (${Date.now() - startTime}ms): success`,
+      });
+    }
+
+    return executionResult;
   }
 
   /**
@@ -177,14 +211,55 @@ export class PolicyGate {
   }
 
   /**
-   * Extract structured rules from policy markdown.
+   * Extract structured rules from policy content.
+   * Supports two formats:
+   * 1. Structured YAML/JSON rules block (preferred, extensible):
+   *    ```rules
+   *    - title: "Rule name"
+   *      keywords: [keyword1, keyword2]
+   *      antiPatterns: [pattern1, pattern2]
+   *    ```
+   * 2. Legacy markdown numbered rules with bold titles (auto-extracted)
    */
   private extractRules(
     markdown: string
   ): Array<{ title: string; keywords: string[]; antiPatterns: string[] }> {
     const rules: Array<{ title: string; keywords: string[]; antiPatterns: string[] }> = [];
 
-    // Match numbered rules with bold titles
+    // Try structured rules block first (```rules ... ```)
+    const structuredMatch = markdown.match(/```rules\n([\s\S]*?)```/);
+    if (structuredMatch) {
+      try {
+        const structuredRules = this.parseStructuredRules(structuredMatch[1]);
+        if (structuredRules.length > 0) return structuredRules;
+      } catch {
+        // Fall through to legacy extraction
+      }
+    }
+
+    // Try JSON rules block (```json ... ```) with "rules" key
+    const jsonMatch = markdown.match(/```json\n([\s\S]*?)```/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[1]);
+        if (Array.isArray(parsed?.rules)) {
+          for (const rule of parsed.rules) {
+            if (rule.title && (Array.isArray(rule.keywords) || Array.isArray(rule.antiPatterns))) {
+              rules.push({
+                title: String(rule.title),
+                keywords: (rule.keywords || []).map(String),
+                antiPatterns: (rule.antiPatterns || []).map(String),
+              });
+            }
+          }
+          if (rules.length > 0) return rules;
+        }
+      } catch {
+        // Fall through to legacy extraction
+      }
+    }
+
+    // Legacy: match numbered rules with bold titles
     const ruleRegex = /\d+\.\s+\*\*(.+?)\*\*[^]*?(?=\d+\.\s+\*\*|## |$)/g;
     let match;
 
@@ -192,22 +267,34 @@ export class PolicyGate {
       const title = match[1];
       const body = match[0].toLowerCase();
 
-      // Extract keywords from the rule body
       const keywords: string[] = [];
       const antiPatterns: string[] = [];
 
-      // Common keyword patterns
+      // Auto-extract keywords from rule body content
       if (body.includes('vision') || body.includes('image') || body.includes('visual')) {
         keywords.push('image', 'vision', 'screenshot', 'view');
       }
       if (body.includes('count') || body.includes('measure')) {
         keywords.push('count', 'measure', 'pixel');
       }
-      if (body.includes('never') || body.includes('do not')) {
-        // Extract what should never be done
-        const neverMatch = body.match(/never\s+(?:use\s+)?(\w+(?:\s+\w+)?)/g);
+      if (body.includes('file') || body.includes('write') || body.includes('edit')) {
+        keywords.push('file', 'write', 'edit', 'create', 'delete');
+      }
+      if (body.includes('secret') || body.includes('credential') || body.includes('password')) {
+        keywords.push('secret', 'credential', 'password', 'token', 'key');
+      }
+      if (body.includes('deploy') || body.includes('production') || body.includes('release')) {
+        keywords.push('deploy', 'production', 'release', 'push');
+      }
+      if (body.includes('test') || body.includes('coverage') || body.includes('spec')) {
+        keywords.push('test', 'coverage', 'spec', 'assert');
+      }
+      if (body.includes('never') || body.includes('do not') || body.includes('must not')) {
+        const neverMatch = body.match(/(?:never|must not|do not)\s+(?:use\s+)?(\w+(?:\s+\w+)?)/g);
         if (neverMatch) {
-          antiPatterns.push(...neverMatch.map((n) => n.replace(/^never\s+(?:use\s+)?/, '')));
+          antiPatterns.push(
+            ...neverMatch.map((n) => n.replace(/^(?:never|must not|do not)\s+(?:use\s+)?/, ''))
+          );
         }
       }
       if (body.includes('iterative') || body.includes('loop')) {
@@ -218,6 +305,43 @@ export class PolicyGate {
       }
 
       rules.push({ title, keywords, antiPatterns });
+    }
+
+    return rules;
+  }
+
+  /**
+   * Parse structured YAML-like rules from a ```rules block.
+   * Format: lines starting with "- title:" followed by "  keywords:" and "  antiPatterns:"
+   */
+  private parseStructuredRules(
+    content: string
+  ): Array<{ title: string; keywords: string[]; antiPatterns: string[] }> {
+    const rules: Array<{ title: string; keywords: string[]; antiPatterns: string[] }> = [];
+    const entries = content.split(/^- /m).filter(Boolean);
+
+    for (const entry of entries) {
+      const titleMatch = entry.match(/title:\s*"?([^"\n]+)"?/);
+      const keywordsMatch = entry.match(/keywords:\s*\[([^\]]*)\]/);
+      const antiPatternsMatch = entry.match(/antiPatterns:\s*\[([^\]]*)\]/);
+
+      if (titleMatch) {
+        rules.push({
+          title: titleMatch[1].trim(),
+          keywords: keywordsMatch
+            ? keywordsMatch[1]
+                .split(',')
+                .map((k) => k.trim().replace(/['"]/g, ''))
+                .filter(Boolean)
+            : [],
+          antiPatterns: antiPatternsMatch
+            ? antiPatternsMatch[1]
+                .split(',')
+                .map((k) => k.trim().replace(/['"]/g, ''))
+                .filter(Boolean)
+            : [],
+        });
+      }
     }
 
     return rules;

@@ -18,6 +18,7 @@ import type {
   DependencyType,
   TaskActivityType,
   TaskJSONL,
+  AddDependencyResult,
 } from './types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
@@ -282,7 +283,8 @@ export class TaskService {
     // Record activity
     this.recordActivity(id, 'updated', `Updated: ${changes.map((c) => c.field).join(', ')}`);
 
-    return this.get(id);
+    // Re-fetch the updated task; fall back to the pre-update snapshot if re-fetch fails
+    return this.get(id) ?? existing;
   }
 
   close(id: string, reason?: string): Task | null {
@@ -302,7 +304,15 @@ export class TaskService {
     // Notify dependents that may now be unblocked
     this.notifyUnblockedDependents(id);
 
-    return this.get(id);
+    // Re-fetch the closed task; fall back to the pre-close snapshot with updated status
+    return (
+      this.get(id) ?? {
+        ...task,
+        status: 'done' as const,
+        closedAt: now,
+        closedReason: reason || undefined,
+      }
+    );
   }
 
   /**
@@ -490,16 +500,94 @@ export class TaskService {
 
   ready(): TaskWithRelations[] {
     const openTasks = this.list({ status: 'open' });
-    return openTasks
-      .map((t) => this.getWithRelations(t.id))
-      .filter((t): t is TaskWithRelations => t !== null && t.isReady);
+    return this.batchGetWithRelations(openTasks).filter((t) => t.isReady);
   }
 
   blocked(): TaskWithRelations[] {
     const tasks = this.list({ status: ['open', 'in_progress'] });
-    return tasks
-      .map((t) => this.getWithRelations(t.id))
-      .filter((t): t is TaskWithRelations => t !== null && t.isBlocked);
+    return this.batchGetWithRelations(tasks).filter((t) => t.isBlocked);
+  }
+
+  /**
+   * Batch version of getWithRelations that prefetches all dependencies in 2 queries
+   * instead of N+1 individual queries. Used by ready(), blocked(), and stats().
+   */
+  batchGetWithRelations(tasks: Task[]): TaskWithRelations[] {
+    if (tasks.length === 0) return [];
+
+    // Prefetch ALL dependencies in a single query
+    const allDeps = this.db.prepare('SELECT * FROM task_dependencies').all() as Array<{
+      id: number;
+      from_task: string;
+      to_task: string;
+      dep_type: string;
+      created_at: string;
+    }>;
+
+    // Build lookup maps
+    const depsByTask = new Map<string, typeof allDeps>();
+    for (const dep of allDeps) {
+      // Index by both from_task and to_task
+      if (!depsByTask.has(dep.from_task)) depsByTask.set(dep.from_task, []);
+      depsByTask.get(dep.from_task)!.push(dep);
+      if (!depsByTask.has(dep.to_task)) depsByTask.set(dep.to_task, []);
+      depsByTask.get(dep.to_task)!.push(dep);
+    }
+
+    // Prefetch ALL tasks for blocker status checks (single query)
+    const allTaskRows = this.db.prepare('SELECT id, status FROM tasks').all() as Array<{
+      id: string;
+      status: string;
+    }>;
+    const taskStatusMap = new Map(allTaskRows.map((t) => [t.id, t.status]));
+
+    // Prefetch children counts
+    const childrenRows = this.db
+      .prepare('SELECT parent_id, id FROM tasks WHERE parent_id IS NOT NULL')
+      .all() as Array<{ parent_id: string; id: string }>;
+    const childrenByParent = new Map<string, string[]>();
+    for (const row of childrenRows) {
+      if (!childrenByParent.has(row.parent_id)) childrenByParent.set(row.parent_id, []);
+      childrenByParent.get(row.parent_id)!.push(row.id);
+    }
+
+    const results: TaskWithRelations[] = [];
+
+    for (const task of tasks) {
+      const deps = depsByTask.get(task.id) || [];
+      const blockedBy = deps
+        .filter((d) => d.from_task === task.id && d.dep_type === 'blocks')
+        .map((d) => d.to_task);
+      const blocks = deps
+        .filter((d) => d.to_task === task.id && d.dep_type === 'blocks')
+        .map((d) => d.from_task);
+      const relatedTo = deps
+        .filter((d) => d.dep_type === 'related')
+        .map((d) => (d.from_task === task.id ? d.to_task : d.from_task));
+      const children = childrenByParent.get(task.id) || [];
+      const parent = task.parentId ? this.get(task.parentId) || undefined : undefined;
+
+      const unresolvedBlockers = blockedBy.filter((blockerId) => {
+        const status = taskStatusMap.get(blockerId);
+        return status && status !== 'done' && status !== 'wont_do';
+      });
+
+      const isBlocked = unresolvedBlockers.length > 0;
+      const isReady = task.status === 'open' && !isBlocked;
+
+      results.push({
+        ...task,
+        blockedBy,
+        blocks,
+        relatedTo,
+        children,
+        parent,
+        isBlocked,
+        isReady,
+      });
+    }
+
+    return results;
   }
 
   getChildren(parentId: string): Task[] {
@@ -512,20 +600,20 @@ export class TaskService {
     fromTask: string,
     toTask: string,
     depType: DependencyType = 'blocks'
-  ): TaskDependency | null {
+  ): AddDependencyResult {
     // Validate both tasks exist
     if (!this.get(fromTask) || !this.get(toTask)) {
-      return null;
+      return { ok: false, reason: 'not_found' };
     }
 
     // Prevent self-dependency
     if (fromTask === toTask) {
-      return null;
+      return { ok: false, reason: 'self_dependency' };
     }
 
     // Check for cycles (for blocking dependencies)
     if (depType === 'blocks' && this.wouldCreateCycle(fromTask, toTask)) {
-      return null;
+      return { ok: false, reason: 'would_create_cycle' };
     }
 
     const now = new Date().toISOString();
@@ -538,15 +626,18 @@ export class TaskService {
       const result = stmt.run(fromTask, toTask, depType, now);
 
       return {
-        id: result.lastInsertRowid as number,
-        fromTask,
-        toTask,
-        depType,
-        createdAt: now,
+        ok: true,
+        dependency: {
+          id: result.lastInsertRowid as number,
+          fromTask,
+          toTask,
+          depType,
+          createdAt: now,
+        },
       };
     } catch {
-      // Duplicate dependency
-      return null;
+      // Duplicate dependency (UNIQUE constraint violation)
+      return { ok: false, reason: 'duplicate' };
     }
   }
 

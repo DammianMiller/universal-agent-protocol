@@ -5,28 +5,35 @@ import { existsSync, readFileSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { initCommand } from '../cli/init.js';
-import { analyzeCommand } from '../cli/analyze.js';
-import { generateCommand } from '../cli/generate.js';
-import { memoryCommand } from '../cli/memory.js';
-import { worktreeCommand } from '../cli/worktree.js';
-import { syncCommand } from '../cli/sync.js';
-import { droidsCommand } from '../cli/droids.js';
-import { coordCommand } from '../cli/coord.js';
-import { agentCommand } from '../cli/agent.js';
-import { deployCommand } from '../cli/deploy.js';
-import { taskCommand } from '../cli/task.js';
-import { registerModelCommands } from '../cli/model.js';
-import { mcpRouterCommand } from '../cli/mcp-router.js';
-import { dashboardCommand } from '../cli/dashboard.js';
-import { hooksCommand, type HooksTarget } from '../cli/hooks.js';
-import { patternsCommand } from '../cli/patterns.js';
-import { setupCommand } from '../cli/setup.js';
-import { setupMcpRouter } from '../cli/setup-mcp-router.js';
-import { complianceCommand } from '../cli/compliance.js';
-import { registerSchemaDiffCommand } from '../cli/schema-diff.js';
-import { installRTK, checkRTKStatus, showRTKHelp } from '../cli/rtk.js';
-import { toolCallsCommand } from '../cli/tool-calls.js';
+// Lazy import helpers - commands are loaded on-demand to reduce startup time (~10x faster --help)
+// Each command module is only imported when its action handler is invoked.
+const lazy = {
+  init: () => import('../cli/init.js').then((m) => m.initCommand),
+  analyze: () => import('../cli/analyze.js').then((m) => m.analyzeCommand),
+  generate: () => import('../cli/generate.js').then((m) => m.generateCommand),
+  memory: () => import('../cli/memory.js').then((m) => m.memoryCommand),
+  worktree: () => import('../cli/worktree.js').then((m) => m.worktreeCommand),
+  sync: () => import('../cli/sync.js').then((m) => m.syncCommand),
+  droids: () => import('../cli/droids.js').then((m) => m.droidsCommand),
+  coord: () => import('../cli/coord.js').then((m) => m.coordCommand),
+  agent: () => import('../cli/agent.js').then((m) => m.agentCommand),
+  deploy: () => import('../cli/deploy.js').then((m) => m.deployCommand),
+  task: () => import('../cli/task.js').then((m) => m.taskCommand),
+  model: () => import('../cli/model.js').then((m) => m.registerModelCommands),
+  mcpRouter: () => import('../cli/mcp-router.js').then((m) => m.mcpRouterCommand),
+  dashboard: () => import('../cli/dashboard.js').then((m) => m.dashboardCommand),
+  hooks: () => import('../cli/hooks.js'),
+  patterns: () => import('../cli/patterns.js').then((m) => m.patternsCommand),
+  setup: () => import('../cli/setup.js').then((m) => m.setupCommand),
+  setupMcpRouter: () => import('../cli/setup-mcp-router.js').then((m) => m.setupMcpRouter),
+  compliance: () => import('../cli/compliance.js').then((m) => m.complianceCommand),
+  schemaDiff: () => import('../cli/schema-diff.js').then((m) => m.registerSchemaDiffCommand),
+  rtk: () => import('../cli/rtk.js'),
+  toolCalls: () => import('../cli/tool-calls.js').then((m) => m.toolCallsCommand),
+};
+
+// Type alias for hooks target (used in action handlers)
+type HooksTarget = 'claude' | 'factory' | 'cursor' | 'vscode' | 'opencode' | 'omp';
 
 // Read version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -58,7 +65,10 @@ program
     'Enforce pipeline-only infrastructure changes (no direct kubectl/terraform)'
   )
   .option('-f, --force', 'Overwrite existing configuration')
-  .action(initCommand);
+  .action(async (options) => {
+    const cmd = await lazy.init();
+    await cmd(options);
+  });
 
 program
   .command('setup')
@@ -75,14 +85,18 @@ program
     'Target project directory (defaults to current working directory)'
   )
   .option('-i, --interactive', 'Run interactive setup wizard with feature toggles')
-  .action(setupCommand);
+  .action(async (options) => {
+    (await lazy.setup())(options);
+  });
 
 program
   .command('analyze')
   .description('Analyze project structure and generate metadata')
   .option('-o, --output <format>', 'Output format (json, yaml, md)', 'json')
   .option('--save', 'Save analysis to .uap.analysis.json')
-  .action(analyzeCommand);
+  .action(async (options) => {
+    (await lazy.analyze())(options);
+  });
 
 program
   .command('generate')
@@ -95,30 +109,38 @@ program
     '--pipeline-only',
     'Enforce pipeline-only infrastructure changes (no direct kubectl/terraform)'
   )
-  .action(generateCommand);
+  .action(async (options) => {
+    (await lazy.generate())(options);
+  });
 
 program
   .command('memory')
   .description('Manage agent memory system')
   .addCommand(
-    new Command('status')
-      .description('Show memory system status')
-      .action(() => memoryCommand('status'))
+    new Command('status').description('Show memory system status').action(async () => {
+      (await lazy.memory())('status');
+    })
   )
   .addCommand(
     new Command('start')
       .description('Start memory services (Qdrant container)')
-      .action(() => memoryCommand('start'))
+      .action(async () => {
+        (await lazy.memory())('start');
+      })
   )
   .addCommand(
-    new Command('stop').description('Stop memory services').action(() => memoryCommand('stop'))
+    new Command('stop').description('Stop memory services').action(async () => {
+      (await lazy.memory())('stop');
+    })
   )
   .addCommand(
     new Command('query')
       .description('Query long-term memory')
       .argument('<search>', 'Search term')
       .option('-n, --limit <number>', 'Max results', '10')
-      .action((search, options) => memoryCommand('query', { search, ...options }))
+      .action(async (search, options) => {
+        (await lazy.memory())('query', { search, ...options });
+      })
   )
   .addCommand(
     new Command('store')
@@ -127,7 +149,9 @@ program
       .option('-t, --tags <tags>', 'Comma-separated tags')
       .option('-i, --importance <number>', 'Importance score (1-10)', '5')
       .option('-f, --force', 'Bypass write gate (store without quality check)')
-      .action((content, options) => memoryCommand('store', { content, ...options }))
+      .action(async (content, options) => {
+        (await lazy.memory())('store', { content, ...options });
+      })
   )
   .addCommand(
     new Command('prepopulate')
@@ -137,12 +161,16 @@ program
       .option('-n, --limit <number>', 'Limit git commits to analyze', '500')
       .option('--since <date>', 'Only analyze commits since date (e.g., "2024-01-01")')
       .option('-v, --verbose', 'Show detailed output')
-      .action((options) => memoryCommand('prepopulate', options))
+      .action(async (options) => {
+        (await lazy.memory())('prepopulate', options);
+      })
   )
   .addCommand(
     new Command('promote')
       .description('Review and promote daily log entries to working/semantic memory')
-      .action((options) => memoryCommand('promote', options))
+      .action(async (options) => {
+        (await lazy.memory())('promote', options);
+      })
   )
   .addCommand(
     new Command('correct')
@@ -150,13 +178,17 @@ program
       .argument('<search>', 'Search term to find the memory to correct')
       .option('-c, --correction <text>', 'The corrected content')
       .option('-r, --reason <reason>', 'Reason for correction')
-      .action((search, options) => memoryCommand('correct', { search, ...options }))
+      .action(async (search, options) => {
+        (await lazy.memory())('correct', { search, ...options });
+      })
   )
   .addCommand(
     new Command('maintain')
       .description('Run maintenance: decay, prune stale, archive old, remove duplicates')
       .option('-v, --verbose', 'Show detailed output')
-      .action((options) => memoryCommand('maintain', options))
+      .action(async (options) => {
+        (await lazy.memory())('maintain', options);
+      })
   );
 
 // Pattern RAG Commands
@@ -166,13 +198,17 @@ program
   .addCommand(
     new Command('status')
       .description('Show pattern RAG status and collection info')
-      .action(() => patternsCommand('status'))
+      .action(async () => {
+        (await lazy.patterns())('status');
+      })
   )
   .addCommand(
     new Command('index')
       .description('Index patterns from CLAUDE.md into Qdrant')
       .option('-v, --verbose', 'Show detailed output')
-      .action((options) => patternsCommand('index', options))
+      .action(async (options) => {
+        (await lazy.patterns())('index', options);
+      })
   )
   .addCommand(
     new Command('query')
@@ -181,13 +217,17 @@ program
       .option('-n, --top <number>', 'Number of results', '2')
       .option('--min-score <number>', 'Minimum similarity score', '0.35')
       .option('--format <format>', 'Output format (text, json, context)', 'text')
-      .action((search, options) => patternsCommand('query', { search, ...options }))
+      .action(async (search, options) => {
+        (await lazy.patterns())('query', { search, ...options });
+      })
   )
   .addCommand(
     new Command('generate')
       .description('Generate Python index/query scripts from config')
       .option('-f, --force', 'Overwrite existing scripts')
-      .action((options) => patternsCommand('generate', options))
+      .action(async (options) => {
+        (await lazy.patterns())('generate', options);
+      })
   );
 
 program
@@ -197,23 +237,31 @@ program
     new Command('create')
       .description('Create a new worktree for a feature')
       .argument('<slug>', 'Feature slug (e.g., add-user-auth)')
-      .action((slug) => worktreeCommand('create', { slug }))
+      .action(async (slug) => {
+        (await lazy.worktree())('create', { slug });
+      })
   )
   .addCommand(
-    new Command('list').description('List all worktrees').action(() => worktreeCommand('list'))
+    new Command('list').description('List all worktrees').action(async () => {
+      (await lazy.worktree())('list');
+    })
   )
   .addCommand(
     new Command('pr')
       .description('Create PR from worktree')
       .argument('<id>', 'Worktree ID')
       .option('--draft', 'Create as draft PR')
-      .action((id, options) => worktreeCommand('pr', { id, ...options }))
+      .action(async (id, options) => {
+        (await lazy.worktree())('pr', { id, ...options });
+      })
   )
   .addCommand(
     new Command('cleanup')
       .description('Remove worktree and delete branch')
       .argument('<id>', 'Worktree ID')
-      .action((id) => worktreeCommand('cleanup', { id }))
+      .action(async (id) => {
+        (await lazy.worktree())('cleanup', { id });
+      })
   );
 
 program
@@ -222,26 +270,34 @@ program
   .option('--from <platform>', 'Source platform (claude, factory, vscode, opencode)')
   .option('--to <platform>', 'Target platform(s)')
   .option('--dry-run', 'Preview changes without writing files')
-  .action(syncCommand);
+  .action(async (options) => {
+    (await lazy.sync())(options);
+  });
 
 program
   .command('droids')
   .description('Manage custom droids/agents')
   .addCommand(
-    new Command('list').description('List all droids').action(() => droidsCommand('list'))
+    new Command('list').description('List all droids').action(async () => {
+      (await lazy.droids())('list');
+    })
   )
   .addCommand(
     new Command('add')
       .description('Add a new droid')
       .argument('<name>', 'Droid name')
       .option('-t, --template <template>', 'Use built-in template')
-      .action((name, options) => droidsCommand('add', { name, ...options }))
+      .action(async (name, options) => {
+        (await lazy.droids())('add', { name, ...options });
+      })
   )
   .addCommand(
     new Command('import')
       .description('Import droids from another platform')
       .argument('<path>', 'Path to import from')
-      .action((path) => droidsCommand('import', { path }))
+      .action(async (path) => {
+        (await lazy.droids())('import', { path });
+      })
   );
 
 // Agent Coordination Commands
@@ -252,17 +308,23 @@ program
     new Command('status')
       .description('Show coordination status (agents, claims, deploys)')
       .option('-v, --verbose', 'Show detailed information')
-      .action((options) => coordCommand('status', options))
+      .action(async (options) => {
+        (await lazy.coord())('status', options);
+      })
   )
   .addCommand(
     new Command('flush')
       .description('Force execute all pending deploys')
-      .action((options) => coordCommand('flush', options))
+      .action(async (options) => {
+        (await lazy.coord())('flush', options);
+      })
   )
   .addCommand(
     new Command('cleanup')
       .description('Clean up stale agents and expired data')
-      .action((options) => coordCommand('cleanup', options))
+      .action(async (options) => {
+        (await lazy.coord())('cleanup', options);
+      })
   );
 
 program
@@ -274,19 +336,25 @@ program
       .option('-n, --name <name>', 'Agent name (required)')
       .option('-c, --capabilities <caps>', 'Comma-separated capabilities')
       .option('-w, --worktree <branch>', 'Git worktree branch this agent is using')
-      .action((options) => agentCommand('register', options))
+      .action(async (options) => {
+        (await lazy.agent())('register', options);
+      })
   )
   .addCommand(
     new Command('heartbeat')
       .description('Send heartbeat for an agent')
       .option('-i, --id <id>', 'Agent ID (required)')
-      .action((options) => agentCommand('heartbeat', options))
+      .action(async (options) => {
+        (await lazy.agent())('heartbeat', options);
+      })
   )
   .addCommand(
     new Command('status')
       .description('Show agent status')
       .option('-i, --id <id>', 'Agent ID (optional, shows all if omitted)')
-      .action((options) => agentCommand('status', options))
+      .action(async (options) => {
+        (await lazy.agent())('status', options);
+      })
   )
   .addCommand(
     new Command('announce')
@@ -302,20 +370,26 @@ program
       .option('-d, --description <desc>', 'Description of planned changes')
       .option('-f, --files <files>', 'Comma-separated list of files that will be affected')
       .option('--minutes <minutes>', 'Estimated time to complete (in minutes)')
-      .action((options) => agentCommand('announce', options))
+      .action(async (options) => {
+        (await lazy.agent())('announce', options);
+      })
   )
   .addCommand(
     new Command('complete')
       .description('Mark work as complete on a resource (notifies other agents)')
       .option('-i, --id <id>', 'Agent ID (required)')
       .option('-r, --resource <resource>', 'Resource that work is complete on')
-      .action((options) => agentCommand('complete', options))
+      .action(async (options) => {
+        (await lazy.agent())('complete', options);
+      })
   )
   .addCommand(
     new Command('overlaps')
       .description('Check for overlapping work (merge conflict risk assessment)')
       .option('-r, --resource <resource>', 'Resource to check (omit to show all active work)')
-      .action((options) => agentCommand('overlaps', options))
+      .action(async (options) => {
+        (await lazy.agent())('overlaps', options);
+      })
   )
   .addCommand(
     new Command('broadcast')
@@ -324,7 +398,9 @@ program
       .option('-c, --channel <channel>', 'Channel: broadcast, deploy, review, coordination')
       .option('-m, --message <message>', 'Message payload (JSON or string)')
       .option('-p, --priority <priority>', 'Priority 1-10', '5')
-      .action((options) => agentCommand('broadcast', options))
+      .action(async (options) => {
+        (await lazy.agent())('broadcast', options);
+      })
   )
   .addCommand(
     new Command('send')
@@ -333,7 +409,9 @@ program
       .option('-t, --to <to>', 'Recipient agent ID (required)')
       .option('-m, --message <message>', 'Message payload (JSON or string)')
       .option('-p, --priority <priority>', 'Priority 1-10', '5')
-      .action((options) => agentCommand('send', options))
+      .action(async (options) => {
+        (await lazy.agent())('send', options);
+      })
   )
   .addCommand(
     new Command('receive')
@@ -341,13 +419,17 @@ program
       .option('-i, --id <id>', 'Agent ID (required)')
       .option('-c, --channel <channel>', 'Filter by channel')
       .option('--no-mark-read', 'Do not mark messages as read')
-      .action((options) => agentCommand('receive', options))
+      .action(async (options) => {
+        (await lazy.agent())('receive', options);
+      })
   )
   .addCommand(
     new Command('deregister')
       .description('Deregister an agent')
       .option('-i, --id <id>', 'Agent ID (required)')
-      .action((options) => agentCommand('deregister', options))
+      .action(async (options) => {
+        (await lazy.agent())('deregister', options);
+      })
   );
 
 program
@@ -366,38 +448,50 @@ program
       .option('--ref <ref>', 'Git ref (for workflow action)')
       .option('--inputs <inputs>', 'Workflow inputs as JSON (for workflow action)')
       .option('-p, --priority <priority>', 'Priority 1-10', '5')
-      .action((options) => deployCommand('queue', options))
+      .action(async (options) => {
+        (await lazy.deploy())('queue', options);
+      })
   )
   .addCommand(
     new Command('batch')
       .description('Create a batch from pending deploy actions')
       .option('-v, --verbose', 'Show detailed batch info')
-      .action((options) => deployCommand('batch', options))
+      .action(async (options) => {
+        (await lazy.deploy())('batch', options);
+      })
   )
   .addCommand(
     new Command('execute')
       .description('Execute a deploy batch')
       .option('-b, --batch-id <id>', 'Batch ID (required)')
       .option('--dry-run', 'Show what would be executed without running')
-      .action((options) => deployCommand('execute', options))
+      .action(async (options) => {
+        (await lazy.deploy())('execute', options);
+      })
   )
   .addCommand(
     new Command('status')
       .description('Show deploy queue status')
       .option('-v, --verbose', 'Show detailed status')
-      .action((options) => deployCommand('status', options))
+      .action(async (options) => {
+        (await lazy.deploy())('status', options);
+      })
   )
   .addCommand(
     new Command('flush')
       .description('Flush all pending deploys (batch and execute)')
       .option('-v, --verbose', 'Show detailed results')
       .option('--dry-run', 'Show what would be executed without running')
-      .action((options) => deployCommand('flush', options))
+      .action(async (options) => {
+        (await lazy.deploy())('flush', options);
+      })
   )
   .addCommand(
     new Command('config')
       .description('Show deploy batch configuration (window settings)')
-      .action((options) => deployCommand('config', options))
+      .action(async (options) => {
+        (await lazy.deploy())('config', options);
+      })
   )
   .addCommand(
     new Command('set-config')
@@ -406,14 +500,18 @@ program
         '--message <json>',
         'JSON object with window settings, e.g. {"commit":60000,"push":3000}'
       )
-      .action((options) => deployCommand('set-config', options))
+      .action(async (options) => {
+        (await lazy.deploy())('set-config', options);
+      })
   )
   .addCommand(
     new Command('urgent')
       .description('Enable or disable urgent mode (fast batch windows)')
       .option('--on', 'Enable urgent mode')
       .option('--off', 'Disable urgent mode (default)')
-      .action((options) => deployCommand('urgent', { force: options.on, remote: options.off }))
+      .action(async (options) => {
+        (await lazy.deploy())('urgent', { force: options.on, remote: options.off });
+      })
   );
 
 // Task Management
@@ -431,7 +529,9 @@ program
       .option('--parent <parent>', 'Parent task ID (for hierarchy)')
       .option('-n, --notes <notes>', 'Markdown notes')
       .option('--json', 'Output as JSON')
-      .action((options) => taskCommand('create', options))
+      .action(async (options) => {
+        (await lazy.task())('create', options);
+      })
   )
   .addCommand(
     new Command('list')
@@ -446,7 +546,9 @@ program
       .option('--show-ready', 'Show only ready tasks')
       .option('-v, --verbose', 'Show more details')
       .option('--json', 'Output as JSON')
-      .action((options) => taskCommand('list', options))
+      .action(async (options) => {
+        (await lazy.task())('list', options);
+      })
   )
   .addCommand(
     new Command('show')
@@ -454,7 +556,9 @@ program
       .argument('<id>', 'Task ID')
       .option('-v, --verbose', 'Show history')
       .option('--json', 'Output as JSON')
-      .action((id, options) => taskCommand('show', { id, ...options }))
+      .action(async (id, options) => {
+        (await lazy.task())('show', { id, ...options });
+      })
   )
   .addCommand(
     new Command('update')
@@ -469,32 +573,42 @@ program
       .option('-w, --worktree <worktree>', 'Set worktree branch')
       .option('-l, --labels <labels>', 'New labels (comma-separated)')
       .option('-n, --notes <notes>', 'New notes')
-      .action((id, options) => taskCommand('update', { id, ...options }))
+      .action(async (id, options) => {
+        (await lazy.task())('update', { id, ...options });
+      })
   )
   .addCommand(
     new Command('close')
       .description('Close a task (mark as done)')
       .argument('<id>', 'Task ID')
       .option('-r, --reason <reason>', 'Closure reason')
-      .action((id, options) => taskCommand('close', { id, ...options }))
+      .action(async (id, options) => {
+        (await lazy.task())('close', { id, ...options });
+      })
   )
   .addCommand(
     new Command('delete')
       .description('Delete a task')
       .argument('<id>', 'Task ID')
-      .action((id) => taskCommand('delete', { id }))
+      .action(async (id) => {
+        (await lazy.task())('delete', { id });
+      })
   )
   .addCommand(
     new Command('ready')
       .description('List tasks ready to work on (no blockers)')
       .option('--json', 'Output as JSON')
-      .action((options) => taskCommand('ready', options))
+      .action(async (options) => {
+        (await lazy.task())('ready', options);
+      })
   )
   .addCommand(
     new Command('blocked')
       .description('List blocked tasks')
       .option('--json', 'Output as JSON')
-      .action((options) => taskCommand('blocked', options))
+      .action(async (options) => {
+        (await lazy.task())('blocked', options);
+      })
   )
   .addCommand(
     new Command('dep')
@@ -502,45 +616,59 @@ program
       .option('-f, --from <from>', 'Dependent task (the task that is blocked)')
       .option('-t, --to <to>', 'Blocking task (the task that must complete first)')
       .option('--dep-type <type>', 'Dependency type: blocks, related, discovered_from', 'blocks')
-      .action((options) => taskCommand('dep', options))
+      .action(async (options) => {
+        (await lazy.task())('dep', options);
+      })
   )
   .addCommand(
     new Command('undep')
       .description('Remove a dependency between tasks')
       .option('-f, --from <from>', 'Dependent task')
       .option('-t, --to <to>', 'Blocking task')
-      .action((options) => taskCommand('undep', options))
+      .action(async (options) => {
+        (await lazy.task())('undep', options);
+      })
   )
   .addCommand(
     new Command('claim')
       .description('Claim a task (assign + announce work + create worktree)')
       .argument('<id>', 'Task ID')
       .option('-b, --branch <branch>', 'Worktree branch name')
-      .action((id, options) => taskCommand('claim', { id, ...options }))
+      .action(async (id, options) => {
+        (await lazy.task())('claim', { id, ...options });
+      })
   )
   .addCommand(
     new Command('release')
       .description('Release a task (mark complete + announce)')
       .argument('<id>', 'Task ID')
       .option('-r, --reason <reason>', 'Completion reason')
-      .action((id, options) => taskCommand('release', { id, ...options }))
+      .action(async (id, options) => {
+        (await lazy.task())('release', { id, ...options });
+      })
   )
   .addCommand(
     new Command('stats')
       .description('Show task statistics')
       .option('--json', 'Output as JSON')
-      .action((options) => taskCommand('stats', options))
+      .action(async (options) => {
+        (await lazy.task())('stats', options);
+      })
   )
   .addCommand(
     new Command('sync')
       .description('Sync tasks with JSONL file (for git versioning)')
-      .action((options) => taskCommand('sync', options))
+      .action(async (options) => {
+        (await lazy.task())('sync', options);
+      })
   )
   .addCommand(
     new Command('compact')
       .description('Compact old closed tasks into summaries')
       .option('--days <days>', 'Compact tasks older than N days', '90')
-      .action((options) => taskCommand('compact', options))
+      .action(async (options) => {
+        (await lazy.task())('compact', options);
+      })
   );
 
 // Compliance - protocol verification and auto-fix
@@ -551,13 +679,17 @@ program
     new Command('check')
       .description('Run compliance check (schema, memory, Qdrant, worktrees, secrets)')
       .option('-v, --verbose', 'Show detailed information')
-      .action((options) => complianceCommand('check', options))
+      .action(async (options) => {
+        (await lazy.compliance())('check', options);
+      })
   )
   .addCommand(
     new Command('audit')
       .description('Deep compliance audit with verbose output')
       .option('-v, --verbose', 'Show detailed information')
-      .action((options) => complianceCommand('audit', options))
+      .action(async (options) => {
+        (await lazy.compliance())('audit', options);
+      })
   )
   .addCommand(
     new Command('fix')
@@ -565,7 +697,9 @@ program
         'Auto-fix compliance issues (schema migrations, Qdrant collections, worktree cleanup)'
       )
       .option('-v, --verbose', 'Show detailed information')
-      .action((options) => complianceCommand('fix', options))
+      .action(async (options) => {
+        (await lazy.compliance())('fix', options);
+      })
   );
 
 program
@@ -594,49 +728,64 @@ program
       .description('Full system overview with charts and progress bars')
       .option('-v, --verbose', 'Show detailed information')
       .option('--compact', 'Compact output for narrow terminals')
-      .action((options) => dashboardCommand('overview', options))
+      .action(async (options) => {
+        (await lazy.dashboard())('overview', options);
+      })
   )
   .addCommand(
     new Command('tasks')
       .description('Task breakdown with charts, progress bars, and hierarchy trees')
       .option('-v, --verbose', 'Show detailed information')
       .option('--compact', 'Compact output')
-      .action((options) => dashboardCommand('tasks', options))
+      .action(async (options) => {
+        (await lazy.dashboard())('tasks', options);
+      })
   )
   .addCommand(
     new Command('agents')
       .description('Agent activity, resource claims, and coordination status')
       .option('-v, --verbose', 'Show detailed information')
-      .action((options) => dashboardCommand('agents', options))
+      .action(async (options) => {
+        (await lazy.dashboard())('agents', options);
+      })
   )
   .addCommand(
     new Command('memory')
       .description('Memory system health, capacity, and layer architecture')
       .option('-v, --verbose', 'Show detailed information')
-      .action((options) => dashboardCommand('memory', options))
+      .action(async (options) => {
+        (await lazy.dashboard())('memory', options);
+      })
   )
   .addCommand(
     new Command('progress')
       .description('Completion tracking with per-priority and per-type progress')
       .option('-v, --verbose', 'Show detailed information')
-      .action((options) => dashboardCommand('progress', options))
+      .action(async (options) => {
+        (await lazy.dashboard())('progress', options);
+      })
   )
   .addCommand(
     new Command('stats')
       .description('Session context consumption stats with per-tool breakdown')
       .option('-v, --verbose', 'Show detailed information')
-      .action((options) => dashboardCommand('stats', options))
+      .action(async (options) => {
+        (await lazy.dashboard())('stats', options);
+      })
   )
   .addCommand(
     new Command('session')
       .description('Live UAP session state: infrastructure, patterns, skills, git, policies')
       .option('-v, --verbose', 'Show detailed information')
       .option('--compact', 'Compact summary box (for post-task / pre-compact)')
-      .action((options) => dashboardCommand('session', options))
+      .action(async (options) => {
+        (await lazy.dashboard())('session', options);
+      })
   );
 
-// Multi-Model Architecture commands
-registerModelCommands(program);
+// Multi-Model Architecture commands - registered lazily via top-level await
+const registerModelFn = await lazy.model();
+registerModelFn(program);
 
 // MCP Router - Lightweight hierarchical router for 98%+ token reduction
 program
@@ -647,7 +796,9 @@ program
       .description('Start the MCP router as a stdio server')
       .option('-c, --config <path>', 'Path to mcp.json config file')
       .option('-v, --verbose', 'Enable verbose logging')
-      .action((options) => mcpRouterCommand('start', options))
+      .action(async (options) => {
+        (await lazy.mcpRouter())('start', options);
+      })
   )
   .addCommand(
     new Command('stats')
@@ -655,7 +806,9 @@ program
       .option('-c, --config <path>', 'Path to mcp.json config file')
       .option('-v, --verbose', 'Enable verbose logging')
       .option('--json', 'Output as JSON')
-      .action((options) => mcpRouterCommand('stats', options))
+      .action(async (options) => {
+        (await lazy.mcpRouter())('stats', options);
+      })
   )
   .addCommand(
     new Command('discover')
@@ -666,14 +819,18 @@ program
       .option('-c, --config <path>', 'Path to mcp.json config file')
       .option('-v, --verbose', 'Enable verbose logging')
       .option('--json', 'Output as JSON')
-      .action((options) => mcpRouterCommand('discover', options))
+      .action(async (options) => {
+        (await lazy.mcpRouter())('discover', options);
+      })
   )
   .addCommand(
     new Command('list')
       .description('List configured MCP servers')
       .option('-c, --config <path>', 'Path to mcp.json config file')
       .option('--json', 'Output as JSON')
-      .action((options) => mcpRouterCommand('list', options))
+      .action(async (options) => {
+        (await lazy.mcpRouter())('list', options);
+      })
   );
 
 // Session Hooks - automatic memory injection and pre-compaction flush
@@ -690,7 +847,11 @@ program
         'Target platform: claude, factory, cursor, vscode, opencode, omp (default: all)'
       )
       .action((options) =>
-        hooksCommand('install', { target: options.target as HooksTarget | undefined })
+        lazy
+          .hooks()
+          .then((m) =>
+            m.hooksCommand('install', { target: options.target as HooksTarget | undefined })
+          )
       )
   )
   .addCommand(
@@ -701,7 +862,11 @@ program
         'Target platform: claude, factory, cursor, vscode, opencode, omp (default: all)'
       )
       .action((options) =>
-        hooksCommand('status', { target: options.target as HooksTarget | undefined })
+        lazy
+          .hooks()
+          .then((m) =>
+            m.hooksCommand('status', { target: options.target as HooksTarget | undefined })
+          )
       )
   );
 
@@ -709,25 +874,27 @@ program
 const toolCallsCmd = new Command('tool-calls');
 toolCallsCmd.description('Manage Qwen3.5 tool call fixes and chat templates');
 toolCallsCmd.addCommand(
-  new Command('setup')
-    .description('Install chat templates and Python scripts')
-    .action(() => toolCallsCommand('setup'))
+  new Command('setup').description('Install chat templates and Python scripts').action(async () => {
+    (await lazy.toolCalls())('setup');
+  })
 );
 toolCallsCmd.addCommand(
   new Command('test')
     .description('Run reliability test suite')
     .addOption(new Option('--verbose', 'Verbose output'))
-    .action(() => toolCallsCommand('test'))
+    .action(async () => {
+      (await lazy.toolCalls())('test');
+    })
 );
 toolCallsCmd.addCommand(
-  new Command('status')
-    .description('Check current configuration')
-    .action(() => toolCallsCommand('status'))
+  new Command('status').description('Check current configuration').action(async () => {
+    (await lazy.toolCalls())('status');
+  })
 );
 toolCallsCmd.addCommand(
-  new Command('fix')
-    .description('Apply template fixes to existing templates')
-    .action(() => toolCallsCommand('fix'))
+  new Command('fix').description('Apply template fixes to existing templates').action(async () => {
+    (await lazy.toolCalls())('fix');
+  })
 );
 program.addCommand(toolCallsCmd);
 
@@ -740,7 +907,8 @@ rtkCmd.addCommand(
     .option('--force', 'Force reinstall')
     .option('--method <method>', 'Installation method (npm, cargo, binary)')
     .action(async (options) => {
-      await installRTK({
+      const rtk = await lazy.rtk();
+      await rtk.installRTK({
         force: !!options.force,
         method: options.method as any,
       });
@@ -748,12 +916,14 @@ rtkCmd.addCommand(
 );
 rtkCmd.addCommand(
   new Command('status').description('Check RTK installation and token savings').action(async () => {
-    await checkRTKStatus();
+    const rtk = await lazy.rtk();
+    await rtk.checkRTKStatus();
   })
 );
 rtkCmd.addCommand(
-  new Command('help').description('Show RTK usage information').action(() => {
-    showRTKHelp();
+  new Command('help').description('Show RTK usage information').action(async () => {
+    const rtk = await lazy.rtk();
+    rtk.showRTKHelp();
   })
 );
 program.addCommand(rtkCmd);
@@ -765,11 +935,13 @@ program
   .option('--force', 'Force replace existing MCP configurations')
   .option('--verbose', 'Enable verbose output')
   .action(async (options) => {
-    await setupMcpRouter({ force: !!options.force, verbose: !!options.verbose });
+    const fn = await lazy.setupMcpRouter();
+    await fn({ force: !!options.force, verbose: !!options.verbose });
   });
 
-// Register schema-diff command
-registerSchemaDiffCommand(program);
+// Register schema-diff command lazily
+const registerSchemaDiffFn = await lazy.schemaDiff();
+registerSchemaDiffFn(program);
 
 // UAP for Oh-My-Pi - dashboard and controls for omp users
 const uapOmpCmd = new Command('uap-omp');

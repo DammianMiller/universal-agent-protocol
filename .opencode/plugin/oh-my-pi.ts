@@ -97,8 +97,8 @@ export const OhMyPi: Plugin = async ({ $, directory }) => {
           }
 
           const args = sharedGateway ? '--shared-gateway' : '';
-          const result = await $`omp python ${args} <<< ${code}`;
-          return result.stdout.toString().trim();
+          const result = await $`omp python ${args} <<< ${code}`.quiet();
+          return result.stdout.toString().trim() || '(no output)';
         },
       }),
 

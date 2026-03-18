@@ -22,7 +22,16 @@ interface DroidMeta {
   channels: string[];
 }
 
+// Droid discovery cache: avoids re-reading filesystem on every invocation
+let _droidCache: { droids: DroidMeta[]; timestamp: number } | null = null;
+const DROID_CACHE_TTL_MS = 60_000; // 1 minute
+
 async function discoverDroids(projectDir: string): Promise<DroidMeta[]> {
+  // Return cached results if fresh
+  if (_droidCache && Date.now() - _droidCache.timestamp < DROID_CACHE_TTL_MS) {
+    return _droidCache.droids;
+  }
+
   const droids: DroidMeta[] = [];
   const droidsDir = join(projectDir, '.factory', 'droids');
 
@@ -61,6 +70,8 @@ async function discoverDroids(projectDir: string): Promise<DroidMeta[]> {
     /* droids directory doesn't exist */
   }
 
+  // Update cache
+  _droidCache = { droids, timestamp: Date.now() };
   return droids;
 }
 

@@ -60,10 +60,16 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // Display analysis summary
   console.log(chalk.dim('\nDetected:'));
-  console.log(chalk.dim(`  Languages: ${analysis.languages.join(', ') || 'none detected'}`));
-  console.log(chalk.dim(`  Frameworks: ${analysis.frameworks.join(', ') || 'none detected'}`));
   console.log(
-    chalk.dim(`  Databases: ${analysis.databases.map((d) => d.type).join(', ') || 'none detected'}`)
+    chalk.dim(`  Languages: ${(analysis.languages || []).join(', ') || 'none detected'}`)
+  );
+  console.log(
+    chalk.dim(`  Frameworks: ${(analysis.frameworks || []).join(', ') || 'none detected'}`)
+  );
+  console.log(
+    chalk.dim(
+      `  Databases: ${(analysis.databases || []).map((d) => d.type).join(', ') || 'none detected'}`
+    )
   );
 
   // Auto-enable memory and worktrees unless explicitly disabled via --no-memory/--no-worktrees

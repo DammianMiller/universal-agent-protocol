@@ -7,6 +7,11 @@ import type { Plugin } from '@opencode-ai/plugin';
  * patterns and injects them into context on-demand. This replaces loading
  * all 36 patterns in the system prompt (~12K tokens saved).
  *
+ * Optimizations:
+ * - Query result caching with TTL to avoid redundant Python cold-starts
+ * - Keyword extraction to skip re-querying for similar messages
+ * - Deduplication via injectedPatternIds set
+ *
  * Hooks:
  * - session.created: Loads general project patterns
  * - session.compacting: Preserves active patterns through compaction
@@ -19,9 +24,36 @@ const VENV_PYTHON = './agents/.venv/bin/python';
 const QUERY_SCRIPT = './agents/scripts/query_patterns.py';
 const DB_PATH = './agents/data/memory/short_term.db';
 
+// Cache TTL: avoid re-querying Qdrant for similar messages within this window
+const CACHE_TTL_MS = 30_000; // 30 seconds
+
+interface CachedQuery {
+  keywords: string;
+  patterns: Array<{ id: number; score: number; title: string; abbreviation: string; body: string }>;
+  timestamp: number;
+}
+
+/**
+ * Extract significant keywords from text for cache key comparison.
+ * Two messages with the same keywords don't need separate Qdrant queries.
+ */
+function extractKeywords(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 3)
+    .sort()
+    .slice(0, 10)
+    .join(' ');
+}
+
 export const UAPPatternRAG: Plugin = async ({ $ }) => {
   // Track which patterns have been injected this session to avoid duplicates
   const injectedPatternIds = new Set<number>();
+
+  // Query cache to avoid redundant Python cold-starts (saves 300-500ms per hit)
+  let queryCache: CachedQuery | null = null;
 
   return {
     event: async ({ event }) => {
@@ -59,8 +91,6 @@ export const UAPPatternRAG: Plugin = async ({ $ }) => {
     },
 
     // Inject task-relevant patterns into the system prompt before each LLM call.
-    // This hook runs on every chat turn, so we extract the latest user message
-    // from the input messages to determine which patterns are relevant.
     'experimental.chat.system.transform': async (input, output) => {
       try {
         // Find the latest user message from the input messages
@@ -79,16 +109,26 @@ export const UAPPatternRAG: Plugin = async ({ $ }) => {
           return;
         }
 
-        // Query Qdrant for relevant patterns
-        const result =
-          await $`${VENV_PYTHON} ${QUERY_SCRIPT} ${taskText.slice(0, 500)} --top 2 --min-score 0.35 --format json`.quiet();
-        const patterns = JSON.parse(result.stdout.toString().trim() || '[]') as Array<{
-          id: number;
-          score: number;
-          title: string;
-          abbreviation: string;
-          body: string;
-        }>;
+        // Check cache: if keywords match and cache is fresh, reuse results
+        const keywords = extractKeywords(taskText);
+        const now = Date.now();
+        let patterns: CachedQuery['patterns'];
+
+        if (
+          queryCache &&
+          queryCache.keywords === keywords &&
+          now - queryCache.timestamp < CACHE_TTL_MS
+        ) {
+          patterns = queryCache.patterns;
+        } else {
+          // Query Qdrant for relevant patterns (Python cold-start ~300-500ms)
+          const result =
+            await $`${VENV_PYTHON} ${QUERY_SCRIPT} ${taskText.slice(0, 500)} --top 2 --min-score 0.35 --format json`.quiet();
+          patterns = JSON.parse(result.stdout.toString().trim() || '[]');
+
+          // Update cache
+          queryCache = { keywords, patterns, timestamp: now };
+        }
 
         // Filter out already-injected patterns
         const newPatterns = patterns.filter((p) => !injectedPatternIds.has(p.id));

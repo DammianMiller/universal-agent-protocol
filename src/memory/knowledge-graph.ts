@@ -270,56 +270,102 @@ export class KnowledgeGraph {
 
   /**
    * Get an entity with all its relationships and related entities.
-   * This is the primary graph query for L4 knowledge access.
+   * Uses a single JOIN query instead of N+1 individual queries.
    */
   queryEntityGraph(type: string, name: string): GraphQueryResult | null {
     const entity = this.getEntity(type, name);
     if (!entity || !entity.id) return null;
 
-    const rels = this.getRelationships(entity.id);
-    const relationships: GraphQueryResult['relationships'] = [];
+    // Single JOIN query to get all relationships with their related entities
+    const rows = this.db
+      .prepare(
+        `
+      SELECT r.id as relId, r.relation, r.strength, r.source_id as sourceId, r.target_id as targetId,
+             e.id as entityId, e.type, e.name, e.description, e.first_seen as firstSeen,
+             e.last_seen as lastSeen, e.mention_count as mentionCount
+      FROM relationships r
+      JOIN entities e ON (
+        CASE WHEN r.source_id = ? THEN r.target_id ELSE r.source_id END = e.id
+      )
+      WHERE r.source_id = ? OR r.target_id = ?
+    `
+      )
+      .all(entity.id, entity.id, entity.id) as Array<{
+      relId: number;
+      relation: string;
+      strength: number;
+      sourceId: number;
+      targetId: number;
+      entityId: number;
+      type: string;
+      name: string;
+      description: string | null;
+      firstSeen: string;
+      lastSeen: string;
+      mentionCount: number;
+    }>;
 
-    for (const rel of rels) {
-      const isOutgoing = rel.sourceId === entity.id;
-      const relatedId = isOutgoing ? rel.targetId : rel.sourceId;
-      const relatedEntity = this.getEntityById(relatedId);
-
-      if (relatedEntity) {
-        relationships.push({
-          relation: rel.relation,
-          direction: isOutgoing ? 'outgoing' : 'incoming',
-          relatedEntity,
-          strength: rel.strength,
-        });
-      }
-    }
+    const relationships: GraphQueryResult['relationships'] = rows.map((row) => ({
+      relation: row.relation,
+      direction: (row.sourceId === entity.id ? 'outgoing' : 'incoming') as 'outgoing' | 'incoming',
+      relatedEntity: {
+        id: row.entityId,
+        type: row.type,
+        name: row.name,
+        description: row.description || undefined,
+        firstSeen: row.firstSeen,
+        lastSeen: row.lastSeen,
+        mentionCount: row.mentionCount,
+      },
+      strength: row.strength,
+    }));
 
     return { entity, relationships };
   }
 
   /**
    * Find entities connected to a given entity within N hops.
+   * Uses a recursive CTE for efficient graph traversal in a single query.
    */
   traverseGraph(entityId: number, maxDepth: number = 2): Entity[] {
-    const visited = new Set<number>();
-    const result: Entity[] = [];
+    const rows = this.db
+      .prepare(
+        `
+      WITH RECURSIVE reachable(id, depth) AS (
+        SELECT ?, 0
+        UNION
+        SELECT
+          CASE WHEN r.source_id = reachable.id THEN r.target_id ELSE r.source_id END,
+          reachable.depth + 1
+        FROM reachable
+        JOIN relationships r ON (r.source_id = reachable.id OR r.target_id = reachable.id)
+        WHERE reachable.depth < ?
+      )
+      SELECT DISTINCT e.id, e.type, e.name, e.description, e.first_seen as firstSeen,
+             e.last_seen as lastSeen, e.mention_count as mentionCount
+      FROM reachable
+      JOIN entities e ON e.id = reachable.id
+    `
+      )
+      .all(entityId, maxDepth) as Array<{
+      id: number;
+      type: string;
+      name: string;
+      description: string | null;
+      firstSeen: string;
+      lastSeen: string;
+      mentionCount: number;
+    }>;
 
-    const traverse = (id: number, depth: number) => {
-      if (depth > maxDepth || visited.has(id)) return;
-      visited.add(id);
-
-      const entity = this.getEntityById(id);
-      if (entity) result.push(entity);
-
-      const rels = this.getRelationships(id);
-      for (const rel of rels) {
-        const nextId = rel.sourceId === id ? rel.targetId : rel.sourceId;
-        traverse(nextId, depth + 1);
-      }
-    };
-
-    traverse(entityId, 0);
-    return result;
+    return rows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      name: row.name,
+      description: row.description || undefined,
+      firstSeen: row.firstSeen,
+      lastSeen: row.lastSeen,
+      mentionCount: row.mentionCount,
+    }));
   }
 
   /**

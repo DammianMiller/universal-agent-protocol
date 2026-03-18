@@ -160,15 +160,21 @@ describe('TaskService', () => {
     it('should add a blocking dependency', () => {
       const task1 = service.create({ title: 'Blocker' });
       const task2 = service.create({ title: 'Blocked' });
-      const dep = service.addDependency(task2.id, task1.id, 'blocks');
-      expect(dep).not.toBeNull();
-      expect(dep!.fromTask).toBe(task2.id);
-      expect(dep!.toTask).toBe(task1.id);
+      const result = service.addDependency(task2.id, task1.id, 'blocks');
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.dependency.fromTask).toBe(task2.id);
+        expect(result.dependency.toTask).toBe(task1.id);
+      }
     });
 
     it('should prevent self-dependency', () => {
       const task = service.create({ title: 'Self' });
-      expect(service.addDependency(task.id, task.id)).toBeNull();
+      const result = service.addDependency(task.id, task.id);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe('self_dependency');
+      }
     });
 
     it('should detect blocked tasks', () => {

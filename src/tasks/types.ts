@@ -50,6 +50,17 @@ export interface TaskDependency {
   createdAt: string;
 }
 
+// Discriminated result for addDependency to distinguish failure reasons
+export type DependencyFailureReason =
+  | 'not_found'
+  | 'self_dependency'
+  | 'would_create_cycle'
+  | 'duplicate';
+
+export type AddDependencyResult =
+  | { ok: true; dependency: TaskDependency }
+  | { ok: false; reason: DependencyFailureReason };
+
 // Task history entry (audit trail)
 export interface TaskHistoryEntry {
   id: number;

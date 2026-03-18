@@ -34,6 +34,23 @@ export function compressToolOutput(
   options: { maxBytes?: number; intent?: string } = {}
 ): CompressedOutput {
   const { maxBytes = DEFAULT_MAX_BYTES, intent } = options;
+
+  // Guard against null/undefined results that would produce "null"/"undefined" strings
+  // or crash Buffer.byteLength. Normalize to a meaningful empty response.
+  if (result === null || result === undefined) {
+    const placeholder = '(no output)';
+    const placeholderBytes = Buffer.byteLength(placeholder, 'utf-8');
+    return {
+      output: placeholder,
+      stats: {
+        originalBytes: 0,
+        compressedBytes: placeholderBytes,
+        savings: '0%',
+        method: 'passthrough',
+      },
+    };
+  }
+
   const serialized = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
   const originalBytes = Buffer.byteLength(serialized, 'utf-8');
 
@@ -112,13 +129,17 @@ function indexAndSearch(content: string, intent: string): string {
 
     // Search with BM25 ranking
     const sanitizedIntent = sanitizeFTS5Query(intent);
-    const results = db.prepare(`
+    const results = db
+      .prepare(
+        `
       SELECT content, rank
       FROM output_fts
       WHERE output_fts MATCH ?
       ORDER BY rank
       LIMIT ?
-    `).all(sanitizedIntent, MAX_SNIPPETS) as Array<{ content: string; rank: number }>;
+    `
+      )
+      .all(sanitizedIntent, MAX_SNIPPETS) as Array<{ content: string; rank: number }>;
 
     // Extract vocabulary from all chunks for follow-up queries
     const vocabulary = extractVocabulary(chunks);
@@ -133,7 +154,7 @@ function indexAndSearch(content: string, intent: string): string {
       return smartTruncate(content, DEFAULT_MAX_BYTES);
     }
 
-    const snippets = results.map(r => r.content);
+    const snippets = results.map((r) => r.content);
     return formatIndexedResponse(snippets, vocabulary, chunks.length, content.length);
   } catch {
     // FTS5 unavailable or error, fall back to truncation
@@ -151,9 +172,8 @@ function formatIndexedResponse(
 ): string {
   const header = `[Indexed ${totalChunks} sections from ${formatBytes(totalBytes)} output — showing ${snippets.length} matching sections]`;
   const body = snippets.map((s, i) => `--- Match ${i + 1} ---\n${s}`).join('\n\n');
-  const footer = vocabulary.length > 0
-    ? `\n[Searchable terms: ${vocabulary.slice(0, 20).join(', ')}]`
-    : '';
+  const footer =
+    vocabulary.length > 0 ? `\n[Searchable terms: ${vocabulary.slice(0, 20).join(', ')}]` : '';
   return `${header}\n\n${body}${footer}`;
 }
 
@@ -195,7 +215,10 @@ function chunkByStructure(content: string): string[] {
   const lines = content.split('\n');
   const chunkSize = Math.max(10, Math.ceil(lines.length / 20));
   for (let i = 0; i < lines.length; i += chunkSize) {
-    const chunk = lines.slice(i, i + chunkSize).join('\n').trim();
+    const chunk = lines
+      .slice(i, i + chunkSize)
+      .join('\n')
+      .trim();
     if (chunk) chunks.push(chunk);
   }
 
@@ -203,19 +226,25 @@ function chunkByStructure(content: string): string[] {
 }
 
 function sanitizeFTS5Query(query: string): string {
-  const words = query.trim().split(/\s+/).filter(w => w.length > 1);
+  const words = query
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 1);
   if (words.length === 0) return '""';
-  return words.map(w => `"${w.replace(/"/g, '""')}"`).join(' OR ');
+  return words.map((w) => `"${w.replace(/"/g, '""')}"`).join(' OR ');
 }
 
 /**
  * Fallback keyword search when FTS5 match returns nothing.
  */
 function keywordSearch(chunks: string[], intent: string): string[] {
-  const keywords = intent.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  const keywords = intent
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
   if (keywords.length === 0) return [];
 
-  const scored = chunks.map(chunk => {
+  const scored = chunks.map((chunk) => {
     const lower = chunk.toLowerCase();
     const score = keywords.reduce((sum, kw) => {
       const matches = lower.split(kw).length - 1;
@@ -225,10 +254,10 @@ function keywordSearch(chunks: string[], intent: string): string[] {
   });
 
   return scored
-    .filter(s => s.score > 0)
+    .filter((s) => s.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_SNIPPETS)
-    .map(s => s.chunk);
+    .map((s) => s.chunk);
 }
 
 /**
@@ -237,19 +266,116 @@ function keywordSearch(chunks: string[], intent: string): string[] {
 function extractVocabulary(chunks: string[]): string[] {
   const wordFreq = new Map<string, number>();
   const stopWords = new Set([
-    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-    'should', 'may', 'might', 'shall', 'can', 'need', 'dare', 'ought',
-    'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
-    'as', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
-    'and', 'but', 'or', 'nor', 'not', 'so', 'yet', 'both', 'either',
-    'neither', 'each', 'every', 'all', 'any', 'few', 'more', 'most',
-    'other', 'some', 'such', 'no', 'only', 'own', 'same', 'than',
-    'too', 'very', 'just', 'because', 'this', 'that', 'these', 'those',
-    'it', 'its', 'itself', 'they', 'them', 'their', 'what', 'which',
-    'who', 'whom', 'how', 'when', 'where', 'why', 'if', 'then', 'else',
-    'true', 'false', 'null', 'undefined', 'function', 'return', 'const',
-    'let', 'var', 'import', 'export', 'default', 'class', 'new', 'type',
+    'the',
+    'a',
+    'an',
+    'is',
+    'are',
+    'was',
+    'were',
+    'be',
+    'been',
+    'being',
+    'have',
+    'has',
+    'had',
+    'do',
+    'does',
+    'did',
+    'will',
+    'would',
+    'could',
+    'should',
+    'may',
+    'might',
+    'shall',
+    'can',
+    'need',
+    'dare',
+    'ought',
+    'used',
+    'to',
+    'of',
+    'in',
+    'for',
+    'on',
+    'with',
+    'at',
+    'by',
+    'from',
+    'as',
+    'into',
+    'through',
+    'during',
+    'before',
+    'after',
+    'above',
+    'below',
+    'and',
+    'but',
+    'or',
+    'nor',
+    'not',
+    'so',
+    'yet',
+    'both',
+    'either',
+    'neither',
+    'each',
+    'every',
+    'all',
+    'any',
+    'few',
+    'more',
+    'most',
+    'other',
+    'some',
+    'such',
+    'no',
+    'only',
+    'own',
+    'same',
+    'than',
+    'too',
+    'very',
+    'just',
+    'because',
+    'this',
+    'that',
+    'these',
+    'those',
+    'it',
+    'its',
+    'itself',
+    'they',
+    'them',
+    'their',
+    'what',
+    'which',
+    'who',
+    'whom',
+    'how',
+    'when',
+    'where',
+    'why',
+    'if',
+    'then',
+    'else',
+    'true',
+    'false',
+    'null',
+    'undefined',
+    'function',
+    'return',
+    'const',
+    'let',
+    'var',
+    'import',
+    'export',
+    'default',
+    'class',
+    'new',
+    'type',
   ]);
 
   for (const chunk of chunks) {

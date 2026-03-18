@@ -613,9 +613,15 @@ async function addDependency(service: TaskService, options: TaskOptions): Promis
   const spinner = ora(`Adding ${depType} dependency...`).start();
 
   try {
-    const dep = service.addDependency(options.from, options.to, depType);
-    if (!dep) {
-      spinner.fail('Failed to add dependency (invalid tasks or would create cycle)');
+    const result = service.addDependency(options.from, options.to, depType);
+    if (!result.ok) {
+      const messages: Record<string, string> = {
+        not_found: 'One or both task IDs not found',
+        self_dependency: 'A task cannot depend on itself',
+        would_create_cycle: 'Adding this dependency would create a cycle',
+        duplicate: 'This dependency already exists',
+      };
+      spinner.fail(`Failed to add dependency: ${messages[result.reason]}`);
       process.exit(1);
     }
 

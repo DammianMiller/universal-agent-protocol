@@ -297,10 +297,14 @@ export class CoordinationService {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
+    // Use agentId as fallback name when agent is not registered (e.g., auto-created MCP agents)
+    const agentName = agent?.name || agentId;
+    const worktreeBranch = agent?.worktreeBranch || null;
+
     const result = stmt.run(
       agentId,
-      agent?.name || null,
-      agent?.worktreeBranch || null,
+      agentName,
+      worktreeBranch,
       intentType,
       resource,
       options.description || null,
