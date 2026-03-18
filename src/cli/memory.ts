@@ -23,7 +23,16 @@ import { runMaintenance } from '../memory/memory-maintenance.js';
 // They persist with the project for its entire lifecycle.
 // Users can manually delete if absolutely necessary.
 
-type MemoryAction = 'status' | 'start' | 'stop' | 'query' | 'store' | 'prepopulate' | 'promote' | 'correct' | 'maintain';
+type MemoryAction =
+  | 'status'
+  | 'start'
+  | 'stop'
+  | 'query'
+  | 'store'
+  | 'prepopulate'
+  | 'promote'
+  | 'correct'
+  | 'maintain';
 
 interface MemoryOptions {
   search?: string;
@@ -40,7 +49,10 @@ interface MemoryOptions {
   reason?: string;
 }
 
-export async function memoryCommand(action: MemoryAction, options: MemoryOptions = {}): Promise<void> {
+export async function memoryCommand(
+  action: MemoryAction,
+  options: MemoryOptions = {}
+): Promise<void> {
   const cwd = process.cwd();
 
   switch (action) {
@@ -54,10 +66,24 @@ export async function memoryCommand(action: MemoryAction, options: MemoryOptions
       await stopServices(cwd);
       break;
     case 'query':
-      await queryMemory(cwd, options.search!, parseInt(options.limit || '10'));
+      if (!options.search) {
+        console.log(chalk.red('Search query is required. Usage: uap memory query <search>'));
+        return;
+      }
+      await queryMemory(cwd, options.search, parseInt(options.limit || '10'));
       break;
     case 'store':
-      await storeMemory(cwd, options.content!, options.tags, parseInt(options.importance || '5'), options.force);
+      if (!options.content) {
+        console.log(chalk.red('Content is required. Usage: uap memory store <content>'));
+        return;
+      }
+      await storeMemory(
+        cwd,
+        options.content,
+        options.tags,
+        parseInt(options.importance || '5'),
+        options.force
+      );
       break;
     case 'prepopulate':
       await prepopulateFromSources(cwd, options);
@@ -89,7 +115,7 @@ async function showStatus(cwd: string): Promise<void> {
     sqliteActive = true;
     const stats = statSync(shortTermPath);
     const sizeKB = Math.round(stats.size / 1024);
-    
+
     let entryCount = 0;
     try {
       const db = new SQLiteShortTermMemory({
@@ -99,35 +125,49 @@ async function showStatus(cwd: string): Promise<void> {
       });
       entryCount = await db.count();
       await db.close();
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     console.log(`  ${statusBadge('active')} ${chalk.bold('Short-term Memory')}`);
-    for (const line of keyValue([
-      ['Size', `${sizeKB} KB`],
-      ['Entries', entryCount],
-      ['Modified', stats.mtime.toLocaleDateString()],
-    ], { indent: 4 })) console.log(line);
-    console.log(`    ${'Capacity'.padEnd(18)} ${miniGauge(entryCount, 50, 15)} ${chalk.dim(`${entryCount}/50`)}`);
+    for (const line of keyValue(
+      [
+        ['Size', `${sizeKB} KB`],
+        ['Entries', entryCount],
+        ['Modified', stats.mtime.toLocaleDateString()],
+      ],
+      { indent: 4 }
+    ))
+      console.log(line);
+    console.log(
+      `    ${'Capacity'.padEnd(18)} ${miniGauge(entryCount, 50, 15)} ${chalk.dim(`${entryCount}/50`)}`
+    );
   } else {
-    console.log(`  ${statusBadge('not_available')} ${chalk.bold('Short-term Memory')} ${chalk.dim('Not initialized')}`);
+    console.log(
+      `  ${statusBadge('not_available')} ${chalk.bold('Short-term Memory')} ${chalk.dim('Not initialized')}`
+    );
   }
   console.log('');
 
   // Qdrant
   try {
-    const dockerStatus = execSync(
-      'docker ps --filter name=qdrant --format "{{.Status}}"',
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
+    const dockerStatus = execSync('docker ps --filter name=qdrant --format "{{.Status}}"', {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
     if (dockerStatus) {
       qdrantActive = true;
       console.log(`  ${statusBadge('running')} ${chalk.bold('Qdrant')} ${chalk.dim(dockerStatus)}`);
       console.log(chalk.dim('    Endpoint: http://localhost:6333'));
     } else {
-      console.log(`  ${statusBadge('stopped')} ${chalk.bold('Qdrant')} ${chalk.dim('Container not running')}`);
+      console.log(
+        `  ${statusBadge('stopped')} ${chalk.bold('Qdrant')} ${chalk.dim('Container not running')}`
+      );
     }
   } catch {
-    console.log(`  ${statusBadge('not_available')} ${chalk.bold('Qdrant')} ${chalk.dim('Docker not available')}`);
+    console.log(
+      `  ${statusBadge('not_available')} ${chalk.bold('Qdrant')} ${chalk.dim('Docker not available')}`
+    );
   }
   console.log('');
 
@@ -137,13 +177,15 @@ async function showStatus(cwd: string): Promise<void> {
       method: 'GET',
       signal: AbortSignal.timeout(2000),
     });
-    
+
     if (ollamaResponse.ok) {
-      const ollamaData = await ollamaResponse.json() as { models: Array<{ name: string; size: number }> };
-      const embedModels = ollamaData.models?.filter(m => 
-        m.name.includes('embed') || m.name.includes('nomic')
-      ) || [];
-      
+      const ollamaData = (await ollamaResponse.json()) as {
+        models: Array<{ name: string; size: number }>;
+      };
+      const embedModels =
+        ollamaData.models?.filter((m) => m.name.includes('embed') || m.name.includes('nomic')) ||
+        [];
+
       if (embedModels.length > 0) {
         console.log(`  ${statusBadge('active')} ${chalk.bold('Embeddings')}`);
         for (const model of embedModels) {
@@ -151,14 +193,20 @@ async function showStatus(cwd: string): Promise<void> {
           console.log(`    ${chalk.cyan(model.name)} ${chalk.dim(`${sizeMB} MB`)}`);
         }
       } else {
-        console.log(`  ${statusBadge('not_available')} ${chalk.bold('Embeddings')} ${chalk.dim('No embed models')}`);
+        console.log(
+          `  ${statusBadge('not_available')} ${chalk.bold('Embeddings')} ${chalk.dim('No embed models')}`
+        );
         console.log(chalk.dim('    Run: ollama pull nomic-embed-text'));
       }
     } else {
-      console.log(`  ${statusBadge('stopped')} ${chalk.bold('Embeddings')} ${chalk.dim('Not responding')}`);
+      console.log(
+        `  ${statusBadge('stopped')} ${chalk.bold('Embeddings')} ${chalk.dim('Not responding')}`
+      );
     }
   } catch {
-    console.log(`  ${statusBadge('not_available')} ${chalk.bold('Embeddings')} ${chalk.dim('Ollama not running')}`);
+    console.log(
+      `  ${statusBadge('not_available')} ${chalk.bold('Embeddings')} ${chalk.dim('Ollama not running')}`
+    );
   }
 
   // Architecture tree
@@ -166,10 +214,26 @@ async function showStatus(cwd: string): Promise<void> {
   const layers: TreeNode = {
     label: chalk.bold('Memory Layers'),
     children: [
-      { label: 'L1 Working',  status: sqliteActive ? chalk.green('ON') : chalk.red('--'), meta: 'SQLite, <1ms' },
-      { label: 'L2 Session',  status: sqliteActive ? chalk.green('ON') : chalk.red('--'), meta: 'SQLite, <5ms' },
-      { label: 'L3 Semantic', status: qdrantActive ? chalk.green('ON') : chalk.yellow('--'), meta: 'Qdrant, ~50ms' },
-      { label: 'L4 Graph',    status: sqliteActive ? chalk.green('ON') : chalk.red('--'), meta: 'SQLite entities' },
+      {
+        label: 'L1 Working',
+        status: sqliteActive ? chalk.green('ON') : chalk.red('--'),
+        meta: 'SQLite, <1ms',
+      },
+      {
+        label: 'L2 Session',
+        status: sqliteActive ? chalk.green('ON') : chalk.red('--'),
+        meta: 'SQLite, <5ms',
+      },
+      {
+        label: 'L3 Semantic',
+        status: qdrantActive ? chalk.green('ON') : chalk.yellow('--'),
+        meta: 'Qdrant, ~50ms',
+      },
+      {
+        label: 'L4 Graph',
+        status: sqliteActive ? chalk.green('ON') : chalk.red('--'),
+        meta: 'SQLite entities',
+      },
     ],
   };
   for (const line of tree(layers)) console.log(line);
@@ -234,7 +298,10 @@ services:
  * Check if Qdrant is reachable by polling its health endpoint.
  * Optionally waits up to `timeoutMs` for it to become available.
  */
-export async function isQdrantReachable(endpoint = 'http://localhost:6333', timeoutMs = 0): Promise<boolean> {
+export async function isQdrantReachable(
+  endpoint = 'http://localhost:6333',
+  timeoutMs = 0
+): Promise<boolean> {
   const url = endpoint.startsWith('http') ? endpoint : `http://${endpoint}`;
   const deadline = Date.now() + timeoutMs;
   const pollInterval = 1000;
@@ -247,7 +314,7 @@ export async function isQdrantReachable(endpoint = 'http://localhost:6333', time
       // Not yet available
     }
     if (Date.now() + pollInterval > deadline) break;
-    await new Promise(r => setTimeout(r, pollInterval));
+    await new Promise((r) => setTimeout(r, pollInterval));
   } while (Date.now() < deadline);
 
   return false;
@@ -322,10 +389,14 @@ async function queryMemory(cwd: string, search: string, limit: number): Promise<
       if (results.length > 0) {
         console.log(chalk.green(`Found ${results.length} results in short-term memory:\n`));
         for (const r of results) {
-          const typeColor = r.type === 'action' ? chalk.blue :
-                           r.type === 'observation' ? chalk.cyan :
-                           r.type === 'thought' ? chalk.magenta :
-                           chalk.yellow;
+          const typeColor =
+            r.type === 'action'
+              ? chalk.blue
+              : r.type === 'observation'
+                ? chalk.cyan
+                : r.type === 'thought'
+                  ? chalk.magenta
+                  : chalk.yellow;
           console.log(`  ${typeColor(`[${r.type}]`)} ${chalk.dim(r.timestamp.slice(0, 10))}`);
           console.log(`    ${r.content.slice(0, 150)}${r.content.length > 150 ? '...' : ''}\n`);
         }
@@ -348,7 +419,10 @@ async function queryQdrant(
   limit: number
 ): Promise<void> {
   const endpoint = config.memory?.longTerm?.endpoint || 'localhost:6333';
-  const url = endpoint.startsWith('http://') || endpoint.startsWith('https://') ? endpoint : `http://${endpoint}`;
+  const url =
+    endpoint.startsWith('http://') || endpoint.startsWith('https://')
+      ? endpoint
+      : `http://${endpoint}`;
   const apiKey = config.memory?.longTerm?.qdrantCloud?.apiKey || process.env.QDRANT_API_KEY;
   const collection = config.memory?.longTerm?.collection || 'agent_memory';
 
@@ -359,8 +433,8 @@ async function queryQdrant(
     // Try collection variants (main and prepopulated)
     const collections = await client.getCollections();
     const candidates = [collection, `${collection}_prepopulated`];
-    const availableCollections = candidates.filter(c =>
-      collections.collections.some(col => col.name === c)
+    const availableCollections = candidates.filter((c) =>
+      collections.collections.some((col) => col.name === c)
     );
 
     if (availableCollections.length === 0) {
@@ -397,20 +471,29 @@ async function queryQdrant(
 
     // Deduplicate and sort by score
     const seen = new Set<string>();
-    allResults = allResults.filter(r => {
-      const key = r.content.slice(0, 100);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    }).sort((a, b) => b.score - a.score).slice(0, limit);
+    allResults = allResults
+      .filter((r) => {
+        const key = r.content.slice(0, 100);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
 
     if (allResults.length > 0) {
-      console.log(chalk.green(`\nFound ${allResults.length} results in long-term memory (Qdrant):\n`));
+      console.log(
+        chalk.green(`\nFound ${allResults.length} results in long-term memory (Qdrant):\n`)
+      );
       for (const r of allResults) {
-        const typeColor = r.type === 'action' ? chalk.blue :
-                         r.type === 'observation' ? chalk.cyan :
-                         r.type === 'thought' ? chalk.magenta :
-                         chalk.yellow;
+        const typeColor =
+          r.type === 'action'
+            ? chalk.blue
+            : r.type === 'observation'
+              ? chalk.cyan
+              : r.type === 'thought'
+                ? chalk.magenta
+                : chalk.yellow;
         const scoreStr = chalk.dim(`(${(r.score * 100).toFixed(0)}%)`);
         console.log(`  ${typeColor(`[${r.type}]`)} ${scoreStr}`);
         console.log(`    ${r.content.slice(0, 150)}${r.content.length > 150 ? '...' : ''}`);
@@ -423,7 +506,9 @@ async function queryQdrant(
       console.log(chalk.dim('\nNo results in long-term memory'));
     }
   } catch {
-    console.log(chalk.dim('\nQdrant not available for long-term search. Run `uap memory start` first.'));
+    console.log(
+      chalk.dim('\nQdrant not available for long-term search. Run `uap memory start` first.')
+    );
   }
 }
 
@@ -446,10 +531,12 @@ async function storeMemory(
       console.log('');
       return;
     }
-    console.log(chalk.bold('\n✓ Write Gate: PASSED') + chalk.dim(` (score: ${gateResult.score.toFixed(2)})`));
-    const matchedCriteria = gateResult.criteria.filter(c => c.matched);
+    console.log(
+      chalk.bold('\n✓ Write Gate: PASSED') + chalk.dim(` (score: ${gateResult.score.toFixed(2)})`)
+    );
+    const matchedCriteria = gateResult.criteria.filter((c) => c.matched);
     if (matchedCriteria.length > 0) {
-      console.log(chalk.dim(`  Matched: ${matchedCriteria.map(c => c.name).join(', ')}`));
+      console.log(chalk.dim(`  Matched: ${matchedCriteria.map((c) => c.name).join(', ')}`));
     }
   } else {
     console.log(chalk.dim('\n  Write gate bypassed (--force)'));
@@ -481,12 +568,18 @@ async function storeMemory(
   }
 
   // Determine memory type based on importance and tags
-  const memoryType: 'action' | 'observation' | 'thought' | 'goal' | 'lesson' | 'decision' = 
-    tags?.includes('lesson') ? 'lesson' :
-    tags?.includes('decision') ? 'decision' :
-    importance >= 8 ? 'goal' :
-    importance >= 6 ? 'thought' :
-    tags?.includes('observation') ? 'observation' : 'action';
+  const memoryType: 'action' | 'observation' | 'thought' | 'goal' | 'lesson' | 'decision' =
+    tags?.includes('lesson')
+      ? 'lesson'
+      : tags?.includes('decision')
+        ? 'decision'
+        : importance >= 8
+          ? 'goal'
+          : importance >= 6
+            ? 'thought'
+            : tags?.includes('observation')
+              ? 'observation'
+              : 'action';
 
   // Always write to daily log first (staging area)
   const dbPath = config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
@@ -520,8 +613,14 @@ async function storeMemory(
 
   // Note about long-term storage
   if (importance >= 7) {
-    console.log(chalk.dim('\nNote: High-importance memories should also be stored in long-term memory.'));
-    console.log(chalk.dim('Long-term semantic storage requires Qdrant + embedding service (not yet integrated).'));
+    console.log(
+      chalk.dim('\nNote: High-importance memories should also be stored in long-term memory.')
+    );
+    console.log(
+      chalk.dim(
+        'Long-term semantic storage requires Qdrant + embedding service (not yet integrated).'
+      )
+    );
   }
 }
 
@@ -570,13 +669,16 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
       verbose: options.verbose,
     });
 
-    spinner.succeed(`Extracted ${shortTerm.length} short-term, ${longTerm.length} long-term memories, ${skills.length} skills/artifacts`);
+    spinner.succeed(
+      `Extracted ${shortTerm.length} short-term, ${longTerm.length} long-term memories, ${skills.length} skills/artifacts`
+    );
 
     // Store short-term memories to SQLite
     if (shortTerm.length > 0) {
       const stSpinner = ora('Storing short-term memories...').start();
       try {
-        const dbPath = config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
+        const dbPath =
+          config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
         const shortTermDb = new SQLiteShortTermMemory({
           dbPath,
           projectId: config.project.name,
@@ -584,7 +686,7 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
         });
 
         // Store memories in batch
-        const entries = shortTerm.map(m => ({
+        const entries = shortTerm.map((m) => ({
           type: m.type,
           content: m.content,
           timestamp: m.timestamp,
@@ -606,7 +708,8 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
     if (shortTerm.length > 0 || longTerm.length > 0) {
       const sessionSpinner = ora('Storing session memories...').start();
       try {
-        const dbPath = config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
+        const dbPath =
+          config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
         sessionInserted = storeSessionMemories(dbPath, config.project.name, shortTerm, longTerm);
         sessionSpinner.succeed(`Stored ${sessionInserted} session memories`);
       } catch (error) {
@@ -618,9 +721,12 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
     if (longTerm.length > 0 || skills.length > 0) {
       const graphSpinner = ora('Building knowledge graph...').start();
       try {
-        const dbPath = config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
+        const dbPath =
+          config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
         graphStats = storeKnowledgeGraph(dbPath, config.project.name, longTerm, skills);
-        graphSpinner.succeed(`Stored ${graphStats.entities} entities, ${graphStats.relationships} relationships`);
+        graphSpinner.succeed(
+          `Stored ${graphStats.entities} entities, ${graphStats.relationships} relationships`
+        );
       } catch (error) {
         graphSpinner.fail('Failed to build knowledge graph');
         console.error(chalk.red(error));
@@ -637,7 +743,7 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
       } else {
         ltSpinner.warn(`Skipped long-term store: ${ltResult.reason || 'Qdrant not available'}`);
       }
-      
+
       // Save long-term memories as JSON for manual import or Qdrant storage
       const ltPath = join(cwd, 'agents/data/memory/long_term_prepopulated.json');
       const ltDir = join(cwd, 'agents/data/memory');
@@ -651,10 +757,10 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
     // Summary by type
     console.log(chalk.bold('\n📊 Memory Summary:\n'));
     const byType = {
-      observations: longTerm.filter(m => m.type === 'observation').length,
-      thoughts: longTerm.filter(m => m.type === 'thought').length,
-      actions: longTerm.filter(m => m.type === 'action').length,
-      goals: longTerm.filter(m => m.type === 'goal').length,
+      observations: longTerm.filter((m) => m.type === 'observation').length,
+      thoughts: longTerm.filter((m) => m.type === 'thought').length,
+      actions: longTerm.filter((m) => m.type === 'action').length,
+      goals: longTerm.filter((m) => m.type === 'goal').length,
     };
     console.log(chalk.dim(`  Observations: ${byType.observations}`));
     console.log(chalk.dim(`  Thoughts: ${byType.thoughts}`));
@@ -668,12 +774,13 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
     if (options.verbose && shortTerm.length > 0) {
       console.log(chalk.bold('\n📝 Sample Memories:\n'));
       for (const mem of shortTerm.slice(0, 3)) {
-        console.log(chalk.cyan(`  [${mem.type}] `) + chalk.dim(mem.content.substring(0, 100) + '...'));
+        console.log(
+          chalk.cyan(`  [${mem.type}] `) + chalk.dim(mem.content.substring(0, 100) + '...')
+        );
       }
     }
 
     console.log(chalk.green('\n✅ Memory prepopulation complete!\n'));
-
   } catch (error) {
     spinner.fail('Failed to prepopulate memory');
     console.error(chalk.red(error));
@@ -756,7 +863,6 @@ function storeKnowledgeGraph(
   return { entities, relationships };
 }
 
-
 function upsertEntity(
   db: Database.Database,
   type: string,
@@ -764,22 +870,45 @@ function upsertEntity(
   now: string,
   description?: string
 ): { id: number; inserted: number } {
-  const existing = db.prepare('SELECT id, mention_count FROM entities WHERE type = ? AND name = ?').get(type, name) as { id: number; mention_count: number } | undefined;
+  const existing = db
+    .prepare('SELECT id, mention_count FROM entities WHERE type = ? AND name = ?')
+    .get(type, name) as { id: number; mention_count: number } | undefined;
   if (existing) {
     if (description) {
-      db.prepare('UPDATE entities SET last_seen = ?, mention_count = ?, description = ? WHERE id = ?').run(now, existing.mention_count + 1, description, existing.id);
+      db.prepare(
+        'UPDATE entities SET last_seen = ?, mention_count = ?, description = ? WHERE id = ?'
+      ).run(now, existing.mention_count + 1, description, existing.id);
     } else {
-      db.prepare('UPDATE entities SET last_seen = ?, mention_count = ? WHERE id = ?').run(now, existing.mention_count + 1, existing.id);
+      db.prepare('UPDATE entities SET last_seen = ?, mention_count = ? WHERE id = ?').run(
+        now,
+        existing.mention_count + 1,
+        existing.id
+      );
     }
     return { id: existing.id, inserted: 0 };
   }
 
-  const result = db.prepare('INSERT INTO entities (type, name, description, first_seen, last_seen, mention_count) VALUES (?, ?, ?, ?, ?, 1)').run(type, name, description || null, now, now);
+  const result = db
+    .prepare(
+      'INSERT INTO entities (type, name, description, first_seen, last_seen, mention_count) VALUES (?, ?, ?, ?, ?, 1)'
+    )
+    .run(type, name, description || null, now, now);
   return { id: Number(result.lastInsertRowid), inserted: 1 };
 }
 
-function insertRelationship(db: Database.Database, sourceId: number, targetId: number, relation: string, now: string, strength: number = 1.0): number {
-  const result = db.prepare('INSERT OR IGNORE INTO relationships (source_id, target_id, relation, strength, timestamp) VALUES (?, ?, ?, ?, ?)').run(sourceId, targetId, relation, strength, now);
+function insertRelationship(
+  db: Database.Database,
+  sourceId: number,
+  targetId: number,
+  relation: string,
+  now: string,
+  strength: number = 1.0
+): number {
+  const result = db
+    .prepare(
+      'INSERT OR IGNORE INTO relationships (source_id, target_id, relation, strength, timestamp) VALUES (?, ?, ?, ?, ?)'
+    )
+    .run(sourceId, targetId, relation, strength, now);
   return result.changes;
 }
 
@@ -821,7 +950,10 @@ async function storeLongTermToQdrant(
     return { stored: 0, backend: 'github', reason: 'Long-term provider set to github' };
   }
   const endpoint = config.memory?.longTerm?.endpoint || 'localhost:6333';
-  const url = endpoint.startsWith('http://') || endpoint.startsWith('https://') ? endpoint : `http://${endpoint}`;
+  const url =
+    endpoint.startsWith('http://') || endpoint.startsWith('https://')
+      ? endpoint
+      : `http://${endpoint}`;
   const apiKey = config.memory?.longTerm?.qdrantCloud?.apiKey || process.env.QDRANT_API_KEY;
   const collection = config.memory?.longTerm?.collection || 'agent_memory';
 
@@ -838,7 +970,8 @@ async function storeLongTermToQdrant(
     const exists = collections.collections.some((c) => c.name === collectionName);
     if (exists) {
       const info = await client.getCollection(collectionName);
-      const size = (info.config as { params?: { vectors?: { size?: number } } }).params?.vectors?.size;
+      const size = (info.config as { params?: { vectors?: { size?: number } } }).params?.vectors
+        ?.size;
       if (size && size !== 384) {
         collectionName = `${collectionName}_prepopulated`;
       }
@@ -870,7 +1003,11 @@ async function storeLongTermToQdrant(
 
     return { stored: longTerm.length, backend: `qdrant (${url}, ${collectionName})` };
   } catch (error) {
-    return { stored: 0, backend: `qdrant (${url})`, reason: error instanceof Error ? error.message : 'Qdrant error' };
+    return {
+      stored: 0,
+      backend: `qdrant (${url})`,
+      reason: error instanceof Error ? error.message : 'Qdrant error',
+    };
   }
 }
 
@@ -894,7 +1031,11 @@ async function promoteFromDailyLog(cwd: string, _options: MemoryOptions): Promis
     const candidates = dailyLog.getPromotionCandidates();
 
     if (candidates.length === 0) {
-      console.log(chalk.dim('  No candidates for promotion. All entries are either already promoted or below threshold.'));
+      console.log(
+        chalk.dim(
+          '  No candidates for promotion. All entries are either already promoted or below threshold.'
+        )
+      );
       dailyLog.close();
       return;
     }
@@ -910,15 +1051,26 @@ async function promoteFromDailyLog(cwd: string, _options: MemoryOptions): Promis
     let promoted = 0;
     for (const candidate of candidates) {
       const { entry, suggestedTier, reason } = candidate;
-      console.log(`  ${chalk.cyan(`[${entry.date}]`)} ${entry.content.slice(0, 100)}${entry.content.length > 100 ? '...' : ''}`);
-      console.log(chalk.dim(`    → ${suggestedTier} (score: ${entry.gateScore.toFixed(2)}) - ${reason}`));
+      console.log(
+        `  ${chalk.cyan(`[${entry.date}]`)} ${entry.content.slice(0, 100)}${entry.content.length > 100 ? '...' : ''}`
+      );
+      console.log(
+        chalk.dim(`    → ${suggestedTier} (score: ${entry.gateScore.toFixed(2)}) - ${reason}`)
+      );
 
       // Auto-promote based on score
       if (suggestedTier === 'working') {
-        const validTypes = ['goal', 'action', 'observation', 'thought', 'lesson', 'decision'] as const;
-        type ValidType = typeof validTypes[number];
+        const validTypes = [
+          'goal',
+          'action',
+          'observation',
+          'thought',
+          'lesson',
+          'decision',
+        ] as const;
+        type ValidType = (typeof validTypes)[number];
         const memType: ValidType = validTypes.includes(entry.type as ValidType)
-          ? entry.type as ValidType
+          ? (entry.type as ValidType)
           : 'observation';
         await (shortTermDb as any).store(memType, entry.content, Math.round(entry.gateScore * 10));
         dailyLog.markPromoted(entry.id, 'working');
@@ -944,7 +1096,9 @@ async function correctMemory(cwd: string, options: MemoryOptions): Promise<void>
   console.log(chalk.bold('\n🔄 Correction Propagation\n'));
 
   if (!options.search || !options.correction) {
-    console.log(chalk.red('  Usage: uap memory correct <search> --correction <corrected> [--reason <reason>]'));
+    console.log(
+      chalk.red('  Usage: uap memory correct <search> --correction <corrected> [--reason <reason>]')
+    );
     return;
   }
 
@@ -959,7 +1113,12 @@ async function correctMemory(cwd: string, options: MemoryOptions): Promise<void>
   }
 
   const dbPath = config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
-  const result = propagateCorrection(dbPath, options.search, options.correction, options.reason || 'user correction');
+  const result = propagateCorrection(
+    dbPath,
+    options.search,
+    options.correction,
+    options.reason || 'user correction'
+  );
 
   if (result.originalFound) {
     console.log(chalk.green(`  ✓ Found and corrected across ${result.tiersUpdated.length} tiers`));

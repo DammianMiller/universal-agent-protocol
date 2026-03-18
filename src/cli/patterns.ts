@@ -402,7 +402,7 @@ async function queryPatterns(cwd: string, options: PatternOptions): Promise<void
     for (const m of matches) {
       const abbr = m.abbreviation ? ` (${m.abbreviation})` : '';
       console.log(
-        `\n  ${chalk.green(`[${(m.score as number).toFixed(1)}]`)} ${chalk.bold(`P${m.id}: ${m.title}${abbr}`)}`
+        `\n  ${chalk.green(`[${(m.score as number).toFixed(1)}]`)} ${chalk.bold(`P${m.id}: ${m.title || 'Untitled'}${abbr}`)}`
       );
       const body = String(m.body || '');
       console.log(

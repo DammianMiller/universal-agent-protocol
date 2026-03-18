@@ -413,7 +413,7 @@ async function showOverlaps(service: CoordinationService, options: AgentOptions)
         }
       }
 
-      console.log(chalk.yellow(`    ${overlap.suggestion}`));
+      console.log(chalk.yellow(`    ${overlap.suggestion || 'Review overlapping work'}`));
       console.log('');
     }
   }
@@ -513,8 +513,10 @@ async function receiveMessages(service: CoordinationService, options: AgentOptio
 
     for (const msg of messages) {
       const fromLabel = msg.fromAgent ? msg.fromAgent.slice(0, 8) + '...' : 'system';
-      console.log(`  [${chalk.cyan(msg.channel)}] ${chalk.dim(fromLabel)} → ${msg.type}`);
-      console.log(`    ${chalk.yellow(JSON.stringify(msg.payload))}`);
+      console.log(
+        `  [${chalk.cyan(msg.channel)}] ${chalk.dim(fromLabel)} → ${msg.type || 'message'}`
+      );
+      console.log(`    ${chalk.yellow(JSON.stringify(msg.payload ?? {}))}`);
       console.log(`    ${chalk.dim(msg.createdAt)}`);
       console.log('');
     }

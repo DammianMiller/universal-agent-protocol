@@ -106,7 +106,10 @@ Follow the project's existing test patterns and conventions.
   },
 };
 
-export async function droidsCommand(action: DroidsAction, options: DroidsOptions = {}): Promise<void> {
+export async function droidsCommand(
+  action: DroidsAction,
+  options: DroidsOptions = {}
+): Promise<void> {
   const cwd = process.cwd();
 
   switch (action) {
@@ -114,10 +117,18 @@ export async function droidsCommand(action: DroidsAction, options: DroidsOptions
       await listDroids(cwd);
       break;
     case 'add':
-      await addDroid(cwd, options.name!, options.template);
+      if (!options.name) {
+        console.log(chalk.red('Droid name is required. Usage: uap droids add <name>'));
+        return;
+      }
+      await addDroid(cwd, options.name, options.template);
       break;
     case 'import':
-      await importDroids(cwd, options.path!);
+      if (!options.path) {
+        console.log(chalk.red('Source path is required. Usage: uap droids import <path>'));
+        return;
+      }
+      await importDroids(cwd, options.path);
       break;
   }
 }
@@ -129,7 +140,10 @@ async function listDroids(cwd: string): Promise<void> {
     { path: join(cwd, '.factory/droids'), label: 'Project (.factory/droids)' },
     { path: join(cwd, '.claude/agents'), label: 'Claude Code (.claude/agents)' },
     { path: join(cwd, '.opencode/agent'), label: 'OpenCode (.opencode/agent)' },
-    { path: join(process.env.HOME || '~', '.factory/droids'), label: 'Personal (~/.factory/droids)' },
+    {
+      path: join(process.env.HOME || '~', '.factory/droids'),
+      label: 'Personal (~/.factory/droids)',
+    },
   ];
 
   let found = false;
@@ -183,10 +197,7 @@ async function addDroid(cwd: string, name: string, template?: string): Promise<v
     let content: string;
 
     if (template && BUILTIN_TEMPLATES[template]) {
-      content = BUILTIN_TEMPLATES[template].content.replace(
-        /name: .+/,
-        `name: ${name}`
-      );
+      content = BUILTIN_TEMPLATES[template].content.replace(/name: .+/, `name: ${name}`);
     } else if (template) {
       spinner.fail(`Unknown template: ${template}`);
       console.log(chalk.dim('Available templates: ' + Object.keys(BUILTIN_TEMPLATES).join(', ')));

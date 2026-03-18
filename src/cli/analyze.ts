@@ -47,7 +47,9 @@ export async function analyzeCommand(options: AnalyzeOptions): Promise<void> {
   }
 }
 
-function formatAsMarkdown(analysis: ReturnType<typeof analyzeProject> extends Promise<infer T> ? T : never): string {
+function formatAsMarkdown(
+  analysis: ReturnType<typeof analyzeProject> extends Promise<infer T> ? T : never
+): string {
   const lines: string[] = [
     `# Project Analysis: ${analysis.projectName}`,
     '',
@@ -79,7 +81,8 @@ function formatAsMarkdown(analysis: ReturnType<typeof analyzeProject> extends Pr
       lines.push('');
       lines.push(`- **Language**: ${comp.language}`);
       if (comp.framework) lines.push(`- **Framework**: ${comp.framework}`);
-      lines.push(`- ${comp.description}`);
+      lines.push(`- ${comp.description || 'No description'}`);
+
       lines.push('');
     }
   }

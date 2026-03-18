@@ -156,14 +156,14 @@ function getPolicyData(cwd: string): PolicyData[] {
       .all() as Array<Record<string, unknown>>;
     db.close();
     return rows.map((r) => ({
-      id: r.id as string,
-      name: r.name as string,
-      category: r.category as string,
-      level: r.level as string,
+      id: (r.id as string) || '',
+      name: (r.name as string) || 'unnamed',
+      category: (r.category as string) || 'general',
+      level: (r.level as string) || 'info',
       enforcementStage: (r.enforcementStage as string) || 'pre-exec',
       isActive: r.isActive === 1,
       tags: typeof r.tags === 'string' ? JSON.parse(r.tags) : (r.tags as string[]) || [],
-      priority: r.priority as number,
+      priority: (r.priority as number) || 0,
     }));
   } catch {
     return [];
@@ -188,12 +188,12 @@ function getAuditData(cwd: string): AuditEntry[] {
       .all() as Array<Record<string, unknown>>;
     db.close();
     return rows.map((r) => ({
-      policyId: r.policyId as string,
-      operation: r.operation as string,
+      policyId: (r.policyId as string) || '',
+      operation: (r.operation as string) || 'unknown',
       allowed: r.allowed === 1,
       reason: (r.reason as string) || '',
-      executedAt: r.executedAt as string,
-      taskId: r.taskId as string | undefined,
+      executedAt: (r.executedAt as string) || '',
+      taskId: (r.taskId as string) || undefined,
     }));
   } catch {
     return [];
@@ -315,12 +315,12 @@ function getModelData(cwd: string): ModelData {
         )
         .all() as Array<Record<string, unknown>>;
       sessionUsage = rows.map((r) => ({
-        modelId: r.modelId as string,
-        taskCount: r.taskCount as number,
-        totalTokensIn: r.totalTokensIn as number,
-        totalTokensOut: r.totalTokensOut as number,
-        totalCost: r.totalCost as number,
-        successRate: r.successRate as number,
+        modelId: (r.modelId as string) || 'unknown',
+        taskCount: (r.taskCount as number) || 0,
+        totalTokensIn: (r.totalTokensIn as number) || 0,
+        totalTokensOut: (r.totalTokensOut as number) || 0,
+        totalCost: (r.totalCost as number) || 0,
+        successRate: (r.successRate as number) || 0,
       }));
       const costRow = db.prepare('SELECT SUM(cost) as total FROM task_outcomes').get() as
         | { total: number | null }

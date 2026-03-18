@@ -148,15 +148,15 @@ async function createBatch(batcher: DeployBatcher, options: DeployOptions): Prom
     }
 
     spinner.succeed(`Batch created: ${batch.id.slice(0, 8)}...`);
-    console.log(chalk.dim(`  Created: ${batch.createdAt}`));
+    console.log(chalk.dim(`  Created: ${batch.createdAt || '?'}`));
     console.log(chalk.dim(`  Actions: ${batch.actions.length}`));
 
     if (options.verbose) {
       console.log(chalk.bold('\n  Actions:'));
       for (const action of batch.actions) {
-        console.log(`    - ${action.actionType} → ${action.target}`);
+        console.log(`    - ${action.actionType || 'unknown'} → ${action.target || 'unknown'}`);
         if (action.payload) {
-          console.log(chalk.dim(`      ${JSON.stringify(action.payload)}`));
+          console.log(chalk.dim(`      ${JSON.stringify(action.payload ?? {})}`));
         }
       }
     }
@@ -239,7 +239,9 @@ async function showDeployStatus(options: DeployOptions): Promise<void> {
         console.log(`  ${chalk.yellow(type)}: ${actions.length} action(s)`);
         if (options.verbose) {
           for (const action of actions) {
-            console.log(chalk.dim(`    - ${action.target} (queued: ${action.queuedAt})`));
+            console.log(
+              chalk.dim(`    - ${action.target || 'unknown'} (queued: ${action.queuedAt || '?'})`)
+            );
           }
         }
       }
@@ -253,7 +255,7 @@ async function showDeployStatus(options: DeployOptions): Promise<void> {
     } else {
       for (const batch of pendingBatches) {
         console.log(`  ${chalk.blue(batch.id.slice(0, 8))}...`);
-        console.log(chalk.dim(`    Created: ${batch.createdAt}`));
+        console.log(chalk.dim(`    Created: ${batch.createdAt || '?'}`));
         console.log(chalk.dim(`    Actions: ${batch.actions.length}`));
       }
     }

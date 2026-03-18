@@ -153,8 +153,8 @@ async function listWorktrees(_cwd: string, git: SimpleGit): Promise<void> {
       const branch = lines.find((l) => l.startsWith('branch '))?.replace('branch refs/heads/', '');
 
       if (path && path.includes('.worktrees')) {
-        const name = path.split('.worktrees/')[1];
-        const id = name?.split('-')[0] || '-';
+        const name = path.split('.worktrees/')[1] || 'unknown';
+        const id = name.split('-')[0] || '-';
         console.log(`| ${id} | ${name} | ${branch || 'detached'} | ${path} |`);
       }
     }

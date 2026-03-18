@@ -205,7 +205,7 @@ async function runComplianceCheck(cwd: string, options: ComplianceOptions = {}):
       results.push({
         name: 'Database access',
         status: 'fail',
-        message: `Cannot open database: ${err}`,
+        message: `Cannot open database: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
   }
@@ -496,7 +496,9 @@ async function runComplianceFix(cwd: string, _options: ComplianceOptions): Promi
     db.close();
     console.log(chalk.green('✅ Schema migrations applied'));
   } catch (err) {
-    console.log(chalk.red(`❌ Schema migration failed: ${err}`));
+    console.log(
+      chalk.red(`❌ Schema migration failed: ${err instanceof Error ? err.message : String(err)}`)
+    );
   }
 
   // Fix 3: Create Qdrant collections if missing

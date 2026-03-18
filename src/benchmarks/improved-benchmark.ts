@@ -744,7 +744,7 @@ export async function runImprovedBenchmark(
     for (const [modelId, imp] of Object.entries(improvement)) {
       const model = modelsToTest.find((m) => m.id === modelId);
       const sign = imp.successDelta >= 0 ? '+' : '';
-      console.log(`  ${model?.name}: ${sign}${imp.successDelta.toFixed(1)}% success`);
+      console.log(`  ${model?.name || modelId}: ${sign}${imp.successDelta.toFixed(1)}% success`);
     }
   }
 

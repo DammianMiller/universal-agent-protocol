@@ -143,8 +143,8 @@ async function routeCommand(task: string, options: { verbose?: boolean }): Promi
 
   console.log(chalk.bold('Model Selection:'));
   console.log(`  Selected: ${chalk.green(classification.suggestedModel)}`);
-  console.log(`  Fallback: ${chalk.yellow(classification.fallbackModel)}`);
-  console.log(`  Reasoning: ${classification.reasoning}`);
+  console.log(`  Fallback: ${chalk.yellow(classification.fallbackModel || 'none')}`);
+  console.log(`  Reasoning: ${classification.reasoning || 'No reasoning provided'}`);
   console.log();
 
   if (options.verbose) {
@@ -188,9 +188,9 @@ async function planCommand(
     for (const subtask of plan.subtasks) {
       console.log(`\n  ${chalk.cyan(subtask.title)}`);
       console.log(`    Type: ${subtask.type}, Complexity: ${subtask.complexity}`);
-      console.log(`    Model: ${plan.modelAssignments.get(subtask.id)}`);
-      console.log(`    Inputs: ${subtask.inputs.join(', ')}`);
-      console.log(`    Outputs: ${subtask.outputs.join(', ')}`);
+      console.log(`    Model: ${plan.modelAssignments.get(subtask.id) || 'unassigned'}`);
+      console.log(`    Inputs: ${subtask.inputs?.join(', ') || 'none'}`);
+      console.log(`    Outputs: ${subtask.outputs?.join(', ') || 'none'}`);
       if (subtask.constraints.length > 0) {
         console.log(`    Constraints:`);
         for (const c of subtask.constraints) {
@@ -214,7 +214,7 @@ async function planCommand(
     const results = await executor.executePlan(plan, planner, (result) => {
       const icon = result.success ? chalk.green('✓') : chalk.red('✗');
       console.log(
-        `  ${icon} ${result.subtaskId} [${result.modelUsed}] ${result.success ? '' : `- ${result.error}`}`
+        `  ${icon} ${result.subtaskId} [${result.modelUsed || 'unknown'}] ${result.success ? '' : `- ${result.error || 'unknown error'}`}`
       );
     });
 

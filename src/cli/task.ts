@@ -367,7 +367,7 @@ async function showTask(service: TaskService, options: TaskOptions): Promise<voi
       console.log('');
       console.log(chalk.bold('History:'));
       for (const entry of history.slice(0, 10)) {
-        console.log(chalk.dim(`  ${entry.changedAt}: ${entry.field} changed`));
+        console.log(chalk.dim(`  ${entry.changedAt || '?'}: ${entry.field || 'unknown'} changed`));
       }
     }
   }
@@ -670,12 +670,16 @@ async function claimTask(service: TaskService, options: TaskOptions): Promise<vo
 
     spinner.succeed(`Task claimed: ${options.id}`);
     console.log(`  ${STATUS_ICONS.in_progress} ${result.task.title}`);
-    console.log(`  Worktree: ${result.worktreeBranch}`);
+    console.log(`  Worktree: ${result.worktreeBranch || 'none'}`);
 
     if (result.overlaps.length > 0) {
       console.log(chalk.yellow('\n  ⚠️  Overlapping work detected:'));
       for (const overlap of result.overlaps) {
-        console.log(chalk.yellow(`    ${overlap.conflictRisk}: ${overlap.suggestion}`));
+        console.log(
+          chalk.yellow(
+            `    ${overlap.conflictRisk || 'unknown'}: ${overlap.suggestion || 'Review overlapping work'}`
+          )
+        );
       }
     }
 

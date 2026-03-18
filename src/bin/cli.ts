@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { Command, Option } from 'commander';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { initCommand } from '../cli/init.js';
@@ -779,18 +780,17 @@ uapOmpCmd.addCommand(
   new Command('dashboard')
     .description('Show UAP dashboard with tasks, agents, memory, and worktrees')
     .action(async () => {
-      const { execSync } = await import('child_process');
       try {
         const uapOmpDir = process.env.HOME + '/.uap/omp';
         const dashboardScript = `${uapOmpDir}/commands/uap-dashboard.sh`;
-        if (require('fs').existsSync(dashboardScript)) {
+        if (existsSync(dashboardScript)) {
           execSync(`bash "${dashboardScript}"`, { stdio: 'inherit' });
         } else {
-          console.error('❌ UAP dashboard not installed. Run: uap-omp install');
+          console.error('UAP dashboard not installed. Run: uap-omp install');
         }
       } catch (error: unknown) {
         const err = error as Error;
-        console.error('❌ Error showing dashboard:', err.message);
+        console.error('Error showing dashboard:', err.message);
       }
     })
 );
@@ -801,13 +801,12 @@ uapOmpCmd.addCommand(
     .description('Manage UAP memory for oh-my-pi')
     .addCommand(
       new Command('status').description('Show memory status').action(() => {
-        const { execSync } = require('child_process');
         try {
           const uapOmpDir = process.env.HOME + '/.uap/omp';
           const dbPath = `${uapOmpDir}/memory/short_term.db`;
-          if (require('fs').existsSync(dbPath)) {
+          if (existsSync(dbPath)) {
             execSync(
-              `sqlite3 "${dbPath}" "SELECT COUNT(*) as total, COUNT(DISTINCT category) as categories FROM memories;"`,
+              `sqlite3 "${dbPath}" "SELECT COUNT(*) as total, COUNT(DISTINCT type) as types FROM memories;"`,
               {
                 stdio: 'inherit',
               }
@@ -817,7 +816,7 @@ uapOmpCmd.addCommand(
           }
         } catch (error: unknown) {
           const err = error as Error;
-          console.error('❌ Error checking memory:', err.message);
+          console.error('Error checking memory:', err.message);
         }
       })
     )
@@ -827,16 +826,15 @@ uapOmpCmd.addCommand(
         .argument('<search>', 'Search term')
         .option('-n, --limit <number>', 'Max results', '5')
         .action((search, options) => {
-          const { execSync } = require('child_process');
           try {
             const uapOmpDir = process.env.HOME + '/.uap/omp';
             const dbPath = `${uapOmpDir}/memory/short_term.db`;
-            if (require('fs').existsSync(dbPath)) {
+            if (existsSync(dbPath)) {
               // Sanitize search term to prevent SQL injection
               const sanitizedSearch = search.replace(/'/g, "''");
               const sanitizedLimit = parseInt(options.limit, 10) || 5;
               execSync(
-                `sqlite3 "${dbPath}" "SELECT content, category, importance FROM memories WHERE content LIKE '%${sanitizedSearch}%' ORDER BY importance DESC LIMIT ${sanitizedLimit};"`,
+                `sqlite3 "${dbPath}" "SELECT content, type, importance FROM memories WHERE content LIKE '%${sanitizedSearch}%' ORDER BY importance DESC LIMIT ${sanitizedLimit};"`,
                 {
                   stdio: 'inherit',
                 }
@@ -846,7 +844,7 @@ uapOmpCmd.addCommand(
             }
           } catch (error: unknown) {
             const err = error as Error;
-            console.error('❌ Error querying memory:', err.message);
+            console.error('Error querying memory:', err.message);
           }
         })
     )
@@ -858,18 +856,17 @@ uapOmpCmd.addCommand(
     .description('Manage UAP worktrees for oh-my-pi')
     .addCommand(
       new Command('list').description('List active worktrees').action(() => {
-        const { execSync } = require('child_process');
         try {
           const uapOmpDir = process.env.HOME + '/.uap/omp';
           const worktreesFile = `${uapOmpDir}/worktrees.json`;
-          if (require('fs').existsSync(worktreesFile)) {
+          if (existsSync(worktreesFile)) {
             execSync(`cat "${worktreesFile}" | jq '.'`, { stdio: 'inherit' });
           } else {
             console.log('No worktrees tracked. Run: uap-omp install');
           }
         } catch (error: unknown) {
           const err = error as Error;
-          console.error('❌ Error listing worktrees:', err.message);
+          console.error('Error listing worktrees:', err.message);
         }
       })
     )
@@ -878,12 +875,11 @@ uapOmpCmd.addCommand(
         .description('Create a new worktree')
         .argument('<slug>', 'Worktree slug')
         .action((slug) => {
-          const { execSync } = require('child_process');
           try {
             execSync(`uap worktree create ${slug}`, { stdio: 'inherit' });
           } catch (error: unknown) {
             const err = error as Error;
-            console.error('❌ Error creating worktree:', err.message);
+            console.error('Error creating worktree:', err.message);
           }
         })
     )
@@ -895,33 +891,31 @@ uapOmpCmd.addCommand(
     .description('Manage UAP hooks for oh-my-pi')
     .addCommand(
       new Command('install').description('Install UAP hooks for oh-my-pi').action(() => {
-        const { execSync } = require('child_process');
         try {
-          const scriptPath = require('path').join(__dirname, '../../scripts/omp/uap-omp.sh');
-          if (require('fs').existsSync(scriptPath)) {
+          const scriptPath = join(__dirname, '../../scripts/omp/uap-omp.sh');
+          if (existsSync(scriptPath)) {
             execSync(`bash "${scriptPath}" install`, { stdio: 'inherit' });
           } else {
-            console.error('❌ UAP hooks script not found. Please rebuild with: npm run build');
+            console.error('UAP hooks script not found. Please rebuild with: npm run build');
           }
         } catch (error: unknown) {
           const err = error as Error;
-          console.error('❌ Error installing hooks:', err.message);
+          console.error('Error installing hooks:', err.message);
         }
       })
     )
     .addCommand(
       new Command('status').description('Show hook installation status').action(() => {
-        const { execSync } = require('child_process');
         try {
-          const scriptPath = require('path').join(__dirname, '../../scripts/omp/uap-omp.sh');
-          if (require('fs').existsSync(scriptPath)) {
+          const scriptPath = join(__dirname, '../../scripts/omp/uap-omp.sh');
+          if (existsSync(scriptPath)) {
             execSync(`bash "${scriptPath}" status`, { stdio: 'inherit' });
           } else {
-            console.error('❌ UAP hooks script not found. Please rebuild with: npm run build');
+            console.error('UAP hooks script not found. Please rebuild with: npm run build');
           }
         } catch (error: unknown) {
           const err = error as Error;
-          console.error('❌ Error checking hook status:', err.message);
+          console.error('Error checking hook status:', err.message);
         }
       })
     )

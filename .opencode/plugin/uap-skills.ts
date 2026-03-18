@@ -98,7 +98,7 @@ export const UAPSkills: Plugin = async ({ directory }) => {
             (s) => s.name === name || basename(s.path).replace('/SKILL.md', '') === name
           );
           if (!skill) {
-            return `Skill '${name}' not found. Available: ${skills.map((s) => s.name).join(', ')}`;
+            return `Skill '${name}' not found. Available: ${skills.length > 0 ? skills.map((s) => s.name).join(', ') : 'none'}`;
           }
           const content = await readFile(skill.path, 'utf-8');
           // Strip frontmatter for injection

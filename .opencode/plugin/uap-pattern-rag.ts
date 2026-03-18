@@ -10,7 +10,7 @@ import type { Plugin } from '@opencode-ai/plugin';
  * Hooks:
  * - session.created: Loads general project patterns
  * - session.compacting: Preserves active patterns through compaction
- * - message.created: Extracts task keywords and queries relevant patterns
+ * - experimental.chat.system.transform: Queries and injects task-relevant patterns
  *
  * Requires: agents/.venv/bin/python, agents/scripts/query_patterns.py
  */
@@ -19,9 +19,9 @@ const VENV_PYTHON = './agents/.venv/bin/python';
 const QUERY_SCRIPT = './agents/scripts/query_patterns.py';
 const DB_PATH = './agents/data/memory/short_term.db';
 
-export const UAPPatternRAG: Plugin = async ({ $, directory }) => {
+export const UAPPatternRAG: Plugin = async ({ $ }) => {
   // Track which patterns have been injected this session to avoid duplicates
-  let injectedPatternIds = new Set<number>();
+  const injectedPatternIds = new Set<number>();
 
   return {
     event: async ({ event }) => {
@@ -58,23 +58,25 @@ export const UAPPatternRAG: Plugin = async ({ $, directory }) => {
       }
     },
 
-    middleware: async (input, next) => {
-      // Before each user message is processed, check if we should inject patterns
+    // Inject task-relevant patterns into the system prompt before each LLM call.
+    // This hook runs on every chat turn, so we extract the latest user message
+    // from the input messages to determine which patterns are relevant.
+    'experimental.chat.system.transform': async (input, output) => {
       try {
-        const lastMessage = input.messages?.[input.messages.length - 1];
-        if (!lastMessage || lastMessage.role !== 'user') {
-          return next(input);
+        // Find the latest user message from the input messages
+        const messages = (input as any).messages || [];
+        let taskText = '';
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const msg = messages[i];
+          if (msg?.role === 'user') {
+            taskText = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+            break;
+          }
         }
 
-        // Extract task text from the user message
-        const taskText =
-          typeof lastMessage.content === 'string'
-            ? lastMessage.content
-            : JSON.stringify(lastMessage.content);
-
-        // Skip short messages (greetings, confirmations)
+        // Skip short messages (greetings, confirmations) or if no user message found
         if (taskText.length < 20) {
-          return next(input);
+          return;
         }
 
         // Query Qdrant for relevant patterns
@@ -96,19 +98,16 @@ export const UAPPatternRAG: Plugin = async ({ $, directory }) => {
           const contextLines = ['<uap-patterns>'];
           for (const p of newPatterns) {
             const abbr = p.abbreviation ? ` (${p.abbreviation})` : '';
-            contextLines.push(`### P${p.id}: ${p.title}${abbr} [score: ${p.score}]`);
+            contextLines.push(`### P${p.id}: ${p.title || 'Untitled'}${abbr} [score: ${p.score}]`);
             // Truncate body to ~400 chars for 3B model context efficiency
-            contextLines.push(p.body.slice(0, 400));
+            contextLines.push((p.body || '').slice(0, 400));
             contextLines.push('');
             injectedPatternIds.add(p.id);
           }
           contextLines.push('</uap-patterns>');
 
-          // Inject as system context before the user message
-          input.messages.splice(input.messages.length - 1, 0, {
-            role: 'system' as const,
-            content: contextLines.join('\n'),
-          });
+          // Inject into system prompt
+          output.system.push(contextLines.join('\n'));
 
           console.log(
             `[UAP-RAG] Injected ${newPatterns.length} pattern(s): ${newPatterns.map((p) => `P${p.id}`).join(', ')}`
@@ -117,8 +116,6 @@ export const UAPPatternRAG: Plugin = async ({ $, directory }) => {
       } catch {
         // Never block the pipeline on pattern lookup failures
       }
-
-      return next(input);
     },
   };
 };

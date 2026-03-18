@@ -77,7 +77,10 @@ export const UAPDroids: Plugin = async ({ $, directory }) => {
           const droids = await discoverDroids(projectDir);
           if (droids.length === 0) return 'No droids found in .factory/droids/';
           return droids
-            .map((d) => `- **${d.name}** (model: ${d.model}): ${d.description}`)
+            .map(
+              (d) =>
+                `- **${d.name}** (model: ${d.model || 'inherit'}): ${d.description || 'No description'}`
+            )
             .join('\n');
         },
       }),
@@ -146,7 +149,7 @@ export const UAPDroids: Plugin = async ({ $, directory }) => {
           // Return the droid instructions + task + routing/pattern context
           return `<uap-droid name="${found.name}">
 ## Droid: ${found.name}
-${found.description}
+${found.description || 'No description available'}
 ${routingContext}${patternContext}
 ### Instructions
 ${body}

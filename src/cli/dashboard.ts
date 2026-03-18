@@ -179,7 +179,7 @@ async function showHistory(_options: DashboardOptions): Promise<void> {
     );
 
     for (const row of rows) {
-      const ts = (row.timestamp as string).slice(0, 19);
+      const ts = ((row.timestamp as string) || '').slice(0, 19);
       const dur = row.duration_ms ? `${Math.round((row.duration_ms as number) / 1000)}s` : '?';
       const cost = row.total_cost ? `$${(row.total_cost as number).toFixed(4)}` : '$0';
       const tasks = String(row.tasks_completed || 0);
@@ -1239,7 +1239,7 @@ async function showSessionDashboard(options: DashboardOptions): Promise<void> {
           .slice(0, 5)
           .map(
             (p: { title?: string; name?: string; abbreviation?: string; id?: number | string }) =>
-              p.title || p.name || p.abbreviation || `P${p.id}` || '?'
+              p.title || p.name || p.abbreviation || (p.id != null ? `P${p.id}` : '?')
           );
       } catch {
         /* ignore */
@@ -1379,7 +1379,7 @@ async function showSessionDashboard(options: DashboardOptions): Promise<void> {
       console.log('');
       console.log(chalk.dim('  Recent memories (24h):'));
       for (const mem of recentMemories.slice(0, 3)) {
-        console.log(`    ${chalk.dim(mem.type + ':')} ${mem.content}`);
+        console.log(`    ${chalk.dim((mem.type || 'unknown') + ':')} ${mem.content || ''}`);
       }
     }
     console.log('');
@@ -1602,7 +1602,7 @@ async function showPoliciesDashboard(options: DashboardOptions): Promise<void> {
       if (taskEntries.length > 0) {
         for (const entry of taskEntries) {
           const icon = entry.allowed ? chalk.green('PASS') : chalk.red('BLOCK');
-          console.log(`  ${icon} ${entry.operation} - ${entry.reason || 'OK'}`);
+          console.log(`  ${icon} ${entry.operation || 'unknown'} - ${entry.reason || 'OK'}`);
         }
       } else {
         console.log(chalk.dim('  No policy checks recorded for this task'));
@@ -2262,7 +2262,7 @@ export function showDashboard(): void {
         // Show top patterns by success rate
         const sorted = [...withRates].sort((a, b) => (b.successRate || 0) - (a.successRate || 0));
         for (const p of sorted.slice(0, 8)) {
-          const name = p.title || p.name || p.abbreviation || `P${p.id}` || '?';
+          const name = p.title || p.name || p.abbreviation || (p.id != null ? `P${p.id}` : '?');
           const rate = p.successRate || 0;
           const barLen = Math.round(rate / 5);
           const bar =

@@ -78,7 +78,7 @@ fi
 EOF
 
     # Post-session hook: save lessons and update memory
-    cat > "$UAP_OMP_DIR/hooks/post/session-end.sh" << 'EOF'
+    cat > "$UAP_OMP_DIR/hooks/post/session-end.sh" << 'POSTEOF'
 #!/usr/bin/env bash
 # UAP Post-Session Hook for Oh-My-Pi
 # Saves lessons learned, updates memory, and cleans up stale worktrees
@@ -97,9 +97,11 @@ fi
 # Update worktree status
 if [[ -f "$UAP_OMP_DIR/worktrees.json" ]]; then
     # Mark active worktrees as recently used
-    jq '.[] | select(.slug | test("$(git branch --show-current 2>/dev/null || echo "main")")) | .last_used = "'$(date +%Y-%m-%dT%H:%M:%S)'"' "$UAP_OMP_DIR/worktrees.json" > "$UAP_OMP_DIR/worktrees.tmp.json" && mv "$UAP_OMP_DIR/worktrees.tmp.json" "$UAP_OMP_DIR/worktrees.json"
+    CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "main")
+    CURRENT_TIME=$(date +%Y-%m-%dT%H:%M:%S)
+    jq --arg branch "$CURRENT_BRANCH" --arg time "$CURRENT_TIME" '.[] | select(.slug | test($branch)) | .last_used = $time' "$UAP_OMP_DIR/worktrees.json" > "$UAP_OMP_DIR/worktrees.tmp.json" && mv "$UAP_OMP_DIR/worktrees.tmp.json" "$UAP_OMP_DIR/worktrees.json"
 fi
-EOF
+POSTEOF
 
     chmod +x "$UAP_OMP_DIR/hooks/pre/session-start.sh"
     chmod +x "$UAP_OMP_DIR/hooks/post/session-end.sh"
@@ -138,7 +140,7 @@ if [[ -f "$UAP_OMP_DIR/tasks.jsonl" ]]; then
     TASK_COUNT=$(wc -l < "$UAP_OMP_DIR/tasks.jsonl" 2>/dev/null || echo "0")
     echo "║    Active tasks: $TASK_COUNT                               ║"
     # Show pending tasks
-    PENDING=$(jq -r '[.[] | select(.status == "pending") | .title] | join("\n    • ")' "$UAP_OMP_DIR/tasks.json" 2>/dev/null || echo "None")
+    PENDING=$(jq -r '[.[] | select(.status == "pending") | .title] | join("\n    • ")' "$UAP_OMP_DIR/tasks.jsonl" 2>/dev/null || echo "None")
     if [[ -n "$PENDING" && "$PENDING" != "" ]]; then
         echo "║    Pending:                                              ║"
         echo "║    $PENDING                                               ║"
@@ -195,8 +197,8 @@ fi
 echo "╚══════════════════════════════════════════════════════════╝"
 
 # Quick actions
-if [[ -f "$UAP_OMP_DIR/tasks.json" ]]; then
-    PENDING_COUNT=$(jq -r '[.[] | select(.status == "pending") or .status == "in_progress"] | length' "$UAP_OMP_DIR/tasks.json" 2>/dev/null || echo "0")
+if [[ -f "$UAP_OMP_DIR/tasks.jsonl" ]]; then
+    PENDING_COUNT=$(jq -r '[.[] | select(.status == "pending" or .status == "in_progress")] | length' "$UAP_OMP_DIR/tasks.jsonl" 2>/dev/null || echo "0")
     if [[ "$PENDING_COUNT" -gt 0 ]]; then
         echo ""
         echo "💡 Quick actions:"
@@ -416,7 +418,7 @@ case "${1:-install}" in
         case "${1:-status}" in
             status)
                 if [[ -f "$UAP_OMP_DIR/memory/short_term.db" ]]; then
-                    sqlite3 "$UAP_OMP_DIR/memory/short_term.db" "SELECT COUNT(*) as total_memories, COUNT(DISTINCT category) as categories FROM memories;"
+                    sqlite3 "$UAP_OMP_DIR/memory/short_term.db" "SELECT COUNT(*) as total_memories, COUNT(DISTINCT type) as types FROM memories;"
                 else
                     echo "No memory database found"
                 fi
@@ -430,6 +432,15 @@ case "${1:-install}" in
                 show_help
                 ;;
         esac
+        ;;
+    compact)
+        log "Compacting memory system..."
+        if [[ -f "$UAP_OMP_DIR/memory/short_term.db" ]]; then
+            sqlite3 "$UAP_OMP_DIR/memory/short_term.db" "VACUUM; ANALYZE;"
+            echo "Memory compaction completed"
+        else
+            echo "No memory database found"
+        fi
         ;;
     hooks)
         if [[ -d "$UAP_OMP_DIR/hooks" ]]; then
