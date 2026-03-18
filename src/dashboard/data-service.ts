@@ -162,7 +162,13 @@ function getPolicyData(cwd: string): PolicyData[] {
       level: (r.level as string) || 'info',
       enforcementStage: (r.enforcementStage as string) || 'pre-exec',
       isActive: r.isActive === 1,
-      tags: typeof r.tags === 'string' ? JSON.parse(r.tags) : (r.tags as string[]) || [],
+      tags: (() => {
+        if (typeof r.tags === 'string') {
+          const parsed = JSON.parse(r.tags);
+          return Array.isArray(parsed) ? parsed : [];
+        }
+        return Array.isArray(r.tags) ? (r.tags as string[]) : [];
+      })(),
       priority: (r.priority as number) || 0,
     }));
   } catch {

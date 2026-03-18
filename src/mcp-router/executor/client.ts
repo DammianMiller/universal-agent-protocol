@@ -132,18 +132,21 @@ export class McpClient {
     };
 
     return new Promise((resolve, reject) => {
-      this.pendingRequests.set(id, { resolve, reject });
-
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(id);
         reject(new Error(`Request timeout for ${method}`));
       }, 30000);
 
-      const originalResolve = this.pendingRequests.get(id)!.resolve;
-      this.pendingRequests.get(id)!.resolve = (value) => {
-        clearTimeout(timeout);
-        originalResolve(value);
-      };
+      this.pendingRequests.set(id, {
+        resolve: (value) => {
+          clearTimeout(timeout);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+      });
 
       this.process!.stdin!.write(JSON.stringify(request) + '\n');
     });
@@ -192,6 +195,36 @@ export class McpClient {
     }));
   }
 
+  /**
+   * Call a tool on the connected MCP server.
+   *
+   * !! REGRESSION GUARD — DO NOT MODIFY THE RETURN VALUE !!
+   *
+   * This method MUST return the raw JSON-RPC result exactly as received from
+   * the downstream MCP server. The result is typically an MCP content envelope:
+   *   { content: [{ type: "text", text: "..." }] }
+   *
+   * DO NOT:
+   *  - Unwrap, flatten, or extract text from content blocks
+   *  - Substitute placeholder strings like "(no output)" for null/undefined
+   *  - Wrap the result in a new object or add metadata
+   *
+   * WHY: v1.4.0 added content unwrapping here and it was reverted in v1.4.1
+   * because it broke Qwen3.5 (and similar small MoE models). The unwrapping
+   * caused double-processing — the router's server.ts already wraps results
+   * in MCP content blocks for upstream clients. When callTool() also unwrapped,
+   * the model received flattened text instead of structured tool results,
+   * causing it to misinterpret outputs and trigger infinite retries.
+   *
+   * The same regression was nearly re-introduced via unwrapMcpContent() in
+   * execute.ts during the v1.4.2 compliance work and had to be reverted again.
+   *
+   * If you need to transform the result, do it in execute.ts (application
+   * layer), NOT here (transport layer) — and read the v1.4.1 commit message
+   * (5941768f) before changing anything.
+   *
+   * @see commit 5941768f "fix: v1.4.1 - revert callTool content unwrapping"
+   */
   async callTool(toolName: string, args: Record<string, unknown> = {}): Promise<unknown> {
     if (!this.initialized) {
       await this.connect();
@@ -202,11 +235,6 @@ export class McpClient {
       arguments: args,
     });
 
-    // Return the raw MCP result as-is. The MCP tools/call response format
-    // { content: [{ type, text }] } is the standard envelope and must be
-    // preserved for downstream consumers (execute.ts, output-compressor).
-    // Do NOT unwrap content blocks here - that would double-process when
-    // the router itself wraps results in the same format for upstream clients.
     return result;
   }
 

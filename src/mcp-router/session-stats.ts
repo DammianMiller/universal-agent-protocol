@@ -32,6 +32,8 @@ export interface StatsSummary {
   byTool: ToolBreakdown[];
 }
 
+const MAX_CALL_RECORDS = 500; // Rolling window to prevent unbounded memory growth
+
 export class SessionStats {
   private startTime = Date.now();
   private calls: ToolCallRecord[] = [];
@@ -58,6 +60,10 @@ export class SessionStats {
       rawBytes,
       contextBytes,
     });
+    // Cap the array to prevent unbounded memory growth over long sessions
+    if (this.calls.length > MAX_CALL_RECORDS) {
+      this.calls = this.calls.slice(-MAX_CALL_RECORDS);
+    }
   }
 
   getSummary(): StatsSummary {

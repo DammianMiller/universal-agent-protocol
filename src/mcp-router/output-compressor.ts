@@ -12,6 +12,8 @@ import { smartTruncate } from '../memory/context-compressor.js';
 
 const DEFAULT_MAX_BYTES = 5120; // 5KB threshold for truncation
 const INDEX_THRESHOLD = 10240; // 10KB threshold for auto-indexing
+const MAX_INDEX_BYTES = 2 * 1024 * 1024; // 2MB ceiling — skip FTS5 for huge outputs
+const MAX_CHUNK_BYTES = 8192; // 8KB max per FTS5 chunk to avoid tokenizer stress
 const MAX_SNIPPETS = 3;
 
 export interface CompressionStats {
@@ -50,7 +52,26 @@ export function compressToolOutput(
     };
   }
 
-  const serialized = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+  // Safely serialize — JSON.stringify can throw on BigInt values or (theoretically)
+  // circular references. Catch and fall back to String() coercion.
+  let serialized: string;
+  try {
+    serialized = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+  } catch {
+    // BigInt, circular ref, or other exotic value — safe coercion
+    // Avoid String(obj) which produces "[object Object]"
+    if (typeof result === 'object') {
+      try {
+        serialized = JSON.stringify(result, (_key, val) =>
+          typeof val === 'bigint' ? val.toString() : val
+        );
+      } catch {
+        serialized = '[complex value]';
+      }
+    } else {
+      serialized = String(result);
+    }
+  }
   const originalBytes = Buffer.byteLength(serialized, 'utf-8');
 
   // Small output: pass through
@@ -66,8 +87,11 @@ export function compressToolOutput(
     };
   }
 
-  // Large output with intent: index and search
-  if (intent && originalBytes >= INDEX_THRESHOLD) {
+  // Large output with intent: index and search.
+  // Skip FTS5 for outputs above MAX_INDEX_BYTES — the native porter tokenizer in
+  // better-sqlite3 can segfault on very large inputs with no word boundaries
+  // (e.g., base64 blobs, minified JS, escaped JSON from double-serialization).
+  if (intent && originalBytes >= INDEX_THRESHOLD && originalBytes <= MAX_INDEX_BYTES) {
     const indexed = indexAndSearch(serialized, intent);
     const compressedBytes = Buffer.byteLength(indexed, 'utf-8');
     return {
@@ -97,6 +121,28 @@ export function compressToolOutput(
 }
 
 /**
+ * Sanitize a string for safe FTS5 insertion.
+ * Strips null bytes and limits length to prevent native tokenizer crashes.
+ */
+function sanitizeForFTS5(text: string): string {
+  // Remove null bytes — SQLite's C API uses sqlite3_bind_text() with length,
+  // but the porter tokenizer may not handle embedded \0 gracefully.
+  let safe = text.replace(/\0/g, '');
+
+  // Truncate individual chunks to MAX_CHUNK_BYTES to avoid stressing the
+  // native porter tokenizer with very long inputs lacking word boundaries
+  // (e.g., base64 data, minified JS, escaped JSON from double-serialization).
+  if (Buffer.byteLength(safe, 'utf-8') > MAX_CHUNK_BYTES) {
+    // Truncate by characters (approximate) — slightly over is OK, the
+    // tokenizer handles moderate sizes fine.
+    const ratio = MAX_CHUNK_BYTES / Buffer.byteLength(safe, 'utf-8');
+    safe = safe.slice(0, Math.floor(safe.length * ratio));
+  }
+
+  return safe;
+}
+
+/**
  * Index large output into in-memory FTS5 and return intent-matching snippets.
  */
 function indexAndSearch(content: string, intent: string): string {
@@ -120,7 +166,7 @@ function indexAndSearch(content: string, intent: string): string {
     const insert = db.prepare('INSERT INTO output_fts (content, chunk_index) VALUES (?, ?)');
     const insertMany = db.transaction((items: Array<{ content: string; index: number }>) => {
       for (const item of items) {
-        insert.run(item.content, String(item.index));
+        insert.run(sanitizeForFTS5(item.content), String(item.index));
       }
     });
 

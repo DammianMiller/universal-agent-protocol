@@ -183,7 +183,8 @@ async function showHistory(_options: DashboardOptions): Promise<void> {
       const dur = row.duration_ms ? `${Math.round((row.duration_ms as number) / 1000)}s` : '?';
       const cost = row.total_cost ? `$${(row.total_cost as number).toFixed(4)}` : '$0';
       const tasks = String(row.tasks_completed || 0);
-      const models = row.models_used ? JSON.parse(row.models_used as string).join(', ') : '?';
+      const parsedModels = row.models_used ? JSON.parse(row.models_used as string) : null;
+      const models = Array.isArray(parsedModels) ? parsedModels.join(', ') : '?';
       console.log(
         `  ${ts.padEnd(22)} ${dur.padEnd(12)} ${cost.padEnd(10)} ${tasks.padEnd(8)} ${models}`
       );

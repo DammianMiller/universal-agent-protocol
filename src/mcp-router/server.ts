@@ -176,36 +176,76 @@ export class McpRouter {
 // Supported MCP protocol version
 const SUPPORTED_PROTOCOL_VERSION = '2024-11-05';
 
+/** Safely serialize a value to JSON without throwing on BigInt/circular refs */
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value, (_key, val) =>
+          typeof val === 'bigint' ? val.toString() : val
+        );
+      } catch {
+        return '[complex value]';
+      }
+    }
+    return String(value);
+  }
+}
+
+/**
+ * Strip compressionStats from ExecuteResult before sending to the LLM.
+ * compressionStats is diagnostic metadata (~50 tokens) that wastes context.
+ */
+function stripDiagnostics(result: unknown): unknown {
+  if (
+    result &&
+    typeof result === 'object' &&
+    'compressionStats' in (result as Record<string, unknown>)
+  ) {
+    const { compressionStats: _stats, ...rest } = result as Record<string, unknown>;
+    return rest;
+  }
+  return result;
+}
+
 /**
  * Run as stdio MCP server.
  * Fully JSON-RPC 2.0 compliant: parse errors (-32700), invalid request (-32600),
- * batch request support, jsonrpc field validation, and protocol version negotiation.
+ * batch request support, jsonrpc field validation, protocol version negotiation,
+ * initialize state gate, isError signaling, and proper batch response aggregation.
  */
 export async function runStdioServer(options: RouterOptions = {}): Promise<void> {
   const router = new McpRouter({ ...options, verbose: true });
 
   let buffer = '';
+  let initialized = false;
 
   function send(message: object): void {
     process.stdout.write(JSON.stringify(message) + '\n');
   }
 
-  function handleMessage(message: unknown): void {
+  /**
+   * Handle a single JSON-RPC message. Returns a response object for batch
+   * aggregation, or null for notifications (which produce no response).
+   */
+  function handleMessage(message: unknown): Promise<object | null> {
     // Validate it's an object
     if (!message || typeof message !== 'object') {
-      send({
+      return Promise.resolve({
         jsonrpc: '2.0',
         id: null,
         error: { code: -32600, message: 'Invalid Request: expected a JSON object' },
       });
-      return;
     }
 
     const msg = message as Record<string, unknown>;
 
     // JSON-RPC 2.0 compliance: validate jsonrpc field
     if (msg.jsonrpc !== '2.0') {
-      send({
+      return Promise.resolve({
         jsonrpc: '2.0',
         id: msg.id ?? null,
         error: {
@@ -213,23 +253,23 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
           message: 'Invalid Request: missing or invalid "jsonrpc" field (must be "2.0")',
         },
       });
-      return;
     }
 
-    const id = msg.id as number | undefined;
+    // JSON-RPC 2.0: id can be string, number, or null
+    const id = msg.id as string | number | null | undefined;
     const method = msg.method as string;
     const params = msg.params as unknown;
 
     // Validate method field exists
     if (typeof method !== 'string') {
       if (id !== undefined) {
-        send({
+        return Promise.resolve({
           jsonrpc: '2.0',
           id,
           error: { code: -32600, message: 'Invalid Request: missing or invalid "method" field' },
         });
       }
-      return;
+      return Promise.resolve(null); // Notification with no method — ignore
     }
 
     switch (method) {
@@ -243,7 +283,8 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
               `server supports ${SUPPORTED_PROTOCOL_VERSION}. Proceeding with server version.`
           );
         }
-        send({
+        initialized = true;
+        return Promise.resolve({
           jsonrpc: '2.0',
           id,
           result: {
@@ -257,73 +298,103 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
             },
           },
         });
-        break;
       }
 
       case 'notifications/initialized':
         // No response needed for notifications
-        break;
+        return Promise.resolve(null);
+
+      case 'ping':
+        return Promise.resolve({ jsonrpc: '2.0', id, result: {} });
 
       case 'tools/list':
-        send({
+        // Gate: require initialization before accepting requests
+        if (!initialized) {
+          return Promise.resolve({
+            jsonrpc: '2.0',
+            id,
+            error: {
+              code: -32600,
+              message: 'Server not initialized. Send "initialize" first.',
+            },
+          });
+        }
+        return Promise.resolve({
           jsonrpc: '2.0',
           id,
           result: {
             tools: router.getToolDefinitions(),
           },
         });
-        break;
 
       case 'tools/call': {
+        // Gate: require initialization
+        if (!initialized) {
+          return Promise.resolve({
+            jsonrpc: '2.0',
+            id,
+            error: {
+              code: -32600,
+              message: 'Server not initialized. Send "initialize" first.',
+            },
+          });
+        }
         if (!params || typeof params !== 'object') {
-          send({
+          return Promise.resolve({
             jsonrpc: '2.0',
             id,
             error: { code: -32602, message: 'Invalid params: expected { name, arguments }' },
           });
-          break;
         }
         const { name, arguments: args } = params as { name: string; arguments: unknown };
         if (typeof name !== 'string') {
-          send({
+          return Promise.resolve({
             jsonrpc: '2.0',
             id,
             error: { code: -32602, message: 'Invalid params: "name" must be a string' },
           });
-          break;
         }
-        router
+        return router
           .handleToolCall(name, args)
           .then((result) => {
-            // Preserve the actual result structure from handleToolCall.
-            // execute.ts already returns { success, result, toolPath, ... } -
-            // do not inject synthetic objects that could confuse tool call validation.
-            const safeResult = result ?? '';
-            send({
+            // Strip diagnostic metadata (compressionStats) to save LLM tokens.
+            // Serialize without pretty-printing to save 20-30% token overhead.
+            const cleaned = stripDiagnostics(result ?? '');
+            const serialized = safeJsonStringify(cleaned);
+
+            // Check if the tool call itself reported failure (success: false)
+            const isError =
+              cleaned &&
+              typeof cleaned === 'object' &&
+              'success' in (cleaned as Record<string, unknown>) &&
+              (cleaned as Record<string, unknown>).success === false;
+
+            return {
               jsonrpc: '2.0',
               id,
               result: {
-                content: [{ type: 'text', text: JSON.stringify(safeResult, null, 2) }],
+                content: [{ type: 'text', text: serialized }],
+                ...(isError ? { isError: true } : {}),
               },
-            });
+            };
           })
-          .catch((error) => {
-            send({
-              jsonrpc: '2.0',
-              id,
-              error: {
-                code: -32000,
-                message: error instanceof Error ? error.message : String(error),
-              },
-            });
-          });
-        break;
+          .catch((error) => ({
+            // Protocol-level errors (unknown tool, handleToolCall rejection) use
+            // JSON-RPC error responses. Tool-level failures (success: false) are
+            // handled in the .then() path with isError content instead.
+            jsonrpc: '2.0',
+            id,
+            error: {
+              code: -32603,
+              message: error instanceof Error ? error.message : String(error),
+            },
+          }));
       }
 
       default:
         // Only send error for requests (with id), not notifications
         if (id !== undefined) {
-          send({
+          return Promise.resolve({
             jsonrpc: '2.0',
             id,
             error: {
@@ -332,6 +403,7 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
             },
           });
         }
+        return Promise.resolve(null);
     }
   }
 
@@ -357,12 +429,21 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
               error: { code: -32600, message: 'Invalid Request: empty batch' },
             });
           } else {
-            for (const msg of parsed) {
-              handleMessage(msg);
-            }
+            // Process all messages in the batch and aggregate responses
+            // into a single JSON array per JSON-RPC 2.0 spec section 6.
+            Promise.all(parsed.map((msg: unknown) => handleMessage(msg))).then((responses) => {
+              const nonNull = responses.filter((r): r is object => r !== null);
+              if (nonNull.length > 0) {
+                // Send aggregated batch response as a single JSON array
+                process.stdout.write(JSON.stringify(nonNull) + '\n');
+              }
+            });
           }
         } else {
-          handleMessage(parsed);
+          // Single request — send response directly
+          handleMessage(parsed).then((response) => {
+            if (response) send(response);
+          });
         }
       } catch {
         // JSON-RPC 2.0 spec: parse errors MUST return -32700 with id: null

@@ -66,11 +66,7 @@ export function progressBar(
   return parts.join(' ');
 }
 
-export function stackedBar(
-  segments: BarSegment[],
-  total: number,
-  width: number = 40
-): string {
+export function stackedBar(segments: BarSegment[], total: number, width: number = 40): string {
   if (total === 0) return chalk.dim('░'.repeat(width));
 
   let result = '';
@@ -78,9 +74,8 @@ export function stackedBar(
 
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
-    const segWidth = i === segments.length - 1
-      ? width - usedWidth
-      : Math.round((seg.value / total) * width);
+    const segWidth =
+      i === segments.length - 1 ? width - usedWidth : Math.round((seg.value / total) * width);
     if (segWidth > 0) {
       result += seg.color('█'.repeat(Math.min(segWidth, width - usedWidth)));
       usedWidth += segWidth;
@@ -96,8 +91,8 @@ export function stackedBar(
 
 export function stackedBarLegend(segments: BarSegment[]): string {
   return segments
-    .filter(s => s.value > 0)
-    .map(s => `${s.color('██')} ${s.label || ''} ${chalk.bold(String(s.value))}`)
+    .filter((s) => s.value > 0)
+    .map((s) => `${s.color('██')} ${s.label || ''} ${chalk.bold(String(s.value ?? 0))}`)
     .join('  ');
 }
 
@@ -106,7 +101,7 @@ export function horizontalBarChart(
   options: { maxWidth?: number; maxLabelWidth?: number } = {}
 ): string[] {
   const { maxWidth = 40, maxLabelWidth = 15 } = options;
-  const maxValue = Math.max(...data.map(d => d.value), 1);
+  const maxValue = Math.max(...data.map((d) => d.value), 1);
   const lines: string[] = [];
 
   for (const item of data) {
@@ -123,9 +118,7 @@ export function horizontalBarChart(
 
 export function sparkline(values: number[], options: SparklineOptions = {}): string {
   const { width, color = chalk.green } = options;
-  const data = width && values.length > width
-    ? downsample(values, width)
-    : values;
+  const data = width && values.length > width ? downsample(values, width) : values;
 
   if (data.length === 0) return '';
 
@@ -135,7 +128,7 @@ export function sparkline(values: number[], options: SparklineOptions = {}): str
 
   return color(
     data
-      .map(v => {
+      .map((v) => {
         const idx = Math.round(((v - min) / range) * (BRAILLE_DOTS.length - 1));
         return BRAILLE_DOTS[Math.max(0, Math.min(idx, BRAILLE_DOTS.length - 1))];
       })
@@ -155,17 +148,24 @@ function downsample(values: number[], targetLen: number): number[] {
   return result;
 }
 
-export function table(
-  rows: Record<string, unknown>[],
-  columns: TableColumn[]
-): string[] {
-  const colWidths = columns.map(col => {
+/** Safely coerce any value to a display string without producing "[object Object]" */
+function safeDisplayString(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object') {
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return '';
+    }
+  }
+  return String(v);
+}
+
+export function table(rows: Record<string, unknown>[], columns: TableColumn[]): string[] {
+  const colWidths = columns.map((col) => {
     if (col.width) return col.width;
     const headerLen = col.header.length;
-    const maxDataLen = Math.max(
-      ...rows.map(r => String(r[col.key] ?? '').length),
-      0
-    );
+    const maxDataLen = Math.max(...rows.map((r) => safeDisplayString(r[col.key]).length), 0);
     return Math.max(headerLen, maxDataLen) + 2;
   });
 
@@ -176,13 +176,13 @@ export function table(
     .join(chalk.dim(' │ '));
   lines.push(`  ${chalk.bold(headerLine)}`);
 
-  const separator = colWidths.map(w => '─'.repeat(w)).join(chalk.dim('─┼─'));
+  const separator = colWidths.map((w) => '─'.repeat(w)).join(chalk.dim('─┼─'));
   lines.push(`  ${chalk.dim(separator)}`);
 
   for (const row of rows) {
     const rowLine = columns
       .map((col, i) => {
-        const val = String(row[col.key] ?? '');
+        const val = safeDisplayString(row[col.key]);
         const padded = padCell(val, colWidths[i], col.align || 'left');
         return col.color ? col.color(padded) : padded;
       })
@@ -226,11 +226,7 @@ export function tree(node: TreeNode, prefix: string = '', isLast: boolean = true
   if (node.children) {
     const childPrefix = prefix + (isLast ? '    ' : '│   ');
     for (let i = 0; i < node.children.length; i++) {
-      const childLines = tree(
-        node.children[i],
-        childPrefix,
-        i === node.children.length - 1
-      );
+      const childLines = tree(node.children[i], childPrefix, i === node.children.length - 1);
       lines.push(...childLines);
     }
   }
@@ -244,16 +240,17 @@ export function box(
   options: { width?: number; borderColor?: (text: string) => string } = {}
 ): string[] {
   const { borderColor = chalk.dim } = options;
-  const maxContentWidth = Math.max(
-    title.length + 2,
-    ...content.map(l => stripAnsi(l).length)
-  );
+  const maxContentWidth = Math.max(title.length + 2, ...content.map((l) => stripAnsi(l).length));
   const width = options.width || maxContentWidth + 4;
   const innerWidth = width - 2;
 
   const lines: string[] = [];
   lines.push(borderColor(`╭${'─'.repeat(innerWidth)}╮`));
-  lines.push(borderColor('│') + ` ${chalk.bold(title)}${' '.repeat(Math.max(0, innerWidth - title.length - 1))}` + borderColor('│'));
+  lines.push(
+    borderColor('│') +
+      ` ${chalk.bold(title)}${' '.repeat(Math.max(0, innerWidth - title.length - 1))}` +
+      borderColor('│')
+  );
   lines.push(borderColor(`├${'─'.repeat(innerWidth)}┤`));
 
   for (const line of content) {
@@ -299,7 +296,14 @@ export function trend(current: number, previous: number): string {
 export function miniGauge(value: number, max: number, width: number = 10): string {
   const ratio = Math.min(value / Math.max(max, 1), 1);
   const filled = Math.round(ratio * width);
-  const color = ratio >= 0.8 ? chalk.green : ratio >= 0.5 ? chalk.yellow : ratio >= 0.25 ? chalk.hex('#FF8800') : chalk.red;
+  const color =
+    ratio >= 0.8
+      ? chalk.green
+      : ratio >= 0.5
+        ? chalk.yellow
+        : ratio >= 0.25
+          ? chalk.hex('#FF8800')
+          : chalk.red;
   return color('▓'.repeat(filled)) + chalk.dim('░'.repeat(width - filled));
 }
 
@@ -335,7 +339,7 @@ export function bulletList(
     error: chalk.red('●'),
     info: chalk.blue('●'),
   };
-  return items.map(item => {
+  return items.map((item) => {
     const icon = icons[item.status || 'info'];
     return `${pad}${icon} ${item.text}`;
   });
@@ -380,7 +384,8 @@ export function inlineProgressSummary(stats: {
   const progW = total > 0 ? Math.round((inProg / total) * barWidth) : 0;
   const blockW = total > 0 ? Math.round((blocked / total) * barWidth) : 0;
   const openW = Math.max(0, barWidth - doneW - progW - blockW);
-  const bar = chalk.green('█'.repeat(doneW)) +
+  const bar =
+    chalk.green('█'.repeat(doneW)) +
     chalk.cyan('█'.repeat(progW)) +
     chalk.red('█'.repeat(blockW)) +
     chalk.white('█'.repeat(openW));
@@ -389,11 +394,15 @@ export function inlineProgressSummary(stats: {
   lines.push(chalk.dim('─'.repeat(50)));
   lines.push(
     `${bar} ${pctColor(chalk.bold(pct + '%'))} ` +
-    chalk.dim(`${done}`) + chalk.green('✓') + chalk.dim(' ') +
-    chalk.dim(`${inProg}`) + chalk.cyan('◐') + chalk.dim(' ') +
-    (blocked > 0 ? chalk.dim(`${blocked}`) + chalk.red('❄') + chalk.dim(' ') : '') +
-    chalk.dim(`${open}○`) +
-    chalk.dim(` / ${total}`)
+      chalk.dim(`${done}`) +
+      chalk.green('✓') +
+      chalk.dim(' ') +
+      chalk.dim(`${inProg}`) +
+      chalk.cyan('◐') +
+      chalk.dim(' ') +
+      (blocked > 0 ? chalk.dim(`${blocked}`) + chalk.red('❄') + chalk.dim(' ') : '') +
+      chalk.dim(`${open}○`) +
+      chalk.dim(` / ${total}`)
   );
 
   return lines;
@@ -415,10 +424,12 @@ export function heatmapRow(
     chalk.bgRedBright.dim,
   ];
 
-  const cells = values.map(v => {
-    const idx = Math.min(Math.floor((v / max) * (colors.length - 1)), colors.length - 1);
-    return colors[idx](' ');
-  }).join('');
+  const cells = values
+    .map((v) => {
+      const idx = Math.min(Math.floor((v / max) * (colors.length - 1)), colors.length - 1);
+      return colors[idx](' ');
+    })
+    .join('');
 
   return `  ${chalk.dim(label.padEnd(labelWidth))} ${cells}`;
 }

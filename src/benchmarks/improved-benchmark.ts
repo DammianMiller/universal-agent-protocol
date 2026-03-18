@@ -546,7 +546,7 @@ function generateMarkdownReport(report: BenchmarkReport): string {
       const task = BENCHMARK_TASKS.find((t) => t.id === result.taskId);
       const status = result.success ? '✓' : '✗';
       lines.push(
-        `| ${task?.name || result.taskId} | ${task?.difficulty} | ${status} | ${result.latencyMs}ms | ${result.turnsUsed} | ${result.classification.category} |`
+        `| ${task?.name || result.taskId} | ${task?.difficulty ?? 'N/A'} | ${status} | ${result.latencyMs ?? 0}ms | ${result.turnsUsed} | ${result.classification.category} |`
       );
     }
     lines.push('');

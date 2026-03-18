@@ -136,7 +136,7 @@ export class PolicyGate {
     const allPolicies = await this.memory.getAllPolicies();
     // Filter to policies matching this stage or 'always'
     const stagePolicies = allPolicies.filter(
-      (p: any) =>
+      (p: Policy) =>
         !p.enforcementStage || p.enforcementStage === stage || p.enforcementStage === 'always'
     );
     const checks: PolicyCheckResult[] = [];
@@ -158,6 +158,8 @@ export class PolicyGate {
   /**
    * Evaluate a single policy against an operation.
    * Parses the policy's rawMarkdown for rules and checks them.
+   * Serializes args ONCE and passes the cached string to each rule check
+   * to avoid redundant JSON.stringify calls per-rule.
    */
   private evaluatePolicy(
     policy: Policy,
@@ -167,8 +169,17 @@ export class PolicyGate {
     const rules = this.extractRules(policy.rawMarkdown);
     const violations: string[] = [];
 
+    // Cache serialized args once per policy evaluation (not per rule)
+    const opLower = operation.toLowerCase();
+    let argsStr: string;
+    try {
+      argsStr = JSON.stringify(args ?? {}).toLowerCase();
+    } catch {
+      argsStr = '';
+    }
+
     for (const rule of rules) {
-      const violation = this.checkRule(rule, operation, args);
+      const violation = this.checkRule(rule, opLower, argsStr);
       if (violation) {
         violations.push(violation);
       }
@@ -186,24 +197,23 @@ export class PolicyGate {
   /**
    * Check a single rule against an operation.
    * Returns a violation message if the rule is violated, null otherwise.
+   * Accepts pre-computed lowercase strings to avoid redundant serialization.
    */
   private checkRule(
     rule: { title: string; keywords: string[]; antiPatterns: string[] },
-    operation: string,
-    args: Record<string, unknown>
+    opLower: string,
+    argsStr: string
   ): string | null {
-    const opLower = operation.toLowerCase();
-    const argsStr = JSON.stringify(args).toLowerCase();
-
     // Check if this rule is relevant to the operation
     const isRelevant = rule.keywords.some((kw) => opLower.includes(kw) || argsStr.includes(kw));
 
     if (!isRelevant) return null;
 
     // Check for anti-patterns
+    const ruleTitle = rule.title || 'Untitled rule';
     for (const antiPattern of rule.antiPatterns) {
       if (opLower.includes(antiPattern) || argsStr.includes(antiPattern)) {
-        return `Rule "${rule.title}" violated: detected anti-pattern "${antiPattern}"`;
+        return `Rule "${ruleTitle}" violated: detected anti-pattern "${antiPattern}"`;
       }
     }
 
@@ -246,7 +256,7 @@ export class PolicyGate {
           for (const rule of parsed.rules) {
             if (rule.title && (Array.isArray(rule.keywords) || Array.isArray(rule.antiPatterns))) {
               rules.push({
-                title: String(rule.title),
+                title: String(rule.title ?? 'Untitled rule'),
                 keywords: (rule.keywords || []).map(String),
                 antiPatterns: (rule.antiPatterns || []).map(String),
               });

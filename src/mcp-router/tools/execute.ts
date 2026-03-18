@@ -56,6 +56,36 @@ export interface ExecuteResult {
   compressionStats?: OutputCompressionStats;
 }
 
+// !! REGRESSION GUARD — DO NOT UNWRAP MCP CONTENT ENVELOPES !!
+//
+// The raw { content: [{ type, text }] } structure returned by callTool() MUST flow
+// through compression and into ExecuteResult.result WITHOUT being flattened to text.
+//
+// History of this regression (it has been attempted and reverted TWICE):
+//
+//   v1.4.0 — Added unwrapping inside callTool() (client.ts). Broke Qwen3.5: the
+//            model received flattened text instead of structured results, causing
+//            misinterpretation and infinite retry loops. Reverted in v1.4.1.
+//
+//   v1.4.2 — Added unwrapMcpContent() here in execute.ts. Same logical result:
+//            the model still received flattened text (just unwrapped one layer up).
+//            Caught during validation and reverted before release.
+//
+// The triple-nesting (downstream MCP envelope inside ExecuteResult inside router
+// MCP envelope) is intentional. Qwen3.5 and similar small MoE models rely on the
+// structured envelope to correctly parse tool outputs.
+//
+// @see commit 5941768f "fix: v1.4.1 - revert callTool content unwrapping"
+
+// Lazy singleton for coordination — avoid creating a new instance per tool call
+let _coordService: CoordinationService | null = null;
+function getCoordinationService(): CoordinationService {
+  if (!_coordService) {
+    _coordService = new CoordinationService();
+  }
+  return _coordService;
+}
+
 export async function handleExecuteTool(
   args: ExecuteToolArgs,
   searchIndex: ToolSearchIndex,
@@ -99,19 +129,20 @@ export async function handleExecuteTool(
 
   try {
     // Run through PolicyGate - all tool calls are policy-checked and audit-logged
+    // Pass only the user's args to the gate; inject metadata separately for audit
     const gate = getPolicyGate();
-    const gateArgs = {
-      ...(toolArgs as Record<string, unknown>),
-      _toolPath: path,
-      _serverName: serverName,
-    };
 
-    const rawResult = await gate.executeWithGates(path, gateArgs, async () => {
-      await client.connect();
-      return client.callTool(toolName, toolArgs as Record<string, unknown>);
-    });
+    const rawResult = await gate.executeWithGates(
+      path,
+      (toolArgs as Record<string, unknown>) ?? {},
+      async () => {
+        await client.connect();
+        return client.callTool(toolName, toolArgs as Record<string, unknown>);
+      }
+    );
 
-    // Compress output to save context window
+    // Pass raw MCP result directly to compression — do NOT unwrap content envelopes.
+    // See v1.4.1 revert notes: Qwen3.5 needs the structured envelope preserved.
     const compressed = compressToolOutput(rawResult, { intent });
 
     // Record stats
@@ -132,14 +163,15 @@ export async function handleExecuteTool(
         toolName.includes('rename');
       if (isFileWrite) {
         const agentId = process.env.UAP_AGENT_ID || `mcp-${process.pid}`;
-        const filePath =
+        const rawPath =
           (toolArgs as Record<string, unknown>)?.path ||
-          (toolArgs as Record<string, unknown>)?.filePath ||
-          path;
-        const coord = new CoordinationService();
-        coord.announceWork(agentId, String(filePath), 'editing', {
+          (toolArgs as Record<string, unknown>)?.filePath;
+        // Guard against null/undefined producing "null"/"undefined" strings
+        const filePath = rawPath != null ? String(rawPath) : path;
+        const coord = getCoordinationService();
+        coord.announceWork(agentId, filePath, 'editing', {
           description: `${toolName} via MCP router`,
-          filesAffected: [String(filePath)],
+          filesAffected: [filePath],
         });
       }
     } catch {
