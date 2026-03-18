@@ -862,6 +862,7 @@ export function lookupSemanticCache(instructionHash: string): ContextDecision | 
       `
       ).run(Date.now(), instructionHash);
 
+      if (!row.decision_json) return null;
       return JSON.parse(row.decision_json);
     }
   } catch {

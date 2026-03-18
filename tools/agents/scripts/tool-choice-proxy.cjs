@@ -52,8 +52,6 @@ const MAX_OUTPUT_HISTORY = 10;
 let consecutiveIdenticalOutputs = 0;
 
 // --- Option 6: Semantic dedup ---
-const recentCommandPrefixes = [];
-const MAX_CMD_HISTORY = 10;
 
 function simpleHash(s) {
   let h = 0;
@@ -127,7 +125,10 @@ const server = http.createServer((req, res) => {
           console.log(`[proxy] #${n} SOFT BUDGET: tool_choice=auto`);
         } else if (parsed.tools && parsed.tools.length > 0) {
           const original = parsed.tool_choice;
-          parsed.tool_choice = FORCE_TOOL_CHOICE;
+          // Only override string values, preserve object structures (per-tool choice)
+          if (typeof parsed.tool_choice === 'string') {
+            parsed.tool_choice = FORCE_TOOL_CHOICE;
+          }
           toolForceCount++;
         }
 
@@ -233,43 +234,38 @@ const server = http.createServer((req, res) => {
         res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
 
         // === Track response for output-diff detection ===
-        const responseChunks = [];
+        // Use incremental hashing to avoid buffering the entire response body.
+        // Previously the proxy accumulated all chunks in memory and re-parsed
+        // the full response just to compute a hash — doubling memory usage.
+        let runningHash = 0;
+        const isChatEndpoint = req.url && req.url.includes('/chat/completions');
+
         proxyRes.on('data', (chunk) => {
-          responseChunks.push(chunk);
           res.write(chunk);
+          // Compute hash incrementally from each chunk
+          if (isChatEndpoint) {
+            const s = chunk.toString();
+            for (let i = 0; i < Math.min(s.length, 2000); i++) {
+              runningHash = ((runningHash << 5) - runningHash + s.charCodeAt(i)) | 0;
+            }
+          }
         });
         proxyRes.on('end', () => {
           res.end();
 
           // Track output hash for diff detection
-          if (req.url && req.url.includes('/chat/completions')) {
-            const responseBody = Buffer.concat(responseChunks).toString();
-            try {
-              const respParsed = JSON.parse(responseBody);
-              const content = respParsed?.choices?.[0]?.message?.content || '';
-              const toolCalls = respParsed?.choices?.[0]?.message?.tool_calls || [];
-
-              // Hash the response content + tool call args
-              const hashInput =
-                content + toolCalls.map((tc) => tc?.function?.arguments || '').join('');
-
-              if (hashInput.length > 0) {
-                const hash = simpleHash(hashInput);
-                if (
-                  recentOutputHashes.length > 0 &&
-                  recentOutputHashes[recentOutputHashes.length - 1] === hash
-                ) {
-                  consecutiveIdenticalOutputs++;
-                } else {
-                  consecutiveIdenticalOutputs = 0;
-                }
-                recentOutputHashes.push(hash);
-                if (recentOutputHashes.length > MAX_OUTPUT_HISTORY) {
-                  recentOutputHashes.shift();
-                }
-              }
-            } catch (e) {
-              // Ignore parse errors on response
+          if (isChatEndpoint && runningHash !== 0) {
+            if (
+              recentOutputHashes.length > 0 &&
+              recentOutputHashes[recentOutputHashes.length - 1] === runningHash
+            ) {
+              consecutiveIdenticalOutputs++;
+            } else {
+              consecutiveIdenticalOutputs = 0;
+            }
+            recentOutputHashes.push(runningHash);
+            if (recentOutputHashes.length > MAX_OUTPUT_HISTORY) {
+              recentOutputHashes.shift();
             }
           }
         });

@@ -247,7 +247,9 @@ async function runTaskForModel(
       }
     } catch (error) {
       if (config.verbose) {
-        console.log(`    Memory: Failed to retrieve (${error})`);
+        console.log(
+          `    Memory: Failed to retrieve (${error instanceof Error ? error.message : String(error)})`
+        );
       }
     }
   }
@@ -307,11 +309,11 @@ async function runTaskForModel(
         executionSucceeded: false,
         testsRun: 0,
         testsPassed: 0,
-        errors: [`Execution failed: ${error}`],
+        errors: [`Execution failed: ${error instanceof Error ? error.message : String(error)}`],
         output: '',
         executionTimeMs: 0,
       };
-      errors.push(`Execution failed: ${error}`);
+      errors.push(`Execution failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

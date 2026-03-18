@@ -402,24 +402,24 @@ export class KnowledgeGraph {
 
   private rowToEntity(row: Record<string, unknown>): Entity {
     return {
-      id: row.id as number,
-      type: row.type as string,
-      name: row.name as string,
+      id: (row.id as number) ?? 0,
+      type: (row.type as string) ?? 'unknown',
+      name: (row.name as string) ?? '',
       description: row.description as string | undefined,
-      firstSeen: row.first_seen as string,
-      lastSeen: row.last_seen as string,
-      mentionCount: row.mention_count as number,
+      firstSeen: (row.first_seen as string) ?? new Date().toISOString(),
+      lastSeen: (row.last_seen as string) ?? new Date().toISOString(),
+      mentionCount: (row.mention_count as number) ?? 0,
     };
   }
 
   private rowToRelationship(row: Record<string, unknown>): Relationship {
     return {
-      id: row.id as number,
-      sourceId: row.source_id as number,
-      targetId: row.target_id as number,
-      relation: row.relation as string,
-      strength: row.strength as number,
-      timestamp: row.timestamp as string,
+      id: (row.id as number) ?? 0,
+      sourceId: (row.source_id as number) ?? 0,
+      targetId: (row.target_id as number) ?? 0,
+      relation: (row.relation as string) ?? '',
+      strength: (row.strength as number) ?? 0,
+      timestamp: (row.timestamp as string) ?? new Date().toISOString(),
     };
   }
 }

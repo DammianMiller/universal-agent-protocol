@@ -127,7 +127,9 @@ export class NaiveAgent {
       }
     } catch (error) {
       // Should not happen in normal flow, but simulate occasional failures
-      console.error(`Unexpected verification failure: ${error}`);
+      console.error(
+        `Unexpected verification failure: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 

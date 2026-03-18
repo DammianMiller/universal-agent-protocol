@@ -246,6 +246,28 @@ export class DatabaseManager {
     return rows.map((r) => this.deserializeRow(r));
   }
 
+  /**
+   * Prune old audit log entries to prevent unbounded table growth.
+   * Keeps the most recent `keepCount` rows and deletes everything older.
+   */
+  pruneExecutionLog(keepCount: number = 1000): number {
+    try {
+      const result = this.db
+        .prepare(
+          `
+        DELETE FROM policy_executions
+        WHERE rowid NOT IN (
+          SELECT rowid FROM policy_executions ORDER BY executedAt DESC LIMIT ?
+        )
+      `
+        )
+        .run(keepCount);
+      return result.changes;
+    } catch {
+      return 0;
+    }
+  }
+
   close(): void {
     this.db.close();
   }

@@ -221,15 +221,15 @@ export class ModelAnalytics {
       .prepare('SELECT * FROM task_outcomes WHERE taskId = ? ORDER BY timestamp')
       .all(taskId) as Array<Record<string, unknown>>;
     return rows.map((r) => ({
-      modelId: r.modelId as string,
-      taskType: r.taskType as string,
-      complexity: r.complexity as TaskComplexity,
+      modelId: (r.modelId as string) ?? '',
+      taskType: (r.taskType as string) ?? '',
+      complexity: (r.complexity as TaskComplexity) ?? 'low',
       success: r.success === 1,
-      durationMs: r.durationMs as number,
-      tokensUsed: { input: r.tokensIn as number, output: r.tokensOut as number },
-      cost: r.cost as number,
-      taskId: r.taskId as string,
-      timestamp: r.timestamp as string,
+      durationMs: (r.durationMs as number) ?? 0,
+      tokensUsed: { input: (r.tokensIn as number) ?? 0, output: (r.tokensOut as number) ?? 0 },
+      cost: (r.cost as number) ?? 0,
+      taskId: (r.taskId as string) ?? '',
+      timestamp: (r.timestamp as string) ?? new Date().toISOString(),
     }));
   }
 

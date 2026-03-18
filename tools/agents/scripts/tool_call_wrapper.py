@@ -83,7 +83,7 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         "dynamic_temp_floor": 0.2,
     },
     "qwen35": {
-        "temperature": 0.6,
+        "temperature": 0.3,
         "top_p": 0.9,
         "presence_penalty": 0.0,
         "max_tokens": 4096,
@@ -105,7 +105,7 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
             "CRITICAL: You MUST emit ALL tool calls in a SINGLE response. "
             "Each tool call must be a separate <tool_call>...</tool_call> block. "
             "Do NOT call one tool and wait - emit ALL tool calls together NOW. "
-            "If asked to do 3 things, you must produce 3 tool calls in one response."
+            "You must produce all required tool calls in one response."
         ),
     },
     "llama": {
@@ -206,7 +206,7 @@ class ToolCallClient:
         "max_tokens": 4096,
         "enable_thinking": False,
         "max_retries": 3,
-        "backoff_factor": 2.0,
+        "backoff_factor": 1.0,
         "base_url": "http://127.0.0.1:8080/v1",
         "api_key": "not-needed",
         "model": "default",
@@ -337,8 +337,12 @@ class ToolCallClient:
         # Make a copy of messages to avoid modifying original
         current_messages = [msg.copy() for msg in messages]
 
-        # Strategy 2: Inject multi-tool system prompt
-        if self.config.get("batch_tool_calls") and len(tools) > 1:
+        # Strategy 2: Inject multi-tool system prompt (only when multiple tool calls expected)
+        if (
+            self.config.get("batch_tool_calls")
+            and expected_tool_calls
+            and expected_tool_calls > 1
+        ):
             batch_prompt = self.config.get(
                 "batch_system_prompt", DEFAULT_BATCH_SYSTEM_PROMPT
             )
@@ -402,6 +406,11 @@ class ToolCallClient:
                             "enable_thinking": self.config.get("enable_thinking", False)
                         }
                     }
+                    # Version check: llama.cpp >= 3761 supports chat_template_kwargs
+                    # Older versions will ignore unknown extra_body keys
+                    logger.debug(
+                        f"Sending chat_template_kwargs with enable_thinking={self.config.get('enable_thinking', False)}"
+                    )
 
                 logger.debug(
                     f"Attempt {attempt + 1}/{max_retries}: "

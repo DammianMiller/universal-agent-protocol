@@ -178,12 +178,14 @@ export async function handleExecuteTool(
       // Coordination is best-effort -- never block tool execution
     }
 
+    // compressionStats are already recorded to session-stats (line 149-153).
+    // Omit from the return value to save ~50 tokens per call — server.ts
+    // no longer needs stripDiagnostics.
     return {
       success: true,
       result: compressed.output,
       toolPath: path,
       executionTimeMs: Date.now() - startTime,
-      compressionStats: compressed.stats,
     };
   } catch (error) {
     // Surface policy violations distinctly from tool errors

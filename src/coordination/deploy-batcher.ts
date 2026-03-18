@@ -285,7 +285,9 @@ export class DeployBatcher {
     const row = stmt.get(existingId) as { payload: string } | undefined;
     if (!row) return;
 
-    const existingPayload = row.payload ? JSON.parse(row.payload) : {};
+    const parsed = row.payload ? JSON.parse(row.payload) : {};
+    const existingPayload =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
     const merged = this.mergePayloads(existingPayload, newPayload);
 
     const updateStmt = this.db.prepare(`
@@ -649,7 +651,7 @@ export class DeployBatcher {
 
   private async executeCommit(_target: string, payload: Record<string, unknown>): Promise<void> {
     const message = (payload.message as string) || 'Automated commit';
-    const files = (payload.files as string[]) || [];
+    const files = Array.isArray(payload.files) ? (payload.files as string[]) : [];
 
     if (files.length > 0) {
       await this.execFileWithTimeout('git', ['add', ...files]);

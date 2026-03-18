@@ -162,7 +162,11 @@ export class McpRouter {
    * Shutdown - cleanup all connections
    */
   async shutdown(): Promise<void> {
-    await this.clientPool.disconnectAll();
+    try {
+      await this.clientPool.disconnectAll();
+    } catch (err) {
+      console.error(`[router] Shutdown error: ${(err as Error).message}`);
+    }
   }
 
   /**
@@ -195,21 +199,26 @@ function safeJsonStringify(value: unknown): string {
   }
 }
 
-/**
- * Strip compressionStats from ExecuteResult before sending to the LLM.
- * compressionStats is diagnostic metadata (~50 tokens) that wastes context.
- */
-function stripDiagnostics(result: unknown): unknown {
-  if (
-    result &&
-    typeof result === 'object' &&
-    'compressionStats' in (result as Record<string, unknown>)
-  ) {
-    const { compressionStats: _stats, ...rest } = result as Record<string, unknown>;
-    return rest;
+// Safety limits
+const MAX_BATCH_SIZE = 100; // Reject batches larger than this
+const MAX_BUFFER_BYTES = 10 * 1024 * 1024; // 10MB max stdin buffer
+
+// ESM-compatible version reader for TypeScript modules
+const PKG_VERSION = (() => {
+  try {
+    const { readFileSync } = require('fs');
+    const { join, dirname } = require('path');
+    const pkg = JSON.parse(
+      readFileSync(
+        join(dirname(new URL(import.meta.url).pathname), '..', '..', 'package.json'),
+        'utf-8'
+      )
+    );
+    return pkg.version || '0.0.0';
+  } catch {
+    return '0.0.0';
   }
-  return result;
-}
+})();
 
 /**
  * Run as stdio MCP server.
@@ -222,9 +231,22 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
 
   let buffer = '';
   let initialized = false;
+  let notifiedInitialized = false; // Track notifications/initialized receipt
+
+  /** Safe write to stdout — silently ignores EPIPE (broken pipe) */
+  function safeSend(data: string): void {
+    try {
+      process.stdout.write(data);
+    } catch (err) {
+      // EPIPE = client disconnected. Log and continue; don't crash.
+      if ((err as NodeJS.ErrnoException).code !== 'EPIPE') {
+        console.error(`[router] stdout write error: ${(err as Error).message}`);
+      }
+    }
+  }
 
   function send(message: object): void {
-    process.stdout.write(JSON.stringify(message) + '\n');
+    safeSend(JSON.stringify(message) + '\n');
   }
 
   /**
@@ -274,6 +296,17 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
 
     switch (method) {
       case 'initialize': {
+        // Reject re-initialization after notifications/initialized per MCP spec
+        if (notifiedInitialized) {
+          return Promise.resolve({
+            jsonrpc: '2.0',
+            id,
+            error: {
+              code: -32600,
+              message: 'Already initialized. Re-initialization is not allowed.',
+            },
+          });
+        }
         // Protocol version negotiation
         const initParams = params as { protocolVersion?: string } | undefined;
         const clientVersion = initParams?.protocolVersion;
@@ -290,18 +323,19 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
           result: {
             protocolVersion: SUPPORTED_PROTOCOL_VERSION,
             capabilities: {
-              tools: {},
+              tools: { listChanged: false },
             },
             serverInfo: {
               name: 'uap-mcp-router',
-              version: '1.0.0',
+              version: PKG_VERSION,
             },
           },
         });
       }
 
       case 'notifications/initialized':
-        // No response needed for notifications
+        // Mark initialization complete — reject future re-initialization
+        notifiedInitialized = true;
         return Promise.resolve(null);
 
       case 'ping':
@@ -357,17 +391,17 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
         return router
           .handleToolCall(name, args)
           .then((result) => {
-            // Strip diagnostic metadata (compressionStats) to save LLM tokens.
-            // Serialize without pretty-printing to save 20-30% token overhead.
-            const cleaned = stripDiagnostics(result ?? '');
-            const serialized = safeJsonStringify(cleaned);
+            // execute.ts no longer includes compressionStats in the return value,
+            // so no stripping is needed. Serialize without pretty-printing.
+            const safeResult = result ?? '';
+            const serialized = safeJsonStringify(safeResult);
 
             // Check if the tool call itself reported failure (success: false)
             const isError =
-              cleaned &&
-              typeof cleaned === 'object' &&
-              'success' in (cleaned as Record<string, unknown>) &&
-              (cleaned as Record<string, unknown>).success === false;
+              safeResult &&
+              typeof safeResult === 'object' &&
+              'success' in (safeResult as Record<string, unknown>) &&
+              (safeResult as Record<string, unknown>).success === false;
 
             return {
               jsonrpc: '2.0',
@@ -410,6 +444,18 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
   process.stdin.on('data', (data: Buffer) => {
     buffer += data.toString();
 
+    // Guard against unbounded buffer growth from a client that never sends newlines
+    if (Buffer.byteLength(buffer, 'utf-8') > MAX_BUFFER_BYTES) {
+      console.error(`[router] stdin buffer exceeded ${MAX_BUFFER_BYTES} bytes, dropping`);
+      buffer = '';
+      send({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32600, message: 'Request too large' },
+      });
+      return;
+    }
+
     const lines = buffer.split('\n');
     buffer = lines.pop() || '';
 
@@ -428,22 +474,50 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
               id: null,
               error: { code: -32600, message: 'Invalid Request: empty batch' },
             });
+          } else if (parsed.length > MAX_BATCH_SIZE) {
+            send({
+              jsonrpc: '2.0',
+              id: null,
+              error: {
+                code: -32600,
+                message: `Batch too large: ${parsed.length} requests (max ${MAX_BATCH_SIZE})`,
+              },
+            });
           } else {
             // Process all messages in the batch and aggregate responses
             // into a single JSON array per JSON-RPC 2.0 spec section 6.
-            Promise.all(parsed.map((msg: unknown) => handleMessage(msg))).then((responses) => {
-              const nonNull = responses.filter((r): r is object => r !== null);
-              if (nonNull.length > 0) {
-                // Send aggregated batch response as a single JSON array
-                process.stdout.write(JSON.stringify(nonNull) + '\n');
-              }
-            });
+            // Use allSettled to prevent one rejection from breaking the batch.
+            Promise.allSettled(parsed.map((msg: unknown) => handleMessage(msg)))
+              .then((results) => {
+                const responses: object[] = [];
+                for (const r of results) {
+                  if (r.status === 'fulfilled' && r.value !== null) {
+                    responses.push(r.value);
+                  } else if (r.status === 'rejected') {
+                    responses.push({
+                      jsonrpc: '2.0',
+                      id: null,
+                      error: { code: -32603, message: 'Internal error' },
+                    });
+                  }
+                }
+                if (responses.length > 0) {
+                  safeSend(JSON.stringify(responses) + '\n');
+                }
+              })
+              .catch((err) => {
+                console.error(`[router] batch processing error: ${(err as Error).message}`);
+              });
           }
         } else {
           // Single request — send response directly
-          handleMessage(parsed).then((response) => {
-            if (response) send(response);
-          });
+          handleMessage(parsed)
+            .then((response) => {
+              if (response) send(response);
+            })
+            .catch((err) => {
+              console.error(`[router] message handling error: ${(err as Error).message}`);
+            });
         }
       } catch {
         // JSON-RPC 2.0 spec: parse errors MUST return -32700 with id: null
@@ -453,6 +527,19 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
           error: { code: -32700, message: 'Parse error: invalid JSON' },
         });
       }
+    }
+  });
+
+  process.stdin.on('error', (err) => {
+    console.error(`[router] stdin error: ${err.message}`);
+  });
+
+  process.stdout.on('error', (err) => {
+    if ((err as NodeJS.ErrnoException).code === 'EPIPE') {
+      // Client disconnected — shut down gracefully
+      router.shutdown().then(() => process.exit(0));
+    } else {
+      console.error(`[router] stdout error: ${err.message}`);
     }
   });
 

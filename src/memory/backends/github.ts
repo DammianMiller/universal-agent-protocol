@@ -51,7 +51,9 @@ export class GitHubMemoryBackend implements MemoryBackend {
         branch: this.branch,
       });
     } catch (error) {
-      throw new Error(`Failed to store memory in GitHub: ${error}`);
+      throw new Error(
+        `Failed to store memory in GitHub: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 

@@ -239,7 +239,7 @@ INTEGRATION:
   }
 
   private async installForOpencode(): Promise<void> {
-    const homeDir = process.env.HOME || '';
+    const homeDir = process.env.HOME || '/tmp';
     const opencodeDir = path.join(homeDir, '.opencode');
     const pluginsDir = path.join(opencodeDir, 'plugin');
 
@@ -269,7 +269,7 @@ INTEGRATION:
   }
 
   private async installForClaudeCode(): Promise<void> {
-    const homeDir = process.env.HOME || '';
+    const homeDir = process.env.HOME || '/tmp';
     const claudeCodeDir = path.join(homeDir, '.claude', 'code');
     const hooksDir = path.join(claudeCodeDir, '.factory', 'hooks');
 

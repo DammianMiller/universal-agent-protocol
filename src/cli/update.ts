@@ -77,7 +77,7 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
 
   // Create backup before update
   const backupPath = existingPath + '.backup.' + new Date().toISOString().replace(/[:.]/g, '-');
-  
+
   if (options.dryRun) {
     console.log(chalk.dim(`Would create backup at: ${backupPath}`));
   } else {
@@ -118,7 +118,9 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
   }
 
   // Merge: New template structure + existing user content
-  const mergeSpinner = ora('Merging with existing content (preserving all customizations)...').start();
+  const mergeSpinner = ora(
+    'Merging with existing content (preserving all customizations)...'
+  ).start();
   let mergedContent: string;
   try {
     mergedContent = mergeClaudeMd(existingContent, newContent);
@@ -142,7 +144,7 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
   const existingLines = existingContent.split('\n').length;
   const newLines = newContent.split('\n').length;
   const mergedLines = mergedContent.split('\n').length;
-  
+
   console.log(chalk.bold('\n📊 Update Summary:\n'));
   console.log(chalk.dim(`  Existing file: ${existingLines} lines`));
   console.log(chalk.dim(`  New template:  ${newLines} lines`));
@@ -155,7 +157,7 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
 
   if (options.dryRun) {
     console.log(chalk.yellow('\n  --dry-run: No changes made\n'));
-    
+
     // Show preview
     console.log(chalk.dim('--- Preview (first 50 lines) ---\n'));
     console.log(mergedContent.split('\n').slice(0, 50).join('\n'));
@@ -203,45 +205,44 @@ async function updateMemorySystem(
   options: UpdateOptions
 ): Promise<void> {
   const memSpinner = ora('Updating memory system...').start();
-  
+
   try {
     // Ensure directories exist
     const memoryDir = join(cwd, 'agents/data/memory');
     if (!existsSync(memoryDir)) {
       mkdirSync(memoryDir, { recursive: true });
     }
-    
+
     // Initialize/update SQLite database
     const dbPath = config.memory?.shortTerm?.path || './agents/data/memory/short_term.db';
     const fullDbPath = join(cwd, dbPath);
     initializeMemoryDatabase(fullDbPath);
-    
+
     // Initialize embedding service
     const embeddingService = getEmbeddingService();
     await embeddingService.initialize();
-    
+
     if (options.verbose) {
       console.log(chalk.dim(`  Embedding provider: ${embeddingService.getProviderName()}`));
       console.log(chalk.dim(`  Dimensions: ${embeddingService.getDimensions()}`));
     }
-    
+
     // Initialize consolidator
     const consolidator = getMemoryConsolidator();
     consolidator.initialize(fullDbPath);
-    
+
     memSpinner.succeed('Memory system updated');
-    
+
     if (options.verbose) {
       const stats = consolidator.getStats();
       console.log(chalk.dim(`  Total memories: ${stats.totalMemories}`));
       console.log(chalk.dim(`  Session memories: ${stats.totalSessionMemories}`));
       console.log(chalk.dim(`  Lessons extracted: ${stats.totalLessons}`));
     }
-    
   } catch (error) {
     memSpinner.warn('Memory system update had issues');
     if (options.verbose) {
-      console.error(chalk.dim(`  ${error}`));
+      console.error(chalk.dim(`  ${error instanceof Error ? error.message : String(error)}`));
     }
   }
 }
@@ -251,10 +252,8 @@ async function updateMemorySystem(
  */
 function getProjectCollectionName(base: string, projectPath: string): string {
   const hash = createHash('sha256').update(projectPath).digest('hex').slice(0, 8);
-  const projectName = projectPath
-    .split(/[/\\]/).pop() || projectPath
-    .replace(/[^a-zA-Z0-9_-]/g, '_')
-    .slice(0, 32);
+  const projectName =
+    projectPath.split(/[/\\]/).pop() || projectPath.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32);
   return `${base}_${projectName}_${hash}`;
 }
 
@@ -268,54 +267,54 @@ async function updateQdrantCollection(
   options: UpdateOptions
 ): Promise<void> {
   const qdrantSpinner = ora('Checking Qdrant collection...').start();
-  
+
   try {
     // Check if Qdrant is running
     const endpoint = config.memory?.longTerm?.endpoint || 'localhost:6333';
     const url = endpoint.startsWith('http') ? endpoint : `http://${endpoint}`;
-    
+
     const response = await fetch(`${url}/collections`, {
       signal: AbortSignal.timeout(3000),
     });
-    
+
     if (!response.ok) {
       qdrantSpinner.info('Qdrant not available (optional)');
       return;
     }
-    
-    const data = await response.json() as { result: { collections: Array<{ name: string }> } };
+
+    const data = (await response.json()) as { result: { collections: Array<{ name: string }> } };
     const baseCollection = config.memory?.longTerm?.collection || 'agent_memory';
     const projectId = config.project?.name || cwd;
-    
+
     // Generate project-scoped collection name
     const collection = getProjectCollectionName(baseCollection, projectId);
-    
+
     if (options.verbose) {
       console.log(chalk.dim(`  Project-scoped collection: ${collection}`));
     }
-    
+
     // Check collection dimensions
-    const collectionExists = data.result.collections.some(c => c.name === collection);
-    
+    const collectionExists = data.result.collections.some((c) => c.name === collection);
+
     if (collectionExists) {
       const collectionInfo = await fetch(`${url}/collections/${collection}`);
-      const info = await collectionInfo.json() as { 
-        result: { config: { params: { vectors: { size: number } } } } 
+      const info = (await collectionInfo.json()) as {
+        result: { config: { params: { vectors: { size: number } } } };
       };
       const currentSize = info.result?.config?.params?.vectors?.size;
-      
+
       // Get expected dimensions from embedding service
       const embeddingService = getEmbeddingService();
       await embeddingService.initialize();
       const expectedSize = embeddingService.getDimensions();
-      
+
       if (currentSize && currentSize !== expectedSize) {
         qdrantSpinner.text = `Migrating collection (${currentSize} → ${expectedSize} dimensions)...`;
-        
+
         // Create new collection with correct dimensions
         const newCollection = `${collection}_v${expectedSize}`;
-        const newExists = data.result.collections.some(c => c.name === newCollection);
-        
+        const newExists = data.result.collections.some((c) => c.name === newCollection);
+
         if (!newExists) {
           await fetch(`${url}/collections/${newCollection}`, {
             method: 'PUT',
@@ -324,11 +323,13 @@ async function updateQdrantCollection(
               vectors: { size: expectedSize, distance: 'Cosine' },
             }),
           });
-          
+
           qdrantSpinner.succeed(`Created new collection: ${newCollection} (${expectedSize} dims)`);
           console.log(chalk.dim(`  Old collection ${collection} preserved for reference`));
         } else {
-          qdrantSpinner.succeed(`Collection ${newCollection} already exists with correct dimensions`);
+          qdrantSpinner.succeed(
+            `Collection ${newCollection} already exists with correct dimensions`
+          );
         }
       } else {
         qdrantSpinner.succeed(`Qdrant collection OK (${currentSize} dimensions)`);
@@ -338,7 +339,7 @@ async function updateQdrantCollection(
       const embeddingService = getEmbeddingService();
       await embeddingService.initialize();
       const expectedSize = embeddingService.getDimensions();
-      
+
       await fetch(`${url}/collections/${collection}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -346,14 +347,13 @@ async function updateQdrantCollection(
           vectors: { size: expectedSize, distance: 'Cosine' },
         }),
       });
-      
+
       qdrantSpinner.succeed(`Created Qdrant collection: ${collection} (${expectedSize} dims)`);
     }
-    
   } catch (error) {
     qdrantSpinner.info('Qdrant not available (run `uap memory start` to enable)');
     if (options.verbose) {
-      console.log(chalk.dim(`  ${error}`));
+      console.log(chalk.dim(`  ${error instanceof Error ? error.message : String(error)}`));
     }
   }
 }

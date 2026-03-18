@@ -147,6 +147,9 @@ export class LlamaCppEmbeddingProvider implements EmbeddingProvider {
     };
 
     // Sort by index to maintain order
+    if (!data?.data || !Array.isArray(data.data)) {
+      throw new Error('OpenAI embedding API returned unexpected response shape');
+    }
     const sorted = data.data.sort((a, b) => a.index - b.index);
     const embeddings = sorted.map((d) => d.embedding);
 
@@ -221,6 +224,9 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     }
 
     const data = (await response.json()) as { embedding: number[] };
+    if (!data?.embedding || !Array.isArray(data.embedding)) {
+      throw new Error('Ollama embedding API returned unexpected response shape');
+    }
     this.dimensions = data.embedding.length; // Update dimensions from actual response
     return data.embedding;
   }
@@ -339,9 +345,15 @@ print(json.dumps(embeddings.tolist()))
         maxBuffer: 50 * 1024 * 1024,
         input: JSON.stringify(texts),
       });
-      return JSON.parse(result.trim());
+      const parsed = JSON.parse(result.trim());
+      if (!Array.isArray(parsed)) {
+        throw new Error('Local embedding script returned non-array result');
+      }
+      return parsed;
     } catch (error) {
-      throw new Error(`Local embedding generation failed: ${error}`);
+      throw new Error(
+        `Local embedding generation failed: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 }

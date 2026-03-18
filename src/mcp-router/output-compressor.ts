@@ -56,7 +56,7 @@ export function compressToolOutput(
   // circular references. Catch and fall back to String() coercion.
   let serialized: string;
   try {
-    serialized = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+    serialized = typeof result === 'string' ? result : JSON.stringify(result);
   } catch {
     // BigInt, circular ref, or other exotic value — safe coercion
     // Avoid String(obj) which produces "[object Object]"

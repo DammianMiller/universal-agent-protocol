@@ -70,7 +70,8 @@ export class PolicyToolRegistry {
     );
 
     try {
-      return JSON.parse(result);
+      const parsed = JSON.parse(result);
+      return parsed ?? { raw: result.trim() };
     } catch {
       return { raw: result.trim() };
     }

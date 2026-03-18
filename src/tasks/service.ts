@@ -1042,7 +1042,7 @@ export class TaskService {
     const rows = stmt.all() as Array<Record<string, unknown>>;
     return rows.map((row) => ({
       ...row,
-      originalIds: JSON.parse(row.originalIds as string),
+      originalIds: row.originalIds ? JSON.parse(row.originalIds as string) : [],
       labels: row.labels ? JSON.parse(row.labels as string) : [],
     })) as TaskSummary[];
   }

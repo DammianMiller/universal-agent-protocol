@@ -1762,7 +1762,7 @@ async function showModelsDashboard(options: DashboardOptions): Promise<void> {
           ? val
             ? chalk.green('ON')
             : chalk.red('OFF')
-          : chalk.cyan(String(val));
+          : chalk.cyan(val != null ? String(val) : chalk.dim('(not set)'));
       flagLines.push(`${key}: ${display}`);
     }
     // Print 3 per line

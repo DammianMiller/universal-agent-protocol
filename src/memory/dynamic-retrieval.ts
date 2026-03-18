@@ -719,13 +719,20 @@ async function queryLongTermMemory(
       for (const mem of allMemories) {
         if (memories.length >= _limit) break;
 
-        const content = (mem.content || mem.text || JSON.stringify(mem)).toLowerCase();
+        const rawContent = mem?.content || mem?.text || '';
+        const content = (
+          typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent)
+        ).toLowerCase();
         const matchCount = queryWords.filter((w) => content.includes(w)).length;
 
         // Require at least 1 non-stopword match (was 2 including stopwords)
         if (matchCount >= 1 && matchCount / queryWords.length >= 0.3) {
+          const rawSlice = mem?.content || mem?.text || '';
           memories.push({
-            content: (mem.content || mem.text || JSON.stringify(mem)).slice(0, 500),
+            content: (typeof rawSlice === 'string' ? rawSlice : JSON.stringify(rawSlice)).slice(
+              0,
+              500
+            ),
             type: mem.type || 'lesson',
             relevance: matchCount / queryWords.length,
             source: 'long-term-memory',

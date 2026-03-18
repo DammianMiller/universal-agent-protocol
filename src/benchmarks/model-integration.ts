@@ -1139,7 +1139,7 @@ export async function runModelBenchmark(
       const model = modelsToTest.find((m) => m.id === modelId);
       const sign = imp.successDelta >= 0 ? '+' : '';
       console.log(
-        `  ${model?.name}: ${sign}${imp.successDelta.toFixed(1)}% success, ${imp.speedupRatio.toFixed(2)}x speed`
+        `  ${model?.name ?? modelId}: ${sign}${imp.successDelta.toFixed(1)}% success, ${imp.speedupRatio.toFixed(2)}x speed`
       );
     }
   } else {

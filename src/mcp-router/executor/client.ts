@@ -34,10 +34,13 @@ export class McpClient {
   private initialized = false;
   private serverName: string;
   private config: McpServerConfig;
+  /** Serialized config for stale-detection by the pool */
+  readonly configHash: string;
 
   constructor(serverName: string, config: McpServerConfig) {
     this.serverName = serverName;
     this.config = config;
+    this.configHash = JSON.stringify(config);
   }
 
   async connect(): Promise<void> {
@@ -148,7 +151,14 @@ export class McpClient {
         },
       });
 
-      this.process!.stdin!.write(JSON.stringify(request) + '\n');
+      const requestStr = JSON.stringify(request) + '\n';
+      this.process!.stdin!.write(requestStr, (writeErr) => {
+        if (writeErr) {
+          clearTimeout(timeout);
+          this.pendingRequests.delete(id);
+          reject(new Error(`Write failed: ${writeErr.message}`));
+        }
+      });
     });
   }
 
@@ -252,6 +262,10 @@ export class McpClient {
 
   disconnect(): void {
     if (this.process) {
+      // Remove listeners before kill to prevent double-cleanup from the exit handler
+      this.process.removeAllListeners();
+      this.process.stdout?.removeAllListeners();
+      this.process.stderr?.removeAllListeners();
       this.process.stdin?.end();
       this.process.kill();
       this.cleanup();
@@ -269,6 +283,13 @@ export class McpClientPool {
 
   getClient(serverName: string, config: McpServerConfig): McpClient {
     let client = this.clients.get(serverName);
+
+    // Detect stale config — if the server config changed, disconnect the old
+    // client and create a new one with the updated config.
+    if (client && client.configHash !== JSON.stringify(config)) {
+      client.disconnect();
+      client = undefined;
+    }
 
     if (!client) {
       client = new McpClient(serverName, config);

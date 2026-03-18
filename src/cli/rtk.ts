@@ -143,7 +143,7 @@ async function installWithCurl(): Promise<void> {
     execSync(`tar -xzf "${downloadPath}/rtk.tar.gz" -C "${downloadPath}"`, { stdio: 'inherit' });
 
     // Move to local bin
-    const localBin = path.join(process.env.HOME || '', '.local', 'bin');
+    const localBin = path.join(process.env.HOME || '/tmp', '.local', 'bin');
     mkdirSync(localBin, { recursive: true });
 
     execSync(`mv "${downloadPath}/rtk" "${localBin}/rtk"`, { stdio: 'inherit' });
@@ -270,7 +270,7 @@ export async function checkRTKStatus(): Promise<void> {
   console.log('');
 
   // Check hook installation
-  const homeDir = process.env.HOME || '';
+  const homeDir = process.env.HOME || '/tmp';
   const claudeHooksDir = path.join(homeDir, '.claude', 'hooks');
   const rtkHookPath = path.join(claudeHooksDir, 'rtk-rewrite.sh');
 

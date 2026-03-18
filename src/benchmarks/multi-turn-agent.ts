@@ -77,7 +77,9 @@ export async function executeWithMultiTurn(
       }
     } catch (error) {
       if (cfg.verbose) {
-        console.log(`  [Memory] Failed to retrieve context: ${error}`);
+        console.log(
+          `  [Memory] Failed to retrieve context: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
     }
   }
@@ -106,7 +108,7 @@ export async function executeWithMultiTurn(
           executionSucceeded: false,
           testsRun: 0,
           testsPassed: 0,
-          errors: [`Execution failed: ${error}`],
+          errors: [`Execution failed: ${error instanceof Error ? error.message : String(error)}`],
           output: '',
           executionTimeMs: 0,
         },
@@ -115,7 +117,9 @@ export async function executeWithMultiTurn(
       turns.push(agentTurn);
 
       if (cfg.verbose) {
-        console.log(`  [Turn ${turn}] Failed: ${error}`);
+        console.log(
+          `  [Turn ${turn}] Failed: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
       continue;
     }

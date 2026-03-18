@@ -733,7 +733,7 @@ async function presetMode(presetName: string): Promise<Config> {
   console.log(`${preset.description}`);
   console.log('='.repeat(60));
   console.log(
-    `Quantization:   ${profile?.name || config.quantization} (${profile?.accuracy}% accuracy)`
+    `Quantization:   ${profile?.name || config.quantization} (${profile?.accuracy ?? '?'}% accuracy)`
   );
   console.log(
     `Context:        ${CONTEXT_LENGTHS.find((c) => c.value === config.context)?.label || config.context}`

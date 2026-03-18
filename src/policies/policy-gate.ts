@@ -36,6 +36,19 @@ export class PolicyViolationError extends Error {
 export class PolicyGate {
   private _memory: PolicyMemoryManager | null = null;
   private _db: DatabaseManager | null = null;
+  private _executionCount = 0;
+  private static readonly PRUNE_INTERVAL = 100; // Prune audit log every N executions
+
+  // Cache parsed policies + extracted rules to avoid re-querying SQLite,
+  // re-running Zod validation, and re-extracting rules via regex on every
+  // tool call. Policies change extremely rarely (only on explicit user action).
+  private _cachedPolicies: Policy[] | null = null;
+  private _cachedRules = new Map<
+    string,
+    Array<{ title: string; keywords: string[]; antiPatterns: string[] }>
+  >();
+  private _cacheTimestamp = 0;
+  private static readonly CACHE_TTL_MS = 30_000; // 30s TTL
 
   private get memory(): PolicyMemoryManager {
     if (!this._memory) {
@@ -49,6 +62,35 @@ export class PolicyGate {
       this._db = new DatabaseManager();
     }
     return this._db;
+  }
+
+  /** Invalidate the policy cache (call after policy upsert/update/toggle) */
+  invalidateCache(): void {
+    this._cachedPolicies = null;
+    this._cachedRules.clear();
+    this._cacheTimestamp = 0;
+  }
+
+  /** Get policies from cache or reload from DB */
+  private async getCachedPolicies(): Promise<Policy[]> {
+    const now = Date.now();
+    if (this._cachedPolicies && now - this._cacheTimestamp < PolicyGate.CACHE_TTL_MS) {
+      return this._cachedPolicies;
+    }
+    this._cachedPolicies = await this.memory.getAllPolicies();
+    this._cacheTimestamp = now;
+    return this._cachedPolicies;
+  }
+
+  /** Get extracted rules for a policy, cached by policy ID */
+  private getCachedRules(
+    policy: Policy
+  ): Array<{ title: string; keywords: string[]; antiPatterns: string[] }> {
+    const cached = this._cachedRules.get(policy.id);
+    if (cached) return cached;
+    const rules = this.extractRules(policy.rawMarkdown);
+    this._cachedRules.set(policy.id, rules);
+    return rules;
   }
 
   /**
@@ -122,6 +164,16 @@ export class PolicyGate {
       });
     }
 
+    // Periodically prune old audit log entries to prevent unbounded growth
+    this._executionCount++;
+    if (this._executionCount % PolicyGate.PRUNE_INTERVAL === 0) {
+      try {
+        this.db.pruneExecutionLog(1000);
+      } catch {
+        // Best-effort cleanup
+      }
+    }
+
     return executionResult;
   }
 
@@ -133,7 +185,7 @@ export class PolicyGate {
     args: Record<string, unknown>,
     stage: 'pre-exec' | 'post-exec' | 'review' | 'always' = 'pre-exec'
   ): Promise<GateResult> {
-    const allPolicies = await this.memory.getAllPolicies();
+    const allPolicies = await this.getCachedPolicies();
     // Filter to policies matching this stage or 'always'
     const stagePolicies = allPolicies.filter(
       (p: Policy) =>
@@ -166,7 +218,7 @@ export class PolicyGate {
     operation: string,
     args: Record<string, unknown>
   ): PolicyCheckResult {
-    const rules = this.extractRules(policy.rawMarkdown);
+    const rules = this.getCachedRules(policy);
     const violations: string[] = [];
 
     // Cache serialized args once per policy evaluation (not per rule)
