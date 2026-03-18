@@ -263,6 +263,14 @@ program
       .action(async (id) => {
         (await lazy.worktree())('cleanup', { id });
       })
+  )
+  .addCommand(
+    new Command('ensure')
+      .description('Check if working inside a worktree')
+      .option('--strict', 'Exit with code 1 if not in a worktree (for use as a gate)')
+      .action(async (options) => {
+        (await lazy.worktree())('ensure', { strict: options.strict });
+      })
   );
 
 program

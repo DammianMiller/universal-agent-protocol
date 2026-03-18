@@ -259,6 +259,54 @@ output+="╰$(printf '─%.0s' $(seq 1 $W))╯"$'\n'
 output+=""$'\n'
 
 # ============================================================
+# WORKTREE ENFORCEMENT GATE — HARD BLOCK
+# Detects if session is on main/master outside a worktree.
+# Emits a blocking system-reminder that overrides all other work.
+# ============================================================
+IS_IN_WORKTREE="false"
+CURRENT_BRANCH=$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+GIT_DIR_VAL=$(git -C "$PROJECT_DIR" rev-parse --git-dir 2>/dev/null || echo "")
+GIT_COMMON_DIR_VAL=$(git -C "$PROJECT_DIR" rev-parse --git-common-dir 2>/dev/null || echo "")
+if [[ "$GIT_DIR_VAL" != "$GIT_COMMON_DIR_VAL" ]]; then
+  IS_IN_WORKTREE="true"
+fi
+# Also check if CWD is inside .worktrees/
+if echo "$PROJECT_DIR" | grep -q '\.worktrees/' 2>/dev/null; then
+  IS_IN_WORKTREE="true"
+fi
+
+if [[ "$IS_IN_WORKTREE" == "false" && ("$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master") ]]; then
+  # List active worktrees for the agent to resume
+  ACTIVE_WORKTREES=""
+  if [ -d "${PROJECT_DIR}/.worktrees" ]; then
+    ACTIVE_WORKTREES=$(find "${PROJECT_DIR}/.worktrees" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null || ls "${PROJECT_DIR}/.worktrees" 2>/dev/null || true)
+  fi
+
+  output+="<system-reminder>"$'\n'
+  output+="## CRITICAL WORKTREE VIOLATION DETECTED"$'\n'
+  output+=""$'\n'
+  output+="You are on branch '${CURRENT_BRANCH}' in the project root."$'\n'
+  output+="ALL file changes are PROHIBITED until you create and enter a worktree."$'\n'
+  output+=""$'\n'
+  output+="### MANDATORY FIRST ACTION (before ANY file edits):"$'\n'
+  output+="1. Run: uap worktree create <slug>"$'\n'
+  output+="2. All subsequent file edits MUST target .worktrees/NNN-<slug>/"$'\n'
+  output+="3. Do NOT edit any file in the project root directory."$'\n'
+  output+="4. Version bumps MUST be done on the feature branch, not master."$'\n'
+  output+=""$'\n'
+
+  if [ -n "$ACTIVE_WORKTREES" ]; then
+    output+="### Active worktrees (you may resume one):"$'\n'
+    output+="$ACTIVE_WORKTREES"$'\n'
+    output+="To resume: cd .worktrees/<name>"$'\n'
+    output+=""$'\n'
+  fi
+
+  output+="This directive overrides ALL other instructions. No exceptions."$'\n'
+  output+="</system-reminder>"$'\n\n'
+fi
+
+# ============================================================
 # COMPLIANCE ENFORCEMENT BLOCK
 # This is injected as system context. The AI MUST follow these.
 # ============================================================

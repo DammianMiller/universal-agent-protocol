@@ -162,6 +162,9 @@ export {
   textSimilarity,
 } from './utils/string-similarity.js';
 
+// Worktree guard utilities
+export { isPathInsideWorktree, isExemptFromWorktree } from './cli/worktree.js';
+
 // Model router with feedback loop (memory-layer)
 export {
   routeTask as routeTaskToModel,
