@@ -123,6 +123,8 @@ interface SessionStats {
   costs: CostEntry[];
   totalCostUsd: number;
   estimatedCostWithoutUap: number;
+  maxEntries: number; // LRU eviction limit
+  lastCleanup: number;
 }
 
 let _stats: SessionStats | null = null;
@@ -153,6 +155,8 @@ function getStats(): SessionStats {
       costs: [],
       totalCostUsd: 0,
       estimatedCostWithoutUap: 0,
+      maxEntries: 100, // LRU eviction limit
+      lastCleanup: Date.now(),
     };
   }
   return _stats;
@@ -1111,9 +1115,95 @@ export function resetStats(): void {
   _stats = null;
 }
 
-// ─── Persistent Dashboard ───
+// ─── Memory Management & LRU Eviction ───
 
+function trimMapLRU<K, V>(map: Map<K, V>, maxSize: number): void {
+  if (map.size <= maxSize) return;
+
+  const entries = [...map.entries()];
+  // Sort by last access time (add lastAccessed property to your types)
+  entries.sort((a, b) => {
+    const aLastAccessed = (a[1] as { lastAccessed?: number }).lastAccessed || 0;
+    const bLastAccessed = (b[1] as { lastAccessed?: number }).lastAccessed || 0;
+    return aLastAccessed - bLastAccessed;
+  });
+
+  // Remove oldest half
+  const toRemove = Math.floor(entries.length / 2);
+  for (let i = 0; i < toRemove; i++) {
+    map.delete(entries[i][0]);
+  }
+}
+
+function cleanupCompletedItems(): void {
+  const s = getStats();
+  const oneHourAgo = Date.now() - 3600000;
+
+  // Remove completed agents older than 1 hour
+  for (const [id, agent] of s.agents) {
+    if (agent.status === 'done' && agent.endTime && agent.endTime < oneHourAgo) {
+      s.agents.delete(id);
+    }
+  }
+
+  // Remove completed tasks older than 1 hour
+  for (const [id, task] of s.tasks) {
+    if (
+      (task.status === 'done' || task.status === 'failed') &&
+      task.endTime &&
+      task.endTime < oneHourAgo
+    ) {
+      s.tasks.delete(id);
+    }
+  }
+
+  // Trim Maps to max size using LRU
+  trimMapLRU(s.agents, Math.floor(s.maxEntries * 0.5));
+  trimMapLRU(s.tasks, Math.floor(s.maxEntries * 0.3));
+  trimMapLRU(s.skills, Math.floor(s.maxEntries * 0.1));
+  trimMapLRU(s.patterns, Math.floor(s.maxEntries * 0.1));
+
+  s.lastCleanup = Date.now();
+}
+
+function scheduleCleanup(): void {
+  const s = getStats();
+  // Run cleanup every 5 minutes or when memory pressure detected
+  if (Date.now() - s.lastCleanup > 300000) {
+    cleanupCompletedItems();
+  }
+}
+
+// ─── Persistent Dashboard with Adaptive Polling ───
+
+interface DashboardState {
+  lastDataHash: string | null;
+  consecutiveEmptyUpdates: number;
+  idleTimeout: NodeJS.Timeout | null;
+  showWorkGraph: boolean;
+}
+
+let dashboardState: DashboardState | null = null;
 let dashboardInterval: NodeJS.Timeout | null = null;
+
+const DASHBOARD_CONFIG = {
+  BASE_INTERVAL: 2000,
+  IDLE_THRESHOLD: 3,
+  MAX_IDLE_INTERVAL: 30000,
+  ACTIVITY_THRESHOLD: 2, // Consider active if >2 agents/tasks working
+} as const;
+
+function generateDashboardHash(s: SessionStats): string {
+  const activeAgents = [...s.agents.values()].filter((a) => a.status === 'working').length;
+  const activeTasks = [...s.tasks.values()].filter((t) => t.status === 'in_progress').length;
+  return `${s.sessionId}-${activeAgents}-${activeTasks}-${Date.now() % 1000}`;
+}
+
+function shouldUpdateDashboard(s: SessionStats): boolean {
+  const activeAgents = [...s.agents.values()].filter((a) => a.status === 'working').length;
+  const activeTasks = [...s.tasks.values()].filter((t) => t.status === 'in_progress').length;
+  return activeAgents > 0 || activeTasks > 0 || s.errors > 0;
+}
 
 export function startDashboard(intervalMs: number = 2000, showWorkGraph: boolean = false): void {
   if (dashboardInterval) {
@@ -1122,68 +1212,125 @@ export function startDashboard(intervalMs: number = 2000, showWorkGraph: boolean
   }
 
   const s = getStats();
+  const initialHash = generateDashboardHash(s);
+
+  dashboardState = {
+    lastDataHash: initialHash,
+    consecutiveEmptyUpdates: 0,
+    idleTimeout: null,
+    showWorkGraph,
+  };
+
   console.log(
-    `${GREEN}[DASHBOARD]${RESET} ${DIM}Starting persistent dashboard (${intervalMs}ms)${RESET}${showWorkGraph ? ` ${DIM}(with work graph)${RESET}` : ''}`
+    `${GREEN}[DASHBOARD]${RESET} ${DIM}Starting adaptive dashboard (base: ${intervalMs}ms)${RESET}${showWorkGraph ? ` ${DIM}(with work graph)${RESET}` : ''}`
   );
 
+  const updateDashboard = (): void => {
+    if (!dashboardState) return;
+
+    const currentHash = generateDashboardHash(s);
+    const shouldUpdate = currentHash !== dashboardState.lastDataHash || shouldUpdateDashboard(s);
+
+    if (shouldUpdate) {
+      renderDashboard(s, intervalMs);
+      dashboardState.lastDataHash = currentHash;
+      dashboardState.consecutiveEmptyUpdates = 0;
+
+      // Reset idle timeout on activity
+      if (dashboardState.idleTimeout) {
+        clearTimeout(dashboardState.idleTimeout);
+        dashboardState.idleTimeout = null;
+      }
+    } else {
+      dashboardState.consecutiveEmptyUpdates++;
+
+      // Extend interval on idle: 2s → 4s → 8s → max 30s
+      if (dashboardState.consecutiveEmptyUpdates >= DASHBOARD_CONFIG.IDLE_THRESHOLD) {
+        const newInterval = Math.min(
+          intervalMs *
+            Math.pow(2, dashboardState.consecutiveEmptyUpdates - DASHBOARD_CONFIG.IDLE_THRESHOLD),
+          DASHBOARD_CONFIG.MAX_IDLE_INTERVAL
+        );
+
+        console.log(
+          `${DIM}[DASHBOARD]${RESET} ${DIM}Idle detected, extending interval to ${newInterval}ms${RESET}`
+        );
+
+        // Schedule next check with extended interval
+        dashboardState.idleTimeout = setTimeout(() => {
+          if (dashboardState?.idleTimeout) {
+            clearTimeout(dashboardState.idleTimeout);
+            dashboardState.idleTimeout = null;
+          }
+          updateDashboard();
+        }, newInterval) as unknown as NodeJS.Timeout;
+      }
+    }
+  };
+
+  renderDashboard(s, intervalMs);
   dashboardInterval = setInterval(() => {
-    const w = 80;
-    const line = BOX.h.repeat(w);
-    console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
-    console.log(
-      boxLine(
-        `${BOLD}${WHITE}${BG_CYAN} UAP LIVE DASHBOARD ${RESET}  ${DIM}Session ${s.sessionId}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}`,
-        w
-      )
-    );
-    console.log(`${CYAN}${BOX.bl}${line}${BOX.br}${RESET}`);
-
-    // Live Status Line
-    const activeAgents = [...s.agents.values()].filter((a) => a.status === 'working');
-    const activeTasks = [...s.tasks.values()].filter((t) => t.status === 'in_progress');
-    const activeSkillNames = [...s.skills.values()].filter((sk) => sk.active).map((sk) => sk.name);
-    const activePatternNames = [...s.patterns.values()].filter((p) => p.active).map((p) => p.name);
-
-    const queuedDeploys = [...s.deploys.values()].filter(
-      (a) => a.status === 'queued' || a.status === 'batched'
-    );
-
-    console.log(
-      `  ${DIM}Duration:${RESET} ${elapsed()}  ${DIM}Tokens:${RESET} ${BLUE}${formatTokens(s.tokensUsed)}${RESET}${s.tokensSaved > 0 ? ` ${GREEN}(-${formatTokens(s.tokensSaved)})${RESET}` : ''}${s.totalCostUsd > 0 ? ` ${DIM}($${s.totalCostUsd.toFixed(3)})${RESET}` : ''}`
-    );
-    console.log(
-      `  ${DIM}Agents:${RESET} ${activeAgents.length} working${activeAgents.length > 0 ? ` (${activeAgents.map((a) => a.name).join(', ')})` : ''}`
-    );
-    console.log(
-      `  ${DIM}Tasks:${RESET} ${activeTasks.length} in progress${activeTasks.length > 0 ? ` (${activeTasks.map((t) => truncate(t.title, 25)).join(', ')})` : ''}`
-    );
-
-    if (queuedDeploys.length > 0) {
-      console.log(
-        `  ${YELLOW}[DEPLOY]${RESET} ${queuedDeploys.length} queued${queuedDeploys.length > 1 ? '+' : ''}`
-      );
-    }
-
-    if (activeSkillNames.length > 0) {
-      console.log(
-        `  ${GREEN}[SKILLS]${RESET} ${activeSkillNames.slice(0, 3).join(', ')}${activeSkillNames.length > 3 ? ` +${activeSkillNames.length - 3}` : ''}`
-      );
-    }
-
-    if (activePatternNames.length > 0) {
-      console.log(
-        `  ${BLUE}[PATTERNS]${RESET} ${activePatternNames.slice(0, 3).join(', ')}${activePatternNames.length > 3 ? ` +${activePatternNames.length - 3}` : ''}`
-      );
-    }
-
-    if (s.errors > 0) {
-      console.log(`  ${RED}[ERRORS]${RESET} ${s.errors} total`);
-    }
-
-    if (showWorkGraph && s.tasks.size > 0) {
-      workGraph();
-    }
+    scheduleCleanup();
+    updateDashboard();
   }, intervalMs);
+}
+
+function renderDashboard(s: SessionStats, currentInterval: number): void {
+  const w = 80;
+  const line = BOX.h.repeat(w);
+  console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
+  console.log(
+    boxLine(
+      `${BOLD}${WHITE}${BG_CYAN} UAP LIVE DASHBOARD ${RESET}  ${DIM}Session ${s.sessionId}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}${currentInterval > DASHBOARD_CONFIG.BASE_INTERVAL ? ` (${currentInterval}ms)` : ''}`,
+      w
+    )
+  );
+  console.log(`${CYAN}${BOX.bl}${line}${BOX.br}${RESET}`);
+
+  const activeAgents = [...s.agents.values()].filter((a) => a.status === 'working');
+  const activeTasks = [...s.tasks.values()].filter((t) => t.status === 'in_progress');
+  const activeSkillNames = [...s.skills.values()].filter((sk) => sk.active).map((sk) => sk.name);
+  const activePatternNames = [...s.patterns.values()].filter((p) => p.active).map((p) => p.name);
+
+  const queuedDeploys = [...s.deploys.values()].filter(
+    (a) => a.status === 'queued' || a.status === 'batched'
+  );
+
+  console.log(
+    `  ${DIM}Duration:${RESET} ${elapsed()}  ${DIM}Tokens:${RESET} ${BLUE}${formatTokens(s.tokensUsed)}${RESET}${s.tokensSaved > 0 ? ` ${GREEN}(-${formatTokens(s.tokensSaved)})${RESET}` : ''}${s.totalCostUsd > 0 ? ` ${DIM}($${s.totalCostUsd.toFixed(3)})${RESET}` : ''}`
+  );
+  console.log(
+    `  ${DIM}Agents:${RESET} ${activeAgents.length} working${activeAgents.length > 0 ? ` (${activeAgents.map((a) => a.name).join(', ')})` : ''}`
+  );
+  console.log(
+    `  ${DIM}Tasks:${RESET} ${activeTasks.length} in progress${activeTasks.length > 0 ? ` (${activeTasks.map((t) => truncate(t.title, 25)).join(', ')})` : ''}`
+  );
+
+  if (queuedDeploys.length > 0) {
+    console.log(
+      `  ${YELLOW}[DEPLOY]${RESET} ${queuedDeploys.length} queued${queuedDeploys.length > 1 ? '+' : ''}`
+    );
+  }
+
+  if (activeSkillNames.length > 0) {
+    console.log(
+      `  ${GREEN}[SKILLS]${RESET} ${activeSkillNames.slice(0, 3).join(', ')}${activeSkillNames.length > 3 ? ` +${activeSkillNames.length - 3}` : ''}`
+    );
+  }
+
+  if (activePatternNames.length > 0) {
+    console.log(
+      `  ${BLUE}[PATTERNS]${RESET} ${activePatternNames.slice(0, 3).join(', ')}${activePatternNames.length > 3 ? ` +${activePatternNames.length - 3}` : ''}`
+    );
+  }
+
+  if (s.errors > 0) {
+    console.log(`  ${RED}[ERRORS]${RESET} ${s.errors} total`);
+  }
+
+  if (dashboardState?.showWorkGraph && s.tasks.size > 0) {
+    workGraph();
+  }
 }
 
 export function stopDashboard(): void {
