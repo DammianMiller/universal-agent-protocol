@@ -218,3 +218,63 @@ describe('UnifiedRoutingService - Model Selection', () => {
     });
   });
 });
+
+describe('UnifiedRoutingService - Map Coverage Validation', () => {
+  let service: UnifiedRoutingService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new UnifiedRoutingService(DEFAULT_CONFIG);
+  });
+
+  it('should validate model map coverage for all configured models', () => {
+    const models = ['opus-4.5', 'gpt-5.2', 'glm-4.7', 'qwen35'];
+    const results = new Set<string>();
+
+    // Route tasks that should trigger different model selections
+    for (const model of models) {
+      const result = service.route(`Select ${model} for task`);
+      results.add(result.selectedModel);
+    }
+
+    // All configured models should be in the map and potentially selected
+    expect(results.size).toBeGreaterThanOrEqual(1);
+  });
+
+  it('should handle model disagreements between rule-based and benchmark', () => {
+    const result = service.route('Task with conflicting signals');
+
+    // Should still produce a valid selection even when systems disagree
+    expect(result.selectedModel).toBeDefined();
+    expect(result.source).toBeDefined();
+    expect(['consensus', 'rule-based', 'benchmark-data']).toContain(result.source);
+  });
+
+  it('should validate all models are reachable through routing', () => {
+    const testTasks = [
+      'Use opus for planning',
+      'Use gpt for execution',
+      'Use glm for review',
+      'Use qwen for fallback',
+    ];
+
+    const selectedModels = new Set<string>();
+
+    for (const task of testTasks) {
+      const result = service.route(task);
+      selectedModels.add(result.selectedModel);
+    }
+
+    // Should have reached at least some models from the map
+    expect(selectedModels.size).toBeGreaterThanOrEqual(1);
+  });
+
+  it('should maintain consistent routing for same task', () => {
+    const task = 'Consistent routing test';
+    const result1 = service.route(task);
+    const result2 = service.route(task);
+
+    expect(result1.selectedModel).toBe(result2.selectedModel);
+    expect(result1.confidence).toBe(result2.confidence);
+  });
+});

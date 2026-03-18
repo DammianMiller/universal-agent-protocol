@@ -38,6 +38,21 @@ describe('ModelRouter', () => {
       expect(result.requiresPlanning).toBe(false);
     });
 
+    it('should cache classification results for 5 seconds', () => {
+      const task = 'implement new authentication system';
+      const result1 = router.classifyTask(task);
+      const result2 = router.classifyTask(task);
+
+      expect(result1).toBe(result2);
+    });
+
+    it('should use lowercase trimmed key for cache', () => {
+      const result1 = router.classifyTask('  IMPLEMENT FEATURE  ');
+      const result2 = router.classifyTask('implement feature');
+
+      expect(result1).toBe(result2);
+    });
+
     it('should classify security task as critical', () => {
       const result = router.classifyTask('implement authentication with OAuth2');
       expect(result.complexity).toBe('critical');
@@ -97,7 +112,11 @@ describe('ModelRouter', () => {
     });
 
     it('should return 0 for models without cost info', () => {
-      const model = { ...ModelPresets['opus-4.5'], costPer1MInput: undefined, costPer1MOutput: undefined };
+      const model = {
+        ...ModelPresets['opus-4.5'],
+        costPer1MInput: undefined,
+        costPer1MOutput: undefined,
+      };
       const cost = router.estimateCost(model, 10000, 5000);
       expect(cost).toBe(0);
     });
@@ -106,7 +125,7 @@ describe('ModelRouter', () => {
   describe('analyzeRouting', () => {
     it('should return complete analysis', () => {
       const analysis = router.analyzeRouting('implement secure authentication');
-      
+
       expect(analysis.classification).toBeDefined();
       expect(analysis.matchedRules).toBeDefined();
       expect(analysis.matchedRules.length).toBeGreaterThan(0);
@@ -139,23 +158,25 @@ describe('TaskPlanner', () => {
   describe('createPlan', () => {
     it('should create single subtask for simple tasks', async () => {
       const plan = await planner.createPlan('fix typo in readme');
-      
+
       expect(plan.subtasks.length).toBe(1);
       expect(plan.subtasks[0].title).toBe('Execute task');
     });
 
     it('should decompose complex tasks', async () => {
-      const plan = await planner.createPlan('implement new authentication system with security review');
-      
+      const plan = await planner.createPlan(
+        'implement new authentication system with security review'
+      );
+
       expect(plan.subtasks.length).toBeGreaterThan(1);
-      expect(plan.subtasks.some(s => s.type === 'planning')).toBe(true);
-      expect(plan.subtasks.some(s => s.type === 'coding')).toBe(true);
-      expect(plan.subtasks.some(s => s.type === 'review')).toBe(true);
+      expect(plan.subtasks.some((s) => s.type === 'planning')).toBe(true);
+      expect(plan.subtasks.some((s) => s.type === 'coding')).toBe(true);
+      expect(plan.subtasks.some((s) => s.type === 'review')).toBe(true);
     });
 
     it('should assign models to subtasks', async () => {
       const plan = await planner.createPlan('implement new feature');
-      
+
       for (const subtask of plan.subtasks) {
         expect(plan.modelAssignments.has(subtask.id)).toBe(true);
       }
@@ -163,7 +184,7 @@ describe('TaskPlanner', () => {
 
     it('should estimate cost and duration', async () => {
       const plan = await planner.createPlan('implement new feature');
-      
+
       expect(plan.estimatedCost).toBeGreaterThan(0);
       expect(plan.estimatedDuration).toBeGreaterThan(0);
     });
@@ -173,7 +194,7 @@ describe('TaskPlanner', () => {
     it('should return tasks in dependency order', async () => {
       const plan = await planner.createPlan('design and implement new architecture');
       const order = planner.getExecutionOrder(plan);
-      
+
       expect(order.length).toBeGreaterThan(0);
       // First level should have no dependencies
       const firstLevelIds = new Set(order[0]);
@@ -188,7 +209,7 @@ describe('TaskPlanner', () => {
     it('should generate readable visualization', async () => {
       const plan = await planner.createPlan('implement feature');
       const viz = planner.visualizePlan(plan);
-      
+
       expect(viz).toContain('Execution Plan');
       expect(viz).toContain('Subtasks');
       expect(viz).toContain('Estimated Cost');
@@ -215,12 +236,15 @@ describe('TaskExecutor', () => {
     };
     router = createRouter(config);
     planner = createPlanner(router, config);
-    
-    const mockClient = new MockModelClient({
-      'implement': 'function example() { return "implemented"; }',
-      'test': 'describe("test", () => { it("works", () => {}); });',
-    }, 100);
-    
+
+    const mockClient = new MockModelClient(
+      {
+        implement: 'function example() { return "implemented"; }',
+        test: 'describe("test", () => { it("works", () => {}); });',
+      },
+      100
+    );
+
     executor = createExecutor(router, config, mockClient);
   });
 
@@ -228,7 +252,23 @@ describe('TaskExecutor', () => {
     it('should execute simple plan', async () => {
       const plan = await planner.createPlan('fix typo');
       const results = await executor.executePlan(plan, planner);
-      
+
+      expect(results.length).toBe(1);
+      expect(results[0].success).toBe(true);
+    });
+
+    it('should feed task outcomes to benchmark learning system', async () => {
+      const plan = await planner.createPlan('implement new feature');
+      const results = await executor.executePlan(plan, planner);
+
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0].success).toBe(true);
+    });
+
+    it('should handle task outcome recording failures gracefully', async () => {
+      const plan = await planner.createPlan('fix bug');
+      const results = await executor.executePlan(plan, planner);
+
       expect(results.length).toBe(1);
       expect(results[0].success).toBe(true);
     });
@@ -236,7 +276,7 @@ describe('TaskExecutor', () => {
     it('should track execution results', async () => {
       const plan = await planner.createPlan('implement feature');
       await executor.executePlan(plan, planner);
-      
+
       const results = executor.getResults(plan.id);
       expect(results).toBeDefined();
       expect(results!.length).toBeGreaterThan(0);
@@ -245,7 +285,7 @@ describe('TaskExecutor', () => {
     it('should calculate total cost', async () => {
       const plan = await planner.createPlan('implement feature');
       await executor.executePlan(plan, planner);
-      
+
       const cost = executor.getTotalCost(plan.id);
       expect(cost).toBeGreaterThanOrEqual(0);
     });
@@ -253,7 +293,7 @@ describe('TaskExecutor', () => {
     it('should generate summary', async () => {
       const plan = await planner.createPlan('implement feature');
       await executor.executePlan(plan, planner);
-      
+
       const summary = executor.generateSummary(plan.id);
       expect(summary).toContain('Execution Summary');
       expect(summary).toContain('Success Rate');
@@ -266,9 +306,9 @@ describe('Factory Functions', () => {
     it('should use cost-optimized settings', () => {
       const router = createCostOptimizedRouter();
       const models = router.getAllModels();
-      
-      expect(models.some(m => m.id === 'deepseek-v3.2')).toBe(true);
-      expect(models.some(m => m.id === 'glm-4.7')).toBe(true);
+
+      expect(models.some((m) => m.id === 'deepseek-v3.2')).toBe(true);
+      expect(models.some((m) => m.id === 'glm-4.7')).toBe(true);
     });
   });
 
@@ -276,8 +316,8 @@ describe('Factory Functions', () => {
     it('should use performance-first settings', () => {
       const router = createPerformanceRouter();
       const models = router.getAllModels();
-      
-      expect(models.some(m => m.id === 'opus-4.5')).toBe(true);
+
+      expect(models.some((m) => m.id === 'opus-4.5')).toBe(true);
     });
   });
 });

@@ -8,11 +8,13 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { getDashboardData } from './data-service.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 
-const DASHBOARD_HTML_PATH = join(import.meta.dirname || '.', '../../web/dashboard.html');
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DASHBOARD_HTML_PATH = join(__dirname, '../../web/dashboard.html');
 
 export interface DashboardServerOptions {
   port?: number;

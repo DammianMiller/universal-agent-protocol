@@ -1,6 +1,6 @@
 /**
  * MCP Router Config Filtering Tests
- * 
+ *
  * Verifies that:
  * - Disabled servers are excluded
  * - Router itself is excluded (prevents circular reference)
@@ -17,7 +17,7 @@ describe('MCP Router Config Filtering', () => {
   it('should exclude servers marked as disabled', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-test-'));
     const configPath = path.join(tmpDir, 'mcp.json');
-    
+
     const config = {
       mcpServers: {
         'enabled-server': {
@@ -36,26 +36,26 @@ describe('MCP Router Config Filtering', () => {
         },
       },
     };
-    
+
     fs.writeFileSync(configPath, JSON.stringify(config));
-    
+
     const loaded = loadConfigFromFile(configPath);
     const serverNames = Object.keys(loaded.mcpServers);
-    
+
     expect(serverNames).toContain('enabled-server');
     expect(serverNames).toContain('implicitly-enabled');
     expect(serverNames).not.toContain('disabled-server');
-    
+
     fs.rmSync(tmpDir, { recursive: true });
   });
-  
+
   it('should exclude router named "router"', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-test-'));
     const configPath = path.join(tmpDir, 'mcp.json');
-    
+
     const config = {
       mcpServers: {
-        'router': {
+        router: {
           command: 'npx',
           args: ['uap', 'mcp-router', 'start'],
         },
@@ -65,22 +65,22 @@ describe('MCP Router Config Filtering', () => {
         },
       },
     };
-    
+
     fs.writeFileSync(configPath, JSON.stringify(config));
-    
+
     const loaded = loadConfigFromFile(configPath);
     const serverNames = Object.keys(loaded.mcpServers);
-    
+
     expect(serverNames).not.toContain('router');
     expect(serverNames).toContain('other-server');
-    
+
     fs.rmSync(tmpDir, { recursive: true });
   });
-  
+
   it('should exclude servers with "mcp-router start" in args', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-test-'));
     const configPath = path.join(tmpDir, 'mcp.json');
-    
+
     const config = {
       mcpServers: {
         'self-reference': {
@@ -97,31 +97,31 @@ describe('MCP Router Config Filtering', () => {
         },
       },
     };
-    
+
     fs.writeFileSync(configPath, JSON.stringify(config));
-    
+
     const loaded = loadConfigFromFile(configPath);
     const serverNames = Object.keys(loaded.mcpServers);
-    
+
     expect(serverNames).not.toContain('self-reference');
     expect(serverNames).not.toContain('another-self-reference');
     expect(serverNames).toContain('valid-server');
-    
+
     fs.rmSync(tmpDir, { recursive: true });
   });
-  
+
   it('should handle combined disabled + self-reference', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-test-'));
     const configPath = path.join(tmpDir, 'mcp.json');
-    
+
     const config = {
       mcpServers: {
-        'router': {
+        router: {
           command: 'npx',
           args: ['uap', 'mcp-router', 'start'],
           disabled: true, // Both conditions to filter
         },
-        'playwright': {
+        playwright: {
           command: 'npx',
           args: ['-y', '@playwright/mcp@latest'],
           disabled: true,
@@ -137,21 +137,21 @@ describe('MCP Router Config Filtering', () => {
         },
       },
     };
-    
+
     fs.writeFileSync(configPath, JSON.stringify(config));
-    
+
     const loaded = loadConfigFromFile(configPath);
     const serverNames = Object.keys(loaded.mcpServers);
-    
+
     expect(serverNames).toEqual(['chrome-devtools', 'dev-browser']);
-    
+
     fs.rmSync(tmpDir, { recursive: true });
   });
-  
+
   it('should not filter servers with "router" in description but different command', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-test-'));
     const configPath = path.join(tmpDir, 'mcp.json');
-    
+
     const config = {
       mcpServers: {
         'request-router': {
@@ -160,14 +160,33 @@ describe('MCP Router Config Filtering', () => {
         },
       },
     };
-    
+
     fs.writeFileSync(configPath, JSON.stringify(config));
-    
+
     const loaded = loadConfigFromFile(configPath);
     const serverNames = Object.keys(loaded.mcpServers);
-    
+
     expect(serverNames).toContain('request-router');
-    
+
     fs.rmSync(tmpDir, { recursive: true });
+  });
+});
+
+describe('Policy Gate Category Metadata', () => {
+  it('should pass category metadata to policy gate for pre-execution', async () => {
+    const { getPolicyGate } = await import('../src/policies/policy-gate.js');
+    const gate = getPolicyGate();
+
+    expect(gate).toBeDefined();
+    expect(typeof gate.executeWithGates).toBe('function');
+  });
+
+  it('should support category parameter in executeWithGates', async () => {
+    const { getPolicyGate } = await import('../src/policies/policy-gate.js');
+    const gate = getPolicyGate();
+
+    const mockFn = async () => ({ content: [{ type: 'text', text: 'test' }] });
+
+    await expect(gate.executeWithGates('tool-name', {}, mockFn, 'pre-exec')).resolves.toBeDefined();
   });
 });

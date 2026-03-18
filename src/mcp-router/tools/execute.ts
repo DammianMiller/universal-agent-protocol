@@ -138,7 +138,8 @@ export async function handleExecuteTool(
       async () => {
         await client.connect();
         return client.callTool(toolName, toolArgs as Record<string, unknown>);
-      }
+      },
+      'pre-exec'
     );
 
     // Pass raw MCP result directly to compression — do NOT unwrap content envelopes.

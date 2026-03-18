@@ -271,6 +271,19 @@ export class TaskExecutor {
       /* analytics should never break execution */
     }
 
+    // Also feed benchmark-data router for learning feedback loop
+    try {
+      const { recordTaskOutcome } = await import('../memory/model-router.js');
+      recordTaskOutcome(
+        finalResult.modelUsed as any,
+        finalResult.success,
+        finalResult.duration,
+        subtask.type || 'coding'
+      );
+    } catch {
+      /* learning feedback should never break execution */
+    }
+
     return finalResult;
   }
 

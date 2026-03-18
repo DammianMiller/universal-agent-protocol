@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.5 (2026-03-18)
+
+- feat: validate worktrees, model router, and adaptive knowledge seeding
+- test: improve test coverage with embeddings and unified-router tests
+
+
 ## v1.5.4 (2026-03-18)
 
 - fix: embeddings tests mock all fetch calls for isAvailable (health + test embed)

@@ -91,6 +91,11 @@ export class ModelRouter {
   private models: Map<string, ModelConfig>;
   private routingRules: RoutingRule[];
   private roleAssignments: Map<ModelRole, string>;
+  private classificationCache: Map<
+    string,
+    { result: TaskClassificationResult; timestamp: number }
+  > = new Map();
+  private readonly CACHE_TTL_MS = 5000;
 
   constructor(config: MultiModelConfig) {
     this.config = config;
@@ -168,6 +173,13 @@ export class ModelRouter {
    * Classify a task to determine complexity and type
    */
   classifyTask(taskDescription: string): TaskClassificationResult {
+    // Check cache first (5s TTL, lowercase trimmed key)
+    const cacheKey = taskDescription.toLowerCase().trim();
+    const cached = this.classificationCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
+      return cached.result;
+    }
+
     const lowerTask = taskDescription.toLowerCase();
     const words = lowerTask.split(/\s+/);
 
@@ -221,7 +233,7 @@ export class ModelRouter {
     // Select model based on routing
     const selection = this.selectModel(complexity, taskType, matchedKeywords);
 
-    return {
+    const result = {
       complexity,
       taskType,
       keywords: [...new Set(matchedKeywords)],
@@ -231,6 +243,14 @@ export class ModelRouter {
       fallbackModel: selection.fallback?.id || this.roleAssignments.get('fallback') || 'opus-4.6',
       reasoning: selection.reasoning,
     };
+
+    // Cache the result
+    this.classificationCache.set(cacheKey, {
+      result,
+      timestamp: Date.now(),
+    });
+
+    return result;
   }
 
   /**
