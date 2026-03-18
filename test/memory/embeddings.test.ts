@@ -30,11 +30,11 @@ describe('LlamaCppEmbeddingProvider', () => {
   });
 
   it('should detect provider availability via health check', async () => {
-    const mockResponse = {
+    const mockHealthResponse = {
       ok: true,
       json: async () => ({ status: 'ok' }),
     };
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse as any);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockHealthResponse as any);
 
     const available = await provider.isAvailable();
     expect(available).toBe(true);
@@ -53,18 +53,40 @@ describe('LlamaCppEmbeddingProvider', () => {
   });
 
   it('should embed single text and return correct dimensions', async () => {
+    const mockHealthResponse = { ok: true, json: async () => ({ status: 'ok' }) };
+    const mockEmbedResponse = {
+      ok: true,
+      json: async () => createLlamaCppEmbeddingResponse(['test'], 768),
+    };
     vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ok' }) } as any)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => createLlamaCppEmbeddingResponse(['test'], 768),
-      } as any);
+      .mockResolvedValueOnce(mockHealthResponse as any)
+      .mockResolvedValueOnce(mockEmbedResponse as any)
+      .mockResolvedValueOnce(mockEmbedResponse as any); // embed() calls embedBatch()
 
     await provider.isAvailable(); // Initialize
     const embedding = await provider.embed('test text');
 
     expect(embedding).toBeDefined();
     expect(embedding.length).toBe(768);
+  });
+
+  it('should embed batch texts and maintain order', async () => {
+    const mockHealthResponse = { ok: true, json: async () => ({ status: 'ok' }) };
+    const mockEmbedResponse = {
+      ok: true,
+      json: async () => createLlamaCppEmbeddingResponse(['first', 'second', 'third'], 512),
+    };
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(mockHealthResponse as any)
+      .mockResolvedValueOnce(mockEmbedResponse as any);
+
+    await provider.isAvailable();
+    const embeddings = await provider.embedBatch(['first', 'second', 'third']);
+
+    expect(embeddings).toHaveLength(3);
+    expect(embeddings[0].length).toBe(512);
+    expect(embeddings[1].length).toBe(512);
+    expect(embeddings[2].length).toBe(512);
   });
 
   it('should embed batch texts and maintain order', async () => {
