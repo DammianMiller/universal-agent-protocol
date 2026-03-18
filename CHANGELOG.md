@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.3 (2026-03-18)
+
+- fix: resolve inquirer.prompt TypeError in model select command
+
+
 ## v1.5.2 (2026-03-18)
 
 - fix: worktree enforcement + null safety in session hooks
