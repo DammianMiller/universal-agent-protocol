@@ -45,13 +45,6 @@
       "sourceFile": "CLAUDE.md",
       "sourceFiles": [],
       "maxBodyChars": 400
-    },
-    "knowledgeGraph": {
-      "enabled": true
-    },
-    "prepopulation": {
-      "docs": true,
-      "gitHistory": true
     }
   },
   "worktrees": {
@@ -74,19 +67,5 @@
       "pipelineOnly": false,
       "benchmark": false
     }
-  },
-  "multiModel": {
-    "enabled": true,
-    "models": [
-      "opus-4.6",
-      "qwen35"
-    ],
-    "roles": {
-      "planner": "opus-4.6",
-      "executor": "qwen35-a3b",
-      "reviewer": "opus-4.6",
-      "fallback": "qwen35-a3b"
-    },
-    "routingStrategy": "balanced"
   }
 }
