@@ -391,7 +391,7 @@ async function selectCommand(options: { save?: boolean }): Promise<void> {
   console.log();
 
   const inquirerModule = await import('inquirer');
-  const inquirer = inquirerModule as any;
+  const inquirer = (inquirerModule as any).default ?? inquirerModule;
 
   const answers: Record<string, string> = {};
 
@@ -421,7 +421,7 @@ async function selectCommand(options: { save?: boolean }): Promise<void> {
   }
 
   // Ask for routing strategy
-  const strategyAnswer = await inquirer.default.prompt([
+  const strategyAnswer = await inquirer.prompt([
     {
       type: 'list',
       name: 'strategy',
@@ -448,7 +448,7 @@ async function selectCommand(options: { save?: boolean }): Promise<void> {
   console.log();
 
   // Ask for confirmation
-  const confirm = await inquirer.default.prompt([
+  const confirm = await inquirer.prompt([
     {
       type: 'confirm',
       name: 'confirm',

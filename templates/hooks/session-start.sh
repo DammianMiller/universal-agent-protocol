@@ -184,35 +184,14 @@ if docker ps --filter name=qdrant --format "{{.Status}}" 2>/dev/null | grep -q "
   QDRANT_STATUS="ON"
 fi
 
-# Git branch (safe fallback if not in git repo)
-GIT_BRANCH="?"
-if [ -d "${PROJECT_DIR}/.git" ]; then
-  GIT_BRANCH=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "?")
-fi
-GIT_DIRTY=0
-if [ -d "${PROJECT_DIR}/.git" ]; then
-  GIT_DIRTY=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-fi
+# Git branch
+GIT_BRANCH=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "?")
+GIT_DIRTY=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 
-# Worktree count (safe fallback if not in UAP project)
+# Worktree count
 WORKTREE_COUNT=0
 if [ -d "${PROJECT_DIR}/.worktrees" ]; then
   WORKTREE_COUNT=$(find "${PROJECT_DIR}/.worktrees" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-fi
-
-# Check if worktree workflow is enabled in config
-WORKTREE_ENABLED=false
-if [ -f "${PROJECT_DIR}/.uap.json" ]; then
-  WORKTREE_ENABLED=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('${PROJECT_DIR}/.uap.json','utf8'));console.log(c.template?.sections?.worktreeWorkflow ? 'true' : 'false')}catch{console.log('false')}" 2>/dev/null || echo "false")
-fi
-
-# Check if we're inside a worktree directory
-IN_WORKTREE=false
-if [ -d "${PROJECT_DIR}/.worktrees" ]; then
-  CURRENT_DIR=$(pwd)
-  if [[ "$CURRENT_DIR" == *"/.worktrees/"* ]]; then
-    IN_WORKTREE=true
-  fi
 fi
 
 # Pattern count
@@ -262,21 +241,12 @@ output+="│ ${MEM_LINE}$(printf ' %.0s' $(seq 1 $((W - 1 - ${#MEM_LINE}))))│"
 INFRA_LINE="Agents: ${AGENT_COUNT}  Patterns: ${PATTERN_COUNT}  Skills: ${SKILL_COUNT}  Droids: ${DROID_COUNT}"
 output+="│ ${INFRA_LINE}$(printf ' %.0s' $(seq 1 $((W - 1 - ${#INFRA_LINE}))))│"$'\n'
 
-
 # Git & worktree line
-if [ "$WORKTREE_ENABLED" = "true" ]; then
-  if [ "$IN_WORKTREE" = "true" ]; then
-    WORKTREE_STATUS="✅ In worktree"
-  else
-    WORKTREE_STATUS="⚠️ Use worktree (uap worktree create <slug>)"
-  fi
-else
-  WORKTREE_STATUS="Worktrees disabled"
-fi
-GIT_LINE="Git: ${GIT_DIRTY} uncommitted  ${WORKTREE_STATUS}"
+GIT_LINE="Git: ${GIT_DIRTY} uncommitted  Worktrees: ${WORKTREE_COUNT}"
 output+="│ ${GIT_LINE}$(printf ' %.0s' $(seq 1 $((W - 1 - ${#GIT_LINE}))))│"$'\n'
 
 output+="├$(printf '─%.0s' $(seq 1 $W))┤"$'\n'
+
 # Active policies
 output+="│ Policies: [ON] IaC Parity  [ON] File Backup$(printf ' %.0s' $(seq 1 $((W - 47))))│"$'\n'
 

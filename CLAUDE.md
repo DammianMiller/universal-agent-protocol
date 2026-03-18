@@ -22,6 +22,12 @@ If the build fails, fix the error before making any further edits.
 - Never leave the project in a broken build state between edits
 - Validation: `bash scripts/validate-build.sh` or `npm run build`
 
+---
+
+---
+
+---
+
 ## Completion Gate [REQUIRED]
 
 Claiming DONE, COMPLETE, or CLOSED is prohibited until ALL of the following pass:
