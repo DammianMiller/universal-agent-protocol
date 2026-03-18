@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.6.1 (2026-03-19)
+
+- fix: resolve all validation issues - CLAUDE.md compliance, SKILL.md refs, reinforcement DB
+
+
 ## v1.6.0 (2026-03-19)
 
 - feat: implement 4-layer worktree enforcement for 100% compliance
