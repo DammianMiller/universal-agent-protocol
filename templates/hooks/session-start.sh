@@ -123,7 +123,7 @@ if [ -f "$COORD_DB" ]; then
   " 2>/dev/null || true)
 
   ACTIVE_WORK=$(sqlite3 "$COORD_DB" "
-    SELECT agent_id || ' -> ' || resource
+    SELECT agent_id || ' -> ' || resources
     FROM work_announcements
     WHERE completed_at IS NULL
     ORDER BY announced_at DESC LIMIT 5;

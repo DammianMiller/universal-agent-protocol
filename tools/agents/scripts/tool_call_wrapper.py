@@ -91,10 +91,7 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         "model": "qwen35-a3b-iq4xs",
         "base_url": "http://127.0.0.1:8080/v1",
         "api_key": "not-needed",
-        # Use "auto" so the escalation strategy (auto -> required) works.
-        # "required" forces tool calls even when the model should respond
-        # with text (e.g. after tool results), causing it to "stop".
-        "default_tool_choice": "auto",
+        "default_tool_choice": "required",
         "parallel_tool_calls": True,
         "batch_tool_calls": True,
         "escalate_tool_choice": True,
@@ -104,12 +101,11 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         "dynamic_temp_floor": 0.2,
         # Qwen-specific: suppress thinking mode to avoid tag leakage
         "suppress_thinking": True,
-        # Match the chat template's <tool_call> format for reliable parsing
         "batch_system_prompt": (
-            "When multiple tools are needed, emit ALL tool calls in a single response. "
+            "CRITICAL: You MUST emit ALL tool calls in a SINGLE response. "
             "Each tool call must be a separate <tool_call>...</tool_call> block. "
-            "Do not call one tool and wait for a response before calling the next. "
-            "Emit all <tool_call> blocks together in sequence."
+            "Do NOT call one tool and wait - emit ALL tool calls together NOW. "
+            "If asked to do 3 things, you must produce 3 tool calls in one response."
         ),
     },
     "llama": {
@@ -278,8 +274,8 @@ class ToolCallClient:
         Determine tool_choice based on strategy and attempt number.
 
         Strategy 3 (escalation):
-          - Attempt 0: use default_tool_choice (usually "auto")
-          - Attempt 1+: escalate to "required"
+          - Attempt 0: use default_tool_choice (usually "required")
+          - Attempt 1+: escalate to "required" (no-op if already required)
 
         Strategy 5 (per-tool):
           - If expected_tool is set and only one tool matches, use per-tool choice

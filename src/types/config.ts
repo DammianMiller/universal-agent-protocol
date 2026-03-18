@@ -437,12 +437,8 @@ export const AgentExecutionSchema = z.object({
   /** Hard budget: strip tools entirely after this many calls. */
   hardBudget: z.number().default(50),
 
-  /** tool_choice value to force during normal operation.
-   *  Use "auto" to let the model decide when to call tools vs respond with text.
-   *  The retry escalation strategy (auto -> required) handles tool call failures.
-   *  "required" forces tool calls on every turn, which can cause the model to
-   *  get stuck in a tool-call loop instead of synthesizing answers. */
-  toolChoiceForce: z.enum(['required', 'auto', 'none']).default('auto'),
+  /** tool_choice value to force during normal operation. */
+  toolChoiceForce: z.enum(['required', 'auto', 'none']).default('required'),
 });
 
 export const AgentContextConfigSchema = z.object({
