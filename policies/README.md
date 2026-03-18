@@ -13,6 +13,7 @@ These policies can be enabled/disabled during `uap setup` or via `uap-policy` CL
 | mandatory-file-backup    | ON      | REQUIRED    | Backup files before modification                          |
 | pre-edit-build-gate      | ON      | REQUIRED    | Verify build before/after every TS file edit              |
 | completion-gate          | ON      | REQUIRED    | All gates (test, build, lint, deploy, review) before DONE |
+| semver-versioning        | ON      | REQUIRED    | Automated semver bumps via npm scripts, no manual edits   |
 | image-asset-verification | OFF     | RECOMMENDED | Enforce deterministic image operations                    |
 
 ## Usage

@@ -1,11 +1,11 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { existsSync, readdirSync, mkdirSync } from 'fs';
+import { existsSync, readdirSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { simpleGit, SimpleGit } from 'simple-git';
 import Database from 'better-sqlite3';
 
-type WorktreeAction = 'create' | 'list' | 'pr' | 'cleanup';
+type WorktreeAction = 'create' | 'list' | 'pr' | 'cleanup' | 'ensure';
 
 interface WorktreeOptions {
   slug?: string;
@@ -85,6 +85,9 @@ export async function worktreeCommand(
       break;
     case 'cleanup':
       await cleanupWorktree(cwd, git, options.id!);
+      break;
+    case 'ensure':
+      await ensureWorktree(cwd, git);
       break;
   }
 }
@@ -257,6 +260,88 @@ async function cleanupWorktree(cwd: string, git: SimpleGit, id: string): Promise
     spinner.succeed(`Cleaned up: ${worktree}`);
   } catch (error) {
     spinner.fail('Failed to cleanup worktree');
+    console.error(chalk.red(error));
+  }
+}
+
+async function ensureWorktree(cwd: string, _git: SimpleGit): Promise<void> {
+  const spinner = ora('Checking worktree workflow...').start();
+
+  try {
+    // Check if worktrees are enabled in config
+    const configPath = join(cwd, '.uap.json');
+    if (!existsSync(configPath)) {
+      console.log(chalk.yellow('⚠️  No .uap.json found. Run "uap init" to set up UAP.'));
+      return;
+    }
+
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    const worktreeEnabled = config.template?.sections?.worktreeWorkflow !== false;
+
+    if (!worktreeEnabled) {
+      console.log(chalk.dim('Worktree workflow is disabled in .uap.json'));
+      return;
+    }
+
+    // Check if we're already in a worktree
+    const currentDir = cwd;
+    const worktreesDir = join(cwd, '.worktrees');
+
+    if (currentDir.startsWith(worktreesDir)) {
+      spinner.succeed('Already working in a git worktree');
+      console.log(chalk.dim(`  Path: ${currentDir}`));
+      return;
+    }
+
+    // Check for active worktrees
+    const worktrees: { id: string; path: string; branch: string }[] = [];
+    if (existsSync(worktreesDir)) {
+      const entries = readdirSync(worktreesDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => ({
+          name: e.name,
+          path: join(worktreesDir, e.name),
+        }));
+
+      for (const entry of entries) {
+        try {
+          const worktreeGit = simpleGit(entry.path);
+          const branch = await worktreeGit.revparse(['--abbrev-ref', 'HEAD']);
+          worktrees.push({
+            id: entry.name.split('-')[0] || 'unknown',
+            path: entry.path,
+            branch: branch.trim(),
+          });
+        } catch {
+          // Skip invalid worktrees
+        }
+      }
+    }
+
+    if (worktrees.length > 0) {
+      spinner.info('No active worktree. Here are your options:');
+      console.log('');
+      console.log(chalk.bold('Active worktrees:'));
+      for (const wt of worktrees) {
+        const status =
+          wt.branch === 'master' || wt.branch === 'main' ? chalk.yellow('🔴') : chalk.green('🟢');
+        console.log(`  ${status} [${wt.id}] ${wt.branch} - ${wt.path}`);
+      }
+      console.log('');
+      console.log(chalk.dim('To switch to a worktree: cd .worktrees/<id>-<slug>'));
+      console.log(chalk.dim('Or create a new one: uap worktree create <slug>'));
+    } else {
+      spinner.info('No active worktrees found.');
+      console.log('');
+      console.log(chalk.bold('Create a new worktree:'));
+      console.log(chalk.cyan('  uap worktree create <slug>'));
+      console.log('');
+      console.log(
+        chalk.dim('<slug> should be descriptive, e.g., "fix-auth-bug" or "add-dashboard"')
+      );
+    }
+  } catch (error) {
+    spinner.fail('Failed to check worktree status');
     console.error(chalk.red(error));
   }
 }

@@ -31,6 +31,9 @@
     "install:all": "bash scripts/install.sh",
     "install:cloakbrowser": "tsx scripts/install-cloakbrowser.ts",
     "postinstall": "echo '\n✨ Run: npx universal-agent-protocol init --interactive'",
+    "version:patch": "bash scripts/version-bump.sh patch",
+    "version:minor": "bash scripts/version-bump.sh minor",
+    "version:major": "bash scripts/version-bump.sh major",
     "update-uap": "bash scripts/update-uap-compliance.sh",
     "verify-uap": "bash scripts/verify-compliance.sh",
     "check-claude": "bash scripts/verify-compliance.sh"

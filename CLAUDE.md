@@ -26,11 +26,38 @@ If the build fails, fix the error before making any further edits.
 
 Claiming DONE, COMPLETE, or CLOSED is prohibited until ALL of the following pass:
 
-1. **Testing** — `npm test` passes with no failures. Coverage must not regress.
-2. **Build** — `npm run build` succeeds with zero errors.
-3. **Lint & Type-check** — `npm run lint` (if available) and `tsc --noEmit` pass cleanly.
-4. **Deployment verification** — If the change touches deployable artifacts, deployment to staging/preview must succeed and smoke tests must pass.
-5. **Self-review** — Diff has been reviewed for correctness, no debug code, no secrets, no unresolved TODOs.
+1. **New tests written** — Every task that changes code MUST add at least 2 new test cases covering the changed behavior. Tests must be in `test/` following existing patterns (`describe`/`it`/`expect` with vitest). No exceptions for "small changes."
+2. **Testing** — `npm test` passes with no failures. Coverage must not regress.
+3. **Build** — `npm run build` succeeds with zero errors.
+4. **Lint & Type-check** — `npm run lint` (if available) and `tsc --noEmit` pass cleanly.
+5. **Version bump** — Run `npm run version:patch`, `version:minor`, or `version:major` based on commit type. Manual `package.json` version edits are prohibited. See `policies/semver-versioning.md`.
+6. **Deployment verification** — If the change touches deployable artifacts, deployment to staging/preview must succeed and smoke tests must pass.
+7. **Self-review** — Diff has been reviewed for correctness, no debug code, no secrets, no unresolved TODOs.
+
+### Mandatory Test Creation [REQUIRED]
+
+Every code change MUST include at least **2 new test cases** before claiming DONE:
+
+- Tests must cover the **new or changed behavior** (not unrelated code)
+- Tests must follow existing patterns: `test/<feature>.test.ts` using vitest (`describe`/`it`/`expect`)
+- Tests must actually assert correctness (not just "it doesn't throw")
+- If fixing a bug, at least one test must reproduce the bug scenario
+- If adding a feature, tests must cover the happy path and at least one edge case
+- Run `npm test` to confirm all tests pass including the new ones
+
+### Mandatory Versioning [REQUIRED]
+
+**Policy**: `semver-versioning` (REQUIRED level)
+
+Version bumps are automated and mandatory. Never edit `package.json` version directly.
+
+```bash
+npm run version:patch   # fix, chore, refactor, docs, test, style, ci
+npm run version:minor   # feat (new backwards-compatible functionality)
+npm run version:major   # breaking changes (feat! or BREAKING CHANGE)
+```
+
+The script validates clean working tree, runs tests + build, bumps version, updates CHANGELOG.md, commits, and creates a git tag. See `policies/semver-versioning.md`.
 
 ### Mandatory Policy Enforcement [REQUIRED]
 
@@ -38,40 +65,44 @@ Claiming DONE, COMPLETE, or CLOSED is prohibited until ALL of the following pass
 
 Before claiming task completion, you MUST verify:
 
-- ✅ All unit tests passing (`npm test` or equivalent)
-- ✅ Test coverage maintained or improved (no regression)
-- ✅ Code linting passes (`npm run lint`)
-- ✅ TypeScript type checking passes (`tsc --noEmit`)
-- ✅ Deployment to staging/preview successful (if applicable)
-- ✅ Smoke tests passed in target environment (if applicable)
-- ✅ No new security vulnerabilities detected
-- ✅ Documentation updated (README, CHANGELOG, API docs)
-- ✅ Breaking changes documented
+- At least 2 new tests written for changed code
+- All unit tests passing (`npm test` or equivalent)
+- Test coverage maintained or improved (no regression)
+- Code linting passes (`npm run lint`)
+- TypeScript type checking passes (`tsc --noEmit`)
+- Version bumped via `npm run version:<level>` (not manual edit)
+- Deployment to staging/preview successful (if applicable)
+- Smoke tests passed in target environment (if applicable)
+- No new security vulnerabilities detected
+- Documentation updated (README, CHANGELOG, API docs)
+- Breaking changes documented
 
 ### Enforcement Rules
 
 **DO NOT** mark tasks as DONE when:
 
-- ❌ Tests are failing or skipped
-- ❌ Deployment hasn't been verified
-- ❌ Code quality gates are bypassed
-- ❌ Documentation is missing or outdated
-- ❌ Critical bugs remain open
-- ❌ Security warnings are ignored
+- No new tests were written for code changes
+- Tests are failing or skipped
+- Version was not bumped or was bumped manually
+- Deployment hasn't been verified
+- Code quality gates are bypassed
+- Documentation is missing or outdated
+- Critical bugs remain open
+- Security warnings are ignored
 
 **DO** verify completion by running:
 
 ```bash
-# Check policy status
-uap policy list
-
-# Run all compliance checks
-uap compliance check
-
-# Verify build and tests pass
+# Verify build and tests pass (including your new tests)
 npm run build && npm test
+
+# Bump version (after all changes are committed)
+npm run version:patch  # or version:minor / version:major
+
+# Push with tags
+git push && git push --tags
 ```
 
 If any gate fails, fix the issue and re-run ALL gates before claiming completion.
 Skipping or deferring any gate is a policy violation.
-See `policies/completion-gate.md` for full enforcement details.
+See `policies/completion-gate.md` and `policies/semver-versioning.md` for full enforcement details.
