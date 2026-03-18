@@ -1110,3 +1110,234 @@ export function showActivePolicies(): void {
 export function resetStats(): void {
   _stats = null;
 }
+
+// ─── Persistent Dashboard ───
+
+let dashboardInterval: NodeJS.Timeout | null = null;
+
+export function startDashboard(intervalMs: number = 2000, showWorkGraph: boolean = false): void {
+  if (dashboardInterval) {
+    console.log(`${DIM}[DASHBOARD]${RESET} Already running`);
+    return;
+  }
+
+  const s = getStats();
+  console.log(
+    `${GREEN}[DASHBOARD]${RESET} ${DIM}Starting persistent dashboard (${intervalMs}ms)${RESET}${showWorkGraph ? ` ${DIM}(with work graph)${RESET}` : ''}`
+  );
+
+  dashboardInterval = setInterval(() => {
+    const w = 80;
+    const line = BOX.h.repeat(w);
+    console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
+    console.log(
+      boxLine(
+        `${BOLD}${WHITE}${BG_CYAN} UAP LIVE DASHBOARD ${RESET}  ${DIM}Session ${s.sessionId}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}`,
+        w
+      )
+    );
+    console.log(`${CYAN}${BOX.bl}${line}${BOX.br}${RESET}`);
+
+    // Live Status Line
+    const activeAgents = [...s.agents.values()].filter((a) => a.status === 'working');
+    const activeTasks = [...s.tasks.values()].filter((t) => t.status === 'in_progress');
+    const activeSkillNames = [...s.skills.values()].filter((sk) => sk.active).map((sk) => sk.name);
+    const activePatternNames = [...s.patterns.values()].filter((p) => p.active).map((p) => p.name);
+
+    const queuedDeploys = [...s.deploys.values()].filter(
+      (a) => a.status === 'queued' || a.status === 'batched'
+    );
+
+    console.log(
+      `  ${DIM}Duration:${RESET} ${elapsed()}  ${DIM}Tokens:${RESET} ${BLUE}${formatTokens(s.tokensUsed)}${RESET}${s.tokensSaved > 0 ? ` ${GREEN}(-${formatTokens(s.tokensSaved)})${RESET}` : ''}${s.totalCostUsd > 0 ? ` ${DIM}($${s.totalCostUsd.toFixed(3)})${RESET}` : ''}`
+    );
+    console.log(
+      `  ${DIM}Agents:${RESET} ${activeAgents.length} working${activeAgents.length > 0 ? ` (${activeAgents.map((a) => a.name).join(', ')})` : ''}`
+    );
+    console.log(
+      `  ${DIM}Tasks:${RESET} ${activeTasks.length} in progress${activeTasks.length > 0 ? ` (${activeTasks.map((t) => truncate(t.title, 25)).join(', ')})` : ''}`
+    );
+
+    if (queuedDeploys.length > 0) {
+      console.log(
+        `  ${YELLOW}[DEPLOY]${RESET} ${queuedDeploys.length} queued${queuedDeploys.length > 1 ? '+' : ''}`
+      );
+    }
+
+    if (activeSkillNames.length > 0) {
+      console.log(
+        `  ${GREEN}[SKILLS]${RESET} ${activeSkillNames.slice(0, 3).join(', ')}${activeSkillNames.length > 3 ? ` +${activeSkillNames.length - 3}` : ''}`
+      );
+    }
+
+    if (activePatternNames.length > 0) {
+      console.log(
+        `  ${BLUE}[PATTERNS]${RESET} ${activePatternNames.slice(0, 3).join(', ')}${activePatternNames.length > 3 ? ` +${activePatternNames.length - 3}` : ''}`
+      );
+    }
+
+    if (s.errors > 0) {
+      console.log(`  ${RED}[ERRORS]${RESET} ${s.errors} total`);
+    }
+
+    if (showWorkGraph && s.tasks.size > 0) {
+      workGraph();
+    }
+  }, intervalMs);
+}
+
+export function stopDashboard(): void {
+  if (!dashboardInterval) {
+    console.log(`${DIM}[DASHBOARD]${RESET} Not running`);
+    return;
+  }
+
+  clearInterval(dashboardInterval);
+  dashboardInterval = null;
+  console.log(`${GREEN}[DASHBOARD]${RESET} ${DIM}Stopped${RESET}`);
+}
+
+export function dashboardPause(): void {
+  if (!dashboardInterval) {
+    console.log(`${DIM}[DASHBOARD]${RESET} Not running`);
+    return;
+  }
+
+  clearInterval(dashboardInterval);
+  dashboardInterval = null;
+  console.log(`${YELLOW}[DASHBOARD]${RESET} ${DIM}Paused${RESET}`);
+}
+
+export function dashboardResume(): void {
+  if (dashboardInterval) {
+    console.log(`${DIM}[DASHBOARD]${RESET} Already running`);
+    return;
+  }
+
+  const s = getStats();
+  console.log(`${GREEN}[DASHBOARD]${RESET} ${DIM}Resumed${RESET}`);
+  dashboardInterval = setInterval(() => {
+    const w = 80;
+    const line = BOX.h.repeat(w);
+    console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
+    console.log(
+      boxLine(
+        `${BOLD}${WHITE}${BG_CYAN} UAP LIVE DASHBOARD ${RESET}  ${DIM}Session ${s.sessionId}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}`,
+        w
+      )
+    );
+    console.log(`${CYAN}${BOX.bl}${line}${BOX.br}${RESET}`);
+
+    const activeAgents = [...s.agents.values()].filter((a) => a.status === 'working');
+    const activeTasks = [...s.tasks.values()].filter((t) => t.status === 'in_progress');
+    const activeSkillNames = [...s.skills.values()].filter((sk) => sk.active).map((sk) => sk.name);
+    const activePatternNames = [...s.patterns.values()].filter((p) => p.active).map((p) => p.name);
+
+    const queuedDeploys = [...s.deploys.values()].filter(
+      (a) => a.status === 'queued' || a.status === 'batched'
+    );
+
+    console.log(
+      `  ${DIM}Duration:${RESET} ${elapsed()}  ${DIM}Tokens:${RESET} ${BLUE}${formatTokens(s.tokensUsed)}${RESET}${s.tokensSaved > 0 ? ` ${GREEN}(-${formatTokens(s.tokensSaved)})${RESET}` : ''}${s.totalCostUsd > 0 ? ` ${DIM}($${s.totalCostUsd.toFixed(3)})${RESET}` : ''}`
+    );
+    console.log(
+      `  ${DIM}Agents:${RESET} ${activeAgents.length} working${activeAgents.length > 0 ? ` (${activeAgents.map((a) => a.name).join(', ')})` : ''}`
+    );
+    console.log(
+      `  ${DIM}Tasks:${RESET} ${activeTasks.length} in progress${activeTasks.length > 0 ? ` (${activeTasks.map((t) => truncate(t.title, 25)).join(', ')})` : ''}`
+    );
+
+    if (queuedDeploys.length > 0) {
+      console.log(
+        `  ${YELLOW}[DEPLOY]${RESET} ${queuedDeploys.length} queued${queuedDeploys.length > 1 ? '+' : ''}`
+      );
+    }
+
+    if (activeSkillNames.length > 0) {
+      console.log(
+        `  ${GREEN}[SKILLS]${RESET} ${activeSkillNames.slice(0, 3).join(', ')}${activeSkillNames.length > 3 ? ` +${activeSkillNames.length - 3}` : ''}`
+      );
+    }
+
+    if (activePatternNames.length > 0) {
+      console.log(
+        `  ${BLUE}[PATTERNS]${RESET} ${activePatternNames.slice(0, 3).join(', ')}${activePatternNames.length > 3 ? ` +${activePatternNames.length - 3}` : ''}`
+      );
+    }
+
+    if (s.errors > 0) {
+      console.log(`  ${RED}[ERRORS]${RESET} ${s.errors} total`);
+    }
+  }, 2000);
+}
+
+export function showDashboardSnapshot(showWorkGraph: boolean = false): void {
+  const s = getStats();
+  const w = 80;
+  const line = BOX.h.repeat(w);
+  console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
+  console.log(
+    boxLine(
+      `${BOLD}${WHITE}${BG_CYAN} UAP DASHBOARD ${RESET}  ${DIM}Session ${s.sessionId}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}`,
+      w
+    )
+  );
+  console.log(`${CYAN}${BOX.bl}${line}${BOX.br}${RESET}`);
+
+  const activeAgents = [...s.agents.values()].filter((a) => a.status === 'working');
+  const activeTasks = [...s.tasks.values()].filter((t) => t.status === 'in_progress');
+  const doneTasks = [...s.tasks.values()].filter((t) => t.status === 'done');
+  const activeSkillNames = [...s.skills.values()].filter((sk) => sk.active).map((sk) => sk.name);
+  const activePatternNames = [...s.patterns.values()].filter((p) => p.active).map((p) => p.name);
+
+  const queuedDeploys = [...s.deploys.values()].filter(
+    (a) => a.status === 'queued' || a.status === 'batched'
+  );
+  const executingDeploys = [...s.deploys.values()].filter((a) => a.status === 'executing');
+
+  console.log(
+    `  ${DIM}Duration:${RESET} ${elapsed()}  ${DIM}Tokens:${RESET} ${BLUE}${formatTokens(s.tokensUsed)}${RESET}${s.tokensSaved > 0 ? ` ${GREEN}(-${formatTokens(s.tokensSaved)})${RESET}` : ''}${s.totalCostUsd > 0 ? ` ${DIM}($${s.totalCostUsd.toFixed(3)})${RESET}` : ''}`
+  );
+  console.log(
+    `  ${DIM}Agents:${RESET} ${s.agents.size} total (${activeAgents.length} working, ${[...s.agents.values()].filter((a) => a.status === 'done').length} done)`
+  );
+  console.log(
+    `  ${DIM}Tasks:${RESET} ${doneTasks.length}/${s.tasks.size} done${activeTasks.length > 0 ? ` (${activeTasks.length} in progress)` : ''}`
+  );
+
+  if (queuedDeploys.length > 0) {
+    console.log(
+      `  ${YELLOW}[DEPLOY]${RESET} ${queuedDeploys.length} queued${queuedDeploys.length > 1 ? '+' : ''}${executingDeploys.length > 0 ? ` ${CYAN}${executingDeploys.length} executing${RESET}` : ''}`
+    );
+  }
+
+  if (activeSkillNames.length > 0) {
+    console.log(
+      `  ${GREEN}[SKILLS]${RESET} ${activeSkillNames.slice(0, 5).join(', ')}${activeSkillNames.length > 5 ? ` +${activeSkillNames.length - 5}` : ''}`
+    );
+  }
+
+  if (activePatternNames.length > 0) {
+    console.log(
+      `  ${BLUE}[PATTERNS]${RESET} ${activePatternNames.slice(0, 5).join(', ')}${activePatternNames.length > 5 ? ` +${activePatternNames.length - 5}` : ''}`
+    );
+  }
+
+  if (s.memoryHits > 0 || s.memoryMisses > 0) {
+    console.log(`  ${MAGENTA}[MEMORY]${RESET} ${s.memoryHits} hits / ${s.memoryMisses} misses`);
+  }
+
+  if (s.policyChecks > 0) {
+    console.log(
+      `  ${s.policyBlocks > 0 ? RED : GREEN}[POLICY]${RESET} ${s.policyChecks} checks${s.policyBlocks > 0 ? ` (${s.policyBlocks} blocked)` : ''}`
+    );
+  }
+
+  if (s.errors > 0) {
+    console.log(`  ${RED}[ERRORS]${RESET} ${s.errors} total`);
+  }
+
+  if (showWorkGraph && s.tasks.size > 0) {
+    workGraph();
+  }
+}

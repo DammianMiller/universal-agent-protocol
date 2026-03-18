@@ -24,6 +24,10 @@ If the build fails, fix the error before making any further edits.
 
 ---
 
+---
+
+---
+
 ## Completion Gate [REQUIRED]
 
 Claiming DONE, COMPLETE, or CLOSED is prohibited until ALL of the following pass:
