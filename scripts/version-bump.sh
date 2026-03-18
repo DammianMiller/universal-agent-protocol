@@ -59,6 +59,10 @@ npm run build 2>&1 || {
   exit 1
 }
 
+# 2b. Restore clean tree (tests may create temp files like test droids)
+git checkout -- . 2>/dev/null || true
+git clean -fd .factory/droids/test-droid-* 2>/dev/null || true
+
 # 3. Bump version in package.json (no git tag yet — we do it after changelog)
 npm version "$LEVEL" --no-git-tag-version > /dev/null 2>&1
 
