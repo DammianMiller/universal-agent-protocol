@@ -32,9 +32,10 @@ const PROXY_PORT = parseInt(process.env.PROXY_PORT || '11435', 10);
 const TARGET_URL = process.env.TARGET_URL || 'http://127.0.0.1:8080';
 const FORCE_TOOL_CHOICE = process.env.FORCE_TOOL_CHOICE || 'required';
 
-// Temperature cap: clamp temperature to this value when tools are present
-// Set to 0 to disable temperature capping
-const MAX_TOOL_TEMPERATURE = parseFloat(process.env.MAX_TOOL_TEMPERATURE || '0.15');
+// Temperature cap: clamp temperature to this value when tools are present.
+// Must be >= the wrapper's dynamic_temp_floor (0.2 for Qwen3.5) to avoid
+// overriding the wrapper's retry temperature strategy. Set to 0 to disable.
+const MAX_TOOL_TEMPERATURE = parseFloat(process.env.MAX_TOOL_TEMPERATURE || '0.4');
 
 // Budget: stop forcing tool calls after this many chat/completions requests
 const SOFT_BUDGET = parseInt(process.env.PROXY_SOFT_BUDGET || '35', 10);
@@ -224,6 +225,13 @@ const server = http.createServer((req, res) => {
         },
       },
       (proxyRes) => {
+        // CRITICAL: writeHead MUST be called before any res.write() calls.
+        // Previously this was after the event listener setup, causing a race
+        // condition where data events could fire before headers were sent,
+        // producing malformed HTTP responses that broke OpenAI client parsing
+        // and caused Qwen3.5 tool call test failures.
+        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+
         // === Track response for output-diff detection ===
         const responseChunks = [];
         proxyRes.on('data', (chunk) => {
@@ -265,8 +273,6 @@ const server = http.createServer((req, res) => {
             }
           }
         });
-
-        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
       }
     );
 
