@@ -24,7 +24,7 @@ Automatically invoked by opencode for complex multi-step tasks.
 
 ## Location
 
-`scripts/tool-router.sh`
+`src/coordination/pattern-router.ts` (patterns loaded from `.factory/patterns/index.json`)
 
 ## Integration
 

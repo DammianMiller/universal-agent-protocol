@@ -24,7 +24,7 @@ Automatically invoked at session start.
 
 ## Location
 
-`scripts/preload-memory.sh`
+`src/memory/prepopulate.ts` (CLI: `uap memory prepopulate`)
 
 ## Memory Types
 
