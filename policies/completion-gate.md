@@ -16,7 +16,9 @@ Claiming DONE, COMPLETE, or CLOSED is prohibited until ALL gates below pass. No 
 
 6. **Deployment verification is required for deployable changes.** If the change touches deployable artifacts (infrastructure, services, published packages), deployment to staging/preview must succeed and smoke tests must pass in the target environment. A rollback plan must exist for breaking changes.
 
-7. **Self-review is required.** The diff must be reviewed for correctness. No debug code, no secrets, no `console.log` left behind, no unresolved TODOs or FIXMEs.
+7. **Worktree must have been used.** All file changes must have been made inside a worktree (`.worktrees/NNN-<slug>/`), not in the project root. The worktree must be cleaned up after PR merge via `uap worktree cleanup <id>`. See `policies/worktree-enforcement.md`.
+
+8. **Self-review is required.** The diff must be reviewed for correctness. No debug code, no secrets, no `console.log` left behind, no unresolved TODOs or FIXMEs.
 
 ## Gate Sequence
 
@@ -29,6 +31,8 @@ npm run build     -> must succeed (zero errors)
 npm run lint      -> must pass (if available)
 tsc --noEmit      -> must pass (zero type errors)
 version bump      -> npm run version:patch/minor/major (automated)
+worktree used     -> all changes in .worktrees/NNN-<slug>/, PR created
+worktree cleanup  -> uap worktree cleanup <id> after merge
 deploy to staging -> must succeed (if deployable change)
 smoke tests       -> must pass (if deployable change)
 self-review       -> diff reviewed, no debug code, no secrets
@@ -53,6 +57,8 @@ DO NOT:
 - Defer lint/type-check fixes to a follow-up
 - Edit package.json version manually instead of using `npm run version:*`
 - Skip the version bump for "small changes"
+- Commit directly to main/master without a worktree
+- Leave stale worktrees after PR merge
 - Skip deployment verification for "small changes"
 - Bypass any gate with the intent to fix later
 - Batch multiple gate failures as "known issues"
@@ -63,6 +69,7 @@ DO NOT:
 
 ## Related Policies
 
+- `worktree-enforcement` — Mandatory worktree usage for all file changes
 - `semver-versioning` — Automated version bump rules and script
 - `pre-edit-build-gate` — Build verification during editing
 - `mandatory-testing-deployment` — Detailed testing and deployment requirements

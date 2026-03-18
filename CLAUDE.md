@@ -22,11 +22,46 @@ If the build fails, fix the error before making any further edits.
 - Never leave the project in a broken build state between edits
 - Validation: `bash scripts/validate-build.sh` or `npm run build`
 
----
+## WORKTREE WORKFLOW — MANDATORY [REQUIRED]
 
----
+ALL file changes MUST use a worktree. No exceptions. Never commit directly to main/master.
 
----
+### Workflow
+
+```bash
+# 1. Create worktree for your task
+uap worktree create <slug>
+
+# 2. Work in the worktree directory
+cd .worktrees/NNN-<slug>/
+
+# 3. Make changes, commit
+git add -A && git commit -m "type: description"
+
+# 4. Create PR from worktree
+uap worktree pr <id>
+
+# 5. After PR merge, clean up (MANDATORY)
+uap worktree cleanup <id>
+```
+
+### Rules
+
+1. **Every file change requires a worktree.** Application code, configs, workflows, documentation, even CLAUDE.md itself. No direct commits to main.
+2. **Create before editing.** Run `uap worktree create <slug>` before making any file changes.
+3. **Work inside the worktree directory.** All edits happen in `.worktrees/NNN-<slug>/`, not in the project root.
+4. **One worktree per task.** Each logical unit of work gets its own worktree and branch.
+5. **Cleanup is mandatory.** After PR merge, run `uap worktree cleanup <id>`. Stale worktrees are a policy violation.
+6. **PR required.** Changes go through `uap worktree pr <id>`, not direct push to main.
+
+### When to Skip (Exceptions)
+
+Worktree creation may be skipped ONLY when:
+
+- Running read-only commands (status, list, query)
+- The project has worktrees disabled in `.uap.json` (`template.sections.worktreeWorkflow: false`)
+
+See `policies/worktree-enforcement.md` for full enforcement details.
 
 ## Completion Gate [REQUIRED]
 
