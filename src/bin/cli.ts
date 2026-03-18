@@ -767,6 +767,14 @@ program
       })
   )
   .addCommand(
+    new Command('serve')
+      .description('Start web-based dashboard server with real-time updates')
+      .option('-p, --port <number>', 'Port to listen on (default: 3847)', '3847')
+      .action(async (options) => {
+        (await lazy.dashboard())('serve', { port: parseInt(options.port) });
+      })
+  )
+  .addCommand(
     new Command('stats')
       .description('Session context consumption stats with per-tool breakdown')
       .option('-v, --verbose', 'Show detailed information')
