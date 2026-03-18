@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.6.2 (2026-03-19)
+
+- fix: implement validated optimization plan - correctness, performance, and resource leak fixes
+
+
 ## v1.6.1 (2026-03-19)
 
 - fix: resolve all validation issues - CLAUDE.md compliance, SKILL.md refs, reinforcement DB
