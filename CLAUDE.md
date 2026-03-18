@@ -11,6 +11,21 @@
 
 <!-- Custom Sections (preserved from existing file) -->
 
+## Pre-Edit Worktree Gate [REQUIRED]
+
+Before editing ANY file, verify you are working inside a worktree:
+
+1. Run `uap worktree ensure --strict` — must exit 0
+2. If not in a worktree, run `uap worktree create <slug>` first
+3. All file paths in edit operations must be under `.worktrees/NNN-<slug>/`
+4. Never edit files in the project root directory
+5. Version bumps must be done on the feature branch, not master
+
+This gate applies to ALL file types: .ts, .md, .json, .sh, .yaml, configs, tests, docs.
+No exceptions for "small changes", "just docs", or "version bumps".
+
+---
+
 ## Pre-Edit Build Gate [REQUIRED]
 
 Before editing any `.ts` file, run `npm run build` to confirm the project compiles.
@@ -21,18 +36,6 @@ If the build fails, fix the error before making any further edits.
 - Always read the target region + surrounding context before editing to ensure unique anchors
 - Never leave the project in a broken build state between edits
 - Validation: `bash scripts/validate-build.sh` or `npm run build`
-
----
-
----
-
----
-
----
-
----
-
----
 
 ---
 
