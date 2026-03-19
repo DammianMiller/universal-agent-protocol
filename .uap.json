@@ -18,6 +18,9 @@
     },
     "opencode": {
       "enabled": true
+    },
+    "codex": {
+      "enabled": true
     }
   },
   "memory": {
