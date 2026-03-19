@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.13.0 (2026-03-20)
+
+- feat: hard policy enforcement hooks for all agent platforms (#61)
+- chore: bump version to 1.12.0
+- chore: gitignore dist symlink in worktree
+- chore: gitignore root-owned backup artifacts
+- feat: deploy batching integration, policy DB seeding, cross-platform hook parity
+- fix: wire session telemetry into web dashboard and add time-series graphs
+- chore: bump version to 1.11.0
+- fix: skip flaky browser tests in CI and handle missing settings.local.json
+- feat: add kanban board view for tasks in web dashboard and CLI
+- fix: resolve ((score++)) set -e bug in CI compliance workflow
+- fix: restore 4 missing compliance blocks in CLAUDE.md and fix SQL column bug
+- chore: simplify opencode session hooks plugin
+
+
 ## v1.12.0 (2026-03-20)
 
 - chore: gitignore dist symlink in worktree
