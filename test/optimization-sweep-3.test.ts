@@ -64,7 +64,7 @@ describe('2+3: Model router deferred init + simplified pool', () => {
 
   it('should use structured logger instead of console.warn', () => {
     const source = readFileSync('src/memory/model-router.ts', 'utf-8');
-    expect(source).toContain("import { createLogger }");
+    expect(source).toContain('import { createLogger }');
     expect(source).not.toContain('console.warn');
   });
 });
@@ -126,7 +126,7 @@ describe('9: Dead code removed - TemplateLoader', () => {
 describe('10: Consolidated validateDecoderFirst', () => {
   it('should re-export validateDecoderFirstFull from decoder-gate.ts', () => {
     const source = readFileSync('src/uap-droids-strict.ts', 'utf-8');
-    expect(source).toContain("export { validateDecoderFirst as validateDecoderFirstFull }");
+    expect(source).toContain('export { validateDecoderFirst as validateDecoderFirstFull }');
     expect(source).toContain("from './tasks/decoder-gate.js'");
   });
 
@@ -140,19 +140,15 @@ describe('10: Consolidated validateDecoderFirst', () => {
 // ── 11: Dependencies moved ──
 
 describe('11: Dependencies cleaned up', () => {
-  it('should NOT have execa/glob/cloakbrowser/playwright-core in dependencies', () => {
+  it('execa and cloakbrowser should be in dependencies (runtime imports)', () => {
     const pkg = JSON.parse(readFileSync('package.json', 'utf-8'));
-    expect(pkg.dependencies).not.toHaveProperty('execa');
-    expect(pkg.dependencies).not.toHaveProperty('glob');
-    expect(pkg.dependencies).not.toHaveProperty('cloakbrowser');
-    expect(pkg.dependencies).not.toHaveProperty('playwright-core');
+    expect(pkg.dependencies).toHaveProperty('execa');
+    expect(pkg.dependencies).toHaveProperty('cloakbrowser');
   });
 
-  it('should have execa/glob/cloakbrowser/playwright-core in devDependencies', () => {
+  it('glob and playwright-core should be in devDependencies (not imported in src/)', () => {
     const pkg = JSON.parse(readFileSync('package.json', 'utf-8'));
-    expect(pkg.devDependencies).toHaveProperty('execa');
     expect(pkg.devDependencies).toHaveProperty('glob');
-    expect(pkg.devDependencies).toHaveProperty('cloakbrowser');
     expect(pkg.devDependencies).toHaveProperty('playwright-core');
   });
 
@@ -183,7 +179,7 @@ describe('12: Workflow defaults fixed', () => {
 describe('13: EnforcedToolRouter wired into MCP client pool', () => {
   it('should import getEnforcedToolRouter in client.ts', () => {
     const source = readFileSync('src/mcp-router/executor/client.ts', 'utf-8');
-    expect(source).toContain("import { getEnforcedToolRouter }");
+    expect(source).toContain('import { getEnforcedToolRouter }');
   });
 
   it('McpClientPool should have executeToolWithPolicy method', async () => {
