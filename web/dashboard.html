@@ -625,117 +625,6 @@
       </header>
 
       <div class="grid" role="main" aria-live="polite">
-        <!-- System -->
-        <div class="panel">
-          <h2>System</h2>
-          <div id="system-panel">
-            <div class="kv">
-              <span class="label">Version</span><span class="value" id="sys-version">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">Branch</span><span class="value cyan" id="sys-branch">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">Uncommitted</span><span class="value" id="sys-dirty">-</span>
-            </div>
-          </div>
-          <h3>Tasks</h3>
-          <div id="task-summary">
-            <div class="kv">
-              <span class="label">Total</span><span class="value" id="task-total">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Done</span><span class="value green" id="task-done">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Active</span><span class="value cyan" id="task-progress">0</span>
-            </div>
-          </div>
-          <h3>Coordination</h3>
-          <div id="coord-panel">
-            <div class="kv">
-              <span class="label">Active Agents</span><span class="value" id="coord-agents">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Total Agents</span
-              ><span class="value" id="coord-total-agents">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Completed</span
-              ><span class="value green" id="coord-completed-agents">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Resource Claims</span
-              ><span class="value" id="coord-claims">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Pending Deploys</span
-              ><span class="value" id="coord-deploys">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Active Worktrees</span
-              ><span class="value cyan" id="coord-worktrees">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Pattern Uses</span
-              ><span class="value" id="coord-pattern-hits">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Pattern Successes</span
-              ><span class="value green" id="coord-pattern-successes">0</span>
-            </div>
-          </div>
-          <h3>Recent Agents</h3>
-          <div id="coord-agents-table" class="table-wrap">
-            <div class="empty">No agents registered</div>
-          </div>
-          <h3>Skills per Agent</h3>
-          <div id="coord-skills-per-agent">
-            <div class="empty">No skill data</div>
-          </div>
-          <h3>Patterns per Agent</h3>
-          <div id="coord-patterns-per-agent">
-            <div class="empty">No pattern data</div>
-          </div>
-        </div>
-
-        <!-- Kanban Board -->
-        <div class="panel full-width" id="kanban-panel">
-          <h2>Task Board</h2>
-          <div class="kanban" id="kanban-board">
-            <div class="kanban-col" data-status="open">
-              <div class="kanban-col-header open">
-                <span>Open</span><span class="col-count" id="kb-open-count">0</span>
-              </div>
-              <div class="kanban-cards" id="kb-open"></div>
-            </div>
-            <div class="kanban-col" data-status="in_progress">
-              <div class="kanban-col-header in_progress">
-                <span>In Progress</span><span class="col-count" id="kb-progress-count">0</span>
-              </div>
-              <div class="kanban-cards" id="kb-progress"></div>
-            </div>
-            <div class="kanban-col" data-status="blocked">
-              <div class="kanban-col-header blocked">
-                <span>Blocked</span><span class="col-count" id="kb-blocked-count">0</span>
-              </div>
-              <div class="kanban-cards" id="kb-blocked"></div>
-            </div>
-            <div class="kanban-col" data-status="done">
-              <div class="kanban-col-header done">
-                <span>Done</span><span class="col-count" id="kb-done-count">0</span>
-              </div>
-              <div class="kanban-cards" id="kb-done"></div>
-            </div>
-            <div class="kanban-col" data-status="wont_do">
-              <div class="kanban-col-header wont_do">
-                <span>Won't Do</span><span class="col-count" id="kb-wontdo-count">0</span>
-              </div>
-              <div class="kanban-cards" id="kb-wontdo"></div>
-            </div>
-          </div>
-        </div>
-
         <!-- Models -->
         <div class="panel">
           <h2>Models</h2>
@@ -895,6 +784,112 @@
         <div class="panel full-width">
           <h2>Audit Trail</h2>
           <div id="audit-trail"></div>
+        </div>
+      </div>
+
+      <!-- System & Coordination (bottom) -->
+      <div class="panel" style="margin-top: 16px">
+        <h2>System</h2>
+        <div id="system-panel">
+          <div class="kv">
+            <span class="label">Version</span><span class="value" id="sys-version">-</span>
+          </div>
+          <div class="kv">
+            <span class="label">Branch</span><span class="value cyan" id="sys-branch">-</span>
+          </div>
+          <div class="kv">
+            <span class="label">Uncommitted</span><span class="value" id="sys-dirty">-</span>
+          </div>
+        </div>
+        <h3>Tasks</h3>
+        <div id="task-summary">
+          <div class="kv">
+            <span class="label">Total</span><span class="value" id="task-total">0</span>
+          </div>
+          <div class="kv">
+            <span class="label">Done</span><span class="value green" id="task-done">0</span>
+          </div>
+          <div class="kv">
+            <span class="label">Active</span><span class="value cyan" id="task-progress">0</span>
+          </div>
+        </div>
+        <h3>Coordination</h3>
+        <div id="coord-panel">
+          <div class="kv">
+            <span class="label">Active Agents</span><span class="value" id="coord-agents">0</span>
+          </div>
+          <div class="kv">
+            <span class="label">Total Agents</span
+            ><span class="value" id="coord-total-agents">0</span>
+          </div>
+          <div class="kv">
+            <span class="label">Completed</span
+            ><span class="value green" id="coord-completed-agents">0</span>
+          </div>
+          <div class="kv">
+            <span class="label">Resource Claims</span><span class="value" id="coord-claims">0</span>
+          </div>
+          <div class="kv">
+            <span class="label">Pending Deploys</span
+            ><span class="value" id="coord-deploys">0</span>
+          </div>
+          <div class="kv">
+            <span class="label">Active Worktrees</span
+            ><span class="value cyan" id="coord-worktrees">0</span>
+          </div>
+          <div class="kv">
+            <span class="label">Pattern Uses</span
+            ><span class="value" id="coord-pattern-hits">0</span>
+          </div>
+          <div class="kv">
+            <span class="label">Pattern Successes</span
+            ><span class="value green" id="coord-pattern-successes">0</span>
+          </div>
+        </div>
+        <h3>Recent Agents</h3>
+        <div id="coord-agents-table" class="table-wrap">
+          <div class="empty">No agents registered</div>
+        </div>
+        <h3>Skills per Agent</h3>
+        <div id="coord-skills-per-agent"><div class="empty">No skill data</div></div>
+        <h3>Patterns per Agent</h3>
+        <div id="coord-patterns-per-agent"><div class="empty">No pattern data</div></div>
+      </div>
+
+      <!-- Task Board (bottom) -->
+      <div class="panel full-width" id="kanban-panel" style="margin-top: 16px">
+        <h2>Task Board</h2>
+        <div class="kanban" id="kanban-board">
+          <div class="kanban-col" data-status="open">
+            <div class="kanban-col-header open">
+              <span>Open</span><span class="col-count" id="kb-open-count">0</span>
+            </div>
+            <div class="kanban-cards" id="kb-open"></div>
+          </div>
+          <div class="kanban-col" data-status="in_progress">
+            <div class="kanban-col-header in_progress">
+              <span>In Progress</span><span class="col-count" id="kb-progress-count">0</span>
+            </div>
+            <div class="kanban-cards" id="kb-progress"></div>
+          </div>
+          <div class="kanban-col" data-status="blocked">
+            <div class="kanban-col-header blocked">
+              <span>Blocked</span><span class="col-count" id="kb-blocked-count">0</span>
+            </div>
+            <div class="kanban-cards" id="kb-blocked"></div>
+          </div>
+          <div class="kanban-col" data-status="done">
+            <div class="kanban-col-header done">
+              <span>Done</span><span class="col-count" id="kb-done-count">0</span>
+            </div>
+            <div class="kanban-cards" id="kb-done"></div>
+          </div>
+          <div class="kanban-col" data-status="wont_do">
+            <div class="kanban-col-header wont_do">
+              <span>Won't Do</span><span class="col-count" id="kb-wontdo-count">0</span>
+            </div>
+            <div class="kanban-cards" id="kb-wontdo"></div>
+          </div>
         </div>
       </div>
     </div>
