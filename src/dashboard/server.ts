@@ -71,7 +71,7 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
+          Connection: 'keep-alive',
           'Access-Control-Allow-Origin': '*',
         });
 
@@ -107,9 +107,7 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
         const limit = parseInt(urlObj.searchParams.get('limit') || '50', 10);
         const sinceId = parseInt(urlObj.searchParams.get('since') || '0', 10);
 
-        const events = sinceId > 0
-          ? eventBus.getEventsSince(sinceId)
-          : eventBus.getHistory(limit);
+        const events = sinceId > 0 ? eventBus.getEventsSince(sinceId) : eventBus.getHistory(limit);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(events));
@@ -136,7 +134,8 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
       if (url.startsWith('/api/policy/') && url.endsWith('/stage') && req.method === 'POST') {
         const id = url.split('/')[3];
         const body = await readBody(req);
-        const { stage } = JSON.parse(body);
+        const parsed = parseJsonBody(body);
+        const stage = parsed.stage as string;
         const validStages = ['pre-exec', 'post-exec', 'review', 'always'];
         if (!validStages.includes(stage)) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -144,7 +143,10 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
           return;
         }
         const memory = getPolicyMemoryManager();
-        await memory.setEnforcementStage(id, stage);
+        await memory.setEnforcementStage(
+          id,
+          stage as 'pre-exec' | 'post-exec' | 'review' | 'always'
+        );
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id, enforcementStage: stage }));
         return;
@@ -154,7 +156,8 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
       if (url.startsWith('/api/policy/') && url.endsWith('/level') && req.method === 'POST') {
         const id = url.split('/')[3];
         const body = await readBody(req);
-        const { level } = JSON.parse(body);
+        const parsed = parseJsonBody(body);
+        const level = parsed.level as string;
         const validLevels = ['REQUIRED', 'RECOMMENDED', 'OPTIONAL'];
         if (!validLevels.includes(level)) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -187,8 +190,10 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
     } catch (error) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Internal error' }));
+      const message = error instanceof Error ? error.message : 'Internal error';
+      const isClientError = message.includes('Invalid JSON') || message.includes('too large');
+      res.writeHead(isClientError ? 400 : 500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message }));
     }
   });
 
@@ -245,13 +250,27 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
   };
 }
 
+const MAX_BODY_SIZE = 10240; // 10 KB
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', (chunk: Buffer) => {
       body += chunk;
+      if (body.length > MAX_BODY_SIZE) {
+        reject(new Error('Request body too large'));
+        req.destroy();
+      }
     });
     req.on('end', () => resolve(body));
     req.on('error', reject);
   });
+}
+
+function parseJsonBody(body: string): Record<string, unknown> {
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error('Invalid JSON in request body');
+  }
 }
