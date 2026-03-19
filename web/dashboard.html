@@ -18,14 +18,11 @@
         --red: #f85149;
         --purple: #bc8cff;
         --orange: #d18616;
+        --magenta: #f778ba;
         --border: #30363d;
         --radius: 8px;
       }
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
       body {
         font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
         background: var(--bg);
@@ -33,236 +30,214 @@
         font-size: 13px;
         line-height: 1.5;
       }
-      .container {
-        max-width: 1200px;
-        margin: 0 auto;
-        padding: 16px;
-      }
+      .container { max-width: 1600px; margin: 0 auto; padding: 16px; }
       header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 12px 0;
-        border-bottom: 1px solid var(--border);
-        margin-bottom: 16px;
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 12px 0; border-bottom: 1px solid var(--border); margin-bottom: 16px;
       }
-      header h1 {
-        font-size: 18px;
-        color: var(--cyan);
-        font-weight: 600;
-      }
+      header h1 { font-size: 18px; color: var(--cyan); font-weight: 600; }
+      .header-right { display: flex; align-items: center; gap: 16px; }
       .status-dot {
-        display: inline-block;
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        margin-right: 6px;
+        display: inline-block; width: 8px; height: 8px;
+        border-radius: 50%; margin-right: 6px;
       }
-      .status-dot.connected {
-        background: var(--green);
-      }
-      .status-dot.disconnected {
-        background: var(--red);
+      .status-dot.connected { background: var(--green); }
+      .status-dot.disconnected { background: var(--red); }
+      .session-badge {
+        background: var(--bg3); border: 1px solid var(--border);
+        padding: 2px 8px; border-radius: 4px; font-size: 11px; color: var(--fg2);
       }
       .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
         gap: 16px;
       }
       .panel {
-        background: var(--bg2);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        padding: 16px;
+        background: var(--bg2); border: 1px solid var(--border);
+        border-radius: var(--radius); padding: 16px;
       }
       .panel h2 {
-        font-size: 14px;
-        color: var(--cyan);
-        margin-bottom: 12px;
-        font-weight: 600;
-        border-bottom: 1px solid var(--border);
-        padding-bottom: 8px;
+        font-size: 14px; color: var(--cyan); margin-bottom: 12px;
+        font-weight: 600; border-bottom: 1px solid var(--border); padding-bottom: 8px;
+        display: flex; justify-content: space-between; align-items: center;
+      }
+      .panel h2 .count {
+        font-size: 11px; color: var(--fg2); font-weight: 400;
+        background: var(--bg3); padding: 1px 6px; border-radius: 3px;
       }
       .panel h3 {
-        font-size: 12px;
-        color: var(--fg2);
-        margin: 12px 0 6px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
+        font-size: 12px; color: var(--fg2); margin: 12px 0 6px;
+        text-transform: uppercase; letter-spacing: 0.5px;
       }
-      .kv {
-        display: flex;
-        justify-content: space-between;
-        padding: 3px 0;
-      }
-      .kv .label {
-        color: var(--fg2);
-      }
-      .kv .value {
-        color: var(--fg);
-        font-weight: 500;
-      }
-      .kv .value.green {
-        color: var(--green);
-      }
-      .kv .value.yellow {
-        color: var(--yellow);
-      }
-      .kv .value.red {
-        color: var(--red);
-      }
-      .kv .value.cyan {
-        color: var(--cyan);
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 12px;
-      }
+      .kv { display: flex; justify-content: space-between; padding: 3px 0; }
+      .kv .label { color: var(--fg2); }
+      .kv .value { color: var(--fg); font-weight: 500; }
+      .kv .value.green { color: var(--green); }
+      .kv .value.yellow { color: var(--yellow); }
+      .kv .value.red { color: var(--red); }
+      .kv .value.cyan { color: var(--cyan); }
+      .kv .value.purple { color: var(--purple); }
+      .kv .value.magenta { color: var(--magenta); }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
       th {
-        text-align: left;
-        color: var(--fg2);
-        font-weight: 500;
-        padding: 4px 8px;
-        border-bottom: 1px solid var(--border);
+        text-align: left; color: var(--fg2); font-weight: 500;
+        padding: 4px 8px; border-bottom: 1px solid var(--border);
       }
-      td {
-        padding: 4px 8px;
-        border-bottom: 1px solid var(--bg3);
-      }
+      td { padding: 4px 8px; border-bottom: 1px solid var(--bg3); }
       .badge {
-        display: inline-block;
-        padding: 1px 6px;
-        border-radius: 3px;
-        font-size: 11px;
-        font-weight: 600;
+        display: inline-block; padding: 1px 6px;
+        border-radius: 3px; font-size: 11px; font-weight: 600;
       }
-      .badge.required {
-        background: rgba(248, 81, 73, 0.15);
-        color: var(--red);
-      }
-      .badge.recommended {
-        background: rgba(210, 153, 34, 0.15);
-        color: var(--yellow);
-      }
-      .badge.optional {
-        background: rgba(72, 79, 88, 0.15);
-        color: var(--fg3);
-      }
-      .badge.on {
-        background: rgba(63, 185, 80, 0.15);
-        color: var(--green);
-      }
-      .badge.off {
-        background: rgba(248, 81, 73, 0.15);
-        color: var(--red);
-      }
-      .bar-container {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin: 3px 0;
-      }
-      .bar-label {
-        width: 80px;
-        color: var(--fg2);
-        font-size: 12px;
-      }
+      .badge.required { background: rgba(248,81,73,0.15); color: var(--red); }
+      .badge.recommended { background: rgba(210,153,34,0.15); color: var(--yellow); }
+      .badge.optional { background: rgba(72,79,88,0.15); color: var(--fg3); }
+      .badge.on { background: rgba(63,185,80,0.15); color: var(--green); }
+      .badge.off { background: rgba(248,81,73,0.15); color: var(--red); }
+      .badge.working { background: rgba(210,153,34,0.15); color: var(--yellow); }
+      .badge.idle { background: rgba(72,79,88,0.15); color: var(--fg3); }
+      .badge.done { background: rgba(63,185,80,0.15); color: var(--green); }
+      .badge.error { background: rgba(248,81,73,0.15); color: var(--red); }
+      .badge.droid { background: rgba(247,120,186,0.15); color: var(--magenta); }
+      .badge.subagent { background: rgba(88,166,255,0.15); color: var(--cyan); }
+      .badge.main { background: rgba(188,140,255,0.15); color: var(--purple); }
+      .bar-container { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+      .bar-label { width: 80px; color: var(--fg2); font-size: 12px; }
       .bar {
-        height: 14px;
-        border-radius: 3px;
-        min-width: 2px;
+        height: 14px; border-radius: 3px; min-width: 2px;
         transition: width 0.3s;
       }
-      .bar.cyan {
-        background: var(--cyan);
-      }
-      .bar.green {
-        background: var(--green);
-      }
-      .bar.yellow {
-        background: var(--yellow);
-      }
-      .bar.red {
-        background: var(--red);
-      }
-      .bar-value {
-        color: var(--fg2);
-        font-size: 11px;
-        min-width: 20px;
-      }
+      .bar.cyan { background: var(--cyan); }
+      .bar.green { background: var(--green); }
+      .bar.yellow { background: var(--yellow); }
+      .bar.red { background: var(--red); }
+      .bar.purple { background: var(--purple); }
+      .bar.magenta { background: var(--magenta); }
+      .bar-value { color: var(--fg2); font-size: 11px; min-width: 20px; }
       .btn {
-        background: var(--bg3);
-        border: 1px solid var(--border);
-        color: var(--fg);
-        padding: 3px 8px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 11px;
-        font-family: inherit;
+        background: var(--bg3); border: 1px solid var(--border);
+        color: var(--fg); padding: 3px 8px; border-radius: 4px;
+        cursor: pointer; font-size: 11px; font-family: inherit;
       }
-      .btn:hover {
-        background: var(--border);
-      }
-      .btn.active {
-        background: var(--cyan);
-        color: var(--bg);
-        border-color: var(--cyan);
-      }
+      .btn:hover { background: var(--border); }
+      .btn.active { background: var(--cyan); color: var(--bg); border-color: var(--cyan); }
       select {
-        background: var(--bg3);
-        border: 1px solid var(--border);
-        color: var(--fg);
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-size: 11px;
-        font-family: inherit;
+        background: var(--bg3); border: 1px solid var(--border);
+        color: var(--fg); padding: 2px 6px; border-radius: 4px;
+        font-size: 11px; font-family: inherit;
       }
+      .full-width { grid-column: 1 / -1; }
+      .empty { color: var(--fg3); font-style: italic; padding: 8px 0; }
+      .refresh-info { color: var(--fg3); font-size: 11px; }
+
+      /* Hit/miss gauge */
+      .gauge { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+      .gauge-bar {
+        flex: 1; height: 18px; background: var(--bg3);
+        border-radius: 3px; overflow: hidden; display: flex;
+      }
+      .gauge-fill-hit { background: var(--green); height: 100%; transition: width 0.3s; }
+      .gauge-fill-miss { background: var(--red); height: 100%; transition: width 0.3s; opacity: 0.6; }
+      .gauge-label { font-size: 11px; color: var(--fg2); min-width: 60px; text-align: right; }
+
+      /* Event stream */
+      .event-stream {
+        max-height: 400px; overflow-y: auto; font-size: 12px;
+        scrollbar-width: thin; scrollbar-color: var(--border) var(--bg2);
+      }
+      .event-stream::-webkit-scrollbar { width: 6px; }
+      .event-stream::-webkit-scrollbar-track { background: var(--bg2); }
+      .event-stream::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+      .event-row {
+        display: flex; gap: 8px; padding: 4px 0;
+        border-bottom: 1px solid var(--bg3); align-items: flex-start;
+      }
+      .event-row.new { animation: flash 0.5s ease-out; }
+      @keyframes flash {
+        0% { background: rgba(88,166,255,0.15); }
+        100% { background: transparent; }
+      }
+      .event-time { color: var(--fg3); width: 70px; flex-shrink: 0; font-size: 11px; }
+      .event-cat {
+        width: 60px; flex-shrink: 0; font-size: 10px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.3px;
+      }
+      .event-cat.policy { color: var(--red); }
+      .event-cat.memory { color: var(--magenta); }
+      .event-cat.deploy { color: var(--yellow); }
+      .event-cat.agent { color: var(--cyan); }
+      .event-cat.task { color: var(--green); }
+      .event-cat.skill { color: var(--green); }
+      .event-cat.pattern { color: var(--purple); }
+      .event-cat.cost { color: var(--orange); }
+      .event-cat.system { color: var(--fg2); }
+      .event-severity {
+        width: 14px; flex-shrink: 0; font-size: 12px; text-align: center;
+      }
+      .event-title { color: var(--fg); flex: 1; }
+      .event-detail { color: var(--fg3); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      /* Filter tabs */
+      .filter-tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
+      .filter-tab {
+        background: var(--bg3); border: 1px solid var(--border);
+        color: var(--fg2); padding: 2px 8px; border-radius: 4px;
+        cursor: pointer; font-size: 10px; font-family: inherit;
+        text-transform: uppercase; letter-spacing: 0.3px;
+      }
+      .filter-tab.active { background: var(--cyan); color: var(--bg); border-color: var(--cyan); }
+      .filter-tab:hover { border-color: var(--fg3); }
+
+      /* Progress bar */
+      .progress-bar {
+        width: 100%; height: 6px; background: var(--bg3);
+        border-radius: 3px; overflow: hidden; margin: 4px 0;
+      }
+      .progress-fill {
+        height: 100%; background: var(--green); border-radius: 3px;
+        transition: width 0.3s;
+      }
+
+      /* Deploy pipeline */
+      .deploy-pipeline { display: flex; gap: 4px; align-items: center; margin: 6px 0; }
+      .deploy-stage {
+        display: flex; flex-direction: column; align-items: center;
+        padding: 4px 8px; border-radius: 4px; font-size: 11px;
+        background: var(--bg3); min-width: 60px;
+      }
+      .deploy-stage .stage-count { font-size: 16px; font-weight: 600; }
+      .deploy-stage .stage-label { font-size: 9px; text-transform: uppercase; color: var(--fg2); }
+      .deploy-arrow { color: var(--fg3); font-size: 14px; }
+
+      /* Audit trail */
       .audit-row {
-        display: flex;
-        gap: 8px;
-        padding: 3px 0;
-        font-size: 12px;
-        border-bottom: 1px solid var(--bg3);
+        display: flex; gap: 8px; padding: 3px 0;
+        font-size: 12px; border-bottom: 1px solid var(--bg3);
       }
-      .audit-time {
-        color: var(--fg3);
-        width: 140px;
-        flex-shrink: 0;
-      }
-      .audit-icon {
-        width: 40px;
-        flex-shrink: 0;
-        font-weight: 600;
-      }
-      .audit-icon.pass {
-        color: var(--green);
-      }
-      .audit-icon.block {
-        color: var(--red);
-      }
-      .audit-op {
-        color: var(--fg);
-        flex: 1;
-      }
+      .audit-time { color: var(--fg3); width: 140px; flex-shrink: 0; }
+      .audit-icon { width: 40px; flex-shrink: 0; font-weight: 600; }
+      .audit-icon.pass { color: var(--green); }
+      .audit-icon.block { color: var(--red); }
+      .audit-op { color: var(--fg); flex: 1; }
       .audit-reason {
-        color: var(--fg3);
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        color: var(--fg3); flex: 1; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap;
       }
-      .full-width {
-        grid-column: 1 / -1;
+
+      /* Weight bar for patterns */
+      .weight-bar {
+        display: inline-block; width: 60px; height: 8px;
+        background: var(--bg3); border-radius: 2px; overflow: hidden;
+        vertical-align: middle; margin-left: 4px;
       }
-      .empty {
-        color: var(--fg3);
-        font-style: italic;
-        padding: 8px 0;
+      .weight-fill {
+        height: 100%; background: var(--cyan); border-radius: 2px;
+        transition: width 0.3s;
       }
-      .refresh-info {
-        color: var(--fg3);
-        font-size: 11px;
+
+      /* Cost savings highlight */
+      .savings-highlight {
+        background: rgba(63,185,80,0.08); border: 1px solid rgba(63,185,80,0.2);
+        border-radius: var(--radius); padding: 8px 12px; margin-top: 8px;
       }
     </style>
   </head>
@@ -270,123 +245,126 @@
     <div class="container">
       <header>
         <h1>UAP Dashboard</h1>
-        <div>
-          <span class="status-dot disconnected" id="ws-status"></span>
-          <span class="refresh-info" id="refresh-info">Connecting...</span>
+        <div class="header-right">
+          <span class="session-badge" id="session-id">-</span>
+          <span class="session-badge" id="session-uptime">-</span>
+          <div>
+            <span class="status-dot disconnected" id="ws-status"></span>
+            <span class="refresh-info" id="refresh-info">Connecting...</span>
+          </div>
         </div>
       </header>
 
       <div class="grid">
-        <!-- System -->
+        <!-- System & Tasks -->
         <div class="panel">
           <h2>System</h2>
           <div id="system-panel">
-            <div class="kv">
-              <span class="label">Version</span><span class="value" id="sys-version">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">Branch</span><span class="value cyan" id="sys-branch">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">Uncommitted</span><span class="value" id="sys-dirty">-</span>
-            </div>
+            <div class="kv"><span class="label">Version</span><span class="value" id="sys-version">-</span></div>
+            <div class="kv"><span class="label">Branch</span><span class="value cyan" id="sys-branch">-</span></div>
+            <div class="kv"><span class="label">Uncommitted</span><span class="value" id="sys-dirty">-</span></div>
           </div>
           <h3>Tasks</h3>
           <div id="task-panel">
-            <div class="kv">
-              <span class="label">Total</span><span class="value" id="task-total">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Done</span><span class="value green" id="task-done">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">In Progress</span
-              ><span class="value cyan" id="task-progress">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Blocked</span><span class="value red" id="task-blocked">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Open</span><span class="value" id="task-open">0</span>
-            </div>
+            <div class="kv"><span class="label">Total</span><span class="value" id="task-total">0</span></div>
+            <div class="kv"><span class="label">Done</span><span class="value green" id="task-done">0</span></div>
+            <div class="kv"><span class="label">In Progress</span><span class="value cyan" id="task-progress">0</span></div>
+            <div class="kv"><span class="label">Blocked</span><span class="value red" id="task-blocked">0</span></div>
+            <div class="kv"><span class="label">Open</span><span class="value" id="task-open">0</span></div>
           </div>
-          <h3>Coordination</h3>
-          <div id="coord-panel">
-            <div class="kv">
-              <span class="label">Active Agents</span><span class="value" id="coord-agents">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Resource Claims</span
-              ><span class="value" id="coord-claims">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Pending Deploys</span
-              ><span class="value" id="coord-deploys">0</span>
-            </div>
+          <div id="task-progress-bar"></div>
+          <h3>Session Stats</h3>
+          <div id="session-stats">
+            <div class="kv"><span class="label">Tool Calls</span><span class="value" id="stat-tools">0</span></div>
+            <div class="kv"><span class="label">Tokens Used</span><span class="value cyan" id="stat-tokens">0</span></div>
+            <div class="kv"><span class="label">Tokens Saved</span><span class="value green" id="stat-saved">0</span></div>
+            <div class="kv"><span class="label">Files Backed Up</span><span class="value" id="stat-backups">0</span></div>
+            <div class="kv"><span class="label">Errors</span><span class="value" id="stat-errors">0</span></div>
           </div>
         </div>
 
-        <!-- Models -->
+        <!-- Models & Cost -->
         <div class="panel">
           <h2>Models</h2>
           <div id="model-roles"></div>
           <h3>Session Usage</h3>
           <div id="model-usage"></div>
-          <div
-            class="kv"
-            style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px"
-          >
-            <span class="label" style="font-weight: 600">Total Cost</span>
+          <div class="kv" style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px">
+            <span class="label" style="font-weight:600">Total Cost</span>
             <span class="value green" id="model-cost">$0.0000</span>
           </div>
+          <div id="cost-savings"></div>
         </div>
 
         <!-- Memory -->
         <div class="panel">
           <h2>Memory</h2>
           <div id="memory-panel">
-            <div class="kv">
-              <span class="label">L1 Working</span><span class="value" id="mem-l1">-</span>
+            <div class="kv"><span class="label">L1 Working</span><span class="value" id="mem-l1">-</span></div>
+            <div class="kv"><span class="label">L2 Session</span><span class="value" id="mem-l2">-</span></div>
+            <div class="kv"><span class="label">L3 Semantic</span><span class="value" id="mem-l3">-</span></div>
+            <div class="kv"><span class="label">L4 Knowledge</span><span class="value" id="mem-l4">-</span></div>
+          </div>
+          <h3>Hits vs Misses</h3>
+          <div id="memory-hits-misses">
+            <div class="gauge">
+              <div class="gauge-bar">
+                <div class="gauge-fill-hit" id="hit-bar" style="width:0%"></div>
+                <div class="gauge-fill-miss" id="miss-bar" style="width:0%"></div>
+              </div>
+              <span class="gauge-label" id="hit-rate">0%</span>
             </div>
-            <div class="kv">
-              <span class="label">L2 Session</span><span class="value" id="mem-l2">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">L3 Semantic</span><span class="value" id="mem-l3">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">L4 Knowledge</span><span class="value" id="mem-l4">-</span>
-            </div>
+            <div class="kv"><span class="label">Hits</span><span class="value green" id="mem-hits">0</span></div>
+            <div class="kv"><span class="label">Misses</span><span class="value red" id="mem-misses">0</span></div>
           </div>
           <h3>Context Compression</h3>
           <div id="compression-panel">
-            <div class="kv">
-              <span class="label">Raw</span><span class="value" id="comp-raw">0 KB</span>
-            </div>
-            <div class="kv">
-              <span class="label">Compressed</span><span class="value" id="comp-ctx">0 KB</span>
-            </div>
-            <div class="kv">
-              <span class="label">Savings</span
-              ><span class="value green" id="comp-savings">0%</span>
-            </div>
-            <div class="kv">
-              <span class="label">Tool Calls</span><span class="value" id="comp-calls">0</span>
-            </div>
+            <div class="kv"><span class="label">Raw</span><span class="value" id="comp-raw">0 KB</span></div>
+            <div class="kv"><span class="label">Compressed</span><span class="value" id="comp-ctx">0 KB</span></div>
+            <div class="kv"><span class="label">Savings</span><span class="value green" id="comp-savings">0%</span></div>
+            <div class="kv"><span class="label">Tool Calls</span><span class="value" id="comp-calls">0</span></div>
           </div>
+        </div>
+
+        <!-- Agents -->
+        <div class="panel">
+          <h2>Agents <span class="count" id="agent-count">0</span></h2>
+          <div id="agents-panel"><div class="empty">No agents registered</div></div>
+        </div>
+
+        <!-- Skills & Patterns -->
+        <div class="panel">
+          <h2>Skills & Patterns</h2>
+          <h3>Skills <span class="count" id="skill-count">0</span></h3>
+          <div id="skills-panel"><div class="empty">No skills matched</div></div>
+          <h3>Patterns <span class="count" id="pattern-count">0</span></h3>
+          <div id="patterns-panel"><div class="empty">No patterns matched</div></div>
+        </div>
+
+        <!-- Deploy Batching -->
+        <div class="panel">
+          <h2>Deploy Batching</h2>
+          <div id="deploy-pipeline"></div>
+          <div id="deploy-summary">
+            <div class="kv"><span class="label">Total Actions</span><span class="value" id="deploy-total">0</span></div>
+            <div class="kv"><span class="label">Batches Created</span><span class="value" id="deploy-batches">0</span></div>
+            <div class="kv"><span class="label">Ops Saved</span><span class="value green" id="deploy-saved">0</span></div>
+          </div>
+          <h3>Recent Actions</h3>
+          <div id="deploy-actions"><div class="empty">No deploy actions</div></div>
         </div>
 
         <!-- Performance -->
-        <div class="card">
+        <div class="panel">
           <h2>Performance</h2>
-          <div id="perf-panel">
-            <div class="empty">No performance data yet</div>
-          </div>
+          <div id="perf-panel"><div class="empty">No performance data yet</div></div>
         </div>
 
-        <!-- Policies -->
+        <!-- Policy Enforcement -->
         <div class="panel full-width">
-          <h2>Policies</h2>
+          <h2>Policy Enforcement <span class="count" id="policy-enforcement-count">0 checks / 0 blocks</span></h2>
+          <div id="policy-enforcement-bars"></div>
+          <h3>Policies</h3>
           <div id="policy-table"></div>
           <h3>Enforcement Stages</h3>
           <div id="policy-stages"></div>
@@ -397,6 +375,26 @@
           <h2>Audit Trail</h2>
           <div id="audit-trail"></div>
         </div>
+
+        <!-- Live Event Stream -->
+        <div class="panel full-width">
+          <h2>Live Event Stream <span class="count" id="event-count">0</span></h2>
+          <div class="filter-tabs" id="event-filters">
+            <span class="filter-tab active" data-filter="all" onclick="setEventFilter('all')">All</span>
+            <span class="filter-tab" data-filter="policy" onclick="setEventFilter('policy')">Policy</span>
+            <span class="filter-tab" data-filter="memory" onclick="setEventFilter('memory')">Memory</span>
+            <span class="filter-tab" data-filter="deploy" onclick="setEventFilter('deploy')">Deploy</span>
+            <span class="filter-tab" data-filter="agent" onclick="setEventFilter('agent')">Agent</span>
+            <span class="filter-tab" data-filter="task" onclick="setEventFilter('task')">Task</span>
+            <span class="filter-tab" data-filter="skill" onclick="setEventFilter('skill')">Skill</span>
+            <span class="filter-tab" data-filter="pattern" onclick="setEventFilter('pattern')">Pattern</span>
+            <span class="filter-tab" data-filter="cost" onclick="setEventFilter('cost')">Cost</span>
+            <span class="filter-tab" data-filter="system" onclick="setEventFilter('system')">System</span>
+          </div>
+          <div class="event-stream" id="event-stream">
+            <div class="empty">Waiting for events...</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -405,7 +403,12 @@
       const API_URL = `http://${location.host}`;
       let ws = null;
       let reconnectTimer = null;
+      let eventSource = null;
+      let events = [];
+      let eventFilter = 'all';
+      const MAX_EVENTS = 200;
 
+      // ── WebSocket connection for dashboard data ──
       function connect() {
         ws = new WebSocket(WS_URL);
         ws.onopen = () => {
@@ -413,11 +416,8 @@
           document.getElementById('refresh-info').textContent = 'Live';
         };
         ws.onmessage = (e) => {
-          try {
-            render(JSON.parse(e.data));
-          } catch {}
-          document.getElementById('refresh-info').textContent =
-            'Live - ' + new Date().toLocaleTimeString();
+          try { render(JSON.parse(e.data)); } catch {}
+          document.getElementById('refresh-info').textContent = 'Live - ' + new Date().toLocaleTimeString();
         };
         ws.onclose = () => {
           document.getElementById('ws-status').className = 'status-dot disconnected';
@@ -427,7 +427,33 @@
         ws.onerror = () => ws.close();
       }
 
+      // ── SSE connection for live events ──
+      function connectSSE() {
+        if (eventSource) { eventSource.close(); }
+        eventSource = new EventSource(API_URL + '/api/events');
+        eventSource.onmessage = (e) => {
+          try {
+            const event = JSON.parse(e.data);
+            events.push(event);
+            if (events.length > MAX_EVENTS) events = events.slice(-MAX_EVENTS);
+            renderEventStream();
+            document.getElementById('event-count').textContent = events.length;
+          } catch {}
+        };
+        eventSource.onerror = () => {
+          eventSource.close();
+          setTimeout(connectSSE, 5000);
+        };
+      }
+
+      // ── Main render function ──
       function render(data) {
+        // Session header
+        if (data.session && data.session.sessionId) {
+          setText('session-id', 'Session: ' + data.session.sessionId);
+          setText('session-uptime', data.session.uptime);
+        }
+
         // System
         setText('sys-version', 'v' + data.system.version);
         setText('sys-branch', data.system.branch);
@@ -442,10 +468,28 @@
         setText('task-blocked', data.tasks.blocked);
         setText('task-open', data.tasks.open);
 
+        // Task progress bar
+        if (data.tasks.total > 0) {
+          const pct = Math.round((data.tasks.done / data.tasks.total) * 100);
+          document.getElementById('task-progress-bar').innerHTML =
+            `<div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>` +
+            `<div style="font-size:11px;color:var(--fg3);text-align:right">${pct}% complete</div>`;
+        }
+
+        // Session stats
+        if (data.session) {
+          const s = data.session;
+          setText('stat-tools', s.toolCalls);
+          setText('stat-tokens', fmt(s.tokensUsed));
+          setText('stat-saved', fmt(s.tokensSaved));
+          setText('stat-backups', s.filesBackedUp);
+          const errEl = document.getElementById('stat-errors');
+          errEl.textContent = s.errors;
+          errEl.className = 'value ' + (s.errors > 0 ? 'red' : 'green');
+        }
+
         // Coordination
-        setText('coord-agents', data.coordination.activeAgents);
-        setText('coord-claims', data.coordination.activeClaims);
-        setText('coord-deploys', data.coordination.pendingDeploys);
+        // (kept for backward compat but agents panel now shows details)
 
         // Models
         const roles = data.models.roles;
@@ -458,30 +502,49 @@
         document.getElementById('model-roles').innerHTML = rolesHtml;
 
         if (data.models.sessionUsage.length > 0) {
-          let usageHtml =
-            '<table><tr><th>Model</th><th>Tasks</th><th>Tokens In</th><th>Out</th><th>Cost</th><th>Success</th></tr>';
+          let usageHtml = '<table><tr><th>Model</th><th>Tasks</th><th>Tokens In</th><th>Out</th><th>Cost</th><th>Success</th></tr>';
           for (const u of data.models.sessionUsage) {
             usageHtml += `<tr><td style="color:var(--cyan)">${u.modelId}</td><td>${u.taskCount}</td><td>${fmt(u.totalTokensIn)}</td><td>${fmt(u.totalTokensOut)}</td><td>$${u.totalCost.toFixed(4)}</td><td>${(u.successRate * 100).toFixed(0)}%</td></tr>`;
           }
           usageHtml += '</table>';
           document.getElementById('model-usage').innerHTML = usageHtml;
         } else {
-          document.getElementById('model-usage').innerHTML =
-            '<div class="empty">No usage recorded</div>';
+          document.getElementById('model-usage').innerHTML = '<div class="empty">No usage recorded</div>';
         }
         setText('model-cost', '$' + data.models.totalCost.toFixed(4));
+
+        // Cost savings
+        if (data.session && data.session.estimatedCostWithoutUap > 0 && data.session.costSavingsPercent > 0) {
+          const saved = data.session.estimatedCostWithoutUap - data.session.totalCostUsd;
+          document.getElementById('cost-savings').innerHTML =
+            `<div class="savings-highlight">` +
+            `<div class="kv"><span class="label">Without UAP</span><span class="value" style="color:var(--fg3)">$${data.session.estimatedCostWithoutUap.toFixed(4)}</span></div>` +
+            `<div class="kv"><span class="label">Saved</span><span class="value green">$${saved.toFixed(4)} (${data.session.costSavingsPercent}%)</span></div>` +
+            `</div>`;
+        } else {
+          document.getElementById('cost-savings').innerHTML = '';
+        }
 
         // Memory
         setText('mem-l1', data.memory.l1.entries + ' entries (' + data.memory.l1.sizeKB + ' KB)');
         setText('mem-l2', data.memory.l2.entries + ' entries');
         const l3El = document.getElementById('mem-l3');
-        l3El.textContent =
-          data.memory.l3.status === 'Running' ? 'Qdrant ' + data.memory.l3.uptime : 'Stopped';
+        l3El.textContent = data.memory.l3.status === 'Running' ? 'Qdrant ' + data.memory.l3.uptime : 'Stopped';
         l3El.className = 'value ' + (data.memory.l3.status === 'Running' ? 'green' : 'yellow');
-        setText(
-          'mem-l4',
-          data.memory.l4.entities + ' entities, ' + data.memory.l4.relationships + ' rels'
-        );
+        setText('mem-l4', data.memory.l4.entities + ' entities, ' + data.memory.l4.relationships + ' rels');
+
+        // Memory hits/misses
+        if (data.memory.hitsMisses) {
+          const hm = data.memory.hitsMisses;
+          const total = hm.hits + hm.misses;
+          const hitPct = total > 0 ? Math.round((hm.hits / total) * 100) : 0;
+          const missPct = total > 0 ? 100 - hitPct : 0;
+          document.getElementById('hit-bar').style.width = hitPct + '%';
+          document.getElementById('miss-bar').style.width = missPct + '%';
+          setText('hit-rate', hm.hitRate);
+          setText('mem-hits', hm.hits);
+          setText('mem-misses', hm.misses);
+        }
 
         // Compression
         setText('comp-raw', Math.round(data.memory.compression.rawBytes / 1024) + ' KB');
@@ -489,53 +552,105 @@
         setText('comp-savings', data.memory.compression.savingsPercent);
         setText('comp-calls', data.memory.compression.totalCalls);
 
-        // Policies
-        if (data.policies.length > 0) {
-          let pHtml =
-            '<table><tr><th>Name</th><th>Level</th><th>Stage</th><th>Category</th><th>Status</th><th>Actions</th></tr>';
-          for (const p of data.policies) {
-            const levelClass = p.level.toLowerCase();
-            const statusClass = p.isActive ? 'on' : 'off';
-            pHtml += `<tr>
-        <td>${esc(p.name)}</td>
-        <td><span class="badge ${levelClass}">${p.level}</span></td>
-        <td>${p.enforcementStage}</td>
-        <td>${p.category}</td>
-        <td><span class="badge ${statusClass}">${p.isActive ? 'ON' : 'OFF'}</span></td>
-        <td>
-          <button class="btn" onclick="togglePolicy('${p.id}')">${p.isActive ? 'Disable' : 'Enable'}</button>
-          <select onchange="setStage('${p.id}', this.value)">
-            ${['pre-exec', 'post-exec', 'review', 'always'].map((s) => `<option value="${s}" ${s === p.enforcementStage ? 'selected' : ''}>${s}</option>`).join('')}
-          </select>
-          <select onchange="setLevel('${p.id}', this.value)">
-            ${['REQUIRED', 'RECOMMENDED', 'OPTIONAL'].map((l) => `<option value="${l}" ${l === p.level ? 'selected' : ''}>${l}</option>`).join('')}
-          </select>
-        </td>
-      </tr>`;
+        // Agents
+        if (data.session && data.session.agents && data.session.agents.length > 0) {
+          document.getElementById('agent-count').textContent = data.session.agents.length;
+          let agentHtml = '<table><tr><th>Name</th><th>Type</th><th>Status</th><th>Task</th><th>Tokens</th><th>Duration</th></tr>';
+          for (const a of data.session.agents) {
+            const statusClass = a.status;
+            const typeClass = a.type;
+            const dur = formatDuration(a.durationMs);
+            agentHtml += `<tr>` +
+              `<td style="font-weight:500">${esc(a.name)}</td>` +
+              `<td><span class="badge ${typeClass}">${a.type}</span></td>` +
+              `<td><span class="badge ${statusClass}">${a.status}</span></td>` +
+              `<td style="color:var(--fg2);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.task)}</td>` +
+              `<td>${fmt(a.tokensUsed)}</td>` +
+              `<td style="color:var(--fg3)">${dur}</td>` +
+              `</tr>`;
           }
-          pHtml += '</table>';
-          document.getElementById('policy-table').innerHTML = pHtml;
-
-          // Stage bars
-          const stages = { 'pre-exec': 0, 'post-exec': 0, review: 0, always: 0 };
-          for (const p of data.policies)
-            stages[p.enforcementStage] = (stages[p.enforcementStage] || 0) + 1;
-          const maxStage = Math.max(...Object.values(stages), 1);
-          let stageHtml = '';
-          for (const [stage, count] of Object.entries(stages)) {
-            const w = Math.round((count / maxStage) * 200);
-            stageHtml += `<div class="bar-container"><span class="bar-label">${stage}</span><div class="bar cyan" style="width:${w}px"></div><span class="bar-value">${count}</span></div>`;
-          }
-          document.getElementById('policy-stages').innerHTML = stageHtml;
+          agentHtml += '</table>';
+          document.getElementById('agents-panel').innerHTML = agentHtml;
         } else {
-          document.getElementById('policy-table').innerHTML =
-            '<div class="empty">No policies configured</div>';
-          document.getElementById('policy-stages').innerHTML = '';
+          document.getElementById('agent-count').textContent = data.coordination?.activeAgents || 0;
+          document.getElementById('agents-panel').innerHTML = '<div class="empty">No agents registered</div>';
+        }
+
+        // Skills
+        if (data.session && data.session.skills && data.session.skills.length > 0) {
+          document.getElementById('skill-count').textContent = data.session.skills.length;
+          let skillHtml = '';
+          for (const s of data.session.skills) {
+            const icon = s.active ? '<span class="badge on">ON</span>' : '<span class="badge off">OFF</span>';
+            skillHtml += `<div class="kv">${icon} <span class="label" style="margin-left:6px">${esc(s.name)}</span><span class="value" style="color:var(--fg3);font-size:11px">${esc(s.source)}</span></div>`;
+          }
+          document.getElementById('skills-panel').innerHTML = skillHtml;
+        } else {
+          document.getElementById('skill-count').textContent = '0';
+          document.getElementById('skills-panel').innerHTML = '<div class="empty">No skills matched</div>';
+        }
+
+        // Patterns
+        if (data.session && data.session.patterns && data.session.patterns.length > 0) {
+          document.getElementById('pattern-count').textContent = data.session.patterns.length;
+          let patHtml = '';
+          for (const p of data.session.patterns) {
+            const icon = p.active ? '<span class="badge on">ON</span>' : '<span class="badge off">OFF</span>';
+            const wPct = Math.round(p.weight * 100);
+            patHtml += `<div class="kv" style="align-items:center">${icon} <span class="label" style="margin-left:6px">${esc(p.name)}</span>` +
+              `<span style="display:flex;align-items:center;gap:4px"><span class="weight-bar"><span class="weight-fill" style="width:${wPct}%"></span></span><span style="color:var(--fg3);font-size:11px">${wPct}%</span></span></div>`;
+          }
+          document.getElementById('patterns-panel').innerHTML = patHtml;
+        } else {
+          document.getElementById('pattern-count').textContent = '0';
+          document.getElementById('patterns-panel').innerHTML = '<div class="empty">No patterns matched</div>';
+        }
+
+        // Deploy batching
+        if (data.session && data.session.deployBatchSummary) {
+          const ds = data.session.deployBatchSummary;
+          // Pipeline visualization
+          const stages = [
+            { label: 'Queued', count: ds.queued, color: 'var(--fg2)' },
+            { label: 'Batched', count: ds.batched, color: 'var(--yellow)' },
+            { label: 'Exec', count: ds.executing, color: 'var(--cyan)' },
+            { label: 'Done', count: ds.done, color: 'var(--green)' },
+            { label: 'Failed', count: ds.failed, color: 'var(--red)' },
+          ];
+          let pipeHtml = '<div class="deploy-pipeline">';
+          for (let i = 0; i < stages.length; i++) {
+            const s = stages[i];
+            pipeHtml += `<div class="deploy-stage" style="border:1px solid ${s.count > 0 ? s.color : 'var(--border)'}">` +
+              `<span class="stage-count" style="color:${s.color}">${s.count}</span>` +
+              `<span class="stage-label">${s.label}</span></div>`;
+            if (i < stages.length - 1) pipeHtml += '<span class="deploy-arrow">&#8594;</span>';
+          }
+          pipeHtml += '</div>';
+          document.getElementById('deploy-pipeline').innerHTML = pipeHtml;
+
+          setText('deploy-total', ds.totalActions);
+          setText('deploy-batches', ds.batchCount);
+          setText('deploy-saved', ds.savedOps);
+        }
+
+        // Deploy actions list
+        if (data.session && data.session.deploys && data.session.deploys.length > 0) {
+          let dHtml = '<table><tr><th>Type</th><th>Target</th><th>Status</th><th>Message</th></tr>';
+          for (const d of data.session.deploys.slice(-10)) {
+            const statusColor = d.status === 'done' ? 'green' : d.status === 'failed' ? 'red' : d.status === 'executing' ? 'cyan' : 'yellow';
+            dHtml += `<tr><td>${d.type}</td><td style="color:var(--cyan)">${esc(d.target)}</td>` +
+              `<td><span class="badge ${d.status}">${d.status}</span></td>` +
+              `<td style="color:var(--fg3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.message)}</td></tr>`;
+          }
+          dHtml += '</table>';
+          document.getElementById('deploy-actions').innerHTML = dHtml;
+        } else {
+          document.getElementById('deploy-actions').innerHTML = '<div class="empty">No deploy actions</div>';
         }
 
         // Performance hot paths
         if (data.performance && data.performance.hotPaths && data.performance.hotPaths.length > 0) {
-          let perfHtml = '<table class="policy-table"><tr><th>Operation</th><th>Avg (ms)</th><th>P95 (ms)</th><th>Calls</th></tr>';
+          let perfHtml = '<table><tr><th>Operation</th><th>Avg (ms)</th><th>P95 (ms)</th><th>Calls</th></tr>';
           for (const hp of data.performance.hotPaths) {
             perfHtml += `<tr><td>${esc(hp.name)}</td><td>${hp.avgMs}</td><td>${hp.p95Ms}</td><td>${hp.count}</td></tr>`;
           }
@@ -545,69 +660,148 @@
           document.getElementById('perf-panel').innerHTML = '<div class="empty">No performance data yet</div>';
         }
 
+        // Policy enforcement summary
+        if (data.session) {
+          document.getElementById('policy-enforcement-count').textContent =
+            `${data.session.policyChecks} checks / ${data.session.policyBlocks} blocks`;
+
+          if (data.session.policyChecks > 0) {
+            const passRate = Math.round(((data.session.policyChecks - data.session.policyBlocks) / data.session.policyChecks) * 100);
+            const blockRate = 100 - passRate;
+            document.getElementById('policy-enforcement-bars').innerHTML =
+              `<div class="gauge"><div class="gauge-bar">` +
+              `<div class="gauge-fill-hit" style="width:${passRate}%"></div>` +
+              `<div class="gauge-fill-miss" style="width:${blockRate}%"></div>` +
+              `</div><span class="gauge-label">${passRate}% pass</span></div>`;
+          }
+        }
+
+        // Policies
+        if (data.policies.length > 0) {
+          let pHtml = '<table><tr><th>Name</th><th>Level</th><th>Stage</th><th>Category</th><th>Status</th><th>Actions</th></tr>';
+          for (const p of data.policies) {
+            const levelClass = p.level.toLowerCase();
+            const statusClass = p.isActive ? 'on' : 'off';
+            pHtml += `<tr>
+              <td>${esc(p.name)}</td>
+              <td><span class="badge ${levelClass}">${p.level}</span></td>
+              <td>${p.enforcementStage}</td>
+              <td>${p.category}</td>
+              <td><span class="badge ${statusClass}">${p.isActive ? 'ON' : 'OFF'}</span></td>
+              <td>
+                <button class="btn" onclick="togglePolicy('${p.id}')">${p.isActive ? 'Disable' : 'Enable'}</button>
+                <select onchange="setStage('${p.id}', this.value)">
+                  ${['pre-exec','post-exec','review','always'].map(s => `<option value="${s}" ${s === p.enforcementStage ? 'selected' : ''}>${s}</option>`).join('')}
+                </select>
+                <select onchange="setLevel('${p.id}', this.value)">
+                  ${['REQUIRED','RECOMMENDED','OPTIONAL'].map(l => `<option value="${l}" ${l === p.level ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+              </td>
+            </tr>`;
+          }
+          pHtml += '</table>';
+          document.getElementById('policy-table').innerHTML = pHtml;
+
+          // Stage bars
+          const stages = {'pre-exec':0,'post-exec':0,'review':0,'always':0};
+          for (const p of data.policies) stages[p.enforcementStage] = (stages[p.enforcementStage] || 0) + 1;
+          const maxStage = Math.max(...Object.values(stages), 1);
+          let stageHtml = '';
+          for (const [stage, count] of Object.entries(stages)) {
+            const w = Math.round((count / maxStage) * 200);
+            stageHtml += `<div class="bar-container"><span class="bar-label">${stage}</span><div class="bar cyan" style="width:${w}px"></div><span class="bar-value">${count}</span></div>`;
+          }
+          document.getElementById('policy-stages').innerHTML = stageHtml;
+        } else {
+          document.getElementById('policy-table').innerHTML = '<div class="empty">No policies configured</div>';
+          document.getElementById('policy-stages').innerHTML = '';
+        }
+
         // Audit trail
         if (data.auditTrail.length > 0) {
           let aHtml = '';
           for (const e of data.auditTrail.slice(0, 15)) {
             const cls = e.allowed ? 'pass' : 'block';
             const icon = e.allowed ? 'PASS' : 'BLOCK';
-            aHtml += `<div class="audit-row"><span class="audit-time">${e.executedAt.slice(0, 19)}</span><span class="audit-icon ${cls}">${icon}</span><span class="audit-op">${esc(e.operation)}</span><span class="audit-reason">${esc(e.reason)}</span></div>`;
+            aHtml += `<div class="audit-row"><span class="audit-time">${e.executedAt.slice(0,19)}</span><span class="audit-icon ${cls}">${icon}</span><span class="audit-op">${esc(e.operation)}</span><span class="audit-reason">${esc(e.reason)}</span></div>`;
           }
           document.getElementById('audit-trail').innerHTML = aHtml;
         } else {
-          document.getElementById('audit-trail').innerHTML =
-            '<div class="empty">No audit entries</div>';
+          document.getElementById('audit-trail').innerHTML = '<div class="empty">No audit entries</div>';
         }
       }
 
-      // API actions
+      // ── Event stream rendering ──
+      function renderEventStream() {
+        const container = document.getElementById('event-stream');
+        const filtered = eventFilter === 'all' ? events : events.filter(e => e.category === eventFilter);
+        const visible = filtered.slice(-100);
+
+        if (visible.length === 0) {
+          container.innerHTML = '<div class="empty">No events matching filter</div>';
+          return;
+        }
+
+        let html = '';
+        for (const e of visible) {
+          const time = e.timestamp.slice(11, 19);
+          const sevIcon = e.severity === 'success' ? '&#10003;' :
+                          e.severity === 'error' ? '&#10007;' :
+                          e.severity === 'warn' ? '&#9888;' : '&#8226;';
+          const sevColor = e.severity === 'success' ? 'var(--green)' :
+                           e.severity === 'error' ? 'var(--red)' :
+                           e.severity === 'warn' ? 'var(--yellow)' : 'var(--fg3)';
+          html += `<div class="event-row">` +
+            `<span class="event-time">${time}</span>` +
+            `<span class="event-cat ${e.category}">${e.category}</span>` +
+            `<span class="event-severity" style="color:${sevColor}">${sevIcon}</span>` +
+            `<span class="event-title">${esc(e.title)}</span>` +
+            `<span class="event-detail">${esc(e.detail || '')}</span>` +
+            `</div>`;
+        }
+        container.innerHTML = html;
+        container.scrollTop = container.scrollHeight;
+      }
+
+      function setEventFilter(filter) {
+        eventFilter = filter;
+        document.querySelectorAll('.filter-tab').forEach(t => {
+          t.classList.toggle('active', t.dataset.filter === filter);
+        });
+        renderEventStream();
+      }
+
+      // ── API actions ──
       async function togglePolicy(id) {
-        try {
-          await fetch(`${API_URL}/api/policy/${id}/toggle`, { method: 'POST' });
-        } catch {}
+        try { await fetch(`${API_URL}/api/policy/${id}/toggle`, { method: 'POST' }); } catch {}
       }
       async function setStage(id, stage) {
-        try {
-          await fetch(`${API_URL}/api/policy/${id}/stage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ stage }),
-          });
-        } catch {}
+        try { await fetch(`${API_URL}/api/policy/${id}/stage`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({stage}) }); } catch {}
       }
       async function setLevel(id, level) {
-        try {
-          await fetch(`${API_URL}/api/policy/${id}/level`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ level }),
-          });
-        } catch {}
+        try { await fetch(`${API_URL}/api/policy/${id}/level`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({level}) }); } catch {}
       }
 
-      // Helpers
-      function setText(id, val) {
-        const el = document.getElementById(id);
-        if (el) el.textContent = String(val);
-      }
+      // ── Helpers ──
+      function setText(id, val) { const el = document.getElementById(id); if (el) el.textContent = String(val); }
       function fmt(n) {
-        return n >= 1000000
-          ? (n / 1000000).toFixed(1) + 'M'
-          : n >= 1000
-            ? (n / 1000).toFixed(1) + 'K'
-            : String(n);
+        if (n === undefined || n === null) return '0';
+        return n >= 1000000 ? (n/1000000).toFixed(1)+'M' : n >= 1000 ? (n/1000).toFixed(1)+'K' : String(n);
       }
-      function capitalize(s) {
-        return s.charAt(0).toUpperCase() + s.slice(1);
-      }
-      function esc(s) {
-        const d = document.createElement('div');
-        d.textContent = s || '';
-        return d.innerHTML;
+      function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+      function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+      function formatDuration(ms) {
+        if (!ms || ms <= 0) return '-';
+        if (ms < 1000) return ms + 'ms';
+        if (ms < 60000) return (ms/1000).toFixed(1) + 's';
+        const m = Math.floor(ms/60000);
+        const s = Math.floor((ms%60000)/1000);
+        return m + 'm ' + s + 's';
       }
 
-      // Start
+      // ── Start connections ──
       connect();
+      connectSSE();
 
       // Fallback: poll if WS fails
       setInterval(async () => {
@@ -616,8 +810,7 @@
           const res = await fetch(API_URL + '/api/dashboard');
           const data = await res.json();
           render(data);
-          document.getElementById('refresh-info').textContent =
-            'Polling - ' + new Date().toLocaleTimeString();
+          document.getElementById('refresh-info').textContent = 'Polling - ' + new Date().toLocaleTimeString();
         } catch {}
       }, 5000);
     </script>

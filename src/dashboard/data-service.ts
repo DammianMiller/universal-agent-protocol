@@ -59,6 +59,11 @@ export interface MemoryData {
     savingsPercent: string;
     totalCalls: number;
   };
+  hitsMisses: {
+    hits: number;
+    misses: number;
+    hitRate: string;
+  };
 }
 
 export interface ModelData {
@@ -105,6 +110,78 @@ export interface PerformanceData {
   hotPaths: Array<{ name: string; avgMs: number; p95Ms: number; count: number }>;
 }
 
+// ── New types for enhanced dashboard ──
+
+export interface AgentDetail {
+  id: string;
+  name: string;
+  type: 'droid' | 'subagent' | 'main';
+  status: string;
+  task: string;
+  tokensUsed: number;
+  durationMs: number;
+}
+
+export interface SkillDetail {
+  name: string;
+  source: string;
+  active: boolean;
+  reason: string;
+}
+
+export interface PatternDetail {
+  id: string;
+  name: string;
+  weight: number;
+  active: boolean;
+  category: string;
+}
+
+export interface DeployDetail {
+  id: string;
+  type: string;
+  target: string;
+  status: string;
+  message: string;
+  batchId: string | null;
+  queuedAt: number;
+  executedAt: number | null;
+}
+
+export interface DeployBatchSummary {
+  totalActions: number;
+  queued: number;
+  batched: number;
+  executing: number;
+  done: number;
+  failed: number;
+  batchCount: number;
+  savedOps: number;
+}
+
+export interface SessionTelemetryData {
+  sessionId: string;
+  uptime: string;
+  tokensUsed: number;
+  tokensSaved: number;
+  toolCalls: number;
+  policyChecks: number;
+  policyBlocks: number;
+  filesBackedUp: number;
+  errors: number;
+  totalCostUsd: number;
+  estimatedCostWithoutUap: number;
+  costSavingsPercent: number;
+  agents: AgentDetail[];
+  skills: SkillDetail[];
+  patterns: PatternDetail[];
+  deploys: DeployDetail[];
+  deployBatchSummary: DeployBatchSummary;
+  stepsCompleted: number;
+  stepsTotal: number;
+  currentStep: string;
+}
+
 export interface DashboardData {
   timestamp: string;
   system: SystemData;
@@ -115,6 +192,96 @@ export interface DashboardData {
   tasks: TaskData;
   coordination: CoordData;
   performance: PerformanceData;
+  session: SessionTelemetryData;
+}
+
+// ── Session Telemetry Access ──
+// We import the getStats function indirectly by accessing the module's internal state
+// through the exported functions. We need a way to read the session stats.
+
+interface SessionStatsSnapshot {
+  sessionId: string;
+  startTime: number;
+  tokensUsed: number;
+  tokensSaved: number;
+  memoryHits: number;
+  memoryMisses: number;
+  toolCalls: number;
+  policyChecks: number;
+  policyBlocks: number;
+  filesBackedUp: number;
+  stepsCompleted: number;
+  stepsTotal: number;
+  currentStep: string;
+  errors: number;
+  totalCostUsd: number;
+  estimatedCostWithoutUap: number;
+  agents: Map<string, {
+    id: string;
+    name: string;
+    type: 'droid' | 'subagent' | 'main';
+    status: string;
+    task: string;
+    startTime: number;
+    endTime: number | null;
+    tokensUsed: number;
+  }>;
+  tasks: Map<string, {
+    id: string;
+    title: string;
+    status: string;
+    assignedTo: string | null;
+    children: string[];
+    parentId: string | null;
+    startTime: number | null;
+    endTime: number | null;
+    depth: number;
+  }>;
+  skills: Map<string, {
+    name: string;
+    source: string;
+    active: boolean;
+    matchedAt: number;
+    reason: string;
+  }>;
+  patterns: Map<string, {
+    id: string;
+    name: string;
+    weight: number;
+    active: boolean;
+    matchedAt: number;
+    category: string;
+  }>;
+  deploys: Map<string, {
+    id: string;
+    type: string;
+    target: string;
+    status: string;
+    queuedAt: number;
+    executedAt: number | null;
+    batchId: string | null;
+    message: string;
+  }>;
+}
+
+// We'll dynamically import the telemetry module to access its internal state
+let _sessionStatsGetter: (() => SessionStatsSnapshot | null) | null = null;
+
+async function getSessionStats(): Promise<SessionStatsSnapshot | null> {
+  if (!_sessionStatsGetter) {
+    try {
+      // Dynamic import to avoid circular dependencies
+      const telemetry = await import('../telemetry/session-telemetry.js');
+      if (typeof telemetry.getSessionSnapshot === 'function') {
+        _sessionStatsGetter = telemetry.getSessionSnapshot as () => SessionStatsSnapshot | null;
+      } else {
+        _sessionStatsGetter = () => null;
+      }
+    } catch {
+      _sessionStatsGetter = () => null;
+    }
+  }
+  return _sessionStatsGetter();
 }
 
 // ── Data Gathering ──
@@ -122,16 +289,20 @@ export interface DashboardData {
 export async function getDashboardData(): Promise<DashboardData> {
   const cwd = process.cwd();
 
+  // Gather session telemetry in parallel with other data
+  const sessionSnapshot = await getSessionStats();
+
   return {
     timestamp: new Date().toISOString(),
     system: getSystemData(cwd),
     policies: getPolicyData(cwd),
     auditTrail: getAuditData(cwd),
-    memory: getMemoryData(cwd),
+    memory: getMemoryData(cwd, sessionSnapshot),
     models: getModelData(cwd),
     tasks: getTaskData(cwd),
     coordination: getCoordData(cwd),
     performance: getPerformanceData(),
+    session: getSessionTelemetryData(sessionSnapshot),
   };
 }
 
@@ -236,7 +407,7 @@ function getAuditData(cwd: string): AuditEntry[] {
   }
 }
 
-function getMemoryData(cwd: string): MemoryData {
+function getMemoryData(cwd: string, sessionSnapshot: SessionStatsSnapshot | null): MemoryData {
   const memDbPath = join(cwd, 'agents/data/memory/short_term.db');
   let l1Entries = 0;
   let l1SizeKB = 0;
@@ -295,6 +466,12 @@ function getMemoryData(cwd: string): MemoryData {
   // Get compression stats first (needed for both cached and fresh paths)
   const stats = globalSessionStats.getSummary();
 
+  // Memory hits/misses from session telemetry
+  const hits = sessionSnapshot?.memoryHits ?? 0;
+  const misses = sessionSnapshot?.memoryMisses ?? 0;
+  const total = hits + misses;
+  const hitRate = total > 0 ? `${Math.round((hits / total) * 100)}%` : '0%';
+
   // Use TTL cache for Qdrant status (Docker doesn't change faster than 30s)
   let l3Status = 'Stopped';
   let l3Uptime = '';
@@ -311,6 +488,7 @@ function getMemoryData(cwd: string): MemoryData {
         savingsPercent: stats.savingsPercent,
         totalCalls: stats.totalCalls,
       },
+      hitsMisses: { hits, misses, hitRate },
     };
   }
 
@@ -342,6 +520,7 @@ function getMemoryData(cwd: string): MemoryData {
       savingsPercent: stats.savingsPercent,
       totalCalls: stats.totalCalls,
     },
+    hitsMisses: { hits, misses, hitRate },
   };
 }
 
@@ -505,4 +684,143 @@ function getPerformanceData(): PerformanceData {
     metrics: allMetrics,
     hotPaths,
   };
+}
+
+/**
+ * Build session telemetry data from the in-memory session stats.
+ */
+function getSessionTelemetryData(snapshot: SessionStatsSnapshot | null): SessionTelemetryData {
+  if (!snapshot) {
+    return {
+      sessionId: '',
+      uptime: '0s',
+      tokensUsed: 0,
+      tokensSaved: 0,
+      toolCalls: 0,
+      policyChecks: 0,
+      policyBlocks: 0,
+      filesBackedUp: 0,
+      errors: 0,
+      totalCostUsd: 0,
+      estimatedCostWithoutUap: 0,
+      costSavingsPercent: 0,
+      agents: [],
+      skills: [],
+      patterns: [],
+      deploys: [],
+      deployBatchSummary: {
+        totalActions: 0,
+        queued: 0,
+        batched: 0,
+        executing: 0,
+        done: 0,
+        failed: 0,
+        batchCount: 0,
+        savedOps: 0,
+      },
+      stepsCompleted: 0,
+      stepsTotal: 0,
+      currentStep: '',
+    };
+  }
+
+  const uptimeMs = Date.now() - snapshot.startTime;
+  const uptime = formatUptime(uptimeMs);
+
+  // Agents
+  const agents: AgentDetail[] = [...snapshot.agents.values()].map((a) => ({
+    id: a.id,
+    name: a.name,
+    type: a.type,
+    status: a.status,
+    task: a.task,
+    tokensUsed: a.tokensUsed,
+    durationMs: a.endTime ? a.endTime - a.startTime : Date.now() - a.startTime,
+  }));
+
+  // Skills
+  const skills: SkillDetail[] = [...snapshot.skills.values()].map((s) => ({
+    name: s.name,
+    source: s.source,
+    active: s.active,
+    reason: s.reason,
+  }));
+
+  // Patterns
+  const patterns: PatternDetail[] = [...snapshot.patterns.values()].map((p) => ({
+    id: p.id,
+    name: p.name,
+    weight: p.weight,
+    active: p.active,
+    category: p.category,
+  }));
+
+  // Deploys
+  const deployValues = [...snapshot.deploys.values()];
+  const deploys: DeployDetail[] = deployValues.map((d) => ({
+    id: d.id,
+    type: d.type,
+    target: d.target,
+    status: d.status,
+    message: d.message,
+    batchId: d.batchId,
+    queuedAt: d.queuedAt,
+    executedAt: d.executedAt,
+  }));
+
+  // Deploy batch summary
+  const queued = deployValues.filter((a) => a.status === 'queued').length;
+  const batched = deployValues.filter((a) => a.status === 'batched').length;
+  const executing = deployValues.filter((a) => a.status === 'executing').length;
+  const done = deployValues.filter((a) => a.status === 'done').length;
+  const failed = deployValues.filter((a) => a.status === 'failed').length;
+  const batchIds = new Set(deployValues.map((a) => a.batchId).filter(Boolean));
+  const savedOps = deployValues.length > 0 ? deployValues.length - batchIds.size : 0;
+
+  // Cost savings
+  const savedUsd = snapshot.estimatedCostWithoutUap - snapshot.totalCostUsd;
+  const costSavingsPercent =
+    snapshot.estimatedCostWithoutUap > 0
+      ? Math.round((savedUsd / snapshot.estimatedCostWithoutUap) * 100)
+      : 0;
+
+  return {
+    sessionId: snapshot.sessionId,
+    uptime,
+    tokensUsed: snapshot.tokensUsed,
+    tokensSaved: snapshot.tokensSaved,
+    toolCalls: snapshot.toolCalls,
+    policyChecks: snapshot.policyChecks,
+    policyBlocks: snapshot.policyBlocks,
+    filesBackedUp: snapshot.filesBackedUp,
+    errors: snapshot.errors,
+    totalCostUsd: snapshot.totalCostUsd,
+    estimatedCostWithoutUap: snapshot.estimatedCostWithoutUap,
+    costSavingsPercent,
+    agents,
+    skills,
+    patterns,
+    deploys,
+    deployBatchSummary: {
+      totalActions: deployValues.length,
+      queued,
+      batched,
+      executing,
+      done,
+      failed,
+      batchCount: batchIds.size,
+      savedOps,
+    },
+    stepsCompleted: snapshot.stepsCompleted,
+    stepsTotal: snapshot.stepsTotal,
+    currentStep: snapshot.currentStep,
+  };
+}
+
+function formatUptime(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const mins = Math.floor(ms / 60000);
+  const secs = Math.floor((ms % 60000) / 1000);
+  return `${mins}m ${secs}s`;
 }
