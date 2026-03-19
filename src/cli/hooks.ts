@@ -71,7 +71,16 @@ function copyHookScripts(targetHooksDir: string): void {
     console.log(chalk.dim(`  Created ${targetHooksDir}`));
   }
 
-  const hookFiles = ['session-start.sh', 'pre-compact.sh'];
+  const hookFiles = [
+    'session-start.sh',
+    'pre-compact.sh',
+    'pre-tool-use-edit-write.sh',
+    'pre-tool-use-bash.sh',
+    'post-tool-use-edit-write.sh',
+    'post-compact.sh',
+    'stop.sh',
+    'session-end.sh',
+  ];
   for (const file of hookFiles) {
     const src = join(templateHooksDir, file);
     const dest = join(targetHooksDir, file);
@@ -127,8 +136,33 @@ async function installClaudeHooks(cwd: string): Promise<void> {
     SessionStart: {
       hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
     },
+    PreToolUse: [
+      {
+        matcher: 'Edit|Write',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-tool-use-edit-write.sh' }],
+      },
+      {
+        matcher: 'Bash',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-tool-use-bash.sh' }],
+      },
+    ],
+    PostToolUse: [
+      {
+        matcher: 'Edit|Write',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' }],
+      },
+    ],
     PreCompact: {
       hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-compact.sh' }],
+    },
+    PostCompact: {
+      hooks: [{ type: 'command', command: 'bash .claude/hooks/post-compact.sh' }],
+    },
+    Stop: {
+      hooks: [{ type: 'command', command: 'bash .claude/hooks/stop.sh' }],
+    },
+    SessionEnd: {
+      hooks: [{ type: 'command', command: 'bash .claude/hooks/session-end.sh' }],
     },
   };
 
@@ -168,8 +202,39 @@ async function installFactoryHooks(cwd: string): Promise<void> {
         { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/session-start.sh' },
       ],
     },
+    PreToolUse: [
+      {
+        matcher: 'Edit|Write',
+        hooks: [
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-tool-use-edit-write.sh' },
+        ],
+      },
+      {
+        matcher: 'Bash',
+        hooks: [
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-tool-use-bash.sh' },
+        ],
+      },
+    ],
+    PostToolUse: [
+      {
+        matcher: 'Edit|Write',
+        hooks: [
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/post-tool-use-edit-write.sh' },
+        ],
+      },
+    ],
     PreCompact: {
       hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-compact.sh' }],
+    },
+    PostCompact: {
+      hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/post-compact.sh' }],
+    },
+    Stop: {
+      hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/stop.sh' }],
+    },
+    SessionEnd: {
+      hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/session-end.sh' }],
     },
   };
 
@@ -207,7 +272,17 @@ async function installCursorHooks(cwd: string): Promise<void> {
   config.hooks = {
     ...existingHooks,
     sessionStart: [{ command: '.cursor/hooks/session-start.sh' }],
+    preToolUse: [
+      { matcher: 'Edit|Write', command: '.cursor/hooks/pre-tool-use-edit-write.sh' },
+      { matcher: 'Bash', command: '.cursor/hooks/pre-tool-use-bash.sh' },
+    ],
+    postToolUse: [
+      { matcher: 'Edit|Write', command: '.cursor/hooks/post-tool-use-edit-write.sh' },
+    ],
     preCompact: [{ command: '.cursor/hooks/pre-compact.sh' }],
+    postCompact: [{ command: '.cursor/hooks/post-compact.sh' }],
+    stop: [{ command: '.cursor/hooks/stop.sh' }],
+    sessionEnd: [{ command: '.cursor/hooks/session-end.sh' }],
   };
   config.version = 1;
 
@@ -242,8 +317,33 @@ async function installVscodeHooks(cwd: string): Promise<void> {
     SessionStart: {
       hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
     },
+    PreToolUse: [
+      {
+        matcher: 'Edit|Write',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-tool-use-edit-write.sh' }],
+      },
+      {
+        matcher: 'Bash',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-tool-use-bash.sh' }],
+      },
+    ],
+    PostToolUse: [
+      {
+        matcher: 'Edit|Write',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' }],
+      },
+    ],
     PreCompact: {
       hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-compact.sh' }],
+    },
+    PostCompact: {
+      hooks: [{ type: 'command', command: 'bash .claude/hooks/post-compact.sh' }],
+    },
+    Stop: {
+      hooks: [{ type: 'command', command: 'bash .claude/hooks/stop.sh' }],
+    },
+    SessionEnd: {
+      hooks: [{ type: 'command', command: 'bash .claude/hooks/session-end.sh' }],
     },
   };
 
@@ -382,6 +482,17 @@ async function installCodexHooks(cwd: string): Promise<void> {
     '```',
     'bash .codex/hooks/pre-compact.sh',
     '```',
+    '',
+    '## Enforcement Hooks',
+    '',
+    'The following enforcement hooks are installed and run automatically:',
+    '',
+    '- **pre-tool-use-edit-write.sh** - Blocks edits outside worktree directories',
+    '- **pre-tool-use-bash.sh** - Blocks dangerous commands (force push, terraform apply, etc)',
+    '- **post-tool-use-edit-write.sh** - Runs build gate + backup reminder after edits',
+    '- **post-compact.sh** - Re-injects policy awareness after context compaction',
+    '- **stop.sh** - Completion gate checklist + session cleanup',
+    '- **session-end.sh** - Agent deregistration + backup retention',
     '',
     '## Memory System',
     '',
@@ -770,9 +881,14 @@ async function installOmpHooks(cwd: string): Promise<void> {
   mkdirSync(hooksPre, { recursive: true });
   mkdirSync(hooksPost, { recursive: true });
 
-  // Copy hook scripts
-  const hookFiles = ['session-start.sh', 'pre-compact.sh'];
-  for (const file of hookFiles) {
+  // Copy hook scripts to pre/ directory
+  const preHookFiles = [
+    'session-start.sh',
+    'pre-compact.sh',
+    'pre-tool-use-edit-write.sh',
+    'pre-tool-use-bash.sh',
+  ];
+  for (const file of preHookFiles) {
     const src = join(getTemplateHooksDir(), file);
     const dest = join(hooksPre, file);
     if (existsSync(src)) {
@@ -784,47 +900,23 @@ async function installOmpHooks(cwd: string): Promise<void> {
     }
   }
 
-  // Copy post-session hook
-  const postHook = join(getTemplateHooksDir(), 'session-end.sh');
-  if (existsSync(postHook)) {
-    copyFileSync(postHook, join(hooksPost, 'session-end.sh'));
-    chmodSync(join(hooksPost, 'session-end.sh'), 0o755);
-    console.log(chalk.green('  + .uap/omp/hooks/post/session-end.sh'));
-  } else {
-    // Generate default post-session hook
-    const sessionEndContent =
-      [
-        '#!/usr/bin/env bash',
-        '# UAP Post-Session Hook for Oh-My-Pi',
-        '# Fails safely - never blocks the agent.',
-        'set -euo pipefail',
-        '',
-        'PROJECT_DIR="${UAP_PROJECT_DIR:-.}"',
-        'DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"',
-        'COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"',
-        '',
-        'if [ ! -f "$DB_PATH" ]; then',
-        '  exit 0',
-        'fi',
-        '',
-        'TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")',
-        '',
-        'sqlite3 "$DB_PATH" "',
-        '  INSERT OR IGNORE INTO memories (timestamp, type, content)',
-        "  VALUES ('$TIMESTAMP', 'action', '[post-session] Session completed at $TIMESTAMP');",
-        '" 2>/dev/null || true',
-        '',
-        '# Clean up agent registrations',
-        'if [ -f "$COORD_DB" ]; then',
-        '  sqlite3 "$COORD_DB" "',
-        "    UPDATE agent_registry SET status='completed'",
-        "      WHERE status='active' AND last_heartbeat >= datetime('now','-10 minutes');",
-        '  " 2>/dev/null || true',
-        'fi',
-      ].join('\n') + '\n';
-    writeFileSync(join(hooksPost, 'session-end.sh'), sessionEndContent);
-    chmodSync(join(hooksPost, 'session-end.sh'), 0o755);
-    console.log(chalk.green('  + .uap/omp/hooks/post/session-end.sh (generated)'));
+  // Copy hook scripts to post/ directory
+  const postHookFiles = [
+    'post-tool-use-edit-write.sh',
+    'post-compact.sh',
+    'stop.sh',
+    'session-end.sh',
+  ];
+  for (const file of postHookFiles) {
+    const src = join(getTemplateHooksDir(), file);
+    const dest = join(hooksPost, file);
+    if (existsSync(src)) {
+      copyFileSync(src, dest);
+      chmodSync(dest, 0o755);
+      console.log(chalk.green(`  + .uap/omp/hooks/post/${file}`));
+    } else {
+      console.log(chalk.yellow(`  - .uap/omp/hooks/post/${file} (template not found)`));
+    }
   }
 
   // Create settings.json for omp integration
@@ -837,8 +929,15 @@ async function installOmpHooks(cwd: string): Promise<void> {
       worktreeIsolation: true,
       taskTracking: true,
       agentCoordination: true,
+      policyEnforcement: true,
       hooks: {
         preSession: '.uap/omp/hooks/pre/session-start.sh',
+        preToolUseEditWrite: '.uap/omp/hooks/pre/pre-tool-use-edit-write.sh',
+        preToolUseBash: '.uap/omp/hooks/pre/pre-tool-use-bash.sh',
+        preCompact: '.uap/omp/hooks/pre/pre-compact.sh',
+        postToolUseEditWrite: '.uap/omp/hooks/post/post-tool-use-edit-write.sh',
+        postCompact: '.uap/omp/hooks/post/post-compact.sh',
+        stop: '.uap/omp/hooks/post/stop.sh',
         postSession: '.uap/omp/hooks/post/session-end.sh',
       },
       modelRouting: {
@@ -897,6 +996,12 @@ interface HookFileInfo {
 const HOOK_FILES: HookFileInfo[] = [
   { name: 'session-start.sh', event: 'SessionStart', desc: 'Injects recent memory context' },
   { name: 'pre-compact.sh', event: 'PreCompact', desc: 'Flushes compaction marker to memory' },
+  { name: 'pre-tool-use-edit-write.sh', event: 'PreToolUse', desc: 'Worktree file guard (BLOCKS non-worktree edits)' },
+  { name: 'pre-tool-use-bash.sh', event: 'PreToolUse', desc: 'Dangerous command guard (BLOCKS terraform apply, force push, etc)' },
+  { name: 'post-tool-use-edit-write.sh', event: 'PostToolUse', desc: 'Build gate + backup reminder after edits' },
+  { name: 'post-compact.sh', event: 'PostCompact', desc: 'Re-injects policy awareness after compaction' },
+  { name: 'stop.sh', event: 'Stop', desc: 'Completion gate checklist + session cleanup' },
+  { name: 'session-end.sh', event: 'SessionEnd', desc: 'Agent deregistration + backup retention' },
 ];
 
 function showScriptStatus(hooksDir: string): void {
