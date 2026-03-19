@@ -9,8 +9,6 @@
  */
 
 import { Command } from 'commander';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
 import chalk from 'chalk';
 import {
   createRouter,
@@ -22,21 +20,9 @@ import {
 } from '../models/index.js';
 import { AgentContextConfig, MultiModelSchema } from '../types/config.js';
 
-/**
- * Load UAP config from project root
- */
-function loadConfig(): AgentContextConfig | null {
-  const configPath = join(process.cwd(), '.uap.json');
-  if (!existsSync(configPath)) {
-    return null;
-  }
-  try {
-    const content = readFileSync(configPath, 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
-}
+// Config loading delegated to shared utility
+import { loadUapConfig } from '../utils/config-loader.js';
+const loadConfig = () => loadUapConfig();
 
 /**
  * Get multi-model config with defaults
@@ -390,8 +376,8 @@ async function selectCommand(options: { save?: boolean }): Promise<void> {
   }
   console.log();
 
-  const inquirerModule = await import('inquirer');
-  const inquirer = (inquirerModule as any).default ?? inquirerModule;
+  const { ensureInquirer } = await import('../utils/lazy-imports.js');
+  const inquirer = await ensureInquirer();
 
   const answers: Record<string, string> = {};
 
@@ -467,17 +453,19 @@ async function selectCommand(options: { save?: boolean }): Promise<void> {
         reviewer: answers.reviewer || answers.planner,
         fallback: answers.fallback,
       },
-      routingStrategy: answers.strategy as any,
+      routingStrategy: answers.strategy as
+        | 'cost-optimized'
+        | 'performance-first'
+        | 'balanced'
+        | 'adaptive',
     };
 
     // Save to .uap.json if requested
     if (options.save) {
       try {
-        const uapConfigPath = join(process.cwd(), '.uap.json');
-        if (existsSync(uapConfigPath)) {
-          const uapConfig = JSON.parse(readFileSync(uapConfigPath, 'utf-8'));
-          uapConfig.multiModel = updatedConfig;
-          writeFileSync(uapConfigPath, JSON.stringify(uapConfig, null, 2));
+        const { modifyUapConfig, findUapConfigPath } = await import('../utils/config-loader.js');
+        if (findUapConfigPath()) {
+          modifyUapConfig(process.cwd(), (cfg) => ({ ...cfg, multiModel: updatedConfig }));
           console.log(chalk.green('\n✓ Configuration saved to .uap.json'));
         } else {
           console.warn('No .uap.json found. Use --save flag after init.');

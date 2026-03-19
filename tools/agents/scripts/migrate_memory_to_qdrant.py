@@ -25,7 +25,7 @@ try:
 except ImportError as e:
     print(f"Error: Missing required packages: {e}")
     print("\nPlease install dependencies:")
-    print("  cd /home/cogtek/dev/miller-tech/universal-agent-memory")
+    print("  cd /home/cogtek/dev/miller-tech/universal-agent-protocol")
     print("  agents/.venv/bin/pip install sentence-transformers qdrant-client")
     print("\nThen run:")
     print("  agents/.venv/bin/python agents/scripts/migrate_memory_to_qdrant.py")

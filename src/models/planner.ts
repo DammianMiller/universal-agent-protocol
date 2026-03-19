@@ -29,6 +29,7 @@ export interface PlannerOptions {
   enableParallelization?: boolean;
   estimateTokenBudget?: boolean;
   enableAutoValidation?: boolean;
+  maxPlanningTokens?: number;
 }
 
 const DEFAULT_OPTIONS: PlannerOptions = {
@@ -462,5 +463,16 @@ export function createPlanner(
   config: MultiModelConfig,
   options?: PlannerOptions
 ): TaskPlanner {
-  return new TaskPlanner(router, config, options);
+  // Bridge config.plannerSettings into PlannerOptions (config takes precedence over defaults)
+  const bridgedOptions: PlannerOptions = {
+    ...options,
+  };
+  if (config.plannerSettings) {
+    if (config.plannerSettings.enableDecomposition === false) bridgedOptions.maxSubtasks = 1; // Disable decomposition by limiting to 1 subtask
+    if (config.plannerSettings.maxPlanningTokens !== undefined) {
+      bridgedOptions.estimateTokenBudget = true;
+      bridgedOptions.maxPlanningTokens = config.plannerSettings.maxPlanningTokens;
+    }
+  }
+  return new TaskPlanner(router, config, bridgedOptions);
 }

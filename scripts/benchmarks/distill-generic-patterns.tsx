@@ -61,7 +61,7 @@ const DISTILLED_PATTERNS = {
 - **Path Consistency**: Use absolute paths for reliability
 - **Existence Verification**: Check files before operations
 - **Error Handling**: Handle missing files and I/O errors gracefully
-- **Edge Cases**: Consider empty files, special characters`
+- **Edge Cases**: Consider empty files, special characters`,
 };
 
 console.log('='.repeat(80));
@@ -143,5 +143,8 @@ export function getGenericContext(category: string): string {
 }
 `;
 
-writeFileSync('/home/cogtek/dev/miller-tech/universal-agent-memory/src/memory/generic-uap-patterns.ts', typescriptCode);
+writeFileSync(
+  '/home/cogtek/dev/miller-tech/universal-agent-protocol/src/memory/generic-uap-patterns.ts',
+  typescriptCode
+);
 console.log('\n✅ Saved to: src/memory/generic-uap-patterns.ts');

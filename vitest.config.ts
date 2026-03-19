@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    include: ['test/**/*.test.ts', 'benchmark-env/src/**/*.test.ts'],
+    include: ['test/**/*.test.ts'],
     exclude: ['**/.worktrees/**', 'test/benchmarks/**', 'node_modules/**', 'benchmark-results/**'],
     watch: false,
     coverage: {
@@ -14,17 +14,16 @@ export default defineConfig({
         'src/**/index.ts',
         'src/uap_harbor/**',
         'benchmark-results/**',
-        // Exclude experimental/unstable features
+        // Exclude experimental/unstable features from coverage
         'src/policies/**/*.ts',
-        'src/types/**/*.ts',
         'src/telemetry/**/*.ts',
         'src/generators/**/*.ts',
       ],
       thresholds: {
-        statements: 30,
-        branches: 30,
-        functions: 30,
-        lines: 30,
+        statements: 50,
+        branches: 50,
+        functions: 50,
+        lines: 50,
       },
     },
   },

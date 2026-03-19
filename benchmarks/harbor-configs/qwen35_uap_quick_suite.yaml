@@ -25,7 +25,7 @@ run_options:
 # Environment variables for UAP integration
 environment_variables:
   USE_UAP: 'true'
-  PROJECT_ROOT: '/home/cogtek/dev/miller-tech/universal-agent-memory'
+  PROJECT_ROOT: '/home/cogtek/dev/miller-tech/universal-agent-protocol'
   UAP_MEMORY_ENABLED: 'true'
   UAP_PATTERNS_RAG_ENABLED: 'true'
   QDRANT_ENDPOINT: 'localhost:6333'

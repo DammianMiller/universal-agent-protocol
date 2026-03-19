@@ -57,10 +57,9 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
     // Try serverless Qdrant manager if configured in .uap.json
     let serverlessStarted = false;
     try {
-      const uapConfigRaw = existsSync(join(cwd, '.uap.json'))
-        ? JSON.parse(readFileSync(join(cwd, '.uap.json'), 'utf-8'))
-        : null;
-      const serverlessConfig = uapConfigRaw?.memory?.longTerm?.serverless;
+      const { loadUapConfig: loadCfg } = await import('../utils/config-loader.js');
+      const uapConfigParsed = loadCfg(cwd);
+      const serverlessConfig = uapConfigParsed?.memory?.longTerm?.serverless;
       if (serverlessConfig?.enabled) {
         const { initServerlessQdrant } = await import('../memory/serverless-qdrant.js');
         const manager = initServerlessQdrant(serverlessConfig);

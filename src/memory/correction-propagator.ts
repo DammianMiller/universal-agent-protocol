@@ -82,12 +82,16 @@ export function propagateCorrection(
 
   try {
     // 1. Search in memories (working memory / L1)
-    const memRows = db.prepare(`
+    const memRows = db
+      .prepare(
+        `
       SELECT id, content FROM memories
       WHERE LOWER(content) LIKE ?
       ORDER BY id DESC
       LIMIT 5
-    `).all(`%${searchLower}%`) as Array<{ id: number; content: string }>;
+    `
+      )
+      .all(`%${searchLower}%`) as Array<{ id: number; content: string }>;
 
     for (const row of memRows) {
       result.originalFound = true;
@@ -95,15 +99,19 @@ export function propagateCorrection(
       result.originalContent = result.originalContent || row.content;
 
       // Record superseded entry
-      db.prepare(`
+      db.prepare(
+        `
         INSERT INTO superseded_entries (tier, original_entry_id, original_content, corrected_content, superseded_date, reason)
         VALUES ('memories', ?, ?, ?, ?, ?)
-      `).run(row.id, row.content, correctedContent, now, reason);
+      `
+      ).run(row.id, row.content, correctedContent, now, reason);
 
       // Update the memory in-place (prepend [corrected] marker)
-      db.prepare(`
+      db.prepare(
+        `
         UPDATE memories SET content = ? WHERE id = ?
-      `).run(`[corrected ${today}] ${correctedContent}`, row.id);
+      `
+      ).run(`[corrected ${today}] ${correctedContent}`, row.id);
 
       result.supersededCount++;
     }
@@ -112,24 +120,32 @@ export function propagateCorrection(
     }
 
     // 2. Search in session_memories (L2)
-    const sessRows = db.prepare(`
+    const sessRows = db
+      .prepare(
+        `
       SELECT id, content FROM session_memories
       WHERE LOWER(content) LIKE ?
       ORDER BY id DESC
       LIMIT 5
-    `).all(`%${searchLower}%`) as Array<{ id: number; content: string }>;
+    `
+      )
+      .all(`%${searchLower}%`) as Array<{ id: number; content: string }>;
 
     for (const row of sessRows) {
       result.originalFound = true;
 
-      db.prepare(`
+      db.prepare(
+        `
         INSERT INTO superseded_entries (tier, original_entry_id, original_content, corrected_content, superseded_date, reason)
         VALUES ('session_memories', ?, ?, ?, ?, ?)
-      `).run(row.id, row.content, correctedContent, now, reason);
+      `
+      ).run(row.id, row.content, correctedContent, now, reason);
 
-      db.prepare(`
+      db.prepare(
+        `
         UPDATE session_memories SET content = ? WHERE id = ?
-      `).run(`[corrected ${today}] ${correctedContent}`, row.id);
+      `
+      ).run(`[corrected ${today}] ${correctedContent}`, row.id);
 
       result.supersededCount++;
     }
@@ -138,28 +154,27 @@ export function propagateCorrection(
     }
 
     // 3. Always write the correction to the daily log
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO daily_log (date, timestamp, content, type, gate_score)
       VALUES (?, ?, ?, 'correction', 1.0)
-    `).run(today, now, `[CORRECTION] ${reason}: ${correctedContent}`);
+    `
+    ).run(today, now, `[CORRECTION] ${reason}: ${correctedContent}`);
     result.tiersUpdated.push('daily_log');
 
     // 4. Write corrected version as new working memory entry
-    const insertResult = db.prepare(`
+    const insertResult = db
+      .prepare(
+        `
       INSERT INTO memories (timestamp, type, content, project_id, importance)
       VALUES (?, 'observation', ?, 'default', 8)
-    `).run(now, correctedContent);
+    `
+      )
+      .run(now, correctedContent);
     result.correctedEntryId = Number(insertResult.lastInsertRowid);
 
-    // Update FTS if available
-    try {
-      db.prepare(`
-        INSERT INTO memories_fts(rowid, content, type)
-        VALUES (?, ?, 'observation')
-      `).run(result.correctedEntryId, correctedContent);
-    } catch {
-      // FTS not available
-    }
+    // FTS5 index is automatically updated via AFTER INSERT trigger in schema.ts
+    // (no manual insert needed — the trigger handles synchronization)
   } finally {
     db.close();
   }
@@ -170,22 +185,23 @@ export function propagateCorrection(
 /**
  * Get the superseded history for audit trail.
  */
-export function getSupersededHistory(
-  dbPath: string,
-  limit: number = 20
-): SupersededEntry[] {
+export function getSupersededHistory(dbPath: string, limit: number = 20): SupersededEntry[] {
   if (!existsSync(dbPath)) return [];
 
   const db = new Database(dbPath);
   ensureSupersededSchema(db);
 
   try {
-    const rows = db.prepare(`
+    const rows = db
+      .prepare(
+        `
       SELECT id, tier, original_entry_id, original_content, superseded_date, reason
       FROM superseded_entries
       ORDER BY id DESC
       LIMIT ?
-    `).all(limit) as Array<{
+    `
+      )
+      .all(limit) as Array<{
       id: number;
       tier: string;
       original_entry_id: number;
@@ -194,7 +210,7 @@ export function getSupersededHistory(
       reason: string;
     }>;
 
-    return rows.map(r => ({
+    return rows.map((r) => ({
       id: r.id,
       tier: r.tier,
       originalContent: r.original_content,

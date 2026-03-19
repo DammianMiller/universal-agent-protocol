@@ -1,7 +1,12 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import inquirer from 'inquirer';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+// inquirer lazy-loaded via shared utility (saves ~500ms startup)
+import { ensureInquirer as _ensureInquirer } from '../utils/lazy-imports.js';
+let inquirer: typeof import('inquirer').default;
+async function ensureInquirer(): Promise<void> {
+  inquirer = await _ensureInquirer();
+}
+import { existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -725,11 +730,10 @@ async function executeSetup(selections: WizardSelections): Promise<void> {
   // ── Step 2: Patch .uap.json with wizard-specific settings ──────────
   const configSpinner = ora('Applying wizard configuration...').start();
   try {
-    const configPath = join(cwd, '.uap.json');
-    let config: Record<string, unknown> = {};
-    if (existsSync(configPath)) {
-      config = JSON.parse(readFileSync(configPath, 'utf-8'));
-    }
+    const { loadUapConfigRaw: loadRaw, findUapConfigPath } =
+      await import('../utils/config-loader.js');
+    const configPath = findUapConfigPath(cwd) || join(cwd, '.uap.json');
+    let config: Record<string, unknown> = loadRaw(cwd) ?? {};
 
     // Memory settings
     const memory = (config.memory || {}) as Record<string, unknown>;
@@ -983,6 +987,7 @@ function printFinalInstructions(selections: WizardSelections): void {
 // ── Main entry point ───────────────────────────────────────────────────
 
 export async function runSetupWizard(): Promise<void> {
+  await ensureInquirer();
   printBanner();
 
   // Walk through each section

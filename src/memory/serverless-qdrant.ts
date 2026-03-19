@@ -1,6 +1,7 @@
 import { execSync, spawn } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
 import type { QdrantServerlessConfig } from '../types/config.js';
+import { cosineSimilarity as sharedCosineSimilarity } from '../utils/string-similarity.js';
 
 /**
  * Serverless Qdrant manager for cost-optimized vector storage.
@@ -388,19 +389,10 @@ export class ServerlessQdrantManager {
 
   /**
    * Calculate cosine similarity between two vectors.
+   * Delegates to shared utility to avoid duplicate implementations.
    */
   private cosineSimilarity(a: number[], b: number[]): number {
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-      dotProduct += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    return sharedCosineSimilarity(a, b);
   }
 
   /**

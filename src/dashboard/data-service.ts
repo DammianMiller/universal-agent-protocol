@@ -6,6 +6,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from 'fs';
+import { loadUapConfig } from '../utils/config-loader.js';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
@@ -419,22 +420,18 @@ function getMemoryData(cwd: string): MemoryData {
 }
 
 function getModelData(cwd: string): ModelData {
-  const configPath = join(cwd, '.uap.json');
   let roles = { planner: 'opus-4.6', executor: 'qwen35', reviewer: 'opus-4.6', fallback: 'qwen35' };
   let strategy = 'balanced';
 
-  if (existsSync(configPath)) {
-    try {
-      const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-      if (raw.multiModel?.roles) {
-        roles = { ...roles, ...raw.multiModel.roles };
-      }
-      if (raw.multiModel?.routingStrategy) {
-        strategy = raw.multiModel.routingStrategy;
-      }
-    } catch {
-      /* ignore */
+  try {
+    const cfg = loadUapConfig(cwd);
+    if (cfg?.multiModel) {
+      const mm = cfg.multiModel as Record<string, unknown>;
+      if (mm.roles) roles = { ...roles, ...(mm.roles as Record<string, string>) };
+      if (mm.routingStrategy) strategy = mm.routingStrategy as string;
     }
+  } catch {
+    // Config load failure is non-fatal — use defaults
   }
 
   // Session usage from analytics DB

@@ -104,9 +104,9 @@ export async function dashboardCommand(
   }
 }
 
-async function serveDashboard(_options: DashboardOptions): Promise<void> {
+async function serveDashboard(options: DashboardOptions): Promise<void> {
   const { startDashboardServer } = await import('../dashboard/server.js');
-  const server = startDashboardServer({ port: 3847 });
+  const server = startDashboardServer({ port: (options as { port?: number }).port || 3847 });
 
   // Keep alive until Ctrl+C
   process.on('SIGINT', () => {
@@ -1450,7 +1450,7 @@ async function showSessionDashboard(options: DashboardOptions): Promise<void> {
       const allPolicies = await policyMgr.getAllPolicies();
       if (allPolicies.length > 0) {
         for (const policy of allPolicies) {
-          const stageLabel = (policy as any).enforcementStage || 'pre-exec';
+          const stageLabel = policy.enforcementStage || 'pre-exec';
           const levelColor =
             policy.level === 'REQUIRED'
               ? chalk.red
@@ -1527,7 +1527,7 @@ async function showPoliciesDashboard(options: DashboardOptions): Promise<void> {
         `  ${'─'.repeat(28)} ${'─'.repeat(14)} ${'─'.repeat(12)} ${'─'.repeat(10)} ${'─'.repeat(6)}`
       );
       for (const policy of allPolicies) {
-        const stage = (policy as any).enforcementStage || 'pre-exec';
+        const stage = policy.enforcementStage || 'pre-exec';
         const status = policy.isActive ? chalk.green('ON') : chalk.red('OFF');
         const levelColor =
           policy.level === 'REQUIRED'
@@ -1550,7 +1550,7 @@ async function showPoliciesDashboard(options: DashboardOptions): Promise<void> {
       always: 0,
     };
     for (const p of allPolicies) {
-      const stage = (p as any).enforcementStage || 'pre-exec';
+      const stage = p.enforcementStage || 'pre-exec';
       stageGroups[stage] = (stageGroups[stage] || 0) + 1;
     }
 
@@ -1628,20 +1628,18 @@ async function showModelsDashboard(options: DashboardOptions): Promise<void> {
 
   try {
     // Load UAP config
-    const configPath = join(process.cwd(), '.uap.json');
+    const { loadUapConfig: loadCfg } = await import('../utils/config-loader.js');
     let mmConfig: MultiModelConfig = {
       enabled: true,
       models: ['opus-4.6', 'qwen35'],
       roles: { planner: 'opus-4.6', executor: 'qwen35', fallback: 'qwen35' },
       routingStrategy: 'balanced',
     };
-    if (existsSync(configPath)) {
-      try {
-        const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-        if (raw.multiModel) mmConfig = raw.multiModel;
-      } catch {
-        /* use defaults */
-      }
+    try {
+      const cfg = loadCfg();
+      if (cfg?.multiModel) mmConfig = cfg.multiModel as typeof mmConfig;
+    } catch {
+      /* use defaults */
     }
 
     const router = new ModelRouter(mmConfig);

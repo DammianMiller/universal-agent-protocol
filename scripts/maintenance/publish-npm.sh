@@ -43,7 +43,7 @@ echo ""
 # Get workflow ID
 echo "🔄 Fetching workflow information..."
 WORKFLOW_ID=$(gh api "/repos/$REPO/actions/workflows" \
-  --jq '.workflows[] | select(.name == "Build, Publish & Deploy") | .id')
+  --jq '.workflows[] | select(.name == "Build, Test & Publish to NPM") | .id')
 
 if [ -z "$WORKFLOW_ID" ]; then
     echo "❌ Could not find workflow: $WORKFLOW_ID"

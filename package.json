@@ -28,7 +28,7 @@
     "install:web": "bash scripts/setup/install-web.sh",
     "install:desktop": "bash scripts/setup/install-desktop.sh",
     "install:cloakbrowser": "tsx scripts/setup/install-cloakbrowser.ts",
-    "postinstall": "echo '\n✨ Run: npx universal-agent-protocol init --interactive'",
+    "postinstall": "echo '\n✨ Run: npx @miller-tech/uap init --interactive'",
     "version:patch": "bash scripts/version-bump.sh patch",
     "version:minor": "bash scripts/version-bump.sh minor",
     "version:major": "bash scripts/version-bump.sh major",

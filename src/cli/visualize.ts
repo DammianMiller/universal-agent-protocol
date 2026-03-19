@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 
-const BRAILLE_DOTS = [' ', '⠄', '⠤', '⠴', '⠶', '⠷', '⠿', '⡿', '⣿'];
+// BRAILLE_DOTS removed — was only used by dead sparkline function
 
 export interface BarSegment {
   value: number;
@@ -13,13 +13,6 @@ export interface TableColumn {
   header: string;
   width?: number;
   align?: 'left' | 'right' | 'center';
-  color?: (text: string) => string;
-}
-
-export interface SparklineOptions {
-  width?: number;
-  min?: number;
-  max?: number;
   color?: (text: string) => string;
 }
 
@@ -114,38 +107,6 @@ export function horizontalBarChart(
   }
 
   return lines;
-}
-
-export function sparkline(values: number[], options: SparklineOptions = {}): string {
-  const { width, color = chalk.green } = options;
-  const data = width && values.length > width ? downsample(values, width) : values;
-
-  if (data.length === 0) return '';
-
-  const min = options.min ?? Math.min(...data);
-  const max = options.max ?? Math.max(...data);
-  const range = max - min || 1;
-
-  return color(
-    data
-      .map((v) => {
-        const idx = Math.round(((v - min) / range) * (BRAILLE_DOTS.length - 1));
-        return BRAILLE_DOTS[Math.max(0, Math.min(idx, BRAILLE_DOTS.length - 1))];
-      })
-      .join('')
-  );
-}
-
-function downsample(values: number[], targetLen: number): number[] {
-  const result: number[] = [];
-  const step = values.length / targetLen;
-  for (let i = 0; i < targetLen; i++) {
-    const start = Math.floor(i * step);
-    const end = Math.floor((i + 1) * step);
-    const slice = values.slice(start, end);
-    result.push(slice.reduce((a, b) => a + b, 0) / slice.length);
-  }
-  return result;
 }
 
 /** Safely coerce any value to a display string without producing "[object Object]" */
@@ -315,19 +276,6 @@ export function keyValue(
   });
 }
 
-export function percentage(value: number, total: number): string {
-  if (total === 0) return chalk.dim('N/A');
-  const pct = Math.round((value / total) * 100);
-  const color = pct >= 80 ? chalk.green : pct >= 50 ? chalk.yellow : chalk.red;
-  return color(`${pct}%`);
-}
-
-export function trend(current: number, previous: number): string {
-  if (current > previous) return chalk.green(`▲ +${current - previous}`);
-  if (current < previous) return chalk.red(`▼ -${previous - current}`);
-  return chalk.dim('─ 0');
-}
-
 export function miniGauge(value: number, max: number, width: number = 10): string {
   const ratio = Math.min(value / Math.max(max, 1), 1);
   const filled = Math.round(ratio * width);
@@ -443,28 +391,4 @@ export function inlineProgressSummary(stats: {
   return lines;
 }
 
-export function heatmapRow(
-  label: string,
-  values: number[],
-  options: { max?: number; labelWidth?: number } = {}
-): string {
-  const { labelWidth = 12 } = options;
-  const max = options.max ?? Math.max(...values, 1);
-  const colors = [
-    chalk.bgGray.dim,
-    chalk.bgGreen.dim,
-    chalk.bgGreenBright.dim,
-    chalk.bgYellow.dim,
-    chalk.bgYellowBright.dim,
-    chalk.bgRedBright.dim,
-  ];
-
-  const cells = values
-    .map((v) => {
-      const idx = Math.min(Math.floor((v / max) * (colors.length - 1)), colors.length - 1);
-      return colors[idx](' ');
-    })
-    .join('');
-
-  return `  ${chalk.dim(label.padEnd(labelWidth))} ${cells}`;
-}
+// heatmapRow removed — was exported but never imported by any consumer

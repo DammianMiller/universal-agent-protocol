@@ -302,8 +302,14 @@ export class TaskExecutor {
     const monitor = getPerformanceMonitor();
     const startTime = Date.now();
 
-    // Build prompt
-    const prompt = this.buildPrompt(subtask, context);
+    // Enforce per-model rate limits from profile if configured
+    await this.enforceRateLimit(model.id);
+
+    // Build prompt (with optional tool_call_batching suffix from model profile)
+    const prompt = this.buildPromptWithProfile(subtask, context, model);
+
+    // Calculate temperature from model profile (supports dynamic decay per retry)
+    const temperature = this.getProfileTemperature(model.id, context.previousAttempts.length);
 
     // Execute with hard timeout enforcement via withTimeout utility
     const stepTimeout = this.options.stepTimeout || 120_000;
@@ -311,9 +317,12 @@ export class TaskExecutor {
       this.client.complete(model, prompt, {
         maxTokens: this.getMaxTokens(subtask),
         timeout: stepTimeout,
+        temperature,
       }),
       stepTimeout,
-      { errorMessage: `Subtask "${subtask.title}" timed out after ${stepTimeout}ms on model ${model.id}` }
+      {
+        errorMessage: `Subtask "${subtask.title}" timed out after ${stepTimeout}ms on model ${model.id}`,
+      }
     );
 
     const duration = Date.now() - startTime;
@@ -413,6 +422,111 @@ export class TaskExecutor {
     }
 
     return parts.join('\n');
+  }
+
+  /**
+   * Build prompt with optional tool_call_batching suffix from model profile.
+   */
+  private buildPromptWithProfile(
+    subtask: Subtask,
+    context: ExecutionContext,
+    model: ModelConfig
+  ): string {
+    let prompt = this.buildPrompt(subtask, context);
+
+    // Append tool_call_batching system prompt suffix if profile enables it
+    try {
+      const profile = this.getModelProfile(model.id);
+      if (profile?.tool_call_batching?.enabled && profile.tool_call_batching.system_prompt_suffix) {
+        prompt += '\n\n' + profile.tool_call_batching.system_prompt_suffix;
+      }
+    } catch {
+      // Profile loading is non-fatal
+    }
+
+    return prompt;
+  }
+
+  /**
+   * Get temperature from model profile with optional dynamic decay per retry.
+   * Returns undefined if no profile is configured (uses model default).
+   */
+  private getProfileTemperature(modelId: string, retryCount: number): number | undefined {
+    try {
+      const profile = this.getModelProfile(modelId);
+      if (!profile) return undefined;
+
+      const baseTemp = profile.temperature ?? 0.6;
+
+      if (profile.dynamic_temperature?.enabled) {
+        const decay = profile.dynamic_temperature.decay ?? 0.1;
+        const floor = profile.dynamic_temperature.floor ?? 0.1;
+        return Math.max(floor, baseTemp - decay * retryCount);
+      }
+
+      return baseTemp;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Load model profile by ID. Caches the result.
+   */
+  private _rateLimitState: Map<string, { windowStart: number; count: number }> = new Map();
+
+  /**
+   * Enforce per-model rate limits from profile configuration.
+   * Waits if the rate limit window is exceeded.
+   */
+  private async enforceRateLimit(modelId: string): Promise<void> {
+    const profile = this.getModelProfile(modelId);
+    const rpm = profile?.rate_limits?.requests_per_minute;
+    if (!rpm) return;
+
+    const now = Date.now();
+    const state = this._rateLimitState.get(modelId) || { windowStart: now, count: 0 };
+
+    // Reset window if expired
+    if (now - state.windowStart >= 60_000) {
+      state.windowStart = now;
+      state.count = 0;
+    }
+
+    // Wait if at limit
+    if (state.count >= rpm) {
+      const waitMs = 60_000 - (now - state.windowStart);
+      if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+      state.windowStart = Date.now();
+      state.count = 0;
+    }
+
+    state.count++;
+    this._rateLimitState.set(modelId, state);
+  }
+
+  private _profileCache: Map<string, import('./profile-loader.js').ModelProfile | null> = new Map();
+  private _profileLoaderPromise: Promise<typeof import('./profile-loader.js')> | null = null;
+  private getModelProfile(modelId: string): import('./profile-loader.js').ModelProfile | null {
+    if (this._profileCache.has(modelId)) return this._profileCache.get(modelId)!;
+    // Trigger async load for next call (first call returns null, subsequent calls use cache)
+    if (!this._profileLoaderPromise) {
+      this._profileLoaderPromise = import('./profile-loader.js')
+        .then((mod) => {
+          // Pre-populate cache for all known model IDs
+          for (const m of this.router.getAllModels?.() || []) {
+            const id = m.id;
+            const p = mod.getActiveModelProfile(id) ?? null;
+            this._profileCache.set(id, p);
+          }
+          // Also load the requested model
+          const p = mod.getActiveModelProfile(modelId) ?? null;
+          this._profileCache.set(modelId, p);
+          return mod;
+        })
+        .catch(() => null as unknown as typeof import('./profile-loader.js'));
+    }
+    return this._profileCache.get(modelId) ?? null;
   }
 
   /**
@@ -552,7 +666,19 @@ export function createExecutor(
   client: ModelClient,
   options?: ExecutorOptions
 ): TaskExecutor {
-  return new TaskExecutor(router, config, client, options);
+  // Bridge config.executorSettings into ExecutorOptions (config takes precedence over defaults)
+  const bridgedOptions: ExecutorOptions = {
+    ...options,
+  };
+  if (config.executorSettings) {
+    if (config.executorSettings.maxRetries !== undefined)
+      bridgedOptions.maxRetries = config.executorSettings.maxRetries;
+    if (config.executorSettings.stepTimeout !== undefined)
+      bridgedOptions.stepTimeout = config.executorSettings.stepTimeout;
+    if (config.executorSettings.retryWithFallback !== undefined)
+      bridgedOptions.enableFallback = config.executorSettings.retryWithFallback;
+  }
+  return new TaskExecutor(router, config, client, bridgedOptions);
 }
 
 /**

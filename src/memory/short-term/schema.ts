@@ -7,7 +7,7 @@ export function ensureShortTermSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS memories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('action', 'observation', 'thought', 'goal')),
+      type TEXT NOT NULL CHECK(type IN ('action', 'observation', 'thought', 'goal', 'lesson', 'decision')),
       content TEXT NOT NULL,
       project_id TEXT NOT NULL DEFAULT 'default',
       importance INTEGER NOT NULL DEFAULT 5
@@ -37,17 +37,36 @@ export function ensureShortTermSchema(db: Database.Database): void {
   db.pragma('mmap_size = 268435456');
   db.pragma('cache_size = -64000');
 
-  // Create FTS5 virtual table for full-text search
+  // Create FTS5 virtual table for full-text search (external content table synced via triggers)
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       content,
       type,
-      content_rowid=id,
+      content='memories',
+      content_rowid='id',
       tokenize='porter unicode61'
     );
+
+    -- Triggers to keep FTS5 index in sync with memories table
+    CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+      INSERT INTO memories_fts(rowid, content, type)
+      VALUES (new.id, new.content, new.type);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, content, type)
+      VALUES ('delete', old.id, old.content, old.type);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, content, type)
+      VALUES ('delete', old.id, old.content, old.type);
+      INSERT INTO memories_fts(rowid, content, type)
+      VALUES (new.id, new.content, new.type);
+    END;
   `);
 
-  // Populate FTS if empty but memories exist
+  // Populate FTS if empty but memories exist (initial backfill)
   const ftsCount = (db.prepare('SELECT COUNT(*) as c FROM memories_fts').get() as { c: number }).c;
   const memCount = (db.prepare('SELECT COUNT(*) as c FROM memories').get() as { c: number }).c;
   if (ftsCount === 0 && memCount > 0) {
@@ -75,14 +94,33 @@ export function ensureSessionSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_session_id_importance ON session_memories(session_id, importance DESC);
   `);
 
-  // Create FTS5 for session memories
+  // Create FTS5 for session memories (external content table synced via triggers)
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS session_memories_fts USING fts5(
       content,
       type,
-      content_rowid=id,
+      content='session_memories',
+      content_rowid='id',
       tokenize='porter unicode61'
     );
+
+    -- Triggers to keep FTS5 index in sync with session_memories table
+    CREATE TRIGGER IF NOT EXISTS session_memories_ai AFTER INSERT ON session_memories BEGIN
+      INSERT INTO session_memories_fts(rowid, content, type)
+      VALUES (new.id, new.content, new.type);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS session_memories_ad AFTER DELETE ON session_memories BEGIN
+      INSERT INTO session_memories_fts(session_memories_fts, rowid, content, type)
+      VALUES ('delete', old.id, old.content, old.type);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS session_memories_au AFTER UPDATE ON session_memories BEGIN
+      INSERT INTO session_memories_fts(session_memories_fts, rowid, content, type)
+      VALUES ('delete', old.id, old.content, old.type);
+      INSERT INTO session_memories_fts(rowid, content, type)
+      VALUES (new.id, new.content, new.type);
+    END;
   `);
 }
 

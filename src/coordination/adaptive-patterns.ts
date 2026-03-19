@@ -110,7 +110,12 @@ export class AdaptivePatternEngine {
 
     const rows = this.db
       .prepare('SELECT pattern_id, task_category, uses, successes FROM pattern_outcomes')
-      .all() as Array<{ pattern_id: string; task_category: string; uses: number; successes: number }>;
+      .all() as Array<{
+      pattern_id: string;
+      task_category: string;
+      uses: number;
+      successes: number;
+    }>;
 
     for (const row of rows) {
       if (!this.outcomes.has(row.pattern_id)) {
@@ -250,9 +255,12 @@ let instance: AdaptivePatternEngine | null = null;
 export function getAdaptivePatternEngine(dbPath?: string): AdaptivePatternEngine {
   if (!instance) {
     instance = new AdaptivePatternEngine();
-    if (dbPath) {
-      instance.attachDb(dbPath);
-    }
+    // Default to the coordination DB path if none provided
+    const resolvedPath = dbPath || './agents/data/coordination/coordination.db';
+    instance.attachDb(resolvedPath);
+  } else if (dbPath && !instance['db']) {
+    // If instance exists but has no DB attached, attach now
+    instance.attachDb(dbPath);
   }
   return instance;
 }

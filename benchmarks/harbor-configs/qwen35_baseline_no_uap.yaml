@@ -23,7 +23,7 @@ run_options:
 # NO UAP environment variables - baseline configuration
 environment_variables:
   USE_UAP: 'false'
-  PROJECT_ROOT: '/home/cogtek/dev/miller-tech/universal-agent-memory'
+  PROJECT_ROOT: '/home/cogtek/dev/miller-tech/universal-agent-protocol'
 
 resources:
   n_cpus: 2

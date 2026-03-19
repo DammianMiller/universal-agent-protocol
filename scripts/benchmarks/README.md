@@ -8,7 +8,7 @@ This directory contains all necessary configurations to run full containerized b
 
 ```bash
 # Run the comprehensive benchmark scripts we already executed successfully
-cd /home/cogtek/dev/miller-tech/universal-agent-memory
+cd /home/cogtek/dev/miller-tech/universal-agent-protocol
 
 # UAP 3.0+OpenCode configuration
 npx tsx scripts/benchmark-qwen35-uap-3.0-opencode.tsx > results_uap.log 2>&1 &
