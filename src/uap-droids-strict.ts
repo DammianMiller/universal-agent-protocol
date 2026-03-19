@@ -113,7 +113,10 @@ export async function discoverDroids(projectDir: string): Promise<DroidMeta[]> {
   return droids;
 }
 
-// Option #2A: Decoder-First Gate Validator
+// Re-export the full decoder-first gate from tasks/decoder-gate.ts
+export { validateDecoderFirst as validateDecoderFirstFull } from './tasks/decoder-gate.js';
+
+// Option #2A: Simplified Decoder-First Gate Validator (lightweight, no ambiguity detection)
 interface ValidationResult {
   valid: boolean;
   errors?: string[];
@@ -121,7 +124,7 @@ interface ValidationResult {
 
 export async function validateDecoderFirst(
   droidName: string,
-  _taskContext: any = {}
+  taskContext: { availableTools?: string[] } = {}
 ): Promise<ValidationResult> {
   const errors: string[] = [];
 
@@ -139,10 +142,21 @@ export async function validateDecoderFirst(
 
     // Step 1-3 validation already done by discoverDroids
 
-    const hasReadTool = true;
+    // Verify Read tool is accessible from the provided tool registry.
+    // If no tool list is provided, check for common file-reading tools
+    // in the environment (e.g., the `cat` command as a proxy).
+    const hasReadTool = taskContext.availableTools
+      ? taskContext.availableTools.some(
+          (t) =>
+            t.toLowerCase() === 'read' ||
+            t.toLowerCase() === 'readfile' ||
+            t.toLowerCase() === 'cat' ||
+            t.toLowerCase().includes('read')
+        )
+      : await checkReadToolAvailable();
 
     if (!hasReadTool) {
-      errors.push('Required "Read" tool not accessible');
+      errors.push('Required "Read" tool not accessible — provide availableTools in taskContext');
     }
 
     return {
@@ -154,6 +168,28 @@ export async function validateDecoderFirst(
       valid: false,
       errors: [`Decoder gate validation error: ${String(err)}`],
     };
+  }
+}
+
+/**
+ * Check if a file-reading tool is available in the environment.
+ * Uses `cat --version` as a lightweight proxy for file-read capability.
+ */
+async function checkReadToolAvailable(): Promise<boolean> {
+  try {
+    const { execFileSync } = await import('child_process');
+    execFileSync('cat', ['--version'], { stdio: 'pipe', timeout: 2000 });
+    return true;
+  } catch {
+    // cat not available — still allow if we're in a Node.js environment
+    // where fs.readFile is always available
+    try {
+      const { accessSync, constants } = await import('fs');
+      accessSync('.', constants.R_OK);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 

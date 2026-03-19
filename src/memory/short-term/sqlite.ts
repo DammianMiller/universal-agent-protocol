@@ -3,7 +3,15 @@ import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { ensureShortTermSchema } from './schema.js';
 import { getSpeculativeCache } from '../speculative-cache.js';
-import type { ShortTermMemoryBackend } from './factory.js';
+/** Backend interface (previously in factory.ts, inlined after dead code removal) */
+export interface ShortTermMemoryBackend {
+  store(type: 'action' | 'observation' | 'thought' | 'goal', content: string, importance?: number): Promise<void>;
+  storeBatch?(entries: Array<{ type: 'action' | 'observation' | 'thought' | 'goal'; content: string; timestamp?: string; importance?: number }>): Promise<void>;
+  getRecent(limit?: number): Promise<Array<{ timestamp: string; type: string; content: string; importance?: number }>>;
+  query(searchTerm: string, limit?: number): Promise<Array<{ timestamp: string; type: string; content: string; importance?: number }>>;
+  clear(): Promise<void>;
+  close?(): Promise<void>;
+}
 
 interface ShortTermMemory {
   id?: number;

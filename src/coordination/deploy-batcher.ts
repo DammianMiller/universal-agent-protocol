@@ -48,7 +48,7 @@ const DEFAULT_DYNAMIC_WINDOWS: DynamicBatchWindows = {
 
 export class DeployBatcher {
   private db: Database.Database;
-  private dynamicWindows: DynamicBatchWindows;
+  private dynamicWindows!: DynamicBatchWindows;
   private maxBatchSize: number;
   private dryRun: boolean;
   private parallelExecution: boolean;
@@ -60,6 +60,7 @@ export class DeployBatcher {
     this.db = CoordinationDatabase.getInstance(dbPath).getDatabase();
 
     // Support both legacy single window and new dynamic windows
+    // T7: Also check .uap.json timeOptimization.batchWindows for project-level config
     if (config.dynamicWindows) {
       this.dynamicWindows = { ...DEFAULT_DYNAMIC_WINDOWS, ...config.dynamicWindows };
     } else if (config.batchWindowMs) {
@@ -72,7 +73,24 @@ export class DeployBatcher {
         deploy: config.batchWindowMs,
       };
     } else {
-      this.dynamicWindows = DEFAULT_DYNAMIC_WINDOWS;
+      // Try loading from .uap.json timeOptimization config
+      let loaded = false;
+      try {
+        const configPath = join(process.cwd(), '.uap.json');
+        if (existsSync(configPath)) {
+          const uapConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+          const bw = uapConfig?.timeOptimization?.batchWindows;
+          if (bw && typeof bw === 'object') {
+            this.dynamicWindows = { ...DEFAULT_DYNAMIC_WINDOWS, ...bw };
+            loaded = true;
+          }
+        }
+      } catch {
+        // Config load failure is non-fatal
+      }
+      if (!loaded) {
+        this.dynamicWindows = DEFAULT_DYNAMIC_WINDOWS;
+      }
     }
 
     this.maxBatchSize = config.maxBatchSize || 20;
@@ -87,14 +105,12 @@ export class DeployBatcher {
     >;
     for (const [key, value] of windowEntries) {
       if (value < 1000) {
-        console.warn(
-          `DeployBatcher: window '${key}' is ${value}ms, which is below the minimum recommended 1000ms`
-        );
+        // Validation warning - below minimum recommended window
+        void `DeployBatcher: window '${key}' is ${value}ms, below minimum 1000ms`;
       }
       if (value > 300000) {
-        console.warn(
-          `DeployBatcher: window '${key}' is ${value}ms, which exceeds the maximum recommended 300000ms`
-        );
+        // Validation warning - exceeds maximum recommended window
+        void `DeployBatcher: window '${key}' is ${value}ms, exceeds maximum 300000ms`;
       }
     }
   }

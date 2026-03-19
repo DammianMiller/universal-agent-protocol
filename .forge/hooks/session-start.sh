@@ -1,1 +1,1 @@
-../../templates/hooks/session-start.sh
+../../.factory/hooks/session-start.sh

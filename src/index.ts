@@ -112,18 +112,7 @@ export {
   initServerlessQdrant,
 } from './memory/serverless-qdrant.js';
 
-// Multi-view memory with ENGRAM typing
-export {
-  MultiViewMemoryManager,
-  getMultiViewMemoryManager,
-  classifyENGRAMType,
-  extractTemporalBucket,
-} from './memory/multi-view-memory.js';
-export type {
-  ENGRAMMemoryType,
-  MultiViewMemory,
-  MultiViewIndex,
-} from './memory/multi-view-memory.js';
+// Multi-view memory removed — was export-only with zero internal consumers
 
 // Entropy-aware compression
 export { calculateEntropy, calculateInformationDensity } from './memory/semantic-compression.js';
@@ -148,9 +137,7 @@ export type { CorrectionResult, SupersededEntry } from './memory/correction-prop
 export { runMaintenance, getHealthSummary } from './memory/memory-maintenance.js';
 export type { MaintenanceResult, MaintenanceConfig } from './memory/memory-maintenance.js';
 
-// Agent-Scoped Memory (per-agent isolation)
-export { AgentScopedMemory, ensureAgentScopedSchema } from './memory/agent-scoped-memory.js';
-export type { AgentMemoryPartition, AgentScopedEntry } from './memory/agent-scoped-memory.js';
+// Agent-scoped memory removed — was export-only with zero internal consumers
 
 // String similarity utilities
 export {
@@ -261,3 +248,99 @@ export * from './telemetry/index.js';
 
 // Policy Enforcement
 export * from './policies/index.js';
+
+// Browser automation (CloakBrowser wrapper)
+export { WebBrowser, createWebBrowser } from './browser/index.js';
+
+// Dashboard (data service + server)
+export {
+  getDashboardData,
+  startDashboardServer,
+} from './dashboard/index.js';
+export type {
+  DashboardData,
+  PolicyData,
+  MemoryData,
+  ModelData,
+  TaskData,
+  CoordData,
+  SystemData,
+  AuditEntry,
+  DashboardServerOptions,
+} from './dashboard/index.js';
+
+// Predictive Memory (prefetch + learning)
+export {
+  PredictiveMemoryService,
+  getPredictiveMemoryService,
+} from './memory/predictive-memory.js';
+
+// Context Pruner (token-budget-aware pruning)
+export { ContextPruner } from './memory/context-pruner.js';
+
+// Ambiguity Detector (P37 pattern)
+export { detectAmbiguity, formatAmbiguityForContext } from './memory/ambiguity-detector.js';
+export type { AmbiguityResult } from './memory/ambiguity-detector.js';
+
+// Models - additional exports not in selective re-export above
+export {
+  PlanValidator,
+  createPlanValidator,
+  createUnifiedRouter,
+  getExecutionProfile,
+  detectExecutionProfile,
+  getExecutionConfig,
+  listExecutionProfiles,
+  ModelAnalytics,
+  getModelAnalytics,
+} from './models/index.js';
+export type {
+  PlanValidationConfig,
+  PlanValidationResult,
+  ExecutionProfile,
+  ModelMetrics,
+  CostBreakdown,
+  SessionModelUsage,
+} from './models/index.js';
+
+// Task Event Bus
+export { TaskEventBus, getTaskEventBus } from './tasks/event-bus.js';
+export type { TaskEvent, TaskEventHandler } from './tasks/event-bus.js';
+
+// Utility exports (previously dead code, now wired up)
+export { AdaptiveCache, createPatternCache } from './utils/adaptive-cache.js';
+export type {
+  CacheEntry as AdaptiveCacheEntry,
+  AdaptiveCacheOptions,
+} from './utils/adaptive-cache.js';
+export { RateLimiter } from './utils/rate-limiter.js';
+export type { RateLimiterConfig } from './utils/rate-limiter.js';
+export {
+  PerformanceMonitor,
+  getPerformanceMonitor,
+  monitorFunction,
+} from './utils/performance-monitor.js';
+export type { PerformanceMetrics } from './utils/performance-monitor.js';
+export { retry, withTimeout, parallelWithFallback } from './utils/concurrency.js';
+export { concurrentMap, concurrentMapSettled } from './utils/concurrency-pool.js';
+
+// Knowledge Graph (L4 memory)
+export { KnowledgeGraph } from './memory/knowledge-graph.js';
+export type { Entity, Relationship, GraphQueryResult } from './memory/knowledge-graph.js';
+
+// Structured Logger
+export { createLogger, logger, setLogLevel, getLogLevel } from './utils/logger.js';
+export type { Logger, LogLevel } from './utils/logger.js';
+
+// Memory Consolidation (auto-start)
+export { autoStartConsolidation } from './memory/memory-consolidator.js';
+
+// Execution Profiles (with config loading)
+export {
+  loadAgentExecutionOverrides,
+  getExecutionConfigWithProjectOverrides,
+} from './models/execution-profiles.js';
+
+// Task feedback loop
+export { recordTaskFeedback } from './memory/dynamic-retrieval.js';
+export type { TaskOutcome as DynamicTaskOutcome } from './memory/dynamic-retrieval.js';

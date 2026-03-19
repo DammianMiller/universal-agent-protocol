@@ -18,6 +18,9 @@ import Database from 'better-sqlite3';
 import { summarizeMemories, compressMemoryEntry } from './context-compressor.js';
 import { getEmbeddingService } from './embeddings.js';
 import { createSemanticUnit } from './semantic-compression.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('memory-consolidator');
 
 export interface ConsolidationConfig {
   triggerThreshold: number;
@@ -442,13 +445,15 @@ export class MemoryConsolidator {
         // Apply quality decay
         await this.applyQualityDecay();
       } catch (error) {
-        console.error('[MemoryConsolidator] Background error:', error);
+        log.error('Background consolidation error:', error);
       }
     }, this.config.backgroundIntervalMs);
+    // Prevent blocking Node.js process exit
+    if (this.backgroundInterval && (this.backgroundInterval as NodeJS.Timeout).unref) {
+      (this.backgroundInterval as NodeJS.Timeout).unref();
+    }
 
-    console.log(
-      `[MemoryConsolidator] Background consolidation started (interval: ${this.config.backgroundIntervalMs}ms)`
-    );
+    log.info(`Background consolidation started (interval: ${this.config.backgroundIntervalMs}ms)`);
   }
 
   /**
@@ -630,4 +635,26 @@ export function getMemoryConsolidator(config?: Partial<ConsolidationConfig>): Me
     globalConsolidator = new MemoryConsolidator(config);
   }
   return globalConsolidator;
+}
+
+/**
+ * Initialize and auto-start background consolidation if a memory DB exists.
+ * Safe to call multiple times -- will not start duplicate intervals.
+ * Call this from session-start hooks or CLI setup.
+ */
+export function autoStartConsolidation(
+  dbPath?: string,
+  config?: Partial<ConsolidationConfig>
+): boolean {
+  const path = dbPath || 'agents/data/memory/short_term.db';
+  if (!existsSync(path)) return false;
+
+  try {
+    const consolidator = getMemoryConsolidator(config);
+    consolidator.initialize(path);
+    consolidator.startBackgroundConsolidation();
+    return true;
+  } catch {
+    return false;
+  }
 }

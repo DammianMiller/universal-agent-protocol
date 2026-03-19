@@ -157,6 +157,8 @@ export class AdaptiveCache<K, V> {
     this.evictionInterval = setInterval(() => {
       this.evict();
     }, 60000); // Run every minute
+    // Prevent blocking Node.js process exit
+    if (this.evictionInterval.unref) this.evictionInterval.unref();
   }
 
   /**
@@ -182,14 +184,4 @@ export function createPatternCache(maxEntries: number = 100): AdaptiveCache<stri
   });
 }
 
-/**
- * Create a cache instance for short-term query results
- */
-export function createQueryCache(maxEntries: number = 50): AdaptiveCache<string, any> {
-  return new AdaptiveCache({
-    maxEntries,
-    defaultTTL: 60000, // 1 minute
-    hotThreshold: 5,
-    coldEvictionRatio: 0.7,
-  });
-}
+

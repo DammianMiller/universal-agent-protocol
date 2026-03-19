@@ -7,6 +7,8 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { AdaptiveCache } from '../utils/adaptive-cache.js';
+import { getAdaptivePatternEngine } from './adaptive-patterns.js';
 
 export interface PatternDefinition {
   id: string | number;
@@ -20,9 +22,17 @@ export interface PatternDefinition {
 export class PatternRouter {
   private patterns: Map<string, PatternDefinition>;
   private loadedFromPath?: string;
+  /** Cache for matchPatterns results — avoids re-scanning all patterns on repeated queries */
+  private matchCache: AdaptiveCache<string, PatternDefinition[]>;
 
   constructor() {
     this.patterns = new Map();
+    this.matchCache = new AdaptiveCache({
+      maxEntries: 200,
+      defaultTTL: 300_000, // 5 minutes
+      hotThreshold: 5,
+      coldEvictionRatio: 0.5,
+    });
   }
 
   /**
@@ -65,10 +75,16 @@ export class PatternRouter {
   }
 
   /**
-   * Match patterns based on keywords or task description
+   * Match patterns based on keywords or task description.
+   * Results are cached with adaptive TTL to avoid re-scanning on repeated queries.
    */
   matchPatterns(description: string): PatternDefinition[] {
     const normalized = description.toLowerCase();
+
+    // Check adaptive cache first
+    const cached = this.matchCache.get(normalized);
+    if (cached) return cached;
+
     const matches: PatternDefinition[] = [];
 
     for (const [_id, pattern] of this.patterns) {
@@ -79,14 +95,18 @@ export class PatternRouter {
       }
     }
 
+    // Store in cache (priority based on match count)
+    this.matchCache.set(normalized, matches, matches.length);
+
     return matches;
   }
 
   /**
    * Get enforcement checklist for a task description.
    * Always includes critical patterns (Output Existence, Decoder-First) regardless of keywords.
+   * Sorts by historical success rate from AdaptivePatternEngine when data is available.
    */
-  getEnforcementChecklist(description: string): PatternDefinition[] {
+  getEnforcementChecklist(description: string, taskCategory?: string): PatternDefinition[] {
     const matched = this.matchPatterns(description);
 
     // Always include critical patterns regardless of keywords
@@ -98,6 +118,24 @@ export class PatternRouter {
         if (pattern && !matched.includes(pattern)) {
           matched.push(pattern);
         }
+      }
+    }
+
+    // Sort by historical success rate from AdaptivePatternEngine
+    if (taskCategory) {
+      try {
+        const engine = getAdaptivePatternEngine();
+        const adapted = engine.getAdaptedPatterns(taskCategory);
+        if (adapted.length > 0) {
+          const rateMap = new Map(adapted.map(a => [a.id, a.successRate]));
+          matched.sort((a, b) => {
+            const rateA = rateMap.get(String(a.id)) ?? 0.5;
+            const rateB = rateMap.get(String(b.id)) ?? 0.5;
+            return rateB - rateA; // Higher success rate first
+          });
+        }
+      } catch {
+        // AdaptivePatternEngine not available -- use default order
       }
     }
 

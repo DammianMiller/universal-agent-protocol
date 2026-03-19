@@ -14,6 +14,9 @@
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { concurrentMap } from '../utils/concurrency-pool.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('embeddings');
 
 export interface EmbeddingProvider {
   name: string;
@@ -759,7 +762,7 @@ export class EmbeddingService {
     for (const provider of this.providers) {
       if (await provider.isAvailable()) {
         this.provider = provider;
-        console.log(
+        log.info(
           `[EmbeddingService] Using provider: ${provider.name} (${provider.dimensions} dims)`
         );
         return;
@@ -767,7 +770,7 @@ export class EmbeddingService {
     }
     // Fallback to TF-IDF which is always available
     this.provider = this.providers[this.providers.length - 1];
-    console.log(`[EmbeddingService] Fallback to TF-IDF provider`);
+    log.info('Fallback to TF-IDF provider');
   }
 
   async embed(text: string): Promise<number[]> {
