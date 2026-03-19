@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.0 (2026-03-19)
+
+- feat: 4-phase optimization sweep — wire unwired code, add persistence, implement HTTP/SSE transport
+
+
 ## v1.7.1 (2026-03-19)
 
 - fix: restore execa and cloakbrowser to dependencies (runtime imports in setup-wizard and web-browser)
