@@ -66,6 +66,8 @@ jobs:
         run: |
           echo "Publishing @miller-tech/uap@${{ steps.get_version.outputs.VERSION }} to NPM..."
           npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         
       - name: Output publication status
         if: always()

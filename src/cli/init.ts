@@ -7,6 +7,8 @@ import { generateClaudeMd } from '../generators/claude-md.js';
 import { mergeClaudeMd } from '../utils/merge-claude-md.js';
 import { initializeMemoryDatabase } from '../memory/short-term/schema.js';
 import { CoordinationDatabase, getDefaultCoordinationDbPath } from '../coordination/database.js';
+import { initializeCacheFromDb, autoWarmCache } from '../memory/speculative-cache.js';
+import { ServerlessQdrantManager } from '../memory/serverless-qdrant.js';
 import { generateScripts, ensurePythonVenv, findPython } from './patterns.js';
 import { isQdrantReachable } from './memory.js';
 import type { AgentContextConfig, Platform } from '../types/index.js';
@@ -98,7 +100,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   // Build configuration - merge with existing to preserve user customizations
   const config: AgentContextConfig = {
     $schema:
-      'https://raw.githubusercontent.com/DammianMiller/universal-agent-memory/main/schema.json',
+      'https://raw.githubusercontent.com/DammianMiller/universal-agent-protocol/main/schema.json',
     version: '1.0.0',
     project: {
       name: existingConfig.project?.name || analysis.projectName,
@@ -228,6 +230,18 @@ export async function initCommand(options: InitOptions): Promise<void> {
       const fullDbPath = join(cwd, dbPath);
       initializeMemoryDatabase(fullDbPath);
       memorySpinner.succeed('Memory database initialized');
+
+      // Wire speculative cache startup (OPT A1: was exported but never called)
+      const cacheSpinner = ora('Warming speculative cache...').start();
+      try {
+        const { entriesLoaded } = await initializeCacheFromDb(fullDbPath);
+        const warmed = autoWarmCache();
+        cacheSpinner.succeed(
+          `Cache warmed: ${entriesLoaded} from DB + ${warmed} high-value patterns`
+        );
+      } catch {
+        cacheSpinner.warn('Cache warm-up skipped (non-fatal)');
+      }
     } catch (error) {
       memorySpinner.fail('Failed to initialize memory database');
       console.error(chalk.red(error));
@@ -245,6 +259,19 @@ export async function initCommand(options: InitOptions): Promise<void> {
     } catch (error) {
       coordSpinner.fail('Failed to initialize coordination database');
       console.error(chalk.red(error));
+    }
+
+    // B3: Pre-warm Qdrant if configured (was schema-only, now wired)
+    const qdrantServerless = existingConfig.memory?.longTerm?.serverless;
+    if (qdrantServerless?.enabled) {
+      const prewarmSpinner = ora('Pre-warming Qdrant...').start();
+      try {
+        const manager = new ServerlessQdrantManager(qdrantServerless);
+        await manager.ensureLocalRunning();
+        prewarmSpinner.succeed('Qdrant pre-warmed and ready');
+      } catch {
+        prewarmSpinner.warn('Qdrant pre-warming skipped (non-fatal)');
+      }
     }
   }
 

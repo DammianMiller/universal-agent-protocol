@@ -38,6 +38,8 @@ export class McpClient {
   private config: McpServerConfig;
   /** Serialized config for stale-detection by the pool */
   readonly configHash: string;
+  /** HTTP/SSE transport base URL (set when config.url is provided) */
+  private httpBaseUrl: string | null = null;
 
   constructor(serverName: string, config: McpServerConfig) {
     this.serverName = serverName;
@@ -49,12 +51,10 @@ export class McpClient {
     if (this.process) return;
 
     if (this.config.url) {
-      // HTTP/SSE transport requires a streaming HTTP client (planned for v0.9.0)
-      throw new Error(
-        `HTTP/SSE transport is not yet supported for server "${this.serverName}". ` +
-          `Use stdio transport instead by specifying "command" in the server config. ` +
-          `See: https://github.com/DammianMiller/universal-agent-protocol/issues`
-      );
+      // HTTP/SSE transport — connect via HTTP POST + SSE for responses
+      this.httpBaseUrl = this.config.url.replace(/\/$/, '');
+      await this.initializeHttp();
+      return;
     }
 
     if (!this.config.command) {
@@ -124,6 +124,11 @@ export class McpClient {
   }
 
   private async sendRequest(method: string, params?: unknown): Promise<unknown> {
+    // Route to HTTP transport if configured
+    if (this.httpBaseUrl) {
+      return this.sendHttpRequest(method, params);
+    }
+
     if (!this.process?.stdin) {
       throw new Error(`Not connected to ${this.serverName}`);
     }
@@ -162,6 +167,81 @@ export class McpClient {
         }
       });
     });
+  }
+
+  /**
+   * Send a JSON-RPC request over HTTP POST.
+   * Used when the server is configured with a URL (HTTP/SSE transport).
+   */
+  private async sendHttpRequest(method: string, params?: unknown): Promise<unknown> {
+    if (!this.httpBaseUrl) {
+      throw new Error(`HTTP transport not configured for ${this.serverName}`);
+    }
+
+    const id = ++this.requestId;
+    const request: JsonRpcRequest = {
+      jsonrpc: '2.0',
+      id,
+      method,
+      params,
+    };
+
+    const response = await fetch(this.httpBaseUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.config.env?.MCP_API_KEY
+          ? { Authorization: `Bearer ${this.config.env.MCP_API_KEY}` }
+          : {}),
+      },
+      body: JSON.stringify(request),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `HTTP ${response.status} from ${this.serverName}: ${await response.text()}`
+      );
+    }
+
+    const result = (await response.json()) as JsonRpcResponse;
+
+    if (result.error) {
+      throw new Error(result.error.message);
+    }
+
+    return result.result ?? null;
+  }
+
+  /**
+   * Initialize MCP connection over HTTP transport.
+   */
+  private async initializeHttp(): Promise<void> {
+    await this.sendHttpRequest('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: {
+        name: 'uap-mcp-router',
+        version: '1.0.0',
+      },
+    });
+
+    // Send initialized notification (fire-and-forget for HTTP)
+    try {
+      await fetch(this.httpBaseUrl!, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notifications/initialized',
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch {
+      // Notification failure is non-fatal
+    }
+
+    this.initialized = true;
   }
 
   private async initialize(): Promise<void> {
@@ -263,6 +343,13 @@ export class McpClient {
   }
 
   disconnect(): void {
+    if (this.httpBaseUrl) {
+      // HTTP transport: just reset state, no process to kill
+      this.httpBaseUrl = null;
+      this.initialized = false;
+      return;
+    }
+
     if (this.process) {
       // Remove listeners before kill to prevent double-cleanup from the exit handler
       this.process.removeAllListeners();
@@ -275,7 +362,7 @@ export class McpClient {
   }
 
   get isConnected(): boolean {
-    return this.process !== null && this.initialized;
+    return (this.process !== null || this.httpBaseUrl !== null) && this.initialized;
   }
 }
 

@@ -15,6 +15,7 @@ import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { concurrentMap } from '../utils/concurrency-pool.js';
 import { createLogger } from '../utils/logger.js';
+import { getPerformanceMonitor } from '../utils/performance-monitor.js';
 
 const log = createLogger('embeddings');
 
@@ -747,6 +748,8 @@ export class EmbeddingService {
   private providers: EmbeddingProvider[];
   private cache: Map<string, number[]> = new Map();
   private cacheMaxSize: number = 10000;
+  /** Memory pressure threshold (fraction of heap used). Evicts aggressively above this. */
+  private memoryPressureThreshold: number = 0.85;
 
   constructor(ollamaEndpoint?: string, ollamaModel?: string, llamaCppEndpoint?: string) {
     this.providers = [
@@ -788,11 +791,27 @@ export class EmbeddingService {
       return cached;
     }
 
-    const embedding = await this.provider!.embed(text);
+    const monitor = getPerformanceMonitor();
+    const embedding = await monitor.measure('embedding.embed', () => this.provider!.embed(text));
 
-    // Update cache (LRU eviction: remove least recently used entry)
-    if (this.cache.size >= this.cacheMaxSize) {
-      // Remove LRU entry (first in Map iteration order)
+    // Memory-pressure-aware eviction (C2 optimization)
+    const heapUsed = process.memoryUsage().heapUsed;
+    const heapTotal = process.memoryUsage().heapTotal;
+    const pressure = heapTotal > 0 ? heapUsed / heapTotal : 0;
+
+    if (pressure > this.memoryPressureThreshold && this.cache.size > 100) {
+      // Under memory pressure: evict 25% of cache (LRU order)
+      const evictCount = Math.floor(this.cache.size * 0.25);
+      const keys = this.cache.keys();
+      for (let i = 0; i < evictCount; i++) {
+        const key = keys.next().value;
+        if (key !== undefined) {
+          this.cache.delete(key);
+        }
+      }
+      log.debug(`[EmbeddingService] Memory pressure eviction: removed ${evictCount} entries`);
+    } else if (this.cache.size >= this.cacheMaxSize) {
+      // Normal LRU eviction: remove least recently used entry
       const firstKey = this.cache.keys().next().value;
       if (firstKey !== undefined) {
         this.cache.delete(firstKey);

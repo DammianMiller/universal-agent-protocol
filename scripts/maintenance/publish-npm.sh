@@ -3,8 +3,9 @@
 
 set -e
 
+VERSION=$(node -p 'require("./package.json").version' 2>/dev/null || echo "unknown")
 echo "=========================================="
-echo "  Universal Agent Protocol v0.10.0"
+echo "  Universal Agent Protocol v${VERSION}"
 echo "  Publishing to NPM..."
 echo "=========================================="
 echo ""
