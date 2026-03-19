@@ -20,29 +20,8 @@ import {
   ModelRole,
 } from './types.js';
 import { createLogger } from '../utils/logger.js';
-import { AdaptiveCache } from '../utils/adaptive-cache.js';
 
 const log = createLogger('model-router-exec');
-
-/**
- * LLM call reduction cache for task classification results.
- * Implements costOptimization.llmCallReduction.cacheResponses config.
- * Deduplicates identical or near-identical task descriptions.
- */
-const classificationCache = new AdaptiveCache<string, TaskClassificationResult>({
-  maxEntries: 500,
-  defaultTTL: 3_600_000, // 1 hour (matches config default cacheTtlMs)
-  hotThreshold: 3,
-  coldEvictionRatio: 0.3,
-});
-
-/**
- * Normalize a task description for cache deduplication.
- * Strips whitespace variations and lowercases for consistent cache hits.
- */
-function normalizeForCache(description: string): string {
-  return description.toLowerCase().replace(/\s+/g, ' ').trim();
-}
 
 // Complexity keywords for classification
 const COMPLEXITY_KEYWORDS: Record<TaskComplexity, string[]> = {
@@ -187,18 +166,9 @@ export class ModelRouter {
   }
 
   /**
-   * Classify a task to determine complexity and type.
-   * Results are cached to implement LLM call reduction (costOptimization.llmCallReduction).
+   * Classify a task to determine complexity and type
    */
   classifyTask(taskDescription: string): TaskClassificationResult {
-    // Check classification cache for deduplication
-    const cacheKey = normalizeForCache(taskDescription);
-    const cached = classificationCache.get(cacheKey);
-    if (cached) {
-      log.debug(`Classification cache hit for: ${cacheKey.slice(0, 50)}...`);
-      return cached;
-    }
-
     const lowerTask = taskDescription.toLowerCase();
     const words = lowerTask.split(/\s+/);
 
@@ -252,7 +222,7 @@ export class ModelRouter {
     // Select model based on routing
     const selection = this.selectModel(complexity, taskType, matchedKeywords);
 
-    const result: TaskClassificationResult = {
+    return {
       complexity,
       taskType,
       keywords: [...new Set(matchedKeywords)],
@@ -262,11 +232,6 @@ export class ModelRouter {
       fallbackModel: selection.fallback?.id || this.roleAssignments.get('fallback') || 'opus-4.6',
       reasoning: selection.reasoning,
     };
-
-    // Cache the classification result for deduplication
-    classificationCache.set(cacheKey, result, result.keywords.length);
-
-    return result;
   }
 
   /**

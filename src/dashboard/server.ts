@@ -3,6 +3,7 @@
  *
  * Lightweight HTTP + WebSocket server for the web overlay.
  * Serves JSON data from getDashboardData() and pushes real-time updates.
+ * Includes SSE endpoint for live event streaming.
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
@@ -11,6 +12,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { getDashboardData } from './data-service.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
+import { getDashboardEventBus, type DashboardEvent } from './event-stream.js';
 
 const DASHBOARD_HTML_PATH = join(import.meta.dirname || '.', '../../web/dashboard.html');
 
@@ -24,6 +26,22 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
   const port = options.port || 3847;
   const host = options.host || 'localhost';
   const updateInterval = options.updateIntervalMs || 2000;
+
+  // Track SSE clients for live event streaming
+  const sseClients = new Set<ServerResponse>();
+
+  // Subscribe to dashboard events and forward to SSE clients
+  const eventBus = getDashboardEventBus();
+  const unsubscribe = eventBus.subscribe((event: DashboardEvent) => {
+    const data = `data: ${JSON.stringify(event)}\n\n`;
+    for (const client of sseClients) {
+      try {
+        client.write(data);
+      } catch {
+        sseClients.delete(client);
+      }
+    }
+  });
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url || '/';
@@ -45,6 +63,56 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
         const data = await getDashboardData();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data));
+        return;
+      }
+
+      // API: SSE event stream
+      if (url === '/api/events') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+        });
+
+        // Send recent event history as initial burst
+        const history = eventBus.getHistory(50);
+        for (const event of history) {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+
+        // Keep-alive ping every 30s
+        const keepAlive = setInterval(() => {
+          try {
+            res.write(': keepalive\n\n');
+          } catch {
+            clearInterval(keepAlive);
+            sseClients.delete(res);
+          }
+        }, 30000);
+
+        sseClients.add(res);
+
+        req.on('close', () => {
+          clearInterval(keepAlive);
+          sseClients.delete(res);
+        });
+
+        return;
+      }
+
+      // API: Get event history
+      if (url.startsWith('/api/events/history')) {
+        const urlObj = new URL(url, `http://${host}:${port}`);
+        const limit = parseInt(urlObj.searchParams.get('limit') || '50', 10);
+        const sinceId = parseInt(urlObj.searchParams.get('since') || '0', 10);
+
+        const events = sinceId > 0
+          ? eventBus.getEventsSince(sinceId)
+          : eventBus.getHistory(limit);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(events));
         return;
       }
 
@@ -155,11 +223,22 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
   server.listen(port, host, () => {
     console.log(`UAP Dashboard server running at http://${host}:${port}`);
     console.log(`WebSocket available at ws://${host}:${port}`);
+    console.log(`SSE event stream at http://${host}:${port}/api/events`);
   });
 
   return {
     close: () => {
+      unsubscribe();
       clearInterval(pushInterval);
+      // Close all SSE clients
+      for (const client of sseClients) {
+        try {
+          client.end();
+        } catch {
+          /* ignore */
+        }
+      }
+      sseClients.clear();
       wss.close();
       server.close();
     },
