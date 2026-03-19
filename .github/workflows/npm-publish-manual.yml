@@ -44,8 +44,13 @@ jobs:
 
       - name: Set version
         run: |
-          echo "Updating package.json version to ${{ github.event.inputs.version }}"
-          npm version ${{ github.event.inputs.version }} --no-git-tag-version
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          if [ "$CURRENT_VERSION" != "${{ github.event.inputs.version }}" ]; then
+            echo "Updating package.json version from $CURRENT_VERSION to ${{ github.event.inputs.version }}"
+            npm version ${{ github.event.inputs.version }} --no-git-tag-version || true
+          else
+            echo "Version already at $CURRENT_VERSION, skipping version bump"
+          fi
 
       - name: Build
         run: npm run build
