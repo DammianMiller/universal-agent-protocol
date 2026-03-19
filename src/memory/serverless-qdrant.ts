@@ -250,20 +250,20 @@ export class ServerlessQdrantManager {
     // Health check
     this.healthCheckInterval = setInterval(() => {
       if (!this.isLocalRunning()) {
-        console.warn('[UAP] Qdrant health check failed, attempting restart...');
-        this.startLocal().catch(console.error);
+        this.startLocal().catch(() => {});
       }
     }, healthCheckIntervalMs);
+    if (this.healthCheckInterval.unref) this.healthCheckInterval.unref();
 
     // Idle check (auto-stop)
     if (autoStop) {
       this.idleCheckInterval = setInterval(() => {
         const idleTime = Date.now() - this.lastActivityTime;
         if (idleTime > idleTimeoutMs) {
-          console.log(`[UAP] Qdrant idle for ${idleTime}ms, stopping...`);
-          this.stopLocal().catch(console.error);
+          this.stopLocal().catch(() => {});
         }
       }, 60000); // Check every minute
+      if (this.idleCheckInterval.unref) this.idleCheckInterval.unref();
     }
   }
 

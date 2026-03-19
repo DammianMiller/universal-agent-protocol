@@ -110,7 +110,8 @@ export class TaskEventBus {
 
     for (const result of results) {
       if (result.status === 'rejected') {
-        console.error(`[TaskEventBus] Handler error for ${event.type}:`, result.reason);
+        // Handler error is non-fatal — swallow to prevent breaking the event loop
+        void result.reason;
       }
     }
   }

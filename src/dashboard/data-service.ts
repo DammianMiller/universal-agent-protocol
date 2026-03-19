@@ -10,6 +10,7 @@ import { join } from 'path';
 import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { globalSessionStats } from '../mcp-router/session-stats.js';
+import { getPerformanceMonitor, type PerformanceMetrics } from '../utils/performance-monitor.js';
 
 // ── TTL Cache for subprocess calls (git/docker don't change faster than 30s) ──
 interface CachedSubprocessResult<T> {
@@ -99,6 +100,11 @@ export interface SystemData {
   dirty: number;
 }
 
+export interface PerformanceData {
+  metrics: Record<string, PerformanceMetrics>;
+  hotPaths: Array<{ name: string; avgMs: number; p95Ms: number; count: number }>;
+}
+
 export interface DashboardData {
   timestamp: string;
   system: SystemData;
@@ -108,6 +114,7 @@ export interface DashboardData {
   models: ModelData;
   tasks: TaskData;
   coordination: CoordData;
+  performance: PerformanceData;
 }
 
 // ── Data Gathering ──
@@ -124,6 +131,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     models: getModelData(cwd),
     tasks: getTaskData(cwd),
     coordination: getCoordData(cwd),
+    performance: getPerformanceData(),
   };
 }
 
@@ -472,4 +480,29 @@ function getCoordData(cwd: string): CoordData {
   }
 
   return result;
+}
+
+/**
+ * Get performance metrics from the global PerformanceMonitor.
+ * Surfaces p50/p95/p99 latency data for all monitored operations.
+ */
+function getPerformanceData(): PerformanceData {
+  const monitor = getPerformanceMonitor();
+  const allMetrics = monitor.exportMetrics();
+
+  // Build hot paths list sorted by call count (most active first)
+  const hotPaths = Object.entries(allMetrics)
+    .map(([name, stats]) => ({
+      name,
+      avgMs: Math.round(stats.avg * 100) / 100,
+      p95Ms: Math.round(stats.p95 * 100) / 100,
+      count: stats.count,
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  return {
+    metrics: allMetrics,
+    hotPaths,
+  };
 }

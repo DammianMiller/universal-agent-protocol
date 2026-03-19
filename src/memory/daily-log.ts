@@ -177,6 +177,23 @@ export class DailyLog {
     return stmt.all(limit) as DailyLogEntry[];
   }
 
+  /**
+   * Auto-promote high-quality unpromoted entries.
+   * Promotes entries with gate score >= minScore to their suggested tier.
+   * Returns the number of entries promoted.
+   */
+  autoPromote(minScore: number = 0.5): number {
+    const candidates = this.getPromotionCandidates(minScore);
+    let promoted = 0;
+
+    for (const candidate of candidates) {
+      this.markPromoted(candidate.entry.id, candidate.suggestedTier);
+      promoted++;
+    }
+
+    return promoted;
+  }
+
   close(): void {
     this.db.close();
   }

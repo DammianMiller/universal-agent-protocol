@@ -399,12 +399,77 @@ INTEGRATION:
     console.log('✅ Hooks installed!');
   }
 
-  private async installMCPRouter(_projectDir: string): Promise<void> {
-    console.log('🔧 Setting up MCP Router...');
+  private async installMCPRouter(projectDir: string): Promise<void> {
+    console.log('Setting up MCP Router...');
 
-    // MCP router setup would go here
-    console.log('ℹ MCP Router configuration pending implementation');
-    console.log('✅ MCP Router placeholder created!');
+    // Discover existing MCP server configurations
+    const mcpConfigPaths = [
+      path.join(projectDir, '.claude', 'settings.json'),
+      path.join(projectDir, '.cursor', 'mcp.json'),
+      path.join(projectDir, 'mcp.json'),
+      path.join(projectDir, '.vscode', 'mcp.json'),
+    ];
+
+    const discoveredServers: Record<string, any> = {};
+
+    for (const configPath of mcpConfigPaths) {
+      if (existsSync(configPath)) {
+        try {
+          const config = JSON.parse(readFileSync(configPath, 'utf8'));
+          const servers = config.mcpServers || config.servers || {};
+          for (const [name, serverConfig] of Object.entries(servers)) {
+            if (!discoveredServers[name]) {
+              discoveredServers[name] = serverConfig;
+              console.log(`  Found MCP server: ${name} (from ${path.basename(configPath)})`);
+            }
+          }
+        } catch {
+          // Skip invalid configs
+        }
+      }
+    }
+
+    // Generate router configuration
+    const routerConfig: Record<string, any> = {
+      version: '1.0.0',
+      router: {
+        name: 'uap-mcp-router',
+        description: 'UAP MCP Router - reduces tool context by 98%+',
+        exposedTools: ['discover_tools', 'execute_tool'],
+      },
+      servers: {} as Record<string, any>,
+    };
+
+    // Add discovered servers
+    for (const [name, config] of Object.entries(discoveredServers)) {
+      routerConfig.servers[name] = {
+        ...(config as object),
+        enabled: true,
+      };
+    }
+
+    // Add self-exclusion to prevent routing loops
+    routerConfig.servers['uap-mcp-router'] = {
+      enabled: false,
+      comment: 'Self-exclusion to prevent routing loops',
+    };
+
+    // Write router config
+    const routerConfigPath = path.join(projectDir, '.mcp-router.json');
+    writeFileSync(routerConfigPath, JSON.stringify(routerConfig, null, 2));
+    console.log(`  Created router config: .mcp-router.json`);
+
+    // Report results
+    const serverCount = Object.keys(discoveredServers).length;
+    if (serverCount > 0) {
+      console.log(`  Discovered ${serverCount} MCP server(s)`);
+      console.log(`  Router will expose 2 meta-tools instead of ${serverCount * 15}+ raw tools`);
+    } else {
+      console.log('  No existing MCP servers found. Add servers to .mcp-router.json manually.');
+    }
+
+    console.log('MCP Router setup complete!');
+    console.log('  Start: npx uap mcp-router start');
   }
 
   private async uninstall(): Promise<void> {

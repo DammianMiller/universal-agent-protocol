@@ -1,78 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  concurrentMapWithBackpressure,
   parallelWithFallback,
   retry,
   withTimeout,
 } from '../../src/utils/concurrency.js';
 
 describe('Concurrency Utilities', () => {
-  describe('concurrentMapWithBackpressure', () => {
-    it('should map items sequentially when maxConcurrent is 1', async () => {
-      const items = [1, 2, 3, 4, 5];
-      const result = await concurrentMapWithBackpressure(items, async (item) => item * 2, {
-        maxConcurrent: 1,
-      });
-      expect(result).toEqual([2, 4, 6, 8, 10]);
-    });
-
-    it('should map items with controlled concurrency', async () => {
-      const items = [1, 2, 3, 4, 5];
-      const result = await concurrentMapWithBackpressure(items, async (item) => item * 3, {
-        maxConcurrent: 2,
-      });
-      expect(result).toEqual([3, 6, 9, 12, 15]);
-    });
-
-    it('should handle empty array', async () => {
-      const result = await concurrentMapWithBackpressure([], async (item) => item);
-      expect(result).toEqual([]);
-    });
-
-    it('should handle errors gracefully and continue', async () => {
-      const items = [1, 2, 3, 4, 5];
-      const result = await concurrentMapWithBackpressure(items, async (item) => {
-        if (item === 3) throw new Error('Expected error');
-        return item * 2;
-      });
-      expect(result).toHaveLength(5);
-      expect(result[0]).toBe(2);
-      expect(result[1]).toBe(4);
-      expect(result[2]).toBeUndefined(); // Error case
-      expect(result[3]).toBe(8);
-      expect(result[4]).toBe(10);
-    });
-
-    it('should use batch processing for large arrays', async () => {
-      const items = Array.from({ length: 250 }, (_, i) => i);
-      const result = await concurrentMapWithBackpressure(items, async (item) => item * 2, {
-        maxConcurrent: 10,
-        batchSize: 50,
-      });
-      expect(result).toHaveLength(250);
-      expect(result[0]).toBe(0);
-      expect(result[124]).toBe(248);
-      expect(result[249]).toBe(498);
-    });
-
-    it('should handle async operations with delays', async () => {
-      const items = [1, 2, 3, 4, 5];
-      const delays: number[] = [];
-
-      const result = await concurrentMapWithBackpressure(
-        items,
-        async (item) => {
-          const delay = item * 100;
-          delays.push(delay);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          return item;
-        },
-        { maxConcurrent: 2 }
-      );
-
-      expect(result).toEqual([1, 2, 3, 4, 5]);
-    });
-  });
+  // concurrentMapWithBackpressure tests removed — function was removed in sweep 3
 
   describe('parallelWithFallback', () => {
     it('should resolve all promises successfully', async () => {

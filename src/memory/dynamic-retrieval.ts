@@ -29,8 +29,10 @@ import {
 } from './adaptive-context.js';
 import { getRelevantKnowledge, recordKnowledgeOutcome } from './terminal-bench-knowledge.js';
 import { ContextPruner } from './context-pruner.js';
-import { PredictiveMemoryService } from './predictive-memory.js';
+import { getPredictiveMemoryService } from './predictive-memory.js';
+import { getSpeculativeCache } from './speculative-cache.js';
 import { contentHash, jaccardSimilarity } from '../utils/string-similarity.js';
+import { getPerformanceMonitor } from '../utils/performance-monitor.js';
 import {
   detectAmbiguity,
   formatAmbiguityForContext,
@@ -168,7 +170,25 @@ export async function retrieveDynamicMemoryContext(
     taskMetadata?: TaskMetadata;
   } = {}
 ): Promise<DynamicMemoryContext> {
-  const { maxTokens = 2000, useSemanticCompression = true, taskMetadata } = options;
+  // T5: Read token budget from config if available, fall back to parameter or default
+  let configMaxTokens = 2000;
+  try {
+    const { existsSync: fsExists, readFileSync: fsRead } = await import('fs');
+    const { join: pathJoin } = await import('path');
+    const configPath = pathJoin(projectRoot, '.uap.json');
+    if (fsExists(configPath)) {
+      const config = JSON.parse(fsRead(configPath, 'utf-8'));
+      const budgetFromConfig = config?.costOptimization?.tokenBudget?.maxContextTokens;
+      if (typeof budgetFromConfig === 'number' && budgetFromConfig > 0) {
+        configMaxTokens = budgetFromConfig;
+      }
+    }
+  } catch {
+    // Config read failure is non-fatal
+  }
+  const { maxTokens = configMaxTokens, useSemanticCompression = true, taskMetadata } = options;
+  const perfMonitor = getPerformanceMonitor();
+  const retrievalStart = performance.now();
 
   // Step 0: Adaptive context decision - skip UAP if not beneficial
   const contextDecision = decideContextLevel(taskInstruction, taskMetadata);
@@ -208,8 +228,9 @@ export async function retrieveDynamicMemoryContext(
   const suggestedQueries = getSuggestedMemoryQueries(classification);
 
   // Step 5b: Predictive memory prefetch - predict additional queries based on task history
+  // Uses singleton PredictiveMemoryService for cross-session learning
   try {
-    const predictive = new PredictiveMemoryService();
+    const predictive = getPredictiveMemoryService();
     const predictedQueries = predictive.predictNeededContext(taskInstruction, []);
     // Merge predicted queries with suggested (deduplicated)
     const existingSet = new Set(suggestedQueries);
@@ -221,6 +242,29 @@ export async function retrieveDynamicMemoryContext(
     }
   } catch {
     // PredictiveMemory failure is non-fatal
+  }
+
+  // Step 5c: Speculative cache - check if we have pre-warmed results
+  try {
+    const speculativeCache = getSpeculativeCache();
+    const cachedResult = speculativeCache.get(taskInstruction);
+    if (cachedResult && Array.isArray(cachedResult.result) && cachedResult.result.length > 0) {
+      // Use cached results as additional memory source
+      for (const item of cachedResult.result) {
+        if (item && typeof item === 'object' && 'content' in item) {
+          suggestedQueries.push(String((item as { content: string }).content).slice(0, 100));
+        }
+      }
+    }
+    // Pre-warm cache for predicted next queries
+    const predictions = speculativeCache.getPredictedQueries(taskInstruction);
+    for (const pred of predictions.slice(0, 3)) {
+      if (!suggestedQueries.includes(pred)) {
+        suggestedQueries.push(pred);
+      }
+    }
+  } catch {
+    // SpeculativeCache failure is non-fatal
   }
 
   // Step 6: Query all memory sources with adaptive limits
@@ -325,6 +369,22 @@ export async function retrieveDynamicMemoryContext(
   }
 
   const { content: formattedContext } = budget.allocate('main', baseContext);
+
+  // Record performance metrics
+  const retrievalDuration = performance.now() - retrievalStart;
+  perfMonitor.record('memory.dynamicRetrieval', retrievalDuration);
+  perfMonitor.record(`memory.retrieval.${queryComplexity}`, retrievalDuration);
+
+  // Record access for predictive memory learning
+  try {
+    const predictive = getPredictiveMemoryService();
+    predictive.recordAccess(
+      taskInstruction,
+      processedMemories.map(m => m.source).filter((v, i, a) => a.indexOf(v) === i)
+    );
+  } catch {
+    // Non-fatal
+  }
 
   return {
     classification,

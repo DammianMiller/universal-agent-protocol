@@ -19,6 +19,9 @@ import {
   DEFAULT_ROUTING_RULES,
   ModelRole,
 } from './types.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('model-router-exec');
 
 // Complexity keywords for classification
 const COMPLEXITY_KEYWORDS: Record<TaskComplexity, string[]> = {
@@ -119,7 +122,7 @@ export class ModelRouter {
         if (preset) {
           this.models.set(modelDef, preset);
         } else {
-          console.warn(`Model preset '${modelDef}' not found, skipping`);
+          log.warn(`Model preset '${modelDef}' not found, skipping`);
         }
       } else {
         // It's a custom config
@@ -157,9 +160,7 @@ export class ModelRouter {
     const roles = this.config.roles || {};
     for (const [role, modelId] of Object.entries(roles) as Array<[string, string]>) {
       if (!this.models.has(modelId)) {
-        console.warn(
-          `⚠️ Role '${role}' assigned to non-existent model '${modelId}'. Using fallback.`
-        );
+        log.warn(`Role '${role}' assigned to non-existent model '${modelId}'. Using fallback.`);
       }
     }
   }
