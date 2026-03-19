@@ -5,6 +5,8 @@
 
 import { spawn, type ChildProcess } from 'child_process';
 import type { McpServerConfig, ToolDefinition } from '../types.js';
+import { RateLimiter } from '../../utils/rate-limiter.js';
+import { getEnforcedToolRouter } from '../../policies/enforced-tool-router.js';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -277,9 +279,18 @@ export class McpClient {
   }
 }
 
-// Connection pool for reusing MCP clients
+// Connection pool for reusing MCP clients with rate limiting
 export class McpClientPool {
   private clients = new Map<string, McpClient>();
+  /** Per-server rate limiter to prevent overloading downstream MCP servers */
+  private rateLimiter: RateLimiter;
+
+  constructor(options?: { maxRequestsPerWindow?: number; windowMs?: number }) {
+    this.rateLimiter = new RateLimiter({
+      maxRequests: options?.maxRequestsPerWindow ?? 60,
+      windowMs: options?.windowMs ?? 10_000, // 60 requests per 10s per server
+    });
+  }
 
   getClient(serverName: string, config: McpServerConfig): McpClient {
     let client = this.clients.get(serverName);
@@ -299,11 +310,58 @@ export class McpClientPool {
     return client;
   }
 
+  /**
+   * Check if a request to a server is allowed by the rate limiter.
+   * Returns true if allowed, false if rate-limited.
+   */
+  isRequestAllowed(serverName: string): boolean {
+    return this.rateLimiter.isAllowed(serverName);
+  }
+
+  /**
+   * Get remaining requests for a server in the current window.
+   */
+  getRemainingRequests(serverName: string): number {
+    return this.rateLimiter.getRemainingRequests(serverName);
+  }
+
   async disconnectAll(): Promise<void> {
     for (const client of this.clients.values()) {
       client.disconnect();
     }
     this.clients.clear();
+  }
+
+  /**
+   * Execute a tool call through the policy gate.
+   * Checks REQUIRED policies before forwarding to the MCP server.
+   * Falls back to direct execution if policy gate is not configured.
+   */
+  async executeToolWithPolicy(
+    serverName: string,
+    config: McpServerConfig,
+    toolName: string,
+    args: Record<string, unknown> = {}
+  ): Promise<unknown> {
+    // Rate limit check
+    if (!this.isRequestAllowed(serverName)) {
+      throw new Error(`Rate limited: ${serverName} (${this.getRemainingRequests(serverName)} remaining)`);
+    }
+
+    // Policy check (non-blocking if no policies configured)
+    try {
+      const router = getEnforcedToolRouter();
+      const check = await router.wouldAllow(toolName, { ...args, _server: serverName });
+      if (!check.allowed) {
+        throw new Error(`Policy blocked tool "${toolName}": ${check.reasons.join('; ')}`);
+      }
+    } catch (err) {
+      // If the error is a policy block, re-throw. Otherwise ignore (no policies configured).
+      if (err instanceof Error && err.message.startsWith('Policy blocked')) throw err;
+    }
+
+    const client = this.getClient(serverName, config);
+    return client.callTool(toolName, args);
   }
 
   getConnectedServers(): string[] {

@@ -1257,13 +1257,15 @@ export function startDashboard(intervalMs: number = 2000, showWorkGraph: boolean
         );
 
         // Schedule next check with extended interval
-        dashboardState.idleTimeout = setTimeout(() => {
+        const idleTimer = setTimeout(() => {
           if (dashboardState?.idleTimeout) {
             clearTimeout(dashboardState.idleTimeout);
             dashboardState.idleTimeout = null;
           }
           updateDashboard();
         }, newInterval) as unknown as NodeJS.Timeout;
+        if (idleTimer.unref) idleTimer.unref();
+        dashboardState.idleTimeout = idleTimer;
       }
     }
   };
@@ -1273,6 +1275,9 @@ export function startDashboard(intervalMs: number = 2000, showWorkGraph: boolean
     scheduleCleanup();
     updateDashboard();
   }, intervalMs);
+  if (dashboardInterval && (dashboardInterval as NodeJS.Timeout).unref) {
+    (dashboardInterval as NodeJS.Timeout).unref();
+  }
 }
 
 function renderDashboard(s: SessionStats, currentInterval: number): void {
@@ -1363,59 +1368,14 @@ export function dashboardResume(): void {
 
   const s = getStats();
   console.log(`${GREEN}[DASHBOARD]${RESET} ${DIM}Resumed${RESET}`);
+  // Reuse renderDashboard instead of duplicating rendering logic
+  renderDashboard(s, 2000);
   dashboardInterval = setInterval(() => {
-    const w = 80;
-    const line = BOX.h.repeat(w);
-    console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
-    console.log(
-      boxLine(
-        `${BOLD}${WHITE}${BG_CYAN} UAP LIVE DASHBOARD ${RESET}  ${DIM}Session ${s.sessionId}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}`,
-        w
-      )
-    );
-    console.log(`${CYAN}${BOX.bl}${line}${BOX.br}${RESET}`);
-
-    const activeAgents = [...s.agents.values()].filter((a) => a.status === 'working');
-    const activeTasks = [...s.tasks.values()].filter((t) => t.status === 'in_progress');
-    const activeSkillNames = [...s.skills.values()].filter((sk) => sk.active).map((sk) => sk.name);
-    const activePatternNames = [...s.patterns.values()].filter((p) => p.active).map((p) => p.name);
-
-    const queuedDeploys = [...s.deploys.values()].filter(
-      (a) => a.status === 'queued' || a.status === 'batched'
-    );
-
-    console.log(
-      `  ${DIM}Duration:${RESET} ${elapsed()}  ${DIM}Tokens:${RESET} ${BLUE}${formatTokens(s.tokensUsed)}${RESET}${s.tokensSaved > 0 ? ` ${GREEN}(-${formatTokens(s.tokensSaved)})${RESET}` : ''}${s.totalCostUsd > 0 ? ` ${DIM}($${s.totalCostUsd.toFixed(3)})${RESET}` : ''}`
-    );
-    console.log(
-      `  ${DIM}Agents:${RESET} ${activeAgents.length} working${activeAgents.length > 0 ? ` (${activeAgents.map((a) => a.name).join(', ')})` : ''}`
-    );
-    console.log(
-      `  ${DIM}Tasks:${RESET} ${activeTasks.length} in progress${activeTasks.length > 0 ? ` (${activeTasks.map((t) => truncate(t.title, 25)).join(', ')})` : ''}`
-    );
-
-    if (queuedDeploys.length > 0) {
-      console.log(
-        `  ${YELLOW}[DEPLOY]${RESET} ${queuedDeploys.length} queued${queuedDeploys.length > 1 ? '+' : ''}`
-      );
-    }
-
-    if (activeSkillNames.length > 0) {
-      console.log(
-        `  ${GREEN}[SKILLS]${RESET} ${activeSkillNames.slice(0, 3).join(', ')}${activeSkillNames.length > 3 ? ` +${activeSkillNames.length - 3}` : ''}`
-      );
-    }
-
-    if (activePatternNames.length > 0) {
-      console.log(
-        `  ${BLUE}[PATTERNS]${RESET} ${activePatternNames.slice(0, 3).join(', ')}${activePatternNames.length > 3 ? ` +${activePatternNames.length - 3}` : ''}`
-      );
-    }
-
-    if (s.errors > 0) {
-      console.log(`  ${RED}[ERRORS]${RESET} ${s.errors} total`);
-    }
+    renderDashboard(getStats(), 2000);
   }, 2000);
+  if (dashboardInterval && (dashboardInterval as NodeJS.Timeout).unref) {
+    (dashboardInterval as NodeJS.Timeout).unref();
+  }
 }
 
 export function showDashboardSnapshot(showWorkGraph: boolean = false): void {

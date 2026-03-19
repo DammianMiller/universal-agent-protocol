@@ -13,6 +13,9 @@ import { randomUUID } from 'crypto';
 import { ExecutionPlan, Subtask, TaskComplexity, MultiModelConfig } from './types.js';
 import { ModelRouter } from './router.js';
 import { createPlanValidator } from './plan-validator.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('planner');
 
 // UUID generator
 const uuidv4 = (): string => randomUUID();
@@ -105,10 +108,10 @@ export class TaskPlanner {
     // Auto-validate the plan - runs on EVERY plan at every complexity level
     const result = await this.validator.validatePlan(plan, { skipIfTrivial: false });
     if (result.validation.errors.length > 0) {
-      console.warn('Plan validation errors:', result.validation.errors);
+      log.warn('Plan validation errors:', result.validation.errors);
     }
     if (result.validation.warnings.length > 0) {
-      console.warn('Plan validation warnings:', result.validation.warnings);
+      log.warn('Plan validation warnings:', result.validation.warnings);
     }
 
     return plan;
@@ -211,8 +214,8 @@ export class TaskPlanner {
     // Enforce maxSubtasks limit
     if (this.options.maxSubtasks !== undefined && subtasks.length > this.options.maxSubtasks) {
       const excess = subtasks.length - this.options.maxSubtasks;
-      console.warn(
-        `TaskPlanner: Generated ${excess} subtask(s) exceeding maxSubtasks limit (${this.options.maxSubtasks}). Truncating plan.`
+      log.warn(
+        `Generated ${excess} subtask(s) exceeding maxSubtasks limit (${this.options.maxSubtasks}). Truncating plan.`
       );
       subtasks.splice(this.options.maxSubtasks);
     }

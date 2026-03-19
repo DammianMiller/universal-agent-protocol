@@ -2,6 +2,9 @@ import type { AgentContextConfig } from '../../types/index.js';
 import type { MemoryBackend } from './base.js';
 import { GitHubMemoryBackend } from './github.js';
 import { QdrantCloudBackend } from './qdrant-cloud.js';
+import { createLogger } from '../../utils/logger.js';
+
+const log = createLogger('memory-backends');
 
 export async function createMemoryBackend(
   config: AgentContextConfig
@@ -30,7 +33,7 @@ export async function createMemoryBackend(
           return backend;
         }
       } catch (error) {
-        console.warn(
+        log.warn(
           `GitHub backend not available: ${error instanceof Error ? error.message : String(error)}`
         );
       }
@@ -55,7 +58,7 @@ export async function createMemoryBackend(
           return backend;
         }
       } catch (error) {
-        console.warn(
+        log.warn(
           `Qdrant Cloud backend not available: ${error instanceof Error ? error.message : String(error)}`
         );
       }

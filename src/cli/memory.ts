@@ -8,7 +8,7 @@ import { execSync } from 'child_process';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { prepopulateMemory } from '../memory/prepopulate.js';
 import { SQLiteShortTermMemory } from '../memory/short-term/sqlite.js';
-import { ensureKnowledgeSchema, ensureSessionSchema } from '../memory/short-term/schema.js';
+import { ensureSessionSchema } from '../memory/short-term/schema.js';
 import { AgentContextConfigSchema } from '../types/index.js';
 import type { AgentContextConfig } from '../types/index.js';
 import type { MemoryEntry } from '../memory/backends/base.js';
@@ -348,6 +348,56 @@ async function stopServices(cwd: string): Promise<void> {
     spinner.fail('Failed to stop memory services');
     console.error(error);
   }
+}
+
+/**
+ * Check Qdrant health and offer to auto-start if not running.
+ * Exported for use by other CLI commands and session hooks.
+ */
+export async function checkQdrantHealth(
+  cwd: string,
+  options: { autoStart?: boolean; verbose?: boolean } = {}
+): Promise<{ healthy: boolean; started: boolean }> {
+  const configPath = join(cwd, '.uap.json');
+  let endpoint = 'http://localhost:6333';
+  if (existsSync(configPath)) {
+    try {
+      const config = AgentContextConfigSchema.parse(JSON.parse(readFileSync(configPath, 'utf-8')));
+      const ep = config.memory?.longTerm?.endpoint || 'localhost:6333';
+      endpoint = ep.startsWith('http') ? ep : `http://${ep}`;
+    } catch {
+      // use default
+    }
+  }
+
+  const healthy = await isQdrantReachable(endpoint, 3000);
+  if (healthy) {
+    if (options.verbose) {
+      console.log(`Qdrant is healthy at ${endpoint}`);
+    }
+    return { healthy: true, started: false };
+  }
+
+  if (options.verbose) {
+    console.log(`Qdrant not reachable at ${endpoint}`);
+  }
+
+  if (options.autoStart) {
+    try {
+      await startServices(cwd);
+      const nowHealthy = await isQdrantReachable(endpoint, 15000);
+      if (nowHealthy) {
+        if (options.verbose) {
+          console.log('Qdrant auto-started successfully');
+        }
+        return { healthy: true, started: true };
+      }
+    } catch {
+      // Auto-start failed
+    }
+  }
+
+  return { healthy: false, started: false };
 }
 
 async function queryMemory(cwd: string, search: string, limit: number): Promise<void> {
@@ -827,14 +877,18 @@ function storeKnowledgeGraph(
   longTerm: MemoryEntry[],
   skills: DiscoveredSkill[]
 ): { entities: number; relationships: number } {
-  const db = new Database(dbPath);
-  ensureKnowledgeSchema(db);
-  const now = new Date().toISOString();
+  // Use the KnowledgeGraph class for graph operations
+  const { KnowledgeGraph } = require('../memory/knowledge-graph.js') as typeof import('../memory/knowledge-graph.js');
+  const graph = new KnowledgeGraph(dbPath);
 
-  const projectEntity = upsertEntity(db, 'project', projectName, now);
-  let entities = projectEntity.inserted;
+  let entities = 0;
   let relationships = 0;
 
+  // Create project entity
+  const projectEntity = graph.upsertEntity('project', projectName);
+  if (projectEntity.id) entities++;
+
+  // Extract file paths from long-term memories
   const filePaths = new Set<string>();
   for (const entry of longTerm) {
     const file = entry.metadata?.file;
@@ -847,70 +901,31 @@ function storeKnowledgeGraph(
     }
   }
 
+  // Create file entities and relationships
   for (const file of filePaths) {
-    const fileEntity = upsertEntity(db, 'file', file, now);
-    entities += fileEntity.inserted;
-    relationships += insertRelationship(db, projectEntity.id, fileEntity.id, 'contains', now);
+    const fileEntity = graph.upsertEntity('file', file);
+    if (fileEntity.id) entities++;
+    if (projectEntity.id && fileEntity.id) {
+      graph.addRelationship(projectEntity.id, fileEntity.id, 'contains');
+      relationships++;
+    }
   }
 
+  // Create skill entities and relationships
   for (const skill of skills) {
-    const skillEntity = upsertEntity(db, skill.type, skill.name, now);
-    entities += skillEntity.inserted;
-    relationships += insertRelationship(db, projectEntity.id, skillEntity.id, 'contains', now);
+    const skillEntity = graph.upsertEntity(skill.type, skill.name);
+    if (skillEntity.id) entities++;
+    if (projectEntity.id && skillEntity.id) {
+      graph.addRelationship(projectEntity.id, skillEntity.id, 'contains');
+      relationships++;
+    }
   }
 
-  db.close();
+  graph.close();
   return { entities, relationships };
 }
 
-function upsertEntity(
-  db: Database.Database,
-  type: string,
-  name: string,
-  now: string,
-  description?: string
-): { id: number; inserted: number } {
-  const existing = db
-    .prepare('SELECT id, mention_count FROM entities WHERE type = ? AND name = ?')
-    .get(type, name) as { id: number; mention_count: number } | undefined;
-  if (existing) {
-    if (description) {
-      db.prepare(
-        'UPDATE entities SET last_seen = ?, mention_count = ?, description = ? WHERE id = ?'
-      ).run(now, existing.mention_count + 1, description, existing.id);
-    } else {
-      db.prepare('UPDATE entities SET last_seen = ?, mention_count = ? WHERE id = ?').run(
-        now,
-        existing.mention_count + 1,
-        existing.id
-      );
-    }
-    return { id: existing.id, inserted: 0 };
-  }
-
-  const result = db
-    .prepare(
-      'INSERT INTO entities (type, name, description, first_seen, last_seen, mention_count) VALUES (?, ?, ?, ?, ?, 1)'
-    )
-    .run(type, name, description || null, now, now);
-  return { id: Number(result.lastInsertRowid), inserted: 1 };
-}
-
-function insertRelationship(
-  db: Database.Database,
-  sourceId: number,
-  targetId: number,
-  relation: string,
-  now: string,
-  strength: number = 1.0
-): number {
-  const result = db
-    .prepare(
-      'INSERT OR IGNORE INTO relationships (source_id, target_id, relation, strength, timestamp) VALUES (?, ?, ?, ?, ?)'
-    )
-    .run(sourceId, targetId, relation, strength, now);
-  return result.changes;
-}
+// upsertEntity and insertRelationship removed — now delegated to KnowledgeGraph class
 
 function createDeterministicEmbedding(input: string, size = 384): number[] {
   const hash = createHash('sha256').update(input).digest();

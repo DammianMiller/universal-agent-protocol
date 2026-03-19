@@ -1,53 +1,6 @@
 /**
- * Concurrent execution utilities with backpressure control
+ * Concurrent execution utilities with retry, timeout, and fallback
  */
-
-/**
- * Execute async operations with controlled concurrency and backpressure
- */
-export async function concurrentMapWithBackpressure<T, R>(
-  items: T[],
-  fn: (item: T, index: number) => Promise<R>,
-  options?: {
-    maxConcurrent?: number;
-    batchSize?: number;
-  }
-): Promise<R[]> {
-  const { maxConcurrent = 10, batchSize = 100 } = options || {};
-
-  const results: R[] = new Array(items.length);
-
-  // Process in batches to avoid memory spikes
-  for (let i = 0; i < items.length; i += batchSize) {
-    const batch = items.slice(i, i + batchSize);
-    const batchPromises = batch.map(async (item, idx) => {
-      try {
-        const result = await fn(item, i + idx);
-        results[i + idx] = result;
-      } catch (error) {
-        // Store error as result or handle differently
-        results[i + idx] = undefined as unknown as R;
-      }
-    });
-
-    // Limit concurrency within batch using simple queue
-    const queue = [...batchPromises];
-    const workers = Array.from({ length: Math.min(maxConcurrent, batch.length) }, async () => {
-      while (queue.length > 0) {
-        const promise = queue.shift();
-        if (promise) await promise;
-      }
-    });
-    await Promise.all(workers);
-
-    // Yield to event loop between batches
-    if (i + batchSize < items.length) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-  }
-
-  return results;
-}
 
 /**
  * Execute operations in parallel with graceful degradation

@@ -13,6 +13,9 @@
 
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('model-router');
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { classifyTask, type TaskClassification } from './task-classifier.js';
@@ -192,14 +195,11 @@ const MODEL_FINGERPRINTS: Record<ModelId, ModelFingerprint> = {
 
 const COMPLEXITY_RANK = { easy: 1, medium: 2, hard: 3 };
 
-// OPT 8: SQLite-backed fingerprint persistence - single connection sufficient for sync driver
-const DB_POOL_SIZE = 1; // Keep at 1 - better-sqlite3 is synchronous, no need for pool
-const dbPool: Database.Database[] = [];
-let poolInitialized = false;
-let poolRoundRobinIndex = 0;
+// OPT 8: SQLite-backed fingerprint persistence (simplified from pool-of-1)
+let _fingerprintDb: Database.Database | null = null;
 
-function initFingerprintDbPool(): void {
-  if (poolInitialized) return;
+function initFingerprintDb(): Database.Database {
+  if (_fingerprintDb) return _fingerprintDb;
 
   const dbDir = join(__dirname, '../../agents/data/memory');
   if (!existsSync(dbDir)) {
@@ -207,61 +207,49 @@ function initFingerprintDbPool(): void {
   }
 
   const dbPath = join(dbDir, 'model_fingerprints.db');
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('busy_timeout = 10000');
+  db.pragma('synchronous = NORMAL');
 
-  for (let i = 0; i < DB_POOL_SIZE; i++) {
-    const db = new Database(dbPath);
-    db.pragma('journal_mode = WAL');
-    db.pragma('busy_timeout = 10000');
-    db.pragma('synchronous = NORMAL');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fingerprint_updates (
+      model_id TEXT NOT NULL,
+      avg_latency_ms REAL,
+      success_rate REAL,
+      updated_at INTEGER,
+      PRIMARY KEY (model_id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS category_stats (
+      model_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      attempts INTEGER DEFAULT 0,
+      successes INTEGER DEFAULT 0,
+      updated_at INTEGER,
+      PRIMARY KEY (model_id, category)
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_category_stats_model ON category_stats(model_id);
+  `);
 
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS fingerprint_updates (
-        model_id TEXT NOT NULL,
-        avg_latency_ms REAL,
-        success_rate REAL,
-        updated_at INTEGER,
-        PRIMARY KEY (model_id)
-      );
-      
-      CREATE TABLE IF NOT EXISTS category_stats (
-        model_id TEXT NOT NULL,
-        category TEXT NOT NULL,
-        attempts INTEGER DEFAULT 0,
-        successes INTEGER DEFAULT 0,
-        updated_at INTEGER,
-        PRIMARY KEY (model_id, category)
-      );
-      
-      CREATE INDEX IF NOT EXISTS idx_category_stats_model ON category_stats(model_id);
-    `);
-
-    dbPool.push(db);
-  }
-
-  poolInitialized = true;
-}
-
-function getFingerprintDbFromPool(): Database.Database {
-  if (!poolInitialized) initFingerprintDbPool();
-  const currentIndex = poolRoundRobinIndex % DB_POOL_SIZE;
-  poolRoundRobinIndex = (poolRoundRobinIndex + 1) % DB_POOL_SIZE;
-  return dbPool[currentIndex];
+  _fingerprintDb = db;
+  return db;
 }
 
 export function closeAllPools(): void {
-  for (const db of dbPool) {
+  if (_fingerprintDb) {
     try {
-      db.close();
-    } catch (err) {
-      console.warn('Failed to close fingerprint DB pool connection:', err);
+      _fingerprintDb.close();
+    } catch {
+      // Close failure is non-fatal
     }
+    _fingerprintDb = null;
   }
-  dbPool.length = 0;
-  poolInitialized = false;
 }
 
 export function getFingerprintDb(): Database.Database {
-  return getFingerprintDbFromPool();
+  return initFingerprintDb();
 }
 
 /**
@@ -309,7 +297,7 @@ function loadPersistedFingerprints(): void {
     }
   } catch (err) {
     // Silently fail - fingerprints will use defaults
-    console.warn('Failed to load persisted fingerprints:', err);
+    log.debug('Failed to load persisted fingerprints:', err);
   }
 }
 
@@ -329,7 +317,7 @@ function persistFingerprintUpdate(modelId: ModelId): void {
     `
     ).run(modelId, fp.avgLatencyMs, fp.successRate, Date.now());
   } catch (err) {
-    console.warn('Failed to persist fingerprint update:', err);
+    log.debug('Failed to persist fingerprint update:', err);
   }
 }
 
@@ -350,12 +338,17 @@ function persistCategoryStats(modelId: ModelId, category: string): void {
     `
     ).run(modelId, category, stats.attempts, stats.successes, Date.now());
   } catch (err) {
-    console.warn('Failed to persist category stats:', err);
+    log.debug('Failed to persist category stats:', err);
   }
 }
 
-// Initialize on module load
-loadPersistedFingerprints();
+// Deferred initialization — fingerprints load on first use, not module import
+let _fingerprintsLoaded = false;
+function ensureFingerprintsLoaded(): void {
+  if (_fingerprintsLoaded) return;
+  _fingerprintsLoaded = true;
+  loadPersistedFingerprints();
+}
 
 /**
  * Failure handlers for model-specific known issues
@@ -476,6 +469,7 @@ export function routeTask(
   difficulty: 'easy' | 'medium' | 'hard' = 'medium',
   config: Partial<RoutingConfig> = {}
 ): RoutingDecision {
+  ensureFingerprintsLoaded();
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const classification = classifyTask(instruction);
 

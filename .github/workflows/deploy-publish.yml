@@ -52,7 +52,7 @@ jobs:
         env:
           VERSION: ${{ steps.get_version.outputs.VERSION }}
         run: |
-          EXISTING_VERSION=$(npm view universal-agent-protocol@$VERSION version 2>/dev/null || echo "")
+          EXISTING_VERSION=$(npm view @miller-tech/uap@$VERSION version 2>/dev/null || echo "")
           if [ -n "$EXISTING_VERSION" ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
             echo "Version $VERSION already exists on NPM registry"
@@ -64,19 +64,19 @@ jobs:
       - name: Publish to NPM (if version doesn't exist)
         if: steps.check_npm.outputs.exists == 'false' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/master')
         run: |
-          echo "Publishing universal-agent-protocol@${{ steps.get_version.outputs.VERSION }} to NPM..."
+          echo "Publishing @miller-tech/uap@${{ steps.get_version.outputs.VERSION }} to NPM..."
           npm publish --access public
         
       - name: Output publication status
         if: always()
         run: |
           echo "### Publication Status" >> $GITHUB_STEP_SUMMARY
-          echo "**Package:** universal-agent-protocol" >> $GITHUB_STEP_SUMMARY  
+          echo "**Package:** @miller-tech/uap" >> $GITHUB_STEP_SUMMARY  
           echo "**Version:** v${{ steps.get_version.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.check_npm.outputs.exists }}" == "true" ]; then
             echo "**Status:** Already published (skipped)" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**Status:** Published successfully to https://www.npmjs.com/package/universal-agent-protocol" >> $GITHUB_STEP_SUMMARY
+            echo "**Status:** Published successfully to https://www.npmjs.com/package/@miller-tech/uap" >> $GITHUB_STEP_SUMMARY
           fi
 
   create-release:
@@ -112,13 +112,9 @@ jobs:
           tag_name: v${{ steps.get_version.outputs.VERSION }}
           name: Release v${{ steps.get_version.outputs.VERSION }}
           body: |
-            ## Universal Agent Protocol v${{ steps.get_version.outputs.VERSION }}
+            ## @miller-tech/uap v${{ steps.get_version.outputs.VERSION }}
             
-            ### Features
-            - Validation toggle enabled (UAP_VALIDATE_PLAN=true by default)
-            - Parallel execution support (UAP_PARALLEL_EXECUTION=true by default)  
-            - Qwen3.5 optimized parameters output in agent responses
-            - All UAP components enforced and logged
+            See [CHANGELOG.md](https://github.com/DammianMiller/universal-agent-protocol/blob/master/CHANGELOG.md) for details.
             
           draft: false
           prerelease: false

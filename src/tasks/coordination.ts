@@ -3,6 +3,7 @@ import { CoordinationService } from '../coordination/service.js';
 import { getCapabilityRouter } from '../coordination/capability-router.js';
 import { getPatternRouter } from '../coordination/pattern-router.js';
 import { getAdaptivePatternEngine } from '../coordination/adaptive-patterns.js';
+import { recordTaskFeedback } from '../memory/dynamic-retrieval.js';
 import type { Task, TaskWithRelations } from './types.js';
 import type {
   WorkAnnouncement,
@@ -96,7 +97,8 @@ export class TaskCoordinator {
         try {
           await this.claim(event.taskId);
         } catch (err) {
-          console.error(`[TaskCoordinator] Auto-execute claim failed for ${event.taskId}:`, err);
+          // Auto-execute claim failure is non-fatal
+          void err;
         }
       }
     });
@@ -256,6 +258,22 @@ export class TaskCoordinator {
       }
     } catch {
       // AdaptivePatternEngine not configured -- skip
+    }
+
+    // Close the feedback loop: update adaptive context, model router, and knowledge outcomes
+    try {
+      const isSuccess = closedTask.status === 'done';
+      const durationMs = closedTask.closedAt && closedTask.createdAt
+        ? new Date(closedTask.closedAt).getTime() - new Date(closedTask.createdAt).getTime()
+        : 0;
+      recordTaskFeedback({
+        instruction: task.title,
+        success: isSuccess,
+        durationMs,
+        projectRoot: process.cwd(),
+      });
+    } catch {
+      // Feedback recording is non-fatal
     }
 
     return {

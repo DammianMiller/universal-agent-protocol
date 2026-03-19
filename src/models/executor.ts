@@ -15,6 +15,10 @@ import { getModelAnalytics } from './analytics.js';
 import { getMaxParallel, isParallelEnabled } from '../utils/system-resources.js';
 import { concurrentMap } from '../utils/concurrency-pool.js';
 import { getTaskEventBus } from '../tasks/event-bus.js';
+import { withTimeout } from '../utils/concurrency.js';
+import { getPerformanceMonitor } from '../utils/performance-monitor.js';
+import { recordTaskOutcome as recordModelRouterOutcome } from '../memory/model-router.js';
+import type { ModelId } from '../memory/model-router.js';
 
 /**
  * Model client interface for executing prompts
@@ -271,29 +275,52 @@ export class TaskExecutor {
       /* analytics should never break execution */
     }
 
+    // Record outcome in memory model-router for fingerprint learning
+    try {
+      recordModelRouterOutcome(
+        finalResult.modelUsed as ModelId,
+        finalResult.success,
+        finalResult.duration,
+        subtask.type || 'coding'
+      );
+    } catch {
+      /* model router feedback should never break execution */
+    }
+
     return finalResult;
   }
 
   /**
-   * Attempt to execute a subtask with a specific model
+   * Attempt to execute a subtask with a specific model.
+   * Uses withTimeout for hard deadline enforcement and PerformanceMonitor for tracking.
    */
   private async attemptExecution(
     model: ModelConfig,
     subtask: Subtask,
     context: ExecutionContext
   ): Promise<ExecutionResult> {
+    const monitor = getPerformanceMonitor();
     const startTime = Date.now();
 
     // Build prompt
     const prompt = this.buildPrompt(subtask, context);
 
-    // Execute
-    const response = await this.client.complete(model, prompt, {
-      maxTokens: this.getMaxTokens(subtask),
-      timeout: this.options.stepTimeout,
-    });
+    // Execute with hard timeout enforcement via withTimeout utility
+    const stepTimeout = this.options.stepTimeout || 120_000;
+    const response = await withTimeout(
+      this.client.complete(model, prompt, {
+        maxTokens: this.getMaxTokens(subtask),
+        timeout: stepTimeout,
+      }),
+      stepTimeout,
+      { errorMessage: `Subtask "${subtask.title}" timed out after ${stepTimeout}ms on model ${model.id}` }
+    );
 
     const duration = Date.now() - startTime;
+
+    // Record performance metrics
+    monitor.record(`executor.${model.id}`, duration);
+    monitor.record(`executor.subtask.${subtask.type || 'unknown'}`, duration);
 
     // Calculate cost
     const cost = this.router.estimateCost(
