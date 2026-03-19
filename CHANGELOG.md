@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.1 (2026-03-19)
+
+- fix: add missing dashboard type exports and restore optimization sweep changes lost in merge
+
+
 ## v1.8.0 (2026-03-19)
 
 - feat: 4-phase optimization sweep — wire unwired code, add persistence, implement HTTP/SSE transport
