@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.14.1 (2026-03-20)
+
+- chore: add GitHub Actions workflow for publishing to npm
+- chore: bump version to 1.14.0 for npm publish
+- chore: bump version to 1.13.3 for npm publish
+
+
 ## v1.13.1 (2026-03-20)
 
 - fix: correct Claude Code hooks schema to use matcher+hooks array format (#62)
