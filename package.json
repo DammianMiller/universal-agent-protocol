@@ -1,13 +1,12 @@
 {
   "name": "@miller-tech/uap",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "description": "Autonomous AI agent memory system with CLAUDE.md protocol enforcement",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "uap": "./dist/bin/cli.js",
-    "uap-tool-calls": "./dist/bin/tool-calls.js",
     "uap-tool-call-test": "./tools/agents/scripts/tool_call_test.py",
     "uap-tool-call-wrapper": "./tools/agents/scripts/tool_call_wrapper.py",
     "uap-template-verify": "./tools/agents/scripts/chat_template_verifier.py",
@@ -25,19 +24,17 @@
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "format": "prettier --write src/**/*.ts",
-    "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm test",
-    "install:web": "bash scripts/install-web.sh",
-    "install:desktop": "bash scripts/install-desktop.sh",
-    "install:all": "bash scripts/install.sh",
-    "install:cloakbrowser": "tsx scripts/install-cloakbrowser.ts",
+    "install:web": "bash scripts/setup/install-web.sh",
+    "install:desktop": "bash scripts/setup/install-desktop.sh",
+    "install:cloakbrowser": "tsx scripts/setup/install-cloakbrowser.ts",
     "postinstall": "echo '\n✨ Run: npx universal-agent-protocol init --interactive'",
     "version:patch": "bash scripts/version-bump.sh patch",
     "version:minor": "bash scripts/version-bump.sh minor",
     "version:major": "bash scripts/version-bump.sh major",
-    "update-uap": "bash scripts/update-uap-compliance.sh",
-    "verify-uap": "bash scripts/verify-compliance.sh",
-    "check-claude": "bash scripts/verify-compliance.sh"
+    "update-uap": "bash scripts/maintenance/update-uap-compliance.sh",
+    "verify-uap": "bash scripts/maintenance/verify-compliance.sh",
+    "check-claude": "bash scripts/maintenance/verify-compliance.sh"
   },
   "keywords": [
     "claude",
@@ -107,11 +104,13 @@
   "files": [
     "dist",
     "docs",
-    "benchmark-results",
+    "config",
     "templates",
     "tools/agents",
-    "scripts/install-cloakbrowser.ts",
-    "scripts/convert-policy-to-claude.ts",
+    "scripts/setup",
+    "scripts/version-bump.sh",
+    "scripts/validate-build.sh",
+    "scripts/maintenance",
     "README.md",
     "LICENSE"
   ]
