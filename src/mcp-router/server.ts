@@ -4,6 +4,8 @@
  * Achieves 98%+ token reduction by hiding individual tool definitions
  */
 
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
 import { loadConfigFromPaths, loadConfigFromFile } from './config/parser.js';
 import { ToolSearchIndex } from './search/fuzzy.js';
 import { McpClientPool } from './executor/client.js';
@@ -206,8 +208,6 @@ const MAX_BUFFER_BYTES = 10 * 1024 * 1024; // 10MB max stdin buffer
 // ESM-compatible version reader for TypeScript modules
 const PKG_VERSION = (() => {
   try {
-    const { readFileSync } = require('fs');
-    const { join, dirname } = require('path');
     const pkg = JSON.parse(
       readFileSync(
         join(dirname(new URL(import.meta.url).pathname), '..', '..', 'package.json'),

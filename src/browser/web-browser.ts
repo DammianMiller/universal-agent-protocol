@@ -71,7 +71,7 @@ export class WebBrowser {
     await this.page!['screenshot']({ path });
   }
 
-  async evaluate<T>(script: string | Function): Promise<T> {
+  async evaluate<T>(script: string | ((arg: unknown) => unknown)): Promise<T> {
     if (!this.page) throw new Error('Browser not initialized');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const page: any = this.page;

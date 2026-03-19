@@ -18,14 +18,21 @@ if [ -f "$DB_PATH" ]; then
   " 2>/dev/null || true
 fi
 
-# Clean up all active agents and work claims
+# FIX C: Only clean up agents that have been idle for extended periods (>30 min)
+# This prevents premature cleanup during normal session pauses
 if [ -f "$COORD_DB" ]; then
   sqlite3 "$COORD_DB" "
     UPDATE work_announcements SET completed_at = '$TIMESTAMP'
-    WHERE completed_at IS NULL;
-    DELETE FROM work_claims;
+    WHERE completed_at IS NULL AND agent_id IN (
+      SELECT id FROM agent_registry
+      WHERE status IN ('active', 'idle') AND last_heartbeat < datetime('now', '-30 minutes')
+    );
+    DELETE FROM work_claims WHERE agent_id IN (
+      SELECT id FROM agent_registry
+      WHERE status IN ('active', 'idle') AND last_heartbeat < datetime('now', '-30 minutes')
+    );
     UPDATE agent_registry SET status = 'completed'
-    WHERE status IN ('active', 'idle');
+    WHERE status IN ('active', 'idle') AND last_heartbeat < datetime('now', '-30 minutes');
   " 2>/dev/null || true
 fi
 

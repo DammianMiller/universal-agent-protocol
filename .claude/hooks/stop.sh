@@ -115,20 +115,21 @@ if [ -f "$DB_PATH" ]; then
 fi
 
 # Mark agent as completed in coordination DB
+# FIX A: Increased timeout from 5 minutes to 30 minutes to prevent premature cleanup
 if [ -f "$COORD_DB" ]; then
   # Complete all active announcements for agents from this session
   sqlite3 "$COORD_DB" "
     UPDATE work_announcements SET completed_at = datetime('now')
     WHERE completed_at IS NULL AND agent_id IN (
       SELECT id FROM agent_registry
-      WHERE status = 'active' AND last_heartbeat >= datetime('now', '-5 minutes')
+      WHERE status = 'active' AND last_heartbeat >= datetime('now', '-30 minutes')
     );
     DELETE FROM work_claims WHERE agent_id IN (
       SELECT id FROM agent_registry
-      WHERE status = 'active' AND last_heartbeat >= datetime('now', '-5 minutes')
+      WHERE status = 'active' AND last_heartbeat >= datetime('now', '-30 minutes')
     );
     UPDATE agent_registry SET status = 'completed'
-    WHERE status = 'active' AND last_heartbeat >= datetime('now', '-5 minutes');
+    WHERE status = 'active' AND last_heartbeat >= datetime('now', '-30 minutes');
   " 2>/dev/null || true
 fi
 

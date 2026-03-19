@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const PolicySchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
-  category: z.enum(['image', 'code', 'security', 'testing', 'ui', 'automation', 'custom']),
+  category: z.enum(['image', 'code', 'security', 'testing', 'ui', 'automation', 'workflow', 'custom']),
   level: z.enum(['REQUIRED', 'RECOMMENDED', 'OPTIONAL']),
   enforcementStage: z.enum(['pre-exec', 'post-exec', 'review', 'always']).default('pre-exec'),
   rawMarkdown: z.string(),

@@ -83,5 +83,14 @@ if echo "$CMD" | grep -qE "(sed|awk).*package\.json.*(version|\"version\")|((sed
   exit 2
 fi
 
+# FIX D: Send heartbeat ping before each tool call to prevent idle timeout
+# This ensures the agent stays active during long-running operations
+if [ -n "${UAP_AGENT_ID:-}" ]; then
+  COORD_DB="${PROJECT_DIR:-.}/agents/data/coordination/coordination.db"
+  if [ -f "$COORD_DB" ]; then
+    sqlite3 "$COORD_DB" "UPDATE agent_registry SET last_heartbeat=datetime('now') WHERE id='${UAP_AGENT_ID}';" 2>/dev/null || true
+  fi
+fi
+
 # Command allowed
 exit 0
