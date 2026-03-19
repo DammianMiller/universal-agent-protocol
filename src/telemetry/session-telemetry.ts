@@ -1115,6 +1115,14 @@ export function resetStats(): void {
   _stats = null;
 }
 
+/**
+ * Get a snapshot of the current session stats for the web dashboard.
+ * Returns null if no session has been initialized.
+ */
+export function getSessionSnapshot(): ReturnType<typeof getStats> | null {
+  return _stats ? getStats() : null;
+}
+
 // ─── Memory Management & LRU Eviction ───
 
 function trimMapLRU<K, V>(map: Map<K, V>, maxSize: number): void {
