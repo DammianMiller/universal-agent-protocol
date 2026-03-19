@@ -81,12 +81,23 @@ export interface ModelData {
   totalCost: number;
 }
 
+export interface TaskItem {
+  id: string;
+  title: string;
+  type: string;
+  status: string;
+  priority: number;
+  assignee: string | null;
+  updatedAt: string;
+}
+
 export interface TaskData {
   total: number;
   done: number;
   inProgress: number;
   blocked: number;
   open: number;
+  items: TaskItem[];
 }
 
 export interface CoordData {
@@ -475,7 +486,7 @@ function getModelData(cwd: string): ModelData {
 
 function getTaskData(cwd: string): TaskData {
   const taskDbPath = join(cwd, '.uap/tasks/tasks.db');
-  const result: TaskData = { total: 0, done: 0, inProgress: 0, blocked: 0, open: 0 };
+  const result: TaskData = { total: 0, done: 0, inProgress: 0, blocked: 0, open: 0, items: [] };
 
   if (existsSync(taskDbPath)) {
     try {
@@ -497,6 +508,35 @@ function getTaskData(cwd: string): TaskData {
       result.open = (
         db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status='open'").get() as { c: number }
       ).c;
+
+      // Fetch individual task items for kanban board (most recent 50)
+      const rows = db.prepare(
+        `SELECT id, title, type, status, priority, assignee, updated_at
+         FROM tasks
+         WHERE status NOT IN ('done', 'wont_do')
+         ORDER BY priority ASC, updated_at DESC
+         LIMIT 50`
+      ).all() as Array<{ id: string; title: string; type: string; status: string; priority: number; assignee: string | null; updated_at: string }>;
+
+      // Also fetch recent done/wont_do (last 10)
+      const doneRows = db.prepare(
+        `SELECT id, title, type, status, priority, assignee, updated_at
+         FROM tasks
+         WHERE status IN ('done', 'wont_do')
+         ORDER BY updated_at DESC
+         LIMIT 10`
+      ).all() as Array<{ id: string; title: string; type: string; status: string; priority: number; assignee: string | null; updated_at: string }>;
+
+      result.items = [...rows, ...doneRows].map(r => ({
+        id: r.id,
+        title: r.title,
+        type: r.type,
+        status: r.status,
+        priority: r.priority,
+        assignee: r.assignee,
+        updatedAt: r.updated_at,
+      }));
+
       db.close();
     } catch {
       /* ignore */

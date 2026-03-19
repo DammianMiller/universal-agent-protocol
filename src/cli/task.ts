@@ -40,6 +40,7 @@ type TaskAction =
   | 'claim'
   | 'release'
   | 'stats'
+  | 'board'
   | 'sync'
   | 'compact';
 
@@ -130,6 +131,9 @@ export async function taskCommand(action: TaskAction, options: TaskOptions = {})
       break;
     case 'stats':
       await showStats(service, options);
+      break;
+    case 'board':
+      await showBoard(service, options);
       break;
     case 'sync':
       await syncTasks(service, options);
@@ -732,6 +736,78 @@ async function releaseTask(service: TaskService, options: TaskOptions): Promise<
     console.error(chalk.red(error instanceof Error ? error.message : String(error)));
     process.exit(1);
   }
+}
+
+async function showBoard(service: TaskService, _options: TaskOptions): Promise<void> {
+  const allTasks = service.list({});
+  const stats = service.getStats();
+
+  // Group tasks by status
+  const columns: Record<string, typeof allTasks> = {
+    open: allTasks.filter(t => t.status === 'open'),
+    in_progress: allTasks.filter(t => t.status === 'in_progress'),
+    blocked: allTasks.filter(t => t.status === 'blocked'),
+    done: allTasks.filter(t => t.status === 'done').slice(0, 10),
+    wont_do: allTasks.filter(t => t.status === 'wont_do').slice(0, 5),
+  };
+
+  const colHeaders: Record<string, { label: string; color: typeof chalk.green }> = {
+    open: { label: `${STATUS_ICONS.open} Open`, color: chalk.white },
+    in_progress: { label: `${STATUS_ICONS.in_progress} In Progress`, color: chalk.cyan },
+    blocked: { label: `${STATUS_ICONS.blocked} Blocked`, color: chalk.red },
+    done: { label: `${STATUS_ICONS.done} Done`, color: chalk.green },
+    wont_do: { label: `${STATUS_ICONS.wont_do} Won't Do`, color: chalk.dim },
+  };
+
+  // Determine column width based on terminal
+  const termWidth = process.stdout.columns || 120;
+  const colCount = 5;
+  const colWidth = Math.max(20, Math.floor((termWidth - colCount - 1) / colCount));
+  const maxRows = Math.max(...Object.values(columns).map(c => c.length), 0);
+
+  console.log('');
+  console.log(chalk.bold.cyan('  Task Board'));
+  const completed = stats.byStatus.done + stats.byStatus.wont_do;
+  console.log(`  ${progressBar(completed, stats.total, 40, { label: 'Progress', filled: chalk.green })}`);
+  console.log(divider(termWidth - 2));
+
+  // Column headers
+  const headerLine = Object.entries(colHeaders).map(([key, { label, color }]) => {
+    const count = columns[key].length;
+    const text = `${label} (${count})`;
+    return color(text.padEnd(colWidth).slice(0, colWidth));
+  }).join(chalk.dim('\u2502'));
+  console.log(`  ${headerLine}`);
+  console.log(`  ${Array(colCount).fill('\u2500'.repeat(colWidth)).join(chalk.dim('\u253C'))}`);
+
+  // Render rows
+  for (let row = 0; row < Math.min(maxRows, 15); row++) {
+    const cells = Object.keys(columns).map(status => {
+      const tasks = columns[status];
+      if (row >= tasks.length) return ' '.repeat(colWidth);
+
+      const t = tasks[row];
+      const prioColor = t.priority === 0 ? chalk.red : t.priority === 1 ? chalk.yellow : t.priority === 2 ? chalk.blue : chalk.dim;
+      const typeIcon = TYPE_ICONS[t.type] || '\u25C6';
+      const prio = PRIORITY_LABELS[t.priority] || 'P2';
+      const titleMax = colWidth - 12;
+      const title = t.title.length > titleMax ? t.title.slice(0, titleMax - 1) + '\u2026' : t.title;
+
+      // Format: P0 icon title [id]
+      const card = `${prioColor(prio)} ${typeIcon} ${title}`;
+      // Pad to column width (accounting for ANSI codes)
+      const visLen = `${prio} ${typeIcon} ${title}`.length;
+      const pad = Math.max(0, colWidth - visLen);
+      return card + ' '.repeat(pad);
+    });
+    console.log(`  ${cells.join(chalk.dim('\u2502'))}`);
+  }
+
+  if (maxRows > 15) {
+    console.log(chalk.dim(`  ... ${maxRows - 15} more tasks not shown`));
+  }
+
+  console.log('');
 }
 
 async function showStats(service: TaskService, options: TaskOptions): Promise<void> {
