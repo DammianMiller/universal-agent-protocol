@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.9.1 (2026-03-19)
+
+- fix: dashboard display rendering — remove duplicate tool, fix box alignment, add visual width support
+
+
 ## v1.9.0 (2026-03-19)
 
 - feat: add Codex CLI integration with AGENTS.md, MCP server, skills, and hooks
