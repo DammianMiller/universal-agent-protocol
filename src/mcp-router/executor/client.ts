@@ -6,8 +6,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import type { McpServerConfig, ToolDefinition } from '../types.js';
 import { RateLimiter } from '../../utils/rate-limiter.js';
-import { getEnforcedToolRouter } from '../../policies/enforced-tool-router.js';
-
 interface JsonRpcRequest {
   jsonrpc: '2.0';
   id: number;
@@ -199,9 +197,7 @@ export class McpClient {
     });
 
     if (!response.ok) {
-      throw new Error(
-        `HTTP ${response.status} from ${this.serverName}: ${await response.text()}`
-      );
+      throw new Error(`HTTP ${response.status} from ${this.serverName}: ${await response.text()}`);
     }
 
     const result = (await response.json()) as JsonRpcResponse;
@@ -419,37 +415,7 @@ export class McpClientPool {
     this.clients.clear();
   }
 
-  /**
-   * Execute a tool call through the policy gate.
-   * Checks REQUIRED policies before forwarding to the MCP server.
-   * Falls back to direct execution if policy gate is not configured.
-   */
-  async executeToolWithPolicy(
-    serverName: string,
-    config: McpServerConfig,
-    toolName: string,
-    args: Record<string, unknown> = {}
-  ): Promise<unknown> {
-    // Rate limit check
-    if (!this.isRequestAllowed(serverName)) {
-      throw new Error(`Rate limited: ${serverName} (${this.getRemainingRequests(serverName)} remaining)`);
-    }
-
-    // Policy check (non-blocking if no policies configured)
-    try {
-      const router = getEnforcedToolRouter();
-      const check = await router.wouldAllow(toolName, { ...args, _server: serverName });
-      if (!check.allowed) {
-        throw new Error(`Policy blocked tool "${toolName}": ${check.reasons.join('; ')}`);
-      }
-    } catch (err) {
-      // If the error is a policy block, re-throw. Otherwise ignore (no policies configured).
-      if (err instanceof Error && err.message.startsWith('Policy blocked')) throw err;
-    }
-
-    const client = this.getClient(serverName, config);
-    return client.callTool(toolName, args);
-  }
+  // executeToolWithPolicy removed — execute.ts uses PolicyGate directly
 
   getConnectedServers(): string[] {
     return Array.from(this.clients.entries())

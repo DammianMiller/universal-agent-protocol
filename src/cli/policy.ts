@@ -13,7 +13,9 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { getPolicyGate } from '../policies/policy-gate.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { getPolicyToolRegistry } from '../policies/policy-tools.js';
+import { convertPolicyToClaude } from '../policies/convert-policy-to-claude.js';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 const POLICY_DIR = join(process.cwd(), 'src', 'policies', 'schemas', 'policies');
@@ -200,4 +202,192 @@ export function registerPolicyCommands(program: Command): void {
     .command('status')
     .description('Show detailed policy enforcement status')
     .action(statusCommand);
+
+  // ── Commands merged from bin/policy.ts ──────────────────────────────
+
+  policy
+    .command('add')
+    .description('Add a new policy from markdown file')
+    .requiredOption('-f, --file <path>', 'Path to policy markdown file')
+    .option('-c, --category <name>', 'Policy category', 'custom')
+    .option(
+      '-l, --level <level>',
+      'Enforcement level (REQUIRED, RECOMMENDED, OPTIONAL)',
+      'RECOMMENDED'
+    )
+    .option('-t, --tags <tags>', 'Comma-separated tags', '')
+    .action(async (options: { file: string; category: string; level: string; tags: string }) => {
+      const memory = getPolicyMemoryManager();
+      const rawMarkdown = readFileSync(options.file, 'utf-8');
+      const tags = options.tags ? options.tags.split(',').map((t: string) => t.trim()) : [];
+      const validLevels = ['REQUIRED', 'RECOMMENDED', 'OPTIONAL'];
+      const level = validLevels.includes(options.level) ? options.level : 'RECOMMENDED';
+      const policyId = await memory.storeRawPolicy(rawMarkdown, {
+        category: options.category as
+          | 'custom'
+          | 'security'
+          | 'testing'
+          | 'code'
+          | 'ui'
+          | 'automation'
+          | 'image',
+        level: level as 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL',
+        tags,
+      });
+      console.log(chalk.green(`Policy stored with ID: ${policyId}`));
+    });
+
+  policy
+    .command('convert')
+    .description('Convert raw policy to CLAUDE.md format')
+    .requiredOption('-i, --input <id>', 'Policy ID or path to markdown file')
+    .option('-o, --output <path>', 'Output file path')
+    .action(async (options: { input: string; output?: string }) => {
+      let rawMarkdown: string;
+      if (options.input.endsWith('.md')) {
+        rawMarkdown = readFileSync(options.input, 'utf-8');
+      } else {
+        const memory = getPolicyMemoryManager();
+        const p = await memory.getPolicy(options.input);
+        if (!p) throw new Error(`Policy ${options.input} not found`);
+        rawMarkdown = p.rawMarkdown;
+      }
+      const converted = convertPolicyToClaude(rawMarkdown);
+      const outputPath = options.output || `converted-${Date.now()}.md`;
+      writeFileSync(outputPath, converted);
+      console.log(chalk.green(`Converted to: ${outputPath}`));
+    });
+
+  policy
+    .command('get-relevant')
+    .description('Get policies relevant to current task context')
+    .requiredOption('-t, --task <text>', 'Task description or context')
+    .option('--top <n>', 'Number of policies to retrieve', '3')
+    .action(async (options: { task: string; top: string }) => {
+      const memory = getPolicyMemoryManager();
+      const policies = await memory.getRelevantPolicies(options.task, parseInt(options.top));
+      console.log(chalk.bold('\nRelevant Policies:\n'));
+      for (const p of policies) {
+        const preview = p.rawMarkdown.split('\n').slice(0, 2).join('\n     ');
+        console.log(`  ${chalk.cyan(`[${p.level}]`)} ${p.name}`);
+        console.log(`     ${preview}`);
+        console.log('');
+      }
+    });
+
+  policy
+    .command('add-tool')
+    .description('Add Python tool code to a policy')
+    .requiredOption('-p, --policy <id>', 'Policy ID')
+    .requiredOption('-t, --tool <name>', 'Tool name')
+    .requiredOption('-c, --code <file>', 'Path to Python code file')
+    .action(async (options: { policy: string; tool: string; code: string }) => {
+      const registry = getPolicyToolRegistry();
+      const pythonCode = readFileSync(options.code, 'utf-8');
+      await registry.storeToolCode(options.policy, options.tool, pythonCode);
+      console.log(chalk.green(`Tool "${options.tool}" added to policy ${options.policy}`));
+    });
+
+  policy
+    .command('check')
+    .description('Check if an operation would be allowed by policies')
+    .requiredOption('-o, --operation <name>', 'Operation name')
+    .option('-a, --args <json>', 'JSON arguments', '{}')
+    .action(async (options: { operation: string; args: string }) => {
+      const gate = getPolicyGate();
+      const args = JSON.parse(options.args);
+      const result = await gate.checkPolicies(options.operation, args);
+      if (result.allowed) {
+        console.log(
+          chalk.green(`ALLOWED: Operation "${options.operation}" passes all policy checks`)
+        );
+      } else {
+        console.log(chalk.red(`BLOCKED: Operation "${options.operation}" blocked by:`));
+        for (const block of result.blockedBy) {
+          console.log(`  ${chalk.red(`[${block.policyName}]`)} ${block.reason}`);
+        }
+      }
+    });
+
+  policy
+    .command('audit')
+    .description('Show policy enforcement audit trail')
+    .option('-p, --policy <id>', 'Filter by policy ID')
+    .option('-n, --limit <n>', 'Number of entries', '20')
+    .action(async (options: { policy?: string; limit: string }) => {
+      const gate = getPolicyGate();
+      const entries = await gate.getAuditTrail(options.policy, parseInt(options.limit));
+      console.log(chalk.bold('\nAudit Trail:\n'));
+      for (const entry of entries) {
+        const icon = entry.allowed ? chalk.green('PASS') : chalk.red('BLOCK');
+        console.log(`  [${icon}] ${entry.operation} at ${entry.executedAt}`);
+        console.log(`     Policy: ${entry.policyId}`);
+        if (entry.reason) console.log(`     Reason: ${entry.reason}`);
+        console.log('');
+      }
+    });
+
+  policy
+    .command('toggle <id>')
+    .description('Toggle a policy on or off')
+    .option('--on', 'Enable the policy')
+    .option('--off', 'Disable the policy')
+    .action(async (id: string, options: { on?: boolean; off?: boolean }) => {
+      const memory = getPolicyMemoryManager();
+      const p = await memory.getPolicy(id);
+      if (!p) {
+        console.error(chalk.red(`Policy ${id} not found`));
+        process.exit(1);
+      }
+      const newState = options.off ? false : options.on ? true : !p.isActive;
+      await memory.togglePolicy(id, newState);
+      console.log(chalk.green(`Policy "${p.name}" is now ${newState ? 'ACTIVE' : 'INACTIVE'}`));
+    });
+
+  policy
+    .command('stage <id>')
+    .description('Change the enforcement stage of a policy')
+    .requiredOption('-s, --stage <stage>', 'Enforcement stage: pre-exec, post-exec, review, always')
+    .action(async (id: string, options: { stage: string }) => {
+      const validStages = ['pre-exec', 'post-exec', 'review', 'always'];
+      if (!validStages.includes(options.stage)) {
+        console.error(
+          chalk.red(`Invalid stage "${options.stage}". Must be one of: ${validStages.join(', ')}`)
+        );
+        process.exit(1);
+      }
+      const memory = getPolicyMemoryManager();
+      const p = await memory.getPolicy(id);
+      if (!p) {
+        console.error(chalk.red(`Policy ${id} not found`));
+        process.exit(1);
+      }
+      await memory.setEnforcementStage(
+        id,
+        options.stage as 'pre-exec' | 'post-exec' | 'review' | 'always'
+      );
+      console.log(chalk.green(`Policy "${p.name}" enforcement stage set to: ${options.stage}`));
+    });
+
+  policy
+    .command('level <id>')
+    .description('Change the enforcement level of a policy')
+    .requiredOption('-l, --level <level>', 'Enforcement level: REQUIRED, RECOMMENDED, OPTIONAL')
+    .action(async (id: string, options: { level: string }) => {
+      const validLevels = ['REQUIRED', 'RECOMMENDED', 'OPTIONAL'];
+      if (!validLevels.includes(options.level)) {
+        console.error(
+          chalk.red(`Invalid level "${options.level}". Must be one of: ${validLevels.join(', ')}`)
+        );
+        process.exit(1);
+      }
+      const memory = getPolicyMemoryManager();
+      const p = await memory.getPolicy(id);
+      if (!p) {
+        console.error(chalk.red(`Policy ${id} not found`));
+        process.exit(1);
+      }
+      await memory.setLevel(id, options.level as 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL');
+      console.log(chalk.green(`Policy "${p.name}" enforcement level set to: ${options.level}`));
+    });
 }

@@ -68,7 +68,6 @@ benchmark-env/
 
 # Generated analysis files
 *.uap.analysis.json
-*.uap.analysis.json
 
 # npm pack tarballs
 *.tgz

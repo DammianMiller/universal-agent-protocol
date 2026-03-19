@@ -757,6 +757,10 @@ export function costTrack(
     operation,
   };
   s.costs.push(entry);
+  // Cap costs array to prevent unbounded growth in long sessions (matches calls cap of 500)
+  if (s.costs.length > 500) {
+    s.costs = s.costs.slice(-500);
+  }
   s.totalCostUsd += costUsd;
 
   // Estimate what it would have cost without UAP optimizations (no caching, no token savings, no batching)
@@ -1178,18 +1182,15 @@ export function getSessionSnapshot(): ReturnType<typeof getStats> | null {
 function trimMapLRU<K, V>(map: Map<K, V>, maxSize: number): void {
   if (map.size <= maxSize) return;
 
-  const entries = [...map.entries()];
-  // Sort by last access time (add lastAccessed property to your types)
-  entries.sort((a, b) => {
-    const aLastAccessed = (a[1] as { lastAccessed?: number }).lastAccessed || 0;
-    const bLastAccessed = (b[1] as { lastAccessed?: number }).lastAccessed || 0;
-    return aLastAccessed - bLastAccessed;
-  });
-
-  // Remove oldest half
-  const toRemove = Math.floor(entries.length / 2);
-  for (let i = 0; i < toRemove; i++) {
-    map.delete(entries[i][0]);
+  // Map insertion order is preserved in JS Maps — oldest entries are first.
+  // Since we don't have a reliable lastAccessed field on all value types,
+  // use insertion order as a proxy: remove the first (oldest-inserted) entries.
+  const toRemove = map.size - maxSize;
+  let removed = 0;
+  for (const key of map.keys()) {
+    if (removed >= toRemove) break;
+    map.delete(key);
+    removed++;
   }
 }
 
@@ -1344,7 +1345,8 @@ function renderDashboard(s: SessionStats, currentInterval: number): void {
   const w = 80;
   const line = BOX.h.repeat(w);
   const sessionShort = s.sessionId.length > 12 ? s.sessionId.slice(0, 12) + '…' : s.sessionId;
-  const intervalSuffix = currentInterval > DASHBOARD_CONFIG.BASE_INTERVAL ? ` ${DIM}(${currentInterval}ms)${RESET}` : '';
+  const intervalSuffix =
+    currentInterval > DASHBOARD_CONFIG.BASE_INTERVAL ? ` ${DIM}(${currentInterval}ms)${RESET}` : '';
   console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
   console.log(
     boxLine(

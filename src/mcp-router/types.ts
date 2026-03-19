@@ -55,11 +55,7 @@ export interface OutputCompressionStats {
   method: 'passthrough' | 'truncated' | 'indexed';
 }
 
-export interface ToolRegistry {
-  tools: Map<string, ToolDefinition>;
-  servers: Map<string, McpServerConfig>;
-  searchIndex: unknown; // Fuse instance
-}
+// ToolRegistry interface removed — was never implemented or used
 
 export interface RouterStats {
   totalServers: number;

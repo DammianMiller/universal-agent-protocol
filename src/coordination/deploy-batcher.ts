@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { loadUapConfig } from '../utils/config-loader.js';
 import type Database from 'better-sqlite3';
 import { CoordinationDatabase, getDefaultCoordinationDbPath } from './database.js';
 import type {
@@ -76,14 +77,11 @@ export class DeployBatcher {
       // Try loading from .uap.json timeOptimization config
       let loaded = false;
       try {
-        const configPath = join(process.cwd(), '.uap.json');
-        if (existsSync(configPath)) {
-          const uapConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
-          const bw = uapConfig?.timeOptimization?.batchWindows;
-          if (bw && typeof bw === 'object') {
-            this.dynamicWindows = { ...DEFAULT_DYNAMIC_WINDOWS, ...bw };
-            loaded = true;
-          }
+        const cfg = loadUapConfig();
+        const bw = cfg?.timeOptimization?.batchWindows;
+        if (bw && typeof bw === 'object') {
+          this.dynamicWindows = { ...DEFAULT_DYNAMIC_WINDOWS, ...bw };
+          loaded = true;
         }
       } catch {
         // Config load failure is non-fatal
@@ -806,6 +804,8 @@ export class DeployBatcher {
     if (existsSync(configPath)) {
       try {
         const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+        // Note: 'deploy.batchWindows' is a non-schema field (not in AgentContextConfigSchema).
+        // Using raw JSON.parse intentionally to read this legacy config path.
         if (raw?.deploy?.batchWindows) {
           const bw = raw.deploy.batchWindows;
           if (typeof bw.commit === 'number') fileWindows.commit = bw.commit;

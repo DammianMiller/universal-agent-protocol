@@ -32,9 +32,7 @@ function extractZodFields(content: string): Map<string, string> {
   const fields = new Map<string, string>();
 
   // Match z.object({ ... }) blocks
-  const objectBlocks = content.matchAll(
-    /z\.object\(\s*\{([\s\S]*?)\}\s*\)/g
-  );
+  const objectBlocks = content.matchAll(/z\.object\(\s*\{([\s\S]*?)\}\s*\)/g);
 
   for (const block of objectBlocks) {
     const body = block[1];
@@ -65,9 +63,7 @@ function extractTypeScriptFields(content: string): Map<string, string> {
   for (const block of blocks) {
     const body = block[1];
     // Match field: type patterns (including optional ?)
-    const fieldMatches = body.matchAll(
-      /(\w+)\??\s*:\s*([^;]+)/g
-    );
+    const fieldMatches = body.matchAll(/(\w+)\??\s*:\s*([^;]+)/g);
     for (const fm of fieldMatches) {
       fields.set(fm[1], fm[2].trim());
     }
@@ -182,12 +178,14 @@ export async function diffFileSchema(
       // File was deleted — all fields removed (breaking)
       return {
         file: filePath,
-        changes: [{
-          type: 'removed',
-          path: filePath,
-          description: `File "${filePath}" was deleted`,
-          breaking: true,
-        }],
+        changes: [
+          {
+            type: 'removed',
+            path: filePath,
+            description: `File "${filePath}" was deleted`,
+            breaking: true,
+          },
+        ],
         breaking: true,
       };
     }
@@ -226,12 +224,17 @@ export async function diffFileSchema(
     }
 
     // JSON schema files
-    if (filePath.endsWith('.json') && (filePath.includes('schema') || filePath.includes('config'))) {
+    if (
+      filePath.endsWith('.json') &&
+      (filePath.includes('schema') || filePath.includes('config'))
+    ) {
       try {
         const beforeObj = JSON.parse(beforeContent);
         const afterObj = JSON.parse(afterContent);
-        const beforeKeys = new Map(Object.keys(flattenObject(beforeObj)).map(k => [k, typeof (flattenObject(beforeObj) as any)[k]]));
-        const afterKeys = new Map(Object.keys(flattenObject(afterObj)).map(k => [k, typeof (flattenObject(afterObj) as any)[k]]));
+        const flatBefore = flattenObject(beforeObj) as Record<string, unknown>;
+        const flatAfter = flattenObject(afterObj) as Record<string, unknown>;
+        const beforeKeys = new Map(Object.keys(flatBefore).map((k) => [k, typeof flatBefore[k]]));
+        const afterKeys = new Map(Object.keys(flatAfter).map((k) => [k, typeof flatAfter[k]]));
         changes.push(...diffFields(beforeKeys, afterKeys, 'json'));
       } catch {
         // Not valid JSON
@@ -244,7 +247,7 @@ export async function diffFileSchema(
   return {
     file: filePath,
     changes,
-    breaking: changes.some(c => c.breaking),
+    breaking: changes.some((c) => c.breaking),
   };
 }
 
@@ -267,7 +270,9 @@ function flattenObject(obj: Record<string, unknown>, prefix: string = ''): Recor
 /**
  * Run schema diff on all changed files that contain schemas.
  */
-export async function schemaDiffCommand(baseBranch: string = 'HEAD~1'): Promise<SchemaDiffResult[]> {
+export async function schemaDiffCommand(
+  baseBranch: string = 'HEAD~1'
+): Promise<SchemaDiffResult[]> {
   const results: SchemaDiffResult[] = [];
 
   try {
@@ -276,23 +281,26 @@ export async function schemaDiffCommand(baseBranch: string = 'HEAD~1'): Promise<
     // Get list of changed files
     const changedFiles = execSync(`git diff --name-only ${baseBranch}`, {
       encoding: 'utf-8',
-    }).trim().split('\n').filter(Boolean);
+    })
+      .trim()
+      .split('\n')
+      .filter(Boolean);
 
     // Filter to schema-relevant files
-    const schemaFiles = changedFiles.filter(f =>
-      f.includes('schema') ||
-      f.includes('types') ||
-      f.includes('config') ||
-      f.includes('database') ||
-      f.endsWith('.sql') ||
-      (f.endsWith('.ts') && (
-        f.includes('types/') ||
-        f.includes('schemas/') ||
-        f.includes('coordination/database') ||
-        f.includes('memory/short-term/schema') ||
-        f.includes('tasks/database') ||
-        f.includes('tasks/types')
-      ))
+    const schemaFiles = changedFiles.filter(
+      (f) =>
+        f.includes('schema') ||
+        f.includes('types') ||
+        f.includes('config') ||
+        f.includes('database') ||
+        f.endsWith('.sql') ||
+        (f.endsWith('.ts') &&
+          (f.includes('types/') ||
+            f.includes('schemas/') ||
+            f.includes('coordination/database') ||
+            f.includes('memory/short-term/schema') ||
+            f.includes('tasks/database') ||
+            f.includes('tasks/types')))
     );
 
     for (const file of schemaFiles) {
@@ -306,7 +314,7 @@ export async function schemaDiffCommand(baseBranch: string = 'HEAD~1'): Promise<
     if (results.length === 0) {
       console.log('No schema changes detected.');
     } else {
-      const hasBreaking = results.some(r => r.breaking);
+      const hasBreaking = results.some((r) => r.breaking);
       console.log(`\nSchema Diff Results (${results.length} files with changes):`);
       console.log(hasBreaking ? '  BREAKING CHANGES DETECTED' : '  No breaking changes');
       console.log('');
@@ -333,7 +341,7 @@ export function registerSchemaDiffCommand(program: Command): void {
     .option('-b, --base <branch>', 'Base branch/commit to compare against', 'HEAD~1')
     .action(async (options: { base: string }) => {
       const results = await schemaDiffCommand(options.base);
-      const hasBreaking = results.some(r => r.breaking);
+      const hasBreaking = results.some((r) => r.breaking);
       if (hasBreaking) {
         console.log('\nBreaking changes require explicit approval before proceeding.');
         process.exitCode = 1;

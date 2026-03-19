@@ -177,15 +177,18 @@ describe('12: Workflow defaults fixed', () => {
 // ── 13: EnforcedToolRouter wired ──
 
 describe('13: EnforcedToolRouter wired into MCP client pool', () => {
-  it('should import getEnforcedToolRouter in client.ts', () => {
-    const source = readFileSync('src/mcp-router/executor/client.ts', 'utf-8');
-    expect(source).toContain('import { getEnforcedToolRouter }');
+  it('should use PolicyGate in execute.ts instead of executeToolWithPolicy', () => {
+    // executeToolWithPolicy was removed — policy enforcement is handled by PolicyGate in execute.ts
+    const source = readFileSync('src/mcp-router/tools/execute.ts', 'utf-8');
+    expect(source).toContain('PolicyGate');
   });
 
-  it('McpClientPool should have executeToolWithPolicy method', async () => {
+  it('McpClientPool should NOT have executeToolWithPolicy (removed dead code)', async () => {
     const { McpClientPool } = await import('../src/mcp-router/executor/client.js');
     const pool = new McpClientPool();
-    expect(typeof pool.executeToolWithPolicy).toBe('function');
+    expect(typeof (pool as unknown as Record<string, unknown>).executeToolWithPolicy).toBe(
+      'undefined'
+    );
   });
 });
 

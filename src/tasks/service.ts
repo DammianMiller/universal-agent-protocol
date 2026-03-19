@@ -401,10 +401,13 @@ export class TaskService {
 
   // ==================== Query Operations ====================
 
+  private _hasDueDateColumn: boolean | null = null;
   private hasDueDateColumn(): boolean {
+    if (this._hasDueDateColumn !== null) return this._hasDueDateColumn;
     try {
       const columns = this.db.pragma('table_info(tasks)') as Array<{ name: string }>;
-      return columns.some((c) => c.name === 'due_date');
+      this._hasDueDateColumn = columns.some((c) => c.name === 'due_date');
+      return this._hasDueDateColumn;
     } catch {
       return false;
     }
@@ -689,6 +692,12 @@ export class TaskService {
     const visited = new Set<string>();
     const queue = [toTask];
 
+    // Prepare statement once outside the loop (was previously inside, causing N preparations)
+    const stmt = this.db.prepare(`
+      SELECT to_task FROM task_dependencies
+      WHERE from_task = ? AND dep_type = 'blocks'
+    `);
+
     while (queue.length > 0) {
       const current = queue.shift()!;
       if (current === fromTask) {
@@ -699,11 +708,6 @@ export class TaskService {
       }
       visited.add(current);
 
-      // Get tasks that current blocks
-      const stmt = this.db.prepare(`
-        SELECT to_task FROM task_dependencies
-        WHERE from_task = ? AND dep_type = 'blocks'
-      `);
       const deps = stmt.all(current) as Array<{ to_task: string }>;
       queue.push(...deps.map((d) => d.to_task));
     }

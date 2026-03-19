@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { existsSync, readdirSync, mkdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { simpleGit, SimpleGit } from 'simple-git';
 import Database from 'better-sqlite3';
@@ -284,10 +284,16 @@ async function ensureWorktree(cwd: string, _git: SimpleGit, strict?: boolean): P
       }
     }
 
-    const config = existsSync(configPath)
-      ? JSON.parse(readFileSync(configPath, 'utf-8'))
-      : JSON.parse(readFileSync(join(cwd, '..', '..', '.uap.json'), 'utf-8'));
-    const worktreeEnabled = config.template?.sections?.worktreeWorkflow !== false;
+    const { loadUapConfigRaw } = await import('../utils/config-loader.js');
+    const config = loadUapConfigRaw(cwd);
+    if (!config) {
+      spinner.succeed('No .uap.json found — worktree check skipped');
+      return;
+    }
+    const worktreeEnabled = (config as Record<string, unknown>).template
+      ? ((config.template as Record<string, unknown>)?.sections as Record<string, unknown>)
+          ?.worktreeWorkflow !== false
+      : true;
 
     if (!worktreeEnabled) {
       if (strict) {
@@ -388,13 +394,6 @@ export function isPathInsideWorktree(filePath: string): boolean {
  * Runtime data directories and node_modules are exempt.
  */
 export function isExemptFromWorktree(filePath: string): boolean {
-  const exemptPaths = [
-    'agents/data/',
-    'node_modules/',
-    '.uap-backups/',
-    '.uap/',
-    '.git/',
-    'dist/',
-  ];
+  const exemptPaths = ['agents/data/', 'node_modules/', '.uap-backups/', '.uap/', '.git/', 'dist/'];
   return exemptPaths.some((exempt) => filePath.includes(exempt));
 }

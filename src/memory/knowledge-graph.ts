@@ -54,6 +54,7 @@ export class KnowledgeGraph {
     // Optimize for read-heavy graph queries
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
+    this.db.pragma('busy_timeout = 5000');
   }
 
   // ============================================================
@@ -333,7 +334,7 @@ export class KnowledgeGraph {
         `
       WITH RECURSIVE reachable(id, depth) AS (
         SELECT ?, 0
-        UNION
+        UNION ALL
         SELECT
           CASE WHEN r.source_id = reachable.id THEN r.target_id ELSE r.source_id END,
           reachable.depth + 1

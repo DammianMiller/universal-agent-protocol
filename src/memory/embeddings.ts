@@ -16,6 +16,7 @@ import { createHash } from 'crypto';
 import { concurrentMap } from '../utils/concurrency-pool.js';
 import { createLogger } from '../utils/logger.js';
 import { getPerformanceMonitor } from '../utils/performance-monitor.js';
+import { cosineSimilarity as sharedCosineSimilarity } from '../utils/string-similarity.js';
 
 const log = createLogger('embeddings');
 
@@ -865,24 +866,7 @@ export class EmbeddingService {
   }
 
   cosineSimilarity(a: number[], b: number[]): number {
-    if (a.length !== b.length) {
-      throw new Error('Vectors must have same dimensions');
-    }
-
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-      dotProduct += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-
-    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-    if (denominator === 0) return 0;
-
-    return dotProduct / denominator;
+    return sharedCosineSimilarity(a, b);
   }
 
   getDimensions(): number {

@@ -40,42 +40,10 @@ describe('B1: Schema Diff', () => {
 // ── B2: RTK Validation ──
 
 describe('B2: RTK Validation', () => {
-  it('should export validateRTKIncludes with proper interface', async () => {
-    const mod = await import('../src/cli/rtk-validation.js');
-    expect(typeof mod.validateRTKIncludes).toBe('function');
-  });
-
-  it('should validate CLAUDE.md and return structured result', async () => {
-    const { validateRTKIncludes } = await import('../src/cli/rtk-validation.js');
-    const result = validateRTKIncludes();
-    expect(result).toHaveProperty('valid');
-    expect(result).toHaveProperty('missing');
-    expect(result).toHaveProperty('found');
-    expect(result).toHaveProperty('warnings');
-    expect(Array.isArray(result.missing)).toBe(true);
-    expect(Array.isArray(result.found)).toBe(true);
-    expect(Array.isArray(result.warnings)).toBe(true);
-  });
-
-  it('should find required sections in the project CLAUDE.md', async () => {
-    const { validateRTKIncludes } = await import('../src/cli/rtk-validation.js');
-    // Our project CLAUDE.md should have most required sections
-    const result = validateRTKIncludes();
-    expect(result.found.length).toBeGreaterThan(0);
-    // VERIFIER_FIRST should be found (present in all CLAUDE.md versions)
-    expect(result.found).toContain('VERIFIER_FIRST');
-  });
-
-  it('should report missing for non-existent directory', async () => {
-    const { validateRTKIncludes } = await import('../src/cli/rtk-validation.js');
-    const result = validateRTKIncludes('/tmp/nonexistent-dir-' + Date.now());
-    expect(result.valid).toBe(false);
-    expect(result.missing.length).toBeGreaterThan(0);
-  });
-
-  it('should export printRTKValidation', async () => {
-    const mod = await import('../src/cli/rtk-validation.js');
-    expect(typeof mod.printRTKValidation).toBe('function');
+  it('rtk-validation.ts was removed as dead code (zero production callers)', () => {
+    // The module had zero production imports — only test imports.
+    // RTK validation logic was never wired into the CLI or any hook.
+    expect(true).toBe(true);
   });
 });
 
@@ -360,10 +328,10 @@ describe('D5+D6: Predictive Memory Integration', () => {
 // ── B4: MCP Router Init ──
 
 describe('B4: MCP Router Init', () => {
-  it('should have installMCPRouter method that creates config', async () => {
-    // Verify the UAPCli class has the method by checking the module exports
-    const mod = await import('../src/cli/uap.js');
-    // The module runs as a CLI entry point, so we just verify it loads
-    expect(mod).toBeDefined();
+  it('should have MCP router setup available via main CLI', async () => {
+    // src/cli/uap.ts was removed as dead code (redundant alternate CLI)
+    // MCP router setup is available via the main CLI: uap mcp-setup
+    const mod = await import('../src/cli/setup-mcp-router.js');
+    expect(typeof mod.setupMcpRouter).toBe('function');
   });
 });

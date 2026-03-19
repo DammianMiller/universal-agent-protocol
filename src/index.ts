@@ -143,6 +143,7 @@ export type { MaintenanceResult, MaintenanceConfig } from './memory/memory-maint
 export {
   jaccardSimilarity,
   contentHash,
+  cosineSimilarity,
   estimateTokensAccurate,
   simpleStem,
   fuzzyKeywordMatch,
@@ -238,7 +239,6 @@ export type {
   ToolSearchResult,
   DiscoverToolsArgs,
   ExecuteToolArgs,
-  ToolRegistry,
   RouterStats,
   RouterOptions,
 } from './mcp-router/index.js';
@@ -253,10 +253,7 @@ export * from './policies/index.js';
 export { WebBrowser, createWebBrowser } from './browser/index.js';
 
 // Dashboard (data service + server)
-export {
-  getDashboardData,
-  startDashboardServer,
-} from './dashboard/index.js';
+export { getDashboardData, startDashboardServer } from './dashboard/index.js';
 export type {
   DashboardData,
   PolicyData,
@@ -270,10 +267,7 @@ export type {
 } from './dashboard/index.js';
 
 // Predictive Memory (prefetch + learning)
-export {
-  PredictiveMemoryService,
-  getPredictiveMemoryService,
-} from './memory/predictive-memory.js';
+export { PredictiveMemoryService, getPredictiveMemoryService } from './memory/predictive-memory.js';
 
 // Context Pruner (token-budget-aware pruning)
 export { ContextPruner } from './memory/context-pruner.js';

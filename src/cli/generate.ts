@@ -1,6 +1,11 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import inquirer from 'inquirer';
+// inquirer lazy-loaded via shared utility (saves ~500ms startup)
+import { ensureInquirer as _ensureInquirer } from '../utils/lazy-imports.js';
+let inquirer: typeof import('inquirer').default;
+async function ensureInquirer(): Promise<void> {
+  inquirer = await _ensureInquirer();
+}
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
@@ -60,33 +65,7 @@ function checkDependencies(): DependencyStatus {
   return status;
 }
 
-// Print dependency status - used when verbose flag is enabled
-export function printDependencyHelp(deps: DependencyStatus): void {
-  console.log(chalk.bold('\n📦 Dependency Status:\n'));
-
-  console.log(`  ${deps.git ? '✅' : '❌'} Git: ${deps.git ? 'Available' : 'Not found'}`);
-  if (!deps.git) {
-    console.log(chalk.dim('     Install: https://git-scm.com/downloads'));
-  }
-
-  console.log(
-    `  ${deps.docker ? '✅' : '⚠️ '} Docker: ${deps.docker ? 'Available' : 'Not found (optional)'}`
-  );
-  if (!deps.docker) {
-    console.log(chalk.dim('     Install for semantic memory: https://docs.docker.com/get-docker/'));
-  }
-
-  console.log(
-    `  ${deps.qdrant ? '✅' : '⚠️ '} Qdrant: ${deps.qdrant ? 'Running' : 'Not running (optional)'}`
-  );
-  if (deps.docker && !deps.qdrant) {
-    console.log(chalk.dim('     Start with: uap memory start'));
-  } else if (!deps.docker) {
-    console.log(chalk.dim('     Requires Docker - UAP works without it (no semantic memory)'));
-  }
-
-  console.log('');
-}
+// printDependencyHelp removed — was exported but never called from any consumer
 
 export async function generateCommand(options: GenerateOptions): Promise<void> {
   const cwd = process.cwd();
@@ -172,6 +151,7 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       );
     }
 
+    await ensureInquirer();
     const { action } = await inquirer.prompt([
       {
         type: 'list',
@@ -487,11 +467,12 @@ async function generatePlatformFiles(
             },
           },
           model: existingOpencodeConfig.model ?? 'llama.cpp/qwen35-a3b-iq4xs',
-          agent: (existingOpencodeConfig.agent ?? existingOpencodeConfig.agents) ?? {
-            build: { model: 'llama.cpp/qwen35-a3b-iq4xs', temperature: 0.1 },
-            plan: { model: 'llama.cpp/qwen35-a3b-iq4xs', temperature: 0.2 },
-            memory: { model: 'llama.cpp/qwen35-a3b-iq4xs', temperature: 0.0 },
-          },
+          agent: existingOpencodeConfig.agent ??
+            existingOpencodeConfig.agents ?? {
+              build: { model: 'llama.cpp/qwen35-a3b-iq4xs', temperature: 0.1 },
+              plan: { model: 'llama.cpp/qwen35-a3b-iq4xs', temperature: 0.2 },
+              memory: { model: 'llama.cpp/qwen35-a3b-iq4xs', temperature: 0.0 },
+            },
           ...(existingOpencodeConfig.mcp ? { mcp: existingOpencodeConfig.mcp } : {}),
         };
         writeFileSync(opencodeConfigPath, JSON.stringify(opencodeConfig, null, 2));
