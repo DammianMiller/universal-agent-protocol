@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   AdaptiveCache,
   createPatternCache,
-  createQueryCache,
 } from '../../src/utils/adaptive-cache.js';
 
 describe('Adaptive Cache', () => {
@@ -178,13 +177,7 @@ describe('Adaptive Cache', () => {
     });
   });
 
-  describe('createQueryCache', () => {
-    it('should create cache with shorter TTL for queries', () => {
-      const cache = createQueryCache(50);
-
-      expect(cache.size).toBe(0);
-    });
-  });
+  // createQueryCache tests removed — function was removed in sweep 3
 
   describe('stop method', () => {
     it('should stop eviction interval', () => {

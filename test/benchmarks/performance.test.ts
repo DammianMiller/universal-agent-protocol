@@ -20,7 +20,8 @@ import { TaskService } from '../../src/tasks/service.js';
 import { TaskDatabase } from '../../src/tasks/database.js';
 import { evaluateWriteGate } from '../../src/memory/write-gate.js';
 import { SQLiteShortTermMemory } from '../../src/memory/short-term/sqlite.js';
-import { AgentScopedMemory } from '../../src/memory/agent-scoped-memory.js';
+// AgentScopedMemory removed in sweep 4 — benchmark section disabled
+// import { AgentScopedMemory } from '../../src/memory/agent-scoped-memory.js';
 import { DailyLog } from '../../src/memory/daily-log.js';
 
 // --- Helpers ---
@@ -423,75 +424,7 @@ describe('Performance Benchmarks', () => {
     });
   });
 
-  // -------------------------------------------------------
-  // 5. Agent-Scoped Memory
-  // -------------------------------------------------------
-  describe('Agent-Scoped Memory', () => {
-    const dbPath = benchPath('agent-scoped');
-    let mem: AgentScopedMemory;
-
-    beforeEach(() => {
-      cleanDb(dbPath);
-      mem = new AgentScopedMemory(dbPath);
-    });
-
-    afterEach(() => {
-      mem.close();
-      cleanDb(dbPath);
-    });
-
-    it('store latency', () => {
-      let idx = 0;
-      const stats = bench(() => {
-        mem.store(
-          `agent-${idx % 5}`,
-          `Memory entry ${idx}: discovered pattern in codebase`,
-          'observation',
-          5
-        );
-        idx++;
-      }, ITERATIONS);
-
-      allResults.push('\n[5] AGENT-SCOPED MEMORY');
-      allResults.push(formatStats('store', stats));
-      expect(stats.p95Ms).toBeLessThan(20);
-    });
-
-    it('query latency', () => {
-      // Seed 200 entries across 5 agents
-      for (let i = 0; i < 200; i++) {
-        mem.store(
-          `agent-${i % 5}`,
-          `Entry ${i}: performance testing with database optimization and caching strategies`
-        );
-      }
-
-      let idx = 0;
-      const queries = ['performance', 'database', 'caching', 'optimization'];
-      const stats = bench(() => {
-        mem.query(`agent-${idx % 5}`, queries[idx % queries.length], 10);
-        idx++;
-      }, SEARCH_ITERATIONS);
-
-      allResults.push(formatStats('query', stats));
-      expect(stats.p95Ms).toBeLessThan(30);
-    });
-
-    it('getForAgent latency', () => {
-      for (let i = 0; i < 200; i++) {
-        mem.store(`agent-${i % 5}`, `Entry ${i}: agent-scoped memory content`);
-      }
-
-      let idx = 0;
-      const stats = bench(() => {
-        mem.getForAgent(`agent-${idx % 5}`, 20);
-        idx++;
-      }, SEARCH_ITERATIONS);
-
-      allResults.push(formatStats('getForAgent(20)', stats));
-      expect(stats.p95Ms).toBeLessThan(20);
-    });
-  });
+  // Agent-Scoped Memory benchmarks removed — module deleted in sweep 4
 
   // -------------------------------------------------------
   // 6. Daily Log

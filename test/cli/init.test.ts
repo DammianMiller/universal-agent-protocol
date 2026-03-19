@@ -179,7 +179,7 @@ describe('init command config generation', () => {
   it('should generate config with correct default values', () => {
     const defaultConfig: AgentContextConfig = {
       $schema:
-        'https://raw.githubusercontent.com/DammianMiller/universal-agent-memory/main/schema.json',
+        'https://raw.githubusercontent.com/DammianMiller/universal-agent-protocol/main/schema.json',
       version: '1.0.0',
       project: {
         name: 'test-project',
@@ -236,7 +236,7 @@ describe('init command config generation', () => {
   it('should support platform-specific configuration', () => {
     const config: AgentContextConfig = {
       $schema:
-        'https://raw.githubusercontent.com/DammianMiller/universal-agent-memory/main/schema.json',
+        'https://raw.githubusercontent.com/DammianMiller/universal-agent-protocol/main/schema.json',
       version: '1.0.0',
       project: { name: 'test', defaultBranch: 'main' },
       platforms: {
@@ -271,7 +271,7 @@ describe('init command config generation', () => {
   it('should support pattern RAG configuration', () => {
     const config: AgentContextConfig = {
       $schema:
-        'https://raw.githubusercontent.com/DammianMiller/universal-agent-memory/main/schema.json',
+        'https://raw.githubusercontent.com/DammianMiller/universal-agent-protocol/main/schema.json',
       version: '1.0.0',
       project: { name: 'test', defaultBranch: 'main' },
       platforms: {},

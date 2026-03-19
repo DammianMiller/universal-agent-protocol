@@ -12,19 +12,27 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getDashboardData } from './data-service.js';
+import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { getDashboardEventBus, type DashboardEvent } from './event-stream.js';
 
 /**
  * Resolve the dashboard HTML file using multiple strategies.
+ * Tries in order:
+ *   1. Relative to this module's directory (works in-place and installed)
+ *   2. Relative to import.meta.url via fileURLToPath (ESM-safe)
+ *   3. Relative to process.cwd() (works when run from project root)
+ *   4. Relative to package.json location (works for global/npx installs)
  */
 function resolveDashboardHtml(): string | null {
   const candidates: string[] = [];
 
+  // Strategy 1: import.meta.dirname (Node >= 21.2, always set for ESM)
   if (import.meta.dirname) {
     candidates.push(join(import.meta.dirname, '../../web/dashboard.html'));
   }
 
+  // Strategy 2: import.meta.url -> fileURLToPath (works in all ESM Node versions)
   try {
     const thisDir = dirname(fileURLToPath(import.meta.url));
     candidates.push(join(thisDir, '../../web/dashboard.html'));
@@ -32,8 +40,10 @@ function resolveDashboardHtml(): string | null {
     // import.meta.url may not be a file:// URL in some bundlers
   }
 
+  // Strategy 3: process.cwd() (works when invoked from project root)
   candidates.push(join(process.cwd(), 'web/dashboard.html'));
 
+  // Strategy 4: Walk up from this file to find package.json, then resolve web/
   try {
     const thisDir = import.meta.dirname || dirname(fileURLToPath(import.meta.url));
     let dir = thisDir;
@@ -220,7 +230,7 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
         } else {
           res.writeHead(500, { 'Content-Type': 'text/html' });
           res.end(
-            '<html><body><h1>UAP Dashboard</h1><p>web/dashboard.html not found.</p></body></html>'
+            '<html><body><h1>UAP Dashboard</h1><p>web/dashboard.html not found. Searched relative to module, import.meta.url, cwd, and package.json. Ensure the UAP package is intact or run from the project root.</p></body></html>'
           );
         }
         return;
@@ -256,6 +266,7 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
   }, updateInterval);
 
   wss.on('connection', async (ws: WebSocket) => {
+    // Send initial state immediately
     try {
       const data = await getDashboardData();
       ws.send(JSON.stringify(data));
@@ -264,16 +275,35 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
     }
   });
 
+  const cwd = process.cwd();
+
   server.listen(port, host, () => {
     console.log(`UAP Dashboard server running at http://${host}:${port}`);
     console.log(`WebSocket available at ws://${host}:${port}`);
     console.log(`SSE event stream at http://${host}:${port}/api/events`);
+
+    // Seed dashboard data from project state
+    try {
+      const state = seedDashboardData(cwd);
+      console.log(
+        `Dashboard seeder: ${state.tasksCreated} tasks, ${state.deploysQueued} deploys, ${state.batchesCreated} batches`
+      );
+    } catch {
+      /* seeder failure is non-fatal */
+    }
   });
 
   return {
     close: () => {
       unsubscribe();
       clearInterval(pushInterval);
+      // Cleanup seeder (clear heartbeat, mark agent completed)
+      try {
+        cleanupSeeder(cwd);
+      } catch {
+        /* ignore */
+      }
+      // Close all SSE clients
       for (const client of sseClients) {
         try {
           client.end();

@@ -14,9 +14,10 @@ describe('CLI Source Files', () => {
     expect(content).toContain('Command');
   });
 
-  it('should have tool-calls.ts file', async () => {
-    const content = readFileSync(join(cliDir, 'tool-calls.ts'), 'utf-8');
-    expect(content).toContain('Command');
+  it('should have tool-calls command in main CLI (bin/tool-calls.ts removed as dead wrapper)', () => {
+    // bin/tool-calls.ts was a 4-line wrapper duplicated by bin/cli.ts tool-calls command
+    const cliContent = readFileSync(join(cliDir, 'cli.ts'), 'utf-8');
+    expect(cliContent).toContain('tool-calls');
   });
 
   it('should have llama-server-optimize.ts file', async () => {

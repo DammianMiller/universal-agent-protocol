@@ -3,7 +3,7 @@
 
 set -e
 
-PROJECT_ROOT="/home/cogtek/dev/miller-tech/universal-agent-memory"
+PROJECT_ROOT="/home/cogtek/dev/miller-tech/universal-agent-protocol"
 HARBOR_CONFIGS="$PROJECT_ROOT/harbor-configs"
 RESULTS_DIR="$PROJECT_ROOT/benchmark-results/qwen35_harbor_containers"
 

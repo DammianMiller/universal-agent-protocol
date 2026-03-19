@@ -132,7 +132,7 @@ for method in "${install_methods[@]}"; do
                         echo "   Installed to: $HOME/.local/bin/rtk"
                     else
                         sudo mkdir -p /usr/local/bin
-                        sudo mv rkt /usr/local/bin/
+                        sudo mv rtk /usr/local/bin/
                         echo "   Installed to: /usr/local/bin/rtk"
                     fi
                     

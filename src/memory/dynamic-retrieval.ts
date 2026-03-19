@@ -10,7 +10,7 @@
  * - Speculative prefetch for common patterns
  */
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import Database from 'better-sqlite3';
 import {
@@ -19,7 +19,7 @@ import {
   getSuggestedMemoryQueries,
   type TaskClassification,
 } from './task-classifier.js';
-import { ContextBudget } from './context-compressor.js';
+import { ContextBudget, DynamicCompressor, estimateTokens } from './context-compressor.js';
 import { compressToSemanticUnits } from './semantic-compression.js';
 import {
   decideContextLevel,
@@ -29,13 +29,88 @@ import {
 } from './adaptive-context.js';
 import { getRelevantKnowledge, recordKnowledgeOutcome } from './terminal-bench-knowledge.js';
 import { ContextPruner } from './context-pruner.js';
-import { PredictiveMemoryService } from './predictive-memory.js';
+import { getPredictiveMemoryService } from './predictive-memory.js';
+import { getSpeculativeCache } from './speculative-cache.js';
 import { contentHash, jaccardSimilarity } from '../utils/string-similarity.js';
+import { getPerformanceMonitor } from '../utils/performance-monitor.js';
 import {
   detectAmbiguity,
   formatAmbiguityForContext,
   type AmbiguityResult,
 } from './ambiguity-detector.js';
+import { getMemoryConsolidator } from './memory-consolidator.js';
+import { KnowledgeGraph } from './knowledge-graph.js';
+
+// Singleton KnowledgeGraph to avoid open/close per retrieval call
+let _knowledgeGraph: KnowledgeGraph | null = null;
+let _knowledgeGraphPath: string | null = null;
+function getOrCreateKnowledgeGraph(dbPath: string): KnowledgeGraph {
+  if (!_knowledgeGraph || _knowledgeGraphPath !== dbPath) {
+    if (_knowledgeGraph)
+      try {
+        _knowledgeGraph.close();
+      } catch {
+        /* ignore */
+      }
+    _knowledgeGraph = new KnowledgeGraph(dbPath);
+    _knowledgeGraphPath = dbPath;
+  }
+  return _knowledgeGraph;
+}
+
+// ── File read cache with mtime invalidation (prevents repeated reads of rarely-changing files) ──
+interface CachedFile<T> {
+  data: T;
+  mtime: number;
+  expiresAt: number;
+}
+
+const FILE_CACHE_TTL = 60_000; // 1 minute TTL
+const FILE_CACHE_MAX = 20; // Maximum cached files (prevents unbounded growth)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fileReadCache = new Map<string, CachedFile<any>>();
+
+// Evict oldest entries if cache exceeds max size (runs on cleanup interval)
+function trimFileCache(): void {
+  while (fileReadCache.size > FILE_CACHE_MAX) {
+    const firstKey = fileReadCache.keys().next().value;
+    if (firstKey) fileReadCache.delete(firstKey);
+    else break;
+  }
+}
+
+// ── Shared readonly DB connection pool (avoids N+1 connection opens per retrieval) ──
+const readonlyDbPool = new Map<string, { db: Database.Database; lastUsed: number }>();
+const DB_POOL_TTL = 30_000; // Close idle connections after 30s
+
+function getReadonlyDb(dbPath: string): Database.Database {
+  const existing = readonlyDbPool.get(dbPath);
+  if (existing) {
+    existing.lastUsed = Date.now();
+    return existing.db;
+  }
+  const db = new Database(dbPath, { readonly: true });
+  readonlyDbPool.set(dbPath, { db, lastUsed: Date.now() });
+  return db;
+}
+
+// Periodic cleanup of idle connections (runs every 60s, unref'd so it doesn't block exit)
+const dbPoolCleanupInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [path, entry] of readonlyDbPool) {
+    if (now - entry.lastUsed > DB_POOL_TTL) {
+      try {
+        entry.db.close();
+      } catch {
+        /* ignore */
+      }
+      readonlyDbPool.delete(path);
+    }
+  }
+  // Also trim file cache
+  trimFileCache();
+}, 60_000);
+dbPoolCleanupInterval.unref();
 
 /**
  * Query complexity levels for adaptive retrieval
@@ -158,7 +233,21 @@ export async function retrieveDynamicMemoryContext(
     taskMetadata?: TaskMetadata;
   } = {}
 ): Promise<DynamicMemoryContext> {
-  const { maxTokens = 2000, useSemanticCompression = true, taskMetadata } = options;
+  // T5: Read token budget from config if available, fall back to parameter or default
+  let configMaxTokens = 2000;
+  try {
+    const { loadUapConfig: loadCfg } = await import('../utils/config-loader.js');
+    const cfg = loadCfg(projectRoot);
+    const budgetFromConfig = cfg?.costOptimization?.tokenBudget?.maxContextTokens;
+    if (typeof budgetFromConfig === 'number' && budgetFromConfig > 0) {
+      configMaxTokens = budgetFromConfig;
+    }
+  } catch {
+    // Config read failure is non-fatal
+  }
+  const { maxTokens = configMaxTokens, useSemanticCompression = true, taskMetadata } = options;
+  const perfMonitor = getPerformanceMonitor();
+  const retrievalStart = performance.now();
 
   // Step 0: Adaptive context decision - skip UAP if not beneficial
   const contextDecision = decideContextLevel(taskInstruction, taskMetadata);
@@ -194,12 +283,46 @@ export async function retrieveDynamicMemoryContext(
   // Step 4: Extract entities from task
   const entities = extractTaskEntities(taskInstruction);
 
+  // Step 4b: Enrich entities with knowledge graph relationships
+  // Uses a singleton KnowledgeGraph to avoid open/close per retrieval call
+  try {
+    const kgDbPath = join(projectRoot, 'agents/data/memory/short_term.db');
+    if (existsSync(kgDbPath)) {
+      const kg = getOrCreateKnowledgeGraph(kgDbPath);
+      // Query knowledge graph for each extracted entity to find related concepts
+      for (const tech of entities.technologies.slice(0, 3)) {
+        const result = kg.queryEntityGraph('technology', tech);
+        if (result) {
+          for (const rel of result.relationships.slice(0, 3)) {
+            if (!entities.technologies.includes(rel.relatedEntity.name)) {
+              entities.technologies.push(rel.relatedEntity.name);
+            }
+          }
+        }
+      }
+      for (const file of entities.files.slice(0, 2)) {
+        const result = kg.queryEntityGraph('file', file);
+        if (result) {
+          for (const rel of result.relationships.slice(0, 2)) {
+            if (!entities.files.includes(rel.relatedEntity.name)) {
+              entities.files.push(rel.relatedEntity.name);
+            }
+          }
+        }
+      }
+      // Don't close — singleton is reused across calls
+    }
+  } catch {
+    // Knowledge graph enrichment is non-fatal
+  }
+
   // Step 5: Get suggested memory queries (enhanced with predictive prefetch)
   const suggestedQueries = getSuggestedMemoryQueries(classification);
 
   // Step 5b: Predictive memory prefetch - predict additional queries based on task history
+  // Uses singleton PredictiveMemoryService for cross-session learning
   try {
-    const predictive = new PredictiveMemoryService();
+    const predictive = getPredictiveMemoryService();
     const predictedQueries = predictive.predictNeededContext(taskInstruction, []);
     // Merge predicted queries with suggested (deduplicated)
     const existingSet = new Set(suggestedQueries);
@@ -211,6 +334,29 @@ export async function retrieveDynamicMemoryContext(
     }
   } catch {
     // PredictiveMemory failure is non-fatal
+  }
+
+  // Step 5c: Speculative cache - check if we have pre-warmed results
+  try {
+    const speculativeCache = getSpeculativeCache();
+    const cachedResult = speculativeCache.get(taskInstruction);
+    if (cachedResult && Array.isArray(cachedResult.result) && cachedResult.result.length > 0) {
+      // Use cached results as additional memory source
+      for (const item of cachedResult.result) {
+        if (item && typeof item === 'object' && 'content' in item) {
+          suggestedQueries.push(String((item as { content: string }).content).slice(0, 100));
+        }
+      }
+    }
+    // Pre-warm cache for predicted next queries
+    const predictions = speculativeCache.getPredictedQueries(taskInstruction);
+    for (const pred of predictions.slice(0, 3)) {
+      if (!suggestedQueries.includes(pred)) {
+        suggestedQueries.push(pred);
+      }
+    }
+  } catch {
+    // SpeculativeCache failure is non-fatal
   }
 
   // Step 6: Query all memory sources with adaptive limits
@@ -263,7 +409,27 @@ export async function retrieveDynamicMemoryContext(
     }
   }
 
-  // Step 7b: Prune memories to fit token budget using ContextPruner
+  // Step 7b: Apply budget-aware dynamic compression to individual memories
+  // Track consumed tokens so each memory sees a decreasing budget
+  let compressorConsumedTokens = 0;
+  try {
+    const dynamicCompressor = new DynamicCompressor();
+    processedMemories = processedMemories.map((m) => {
+      const budgetRemaining = Math.max(0, budget.remaining() - compressorConsumedTokens);
+      const { compressed } = dynamicCompressor.compressDynamic(
+        m.content,
+        budgetRemaining,
+        effectiveMaxTokens
+      );
+      compressorConsumedTokens += estimateTokens(compressed);
+      return { ...m, content: compressed };
+    });
+  } catch {
+    // DynamicCompressor failure is non-fatal
+  }
+
+  // Step 7c: Prune memories to fit token budget using ContextPruner
+  // Subtract tokens already consumed by compression from the available budget
   try {
     const pruner = new ContextPruner();
     const prunableMemories = processedMemories.map((m, i) => ({
@@ -272,7 +438,8 @@ export async function retrieveDynamicMemoryContext(
       age: i, // Use index as age proxy (older = higher index)
       accessCount: 1,
     }));
-    const pruned = pruner.prune(prunableMemories, budget.remaining());
+    const adjustedBudget = Math.max(0, budget.remaining() - compressorConsumedTokens);
+    const pruned = pruner.prune(prunableMemories, adjustedBudget);
     if (pruned.length < processedMemories.length) {
       // Map pruned back to processed memories by content match
       const prunedContents = new Set(pruned.map((p: { content: string }) => p.content));
@@ -316,6 +483,77 @@ export async function retrieveDynamicMemoryContext(
 
   const { content: formattedContext } = budget.allocate('main', baseContext);
 
+  // Record performance metrics
+  const retrievalDuration = performance.now() - retrievalStart;
+  perfMonitor.record('memory.dynamicRetrieval', retrievalDuration);
+  perfMonitor.record(`memory.retrieval.${queryComplexity}`, retrievalDuration);
+
+  // Record access for predictive memory learning
+  try {
+    const predictive = getPredictiveMemoryService();
+    predictive.recordAccess(
+      taskInstruction,
+      processedMemories.map((m) => m.source).filter((v, i, a) => a.indexOf(v) === i)
+    );
+  } catch {
+    // Non-fatal
+  }
+
+  // Record memory access for quality scoring (enables access-pattern learning)
+  try {
+    const consolidator = getMemoryConsolidator();
+    for (const mem of processedMemories) {
+      // Use content hash as memory ID for quality tracking
+      const memId = contentHash(mem.content);
+      consolidator.recordAccess(memId);
+    }
+  } catch {
+    // Non-fatal — quality scoring is an optimization, not a requirement
+  }
+
+  // Pre-warm speculative cache for predicted next queries (async, non-blocking)
+  try {
+    const speculativeCache = getSpeculativeCache();
+    // Fire-and-forget: pre-warm cache with a real fetcher that queries short-term memory
+    void speculativeCache.preWarm(taskInstruction, async (query: string) => {
+      const stDbPath = join(projectRoot, 'agents/data/memory/short_term.db');
+      if (!existsSync(stDbPath)) return [];
+      try {
+        const db = getReadonlyDb(stDbPath);
+        const rows = db
+          .prepare(
+            `
+          SELECT type, content FROM memories
+          WHERE content LIKE ?
+          ORDER BY id DESC LIMIT 5
+        `
+          )
+          .all(`%${query.slice(0, 50)}%`) as Array<{ type: string; content: string }>;
+        return rows;
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    // Non-fatal
+  }
+
+  // Periodically persist learned data (fire-and-forget, every ~10th call)
+  if (Math.random() < 0.1) {
+    try {
+      const predictive = getPredictiveMemoryService();
+      predictive.saveToDb('./agents/data/memory/predictive.db');
+    } catch {
+      /* non-fatal */
+    }
+    try {
+      const { saveHierarchicalMemory } = await import('./hierarchical-memory.js');
+      saveHierarchicalMemory(join(projectRoot, 'agents/data/memory/hierarchical.db'));
+    } catch {
+      /* non-fatal */
+    }
+  }
+
   return {
     classification,
     relevantMemories: processedMemories,
@@ -354,18 +592,54 @@ async function queryAllMemorySources(
 ): Promise<RetrievedMemory[]> {
   const memories: RetrievedMemory[] = [];
 
-  // Source 1: Short-term SQLite memory (limited by depth)
-  const shortTermMemories = await queryShortTermMemory(
-    classification,
-    entities,
-    projectRoot,
-    depth.shortTerm
-  );
-  memories.push(...shortTermMemories);
+  // Source 1+2: Hierarchical tiered memory (replaces flat short-term + session queries)
+  // Uses hot/warm/cold tiering with automatic promotion/demotion and semantic search
+  try {
+    const { getHierarchicalMemoryManager } = await import('./hierarchical-memory.js');
+    const stDbPath = join(projectRoot, 'agents/data/memory/short_term.db');
+    const hmm = getHierarchicalMemoryManager(
+      undefined,
+      existsSync(stDbPath) ? stDbPath : undefined
+    );
+    // Run tier maintenance periodically (~every 5th retrieval)
+    if (Math.random() < 0.2) {
+      hmm.pruneStale();
+      hmm.enforceTokenBudget();
+    }
+    const tieredResults = await hmm.query(taskInstruction, depth.shortTerm + depth.sessionMem);
+    for (const entry of tieredResults) {
+      memories.push({
+        content: entry.compressed || entry.content,
+        type:
+          entry.type === 'observation'
+            ? 'lesson'
+            : entry.type === 'action' || entry.type === 'goal'
+              ? 'context'
+              : 'pattern',
+        relevance: Math.min(
+          0.95,
+          entry.importance / 10 + (entry.tier === 'hot' ? 0.2 : entry.tier === 'warm' ? 0.1 : 0)
+        ),
+        source: `hierarchical-${entry.tier}`,
+      });
+    }
+  } catch {
+    // Fallback to flat queries if hierarchical memory fails
+    const shortTermMemories = await queryShortTermMemory(
+      classification,
+      entities,
+      projectRoot,
+      depth.shortTerm
+    );
+    memories.push(...shortTermMemories);
 
-  // Source 2: Session memories (limited by depth)
-  const sessionMemories = await querySessionMemory(taskInstruction, projectRoot, depth.sessionMem);
-  memories.push(...sessionMemories);
+    const sessionMemories = await querySessionMemory(
+      taskInstruction,
+      projectRoot,
+      depth.sessionMem
+    );
+    memories.push(...sessionMemories);
+  }
 
   // Source 3: Long-term prepopulated memory (limited by depth)
   const longTermMemories = await queryLongTermMemory(suggestedQueries, projectRoot, depth.longTerm);
@@ -401,7 +675,7 @@ async function queryAllMemorySources(
   const budgeted: RetrievedMemory[] = [];
   let usedTokens = 0;
   for (const mem of uniqueMemories) {
-    const memTokens = Math.ceil(mem.content.length / 4);
+    const memTokens = estimateTokens(mem.content);
     if (usedTokens + memTokens > effectiveBudget && budgeted.length > 0) break;
     budgeted.push(mem);
     usedTokens += memTokens;
@@ -425,9 +699,8 @@ async function queryShortTermMemory(
   const memories: RetrievedMemory[] = [];
   const perKeywordLimit = Math.max(1, Math.ceil(limit / 3));
 
-  let db: Database.Database | null = null;
   try {
-    db = new Database(dbPath, { readonly: true });
+    const db = getReadonlyDb(dbPath);
 
     // Check if FTS5 index exists
     const hasFts =
@@ -543,19 +816,19 @@ async function queryShortTermMemory(
       }
     }
   } catch {
-    // Ignore query errors
-  } finally {
-    db?.close();
+    // Ignore query errors — pooled connection stays open for reuse
   }
 
   return memories;
 }
 
 /**
- * Query session memories for recent decisions using parameterized queries (secure)
+ * Query session memories for recent decisions using parameterized queries (secure).
+ * Uses FTS5 full-text search when a task instruction is provided for content-aware recall,
+ * falling back to importance-based recency query.
  */
 async function querySessionMemory(
-  _taskInstruction: string,
+  taskInstruction: string,
   projectRoot: string,
   limit: number = 5
 ): Promise<RetrievedMemory[]> {
@@ -564,127 +837,76 @@ async function querySessionMemory(
 
   const memories: RetrievedMemory[] = [];
 
-  let db: Database.Database | null = null;
   try {
-    db = new Database(dbPath, { readonly: true });
+    const db = getReadonlyDb(dbPath);
 
-    const stmt = db.prepare(`
-      SELECT type, content FROM session_memories 
-      WHERE importance >= 7 
-      ORDER BY id DESC 
-      LIMIT ?
-    `);
+    // Try FTS5 content-aware search first if we have a task instruction
+    let rows: Array<{ type: string; content: string; rank?: number }> = [];
+    if (taskInstruction && taskInstruction.trim().length > 3) {
+      try {
+        // Extract key terms from task instruction for FTS5 query
+        // Quote each word to prevent FTS5 reserved words (AND, OR, NOT, NEAR) from being
+        // interpreted as operators — matches the sanitization pattern in sqlite.ts:186-194
+        const FTS5_RESERVED = new Set(['and', 'or', 'not', 'near']);
+        const ftsQuery = taskInstruction
+          .replace(/[^\w\s]/g, ' ')
+          .split(/\s+/)
+          .filter((w) => w.length > 2 && !FTS5_RESERVED.has(w.toLowerCase()))
+          .slice(0, 8)
+          .map((w) => '"' + w.replace(/"/g, '""') + '"')
+          .join(' OR ');
 
-    const rows = stmt.all(limit) as Array<{ type: string; content: string }>;
+        if (ftsQuery.length > 0) {
+          const ftsStmt = db.prepare(`
+            SELECT sm.type, sm.content, fts.rank
+            FROM session_memories_fts fts
+            JOIN session_memories sm ON sm.id = fts.rowid
+            WHERE session_memories_fts MATCH ?
+            ORDER BY fts.rank
+            LIMIT ?
+          `);
+          rows = ftsStmt.all(ftsQuery, limit) as Array<{
+            type: string;
+            content: string;
+            rank: number;
+          }>;
+        }
+      } catch {
+        // FTS5 table may not exist yet or query may fail — fall through to fallback
+        rows = [];
+      }
+    }
+
+    // Fallback: importance-based recency query
+    if (rows.length === 0) {
+      const stmt = db.prepare(`
+        SELECT type, content FROM session_memories 
+        WHERE importance >= 7 
+        ORDER BY id DESC 
+        LIMIT ?
+      `);
+      rows = stmt.all(limit) as Array<{ type: string; content: string }>;
+    }
+
     for (const row of rows) {
       if (row.content) {
         memories.push({
           content: row.content.slice(0, 500),
           type: row.type === 'lesson' ? 'lesson' : row.type === 'decision' ? 'context' : 'pattern',
-          relevance: 0.8,
+          relevance: row.rank ? Math.min(0.95, 0.8 + Math.abs(row.rank) * 0.01) : 0.8,
           source: 'session-memory',
         });
       }
     }
   } catch {
-    // Ignore query errors
-  } finally {
-    db?.close();
+    // Ignore query errors — pooled connection stays open for reuse
   }
 
   return memories;
 }
 
-// OPTIMIZATION 9: Stopwords to filter from long-term memory queries
-// These words match nearly everything and reduce query precision
-const QUERY_STOPWORDS = new Set([
-  'a',
-  'an',
-  'the',
-  'is',
-  'are',
-  'was',
-  'were',
-  'be',
-  'been',
-  'being',
-  'have',
-  'has',
-  'had',
-  'do',
-  'does',
-  'did',
-  'will',
-  'would',
-  'could',
-  'should',
-  'may',
-  'might',
-  'shall',
-  'can',
-  'need',
-  'must',
-  'to',
-  'of',
-  'in',
-  'for',
-  'on',
-  'with',
-  'at',
-  'by',
-  'from',
-  'as',
-  'into',
-  'through',
-  'during',
-  'before',
-  'after',
-  'above',
-  'below',
-  'and',
-  'but',
-  'or',
-  'nor',
-  'not',
-  'so',
-  'yet',
-  'both',
-  'either',
-  'this',
-  'that',
-  'these',
-  'those',
-  'it',
-  'its',
-  'best',
-  'most',
-  'very',
-  'good',
-  'great',
-  'well',
-  'new',
-  'more',
-  'common',
-  'general',
-  'basic',
-  'simple',
-  'all',
-  'any',
-  'some',
-  'how',
-  'what',
-  'when',
-  'where',
-  'which',
-  'who',
-  'why',
-  'practices',
-  'tips',
-  'implementation',
-  'gotchas',
-  'mistakes',
-  'patterns',
-]);
+// OPTIMIZATION 9: Stopwords from shared utility (replaces 88-line inline set)
+import { QUERY_STOPWORDS } from '../utils/stopwords.js';
 
 /**
  * Query long-term prepopulated memory
@@ -701,7 +923,38 @@ async function queryLongTermMemory(
   const memories: RetrievedMemory[] = [];
 
   try {
-    const data = JSON.parse(readFileSync(memoryPath, 'utf-8'));
+    // Use cached file read with mtime invalidation (file rarely changes)
+    let data: any;
+    const cacheKey = `long_term:${memoryPath}`;
+    const now = Date.now();
+    const cached = fileReadCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      // Check if file was modified
+      try {
+        const stat = statSync(memoryPath);
+        if (stat.mtimeMs === cached.mtime) {
+          data = cached.data;
+        } else {
+          data = JSON.parse(readFileSync(memoryPath, 'utf-8'));
+          fileReadCache.set(cacheKey, {
+            data,
+            mtime: stat.mtimeMs,
+            expiresAt: now + FILE_CACHE_TTL,
+          });
+        }
+      } catch {
+        data = JSON.parse(readFileSync(memoryPath, 'utf-8'));
+        fileReadCache.set(cacheKey, { data, mtime: 0, expiresAt: now + FILE_CACHE_TTL });
+      }
+    } else {
+      data = JSON.parse(readFileSync(memoryPath, 'utf-8'));
+      try {
+        const stat = statSync(memoryPath);
+        fileReadCache.set(cacheKey, { data, mtime: stat.mtimeMs, expiresAt: now + FILE_CACHE_TTL });
+      } catch {
+        fileReadCache.set(cacheKey, { data, mtime: 0, expiresAt: now + FILE_CACHE_TTL });
+      }
+    }
     const allMemories = data.memories || data.lessons || data || [];
 
     for (const query of queries.slice(0, 5)) {
@@ -760,7 +1013,41 @@ async function queryCLAUDEMd(
   const memories: RetrievedMemory[] = [];
 
   try {
-    const content = readFileSync(claudeMdPath, 'utf-8');
+    // Use cached file read with mtime invalidation (CLAUDE.md rarely changes)
+    let content: string;
+    const cacheKey = `claude_md:${claudeMdPath}`;
+    const now = Date.now();
+    const cached = fileReadCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      try {
+        const stat = statSync(claudeMdPath);
+        if (stat.mtimeMs === cached.mtime) {
+          content = cached.data;
+        } else {
+          content = readFileSync(claudeMdPath, 'utf-8');
+          fileReadCache.set(cacheKey, {
+            data: content,
+            mtime: stat.mtimeMs,
+            expiresAt: now + FILE_CACHE_TTL,
+          });
+        }
+      } catch {
+        content = readFileSync(claudeMdPath, 'utf-8');
+        fileReadCache.set(cacheKey, { data: content, mtime: 0, expiresAt: now + FILE_CACHE_TTL });
+      }
+    } else {
+      content = readFileSync(claudeMdPath, 'utf-8');
+      try {
+        const stat = statSync(claudeMdPath);
+        fileReadCache.set(cacheKey, {
+          data: content,
+          mtime: stat.mtimeMs,
+          expiresAt: now + FILE_CACHE_TTL,
+        });
+      } catch {
+        fileReadCache.set(cacheKey, { data: content, mtime: 0, expiresAt: now + FILE_CACHE_TTL });
+      }
+    }
 
     // Extract Code Field section (always relevant)
     const codeFieldMatch = content.match(/## .*CODE FIELD.*?(?=\n## |\n---\n|$)/s);

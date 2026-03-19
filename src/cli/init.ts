@@ -1,12 +1,18 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, chmodSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename_init = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename_init);
 import { analyzeProject } from '../analyzers/index.js';
 import { generateClaudeMd } from '../generators/claude-md.js';
 import { mergeClaudeMd } from '../utils/merge-claude-md.js';
 import { initializeMemoryDatabase } from '../memory/short-term/schema.js';
 import { CoordinationDatabase, getDefaultCoordinationDbPath } from '../coordination/database.js';
+import { initializeCacheFromDb, autoWarmCache } from '../memory/speculative-cache.js';
+import { ServerlessQdrantManager } from '../memory/serverless-qdrant.js';
 import { generateScripts, ensurePythonVenv, findPython } from './patterns.js';
 import { isQdrantReachable } from './memory.js';
 import type { AgentContextConfig, Platform } from '../types/index.js';
@@ -27,6 +33,7 @@ const PLATFORM_MAP: Record<string, Platform> = {
   factory: 'factory',
   vscode: 'vscode',
   opencode: 'opencode',
+  codex: 'codex',
 };
 
 export async function initCommand(options: InitOptions): Promise<void> {
@@ -43,7 +50,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // Determine platforms - default to all if not specified
   const platforms: Platform[] = options.platform.includes('all')
-    ? ['claudeCode', 'factory', 'vscode', 'opencode']
+    ? ['claudeCode', 'factory', 'vscode', 'opencode', 'codex']
     : (options.platform.map((p) => PLATFORM_MAP[p] || p) as Platform[]);
 
   // Analyze project
@@ -98,7 +105,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   // Build configuration - merge with existing to preserve user customizations
   const config: AgentContextConfig = {
     $schema:
-      'https://raw.githubusercontent.com/DammianMiller/universal-agent-memory/main/schema.json',
+      'https://raw.githubusercontent.com/DammianMiller/universal-agent-protocol/main/schema.json',
     version: '1.0.0',
     project: {
       name: existingConfig.project?.name || analysis.projectName,
@@ -110,6 +117,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       factory: { enabled: platforms.includes('factory') },
       vscode: { enabled: platforms.includes('vscode') },
       opencode: { enabled: platforms.includes('opencode') },
+      codex: { enabled: platforms.includes('codex') },
     },
     memory: withMemory
       ? {
@@ -228,6 +236,18 @@ export async function initCommand(options: InitOptions): Promise<void> {
       const fullDbPath = join(cwd, dbPath);
       initializeMemoryDatabase(fullDbPath);
       memorySpinner.succeed('Memory database initialized');
+
+      // Wire speculative cache startup (OPT A1: was exported but never called)
+      const cacheSpinner = ora('Warming speculative cache...').start();
+      try {
+        const { entriesLoaded } = await initializeCacheFromDb(fullDbPath);
+        const warmed = autoWarmCache();
+        cacheSpinner.succeed(
+          `Cache warmed: ${entriesLoaded} from DB + ${warmed} high-value patterns`
+        );
+      } catch {
+        cacheSpinner.warn('Cache warm-up skipped (non-fatal)');
+      }
     } catch (error) {
       memorySpinner.fail('Failed to initialize memory database');
       console.error(chalk.red(error));
@@ -245,6 +265,19 @@ export async function initCommand(options: InitOptions): Promise<void> {
     } catch (error) {
       coordSpinner.fail('Failed to initialize coordination database');
       console.error(chalk.red(error));
+    }
+
+    // B3: Pre-warm Qdrant if configured (was schema-only, now wired)
+    const qdrantServerless = existingConfig.memory?.longTerm?.serverless;
+    if (qdrantServerless?.enabled) {
+      const prewarmSpinner = ora('Pre-warming Qdrant...').start();
+      try {
+        const manager = new ServerlessQdrantManager(qdrantServerless);
+        await manager.ensureLocalRunning();
+        prewarmSpinner.succeed('Qdrant pre-warmed and ready');
+      } catch {
+        prewarmSpinner.warn('Qdrant pre-warming skipped (non-fatal)');
+      }
     }
   }
 
@@ -387,6 +420,7 @@ async function setupPlatform(
     ],
     vscode: ['.vscode'],
     opencode: ['.opencode/plugin'],
+    codex: ['.codex', '.agents/skills'],
     claudeWeb: [], // Web platforms don't need local directories
     factoryWeb: [],
   };
@@ -396,6 +430,122 @@ async function setupPlatform(
     const fullPath = join(cwd, dir);
     if (!existsSync(fullPath)) {
       mkdirSync(fullPath, { recursive: true });
+    }
+  }
+
+  // Codex CLI: generate AGENTS.md, config.toml, and skills
+  if (platform === 'codex') {
+    // Generate AGENTS.md for Codex with UAP integration instructions
+    const agentsMdPath = join(cwd, 'AGENTS.md');
+    if (!existsSync(agentsMdPath)) {
+      const agentsMdContent = [
+        '# AGENTS.md - UAP Integration for Codex CLI',
+        '',
+        '## Universal Agent Protocol (UAP)',
+        '',
+        'This project uses UAP for persistent memory, multi-agent coordination,',
+        'pattern libraries, and policy enforcement across sessions.',
+        '',
+        '## Session Start',
+        '',
+        'At the beginning of each session, run the following to load context:',
+        '',
+        '```',
+        'bash .codex/hooks/session-start.sh',
+        '```',
+        '',
+        '## Memory System',
+        '',
+        'Use the UAP memory system to query and store knowledge:',
+        '',
+        '- **Query memory**: `uap memory query "<search terms>"`',
+        '- **Store lesson**: `uap memory store "<content>" --importance <1-10>`',
+        '- **Memory status**: `uap memory status`',
+        '',
+        '## Worktree Workflow',
+        '',
+        'All code changes MUST use worktrees for safe git workflow:',
+        '',
+        '1. `uap worktree create <slug>` - Create isolated worktree',
+        '2. Make changes in the worktree directory',
+        '3. `uap worktree cleanup <id>` - Clean up after merge',
+        '4. `uap worktree list` - List active worktrees',
+        '',
+        '## Pattern Library',
+        '',
+        'Query task-relevant patterns before starting work:',
+        '',
+        '- `uap patterns query "<task description>"`',
+        '',
+        '## Task Management',
+        '',
+        '- `uap task create "<description>"` - Create a new task',
+        '- `uap task list` - List current tasks',
+        '- `uap task ready` - Check task readiness',
+        '',
+        '## Agent Coordination',
+        '',
+        '- `uap agent status` - Show agent coordination status',
+        '- `uap dashboard` - Show UAP session dashboard',
+        '',
+        '## Pre-Compact',
+        '',
+        'Before context compaction, save state:',
+        '',
+        '```',
+        'bash .codex/hooks/pre-compact.sh',
+        '```',
+        '',
+      ].join('\n');
+      writeFileSync(agentsMdPath, agentsMdContent);
+    }
+
+    // Generate .codex/config.toml with UAP MCP server
+    const codexDir = join(cwd, '.codex');
+    if (!existsSync(codexDir)) {
+      mkdirSync(codexDir, { recursive: true });
+    }
+    const configTomlPath = join(codexDir, 'config.toml');
+    if (!existsSync(configTomlPath)) {
+      const configToml = [
+        '# Codex CLI configuration with UAP integration',
+        '# Generated by: uap init -p codex',
+        '',
+        '# UAP MCP Server - provides memory, worktree, pattern, and task tools',
+        '[mcp_servers.uap]',
+        'command = "uap"',
+        'args = ["mcp", "serve"]',
+        'startup_timeout_sec = 15',
+        'tool_timeout_sec = 120',
+        '',
+      ].join('\n');
+      writeFileSync(configTomlPath, configToml);
+    }
+
+    // Generate .codex/hooks directory with session scripts
+    const codexHooksDir = join(codexDir, 'hooks');
+    if (!existsSync(codexHooksDir)) {
+      mkdirSync(codexHooksDir, { recursive: true });
+    }
+
+    // Copy hook scripts from templates if available, otherwise generate
+    const templateHooksDir = join(__dirname, '../../templates/hooks');
+    const hookFiles = ['session-start.sh', 'pre-compact.sh'];
+    for (const file of hookFiles) {
+      const dest = join(codexHooksDir, file);
+      if (!existsSync(dest)) {
+        const src = join(templateHooksDir, file);
+        if (existsSync(src)) {
+          copyFileSync(src, dest);
+          chmodSync(dest, 0o755);
+        }
+      }
+    }
+
+    // Generate .codex/.gitignore
+    const codexGitignorePath = join(codexDir, '.gitignore');
+    if (!existsSync(codexGitignorePath)) {
+      writeFileSync(codexGitignorePath, 'config.toml\n');
     }
   }
 

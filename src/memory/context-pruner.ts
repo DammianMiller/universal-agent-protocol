@@ -18,13 +18,10 @@ export interface PrunedMemory {
   relevance: number;
 }
 
-/**
- * Estimate token count from text using a rough 4-chars-per-token heuristic.
- */
-export function estimateTokens(text: string): number {
-  if (!text || text.length === 0) return 0;
-  return Math.ceil(text.length / 4);
-}
+// Use the accurate token estimator from context-compressor
+// (replaces the naive length/4 heuristic that was here before)
+import { estimateTokens as _estimateTokens } from './context-compressor.js';
+export const estimateTokens = _estimateTokens;
 
 /**
  * ContextPruner scores memories using a composite formula and removes
@@ -84,21 +81,5 @@ export class ContextPruner {
 
     return result;
   }
-
-  /**
-   * Rough token estimation at 4 characters per token.
-   */
-  estimateTokens(text: string): number {
-    return estimateTokens(text);
-  }
 }
-
-// Singleton
-let instance: ContextPruner | null = null;
-
-export function getContextPruner(): ContextPruner {
-  if (!instance) {
-    instance = new ContextPruner();
-  }
-  return instance;
-}
+// getContextPruner singleton and ContextPruner.estimateTokens method removed — never called

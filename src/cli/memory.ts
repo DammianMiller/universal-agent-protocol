@@ -2,14 +2,15 @@ import chalk from 'chalk';
 import ora from 'ora';
 import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
-import { QdrantClient } from '@qdrant/js-client-rest';
+// QdrantClient lazy-loaded via shared utility (saves ~100ms startup)
+import { getQdrantClientClass } from '../utils/lazy-imports.js';
+import { loadUapConfig } from '../utils/config-loader.js';
 import { prepopulateMemory } from '../memory/prepopulate.js';
 import { SQLiteShortTermMemory } from '../memory/short-term/sqlite.js';
-import { ensureKnowledgeSchema, ensureSessionSchema } from '../memory/short-term/schema.js';
-import { AgentContextConfigSchema } from '../types/index.js';
+import { ensureSessionSchema } from '../memory/short-term/schema.js';
 import type { AgentContextConfig } from '../types/index.js';
 import type { MemoryEntry } from '../memory/backends/base.js';
 import type { DiscoveredSkill } from '../memory/prepopulate.js';
@@ -350,28 +351,61 @@ async function stopServices(cwd: string): Promise<void> {
   }
 }
 
+/**
+ * Check Qdrant health and offer to auto-start if not running.
+ * Exported for use by other CLI commands and session hooks.
+ */
+export async function checkQdrantHealth(
+  cwd: string,
+  options: { autoStart?: boolean; verbose?: boolean } = {}
+): Promise<{ healthy: boolean; started: boolean }> {
+  let endpoint = 'http://localhost:6333';
+  try {
+    const config = loadUapConfig(cwd);
+    const ep = config?.memory?.longTerm?.endpoint || 'localhost:6333';
+    endpoint = ep.startsWith('http') ? ep : `http://${ep}`;
+  } catch {
+    // use default
+  }
+
+  const healthy = await isQdrantReachable(endpoint, 3000);
+  if (healthy) {
+    if (options.verbose) {
+      console.log(`Qdrant is healthy at ${endpoint}`);
+    }
+    return { healthy: true, started: false };
+  }
+
+  if (options.verbose) {
+    console.log(`Qdrant not reachable at ${endpoint}`);
+  }
+
+  if (options.autoStart) {
+    try {
+      await startServices(cwd);
+      const nowHealthy = await isQdrantReachable(endpoint, 15000);
+      if (nowHealthy) {
+        if (options.verbose) {
+          console.log('Qdrant auto-started successfully');
+        }
+        return { healthy: true, started: true };
+      }
+    } catch {
+      // Auto-start failed
+    }
+  }
+
+  return { healthy: false, started: false };
+}
+
 async function queryMemory(cwd: string, search: string, limit: number): Promise<void> {
   console.log(chalk.bold(`\n🔍 Searching for: "${search}" (limit: ${limit})\n`));
 
-  // Load config
-  const configPath = join(cwd, '.uap.json');
-  let config: AgentContextConfig;
-  if (existsSync(configPath)) {
-    try {
-      const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-      config = AgentContextConfigSchema.parse(raw);
-    } catch {
-      config = {
-        version: '1.0.0',
-        project: { name: 'project', defaultBranch: 'main' },
-      };
-    }
-  } else {
-    config = {
-      version: '1.0.0',
-      project: { name: 'project', defaultBranch: 'main' },
-    };
-  }
+  // Load config via shared utility
+  const config: AgentContextConfig = loadUapConfig(cwd) ?? {
+    version: '1.0.0',
+    project: { name: 'project', defaultBranch: 'main' },
+  };
 
   // Query short-term memory (SQLite) first
   const dbPath = config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
@@ -427,14 +461,15 @@ async function queryQdrant(
   const collection = config.memory?.longTerm?.collection || 'agent_memory';
 
   try {
-    const client = new QdrantClient({ url, apiKey });
+    const QdrantClientClass = await getQdrantClientClass();
+    const client = new QdrantClientClass({ url, apiKey });
     await client.getCollections();
 
     // Try collection variants (main and prepopulated)
     const collections = await client.getCollections();
     const candidates = [collection, `${collection}_prepopulated`];
-    const availableCollections = candidates.filter((c) =>
-      collections.collections.some((col) => col.name === c)
+    const availableCollections = candidates.filter((c: string) =>
+      collections.collections.some((col: { name: string }) => col.name === c)
     );
 
     if (availableCollections.length === 0) {
@@ -547,25 +582,11 @@ async function storeMemory(
   console.log(chalk.dim(`Tags: ${tags || 'none'}`));
   console.log(chalk.dim(`Importance: ${importance}/10`));
 
-  // Load config
-  const configPath = join(cwd, '.uap.json');
-  let config: AgentContextConfig;
-  if (existsSync(configPath)) {
-    try {
-      const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-      config = AgentContextConfigSchema.parse(raw);
-    } catch {
-      config = {
-        version: '1.0.0',
-        project: { name: 'project', defaultBranch: 'main' },
-      };
-    }
-  } else {
-    config = {
-      version: '1.0.0',
-      project: { name: 'project', defaultBranch: 'main' },
-    };
-  }
+  // Load config via shared utility
+  const config: AgentContextConfig = loadUapConfig(cwd) ?? {
+    version: '1.0.0',
+    project: { name: 'project', defaultBranch: 'main' },
+  };
 
   // Determine memory type based on importance and tags
   const memoryType: 'action' | 'observation' | 'thought' | 'goal' | 'lesson' | 'decision' =
@@ -601,7 +622,7 @@ async function storeMemory(
       maxEntries: config.memory?.shortTerm?.maxEntries || 50,
     });
 
-    await (shortTermDb as any).store(memoryType, content);
+    await shortTermDb.store(memoryType, content);
     await shortTermDb.close();
 
     console.log(chalk.green('✓ Stored in short-term memory (SQLite)'));
@@ -627,25 +648,11 @@ async function storeMemory(
 async function prepopulateFromSources(cwd: string, options: MemoryOptions): Promise<void> {
   console.log(chalk.bold('\n🧠 Prepopulating Memory from Project Sources\n'));
 
-  // Load config
-  const configPath = join(cwd, '.uap.json');
-  let config: AgentContextConfig;
-  if (existsSync(configPath)) {
-    try {
-      const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-      config = AgentContextConfigSchema.parse(raw);
-    } catch {
-      config = {
-        version: '1.0.0',
-        project: { name: 'project', defaultBranch: 'main' },
-      };
-    }
-  } else {
-    config = {
-      version: '1.0.0',
-      project: { name: 'project', defaultBranch: 'main' },
-    };
-  }
+  // Load config via shared utility
+  const config: AgentContextConfig = loadUapConfig(cwd) ?? {
+    version: '1.0.0',
+    project: { name: 'project', defaultBranch: 'main' },
+  };
 
   const sources: string[] = [];
   if (options.docs) sources.push('documentation');
@@ -691,7 +698,7 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
           content: m.content,
           timestamp: m.timestamp,
         }));
-        await (shortTermDb as any).storeBatch(entries);
+        await shortTermDb.storeBatch?.(entries);
         await shortTermDb.close();
 
         stSpinner.succeed(`Stored ${shortTerm.length} short-term memories to SQLite`);
@@ -827,14 +834,19 @@ function storeKnowledgeGraph(
   longTerm: MemoryEntry[],
   skills: DiscoveredSkill[]
 ): { entities: number; relationships: number } {
-  const db = new Database(dbPath);
-  ensureKnowledgeSchema(db);
-  const now = new Date().toISOString();
+  // Use the KnowledgeGraph class for graph operations
+  const { KnowledgeGraph } =
+    require('../memory/knowledge-graph.js') as typeof import('../memory/knowledge-graph.js');
+  const graph = new KnowledgeGraph(dbPath);
 
-  const projectEntity = upsertEntity(db, 'project', projectName, now);
-  let entities = projectEntity.inserted;
+  let entities = 0;
   let relationships = 0;
 
+  // Create project entity
+  const projectEntity = graph.upsertEntity('project', projectName);
+  if (projectEntity.id) entities++;
+
+  // Extract file paths from long-term memories
   const filePaths = new Set<string>();
   for (const entry of longTerm) {
     const file = entry.metadata?.file;
@@ -847,70 +859,31 @@ function storeKnowledgeGraph(
     }
   }
 
+  // Create file entities and relationships
   for (const file of filePaths) {
-    const fileEntity = upsertEntity(db, 'file', file, now);
-    entities += fileEntity.inserted;
-    relationships += insertRelationship(db, projectEntity.id, fileEntity.id, 'contains', now);
+    const fileEntity = graph.upsertEntity('file', file);
+    if (fileEntity.id) entities++;
+    if (projectEntity.id && fileEntity.id) {
+      graph.addRelationship(projectEntity.id, fileEntity.id, 'contains');
+      relationships++;
+    }
   }
 
+  // Create skill entities and relationships
   for (const skill of skills) {
-    const skillEntity = upsertEntity(db, skill.type, skill.name, now);
-    entities += skillEntity.inserted;
-    relationships += insertRelationship(db, projectEntity.id, skillEntity.id, 'contains', now);
+    const skillEntity = graph.upsertEntity(skill.type, skill.name);
+    if (skillEntity.id) entities++;
+    if (projectEntity.id && skillEntity.id) {
+      graph.addRelationship(projectEntity.id, skillEntity.id, 'contains');
+      relationships++;
+    }
   }
 
-  db.close();
+  graph.close();
   return { entities, relationships };
 }
 
-function upsertEntity(
-  db: Database.Database,
-  type: string,
-  name: string,
-  now: string,
-  description?: string
-): { id: number; inserted: number } {
-  const existing = db
-    .prepare('SELECT id, mention_count FROM entities WHERE type = ? AND name = ?')
-    .get(type, name) as { id: number; mention_count: number } | undefined;
-  if (existing) {
-    if (description) {
-      db.prepare(
-        'UPDATE entities SET last_seen = ?, mention_count = ?, description = ? WHERE id = ?'
-      ).run(now, existing.mention_count + 1, description, existing.id);
-    } else {
-      db.prepare('UPDATE entities SET last_seen = ?, mention_count = ? WHERE id = ?').run(
-        now,
-        existing.mention_count + 1,
-        existing.id
-      );
-    }
-    return { id: existing.id, inserted: 0 };
-  }
-
-  const result = db
-    .prepare(
-      'INSERT INTO entities (type, name, description, first_seen, last_seen, mention_count) VALUES (?, ?, ?, ?, ?, 1)'
-    )
-    .run(type, name, description || null, now, now);
-  return { id: Number(result.lastInsertRowid), inserted: 1 };
-}
-
-function insertRelationship(
-  db: Database.Database,
-  sourceId: number,
-  targetId: number,
-  relation: string,
-  now: string,
-  strength: number = 1.0
-): number {
-  const result = db
-    .prepare(
-      'INSERT OR IGNORE INTO relationships (source_id, target_id, relation, strength, timestamp) VALUES (?, ?, ?, ?, ?)'
-    )
-    .run(sourceId, targetId, relation, strength, now);
-  return result.changes;
-}
+// upsertEntity and insertRelationship removed — now delegated to KnowledgeGraph class
 
 function createDeterministicEmbedding(input: string, size = 384): number[] {
   const hash = createHash('sha256').update(input).digest();
@@ -957,7 +930,8 @@ async function storeLongTermToQdrant(
   const apiKey = config.memory?.longTerm?.qdrantCloud?.apiKey || process.env.QDRANT_API_KEY;
   const collection = config.memory?.longTerm?.collection || 'agent_memory';
 
-  const client = new QdrantClient({ url, apiKey });
+  const QdrantClientClass = await getQdrantClientClass();
+  const client = new QdrantClientClass({ url, apiKey });
   try {
     await client.getCollections();
   } catch {
@@ -967,7 +941,7 @@ async function storeLongTermToQdrant(
   try {
     const collections = await client.getCollections();
     let collectionName = collection;
-    const exists = collections.collections.some((c) => c.name === collectionName);
+    const exists = collections.collections.some((c: { name: string }) => c.name === collectionName);
     if (exists) {
       const info = await client.getCollection(collectionName);
       const size = (info.config as { params?: { vectors?: { size?: number } } }).params?.vectors
@@ -977,7 +951,9 @@ async function storeLongTermToQdrant(
       }
     }
 
-    const finalExists = collections.collections.some((c) => c.name === collectionName);
+    const finalExists = collections.collections.some(
+      (c: { name: string }) => c.name === collectionName
+    );
     if (!finalExists) {
       await client.createCollection(collectionName, { vectors: { size: 384, distance: 'Cosine' } });
     }
@@ -1014,15 +990,10 @@ async function storeLongTermToQdrant(
 async function promoteFromDailyLog(cwd: string, _options: MemoryOptions): Promise<void> {
   console.log(chalk.bold('\n📋 Daily Log Promotion Review\n'));
 
-  const configPath = join(cwd, '.uap.json');
-  let config: AgentContextConfig;
-  try {
-    config = existsSync(configPath)
-      ? AgentContextConfigSchema.parse(JSON.parse(readFileSync(configPath, 'utf-8')))
-      : { version: '1.0.0', project: { name: 'project', defaultBranch: 'main' } };
-  } catch {
-    config = { version: '1.0.0', project: { name: 'project', defaultBranch: 'main' } };
-  }
+  const config: AgentContextConfig = loadUapConfig(cwd) ?? {
+    version: '1.0.0',
+    project: { name: 'project', defaultBranch: 'main' },
+  };
 
   const dbPath = config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
 
@@ -1072,7 +1043,11 @@ async function promoteFromDailyLog(cwd: string, _options: MemoryOptions): Promis
         const memType: ValidType = validTypes.includes(entry.type as ValidType)
           ? (entry.type as ValidType)
           : 'observation';
-        await (shortTermDb as any).store(memType, entry.content, Math.round(entry.gateScore * 10));
+        await shortTermDb.store(
+          memType as import('../memory/short-term/sqlite.js').ShortTermMemoryType,
+          entry.content,
+          Math.round(entry.gateScore * 10)
+        );
         dailyLog.markPromoted(entry.id, 'working');
         promoted++;
         console.log(chalk.green(`    ✓ Promoted to working memory`));
@@ -1102,15 +1077,10 @@ async function correctMemory(cwd: string, options: MemoryOptions): Promise<void>
     return;
   }
 
-  const configPath = join(cwd, '.uap.json');
-  let config: AgentContextConfig;
-  try {
-    config = existsSync(configPath)
-      ? AgentContextConfigSchema.parse(JSON.parse(readFileSync(configPath, 'utf-8')))
-      : { version: '1.0.0', project: { name: 'project', defaultBranch: 'main' } };
-  } catch {
-    config = { version: '1.0.0', project: { name: 'project', defaultBranch: 'main' } };
-  }
+  const config: AgentContextConfig = loadUapConfig(cwd) ?? {
+    version: '1.0.0',
+    project: { name: 'project', defaultBranch: 'main' },
+  };
 
   const dbPath = config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
   const result = propagateCorrection(
@@ -1138,15 +1108,10 @@ async function correctMemory(cwd: string, options: MemoryOptions): Promise<void>
 async function maintainMemory(cwd: string, _options: MemoryOptions): Promise<void> {
   console.log(chalk.bold('\n🔧 Memory Maintenance\n'));
 
-  const configPath = join(cwd, '.uap.json');
-  let config: AgentContextConfig;
-  try {
-    config = existsSync(configPath)
-      ? AgentContextConfigSchema.parse(JSON.parse(readFileSync(configPath, 'utf-8')))
-      : { version: '1.0.0', project: { name: 'project', defaultBranch: 'main' } };
-  } catch {
-    config = { version: '1.0.0', project: { name: 'project', defaultBranch: 'main' } };
-  }
+  const config: AgentContextConfig = loadUapConfig(cwd) ?? {
+    version: '1.0.0',
+    project: { name: 'project', defaultBranch: 'main' },
+  };
 
   const dbPath = config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
   const spinner = ora('Running maintenance cycle...').start();

@@ -71,43 +71,26 @@ export async function analyzeProject(cwd: string): Promise<ProjectAnalysis> {
     // Not a git repo or git not available
   }
 
-  // Analyze package files
+  // Analyze package files first (sets project name, languages, frameworks)
   await analyzePackageFiles(cwd, analysis);
 
-  // Analyze directory structure
-  analyzeDirectoryStructure(cwd, analysis);
+  // Run independent detection passes in parallel for faster analysis
+  // Each function mutates `analysis` but operates on non-overlapping fields
+  await Promise.all([
+    Promise.resolve(analyzeDirectoryStructure(cwd, analysis)),
+    Promise.resolve(analyzeCiCd(cwd, analysis)),
+    Promise.resolve(analyzeExistingAgents(cwd, analysis)),
+    Promise.resolve(analyzeReadme(cwd, analysis)),
+    Promise.resolve(detectDatabases(cwd, analysis)),
+    Promise.resolve(detectInfrastructure(cwd, analysis)),
+    Promise.resolve(detectMcpPlugins(cwd, analysis)),
+    Promise.resolve(detectKeyConfigFiles(cwd, analysis)),
+    Promise.resolve(detectAuthentication(cwd, analysis)),
+    Promise.resolve(detectClusters(cwd, analysis)),
+    Promise.resolve(detectComponents(cwd, analysis)),
+  ]);
 
-  // Analyze CI/CD
-  analyzeCiCd(cwd, analysis);
-
-  // Analyze existing droids/agents
-  analyzeExistingAgents(cwd, analysis);
-
-  // Analyze README for description and URLs
-  analyzeReadme(cwd, analysis);
-
-  // Detect databases
-  detectDatabases(cwd, analysis);
-
-  // Detect infrastructure
-  detectInfrastructure(cwd, analysis);
-
-  // Detect MCP plugins
-  detectMcpPlugins(cwd, analysis);
-
-  // Detect key configuration files
-  detectKeyConfigFiles(cwd, analysis);
-
-  // Detect authentication
-  detectAuthentication(cwd, analysis);
-
-  // Detect clusters (Kubernetes)
-  detectClusters(cwd, analysis);
-
-  // Detect components from apps/services directories
-  detectComponents(cwd, analysis);
-
-  // Detect file type routing from languages
+  // File type routing depends on languages being fully detected
   detectFileTypeRouting(analysis);
 
   return analysis;

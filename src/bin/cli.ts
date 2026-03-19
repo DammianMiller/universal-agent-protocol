@@ -263,6 +263,14 @@ program
       .action(async (id) => {
         (await lazy.worktree())('cleanup', { id });
       })
+  )
+  .addCommand(
+    new Command('ensure')
+      .description('Check if working inside a worktree')
+      .option('--strict', 'Exit with code 1 if not in a worktree (for use as a gate)')
+      .action(async (options) => {
+        (await lazy.worktree())('ensure', { strict: options.strict });
+      })
   );
 
 program
@@ -657,6 +665,13 @@ program
       })
   )
   .addCommand(
+    new Command('board')
+      .description('Show tasks as a kanban board')
+      .action(async (options) => {
+        (await lazy.task())('board', options);
+      })
+  )
+  .addCommand(
     new Command('sync')
       .description('Sync tasks with JSONL file (for git versioning)')
       .action(async (options) => {
@@ -790,11 +805,67 @@ program
       .action(async (options) => {
         (await lazy.dashboard())('session', options);
       })
+  )
+  .addCommand(
+    new Command('benchmark')
+      .description('Benchmark results and performance comparison dashboard')
+      .option('-v, --verbose', 'Show detailed information')
+      .action(async (options) => {
+        (await lazy.dashboard())('benchmark', options);
+      })
+  )
+  .addCommand(
+    new Command('policies')
+      .description('Policy enforcement status and compliance dashboard')
+      .option('-v, --verbose', 'Show detailed information')
+      .action(async (options) => {
+        (await lazy.dashboard())('policies', options);
+      })
+  )
+  .addCommand(
+    new Command('models')
+      .description('Multi-model architecture status and routing analytics')
+      .option('-v, --verbose', 'Show detailed information')
+      .action(async (options) => {
+        (await lazy.dashboard())('models', options);
+      })
+  )
+  .addCommand(
+    new Command('export')
+      .description('Export dashboard data as JSON for external analysis')
+      .option('-o, --output <path>', 'Output file path')
+      .action(async (options) => {
+        (await lazy.dashboard())('export', options);
+      })
+  )
+  .addCommand(
+    new Command('history')
+      .description('Session history and trend analysis')
+      .option('-v, --verbose', 'Show detailed information')
+      .action(async (options) => {
+        (await lazy.dashboard())('history', options);
+      })
   );
 
-// Multi-Model Architecture commands - registered lazily via top-level await
-const registerModelFn = await lazy.model();
-registerModelFn(program);
+// Multi-Model Architecture commands - visible in --help, loaded on demand
+{
+  const modelCmd = program
+    .command('model')
+    .description(
+      'Multi-model architecture management (status, route, plan, compare, presets, select, export, health)'
+    )
+    .action(async () => {
+      // Re-register with full subcommands and re-parse
+      const cmds = program.commands as unknown as Command[];
+      const idx = cmds.findIndex((c) => c.name() === 'model');
+      if (idx >= 0) cmds.splice(idx, 1);
+      const registerModelFn = await lazy.model();
+      registerModelFn(program);
+      await program.parseAsync(process.argv);
+    });
+  // Show help for model subcommands when invoked without action
+  modelCmd.addHelpText('after', '\n  Run `uap model <subcommand>` for details.');
+}
 
 // MCP Router - Lightweight hierarchical router for 98%+ token reduction
 program
@@ -919,7 +990,7 @@ rtkCmd.addCommand(
       const rtk = await lazy.rtk();
       await rtk.installRTK({
         force: !!options.force,
-        method: options.method as any,
+        method: options.method as 'homebrew' | 'cargo' | 'curl',
       });
     })
 );
@@ -948,13 +1019,35 @@ program
     await fn({ force: !!options.force, verbose: !!options.verbose });
   });
 
-// Register schema-diff command lazily
-const registerSchemaDiffFn = await lazy.schemaDiff();
-registerSchemaDiffFn(program);
+// Schema-diff and policy commands - visible in --help, loaded on demand
+program
+  .command('schema-diff')
+  .description('Detect breaking schema changes between branches')
+  .option('-b, --base <branch>', 'Base branch/commit to compare against', 'HEAD~1')
+  .action(async (_options: { base: string }) => {
+    const { registerSchemaDiffCommand } = await import('../cli/schema-diff.js');
+    // Remove stub and register real command
+    const cmds = program.commands as unknown as Command[];
+    const idx = cmds.findIndex((c) => c.name() === 'schema-diff');
+    if (idx >= 0) cmds.splice(idx, 1);
+    registerSchemaDiffCommand(program);
+    await program.parseAsync(process.argv);
+  });
 
-// Register policy commands lazily
-const registerPolicyFn = await lazy.policy();
-registerPolicyFn(program);
+{
+  const policyCmd = program
+    .command('policy')
+    .description('UAP policy management (list, install, enable, disable, status)')
+    .action(async () => {
+      const cmds = program.commands as unknown as Command[];
+      const idx = cmds.findIndex((c) => c.name() === 'policy');
+      if (idx >= 0) cmds.splice(idx, 1);
+      const registerPolicyFn = await lazy.policy();
+      registerPolicyFn(program);
+      await program.parseAsync(process.argv);
+    });
+  policyCmd.addHelpText('after', '\n  Run `uap policy <subcommand>` for details.');
+}
 
 // UAP for Oh-My-Pi - dashboard and controls for omp users
 const uapOmpCmd = new Command('uap-omp');

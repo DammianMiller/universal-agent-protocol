@@ -1,5 +1,63 @@
 # Changelog
 
+## v1.9.1 (2026-03-19)
+
+- fix: dashboard display rendering — remove duplicate tool, fix box alignment, add visual width support
+
+
+## v1.9.0 (2026-03-19)
+
+- feat: add Codex CLI integration with AGENTS.md, MCP server, skills, and hooks
+
+
+## v1.8.1 (2026-03-19)
+
+- fix: add missing dashboard type exports and restore optimization sweep changes lost in merge
+
+
+## v1.8.0 (2026-03-19)
+
+- feat: 4-phase optimization sweep — wire unwired code, add persistence, implement HTTP/SSE transport
+
+
+## v1.7.1 (2026-03-19)
+
+- fix: restore execa and cloakbrowser to dependencies (runtime imports in setup-wizard and web-browser)
+
+
+## v1.7.0 (2026-03-19)
+
+- fix: align validation-fixes test with actual CLAUDE.md sections
+- fix: align tests with actual CLAUDE.md content on master
+- fix: adjust factory hooks test to match existing settings.local.json structure
+- fix: make reinforcement.db test self-initializing (was relying on pre-existing schema)
+- feat: 4-pass optimization sweep — wire dead code, close feedback loops, remove 3400 lines
+
+
+## v1.6.2 (2026-03-19)
+
+- fix: implement validated optimization plan - correctness, performance, and resource leak fixes
+
+
+## v1.6.1 (2026-03-19)
+
+- fix: resolve all validation issues - CLAUDE.md compliance, SKILL.md refs, reinforcement DB
+
+
+## v1.6.0 (2026-03-19)
+
+- feat: implement 4-layer worktree enforcement for 100% compliance
+- chore: version bump to 1.5.6
+- chore: fix npm publish errors
+
+
+## v1.5.6 (2026-03-18)
+
+- feat: complete UAP optimization tasks P1a-P2b
+- feat: validate worktrees, model router, and adaptive knowledge seeding
+- test: improve test coverage with embeddings and unified-router tests
+
+
 ## v1.5.5 (2026-03-18)
 
 - feat: validate worktrees, model router, and adaptive knowledge seeding

@@ -51,11 +51,30 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
     return;
   }
 
-  // Step 2: Start Qdrant
+  // Step 2: Start Qdrant (try serverless manager first, fall back to docker-compose)
   const qdrantSpinner = ora('Starting Qdrant...').start();
   try {
-    await startServices(cwd);
-    qdrantSpinner.succeed('Started Qdrant');
+    // Try serverless Qdrant manager if configured in .uap.json
+    let serverlessStarted = false;
+    try {
+      const { loadUapConfig: loadCfg } = await import('../utils/config-loader.js');
+      const uapConfigParsed = loadCfg(cwd);
+      const serverlessConfig = uapConfigParsed?.memory?.longTerm?.serverless;
+      if (serverlessConfig?.enabled) {
+        const { initServerlessQdrant } = await import('../memory/serverless-qdrant.js');
+        const manager = initServerlessQdrant(serverlessConfig);
+        await manager.ensureLocalRunning();
+        serverlessStarted = true;
+        qdrantSpinner.succeed('Started Qdrant (serverless)');
+      }
+    } catch {
+      // Serverless not available, fall through
+    }
+
+    if (!serverlessStarted) {
+      await startServices(cwd);
+      qdrantSpinner.succeed('Started Qdrant (docker)');
+    }
   } catch {
     qdrantSpinner.warn('Could not start Qdrant (Docker may not be available)');
   }
@@ -81,8 +100,35 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
     healthSpinner.warn('Qdrant not reachable after 15s — pattern indexing will be skipped');
   }
 
+  // Step 3b: Auto-start background memory consolidation
+  try {
+    const { autoStartConsolidation } = await import('../memory/memory-consolidator.js');
+    const stDbPath = join(cwd, 'agents/data/memory/short_term.db');
+    if (autoStartConsolidation(stDbPath)) {
+      console.log(chalk.green('  Background memory consolidation started'));
+    }
+  } catch {
+    // Non-fatal
+  }
+
+  // Step 3c: Auto-promote high-quality daily log entries
+  try {
+    const { DailyLog } = await import('../memory/daily-log.js');
+    const dlDbPath = join(cwd, 'agents/data/memory/short_term.db');
+    if (existsSync(dlDbPath)) {
+      const dailyLog = new DailyLog(dlDbPath);
+      const promoted = dailyLog.autoPromote(0.5);
+      if (promoted > 0) {
+        console.log(chalk.green(`  Auto-promoted ${promoted} daily log entries`));
+      }
+      dailyLog.close();
+    }
+  } catch {
+    // Non-fatal
+  }
+
   if (!withPatterns) {
-    console.log(chalk.green('\n✅ Setup complete (patterns disabled).\n'));
+    console.log(chalk.green('\n Setup complete (patterns disabled).\n'));
     return;
   }
 

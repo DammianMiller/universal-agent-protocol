@@ -1,10 +1,13 @@
 import { PolicyGate, getPolicyGate, PolicyViolationError } from './policy-gate.js';
 
-export interface ToolDefinition {
+export interface PolicyToolDefinition {
   name: string;
   category: string;
   execute: (args: Record<string, unknown>) => Promise<unknown>;
 }
+
+/** @deprecated Use PolicyToolDefinition instead */
+export type ToolDefinition = PolicyToolDefinition;
 
 /**
  * EnforcedToolRouter is the single entry point for all tool execution.

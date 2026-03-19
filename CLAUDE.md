@@ -11,6 +11,61 @@
 
 <!-- Custom Sections (preserved from existing file) -->
 
+## SESSION START
+
+At the beginning of every session, execute the following before any work:
+
+1. Run `uap task ready` to initialize the task tracker
+2. Query recent memory: `sqlite3 ./agents/data/memory/short_term.db "SELECT type, substr(content,1,80) FROM memories ORDER BY id DESC LIMIT 5;"`
+3. Query relevant context: `uap memory query "<relevant to user request>"`
+4. On work request: `uap task create --type <task|bug|feature> --title "<description>"`
+
+---
+
+## DECISION LOOP
+
+For every task, follow the 6-step decision loop:
+
+1. **READ** — Read the task description and all relevant context
+2. **QUERY** — Query memory for related patterns: @Skill:name.md
+3. **THINK** — Analyze constraints, identify risks, plan approach
+4. **ACT** — Execute the plan using appropriate tools
+5. **RECORD** — Store outcomes in memory for future sessions
+6. **OPTIONALLY** — Store lessons learned in session memory
+
+---
+
+## WORKTREE WORKFLOW — MANDATORY
+
+ALL file changes MUST use a git worktree. No exceptions.
+
+1. Run `uap worktree create <slug>` before any file edit
+2. All edits happen inside `.worktrees/NNN-<slug>/` directory
+3. One worktree per task (bug fix, feature, refactor). No mixing.
+4. Changes go through PRs via `uap worktree pr <id>`
+5. Direct pushes to main/master are prohibited
+6. Cleanup after merge: `uap worktree cleanup <id>`
+
+This applies to ALL file types: .ts, .md, .json, .sh, .yaml, configs, tests, docs.
+No exceptions for "small changes", "just docs", or "version bumps".
+
+---
+
+## Pre-Edit Worktree Gate [REQUIRED]
+
+Before editing ANY file, verify you are working inside a worktree:
+
+1. Run `uap worktree ensure --strict` — must exit 0
+2. If not in a worktree, run `uap worktree create <slug>` first
+3. All file paths in edit operations must be under `.worktrees/NNN-<slug>/`
+4. Never edit files in the project root directory
+5. Version bumps must be done on the feature branch, not master
+
+This gate applies to ALL file types: .ts, .md, .json, .sh, .yaml, configs, tests, docs.
+No exceptions for "small changes", "just docs", or "version bumps".
+
+---
+
 ## Pre-Edit Build Gate [REQUIRED]
 
 Before editing any `.ts` file, run `npm run build` to confirm the project compiles.
@@ -24,19 +79,56 @@ If the build fails, fix the error before making any further edits.
 
 ---
 
----
+## VERIFIER-FIRST
+
+Before implementing any change, verify the current state first:
+
+1. Run the existing test suite to establish a baseline
+2. Confirm the build compiles before making changes
+3. Check for existing patterns that solve the same problem
+4. Verify assumptions by reading source code, not guessing
+
+The verifier loop MUST run MANDATORY minimum 3 times:
+- Once before changes (baseline)
+- Once after changes (validation)
+- Once after all fixes (final confirmation)
 
 ---
 
----
+## PARALLEL REVIEW PROTOCOL
+
+When reviewing code changes or PRs:
+
+1. Run build, tests, and lint in parallel for efficiency
+2. Check for security issues, performance regressions, and correctness simultaneously
+3. Use the Pattern Router to identify relevant verification patterns
+4. Apply all matched patterns before approving
 
 ---
 
----
+## Pattern Router
+
+The pattern router automatically matches tasks to execution patterns from `.factory/patterns/index.json`.
+
+- Critical patterns P12 (Output Existence) and P35 (Decoder-First) are always enforced
+- Patterns are indexed in Qdrant for semantic search (collection: `agent_patterns`)
+- The adaptive pattern engine learns from task outcomes to improve routing
+- Per-prompt hooks inject relevant patterns into context automatically
 
 ---
 
-## Completion Gate [REQUIRED]
+## BLOCKING PREREQUISITES
+
+Before any code change can proceed, these gates must pass in order:
+
+1. **Schema Diff Gate** — If the change touches database schemas, config schemas, or API contracts, diff the schema before and after. Breaking changes require explicit approval.
+2. **Worktree Gate** — Must be working inside a worktree (not project root)
+3. **Build Gate** — `npm run build` must pass
+4. **Test Gate** — `npm test` must pass
+
+---
+
+## COMPLETION GATES - MANDATORY
 
 Claiming DONE, COMPLETE, or CLOSED is prohibited until ALL of the following pass:
 

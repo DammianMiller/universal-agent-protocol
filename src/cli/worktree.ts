@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { existsSync, readdirSync, mkdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { simpleGit, SimpleGit } from 'simple-git';
 import Database from 'better-sqlite3';
@@ -11,6 +11,7 @@ interface WorktreeOptions {
   slug?: string;
   id?: string;
   draft?: boolean;
+  strict?: boolean;
 }
 
 let worktreeDb: Database.Database | null = null;
@@ -87,7 +88,7 @@ export async function worktreeCommand(
       await cleanupWorktree(cwd, git, options.id!);
       break;
     case 'ensure':
-      await ensureWorktree(cwd, git);
+      await ensureWorktree(cwd, git, options.strict);
       break;
   }
 }
@@ -264,36 +265,67 @@ async function cleanupWorktree(cwd: string, git: SimpleGit, id: string): Promise
   }
 }
 
-async function ensureWorktree(cwd: string, _git: SimpleGit): Promise<void> {
+async function ensureWorktree(cwd: string, _git: SimpleGit, strict?: boolean): Promise<void> {
   const spinner = ora('Checking worktree workflow...').start();
 
   try {
     // Check if worktrees are enabled in config
     const configPath = join(cwd, '.uap.json');
     if (!existsSync(configPath)) {
-      console.log(chalk.yellow('⚠️  No .uap.json found. Run "uap init" to set up UAP.'));
-      return;
+      // Try to find .uap.json in parent directories (we might be in a worktree)
+      const parentConfig = join(cwd, '..', '..', '.uap.json');
+      if (!existsSync(parentConfig)) {
+        if (strict) {
+          spinner.fail('Not in a worktree (no .uap.json found)');
+          process.exit(1);
+        }
+        console.log(chalk.yellow('⚠️  No .uap.json found. Run "uap init" to set up UAP.'));
+        return;
+      }
     }
 
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-    const worktreeEnabled = config.template?.sections?.worktreeWorkflow !== false;
+    const { loadUapConfigRaw } = await import('../utils/config-loader.js');
+    const config = loadUapConfigRaw(cwd);
+    if (!config) {
+      spinner.succeed('No .uap.json found — worktree check skipped');
+      return;
+    }
+    const worktreeEnabled = (config as Record<string, unknown>).template
+      ? ((config.template as Record<string, unknown>)?.sections as Record<string, unknown>)
+          ?.worktreeWorkflow !== false
+      : true;
 
     if (!worktreeEnabled) {
+      if (strict) {
+        spinner.succeed('Worktree workflow is disabled — strict check skipped');
+        return;
+      }
       console.log(chalk.dim('Worktree workflow is disabled in .uap.json'));
       return;
     }
 
     // Check if we're already in a worktree
     const currentDir = cwd;
-    const worktreesDir = join(cwd, '.worktrees');
+    // Resolve worktrees dir relative to project root (handle being inside a worktree)
+    const projectRoot = existsSync(configPath) ? cwd : join(cwd, '..', '..');
+    const worktreesDir = join(projectRoot, '.worktrees');
 
-    if (currentDir.startsWith(worktreesDir)) {
+    if (currentDir.includes('.worktrees/') || currentDir.includes('.worktrees\\')) {
       spinner.succeed('Already working in a git worktree');
       console.log(chalk.dim(`  Path: ${currentDir}`));
       return;
     }
 
-    // Check for active worktrees
+    // Not in a worktree — in strict mode, this is a hard failure
+    if (strict) {
+      spinner.fail('NOT in a worktree. All file edits are prohibited.');
+      console.error(chalk.red('  Current directory: ' + currentDir));
+      console.error(chalk.red('  Run: uap worktree create <slug>'));
+      console.error(chalk.red('  Then: cd .worktrees/<id>-<slug>/'));
+      process.exit(1);
+    }
+
+    // Advisory mode — show available worktrees
     const worktrees: { id: string; path: string; branch: string }[] = [];
     if (existsSync(worktreesDir)) {
       const entries = readdirSync(worktreesDir, { withFileTypes: true })
@@ -343,5 +375,25 @@ async function ensureWorktree(cwd: string, _git: SimpleGit): Promise<void> {
   } catch (error) {
     spinner.fail('Failed to check worktree status');
     console.error(chalk.red(error));
+    if (strict) {
+      process.exit(1);
+    }
   }
+}
+
+/**
+ * Check if a given file path is inside a worktree directory.
+ * Exported for use by the worktree file guard in the MCP router.
+ */
+export function isPathInsideWorktree(filePath: string): boolean {
+  return filePath.includes('.worktrees/') || filePath.includes('.worktrees\\');
+}
+
+/**
+ * Check if a file path is exempt from worktree enforcement.
+ * Runtime data directories and node_modules are exempt.
+ */
+export function isExemptFromWorktree(filePath: string): boolean {
+  const exemptPaths = ['agents/data/', 'node_modules/', '.uap-backups/', '.uap/', '.git/', 'dist/'];
+  return exemptPaths.some((exempt) => filePath.includes(exempt));
 }

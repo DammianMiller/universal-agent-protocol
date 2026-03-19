@@ -3,17 +3,10 @@
  *
  * Extracts structured data from all UAP subsystems for consumption
  * by both the CLI dashboard and the web overlay.
- *
- * FIX: Wires session telemetry (agents, skills, patterns, deploys, memory
- * hits/misses, cost savings) into getDashboardData() so the web dashboard
- * receives live session data instead of only static DB reads.
- *
- * FEAT: Adds time-series history ring buffer for graphing Tasks, Coordination,
- * Deploy Buckets, Context Compression, Memory Hits/Misses, and Compliance
- * Failures (with defeated mechanism tracking).
  */
 
-import { existsSync, readFileSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { loadUapConfig } from '../utils/config-loader.js';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
@@ -31,74 +24,91 @@ const SUBPROCESS_CACHE_TTL = 30_000; // 30 seconds
 let cachedGitData: CachedSubprocessResult<{ branch: string; dirty: number }> | null = null;
 let cachedQdrantStatus: CachedSubprocessResult<{ status: string; uptime: string }> | null = null;
 
-// ── DB Connection Pool for memory database ──
+// ── DB Connection Pool for memory database (prevents opening/closing on every refresh) ──
 const MEMORY_DB_CACHE_TTL = 5_000; // 5 seconds
 let cachedMemoryDb: { db: Database.Database; expiresAt: number } | null = null;
 
-// ── Time-Series History Ring Buffer ──
-const MAX_HISTORY_POINTS = 120; // 2 minutes at 1s intervals, or 4 minutes at 2s
+// ── Persistent Telemetry DB ──
 
 export interface TimeSeriesPoint {
   timestamp: string;
-  tasks: TaskData;
-  coordination: CoordData;
+  tasks: { total: number; done: number; inProgress: number; blocked: number; open: number };
+  coordination: {
+    activeAgents: number;
+    totalAgents: number;
+    completedAgents: number;
+    patternHits: number;
+    activeWorktrees: number;
+  };
   deployBuckets: DeployBucketData;
-  compression: CompressionData;
+  compression: {
+    rawBytes: number;
+    contextBytes: number;
+    savingsPercent: string;
+    totalCalls: number;
+  };
   memoryHitsMisses: MemoryHitMissData;
-  compliance: ComplianceData;
+  compliance: { totalChecks: number; totalBlocks: number; blockRate: string };
 }
 
-export interface DeployBucketData {
-  queued: number;
-  batched: number;
-  executing: number;
-  done: number;
-  failed: number;
-  batchCount: number;
-  savedOps: number;
+function getTelemetryDb(cwd: string): Database.Database {
+  const dbPath = join(cwd, 'agents', 'data', 'memory', 'telemetry.db');
+  const db = new Database(dbPath);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS time_series (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL,
+      data TEXT NOT NULL
+    )
+  `);
+  return db;
 }
 
-export interface CompressionData {
-  rawBytes: number;
-  contextBytes: number;
-  savingsPercent: string;
-  totalCalls: number;
-}
-
-export interface MemoryHitMissData {
-  hits: number;
-  misses: number;
-  hitRate: string;
-}
-
-export interface ComplianceFailure {
-  policyId: string;
-  policyName: string;
-  operation: string;
-  reason: string;
-  executedAt: string;
-  defeatedMechanism: string; // which compliance mechanism was defeated
-}
-
-export interface ComplianceData {
-  totalChecks: number;
-  totalBlocks: number;
-  blockRate: string;
-  recentFailures: ComplianceFailure[];
-  failuresByMechanism: Record<string, number>;
-}
-
-const _timeSeriesHistory: TimeSeriesPoint[] = [];
-
-export function getTimeSeriesHistory(): TimeSeriesPoint[] {
-  return _timeSeriesHistory;
-}
-
-function pushTimeSeriesPoint(point: TimeSeriesPoint): void {
-  _timeSeriesHistory.push(point);
-  if (_timeSeriesHistory.length > MAX_HISTORY_POINTS) {
-    _timeSeriesHistory.splice(0, _timeSeriesHistory.length - MAX_HISTORY_POINTS);
+function persistTimeSeriesPoint(cwd: string, point: TimeSeriesPoint): void {
+  try {
+    const db = getTelemetryDb(cwd);
+    db.prepare('INSERT INTO time_series (timestamp, data) VALUES (?, ?)').run(
+      point.timestamp,
+      JSON.stringify(point)
+    );
+    // Keep only the last 500 points
+    db.prepare(
+      'DELETE FROM time_series WHERE id NOT IN (SELECT id FROM time_series ORDER BY id DESC LIMIT 500)'
+    ).run();
+    db.close();
+  } catch {
+    /* ignore */
   }
+}
+
+function getTimeSeriesFromDb(cwd: string): TimeSeriesPoint[] {
+  try {
+    const db = getTelemetryDb(cwd);
+    const rows = db
+      .prepare('SELECT data FROM time_series ORDER BY id DESC LIMIT 120')
+      .all() as Array<{ data: string }>;
+    db.close();
+    return rows
+      .reverse()
+      .map((r) => {
+        try {
+          return JSON.parse(r.data) as TimeSeriesPoint;
+        } catch {
+          return null;
+        }
+      })
+      .filter((p): p is TimeSeriesPoint => p !== null);
+  } catch {
+    return [];
+  }
+}
+
+export function getTimeSeriesHistory(cwd: string): TimeSeriesPoint[] {
+  return getTimeSeriesFromDb(cwd);
+}
+
+export function pushTimeSeriesPoint(cwd: string, point: TimeSeriesPoint): void {
+  persistTimeSeriesPoint(cwd, point);
 }
 
 // ── Types ──
@@ -114,6 +124,38 @@ export interface PolicyData {
   priority: number;
 }
 
+export interface PolicyFileData {
+  filename: string;
+  name: string;
+  category: string;
+  path: string;
+}
+
+export interface ComplianceData {
+  totalChecks: number;
+  totalBlocks: number;
+  blockRate: string;
+  recentFailures: Array<{
+    policyId: string;
+    policyName: string;
+    operation: string;
+    reason: string;
+    executedAt: string;
+    defeatedMechanism: string;
+  }>;
+  failuresByMechanism: Record<string, number>;
+}
+
+export interface DeployBucketData {
+  queued: number;
+  batched: number;
+  executing: number;
+  done: number;
+  failed: number;
+  batchCount: number;
+  savedOps: number;
+}
+
 export interface AuditEntry {
   policyId: string;
   operation: string;
@@ -123,13 +165,25 @@ export interface AuditEntry {
   taskId?: string;
 }
 
+export interface MemoryHitMissData {
+  hits: number;
+  misses: number;
+  hitRate: string;
+}
+
 export interface MemoryData {
   l1: { entries: number; sizeKB: number };
   l2: { entries: number };
   l3: { status: string; uptime: string };
   l4: { entities: number; relationships: number };
-  compression: CompressionData;
+  compression: {
+    rawBytes: number;
+    contextBytes: number;
+    savingsPercent: string;
+    totalCalls: number;
+  };
   hitsMisses: MemoryHitMissData;
+  recentQueries: Array<{ query: string; type: string; timestamp: string }>;
 }
 
 export interface ModelData {
@@ -151,18 +205,37 @@ export interface ModelData {
   totalCost: number;
 }
 
+export interface TaskItem {
+  id: string;
+  title: string;
+  type: string;
+  status: string;
+  priority: number;
+  assignee: string | null;
+  updatedAt: string;
+}
+
 export interface TaskData {
   total: number;
   done: number;
   inProgress: number;
   blocked: number;
   open: number;
+  items: TaskItem[];
 }
 
 export interface CoordData {
   activeAgents: number;
   activeClaims: number;
   pendingDeploys: number;
+  totalAgents: number;
+  completedAgents: number;
+  patternHits: number;
+  patternSuccesses: number;
+  activeWorktrees: number;
+  agents: Array<{ id: string; name: string; status: string; startedAt: string }>;
+  skillsPerAgent: Record<string, string[]>;
+  patternsPerAgent: Record<string, Array<{ id: string; category: string; uses: number }>>;
 }
 
 export interface SystemData {
@@ -176,7 +249,7 @@ export interface PerformanceData {
   hotPaths: Array<{ name: string; avgMs: number; p95Ms: number; count: number }>;
 }
 
-// ── Enhanced dashboard types for session telemetry ──
+// ── Enhanced dashboard types (merged from feature/007-dashboard-live-stream) ──
 
 export interface AgentDetail {
   id: string;
@@ -252,6 +325,7 @@ export interface DashboardData {
   timestamp: string;
   system: SystemData;
   policies: PolicyData[];
+  policyFiles: PolicyFileData[];
   auditTrail: AuditEntry[];
   memory: MemoryData;
   models: ModelData;
@@ -261,7 +335,7 @@ export interface DashboardData {
   session?: SessionTelemetryData;
   timeSeries: TimeSeriesPoint[];
   compliance: ComplianceData;
-  deployBuckets: DeployBucketData;
+  deployBuckets: DeployBucketData | DeployBatchSummary;
 }
 
 // ── Data Gathering ──
@@ -272,298 +346,53 @@ export async function getDashboardData(): Promise<DashboardData> {
   const tasks = getTaskData(cwd);
   const coordination = getCoordData(cwd);
   const memory = getMemoryData(cwd);
-  const session = getSessionTelemetryData();
   const compliance = getComplianceData(cwd);
-  const deployBuckets = getDeployBucketData(session);
+  const deployBuckets = getDeployBucketData(cwd);
 
-  // Record time-series point for graphs
-  pushTimeSeriesPoint({
+  // Persist time-series point
+  const tsPoint: TimeSeriesPoint = {
     timestamp: new Date().toISOString(),
-    tasks,
-    coordination,
+    tasks: {
+      total: tasks.total,
+      done: tasks.done,
+      inProgress: tasks.inProgress,
+      blocked: tasks.blocked,
+      open: tasks.open,
+    },
+    coordination: {
+      activeAgents: coordination.activeAgents,
+      totalAgents: coordination.totalAgents,
+      completedAgents: coordination.completedAgents,
+      patternHits: coordination.patternHits,
+      activeWorktrees: coordination.activeWorktrees,
+    },
     deployBuckets,
     compression: memory.compression,
-    memoryHitsMisses: memory.hitsMisses,
-    compliance,
-  });
+    memoryHitsMisses: memory.hitsMisses || { hits: 0, misses: 0, hitRate: 'N/A' },
+    compliance: {
+      totalChecks: compliance.totalChecks,
+      totalBlocks: compliance.totalBlocks,
+      blockRate: compliance.blockRate,
+    },
+  };
+  pushTimeSeriesPoint(cwd, tsPoint);
 
   return {
     timestamp: new Date().toISOString(),
     system: getSystemData(cwd),
     policies: getPolicyData(cwd),
+    policyFiles: getPolicyFiles(cwd),
     auditTrail: getAuditData(cwd),
     memory,
     models: getModelData(cwd),
     tasks,
     coordination,
     performance: getPerformanceData(),
-    session: session || undefined,
-    timeSeries: getTimeSeriesHistory(),
+    timeSeries: getTimeSeriesHistory(cwd),
     compliance,
     deployBuckets,
   };
 }
-
-// ── Session Telemetry Bridge ──
-
-function getSessionTelemetryData(): SessionTelemetryData | null {
-  const snapshot = getSessionSnapshot();
-  if (!snapshot) return null;
-
-  const now = Date.now();
-  const uptimeMs = now - snapshot.startTime;
-  const uptimeStr =
-    uptimeMs < 60000
-      ? `${(uptimeMs / 1000).toFixed(1)}s`
-      : `${Math.floor(uptimeMs / 60000)}m ${Math.floor((uptimeMs % 60000) / 1000)}s`;
-
-  // Convert agents Map to array
-  const agents: AgentDetail[] = [...snapshot.agents.values()].map((a) => ({
-    id: a.id,
-    name: a.name,
-    type: a.type,
-    status: a.status,
-    task: a.task,
-    tokensUsed: a.tokensUsed,
-    durationMs: (a.endTime || now) - a.startTime,
-  }));
-
-  // Convert skills Map to array
-  const skills: SkillDetail[] = [...snapshot.skills.values()].map((s) => ({
-    name: s.name,
-    source: s.source,
-    active: s.active,
-    reason: s.reason,
-  }));
-
-  // Convert patterns Map to array
-  const patterns: PatternDetail[] = [...snapshot.patterns.values()].map((p) => ({
-    id: p.id,
-    name: p.name,
-    weight: p.weight,
-    active: p.active,
-    category: p.category,
-  }));
-
-  // Convert deploys Map to array
-  const deploys: DeployDetail[] = [...snapshot.deploys.values()].map((d) => ({
-    id: d.id,
-    type: d.type,
-    target: d.target,
-    status: d.status,
-    message: d.message,
-    batchId: d.batchId,
-    queuedAt: d.queuedAt,
-    executedAt: d.executedAt,
-  }));
-
-  // Compute deploy batch summary
-  const deployValues = [...snapshot.deploys.values()];
-  const batchIds = new Set(deployValues.map((a) => a.batchId).filter(Boolean));
-  const deployBatchSummary: DeployBatchSummary = {
-    totalActions: deployValues.length,
-    queued: deployValues.filter((a) => a.status === 'queued').length,
-    batched: deployValues.filter((a) => a.status === 'batched').length,
-    executing: deployValues.filter((a) => a.status === 'executing').length,
-    done: deployValues.filter((a) => a.status === 'done').length,
-    failed: deployValues.filter((a) => a.status === 'failed').length,
-    batchCount: batchIds.size,
-    savedOps: Math.max(0, deployValues.length - batchIds.size),
-  };
-
-  // Cost savings
-  const savedUsd = snapshot.estimatedCostWithoutUap - snapshot.totalCostUsd;
-  const costSavingsPercent =
-    snapshot.estimatedCostWithoutUap > 0
-      ? Math.round((savedUsd / snapshot.estimatedCostWithoutUap) * 100)
-      : 0;
-
-  return {
-    sessionId: snapshot.sessionId,
-    uptime: uptimeStr,
-    tokensUsed: snapshot.tokensUsed,
-    tokensSaved: snapshot.tokensSaved,
-    toolCalls: snapshot.toolCalls,
-    policyChecks: snapshot.policyChecks,
-    policyBlocks: snapshot.policyBlocks,
-    filesBackedUp: snapshot.filesBackedUp,
-    errors: snapshot.errors,
-    totalCostUsd: snapshot.totalCostUsd,
-    estimatedCostWithoutUap: snapshot.estimatedCostWithoutUap,
-    costSavingsPercent,
-    agents,
-    skills,
-    patterns,
-    deploys,
-    deployBatchSummary,
-    stepsCompleted: snapshot.stepsCompleted,
-    stepsTotal: snapshot.stepsTotal,
-    currentStep: snapshot.currentStep,
-  };
-}
-
-// ── Deploy Bucket Data ──
-
-function getDeployBucketData(session: SessionTelemetryData | null): DeployBucketData {
-  if (!session) {
-    return { queued: 0, batched: 0, executing: 0, done: 0, failed: 0, batchCount: 0, savedOps: 0 };
-  }
-  return {
-    queued: session.deployBatchSummary.queued,
-    batched: session.deployBatchSummary.batched,
-    executing: session.deployBatchSummary.executing,
-    done: session.deployBatchSummary.done,
-    failed: session.deployBatchSummary.failed,
-    batchCount: session.deployBatchSummary.batchCount,
-    savedOps: session.deployBatchSummary.savedOps,
-  };
-}
-
-// ── Compliance Data ──
-
-/**
- * Categorize which compliance mechanism a policy failure defeated.
- * Maps policy IDs/names to the mechanism they enforce.
- */
-function categorizeMechanism(policyId: string, policyName: string, operation: string): string {
-  const id = policyId.toLowerCase();
-  const name = policyName.toLowerCase();
-  const op = operation.toLowerCase();
-
-  if (id.includes('worktree') || name.includes('worktree') || op.includes('worktree'))
-    return 'Worktree Gate';
-  if (id.includes('build') || name.includes('build') || op.includes('build'))
-    return 'Build Gate';
-  if (id.includes('test') || name.includes('test') || op.includes('test'))
-    return 'Test Gate';
-  if (id.includes('schema') || name.includes('schema') || op.includes('schema'))
-    return 'Schema Diff Gate';
-  if (id.includes('backup') || name.includes('backup') || op.includes('backup'))
-    return 'File Backup';
-  if (id.includes('iac') || name.includes('iac') || op.includes('iac'))
-    return 'IaC Parity';
-  if (id.includes('kubectl') || name.includes('kubectl') || op.includes('kubectl'))
-    return 'kubectl Verify';
-  if (id.includes('version') || name.includes('version') || op.includes('version'))
-    return 'Version Gate';
-  if (id.includes('lint') || name.includes('lint') || op.includes('lint'))
-    return 'Lint Gate';
-  if (id.includes('deploy') || name.includes('deploy') || op.includes('deploy'))
-    return 'Deploy Gate';
-  if (id.includes('security') || name.includes('security') || op.includes('secret'))
-    return 'Security Gate';
-  return 'Policy Enforcement';
-}
-
-function getComplianceData(cwd: string): ComplianceData {
-  const dbPath = join(cwd, 'agents', 'data', 'memory', 'policies.db');
-  const result: ComplianceData = {
-    totalChecks: 0,
-    totalBlocks: 0,
-    blockRate: '0%',
-    recentFailures: [],
-    failuresByMechanism: {},
-  };
-
-  // Get from session telemetry first (live data)
-  const snapshot = getSessionSnapshot();
-  if (snapshot) {
-    result.totalChecks = snapshot.policyChecks;
-    result.totalBlocks = snapshot.policyBlocks;
-    result.blockRate =
-      snapshot.policyChecks > 0
-        ? `${Math.round((snapshot.policyBlocks / snapshot.policyChecks) * 100)}%`
-        : '0%';
-  }
-
-  if (!existsSync(dbPath)) return result;
-
-  try {
-    const db = new Database(dbPath, { readonly: true });
-
-    // Check if policy_executions table exists
-    const hasTable = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='policy_executions'")
-      .all();
-    if (hasTable.length === 0) {
-      db.close();
-      return result;
-    }
-
-    // Get total counts from DB if session telemetry doesn't have them
-    if (result.totalChecks === 0) {
-      const totalRow = db.prepare('SELECT COUNT(*) as c FROM policy_executions').get() as {
-        c: number;
-      };
-      result.totalChecks = totalRow.c;
-      const blockRow = db
-        .prepare('SELECT COUNT(*) as c FROM policy_executions WHERE allowed = 0')
-        .get() as { c: number };
-      result.totalBlocks = blockRow.c;
-      result.blockRate =
-        result.totalChecks > 0
-          ? `${Math.round((result.totalBlocks / result.totalChecks) * 100)}%`
-          : '0%';
-    }
-
-    // Get recent failures (blocks) with policy name lookup
-    const hasPolicies = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='policies'")
-      .all();
-
-    let failureRows: Array<Record<string, unknown>>;
-    if (hasPolicies.length > 0) {
-      failureRows = db
-        .prepare(
-          `SELECT pe.policyId, pe.operation, pe.reason, pe.executedAt,
-                  COALESCE(p.name, pe.policyId) as policyName
-           FROM policy_executions pe
-           LEFT JOIN policies p ON pe.policyId = p.id
-           WHERE pe.allowed = 0
-           ORDER BY pe.executedAt DESC LIMIT 50`
-        )
-        .all() as Array<Record<string, unknown>>;
-    } else {
-      failureRows = db
-        .prepare(
-          `SELECT policyId, operation, reason, executedAt, policyId as policyName
-           FROM policy_executions
-           WHERE allowed = 0
-           ORDER BY executedAt DESC LIMIT 50`
-        )
-        .all() as Array<Record<string, unknown>>;
-    }
-
-    const mechanismCounts: Record<string, number> = {};
-
-    result.recentFailures = failureRows.map((r) => {
-      const policyId = (r.policyId as string) || '';
-      const policyName = (r.policyName as string) || policyId;
-      const operation = (r.operation as string) || 'unknown';
-      const mechanism = categorizeMechanism(policyId, policyName, operation);
-
-      mechanismCounts[mechanism] = (mechanismCounts[mechanism] || 0) + 1;
-
-      return {
-        policyId,
-        policyName,
-        operation,
-        reason: (r.reason as string) || '',
-        executedAt: (r.executedAt as string) || '',
-        defeatedMechanism: mechanism,
-      };
-    });
-
-    result.failuresByMechanism = mechanismCounts;
-    db.close();
-  } catch {
-    /* ignore */
-  }
-
-  return result;
-}
-
-// ── Existing Data Gathering Functions ──
 
 function getSystemData(cwd: string): SystemData {
   let version = '?';
@@ -574,7 +403,7 @@ function getSystemData(cwd: string): SystemData {
     /* ignore */
   }
 
-  // Use TTL cache for git data
+  // Use TTL cache for git data (doesn't change faster than 30s during normal operation)
   let branch = '?';
   let dirty = 0;
   const now = Date.now();
@@ -636,6 +465,61 @@ function getPolicyData(cwd: string): PolicyData[] {
   }
 }
 
+/**
+ * Read policy .md files from the policies/ directory.
+ * Returns metadata about each file (excluding README.md).
+ */
+export function getPolicyFiles(cwd: string): PolicyFileData[] {
+  const policiesDir = join(cwd, 'policies');
+  if (!existsSync(policiesDir)) return [];
+
+  try {
+    const files = readdirSync(policiesDir).filter(
+      (f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md'
+    );
+
+    return files.map((f) => {
+      const nameWithoutExt = f.replace(/\.md$/, '');
+      // Convert kebab-case to Title Case
+      const name = nameWithoutExt
+        .split('-')
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+
+      // Derive category from filename patterns
+      let category = 'general';
+      if (nameWithoutExt.includes('iac') || nameWithoutExt.includes('pipeline')) {
+        category = 'infrastructure';
+      } else if (nameWithoutExt.includes('worktree') || nameWithoutExt.includes('file')) {
+        category = 'workflow';
+      } else if (
+        nameWithoutExt.includes('gate') ||
+        nameWithoutExt.includes('completion') ||
+        nameWithoutExt.includes('mandatory')
+      ) {
+        category = 'quality';
+      } else if (nameWithoutExt.includes('semver') || nameWithoutExt.includes('version')) {
+        category = 'versioning';
+      } else if (nameWithoutExt.includes('image') || nameWithoutExt.includes('asset')) {
+        category = 'assets';
+      } else if (nameWithoutExt.includes('kubectl') || nameWithoutExt.includes('backport')) {
+        category = 'operations';
+      } else if (nameWithoutExt.includes('backup')) {
+        category = 'safety';
+      }
+
+      return {
+        filename: f,
+        name,
+        category,
+        path: join(policiesDir, f),
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
 function getAuditData(cwd: string): AuditEntry[] {
   const dbPath = join(cwd, 'agents', 'data', 'memory', 'policies.db');
   if (!existsSync(dbPath)) return [];
@@ -673,12 +557,14 @@ function getMemoryData(cwd: string): MemoryData {
   let l2Entries = 0;
   let l4Entities = 0;
   let l4Relationships = 0;
+  const recentQueries: Array<{ query: string; type: string; timestamp: string }> = [];
 
   if (existsSync(memDbPath)) {
     try {
       l1SizeKB = Math.round(statSync(memDbPath).size / 1024);
       const now = Date.now();
 
+      // Reuse DB connection if still valid (prevents open/close overhead on rapid refreshes)
       let db: Database.Database | null = null;
       if (cachedMemoryDb && cachedMemoryDb.expiresAt > now) {
         db = cachedMemoryDb.db;
@@ -692,6 +578,25 @@ function getMemoryData(cwd: string): MemoryData {
         .all();
       if (hasMem.length > 0) {
         l1Entries = (db.prepare('SELECT COUNT(*) as c FROM memories').get() as { c: number }).c;
+
+        // Recent queries from memories table (last 10)
+        try {
+          const memRows = db
+            .prepare(
+              `SELECT type, substr(content, 1, 80) as snippet, timestamp
+               FROM memories ORDER BY id DESC LIMIT 10`
+            )
+            .all() as Array<{ type: string; snippet: string; timestamp: string }>;
+          for (const row of memRows) {
+            recentQueries.push({
+              query: row.snippet || '',
+              type: row.type || 'memory',
+              timestamp: row.timestamp || '',
+            });
+          }
+        } catch {
+          /* table might not have expected columns */
+        }
       }
       const hasSess = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_memories'")
@@ -715,25 +620,80 @@ function getMemoryData(cwd: string): MemoryData {
           db.prepare('SELECT COUNT(*) as c FROM relationships').get() as { c: number }
         ).c;
       }
+      // Don't close - keep connection cached for next refresh
     } catch {
       /* ignore */
     }
   }
 
-  // Get compression stats
+  // Get compression stats from session stats
   const stats = globalSessionStats.getSummary();
 
-  // Get memory hits/misses from session telemetry
-  const snapshot = getSessionSnapshot();
-  const hits = snapshot?.memoryHits ?? 0;
-  const misses = snapshot?.memoryMisses ?? 0;
-  const total = hits + misses;
-  const hitRate = total > 0 ? `${Math.round((hits / total) * 100)}%` : '0%';
+  // Try real compression ratio from model_analytics.db
+  let compressionRaw = stats.totalRawBytes;
+  let compressionCtx = stats.totalContextBytes;
+  let compressionSavings = stats.savingsPercent;
+  const compressionCalls = stats.totalCalls;
 
-  // Use TTL cache for Qdrant status
+  const analyticsDbPath = join(cwd, 'agents', 'data', 'memory', 'model_analytics.db');
+  if (existsSync(analyticsDbPath) && compressionRaw === 0) {
+    try {
+      const aDb = new Database(analyticsDbPath, { readonly: true });
+      const hasTable = aDb
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='task_outcomes'")
+        .all();
+      if (hasTable.length > 0) {
+        const row = aDb
+          .prepare('SELECT SUM(tokensIn) as ti, SUM(tokensOut) as to2 FROM task_outcomes')
+          .get() as { ti: number | null; to2: number | null } | undefined;
+        if (row && row.ti && row.to2 && row.ti + row.to2 > 0) {
+          compressionRaw = row.ti + row.to2;
+          compressionCtx = row.to2;
+          const ratio = row.to2 / (row.ti + row.to2);
+          compressionSavings = ((1 - ratio) * 100).toFixed(1) + '%';
+        }
+      }
+      aDb.close();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Use TTL cache for Qdrant status (Docker doesn't change faster than 30s)
   let l3Status = 'Stopped';
   let l3Uptime = '';
   const now = Date.now();
+  // Memory hits/misses: derive from memory types (observations=hits, thoughts=misses)
+  // or from session telemetry if available
+  const snapshot = getSessionSnapshot();
+  let memHits = snapshot?.memoryHits ?? 0;
+  let memMisses = snapshot?.memoryMisses ?? 0;
+  if (memHits === 0 && memMisses === 0 && existsSync(memDbPath)) {
+    try {
+      const mdb = cachedMemoryDb?.db || new Database(memDbPath, { readonly: true });
+      const typeCounts = mdb
+        .prepare('SELECT type, COUNT(*) as c FROM memories GROUP BY type')
+        .all() as Array<{ type: string; c: number }>;
+      for (const tc of typeCounts) {
+        if (tc.type === 'observation' || tc.type === 'action') memHits += tc.c;
+        else if (tc.type === 'thought') memMisses += tc.c;
+      }
+      // Session memories are all hits (successfully stored context)
+      const sesCount = mdb.prepare('SELECT COUNT(*) as c FROM session_memories').get() as {
+        c: number;
+      };
+      memHits += sesCount.c;
+    } catch {
+      /* ignore */
+    }
+  }
+  const memTotal = memHits + memMisses;
+  const hitsMisses: MemoryHitMissData = {
+    hits: memHits,
+    misses: memMisses,
+    hitRate: memTotal > 0 ? `${Math.round((memHits / memTotal) * 100)}%` : 'N/A',
+  };
+
   if (cachedQdrantStatus && cachedQdrantStatus.expiresAt > now) {
     return {
       l1: { entries: l1Entries, sizeKB: l1SizeKB },
@@ -741,12 +701,13 @@ function getMemoryData(cwd: string): MemoryData {
       l3: { status: cachedQdrantStatus.data.status, uptime: cachedQdrantStatus.data.uptime },
       l4: { entities: l4Entities, relationships: l4Relationships },
       compression: {
-        rawBytes: stats.totalRawBytes,
-        contextBytes: stats.totalContextBytes,
-        savingsPercent: stats.savingsPercent,
-        totalCalls: stats.totalCalls,
+        rawBytes: compressionRaw,
+        contextBytes: compressionCtx,
+        savingsPercent: compressionSavings,
+        totalCalls: compressionCalls,
       },
-      hitsMisses: { hits, misses, hitRate },
+      hitsMisses,
+      recentQueries,
     };
   }
 
@@ -773,37 +734,29 @@ function getMemoryData(cwd: string): MemoryData {
     l3: { status: l3Status, uptime: l3Uptime },
     l4: { entities: l4Entities, relationships: l4Relationships },
     compression: {
-      rawBytes: stats.totalRawBytes,
-      contextBytes: stats.totalContextBytes,
-      savingsPercent: stats.savingsPercent,
-      totalCalls: stats.totalCalls,
+      rawBytes: compressionRaw,
+      contextBytes: compressionCtx,
+      savingsPercent: compressionSavings,
+      totalCalls: compressionCalls,
     },
-    hitsMisses: { hits, misses, hitRate },
+    hitsMisses,
+    recentQueries,
   };
 }
 
 function getModelData(cwd: string): ModelData {
-  let roles = {
-    planner: 'opus-4.6',
-    executor: 'qwen35',
-    reviewer: 'opus-4.6',
-    fallback: 'qwen35',
-  };
+  let roles = { planner: 'opus-4.6', executor: 'qwen35', reviewer: 'opus-4.6', fallback: 'qwen35' };
   let strategy = 'balanced';
 
-  const configPath = join(cwd, '.uap.json');
-  if (existsSync(configPath)) {
-    try {
-      const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-      if (raw.multiModel?.roles) {
-        roles = { ...roles, ...raw.multiModel.roles };
-      }
-      if (raw.multiModel?.routingStrategy) {
-        strategy = raw.multiModel.routingStrategy;
-      }
-    } catch {
-      /* ignore */
+  try {
+    const cfg = loadUapConfig(cwd);
+    if (cfg?.multiModel) {
+      const mm = cfg.multiModel as Record<string, unknown>;
+      if (mm.roles) roles = { ...roles, ...(mm.roles as Record<string, string>) };
+      if (mm.routingStrategy) strategy = mm.routingStrategy as string;
     }
+  } catch {
+    // Config load failure is non-fatal — use defaults
   }
 
   // Session usage from analytics DB
@@ -847,7 +800,7 @@ function getModelData(cwd: string): ModelData {
 
 function getTaskData(cwd: string): TaskData {
   const taskDbPath = join(cwd, '.uap/tasks/tasks.db');
-  const result: TaskData = { total: 0, done: 0, inProgress: 0, blocked: 0, open: 0 };
+  const result: TaskData = { total: 0, done: 0, inProgress: 0, blocked: 0, open: 0, items: [] };
 
   if (existsSync(taskDbPath)) {
     try {
@@ -869,6 +822,55 @@ function getTaskData(cwd: string): TaskData {
       result.open = (
         db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status='open'").get() as { c: number }
       ).c;
+
+      // Fetch individual task items for kanban board (most recent 50)
+      const rows = db
+        .prepare(
+          `SELECT id, title, type, status, priority, assignee, updated_at
+         FROM tasks
+         WHERE status NOT IN ('done', 'wont_do')
+         ORDER BY priority ASC, updated_at DESC
+         LIMIT 50`
+        )
+        .all() as Array<{
+        id: string;
+        title: string;
+        type: string;
+        status: string;
+        priority: number;
+        assignee: string | null;
+        updated_at: string;
+      }>;
+
+      // Also fetch recent done/wont_do (last 10)
+      const doneRows = db
+        .prepare(
+          `SELECT id, title, type, status, priority, assignee, updated_at
+         FROM tasks
+         WHERE status IN ('done', 'wont_do')
+         ORDER BY updated_at DESC
+         LIMIT 10`
+        )
+        .all() as Array<{
+        id: string;
+        title: string;
+        type: string;
+        status: string;
+        priority: number;
+        assignee: string | null;
+        updated_at: string;
+      }>;
+
+      result.items = [...rows, ...doneRows].map((r) => ({
+        id: r.id,
+        title: r.title,
+        type: r.type,
+        status: r.status,
+        priority: r.priority,
+        assignee: r.assignee,
+        updatedAt: r.updated_at,
+      }));
+
       db.close();
     } catch {
       /* ignore */
@@ -880,57 +882,383 @@ function getTaskData(cwd: string): TaskData {
 
 function getCoordData(cwd: string): CoordData {
   const coordDbPath = join(cwd, 'agents/data/coordination/coordination.db');
-  const result: CoordData = { activeAgents: 0, activeClaims: 0, pendingDeploys: 0 };
+  const result: CoordData = {
+    activeAgents: 0,
+    activeClaims: 0,
+    pendingDeploys: 0,
+    totalAgents: 0,
+    completedAgents: 0,
+    patternHits: 0,
+    patternSuccesses: 0,
+    activeWorktrees: 0,
+    agents: [],
+    skillsPerAgent: {},
+    patternsPerAgent: {},
+  };
 
   if (existsSync(coordDbPath)) {
     try {
       const db = new Database(coordDbPath, { readonly: true });
-      const hasAgents = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_registry'")
-        .all();
-      if (hasAgents.length > 0) {
-        result.activeAgents = (
-          db.prepare("SELECT COUNT(*) as c FROM agent_registry WHERE status='active'").get() as {
-            c: number;
+
+      // Active agents
+      try {
+        const hasAgents = db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_registry'")
+          .all();
+        if (hasAgents.length > 0) {
+          result.activeAgents = (
+            db.prepare("SELECT COUNT(*) as c FROM agent_registry WHERE status='active'").get() as {
+              c: number;
+            }
+          ).c;
+
+          result.totalAgents = (
+            db.prepare('SELECT COUNT(*) as c FROM agent_registry').get() as { c: number }
+          ).c;
+
+          result.completedAgents = (
+            db
+              .prepare("SELECT COUNT(*) as c FROM agent_registry WHERE status='completed'")
+              .get() as {
+              c: number;
+            }
+          ).c;
+
+          // Agent list
+          try {
+            const agentRows = db
+              .prepare(
+                'SELECT id, name, status, started_at FROM agent_registry ORDER BY started_at DESC LIMIT 20'
+              )
+              .all() as Array<{
+              id: string;
+              name: string;
+              status: string;
+              started_at: string;
+            }>;
+            result.agents = agentRows.map((a) => ({
+              id: a.id,
+              name: a.name,
+              status: a.status,
+              startedAt: a.started_at,
+            }));
+          } catch {
+            /* ignore */
           }
-        ).c;
+        }
+      } catch {
+        /* ignore */
       }
-      const hasClaims = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='work_claims'")
-        .all();
-      if (hasClaims.length > 0) {
-        result.activeClaims = (
-          db.prepare("SELECT COUNT(*) as c FROM work_claims WHERE status='active'").get() as {
-            c: number;
+
+      // Work claims - NO status column, use COUNT(*)
+      try {
+        const hasClaims = db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='work_claims'")
+          .all();
+        if (hasClaims.length > 0) {
+          result.activeClaims = (
+            db.prepare('SELECT COUNT(*) as c FROM work_claims').get() as {
+              c: number;
+            }
+          ).c;
+        }
+      } catch {
+        /* ignore */
+      }
+
+      // Deploy queue
+      try {
+        const hasDQ = db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='deploy_queue'")
+          .all();
+        if (hasDQ.length > 0) {
+          result.pendingDeploys = (
+            db.prepare("SELECT COUNT(*) as c FROM deploy_queue WHERE status='pending'").get() as {
+              c: number;
+            }
+          ).c;
+        }
+      } catch {
+        /* ignore */
+      }
+
+      // Pattern outcomes
+      try {
+        const hasPO = db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='pattern_outcomes'")
+          .all();
+        if (hasPO.length > 0) {
+          const poRow = db
+            .prepare('SELECT SUM(uses) as u, SUM(successes) as s FROM pattern_outcomes')
+            .get() as { u: number | null; s: number | null } | undefined;
+          result.patternHits = poRow?.u || 0;
+          result.patternSuccesses = poRow?.s || 0;
+
+          // Patterns per agent - group by pattern_id
+          try {
+            const patternRows = db
+              .prepare(
+                'SELECT pattern_id, task_category, uses FROM pattern_outcomes ORDER BY uses DESC'
+              )
+              .all() as Array<{
+              pattern_id: string;
+              task_category: string;
+              uses: number;
+            }>;
+
+            // Group patterns by agent (use agent list if available, otherwise use 'all')
+            const agentIds = result.agents.length > 0 ? result.agents.map((a) => a.id) : ['all'];
+            for (const agentId of agentIds) {
+              result.patternsPerAgent[agentId] = patternRows.map((p) => ({
+                id: p.pattern_id,
+                category: p.task_category,
+                uses: p.uses,
+              }));
+            }
+          } catch {
+            /* ignore */
           }
-        ).c;
+        }
+      } catch {
+        /* ignore */
       }
-      const hasDQ = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='deploy_queue'")
-        .all();
-      if (hasDQ.length > 0) {
-        result.pendingDeploys = (
-          db.prepare("SELECT COUNT(*) as c FROM deploy_queue WHERE status='pending'").get() as {
-            c: number;
-          }
-        ).c;
-      }
+
       db.close();
     } catch {
       /* ignore */
     }
   }
 
+  // Worktree count from worktree registry
+  try {
+    const wtDbPath = join(cwd, '.uap/worktree_registry.db');
+    if (existsSync(wtDbPath)) {
+      const wtDb = new Database(wtDbPath, { readonly: true });
+      try {
+        const hasTable = wtDb
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='worktrees'")
+          .all();
+        if (hasTable.length > 0) {
+          result.activeWorktrees = (
+            wtDb.prepare("SELECT COUNT(*) as c FROM worktrees WHERE status='active'").get() as {
+              c: number;
+            }
+          ).c;
+        }
+      } catch {
+        /* ignore */
+      }
+      wtDb.close();
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // Skills per agent: read from .claude/skills/ directory (shared by all agents)
+  try {
+    const skillsDir = join(cwd, '.claude', 'skills');
+    if (existsSync(skillsDir)) {
+      const skillDirs = readdirSync(skillsDir).filter((d) => {
+        try {
+          return statSync(join(skillsDir, d)).isDirectory();
+        } catch {
+          return false;
+        }
+      });
+
+      const agentIds = result.agents.length > 0 ? result.agents.map((a) => a.id) : ['all'];
+      for (const agentId of agentIds) {
+        result.skillsPerAgent[agentId] = skillDirs;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return result;
+}
+
+export function getDeployBucketData(cwd: string): DeployBatchSummary {
+  const coordDbPath = join(cwd, 'agents/data/coordination/coordination.db');
+  const summary: DeployBatchSummary = {
+    totalActions: 0,
+    queued: 0,
+    batched: 0,
+    executing: 0,
+    done: 0,
+    failed: 0,
+    batchCount: 0,
+    savedOps: 0,
+  };
+
+  if (!existsSync(coordDbPath)) return summary;
+
+  try {
+    const db = new Database(coordDbPath, { readonly: true });
+
+    try {
+      const hasDQ = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='deploy_queue'")
+        .all();
+      if (hasDQ.length > 0) {
+        // Use status mapping: 'completed' counts as done
+        const rows = db
+          .prepare(`SELECT status, COUNT(*) as c FROM deploy_queue GROUP BY status`)
+          .all() as Array<{ status: string; c: number }>;
+
+        for (const row of rows) {
+          summary.totalActions += row.c;
+          switch (row.status) {
+            case 'pending':
+              summary.queued += row.c;
+              break;
+            case 'batched':
+              summary.batched += row.c;
+              break;
+            case 'executing':
+              summary.executing += row.c;
+              break;
+            case 'completed':
+              summary.done += row.c;
+              break;
+            case 'failed':
+              summary.failed += row.c;
+              break;
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    try {
+      const hasDB = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='deploy_batches'")
+        .all();
+      if (hasDB.length > 0) {
+        summary.batchCount = (
+          db.prepare('SELECT COUNT(*) as c FROM deploy_batches').get() as { c: number }
+        ).c;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    db.close();
+  } catch {
+    /* ignore */
+  }
+
+  // Calculate saved ops (batched actions that were squashed)
+  if (summary.batchCount > 0 && summary.totalActions > summary.batchCount) {
+    summary.savedOps = summary.totalActions - summary.batchCount;
+  }
+
+  return summary;
+}
+
+// ── Compliance Data ──
+
+function categorizeMechanism(policyId: string, policyName: string, operation: string): string {
+  const combined = `${policyId} ${policyName} ${operation}`.toLowerCase();
+  if (combined.includes('worktree')) return 'Worktree Gate';
+  if (combined.includes('build')) return 'Build Gate';
+  if (combined.includes('test')) return 'Test Gate';
+  if (combined.includes('schema')) return 'Schema Diff Gate';
+  if (combined.includes('backup')) return 'File Backup';
+  if (combined.includes('version')) return 'Version Gate';
+  if (combined.includes('lint')) return 'Lint Gate';
+  if (combined.includes('deploy')) return 'Deploy Gate';
+  if (combined.includes('security') || combined.includes('secret')) return 'Security Gate';
+  return 'Policy Enforcement';
+}
+
+function getComplianceData(cwd: string): ComplianceData {
+  const dbPath = join(cwd, 'agents', 'data', 'memory', 'policies.db');
+  const result: ComplianceData = {
+    totalChecks: 0,
+    totalBlocks: 0,
+    blockRate: '0%',
+    recentFailures: [],
+    failuresByMechanism: {},
+  };
+  if (!existsSync(dbPath)) return result;
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    const hasTable = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='policy_executions'")
+      .all();
+    if (hasTable.length === 0) {
+      db.close();
+      return result;
+    }
+
+    result.totalChecks = (
+      db.prepare('SELECT COUNT(*) as c FROM policy_executions').get() as { c: number }
+    ).c;
+    result.totalBlocks = (
+      db.prepare('SELECT COUNT(*) as c FROM policy_executions WHERE allowed = 0').get() as {
+        c: number;
+      }
+    ).c;
+    result.blockRate =
+      result.totalChecks > 0
+        ? `${Math.round((result.totalBlocks / result.totalChecks) * 100)}%`
+        : '0%';
+
+    const hasPolicies = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='policies'")
+      .all();
+    let failureRows: Array<Record<string, unknown>>;
+    if (hasPolicies.length > 0) {
+      failureRows = db
+        .prepare(
+          `SELECT pe.policyId, pe.operation, pe.reason, pe.executedAt, COALESCE(p.name, pe.policyId) as policyName
+         FROM policy_executions pe LEFT JOIN policies p ON pe.policyId = p.id
+         WHERE pe.allowed = 0 ORDER BY pe.executedAt DESC LIMIT 50`
+        )
+        .all() as Array<Record<string, unknown>>;
+    } else {
+      failureRows = db
+        .prepare(
+          `SELECT policyId, operation, reason, executedAt, policyId as policyName
+         FROM policy_executions WHERE allowed = 0 ORDER BY executedAt DESC LIMIT 50`
+        )
+        .all() as Array<Record<string, unknown>>;
+    }
+    const mechanismCounts: Record<string, number> = {};
+    result.recentFailures = failureRows.map((r) => {
+      const pid = (r.policyId as string) || '';
+      const pname = (r.policyName as string) || pid;
+      const op = (r.operation as string) || 'unknown';
+      const mech = categorizeMechanism(pid, pname, op);
+      mechanismCounts[mech] = (mechanismCounts[mech] || 0) + 1;
+      return {
+        policyId: pid,
+        policyName: pname,
+        operation: op,
+        reason: (r.reason as string) || '',
+        executedAt: (r.executedAt as string) || '',
+        defeatedMechanism: mech,
+      };
+    });
+    result.failuresByMechanism = mechanismCounts;
+    db.close();
+  } catch {
+    /* ignore */
+  }
   return result;
 }
 
 /**
  * Get performance metrics from the global PerformanceMonitor.
+ * Surfaces p50/p95/p99 latency data for all monitored operations.
  */
 function getPerformanceData(): PerformanceData {
   const monitor = getPerformanceMonitor();
   const allMetrics = monitor.exportMetrics();
 
+  // Build hot paths list sorted by call count (most active first)
   const hotPaths = Object.entries(allMetrics)
     .map(([name, stats]) => ({
       name,

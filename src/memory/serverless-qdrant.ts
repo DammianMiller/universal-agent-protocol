@@ -1,6 +1,7 @@
 import { execSync, spawn } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
 import type { QdrantServerlessConfig } from '../types/config.js';
+import { cosineSimilarity as sharedCosineSimilarity } from '../utils/string-similarity.js';
 
 /**
  * Serverless Qdrant manager for cost-optimized vector storage.
@@ -250,20 +251,20 @@ export class ServerlessQdrantManager {
     // Health check
     this.healthCheckInterval = setInterval(() => {
       if (!this.isLocalRunning()) {
-        console.warn('[UAP] Qdrant health check failed, attempting restart...');
-        this.startLocal().catch(console.error);
+        this.startLocal().catch(() => {});
       }
     }, healthCheckIntervalMs);
+    if (this.healthCheckInterval.unref) this.healthCheckInterval.unref();
 
     // Idle check (auto-stop)
     if (autoStop) {
       this.idleCheckInterval = setInterval(() => {
         const idleTime = Date.now() - this.lastActivityTime;
         if (idleTime > idleTimeoutMs) {
-          console.log(`[UAP] Qdrant idle for ${idleTime}ms, stopping...`);
-          this.stopLocal().catch(console.error);
+          this.stopLocal().catch(() => {});
         }
       }, 60000); // Check every minute
+      if (this.idleCheckInterval.unref) this.idleCheckInterval.unref();
     }
   }
 
@@ -388,19 +389,10 @@ export class ServerlessQdrantManager {
 
   /**
    * Calculate cosine similarity between two vectors.
+   * Delegates to shared utility to avoid duplicate implementations.
    */
   private cosineSimilarity(a: number[], b: number[]): number {
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-      dotProduct += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    return sharedCosineSimilarity(a, b);
   }
 
   /**

@@ -147,17 +147,6 @@ const KV_CACHE_OPTIONS = [
   },
 ];
 
-// GPU layers (Qwen3.5 35B has 64 layers in MoE architecture)
-// Used in interactive mode for GPU layer selection
-const _GPU_LAYERS = [
-  { value: 0, label: '0 (CPU only)' },
-  { value: 32, label: '32 (half on GPU)' },
-  { value: 63, label: '63 (all but 1 on GPU)' },
-  { value: 64, label: '64 (all on GPU)' },
-  { value: 99, label: '99 (auto - offload everything possible)' },
-];
-void _GPU_LAYERS;
-
 // Preset configurations
 const PRESETS: Record<
   string,

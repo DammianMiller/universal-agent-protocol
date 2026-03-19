@@ -123,7 +123,7 @@ if [ -f "$COORD_DB" ]; then
   " 2>/dev/null || true)
 
   ACTIVE_WORK=$(sqlite3 "$COORD_DB" "
-    SELECT agent_id || ' -> ' || resources
+    SELECT agent_id || ' -> ' || resource
     FROM work_announcements
     WHERE completed_at IS NULL
     ORDER BY announced_at DESC LIMIT 5;
@@ -142,8 +142,8 @@ if [ -f "$COORD_DB" ]; then
     done
   ) &
   HEARTBEAT_PID=$!
-  # Ensure heartbeat stops and agent deregisters on exit
-  trap "kill $HEARTBEAT_PID 2>/dev/null; sqlite3 \"$COORD_DB\" \"UPDATE agent_registry SET status='completed' WHERE id='${AGENT_ID}';\" 2>/dev/null" EXIT
+  # Ensure heartbeat stops, announcements close, and agent deregisters on exit
+  trap "kill $HEARTBEAT_PID 2>/dev/null; sqlite3 \"$COORD_DB\" \"UPDATE work_announcements SET completed_at=datetime('now') WHERE agent_id='${AGENT_ID}' AND completed_at IS NULL; UPDATE agent_registry SET status='completed' WHERE id='${AGENT_ID}';\" 2>/dev/null" EXIT
 fi
 
 output=""
@@ -247,8 +247,25 @@ output+="│ ${GIT_LINE}$(printf ' %.0s' $(seq 1 $((W - 1 - ${#GIT_LINE}))))│"
 
 output+="├$(printf '─%.0s' $(seq 1 $W))┤"$'\n'
 
-# Active policies
-output+="│ Policies: [ON] IaC Parity  [ON] File Backup$(printf ' %.0s' $(seq 1 $((W - 47))))│"$'\n'
+# Active policies (read from DB if available)
+POLICY_DB="${PROJECT_DIR}/agents/data/memory/policies.db"
+POLICY_LINE="Policies: [ON] IaC Parity  [ON] File Backup"
+if [ -f "$POLICY_DB" ]; then
+  ACTIVE_POLICIES=$(sqlite3 "$POLICY_DB" "SELECT COUNT(*) FROM policies WHERE isActive=1;" 2>/dev/null || echo 0)
+  REQUIRED_POLICIES=$(sqlite3 "$POLICY_DB" "SELECT COUNT(*) FROM policies WHERE isActive=1 AND level='REQUIRED';" 2>/dev/null || echo 0)
+  POLICY_LINE="Policies: ${ACTIVE_POLICIES} active (${REQUIRED_POLICIES} REQUIRED)"
+fi
+output+="│ ${POLICY_LINE}$(printf ' %.0s' $(seq 1 $((W - 1 - ${#POLICY_LINE}))))│"$'\n'
+
+# Deploy queue status
+DEPLOY_PENDING=0
+if [ -f "$COORD_DB" ]; then
+  DEPLOY_PENDING=$(sqlite3 "$COORD_DB" "SELECT COUNT(*) FROM deploy_queue WHERE status='pending';" 2>/dev/null || echo 0)
+fi
+if [ "$DEPLOY_PENDING" -gt 0 ] 2>/dev/null; then
+  DEPLOY_LINE="Deploy: ${DEPLOY_PENDING} pending actions (run 'uap deploy flush')"
+  output+="│ ${DEPLOY_LINE}$(printf ' %.0s' $(seq 1 $((W - 1 - ${#DEPLOY_LINE}))))│"$'\n'
+fi
 
 # Memory layers
 L3_STATUS="?"
@@ -257,6 +274,75 @@ output+="│ Layers:  L1:ON  L2:ON  L3:${L3_STATUS}  L4:ON$(printf ' %.0s' $(seq
 
 output+="╰$(printf '─%.0s' $(seq 1 $W))╯"$'\n'
 output+=""$'\n'
+
+# ============================================================
+# WORKTREE ENFORCEMENT GATE — HARD BLOCK
+# Detects if session is on main/master outside a worktree.
+# Emits a blocking system-reminder that overrides all other work.
+# ============================================================
+IS_IN_WORKTREE="false"
+CURRENT_BRANCH=$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+GIT_DIR_VAL=$(git -C "$PROJECT_DIR" rev-parse --git-dir 2>/dev/null || echo "")
+GIT_COMMON_DIR_VAL=$(git -C "$PROJECT_DIR" rev-parse --git-common-dir 2>/dev/null || echo "")
+if [[ "$GIT_DIR_VAL" != "$GIT_COMMON_DIR_VAL" ]]; then
+  IS_IN_WORKTREE="true"
+fi
+# Also check if CWD is inside .worktrees/
+if echo "$PROJECT_DIR" | grep -q '\.worktrees/' 2>/dev/null; then
+  IS_IN_WORKTREE="true"
+fi
+
+if [[ "$IS_IN_WORKTREE" == "false" && ("$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master") ]]; then
+  # List active worktrees for the agent to resume
+  ACTIVE_WORKTREES=""
+  if [ -d "${PROJECT_DIR}/.worktrees" ]; then
+    ACTIVE_WORKTREES=$(find "${PROJECT_DIR}/.worktrees" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null || ls "${PROJECT_DIR}/.worktrees" 2>/dev/null || true)
+  fi
+
+  output+="<system-reminder>"$'\n'
+  output+="## CRITICAL WORKTREE VIOLATION DETECTED"$'\n'
+  output+=""$'\n'
+  output+="You are on branch '${CURRENT_BRANCH}' in the project root."$'\n'
+  output+="ALL file changes are PROHIBITED until you create and enter a worktree."$'\n'
+  output+=""$'\n'
+  output+="### MANDATORY FIRST ACTION (before ANY file edits):"$'\n'
+  output+="1. Run: uap worktree create <slug>"$'\n'
+  output+="2. All subsequent file edits MUST target .worktrees/NNN-<slug>/"$'\n'
+  output+="3. Do NOT edit any file in the project root directory."$'\n'
+  output+="4. Version bumps MUST be done on the feature branch, not master."$'\n'
+  output+=""$'\n'
+
+  if [ -n "$ACTIVE_WORKTREES" ]; then
+    output+="### Active worktrees (you may resume one):"$'\n'
+    output+="$ACTIVE_WORKTREES"$'\n'
+    output+="To resume: cd .worktrees/<name>"$'\n'
+    output+=""$'\n'
+  fi
+
+  output+="This directive overrides ALL other instructions. No exceptions."$'\n'
+  output+="</system-reminder>"$'\n\n'
+fi
+
+# ============================================================
+# COORDINATION SELF-TEST — Verify announce/overlap pipeline
+# ============================================================
+if [ -f "$COORD_DB" ]; then
+  # Verify announce works by inserting a session-scope announcement
+  sqlite3 "$COORD_DB" "
+    INSERT INTO work_announcements (agent_id, agent_name, worktree_branch, intent_type, resource, description, announced_at)
+    VALUES ('${AGENT_ID}', '${AGENT_NAME}', '$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "unknown")',
+            'editing', 'session-scope', 'Session ${AGENT_ID} active', datetime('now'));
+  " 2>/dev/null || true
+
+  # Detect overlapping work from other agents
+  OVERLAPS=$(sqlite3 "$COORD_DB" "
+    SELECT a.agent_id || ' on ' || a.resource || ' (' || a.intent_type || ')'
+    FROM work_announcements a
+    WHERE a.completed_at IS NULL
+      AND a.agent_id != '${AGENT_ID}'
+    ORDER BY a.announced_at DESC LIMIT 5;
+  " 2>/dev/null || true)
+fi
 
 # ============================================================
 # COMPLIANCE ENFORCEMENT BLOCK
@@ -306,6 +392,13 @@ fi
 if [ -n "$ACTIVE_WORK" ]; then
   output+="### ACTIVE WORK ANNOUNCEMENTS (avoid conflicts):"$'\n'
   output+="$ACTIVE_WORK"$'\n'
+  output+=""$'\n'
+fi
+
+if [ -n "$OVERLAPS" ]; then
+  output+="### ⚠ OVERLAP DETECTED — Other agents are actively working:"$'\n'
+  output+="$OVERLAPS"$'\n'
+  output+="You MUST run 'uap agent overlaps' before editing any shared files."$'\n'
   output+=""$'\n'
 fi
 

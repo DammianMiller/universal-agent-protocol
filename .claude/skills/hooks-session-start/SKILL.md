@@ -41,7 +41,7 @@ Automatically invoked by opencode at session start. No manual invocation needed.
 
 ## Location
 
-`scripts/hooks/session-start.sh`
+`.forge/hooks/session-start.sh` (also mirrored at `.uap/omp/hooks/pre/session-start.sh`)
 
 ## Database Paths
 

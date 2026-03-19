@@ -1,10 +1,11 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { execSync, execFileSync } from 'child_process';
-import { QdrantClient } from '@qdrant/js-client-rest';
-import { AgentContextConfigSchema } from '../types/index.js';
+// QdrantClient lazy-loaded via shared utility (saves ~100ms startup)
+import { getQdrantClientClass } from '../utils/lazy-imports.js';
+import { loadUapConfig } from '../utils/config-loader.js';
 import type { AgentContextConfig } from '../types/index.js';
 
 type PatternAction = 'index' | 'query' | 'status' | 'generate';
@@ -22,13 +23,12 @@ interface PatternOptions {
  * Load .uap.json config from the current working directory.
  */
 function loadConfig(cwd: string): AgentContextConfig | null {
-  const configPath = join(cwd, '.uap.json');
-  if (!existsSync(configPath)) {
+  const config = loadUapConfig(cwd);
+  if (!config) {
     console.log(chalk.red('  No .uap.json found. Run `uap init` first.'));
     return null;
   }
-  const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-  return AgentContextConfigSchema.parse(raw);
+  return config;
 }
 
 /**
@@ -180,9 +180,10 @@ async function showPatternStatus(cwd: string): Promise<void> {
   // Check Qdrant collection
   const url = getQdrantEndpoint(config);
   try {
-    const client = new QdrantClient({ url });
+    const QdrantClientCls = await getQdrantClientClass();
+    const client = new QdrantClientCls({ url });
     const collections = await client.getCollections();
-    const found = collections.collections.find((c) => c.name === rag.collection);
+    const found = collections.collections.find((c: { name: string }) => c.name === rag.collection);
 
     if (found) {
       const info = await client.getCollection(rag.collection);
@@ -357,9 +358,10 @@ async function queryPatterns(cwd: string, options: PatternOptions): Promise<void
 
   try {
     const url = getQdrantEndpoint(config);
-    const client = new QdrantClient({ url });
+    const QdrantClientCls2 = await getQdrantClientClass();
+    const client = new QdrantClientCls2({ url });
     const collections = await client.getCollections();
-    const found = collections.collections.some((c) => c.name === rag.collection);
+    const found = collections.collections.some((c: { name: string }) => c.name === rag.collection);
 
     if (!found) {
       console.log(chalk.yellow(`  Collection '${rag.collection}' not found.`));

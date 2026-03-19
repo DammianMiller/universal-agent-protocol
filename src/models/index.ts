@@ -50,3 +50,11 @@ export type { ExecutionProfile } from './execution-profiles.js';
 // Analytics
 export { ModelAnalytics, getModelAnalytics } from './analytics.js';
 export type { TaskOutcome, ModelMetrics, CostBreakdown, SessionModelUsage } from './analytics.js';
+
+// Profile Loader (runtime model profile loading from config/model-profiles/)
+export {
+  loadModelProfile,
+  loadAllModelProfiles,
+  getActiveModelProfile,
+} from './profile-loader.js';
+export type { ModelProfile } from './profile-loader.js';

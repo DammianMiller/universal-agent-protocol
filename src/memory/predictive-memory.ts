@@ -321,14 +321,103 @@ export class PredictiveMemoryService {
       .map((w) => w.replace(/[^a-z0-9-_]/g, ''))
       .filter((w) => w.length > 2 && !stopWords.has(w));
   }
+
+  // ── Persistence ──────────────────────────────────────────────────────
+
+  /**
+   * Save learned data to SQLite for cross-session persistence.
+   */
+  saveToDb(dbPath: string): void {
+    try {
+      const Database = require('better-sqlite3');
+      const db = new Database(dbPath);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS predictive_queries (
+          keyword TEXT PRIMARY KEY,
+          queries TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS predictive_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          description TEXT NOT NULL,
+          queries TEXT NOT NULL
+        );
+      `);
+
+      const upsert = db.prepare(
+        'INSERT OR REPLACE INTO predictive_queries (keyword, queries) VALUES (?, ?)'
+      );
+      const insertMany = db.transaction(() => {
+        for (const [keyword, queries] of this.learnedQueries) {
+          upsert.run(keyword, JSON.stringify(queries));
+        }
+      });
+      insertMany();
+
+      // Save recent history (replace all)
+      db.exec('DELETE FROM predictive_history');
+      const insertHist = db.prepare(
+        'INSERT INTO predictive_history (description, queries) VALUES (?, ?)'
+      );
+      const insertHistMany = db.transaction(() => {
+        for (const entry of this.taskHistory) {
+          insertHist.run(entry.description, JSON.stringify(entry.queries));
+        }
+      });
+      insertHistMany();
+
+      db.close();
+    } catch {
+      // Persistence failure is non-fatal
+    }
+  }
+
+  /**
+   * Load learned data from SQLite.
+   */
+  loadFromDb(dbPath: string): void {
+    try {
+      const Database = require('better-sqlite3');
+      const { existsSync } = require('fs');
+      if (!existsSync(dbPath)) return;
+
+      const db = new Database(dbPath, { readonly: true });
+
+      try {
+        const rows = db.prepare('SELECT keyword, queries FROM predictive_queries').all() as Array<{
+          keyword: string;
+          queries: string;
+        }>;
+        for (const row of rows) {
+          this.learnedQueries.set(row.keyword, JSON.parse(row.queries));
+        }
+
+        const histRows = db
+          .prepare('SELECT description, queries FROM predictive_history ORDER BY id DESC LIMIT ?')
+          .all(this.maxHistory) as Array<{ description: string; queries: string }>;
+        this.taskHistory = histRows.map((r) => ({
+          description: r.description,
+          queries: JSON.parse(r.queries),
+        }));
+      } catch {
+        // Tables may not exist yet
+      }
+
+      db.close();
+    } catch {
+      // Load failure is non-fatal
+    }
+  }
 }
 
 // Singleton
 let instance: PredictiveMemoryService | null = null;
 
-export function getPredictiveMemoryService(): PredictiveMemoryService {
+export function getPredictiveMemoryService(dbPath?: string): PredictiveMemoryService {
   if (!instance) {
     instance = new PredictiveMemoryService();
+    // Auto-load from default DB path if available
+    const loadPath = dbPath || './agents/data/memory/predictive.db';
+    instance.loadFromDb(loadPath);
   }
   return instance;
 }

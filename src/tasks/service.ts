@@ -401,10 +401,13 @@ export class TaskService {
 
   // ==================== Query Operations ====================
 
+  private _hasDueDateColumn: boolean | null = null;
   private hasDueDateColumn(): boolean {
+    if (this._hasDueDateColumn !== null) return this._hasDueDateColumn;
     try {
       const columns = this.db.pragma('table_info(tasks)') as Array<{ name: string }>;
-      return columns.some((c) => c.name === 'due_date');
+      this._hasDueDateColumn = columns.some((c) => c.name === 'due_date');
+      return this._hasDueDateColumn;
     } catch {
       return false;
     }
@@ -481,14 +484,11 @@ export class TaskService {
 
     // Post-filter for blocked/ready (requires dependency check)
     if (filter.isBlocked !== undefined || filter.isReady !== undefined) {
-      tasks = tasks.filter((task) => {
-        const withRelations = this.getWithRelations(task.id);
-        if (!withRelations) return false;
-
-        if (filter.isBlocked !== undefined && withRelations.isBlocked !== filter.isBlocked) {
+      tasks = this.batchGetWithRelations(tasks).filter((task) => {
+        if (filter.isBlocked !== undefined && task.isBlocked !== filter.isBlocked) {
           return false;
         }
-        if (filter.isReady !== undefined && withRelations.isReady !== filter.isReady) {
+        if (filter.isReady !== undefined && task.isReady !== filter.isReady) {
           return false;
         }
         return true;
@@ -551,6 +551,19 @@ export class TaskService {
       childrenByParent.get(row.parent_id)!.push(row.id);
     }
 
+    // Prefetch all parent tasks in a single query to avoid N+1
+    const parentIds = [...new Set(tasks.map((t) => t.parentId).filter((p): p is string => !!p))];
+    const parentMap = new Map<string, Task>();
+    if (parentIds.length > 0) {
+      const placeholders = parentIds.map(() => '?').join(',');
+      const parentRows = this.db
+        .prepare(`SELECT * FROM tasks WHERE id IN (${placeholders})`)
+        .all(...parentIds) as Task[];
+      for (const parent of parentRows) {
+        parentMap.set(parent.id, parent);
+      }
+    }
+
     const results: TaskWithRelations[] = [];
 
     for (const task of tasks) {
@@ -565,7 +578,7 @@ export class TaskService {
         .filter((d) => d.dep_type === 'related')
         .map((d) => (d.from_task === task.id ? d.to_task : d.from_task));
       const children = childrenByParent.get(task.id) || [];
-      const parent = task.parentId ? this.get(task.parentId) || undefined : undefined;
+      const parent = task.parentId ? parentMap.get(task.parentId) || undefined : undefined;
 
       const unresolvedBlockers = blockedBy.filter((blockerId) => {
         const status = taskStatusMap.get(blockerId);
@@ -679,6 +692,12 @@ export class TaskService {
     const visited = new Set<string>();
     const queue = [toTask];
 
+    // Prepare statement once outside the loop (was previously inside, causing N preparations)
+    const stmt = this.db.prepare(`
+      SELECT to_task FROM task_dependencies
+      WHERE from_task = ? AND dep_type = 'blocks'
+    `);
+
     while (queue.length > 0) {
       const current = queue.shift()!;
       if (current === fromTask) {
@@ -689,11 +708,6 @@ export class TaskService {
       }
       visited.add(current);
 
-      // Get tasks that current blocks
-      const stmt = this.db.prepare(`
-        SELECT to_task FROM task_dependencies
-        WHERE from_task = ? AND dep_type = 'blocks'
-      `);
       const deps = stmt.all(current) as Array<{ to_task: string }>;
       queue.push(...deps.map((d) => d.to_task));
     }

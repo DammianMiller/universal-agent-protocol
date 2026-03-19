@@ -24,7 +24,7 @@ jobs:
           
           # 1. SESSION START block
           if grep -q "## SESSION START" CLAUDE.md && grep -q "uap task ready" CLAUDE.md; then
-            ((score++))
+            score=$((score + 1))
             echo "✓ SESSION START block with uap task ready"
           else
             echo "✗ SESSION START block MISSING"
@@ -33,7 +33,7 @@ jobs:
           
           # 2. DECISION LOOP workflow
           if grep -q "## DECISION LOOP" CLAUDE.md && grep -q "@Skill:name.md" CLAUDE.md; then
-            ((score++))
+            score=$((score + 1))
             echo "✓ DECISION LOOP with skills reference"
           else
             echo "✗ DECISION LOOP or skills reference MISSING"
@@ -42,7 +42,7 @@ jobs:
           
           # 3. MANDATORY worktree enforcement
           if grep -q "WORKTREE WORKFLOW — MANDATORY\|## WORKTREE WORKFLOW.*MANDATORY" CLAUDE.md; then
-            ((score++))
+            score=$((score + 1))
             echo "✓ MANDATORY worktree enforcement present"
           else
             echo "✗ MANDATORY worktree enforcement MISSING"
@@ -51,7 +51,7 @@ jobs:
           
           # 4. PARALLEL REVIEW PROTOCOL
           if grep -q "## PARALLEL REVIEW PROTOCOL" CLAUDE.md; then
-            ((score++))
+            score=$((score + 1))
             echo "✓ PARALLEL REVIEW PROTOCOL present"
           else
             echo "✗ PARALLEL REVIEW PROTOCOL MISSING"
@@ -60,7 +60,7 @@ jobs:
           
           # 5. Schema diff gate ordering
           if grep -q "BLOCKING PREREQUISITES.*Schema Diff Gate\|1\. \*\*Schema Diff Gate" CLAUDE.md; then
-            ((score++))
+            score=$((score + 1))
             echo "✓ Schema diff gate in BLOCKING PREREQUISITES"
           else
             echo "✗ Schema diff gate NOT in blocking prerequisites"
@@ -69,7 +69,7 @@ jobs:
           
           # 6. VERIFIER-FIRST section
           if grep -q "## VERIFIER-FIRST" CLAUDE.md; then
-            ((score++))
+            score=$((score + 1))
             echo "✓ VERIFIER-FIRST section present"
           else
             echo "✗ VERIFIER-FIRST MISSING"
@@ -78,7 +78,7 @@ jobs:
           
           # 7. COMPLETION GATES - MANDATORY
           if grep -q "COMPLETION GATES.*-.*MANDATORY\|## COMPLETION GATES - MANDATORY" CLAUDE.md; then
-            ((score++))
+            score=$((score + 1))
             echo "✓ COMPLETION GATES - MANDATORY present"
           else
             echo "✗ COMPLETION GATES - MANDATORY MISSING"
@@ -87,7 +87,7 @@ jobs:
           
           # 8. Pattern Router requirement
           if grep -q "Pattern.*Router\|pattern router" CLAUDE.md; then
-            ((score++))
+            score=$((score + 1))
             echo "✓ Pattern Router documented"
           else
             echo "✗ Pattern Router MISSING"
@@ -96,7 +96,7 @@ jobs:
           
           # 9. RTK includes
           if grep -q "@hooks-session-start.md\|@PreCompact.md" CLAUDE.md; then
-            ((score++))
+            score=$((score + 1))
             echo "✓ RTK includes (@hooks-session-start, @PreCompact)"
           else
             echo "✗ RTK includes MISSING"
@@ -105,7 +105,7 @@ jobs:
           
           # 10. Verifier loop enforcement (min 3 runs)
           if grep -q "MANDATORY.*minimum 3 times\|MANDATORY.*3 times" CLAUDE.md; then
-            ((score++))
+            score=$((score + 1))
             echo "✓ Verifier loop enforced (min 3 runs)"
           else
             echo "✗ Verifier loop enforcement MISSING"
@@ -113,8 +113,8 @@ jobs:
           fi
           
           # 11. Template version tracking
-          if grep -q "v2\.[2-9]\|v3\." CLAUDE.md | head -1; then
-            ((score++))
+          if grep -q "v2\.[2-9]\|v3\." CLAUDE.md; then
+            score=$((score + 1))
             echo "✓ Template version tracked (v2.x+)"
           else
             echo "✗ Template version NOT tracked"

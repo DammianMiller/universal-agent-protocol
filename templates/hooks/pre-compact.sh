@@ -56,6 +56,20 @@ if [ -f "${PROJECT_DIR}/dist/bin/cli.js" ]; then
   node "${PROJECT_DIR}/dist/bin/cli.js" dash session --compact 2>/dev/null || true
 fi
 
+# Flush pending deploy queue before session ends
+if [ -f "$COORD_DB" ]; then
+  PENDING_DEPLOYS=$(sqlite3 "$COORD_DB" "
+    SELECT COUNT(*) FROM deploy_queue WHERE status='pending';
+  " 2>/dev/null || echo "0")
+
+  if [ "$PENDING_DEPLOYS" -gt 0 ] 2>/dev/null; then
+    echo "[UAP] Flushing $PENDING_DEPLOYS pending deploy actions before compaction..." >&2
+    if [ -f "${PROJECT_DIR}/dist/bin/cli.js" ]; then
+      node "${PROJECT_DIR}/dist/bin/cli.js" deploy flush 2>/dev/null || true
+    fi
+  fi
+fi
+
 # Clean up agents with recent heartbeats (likely from this session being compacted)
 if [ -f "$COORD_DB" ]; then
   sqlite3 "$COORD_DB" "

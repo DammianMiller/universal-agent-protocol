@@ -206,10 +206,59 @@ function formatTokens(n: number): string {
   return `${(n / 1000000).toFixed(2)}M`;
 }
 
+/**
+ * Render a single line inside a box, padded to exact width.
+ * Strips ANSI codes and accounts for wide Unicode characters (emoji, CJK)
+ * to ensure the right border aligns correctly in terminals.
+ */
 function boxLine(content: string, width: number = 60): string {
-  const stripped = content.replace(/\x1b\[[0-9;]*m/g, '');
-  const pad = Math.max(0, width - stripped.length - 2);
+  const stripped = stripAnsiCodes(content);
+  const visualWidth = getVisualWidth(stripped);
+  const pad = Math.max(0, width - visualWidth - 2);
   return `${BOX.v} ${content}${' '.repeat(pad)}${BOX.v}`;
+}
+
+/** Strip all ANSI escape codes (SGR, 256-color, true-color). */
+function stripAnsiCodes(str: string): string {
+  // Handles: \x1b[...m (SGR), \x1b[38;2;R;G;Bm (true-color), \x1b[38;5;Nm (256-color)
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/**
+ * Calculate the visual width of a string in terminal columns.
+ * Wide characters (emoji, CJK) occupy 2 columns; most others occupy 1.
+ */
+function getVisualWidth(str: string): number {
+  let width = 0;
+  for (const char of str) {
+    const code = char.codePointAt(0) || 0;
+    // Common wide character ranges:
+    // - CJK Unified Ideographs: U+4E00-U+9FFF
+    // - CJK Compatibility Ideographs: U+F900-U+FAFF
+    // - Fullwidth Forms: U+FF01-U+FF60, U+FFE0-U+FFE6
+    // - Emoji (most): U+1F300-U+1FAFF
+    // - Miscellaneous Symbols: U+2600-U+27BF (some are wide)
+    if (
+      (code >= 0x1100 && code <= 0x115f) || // Hangul Jamo
+      (code >= 0x2e80 && code <= 0x303e) || // CJK Radicals
+      (code >= 0x3040 && code <= 0x33bf) || // Japanese
+      (code >= 0x4e00 && code <= 0x9fff) || // CJK Unified
+      (code >= 0xac00 && code <= 0xd7a3) || // Hangul Syllables
+      (code >= 0xf900 && code <= 0xfaff) || // CJK Compatibility
+      (code >= 0xfe30 && code <= 0xfe6f) || // CJK Compatibility Forms
+      (code >= 0xff01 && code <= 0xff60) || // Fullwidth Forms
+      (code >= 0xffe0 && code <= 0xffe6) || // Fullwidth Signs
+      (code >= 0x1f300 && code <= 0x1faff) || // Emoji
+      (code >= 0x1f900 && code <= 0x1f9ff) || // Supplemental Emoji
+      (code >= 0x20000 && code <= 0x2ffff) // CJK Extension B+
+    ) {
+      width += 2;
+    } else {
+      width += 1;
+    }
+  }
+  return width;
 }
 
 function statusIcon(status: AgentStatus | string): string {
@@ -708,6 +757,10 @@ export function costTrack(
     operation,
   };
   s.costs.push(entry);
+  // Cap costs array to prevent unbounded growth in long sessions (matches calls cap of 500)
+  if (s.costs.length > 500) {
+    s.costs = s.costs.slice(-500);
+  }
   s.totalCostUsd += costUsd;
 
   // Estimate what it would have cost without UAP optimizations (no caching, no token savings, no batching)
@@ -879,10 +932,11 @@ export function sessionSummary(): void {
   const doneTasks = [...s.tasks.values()].filter((t) => t.status === 'done').length;
   const totalTasks = s.tasks.size;
 
+  const sessionShort = s.sessionId.length > 20 ? s.sessionId.slice(0, 20) + '…' : s.sessionId;
   console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
   console.log(
     boxLine(
-      `${BOLD}${WHITE}${BG_GREEN} UAP SESSION SUMMARY ${RESET}  ${DIM}Session ${s.sessionId}${RESET}`,
+      `${BOLD}${WHITE}${BG_GREEN} UAP SESSION SUMMARY ${RESET}  ${DIM}${sessionShort}${RESET}`,
       w
     )
   );
@@ -1128,18 +1182,15 @@ export function getSessionSnapshot(): ReturnType<typeof getStats> | null {
 function trimMapLRU<K, V>(map: Map<K, V>, maxSize: number): void {
   if (map.size <= maxSize) return;
 
-  const entries = [...map.entries()];
-  // Sort by last access time (add lastAccessed property to your types)
-  entries.sort((a, b) => {
-    const aLastAccessed = (a[1] as { lastAccessed?: number }).lastAccessed || 0;
-    const bLastAccessed = (b[1] as { lastAccessed?: number }).lastAccessed || 0;
-    return aLastAccessed - bLastAccessed;
-  });
-
-  // Remove oldest half
-  const toRemove = Math.floor(entries.length / 2);
-  for (let i = 0; i < toRemove; i++) {
-    map.delete(entries[i][0]);
+  // Map insertion order is preserved in JS Maps — oldest entries are first.
+  // Since we don't have a reliable lastAccessed field on all value types,
+  // use insertion order as a proxy: remove the first (oldest-inserted) entries.
+  const toRemove = map.size - maxSize;
+  let removed = 0;
+  for (const key of map.keys()) {
+    if (removed >= toRemove) break;
+    map.delete(key);
+    removed++;
   }
 }
 
@@ -1204,7 +1255,9 @@ const DASHBOARD_CONFIG = {
 function generateDashboardHash(s: SessionStats): string {
   const activeAgents = [...s.agents.values()].filter((a) => a.status === 'working').length;
   const activeTasks = [...s.tasks.values()].filter((t) => t.status === 'in_progress').length;
-  return `${s.sessionId}-${activeAgents}-${activeTasks}-${Date.now() % 1000}`;
+  const doneTasks = [...s.tasks.values()].filter((t) => t.status === 'done').length;
+  // Hash based on actual state, not time — enables adaptive polling to detect idle
+  return `${s.sessionId}-${activeAgents}-${activeTasks}-${doneTasks}-${s.tokensUsed}-${s.errors}`;
 }
 
 function shouldUpdateDashboard(s: SessionStats): boolean {
@@ -1265,13 +1318,15 @@ export function startDashboard(intervalMs: number = 2000, showWorkGraph: boolean
         );
 
         // Schedule next check with extended interval
-        dashboardState.idleTimeout = setTimeout(() => {
+        const idleTimer = setTimeout(() => {
           if (dashboardState?.idleTimeout) {
             clearTimeout(dashboardState.idleTimeout);
             dashboardState.idleTimeout = null;
           }
           updateDashboard();
         }, newInterval) as unknown as NodeJS.Timeout;
+        if (idleTimer.unref) idleTimer.unref();
+        dashboardState.idleTimeout = idleTimer;
       }
     }
   };
@@ -1281,15 +1336,21 @@ export function startDashboard(intervalMs: number = 2000, showWorkGraph: boolean
     scheduleCleanup();
     updateDashboard();
   }, intervalMs);
+  if (dashboardInterval && (dashboardInterval as NodeJS.Timeout).unref) {
+    (dashboardInterval as NodeJS.Timeout).unref();
+  }
 }
 
 function renderDashboard(s: SessionStats, currentInterval: number): void {
   const w = 80;
   const line = BOX.h.repeat(w);
+  const sessionShort = s.sessionId.length > 12 ? s.sessionId.slice(0, 12) + '…' : s.sessionId;
+  const intervalSuffix =
+    currentInterval > DASHBOARD_CONFIG.BASE_INTERVAL ? ` ${DIM}(${currentInterval}ms)${RESET}` : '';
   console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
   console.log(
     boxLine(
-      `${BOLD}${WHITE}${BG_CYAN} UAP LIVE DASHBOARD ${RESET}  ${DIM}Session ${s.sessionId}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}${currentInterval > DASHBOARD_CONFIG.BASE_INTERVAL ? ` (${currentInterval}ms)` : ''}`,
+      `${BOLD}${WHITE}${BG_CYAN} UAP LIVE DASHBOARD ${RESET}  ${DIM}${sessionShort}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}${intervalSuffix}`,
       w
     )
   );
@@ -1371,69 +1432,25 @@ export function dashboardResume(): void {
 
   const s = getStats();
   console.log(`${GREEN}[DASHBOARD]${RESET} ${DIM}Resumed${RESET}`);
+  // Reuse renderDashboard instead of duplicating rendering logic
+  renderDashboard(s, 2000);
   dashboardInterval = setInterval(() => {
-    const w = 80;
-    const line = BOX.h.repeat(w);
-    console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
-    console.log(
-      boxLine(
-        `${BOLD}${WHITE}${BG_CYAN} UAP LIVE DASHBOARD ${RESET}  ${DIM}Session ${s.sessionId}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}`,
-        w
-      )
-    );
-    console.log(`${CYAN}${BOX.bl}${line}${BOX.br}${RESET}`);
-
-    const activeAgents = [...s.agents.values()].filter((a) => a.status === 'working');
-    const activeTasks = [...s.tasks.values()].filter((t) => t.status === 'in_progress');
-    const activeSkillNames = [...s.skills.values()].filter((sk) => sk.active).map((sk) => sk.name);
-    const activePatternNames = [...s.patterns.values()].filter((p) => p.active).map((p) => p.name);
-
-    const queuedDeploys = [...s.deploys.values()].filter(
-      (a) => a.status === 'queued' || a.status === 'batched'
-    );
-
-    console.log(
-      `  ${DIM}Duration:${RESET} ${elapsed()}  ${DIM}Tokens:${RESET} ${BLUE}${formatTokens(s.tokensUsed)}${RESET}${s.tokensSaved > 0 ? ` ${GREEN}(-${formatTokens(s.tokensSaved)})${RESET}` : ''}${s.totalCostUsd > 0 ? ` ${DIM}($${s.totalCostUsd.toFixed(3)})${RESET}` : ''}`
-    );
-    console.log(
-      `  ${DIM}Agents:${RESET} ${activeAgents.length} working${activeAgents.length > 0 ? ` (${activeAgents.map((a) => a.name).join(', ')})` : ''}`
-    );
-    console.log(
-      `  ${DIM}Tasks:${RESET} ${activeTasks.length} in progress${activeTasks.length > 0 ? ` (${activeTasks.map((t) => truncate(t.title, 25)).join(', ')})` : ''}`
-    );
-
-    if (queuedDeploys.length > 0) {
-      console.log(
-        `  ${YELLOW}[DEPLOY]${RESET} ${queuedDeploys.length} queued${queuedDeploys.length > 1 ? '+' : ''}`
-      );
-    }
-
-    if (activeSkillNames.length > 0) {
-      console.log(
-        `  ${GREEN}[SKILLS]${RESET} ${activeSkillNames.slice(0, 3).join(', ')}${activeSkillNames.length > 3 ? ` +${activeSkillNames.length - 3}` : ''}`
-      );
-    }
-
-    if (activePatternNames.length > 0) {
-      console.log(
-        `  ${BLUE}[PATTERNS]${RESET} ${activePatternNames.slice(0, 3).join(', ')}${activePatternNames.length > 3 ? ` +${activePatternNames.length - 3}` : ''}`
-      );
-    }
-
-    if (s.errors > 0) {
-      console.log(`  ${RED}[ERRORS]${RESET} ${s.errors} total`);
-    }
+    renderDashboard(getStats(), 2000);
   }, 2000);
+  if (dashboardInterval && (dashboardInterval as NodeJS.Timeout).unref) {
+    (dashboardInterval as NodeJS.Timeout).unref();
+  }
 }
 
 export function showDashboardSnapshot(showWorkGraph: boolean = false): void {
   const s = getStats();
   const w = 80;
   const line = BOX.h.repeat(w);
+  const sessionShort = s.sessionId.length > 16 ? s.sessionId.slice(0, 16) + '…' : s.sessionId;
   console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
   console.log(
     boxLine(
-      `${BOLD}${WHITE}${BG_CYAN} UAP DASHBOARD ${RESET}  ${DIM}Session ${s.sessionId}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}`,
+      `${BOLD}${WHITE}${BG_CYAN} UAP DASHBOARD ${RESET}  ${DIM}${sessionShort}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}`,
       w
     )
   );

@@ -14,6 +14,11 @@
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { concurrentMap } from '../utils/concurrency-pool.js';
+import { createLogger } from '../utils/logger.js';
+import { getPerformanceMonitor } from '../utils/performance-monitor.js';
+import { cosineSimilarity as sharedCosineSimilarity } from '../utils/string-similarity.js';
+
+const log = createLogger('embeddings');
 
 export interface EmbeddingProvider {
   name: string;
@@ -744,6 +749,8 @@ export class EmbeddingService {
   private providers: EmbeddingProvider[];
   private cache: Map<string, number[]> = new Map();
   private cacheMaxSize: number = 10000;
+  /** Memory pressure threshold (fraction of heap used). Evicts aggressively above this. */
+  private memoryPressureThreshold: number = 0.85;
 
   constructor(ollamaEndpoint?: string, ollamaModel?: string, llamaCppEndpoint?: string) {
     this.providers = [
@@ -759,7 +766,7 @@ export class EmbeddingService {
     for (const provider of this.providers) {
       if (await provider.isAvailable()) {
         this.provider = provider;
-        console.log(
+        log.info(
           `[EmbeddingService] Using provider: ${provider.name} (${provider.dimensions} dims)`
         );
         return;
@@ -767,7 +774,7 @@ export class EmbeddingService {
     }
     // Fallback to TF-IDF which is always available
     this.provider = this.providers[this.providers.length - 1];
-    console.log(`[EmbeddingService] Fallback to TF-IDF provider`);
+    log.info('Fallback to TF-IDF provider');
   }
 
   async embed(text: string): Promise<number[]> {
@@ -785,11 +792,27 @@ export class EmbeddingService {
       return cached;
     }
 
-    const embedding = await this.provider!.embed(text);
+    const monitor = getPerformanceMonitor();
+    const embedding = await monitor.measure('embedding.embed', () => this.provider!.embed(text));
 
-    // Update cache (LRU eviction: remove least recently used entry)
-    if (this.cache.size >= this.cacheMaxSize) {
-      // Remove LRU entry (first in Map iteration order)
+    // Memory-pressure-aware eviction (C2 optimization)
+    const heapUsed = process.memoryUsage().heapUsed;
+    const heapTotal = process.memoryUsage().heapTotal;
+    const pressure = heapTotal > 0 ? heapUsed / heapTotal : 0;
+
+    if (pressure > this.memoryPressureThreshold && this.cache.size > 100) {
+      // Under memory pressure: evict 25% of cache (LRU order)
+      const evictCount = Math.floor(this.cache.size * 0.25);
+      const keys = this.cache.keys();
+      for (let i = 0; i < evictCount; i++) {
+        const key = keys.next().value;
+        if (key !== undefined) {
+          this.cache.delete(key);
+        }
+      }
+      log.debug(`[EmbeddingService] Memory pressure eviction: removed ${evictCount} entries`);
+    } else if (this.cache.size >= this.cacheMaxSize) {
+      // Normal LRU eviction: remove least recently used entry
       const firstKey = this.cache.keys().next().value;
       if (firstKey !== undefined) {
         this.cache.delete(firstKey);
@@ -843,24 +866,7 @@ export class EmbeddingService {
   }
 
   cosineSimilarity(a: number[], b: number[]): number {
-    if (a.length !== b.length) {
-      throw new Error('Vectors must have same dimensions');
-    }
-
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-      dotProduct += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-
-    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-    if (denominator === 0) return 0;
-
-    return dotProduct / denominator;
+    return sharedCosineSimilarity(a, b);
   }
 
   getDimensions(): number {

@@ -31,4 +31,4 @@ Automatically invoked before compaction tasks.
 
 ## Location
 
-`scripts/hooks/pre-compact.sh`
+`.forge/hooks/pre-compact.sh` (also mirrored at `.uap/omp/hooks/pre/pre-compact.sh`)

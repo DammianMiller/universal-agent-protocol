@@ -24,6 +24,9 @@ import { existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { classifyTask as classifyTaskType } from './task-classifier.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('adaptive-context');
 import {
   recordTaskOutcome as updateModelRouterFingerprint,
   getModelFingerprint,
@@ -70,14 +73,11 @@ export interface HistoricalData {
   lastUpdated: number;
 }
 
-// OPT 1: SQLite-backed historical data persistence with connection pooling to prevent contention
-const DB_POOL_SIZE = 5;
-const dbPool: Database.Database[] = [];
-let poolInitialized = false;
-let poolRoundRobinIndex = 0;
+// OPT 1: SQLite-backed historical data persistence (simplified from pool-of-1)
+let _historicalDb: Database.Database | null = null;
 
-function initHistoricalDbPool(): void {
-  if (poolInitialized) return;
+function initHistoricalDb(): Database.Database {
+  if (_historicalDb) return _historicalDb;
 
   const dbDir = join(__dirname, '../../agents/data/memory');
   if (!existsSync(dbDir)) {
@@ -85,65 +85,53 @@ function initHistoricalDbPool(): void {
   }
 
   const dbPath = join(dbDir, 'historical_context.db');
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('busy_timeout = 10000');
+  db.pragma('synchronous = NORMAL');
 
-  for (let i = 0; i < DB_POOL_SIZE; i++) {
-    const db = new Database(dbPath);
-    db.pragma('journal_mode = WAL');
-    db.pragma('busy_timeout = 10000');
-    db.pragma('synchronous = NORMAL');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS historical_data (
+      task_type TEXT PRIMARY KEY,
+      total_attempts INTEGER DEFAULT 0,
+      uam_successes INTEGER DEFAULT 0,
+      no_uam_successes INTEGER DEFAULT 0,
+      avg_time_with_uam REAL DEFAULT 0,
+      avg_time_without_uam REAL DEFAULT 0,
+      last_updated INTEGER DEFAULT 0
+    );
+    
+    -- OPT 10: Semantic cache for task-to-outcome mappings
+    CREATE TABLE IF NOT EXISTS semantic_cache (
+      cache_key TEXT PRIMARY KEY,
+      instruction_hash TEXT,
+      decision_json TEXT,
+      success_rate REAL DEFAULT 0.5,
+      created_at INTEGER,
+      last_used INTEGER,
+      use_count INTEGER DEFAULT 1
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_semantic_cache_hash ON semantic_cache(instruction_hash);
+  `);
 
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS historical_data (
-        task_type TEXT PRIMARY KEY,
-        total_attempts INTEGER DEFAULT 0,
-        uam_successes INTEGER DEFAULT 0,
-        no_uam_successes INTEGER DEFAULT 0,
-        avg_time_with_uam REAL DEFAULT 0,
-        avg_time_without_uam REAL DEFAULT 0,
-        last_updated INTEGER DEFAULT 0
-      );
-      
-      -- OPT 10: Semantic cache for task→outcome mappings
-      CREATE TABLE IF NOT EXISTS semantic_cache (
-        cache_key TEXT PRIMARY KEY,
-        instruction_hash TEXT,
-        decision_json TEXT,
-        success_rate REAL DEFAULT 0.5,
-        created_at INTEGER,
-        last_used INTEGER,
-        use_count INTEGER DEFAULT 1
-      );
-      
-      CREATE INDEX IF NOT EXISTS idx_semantic_cache_hash ON semantic_cache(instruction_hash);
-    `);
-
-    dbPool.push(db);
-  }
-
-  poolInitialized = true;
-}
-
-function getHistoricalDbFromPool(): Database.Database {
-  if (!poolInitialized) initHistoricalDbPool();
-  const currentIndex = poolRoundRobinIndex % DB_POOL_SIZE;
-  poolRoundRobinIndex = (poolRoundRobinIndex + 1) % DB_POOL_SIZE;
-  return dbPool[currentIndex];
+  _historicalDb = db;
+  return db;
 }
 
 export function closeAllPools(): void {
-  for (const db of dbPool) {
+  if (_historicalDb) {
     try {
-      db.close();
+      _historicalDb.close();
     } catch (err) {
-      console.warn('Failed to close historical DB pool connection:', err);
+      log.warn('Failed to close historical DB connection:', err);
     }
+    _historicalDb = null;
   }
-  dbPool.length = 0;
-  poolInitialized = false;
 }
 
 export function getHistoricalDb(): Database.Database {
-  return getHistoricalDbFromPool();
+  return initHistoricalDb();
 }
 
 // OPTIMIZATION 7: Refined low-benefit categories
@@ -555,6 +543,7 @@ const MS_PER_TOKEN = 1.5;
 const BENEFIT_THRESHOLD = 0.1;
 const RELEVANCE_THRESHOLD = 0.3;
 const TIME_CRITICAL_MAX_TOKENS = 300;
+const MAX_POSSIBLE = 100;
 
 // OPT 4: Calculate weighted relevance score for a section
 function calculateSectionRelevance(
@@ -668,8 +657,7 @@ export function classifyTaskMultiCategory(instruction: string): MultiCategoryCla
     .filter(([, score]) => score >= primaryScore * 0.4)
     .map(([cat]) => cat);
 
-  const maxPossible = Object.values(HIGH_BENEFIT_KEYWORDS).reduce((a, b) => a + b, 0);
-  const confidence = Math.min(primaryScore / (maxPossible * 0.1), 1);
+  const confidence = Math.min(primaryScore / (MAX_POSSIBLE * 0.1), 1);
 
   return {
     primary,
@@ -822,12 +810,19 @@ export function recordOutcome(
     }
   } catch (err) {
     // Log but don't throw - recording should not block execution
-    console.warn('Failed to record outcome:', err);
+    log.warn('Failed to record outcome:', err);
   }
 
   // OPT 8: Also update model router fingerprints
   if (modelId) {
-    const validModelIds: ModelId[] = ['glm-4.7', 'gpt-5.2', 'claude-opus-4.5', 'gpt-5.2-codex'];
+    const validModelIds: ModelId[] = [
+      'glm-4.7',
+      'gpt-5.2',
+      'claude-opus-4.5',
+      'gpt-5.2-codex',
+      'opus-4.6',
+      'qwen35',
+    ];
     if (validModelIds.includes(modelId as ModelId)) {
       updateModelRouterFingerprint(modelId as ModelId, success, durationMs, taskType);
     }
@@ -913,7 +908,7 @@ export function storeSemanticCache(
       );
     }
   } catch (err) {
-    console.warn('Failed to store in semantic cache:', err);
+    log.warn('Failed to store in semantic cache:', err);
   }
 }
 
@@ -1008,6 +1003,13 @@ export function decideContextLevel(
   instruction: string,
   metadata: TaskMetadata = {}
 ): ContextDecision {
+  // OPT 10: Check semantic cache first for previously-seen similar tasks
+  const instructionHash = instruction.toLowerCase().trim().replace(/\s+/g, ' ').slice(0, 200);
+  const cached = lookupSemanticCache(instructionHash);
+  if (cached) {
+    return cached;
+  }
+
   // OPT 9: Use multi-category classification
   const multiClass = classifyTaskMultiCategory(instruction);
   const taskType = multiClass.primary;
@@ -1117,7 +1119,7 @@ export function decideContextLevel(
   }
 
   // Default: Full context for everything else
-  return {
+  const fullDecision: ContextDecision = {
     level: 'full',
     sections: relevantSections.length > 0 ? relevantSections : ['coding'],
     reason: `Full context for ${taskType} task (${timePressure} pressure)`,
@@ -1128,6 +1130,16 @@ export function decideContextLevel(
     secondaryCategories: multiClass.secondary,
     relevantPatterns,
   };
+
+  // OPT 10: Store decision in semantic cache for future lookups
+  try {
+    const cacheKey = `${taskType}:${instructionHash.slice(0, 50)}`;
+    storeSemanticCache(cacheKey, instructionHash, fullDecision, true);
+  } catch {
+    // Cache store is non-fatal
+  }
+
+  return fullDecision;
 }
 
 /**

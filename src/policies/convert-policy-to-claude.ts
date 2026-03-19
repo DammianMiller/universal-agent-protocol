@@ -50,7 +50,7 @@ export function convertPolicyToClaude(rawMarkdown: string): string {
   }
 
   const levelMatch = rawMarkdown.match(/## Enforcement Level\s*\n\[(.+?)\]/);
-  const level = (levelMatch?.[1]?.toUpperCase() || 'RECOMMENDED') as any;
+  const level = (levelMatch?.[1]?.toUpperCase() || 'RECOMMENDED') as 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL';
 
   const emoji = level === 'REQUIRED' ? '🚨' : level === 'RECOMMENDED' ? '⚠️' : 'ℹ️';
 
