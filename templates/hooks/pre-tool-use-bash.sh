@@ -42,6 +42,10 @@ if echo "$CMD" | grep -qE '\bgit\s+commit\b'; then
   if ! echo "$CHECK_DIR" | grep -q '\.worktrees/'; then
     CURRENT_BRANCH=$(git -C "$CHECK_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     if [ "$CURRENT_BRANCH" = "main" ] || [ "$CURRENT_BRANCH" = "master" ]; then
+      # Allow automated version bump commits (message contains "bump version")
+      if echo "$CMD" | grep -qE 'chore: bump version|version:patch|version:minor|version:major|version-bump'; then
+        exit 0
+      fi
       echo "BLOCKED [worktree-enforcement]: Direct commits to ${CURRENT_BRANCH} are prohibited. Create a worktree first: uap worktree create <slug>. See policies/worktree-enforcement.md" >&2
       exit 2
     fi
@@ -53,6 +57,10 @@ fi
 if echo "$CMD" | grep -qE '\bgit\s+push\b'; then
   # Block explicit pushes to main/master
   if echo "$CMD" | grep -qE '\bgit\s+push\s+(origin\s+)?(main|master)\b'; then
+    # Allow push after version bump (git push && git push --tags pattern)
+    if echo "$CMD" | grep -qE 'git\s+push\s+--tags|git\s+push\s*&&\s*git\s+push\s+--tags'; then
+      exit 0
+    fi
     echo "BLOCKED [worktree-enforcement]: Direct push to main/master is prohibited. Use: uap worktree pr <id> to create a PR instead. See policies/worktree-enforcement.md" >&2
     exit 2
   fi
