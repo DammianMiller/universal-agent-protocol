@@ -133,9 +133,12 @@ async function installClaudeHooks(cwd: string): Promise<void> {
   }
 
   const hooksConfig = {
-    SessionStart: {
-      hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
-    },
+    SessionStart: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
+      },
+    ],
     PreToolUse: [
       {
         matcher: 'Edit|Write',
@@ -152,18 +155,30 @@ async function installClaudeHooks(cwd: string): Promise<void> {
         hooks: [{ type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' }],
       },
     ],
-    PreCompact: {
-      hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-compact.sh' }],
-    },
-    PostCompact: {
-      hooks: [{ type: 'command', command: 'bash .claude/hooks/post-compact.sh' }],
-    },
-    Stop: {
-      hooks: [{ type: 'command', command: 'bash .claude/hooks/stop.sh' }],
-    },
-    SessionEnd: {
-      hooks: [{ type: 'command', command: 'bash .claude/hooks/session-end.sh' }],
-    },
+    PreCompact: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-compact.sh' }],
+      },
+    ],
+    PostCompact: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/post-compact.sh' }],
+      },
+    ],
+    Stop: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/stop.sh' }],
+      },
+    ],
+    SessionEnd: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/session-end.sh' }],
+      },
+    ],
   };
 
   const existingHooks = (settings.hooks || {}) as Record<string, unknown>;
@@ -197,11 +212,14 @@ async function installFactoryHooks(cwd: string): Promise<void> {
   }
 
   const hooksConfig = {
-    SessionStart: {
-      hooks: [
-        { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/session-start.sh' },
-      ],
-    },
+    SessionStart: [
+      {
+        matcher: '',
+        hooks: [
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/session-start.sh' },
+        ],
+      },
+    ],
     PreToolUse: [
       {
         matcher: 'Edit|Write',
@@ -224,18 +242,30 @@ async function installFactoryHooks(cwd: string): Promise<void> {
         ],
       },
     ],
-    PreCompact: {
-      hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-compact.sh' }],
-    },
-    PostCompact: {
-      hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/post-compact.sh' }],
-    },
-    Stop: {
-      hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/stop.sh' }],
-    },
-    SessionEnd: {
-      hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/session-end.sh' }],
-    },
+    PreCompact: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-compact.sh' }],
+      },
+    ],
+    PostCompact: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/post-compact.sh' }],
+      },
+    ],
+    Stop: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/stop.sh' }],
+      },
+    ],
+    SessionEnd: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/session-end.sh' }],
+      },
+    ],
   };
 
   const existingHooks = (settings.hooks || {}) as Record<string, unknown>;
@@ -314,9 +344,12 @@ async function installVscodeHooks(cwd: string): Promise<void> {
   }
 
   const hooksConfig = {
-    SessionStart: {
-      hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
-    },
+    SessionStart: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
+      },
+    ],
     PreToolUse: [
       {
         matcher: 'Edit|Write',
@@ -333,18 +366,30 @@ async function installVscodeHooks(cwd: string): Promise<void> {
         hooks: [{ type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' }],
       },
     ],
-    PreCompact: {
-      hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-compact.sh' }],
-    },
-    PostCompact: {
-      hooks: [{ type: 'command', command: 'bash .claude/hooks/post-compact.sh' }],
-    },
-    Stop: {
-      hooks: [{ type: 'command', command: 'bash .claude/hooks/stop.sh' }],
-    },
-    SessionEnd: {
-      hooks: [{ type: 'command', command: 'bash .claude/hooks/session-end.sh' }],
-    },
+    PreCompact: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-compact.sh' }],
+      },
+    ],
+    PostCompact: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/post-compact.sh' }],
+      },
+    ],
+    Stop: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/stop.sh' }],
+      },
+    ],
+    SessionEnd: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/session-end.sh' }],
+      },
+    ],
   };
 
   const existingHooks = (settings.hooks || {}) as Record<string, unknown>;
