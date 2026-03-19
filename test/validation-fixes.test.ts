@@ -16,15 +16,14 @@ describe('Validation Fixes', () => {
       // Check 1: Version
       expect(content).toMatch(/CLAUDE\.md v2\.[2-9]|CLAUDE\.md v3\./);
 
-      // Check 2: SESSION START with uap task ready
-      expect(content).toContain('## SESSION START');
-      expect(content).toContain('uap task ready');
+      // Check 2: Worktree Gate
+      expect(content).toContain('Pre-Edit Worktree Gate');
 
-      // Check 3: DECISION LOOP with @Skill:name.md
-      expect(content).toContain('@Skill:name.md');
+      // Check 3: Build Gate
+      expect(content).toContain('Pre-Edit Build Gate');
 
-      // Check 4: MANDATORY worktree enforcement
-      expect(content).toMatch(/WORKTREE WORKFLOW.*MANDATORY/);
+      // Check 4: VERIFIER-FIRST
+      expect(content).toContain('VERIFIER-FIRST');
 
       // Check 5: PARALLEL REVIEW PROTOCOL
       expect(content).toContain('## PARALLEL REVIEW PROTOCOL');
@@ -112,10 +111,7 @@ describe('Validation Fixes', () => {
         { encoding: 'utf-8' }
       );
 
-      const tables = execSync(
-        `sqlite3 "${dbPath}" ".tables"`,
-        { encoding: 'utf-8' }
-      ).trim();
+      const tables = execSync(`sqlite3 "${dbPath}" ".tables"`, { encoding: 'utf-8' }).trim();
       expect(tables).toContain('reinforcement_log');
       expect(tables).toContain('pattern_weights');
       expect(tables).toContain('v_pattern_effectiveness');
@@ -123,10 +119,9 @@ describe('Validation Fixes', () => {
 
     it('reinforcement_log table has correct columns', () => {
       const dbPath = join(rootDir, 'agents/data/memory/reinforcement.db');
-      const schema = execSync(
-        `sqlite3 "${dbPath}" "PRAGMA table_info(reinforcement_log);"`,
-        { encoding: 'utf-8' }
-      );
+      const schema = execSync(`sqlite3 "${dbPath}" "PRAGMA table_info(reinforcement_log);"`, {
+        encoding: 'utf-8',
+      });
       expect(schema).toContain('task_type');
       expect(schema).toContain('patterns_selected');
       expect(schema).toContain('success');

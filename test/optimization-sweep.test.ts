@@ -62,8 +62,8 @@ describe('B2: RTK Validation', () => {
     // Our project CLAUDE.md should have most required sections
     const result = validateRTKIncludes();
     expect(result.found.length).toBeGreaterThan(0);
-    // SESSION_START should be found
-    expect(result.found).toContain('SESSION_START');
+    // VERIFIER_FIRST should be found (present in all CLAUDE.md versions)
+    expect(result.found).toContain('VERIFIER_FIRST');
   });
 
   it('should report missing for non-existent directory', async () => {
