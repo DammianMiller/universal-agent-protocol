@@ -215,6 +215,38 @@ function stripAnsi(str: string): string {
   return str.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
+/**
+ * Calculate the visual width of a string in terminal columns.
+ * Wide characters (emoji, CJK) occupy 2 columns; most others occupy 1.
+ * Exported for use in tests.
+ */
+export function getVisualWidth(str: string): number {
+  const stripped = stripAnsi(str);
+  let width = 0;
+  for (const char of stripped) {
+    const code = char.codePointAt(0) || 0;
+    if (
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0x303e) ||
+      (code >= 0x3040 && code <= 0x33bf) ||
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff01 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x1f300 && code <= 0x1faff) ||
+      (code >= 0x1f900 && code <= 0x1f9ff) ||
+      (code >= 0x20000 && code <= 0x2ffff)
+    ) {
+      width += 2;
+    } else {
+      width += 1;
+    }
+  }
+  return width;
+}
+
 export function tree(node: TreeNode, prefix: string = '', isLast: boolean = true): string[] {
   const lines: string[] = [];
   const connector = isLast ? '└── ' : '├── ';
@@ -240,7 +272,10 @@ export function box(
   options: { width?: number; borderColor?: (text: string) => string } = {}
 ): string[] {
   const { borderColor = chalk.dim } = options;
-  const maxContentWidth = Math.max(title.length + 2, ...content.map((l) => stripAnsi(l).length));
+  const maxContentWidth = Math.max(
+    getVisualWidth(title) + 2,
+    ...content.map((l) => getVisualWidth(l))
+  );
   const width = options.width || maxContentWidth + 4;
   const innerWidth = width - 2;
 
@@ -248,14 +283,14 @@ export function box(
   lines.push(borderColor(`╭${'─'.repeat(innerWidth)}╮`));
   lines.push(
     borderColor('│') +
-      ` ${chalk.bold(title)}${' '.repeat(Math.max(0, innerWidth - title.length - 1))}` +
+      ` ${chalk.bold(title)}${' '.repeat(Math.max(0, innerWidth - getVisualWidth(title) - 1))}` +
       borderColor('│')
   );
   lines.push(borderColor(`├${'─'.repeat(innerWidth)}┤`));
 
   for (const line of content) {
-    const stripped = stripAnsi(line);
-    const pad = Math.max(0, innerWidth - stripped.length - 1);
+    const vw = getVisualWidth(line);
+    const pad = Math.max(0, innerWidth - vw - 1);
     lines.push(borderColor('│') + ` ${line}${' '.repeat(pad)}` + borderColor('│'));
   }
 
