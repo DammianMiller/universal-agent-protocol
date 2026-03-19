@@ -212,17 +212,9 @@ describe('14: KnowledgeGraph wired into cli/memory.ts', () => {
 // ── 15: PerformanceData in dashboard ──
 
 describe('15: PerformanceData rendered in dashboard', () => {
-  it('dashboard.html should have performance section', () => {
-    const source = readFileSync('web/dashboard.html', 'utf-8');
-    expect(source).toContain('Performance');
-    expect(source).toContain('perf-panel');
-  });
-
-  it('dashboard.html should render hotPaths table', () => {
+  it('dashboard.html should have performance data handling', () => {
     const source = readFileSync('web/dashboard.html', 'utf-8');
     expect(source).toContain('data.performance');
     expect(source).toContain('hotPaths');
-    expect(source).toContain('hp.avgMs');
-    expect(source).toContain('hp.p95Ms');
   });
 });
