@@ -11,7 +11,6 @@ import { join } from 'path';
 import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { globalSessionStats } from '../mcp-router/session-stats.js';
-import { getSessionSnapshot } from '../telemetry/session-telemetry.js';
 import { getPerformanceMonitor, type PerformanceMetrics } from '../utils/performance-monitor.js';
 
 // ── TTL Cache for subprocess calls (git/docker don't change faster than 30s) ──
@@ -534,7 +533,7 @@ function getAuditData(cwd: string): AuditEntry[] {
       return [];
     }
     const rows = db
-      .prepare('SELECT * FROM policy_executions ORDER BY executedAt DESC LIMIT 20')
+      .prepare('SELECT * FROM policy_executions ORDER BY id DESC LIMIT 20')
       .all() as Array<Record<string, unknown>>;
     db.close();
     return rows.map((r) => ({
@@ -663,14 +662,12 @@ function getMemoryData(cwd: string): MemoryData {
   let l3Status = 'Stopped';
   let l3Uptime = '';
   const now = Date.now();
-  // Memory hits/misses: derive from memory types (observations=hits, thoughts=misses)
-  // or from session telemetry if available
-  const snapshot = getSessionSnapshot();
-  let memHits = snapshot?.memoryHits ?? 0;
-  let memMisses = snapshot?.memoryMisses ?? 0;
-  if (memHits === 0 && memMisses === 0 && existsSync(memDbPath)) {
+  // Memory hits/misses: always read fresh from DB (observations+actions=hits, thoughts=misses)
+  let memHits = 0;
+  let memMisses = 0;
+  if (existsSync(memDbPath)) {
     try {
-      const mdb = cachedMemoryDb?.db || new Database(memDbPath, { readonly: true });
+      const mdb = new Database(memDbPath, { readonly: true });
       const typeCounts = mdb
         .prepare('SELECT type, COUNT(*) as c FROM memories GROUP BY type')
         .all() as Array<{ type: string; c: number }>;
@@ -678,11 +675,16 @@ function getMemoryData(cwd: string): MemoryData {
         if (tc.type === 'observation' || tc.type === 'action') memHits += tc.c;
         else if (tc.type === 'thought') memMisses += tc.c;
       }
-      // Session memories are all hits (successfully stored context)
-      const sesCount = mdb.prepare('SELECT COUNT(*) as c FROM session_memories').get() as {
-        c: number;
-      };
-      memHits += sesCount.c;
+      const hasSess = mdb
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_memories'")
+        .all();
+      if (hasSess.length > 0) {
+        const sesCount = mdb.prepare('SELECT COUNT(*) as c FROM session_memories').get() as {
+          c: number;
+        };
+        memHits += sesCount.c;
+      }
+      mdb.close();
     } catch {
       /* ignore */
     }
@@ -1215,14 +1217,14 @@ function getComplianceData(cwd: string): ComplianceData {
         .prepare(
           `SELECT pe.policyId, pe.operation, pe.reason, pe.executedAt, COALESCE(p.name, pe.policyId) as policyName
          FROM policy_executions pe LEFT JOIN policies p ON pe.policyId = p.id
-         WHERE pe.allowed = 0 ORDER BY pe.executedAt DESC LIMIT 50`
+         WHERE pe.allowed = 0 ORDER BY pe.id DESC LIMIT 50`
         )
         .all() as Array<Record<string, unknown>>;
     } else {
       failureRows = db
         .prepare(
           `SELECT policyId, operation, reason, executedAt, policyId as policyName
-         FROM policy_executions WHERE allowed = 0 ORDER BY executedAt DESC LIMIT 50`
+         FROM policy_executions WHERE allowed = 0 ORDER BY id DESC LIMIT 50`
         )
         .all() as Array<Record<string, unknown>>;
     }

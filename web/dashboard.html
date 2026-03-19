@@ -790,14 +790,6 @@
           </div>
         </div>
 
-        <!-- Performance -->
-        <div class="panel">
-          <h2>Performance</h2>
-          <div id="perf-panel" class="table-wrap">
-            <div class="empty">No performance data yet</div>
-          </div>
-        </div>
-
         <!-- Session Telemetry (shown when session data is available) -->
         <div class="panel full-width" id="session-panel" style="display: none">
           <h2>Session Telemetry</h2>
@@ -1155,23 +1147,6 @@
         } else {
           document.getElementById('memory-recent-queries').innerHTML =
             '<div class="empty">No recent queries</div>';
-        }
-
-        // Performance hot paths
-        const hotPaths = perf.hotPaths || [];
-        if (hotPaths.length > 0) {
-          let perfHtml =
-            '<table><tr><th>Operation</th><th>Avg (ms)</th><th>P95 (ms)</th><th>Calls</th></tr>';
-          for (const hp of hotPaths) {
-            const avgColor =
-              hp.avgMs > 100 ? 'color:var(--red)' : hp.avgMs > 50 ? 'color:var(--yellow)' : '';
-            perfHtml += `<tr><td>${esc(hp.name)}</td><td style="${avgColor}">${hp.avgMs}</td><td>${hp.p95Ms}</td><td>${hp.count}</td></tr>`;
-          }
-          perfHtml += '</table>';
-          document.getElementById('perf-panel').innerHTML = perfHtml;
-        } else {
-          document.getElementById('perf-panel').innerHTML =
-            '<div class="empty">No performance data yet</div>';
         }
 
         // Session Telemetry

@@ -4,7 +4,7 @@
  * 1. Duplicate uap_dashboard tool removed from uap-commands.ts
  * 2. session-telemetry.ts boxLine() handles ANSI + wide chars
  * 3. session-telemetry.ts dashboard hash is state-based (not time-based)
- * 4. web/dashboard.html Performance panel uses class="panel"
+ * 4. web/dashboard.html Operations panel uses class="panel"
  * 5. visualize.ts getVisualWidth() handles wide Unicode chars
  * 6. visualize.ts box() uses visual width for padding
  * 7. cli/dashboard.ts compactSessionSummary() width calculation fixed
@@ -60,15 +60,13 @@ describe('Dashboard Display Fixes', () => {
     });
   });
 
-  describe('Web dashboard Performance panel', () => {
-    it('uses class="panel" not class="card"', () => {
+  describe('Web dashboard panels use correct classes', () => {
+    it('Policies panel uses class="panel"', () => {
       const source = readFileSync('web/dashboard.html', 'utf-8');
-      // The Performance section should use panel class
-      const perfSection = source.indexOf('<!-- Performance -->');
-      expect(perfSection).toBeGreaterThan(-1);
-      const afterPerf = source.slice(perfSection, perfSection + 100);
-      expect(afterPerf).toContain('class="panel"');
-      expect(afterPerf).not.toContain('class="card"');
+      const section = source.indexOf('Policies');
+      expect(section).toBeGreaterThan(-1);
+      const before = source.slice(Math.max(0, section - 80), section);
+      expect(before).toContain('class="panel');
     });
   });
 
