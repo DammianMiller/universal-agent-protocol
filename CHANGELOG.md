@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.12.0 (2026-03-20)
+
+- chore: gitignore dist symlink in worktree
+- chore: gitignore root-owned backup artifacts
+- feat: deploy batching integration, policy DB seeding, cross-platform hook parity
+- fix: wire session telemetry into web dashboard and add time-series graphs
+- chore: fix npm publish errors
+
+
 ## v1.9.1 (2026-03-19)
 
 - fix: dashboard display rendering — remove duplicate tool, fix box alignment, add visual width support
