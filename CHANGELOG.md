@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.9.0 (2026-03-19)
+
+- feat: add Codex CLI integration with AGENTS.md, MCP server, skills, and hooks
+
+
 ## v1.8.1 (2026-03-19)
 
 - fix: add missing dashboard type exports and restore optimization sweep changes lost in merge
