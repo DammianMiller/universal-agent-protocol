@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.1 (2026-03-19)
+
+- fix: restore execa and cloakbrowser to dependencies (runtime imports in setup-wizard and web-browser)
+
+
 ## v1.7.0 (2026-03-19)
 
 - fix: align validation-fixes test with actual CLAUDE.md sections
