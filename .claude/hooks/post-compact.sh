@@ -97,9 +97,26 @@ if [ -n "$GIT_DIR" ] && [ -n "$GIT_COMMON" ] && [ "$GIT_DIR" != "$GIT_COMMON" ];
   IS_WORKTREE="true"
 fi
 
+# FIX B: Auto-create worktree if on master/main and not in one
 if [ "$IS_WORKTREE" = "false" ] && { [ "$CURRENT_BRANCH" = "main" ] || [ "$CURRENT_BRANCH" = "master" ]; }; then
   output+="### ⚠ WORKTREE VIOLATION: You are on $CURRENT_BRANCH in the project root."$'\n'
-  output+="Run: uap worktree create <slug> BEFORE any file edits."$'\n'
+  output+="Auto-creating worktree for safety..."$'\n'
+
+  # Generate a unique slug based on timestamp
+  SLUG="fix-session-stoppages-$(date +%s)"
+
+  # Attempt to create worktree automatically
+  if [ -f "${PROJECT_DIR}/dist/bin/cli.js" ]; then
+    WORKTREE_RESULT=$(node "${PROJECT_DIR}/dist/bin/cli.js" worktree create "$SLUG" 2>&1 || true)
+    if echo "$WORKTREE_RESULT" | grep -q "Created worktree"; then
+      output+="Worktree created: $WORKTREE_RESULT"$'\n'
+      output+="Switching to worktree directory..."$'\n'
+      # Note: Cannot auto-cd in hook, user must run: cd <worktree-dir>
+    else
+      output+="Note: Run 'uap worktree create fix-session' to create a worktree before editing files."$'\n'
+    fi
+  fi
+
   output+=""$'\n'
 else
   output+="### Worktree: ACTIVE (branch: $CURRENT_BRANCH)"$'\n'

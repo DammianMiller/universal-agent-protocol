@@ -39,6 +39,14 @@ if echo "$FILE_PATH" | grep -q '\.worktrees/'; then
   exit 0
 fi
 
+# FIX D: Send heartbeat ping before each tool call to prevent idle timeout
+if [ -n "${UAP_AGENT_ID:-}" ]; then
+  COORD_DB="${PROJECT_DIR:-.}/agents/data/coordination/coordination.db"
+  if [ -f "$COORD_DB" ]; then
+    sqlite3 "$COORD_DB" "UPDATE agent_registry SET last_heartbeat=datetime('now') WHERE id='${UAP_AGENT_ID}';" 2>/dev/null || true
+  fi
+fi
+
 # BLOCK: path is outside worktrees and not exempt
 echo '{"decision":"block","reason":"WORKTREE POLICY VIOLATION: File path is outside .worktrees/. All edits must target files inside a worktree. Run: uap worktree create <slug> then edit files in .worktrees/NNN-<slug>/. See policies/worktree-file-guard.md"}' >&2
 exit 2

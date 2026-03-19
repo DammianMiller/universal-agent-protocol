@@ -730,7 +730,7 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
       try {
         const dbPath =
           config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
-        graphStats = storeKnowledgeGraph(dbPath, config.project.name, longTerm, skills);
+        graphStats = await storeKnowledgeGraph(dbPath, config.project.name, longTerm, skills);
         graphSpinner.succeed(
           `Stored ${graphStats.entities} entities, ${graphStats.relationships} relationships`
         );
@@ -828,15 +828,14 @@ function storeSessionMemories(
   return inserted;
 }
 
-function storeKnowledgeGraph(
+async function storeKnowledgeGraph(
   dbPath: string,
   projectName: string,
   longTerm: MemoryEntry[],
   skills: DiscoveredSkill[]
-): { entities: number; relationships: number } {
+): Promise<{ entities: number; relationships: number }> {
   // Use the KnowledgeGraph class for graph operations
-  const { KnowledgeGraph } =
-    require('../memory/knowledge-graph.js') as typeof import('../memory/knowledge-graph.js');
+  const { KnowledgeGraph } = await import('../memory/knowledge-graph.js');
   const graph = new KnowledgeGraph(dbPath);
 
   let entities = 0;

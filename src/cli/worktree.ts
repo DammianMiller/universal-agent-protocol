@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { existsSync, readdirSync, mkdirSync } from 'fs';
+import { cpSync, existsSync, readdirSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { simpleGit, SimpleGit } from 'simple-git';
 import Database from 'better-sqlite3';
@@ -28,7 +28,6 @@ function getWorktreeDb(cwd: string): Database.Database {
   const legacyDbPath = join(cwd, '.uam', 'worktree_registry.db');
   const dbPath = join(dbDir, 'worktree_registry.db');
   if (!existsSync(dbPath) && existsSync(legacyDbPath)) {
-    const { cpSync } = require('fs');
     cpSync(legacyDbPath, dbPath);
   }
   worktreeDb = new Database(dbPath);
