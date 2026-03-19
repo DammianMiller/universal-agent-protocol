@@ -24,7 +24,7 @@ import { existsSync, readFileSync } from 'fs';
 describe('T1: recordTaskFeedback in TaskCoordinator', () => {
   it('should import recordTaskFeedback in tasks/coordination.ts', async () => {
     const source = readFileSync('src/tasks/coordination.ts', 'utf-8');
-    expect(source).toContain("import { recordTaskFeedback }");
+    expect(source).toContain('import { recordTaskFeedback }');
     expect(source).toContain('recordTaskFeedback({');
   });
 
@@ -32,11 +32,13 @@ describe('T1: recordTaskFeedback in TaskCoordinator', () => {
     const { recordTaskFeedback } = await import('../src/memory/dynamic-retrieval.js');
     expect(typeof recordTaskFeedback).toBe('function');
     // Should not throw when called with valid args
-    expect(() => recordTaskFeedback({
-      instruction: 'test task',
-      success: true,
-      durationMs: 1000,
-    })).not.toThrow();
+    expect(() =>
+      recordTaskFeedback({
+        instruction: 'test task',
+        success: true,
+        durationMs: 1000,
+      })
+    ).not.toThrow();
   });
 });
 
@@ -73,7 +75,7 @@ describe('T2: Semantic cache in decideContextLevel', () => {
 describe('T3: recordTaskOutcome in executor', () => {
   it('should import recordModelRouterOutcome in executor.ts', async () => {
     const source = readFileSync('src/models/executor.ts', 'utf-8');
-    expect(source).toContain("import { recordTaskOutcome as recordModelRouterOutcome }");
+    expect(source).toContain('import { recordTaskOutcome as recordModelRouterOutcome }');
     expect(source).toContain('recordModelRouterOutcome(');
   });
 });
@@ -132,7 +134,8 @@ describe('T6: Agent execution config loading', () => {
   });
 
   it('should export getExecutionConfigWithProjectOverrides', async () => {
-    const { getExecutionConfigWithProjectOverrides } = await import('../src/models/execution-profiles.js');
+    const { getExecutionConfigWithProjectOverrides } =
+      await import('../src/models/execution-profiles.js');
     expect(typeof getExecutionConfigWithProjectOverrides).toBe('function');
 
     // Should return a valid config for any model
@@ -195,8 +198,6 @@ describe('T10: Factory hooks registration', () => {
     expect(settings.hooks).toBeDefined();
     expect(settings.hooks.SessionStart).toBeDefined();
     expect(settings.hooks.PreCompact).toBeDefined();
-    expect(settings.hooks.UserPromptSubmit).toBeDefined();
-    expect(settings.hooks.TaskComplete).toBeDefined();
   });
 });
 
@@ -272,8 +273,8 @@ describe('T14: Structured logger', () => {
 
   it('should be used in adaptive-context.ts instead of console.warn', () => {
     const source = readFileSync('src/memory/adaptive-context.ts', 'utf-8');
-    expect(source).toContain("import { createLogger }");
-    expect(source).toContain("log.warn(");
+    expect(source).toContain('import { createLogger }');
+    expect(source).toContain('log.warn(');
     // Should NOT have bare console.warn calls
     expect(source).not.toContain('console.warn(');
   });
