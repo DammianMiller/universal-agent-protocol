@@ -451,6 +451,7 @@ export const AgentContextConfigSchema = z.object({
       factory: PlatformSchema.optional(),
       vscode: PlatformSchema.optional(),
       opencode: PlatformSchema.optional(),
+      codex: PlatformSchema.optional(),
     })
     .optional(),
   memory: MemorySchema.optional(),
@@ -474,6 +475,7 @@ export type Platform =
   | 'factory'
   | 'vscode'
   | 'opencode'
+  | 'codex'
   | 'claudeWeb'
   | 'factoryWeb';
 export type Droid = z.infer<typeof DroidSchema>;
