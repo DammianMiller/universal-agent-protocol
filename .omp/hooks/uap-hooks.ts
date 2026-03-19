@@ -17,6 +17,8 @@ import { join } from 'path';
 const PROJECT_DIR = process.env.UAP_PROJECT_DIR || process.cwd();
 const DB_PATH = join(PROJECT_DIR, 'agents/data/memory/short_term.db');
 const COORD_DB = join(PROJECT_DIR, 'agents/data/coordination/coordination.db');
+const POLICY_DB = join(PROJECT_DIR, 'agents/data/memory/policies.db');
+const AGENT_ID = `omp-${Date.now().toString(36)}`;
 
 function runSql(dbPath: string, sql: string): string {
   try {
@@ -43,10 +45,53 @@ export function preSession(): string {
         SELECT id FROM agent_registry
         WHERE status IN ('active','idle') AND last_heartbeat < datetime('now','-24 hours')
       );
+      DELETE FROM work_announcements WHERE agent_id IN (
+        SELECT id FROM agent_registry
+        WHERE status IN ('active','idle') AND last_heartbeat < datetime('now','-24 hours')
+      ) AND completed_at IS NULL;
       UPDATE agent_registry SET status='failed'
         WHERE status IN ('active','idle') AND last_heartbeat < datetime('now','-24 hours');
     `
     );
+
+    // Register this agent
+    runSql(
+      COORD_DB,
+      `INSERT OR REPLACE INTO agent_registry (id, name, session_id, status, capabilities, started_at, last_heartbeat)
+       VALUES ('${AGENT_ID}', 'omp', '${AGENT_ID}', 'active', '[]', datetime('now'), datetime('now'));`
+    );
+
+    // Auto-announce session
+    runSql(
+      COORD_DB,
+      `INSERT INTO work_announcements (agent_id, agent_name, intent_type, resource, description, announced_at)
+       VALUES ('${AGENT_ID}', 'omp', 'editing', 'session-scope', 'Session ${AGENT_ID} active', datetime('now'));`
+    );
+
+    // Detect overlaps
+    const overlaps = runSql(
+      COORD_DB,
+      `SELECT agent_id || ' on ' || resource || ' (' || intent_type || ')'
+       FROM work_announcements
+       WHERE completed_at IS NULL AND agent_id != '${AGENT_ID}'
+       ORDER BY announced_at DESC LIMIT 5;`
+    );
+    if (overlaps) {
+      output.push('<uap-context>');
+      output.push('## Agent Overlap Warning');
+      output.push(overlaps);
+      output.push('Run `uap agent overlaps` before editing shared files.');
+      output.push('</uap-context>');
+    }
+  }
+
+  // Policy summary
+  if (existsSync(POLICY_DB)) {
+    const activePolicies = runSql(POLICY_DB, `SELECT COUNT(*) FROM policies WHERE isActive=1;`);
+    const requiredPolicies = runSql(POLICY_DB, `SELECT COUNT(*) FROM policies WHERE isActive=1 AND level='REQUIRED';`);
+    if (activePolicies) {
+      output.push(`<uap-context>Policies: ${activePolicies} active (${requiredPolicies} REQUIRED)</uap-context>`);
+    }
   }
 
   // Load recent memories
@@ -100,14 +145,24 @@ export function postSession(): void {
   `
   );
 
-  // Clean up active agents from this session
+  // Flush pending deploys before session ends
   if (existsSync(COORD_DB)) {
+    const pending = runSql(COORD_DB, `SELECT COUNT(*) FROM deploy_queue WHERE status='pending';`);
+    if (parseInt(pending, 10) > 0) {
+      const cliPath = join(PROJECT_DIR, 'dist/bin/cli.js');
+      if (existsSync(cliPath)) {
+        try {
+          execSync(`node "${cliPath}" deploy flush`, { stdio: 'pipe', encoding: 'utf-8' });
+        } catch { /* best effort */ }
+      }
+    }
+
+    // Close announcements and deregister agent
     runSql(
       COORD_DB,
-      `
-      UPDATE agent_registry SET status='completed'
-        WHERE status='active' AND last_heartbeat >= datetime('now','-10 minutes');
-    `
+      `UPDATE work_announcements SET completed_at=datetime('now')
+         WHERE agent_id='${AGENT_ID}' AND completed_at IS NULL;
+       UPDATE agent_registry SET status='completed' WHERE id='${AGENT_ID}';`
     );
   }
 }

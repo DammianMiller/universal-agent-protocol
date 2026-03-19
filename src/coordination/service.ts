@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import type Database from 'better-sqlite3';
 import { CoordinationDatabase, getDefaultCoordinationDbPath } from './database.js';
+import { DeployBatcher } from './deploy-batcher.js';
 import type {
   AgentRegistryEntry,
   AgentMessage,
@@ -30,13 +31,14 @@ export interface CoordinationServiceConfig {
 
 export class CoordinationService {
   private db: Database.Database;
+  private dbPath: string;
   private sessionId: string;
   private heartbeatIntervalMs: number;
   private claimExpiryMs: number;
 
   constructor(config: CoordinationServiceConfig = {}) {
-    const dbPath = config.dbPath || getDefaultCoordinationDbPath();
-    this.db = CoordinationDatabase.getInstance(dbPath).getDatabase();
+    this.dbPath = config.dbPath || getDefaultCoordinationDbPath();
+    this.db = CoordinationDatabase.getInstance(this.dbPath).getDatabase();
     this.sessionId = config.sessionId || randomUUID();
     this.heartbeatIntervalMs = config.heartbeatIntervalMs || 30000;
     this.claimExpiryMs = config.claimExpiryMs || 300000; // 5 minutes
@@ -346,18 +348,52 @@ export class CoordinationService {
    * Mark work as complete on a resource.
    */
   completeWork(agentId: string, resource: string): void {
+    const now = new Date().toISOString();
     const stmt = this.db.prepare(`
       UPDATE work_announcements
       SET completed_at = ?
       WHERE agent_id = ? AND resource = ? AND completed_at IS NULL
     `);
-    stmt.run(new Date().toISOString(), agentId, resource);
+    stmt.run(now, agentId, resource);
+
+    // Auto-queue a push for the agent's worktree branch if one exists
+    const agentStmt = this.db.prepare(`
+      SELECT worktree_branch FROM agent_registry WHERE id = ?
+    `);
+    const agent = agentStmt.get(agentId) as { worktree_branch?: string } | undefined;
+    if (agent?.worktree_branch) {
+      this.queueDeploy(agentId, 'push', agent.worktree_branch, {
+        remote: 'origin',
+        source: 'auto-complete-work',
+      });
+    }
 
     // Broadcast completion so others know merge order
     this.broadcast(agentId, 'coordination', {
       action: 'work_completed',
       resource,
     });
+  }
+
+  /**
+   * Flush all pending deploy actions via the DeployBatcher.
+   * Called automatically during session cleanup / pre-compact.
+   */
+  async flushDeploys(options: { dryRun?: boolean } = {}): Promise<{
+    executed: number;
+    failed: number;
+  }> {
+    const batcher = new DeployBatcher({
+      dbPath: this.dbPath,
+      dryRun: options.dryRun,
+    });
+    const results = await batcher.flushAll();
+    const totals = { executed: 0, failed: 0 };
+    for (const r of results) {
+      totals.executed += r.executedActions;
+      totals.failed += r.failedActions;
+    }
+    return totals;
   }
 
   /**

@@ -7,5 +7,19 @@
   "defaultModel": "claude-sonnet-4",
   "contextWindow": 200000,
   "memoryPath": "./agents/data/memory/short_term.db",
-  "worktreeDirectory": ".worktrees"
+  "worktreeDirectory": ".worktrees",
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "bash .claude/hooks/session-start.sh"
+      }
+    ],
+    "PreCompact": [
+      {
+        "type": "command",
+        "command": "bash .claude/hooks/pre-compact.sh"
+      }
+    ]
+  }
 }

@@ -1,14 +1,20 @@
-export { getDashboardData, getTimeSeriesHistory } from './data-service.js';
+export {
+  getDashboardData,
+  getPolicyFiles,
+  getDeployBucketData,
+  getTimeSeriesHistory,
+  pushTimeSeriesPoint,
+} from './data-service.js';
 export type {
   DashboardData,
   PolicyData,
+  PolicyFileData,
   MemoryData,
   ModelData,
   TaskData,
   CoordData,
   SystemData,
   AuditEntry,
-  PerformanceData,
   SessionTelemetryData,
   AgentDetail,
   SkillDetail,
@@ -16,12 +22,9 @@ export type {
   DeployDetail,
   DeployBatchSummary,
   TimeSeriesPoint,
-  DeployBucketData,
-  CompressionData,
-  MemoryHitMissData,
-  ComplianceData,
-  ComplianceFailure,
 } from './data-service.js';
+export { seedDashboardData, cleanupSeeder, getSeederState } from './data-seeder.js';
+export type { SeederState } from './data-seeder.js';
 export { startDashboardServer } from './server.js';
 export type { DashboardServerOptions } from './server.js';
 export {
