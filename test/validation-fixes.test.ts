@@ -25,8 +25,8 @@ describe('Validation Fixes', () => {
       // Check 4: VERIFIER-FIRST
       expect(content).toContain('VERIFIER-FIRST');
 
-      // Check 5: PARALLEL REVIEW PROTOCOL
-      expect(content).toContain('## PARALLEL REVIEW PROTOCOL');
+      // Check 5: Pattern Router
+      expect(content).toContain('## Pattern Router');
 
       // Check 6: Schema Diff Gate in BLOCKING PREREQUISITES
       expect(content).toMatch(/Schema Diff Gate/);
