@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.8.0 (2026-03-19)
+
+- feat: enhance web dashboard with full telemetry, live event stream, and deployment batching
+- feat: add SSE endpoint (/api/events) for real-time event streaming
+- feat: add dashboard event bus with 9 categories and severity levels
+- feat: add memory hits/misses gauge, deploy pipeline visualization, agent/skill/pattern panels
+- feat: add getSessionSnapshot() to session-telemetry for web data access
+
 ## v1.7.1 (2026-03-19)
 
 - fix: restore execa and cloakbrowser to dependencies (runtime imports in setup-wizard and web-browser)
