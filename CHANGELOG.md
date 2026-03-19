@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.13.1 (2026-03-20)
+
+- fix: correct Claude Code hooks schema to use matcher+hooks array format (#62)
+- feat: live dashboard with dynamic data, policy audit trail, and layout fixes
+
+
 ## v1.13.0 (2026-03-20)
 
 - feat: hard policy enforcement hooks for all agent platforms (#61)
