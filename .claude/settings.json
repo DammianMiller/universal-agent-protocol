@@ -15,10 +15,59 @@
         "command": "bash .claude/hooks/session-start.sh"
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/pre-tool-use-edit-write.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/pre-tool-use-bash.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/post-tool-use-edit-write.sh"
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "type": "command",
         "command": "bash .claude/hooks/pre-compact.sh"
+      }
+    ],
+    "PostCompact": [
+      {
+        "type": "command",
+        "command": "bash .claude/hooks/post-compact.sh"
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "bash .claude/hooks/stop.sh"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "type": "command",
+        "command": "bash .claude/hooks/session-end.sh"
       }
     ]
   }
