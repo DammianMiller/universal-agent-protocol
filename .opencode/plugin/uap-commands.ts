@@ -148,19 +148,8 @@ export const UAPCommands: Plugin = async ({ $ }) => {
         },
       }),
 
-      uap_dashboard: tool({
-        description: 'Show UAP dashboard with overview of tasks, agents, memory, and progress.',
-        args: {
-          view: tool.schema
-            .enum(['overview', 'tasks', 'agents', 'memory', 'progress', 'stats'])
-            .default('overview')
-            .describe('Dashboard view to display'),
-        },
-        async execute({ view }) {
-          const result = await $`uap dashboard ${view}`.quiet();
-          return result.stdout.toString().trim() || 'Dashboard unavailable.';
-        },
-      }),
+      // NOTE: uap_dashboard is registered in uap-dashboard.ts plugin (not here)
+      // to avoid duplicate tool registration with incompatible action enums.
     },
   };
 };

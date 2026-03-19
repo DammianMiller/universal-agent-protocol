@@ -46,10 +46,17 @@ if git rev-parse --git-dir > /dev/null 2>&1; then
 fi
 
 # Record the outcome (silently)
+# Determine success/failure flag for record_task_outcome.py
+if [ "$SUCCESS" = "true" ]; then
+    OUTCOME_FLAG="--success"
+else
+    OUTCOME_FLAG="--failure"
+fi
+
 "$VENV_PYTHON" "$RECORD_SCRIPT" \
     --task-type "$TASK_TYPE" \
     --summary "$SUMMARY" \
-    --$SUCCESS \
+    $OUTCOME_FLAG \
     --iterations "$ITERATIONS" \
     2>/dev/null || true
 

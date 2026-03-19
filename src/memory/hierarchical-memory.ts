@@ -116,6 +116,12 @@ export class HierarchicalMemoryManager {
     accessTimes.push(now);
     this.accessLog.set(id, accessTimes.slice(-10)); // Keep last 10 access times
 
+    // Evict oldest accessLog entries if over 1000 (prevents unbounded growth)
+    if (this.accessLog.size > 1000) {
+      const firstKey = this.accessLog.keys().next().value;
+      if (firstKey) this.accessLog.delete(firstKey);
+    }
+
     // Check for promotion
     this.checkPromotion(entry);
 

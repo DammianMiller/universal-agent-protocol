@@ -463,7 +463,7 @@ export class PolicyGate {
   /**
    * Get the audit trail for a policy or all policies.
    */
-  async getAuditTrail(policyId?: string, limit: number = 50): Promise<Record<string, unknown>[]> {
+  async getAuditTrail(policyId?: string, limit: number = 50) {
     return this.db.getExecutionLog(policyId, limit);
   }
 }

@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 
-const BRAILLE_DOTS = [' ', '⠄', '⠤', '⠴', '⠶', '⠷', '⠿', '⡿', '⣿'];
+// BRAILLE_DOTS removed — was only used by dead sparkline function
 
 export interface BarSegment {
   value: number;
@@ -13,13 +13,6 @@ export interface TableColumn {
   header: string;
   width?: number;
   align?: 'left' | 'right' | 'center';
-  color?: (text: string) => string;
-}
-
-export interface SparklineOptions {
-  width?: number;
-  min?: number;
-  max?: number;
   color?: (text: string) => string;
 }
 
@@ -116,38 +109,6 @@ export function horizontalBarChart(
   return lines;
 }
 
-export function sparkline(values: number[], options: SparklineOptions = {}): string {
-  const { width, color = chalk.green } = options;
-  const data = width && values.length > width ? downsample(values, width) : values;
-
-  if (data.length === 0) return '';
-
-  const min = options.min ?? Math.min(...data);
-  const max = options.max ?? Math.max(...data);
-  const range = max - min || 1;
-
-  return color(
-    data
-      .map((v) => {
-        const idx = Math.round(((v - min) / range) * (BRAILLE_DOTS.length - 1));
-        return BRAILLE_DOTS[Math.max(0, Math.min(idx, BRAILLE_DOTS.length - 1))];
-      })
-      .join('')
-  );
-}
-
-function downsample(values: number[], targetLen: number): number[] {
-  const result: number[] = [];
-  const step = values.length / targetLen;
-  for (let i = 0; i < targetLen; i++) {
-    const start = Math.floor(i * step);
-    const end = Math.floor((i + 1) * step);
-    const slice = values.slice(start, end);
-    result.push(slice.reduce((a, b) => a + b, 0) / slice.length);
-  }
-  return result;
-}
-
 /** Safely coerce any value to a display string without producing "[object Object]" */
 function safeDisplayString(v: unknown): string {
   if (v === null || v === undefined) return '';
@@ -215,6 +176,38 @@ function stripAnsi(str: string): string {
   return str.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
+/**
+ * Calculate the visual width of a string in terminal columns.
+ * Wide characters (emoji, CJK) occupy 2 columns; most others occupy 1.
+ * Exported for use in tests.
+ */
+export function getVisualWidth(str: string): number {
+  const stripped = stripAnsi(str);
+  let width = 0;
+  for (const char of stripped) {
+    const code = char.codePointAt(0) || 0;
+    if (
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0x303e) ||
+      (code >= 0x3040 && code <= 0x33bf) ||
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff01 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x1f300 && code <= 0x1faff) ||
+      (code >= 0x1f900 && code <= 0x1f9ff) ||
+      (code >= 0x20000 && code <= 0x2ffff)
+    ) {
+      width += 2;
+    } else {
+      width += 1;
+    }
+  }
+  return width;
+}
+
 export function tree(node: TreeNode, prefix: string = '', isLast: boolean = true): string[] {
   const lines: string[] = [];
   const connector = isLast ? '└── ' : '├── ';
@@ -240,7 +233,10 @@ export function box(
   options: { width?: number; borderColor?: (text: string) => string } = {}
 ): string[] {
   const { borderColor = chalk.dim } = options;
-  const maxContentWidth = Math.max(title.length + 2, ...content.map((l) => stripAnsi(l).length));
+  const maxContentWidth = Math.max(
+    getVisualWidth(title) + 2,
+    ...content.map((l) => getVisualWidth(l))
+  );
   const width = options.width || maxContentWidth + 4;
   const innerWidth = width - 2;
 
@@ -248,14 +244,14 @@ export function box(
   lines.push(borderColor(`╭${'─'.repeat(innerWidth)}╮`));
   lines.push(
     borderColor('│') +
-      ` ${chalk.bold(title)}${' '.repeat(Math.max(0, innerWidth - title.length - 1))}` +
+      ` ${chalk.bold(title)}${' '.repeat(Math.max(0, innerWidth - getVisualWidth(title) - 1))}` +
       borderColor('│')
   );
   lines.push(borderColor(`├${'─'.repeat(innerWidth)}┤`));
 
   for (const line of content) {
-    const stripped = stripAnsi(line);
-    const pad = Math.max(0, innerWidth - stripped.length - 1);
+    const vw = getVisualWidth(line);
+    const pad = Math.max(0, innerWidth - vw - 1);
     lines.push(borderColor('│') + ` ${line}${' '.repeat(pad)}` + borderColor('│'));
   }
 
@@ -278,19 +274,6 @@ export function keyValue(
     const paddedKey = key.padEnd(keyWidth);
     return `${pad}${chalk.dim(paddedKey)} ${chalk.bold(String(value))}`;
   });
-}
-
-export function percentage(value: number, total: number): string {
-  if (total === 0) return chalk.dim('N/A');
-  const pct = Math.round((value / total) * 100);
-  const color = pct >= 80 ? chalk.green : pct >= 50 ? chalk.yellow : chalk.red;
-  return color(`${pct}%`);
-}
-
-export function trend(current: number, previous: number): string {
-  if (current > previous) return chalk.green(`▲ +${current - previous}`);
-  if (current < previous) return chalk.red(`▼ -${previous - current}`);
-  return chalk.dim('─ 0');
 }
 
 export function miniGauge(value: number, max: number, width: number = 10): string {
@@ -408,28 +391,4 @@ export function inlineProgressSummary(stats: {
   return lines;
 }
 
-export function heatmapRow(
-  label: string,
-  values: number[],
-  options: { max?: number; labelWidth?: number } = {}
-): string {
-  const { labelWidth = 12 } = options;
-  const max = options.max ?? Math.max(...values, 1);
-  const colors = [
-    chalk.bgGray.dim,
-    chalk.bgGreen.dim,
-    chalk.bgGreenBright.dim,
-    chalk.bgYellow.dim,
-    chalk.bgYellowBright.dim,
-    chalk.bgRedBright.dim,
-  ];
-
-  const cells = values
-    .map((v) => {
-      const idx = Math.min(Math.floor((v / max) * (colors.length - 1)), colors.length - 1);
-      return colors[idx](' ');
-    })
-    .join('');
-
-  return `  ${chalk.dim(label.padEnd(labelWidth))} ${cells}`;
-}
+// heatmapRow removed — was exported but never imported by any consumer

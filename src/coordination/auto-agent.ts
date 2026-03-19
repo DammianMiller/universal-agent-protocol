@@ -1,5 +1,8 @@
 import { CoordinationService } from './service.js';
 import type { AgentRegistryEntry } from '../types/coordination.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('auto-agent');
 
 export interface AutoAgentConfig {
   sessionId?: string;
@@ -131,7 +134,7 @@ export class AutoAgentCoordinator {
       this.service.updateStatus(this.agentId, 'completed', undefined);
     } catch (error) {
       // Agent may already be deregistered
-      console.warn('Failed to update agent status:', error);
+      log.warn('Failed to update agent status:', error);
     }
   }
 

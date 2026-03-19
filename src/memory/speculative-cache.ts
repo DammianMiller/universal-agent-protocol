@@ -540,8 +540,8 @@ export function autoWarmCache(cache?: SpeculativeCache): number {
   ];
 
   for (const query of highValueQueries) {
-    // Store with high usage count to prevent early eviction
-    c.set(query, [{ preWarmed: true, query }], 'auto-warm');
+    // Store with 'content' field so dynamic-retrieval.ts can consume pre-warmed results
+    c.set(query, [{ content: query, type: 'pattern', preWarmed: true }], 'auto-warm');
     warmed++;
   }
 

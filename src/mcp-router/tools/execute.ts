@@ -12,6 +12,7 @@ import { compressToolOutput } from '../output-compressor.js';
 import { globalSessionStats } from '../session-stats.js';
 import { getPolicyGate, PolicyViolationError } from '../../policies/policy-gate.js';
 import { CoordinationService } from '../../coordination/service.js';
+import { isPathInsideWorktree, isExemptFromWorktree } from '../../cli/worktree.js';
 
 export const EXECUTE_TOOL_DEFINITION = {
   name: 'execute_tool',
@@ -128,6 +129,30 @@ export async function handleExecuteTool(
   const client = clientPool.getClient(serverName, tool.serverConfig);
 
   try {
+    // Worktree File Guard — block file-mutating tool calls targeting paths outside worktrees
+    const isFileModifying =
+      toolName.includes('write') ||
+      toolName.includes('edit') ||
+      toolName.includes('create') ||
+      toolName.includes('delete') ||
+      toolName.includes('rename');
+    if (isFileModifying) {
+      const rawFilePath =
+        (toolArgs as Record<string, unknown>)?.filePath ||
+        (toolArgs as Record<string, unknown>)?.path;
+      const targetPath = rawFilePath != null ? String(rawFilePath) : '';
+      if (targetPath && !isPathInsideWorktree(targetPath) && !isExemptFromWorktree(targetPath)) {
+        return {
+          success: false,
+          error: `[WORKTREE GUARD] File operation blocked: "${targetPath}" is not inside a worktree (.worktrees/). ` +
+            `Create a worktree first: uap worktree create <slug>, then edit files in .worktrees/<id>-<slug>/. ` +
+            `See policies/worktree-file-guard.md`,
+          toolPath: path,
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
+    }
+
     // Run through PolicyGate - all tool calls are policy-checked and audit-logged
     // Pass only the user's args to the gate; inject metadata separately for audit
     const gate = getPolicyGate();

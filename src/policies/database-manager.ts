@@ -2,6 +2,48 @@ import Database from 'better-sqlite3';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 
+/** Typed row returned from the policies table */
+export interface PolicyRow {
+  id: string;
+  name: string;
+  category: string;
+  level: string;
+  rawMarkdown: string | null;
+  convertedFormat: string | null;
+  executableTools: string[];
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+  isActive: boolean;
+  priority: number;
+  enforcementStage: string;
+}
+
+/** Typed row returned from the executable_tools table */
+export interface ExecutableToolRow {
+  id: string;
+  policyId: string;
+  toolName: string;
+  code: string;
+  language: string;
+  createdAt: string;
+}
+
+/** Typed row returned from the policy_executions table */
+export interface PolicyExecutionRow {
+  id: number;
+  policyId: string;
+  toolName: string;
+  operation: string;
+  args: Record<string, unknown>;
+  result: unknown;
+  allowed: boolean;
+  reason: string;
+  executedAt: string;
+  taskId: string | null;
+}
+
 export class DatabaseManager {
   private db: InstanceType<typeof Database>;
 
@@ -140,16 +182,16 @@ export class DatabaseManager {
     this.db.prepare(sql).run(...Object.values(serialized));
   }
 
-  findPolicies(where: Record<string, unknown>): Record<string, unknown>[] {
+  findPolicies(where: Record<string, unknown>): PolicyRow[] {
     const keys = Object.keys(where);
     const serializedValues = keys.map((k) => this.serialize(where[k]));
     const conditions = keys.map((k) => `${k} = ?`).join(' AND ');
     const sql = `SELECT * FROM policies WHERE ${conditions}`;
     const rows = this.db.prepare(sql).all(...serializedValues) as Record<string, unknown>[];
-    return rows.map((r) => this.deserializeRow(r));
+    return rows.map((r) => this.deserializeRow(r) as unknown as PolicyRow);
   }
 
-  findOnePolicy(where: Record<string, unknown>): Record<string, unknown> | null {
+  findOnePolicy(where: Record<string, unknown>): PolicyRow | null {
     const results = this.findPolicies(where);
     return results[0] || null;
   }
@@ -176,11 +218,11 @@ export class DatabaseManager {
       .run(...Object.values(serializedUpdates), ...Object.values(serializedWhere));
   }
 
-  getAllActivePolicies(): Record<string, unknown>[] {
+  getAllActivePolicies(): PolicyRow[] {
     const rows = this.db
       .prepare('SELECT * FROM policies WHERE isActive = 1 ORDER BY priority DESC')
       .all() as Record<string, unknown>[];
-    return rows.map((r) => this.deserializeRow(r));
+    return rows.map((r) => this.deserializeRow(r) as unknown as PolicyRow);
   }
 
   // --- CRUD for executable_tools table ---
@@ -192,16 +234,16 @@ export class DatabaseManager {
     this.db.prepare(sql).run(...Object.values(data));
   }
 
-  findExecutableTools(policyId: string): Record<string, unknown>[] {
+  findExecutableTools(policyId: string): ExecutableToolRow[] {
     return this.db
       .prepare('SELECT * FROM executable_tools WHERE policyId = ?')
-      .all(policyId) as Record<string, unknown>[];
+      .all(policyId) as ExecutableToolRow[];
   }
 
-  findExecutableTool(policyId: string, toolName: string): Record<string, unknown> | null {
+  findExecutableTool(policyId: string, toolName: string): ExecutableToolRow | null {
     const result = this.db
       .prepare('SELECT * FROM executable_tools WHERE policyId = ? AND toolName = ?')
-      .get(policyId, toolName) as Record<string, unknown> | undefined;
+      .get(policyId, toolName) as ExecutableToolRow | undefined;
     return result || null;
   }
 
@@ -233,7 +275,7 @@ export class DatabaseManager {
       );
   }
 
-  getExecutionLog(policyId?: string, limit: number = 50): Record<string, unknown>[] {
+  getExecutionLog(policyId?: string, limit: number = 50): PolicyExecutionRow[] {
     let sql = 'SELECT * FROM policy_executions';
     const params: unknown[] = [];
     if (policyId) {
@@ -243,7 +285,7 @@ export class DatabaseManager {
     sql += ' ORDER BY executedAt DESC LIMIT ?';
     params.push(limit);
     const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
-    return rows.map((r) => this.deserializeRow(r));
+    return rows.map((r) => this.deserializeRow(r) as unknown as PolicyExecutionRow);
   }
 
   /**

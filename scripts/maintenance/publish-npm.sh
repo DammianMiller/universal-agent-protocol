@@ -3,8 +3,9 @@
 
 set -e
 
+VERSION=$(node -p 'require("./package.json").version' 2>/dev/null || echo "unknown")
 echo "=========================================="
-echo "  Universal Agent Protocol v0.10.0"
+echo "  Universal Agent Protocol v${VERSION}"
 echo "  Publishing to NPM..."
 echo "=========================================="
 echo ""
@@ -42,7 +43,7 @@ echo ""
 # Get workflow ID
 echo "🔄 Fetching workflow information..."
 WORKFLOW_ID=$(gh api "/repos/$REPO/actions/workflows" \
-  --jq '.workflows[] | select(.name == "Build, Publish & Deploy") | .id')
+  --jq '.workflows[] | select(.name == "Build, Test & Publish to NPM") | .id')
 
 if [ -z "$WORKFLOW_ID" ]; then
     echo "❌ Could not find workflow: $WORKFLOW_ID"

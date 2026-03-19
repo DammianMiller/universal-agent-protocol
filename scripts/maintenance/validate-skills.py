@@ -5,13 +5,17 @@ import os
 import sys
 from pathlib import Path
 
-SKILLS_DIR = "/home/cogtek/dev/miller-tech/universal-agent-memory/.factory/skills"
+SKILLS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    ".factory",
+    "skills",
+)
 
 required_markers = [
     "compatibility: CLAUDE.md v2.3.0+",
     "@hooks-session-start.md",
     "DECISION LOOP",
-    "MANDATORY"
+    "MANDATORY",
 ]
 
 print("=== Validating Skills for UAM v2.3.0 Compliance ===\n")
@@ -21,33 +25,33 @@ warnings = []
 
 for skill_dir in os.listdir(SKILLS_DIR):
     skill_path = os.path.join(SKILLS_DIR, skill_dir)
-    
+
     if not os.path.isdir(skill_path):
         continue
-    
+
     skill_file = os.path.join(skill_path, "SKILL.md")
-    
+
     if not os.path.exists(skill_file):
         errors.append(f"{skill_dir}/SKILL.md: File not found")
         continue
-    
-    with open(skill_file, 'r', encoding='utf-8') as f:
+
+    with open(skill_file, "r", encoding="utf-8") as f:
         content = f.read()
-    
+
     skill_name = skill_dir
-    
+
     # Check required markers
     for marker in required_markers:
         if marker not in content:
             errors.append(f"{skill_name}: Missing '{marker}'")
-    
+
     # Warn about optional but recommended markers
     optional_markers = [
         "Completion Gates Checklist",
         "Verifier-First",
-        "Memory Integration"
+        "Memory Integration",
     ]
-    
+
     for marker in optional_markers:
         if marker not in content:
             warnings.append(f"{skill_name}: Missing optional '{marker}' (recommended)")

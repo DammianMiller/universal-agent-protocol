@@ -11,6 +11,27 @@
 
 <!-- Custom Sections (preserved from existing file) -->
 
+## Pre-Edit Worktree Gate [REQUIRED]
+
+Before editing ANY file, verify you are working inside a worktree:
+
+1. Run `uap worktree ensure --strict` — must exit 0
+2. If not in a worktree, run `uap worktree create <slug>` first
+3. All file paths in edit operations must be under `.worktrees/NNN-<slug>/`
+4. Never edit files in the project root directory
+5. Version bumps must be done on the feature branch, not master
+
+This gate applies to ALL file types: .ts, .md, .json, .sh, .yaml, configs, tests, docs.
+No exceptions for "small changes", "just docs", or "version bumps".
+
+---
+
+---
+
+---
+
+---
+
 ## Pre-Edit Build Gate [REQUIRED]
 
 Before editing any `.ts` file, run `npm run build` to confirm the project compiles.
@@ -30,13 +51,63 @@ If the build fails, fix the error before making any further edits.
 
 ---
 
----
+## VERIFIER-FIRST
+
+Before implementing any change, verify the current state first:
+
+1. Run the existing test suite to establish a baseline
+2. Confirm the build compiles before making changes
+3. Check for existing patterns that solve the same problem
+4. Verify assumptions by reading source code, not guessing
+
+The verifier loop MUST run MANDATORY minimum 3 times:
+- Once before changes (baseline)
+- Once after changes (validation)
+- Once after all fixes (final confirmation)
 
 ---
 
 ---
 
-## Completion Gate [REQUIRED]
+---
+
+---
+
+## Pattern Router
+
+The pattern router automatically matches tasks to execution patterns from `.factory/patterns/index.json`.
+
+- Critical patterns P12 (Output Existence) and P35 (Decoder-First) are always enforced
+- Patterns are indexed in Qdrant for semantic search (collection: `agent_patterns`)
+- The adaptive pattern engine learns from task outcomes to improve routing
+- Per-prompt hooks inject relevant patterns into context automatically
+
+---
+
+---
+
+---
+
+---
+
+## BLOCKING PREREQUISITES
+
+Before any code change can proceed, these gates must pass in order:
+
+1. **Schema Diff Gate** — If the change touches database schemas, config schemas, or API contracts, diff the schema before and after. Breaking changes require explicit approval.
+2. **Worktree Gate** — Must be working inside a worktree (not project root)
+3. **Build Gate** — `npm run build` must pass
+4. **Test Gate** — `npm test` must pass
+
+---
+
+---
+
+---
+
+---
+
+## COMPLETION GATES - MANDATORY
 
 Claiming DONE, COMPLETE, or CLOSED is prohibited until ALL of the following pass:
 

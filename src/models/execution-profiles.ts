@@ -18,6 +18,8 @@
  *   const profile = detectExecutionProfile('qwen/qwen35-a3b-iq4xs');
  */
 
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import type { AgentExecutionConfig } from '../types/config.js';
 
 // ============================================================================
@@ -460,6 +462,42 @@ export function getExecutionConfig(
   };
 
   return { profile, config: merged };
+}
+
+/**
+ * Load agentExecution overrides from .uap.json config file.
+ * Returns undefined if no config or no agentExecution section found.
+ */
+export function loadAgentExecutionOverrides(
+  projectDir?: string
+): Partial<AgentExecutionConfig> | undefined {
+  const dir = projectDir || process.cwd();
+  const configPath = join(dir, '.uap.json');
+
+  if (!existsSync(configPath)) return undefined;
+
+  try {
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    if (config?.agentExecution && typeof config.agentExecution === 'object') {
+      return config.agentExecution as Partial<AgentExecutionConfig>;
+    }
+  } catch {
+    // Config parse failure is non-fatal
+  }
+
+  return undefined;
+}
+
+/**
+ * Get execution config with automatic config file loading.
+ * Convenience wrapper that loads .uap.json overrides automatically.
+ */
+export function getExecutionConfigWithProjectOverrides(
+  modelName: string,
+  projectDir?: string
+): { profile: ExecutionProfile; config: AgentExecutionConfig } {
+  const overrides = loadAgentExecutionOverrides(projectDir);
+  return getExecutionConfig(modelName, overrides);
 }
 
 /**

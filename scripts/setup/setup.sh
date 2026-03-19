@@ -155,36 +155,74 @@ else
     # Create hooks directory
     mkdir -p "$HOOKS_DIR"
     
-    # Pre-commit hook - ensures worktree usage and code quality
-    cat > "${HOOKS_DIR}/pre-commit" << 'EOF'
-#!/bin/bash
-#
-# UAP Pre-commit Hook
-#
-# Ensures:
-# 1. No secrets are committed
-# 2. Code passes linting
-# 3. Tests pass (if modified files include tests)
-#
+    # Pre-commit hook - enforces worktree usage and code quality
+    cat > "${HOOKS_DIR}/pre-commit" << 'HOOKEOF'
+#!/usr/bin/env bash
+# UAP Pre-Commit Hook — Enforces worktree usage and code quality
+set -euo pipefail
 
-# Check for secrets
-if grep -rE "(api_key|apikey|password|secret|token)\s*=\s*['\"][^'\"]+['\"]" --include="*.ts" --include="*.js" --include="*.json" . 2>/dev/null | grep -v node_modules | grep -v ".worktrees" | grep -v dist; then
-    echo "Error: Potential secrets detected in committed files!"
-    echo "Please use environment variables for sensitive data."
-    exit 1
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
+fail() { echo -e "${RED}[PRE-COMMIT] BLOCKED: $1${NC}"; exit 1; }
+warn() { echo -e "${YELLOW}[PRE-COMMIT] WARNING: $1${NC}"; }
+ok()   { echo -e "${GREEN}[PRE-COMMIT] $1${NC}"; }
+
+PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# Gate 1: Worktree Enforcement — NO EXCEPTIONS
+UAP_CONFIG="${PROJECT_ROOT}/.uap.json"
+WORKTREE_ENABLED="true"
+if [[ -f "$UAP_CONFIG" ]] && command -v python3 &>/dev/null; then
+  WORKTREE_ENABLED=$(python3 -c "
+import json
+try:
+    c = json.load(open('$UAP_CONFIG'))
+    print('true' if c.get('template',{}).get('sections',{}).get('worktreeWorkflow', True) else 'false')
+except: print('true')
+" 2>/dev/null || echo "true")
 fi
 
-# Run linter
-if npm run lint -- --max-warnings=0 2>/dev/null; then
-    echo "✓ Linting passed"
-else
-    echo "Error: Linting failed. Run 'npm run lint:fix' to fix automatically."
-    exit 1
+if [[ "$WORKTREE_ENABLED" == "true" ]]; then
+  CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+  GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
+  GIT_DIR=$(git rev-parse --git-dir 2>/dev/null || echo "")
+  IS_WORKTREE="false"
+  if [[ "$GIT_DIR" != "$GIT_COMMON_DIR" ]]; then IS_WORKTREE="true"; fi
+
+  if [[ "$IS_WORKTREE" == "false" && ("$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master") ]]; then
+    fail "Direct commits to '$CURRENT_BRANCH' are prohibited. No exceptions.
+  Use a worktree: uap worktree create <slug>
+  Then work in: .worktrees/<id>-<slug>/
+  Version bumps must be done on the feature branch before merging.
+  See: policies/worktree-enforcement.md"
+  fi
+  ok "Worktree check passed"
 fi
 
-echo "Pre-commit checks passed"
-exit 0
-EOF
+# Gate 2: No secrets in staged files
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || echo "")
+for file in $STAGED_FILES; do
+  case "$file" in
+    .env|.env.*|*.pem|*.key|credentials.json|*secret*|*.p12)
+      fail "Potential secret file staged: $file";;
+  esac
+done
+ok "Secret scan passed"
+
+# Gate 3: No debug code (warning only)
+TS_STAGED=$(echo "$STAGED_FILES" | grep '\.ts$' || true)
+if [[ -n "$TS_STAGED" ]]; then
+  for file in $TS_STAGED; do
+    if [[ -f "$file" ]]; then
+      MATCHES=$(git diff --cached -U0 -- "$file" 2>/dev/null | grep '^+' | grep -n 'console\.log\|debugger;' | head -3 || true)
+      if [[ -n "$MATCHES" ]]; then
+        warn "Debug code in ${file}: ${MATCHES}"
+      fi
+    fi
+  done
+fi
+
+ok "All pre-commit gates passed"
+HOOKEOF
     chmod +x "${HOOKS_DIR}/pre-commit"
     echo "  ✓ Created pre-commit hook"
 

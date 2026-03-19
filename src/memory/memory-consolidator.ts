@@ -18,6 +18,9 @@ import Database from 'better-sqlite3';
 import { summarizeMemories, compressMemoryEntry } from './context-compressor.js';
 import { getEmbeddingService } from './embeddings.js';
 import { createSemanticUnit } from './semantic-compression.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('memory-consolidator');
 
 export interface ConsolidationConfig {
   triggerThreshold: number;
@@ -86,13 +89,18 @@ export class MemoryConsolidator {
     try {
       const stmt = this.db.prepare(`
         SELECT content FROM memories
-        UNION
+        UNION ALL
         SELECT content FROM session_memories
       `);
       const rows = stmt.all() as Array<{ content: string }>;
 
       for (const row of rows) {
         this.contentHashes.add(this.hashContent(row.content));
+      }
+      // Cap contentHashes to prevent unbounded memory growth
+      if (this.contentHashes.size > 10000) {
+        const entries = [...this.contentHashes];
+        this.contentHashes = new Set(entries.slice(-10000));
       }
     } catch {
       // Tables might not exist yet
@@ -269,11 +277,14 @@ export class MemoryConsolidator {
         LIMIT 50
       `);
       const existing = stmt.all() as Array<{ content: string }>;
+      if (existing.length === 0) return false;
 
-      for (const { content: existingContent } of existing) {
-        const existingEmbedding = await embeddingService.embed(existingContent);
+      // Batch-embed all existing memories at once (fixes N+1 pattern)
+      const existingContents = existing.map((e) => e.content);
+      const existingEmbeddings = await embeddingService.embedBatch(existingContents);
+
+      for (const existingEmbedding of existingEmbeddings) {
         const similarity = embeddingService.cosineSimilarity(newEmbedding, existingEmbedding);
-
         if (similarity > this.config.similarityThreshold) {
           return true;
         }
@@ -442,13 +453,15 @@ export class MemoryConsolidator {
         // Apply quality decay
         await this.applyQualityDecay();
       } catch (error) {
-        console.error('[MemoryConsolidator] Background error:', error);
+        log.error('Background consolidation error:', error);
       }
     }, this.config.backgroundIntervalMs);
+    // Prevent blocking Node.js process exit
+    if (this.backgroundInterval && (this.backgroundInterval as NodeJS.Timeout).unref) {
+      (this.backgroundInterval as NodeJS.Timeout).unref();
+    }
 
-    console.log(
-      `[MemoryConsolidator] Background consolidation started (interval: ${this.config.backgroundIntervalMs}ms)`
-    );
+    log.info(`Background consolidation started (interval: ${this.config.backgroundIntervalMs}ms)`);
   }
 
   /**
@@ -591,16 +604,30 @@ export class MemoryConsolidator {
     return updated;
   }
 
+  private static readonly MAX_QUALITY_SCORES = 5000;
+
   /**
    * Record memory access (for quality scoring)
    */
   recordAccess(memoryId: string): void {
     const existing = this.memoryQualityScores.get(memoryId);
+    // Delete-then-set to move entry to end of Map iteration order (true LRU)
+    if (existing) this.memoryQualityScores.delete(memoryId);
     this.memoryQualityScores.set(memoryId, {
       score: (existing?.score || 5) + 0.5,
       lastAccessed: new Date(),
       accessCount: (existing?.accessCount || 0) + 1,
     });
+    // Evict oldest entries if map exceeds bounds
+    if (this.memoryQualityScores.size > MemoryConsolidator.MAX_QUALITY_SCORES) {
+      const toRemove = this.memoryQualityScores.size - MemoryConsolidator.MAX_QUALITY_SCORES;
+      let removed = 0;
+      for (const key of this.memoryQualityScores.keys()) {
+        if (removed >= toRemove) break;
+        this.memoryQualityScores.delete(key);
+        removed++;
+      }
+    }
   }
 
   /**
@@ -630,4 +657,26 @@ export function getMemoryConsolidator(config?: Partial<ConsolidationConfig>): Me
     globalConsolidator = new MemoryConsolidator(config);
   }
   return globalConsolidator;
+}
+
+/**
+ * Initialize and auto-start background consolidation if a memory DB exists.
+ * Safe to call multiple times -- will not start duplicate intervals.
+ * Call this from session-start hooks or CLI setup.
+ */
+export function autoStartConsolidation(
+  dbPath?: string,
+  config?: Partial<ConsolidationConfig>
+): boolean {
+  const path = dbPath || 'agents/data/memory/short_term.db';
+  if (!existsSync(path)) return false;
+
+  try {
+    const consolidator = getMemoryConsolidator(config);
+    consolidator.initialize(path);
+    consolidator.startBackgroundConsolidation();
+    return true;
+  } catch {
+    return false;
+  }
 }

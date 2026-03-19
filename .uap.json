@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/DammianMiller/universal-agent-memory/main/schema.json",
+  "$schema": "https://raw.githubusercontent.com/DammianMiller/universal-agent-protocol/main/schema.json",
   "version": "1.0.0",
   "project": {
     "name": "universal-agent-protocol",
@@ -17,6 +17,9 @@
       "enabled": true
     },
     "opencode": {
+      "enabled": true
+    },
+    "codex": {
       "enabled": true
     }
   },

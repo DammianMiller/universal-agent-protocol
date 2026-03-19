@@ -19,8 +19,8 @@ export class PolicyMemoryManager {
     const policy: Policy = {
       id: policyId,
       name,
-      category: (metadata.category as any) || extractedMetadata.category || 'custom',
-      level: (metadata.level as any) || extractedMetadata.level || 'RECOMMENDED',
+      category: (metadata.category ?? extractedMetadata.category ?? 'custom') as Policy['category'],
+      level: (metadata.level ?? extractedMetadata.level ?? 'RECOMMENDED') as Policy['level'],
       enforcementStage:
         metadata.enforcementStage || extractedMetadata.enforcementStage || 'pre-exec',
       rawMarkdown,

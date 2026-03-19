@@ -4,7 +4,13 @@
  * Tracks pattern outcomes per task category and returns patterns sorted
  * by historical success rate. Enables the system to learn which patterns
  * work best for different types of tasks over time.
+ *
+ * Now with SQLite persistence — outcomes survive across process restarts.
  */
+
+import Database from 'better-sqlite3';
+import { existsSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 export interface PatternOutcome {
   uses: number;
@@ -24,8 +30,28 @@ export interface PatternStats {
 }
 
 /**
+ * Ensure the pattern_outcomes table exists in the given database.
+ */
+function ensurePatternOutcomesSchema(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pattern_outcomes (
+      pattern_id TEXT NOT NULL,
+      task_category TEXT NOT NULL,
+      uses INTEGER NOT NULL DEFAULT 0,
+      successes INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (pattern_id, task_category)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pattern_outcomes_category
+      ON pattern_outcomes(task_category);
+  `);
+}
+
+/**
  * AdaptivePatternEngine learns which patterns work best for different
  * task categories by tracking success/failure outcomes.
+ *
+ * Supports optional SQLite persistence via `attachDb()`.
  */
 export class AdaptivePatternEngine {
   /**
@@ -39,6 +65,85 @@ export class AdaptivePatternEngine {
    * Populated when outcomes are recorded so getAdaptedPatterns can return content.
    */
   private patternContent: Map<string, string> = new Map();
+
+  /**
+   * Optional SQLite database for persistence.
+   */
+  private db: Database.Database | null = null;
+  private flushStmt: Database.Statement | null = null;
+
+  /**
+   * Attach a SQLite database for persistent outcome storage.
+   * Loads existing outcomes from the database into memory.
+   */
+  attachDb(dbPath: string): void {
+    const dir = dirname(dbPath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+
+    this.db = new Database(dbPath);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('synchronous = NORMAL');
+    this.db.pragma('busy_timeout = 5000');
+    ensurePatternOutcomesSchema(this.db);
+
+    // Prepare the upsert statement for flushing
+    this.flushStmt = this.db.prepare(`
+      INSERT INTO pattern_outcomes (pattern_id, task_category, uses, successes, updated_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(pattern_id, task_category) DO UPDATE SET
+        uses = excluded.uses,
+        successes = excluded.successes,
+        updated_at = excluded.updated_at
+    `);
+
+    // Load existing outcomes from DB into memory
+    this.loadFromDb();
+  }
+
+  /**
+   * Load all persisted outcomes into the in-memory maps.
+   */
+  private loadFromDb(): void {
+    if (!this.db) return;
+
+    const rows = this.db
+      .prepare('SELECT pattern_id, task_category, uses, successes FROM pattern_outcomes')
+      .all() as Array<{
+      pattern_id: string;
+      task_category: string;
+      uses: number;
+      successes: number;
+    }>;
+
+    for (const row of rows) {
+      if (!this.outcomes.has(row.pattern_id)) {
+        this.outcomes.set(row.pattern_id, new Map());
+      }
+      this.outcomes.get(row.pattern_id)!.set(row.task_category, {
+        uses: row.uses,
+        successes: row.successes,
+      });
+
+      // Set default content if not already present
+      if (!this.patternContent.has(row.pattern_id)) {
+        this.patternContent.set(row.pattern_id, row.pattern_id);
+      }
+    }
+  }
+
+  /**
+   * Flush a single outcome to the database.
+   */
+  private flushOutcome(patternId: string, taskCategory: string, outcome: PatternOutcome): void {
+    if (!this.db || !this.flushStmt) return;
+    try {
+      this.flushStmt.run(patternId, taskCategory, outcome.uses, outcome.successes);
+    } catch {
+      // Non-fatal: DB write failure doesn't break in-memory operation
+    }
+  }
 
   /**
    * Record the outcome of applying a pattern to a task.
@@ -67,6 +172,9 @@ export class AdaptivePatternEngine {
     if (!this.patternContent.has(patternId)) {
       this.patternContent.set(patternId, patternId);
     }
+
+    // Persist to SQLite immediately
+    this.flushOutcome(patternId, taskCategory, outcome);
   }
 
   /**
@@ -128,14 +236,41 @@ export class AdaptivePatternEngine {
 
     return stats;
   }
+
+  /**
+   * Close the database connection if attached.
+   */
+  close(): void {
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+      this.flushStmt = null;
+    }
+  }
 }
 
 // Singleton
 let instance: AdaptivePatternEngine | null = null;
 
-export function getAdaptivePatternEngine(): AdaptivePatternEngine {
+export function getAdaptivePatternEngine(dbPath?: string): AdaptivePatternEngine {
   if (!instance) {
     instance = new AdaptivePatternEngine();
+    // Default to the coordination DB path if none provided
+    const resolvedPath = dbPath || './agents/data/coordination/coordination.db';
+    instance.attachDb(resolvedPath);
+  } else if (dbPath && !instance['db']) {
+    // If instance exists but has no DB attached, attach now
+    instance.attachDb(dbPath);
   }
   return instance;
+}
+
+/**
+ * Reset the singleton (for testing).
+ */
+export function resetAdaptivePatternEngine(): void {
+  if (instance) {
+    instance.close();
+    instance = null;
+  }
 }

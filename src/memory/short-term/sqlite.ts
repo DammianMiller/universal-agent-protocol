@@ -3,12 +3,40 @@ import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { ensureShortTermSchema } from './schema.js';
 import { getSpeculativeCache } from '../speculative-cache.js';
-import type { ShortTermMemoryBackend } from './factory.js';
+/** Backend interface (previously in factory.ts, inlined after dead code removal) */
+export type ShortTermMemoryType =
+  | 'action'
+  | 'observation'
+  | 'thought'
+  | 'goal'
+  | 'lesson'
+  | 'decision';
+
+export interface ShortTermMemoryBackend {
+  store(type: ShortTermMemoryType, content: string, importance?: number): Promise<void>;
+  storeBatch?(
+    entries: Array<{
+      type: ShortTermMemoryType;
+      content: string;
+      timestamp?: string;
+      importance?: number;
+    }>
+  ): Promise<void>;
+  getRecent(
+    limit?: number
+  ): Promise<Array<{ timestamp: string; type: string; content: string; importance?: number }>>;
+  query(
+    searchTerm: string,
+    limit?: number
+  ): Promise<Array<{ timestamp: string; type: string; content: string; importance?: number }>>;
+  clear(): Promise<void>;
+  close?(): Promise<void>;
+}
 
 interface ShortTermMemory {
   id?: number;
   timestamp: string;
-  type: 'action' | 'observation' | 'thought' | 'goal';
+  type: ShortTermMemoryType;
   content: string;
   projectId?: string;
   importance?: number;
@@ -49,18 +77,10 @@ export class SQLiteShortTermMemory implements ShortTermMemoryBackend {
       INSERT INTO memories (timestamp, type, content, project_id, importance)
       VALUES (?, ?, ?, ?, ?)
     `);
-    const result = stmt.run(timestamp, type, content, this.projectId, importance);
+    stmt.run(timestamp, type, content, this.projectId, importance);
 
-    // Update FTS5 index
-    try {
-      const ftsStmt = this.db.prepare(`
-        INSERT INTO memories_fts(rowid, content, type)
-        VALUES (?, ?, ?)
-      `);
-      ftsStmt.run(result.lastInsertRowid, content, type);
-    } catch {
-      // FTS5 not available, ignore
-    }
+    // FTS5 index is automatically updated via AFTER INSERT trigger in schema.ts
+    // (no manual insert needed — the trigger handles synchronization)
 
     // Auto-prune if exceeds maxEntries
     await this.prune();

@@ -38,7 +38,7 @@ if [[ "$MODE" == "--full" ]]; then
   fi
 
   # Step 2: Lint check (if available)
-  if command -v npx &>/dev/null && [[ -f ".eslintrc.json" || -f "eslint.config.js" || -f "eslint.config.mjs" ]]; then
+  if command -v npx &>/dev/null && [[ -f ".eslintrc.json" || -f ".eslintrc.cjs" || -f ".eslintrc.js" || -f "eslint.config.js" || -f "eslint.config.mjs" ]]; then
     if npx eslint src/ --quiet 2>&1; then
       log_ok "Lint check passed"
     else

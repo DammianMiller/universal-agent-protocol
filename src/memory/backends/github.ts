@@ -71,6 +71,8 @@ export class GitHubMemoryBackend implements MemoryBackend {
 
   async getRecent(limit = 50): Promise<MemoryEntry[]> {
     try {
+      // Use directory listing to get file names, then fetch contents in parallel
+      // (replaces sequential N+1 API calls with concurrent batch)
       const { data: files } = await this.octokit.repos.getContent({
         owner: this.owner,
         repo: this.repo,
@@ -81,25 +83,37 @@ export class GitHubMemoryBackend implements MemoryBackend {
       if (!Array.isArray(files)) return [];
 
       const sortedFiles = files
-        .filter((f) => f.type === 'file' && f.name.endsWith('.json'))
-        .sort((a, b) => b.name.localeCompare(a.name))
+        .filter(
+          (f: { type: string; name: string }) => f.type === 'file' && f.name.endsWith('.json')
+        )
+        .sort((a: { name: string }, b: { name: string }) => b.name.localeCompare(a.name))
         .slice(0, limit);
 
-      const memories: MemoryEntry[] = [];
-      for (const file of sortedFiles) {
-        const { data } = await this.octokit.repos.getContent({
-          owner: this.owner,
-          repo: this.repo,
-          path: file.path,
-          ref: this.branch,
-        });
+      // Fetch all file contents in parallel instead of sequentially
+      const results = await Promise.all(
+        sortedFiles.map(async (file: { path: string }) => {
+          try {
+            const { data } = await this.octokit.repos.getContent({
+              owner: this.owner,
+              repo: this.repo,
+              path: file.path,
+              ref: this.branch,
+            });
+            if ('content' in data) {
+              const content = Buffer.from(
+                (data as { content: string }).content,
+                'base64'
+              ).toString();
+              return JSON.parse(content) as MemoryEntry;
+            }
+          } catch {
+            // Skip individual file failures
+          }
+          return null;
+        })
+      );
 
-        if ('content' in data) {
-          const content = Buffer.from(data.content, 'base64').toString();
-          memories.push(JSON.parse(content));
-        }
-      }
-      return memories;
+      return results.filter((m): m is MemoryEntry => m !== null);
     } catch {
       return [];
     }
