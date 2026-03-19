@@ -120,3 +120,4 @@ benchmarks/harbor-datasets-link/
 agents/data/memory/long_term_prepopulated.json
 .codex-root-backup-tmp/
 .codex/hooks-root-backup-tmp/
+dist
