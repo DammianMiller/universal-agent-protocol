@@ -6,9 +6,40 @@
         "command": ".cursor/hooks/session-start.sh"
       }
     ],
+    "preToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": ".cursor/hooks/pre-tool-use-edit-write.sh"
+      },
+      {
+        "matcher": "Bash",
+        "command": ".cursor/hooks/pre-tool-use-bash.sh"
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": ".cursor/hooks/post-tool-use-edit-write.sh"
+      }
+    ],
     "preCompact": [
       {
         "command": ".cursor/hooks/pre-compact.sh"
+      }
+    ],
+    "postCompact": [
+      {
+        "command": ".cursor/hooks/post-compact.sh"
+      }
+    ],
+    "stop": [
+      {
+        "command": ".cursor/hooks/stop.sh"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": ".cursor/hooks/session-end.sh"
       }
     ]
   }

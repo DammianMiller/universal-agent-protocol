@@ -72,4 +72,46 @@ describe('Session Hooks', () => {
       expect(content).not.toContain('conversation');
     });
   });
+
+  describe('enforcement hooks exist as templates', () => {
+    const enforcementHooks = [
+      'pre-tool-use-edit-write.sh',
+      'pre-tool-use-bash.sh',
+      'post-tool-use-edit-write.sh',
+      'post-compact.sh',
+      'stop.sh',
+      'session-end.sh',
+    ];
+
+    for (const hook of enforcementHooks) {
+      it(`${hook} template exists with correct structure`, () => {
+        const hookPath = join(rootDir, 'templates/hooks', hook);
+        expect(existsSync(hookPath)).toBe(true);
+
+        const content = readFileSync(hookPath, 'utf-8');
+        expect(content).toContain('#!/usr/bin/env bash');
+        expect(content).toContain('set -euo pipefail');
+      });
+    }
+  });
+
+  describe('settings.json has all hooks wired', () => {
+    it('settings.json contains all required hook events', () => {
+      const settings = JSON.parse(
+        readFileSync(join(rootDir, '.claude/settings.json'), 'utf-8'),
+      );
+      const requiredEvents = [
+        'SessionStart',
+        'PreToolUse',
+        'PostToolUse',
+        'PreCompact',
+        'PostCompact',
+        'Stop',
+        'SessionEnd',
+      ];
+      for (const event of requiredEvents) {
+        expect(settings.hooks[event]).toBeDefined();
+      }
+    });
+  });
 });
