@@ -105,6 +105,78 @@ export interface PerformanceData {
   hotPaths: Array<{ name: string; avgMs: number; p95Ms: number; count: number }>;
 }
 
+// ── Enhanced dashboard types (merged from feature/007-dashboard-live-stream) ──
+
+export interface AgentDetail {
+  id: string;
+  name: string;
+  type: 'droid' | 'subagent' | 'main';
+  status: string;
+  task: string;
+  tokensUsed: number;
+  durationMs: number;
+}
+
+export interface SkillDetail {
+  name: string;
+  source: string;
+  active: boolean;
+  reason: string;
+}
+
+export interface PatternDetail {
+  id: string;
+  name: string;
+  weight: number;
+  active: boolean;
+  category: string;
+}
+
+export interface DeployDetail {
+  id: string;
+  type: string;
+  target: string;
+  status: string;
+  message: string;
+  batchId: string | null;
+  queuedAt: number;
+  executedAt: number | null;
+}
+
+export interface DeployBatchSummary {
+  totalActions: number;
+  queued: number;
+  batched: number;
+  executing: number;
+  done: number;
+  failed: number;
+  batchCount: number;
+  savedOps: number;
+}
+
+export interface SessionTelemetryData {
+  sessionId: string;
+  uptime: string;
+  tokensUsed: number;
+  tokensSaved: number;
+  toolCalls: number;
+  policyChecks: number;
+  policyBlocks: number;
+  filesBackedUp: number;
+  errors: number;
+  totalCostUsd: number;
+  estimatedCostWithoutUap: number;
+  costSavingsPercent: number;
+  agents: AgentDetail[];
+  skills: SkillDetail[];
+  patterns: PatternDetail[];
+  deploys: DeployDetail[];
+  deployBatchSummary: DeployBatchSummary;
+  stepsCompleted: number;
+  stepsTotal: number;
+  currentStep: string;
+}
+
 export interface DashboardData {
   timestamp: string;
   system: SystemData;
@@ -115,6 +187,7 @@ export interface DashboardData {
   tasks: TaskData;
   coordination: CoordData;
   performance: PerformanceData;
+  session?: SessionTelemetryData;
 }
 
 // ── Data Gathering ──
