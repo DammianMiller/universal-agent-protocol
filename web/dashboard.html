@@ -332,6 +332,31 @@
         color: var(--fg3);
         font-size: 11px;
       }
+      /* ── Kanban Board ── */
+      .kanban { display:flex; gap:12px; overflow-x:auto; padding-bottom:8px; min-height:200px; }
+      .kanban-col { flex:1; min-width:180px; max-width:280px; display:flex; flex-direction:column; gap:8px; }
+      .kanban-col-header { display:flex; align-items:center; gap:6px; padding:6px 8px; border-radius:6px; font-size:12px; font-weight:600; background:var(--bg3); }
+      .kanban-col-header .col-count { margin-left:auto; font-weight:400; color:var(--fg3); font-size:11px; }
+      .kanban-col-header.open { border-left:3px solid var(--fg2); }
+      .kanban-col-header.in_progress { border-left:3px solid var(--cyan); color:var(--cyan); }
+      .kanban-col-header.blocked { border-left:3px solid var(--red); color:var(--red); }
+      .kanban-col-header.done { border-left:3px solid var(--green); color:var(--green); }
+      .kanban-col-header.wont_do { border-left:3px solid var(--fg3); color:var(--fg3); }
+      .kanban-cards { display:flex; flex-direction:column; gap:6px; flex:1; min-height:40px; }
+      .kanban-card { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px 10px; cursor:default; transition:transform 0.2s ease,opacity 0.3s ease,box-shadow 0.2s ease; animation:card-enter 0.35s ease-out; }
+      .kanban-card:hover { border-color:var(--cyan); box-shadow:0 0 8px rgba(88,166,255,0.15); transform:translateY(-1px); }
+      .kanban-card.card-exit { animation:card-exit 0.3s ease-in forwards; }
+      .kanban-card .card-id { font-size:10px; color:var(--cyan); font-weight:600; }
+      .kanban-card .card-title { font-size:12px; color:var(--fg); margin:3px 0; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+      .kanban-card .card-meta { display:flex; align-items:center; gap:6px; font-size:10px; color:var(--fg3); }
+      .kanban-card .card-priority { padding:0 4px; border-radius:3px; font-weight:600; font-size:10px; }
+      .card-priority.p0 { background:rgba(248,81,73,0.2); color:var(--red); }
+      .card-priority.p1 { background:rgba(210,153,34,0.2); color:var(--yellow); }
+      .card-priority.p2 { background:rgba(88,166,255,0.15); color:var(--cyan); }
+      .card-priority.p3,.card-priority.p4 { background:rgba(72,79,88,0.2); color:var(--fg3); }
+      .kanban-empty { color:var(--fg3); font-size:11px; font-style:italic; text-align:center; padding:16px 4px; border:1px dashed var(--border); border-radius:6px; }
+      @keyframes card-enter { 0%{opacity:0;transform:translateY(-12px) scale(0.95)} 100%{opacity:1;transform:translateY(0) scale(1)} }
+      @keyframes card-exit { 0%{opacity:1;transform:translateX(0) scale(1)} 100%{opacity:0;transform:translateX(30px) scale(0.9)} }
       /* Toast notifications */
       .toast-container {
         position: fixed;
@@ -488,7 +513,7 @@
             </div>
           </div>
           <h3>Tasks</h3>
-          <div id="task-panel">
+          <div id="task-summary">
             <div class="kv">
               <span class="label">Total</span><span class="value" id="task-total">0</span>
             </div>
@@ -496,14 +521,7 @@
               <span class="label">Done</span><span class="value green" id="task-done">0</span>
             </div>
             <div class="kv">
-              <span class="label">In Progress</span
-              ><span class="value cyan" id="task-progress">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Blocked</span><span class="value red" id="task-blocked">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Open</span><span class="value" id="task-open">0</span>
+              <span class="label">Active</span><span class="value cyan" id="task-progress">0</span>
             </div>
           </div>
           <h3>Coordination</h3>
@@ -519,6 +537,18 @@
               <span class="label">Pending Deploys</span
               ><span class="value" id="coord-deploys">0</span>
             </div>
+          </div>
+        </div>
+
+        <!-- Kanban Board -->
+        <div class="panel full-width" id="kanban-panel">
+          <h2>Task Board</h2>
+          <div class="kanban" id="kanban-board">
+            <div class="kanban-col" data-status="open"><div class="kanban-col-header open"><span>Open</span><span class="col-count" id="kb-open-count">0</span></div><div class="kanban-cards" id="kb-open"></div></div>
+            <div class="kanban-col" data-status="in_progress"><div class="kanban-col-header in_progress"><span>In Progress</span><span class="col-count" id="kb-progress-count">0</span></div><div class="kanban-cards" id="kb-progress"></div></div>
+            <div class="kanban-col" data-status="blocked"><div class="kanban-col-header blocked"><span>Blocked</span><span class="col-count" id="kb-blocked-count">0</span></div><div class="kanban-cards" id="kb-blocked"></div></div>
+            <div class="kanban-col" data-status="done"><div class="kanban-col-header done"><span>Done</span><span class="col-count" id="kb-done-count">0</span></div><div class="kanban-cards" id="kb-done"></div></div>
+            <div class="kanban-col" data-status="wont_do"><div class="kanban-col-header wont_do"><span>Won't Do</span><span class="col-count" id="kb-wontdo-count">0</span></div><div class="kanban-cards" id="kb-wontdo"></div></div>
           </div>
         </div>
 
@@ -782,12 +812,13 @@
           dirtyEl.className = 'value ' + (dirty > 0 ? 'yellow' : 'green');
         }
 
-        // Tasks
+        // Tasks summary
         setText('task-total', tasks.total || 0);
         setText('task-done', tasks.done || 0);
         setText('task-progress', tasks.inProgress || 0);
-        setText('task-blocked', tasks.blocked || 0);
-        setText('task-open', tasks.open || 0);
+
+        // Kanban board
+        renderKanban(tasks);
 
         // Coordination
         setText('coord-agents', coord.activeAgents || 0);
@@ -1078,6 +1109,56 @@
         } catch (err) {
           console.error('Set level failed:', err);
           showToast('Failed to set level', 'error');
+        }
+      }
+
+      // ── Kanban Board Renderer ──
+      const TYPE_ICONS = { task: '\u25C6', bug: '\uD83D\uDC1B', feature: '\u2728', epic: '\uD83C\uDFAF', chore: '\uD83D\uDD27', story: '\uD83D\uDCD6' };
+      const PRIO_LABELS = ['P0', 'P1', 'P2', 'P3', 'P4'];
+      let prevCardMap = new Map();
+
+      function renderKanban(tasks) {
+        const items = tasks.items || [];
+        const columns = { open: [], in_progress: [], blocked: [], done: [], wont_do: [] };
+        const newCardMap = new Map();
+        for (const item of items) { const col = columns[item.status]; if (col) col.push(item); newCardMap.set(item.id, item.status); }
+        setText('kb-open-count', columns.open.length);
+        setText('kb-progress-count', columns.in_progress.length);
+        setText('kb-blocked-count', columns.blocked.length);
+        setText('kb-done-count', columns.done.length);
+        setText('kb-wontdo-count', columns.wont_do.length);
+        renderColumn('kb-open', columns.open, newCardMap);
+        renderColumn('kb-progress', columns.in_progress, newCardMap);
+        renderColumn('kb-blocked', columns.blocked, newCardMap);
+        renderColumn('kb-done', columns.done, newCardMap);
+        renderColumn('kb-wontdo', columns.wont_do, newCardMap);
+        const panel = document.getElementById('kanban-panel');
+        if (panel) panel.style.display = items.length > 0 ? '' : 'none';
+        prevCardMap = newCardMap;
+      }
+
+      function renderColumn(containerId, items, newCardMap) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        if (items.length === 0) { container.innerHTML = '<div class="kanban-empty">No tasks</div>'; return; }
+        const newIds = new Set(items.map(i => i.id));
+        container.querySelectorAll('.kanban-card').forEach(el => {
+          if (!newIds.has(el.dataset.id)) { el.classList.add('card-exit'); el.addEventListener('animationend', () => el.remove(), { once: true }); }
+        });
+        for (const item of items) {
+          let card = container.querySelector('.kanban-card[data-id="' + item.id + '"]');
+          const isNew = !card;
+          const movedHere = prevCardMap.has(item.id) && prevCardMap.get(item.id) !== item.status;
+          if (isNew) {
+            card = document.createElement('div'); card.className = 'kanban-card'; card.dataset.id = item.id;
+            if (movedHere) { card.style.animation = 'none'; requestAnimationFrame(() => { card.style.animation = ''; }); }
+            container.appendChild(card);
+          } else { card.style.animation = 'none'; }
+          const typeIcon = TYPE_ICONS[item.type] || '\u25C6';
+          const prioLabel = PRIO_LABELS[item.priority] || 'P2';
+          const prioClass = 'p' + (item.priority != null ? item.priority : 2);
+          const assignee = item.assignee ? ' \u00B7 ' + esc(item.assignee) : '';
+          card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center"><span class="card-id">' + esc(item.id) + '</span><span class="card-type">' + typeIcon + '</span></div><div class="card-title">' + esc(item.title || 'Untitled') + '</div><div class="card-meta"><span class="card-priority ' + prioClass + '">' + prioLabel + '</span><span>' + esc(item.type) + assignee + '</span></div>';
         }
       }
 

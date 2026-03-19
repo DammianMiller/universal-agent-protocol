@@ -665,6 +665,13 @@ program
       })
   )
   .addCommand(
+    new Command('board')
+      .description('Show tasks as a kanban board')
+      .action(async (options) => {
+        (await lazy.task())('board', options);
+      })
+  )
+  .addCommand(
     new Command('sync')
       .description('Sync tasks with JSONL file (for git versioning)')
       .action(async (options) => {
