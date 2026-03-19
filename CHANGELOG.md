@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.13.3 (2026-03-20)
+
+- fix: add 'workflow' to policy category enum
+
+
 ## v1.13.1 (2026-03-20)
 
 - fix: correct Claude Code hooks schema to use matcher+hooks array format (#62)
