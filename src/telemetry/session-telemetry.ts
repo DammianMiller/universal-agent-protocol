@@ -206,10 +206,59 @@ function formatTokens(n: number): string {
   return `${(n / 1000000).toFixed(2)}M`;
 }
 
+/**
+ * Render a single line inside a box, padded to exact width.
+ * Strips ANSI codes and accounts for wide Unicode characters (emoji, CJK)
+ * to ensure the right border aligns correctly in terminals.
+ */
 function boxLine(content: string, width: number = 60): string {
-  const stripped = content.replace(/\x1b\[[0-9;]*m/g, '');
-  const pad = Math.max(0, width - stripped.length - 2);
+  const stripped = stripAnsiCodes(content);
+  const visualWidth = getVisualWidth(stripped);
+  const pad = Math.max(0, width - visualWidth - 2);
   return `${BOX.v} ${content}${' '.repeat(pad)}${BOX.v}`;
+}
+
+/** Strip all ANSI escape codes (SGR, 256-color, true-color). */
+function stripAnsiCodes(str: string): string {
+  // Handles: \x1b[...m (SGR), \x1b[38;2;R;G;Bm (true-color), \x1b[38;5;Nm (256-color)
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/**
+ * Calculate the visual width of a string in terminal columns.
+ * Wide characters (emoji, CJK) occupy 2 columns; most others occupy 1.
+ */
+function getVisualWidth(str: string): number {
+  let width = 0;
+  for (const char of str) {
+    const code = char.codePointAt(0) || 0;
+    // Common wide character ranges:
+    // - CJK Unified Ideographs: U+4E00-U+9FFF
+    // - CJK Compatibility Ideographs: U+F900-U+FAFF
+    // - Fullwidth Forms: U+FF01-U+FF60, U+FFE0-U+FFE6
+    // - Emoji (most): U+1F300-U+1FAFF
+    // - Miscellaneous Symbols: U+2600-U+27BF (some are wide)
+    if (
+      (code >= 0x1100 && code <= 0x115f) || // Hangul Jamo
+      (code >= 0x2e80 && code <= 0x303e) || // CJK Radicals
+      (code >= 0x3040 && code <= 0x33bf) || // Japanese
+      (code >= 0x4e00 && code <= 0x9fff) || // CJK Unified
+      (code >= 0xac00 && code <= 0xd7a3) || // Hangul Syllables
+      (code >= 0xf900 && code <= 0xfaff) || // CJK Compatibility
+      (code >= 0xfe30 && code <= 0xfe6f) || // CJK Compatibility Forms
+      (code >= 0xff01 && code <= 0xff60) || // Fullwidth Forms
+      (code >= 0xffe0 && code <= 0xffe6) || // Fullwidth Signs
+      (code >= 0x1f300 && code <= 0x1faff) || // Emoji
+      (code >= 0x1f900 && code <= 0x1f9ff) || // Supplemental Emoji
+      (code >= 0x20000 && code <= 0x2ffff) // CJK Extension B+
+    ) {
+      width += 2;
+    } else {
+      width += 1;
+    }
+  }
+  return width;
 }
 
 function statusIcon(status: AgentStatus | string): string {
@@ -879,10 +928,11 @@ export function sessionSummary(): void {
   const doneTasks = [...s.tasks.values()].filter((t) => t.status === 'done').length;
   const totalTasks = s.tasks.size;
 
+  const sessionShort = s.sessionId.length > 20 ? s.sessionId.slice(0, 20) + '…' : s.sessionId;
   console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
   console.log(
     boxLine(
-      `${BOLD}${WHITE}${BG_GREEN} UAP SESSION SUMMARY ${RESET}  ${DIM}Session ${s.sessionId}${RESET}`,
+      `${BOLD}${WHITE}${BG_GREEN} UAP SESSION SUMMARY ${RESET}  ${DIM}${sessionShort}${RESET}`,
       w
     )
   );
@@ -1204,7 +1254,9 @@ const DASHBOARD_CONFIG = {
 function generateDashboardHash(s: SessionStats): string {
   const activeAgents = [...s.agents.values()].filter((a) => a.status === 'working').length;
   const activeTasks = [...s.tasks.values()].filter((t) => t.status === 'in_progress').length;
-  return `${s.sessionId}-${activeAgents}-${activeTasks}-${Date.now() % 1000}`;
+  const doneTasks = [...s.tasks.values()].filter((t) => t.status === 'done').length;
+  // Hash based on actual state, not time — enables adaptive polling to detect idle
+  return `${s.sessionId}-${activeAgents}-${activeTasks}-${doneTasks}-${s.tokensUsed}-${s.errors}`;
 }
 
 function shouldUpdateDashboard(s: SessionStats): boolean {
@@ -1291,10 +1343,12 @@ export function startDashboard(intervalMs: number = 2000, showWorkGraph: boolean
 function renderDashboard(s: SessionStats, currentInterval: number): void {
   const w = 80;
   const line = BOX.h.repeat(w);
+  const sessionShort = s.sessionId.length > 12 ? s.sessionId.slice(0, 12) + '…' : s.sessionId;
+  const intervalSuffix = currentInterval > DASHBOARD_CONFIG.BASE_INTERVAL ? ` ${DIM}(${currentInterval}ms)${RESET}` : '';
   console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
   console.log(
     boxLine(
-      `${BOLD}${WHITE}${BG_CYAN} UAP LIVE DASHBOARD ${RESET}  ${DIM}Session ${s.sessionId}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}${currentInterval > DASHBOARD_CONFIG.BASE_INTERVAL ? ` (${currentInterval}ms)` : ''}`,
+      `${BOLD}${WHITE}${BG_CYAN} UAP LIVE DASHBOARD ${RESET}  ${DIM}${sessionShort}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}${intervalSuffix}`,
       w
     )
   );
@@ -1390,10 +1444,11 @@ export function showDashboardSnapshot(showWorkGraph: boolean = false): void {
   const s = getStats();
   const w = 80;
   const line = BOX.h.repeat(w);
+  const sessionShort = s.sessionId.length > 16 ? s.sessionId.slice(0, 16) + '…' : s.sessionId;
   console.log(`\n${CYAN}${BOX.tl}${line}${BOX.tr}${RESET}`);
   console.log(
     boxLine(
-      `${BOLD}${WHITE}${BG_CYAN} UAP DASHBOARD ${RESET}  ${DIM}Session ${s.sessionId}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}`,
+      `${BOLD}${WHITE}${BG_CYAN} UAP DASHBOARD ${RESET}  ${DIM}${sessionShort}${RESET}  ${DIM}${new Date().toLocaleTimeString()}${RESET}`,
       w
     )
   );

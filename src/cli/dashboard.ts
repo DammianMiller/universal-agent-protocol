@@ -1966,7 +1966,10 @@ export function compactSessionSummary(): void {
 
   // Render compact box
   const W = 58;
-  // W used for box width below
+
+  // Calculate header content width accurately (without ANSI codes)
+  const headerText = ` UAP v${version} on ${gitBranch}${gitDirty > 0 ? ' *' : ''}`;
+  const headerPad = Math.max(0, W - headerText.length);
 
   console.log('');
   console.log(chalk.cyan(`  \u256D${'─'.repeat(W)}\u256E`));
@@ -1974,7 +1977,7 @@ export function compactSessionSummary(): void {
     chalk.cyan(`  │`) +
       chalk.bold.white(` UAP v${version}`) +
       chalk.dim(` on ${gitBranch}${gitDirty > 0 ? ' *' : ''}`) +
-      ' '.repeat(Math.max(0, W - 12 - version.length - gitBranch.length - (gitDirty > 0 ? 2 : 0))) +
+      ' '.repeat(headerPad) +
       chalk.cyan(`│`)
   );
   console.log(chalk.cyan(`  ├${'─'.repeat(W)}┤`));
