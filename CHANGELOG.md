@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.7.0 (2026-03-19)
+
+- fix: align validation-fixes test with actual CLAUDE.md sections
+- fix: align tests with actual CLAUDE.md content on master
+- fix: adjust factory hooks test to match existing settings.local.json structure
+- fix: make reinforcement.db test self-initializing (was relying on pre-existing schema)
+- feat: 4-pass optimization sweep — wire dead code, close feedback loops, remove 3400 lines
+
+
 ## v1.6.2 (2026-03-19)
 
 - fix: implement validated optimization plan - correctness, performance, and resource leak fixes
