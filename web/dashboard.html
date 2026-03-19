@@ -25,457 +25,169 @@
         --border: #30363d;
         --radius: 8px;
       }
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
       body {
         font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-        background: var(--bg);
-        color: var(--fg);
-        font-size: 13px;
-        line-height: 1.5;
+        background: var(--bg); color: var(--fg); font-size: 13px; line-height: 1.5;
       }
-      .container {
-        max-width: 1400px;
-        margin: 0 auto;
-        padding: 16px;
-      }
+      .container { max-width: 1400px; margin: 0 auto; padding: 16px; }
       header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 12px 0;
-        border-bottom: 1px solid var(--border);
-        margin-bottom: 16px;
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 12px 0; border-bottom: 1px solid var(--border); margin-bottom: 16px;
       }
-      header h1 {
-        font-size: 18px;
-        color: var(--cyan);
-        font-weight: 600;
-      }
-      .header-right {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }
-      .header-ts {
-        color: var(--fg3);
-        font-size: 11px;
-      }
+      header h1 { font-size: 18px; color: var(--cyan); font-weight: 600; }
+      .header-right { display: flex; align-items: center; gap: 12px; }
+      .header-ts { color: var(--fg3); font-size: 11px; }
       .status-dot {
-        display: inline-block;
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        margin-right: 6px;
+        display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px;
       }
-      .status-dot.connected {
-        background: var(--green);
-        box-shadow: 0 0 4px var(--green);
-      }
-      .status-dot.disconnected {
-        background: var(--red);
-      }
-      .status-dot.polling {
-        background: var(--yellow);
-      }
+      .status-dot.connected { background: var(--green); box-shadow: 0 0 4px var(--green); }
+      .status-dot.disconnected { background: var(--red); }
+      .status-dot.polling { background: var(--yellow); }
       .grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-        gap: 16px;
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px;
       }
       .panel {
-        background: var(--bg2);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        padding: 16px;
-        overflow: hidden;
+        background: var(--bg2); border: 1px solid var(--border);
+        border-radius: var(--radius); padding: 16px; overflow: hidden;
       }
       .panel h2 {
-        font-size: 14px;
-        color: var(--cyan);
-        margin-bottom: 12px;
-        font-weight: 600;
-        border-bottom: 1px solid var(--border);
-        padding-bottom: 8px;
+        font-size: 14px; color: var(--cyan); margin-bottom: 12px; font-weight: 600;
+        border-bottom: 1px solid var(--border); padding-bottom: 8px;
       }
       .panel h3 {
-        font-size: 12px;
-        color: var(--fg2);
-        margin: 12px 0 6px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
+        font-size: 12px; color: var(--fg2); margin: 12px 0 6px;
+        text-transform: uppercase; letter-spacing: 0.5px;
       }
-      .kv {
-        display: flex;
-        justify-content: space-between;
-        padding: 3px 0;
-      }
-      .kv .label {
-        color: var(--fg2);
-      }
-      .kv .value {
-        color: var(--fg);
-        font-weight: 500;
-      }
-      .kv .value.green {
-        color: var(--green);
-      }
-      .kv .value.yellow {
-        color: var(--yellow);
-      }
-      .kv .value.red {
-        color: var(--red);
-      }
-      .kv .value.cyan {
-        color: var(--cyan);
-      }
-      .kv .value.purple {
-        color: var(--purple);
-      }
-      .kv .value.orange {
-        color: var(--orange);
-      }
-      .table-wrap {
-        overflow-x: auto;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 12px;
-      }
+      .kv { display: flex; justify-content: space-between; padding: 3px 0; }
+      .kv .label { color: var(--fg2); }
+      .kv .value { color: var(--fg); font-weight: 500; }
+      .kv .value.green { color: var(--green); }
+      .kv .value.yellow { color: var(--yellow); }
+      .kv .value.red { color: var(--red); }
+      .kv .value.cyan { color: var(--cyan); }
+      .kv .value.purple { color: var(--purple); }
+      .kv .value.orange { color: var(--orange); }
+      .table-wrap { overflow-x: auto; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
       th {
-        text-align: left;
-        color: var(--fg2);
-        font-weight: 500;
-        padding: 4px 8px;
-        border-bottom: 1px solid var(--border);
-        white-space: nowrap;
+        text-align: left; color: var(--fg2); font-weight: 500;
+        padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
       }
-      td {
-        padding: 4px 8px;
-        border-bottom: 1px solid var(--bg3);
-      }
+      td { padding: 4px 8px; border-bottom: 1px solid var(--bg3); }
       .badge {
-        display: inline-block;
-        padding: 1px 6px;
-        border-radius: 3px;
-        font-size: 11px;
-        font-weight: 600;
+        display: inline-block; padding: 1px 6px; border-radius: 3px;
+        font-size: 11px; font-weight: 600;
       }
-      .badge.required {
-        background: rgba(248, 81, 73, 0.15);
-        color: var(--red);
-      }
-      .badge.recommended {
-        background: rgba(210, 153, 34, 0.15);
-        color: var(--yellow);
-      }
-      .badge.optional {
-        background: rgba(72, 79, 88, 0.15);
-        color: var(--fg3);
-      }
-      .badge.on {
-        background: rgba(63, 185, 80, 0.15);
-        color: var(--green);
-      }
-      .badge.off {
-        background: rgba(248, 81, 73, 0.15);
-        color: var(--red);
-      }
-      .badge.active {
-        background: rgba(88, 166, 255, 0.15);
-        color: var(--cyan);
-      }
-      .badge.idle {
-        background: rgba(72, 79, 88, 0.15);
-        color: var(--fg3);
-      }
-      .badge.droid {
-        background: rgba(188, 140, 255, 0.15);
-        color: var(--purple);
-      }
-      .badge.subagent {
-        background: rgba(209, 134, 22, 0.15);
-        color: var(--orange);
-      }
-      .badge.main {
-        background: rgba(88, 166, 255, 0.15);
-        color: var(--cyan);
-      }
-      .bar-container {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin: 3px 0;
-      }
-      .bar-label {
-        width: 80px;
-        color: var(--fg2);
-        font-size: 12px;
-      }
+      .badge.required { background: rgba(248,81,73,0.15); color: var(--red); }
+      .badge.recommended { background: rgba(210,153,34,0.15); color: var(--yellow); }
+      .badge.optional { background: rgba(72,79,88,0.15); color: var(--fg3); }
+      .badge.on { background: rgba(63,185,80,0.15); color: var(--green); }
+      .badge.off { background: rgba(248,81,73,0.15); color: var(--red); }
+      .badge.active { background: rgba(88,166,255,0.15); color: var(--cyan); }
+      .badge.idle { background: rgba(72,79,88,0.15); color: var(--fg3); }
+      .badge.droid { background: rgba(188,140,255,0.15); color: var(--purple); }
+      .badge.subagent { background: rgba(209,134,22,0.15); color: var(--orange); }
+      .badge.main { background: rgba(88,166,255,0.15); color: var(--cyan); }
+      .bar-container { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+      .bar-label { width: 80px; color: var(--fg2); font-size: 12px; }
       .bar {
-        height: 14px;
-        border-radius: 3px;
-        min-width: 2px;
-        transition: width 0.3s;
+        height: 14px; border-radius: 3px; min-width: 2px; transition: width 0.3s;
       }
-      .bar.cyan {
-        background: var(--cyan);
-      }
-      .bar.green {
-        background: var(--green);
-      }
-      .bar.yellow {
-        background: var(--yellow);
-      }
-      .bar.red {
-        background: var(--red);
-      }
-      .bar.purple {
-        background: var(--purple);
-      }
-      .bar-value {
-        color: var(--fg2);
-        font-size: 11px;
-        min-width: 20px;
-      }
+      .bar.cyan { background: var(--cyan); }
+      .bar.green { background: var(--green); }
+      .bar.yellow { background: var(--yellow); }
+      .bar.red { background: var(--red); }
+      .bar.purple { background: var(--purple); }
+      .bar-value { color: var(--fg2); font-size: 11px; min-width: 20px; }
       .btn {
-        background: var(--bg3);
-        border: 1px solid var(--border);
-        color: var(--fg);
-        padding: 3px 8px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 11px;
-        font-family: inherit;
+        background: var(--bg3); border: 1px solid var(--border); color: var(--fg);
+        padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; font-family: inherit;
       }
-      .btn:hover {
-        background: var(--border);
-      }
-      .btn:focus-visible {
-        outline: 2px solid var(--cyan);
-        outline-offset: 1px;
-      }
-      .btn.active {
-        background: var(--cyan);
-        color: var(--bg);
-        border-color: var(--cyan);
-      }
+      .btn:hover { background: var(--border); }
+      .btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
       select {
-        background: var(--bg3);
-        border: 1px solid var(--border);
-        color: var(--fg);
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-size: 11px;
-        font-family: inherit;
-      }
-      select:focus-visible {
-        outline: 2px solid var(--cyan);
-        outline-offset: 1px;
+        background: var(--bg3); border: 1px solid var(--border); color: var(--fg);
+        padding: 2px 6px; border-radius: 4px; font-size: 11px; font-family: inherit;
       }
       .audit-row {
-        display: flex;
-        gap: 8px;
-        padding: 3px 0;
-        font-size: 12px;
+        display: flex; gap: 8px; padding: 3px 0; font-size: 12px;
         border-bottom: 1px solid var(--bg3);
       }
-      .audit-time {
-        color: var(--fg3);
-        width: 140px;
-        flex-shrink: 0;
-      }
-      .audit-icon {
-        width: 40px;
-        flex-shrink: 0;
-        font-weight: 600;
-      }
-      .audit-icon.pass {
-        color: var(--green);
-      }
-      .audit-icon.block {
-        color: var(--red);
-      }
-      .audit-op {
-        color: var(--fg);
-        flex: 1;
-      }
+      .audit-time { color: var(--fg3); width: 140px; flex-shrink: 0; }
+      .audit-icon { width: 40px; flex-shrink: 0; font-weight: 600; }
+      .audit-icon.pass { color: var(--green); }
+      .audit-icon.block { color: var(--red); }
+      .audit-op { color: var(--fg); flex: 1; }
       .audit-policy {
-        color: var(--fg3);
-        width: 80px;
-        flex-shrink: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-size: 11px;
+        color: var(--fg3); width: 80px; flex-shrink: 0; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; font-size: 11px;
       }
       .audit-reason {
-        color: var(--fg3);
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        color: var(--fg3); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
-      .full-width {
-        grid-column: 1 / -1;
-      }
-      .empty {
-        color: var(--fg3);
-        font-style: italic;
-        padding: 8px 0;
-      }
-      .refresh-info {
-        color: var(--fg3);
-        font-size: 11px;
-      }
-      /* ── Kanban Board ── */
-      .kanban { display:flex; gap:12px; overflow-x:auto; padding-bottom:8px; min-height:200px; }
-      .kanban-col { flex:1; min-width:180px; max-width:280px; display:flex; flex-direction:column; gap:8px; }
-      .kanban-col-header { display:flex; align-items:center; gap:6px; padding:6px 8px; border-radius:6px; font-size:12px; font-weight:600; background:var(--bg3); }
-      .kanban-col-header .col-count { margin-left:auto; font-weight:400; color:var(--fg3); font-size:11px; }
-      .kanban-col-header.open { border-left:3px solid var(--fg2); }
-      .kanban-col-header.in_progress { border-left:3px solid var(--cyan); color:var(--cyan); }
-      .kanban-col-header.blocked { border-left:3px solid var(--red); color:var(--red); }
-      .kanban-col-header.done { border-left:3px solid var(--green); color:var(--green); }
-      .kanban-col-header.wont_do { border-left:3px solid var(--fg3); color:var(--fg3); }
-      .kanban-cards { display:flex; flex-direction:column; gap:6px; flex:1; min-height:40px; }
-      .kanban-card { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px 10px; cursor:default; transition:transform 0.2s ease,opacity 0.3s ease,box-shadow 0.2s ease; animation:card-enter 0.35s ease-out; }
-      .kanban-card:hover { border-color:var(--cyan); box-shadow:0 0 8px rgba(88,166,255,0.15); transform:translateY(-1px); }
-      .kanban-card.card-exit { animation:card-exit 0.3s ease-in forwards; }
-      .kanban-card .card-id { font-size:10px; color:var(--cyan); font-weight:600; }
-      .kanban-card .card-title { font-size:12px; color:var(--fg); margin:3px 0; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-      .kanban-card .card-meta { display:flex; align-items:center; gap:6px; font-size:10px; color:var(--fg3); }
-      .kanban-card .card-priority { padding:0 4px; border-radius:3px; font-weight:600; font-size:10px; }
-      .card-priority.p0 { background:rgba(248,81,73,0.2); color:var(--red); }
-      .card-priority.p1 { background:rgba(210,153,34,0.2); color:var(--yellow); }
-      .card-priority.p2 { background:rgba(88,166,255,0.15); color:var(--cyan); }
-      .card-priority.p3,.card-priority.p4 { background:rgba(72,79,88,0.2); color:var(--fg3); }
-      .kanban-empty { color:var(--fg3); font-size:11px; font-style:italic; text-align:center; padding:16px 4px; border:1px dashed var(--border); border-radius:6px; }
-      @keyframes card-enter { 0%{opacity:0;transform:translateY(-12px) scale(0.95)} 100%{opacity:1;transform:translateY(0) scale(1)} }
-      @keyframes card-exit { 0%{opacity:1;transform:translateX(0) scale(1)} 100%{opacity:0;transform:translateX(30px) scale(0.9)} }
+      .full-width { grid-column: 1 / -1; }
+      .empty { color: var(--fg3); font-style: italic; padding: 8px 0; }
+      .refresh-info { color: var(--fg3); font-size: 11px; }
       /* Toast notifications */
       .toast-container {
-        position: fixed;
-        top: 16px;
-        right: 16px;
-        z-index: 1000;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
+        position: fixed; top: 16px; right: 16px; z-index: 1000;
+        display: flex; flex-direction: column; gap: 8px;
       }
       .toast {
-        background: var(--bg2);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        padding: 8px 14px;
-        font-size: 12px;
-        color: var(--fg);
-        animation: toast-in 0.2s ease-out;
-        max-width: 320px;
+        background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+        padding: 8px 14px; font-size: 12px; color: var(--fg);
+        animation: toast-in 0.2s ease-out; max-width: 320px;
       }
-      .toast.success {
-        border-color: var(--green);
-        color: var(--green);
-      }
-      .toast.error {
-        border-color: var(--red);
-        color: var(--red);
-      }
+      .toast.success { border-color: var(--green); color: var(--green); }
+      .toast.error { border-color: var(--red); color: var(--red); }
       @keyframes toast-in {
-        from {
-          opacity: 0;
-          transform: translateX(20px);
-        }
-        to {
-          opacity: 1;
-          transform: translateX(0);
-        }
+        from { opacity: 0; transform: translateX(20px); }
+        to { opacity: 1; transform: translateX(0); }
       }
       /* Progress bar for session steps */
-      .progress-track {
-        background: var(--bg3);
-        border-radius: 3px;
-        height: 6px;
-        margin: 6px 0;
-        overflow: hidden;
-      }
-      .progress-fill {
-        height: 100%;
-        border-radius: 3px;
-        background: var(--cyan);
-        transition: width 0.3s;
-      }
+      .progress-track { background: var(--bg3); border-radius: 3px; height: 6px; margin: 6px 0; overflow: hidden; }
+      .progress-fill { height: 100%; border-radius: 3px; background: var(--cyan); transition: width 0.3s; }
       /* Agent status list */
       .agent-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 4px 0;
-        border-bottom: 1px solid var(--bg3);
-        font-size: 12px;
+        display: flex; align-items: center; gap: 8px; padding: 4px 0;
+        border-bottom: 1px solid var(--bg3); font-size: 12px;
       }
-      .agent-name {
-        color: var(--fg);
-        font-weight: 500;
-        min-width: 100px;
-      }
-      .agent-task {
-        color: var(--fg2);
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .agent-tokens {
-        color: var(--fg3);
-        font-size: 11px;
-        min-width: 60px;
-        text-align: right;
-      }
+      .agent-name { color: var(--fg); font-weight: 500; min-width: 100px; }
+      .agent-task { color: var(--fg2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .agent-tokens { color: var(--fg3); font-size: 11px; min-width: 60px; text-align: right; }
       /* Cost savings highlight */
       .cost-savings {
-        background: rgba(63, 185, 80, 0.08);
-        border: 1px solid rgba(63, 185, 80, 0.2);
-        border-radius: var(--radius);
-        padding: 8px 12px;
-        margin-top: 8px;
+        background: rgba(63,185,80,0.08); border: 1px solid rgba(63,185,80,0.2);
+        border-radius: var(--radius); padding: 8px 12px; margin-top: 8px;
       }
-      .cost-savings .big-number {
-        font-size: 20px;
-        font-weight: 700;
-        color: var(--green);
-      }
-      .cost-savings .sub {
-        font-size: 11px;
-        color: var(--fg2);
-      }
+      .cost-savings .big-number { font-size: 20px; font-weight: 700; color: var(--green); }
+      .cost-savings .sub { font-size: 11px; color: var(--fg2); }
       /* Skill/Pattern chips */
-      .chip-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-        margin: 4px 0;
-      }
+      .chip-list { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
       .chip {
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 10px;
-        font-size: 11px;
-        border: 1px solid var(--border);
-        color: var(--fg2);
+        display: inline-block; padding: 2px 8px; border-radius: 10px;
+        font-size: 11px; border: 1px solid var(--border); color: var(--fg2);
       }
-      .chip.active {
-        border-color: var(--cyan);
-        color: var(--cyan);
-        background: rgba(88, 166, 255, 0.08);
+      .chip.active { border-color: var(--cyan); color: var(--cyan); background: rgba(88,166,255,0.08); }
+      .chip.inactive { opacity: 0.5; }
+      /* SVG Graph styles */
+      .graph-container { margin: 8px 0; position: relative; }
+      .graph-container svg { width: 100%; display: block; }
+      .graph-legend {
+        display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; font-size: 11px;
       }
-      .chip.inactive {
-        opacity: 0.5;
-      }
+      .graph-legend-item { display: flex; align-items: center; gap: 4px; color: var(--fg2); }
+      .graph-legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+      /* Stacked bar for deploy buckets */
+      .stacked-bar { display: flex; height: 24px; border-radius: 4px; overflow: hidden; margin: 6px 0; }
+      .stacked-bar .segment { transition: width 0.3s; min-width: 0; }
+      /* Mechanism breakdown */
+      .mechanism-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 12px; }
+      .mechanism-bar-track { flex: 1; background: var(--bg3); height: 10px; border-radius: 3px; overflow: hidden; }
+      .mechanism-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+      .mechanism-label { width: 120px; color: var(--fg2); font-size: 11px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .mechanism-count { width: 30px; text-align: right; color: var(--fg3); font-size: 11px; }
     </style>
   </head>
   <body>
@@ -486,12 +198,7 @@
         <div class="header-right">
           <span class="header-ts" id="data-ts"></span>
           <div>
-            <span
-              class="status-dot disconnected"
-              id="ws-status"
-              role="status"
-              aria-label="Connection status: disconnected"
-            ></span>
+            <span class="status-dot disconnected" id="ws-status" role="status" aria-label="Connection status: disconnected"></span>
             <span class="refresh-info" id="refresh-info">Connecting...</span>
           </div>
         </div>
@@ -502,53 +209,23 @@
         <div class="panel">
           <h2>System</h2>
           <div id="system-panel">
-            <div class="kv">
-              <span class="label">Version</span><span class="value" id="sys-version">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">Branch</span><span class="value cyan" id="sys-branch">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">Uncommitted</span><span class="value" id="sys-dirty">-</span>
-            </div>
+            <div class="kv"><span class="label">Version</span><span class="value" id="sys-version">-</span></div>
+            <div class="kv"><span class="label">Branch</span><span class="value cyan" id="sys-branch">-</span></div>
+            <div class="kv"><span class="label">Uncommitted</span><span class="value" id="sys-dirty">-</span></div>
           </div>
           <h3>Tasks</h3>
-          <div id="task-summary">
-            <div class="kv">
-              <span class="label">Total</span><span class="value" id="task-total">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Done</span><span class="value green" id="task-done">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Active</span><span class="value cyan" id="task-progress">0</span>
-            </div>
+          <div id="task-panel">
+            <div class="kv"><span class="label">Total</span><span class="value" id="task-total">0</span></div>
+            <div class="kv"><span class="label">Done</span><span class="value green" id="task-done">0</span></div>
+            <div class="kv"><span class="label">In Progress</span><span class="value cyan" id="task-progress">0</span></div>
+            <div class="kv"><span class="label">Blocked</span><span class="value red" id="task-blocked">0</span></div>
+            <div class="kv"><span class="label">Open</span><span class="value" id="task-open">0</span></div>
           </div>
           <h3>Coordination</h3>
           <div id="coord-panel">
-            <div class="kv">
-              <span class="label">Active Agents</span><span class="value" id="coord-agents">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Resource Claims</span
-              ><span class="value" id="coord-claims">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Pending Deploys</span
-              ><span class="value" id="coord-deploys">0</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Kanban Board -->
-        <div class="panel full-width" id="kanban-panel">
-          <h2>Task Board</h2>
-          <div class="kanban" id="kanban-board">
-            <div class="kanban-col" data-status="open"><div class="kanban-col-header open"><span>Open</span><span class="col-count" id="kb-open-count">0</span></div><div class="kanban-cards" id="kb-open"></div></div>
-            <div class="kanban-col" data-status="in_progress"><div class="kanban-col-header in_progress"><span>In Progress</span><span class="col-count" id="kb-progress-count">0</span></div><div class="kanban-cards" id="kb-progress"></div></div>
-            <div class="kanban-col" data-status="blocked"><div class="kanban-col-header blocked"><span>Blocked</span><span class="col-count" id="kb-blocked-count">0</span></div><div class="kanban-cards" id="kb-blocked"></div></div>
-            <div class="kanban-col" data-status="done"><div class="kanban-col-header done"><span>Done</span><span class="col-count" id="kb-done-count">0</span></div><div class="kanban-cards" id="kb-done"></div></div>
-            <div class="kanban-col" data-status="wont_do"><div class="kanban-col-header wont_do"><span>Won't Do</span><span class="col-count" id="kb-wontdo-count">0</span></div><div class="kanban-cards" id="kb-wontdo"></div></div>
+            <div class="kv"><span class="label">Active Agents</span><span class="value" id="coord-agents">0</span></div>
+            <div class="kv"><span class="label">Resource Claims</span><span class="value" id="coord-claims">0</span></div>
+            <div class="kv"><span class="label">Pending Deploys</span><span class="value" id="coord-deploys">0</span></div>
           </div>
         </div>
 
@@ -558,11 +235,8 @@
           <div id="model-roles"></div>
           <h3>Session Usage</h3>
           <div id="model-usage" class="table-wrap"></div>
-          <div
-            class="kv"
-            style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px"
-          >
-            <span class="label" style="font-weight: 600">Total Cost</span>
+          <div class="kv" style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px">
+            <span class="label" style="font-weight:600">Total Cost</span>
             <span class="value green" id="model-cost">$0.0000</span>
           </div>
         </div>
@@ -571,34 +245,23 @@
         <div class="panel">
           <h2>Memory</h2>
           <div id="memory-panel">
-            <div class="kv">
-              <span class="label">L1 Working</span><span class="value" id="mem-l1">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">L2 Session</span><span class="value" id="mem-l2">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">L3 Semantic</span><span class="value" id="mem-l3">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">L4 Knowledge</span><span class="value" id="mem-l4">-</span>
-            </div>
+            <div class="kv"><span class="label">L1 Working</span><span class="value" id="mem-l1">-</span></div>
+            <div class="kv"><span class="label">L2 Session</span><span class="value" id="mem-l2">-</span></div>
+            <div class="kv"><span class="label">L3 Semantic</span><span class="value" id="mem-l3">-</span></div>
+            <div class="kv"><span class="label">L4 Knowledge</span><span class="value" id="mem-l4">-</span></div>
+          </div>
+          <h3>Memory Hits / Misses</h3>
+          <div id="mem-hitsmisses">
+            <div class="kv"><span class="label">Hits</span><span class="value green" id="mem-hits">0</span></div>
+            <div class="kv"><span class="label">Misses</span><span class="value red" id="mem-misses">0</span></div>
+            <div class="kv"><span class="label">Hit Rate</span><span class="value cyan" id="mem-hitrate">0%</span></div>
           </div>
           <h3>Context Compression</h3>
           <div id="compression-panel">
-            <div class="kv">
-              <span class="label">Raw</span><span class="value" id="comp-raw">0 KB</span>
-            </div>
-            <div class="kv">
-              <span class="label">Compressed</span><span class="value" id="comp-ctx">0 KB</span>
-            </div>
-            <div class="kv">
-              <span class="label">Savings</span
-              ><span class="value green" id="comp-savings">0%</span>
-            </div>
-            <div class="kv">
-              <span class="label">Tool Calls</span><span class="value" id="comp-calls">0</span>
-            </div>
+            <div class="kv"><span class="label">Raw</span><span class="value" id="comp-raw">0 KB</span></div>
+            <div class="kv"><span class="label">Compressed</span><span class="value" id="comp-ctx">0 KB</span></div>
+            <div class="kv"><span class="label">Savings</span><span class="value green" id="comp-savings">0%</span></div>
+            <div class="kv"><span class="label">Tool Calls</span><span class="value" id="comp-calls">0</span></div>
           </div>
         </div>
 
@@ -610,68 +273,116 @@
           </div>
         </div>
 
+        <!-- GRAPHS: Tasks Over Time -->
+        <div class="panel full-width">
+          <h2>Tasks Over Time</h2>
+          <div class="graph-container" id="graph-tasks"></div>
+          <div class="graph-legend">
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--green)"></div>Done</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--cyan)"></div>In Progress</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--red)"></div>Blocked</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--fg3)"></div>Open</div>
+          </div>
+        </div>
+
+        <!-- GRAPHS: Coordination Over Time -->
+        <div class="panel full-width">
+          <h2>Coordination Over Time</h2>
+          <div class="graph-container" id="graph-coordination"></div>
+          <div class="graph-legend">
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--cyan)"></div>Active Agents</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--yellow)"></div>Resource Claims</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--purple)"></div>Pending Deploys</div>
+          </div>
+        </div>
+
+        <!-- GRAPHS: Deploy Buckets -->
+        <div class="panel">
+          <h2>Deploy Buckets</h2>
+          <div id="deploy-buckets">
+            <div class="kv"><span class="label">Queued</span><span class="value" id="deploy-queued">0</span></div>
+            <div class="kv"><span class="label">Batched</span><span class="value yellow" id="deploy-batched">0</span></div>
+            <div class="kv"><span class="label">Executing</span><span class="value cyan" id="deploy-executing">0</span></div>
+            <div class="kv"><span class="label">Done</span><span class="value green" id="deploy-done">0</span></div>
+            <div class="kv"><span class="label">Failed</span><span class="value red" id="deploy-failed">0</span></div>
+            <div class="kv"><span class="label">Batches</span><span class="value" id="deploy-batches">0</span></div>
+            <div class="kv"><span class="label">Saved Ops</span><span class="value green" id="deploy-saved">0</span></div>
+          </div>
+          <h3>Pipeline</h3>
+          <div class="stacked-bar" id="deploy-pipeline"></div>
+          <div class="graph-legend">
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--fg3)"></div>Queued</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--yellow)"></div>Batched</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--cyan)"></div>Executing</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--green)"></div>Done</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--red)"></div>Failed</div>
+          </div>
+        </div>
+
+        <!-- GRAPHS: Context Compression Over Time -->
+        <div class="panel">
+          <h2>Compression Over Time</h2>
+          <div class="graph-container" id="graph-compression"></div>
+          <div class="graph-legend">
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--fg2)"></div>Raw KB</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--green)"></div>Compressed KB</div>
+          </div>
+        </div>
+
+        <!-- GRAPHS: Memory Hits/Misses Over Time -->
+        <div class="panel full-width">
+          <h2>Memory Hits / Misses Over Time</h2>
+          <div class="graph-container" id="graph-memory-hm"></div>
+          <div class="graph-legend">
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--green)"></div>Hits</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--red)"></div>Misses</div>
+          </div>
+        </div>
+
+        <!-- GRAPHS: Compliance Failures + Defeated Mechanisms -->
+        <div class="panel full-width">
+          <h2>Compliance Failures</h2>
+          <div id="compliance-summary">
+            <div class="kv"><span class="label">Total Checks</span><span class="value" id="comp-checks">0</span></div>
+            <div class="kv"><span class="label">Total Blocks</span><span class="value red" id="comp-blocks">0</span></div>
+            <div class="kv"><span class="label">Block Rate</span><span class="value yellow" id="comp-blockrate">0%</span></div>
+          </div>
+          <h3>Compliance Over Time</h3>
+          <div class="graph-container" id="graph-compliance"></div>
+          <div class="graph-legend">
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--green)"></div>Checks</div>
+            <div class="graph-legend-item"><div class="graph-legend-dot" style="background:var(--red)"></div>Blocks</div>
+          </div>
+          <h3>Defeated Mechanisms</h3>
+          <div id="compliance-mechanisms"></div>
+          <h3>Recent Failures</h3>
+          <div id="compliance-failures" class="table-wrap"></div>
+        </div>
+
         <!-- Session Telemetry (shown when session data is available) -->
-        <div class="panel full-width" id="session-panel" style="display: none">
+        <div class="panel full-width" id="session-panel" style="display:none">
           <h2>Session Telemetry</h2>
-          <div
-            style="
-              display: grid;
-              grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-              gap: 16px;
-            "
-          >
-            <!-- Session Overview -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
             <div>
               <h3>Overview</h3>
-              <div class="kv">
-                <span class="label">Session ID</span><span class="value cyan" id="sess-id">-</span>
-              </div>
-              <div class="kv">
-                <span class="label">Uptime</span><span class="value" id="sess-uptime">-</span>
-              </div>
-              <div class="kv">
-                <span class="label">Tokens Used</span><span class="value" id="sess-tokens">0</span>
-              </div>
-              <div class="kv">
-                <span class="label">Tokens Saved</span
-                ><span class="value green" id="sess-saved">0</span>
-              </div>
-              <div class="kv">
-                <span class="label">Tool Calls</span><span class="value" id="sess-tools">0</span>
-              </div>
-              <div class="kv">
-                <span class="label">Policy Checks</span
-                ><span class="value" id="sess-checks">0</span>
-              </div>
-              <div class="kv">
-                <span class="label">Policy Blocks</span
-                ><span class="value red" id="sess-blocks">0</span>
-              </div>
-              <div class="kv">
-                <span class="label">Errors</span><span class="value red" id="sess-errors">0</span>
-              </div>
-              <div id="sess-progress-wrap" style="display: none">
+              <div class="kv"><span class="label">Session ID</span><span class="value cyan" id="sess-id">-</span></div>
+              <div class="kv"><span class="label">Uptime</span><span class="value" id="sess-uptime">-</span></div>
+              <div class="kv"><span class="label">Tokens Used</span><span class="value" id="sess-tokens">0</span></div>
+              <div class="kv"><span class="label">Tokens Saved</span><span class="value green" id="sess-saved">0</span></div>
+              <div class="kv"><span class="label">Tool Calls</span><span class="value" id="sess-tools">0</span></div>
+              <div class="kv"><span class="label">Policy Checks</span><span class="value" id="sess-checks">0</span></div>
+              <div class="kv"><span class="label">Policy Blocks</span><span class="value red" id="sess-blocks">0</span></div>
+              <div class="kv"><span class="label">Errors</span><span class="value red" id="sess-errors">0</span></div>
+              <div id="sess-progress-wrap" style="display:none">
                 <h3>Step Progress</h3>
-                <div class="kv">
-                  <span class="label" id="sess-step-name">-</span>
-                  <span class="value" id="sess-step-count">0/0</span>
-                </div>
-                <div class="progress-track">
-                  <div class="progress-fill" id="sess-progress-bar" style="width: 0%"></div>
-                </div>
+                <div class="kv"><span class="label" id="sess-step-name">-</span><span class="value" id="sess-step-count">0/0</span></div>
+                <div class="progress-track"><div class="progress-fill" id="sess-progress-bar" style="width:0%"></div></div>
               </div>
             </div>
-            <!-- Cost Savings -->
             <div>
               <h3>Cost</h3>
-              <div class="kv">
-                <span class="label">Session Cost</span
-                ><span class="value" id="sess-cost">$0.0000</span>
-              </div>
-              <div class="kv">
-                <span class="label">Without UAP</span
-                ><span class="value fg2" id="sess-cost-without">$0.0000</span>
-              </div>
+              <div class="kv"><span class="label">Session Cost</span><span class="value" id="sess-cost">$0.0000</span></div>
+              <div class="kv"><span class="label">Without UAP</span><span class="value fg2" id="sess-cost-without">$0.0000</span></div>
               <div class="cost-savings" id="sess-savings-box">
                 <div class="big-number" id="sess-savings-pct">0%</div>
                 <div class="sub">estimated savings with UAP</div>
@@ -679,16 +390,11 @@
               <h3>Agents</h3>
               <div id="sess-agents"><div class="empty">No active agents</div></div>
             </div>
-            <!-- Skills & Patterns -->
             <div>
               <h3>Skills</h3>
-              <div id="sess-skills" class="chip-list">
-                <span class="empty">No skills loaded</span>
-              </div>
+              <div id="sess-skills" class="chip-list"><span class="empty">No skills loaded</span></div>
               <h3>Patterns</h3>
-              <div id="sess-patterns" class="chip-list">
-                <span class="empty">No patterns matched</span>
-              </div>
+              <div id="sess-patterns" class="chip-list"><span class="empty">No patterns matched</span></div>
               <h3>Deploys</h3>
               <div id="sess-deploys"><div class="empty">No deploys</div></div>
             </div>
@@ -726,17 +432,90 @@
         toast.className = 'toast ' + type;
         toast.textContent = message;
         container.appendChild(toast);
-        setTimeout(() => {
-          toast.remove();
-        }, 3000);
+        setTimeout(() => toast.remove(), 3000);
+      }
+
+      // ── SVG Graph Renderer ──
+      function renderLineGraph(containerId, series, opts = {}) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        const W = opts.width || 600;
+        const H = opts.height || 120;
+        const PAD = { top: 10, right: 10, bottom: 20, left: 40 };
+        const gW = W - PAD.left - PAD.right;
+        const gH = H - PAD.top - PAD.bottom;
+
+        // Find global max across all series
+        let maxVal = 1;
+        for (const s of series) {
+          for (const v of s.data) {
+            if (v > maxVal) maxVal = v;
+          }
+        }
+        maxVal = Math.ceil(maxVal * 1.1) || 1;
+
+        const numPoints = series[0]?.data.length || 0;
+        if (numPoints === 0) {
+          container.innerHTML = '<div class="empty">Collecting data...</div>';
+          return;
+        }
+
+        let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+
+        // Grid lines
+        const gridLines = 4;
+        for (let i = 0; i <= gridLines; i++) {
+          const y = PAD.top + (gH / gridLines) * i;
+          const val = Math.round(maxVal - (maxVal / gridLines) * i);
+          svg += `<line x1="${PAD.left}" y1="${y}" x2="${W - PAD.right}" y2="${y}" stroke="#30363d" stroke-width="0.5"/>`;
+          svg += `<text x="${PAD.left - 4}" y="${y + 3}" fill="#484f58" font-size="9" text-anchor="end">${val}</text>`;
+        }
+
+        // Time labels
+        if (numPoints > 1) {
+          const labelCount = Math.min(5, numPoints);
+          const step = Math.floor((numPoints - 1) / (labelCount - 1));
+          for (let i = 0; i < labelCount; i++) {
+            const idx = Math.min(i * step, numPoints - 1);
+            const x = PAD.left + (idx / Math.max(numPoints - 1, 1)) * gW;
+            const ts = series[0].timestamps?.[idx];
+            const label = ts ? new Date(ts).toLocaleTimeString().slice(0, 5) : '';
+            svg += `<text x="${x}" y="${H - 2}" fill="#484f58" font-size="9" text-anchor="middle">${label}</text>`;
+          }
+        }
+
+        // Draw each series
+        for (const s of series) {
+          const points = s.data.map((v, i) => {
+            const x = PAD.left + (i / Math.max(numPoints - 1, 1)) * gW;
+            const y = PAD.top + gH - (v / maxVal) * gH;
+            return `${x},${y}`;
+          });
+
+          // Area fill
+          if (s.fill) {
+            const areaPoints = [...points, `${PAD.left + gW},${PAD.top + gH}`, `${PAD.left},${PAD.top + gH}`];
+            svg += `<polygon points="${areaPoints.join(' ')}" fill="${s.color}" opacity="0.1"/>`;
+          }
+
+          // Line
+          svg += `<polyline points="${points.join(' ')}" fill="none" stroke="${s.color}" stroke-width="1.5" stroke-linejoin="round"/>`;
+
+          // Latest value dot
+          if (points.length > 0) {
+            const last = points[points.length - 1].split(',');
+            svg += `<circle cx="${last[0]}" cy="${last[1]}" r="3" fill="${s.color}"/>`;
+          }
+        }
+
+        svg += '</svg>';
+        container.innerHTML = svg;
       }
 
       // ── WebSocket Connection ──
       function connect() {
         clearTimeout(reconnectTimer);
-        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-          return;
-        }
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
         ws = new WebSocket(WS_URL);
         ws.onopen = () => {
           reconnectDelay = 1000;
@@ -747,13 +526,8 @@
           document.title = 'UAP Dashboard - Live';
         };
         ws.onmessage = (e) => {
-          try {
-            render(JSON.parse(e.data));
-          } catch (err) {
-            console.error('Dashboard render error:', err);
-          }
-          document.getElementById('refresh-info').textContent =
-            'Live - ' + new Date().toLocaleTimeString();
+          try { render(JSON.parse(e.data)); } catch (err) { console.error('Dashboard render error:', err); }
+          document.getElementById('refresh-info').textContent = 'Live - ' + new Date().toLocaleTimeString();
         };
         ws.onclose = () => {
           const dot = document.getElementById('ws-status');
@@ -771,36 +545,27 @@
       function render(data) {
         if (!data) return;
 
-        // Defensive defaults for all top-level fields
         const sys = data.system || {};
         const tasks = data.tasks || {};
         const coord = data.coordination || {};
-        const models = data.models || {
-          roles: {},
-          sessionUsage: [],
-          totalCost: 0,
-          strategy: 'unknown',
-        };
+        const models = data.models || { roles: {}, sessionUsage: [], totalCost: 0, strategy: 'unknown' };
         const mem = data.memory || {};
         const l1 = mem.l1 || { entries: 0, sizeKB: 0 };
         const l2 = mem.l2 || { entries: 0 };
         const l3 = mem.l3 || { status: 'Unknown', uptime: '' };
         const l4 = mem.l4 || { entities: 0, relationships: 0 };
-        const comp = mem.compression || {
-          rawBytes: 0,
-          contextBytes: 0,
-          savingsPercent: '0%',
-          totalCalls: 0,
-        };
+        const comp = mem.compression || { rawBytes: 0, contextBytes: 0, savingsPercent: '0%', totalCalls: 0 };
+        const hm = mem.hitsMisses || { hits: 0, misses: 0, hitRate: '0%' };
         const perf = data.performance || { hotPaths: [], metrics: {} };
         const policies = data.policies || [];
         const audit = data.auditTrail || [];
         const session = data.session || null;
+        const timeSeries = data.timeSeries || [];
+        const compliance = data.compliance || { totalChecks: 0, totalBlocks: 0, blockRate: '0%', recentFailures: [], failuresByMechanism: {} };
+        const deployBuckets = data.deployBuckets || { queued: 0, batched: 0, executing: 0, done: 0, failed: 0, batchCount: 0, savedOps: 0 };
 
         // Timestamp
-        if (data.timestamp) {
-          setText('data-ts', new Date(data.timestamp).toLocaleTimeString());
-        }
+        if (data.timestamp) setText('data-ts', new Date(data.timestamp).toLocaleTimeString());
 
         // System
         setText('sys-version', 'v' + (sys.version || '?'));
@@ -812,13 +577,12 @@
           dirtyEl.className = 'value ' + (dirty > 0 ? 'yellow' : 'green');
         }
 
-        // Tasks summary
+        // Tasks
         setText('task-total', tasks.total || 0);
         setText('task-done', tasks.done || 0);
         setText('task-progress', tasks.inProgress || 0);
-
-        // Kanban board
-        renderKanban(tasks);
+        setText('task-blocked', tasks.blocked || 0);
+        setText('task-open', tasks.open || 0);
 
         // Coordination
         setText('coord-agents', coord.activeAgents || 0);
@@ -829,14 +593,7 @@
         const roles = models.roles || {};
         let rolesHtml = '';
         for (const [role, model] of Object.entries(roles)) {
-          const color =
-            role === 'planner'
-              ? 'green'
-              : role === 'executor'
-                ? 'cyan'
-                : role === 'reviewer'
-                  ? 'purple'
-                  : '';
+          const color = role === 'planner' ? 'green' : role === 'executor' ? 'cyan' : role === 'reviewer' ? 'purple' : '';
           rolesHtml += `<div class="kv"><span class="label">${esc(capitalize(role))}</span><span class="value ${color}">${esc(String(model))}</span></div>`;
         }
         rolesHtml += `<div class="kv"><span class="label">Strategy</span><span class="value cyan">${esc(models.strategy || 'unknown')}</span></div>`;
@@ -844,8 +601,7 @@
 
         const usage = models.sessionUsage || [];
         if (usage.length > 0) {
-          let usageHtml =
-            '<table><tr><th>Model</th><th>Tasks</th><th>Tokens In</th><th>Out</th><th>Cost</th><th>Success</th></tr>';
+          let usageHtml = '<table><tr><th>Model</th><th>Tasks</th><th>Tokens In</th><th>Out</th><th>Cost</th><th>Success</th></tr>';
           for (const u of usage) {
             const cost = typeof u.totalCost === 'number' ? u.totalCost.toFixed(4) : '0.0000';
             const rate = typeof u.successRate === 'number' ? (u.successRate * 100).toFixed(0) : '0';
@@ -854,23 +610,24 @@
           usageHtml += '</table>';
           document.getElementById('model-usage').innerHTML = usageHtml;
         } else {
-          document.getElementById('model-usage').innerHTML =
-            '<div class="empty">No usage recorded</div>';
+          document.getElementById('model-usage').innerHTML = '<div class="empty">No usage recorded</div>';
         }
-        const totalCost =
-          typeof models.totalCost === 'number' ? models.totalCost.toFixed(4) : '0.0000';
-        setText('model-cost', '$' + totalCost);
+        setText('model-cost', '$' + (typeof models.totalCost === 'number' ? models.totalCost.toFixed(4) : '0.0000'));
 
         // Memory
         setText('mem-l1', l1.entries + ' entries (' + l1.sizeKB + ' KB)');
         setText('mem-l2', l2.entries + ' entries');
         const l3El = document.getElementById('mem-l3');
         if (l3El) {
-          l3El.textContent =
-            l3.status === 'Running' ? 'Qdrant ' + (l3.uptime || '') : l3.status || 'Stopped';
+          l3El.textContent = l3.status === 'Running' ? 'Qdrant ' + (l3.uptime || '') : l3.status || 'Stopped';
           l3El.className = 'value ' + (l3.status === 'Running' ? 'green' : 'yellow');
         }
         setText('mem-l4', l4.entities + ' entities, ' + l4.relationships + ' rels');
+
+        // Memory Hits/Misses
+        setText('mem-hits', hm.hits || 0);
+        setText('mem-misses', hm.misses || 0);
+        setText('mem-hitrate', hm.hitRate || '0%');
 
         // Compression
         setText('comp-raw', Math.round((comp.rawBytes || 0) / 1024) + ' KB');
@@ -881,18 +638,145 @@
         // Performance hot paths
         const hotPaths = perf.hotPaths || [];
         if (hotPaths.length > 0) {
-          let perfHtml =
-            '<table><tr><th>Operation</th><th>Avg (ms)</th><th>P95 (ms)</th><th>Calls</th></tr>';
+          let perfHtml = '<table><tr><th>Operation</th><th>Avg (ms)</th><th>P95 (ms)</th><th>Calls</th></tr>';
           for (const hp of hotPaths) {
-            const avgColor =
-              hp.avgMs > 100 ? 'color:var(--red)' : hp.avgMs > 50 ? 'color:var(--yellow)' : '';
+            const avgColor = hp.avgMs > 100 ? 'color:var(--red)' : hp.avgMs > 50 ? 'color:var(--yellow)' : '';
             perfHtml += `<tr><td>${esc(hp.name)}</td><td style="${avgColor}">${hp.avgMs}</td><td>${hp.p95Ms}</td><td>${hp.count}</td></tr>`;
           }
           perfHtml += '</table>';
           document.getElementById('perf-panel').innerHTML = perfHtml;
         } else {
-          document.getElementById('perf-panel').innerHTML =
-            '<div class="empty">No performance data yet</div>';
+          document.getElementById('perf-panel').innerHTML = '<div class="empty">No performance data yet</div>';
+        }
+
+        // ── GRAPHS ──
+
+        // Tasks Over Time
+        if (timeSeries.length > 1) {
+          const timestamps = timeSeries.map(p => p.timestamp);
+          renderLineGraph('graph-tasks', [
+            { data: timeSeries.map(p => p.tasks?.done || 0), color: '#3fb950', fill: true, timestamps },
+            { data: timeSeries.map(p => p.tasks?.inProgress || 0), color: '#58a6ff', fill: false, timestamps },
+            { data: timeSeries.map(p => p.tasks?.blocked || 0), color: '#f85149', fill: false, timestamps },
+            { data: timeSeries.map(p => p.tasks?.open || 0), color: '#484f58', fill: false, timestamps },
+          ]);
+        } else {
+          document.getElementById('graph-tasks').innerHTML = '<div class="empty">Collecting data...</div>';
+        }
+
+        // Coordination Over Time
+        if (timeSeries.length > 1) {
+          const timestamps = timeSeries.map(p => p.timestamp);
+          renderLineGraph('graph-coordination', [
+            { data: timeSeries.map(p => p.coordination?.activeAgents || 0), color: '#58a6ff', fill: true, timestamps },
+            { data: timeSeries.map(p => p.coordination?.activeClaims || 0), color: '#d29922', fill: false, timestamps },
+            { data: timeSeries.map(p => p.coordination?.pendingDeploys || 0), color: '#bc8cff', fill: false, timestamps },
+          ]);
+        } else {
+          document.getElementById('graph-coordination').innerHTML = '<div class="empty">Collecting data...</div>';
+        }
+
+        // Deploy Buckets
+        setText('deploy-queued', deployBuckets.queued || 0);
+        setText('deploy-batched', deployBuckets.batched || 0);
+        setText('deploy-executing', deployBuckets.executing || 0);
+        setText('deploy-done', deployBuckets.done || 0);
+        setText('deploy-failed', deployBuckets.failed || 0);
+        setText('deploy-batches', deployBuckets.batchCount || 0);
+        setText('deploy-saved', deployBuckets.savedOps || 0);
+
+        // Deploy pipeline stacked bar
+        const dTotal = (deployBuckets.queued || 0) + (deployBuckets.batched || 0) + (deployBuckets.executing || 0) + (deployBuckets.done || 0) + (deployBuckets.failed || 0);
+        const pipelineEl = document.getElementById('deploy-pipeline');
+        if (dTotal > 0) {
+          const pct = (v) => ((v / dTotal) * 100).toFixed(1) + '%';
+          pipelineEl.innerHTML = `
+            <div class="segment" style="width:${pct(deployBuckets.queued)};background:var(--fg3)"></div>
+            <div class="segment" style="width:${pct(deployBuckets.batched)};background:var(--yellow)"></div>
+            <div class="segment" style="width:${pct(deployBuckets.executing)};background:var(--cyan)"></div>
+            <div class="segment" style="width:${pct(deployBuckets.done)};background:var(--green)"></div>
+            <div class="segment" style="width:${pct(deployBuckets.failed)};background:var(--red)"></div>`;
+        } else {
+          pipelineEl.innerHTML = '<div class="segment" style="width:100%;background:var(--bg3)"></div>';
+        }
+
+        // Compression Over Time
+        if (timeSeries.length > 1) {
+          const timestamps = timeSeries.map(p => p.timestamp);
+          renderLineGraph('graph-compression', [
+            { data: timeSeries.map(p => Math.round((p.compression?.rawBytes || 0) / 1024)), color: '#8b949e', fill: false, timestamps },
+            { data: timeSeries.map(p => Math.round((p.compression?.contextBytes || 0) / 1024)), color: '#3fb950', fill: true, timestamps },
+          ]);
+        } else {
+          document.getElementById('graph-compression').innerHTML = '<div class="empty">Collecting data...</div>';
+        }
+
+        // Memory Hits/Misses Over Time
+        if (timeSeries.length > 1) {
+          const timestamps = timeSeries.map(p => p.timestamp);
+          renderLineGraph('graph-memory-hm', [
+            { data: timeSeries.map(p => p.memoryHitsMisses?.hits || 0), color: '#3fb950', fill: true, timestamps },
+            { data: timeSeries.map(p => p.memoryHitsMisses?.misses || 0), color: '#f85149', fill: false, timestamps },
+          ]);
+        } else {
+          document.getElementById('graph-memory-hm').innerHTML = '<div class="empty">Collecting data...</div>';
+        }
+
+        // Compliance
+        setText('comp-checks', compliance.totalChecks || 0);
+        setText('comp-blocks', compliance.totalBlocks || 0);
+        setText('comp-blockrate', compliance.blockRate || '0%');
+
+        // Compliance Over Time
+        if (timeSeries.length > 1) {
+          const timestamps = timeSeries.map(p => p.timestamp);
+          renderLineGraph('graph-compliance', [
+            { data: timeSeries.map(p => p.compliance?.totalChecks || 0), color: '#3fb950', fill: false, timestamps },
+            { data: timeSeries.map(p => p.compliance?.totalBlocks || 0), color: '#f85149', fill: true, timestamps },
+          ]);
+        } else {
+          document.getElementById('graph-compliance').innerHTML = '<div class="empty">Collecting data...</div>';
+        }
+
+        // Defeated Mechanisms breakdown
+        const mechanisms = compliance.failuresByMechanism || {};
+        const mechEntries = Object.entries(mechanisms).sort((a, b) => b[1] - a[1]);
+        const mechEl = document.getElementById('compliance-mechanisms');
+        if (mechEntries.length > 0) {
+          const maxMech = Math.max(...mechEntries.map(e => e[1]), 1);
+          let mechHtml = '';
+          for (const [name, count] of mechEntries) {
+            const w = Math.round((count / maxMech) * 100);
+            mechHtml += `<div class="mechanism-row">
+              <span class="mechanism-label" title="${esc(name)}">${esc(name)}</span>
+              <div class="mechanism-bar-track"><div class="mechanism-bar-fill" style="width:${w}%;background:var(--red)"></div></div>
+              <span class="mechanism-count">${count}</span>
+            </div>`;
+          }
+          mechEl.innerHTML = mechHtml;
+        } else {
+          mechEl.innerHTML = '<div class="empty">No compliance failures recorded</div>';
+        }
+
+        // Recent compliance failures table
+        const failures = compliance.recentFailures || [];
+        const failEl = document.getElementById('compliance-failures');
+        if (failures.length > 0) {
+          let fHtml = '<table><tr><th>Time</th><th>Policy</th><th>Operation</th><th>Defeated Mechanism</th><th>Reason</th></tr>';
+          for (const f of failures.slice(0, 20)) {
+            const ts = f.executedAt ? f.executedAt.slice(0, 19).replace('T', ' ') : '-';
+            fHtml += `<tr>
+              <td style="color:var(--fg3);white-space:nowrap">${esc(ts)}</td>
+              <td style="color:var(--cyan)">${esc(f.policyName || f.policyId || '')}</td>
+              <td>${esc(f.operation || '')}</td>
+              <td><span class="badge required">${esc(f.defeatedMechanism || 'Unknown')}</span></td>
+              <td style="color:var(--fg3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(f.reason || '')}">${esc(f.reason || '')}</td>
+            </tr>`;
+          }
+          fHtml += '</table>';
+          failEl.innerHTML = fHtml;
+        } else {
+          failEl.innerHTML = '<div class="empty">No compliance failures</div>';
         }
 
         // Session Telemetry
@@ -908,22 +792,13 @@
           setText('sess-blocks', session.policyBlocks || 0);
           setText('sess-errors', session.errors || 0);
 
-          // Cost
-          const sCost =
-            typeof session.totalCostUsd === 'number' ? session.totalCostUsd.toFixed(4) : '0.0000';
-          const sWithout =
-            typeof session.estimatedCostWithoutUap === 'number'
-              ? session.estimatedCostWithoutUap.toFixed(4)
-              : '0.0000';
-          const sSavings =
-            typeof session.costSavingsPercent === 'number'
-              ? session.costSavingsPercent.toFixed(0) + '%'
-              : '0%';
+          const sCost = typeof session.totalCostUsd === 'number' ? session.totalCostUsd.toFixed(4) : '0.0000';
+          const sWithout = typeof session.estimatedCostWithoutUap === 'number' ? session.estimatedCostWithoutUap.toFixed(4) : '0.0000';
+          const sSavings = typeof session.costSavingsPercent === 'number' ? session.costSavingsPercent.toFixed(0) + '%' : '0%';
           setText('sess-cost', '$' + sCost);
           setText('sess-cost-without', '$' + sWithout);
           setText('sess-savings-pct', sSavings);
 
-          // Step progress
           const progressWrap = document.getElementById('sess-progress-wrap');
           if (session.stepsTotal > 0) {
             progressWrap.style.display = '';
@@ -941,12 +816,11 @@
             let aHtml = '';
             for (const a of agents) {
               const typeClass = a.type || 'main';
-              aHtml += `<div class="agent-row"><span class="badge ${typeClass}">${esc(a.type || 'agent')}</span><span class="agent-name">${esc(a.name || a.id || 'unknown')}</span><span class="badge ${a.status === 'active' ? 'active' : 'idle'}">${esc(a.status || 'idle')}</span><span class="agent-task">${esc(a.task || '-')}</span><span class="agent-tokens">${fmt(a.tokensUsed || 0)} tok</span></div>`;
+              aHtml += `<div class="agent-row"><span class="badge ${typeClass}">${esc(a.type || 'agent')}</span><span class="agent-name">${esc(a.name || a.id || 'unknown')}</span><span class="badge ${a.status === 'active' || a.status === 'working' ? 'active' : 'idle'}">${esc(a.status || 'idle')}</span><span class="agent-task">${esc(a.task || '-')}</span><span class="agent-tokens">${fmt(a.tokensUsed || 0)} tok</span></div>`;
             }
             document.getElementById('sess-agents').innerHTML = aHtml;
           } else {
-            document.getElementById('sess-agents').innerHTML =
-              '<div class="empty">No active agents</div>';
+            document.getElementById('sess-agents').innerHTML = '<div class="empty">No active agents</div>';
           }
 
           // Skills
@@ -959,8 +833,7 @@
             }
             document.getElementById('sess-skills').innerHTML = sHtml;
           } else {
-            document.getElementById('sess-skills').innerHTML =
-              '<span class="empty">No skills loaded</span>';
+            document.getElementById('sess-skills').innerHTML = '<span class="empty">No skills loaded</span>';
           }
 
           // Patterns
@@ -973,8 +846,7 @@
             }
             document.getElementById('sess-patterns').innerHTML = ptHtml;
           } else {
-            document.getElementById('sess-patterns').innerHTML =
-              '<span class="empty">No patterns matched</span>';
+            document.getElementById('sess-patterns').innerHTML = '<span class="empty">No patterns matched</span>';
           }
 
           // Deploys
@@ -989,11 +861,9 @@
               dHtml += `<div class="kv"><span class="label">Batches</span><span class="value">${batch.batchCount || 0}</span></div>`;
               dHtml += `<div class="kv"><span class="label">Saved Ops</span><span class="value green">${batch.savedOps || 0}</span></div>`;
             }
-            document.getElementById('sess-deploys').innerHTML =
-              dHtml || '<div class="empty">No deploys</div>';
+            document.getElementById('sess-deploys').innerHTML = dHtml || '<div class="empty">No deploys</div>';
           } else {
-            document.getElementById('sess-deploys').innerHTML =
-              '<div class="empty">No deploys</div>';
+            document.getElementById('sess-deploys').innerHTML = '<div class="empty">No deploys</div>';
           }
         } else {
           sessionPanel.style.display = 'none';
@@ -1001,43 +871,35 @@
 
         // Policies
         if (policies.length > 0) {
-          let pHtml =
-            '<table><tr><th>Name</th><th>Level</th><th>Stage</th><th>Category</th><th>Priority</th><th>Status</th><th>Actions</th></tr>';
+          let pHtml = '<table><tr><th>Name</th><th>Level</th><th>Stage</th><th>Category</th><th>Priority</th><th>Status</th><th>Actions</th></tr>';
           for (const p of policies) {
             const levelClass = (p.level || '').toLowerCase();
             const statusClass = p.isActive ? 'on' : 'off';
             const tags = p.tags || [];
-            const tagHtml =
-              tags.length > 0
-                ? '<br><span style="font-size:10px;color:var(--fg3)">' +
-                  tags.map((t) => esc(t)).join(', ') +
-                  '</span>'
-                : '';
+            const tagHtml = tags.length > 0 ? '<br><span style="font-size:10px;color:var(--fg3)">' + tags.map(t => esc(t)).join(', ') + '</span>' : '';
             pHtml += `<tr>
-        <td>${esc(p.name || 'unnamed')}${tagHtml}</td>
-        <td><span class="badge ${levelClass}">${esc(p.level || '?')}</span></td>
-        <td>${esc(p.enforcementStage || '?')}</td>
-        <td>${esc(p.category || '?')}</td>
-        <td style="text-align:center">${p.priority || 0}</td>
-        <td><span class="badge ${statusClass}">${p.isActive ? 'ON' : 'OFF'}</span></td>
-        <td>
-          <button class="btn" onclick="togglePolicy('${esc(p.id)}')">${p.isActive ? 'Disable' : 'Enable'}</button>
-          <select onchange="setStage('${esc(p.id)}', this.value)">
-            ${['pre-exec', 'post-exec', 'review', 'always'].map((s) => `<option value="${s}" ${s === p.enforcementStage ? 'selected' : ''}>${s}</option>`).join('')}
-          </select>
-          <select onchange="setLevel('${esc(p.id)}', this.value)">
-            ${['REQUIRED', 'RECOMMENDED', 'OPTIONAL'].map((l) => `<option value="${l}" ${l === p.level ? 'selected' : ''}>${l}</option>`).join('')}
-          </select>
-        </td>
-      </tr>`;
+              <td>${esc(p.name || 'unnamed')}${tagHtml}</td>
+              <td><span class="badge ${levelClass}">${esc(p.level || '?')}</span></td>
+              <td>${esc(p.enforcementStage || '?')}</td>
+              <td>${esc(p.category || '?')}</td>
+              <td style="text-align:center">${p.priority || 0}</td>
+              <td><span class="badge ${statusClass}">${p.isActive ? 'ON' : 'OFF'}</span></td>
+              <td>
+                <button class="btn" onclick="togglePolicy('${esc(p.id)}')">${p.isActive ? 'Disable' : 'Enable'}</button>
+                <select onchange="setStage('${esc(p.id)}', this.value)">
+                  ${['pre-exec','post-exec','review','always'].map(s => `<option value="${s}" ${s === p.enforcementStage ? 'selected' : ''}>${s}</option>`).join('')}
+                </select>
+                <select onchange="setLevel('${esc(p.id)}', this.value)">
+                  ${['REQUIRED','RECOMMENDED','OPTIONAL'].map(l => `<option value="${l}" ${l === p.level ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+              </td>
+            </tr>`;
           }
           pHtml += '</table>';
           document.getElementById('policy-table').innerHTML = pHtml;
 
-          // Stage bars
-          const stages = { 'pre-exec': 0, 'post-exec': 0, review: 0, always: 0 };
-          for (const p of policies)
-            stages[p.enforcementStage] = (stages[p.enforcementStage] || 0) + 1;
+          const stages = { 'pre-exec': 0, 'post-exec': 0, 'review': 0, 'always': 0 };
+          for (const p of policies) stages[p.enforcementStage] = (stages[p.enforcementStage] || 0) + 1;
           const maxStage = Math.max(...Object.values(stages), 1);
           let stageHtml = '';
           for (const [stage, count] of Object.entries(stages)) {
@@ -1046,8 +908,7 @@
           }
           document.getElementById('policy-stages').innerHTML = stageHtml;
         } else {
-          document.getElementById('policy-table').innerHTML =
-            '<div class="empty">No policies configured</div>';
+          document.getElementById('policy-table').innerHTML = '<div class="empty">No policies configured</div>';
           document.getElementById('policy-stages').innerHTML = '';
         }
 
@@ -1057,137 +918,53 @@
           for (const e of audit.slice(0, 20)) {
             const cls = e.allowed ? 'pass' : 'block';
             const icon = e.allowed ? 'PASS' : 'BLOCK';
-            const ts =
-              typeof e.executedAt === 'string' && e.executedAt.length >= 19
-                ? e.executedAt.slice(0, 19).replace('T', ' ')
-                : e.executedAt || '-';
+            const ts = typeof e.executedAt === 'string' && e.executedAt.length >= 19 ? e.executedAt.slice(0, 19).replace('T', ' ') : e.executedAt || '-';
             const policyShort = e.policyId ? e.policyId.slice(0, 8) : '';
             aHtml += `<div class="audit-row"><span class="audit-time">${esc(ts)}</span><span class="audit-icon ${cls}">${icon}</span><span class="audit-policy" title="${esc(e.policyId || '')}">${esc(policyShort)}</span><span class="audit-op">${esc(e.operation || '')}</span><span class="audit-reason">${esc(e.reason || '')}</span></div>`;
           }
           document.getElementById('audit-trail').innerHTML = aHtml;
         } else {
-          document.getElementById('audit-trail').innerHTML =
-            '<div class="empty">No audit entries</div>';
+          document.getElementById('audit-trail').innerHTML = '<div class="empty">No audit entries</div>';
         }
       }
 
-      // ── API Actions with Feedback ──
+      // ── API Actions ──
       async function togglePolicy(id) {
         try {
           const res = await fetch(`${API_URL}/api/policy/${id}/toggle`, { method: 'POST' });
           if (!res.ok) throw new Error(await res.text());
           const data = await res.json();
           showToast(`Policy ${data.isActive ? 'enabled' : 'disabled'}`, 'success');
-        } catch (err) {
-          console.error('Toggle policy failed:', err);
-          showToast('Failed to toggle policy', 'error');
-        }
+        } catch (err) { showToast('Failed to toggle policy', 'error'); }
       }
       async function setStage(id, stage) {
         try {
-          const res = await fetch(`${API_URL}/api/policy/${id}/stage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ stage }),
-          });
+          const res = await fetch(`${API_URL}/api/policy/${id}/stage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage }) });
           if (!res.ok) throw new Error(await res.text());
           showToast(`Stage set to ${stage}`, 'success');
-        } catch (err) {
-          console.error('Set stage failed:', err);
-          showToast('Failed to set stage', 'error');
-        }
+        } catch (err) { showToast('Failed to set stage', 'error'); }
       }
       async function setLevel(id, level) {
         try {
-          const res = await fetch(`${API_URL}/api/policy/${id}/level`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ level }),
-          });
+          const res = await fetch(`${API_URL}/api/policy/${id}/level`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level }) });
           if (!res.ok) throw new Error(await res.text());
           showToast(`Level set to ${level}`, 'success');
-        } catch (err) {
-          console.error('Set level failed:', err);
-          showToast('Failed to set level', 'error');
-        }
-      }
-
-      // ── Kanban Board Renderer ──
-      const TYPE_ICONS = { task: '\u25C6', bug: '\uD83D\uDC1B', feature: '\u2728', epic: '\uD83C\uDFAF', chore: '\uD83D\uDD27', story: '\uD83D\uDCD6' };
-      const PRIO_LABELS = ['P0', 'P1', 'P2', 'P3', 'P4'];
-      let prevCardMap = new Map();
-
-      function renderKanban(tasks) {
-        const items = tasks.items || [];
-        const columns = { open: [], in_progress: [], blocked: [], done: [], wont_do: [] };
-        const newCardMap = new Map();
-        for (const item of items) { const col = columns[item.status]; if (col) col.push(item); newCardMap.set(item.id, item.status); }
-        setText('kb-open-count', columns.open.length);
-        setText('kb-progress-count', columns.in_progress.length);
-        setText('kb-blocked-count', columns.blocked.length);
-        setText('kb-done-count', columns.done.length);
-        setText('kb-wontdo-count', columns.wont_do.length);
-        renderColumn('kb-open', columns.open, newCardMap);
-        renderColumn('kb-progress', columns.in_progress, newCardMap);
-        renderColumn('kb-blocked', columns.blocked, newCardMap);
-        renderColumn('kb-done', columns.done, newCardMap);
-        renderColumn('kb-wontdo', columns.wont_do, newCardMap);
-        const panel = document.getElementById('kanban-panel');
-        if (panel) panel.style.display = items.length > 0 ? '' : 'none';
-        prevCardMap = newCardMap;
-      }
-
-      function renderColumn(containerId, items, newCardMap) {
-        const container = document.getElementById(containerId);
-        if (!container) return;
-        if (items.length === 0) { container.innerHTML = '<div class="kanban-empty">No tasks</div>'; return; }
-        const newIds = new Set(items.map(i => i.id));
-        container.querySelectorAll('.kanban-card').forEach(el => {
-          if (!newIds.has(el.dataset.id)) { el.classList.add('card-exit'); el.addEventListener('animationend', () => el.remove(), { once: true }); }
-        });
-        for (const item of items) {
-          let card = container.querySelector('.kanban-card[data-id="' + item.id + '"]');
-          const isNew = !card;
-          const movedHere = prevCardMap.has(item.id) && prevCardMap.get(item.id) !== item.status;
-          if (isNew) {
-            card = document.createElement('div'); card.className = 'kanban-card'; card.dataset.id = item.id;
-            if (movedHere) { card.style.animation = 'none'; requestAnimationFrame(() => { card.style.animation = ''; }); }
-            container.appendChild(card);
-          } else { card.style.animation = 'none'; }
-          const typeIcon = TYPE_ICONS[item.type] || '\u25C6';
-          const prioLabel = PRIO_LABELS[item.priority] || 'P2';
-          const prioClass = 'p' + (item.priority != null ? item.priority : 2);
-          const assignee = item.assignee ? ' \u00B7 ' + esc(item.assignee) : '';
-          card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center"><span class="card-id">' + esc(item.id) + '</span><span class="card-type">' + typeIcon + '</span></div><div class="card-title">' + esc(item.title || 'Untitled') + '</div><div class="card-meta"><span class="card-priority ' + prioClass + '">' + prioLabel + '</span><span>' + esc(item.type) + assignee + '</span></div>';
-        }
+        } catch (err) { showToast('Failed to set level', 'error'); }
       }
 
       // ── Helpers ──
-      function setText(id, val) {
-        const el = document.getElementById(id);
-        if (el) el.textContent = String(val);
-      }
+      function setText(id, val) { const el = document.getElementById(id); if (el) el.textContent = String(val); }
       function fmt(n) {
         if (typeof n !== 'number' || isNaN(n)) return '0';
-        return n >= 1000000
-          ? (n / 1000000).toFixed(1) + 'M'
-          : n >= 1000
-            ? (n / 1000).toFixed(1) + 'K'
-            : String(n);
+        return n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
       }
-      function capitalize(s) {
-        return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
-      }
-      function esc(s) {
-        const d = document.createElement('div');
-        d.textContent = s || '';
-        return d.innerHTML;
-      }
+      function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+      function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
       // ── Start ──
       connect();
 
-      // Fallback: poll if WS fails (with degraded status indicator)
+      // Fallback: poll if WS fails
       setInterval(async () => {
         if (ws && ws.readyState === WebSocket.OPEN) return;
         try {
@@ -1198,12 +975,9 @@
           const dot = document.getElementById('ws-status');
           dot.className = 'status-dot polling';
           dot.setAttribute('aria-label', 'Connection status: polling (degraded)');
-          document.getElementById('refresh-info').textContent =
-            'Polling - ' + new Date().toLocaleTimeString();
+          document.getElementById('refresh-info').textContent = 'Polling - ' + new Date().toLocaleTimeString();
           document.title = 'UAP Dashboard - Polling';
-        } catch (err) {
-          console.error('Polling fallback failed:', err);
-        }
+        } catch (err) { console.error('Polling fallback failed:', err); }
       }, 5000);
     </script>
   </body>
