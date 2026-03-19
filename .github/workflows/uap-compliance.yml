@@ -113,7 +113,7 @@ jobs:
           fi
           
           # 11. Template version tracking
-          if grep -q "v2\.[2-9]\|v3\." CLAUDE.md | head -1; then
+          if grep -q "v2\.[2-9]\|v3\." CLAUDE.md; then
             ((score++))
             echo "✓ Template version tracked (v2.x+)"
           else
