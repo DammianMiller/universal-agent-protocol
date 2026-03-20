@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.13.4 (2026-03-20)
+
+- fix: prevent Qwen3.5 35B A3B premature generation stopping
+  - Increase --n-predict from 4096 to 16384 (server-side hard cap)
+  - Add _profile field to qwen35.json for profile-loader validation
+  - Increase timeout_ms from 120s to 300s for local model generation
+  - Double executor token budgets (4K/8K/16K/32K)
+  - Increase modelContextBudget from 32K to 131K (match --ctx-size)
+  - Add explicit <|im_end|> stop sequence
+  - Set repeat-penalty to 1.0 (code naturally repeats patterns)
+
 ## v1.13.1 (2026-03-20)
 
 - fix: correct Claude Code hooks schema to use matcher+hooks array format (#62)
