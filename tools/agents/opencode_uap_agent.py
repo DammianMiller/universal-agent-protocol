@@ -1100,7 +1100,14 @@ class OpenCodeUAP(BaseInstalledAgent):
     # ------------------------------------------------------------------ #
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        """Extended setup that uploads Layer 1 proxy and Layer 2 plugin."""
+        """Extended setup that uploads Layer 1 proxy, Layer 2 plugin, and local UAP project.
+
+        The local UAP project is uploaded to /uap-local/ so the install script
+        (install-opencode-local.sh.j2) detects it and installs from the local
+        copy instead of fetching from the npm registry.  This guarantees that
+        benchmarks always test the exact local code, including any uncommitted
+        modifications.
+        """
         # Run the standard setup (uploads and runs install.sh)
         await super().setup(environment)
 
@@ -1121,6 +1128,61 @@ class OpenCodeUAP(BaseInstalledAgent):
                 target_path="/installed-agent/uap-enforce.ts",
             )
             logger.info("[Layer 2] Uploaded uap-enforce.ts to container")
+
+        # -------------------------------------------------------------- #
+        # Upload local UAP project to /uap-local/
+        # -------------------------------------------------------------- #
+        # Auto-detect project root: this file is at <project>/tools/agents/opencode_uap_agent.py
+        uap_project_root = os.environ.get(
+            "UAP_LOCAL_PROJECT",
+            str(Path(__file__).parent.parent.parent),
+        )
+        uap_project_path = Path(uap_project_root)
+
+        if not (uap_project_path / "package.json").exists():
+            logger.warning(
+                "[Local UAP] No package.json at %s -- skipping local upload",
+                uap_project_path,
+            )
+            return
+
+        logger.info(
+            "[Local UAP] Uploading local project from %s to /uap-local/",
+            uap_project_path,
+        )
+
+        local_upload_dirs = [
+            "dist",
+            "config",
+            "templates",
+            "tools/agents",
+            "tools/uap_harbor",
+            "harbor-configs",
+        ]
+        local_upload_files = [
+            "package.json",
+        ]
+
+        for src_rel in local_upload_files:
+            src = uap_project_path / src_rel
+            if src.exists():
+                await environment.upload_file(
+                    source_path=src,
+                    target_path=f"/uap-local/{src_rel}",
+                )
+
+        for src_rel in local_upload_dirs:
+            src_dir = uap_project_path / src_rel
+            if src_dir.is_dir():
+                for fpath in src_dir.rglob("*"):
+                    if fpath.is_file() and "__pycache__" not in str(fpath):
+                        rel = fpath.relative_to(uap_project_path)
+                        await environment.upload_file(
+                            source_path=fpath,
+                            target_path=f"/uap-local/{rel}",
+                        )
+
+        logger.info("[Local UAP] Local project uploaded to /uap-local/")
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         _parse_token_counts(self.logs_dir, context)

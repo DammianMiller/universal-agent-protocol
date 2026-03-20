@@ -62,19 +62,69 @@ fi
 
 # ============================================================================
 # Layer 3: UAP (always runs -- fast, ~3-5s)
+#
+# Prefers LOCAL project mount at /uap-local over npm registry.
+# This allows benchmarking local modifications without publishing.
+#
+# To use local UAP: mount the project folder as a Docker volume:
+#   -v /path/to/universal-agent-protocol:/uap-local:ro
+# Or set UAP_LOCAL_PATH in environment variables.
 # ============================================================================
-echo "=== Layer 3: Installing UAP v${UAP_VERSION} ==="
+echo "=== Layer 3: Installing UAP ==="
 
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
 
-# Check if correct version already installed
-CURRENT_UAP=$(uap --version 2>/dev/null || echo "none")
-if [ "$CURRENT_UAP" = "$UAP_VERSION" ]; then
-    echo "  UAP v${UAP_VERSION} already installed - skipping"
+UAP_LOCAL_MOUNT="${UAP_LOCAL_PATH:-/uap-local}"
+
+if [ -f "$UAP_LOCAL_MOUNT/package.json" ]; then
+    # -------------------------------------------------------------------
+    # LOCAL PROJECT MODE: Install from mounted project directory
+    # This ensures we benchmark the exact local code, not a published npm version.
+    # -------------------------------------------------------------------
+    UAP_LOCAL_VERSION=$(node -e "console.log(require('${UAP_LOCAL_MOUNT}/package.json').version)" 2>/dev/null || echo "local")
+    echo "  Using LOCAL UAP project at ${UAP_LOCAL_MOUNT} (v${UAP_LOCAL_VERSION})"
+
+    # Install from local path (npm link or npm install from dir)
+    if [ -d "$UAP_LOCAL_MOUNT/dist" ]; then
+        # Pre-built dist exists -- use npm link for speed
+        npm link "$UAP_LOCAL_MOUNT" 2>/dev/null \
+            || npm i -g "file:${UAP_LOCAL_MOUNT}" 2>/dev/null \
+            || true
+        echo "  UAP linked from local project (pre-built dist)"
+    else
+        # No dist -- install from source (will run prepublishOnly if defined)
+        npm i -g "file:${UAP_LOCAL_MOUNT}" 2>/dev/null || true
+        echo "  UAP installed from local project source"
+    fi
+
+    # Also make the local project importable via PYTHONPATH for Python agents
+    if [ -d "$UAP_LOCAL_MOUNT/tools" ]; then
+        export PYTHONPATH="${UAP_LOCAL_MOUNT}:${PYTHONPATH:-}"
+        echo "  PYTHONPATH updated for local Python modules"
+    fi
+
+    # Copy local templates, configs, and skills into container
+    if [ -d "$UAP_LOCAL_MOUNT/harbor-configs" ]; then
+        cp -r "$UAP_LOCAL_MOUNT/harbor-configs" /installed-agent/harbor-configs 2>/dev/null || true
+    fi
+    if [ -d "$UAP_LOCAL_MOUNT/templates" ]; then
+        cp -r "$UAP_LOCAL_MOUNT/templates" /installed-agent/templates 2>/dev/null || true
+    fi
+    if [ -d "$UAP_LOCAL_MOUNT/config" ]; then
+        cp -r "$UAP_LOCAL_MOUNT/config" /installed-agent/config 2>/dev/null || true
+    fi
 else
-    npm i -g universal-agent-protocol@${UAP_VERSION} 2>/dev/null || true
-    echo "  UAP v${UAP_VERSION} installed"
+    # -------------------------------------------------------------------
+    # NPM REGISTRY MODE: Fallback when no local mount is present
+    # -------------------------------------------------------------------
+    CURRENT_UAP=$(uap --version 2>/dev/null || echo "none")
+    if [ "$CURRENT_UAP" = "$UAP_VERSION" ]; then
+        echo "  UAP v${UAP_VERSION} already installed - skipping"
+    else
+        npm i -g universal-agent-protocol@${UAP_VERSION} 2>/dev/null || true
+        echo "  UAP v${UAP_VERSION} installed from npm registry"
+    fi
 fi
 
 # Run UAP setup for this project
