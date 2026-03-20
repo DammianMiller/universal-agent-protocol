@@ -2,7 +2,7 @@
 <!-- Optimizations #22-27: Template Compression, Structured Iteration, Inline Domain Knowledge, Early Impossibility Exit, Conditional Context, Remove Emphasis Theater -->
 <!-- Optimizations #28-34: Mandatory Verifier Loop, Decoder-First Gate, Context Stripping, Environment Check, Schema Diff, State Protection, Conditional Domain -->
 
-<!-- ENFORCEMENT_CHECKS: SESSION_START,DECISION_LOOP,MANDATORY_WORKTREE,PARALLEL_REVIEW,SCHEMA_DIFF,GATES,RTK_INCLUDES,PATTERN_ROUTER,VALIDATE_PLAN,COMPLETION_GATES,PLAN_VALIDATION -->
+<!-- ENFORCEMENT_CHECKS: SESSION_START,DECISION_LOOP,MANDATORY_WORKTREE,PARALLEL_REVIEW,SCHEMA_DIFF,GATES,RTK_INCLUDES,PATTERN_ROUTER,VALIDATE_PLAN -->
 <!-- TEMPLATE_VERSION: 2.3.0 -->
 <!-- LAST_VALIDATED: 2026-03-09 -->
 
@@ -32,6 +32,12 @@ No exceptions for "small changes", "just docs", or "version bumps".
 
 ---
 
+---
+
+---
+
+---
+
 ## Pre-Edit Build Gate [REQUIRED]
 
 Before editing any `.ts` file, run `npm run build` to confirm the project compiles.
@@ -42,6 +48,12 @@ If the build fails, fix the error before making any further edits.
 - Always read the target region + surrounding context before editing to ensure unique anchors
 - Never leave the project in a broken build state between edits
 - Validation: `bash scripts/validate-build.sh` or `npm run build`
+
+---
+
+---
+
+---
 
 ---
 
@@ -73,6 +85,12 @@ The verifier loop MUST run MANDATORY minimum 3 times:
 
 ---
 
+---
+
+---
+
+---
+
 ## Pattern Router
 
 The pattern router automatically matches tasks to execution patterns from `.factory/patterns/index.json`.
@@ -81,6 +99,12 @@ The pattern router automatically matches tasks to execution patterns from `.fact
 - Patterns are indexed in Qdrant for semantic search (collection: `agent_patterns`)
 - The adaptive pattern engine learns from task outcomes to improve routing
 - Per-prompt hooks inject relevant patterns into context automatically
+
+---
+
+---
+
+---
 
 ---
 
@@ -107,6 +131,12 @@ Before any code change can proceed, these gates must pass in order:
 
 ---
 
+---
+
+---
+
+---
+
 ## PLAN VALIDATION REQUIRED [REQUIRED]
 
 **After generating any plan, BEFORE offering options or user interaction, you MUST prompt for plan validation.**
@@ -118,6 +148,13 @@ Plans represent significant architectural decisions. User validation ensures ali
 After generating a plan (using `ExitPlanMode` or similar), ALWAYS include:
 
 ```
+
+---
+
+---
+
+---
+
 ## Plan Validation Required
 
 Before proceeding with implementation, please validate this plan:
@@ -129,6 +166,12 @@ Reply "validate" or "approved" to proceed, or provide feedback for adjustments.
 ```
 
 **This is mandatory for all non-trivial tasks. No exceptions.**
+
+---
+
+---
+
+---
 
 ---
 
@@ -219,6 +262,12 @@ See `policies/completion-gate.md` and `policies/semver-versioning.md` for full e
 
 ---
 
+---
+
+---
+
+---
+
 ## SESSION ANALYSIS REQUIRED [REQUIRED]
 
 **Before ending a session or stopping work, analyze and report any incomplete tasks or sudden stops.**
@@ -237,6 +286,13 @@ When ending a session, before claiming completion, check:
 Include a "Session Analysis" section in the final response:
 
 ```
+
+---
+
+---
+
+---
+
 ## Session Analysis
 
 **Completed Tasks:**
@@ -249,6 +305,12 @@ Include a "Session Analysis" section in the final response:
 **Pattern Observation:**
 [Note any sudden stops during this session and their causes]
 ```
+
+---
+
+---
+
+---
 
 ---
 

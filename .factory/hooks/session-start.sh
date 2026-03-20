@@ -133,12 +133,11 @@ fi
 # Export agent ID for downstream tools
 export UAP_AGENT_ID="${AGENT_ID}"
 
-# FIX D: Start background heartbeat (every 15s, auto-stops when shell exits)
-# Reduced interval from 30s to 15s for more responsive keep-alive
+# Start background heartbeat (every 30s, auto-stops when shell exits)
 if [ -f "$COORD_DB" ]; then
   (
     while true; do
-      sleep 15
+      sleep 30
       sqlite3 "$COORD_DB" "UPDATE agent_registry SET last_heartbeat=datetime('now') WHERE id='${AGENT_ID}';" 2>/dev/null || break
     done
   ) &
