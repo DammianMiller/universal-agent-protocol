@@ -163,7 +163,8 @@ describe('TaskPlanner', () => {
 
     it('should estimate cost and duration', async () => {
       const plan = await planner.createPlan('implement new feature');
-      
+
+      // Cost can be 0 for local models (qwen35 has 0 cost)
       expect(plan.estimatedCost).toBeGreaterThanOrEqual(0);
       expect(plan.estimatedDuration).toBeGreaterThan(0);
     });

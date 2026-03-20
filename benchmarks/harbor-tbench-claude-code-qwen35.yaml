@@ -1,0 +1,55 @@
+# Terminal-Bench 2.0 Job: UAP + Claude Code via Anthropic Proxy -> Qwen3.5
+#
+# Architecture:
+#   Claude Code --(Anthropic API :4000)--> UAP Anthropic Proxy --(OpenAI API)--> llama.cpp Qwen3.5
+#   Host endpoint: http://192.168.1.165:8080/v1
+#
+# This job uses the UAPAgent (extends Harbor ClaudeCode) with classified preamble
+# and pre-execution hooks, routed through the Anthropic proxy so Claude Code
+# can communicate with the local Qwen3.5 llama-server.
+#
+# Run:
+#   harbor run --config benchmarks/harbor-tbench-claude-code-qwen35.yaml
+#   # or via wrapper script:
+#   ./scripts/benchmarks/run-tbench-claude-code-qwen35.sh
+
+name: uap-claude-code-qwen35-tbench-2.0
+datasets:
+  - name: terminal-bench@2.0
+    tasks:
+      # Security
+      - crack-7z-hash
+      - filter-js-from-html
+      - password-recovery
+      # File operations
+      - sqlite-db-truncate
+      - extract-elf
+      # Legacy/modernization
+      - cobol-modernization
+      # ML
+      - gpt2-codegolf
+      # Coding/general
+      - code-from-image
+      - log-summary-date-ranges
+      - financial-document-processor
+      # Reasoning
+      - chess-best-move
+      # Infrastructure
+      - docker-compose-setup
+
+agents:
+  - name: uap-claude-code-qwen35
+    type: installed_agent
+    import_path: tools.uap_harbor.uap_agent:UAPAgent
+    kwargs:
+      api_endpoint: "${LLAMA_CPP_BASE:-http://192.168.1.165:8080/v1}"
+
+trial_config:
+  timeout_multiplier: 6.0  # Local model needs more time than cloud APIs
+
+job_settings:
+  n_concurrent: 1   # Single concurrency for local model server
+  max_retries: 2
+  disable_verification: false
+
+output_dir: results/harbor-tbench-claude-code-qwen35
