@@ -57,21 +57,18 @@ if [ -f "${PROJECT_DIR}/dist/bin/cli.js" ]; then
 fi
 
 # Clean up agents with recent heartbeats (likely from this session being compacted)
-# FIX A: Increased timeout from 5 minutes to 30 minutes to prevent premature cleanup
-# FIX C: Only clean up agents that have been idle for extended periods (>30 min)
 if [ -f "$COORD_DB" ]; then
-  HEARTBEAT_THRESHOLD="-30 minutes"
   sqlite3 "$COORD_DB" "
     DELETE FROM work_claims WHERE agent_id IN (
       SELECT id FROM agent_registry
-      WHERE status='active' AND last_heartbeat >= datetime('now', '$HEARTBEAT_THRESHOLD')
+      WHERE status='active' AND last_heartbeat >= datetime('now','-5 minutes')
     );
     UPDATE work_announcements SET completed_at='$TIMESTAMP'
       WHERE completed_at IS NULL AND agent_id IN (
         SELECT id FROM agent_registry
-        WHERE status='active' AND last_heartbeat >= datetime('now', '$HEARTBEAT_THRESHOLD')
+        WHERE status='active' AND last_heartbeat >= datetime('now','-5 minutes')
       );
     UPDATE agent_registry SET status='completed'
-      WHERE status='active' AND last_heartbeat >= datetime('now', '$HEARTBEAT_THRESHOLD');
+      WHERE status='active' AND last_heartbeat >= datetime('now','-5 minutes');
   " 2>/dev/null || true
 fi
