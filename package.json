@@ -12,7 +12,8 @@
     "uap-template-verify": "./tools/agents/scripts/chat_template_verifier.py",
     "llama-optimize": "./dist/bin/llama-server-optimize.js",
     "generate-lora-data": "./tools/agents/scripts/generate_lora_training_data.py",
-    "uap-policy": "./dist/bin/policy.js"
+    "uap-policy": "./dist/bin/policy.js",
+    "uap-anthropic-proxy": "./tools/agents/scripts/anthropic_proxy.py"
   },
   "scripts": {
     "build": "tsc",
