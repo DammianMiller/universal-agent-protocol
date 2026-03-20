@@ -15,9 +15,9 @@ How to run Qwen3.5 35B A3B with the official Qwen3 chat template, LoRA adapters,
 llama-server \
   --model /path/to/qwen3.5-a3b-iq4xs.gguf \
   --chat-template-file chat_template.jinja \
-  --n-predict 4096 \
+  --n-predict 16384 \
   --temp 0.6 --top-p 0.9 --top-k 20 --min-p 0.05 \
-  --repeat-penalty 1.05 \
+  --repeat-penalty 1.0 \
   --threads 8 --ctx-size 131072 --batch-size 8 \
   --gpu-layers 35 --mlock --flash-attn
 ```
@@ -54,9 +54,9 @@ The GBNF file is kept in the repo for per-request use via the `grammar` field in
 llama-server \
   --model /path/to/qwen3.5-a3b-iq4xs.gguf \
   --chat-template-file chat_template.jinja \
-  --n-predict 4096 \
+  --n-predict 16384 \
   --temp 0.6 --top-p 0.9 --top-k 20 --min-p 0.05 \
-  --repeat-penalty 1.05 \
+  --repeat-penalty 1.0 \
   --threads 8 --ctx-size 131072 --batch-size 8 \
   --gpu-layers 35 --mlock --flash-attn
 ```
@@ -69,9 +69,9 @@ llama-server \
   --lora /path/to/qwen35-tool-call-lora/adapter.gguf \
   --lora-scale 1.0 \
   --chat-template-file chat_template.jinja \
-  --n-predict 4096 \
+  --n-predict 16384 \
   --temp 0.6 --top-p 0.9 --top-k 20 --min-p 0.05 \
-  --repeat-penalty 1.05 \
+  --repeat-penalty 1.0 \
   --threads 8 --ctx-size 131072 --batch-size 8 \
   --gpu-layers 35 --mlock --flash-attn
 ```
@@ -86,9 +86,9 @@ llama-server \
   --chat-template-file chat_template.jinja \
   --draft-model /path/to/Qwen3.5-0.8B-Q8_0.gguf \
   --draft-max 16 --draft-p-min 0.75 \
-  --n-predict 4096 \
+  --n-predict 16384 \
   --temp 0.6 --top-p 0.9 --top-k 20 --min-p 0.05 \
-  --repeat-penalty 1.05 \
+  --repeat-penalty 1.0 \
   --threads 8 --ctx-size 131072 --batch-size 8 \
   --gpu-layers 35 --mlock --flash-attn
 ```
@@ -124,7 +124,7 @@ llama-server \
 | `--top-p`          | `0.9`  | Nucleus sampling threshold.                       |
 | `--top-k`          | `20`   | Limits token candidates per step.                 |
 | `--min-p`          | `0.05` | Filters tokens below 5% of top token probability. |
-| `--repeat-penalty` | `1.05` | Mild repetition penalty.                          |
+| `--repeat-penalty` | `1.0`  | No repetition penalty — code naturally repeats patterns. |
 
 ### Performance
 
