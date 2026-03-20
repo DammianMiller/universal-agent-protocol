@@ -11,6 +11,57 @@
 
 <!-- Custom Sections (preserved from existing file) -->
 
+## SESSION START
+
+At session start, load context and verify readiness:
+
+1. Run `bash .codex/hooks/session-start.sh` to bootstrap UAP context
+2. Run `uap task ready` to verify task queue and environment
+3. Query memory: `uap memory query "<current task>"`
+4. Load relevant patterns: `uap patterns query "<task description>"`
+5. Check agent coordination: `uap agent status`
+
+---
+
+## DECISION LOOP
+
+For each task in the session, follow this decision loop:
+
+1. **Check skills**: Load relevant skill with `@Skill:name.md` pattern
+2. **Query patterns**: Match task to execution patterns from pattern library
+3. **Select model**: Use the adaptive routing strategy to pick the right model
+4. **Execute**: Use tools to implement changes (never just explain)
+5. **Verify**: Run build + tests after each change
+6. **Record**: Store outcomes via `uap memory store`
+
+---
+
+## WORKTREE WORKFLOW — MANDATORY
+
+All code changes MUST use worktrees for safe git workflow:
+
+1. `uap worktree create <slug>` — Create isolated worktree
+2. Make ALL changes inside the worktree directory (`.worktrees/NNN-<slug>/`)
+3. Never edit files in the project root directory
+4. `uap worktree cleanup <id>` — Clean up after merge
+5. `uap worktree list` — List active worktrees
+
+Violations of worktree enforcement are policy-blocked at the hook level.
+
+---
+
+## PARALLEL REVIEW PROTOCOL
+
+When multiple changes are pending review:
+
+1. Create separate worktrees for independent changes
+2. Run tests in parallel across worktrees where possible
+3. Review diffs independently before merging
+4. Merge in dependency order (base changes first)
+5. Re-run full test suite after each merge to catch integration issues
+
+---
+
 ## Pre-Edit Worktree Gate [REQUIRED]
 
 Before editing ANY file, verify you are working inside a worktree:
