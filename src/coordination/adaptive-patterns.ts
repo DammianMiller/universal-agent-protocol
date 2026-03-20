@@ -44,6 +44,19 @@ function ensurePatternOutcomesSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_pattern_outcomes_category
       ON pattern_outcomes(task_category);
+    CREATE TABLE IF NOT EXISTS agent_pattern_outcomes (
+      agent_id TEXT NOT NULL,
+      pattern_id TEXT NOT NULL,
+      task_category TEXT NOT NULL,
+      uses INTEGER NOT NULL DEFAULT 0,
+      successes INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (agent_id, pattern_id, task_category)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_pattern_agent
+      ON agent_pattern_outcomes(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_pattern_category
+      ON agent_pattern_outcomes(task_category);
   `);
 }
 
@@ -71,6 +84,7 @@ export class AdaptivePatternEngine {
    */
   private db: Database.Database | null = null;
   private flushStmt: Database.Statement | null = null;
+  private flushAgentStmt: Database.Statement | null = null;
 
   /**
    * Attach a SQLite database for persistent outcome storage.
@@ -95,6 +109,16 @@ export class AdaptivePatternEngine {
       ON CONFLICT(pattern_id, task_category) DO UPDATE SET
         uses = excluded.uses,
         successes = excluded.successes,
+        updated_at = excluded.updated_at
+    `);
+
+    // Prepare per-agent upsert statement
+    this.flushAgentStmt = this.db.prepare(`
+      INSERT INTO agent_pattern_outcomes (agent_id, pattern_id, task_category, uses, successes, updated_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(agent_id, pattern_id, task_category) DO UPDATE SET
+        uses = agent_pattern_outcomes.uses + excluded.uses,
+        successes = agent_pattern_outcomes.successes + excluded.successes,
         updated_at = excluded.updated_at
     `);
 
@@ -136,10 +160,14 @@ export class AdaptivePatternEngine {
   /**
    * Flush a single outcome to the database.
    */
-  private flushOutcome(patternId: string, taskCategory: string, outcome: PatternOutcome): void {
+  private flushOutcome(patternId: string, taskCategory: string, outcome: PatternOutcome, agentId?: string): void {
     if (!this.db || !this.flushStmt) return;
     try {
       this.flushStmt.run(patternId, taskCategory, outcome.uses, outcome.successes);
+      // Also write per-agent row if agent_id is provided
+      if (agentId && this.flushAgentStmt) {
+        this.flushAgentStmt.run(agentId, patternId, taskCategory, 1, outcome.successes > 0 ? 1 : 0);
+      }
     } catch {
       // Non-fatal: DB write failure doesn't break in-memory operation
     }
@@ -151,8 +179,9 @@ export class AdaptivePatternEngine {
    * @param patternId - Identifier of the pattern (e.g. "P12")
    * @param success - Whether the task completed successfully
    * @param taskCategory - Category of the task (e.g. "security", "refactor")
+   * @param agentId - Optional agent identifier for per-agent tracking
    */
-  recordPatternOutcome(patternId: string, success: boolean, taskCategory: string): void {
+  recordPatternOutcome(patternId: string, success: boolean, taskCategory: string, agentId?: string): void {
     if (!this.outcomes.has(patternId)) {
       this.outcomes.set(patternId, new Map());
     }
@@ -174,7 +203,7 @@ export class AdaptivePatternEngine {
     }
 
     // Persist to SQLite immediately
-    this.flushOutcome(patternId, taskCategory, outcome);
+    this.flushOutcome(patternId, taskCategory, outcome, agentId);
   }
 
   /**

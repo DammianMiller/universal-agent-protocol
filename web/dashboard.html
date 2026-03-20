@@ -764,33 +764,10 @@
           </div>
         </div>
 
-        <!-- All Policy Files (from filesystem) -->
-        <div class="panel full-width">
-          <h2>All Policies (Files)</h2>
-          <div id="policy-files-table" class="table-wrap">
-            <div class="empty">No policy files found</div>
-          </div>
-        </div>
-
-        <!-- Active Policies (from DB) -->
-        <div class="panel full-width">
-          <h2>Active Policies (Enforcement)</h2>
-          <div id="policy-table" class="table-wrap"></div>
-          <h3>Enforcement Stages</h3>
-          <div id="policy-stages"></div>
-        </div>
-
-        <!-- Audit Trail -->
-        <div class="panel full-width">
-          <h2>Audit Trail</h2>
-          <div id="audit-trail"></div>
-        </div>
-      </div>
-
-      <!-- System & Coordination (bottom) -->
-      <div class="panel" style="margin-top: 16px">
-        <h2>System</h2>
-        <div id="system-panel">
+        <!-- System & Coordination -->
+        <div class="panel" style="margin-top: 16px">
+          <h2>System</h2>
+          <div id="system-panel">
           <div class="kv">
             <span class="label">Version</span><span class="value" id="sys-version">-</span>
           </div>
@@ -856,8 +833,30 @@
         <div id="coord-patterns-per-agent"><div class="empty">No pattern data</div></div>
       </div>
 
-      <!-- Task Board (bottom) -->
-      <div class="panel full-width" id="kanban-panel" style="margin-top: 16px">
+      <!-- All Policy Files (from filesystem) -->
+        <div class="panel full-width">
+          <h2>All Policies (Files)</h2>
+          <div id="policy-files-table" class="table-wrap">
+            <div class="empty">No policy files found</div>
+          </div>
+        </div>
+
+        <!-- Active Policies (from DB) -->
+        <div class="panel full-width">
+          <h2>Active Policies (Enforcement)</h2>
+          <div id="policy-table" class="table-wrap"></div>
+          <h3>Enforcement Stages</h3>
+          <div id="policy-stages"></div>
+        </div>
+
+        <!-- Audit Trail -->
+        <div class="panel full-width">
+          <h2>Audit Trail</h2>
+          <div id="audit-trail"></div>
+        </div>
+
+        <!-- Task Board (bottom) -->
+        <div class="panel full-width" id="kanban-panel" style="margin-top: 16px">
         <h2>Task Board</h2>
         <div class="kanban" id="kanban-board">
           <div class="kanban-col" data-status="open">
@@ -1482,11 +1481,7 @@
       }
       function fmt(n) {
         if (typeof n !== 'number' || isNaN(n)) return '0';
-        return n >= 1000000
-          ? (n / 1000000).toFixed(1) + 'M'
-          : n >= 1000
-            ? (n / 1000).toFixed(1) + 'K'
-            : String(n);
+        return Math.round(n).toString();
       }
       function capitalize(s) {
         return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';

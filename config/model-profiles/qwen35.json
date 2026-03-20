@@ -13,9 +13,9 @@
   "context_window": 262144,
   "optimize_for_tool_calls": true,
   "mode_switch_buffer_tokens": 500,
-  "enable_thinking": false,
+  "enable_thinking": true,
   "chat_template_kwargs": {
-    "enable_thinking": false
+    "enable_thinking": true
   },
 
   "dynamic_temperature": {

@@ -2,11 +2,7 @@
   "env": {
     "ANTHROPIC_API_KEY": "sk-local",
     "ANTHROPIC_BASE_URL": "http://localhost:4000/anthropic",
-    "CUSTOM_API_TIMEOUT_MS": "300000",
-      "CUSTOM_API_RETRY_COUNT": "5",
-      "CUSTOM_API_RETRY_DELAY_MS": "1000",
-      "CUSTOM_API_RETRY_BACKOFF_FACTOR": "2",
-      "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
+     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
   },
   "autoApprove": [
     "read",

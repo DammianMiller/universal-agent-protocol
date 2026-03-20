@@ -254,7 +254,7 @@ export class TaskCoordinator {
       const category = task.labels[0] || task.type;
 
       for (const pattern of matched) {
-        engine.recordPatternOutcome(String(pattern.id), isSuccess, category);
+        engine.recordPatternOutcome(String(pattern.id), isSuccess, category, this.agentId);
       }
     } catch {
       // AdaptivePatternEngine not configured -- skip

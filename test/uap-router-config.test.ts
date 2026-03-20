@@ -17,7 +17,7 @@ describe('UAP Model Router Configuration', () => {
 
     expect(executorModel).toBeDefined();
     expect(executorModel?.id).toBe('qwen35');
-    expect(executorModel?.name).toBe('Qwen 3.5');
+    expect(executorModel?.name).toBe('Qwen 3.5 35B A3B (iq4xs)');
   });
 
   it('should use qwen35 as the default fallback', () => {
