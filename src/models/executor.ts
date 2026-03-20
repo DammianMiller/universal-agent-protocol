@@ -530,16 +530,20 @@ export class TaskExecutor {
   }
 
   /**
-   * Get max tokens based on subtask complexity
+   * Get max tokens based on subtask complexity.
+   *
+   * Previous values (2K/4K/8K/12K) caused premature truncation on local
+   * models like Qwen3.5 35B A3B where generation is free and responses
+   * routinely exceed 4K tokens for code tasks.
    */
   private getMaxTokens(subtask: Subtask): number {
     const baseTokens: Record<string, number> = {
-      low: 2000,
-      medium: 4000,
-      high: 8000,
-      critical: 12000,
+      low: 4000,
+      medium: 8000,
+      high: 16384,
+      critical: 32768,
     };
-    return baseTokens[subtask.complexity] || 4000;
+    return baseTokens[subtask.complexity] || 8000;
   }
 
   /**

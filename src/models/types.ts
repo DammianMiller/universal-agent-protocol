@@ -145,7 +145,7 @@ export const ModelPresets: Record<string, ModelConfig> = {
     costPer1MInput: 0,
     costPer1MOutput: 0,
     capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
-    modelContextBudget: 32768,
+    modelContextBudget: 131072,
   },
   qwen35: {
     id: 'qwen35',
@@ -157,7 +157,7 @@ export const ModelPresets: Record<string, ModelConfig> = {
     costPer1MInput: 0,
     costPer1MOutput: 0,
     capabilities: ['code-generation', 'execution', 'planning'],
-    modelContextBudget: 32768,
+    modelContextBudget: 131072,
   },
 };
 

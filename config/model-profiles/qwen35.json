@@ -1,4 +1,6 @@
 {
+  "_profile": "qwen35",
+  "_description": "Qwen3.5 35B A3B (IQ4_XS) — local llama.cpp deployment for agentic tool-calling workloads",
   "model": "qwen3.5-a3b-iq4xs",
   "max_tokens": 81920,
   "temperature": 0.3,
@@ -6,8 +8,8 @@
   "top_k": 20,
   "min_p": 0.05,
   "repetition_penalty": 1.0,
-  "stop_sequences": [],
-  "timeout_ms": 120000,
+  "stop_sequences": ["<|im_end|>"],
+  "timeout_ms": 300000,
   "context_window": 262144,
   "optimize_for_tool_calls": true,
   "mode_switch_buffer_tokens": 500,
@@ -79,11 +81,11 @@
 
     "llm_server": {
       "description": "Instance 1: Main LLM (Qwen3.5 35B A3B) — port 8080",
-      "command": "llama-server --model /path/to/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf --chat-template-file chat_template.jinja --port 8080 --host 0.0.0.0 --ctx-size 131072 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q4_0 -fa on --threads 8 --batch-size 512 --ubatch-size 256 --mlock --metrics --n-predict 4096 --temp 0.3 --top-p 0.9 --top-k 20 --min-p 0.05",
+      "command": "llama-server --model /path/to/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf --chat-template-file chat_template.jinja --port 8080 --host 0.0.0.0 --ctx-size 131072 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q4_0 -fa on --threads 8 --batch-size 512 --ubatch-size 256 --mlock --metrics --n-predict 16384 --temp 0.3 --top-p 0.9 --top-k 20 --min-p 0.05",
       "flags": [
         "--model /path/to/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf",
         "--chat-template-file chat_template.jinja",
-        "--n-predict 4096",
+        "--n-predict 16384",
         "--temp 0.3",
         "--top-p 0.9",
         "--top-k 20",
