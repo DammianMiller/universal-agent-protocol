@@ -654,7 +654,7 @@ export class ModelRouter {
   public static getDefaultUAPConfig(): MultiModelConfig {
     return {
       enabled: true,
-      models: ['opus-4.6', 'qwen35'],
+      models: ['opus-4.6', 'qwen35', 'glm-4.7'],
       roles: {
         planner: 'opus-4.6',
         executor: 'qwen35',

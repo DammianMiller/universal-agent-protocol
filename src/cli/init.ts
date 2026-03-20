@@ -64,6 +64,11 @@ export async function initCommand(options: InitOptions): Promise<void> {
     console.error(chalk.red(error));
     return;
   }
+  if (!analysis) {
+    spinner.fail('Failed to analyze project');
+    console.error(chalk.red('Project analysis returned undefined'));
+    return;
+  }
 
   // Display analysis summary
   console.log(chalk.dim('\nDetected:'));

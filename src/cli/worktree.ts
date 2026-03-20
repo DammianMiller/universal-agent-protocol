@@ -393,6 +393,13 @@ export function isPathInsideWorktree(filePath: string): boolean {
  * Runtime data directories and node_modules are exempt.
  */
 export function isExemptFromWorktree(filePath: string): boolean {
-  const exemptPaths = ['agents/data/', 'node_modules/', '.uap-backups/', '.uap/', '.git/', 'dist/'];
+  const exemptPaths = [
+    'agents/data/',
+    'node_modules/',
+    '.uap-backups/',
+    '.uap/',
+    '.git/',
+    'dist/',
+  ];
   return exemptPaths.some((exempt) => filePath.includes(exempt));
 }

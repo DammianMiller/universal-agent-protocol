@@ -193,6 +193,22 @@ export interface ModelData {
     fallback: string;
   };
   strategy: string;
+  enabled: boolean;
+  availableModels: string[];
+  routingMatrix: Record<string, { planner: string; executor: string }>;
+  routingRules: Array<{
+    keywords?: string[];
+    complexity?: string;
+    taskType?: string;
+    targetRole: string;
+    priority: number;
+  }>;
+  costOptimization: {
+    enabled: boolean;
+    targetReduction: number;
+    maxPerformanceDegradation: number;
+    fallbackThreshold: number;
+  };
   sessionUsage: Array<{
     modelId: string;
     taskCount: number;
@@ -749,13 +765,36 @@ function getMemoryData(cwd: string): MemoryData {
 function getModelData(cwd: string): ModelData {
   let roles = { planner: 'opus-4.6', executor: 'qwen35', reviewer: 'opus-4.6', fallback: 'qwen35' };
   let strategy = 'balanced';
+  let enabled = false;
+  let availableModels: string[] = ['opus-4.6', 'qwen35'];
+  let routingMatrix: Record<string, { planner: string; executor: string }> = {};
+  let routingRules: ModelData['routingRules'] = [];
+  let costOptimization: ModelData['costOptimization'] = {
+    enabled: false,
+    targetReduction: 90,
+    maxPerformanceDegradation: 20,
+    fallbackThreshold: 3,
+  };
 
   try {
     const cfg = loadUapConfig(cwd);
     if (cfg?.multiModel) {
       const mm = cfg.multiModel as Record<string, unknown>;
+      enabled = (mm.enabled as boolean) ?? false;
       if (mm.roles) roles = { ...roles, ...(mm.roles as Record<string, string>) };
       if (mm.routingStrategy) strategy = mm.routingStrategy as string;
+      if (mm.models && Array.isArray(mm.models)) availableModels = mm.models as string[];
+      if (mm.routingMatrix) routingMatrix = mm.routingMatrix as typeof routingMatrix;
+      if (mm.routing && Array.isArray(mm.routing)) routingRules = mm.routing as typeof routingRules;
+      if (mm.costOptimization) {
+        const co = mm.costOptimization as Record<string, unknown>;
+        costOptimization = {
+          enabled: (co.enabled as boolean) ?? false,
+          targetReduction: (co.targetReduction as number) ?? 90,
+          maxPerformanceDegradation: (co.maxPerformanceDegradation as number) ?? 20,
+          fallbackThreshold: (co.fallbackThreshold as number) ?? 3,
+        };
+      }
     }
   } catch {
     // Config load failure is non-fatal — use defaults
@@ -797,7 +836,7 @@ function getModelData(cwd: string): ModelData {
     }
   }
 
-  return { roles, strategy, sessionUsage, totalCost };
+  return { roles, strategy, enabled, availableModels, routingMatrix, routingRules, costOptimization, sessionUsage, totalCost };
 }
 
 function getTaskData(cwd: string): TaskData {
@@ -996,26 +1035,55 @@ function getCoordData(cwd: string): CoordData {
           result.patternHits = poRow?.u || 0;
           result.patternSuccesses = poRow?.s || 0;
 
-          // Patterns per agent - group by pattern_id
+          // Patterns per agent - use per-agent table if available, fall back to global
           try {
-            const patternRows = db
-              .prepare(
-                'SELECT pattern_id, task_category, uses FROM pattern_outcomes ORDER BY uses DESC'
-              )
-              .all() as Array<{
-              pattern_id: string;
-              task_category: string;
-              uses: number;
-            }>;
+            const hasAPO = db
+              .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_pattern_outcomes'")
+              .all();
+            if (hasAPO.length > 0) {
+              // Per-agent pattern data available
+              const agentPatternRows = db
+                .prepare(
+                  'SELECT agent_id, pattern_id, task_category, uses, successes FROM agent_pattern_outcomes ORDER BY uses DESC'
+                )
+                .all() as Array<{
+                agent_id: string;
+                pattern_id: string;
+                task_category: string;
+                uses: number;
+                successes: number;
+              }>;
 
-            // Group patterns by agent (use agent list if available, otherwise use 'all')
-            const agentIds = result.agents.length > 0 ? result.agents.map((a) => a.id) : ['all'];
-            for (const agentId of agentIds) {
-              result.patternsPerAgent[agentId] = patternRows.map((p) => ({
-                id: p.pattern_id,
-                category: p.task_category,
-                uses: p.uses,
-              }));
+              // Group by agent
+              for (const row of agentPatternRows) {
+                if (!result.patternsPerAgent[row.agent_id]) {
+                  result.patternsPerAgent[row.agent_id] = [];
+                }
+                result.patternsPerAgent[row.agent_id].push({
+                  id: row.pattern_id,
+                  category: row.task_category,
+                  uses: row.uses,
+                });
+              }
+            } else {
+              // Fallback: assign global patterns to all agents
+              const patternRows = db
+                .prepare(
+                  'SELECT pattern_id, task_category, uses FROM pattern_outcomes ORDER BY uses DESC'
+                )
+                .all() as Array<{
+                pattern_id: string;
+                task_category: string;
+                uses: number;
+              }>;
+              const agentIds = result.agents.length > 0 ? result.agents.map((a) => a.id) : ['all'];
+              for (const agentId of agentIds) {
+                result.patternsPerAgent[agentId] = patternRows.map((p) => ({
+                  id: p.pattern_id,
+                  category: p.task_category,
+                  uses: p.uses,
+                }));
+              }
             }
           } catch {
             /* ignore */
@@ -1056,22 +1124,53 @@ function getCoordData(cwd: string): CoordData {
     /* ignore */
   }
 
-  // Skills per agent: read from .claude/skills/ directory (shared by all agents)
+  // Skills per agent: read from agent capabilities if available, fall back to shared .claude/skills/
   try {
     const skillsDir = join(cwd, '.claude', 'skills');
+    let sharedSkills: string[] = [];
     if (existsSync(skillsDir)) {
-      const skillDirs = readdirSync(skillsDir).filter((d) => {
+      sharedSkills = readdirSync(skillsDir).filter((d) => {
         try {
           return statSync(join(skillsDir, d)).isDirectory();
         } catch {
           return false;
         }
       });
+    }
 
-      const agentIds = result.agents.length > 0 ? result.agents.map((a) => a.id) : ['all'];
-      for (const agentId of agentIds) {
-        result.skillsPerAgent[agentId] = skillDirs;
+    // Try to load per-agent capabilities from agent_registry
+    const coordDbPathSkills = join(cwd, 'agents/data/coordination/coordination.db');
+    if (existsSync(coordDbPathSkills)) {
+      try {
+        const capDb = new Database(coordDbPathSkills, { readonly: true });
+        const agentCaps = capDb
+          .prepare('SELECT id, capabilities FROM agent_registry WHERE capabilities IS NOT NULL AND capabilities != \'[]\' AND capabilities != \'\'')
+          .all() as Array<{ id: string; capabilities: string }>;
+
+        for (const agent of agentCaps) {
+          try {
+            const caps = JSON.parse(agent.capabilities);
+            if (Array.isArray(caps) && caps.length > 0) {
+              result.skillsPerAgent[agent.id] = caps;
+              continue;
+            }
+          } catch { /* invalid JSON, use shared */ }
+          result.skillsPerAgent[agent.id] = sharedSkills;
+        }
+        capDb.close();
+      } catch { /* ignore */ }
+    }
+
+    // For any agents without custom capabilities, assign shared skills
+    for (const agent of result.agents) {
+      if (!result.skillsPerAgent[agent.id]) {
+        result.skillsPerAgent[agent.id] = sharedSkills;
       }
+    }
+
+    // If no agents at all, assign to 'all'
+    if (Object.keys(result.skillsPerAgent).length === 0) {
+      result.skillsPerAgent['all'] = sharedSkills;
     }
   } catch {
     /* ignore */

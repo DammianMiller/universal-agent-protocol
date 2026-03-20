@@ -1,0 +1,86 @@
+# Qwen3.5 + UAP + Claude Code via Anthropic Proxy
+# Harbor Terminal-Bench benchmark: UAP-enhanced Claude Code agent
+# routing through the Anthropic proxy to local Qwen3.5 llama-server
+#
+# Architecture:
+#   Claude Code --(Anthropic API :4000)--> UAP Proxy --(OpenAI API :8080)--> llama.cpp (Qwen3.5)
+#   Host: http://192.168.1.165:8080/v1 (llama-server)
+#   Proxy: http://localhost:4000 (anthropic_proxy.py)
+#
+# Prerequisites:
+#   1. Qwen3.5 llama-server running at http://192.168.1.165:8080/v1
+#   2. Anthropic proxy running: python tools/agents/scripts/anthropic_proxy.py
+#   3. Claude Code installed in PATH
+#   4. Harbor CLI installed
+#
+# Usage:
+#   ./scripts/benchmarks/run-tbench-claude-code-qwen35.sh
+#   # or directly:
+#   harbor run --config benchmarks/harbor-configs/qwen35_uap_claude_code.yaml
+
+name: qwen35-uap-claude-code-tbench-v1
+description: >
+  Qwen3.5 with UAP classified preamble + Claude Code agent via Anthropic proxy.
+  Measures UAP effectiveness when Claude Code is the agentic frontend and
+  Qwen3.5 35B A3B (IQ4_XS) provides the LLM backend through protocol translation.
+
+dataset: terminal-bench@latest
+task_filter: |
+  remember-file-locations,apply-pattern-memory,cross-task-context,multistep-coordination,
+  apply-eslint,add-unit-tests,optimize-imports,password-recovery,file-permissions,
+  extract-elf,gpt2-codegolf,chess-best-move,docker-compose-setup,kubernetes-deploy
+
+# Agent: UAP agent extending Harbor's ClaudeCode base
+agent: tools.uap_harbor.uap_agent:UAPAgent
+model_config:
+  # Claude Code talks Anthropic protocol -> proxy translates to OpenAI for llama.cpp
+  type: custom
+  base_url: http://localhost:4000
+  model_name: claude-sonnet-4-20250514  # spoofed model ID accepted by proxy
+
+adapter_kwargs:
+  api_endpoint: http://192.168.1.165:8080/v1
+
+run_options:
+  n_attempts_per_trial: 1
+  max_retries: 2
+  timeout_multiplier: 6.0  # Higher timeout for local model inference
+  disable_verification: false
+
+# Environment variables for UAP + Claude Code + proxy
+environment_variables:
+  # UAP integration
+  USE_UAP: 'true'
+  PROJECT_ROOT: '/home/cogtek/dev/miller-tech/universal-agent-protocol'
+  UAP_MEMORY_ENABLED: 'true'
+  UAP_PATTERNS_RAG_ENABLED: 'true'
+  QDRANT_ENDPOINT: 'localhost:6333'
+  # Anthropic proxy config (Claude Code reads these)
+  ANTHROPIC_BASE_URL: 'http://localhost:4000'
+  ANTHROPIC_API_KEY: 'sk-uap-proxy'
+  ANTHROPIC_MODEL: 'claude-sonnet-4-20250514'
+  ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-20250514'
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-sonnet-4-20250514'
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+  # Upstream LLM endpoint (proxy reads this)
+  LLAMA_CPP_BASE: 'http://192.168.1.165:8080/v1'
+
+# Container resources
+resources:
+  n_cpus: 4
+  memory_mb: 8192
+  storage_mb: 2048
+
+results_dir: benchmark-results/qwen35_claude_code_uap_tbench
+
+traces_config:
+  export_traces: true
+  sharegpt_export: false
+
+retry_policy:
+  retry_on_exceptions:
+    - AgentTimeoutError
+    - VerifierOutputParseError
+
+# Single concurrent: local model can only handle 1 request at a time efficiently
+max_concurrent_trials: 1

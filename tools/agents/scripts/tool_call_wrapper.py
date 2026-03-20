@@ -86,8 +86,8 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         "temperature": 0.3,
         "top_p": 0.9,
         "presence_penalty": 0.0,
-        "max_tokens": 4096,
-        "enable_thinking": False,
+        "max_tokens": 16384,
+        "enable_thinking": True,
         "model": "qwen35-a3b-iq4xs",
         "base_url": "http://127.0.0.1:8080/v1",
         "api_key": "not-needed",
@@ -99,13 +99,17 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         "dynamic_temperature": True,
         "dynamic_temp_decay": 0.5,
         "dynamic_temp_floor": 0.2,
-        # Qwen-specific: suppress thinking mode to avoid tag leakage
+        # Qwen-specific: thinking mode enabled for better reasoning and longer outputs
+        # suppress_thinking sends chat_template_kwargs to control template behavior
         "suppress_thinking": True,
         "batch_system_prompt": (
             "CRITICAL: You MUST emit ALL tool calls in a SINGLE response. "
-            "Each tool call must be a separate <tool_call>...</tool_call> block. "
+            "Each tool call must use the <tool_call><function=name><parameter=key>value</parameter></function></tool_call> format. "
             "Do NOT call one tool and wait - emit ALL tool calls together NOW. "
-            "You must produce all required tool calls in one response."
+            "You must produce all required tool calls in one response. "
+            "IMPORTANT: You MUST always produce visible output on every turn. "
+            "Never respond with only internal reasoning and no external content. "
+            "Always either use a tool or write a text response to the user."
         ),
     },
     "llama": {
