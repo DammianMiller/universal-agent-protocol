@@ -69,6 +69,17 @@ export const ModelPresets: Record<string, ModelConfig> = {
     ],
     modelContextBudget: 180000,
   },
+  'glm-4.7': {
+    id: 'glm-4.7',
+    name: 'GLM 4.7',
+    provider: 'zhipu',
+    apiModel: 'glm-4-plus',
+    apiKeyEnvVar: 'ZHIPU_API_KEY',
+    maxContextTokens: 128000,
+    costPer1MInput: 0.50,
+    costPer1MOutput: 0.50,
+    capabilities: ['code-generation', 'planning', 'complex-reasoning'],
+  },
   'deepseek-v3.2': {
     id: 'deepseek-v3.2',
     name: 'DeepSeek V3.2 Speciale',
@@ -197,7 +208,7 @@ export const MultiModelConfigSchema = z.object({
         ModelConfigSchemaModels, // Full custom config
       ])
     )
-    .default(['opus-4.6', 'qwen35']),
+    .default(['opus-4.6', 'qwen35', 'glm-4.7']),
 
   // Role assignments
   roles: z

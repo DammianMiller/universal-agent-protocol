@@ -58,39 +58,6 @@
   },
   "droids": [],
   "commands": [],
-  "multiModel": {
-    "enabled": true,
-    "models": ["opus-4.6", "qwen35"],
-    "roles": {
-      "planner": "opus-4.6",
-      "executor": "qwen35",
-      "reviewer": "opus-4.6",
-      "fallback": "qwen35"
-    },
-    "routingStrategy": "adaptive",
-    "routingMatrix": {
-      "critical": { "planner": "opus-4.6", "executor": "opus-4.6" },
-      "high": { "planner": "opus-4.6", "executor": "qwen35" },
-      "medium": { "planner": "qwen35", "executor": "qwen35" },
-      "low": { "planner": "qwen35", "executor": "qwen35" }
-    },
-    "routing": [
-      { "keywords": ["security", "auth", "credential", "deployment", "production"], "targetRole": "planner", "priority": 100 },
-      { "keywords": ["architecture", "design", "distributed", "migration"], "targetRole": "planner", "priority": 90 },
-      { "complexity": "critical", "targetRole": "planner", "priority": 95 },
-      { "complexity": "high", "targetRole": "planner", "priority": 80 },
-      { "taskType": "coding", "targetRole": "executor", "priority": 50 },
-      { "taskType": "bug-fix", "targetRole": "executor", "priority": 50 },
-      { "taskType": "review", "targetRole": "reviewer", "priority": 60 },
-      { "complexity": "low", "targetRole": "executor", "priority": 30 }
-    ],
-    "costOptimization": {
-      "enabled": true,
-      "targetReduction": 90,
-      "maxPerformanceDegradation": 20,
-      "fallbackThreshold": 3
-    }
-  },
   "template": {
     "extends": "default",
     "sections": {

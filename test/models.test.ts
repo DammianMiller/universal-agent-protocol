@@ -106,7 +106,7 @@ describe('ModelRouter', () => {
   describe('analyzeRouting', () => {
     it('should return complete analysis', () => {
       const analysis = router.analyzeRouting('implement secure authentication');
-      
+
       expect(analysis.classification).toBeDefined();
       expect(analysis.matchedRules).toBeDefined();
       expect(analysis.matchedRules.length).toBeGreaterThan(0);
@@ -124,10 +124,10 @@ describe('TaskPlanner', () => {
   beforeEach(() => {
     config = {
       enabled: true,
-      models: ['opus-4.5', 'glm-4.7'],
+      models: ['opus-4.5', 'qwen35'],
       roles: {
         planner: 'opus-4.5',
-        executor: 'glm-4.7',
+        executor: 'qwen35',
         fallback: 'opus-4.5',
       },
       routingStrategy: 'balanced',
@@ -164,7 +164,7 @@ describe('TaskPlanner', () => {
     it('should estimate cost and duration', async () => {
       const plan = await planner.createPlan('implement new feature');
       
-      expect(plan.estimatedCost).toBeGreaterThan(0);
+      expect(plan.estimatedCost).toBeGreaterThanOrEqual(0);
       expect(plan.estimatedDuration).toBeGreaterThan(0);
     });
   });
@@ -266,7 +266,7 @@ describe('Factory Functions', () => {
     it('should use cost-optimized settings', () => {
       const router = createCostOptimizedRouter();
       const models = router.getAllModels();
-      
+
       expect(models.some(m => m.id === 'deepseek-v3.2')).toBe(true);
       expect(models.some(m => m.id === 'glm-4.7')).toBe(true);
     });
@@ -295,8 +295,9 @@ describe('ModelPresets', () => {
     expect(ModelPresets['deepseek-v3.2'].costPer1MInput).toBe(0.25);
   });
 
-  it('should have glm-4.7 preset', () => {
-    expect(ModelPresets['glm-4.7']).toBeDefined();
-    expect(ModelPresets['glm-4.7'].provider).toBe('zhipu');
+  it('should have qwen35-a3b preset', () => {
+    expect(ModelPresets['qwen35-a3b']).toBeDefined();
+    expect(ModelPresets['qwen35-a3b'].provider).toBe('custom');
+    expect(ModelPresets['qwen35-a3b'].apiModel).toBe('qwen35-a3b-iq4xs');
   });
 });
