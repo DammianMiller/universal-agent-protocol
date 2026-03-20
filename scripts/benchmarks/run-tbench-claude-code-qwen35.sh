@@ -254,6 +254,10 @@ export USE_UAP="true"
 export UAP_MEMORY_ENABLED="true"
 export UAP_PATTERNS_RAG_ENABLED="true"
 export PROJECT_ROOT="$PROJECT_ROOT"
+# Ensure benchmarks inject the local UAP project (not the npm package)
+export UAP_LOCAL_PROJECT="$PROJECT_ROOT"
+export UAP_LOCAL_PATH="/uap-local"
+export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 mkdir -p "$RESULTS_DIR"
 

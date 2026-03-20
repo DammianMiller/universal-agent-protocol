@@ -8,6 +8,7 @@ v3.0.0 - Slim classified preamble with regression fixes
 - Regression fixes: enriched git, database, polyglot, statistics snippets
 """
 
+import logging
 import os
 import shlex
 from pathlib import Path
@@ -15,7 +16,10 @@ from typing import Any
 
 from harbor.agents.installed.claude_code import ClaudeCode
 from harbor.agents.installed.base import ExecInput
+from harbor.environments.base import BaseEnvironment
 from harbor.models.trial.paths import EnvironmentPaths
+
+logger = logging.getLogger(__name__)
 
 from .pre_execution_hooks import (
     detect_task_from_instruction,
@@ -262,7 +266,11 @@ def build_classified_preamble(instruction: str) -> str:
 
 
 class UAPAgent(ClaudeCode):
-    """UAP Agent v2.0.0 - Classified preamble with smart routing."""
+    """UAP Agent v2.0.0 - Classified preamble with smart routing.
+
+    Injects the LOCAL UAP project into the container so benchmarks always
+    test the current working copy, not a stale npm-published version.
+    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -273,6 +281,74 @@ class UAPAgent(ClaudeCode):
 
     def version(self) -> str:
         return None
+
+    # ------------------------------------------------------------------ #
+    # Setup: upload local UAP project into container
+    # ------------------------------------------------------------------ #
+
+    async def setup(self, environment: BaseEnvironment) -> None:
+        """Extended setup that uploads the local UAP project into the container.
+
+        The local project is uploaded to /uap-local/ so the install script
+        (install-opencode-local.sh.j2) detects it and installs from the local
+        copy instead of fetching from the npm registry. This guarantees that
+        benchmarks always test the exact local code, including any uncommitted
+        modifications.
+        """
+        await super().setup(environment)
+
+        # Auto-detect project root: this file is at <project>/tools/uap_harbor/uap_agent.py
+        uap_project_root = os.environ.get(
+            "UAP_LOCAL_PROJECT",
+            str(Path(__file__).parent.parent),
+        )
+        uap_project_path = Path(uap_project_root)
+
+        if not (uap_project_path / "package.json").exists():
+            logger.warning(
+                "[Local UAP] No package.json at %s -- skipping local upload",
+                uap_project_path,
+            )
+            return
+
+        logger.info(
+            "[Local UAP] Uploading local project from %s to /uap-local/",
+            uap_project_path,
+        )
+
+        # Upload essential project files (not the entire tree)
+        local_upload_dirs = [
+            "dist",
+            "config",
+            "templates",
+            "tools/agents",
+            "tools/uap_harbor",
+            "harbor-configs",
+        ]
+        local_upload_files = [
+            "package.json",
+        ]
+
+        for src_rel in local_upload_files:
+            src = uap_project_path / src_rel
+            if src.exists():
+                await environment.upload_file(
+                    source_path=src,
+                    target_path=f"/uap-local/{src_rel}",
+                )
+
+        for src_rel in local_upload_dirs:
+            src_dir = uap_project_path / src_rel
+            if src_dir.is_dir():
+                for fpath in src_dir.rglob("*"):
+                    if fpath.is_file() and "__pycache__" not in str(fpath):
+                        rel = fpath.relative_to(uap_project_path)
+                        await environment.upload_file(
+                            source_path=fpath,
+                            target_path=f"/uap-local/{rel}",
+                        )
+
+        logger.info("[Local UAP] Local project uploaded to /uap-local/")
 
     def create_run_agent_commands(self, instruction: str) -> list[ExecInput]:
         """Override to prepend classified UAP patterns and run pre-execution hooks."""

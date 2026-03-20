@@ -29,6 +29,9 @@ environment_variables:
   UAP_MEMORY_ENABLED: 'true'
   UAP_PATTERNS_RAG_ENABLED: 'true'
   QDRANT_ENDPOINT: 'localhost:6333'
+  # Local UAP project injection (benchmark tests local code, not npm)
+  UAP_LOCAL_PROJECT: '/home/cogtek/dev/miller-tech/universal-agent-protocol'
+  UAP_LOCAL_PATH: '/uap-local'
 
 # Container resources (adjust based on your system)
 resources:
