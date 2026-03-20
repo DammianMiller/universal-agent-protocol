@@ -42,6 +42,28 @@ Python script to automatically apply the template fix to existing chat templates
 python3 fix_qwen_chat_template.py [template_file]
 ```
 
+### `scripts/anthropic_proxy.py`
+
+Production-ready proxy that translates Anthropic Messages API requests into OpenAI Chat Completions API requests. Enables Claude Code and Forge Code to use local LLM servers (llama.cpp, vLLM, Ollama) that expose OpenAI-compatible endpoints.
+
+**Features:**
+
+- Full streaming SSE translation (Anthropic <-> OpenAI)
+- Tool/function calling support (streaming and non-streaming)
+- Connection pooling with keep-alive
+- Graceful upstream error recovery
+- Health check endpoint
+- All configuration via environment variables
+
+**Usage:**
+
+```bash
+pip install -r tools/agents/scripts/requirements-proxy.txt
+LLAMA_CPP_BASE=http://localhost:8080/v1 python tools/agents/scripts/anthropic_proxy.py
+```
+
+See `docs/deployment/QWEN35_LLAMA_CPP.md` for full configuration reference.
+
 ### `scripts/qwen_tool_call_wrapper.py`
 
 OpenAI-compatible client with automatic retry logic and validation for Qwen3.5 tool calls.

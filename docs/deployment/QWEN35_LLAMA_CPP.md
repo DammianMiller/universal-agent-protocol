@@ -145,6 +145,82 @@ llama-server \
 | LoRA adapter        | ~50 MB     |
 | **Total**           | **~20 GB** |
 
+## Anthropic API Proxy (for Claude Code / Forge Code)
+
+Claude Code and Forge Code speak the Anthropic Messages API, but llama.cpp exposes an OpenAI-compatible API. The UAP Anthropic Proxy bridges this gap by translating between the two protocols in real time, including full streaming and tool calling support.
+
+### Architecture
+
+```
+Claude Code  --(Anthropic API :4000)-->  UAP Proxy  --(OpenAI API :8080)-->  llama.cpp
+```
+
+### Quick Start
+
+```bash
+# Install Python dependencies
+pip install -r tools/agents/scripts/requirements-proxy.txt
+
+# Start the proxy (default: listen on :4000, forward to llama.cpp on :8080)
+python tools/agents/scripts/anthropic_proxy.py
+```
+
+### Configuration
+
+All settings are via environment variables:
+
+| Variable                | Default                              | Description                              |
+| ----------------------- | ------------------------------------ | ---------------------------------------- |
+| `LLAMA_CPP_BASE`        | `http://192.168.1.165:8080/v1`       | OpenAI-compatible upstream server URL    |
+| `PROXY_PORT`            | `4000`                               | Port for the proxy to listen on          |
+| `PROXY_HOST`            | `0.0.0.0`                            | Host/IP to bind to                       |
+| `PROXY_LOG_LEVEL`       | `INFO`                               | Logging level (DEBUG/INFO/WARNING/ERROR) |
+| `PROXY_READ_TIMEOUT`    | `600`                                | Read timeout (seconds) for LLM streaming |
+| `PROXY_MAX_CONNECTIONS` | `20`                                 | Max concurrent upstream connections      |
+
+### Example: Custom upstream
+
+```bash
+LLAMA_CPP_BASE=http://localhost:8080/v1 PROXY_PORT=5000 python tools/agents/scripts/anthropic_proxy.py
+```
+
+### Claude Code Configuration
+
+Point Claude Code at the proxy by setting the API base URL:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:4000
+```
+
+### Endpoints
+
+| Path                     | Method | Description                                |
+| ------------------------ | ------ | ------------------------------------------ |
+| `/v1/messages`           | POST   | Anthropic Messages API (streaming + sync)  |
+| `/anthropic/v1/messages` | POST   | Alternative path (some clients use this)   |
+| `/v1/models`             | GET    | Lists spoofed Anthropic model IDs          |
+| `/health`                | GET    | Health check (checks upstream reachability) |
+
+### Running as a Service (systemd)
+
+```ini
+[Unit]
+Description=UAP Anthropic Proxy
+After=network.target
+
+[Service]
+Type=simple
+User=cogtek
+Environment=LLAMA_CPP_BASE=http://192.168.1.165:8080/v1
+Environment=PROXY_PORT=4000
+ExecStart=/usr/bin/python3 /path/to/tools/agents/scripts/anthropic_proxy.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
 ## Tool Call Format
 
 The model emits tool calls in the official Qwen3 format:

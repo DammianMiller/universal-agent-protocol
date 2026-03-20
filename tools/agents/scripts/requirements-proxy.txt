@@ -1,0 +1,5 @@
+# Requirements for UAP Anthropic Proxy
+# Install: pip install -r requirements-proxy.txt
+fastapi>=0.104.0
+uvicorn>=0.24.0
+httpx>=0.25.0
