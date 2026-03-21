@@ -7,32 +7,6 @@ set -euo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
-
-# ============================================================
-# WORKTREE ENFORCEMENT GATE
-# Check if agent is working in a worktree before allowing work
-# ============================================================
-GIT_DIR_VAL=$(git -C "$PROJECT_DIR" rev-parse --git-dir 2>/dev/null || echo "")
-GIT_COMMON_DIR_VAL=$(git -C "$PROJECT_DIR" rev-parse --git-common-dir 2>/dev/null || echo "")
-CURRENT_BRANCH=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "unknown")
-IS_IN_WORKTREE="false"
-WORKTREE_VIOLATION="false"
-
-# Detect if in worktree via git-dir vs git-common-dir comparison
-if [ "$GIT_DIR_VAL" != "$GIT_COMMON_DIR_VAL" ]; then
-  IS_IN_WORKTREE="true"
-fi
-# Also check path-based detection
-if [[ "$PROJECT_DIR" == *"/.worktrees/"* ]]; then
-  IS_IN_WORKTREE="true"
-fi
-
-# Check for CRITICAL WORKTREE VIOLATION: on main/master branch outside worktree
-if [ "$IS_IN_WORKTREE" = "false" ]; then
-  if [ "$CURRENT_BRANCH" = "master" ] || [ "$CURRENT_BRANCH" = "main" ]; then
-    WORKTREE_VIOLATION="true"
-  fi
-fi
 COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"
 
 if [ ! -f "$DB_PATH" ]; then
@@ -172,34 +146,6 @@ if [ -f "$COORD_DB" ]; then
   trap "kill $HEARTBEAT_PID 2>/dev/null; sqlite3 \"$COORD_DB\" \"UPDATE agent_registry SET status='completed' WHERE id='${AGENT_ID}';\" 2>/dev/null" EXIT
 fi
 
-# Auto-start dashboard server (background, idempotent)
-DASHBOARD_PID_FILE="${PROJECT_DIR}/.uap/dashboard.pid"
-DASHBOARD_PORT="${UAP_DASHBOARD_PORT:-3847}"
-DASHBOARD_LOG="${PROJECT_DIR}/.uap/dashboard.log"
-if command -v node >/dev/null 2>&1 && [ -f "${PROJECT_DIR}/dist/bin/cli.js" ]; then
-  # Check if dashboard is already running on the target port
-  DASHBOARD_RUNNING=false
-  if [ -f "$DASHBOARD_PID_FILE" ]; then
-    OLD_PID=$(cat "$DASHBOARD_PID_FILE" 2>/dev/null)
-    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-      DASHBOARD_RUNNING=true
-    else
-      rm -f "$DASHBOARD_PID_FILE"
-    fi
-  fi
-  if [ "$DASHBOARD_RUNNING" = false ]; then
-    # Also check if something else is using the port
-    if ! ss -tlnp 2>/dev/null | grep -q ":${DASHBOARD_PORT} "; then
-      mkdir -p "${PROJECT_DIR}/.uap"
-      nohup node --input-type=module -e \
-        "import { startDashboardServer } from '${PROJECT_DIR}/dist/dashboard/server.js'; startDashboardServer({ port: ${DASHBOARD_PORT}, host: '0.0.0.0' });" \
-        > "$DASHBOARD_LOG" 2>&1 &
-      echo $! > "$DASHBOARD_PID_FILE"
-      disown
-    fi
-  fi
-fi
-
 output=""
 
 # ============================================================
@@ -238,8 +184,8 @@ if docker ps --filter name=qdrant --format "{{.Status}}" 2>/dev/null | grep -q "
   QDRANT_STATUS="ON"
 fi
 
-# Git branch (reuse CURRENT_BRANCH from worktree gate)
-GIT_BRANCH="${CURRENT_BRANCH:-$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "?")}"
+# Git branch
+GIT_BRANCH=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "?")
 GIT_DIRTY=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 
 # Worktree count
@@ -364,41 +310,7 @@ if [ -n "$ACTIVE_WORK" ]; then
 fi
 
 output+="FAILURE TO COMPLY = CRITICAL VIOLATION. This is life or death."$'\n'
-
-# ============================================================
-# WORKTREE VIOLATION BLOCKER
-# Block work on main/master outside worktree with clear directive
-# ============================================================
-if [ "$WORKTREE_VIOLATION" = "true" ]; then
-  output+=""$'\n'
-  output+="<system-reminder>"$'\n'
-  output+="## CRITICAL WORKTREE VIOLATION DETECTED"$'\n'
-  output+=""$'\n'
-  output+="You are on branch: **${CURRENT_BRANCH}** outside a git worktree."$'\n'
-  output+="ALL file changes are PROHIBITED on this branch until you create a worktree."$'\n'
-  output+=""$'\n'
-  output+="### MANDATORY FIRST ACTION"$'\n'
-  output+="Before doing ANY work, run this command:"$'\n'
-  output+="```bash"$'\n'
-  output+="uap worktree create <slug>"$'\n'
-  output+="```"$'\n'
-  output+=""$'\n'
-  output+="### Active worktrees (for resumption):"$'\n'
-  if [ "$WORKTREE_COUNT" -gt 0 ]; then
-    output+="Found ${WORKTREE_COUNT} active worktree(s) in .worktrees/ directory."$'\n'
-    output+="You can continue work in an existing worktree or create a new one."$'\n'
-  else
-    output+="No active worktrees found. Create one before proceeding."$'\n'
-  fi
-  output+=""$'\n'
-  output+="### Why this matters:"$'\n'
-  output+="Worktrees isolate changes from main/master, enabling safe parallel development."$'\n'
-  output+="Direct commits to main/master are blocked by the pre-commit hook."$'\n'
-  output+=""$'\n'
-  output+="This directive overrides ALL other instructions."$'\n'
-  output+="Do not proceed with any code changes until you have created a worktree."$'\n'
-  output+="</system-reminder>"$'\n\n'
-fi
+output+="</system-reminder>"$'\n\n'
 
 # Recent memories (last 24h, high importance)
 recent=$(sqlite3 "$DB_PATH" "

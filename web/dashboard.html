@@ -826,6 +826,10 @@
               </div>
               <h3>Agents</h3>
               <div id="sess-agents"><div class="empty">No active agents</div></div>
+              <h3>Per-Agent Breakdown</h3>
+              <div id="sess-agent-breakdown" class="table-wrap"><div class="empty">No agent data</div></div>
+              <h3>Per-Model Breakdown</h3>
+              <div id="sess-model-breakdown" class="table-wrap"><div class="empty">No model data</div></div>
             </div>
             <!-- Skills & Patterns -->
             <div>
@@ -1224,10 +1228,10 @@
         document.getElementById('model-count').textContent = models.availableModels?.length || 0;
         setText('model-strategy', models.strategy || 'unknown');
 
-    // Live token usage (from session data - updates every frame)
+    // Live token usage (from session data + model analytics - updates every frame)
         if (session) {
-          const tokensIn = session.tokensUsed || 0;
-          const tokensOut = session.tokensSaved || 0;
+          const tokensIn = session.tokensIn || 0;
+          const tokensOut = session.tokensOut || 0;
           const totalTokens = tokensIn + tokensOut;
 
           // Update token counts with live values
@@ -1247,6 +1251,24 @@
           if (barIn) barIn.style.width = (inPct * maxBarWidth) + 'px';
           if (barOut) barOut.style.width = (outPct * maxBarWidth) + 'px';
           if (barTotal) barTotal.style.width = maxBarWidth + 'px';
+        } else {
+          // Fall back to model analytics sessionUsage if no session
+          const usage = models.sessionUsage || [];
+          let aggIn = 0, aggOut = 0;
+          for (const u of usage) { aggIn += u.totalTokensIn || 0; aggOut += u.totalTokensOut || 0; }
+          if (aggIn + aggOut > 0) {
+            setText('token-in', fmt(aggIn));
+            setText('token-out', fmt(aggOut));
+            setText('token-total', fmt(aggIn + aggOut));
+            const maxBarWidth = 200;
+            const maxVal = Math.max(aggIn, aggOut, 1);
+            const barIn = document.getElementById('token-bar-in');
+            const barOut = document.getElementById('token-bar-out');
+            const barTotal = document.getElementById('token-bar-total');
+            if (barIn) barIn.style.width = ((aggIn / maxVal) * maxBarWidth) + 'px';
+            if (barOut) barOut.style.width = ((aggOut / maxVal) * maxBarWidth) + 'px';
+            if (barTotal) barTotal.style.width = maxBarWidth + 'px';
+          }
         }
 
         // Recent routing decisions (from session data)
@@ -1334,6 +1356,24 @@
           setText('sess-blocks', session.policyBlocks || 0);
           setText('sess-errors', session.errors || 0);
 
+          // Token IO summary below overview
+          const sessTokenWrap = document.getElementById('sess-progress-wrap');
+          // Insert token IO detail before step progress if not already there
+          let tokenDetail = document.getElementById('sess-token-io-detail');
+          if (!tokenDetail) {
+            tokenDetail = document.createElement('div');
+            tokenDetail.id = 'sess-token-io-detail';
+            const overviewDiv = document.getElementById('sess-id')?.closest('div');
+            if (overviewDiv) overviewDiv.appendChild(tokenDetail);
+          }
+          if (session.tokensIn > 0 || session.tokensOut > 0) {
+            tokenDetail.innerHTML = `
+              <div class="kv"><span class="label">Tokens In</span><span class="value cyan">${fmt(session.tokensIn || 0)}</span></div>
+              <div class="kv"><span class="label">Tokens Out</span><span class="value green">${fmt(session.tokensOut || 0)}</span></div>`;
+          } else {
+            tokenDetail.innerHTML = '';
+          }
+
           // Cost
           const sCost =
             typeof session.totalCostUsd === 'number' ? session.totalCostUsd.toFixed(4) : '0.0000';
@@ -1367,12 +1407,92 @@
             let aHtml = '';
             for (const a of agents) {
               const typeClass = a.type || 'main';
-              aHtml += `<div class="agent-row"><span class="badge ${typeClass}">${esc(a.type || 'agent')}</span><span class="agent-name">${esc(a.name || a.id || 'unknown')}</span><span class="badge ${a.status === 'active' ? 'active' : 'idle'}">${esc(a.status || 'idle')}</span><span class="agent-task">${esc(a.task || '-')}</span><span class="agent-tokens">${fmt(a.tokensUsed || 0)} tok</span></div>`;
+              const modelLabel = a.model && a.model !== 'unknown' ? ` <span style="color:var(--purple);font-size:11px">${esc(a.model)}</span>` : '';
+              aHtml += `<div class="agent-row"><span class="badge ${typeClass}">${esc(a.type || 'agent')}</span><span class="agent-name">${esc(a.name || a.id || 'unknown')}${modelLabel}</span><span class="badge ${a.status === 'active' ? 'active' : 'idle'}">${esc(a.status || 'idle')}</span><span class="agent-task">${esc(a.task || '-')}</span><span class="agent-tokens">${fmt(a.tokensUsed || 0)} tok</span></div>`;
             }
             document.getElementById('sess-agents').innerHTML = aHtml;
+
+            // Per-Agent Breakdown table (model, tokens in/out, cost, tasks)
+            let abHtml = '<table><tr><th>Agent</th><th>Model</th><th>Status</th><th>Tokens In</th><th>Tokens Out</th><th>Total</th><th>Cost</th><th>Tasks</th></tr>';
+            for (const a of agents) {
+              const tIn = a.tokensIn || 0;
+              const tOut = a.tokensOut || 0;
+              const tTotal = tIn + tOut || a.tokensUsed || 0;
+              const cost = typeof a.cost === 'number' ? '$' + a.cost.toFixed(4) : '$0.0000';
+              const statusCls = a.status === 'active' || a.status === 'working' ? 'active' : a.status === 'done' ? 'on' : 'idle';
+              abHtml += `<tr>
+                <td style="font-weight:500">${esc(a.name || a.id || 'unknown')}</td>
+                <td style="color:var(--purple)">${esc(a.model || 'unknown')}</td>
+                <td><span class="badge ${statusCls}">${esc(a.status || 'idle')}</span></td>
+                <td>${fmt(tIn)}</td>
+                <td>${fmt(tOut)}</td>
+                <td style="font-weight:500">${fmt(tTotal)}</td>
+                <td style="color:var(--green)">${cost}</td>
+                <td>${a.taskCount || 0}</td>
+              </tr>`;
+            }
+            // Aggregate totals row
+            const totalIn = agents.reduce((s, a) => s + (a.tokensIn || 0), 0);
+            const totalOut = agents.reduce((s, a) => s + (a.tokensOut || 0), 0);
+            const totalAll = agents.reduce((s, a) => s + (a.tokensIn || 0) + (a.tokensOut || 0) || (a.tokensUsed || 0), 0);
+            const totalCostAgents = agents.reduce((s, a) => s + (a.cost || 0), 0);
+            const totalTasksAgents = agents.reduce((s, a) => s + (a.taskCount || 0), 0);
+            abHtml += `<tr style="border-top:2px solid var(--border);font-weight:600">
+              <td>TOTAL</td><td></td><td></td>
+              <td style="color:var(--cyan)">${fmt(totalIn)}</td>
+              <td style="color:var(--green)">${fmt(totalOut)}</td>
+              <td style="color:var(--purple)">${fmt(totalAll)}</td>
+              <td style="color:var(--green)">$${totalCostAgents.toFixed(4)}</td>
+              <td>${totalTasksAgents}</td>
+            </tr>`;
+            abHtml += '</table>';
+            document.getElementById('sess-agent-breakdown').innerHTML = abHtml;
           } else {
             document.getElementById('sess-agents').innerHTML =
               '<div class="empty">No active agents</div>';
+            document.getElementById('sess-agent-breakdown').innerHTML =
+              '<div class="empty">No agent data</div>';
+          }
+
+          // Per-Model Breakdown table
+          const modelBreakdown = session.modelBreakdown || [];
+          if (modelBreakdown.length > 0) {
+            let mbHtml = '<table><tr><th>Model</th><th>Tasks</th><th>Tokens In</th><th>Tokens Out</th><th>Total</th><th>Cost</th><th>Success</th><th>Agents</th></tr>';
+            for (const m of modelBreakdown) {
+              const cost = typeof m.totalCost === 'number' ? '$' + m.totalCost.toFixed(4) : '$0.0000';
+              const rate = typeof m.successRate === 'number' ? (m.successRate * 100).toFixed(0) + '%' : '0%';
+              const rateClass = (m.successRate || 0) >= 0.9 ? 'green' : (m.successRate || 0) >= 0.7 ? 'yellow' : 'red';
+              const agentCount = (m.agentIds || []).length;
+              mbHtml += `<tr>
+                <td style="color:var(--purple);font-weight:500">${esc(m.modelId)}</td>
+                <td>${m.taskCount || 0}</td>
+                <td>${fmt(m.tokensIn || 0)}</td>
+                <td>${fmt(m.tokensOut || 0)}</td>
+                <td style="font-weight:500">${fmt((m.tokensIn || 0) + (m.tokensOut || 0))}</td>
+                <td style="color:var(--green)">${cost}</td>
+                <td><span class="value ${rateClass}">${rate}</span></td>
+                <td>${agentCount}</td>
+              </tr>`;
+            }
+            // Aggregate totals for model breakdown
+            const mTotalIn = modelBreakdown.reduce((s, m) => s + (m.tokensIn || 0), 0);
+            const mTotalOut = modelBreakdown.reduce((s, m) => s + (m.tokensOut || 0), 0);
+            const mTotalCost = modelBreakdown.reduce((s, m) => s + (m.totalCost || 0), 0);
+            const mTotalTasks = modelBreakdown.reduce((s, m) => s + (m.taskCount || 0), 0);
+            mbHtml += `<tr style="border-top:2px solid var(--border);font-weight:600">
+              <td>TOTAL</td>
+              <td>${mTotalTasks}</td>
+              <td style="color:var(--cyan)">${fmt(mTotalIn)}</td>
+              <td style="color:var(--green)">${fmt(mTotalOut)}</td>
+              <td style="color:var(--purple)">${fmt(mTotalIn + mTotalOut)}</td>
+              <td style="color:var(--green)">$${mTotalCost.toFixed(4)}</td>
+              <td></td><td></td>
+            </tr>`;
+            mbHtml += '</table>';
+            document.getElementById('sess-model-breakdown').innerHTML = mbHtml;
+          } else {
+            document.getElementById('sess-model-breakdown').innerHTML =
+              '<div class="empty">No model data</div>';
           }
 
           // Skills
@@ -1659,7 +1779,8 @@
       }
       function fmt(n) {
         if (typeof n !== 'number' || isNaN(n)) return '0';
-        return Math.round(n).toString();
+        const rounded = Math.round(n);
+        return rounded.toLocaleString();
       }
       function capitalize(s) {
         return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
