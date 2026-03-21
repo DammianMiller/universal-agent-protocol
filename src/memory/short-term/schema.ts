@@ -28,6 +28,66 @@ export function ensureShortTermSchema(db: Database.Database): void {
     // Ignore migration errors - column may already exist
   }
 
+  // Migration: widen CHECK constraint on memories.type to include 'lesson' and 'decision'
+  // SQLite doesn't support ALTER TABLE to change CHECK constraints, so we must rebuild the table.
+  try {
+    const ALLOWED_TYPES = ['action', 'observation', 'thought', 'goal', 'lesson', 'decision'];
+    // Probe: try inserting a 'lesson' row — if it fails, the old CHECK is blocking it
+    let needsRebuild = false;
+    try {
+      db.prepare(
+        "INSERT INTO memories (timestamp, type, content) VALUES ('__check_probe__', 'lesson', '__check_probe__')"
+      ).run();
+      db.exec("DELETE FROM memories WHERE timestamp = '__check_probe__' AND content = '__check_probe__'");
+    } catch {
+      needsRebuild = true;
+    }
+
+    if (needsRebuild) {
+      const checkExpr = ALLOWED_TYPES.map((t) => `'${t}'`).join(', ');
+
+      // Drop FTS triggers first so they don't fire during the migration
+      db.exec(`
+        DROP TRIGGER IF EXISTS memories_ai;
+        DROP TRIGGER IF EXISTS memories_ad;
+        DROP TRIGGER IF EXISTS memories_au;
+      `);
+
+      // Drop the FTS table — it will be recreated below
+      db.exec(`DROP TABLE IF EXISTS memories_fts`);
+
+      // Rebuild: create new table, copy data, swap
+      db.exec(`
+        CREATE TABLE memories_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp TEXT NOT NULL,
+          type TEXT NOT NULL CHECK(type IN (${checkExpr})),
+          content TEXT NOT NULL,
+          project_id TEXT NOT NULL DEFAULT 'default',
+          importance INTEGER NOT NULL DEFAULT 5
+        );
+        INSERT INTO memories_new (id, timestamp, type, content, project_id, importance)
+          SELECT id, timestamp, type, content,
+                 COALESCE(project_id, 'default'),
+                 COALESCE(importance, 5)
+          FROM memories;
+        DROP TABLE memories;
+        ALTER TABLE memories_new RENAME TO memories;
+      `);
+
+      // Recreate indexes on the new table
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_memories_project_id ON memories(project_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
+        CREATE INDEX IF NOT EXISTS idx_memories_project_type ON memories(project_id, type);
+        CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC);
+      `);
+    }
+  } catch {
+    // Ignore — constraint migration is best-effort
+  }
+
   // Create importance index after migration ensures column exists
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC)`);
 
