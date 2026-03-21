@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.13.7 (2026-03-21)
+
+- feat: add GLM 4.7 model preset, Qwen3.5 optimizations, dashboard enhancements
+- fix: add missing CLAUDE.md compliance sections, fix release permissions
+- feat: local UAP injection for harbor tbench benchmarks
+- fix: revert external router.ts regression, add Qwen3.5 benchmark configs
+- fix: add glm-4.7 model preset, fix default model list and test expectations
+- feat: fix Qwen3.5 + Claude Code integration — thinking mode, tool calls, agentic loop
+- feat: add Anthropic-to-OpenAI proxy for Claude Code with local LLMs (#72)
+- chore: update session hooks, restore worktree gate, bump v1.13.5 (#71)
+- fix: correct publishConfig registry to npmjs.org (#70)
+- fix: prevent Qwen3.5 35B A3B premature generation stopping (#69)
+- fix: correct npm registry URL format
+
+
 ## v1.13.4 (2026-03-20)
 
 - fix: prevent Qwen3.5 35B A3B premature generation stopping
