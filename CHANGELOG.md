@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.13.9 (2026-03-21)
+
+- fix: rebuild memories table CHECK constraint to allow lesson and decision types
+
+
 ## v1.13.8 (2026-03-21)
 
 - fix: add worktree enforcement gate, policy categories, dashboard improvements
