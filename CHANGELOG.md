@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.13.11 (2026-03-21)
+
+- fix(dashboard): live data for all panels, per-agent model/token breakdown, correct model routing
+
+
 ## v1.13.10 (2026-03-21)
 
 - fix: add performance data rendering to dashboard (hotPaths, metrics)
