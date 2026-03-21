@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.13.12 (2026-03-21)
+
+- fix: remove synthetic analytics re-seeding from routing decisions, derive router enabled from real data
+- refactor: replace synthetic data seeder with real-data-only dashboard, clean all fake data, add worktree enforcement gate
+
+
 ## v1.13.11 (2026-03-21)
 
 - fix(dashboard): live data for all panels, per-agent model/token breakdown, correct model routing
