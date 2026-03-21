@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.13.10 (2026-03-21)
+
+- fix: add performance data rendering to dashboard (hotPaths, metrics)
+
+
 ## v1.13.9 (2026-03-21)
 
 - fix: rebuild memories table CHECK constraint to allow lesson and decision types
