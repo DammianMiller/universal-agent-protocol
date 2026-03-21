@@ -839,46 +839,12 @@ function buildSessionTelemetry(
       category: p.category || 'general',
     }));
 
-    // Get routing decisions from session DB + model analytics
-    let routingDecisions = db
+    // Get routing decisions from session DB (real decisions only)
+    const routingDecisions = db
       .prepare(
         'SELECT * FROM routing_decisions ORDER BY timestamp DESC LIMIT 50'
       )
       .all();
-
-    // If no routing decisions in session DB, seed from model analytics
-    if (routingDecisions.length === 0) {
-      const analyticsDb = join(cwd, 'agents', 'data', 'memory', 'model_analytics.db');
-      if (existsSync(analyticsDb)) {
-        try {
-          const aDb = new Database(analyticsDb, { readonly: true });
-          const recentTasks = aDb.prepare(
-            `SELECT modelId, taskType, complexity, tokensIn, tokensOut, cost, success, timestamp
-             FROM task_outcomes ORDER BY timestamp DESC LIMIT 50`
-          ).all() as any[];
-          aDb.close();
-
-          const insertRd = db.prepare(
-            `INSERT INTO routing_decisions (timestamp, model_used, task_type, complexity, tokens_in, tokens_out, cost, success) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-          );
-          for (const t of recentTasks) {
-            insertRd.run(
-              t.timestamp || new Date().toISOString(),
-              t.modelId || 'unknown',
-              t.taskType || 'general',
-              t.complexity || 'medium',
-              t.tokensIn || 0,
-              t.tokensOut || 0,
-              t.cost || 0,
-              t.success ?? 1
-            );
-          }
-          routingDecisions = db.prepare(
-            'SELECT * FROM routing_decisions ORDER BY timestamp DESC LIMIT 50'
-          ).all();
-        } catch { /* ignore analytics seed errors */ }
-      }
-    }
 
     const routingDetails: RoutingDecision[] = routingDecisions.map((r: any) => ({
       timestamp: r.timestamp || new Date().toISOString(),
@@ -1565,10 +1531,16 @@ function getModelData(cwd: string): ModelData {
   const finalAvailableModels = (availableModels && availableModels.length > 0) ? availableModels : ['opus-4.6', 'qwen35'];
   const finalRoutingRules = (routingRules && routingRules.length > 0) ? routingRules : [];
 
+  // Router is effectively enabled if explicitly configured OR if there are
+  // actual routing decisions / multiple models producing analytics data
+  const effectivelyEnabled = enabled
+    || recentRoutingDecisions.length > 0
+    || sessionUsage.length > 1;
+
   return {
     roles,
     strategy,
-    enabled,
+    enabled: effectivelyEnabled,
     availableModels: finalAvailableModels,
     routingMatrix,
     routingRules: finalRoutingRules,
