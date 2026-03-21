@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.13.8 (2026-03-21)
+
+- fix: add worktree enforcement gate, policy categories, dashboard improvements
+
+
 ## v1.13.7 (2026-03-21)
 
 - feat: add GLM 4.7 model preset, Qwen3.5 optimizations, dashboard enhancements
