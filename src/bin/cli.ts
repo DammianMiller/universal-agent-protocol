@@ -271,6 +271,20 @@ program
       .action(async (options) => {
         (await lazy.worktree())('ensure', { strict: options.strict });
       })
+  )
+  .addCommand(
+    new Command('prune')
+      .description('Prune stale worktrees older than specified days')
+      .option('-o, --older-than <days>', 'Only prune worktrees older than N days', '30')
+      .option('-f, --force', 'Skip confirmation prompt')
+      .option('-n, --dry-run', 'Preview without making changes')
+      .action(async (options) => {
+        (await lazy.worktree())('prune', {
+          olderThan: parseInt(options.olderThan, 10),
+          force: options.force ?? false,
+          dryRun: options.dryRun ?? false,
+        });
+      })
   );
 
 program

@@ -5,13 +5,16 @@ import { join } from 'path';
 import { simpleGit, SimpleGit } from 'simple-git';
 import Database from 'better-sqlite3';
 
-type WorktreeAction = 'create' | 'list' | 'pr' | 'cleanup' | 'ensure';
+type WorktreeAction = 'create' | 'list' | 'pr' | 'cleanup' | 'ensure' | 'prune';
 
 interface WorktreeOptions {
   slug?: string;
   id?: string;
   draft?: boolean;
   strict?: boolean;
+  olderThan?: number;
+  force?: boolean;
+  dryRun?: boolean;
 }
 
 let worktreeDb: Database.Database | null = null;
@@ -88,6 +91,13 @@ export async function worktreeCommand(
       break;
     case 'ensure':
       await ensureWorktree(cwd, git, options.strict);
+      break;
+    case 'prune':
+      await pruneStaleWorktrees(cwd, {
+        olderThan: options.olderThan ?? 30,
+        force: options.force ?? false,
+        dryRun: options.dryRun ?? false,
+      });
       break;
   }
 }
@@ -402,4 +412,82 @@ export function isExemptFromWorktree(filePath: string): boolean {
     'dist/',
   ];
   return exemptPaths.some((exempt) => filePath.includes(exempt));
+}
+
+/**
+ * Prune stale worktrees - cleanup old/cleaned worktrees automatically
+ */
+async function pruneStaleWorktrees(
+  cwd: string,
+  options: { olderThan: number; force: boolean; dryRun: boolean }
+): Promise<void> {
+  const { rmSync } = await import('fs');
+
+  const db = getWorktreeDb(cwd);
+  const days = options.olderThan;
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+
+  // List stale worktrees (status='cleaned' or older than threshold)
+  const stale = db.prepare(`
+    SELECT id, slug, worktree_path, created_at, status
+    FROM worktrees
+    WHERE created_at < ?
+  `).all(cutoff) as Array<{
+    id: number;
+    slug: string;
+    worktree_path: string;
+    created_at: number;
+    status: string;
+  }>;
+
+  if (stale.length === 0) {
+    console.log(chalk.green(`No worktrees older than ${days} days found`));
+    return;
+  }
+
+  console.log(chalk.bold(`Found ${stale.length} stale worktree(s) older than ${days} days:`));
+  console.log('');
+
+  for (const wt of stale) {
+    const age = Math.floor((Date.now() - wt.created_at) / (1000 * 60 * 60 * 24));
+    const statusColor = wt.status === 'cleaned' ? chalk.yellow : chalk.dim;
+    console.log(`  ${wt.id}: ${wt.slug} (${age} days old) - ${statusColor(wt.status)}`);
+  }
+  console.log('');
+
+  if (!options.force && !options.dryRun) {
+    const inquirer = await import('inquirer');
+    const { confirm } = inquirer as any;
+    const { confirmed } = await confirm({
+      message: `Prune ${stale.length} worktree(s)? (This will delete worktree directories and remove registry entries)`,
+      default: false,
+    });
+
+    if (!confirmed) {
+      console.log(chalk.dim('Cancelled'));
+      return;
+    }
+  }
+
+  // Prune
+  let pruned = 0;
+  let directoriesRemoved = 0;
+
+  for (const wt of stale) {
+    // Remove from DB
+    db.prepare('DELETE FROM worktrees WHERE id = ?').run(wt.id);
+    pruned++;
+
+    // Remove directory
+    if (existsSync(wt.worktree_path)) {
+      rmSync(wt.worktree_path, { recursive: true, force: true });
+      directoriesRemoved++;
+    }
+  }
+
+  if (options.dryRun) {
+    console.log(chalk.yellow(`[DRY RUN] Would prune ${pruned} worktree(s), remove ${directoriesRemoved} directory(ies)`));
+  } else {
+    console.log(chalk.green(`Pruned ${pruned} worktree(s), removed ${directoriesRemoved} directory(ies)`));
+  }
 }

@@ -21,6 +21,9 @@ Key Features
 - Granular timeouts (short connect, long read for LLM generation)
 - Graceful error recovery on upstream connection drops
 - Proper upstream cleanup on client disconnect
+- Context window overflow protection with conversation pruning
+- Smart max_tokens capping to prevent next-turn overflow
+- Session-level token monitoring with warnings
 
 Configuration (Environment Variables)
 --------------------------------------
@@ -41,6 +44,14 @@ Configuration (Environment Variables)
 
     PROXY_MAX_CONNECTIONS   Max concurrent connections to upstream
                             Default: 20
+
+    PROXY_CONTEXT_WINDOW   Override context window size (auto-detected from
+                           upstream /slots endpoint if not set)
+                           Default: 0 (auto-detect)
+
+    PROXY_CONTEXT_PRUNE_THRESHOLD   Fraction of context window at which
+                                    conversation pruning activates (0.0-1.0)
+                                    Default: 0.75
 
 Usage
 -----
@@ -71,6 +82,7 @@ import os
 import sys
 import time
 import uuid
+from dataclasses import dataclass, field
 
 import httpx
 from contextlib import asynccontextmanager
@@ -87,6 +99,8 @@ PROXY_HOST = os.environ.get("PROXY_HOST", "0.0.0.0")
 PROXY_LOG_LEVEL = os.environ.get("PROXY_LOG_LEVEL", "INFO").upper()
 PROXY_READ_TIMEOUT = float(os.environ.get("PROXY_READ_TIMEOUT", "600"))
 PROXY_MAX_CONNECTIONS = int(os.environ.get("PROXY_MAX_CONNECTIONS", "20"))
+PROXY_CONTEXT_WINDOW = int(os.environ.get("PROXY_CONTEXT_WINDOW", "0"))
+PROXY_CONTEXT_PRUNE_THRESHOLD = float(os.environ.get("PROXY_CONTEXT_PRUNE_THRESHOLD", "0.75"))
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -97,6 +111,352 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("uap.anthropic_proxy")
+
+
+# ---------------------------------------------------------------------------
+# Option F: Session-level Context Window Monitor
+# ---------------------------------------------------------------------------
+@dataclass
+class SessionMonitor:
+    """Tracks token usage across the session to provide early warnings
+    and enable proactive context management before overflow occurs."""
+
+    context_window: int = 0          # Auto-detected or configured
+    total_requests: int = 0
+    last_input_tokens: int = 0       # Estimated input tokens of last request
+    last_output_tokens: int = 0      # Actual output tokens of last response
+    peak_input_tokens: int = 0       # High-water mark
+    prune_count: int = 0             # How many times pruning was triggered
+    overflow_count: int = 0          # How many context overflow errors caught
+    context_history: list = field(default_factory=list)  # Recent token counts
+
+    def record_request(self, estimated_tokens: int):
+        """Record an outgoing request's estimated token count."""
+        self.total_requests += 1
+        self.last_input_tokens = estimated_tokens
+        if estimated_tokens > self.peak_input_tokens:
+            self.peak_input_tokens = estimated_tokens
+        self.context_history.append(estimated_tokens)
+        # Keep last 50 entries
+        if len(self.context_history) > 50:
+            self.context_history = self.context_history[-50:]
+
+    def record_response(self, output_tokens: int):
+        """Record a response's output token count."""
+        self.last_output_tokens = output_tokens
+
+    def get_utilization(self) -> float:
+        """Get current context utilization as a fraction (0.0 - 1.0)."""
+        if self.context_window <= 0:
+            return 0.0
+        return self.last_input_tokens / self.context_window
+
+    def get_warning_level(self) -> str | None:
+        """Return warning level based on context utilization.
+        Returns None if no warning needed."""
+        util = self.get_utilization()
+        if util >= 0.95:
+            return "CRITICAL"
+        elif util >= 0.85:
+            return "HIGH"
+        elif util >= 0.75:
+            return "ELEVATED"
+        return None
+
+    def estimate_turns_remaining(self) -> int | None:
+        """Estimate how many more agentic turns can fit before overflow."""
+        if self.context_window <= 0 or len(self.context_history) < 2:
+            return None
+        # Average growth per turn from recent history
+        deltas = [
+            self.context_history[i] - self.context_history[i - 1]
+            for i in range(1, len(self.context_history))
+            if self.context_history[i] > self.context_history[i - 1]
+        ]
+        if not deltas:
+            return None
+        avg_growth = sum(deltas) / len(deltas)
+        if avg_growth <= 0:
+            return None
+        remaining_tokens = self.context_window - self.last_input_tokens
+        return max(0, int(remaining_tokens / avg_growth))
+
+    def log_status(self):
+        """Log current session status."""
+        util = self.get_utilization()
+        warning = self.get_warning_level()
+        turns = self.estimate_turns_remaining()
+        turns_str = f"~{turns} turns remaining" if turns is not None else "unknown"
+
+        if warning == "CRITICAL":
+            logger.error(
+                "CONTEXT CRITICAL: %d/%d tokens (%.1f%%), %s, pruned=%d, overflows=%d",
+                self.last_input_tokens, self.context_window, util * 100,
+                turns_str, self.prune_count, self.overflow_count,
+            )
+        elif warning == "HIGH":
+            logger.warning(
+                "CONTEXT HIGH: %d/%d tokens (%.1f%%), %s, pruned=%d",
+                self.last_input_tokens, self.context_window, util * 100,
+                turns_str, self.prune_count,
+            )
+        elif warning == "ELEVATED":
+            logger.warning(
+                "CONTEXT ELEVATED: %d/%d tokens (%.1f%%), %s",
+                self.last_input_tokens, self.context_window, util * 100,
+                turns_str,
+            )
+        else:
+            logger.info(
+                "CONTEXT: %d/%d tokens (%.1f%%), %s",
+                self.last_input_tokens, self.context_window, util * 100,
+                turns_str,
+            )
+
+
+session_monitor = SessionMonitor()
+
+
+# ---------------------------------------------------------------------------
+# Context Window Detection
+# ---------------------------------------------------------------------------
+async def detect_context_window(client: httpx.AsyncClient) -> int:
+    """Auto-detect the upstream server's per-slot context window size.
+
+    Queries the /slots endpoint (llama.cpp) to get the actual n_ctx value.
+    Falls back to PROXY_CONTEXT_WINDOW env var, then to a safe default.
+    """
+    if PROXY_CONTEXT_WINDOW > 0:
+        logger.info("Using configured context window: %d tokens", PROXY_CONTEXT_WINDOW)
+        return PROXY_CONTEXT_WINDOW
+
+    try:
+        slots_url = LLAMA_CPP_BASE.replace("/v1", "/slots")
+        resp = await client.get(slots_url, timeout=5.0)
+        if resp.status_code == 200:
+            slots = resp.json()
+            if slots and isinstance(slots, list):
+                n_ctx = slots[0].get("n_ctx", 0)
+                if n_ctx > 0:
+                    logger.info(
+                        "Auto-detected context window from upstream: %d tokens (%d slots)",
+                        n_ctx, len(slots),
+                    )
+                    return n_ctx
+    except Exception as exc:
+        logger.warning("Failed to auto-detect context window: %s", exc)
+
+    # Safe default: 128K (common for modern models)
+    default = 131072
+    logger.warning("Using default context window: %d tokens", default)
+    return default
+
+
+# ---------------------------------------------------------------------------
+# Option C: Conversation Pruning
+# ---------------------------------------------------------------------------
+# Characters-per-token ratio for estimation. English text averages ~4 chars/token,
+# but tool call JSON and code tend to be denser (~3.2 chars/token).
+CHARS_PER_TOKEN = 3.5
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count from text length using chars-per-token heuristic."""
+    return max(1, int(len(text) / CHARS_PER_TOKEN))
+
+
+def estimate_message_tokens(msg: dict) -> int:
+    """Estimate token count for a single Anthropic message."""
+    tokens = 4  # Message overhead (role, separators)
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        tokens += estimate_tokens(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                tokens += estimate_tokens(block)
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    tokens += estimate_tokens(block.get("text", ""))
+                elif block.get("type") == "tool_use":
+                    tokens += estimate_tokens(block.get("name", ""))
+                    tokens += estimate_tokens(json.dumps(block.get("input", {})))
+                elif block.get("type") == "tool_result":
+                    tokens += estimate_tokens(_extract_text(block.get("content", "")))
+    return tokens
+
+
+def estimate_total_tokens(anthropic_body: dict) -> int:
+    """Estimate total token count for an Anthropic Messages API request."""
+    tokens = 0
+
+    # System prompt
+    system = anthropic_body.get("system", "")
+    if isinstance(system, str):
+        tokens += estimate_tokens(system)
+    elif isinstance(system, list):
+        for block in system:
+            if isinstance(block, dict) and block.get("type") == "text":
+                tokens += estimate_tokens(block.get("text", ""))
+
+    # Agentic supplement tokens (always injected)
+    tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
+
+    # Messages
+    for msg in anthropic_body.get("messages", []):
+        tokens += estimate_message_tokens(msg)
+
+    # Tool definitions
+    tools = anthropic_body.get("tools", [])
+    if tools:
+        tokens += estimate_tokens(json.dumps(tools))
+
+    return tokens
+
+
+def prune_conversation(anthropic_body: dict, context_window: int, target_fraction: float = 0.65) -> dict:
+    """Prune the conversation to fit within the context window.
+
+    Strategy:
+    - Always keep: system prompt, first user message, last N messages
+    - Remove from the middle: oldest tool_result messages first (they're
+      the largest -- file contents, command output, etc.), then oldest
+      assistant messages, then oldest user messages.
+    - Inject a [CONTEXT PRUNED] marker so the model knows history was trimmed.
+
+    Args:
+        anthropic_body: The full Anthropic request body
+        context_window: Maximum context window in tokens
+        target_fraction: Target utilization after pruning (0.0-1.0)
+
+    Returns:
+        Modified anthropic_body with pruned messages
+    """
+    messages = anthropic_body.get("messages", [])
+    if len(messages) <= 4:
+        # Too few messages to prune meaningfully
+        return anthropic_body
+
+    target_tokens = int(context_window * target_fraction)
+
+    # Estimate non-message tokens (system, tools, agentic supplement)
+    overhead_tokens = 0
+    system = anthropic_body.get("system", "")
+    if isinstance(system, str):
+        overhead_tokens += estimate_tokens(system)
+    elif isinstance(system, list):
+        for block in system:
+            if isinstance(block, dict) and block.get("type") == "text":
+                overhead_tokens += estimate_tokens(block.get("text", ""))
+    overhead_tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
+    tools = anthropic_body.get("tools", [])
+    if tools:
+        overhead_tokens += estimate_tokens(json.dumps(tools))
+
+    # Budget for messages
+    message_budget = target_tokens - overhead_tokens
+    if message_budget <= 0:
+        logger.error("System prompt + tools alone exceed target budget!")
+        return anthropic_body
+
+    # Always keep the first user message and the last N messages
+    KEEP_LAST = 8  # Keep the last 8 messages (recent context)
+    protected_head = messages[:1]   # First user message
+    protected_tail = messages[-KEEP_LAST:] if len(messages) > KEEP_LAST else messages[1:]
+    middle = messages[1:-KEEP_LAST] if len(messages) > KEEP_LAST + 1 else []
+
+    # Calculate tokens for protected messages
+    protected_tokens = sum(estimate_message_tokens(m) for m in protected_head + protected_tail)
+
+    if protected_tokens >= message_budget:
+        # Even protected messages exceed budget -- truncate tool_result content
+        # in the tail to fit
+        logger.warning(
+            "Protected messages (%d tokens) exceed budget (%d) -- truncating tool results",
+            protected_tokens, message_budget,
+        )
+        for msg in protected_tail:
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        result_text = _extract_text(block.get("content", ""))
+                        if len(result_text) > 2000:
+                            block["content"] = result_text[:1000] + "\n...[TRUNCATED]...\n" + result_text[-500:]
+        anthropic_body["messages"] = protected_head + protected_tail
+        return anthropic_body
+
+    remaining_budget = message_budget - protected_tokens
+
+    # Score middle messages for removal priority:
+    # - tool_result messages: remove first (biggest, least important historically)
+    # - assistant text-only: remove second
+    # - user messages: remove last (provide context for the model's actions)
+    # Within each category, remove oldest first.
+    scored_middle = []
+    for i, msg in enumerate(middle):
+        content = msg.get("content", [])
+        tokens = estimate_message_tokens(msg)
+        is_tool_result = False
+        is_assistant = msg.get("role") == "assistant"
+
+        if isinstance(content, list):
+            is_tool_result = any(
+                isinstance(b, dict) and b.get("type") == "tool_result"
+                for b in content
+            )
+
+        # Lower priority = removed first
+        if is_tool_result:
+            priority = 0  # Remove first
+        elif is_assistant:
+            priority = 1  # Remove second
+        else:
+            priority = 2  # Remove last (user messages)
+
+        scored_middle.append((priority, i, tokens, msg))
+
+    # Sort by priority (ascending = remove first), then by index (oldest first)
+    scored_middle.sort(key=lambda x: (x[0], x[1]))
+
+    # Greedily keep messages from highest priority (keep last) until budget fills
+    kept_middle = []
+    used_tokens = 0
+    # Process in reverse priority order (keep high-priority messages first)
+    for priority, idx, tokens, msg in reversed(scored_middle):
+        if used_tokens + tokens <= remaining_budget:
+            kept_middle.append((idx, msg))
+            used_tokens += tokens
+
+    # Sort kept messages back into original order
+    kept_middle.sort(key=lambda x: x[0])
+    kept_msgs = [m for _, m in kept_middle]
+
+    removed_count = len(middle) - len(kept_msgs)
+    removed_tokens = sum(t for _, _, t, _ in scored_middle) - used_tokens
+
+    if removed_count > 0:
+        # Insert a context-pruned marker
+        prune_marker = {
+            "role": "user",
+            "content": (
+                f"[CONTEXT PRUNED: {removed_count} older messages (~{removed_tokens} tokens) "
+                f"were removed to fit within the context window. "
+                f"The conversation continues from recent context below.]"
+            ),
+        }
+        anthropic_body["messages"] = protected_head + [prune_marker] + kept_msgs + protected_tail
+        logger.warning(
+            "PRUNED: removed %d messages (~%d tokens), kept %d messages, "
+            "target=%.0f%% of %d ctx",
+            removed_count, removed_tokens, len(anthropic_body["messages"]),
+            target_fraction * 100, context_window,
+        )
+    else:
+        anthropic_body["messages"] = protected_head + kept_msgs + protected_tail
+
+    return anthropic_body
+
 
 # ---------------------------------------------------------------------------
 # HTTP Client Lifecycle
@@ -127,6 +487,15 @@ async def lifespan(app: FastAPI):
         "Proxy started: listening on %s:%d -> upstream %s",
         PROXY_HOST, PROXY_PORT, LLAMA_CPP_BASE,
     )
+
+    # Auto-detect context window from upstream server
+    session_monitor.context_window = await detect_context_window(http_client)
+    logger.info(
+        "Context window: %d tokens, prune threshold: %.0f%%",
+        session_monitor.context_window,
+        PROXY_CONTEXT_PRUNE_THRESHOLD * 100,
+    )
+
     yield
     await http_client.aclose()
     http_client = None
@@ -256,7 +625,36 @@ def build_openai_request(anthropic_body: dict) -> dict:
         # Enforce minimum floor for thinking mode: model needs tokens for
         # reasoning (<think>...</think>) plus the actual response/tool calls.
         # Claude Code typically sends 4096-8192 which is too low for thinking.
-        openai_body["max_tokens"] = max(anthropic_body["max_tokens"], 16384)
+        requested_max = max(anthropic_body["max_tokens"], 16384)
+
+        # Option E: Smart max_tokens capping — prevent the response from
+        # consuming so many tokens that the NEXT turn's input won't fit.
+        # Formula: max_tokens = min(requested, context_window - input_tokens - safety_margin)
+        # This ensures the model's output + current input stays within bounds,
+        # leaving room for the next turn's incremental growth.
+        ctx_window = session_monitor.context_window
+        if ctx_window > 0:
+            estimated_input = estimate_total_tokens(anthropic_body)
+            # Reserve 15% of context for next-turn growth (tool results, etc.)
+            safety_margin = int(ctx_window * 0.15)
+            available_for_output = ctx_window - estimated_input - safety_margin
+            if available_for_output < requested_max and available_for_output > 1024:
+                logger.info(
+                    "MAX_TOKENS capped: %d -> %d (ctx=%d, input~%d, margin=%d)",
+                    requested_max, available_for_output,
+                    ctx_window, estimated_input, safety_margin,
+                )
+                requested_max = available_for_output
+            elif available_for_output <= 1024:
+                # Very tight on space -- allow minimum but warn
+                logger.warning(
+                    "MAX_TOKENS: only %d tokens available for output (ctx=%d, input~%d). "
+                    "Response may be truncated.",
+                    available_for_output, ctx_window, estimated_input,
+                )
+                requested_max = max(1024, available_for_output)
+
+        openai_body["max_tokens"] = requested_max
     if "temperature" in anthropic_body:
         openai_body["temperature"] = anthropic_body["temperature"]
     if "top_p" in anthropic_body:
@@ -591,7 +989,14 @@ async def stream_anthropic_response(openai_stream: httpx.Response, model: str):
 
 @app.post("/v1/messages")
 async def messages(request: Request):
-    """Handle Anthropic Messages API requests (streaming and non-streaming)."""
+    """Handle Anthropic Messages API requests (streaming and non-streaming).
+
+    Integrates context management:
+    - Option B: HTTP error handling for upstream 4xx/5xx responses
+    - Option C: Conversation pruning when approaching context limits
+    - Option E: Smart max_tokens capping (in build_openai_request)
+    - Option F: Session-level token monitoring with warnings
+    """
     body = await request.json()
     model = body.get("model", "default")
     is_stream = body.get("stream", False)
@@ -614,6 +1019,31 @@ async def messages(request: Request):
         is_stream, n_messages, n_tools, max_tokens, last_role, last_text
     )
 
+    # --- Option F: Estimate tokens and record in session monitor ---
+    estimated_tokens = estimate_total_tokens(body)
+    session_monitor.record_request(estimated_tokens)
+    session_monitor.log_status()
+
+    # --- Option C: Prune conversation if approaching context limit ---
+    ctx_window = session_monitor.context_window
+    if ctx_window > 0:
+        utilization = estimated_tokens / ctx_window
+        if utilization >= PROXY_CONTEXT_PRUNE_THRESHOLD:
+            logger.warning(
+                "Context utilization %.1f%% exceeds threshold %.1f%% -- pruning conversation",
+                utilization * 100, PROXY_CONTEXT_PRUNE_THRESHOLD * 100,
+            )
+            body = prune_conversation(body, ctx_window, target_fraction=0.65)
+            session_monitor.prune_count += 1
+            # Re-estimate after pruning
+            estimated_tokens = estimate_total_tokens(body)
+            session_monitor.record_request(estimated_tokens)
+            n_messages = len(body.get("messages", []))
+            logger.info(
+                "After pruning: ~%d tokens, %d messages",
+                estimated_tokens, n_messages,
+            )
+
     openai_body = build_openai_request(body)
 
     client = http_client
@@ -627,7 +1057,7 @@ async def messages(request: Request):
     if is_stream:
         openai_body["stream"] = True
 
-        # Option F: Retry upstream connection with backoff to handle
+        # Retry upstream connection with backoff to handle
         # llama-server restarts gracefully instead of 500-ing to the client.
         MAX_UPSTREAM_RETRIES = 3
         RETRY_DELAY_SECS = 5.0
@@ -675,6 +1105,78 @@ async def messages(request: Request):
                 media_type="application/json",
             )
 
+        # --- Option B: Check HTTP status before streaming ---
+        # llama-server returns 400 for context overflow, 500 for internal errors, etc.
+        # Without this check, the proxy would try to stream-translate an error body,
+        # producing an empty response that silently kills the agentic loop.
+        if resp.status_code != 200:
+            error_body = await resp.aread()
+            await resp.aclose()
+            error_text = error_body.decode("utf-8", errors="replace")[:1000]
+            logger.error(
+                "Upstream HTTP %d: %s", resp.status_code, error_text
+            )
+
+            # Parse the error for a user-friendly message
+            error_message = f"Upstream server error (HTTP {resp.status_code})"
+            try:
+                error_json = json.loads(error_body)
+                if "error" in error_json:
+                    upstream_error = error_json["error"]
+                    if isinstance(upstream_error, dict):
+                        error_message = upstream_error.get("message", error_message)
+                    else:
+                        error_message = str(upstream_error)
+            except (json.JSONDecodeError, KeyError):
+                error_message = error_text[:500] if error_text else error_message
+
+            # Detect context overflow specifically
+            is_context_overflow = (
+                resp.status_code == 400
+                and "exceeds" in error_message.lower()
+                and "context" in error_message.lower()
+            )
+
+            if is_context_overflow:
+                session_monitor.overflow_count += 1
+                logger.error(
+                    "CONTEXT OVERFLOW detected (count=%d). "
+                    "Estimated input: %d tokens, context window: %d tokens. "
+                    "Conversation needs pruning or context window increase.",
+                    session_monitor.overflow_count, estimated_tokens, ctx_window,
+                )
+                # Return Anthropic-format error that Claude Code can handle
+                return Response(
+                    content=json.dumps({
+                        "type": "error",
+                        "error": {
+                            "type": "overloaded_error",
+                            "message": (
+                                f"Context window exceeded: request requires ~{estimated_tokens} tokens "
+                                f"but only {ctx_window} are available. "
+                                f"The conversation is too long. Please start a new session or "
+                                f"reduce conversation length."
+                            ),
+                        },
+                    }),
+                    status_code=529,
+                    media_type="application/json",
+                )
+
+            # Generic upstream error -- return as Anthropic error format
+            error_type = "overloaded_error" if resp.status_code >= 500 else "invalid_request_error"
+            return Response(
+                content=json.dumps({
+                    "type": "error",
+                    "error": {
+                        "type": error_type,
+                        "message": error_message,
+                    },
+                }),
+                status_code=529 if resp.status_code >= 500 else 400,
+                media_type="application/json",
+            )
+
         return StreamingResponse(
             stream_anthropic_response(resp, model),
             media_type="text/event-stream",
@@ -689,8 +1191,30 @@ async def messages(request: Request):
             json=openai_body,
             headers={"Content-Type": "application/json"},
         )
+
+        # Option B: Handle non-streaming errors too
+        if resp.status_code != 200:
+            error_text = resp.text[:1000]
+            logger.error("Upstream HTTP %d (non-stream): %s", resp.status_code, error_text)
+            return Response(
+                content=json.dumps({
+                    "type": "error",
+                    "error": {
+                        "type": "overloaded_error",
+                        "message": f"Upstream error (HTTP {resp.status_code}): {error_text[:500]}",
+                    },
+                }),
+                status_code=529,
+                media_type="application/json",
+            )
+
         openai_resp = resp.json()
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
+
+        # Track output tokens in session monitor
+        output_tokens = anthropic_resp.get("usage", {}).get("output_tokens", 0)
+        session_monitor.record_response(output_tokens)
+
         return anthropic_resp
 
 
@@ -730,6 +1254,33 @@ async def health():
         "proxy": "ok",
         "upstream": "ok" if upstream_ok else "unreachable",
         "upstream_url": LLAMA_CPP_BASE,
+    }
+
+
+@app.get("/v1/context")
+async def context_status():
+    """Option F: Context window monitoring endpoint.
+
+    Returns current session token usage, utilization, warnings, and
+    estimated remaining turns. Useful for dashboards and debugging.
+    """
+    warning = session_monitor.get_warning_level()
+    turns = session_monitor.estimate_turns_remaining()
+
+    return {
+        "context_window": session_monitor.context_window,
+        "last_input_tokens": session_monitor.last_input_tokens,
+        "last_output_tokens": session_monitor.last_output_tokens,
+        "peak_input_tokens": session_monitor.peak_input_tokens,
+        "utilization": round(session_monitor.get_utilization(), 4),
+        "utilization_pct": f"{session_monitor.get_utilization() * 100:.1f}%",
+        "warning_level": warning,
+        "estimated_turns_remaining": turns,
+        "total_requests": session_monitor.total_requests,
+        "prune_count": session_monitor.prune_count,
+        "overflow_count": session_monitor.overflow_count,
+        "prune_threshold": PROXY_CONTEXT_PRUNE_THRESHOLD,
+        "recent_history": session_monitor.context_history[-10:],
     }
 
 
