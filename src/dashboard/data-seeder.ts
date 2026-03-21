@@ -1,13 +1,14 @@
 /**
  * Dashboard Data Seeder
  *
- * Seeds dashboard databases with real data from worktrees, git history,
- * and active policies. Registers the dashboard server as an active agent
- * with heartbeat for coordination visibility.
+ * Registers the dashboard server as an active agent and populates
+ * empty databases with real data from worktrees and git history.
  *
- * Runs a periodic refresh every 10s that generates new policy execution
- * records, memory observations, and pattern outcome updates so all
- * dashboard values change on every refresh.
+ * IMPORTANT: This module NEVER generates synthetic/fake data.
+ * All data comes from real sources: git log, worktree registry,
+ * and existing database records. The periodic refresh only updates
+ * the agent heartbeat — it does not inject fake tasks, memories,
+ * policy executions, routing decisions, or analytics.
  */
 
 import { existsSync } from 'fs';
@@ -18,7 +19,7 @@ import Database from 'better-sqlite3';
 export interface SeederState {
   agentId: string;
   heartbeatInterval: ReturnType<typeof setInterval> | null;
-  refreshInterval: ReturnType<typeof setInterval> | null;
+  refreshInterval: null; // kept for interface compat; no periodic data injection
   seededAt: string;
   tasksCreated: number;
   deploysQueued: number;
@@ -57,7 +58,7 @@ export function seedDashboardData(cwd: string): SeederState {
     }
   }
 
-  // 2. Create tasks from active worktrees
+  // 2. Create tasks from active worktrees (only when task DB is empty)
   try {
     const wtDbPath = join(cwd, '.uap', 'worktree_registry.db');
     if (existsSync(wtDbPath)) {
@@ -93,7 +94,7 @@ export function seedDashboardData(cwd: string): SeederState {
     /* ignore */
   }
 
-  // 3. Create tasks from recent git commits
+  // 3. Create tasks from recent git commits (only real commits, INSERT OR IGNORE)
   try {
     const taskDbPath = join(cwd, '.uap', 'tasks', 'tasks.db');
     if (existsSync(taskDbPath)) {
@@ -122,7 +123,7 @@ export function seedDashboardData(cwd: string): SeederState {
     /* ignore */
   }
 
-  // 4. Queue deploy actions from git tags and commits
+  // 4. Queue deploy actions from real git tags and commits (INSERT OR IGNORE)
   if (coordDb) {
     try {
       const hasDQ = coordDb
@@ -183,9 +184,6 @@ export function seedDashboardData(cwd: string): SeederState {
     }
   }
 
-  // 6. Seed policy executions from git history
-  const policyChecksRun = seedPolicyChecks(cwd, agentId);
-
   if (coordDb) {
     try {
       coordDb.close();
@@ -194,7 +192,7 @@ export function seedDashboardData(cwd: string): SeederState {
     }
   }
 
-  // 7. Heartbeat every 30s
+  // 6. Heartbeat every 30s (real agent heartbeat, no data injection)
   const heartbeatInterval = setInterval(() => {
     if (!existsSync(coordDbPath)) return;
     try {
@@ -209,360 +207,17 @@ export function seedDashboardData(cwd: string): SeederState {
     }
   }, 30_000);
 
-  // 8. Periodic refresh every 10s - keeps ALL data changing
-  const refreshInterval = setInterval(() => {
-    try {
-      periodicRefresh(cwd, agentId);
-    } catch {
-      /* ignore */
-    }
-  }, 10_000);
-
   seederState = {
     agentId,
     heartbeatInterval,
-    refreshInterval,
+    refreshInterval: null,
     seededAt: now,
     tasksCreated,
     deploysQueued,
     batchesCreated,
-    policyChecksRun,
+    policyChecksRun: 0,
   };
   return seederState;
-}
-
-// ── Seed policy executions from git history ──
-
-function seedPolicyChecks(cwd: string, agentId: string): number {
-  const policyDbPath = join(cwd, 'agents', 'data', 'memory', 'policies.db');
-  if (!existsSync(policyDbPath)) return 0;
-  let count = 0;
-  try {
-    const db = new Database(policyDbPath);
-    const hasTable = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='policy_executions'")
-      .all();
-    if (hasTable.length === 0) {
-      db.close();
-      return 0;
-    }
-    const existing = (
-      db.prepare('SELECT COUNT(*) as c FROM policy_executions').get() as { c: number }
-    ).c;
-    if (existing > 0) {
-      db.close();
-      return existing;
-    }
-
-    const policies = db.prepare('SELECT id, name FROM policies WHERE isActive = 1').all() as Array<{
-      id: string;
-      name: string;
-    }>;
-    if (policies.length === 0) {
-      db.close();
-      return 0;
-    }
-
-    let commits: Array<{ hash: string; msg: string; date: string }> = [];
-    try {
-      const log = execSync('git log --format="%H|%s|%aI" -20', {
-        encoding: 'utf-8',
-        cwd,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
-      commits = log
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => {
-          const parts = line.split('|');
-          return {
-            hash: parts[0] || '',
-            msg: parts[1] || '',
-            date: parts[2] || new Date().toISOString(),
-          };
-        });
-    } catch {
-      /* ignore */
-    }
-
-    const insert = db.prepare(
-      `INSERT INTO policy_executions (policyId, toolName, operation, args, result, allowed, reason, executedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    );
-    for (const policy of policies) {
-      for (const commit of commits) {
-        const op = commit.msg.startsWith('fix:')
-          ? 'commit-fix'
-          : commit.msg.startsWith('feat:')
-            ? 'commit-feat'
-            : commit.msg.startsWith('test:')
-              ? 'commit-test'
-              : 'commit';
-        const hasTests = commit.msg.includes('test');
-        const isFix = commit.msg.startsWith('fix:');
-        const isChore = commit.msg.startsWith('chore:');
-        const allowed = hasTests || isFix || isChore ? 1 : Math.random() > 0.15 ? 1 : 0;
-        const reason = allowed
-          ? `Pre-exec check passed for ${op}`
-          : `REQUIRED policy not satisfied: ${policy.name.slice(0, 60)}`;
-        insert.run(
-          policy.id,
-          `git.${op}`,
-          `git.${op}`,
-          JSON.stringify({ commit: commit.hash.slice(0, 8), message: commit.msg, agent: agentId }),
-          allowed ? 'passed' : 'blocked',
-          allowed,
-          reason,
-          commit.date
-        );
-        count++;
-      }
-    }
-    db.close();
-  } catch {
-    /* ignore */
-  }
-  return count;
-}
-
-// ── Periodic refresh - called every 10s to keep ALL dashboard data updating ──
-
-function periodicRefresh(cwd: string, agentId: string): void {
-  const now = new Date().toISOString();
-
-  // 1. New policy execution record
-  try {
-    const policyDbPath = join(cwd, 'agents', 'data', 'memory', 'policies.db');
-    if (existsSync(policyDbPath)) {
-      const db = new Database(policyDbPath);
-      const policies = db
-        .prepare('SELECT id, name FROM policies WHERE isActive = 1')
-        .all() as Array<{ id: string; name: string }>;
-      if (policies.length > 0) {
-        const policy = policies[Math.floor(Math.random() * policies.length)];
-        const ops = [
-          'file.write',
-          'file.edit',
-          'git.commit',
-          'git.push',
-          'build.run',
-          'test.run',
-          'deploy.check',
-          'worktree.verify',
-          'schema.diff',
-          'lint.check',
-        ];
-        const op = ops[Math.floor(Math.random() * ops.length)];
-        const allowed = Math.random() > 0.12 ? 1 : 0;
-        const reason = allowed
-          ? `${op} passed policy check`
-          : `BLOCKED: ${policy.name.slice(0, 50)} - ${op} failed verification`;
-        db.prepare(
-          `INSERT INTO policy_executions (policyId, toolName, operation, args, result, allowed, reason, executedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(
-          policy.id,
-          op,
-          op,
-          JSON.stringify({ agent: agentId, ts: Date.now() }),
-          allowed ? 'passed' : 'blocked',
-          allowed,
-          reason,
-          now
-        );
-      }
-      db.close();
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // 2. New memory observation
-  try {
-    const memDbPath = join(cwd, 'agents', 'data', 'memory', 'short_term.db');
-    if (existsSync(memDbPath)) {
-      const db = new Database(memDbPath);
-      const hasTable = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories'")
-        .all();
-      if (hasTable.length > 0) {
-        const types = ['observation', 'action', 'thought'];
-        const type = types[Math.floor(Math.random() * types.length)];
-        const contents = [
-          `Dashboard health check at ${now.slice(11, 19)}`,
-          `Policy compliance scan completed`,
-          `Agent heartbeat verified for ${agentId.slice(0, 16)}`,
-          `Memory consolidation cycle`,
-          `Worktree status refresh`,
-          `Pattern outcome evaluation`,
-          `Deploy queue inspection`,
-          `Context compression check`,
-        ];
-        const content = contents[Math.floor(Math.random() * contents.length)];
-        try {
-          db.prepare(
-            `INSERT INTO memories (type, content, importance, timestamp, project_id) VALUES (?, ?, ?, ?, 'default')`
-          ).run(type, content, Math.floor(Math.random() * 4) + 5, now);
-        } catch {
-          /* schema mismatch */
-        }
-      }
-      db.close();
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // 3. Update pattern outcomes
-  try {
-    const coordDbPath = join(cwd, 'agents', 'data', 'coordination', 'coordination.db');
-    if (existsSync(coordDbPath)) {
-      const db = new Database(coordDbPath);
-      const hasTable = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='pattern_outcomes'")
-        .all();
-      if (hasTable.length > 0) {
-        const patterns = db.prepare('SELECT pattern_id FROM pattern_outcomes').all() as Array<{
-          pattern_id: string;
-        }>;
-        if (patterns.length > 0) {
-          const p = patterns[Math.floor(Math.random() * patterns.length)];
-          const isSuccess = Math.random() > 0.3;
-          db.prepare(
-            `UPDATE pattern_outcomes SET uses = uses + 1${isSuccess ? ', successes = successes + 1' : ''}, updated_at = ? WHERE pattern_id = ?`
-          ).run(now, p.pattern_id);
-        }
-      }
-      db.close();
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // 4. Record model routing decision (model analytics)
-  try {
-    const analyticsDbPath = join(cwd, 'agents', 'data', 'memory', 'model_analytics.db');
-    if (existsSync(analyticsDbPath)) {
-      const db = new Database(analyticsDbPath);
-      const hasTable = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='task_outcomes'")
-        .all();
-      if (hasTable.length > 0) {
-        const models = ['opus-4.6', 'qwen35'];
-        const taskTypes = ['coding', 'testing', 'debugging', 'planning', 'review', 'file-ops', 'sysadmin', 'refactoring'];
-        const complexities = ['low', 'medium', 'high'];
-        const modelId = models[Math.floor(Math.random() * models.length)];
-        const taskType = taskTypes[Math.floor(Math.random() * taskTypes.length)];
-        const complexity = complexities[Math.floor(Math.random() * complexities.length)];
-        const success = Math.random() > 0.05 ? 1 : 0;
-        const tokensIn = Math.floor(Math.random() * 200) + 30;
-        const tokensOut = Math.floor(Math.random() * 80) + 10;
-        const cost = (tokensIn * 0.0000075 + tokensOut * 0.0000375);
-        db.prepare(
-          `INSERT INTO task_outcomes (modelId, taskType, complexity, success, durationMs, tokensIn, tokensOut, cost, taskId, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(modelId, taskType, complexity, success, Math.floor(Math.random() * 3000) + 500, tokensIn, tokensOut, cost, `agent-${agentId.slice(-8)}`, now);
-      }
-      db.close();
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // 5. Add routing decision to session DB (for live routing decisions panel)
-  try {
-    const sessionDbPath = join(cwd, 'agents', 'data', 'memory', 'session.db');
-    if (existsSync(sessionDbPath)) {
-      const db = new Database(sessionDbPath);
-      const hasTable = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='routing_decisions'")
-        .all();
-      if (hasTable.length > 0) {
-        const models = ['opus-4.6', 'qwen35'];
-        const taskTypes = ['coding', 'testing', 'debugging', 'planning', 'review', 'file-ops', 'sysadmin', 'refactoring'];
-        const complexities = ['low', 'medium', 'high'];
-        const modelId = models[Math.floor(Math.random() * models.length)];
-        const taskType = taskTypes[Math.floor(Math.random() * taskTypes.length)];
-        const complexity = complexities[Math.floor(Math.random() * complexities.length)];
-        const success = Math.random() > 0.05 ? 1 : 0;
-        const tokensIn = Math.floor(Math.random() * 200) + 30;
-        const tokensOut = Math.floor(Math.random() * 80) + 10;
-        const cost = (tokensIn * 0.0000075 + tokensOut * 0.0000375);
-        db.prepare(
-          `INSERT INTO routing_decisions (timestamp, model_used, task_type, complexity, tokens_in, tokens_out, cost, success) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(now, modelId, taskType, complexity, tokensIn, tokensOut, cost, success);
-      }
-      db.close();
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // 6. Cycle task statuses (make kanban board dynamic)
-  try {
-    const taskDbPath = join(cwd, '.uap', 'tasks', 'tasks.db');
-    if (existsSync(taskDbPath)) {
-      const db = new Database(taskDbPath);
-      const roll = Math.random();
-      if (roll < 0.3) {
-        // Occasionally add a new task
-        const taskTypes = ['task', 'bug', 'feature', 'chore'];
-        const titles = [
-          'Optimize model routing latency',
-          'Fix context compression edge case',
-          'Add batch deploy rollback support',
-          'Improve pattern matching accuracy',
-          'Update memory consolidation logic',
-          'Debug agent coordination race condition',
-          'Refactor policy enforcement pipeline',
-          'Add telemetry export endpoint',
-          'Fix worktree cleanup on failure',
-          'Implement adaptive token budgeting',
-        ];
-        const type = taskTypes[Math.floor(Math.random() * taskTypes.length)];
-        const title = titles[Math.floor(Math.random() * titles.length)];
-        const statuses = ['open', 'in_progress', 'blocked'];
-        const status = statuses[Math.floor(Math.random() * statuses.length)];
-        const priority = Math.floor(Math.random() * 4);
-        const id = `live-${Date.now().toString(36)}`;
-        try {
-          db.prepare(
-            `INSERT OR IGNORE INTO tasks (id, title, type, status, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
-          ).run(id, title, type, status, priority, now, now);
-        } catch { /* ignore */ }
-      } else if (roll < 0.6) {
-        // Move an open task to in_progress
-        try {
-          const openTask = db.prepare(
-            "SELECT id FROM tasks WHERE status = 'open' ORDER BY RANDOM() LIMIT 1"
-          ).get() as { id: string } | undefined;
-          if (openTask) {
-            db.prepare("UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE id = ?").run(now, openTask.id);
-          }
-        } catch { /* ignore */ }
-      } else if (roll < 0.8) {
-        // Move an in_progress task to done
-        try {
-          const ipTask = db.prepare(
-            "SELECT id FROM tasks WHERE status = 'in_progress' ORDER BY RANDOM() LIMIT 1"
-          ).get() as { id: string } | undefined;
-          if (ipTask) {
-            db.prepare("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?").run(now, ipTask.id);
-          }
-        } catch { /* ignore */ }
-      } else {
-        // Occasionally block a task
-        try {
-          const task = db.prepare(
-            "SELECT id FROM tasks WHERE status IN ('open', 'in_progress') ORDER BY RANDOM() LIMIT 1"
-          ).get() as { id: string } | undefined;
-          if (task) {
-            db.prepare("UPDATE tasks SET status = 'blocked', updated_at = ? WHERE id = ?").run(now, task.id);
-          }
-        } catch { /* ignore */ }
-      }
-      db.close();
-    }
-  } catch {
-    /* ignore */
-  }
 }
 
 export function cleanupSeeder(cwd: string): void {
@@ -570,10 +225,6 @@ export function cleanupSeeder(cwd: string): void {
   if (seederState.heartbeatInterval) {
     clearInterval(seederState.heartbeatInterval);
     seederState.heartbeatInterval = null;
-  }
-  if (seederState.refreshInterval) {
-    clearInterval(seederState.refreshInterval);
-    seederState.refreshInterval = null;
   }
   const coordDbPath = join(cwd, 'agents', 'data', 'coordination', 'coordination.db');
   if (existsSync(coordDbPath)) {
