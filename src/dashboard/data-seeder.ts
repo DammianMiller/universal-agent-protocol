@@ -436,6 +436,133 @@ function periodicRefresh(cwd: string, agentId: string): void {
   } catch {
     /* ignore */
   }
+
+  // 4. Record model routing decision (model analytics)
+  try {
+    const analyticsDbPath = join(cwd, 'agents', 'data', 'memory', 'model_analytics.db');
+    if (existsSync(analyticsDbPath)) {
+      const db = new Database(analyticsDbPath);
+      const hasTable = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='task_outcomes'")
+        .all();
+      if (hasTable.length > 0) {
+        const models = ['opus-4.6', 'qwen35'];
+        const taskTypes = ['coding', 'testing', 'debugging', 'planning', 'review', 'file-ops', 'sysadmin', 'refactoring'];
+        const complexities = ['low', 'medium', 'high'];
+        const modelId = models[Math.floor(Math.random() * models.length)];
+        const taskType = taskTypes[Math.floor(Math.random() * taskTypes.length)];
+        const complexity = complexities[Math.floor(Math.random() * complexities.length)];
+        const success = Math.random() > 0.05 ? 1 : 0;
+        const tokensIn = Math.floor(Math.random() * 200) + 30;
+        const tokensOut = Math.floor(Math.random() * 80) + 10;
+        const cost = (tokensIn * 0.0000075 + tokensOut * 0.0000375);
+        db.prepare(
+          `INSERT INTO task_outcomes (modelId, taskType, complexity, success, durationMs, tokensIn, tokensOut, cost, taskId, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(modelId, taskType, complexity, success, Math.floor(Math.random() * 3000) + 500, tokensIn, tokensOut, cost, `agent-${agentId.slice(-8)}`, now);
+      }
+      db.close();
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // 5. Add routing decision to session DB (for live routing decisions panel)
+  try {
+    const sessionDbPath = join(cwd, 'agents', 'data', 'memory', 'session.db');
+    if (existsSync(sessionDbPath)) {
+      const db = new Database(sessionDbPath);
+      const hasTable = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='routing_decisions'")
+        .all();
+      if (hasTable.length > 0) {
+        const models = ['opus-4.6', 'qwen35'];
+        const taskTypes = ['coding', 'testing', 'debugging', 'planning', 'review', 'file-ops', 'sysadmin', 'refactoring'];
+        const complexities = ['low', 'medium', 'high'];
+        const modelId = models[Math.floor(Math.random() * models.length)];
+        const taskType = taskTypes[Math.floor(Math.random() * taskTypes.length)];
+        const complexity = complexities[Math.floor(Math.random() * complexities.length)];
+        const success = Math.random() > 0.05 ? 1 : 0;
+        const tokensIn = Math.floor(Math.random() * 200) + 30;
+        const tokensOut = Math.floor(Math.random() * 80) + 10;
+        const cost = (tokensIn * 0.0000075 + tokensOut * 0.0000375);
+        db.prepare(
+          `INSERT INTO routing_decisions (timestamp, model_used, task_type, complexity, tokens_in, tokens_out, cost, success) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(now, modelId, taskType, complexity, tokensIn, tokensOut, cost, success);
+      }
+      db.close();
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // 6. Cycle task statuses (make kanban board dynamic)
+  try {
+    const taskDbPath = join(cwd, '.uap', 'tasks', 'tasks.db');
+    if (existsSync(taskDbPath)) {
+      const db = new Database(taskDbPath);
+      const roll = Math.random();
+      if (roll < 0.3) {
+        // Occasionally add a new task
+        const taskTypes = ['task', 'bug', 'feature', 'chore'];
+        const titles = [
+          'Optimize model routing latency',
+          'Fix context compression edge case',
+          'Add batch deploy rollback support',
+          'Improve pattern matching accuracy',
+          'Update memory consolidation logic',
+          'Debug agent coordination race condition',
+          'Refactor policy enforcement pipeline',
+          'Add telemetry export endpoint',
+          'Fix worktree cleanup on failure',
+          'Implement adaptive token budgeting',
+        ];
+        const type = taskTypes[Math.floor(Math.random() * taskTypes.length)];
+        const title = titles[Math.floor(Math.random() * titles.length)];
+        const statuses = ['open', 'in_progress', 'blocked'];
+        const status = statuses[Math.floor(Math.random() * statuses.length)];
+        const priority = Math.floor(Math.random() * 4);
+        const id = `live-${Date.now().toString(36)}`;
+        try {
+          db.prepare(
+            `INSERT OR IGNORE INTO tasks (id, title, type, status, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+          ).run(id, title, type, status, priority, now, now);
+        } catch { /* ignore */ }
+      } else if (roll < 0.6) {
+        // Move an open task to in_progress
+        try {
+          const openTask = db.prepare(
+            "SELECT id FROM tasks WHERE status = 'open' ORDER BY RANDOM() LIMIT 1"
+          ).get() as { id: string } | undefined;
+          if (openTask) {
+            db.prepare("UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE id = ?").run(now, openTask.id);
+          }
+        } catch { /* ignore */ }
+      } else if (roll < 0.8) {
+        // Move an in_progress task to done
+        try {
+          const ipTask = db.prepare(
+            "SELECT id FROM tasks WHERE status = 'in_progress' ORDER BY RANDOM() LIMIT 1"
+          ).get() as { id: string } | undefined;
+          if (ipTask) {
+            db.prepare("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?").run(now, ipTask.id);
+          }
+        } catch { /* ignore */ }
+      } else {
+        // Occasionally block a task
+        try {
+          const task = db.prepare(
+            "SELECT id FROM tasks WHERE status IN ('open', 'in_progress') ORDER BY RANDOM() LIMIT 1"
+          ).get() as { id: string } | undefined;
+          if (task) {
+            db.prepare("UPDATE tasks SET status = 'blocked', updated_at = ? WHERE id = ?").run(now, task.id);
+          }
+        } catch { /* ignore */ }
+      }
+      db.close();
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 export function cleanupSeeder(cwd: string): void {
