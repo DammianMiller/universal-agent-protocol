@@ -153,7 +153,7 @@
         "search_document": "search_document: ",
         "_comment": "nomic-embed-text-v2 requires task prefixes. Queries use search_query:, documents use search_document:. The UAP embedding provider handles this automatically."
       },
-      "env_var": "UAP_EMBEDDING_ENDPOINT=http://localhost:8081",
+      "env_var": "UAP_EMBEDDING_ENDPOINT=http://192.168.1.165:8081",
       "_comment": "Set UAP_EMBEDDING_ENDPOINT env var to override the default endpoint. The embedding provider auto-detects dimensions from the model response."
     },
 

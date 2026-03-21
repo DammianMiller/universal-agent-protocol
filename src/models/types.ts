@@ -69,18 +69,7 @@ export const ModelPresets: Record<string, ModelConfig> = {
     ],
     modelContextBudget: 180000,
   },
-  'glm-4.7': {
-    id: 'glm-4.7',
-    name: 'GLM 4.7',
-    provider: 'zhipu',
-    apiModel: 'glm-4-plus',
-    apiKeyEnvVar: 'ZHIPU_API_KEY',
-    maxContextTokens: 128000,
-    costPer1MInput: 0.50,
-    costPer1MOutput: 0.50,
-    capabilities: ['code-generation', 'planning', 'complex-reasoning'],
-  },
-  'deepseek-v3.2': {
+   'deepseek-v3.2': {
     id: 'deepseek-v3.2',
     name: 'DeepSeek V3.2 Speciale',
     provider: 'deepseek',
@@ -147,6 +136,17 @@ export const ModelPresets: Record<string, ModelConfig> = {
     capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
     modelContextBudget: 131072,
   },
+  'glm-4.7': {
+    id: 'glm-4.7',
+    name: 'GLM 4.7',
+    provider: 'zhipu',
+    apiModel: 'glm-4.7',
+    apiKeyEnvVar: 'ZHIPU_API_KEY',
+    maxContextTokens: 128000,
+    costPer1MInput: 0.10,
+    costPer1MOutput: 0.10,
+    capabilities: ['code-generation', 'execution', 'simple-tasks'],
+  },
   qwen35: {
     id: 'qwen35',
     name: 'Qwen 3.5 35B A3B (iq4xs)',
@@ -208,7 +208,7 @@ export const MultiModelConfigSchema = z.object({
         ModelConfigSchemaModels, // Full custom config
       ])
     )
-    .default(['opus-4.6', 'qwen35', 'glm-4.7']),
+    .default(['opus-4.6', 'qwen35']),
 
   // Role assignments
   roles: z

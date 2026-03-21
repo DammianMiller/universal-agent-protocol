@@ -603,6 +603,16 @@
       .chip.inactive {
         opacity: 0.5;
       }
+      /* Token usage bars */
+      #model-tokens .bar-container {
+        margin: 6px 0;
+      }
+      #model-tokens .bar {
+        height: 12px;
+        border-radius: 3px;
+        min-width: 2px;
+        transition: width 0.3s ease;
+      }
     </style>
   </head>
   <body>
@@ -629,6 +639,37 @@
         <div class="panel">
           <h2>Models</h2>
           <div id="model-roles"></div>
+          <h3>Model Router</h3>
+          <div id="model-router">
+            <div class="kv">
+              <span class="label">Strategy</span><span class="value cyan" id="model-strategy">-</span>
+            </div>
+            <div class="kv">
+              <span class="label">Available Models</span><span class="value" id="model-count">0</span>
+            </div>
+          </div>
+    <h3>Live Token Usage</h3>
+          <div id="model-tokens">
+            <div class="bar-container">
+              <span class="bar-label">Input</span>
+              <div class="bar cyan" id="token-bar-in"></div>
+              <span class="bar-value" id="token-in">0</span>
+            </div>
+            <div class="bar-container">
+              <span class="bar-label">Output</span>
+              <div class="bar green" id="token-bar-out"></div>
+              <span class="bar-value" id="token-out">0</span>
+            </div>
+            <div class="bar-container">
+              <span class="bar-label">Total</span>
+              <div class="bar purple" id="token-bar-total"></div>
+              <span class="bar-value" id="token-total">0</span>
+            </div>
+          </div>
+          <h3>Recent Routing Decisions</h3>
+          <div id="model-routes" class="table-wrap">
+            <div class="empty">No routing decisions yet</div>
+          </div>
           <h3>Session Usage</h3>
           <div id="model-usage" class="table-wrap"></div>
           <div
@@ -637,6 +678,44 @@
           >
             <span class="label" style="font-weight: 600">Total Cost</span>
             <span class="value green" id="model-cost">$0.0000</span>
+          </div>
+        </div>
+
+         <!-- Deploy Buckets -->
+        <div class="panel">
+          <h2>Deploy Buckets</h2>
+          <div id="deploy-buckets">
+            <div class="bar-container">
+              <span class="bar-label">Queued</span>
+              <div class="bar yellow" id="deploy-queued" style="width: 0%"></div>
+              <span class="bar-value" id="deploy-queued-count">0</span>
+            </div>
+            <div class="bar-container">
+              <span class="bar-label">Batched</span>
+              <div class="bar purple" id="deploy-batched" style="width: 0%"></div>
+              <span class="bar-value" id="deploy-batched-count">0</span>
+            </div>
+            <div class="bar-container">
+              <span class="bar-label">Executing</span>
+              <div class="bar cyan" id="deploy-executing" style="width: 0%"></div>
+              <span class="bar-value" id="deploy-executing-count">0</span>
+            </div>
+            <div class="bar-container">
+              <span class="bar-label">Done</span>
+              <div class="bar green" id="deploy-done" style="width: 0%"></div>
+              <span class="bar-value" id="deploy-done-count">0</span>
+            </div>
+            <div class="bar-container">
+              <span class="bar-label">Failed</span>
+              <div class="bar red" id="deploy-failed" style="width: 0%"></div>
+              <span class="bar-value" id="deploy-failed-count">0</span>
+            </div>
+            <div class="kv" style="margin-top:8px; border-top:1px solid var(--border); padding-top:6px">
+              <span class="label">Batches</span><span class="value" id="deploy-batch-count">0</span>
+            </div>
+            <div class="kv">
+              <span class="label">Saved Ops</span><span class="value green" id="deploy-saved-ops">0</span>
+            </div>
           </div>
         </div>
 
@@ -827,10 +906,6 @@
         <div id="coord-agents-table" class="table-wrap">
           <div class="empty">No agents registered</div>
         </div>
-        <h3>Skills per Agent</h3>
-        <div id="coord-skills-per-agent"><div class="empty">No skill data</div></div>
-        <h3>Patterns per Agent</h3>
-        <div id="coord-patterns-per-agent"><div class="empty">No pattern data</div></div>
       </div>
 
       <!-- All Policy Files (from filesystem) -->
@@ -888,6 +963,27 @@
               <span>Won't Do</span><span class="col-count" id="kb-wontdo-count">0</span>
             </div>
             <div class="kanban-cards" id="kb-wontdo"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Skills & Patterns by Agent (bottom panel) -->
+        <div class="panel full-width" id="agent-skills-patterns-panel" style="margin-top: 16px; display: none;">
+        <h2>Skills & Patterns by Agent</h2>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+          <!-- Skills per Agent -->
+          <div>
+            <h3>Skills per Agent</h3>
+            <div id="agent-skills-panel">
+              <div class="empty">No skill data</div>
+            </div>
+          </div>
+          <!-- Patterns per Agent -->
+          <div>
+            <h3>Patterns per Agent</h3>
+            <div id="agent-patterns-panel">
+              <div class="empty">No pattern data</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1030,10 +1126,15 @@
             '<div class="empty">No agents registered</div>';
         }
 
-        // Skills per Agent
+        // Skills per Agent (moved to bottom panel)
         const skillsPerAgent = coord.skillsPerAgent || {};
         const skillAgentEntries = Object.entries(skillsPerAgent);
-        if (skillAgentEntries.length > 0) {
+        const agentSkillsPanel = document.getElementById('agent-skills-panel');
+        const agentPatternsPanel = document.getElementById('agent-patterns-panel');
+        const agentSkillsPatternsPanel = document.getElementById('agent-skills-patterns-panel');
+
+        if (skillAgentEntries.length > 0 || agentPatternsPanel) {
+          agentSkillsPatternsPanel.style.display = '';
           let skillsHtml = '';
           for (const [agentId, skills] of skillAgentEntries) {
             const label = agentId === 'all' ? 'All Agents' : esc(agentId.slice(0, 16));
@@ -1043,13 +1144,13 @@
             }
             skillsHtml += '</div></div>';
           }
-          document.getElementById('coord-skills-per-agent').innerHTML = skillsHtml;
+          agentSkillsPanel.innerHTML = skillsHtml || '<div class="empty">No skill data</div>';
         } else {
-          document.getElementById('coord-skills-per-agent').innerHTML =
-            '<div class="empty">No skill data</div>';
+          agentSkillsPanel.innerHTML = '<div class="empty">No skill data</div>';
+          agentSkillsPatternsPanel.style.display = 'none';
         }
 
-        // Patterns per Agent
+        // Patterns per Agent (moved to bottom panel)
         const patternsPerAgent = coord.patternsPerAgent || {};
         const patternAgentEntries = Object.entries(patternsPerAgent);
         if (patternAgentEntries.length > 0) {
@@ -1069,11 +1170,27 @@
             }
             patsHtml += '</div>';
           }
-          document.getElementById('coord-patterns-per-agent').innerHTML = patsHtml;
+          agentPatternsPanel.innerHTML = patsHtml;
         } else {
-          document.getElementById('coord-patterns-per-agent').innerHTML =
-            '<div class="empty">No pattern data</div>';
+          agentPatternsPanel.innerHTML = '<div class="empty">No pattern data</div>';
         }
+
+    // Deploy Buckets
+        const deploy = data.deployBuckets || {};
+        const deployTotal = deploy.totalActions || deploy.done + deploy.failed + deploy.queued + deploy.batched + deploy.executing || 1;
+        const maxDeploy = Math.max(deployTotal, 1);
+        const setDeployBar = (id, val) => {
+          const pct = Math.round((val / maxDeploy) * 100);
+          document.getElementById(id).style.width = Math.min(pct, 100) + '%';
+          document.getElementById(id + '-count').textContent = val;
+        };
+        setDeployBar('deploy-queued', deploy.queued || 0);
+        setDeployBar('deploy-batched', deploy.batched || 0);
+        setDeployBar('deploy-executing', deploy.executing || 0);
+        setDeployBar('deploy-done', deploy.done || 0);
+        setDeployBar('deploy-failed', deploy.failed || 0);
+        document.getElementById('deploy-batch-count').textContent = deploy.batchCount || 0;
+        document.getElementById('deploy-saved-ops').textContent = deploy.savedOps || 0;
 
         // Models
         const roles = models.roles || {};
@@ -1089,17 +1206,78 @@
                   : '';
           rolesHtml += `<div class="kv"><span class="label">${esc(capitalize(role))}</span><span class="value ${color}">${esc(String(model))}</span></div>`;
         }
-        rolesHtml += `<div class="kv"><span class="label">Strategy</span><span class="value cyan">${esc(models.strategy || 'unknown')}</span></div>`;
         document.getElementById('model-roles').innerHTML = rolesHtml;
 
-        const usage = models.sessionUsage || [];
+        // Model Router info
+        const routerHtml = `
+          <div class="kv"><span class="label">Strategy</span><span class="value cyan">${esc(models.strategy || 'unknown')}</span></div>
+          <div class="kv"><span class="label">Available Models</span><span class="value">${esc(models.availableModels?.length || 0)}</span></div>
+          ${models.routingRules && models.routingRules.length > 0 ? `
+          <div style="margin-top:8px"><span style="color:var(--fg2);font-size:11px">Routing Rules:</span>
+            <div class="chip-list">
+              ${models.routingRules.slice(0, 5).map(r => `<span class="chip active">${esc(r.complexity || r.taskType || 'default')} → ${esc(r.targetRole)}</span>`).join('')}
+            </div>
+          </div>
+          ` : ''}
+        `;
+        document.getElementById('model-router').innerHTML = routerHtml;
+        document.getElementById('model-count').textContent = models.availableModels?.length || 0;
+        setText('model-strategy', models.strategy || 'unknown');
+
+    // Live token usage (from session data - updates every frame)
+        if (session) {
+          const tokensIn = session.tokensUsed || 0;
+          const tokensOut = session.tokensSaved || 0;
+          const totalTokens = tokensIn + tokensOut;
+
+          // Update token counts with live values
+          setText('token-in', fmt(tokensIn));
+          setText('token-out', fmt(tokensOut));
+          setText('token-total', fmt(totalTokens));
+
+          // Update bar widths to show relative proportions
+          const maxBarWidth = 200; // max pixels
+          const maxVal = Math.max(tokensIn, tokensOut, 1);
+          const inPct = tokensIn / maxVal;
+          const outPct = tokensOut / maxVal;
+
+          const barIn = document.getElementById('token-bar-in');
+          const barOut = document.getElementById('token-bar-out');
+          const barTotal = document.getElementById('token-bar-total');
+          if (barIn) barIn.style.width = (inPct * maxBarWidth) + 'px';
+          if (barOut) barOut.style.width = (outPct * maxBarWidth) + 'px';
+          if (barTotal) barTotal.style.width = maxBarWidth + 'px';
+        }
+
+        // Recent routing decisions (from session data)
+        const routingDecisions = session?.routingDecisions || [];
+        if (routingDecisions.length > 0) {
+          let routesHtml =
+            '<table><tr><th>Time</th><th>Model</th><th>Reasoning</th></tr>';
+          for (const r of routingDecisions.slice(-10).reverse()) {
+            const ts = r.timestamp
+              ? new Date(r.timestamp).toLocaleTimeString()
+              : '-';
+            routesHtml += `<tr>
+              <td style="color:var(--fg3);font-size:11px">${esc(ts)}</td>
+              <td style="color:var(--cyan);font-weight:500">${esc(r.modelUsed || 'unknown')}</td>
+              <td style="color:var(--fg2);font-size:11px">${esc(r.reasoning || 'auto-select')}</td>
+            </tr>`;
+          }
+          routesHtml += '</table>';
+          document.getElementById('model-routes').innerHTML = routesHtml;
+        }
+
+      const usage = models.sessionUsage || [];
         if (usage.length > 0) {
           let usageHtml =
-            '<table><tr><th>Model</th><th>Tasks</th><th>Tokens In</th><th>Out</th><th>Cost</th><th>Success</th></tr>';
+            '<table><tr><th>Model</th><th>Tasks</th><th>Tokens In</th><th>Out</th><th>Cost</th><th>Success</th><th>Failures</th></tr>';
           for (const u of usage) {
             const cost = typeof u.totalCost === 'number' ? u.totalCost.toFixed(4) : '0.0000';
             const rate = typeof u.successRate === 'number' ? (u.successRate * 100).toFixed(0) : '0';
-            usageHtml += `<tr><td style="color:var(--cyan)">${esc(u.modelId || 'unknown')}</td><td>${u.taskCount || 0}</td><td>${fmt(u.totalTokensIn || 0)}</td><td>${fmt(u.totalTokensOut || 0)}</td><td>$${cost}</td><td>${rate}%</td></tr>`;
+            const failures = u.taskCount ? u.taskCount - Math.round((u.successRate || 0) * u.taskCount) : 0;
+            const rateClass = rate >= 90 ? 'green' : rate >= 70 ? 'yellow' : 'red';
+            usageHtml += `<tr><td style="color:var(--cyan)">${esc(u.modelId || 'unknown')}</td><td>${u.taskCount || 0}</td><td>${fmt(u.totalTokensIn || 0)}</td><td>${fmt(u.totalTokensOut || 0)}</td><td>$${cost}</td><td><span class="value ${rateClass}">${rate}%</span></td><td class="value red">${failures}</td></tr>`;
           }
           usageHtml += '</table>';
           document.getElementById('model-usage').innerHTML = usageHtml;
@@ -1502,7 +1680,7 @@
           const res = await fetch(API_URL + '/api/dashboard');
           if (!res.ok) return;
           const data = await res.json();
-          render(data);
+          if (data) render(data);
           const dot = document.getElementById('ws-status');
           dot.className = 'status-dot polling';
           dot.setAttribute('aria-label', 'Connection status: polling (degraded)');
@@ -1512,7 +1690,7 @@
         } catch (err) {
           console.error('Polling fallback failed:', err);
         }
-      }, 5000);
+      }, 2000);
     </script>
   </body>
 </html>

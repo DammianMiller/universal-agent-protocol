@@ -78,7 +78,7 @@ export class LlamaCppEmbeddingProvider implements EmbeddingProvider {
   private available: boolean | null = null;
   private taskPrefix: string;
 
-  constructor(endpoint: string = 'http://localhost:8081', options: { taskPrefix?: string } = {}) {
+  constructor(endpoint: string = 'http://192.168.1.165:8081', options: { taskPrefix?: string } = {}) {
     // Support env var override
     this.endpoint = process.env.UAP_EMBEDDING_ENDPOINT || endpoint;
     // nomic-embed-text-v2 requires task prefixes for best results

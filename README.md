@@ -13,6 +13,26 @@
 
 ---
 
+## 📊 Recent Analysis & Optimizations (2026-03-20)
+
+A comprehensive deep analysis of the UAP codebase has been completed. See the analysis documentation:
+
+| Document | Description |
+|----------|-------------|
+| **[FINAL_SUMMARY.md](./FINAL_SUMMARY.md)** | TL;DR and key findings |
+| **[ANALYSIS_INDEX.md](./ANALYSIS_INDEX.md)** | Complete navigation guide |
+| **[DEEP_ANALYSIS_REPORT.md](./DEEP_ANALYSIS_REPORT.md)** | Full technical analysis |
+| **[OPTIMIZATION_ROADMAP.md](./OPTIMIZATION_ROADMAP.md)** | Implementation timeline |
+
+**New Feature:** `uap worktree prune` - Automatically clean up stale worktrees!
+
+```bash
+uap worktree prune --dry-run    # Preview
+uap worktree prune --force      # Execute
+```
+
+---
+
 ## Quick Start
 
 ```bash

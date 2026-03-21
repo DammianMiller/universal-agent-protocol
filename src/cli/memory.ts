@@ -172,42 +172,28 @@ async function showStatus(cwd: string): Promise<void> {
   }
   console.log('');
 
-  // Ollama
+  // Embeddings (llama.cpp server)
+  const embeddingEndpoint = process.env.UAP_EMBEDDING_ENDPOINT || 'http://192.168.1.165:8081';
   try {
-    const ollamaResponse = await fetch('http://localhost:11434/api/tags', {
+    const embedResponse = await fetch(`${embeddingEndpoint}/health`, {
       method: 'GET',
       signal: AbortSignal.timeout(2000),
     });
 
-    if (ollamaResponse.ok) {
-      const ollamaData = (await ollamaResponse.json()) as {
-        models: Array<{ name: string; size: number }>;
-      };
-      const embedModels =
-        ollamaData.models?.filter((m) => m.name.includes('embed') || m.name.includes('nomic')) ||
-        [];
-
-      if (embedModels.length > 0) {
-        console.log(`  ${statusBadge('active')} ${chalk.bold('Embeddings')}`);
-        for (const model of embedModels) {
-          const sizeMB = Math.round((model.size || 0) / 1024 / 1024);
-          console.log(`    ${chalk.cyan(model.name)} ${chalk.dim(`${sizeMB} MB`)}`);
-        }
-      } else {
-        console.log(
-          `  ${statusBadge('not_available')} ${chalk.bold('Embeddings')} ${chalk.dim('No embed models')}`
-        );
-        console.log(chalk.dim('    Run: ollama pull nomic-embed-text'));
-      }
+    if (embedResponse.ok) {
+      console.log(`  ${statusBadge('active')} ${chalk.bold('Embeddings')}`);
+      console.log(`    ${chalk.cyan('nomic-embed-text-v2-moe')} ${chalk.dim(`(llama.cpp @ ${embeddingEndpoint})`)}`);
     } else {
       console.log(
         `  ${statusBadge('stopped')} ${chalk.bold('Embeddings')} ${chalk.dim('Not responding')}`
       );
+      console.log(chalk.dim(`    Endpoint: ${embeddingEndpoint}`));
     }
   } catch {
     console.log(
-      `  ${statusBadge('not_available')} ${chalk.bold('Embeddings')} ${chalk.dim('Ollama not running')}`
+      `  ${statusBadge('not_available')} ${chalk.bold('Embeddings')} ${chalk.dim('Embedding server not running')}`
     );
+    console.log(chalk.dim(`    Expected at: ${embeddingEndpoint}`));
   }
 
   // Architecture tree
