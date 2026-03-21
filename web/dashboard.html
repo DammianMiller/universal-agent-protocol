@@ -760,7 +760,7 @@
 
         <!-- Session Telemetry (shown when session data is available) -->
         <div class="panel full-width" id="session-panel" style="display: none">
-          <h2>Session Telemetry</h2>
+          <h2>Session Telemetry <span style="font-size:11px;color:var(--fg3);font-weight:400" id="sess-label">(current)</span></h2>
           <div
             style="
               display: grid;
@@ -844,6 +844,14 @@
               <h3>Deploys</h3>
               <div id="sess-deploys"><div class="empty">No deploys</div></div>
             </div>
+          </div>
+        </div>
+
+        <!-- Session History (all sessions) -->
+        <div class="panel full-width" id="session-history-panel" style="display: none; margin-top: 16px">
+          <h2>Session History</h2>
+          <div id="session-history-table" class="table-wrap">
+            <div class="empty">No session history</div>
           </div>
         </div>
 
@@ -1243,7 +1251,7 @@
                 : role === 'reviewer'
                   ? 'purple'
                   : '';
-          rolesHtml += `<div class="kv"><span class="label">${esc(capitalize(role))}</span><span class="value ${color}">${esc(String(model))}</span></div>`;
+          rolesHtml += `<div class="kv"><span class="label">${esc(capitalize(role))}</span><span class="value ${color}">${esc(modelName(String(model)))}</span></div>`;
         }
         document.getElementById('model-roles').innerHTML = rolesHtml;
 
@@ -1251,8 +1259,44 @@
         const routerHtml = `
           <div class="kv"><span class="label">Strategy</span><span class="value cyan">${esc(models.strategy || 'unknown')}</span></div>
           <div class="kv"><span class="label">Available Models</span><span class="value">${models.availableModels ? models.availableModels.length : 0}</span></div>
+          <div class="kv"><span class="label">Enabled</span><span class="value ${models.enabled ? 'green' : 'yellow'}">${models.enabled ? 'Yes' : 'No'}</span></div>
         `;
         document.getElementById('model-router').innerHTML = routerHtml;
+
+        // Routing rules
+        const routingRules = models.routingRules || [];
+        // Render routing rules if present
+        if (routingRules.length > 0) {
+          let rulesHtml = '<div style="margin:6px 0"><span style="color:var(--fg2);font-size:11px">Routing Rules:</span>';
+          for (const rule of routingRules) {
+            const keywords = (rule.keywords || []).join(', ');
+            rulesHtml += `<div style="font-size:11px;color:var(--fg3);padding:2px 0">${esc(rule.targetRole || '?')} <span style="color:var(--cyan)">P${rule.priority || 0}</span>${keywords ? ' [' + esc(keywords) + ']' : ''}${rule.complexity ? ' complexity=' + esc(rule.complexity) : ''}</div>`;
+          }
+          rulesHtml += '</div>';
+          const routerEl = document.getElementById('model-router');
+          if (routerEl) routerEl.innerHTML += rulesHtml;
+        }
+
+        // Recent Routing Decisions (from model analytics)
+        const routingDecisions = models.recentRoutingDecisions || [];
+        const routesEl = document.getElementById('model-routes');
+        if (routesEl) {
+          if (routingDecisions.length > 0) {
+            let rdHtml = '<table><tr><th>Time</th><th>Model</th><th>Task</th><th>Complexity</th><th>Tokens</th><th>Cost</th><th>Result</th></tr>';
+            for (const rd of routingDecisions.slice(0, 10)) {
+              const ts = rd.timestamp ? rd.timestamp.slice(11, 19) : '-';
+              const resultCls = rd.success ? 'green' : 'red';
+              const resultTxt = rd.success ? 'OK' : 'FAIL';
+              const totalTok = (rd.tokensIn || 0) + (rd.tokensOut || 0);
+              const costStr = typeof rd.cost === 'number' ? '$' + rd.cost.toFixed(4) : '$0';
+              rdHtml += `<tr><td style="color:var(--fg3);font-size:11px">${esc(ts)}</td><td style="color:var(--purple)">${esc(modelName(rd.modelUsed))}</td><td>${esc(rd.taskType || '?')}</td><td>${esc(rd.complexity || '?')}</td><td>${fmt(totalTok)}</td><td style="color:var(--green)">${costStr}</td><td><span class="value ${resultCls}">${resultTxt}</span></td></tr>`;
+            }
+            rdHtml += '</table>';
+            routesEl.innerHTML = rdHtml;
+          } else {
+            routesEl.innerHTML = '<div class="empty">No routing decisions yet</div>';
+          }
+        }
 
         // Live token usage
         if (session) {
@@ -1299,7 +1343,7 @@
             const rate = typeof u.successRate === 'number' ? (u.successRate * 100).toFixed(0) : '0';
             const failures = u.taskCount ? u.taskCount - Math.round((u.successRate || 0) * u.taskCount) : 0;
             const rateClass = rate >= 90 ? 'green' : rate >= 70 ? 'yellow' : 'red';
-            usageHtml += `<tr><td style="color:var(--cyan)">${esc(u.modelId || 'unknown')}</td><td>${u.taskCount || 0}</td><td>${fmt(u.totalTokensIn || 0)}</td><td>${fmt(u.totalTokensOut || 0)}</td><td>$${cost}</td><td><span class="value ${rateClass}">${rate}%</span></td><td class="value red">${failures}</td></tr>`;
+            usageHtml += `<tr><td style="color:var(--cyan)">${esc(modelName(u.modelId))}</td><td>${u.taskCount || 0}</td><td>${fmt(u.totalTokensIn || 0)}</td><td>${fmt(u.totalTokensOut || 0)}</td><td>$${cost}</td><td><span class="value ${rateClass}">${rate}%</span></td><td class="value red">${failures}</td></tr>`;
           }
           usageHtml += '</table>';
           document.getElementById('model-usage').innerHTML = usageHtml;
@@ -1413,7 +1457,7 @@
             let aHtml = '';
             for (const a of agents) {
               const typeClass = a.type || 'main';
-              const modelLabel = a.model && a.model !== 'unknown' ? ` <span style="color:var(--purple);font-size:11px">${esc(a.model)}</span>` : '';
+              const modelLabel = a.model && a.model !== 'unknown' ? ` <span style="color:var(--purple);font-size:11px">${esc(modelName(a.model))}</span>` : '';
               aHtml += `<div class="agent-row"><span class="badge ${typeClass}">${esc(a.type || 'agent')}</span><span class="agent-name">${esc(a.name || a.id || 'unknown')}${modelLabel}</span><span class="badge ${a.status === 'active' ? 'active' : 'idle'}">${esc(a.status || 'idle')}</span><span class="agent-task">${esc(a.task || '-')}</span><span class="agent-tokens">${fmt(a.tokensUsed || 0)} tok</span></div>`;
             }
             document.getElementById('sess-agents').innerHTML = aHtml;
@@ -1426,7 +1470,7 @@
               const tTotal = tIn + tOut || a.tokensUsed || 0;
               const cost = typeof a.cost === 'number' ? '$' + a.cost.toFixed(4) : '$0.0000';
               const statusCls = a.status === 'active' || a.status === 'working' ? 'active' : a.status === 'done' ? 'on' : 'idle';
-              abHtml += `<tr><td style="font-weight:500">${esc(a.name || a.id || 'unknown')}</td><td style="color:var(--purple)">${esc(a.model || 'unknown')}</td><td><span class="badge ${statusCls}">${esc(a.status || 'idle')}</span></td><td>${fmt(tIn)}</td><td>${fmt(tOut)}</td><td style="font-weight:500">${fmt(tTotal)}</td><td style="color:var(--green)">${cost}</td><td>${a.taskCount || 0}</td></tr>`;
+              abHtml += `<tr><td style="font-weight:500">${esc(a.name || a.id || 'unknown')}</td><td style="color:var(--purple)">${esc(modelName(a.model || 'unknown'))}</td><td><span class="badge ${statusCls}">${esc(a.status || 'idle')}</span></td><td>${fmt(tIn)}</td><td>${fmt(tOut)}</td><td style="font-weight:500">${fmt(tTotal)}</td><td style="color:var(--green)">${cost}</td><td>${a.taskCount || 0}</td></tr>`;
             }
             const totalIn = agents.reduce((s, a) => s + (a.tokensIn || 0), 0);
             const totalOut = agents.reduce((s, a) => s + (a.tokensOut || 0), 0);
@@ -1449,7 +1493,7 @@
               const cost = typeof m.totalCost === 'number' ? '$' + m.totalCost.toFixed(4) : '$0.0000';
               const rate = typeof m.successRate === 'number' ? (m.successRate * 100).toFixed(0) + '%' : '0%';
               const rateClass = (m.successRate || 0) >= 0.9 ? 'green' : (m.successRate || 0) >= 0.7 ? 'yellow' : 'red';
-              mbHtml += `<tr><td style="color:var(--purple);font-weight:500">${esc(m.modelId)}</td><td>${m.taskCount || 0}</td><td>${fmt(m.tokensIn || 0)}</td><td>${fmt(m.tokensOut || 0)}</td><td style="font-weight:500">${fmt((m.tokensIn||0)+(m.tokensOut||0))}</td><td style="color:var(--green)">${cost}</td><td><span class="value ${rateClass}">${rate}</span></td><td>${(m.agentIds||[]).length}</td></tr>`;
+              mbHtml += `<tr><td style="color:var(--purple);font-weight:500">${esc(modelName(m.modelId))}</td><td>${m.taskCount || 0}</td><td>${fmt(m.tokensIn || 0)}</td><td>${fmt(m.tokensOut || 0)}</td><td style="font-weight:500">${fmt((m.tokensIn||0)+(m.tokensOut||0))}</td><td style="color:var(--green)">${cost}</td><td><span class="value ${rateClass}">${rate}</span></td><td>${(m.agentIds||[]).length}</td></tr>`;
             }
             const mTotalIn = modelBreakdown.reduce((s, m) => s + (m.tokensIn || 0), 0);
             const mTotalOut = modelBreakdown.reduce((s, m) => s + (m.tokensOut || 0), 0);
@@ -1507,6 +1551,40 @@
         } else {
           sessionPanel.style.display = 'none';
         }
+        });
+
+        // Session History (all sessions)
+        safe('session-history', () => {
+          const sessions = data.sessions || [];
+          const histPanel = document.getElementById('session-history-panel');
+          if (sessions.length > 0) {
+            histPanel.style.display = '';
+            let html = '<table><tr><th>Session</th><th>Started</th><th>Duration</th><th>Status</th><th>Model</th><th>Tokens In</th><th>Tokens Out</th><th>Total</th><th>Cost</th><th>Agents</th><th>Tasks</th></tr>';
+            for (const s of sessions) {
+              const start = s.startedAt ? new Date(s.startedAt).toLocaleString() : '-';
+              const durMs = s.durationMs || 0;
+              const durMin = durMs > 0 ? Math.round(durMs / 60000) + 'm' : '-';
+              const statusCls = s.status === 'active' ? 'active' : s.status === 'completed' ? 'on' : 'idle';
+              const tIn = s.tokensIn || 0;
+              const tOut = s.tokensOut || 0;
+              const tTotal = tIn + tOut;
+              const cost = typeof s.totalCost === 'number' ? '$' + s.totalCost.toFixed(4) : '$0.00';
+              const isCurrent = s.status === 'active';
+              const highlight = isCurrent ? ' style="background:rgba(139,233,253,0.08)"' : '';
+              const label = isCurrent ? ' <span style="color:var(--cyan);font-size:10px">(live)</span>' : '';
+              html += `<tr${highlight}><td style="font-weight:500">${esc(s.sessionId || '-').slice(0,12)}${label}</td><td>${start}</td><td>${durMin}</td><td><span class="badge ${statusCls}">${esc(s.status || 'unknown')}</span></td><td style="color:var(--purple)">${esc(modelName(s.model || '-'))}</td><td>${fmt(tIn)}</td><td>${fmt(tOut)}</td><td style="font-weight:500">${fmt(tTotal)}</td><td style="color:var(--green)">${cost}</td><td>${s.agentCount || 0}</td><td>${s.taskCount || 0}</td></tr>`;
+            }
+            // Totals row
+            const totalIn = sessions.reduce((a, s) => a + (s.tokensIn || 0), 0);
+            const totalOut = sessions.reduce((a, s) => a + (s.tokensOut || 0), 0);
+            const totalCost = sessions.reduce((a, s) => a + (s.totalCost || 0), 0);
+            const totalTasks = sessions.reduce((a, s) => a + (s.taskCount || 0), 0);
+            html += `<tr style="border-top:2px solid var(--border);font-weight:600"><td>ALL (${sessions.length} sessions)</td><td></td><td></td><td></td><td></td><td style="color:var(--cyan)">${fmt(totalIn)}</td><td style="color:var(--green)">${fmt(totalOut)}</td><td style="color:var(--purple)">${fmt(totalIn+totalOut)}</td><td style="color:var(--green)">$${totalCost.toFixed(4)}</td><td></td><td>${totalTasks}</td></tr>`;
+            html += '</table>';
+            document.getElementById('session-history-table').innerHTML = html;
+          } else {
+            histPanel.style.display = 'none';
+          }
         });
 
         // Policy Files (from filesystem)
@@ -1789,6 +1867,21 @@
       }
       function capitalize(s) {
         return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+      }
+      // Model ID to human-readable display name
+      const MODEL_NAMES = {
+        'opus-4.6': 'Claude Opus 4.6',
+        'opus-4.5': 'Claude Opus 4.5',
+        'qwen35': 'Qwen3.5 35B A3B',
+        'qwen35-a3b': 'Qwen3.5 35B A3B',
+        'claude-opus-4': 'Claude Opus 4',
+        'claude-sonnet-4': 'Claude Sonnet 4',
+        'gpt-5.2': 'GPT 5.2',
+        'deepseek-v3.2': 'DeepSeek V3.2',
+        'glm-4.7': 'GLM 4.7',
+      };
+      function modelName(id) {
+        return MODEL_NAMES[id] || id || 'unknown';
       }
       function esc(s) {
         const d = document.createElement('div');
