@@ -15,6 +15,7 @@ import { initializeCacheFromDb, autoWarmCache } from '../memory/speculative-cach
 import { ServerlessQdrantManager } from '../memory/serverless-qdrant.js';
 import { generateScripts, ensurePythonVenv, findPython } from './patterns.js';
 import { isQdrantReachable } from './memory.js';
+import { installSystemdUserServices } from './systemd-services.js';
 import type { AgentContextConfig, Platform } from '../types/index.js';
 
 export interface InitOptions {
@@ -24,6 +25,7 @@ export interface InitOptions {
   worktrees?: boolean; // --no-worktrees sets this to false
   patterns?: boolean; // --patterns / --no-patterns (auto-detect by default)
   pipelineOnly?: boolean; // --pipeline-only enables infrastructure policy
+  systemdServices?: boolean; // --systemd-services scaffolds user services for llama/proxy
   force?: boolean;
   projectDir?: string; // -d, --project-dir to override cwd
 }
@@ -381,6 +383,27 @@ export async function initCommand(options: InitOptions): Promise<void> {
   }
 
   // Final summary - no next steps needed, it just works
+  if (options.systemdServices === true) {
+    const systemdSpinner = ora('Installing optional user systemd services...').start();
+    try {
+      const result = installSystemdUserServices(cwd, { force: options.force === true });
+      systemdSpinner.succeed('Installed user systemd service scaffolding');
+      console.log(chalk.dim(`  Installed/updated: ${result.installed.length}`));
+      if (result.skipped.length > 0) {
+        console.log(chalk.dim(`  Preserved existing: ${result.skipped.length}`));
+      }
+      console.log(chalk.dim('  Next: systemctl --user daemon-reload'));
+      console.log(
+        chalk.dim(
+          '  Next: systemctl --user enable --now uap-llama-server.service uap-anthropic-proxy.service'
+        )
+      );
+    } catch (error) {
+      systemdSpinner.fail('Failed to install optional user systemd services');
+      console.error(chalk.red(error));
+    }
+  }
+
   console.log(chalk.green('\n✅ Initialization complete!\n'));
 
   console.log(chalk.bold('What happens now:\n'));

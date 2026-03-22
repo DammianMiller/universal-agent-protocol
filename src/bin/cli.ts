@@ -65,6 +65,10 @@ program
     '--pipeline-only',
     'Enforce pipeline-only infrastructure changes (no direct kubectl/terraform)'
   )
+  .option(
+    '--systemd-services',
+    'Optionally scaffold user systemd services for llama.cpp and anthropic proxy'
+  )
   .option('-f, --force', 'Overwrite existing configuration')
   .action(async (options) => {
     const cmd = await lazy.init();
@@ -81,6 +85,10 @@ program
   )
   .option('--no-patterns', 'Skip pattern RAG setup')
   .option('--no-memory', 'Skip memory system setup')
+  .option(
+    '--systemd-services',
+    'Optionally scaffold user systemd services for llama.cpp and anthropic proxy'
+  )
   .option(
     '-d, --project-dir <path>',
     'Target project directory (defaults to current working directory)'
