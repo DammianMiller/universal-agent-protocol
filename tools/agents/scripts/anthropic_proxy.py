@@ -76,6 +76,7 @@ Dependencies
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -100,7 +101,29 @@ PROXY_LOG_LEVEL = os.environ.get("PROXY_LOG_LEVEL", "INFO").upper()
 PROXY_READ_TIMEOUT = float(os.environ.get("PROXY_READ_TIMEOUT", "600"))
 PROXY_MAX_CONNECTIONS = int(os.environ.get("PROXY_MAX_CONNECTIONS", "20"))
 PROXY_CONTEXT_WINDOW = int(os.environ.get("PROXY_CONTEXT_WINDOW", "0"))
-PROXY_CONTEXT_PRUNE_THRESHOLD = float(os.environ.get("PROXY_CONTEXT_PRUNE_THRESHOLD", "0.75"))
+PROXY_CONTEXT_PRUNE_THRESHOLD = float(
+    os.environ.get("PROXY_CONTEXT_PRUNE_THRESHOLD", "0.75")
+)
+PROXY_LOOP_BREAKER = os.environ.get("PROXY_LOOP_BREAKER", "on").lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+PROXY_LOOP_WINDOW = int(os.environ.get("PROXY_LOOP_WINDOW", "6"))
+PROXY_LOOP_REPEAT_THRESHOLD = int(os.environ.get("PROXY_LOOP_REPEAT_THRESHOLD", "8"))
+PROXY_FORCED_THRESHOLD = int(os.environ.get("PROXY_FORCED_THRESHOLD", "15"))
+PROXY_NO_PROGRESS_THRESHOLD = int(os.environ.get("PROXY_NO_PROGRESS_THRESHOLD", "4"))
+PROXY_CONTEXT_RELEASE_THRESHOLD = float(
+    os.environ.get("PROXY_CONTEXT_RELEASE_THRESHOLD", "0.90")
+)
+PROXY_GUARDRAIL_RETRY = os.environ.get("PROXY_GUARDRAIL_RETRY", "on").lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+PROXY_SESSION_TTL_SECS = int(os.environ.get("PROXY_SESSION_TTL_SECS", "7200"))
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -121,19 +144,26 @@ class SessionMonitor:
     """Tracks token usage across the session to provide early warnings
     and enable proactive context management before overflow occurs."""
 
-    context_window: int = 0          # Auto-detected or configured
+    context_window: int = 0  # Auto-detected or configured
     total_requests: int = 0
-    last_input_tokens: int = 0       # Estimated input tokens of last request
-    last_output_tokens: int = 0      # Actual output tokens of last response
-    peak_input_tokens: int = 0       # High-water mark
-    prune_count: int = 0             # How many times pruning was triggered
-    overflow_count: int = 0          # How many context overflow errors caught
+    last_input_tokens: int = 0  # Estimated input tokens of last request
+    last_output_tokens: int = 0  # Actual output tokens of last response
+    peak_input_tokens: int = 0  # High-water mark
+    prune_count: int = 0  # How many times pruning was triggered
+    overflow_count: int = 0  # How many context overflow errors caught
     context_history: list = field(default_factory=list)  # Recent token counts
 
     # --- Token Loop Protection ---
-    tool_call_history: list = field(default_factory=list)  # Recent tool call fingerprints
-    consecutive_forced_count: int = 0   # How many times tool_choice was forced consecutively
-    loop_warnings_emitted: int = 0      # How many loop warnings sent to the model
+    tool_call_history: list = field(
+        default_factory=list
+    )  # Recent tool call fingerprints
+    consecutive_forced_count: int = (
+        0  # How many times tool_choice was forced consecutively
+    )
+    loop_warnings_emitted: int = 0  # How many loop warnings sent to the model
+    no_progress_streak: int = 0  # Forced tool turns without new tool_result
+    unexpected_end_turn_count: int = 0  # end_turn without tool_use in active loop
+    last_seen_ts: float = 0.0
 
     def record_request(self, estimated_tokens: int):
         """Record an outgoing request's estimated token count."""
@@ -149,6 +179,9 @@ class SessionMonitor:
     def record_response(self, output_tokens: int):
         """Record a response's output token count."""
         self.last_output_tokens = output_tokens
+
+    def touch(self):
+        self.last_seen_ts = time.time()
 
     def get_utilization(self) -> float:
         """Get current context utilization as a fraction (0.0 - 1.0)."""
@@ -196,25 +229,36 @@ class SessionMonitor:
         if warning == "CRITICAL":
             logger.error(
                 "CONTEXT CRITICAL: %d/%d tokens (%.1f%%), %s, pruned=%d, overflows=%d",
-                self.last_input_tokens, self.context_window, util * 100,
-                turns_str, self.prune_count, self.overflow_count,
+                self.last_input_tokens,
+                self.context_window,
+                util * 100,
+                turns_str,
+                self.prune_count,
+                self.overflow_count,
             )
         elif warning == "HIGH":
             logger.warning(
                 "CONTEXT HIGH: %d/%d tokens (%.1f%%), %s, pruned=%d",
-                self.last_input_tokens, self.context_window, util * 100,
-                turns_str, self.prune_count,
+                self.last_input_tokens,
+                self.context_window,
+                util * 100,
+                turns_str,
+                self.prune_count,
             )
         elif warning == "ELEVATED":
             logger.warning(
                 "CONTEXT ELEVATED: %d/%d tokens (%.1f%%), %s",
-                self.last_input_tokens, self.context_window, util * 100,
+                self.last_input_tokens,
+                self.context_window,
+                util * 100,
                 turns_str,
             )
         else:
             logger.info(
                 "CONTEXT: %d/%d tokens (%.1f%%), %s",
-                self.last_input_tokens, self.context_window, util * 100,
+                self.last_input_tokens,
+                self.context_window,
+                util * 100,
                 turns_str,
             )
 
@@ -264,30 +308,42 @@ class SessionMonitor:
           - 15+ consecutive forced requests regardless -> release
           - Context utilization > 90% -> release (let model wrap up)
         """
-        is_looping, repeat_count = self.detect_tool_loop(window=6)
+        if not PROXY_LOOP_BREAKER:
+            return False
+
+        is_looping, repeat_count = self.detect_tool_loop(window=PROXY_LOOP_WINDOW)
 
         # Pattern 1: Detected tool call loop
-        if is_looping and repeat_count >= 8:
+        if (
+            is_looping
+            and repeat_count >= PROXY_LOOP_REPEAT_THRESHOLD
+            and self.no_progress_streak >= PROXY_NO_PROGRESS_THRESHOLD
+        ):
             logger.warning(
-                "LOOP BREAKER: Same tool pattern repeated %d times. "
+                "LOOP BREAKER: Same tool pattern repeated %d times with no progress streak=%d. "
                 "Releasing tool_choice to 'auto'.",
                 repeat_count,
+                self.no_progress_streak,
             )
             self.loop_warnings_emitted += 1
             return True
 
         # Pattern 2: Too many consecutive forced requests
-        if self.consecutive_forced_count >= 15:
+        if (
+            self.consecutive_forced_count >= PROXY_FORCED_THRESHOLD
+            and self.no_progress_streak >= PROXY_NO_PROGRESS_THRESHOLD
+        ):
             logger.warning(
-                "LOOP BREAKER: %d consecutive forced tool_choice requests. "
+                "LOOP BREAKER: %d consecutive forced tool_choice requests with no progress streak=%d. "
                 "Releasing to 'auto'.",
                 self.consecutive_forced_count,
+                self.no_progress_streak,
             )
             self.loop_warnings_emitted += 1
             return True
 
         # Pattern 3: Context almost full -- let model wrap up naturally
-        if self.get_utilization() >= 0.90:
+        if self.get_utilization() >= PROXY_CONTEXT_RELEASE_THRESHOLD:
             logger.warning(
                 "LOOP BREAKER: Context utilization %.1f%% -- releasing "
                 "tool_choice to let model wrap up.",
@@ -298,7 +354,35 @@ class SessionMonitor:
         return False
 
 
-session_monitor = SessionMonitor()
+session_monitors: dict[str, SessionMonitor] = {}
+default_context_window = 0
+last_session_id = ""
+
+
+def _cleanup_stale_monitors(now_ts: float) -> None:
+    stale = [
+        sid
+        for sid, mon in session_monitors.items()
+        if mon.last_seen_ts > 0 and now_ts - mon.last_seen_ts > PROXY_SESSION_TTL_SECS
+    ]
+    for sid in stale:
+        session_monitors.pop(sid, None)
+
+
+def get_session_monitor(session_id: str) -> SessionMonitor:
+    now_ts = time.time()
+    _cleanup_stale_monitors(now_ts)
+
+    monitor = session_monitors.get(session_id)
+    if monitor is None:
+        monitor = SessionMonitor(context_window=default_context_window)
+        session_monitors[session_id] = monitor
+
+    monitor.touch()
+    if monitor.context_window <= 0:
+        monitor.context_window = default_context_window
+
+    return monitor
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +408,8 @@ async def detect_context_window(client: httpx.AsyncClient) -> int:
                 if n_ctx > 0:
                     logger.info(
                         "Auto-detected context window from upstream: %d tokens (%d slots)",
-                        n_ctx, len(slots),
+                        n_ctx,
+                        len(slots),
                     )
                     return n_ctx
     except Exception as exc:
@@ -398,7 +483,9 @@ def estimate_total_tokens(anthropic_body: dict) -> int:
     return tokens
 
 
-def prune_conversation(anthropic_body: dict, context_window: int, target_fraction: float = 0.65) -> dict:
+def prune_conversation(
+    anthropic_body: dict, context_window: int, target_fraction: float = 0.65
+) -> dict:
     """Prune the conversation to fit within the context window.
 
     Strategy:
@@ -445,19 +532,24 @@ def prune_conversation(anthropic_body: dict, context_window: int, target_fractio
 
     # Always keep the first user message and the last N messages
     KEEP_LAST = 8  # Keep the last 8 messages (recent context)
-    protected_head = messages[:1]   # First user message
-    protected_tail = messages[-KEEP_LAST:] if len(messages) > KEEP_LAST else messages[1:]
+    protected_head = messages[:1]  # First user message
+    protected_tail = (
+        messages[-KEEP_LAST:] if len(messages) > KEEP_LAST else messages[1:]
+    )
     middle = messages[1:-KEEP_LAST] if len(messages) > KEEP_LAST + 1 else []
 
     # Calculate tokens for protected messages
-    protected_tokens = sum(estimate_message_tokens(m) for m in protected_head + protected_tail)
+    protected_tokens = sum(
+        estimate_message_tokens(m) for m in protected_head + protected_tail
+    )
 
     if protected_tokens >= message_budget:
         # Even protected messages exceed budget -- truncate tool_result content
         # in the tail to fit
         logger.warning(
             "Protected messages (%d tokens) exceed budget (%d) -- truncating tool results",
-            protected_tokens, message_budget,
+            protected_tokens,
+            message_budget,
         )
         for msg in protected_tail:
             content = msg.get("content", [])
@@ -466,7 +558,11 @@ def prune_conversation(anthropic_body: dict, context_window: int, target_fractio
                     if isinstance(block, dict) and block.get("type") == "tool_result":
                         result_text = _extract_text(block.get("content", ""))
                         if len(result_text) > 2000:
-                            block["content"] = result_text[:1000] + "\n...[TRUNCATED]...\n" + result_text[-500:]
+                            block["content"] = (
+                                result_text[:1000]
+                                + "\n...[TRUNCATED]...\n"
+                                + result_text[-500:]
+                            )
         anthropic_body["messages"] = protected_head + protected_tail
         return anthropic_body
 
@@ -486,8 +582,7 @@ def prune_conversation(anthropic_body: dict, context_window: int, target_fractio
 
         if isinstance(content, list):
             is_tool_result = any(
-                isinstance(b, dict) and b.get("type") == "tool_result"
-                for b in content
+                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
             )
 
         # Lower priority = removed first
@@ -529,12 +624,17 @@ def prune_conversation(anthropic_body: dict, context_window: int, target_fractio
                 f"The conversation continues from recent context below.]"
             ),
         }
-        anthropic_body["messages"] = protected_head + [prune_marker] + kept_msgs + protected_tail
+        anthropic_body["messages"] = (
+            protected_head + [prune_marker] + kept_msgs + protected_tail
+        )
         logger.warning(
             "PRUNED: removed %d messages (~%d tokens), kept %d messages, "
             "target=%.0f%% of %d ctx",
-            removed_count, removed_tokens, len(anthropic_body["messages"]),
-            target_fraction * 100, context_window,
+            removed_count,
+            removed_tokens,
+            len(anthropic_body["messages"]),
+            target_fraction * 100,
+            context_window,
         )
     else:
         anthropic_body["messages"] = protected_head + kept_msgs + protected_tail
@@ -554,12 +654,13 @@ http_client: httpx.AsyncClient | None = None
 async def lifespan(app: FastAPI):
     """Manage the httpx client lifecycle with the FastAPI app."""
     global http_client
+    global default_context_window
     http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(
-            connect=10.0,                  # 10s to establish connection
-            read=PROXY_READ_TIMEOUT,       # configurable (default 10 min)
-            write=30.0,                    # 30s to send the request body
-            pool=10.0,                     # 10s to acquire a pool connection
+            connect=10.0,  # 10s to establish connection
+            read=PROXY_READ_TIMEOUT,  # configurable (default 10 min)
+            write=30.0,  # 30s to send the request body
+            pool=10.0,  # 10s to acquire a pool connection
         ),
         limits=httpx.Limits(
             max_connections=PROXY_MAX_CONNECTIONS,
@@ -569,14 +670,19 @@ async def lifespan(app: FastAPI):
     )
     logger.info(
         "Proxy started: listening on %s:%d -> upstream %s",
-        PROXY_HOST, PROXY_PORT, LLAMA_CPP_BASE,
+        PROXY_HOST,
+        PROXY_PORT,
+        LLAMA_CPP_BASE,
     )
 
     # Auto-detect context window from upstream server
-    session_monitor.context_window = await detect_context_window(http_client)
+    default_context_window = await detect_context_window(http_client)
+    for mon in session_monitors.values():
+        if mon.context_window <= 0:
+            mon.context_window = default_context_window
     logger.info(
         "Context window: %d tokens, prune threshold: %.0f%%",
-        session_monitor.context_window,
+        default_context_window,
         PROXY_CONTEXT_PRUNE_THRESHOLD * 100,
     )
 
@@ -597,6 +703,7 @@ app = FastAPI(
 # ===========================================================================
 # Request Translation: Anthropic -> OpenAI
 # ===========================================================================
+
 
 def anthropic_to_openai_messages(anthropic_body: dict) -> list[dict]:
     """Convert Anthropic message format to OpenAI message format.
@@ -635,25 +742,33 @@ def anthropic_to_openai_messages(anthropic_body: dict) -> list[dict]:
                 elif block.get("type") == "text":
                     parts.append(block.get("text", ""))
                 elif block.get("type") == "tool_use":
-                    messages.append({
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [{
-                            "id": block.get("id", f"call_{uuid.uuid4().hex[:8]}"),
-                            "type": "function",
-                            "function": {
-                                "name": block["name"],
-                                "arguments": json.dumps(block.get("input", {})),
-                            },
-                        }],
-                    })
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": block.get(
+                                        "id", f"call_{uuid.uuid4().hex[:8]}"
+                                    ),
+                                    "type": "function",
+                                    "function": {
+                                        "name": block["name"],
+                                        "arguments": json.dumps(block.get("input", {})),
+                                    },
+                                }
+                            ],
+                        }
+                    )
                     continue
                 elif block.get("type") == "tool_result":
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": block.get("tool_use_id", ""),
-                        "content": _extract_text(block.get("content", "")),
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": block.get("tool_use_id", ""),
+                            "content": _extract_text(block.get("content", "")),
+                        }
+                    )
                     continue
             if parts:
                 messages.append({"role": role, "content": "\n".join(parts)})
@@ -686,7 +801,77 @@ _AGENTIC_SYSTEM_SUPPLEMENT = (
 )
 
 
-def build_openai_request(anthropic_body: dict) -> dict:
+def _content_fingerprint(content) -> str:
+    if isinstance(content, str):
+        return content[:512]
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                btype = block.get("type", "")
+                if btype == "text":
+                    parts.append(block.get("text", ""))
+                elif btype == "tool_use":
+                    parts.append(f"tool:{block.get('name', '')}")
+                elif btype == "tool_result":
+                    parts.append(f"result:{block.get('tool_use_id', '')}")
+        return "\n".join(parts)[:1024]
+    return str(content)[:512]
+
+
+def resolve_session_id(request: Request, anthropic_body: dict) -> str:
+    header_keys = (
+        "x-uap-session-id",
+        "x-claude-session-id",
+        "anthropic-session-id",
+        "x-session-id",
+    )
+    for key in header_keys:
+        value = request.headers.get(key)
+        if value:
+            return f"hdr:{value}"
+
+    metadata = anthropic_body.get("metadata", {})
+    if isinstance(metadata, dict):
+        for key in ("session_id", "conversation_id", "thread_id"):
+            value = metadata.get(key)
+            if value:
+                return f"meta:{value}"
+
+    first_user = ""
+    for msg in anthropic_body.get("messages", []):
+        if msg.get("role") == "user":
+            first_user = _content_fingerprint(msg.get("content", ""))
+            break
+
+    system_fingerprint = _content_fingerprint(anthropic_body.get("system", ""))
+    model = anthropic_body.get("model", "default")
+    remote = request.client.host if request.client else "unknown"
+    digest = hashlib.sha256(
+        f"{remote}|{model}|{system_fingerprint}|{first_user}".encode(
+            "utf-8", errors="ignore"
+        )
+    ).hexdigest()[:20]
+    return f"fp:{digest}"
+
+
+def _last_user_has_tool_result(anthropic_body: dict) -> bool:
+    messages = anthropic_body.get("messages", [])
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            return False
+        return any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+        )
+    return False
+
+
+def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
     """Build an OpenAI Chat Completions request from an Anthropic Messages request."""
     openai_body = {
         "model": anthropic_body.get("model", "default"),
@@ -700,10 +885,13 @@ def build_openai_request(anthropic_body: dict) -> dict:
         openai_body["messages"][0]["content"] += _AGENTIC_SYSTEM_SUPPLEMENT
     else:
         # No system message from the client; inject one.
-        openai_body["messages"].insert(0, {
-            "role": "system",
-            "content": _AGENTIC_SYSTEM_SUPPLEMENT.strip(),
-        })
+        openai_body["messages"].insert(
+            0,
+            {
+                "role": "system",
+                "content": _AGENTIC_SYSTEM_SUPPLEMENT.strip(),
+            },
+        )
 
     if "max_tokens" in anthropic_body:
         # Enforce minimum floor for thinking mode: model needs tokens for
@@ -716,7 +904,7 @@ def build_openai_request(anthropic_body: dict) -> dict:
         # Formula: max_tokens = min(requested, context_window - input_tokens - safety_margin)
         # This ensures the model's output + current input stays within bounds,
         # leaving room for the next turn's incremental growth.
-        ctx_window = session_monitor.context_window
+        ctx_window = monitor.context_window
         if ctx_window > 0:
             estimated_input = estimate_total_tokens(anthropic_body)
             # Reserve 15% of context for next-turn growth (tool results, etc.)
@@ -725,8 +913,11 @@ def build_openai_request(anthropic_body: dict) -> dict:
             if available_for_output < requested_max and available_for_output > 1024:
                 logger.info(
                     "MAX_TOKENS capped: %d -> %d (ctx=%d, input~%d, margin=%d)",
-                    requested_max, available_for_output,
-                    ctx_window, estimated_input, safety_margin,
+                    requested_max,
+                    available_for_output,
+                    ctx_window,
+                    estimated_input,
+                    safety_margin,
                 )
                 requested_max = available_for_output
             elif available_for_output <= 1024:
@@ -734,7 +925,9 @@ def build_openai_request(anthropic_body: dict) -> dict:
                 logger.warning(
                     "MAX_TOKENS: only %d tokens available for output (ctx=%d, input~%d). "
                     "Response may be truncated.",
-                    available_for_output, ctx_window, estimated_input,
+                    available_for_output,
+                    ctx_window,
+                    estimated_input,
                 )
                 requested_max = max(1024, available_for_output)
 
@@ -750,14 +943,16 @@ def build_openai_request(anthropic_body: dict) -> dict:
     if "tools" in anthropic_body:
         openai_body["tools"] = []
         for tool in anthropic_body["tools"]:
-            openai_body["tools"].append({
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool.get("description", ""),
-                    "parameters": tool.get("input_schema", {}),
-                },
-            })
+            openai_body["tools"].append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("input_schema", {}),
+                    },
+                }
+            )
 
         # Smart tool_choice: force tool calls during the agentic loop to
         # prevent the model from producing text-only end_turn responses that
@@ -774,7 +969,8 @@ def build_openai_request(anthropic_body: dict) -> dict:
         # runaway token consumption.
         n_msgs = len(anthropic_body.get("messages", []))
         has_tool_results = any(
-            isinstance(m.get("content"), list) and any(
+            isinstance(m.get("content"), list)
+            and any(
                 isinstance(b, dict) and b.get("type") == "tool_result"
                 for b in m.get("content", [])
             )
@@ -782,28 +978,41 @@ def build_openai_request(anthropic_body: dict) -> dict:
         )
 
         # Record tool calls from the last assistant message for loop detection
-        _record_last_assistant_tool_calls(anthropic_body)
+        _record_last_assistant_tool_calls(anthropic_body, monitor)
+        last_user_has_tool_result = _last_user_has_tool_result(anthropic_body)
 
         # Check if loop breaker should override tool_choice
-        if session_monitor.should_release_tool_choice():
+        if monitor.should_release_tool_choice():
             openai_body["tool_choice"] = "auto"
-            session_monitor.consecutive_forced_count = 0
+            monitor.consecutive_forced_count = 0
+            monitor.no_progress_streak = 0
             logger.warning("tool_choice set to 'auto' by LOOP BREAKER")
         elif _last_assistant_was_text_only(anthropic_body):
             openai_body["tool_choice"] = "required"
-            session_monitor.consecutive_forced_count += 1
-            logger.info("tool_choice forced to 'required' (last assistant was text-only)")
+            monitor.consecutive_forced_count += 1
+            monitor.no_progress_streak = (
+                0 if last_user_has_tool_result else monitor.no_progress_streak + 1
+            )
+            logger.info(
+                "tool_choice forced to 'required' (last assistant was text-only)"
+            )
         elif has_tool_results and n_msgs > 2:
             openai_body["tool_choice"] = "required"
-            session_monitor.consecutive_forced_count += 1
-            logger.info("tool_choice forced to 'required' (active agentic loop with tool results)")
+            monitor.consecutive_forced_count += 1
+            monitor.no_progress_streak = (
+                0 if last_user_has_tool_result else monitor.no_progress_streak + 1
+            )
+            logger.info(
+                "tool_choice forced to 'required' (active agentic loop with tool results)"
+            )
         else:
-            session_monitor.consecutive_forced_count = 0
+            monitor.consecutive_forced_count = 0
+            monitor.no_progress_streak = 0
 
     return openai_body
 
 
-def _record_last_assistant_tool_calls(anthropic_body: dict):
+def _record_last_assistant_tool_calls(anthropic_body: dict, monitor: SessionMonitor):
     """Extract tool call names from the last assistant message and record
     them in the session monitor for loop detection."""
     messages = anthropic_body.get("messages", [])
@@ -818,7 +1027,36 @@ def _record_last_assistant_tool_calls(anthropic_body: dict):
                     tool_names.append(block.get("name", "unknown"))
         break
     if tool_names:
-        session_monitor.record_tool_calls(tool_names)
+        monitor.record_tool_calls(tool_names)
+
+
+def _is_unexpected_end_turn(openai_resp: dict, anthropic_body: dict) -> bool:
+    choices = openai_resp.get("choices") or []
+    if not choices:
+        return False
+
+    choice = choices[0]
+    finish = choice.get("finish_reason")
+    if finish not in {"stop", "end_turn"}:
+        return False
+
+    msg = choice.get("message", {})
+    if msg.get("tool_calls"):
+        return False
+
+    if "tools" not in anthropic_body:
+        return False
+
+    has_tool_results = any(
+        isinstance(m.get("content"), list)
+        and any(
+            isinstance(b, dict) and b.get("type") == "tool_result"
+            for b in m.get("content", [])
+        )
+        for m in anthropic_body.get("messages", [])
+    )
+
+    return has_tool_results or _last_assistant_was_text_only(anthropic_body)
 
 
 def _last_assistant_was_text_only(anthropic_body: dict) -> bool:
@@ -836,11 +1074,14 @@ def _last_assistant_was_text_only(anthropic_body: dict) -> bool:
             return bool(content.strip())
         if isinstance(content, list):
             has_tool_use = any(
-                isinstance(b, dict) and b.get("type") == "tool_use"
-                for b in content
+                isinstance(b, dict) and b.get("type") == "tool_use" for b in content
             )
             has_text = any(
-                (isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip())
+                (
+                    isinstance(b, dict)
+                    and b.get("type") == "text"
+                    and b.get("text", "").strip()
+                )
                 or isinstance(b, str)
                 for b in content
             )
@@ -853,6 +1094,7 @@ def _last_assistant_was_text_only(anthropic_body: dict) -> bool:
 # ===========================================================================
 # Response Translation: OpenAI -> Anthropic
 # ===========================================================================
+
 
 def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
     """Convert an OpenAI Chat Completions response to Anthropic Messages format."""
@@ -871,12 +1113,14 @@ def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
             args = json.loads(fn.get("arguments", "{}"))
         except json.JSONDecodeError:
             args = {}
-        content.append({
-            "type": "tool_use",
-            "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:12]}"),
-            "name": fn.get("name", ""),
-            "input": args,
-        })
+        content.append(
+            {
+                "type": "tool_use",
+                "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:12]}"),
+                "name": fn.get("name", ""),
+                "input": args,
+            }
+        )
 
     stop_reason_map = {
         "stop": "end_turn",
@@ -906,7 +1150,13 @@ def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
 # Streaming Translation: OpenAI SSE -> Anthropic SSE
 # ===========================================================================
 
-async def stream_anthropic_response(openai_stream: httpx.Response, model: str):
+
+async def stream_anthropic_response(
+    openai_stream: httpx.Response,
+    model: str,
+    monitor: SessionMonitor,
+    anthropic_body: dict,
+):
     """Convert an OpenAI streaming response to Anthropic SSE stream format.
 
     Handles:
@@ -929,7 +1179,7 @@ async def stream_anthropic_response(openai_stream: httpx.Response, model: str):
         f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
     )
 
-    yield "event: ping\ndata: {\"type\": \"ping\"}\n\n"
+    yield 'event: ping\ndata: {"type": "ping"}\n\n'
 
     output_tokens = 0
     finish_reason = "end_turn"
@@ -1081,16 +1331,51 @@ async def stream_anthropic_response(openai_stream: httpx.Response, model: str):
 
     # Log response summary
     accumulated_text = "".join(text_chunks)
-    tc_names = [tc["name"] for tc in tool_calls_by_index.values()] if tool_calls_by_index else []
-    tc_args = [tc.get("arguments", "") for tc in tool_calls_by_index.values()] if tool_calls_by_index else []
+    tc_names = (
+        [tc["name"] for tc in tool_calls_by_index.values()]
+        if tool_calls_by_index
+        else []
+    )
+    tc_args = (
+        [tc.get("arguments", "") for tc in tool_calls_by_index.values()]
+        if tool_calls_by_index
+        else []
+    )
     logger.info(
         "RESP: finish=%s output_tokens=%d text_len=%d text=%.300s tool_calls=%s args=%s",
-        finish_reason, output_tokens,
+        finish_reason,
+        output_tokens,
         len(accumulated_text),
         accumulated_text[:300],
         tc_names,
         [a[:200] for a in tc_args],
     )
+
+    if _is_unexpected_end_turn(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop"
+                    if finish_reason == "end_turn"
+                    else finish_reason,
+                    "message": {
+                        "content": accumulated_text,
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": tc["name"],
+                                    "arguments": tc.get("arguments", ""),
+                                }
+                            }
+                            for tc in tool_calls_by_index.values()
+                        ],
+                    },
+                }
+            ]
+        },
+        anthropic_body,
+    ):
+        monitor.unexpected_end_turn_count += 1
 
     # message_delta with final stop reason
     yield (
@@ -1106,6 +1391,7 @@ async def stream_anthropic_response(openai_stream: httpx.Response, model: str):
 # API Endpoints
 # ===========================================================================
 
+
 @app.post("/v1/messages")
 async def messages(request: Request):
     """Handle Anthropic Messages API requests (streaming and non-streaming).
@@ -1116,9 +1402,14 @@ async def messages(request: Request):
     - Option E: Smart max_tokens capping (in build_openai_request)
     - Option F: Session-level token monitoring with warnings
     """
+    global last_session_id
+
     body = await request.json()
     model = body.get("model", "default")
     is_stream = body.get("stream", False)
+    session_id = resolve_session_id(request, body)
+    monitor = get_session_monitor(session_id)
+    last_session_id = session_id
 
     # Debug: log request summary
     n_messages = len(body.get("messages", []))
@@ -1128,42 +1419,51 @@ async def messages(request: Request):
     last_role = last_msg.get("role", "?")
     last_content = last_msg.get("content", "")
     if isinstance(last_content, list):
-        last_text = next((b.get("text", "") for b in last_content if b.get("type") == "text"), "")[:200]
+        last_text = next(
+            (b.get("text", "") for b in last_content if b.get("type") == "text"), ""
+        )[:200]
     elif isinstance(last_content, str):
         last_text = last_content[:200]
     else:
         last_text = str(last_content)[:200]
     logger.info(
         "REQ: stream=%s msgs=%d tools=%d max_tokens=%s last_role=%s last_content=%.200s",
-        is_stream, n_messages, n_tools, max_tokens, last_role, last_text
+        is_stream,
+        n_messages,
+        n_tools,
+        max_tokens,
+        last_role,
+        last_text,
     )
 
     # --- Option F: Estimate tokens and record in session monitor ---
     estimated_tokens = estimate_total_tokens(body)
-    session_monitor.record_request(estimated_tokens)
-    session_monitor.log_status()
+    monitor.record_request(estimated_tokens)
+    monitor.log_status()
 
     # --- Option C: Prune conversation if approaching context limit ---
-    ctx_window = session_monitor.context_window
+    ctx_window = monitor.context_window
     if ctx_window > 0:
         utilization = estimated_tokens / ctx_window
         if utilization >= PROXY_CONTEXT_PRUNE_THRESHOLD:
             logger.warning(
                 "Context utilization %.1f%% exceeds threshold %.1f%% -- pruning conversation",
-                utilization * 100, PROXY_CONTEXT_PRUNE_THRESHOLD * 100,
+                utilization * 100,
+                PROXY_CONTEXT_PRUNE_THRESHOLD * 100,
             )
             body = prune_conversation(body, ctx_window, target_fraction=0.65)
-            session_monitor.prune_count += 1
+            monitor.prune_count += 1
             # Re-estimate after pruning
             estimated_tokens = estimate_total_tokens(body)
-            session_monitor.record_request(estimated_tokens)
+            monitor.record_request(estimated_tokens)
             n_messages = len(body.get("messages", []))
             logger.info(
                 "After pruning: ~%d tokens, %d messages",
-                estimated_tokens, n_messages,
+                estimated_tokens,
+                n_messages,
             )
 
-    openai_body = build_openai_request(body)
+    openai_body = build_openai_request(body, monitor)
 
     client = http_client
     if client is None:
@@ -1181,6 +1481,7 @@ async def messages(request: Request):
         MAX_UPSTREAM_RETRIES = 3
         RETRY_DELAY_SECS = 5.0
         last_exc: Exception | None = None
+        resp: httpx.Response | None = None
 
         for attempt in range(MAX_UPSTREAM_RETRIES):
             try:
@@ -1201,25 +1502,46 @@ async def messages(request: Request):
                 if attempt < MAX_UPSTREAM_RETRIES - 1:
                     logger.warning(
                         "Upstream connect failed (attempt %d/%d): %s – retrying in %.0fs",
-                        attempt + 1, MAX_UPSTREAM_RETRIES,
-                        type(exc).__name__, RETRY_DELAY_SECS,
+                        attempt + 1,
+                        MAX_UPSTREAM_RETRIES,
+                        type(exc).__name__,
+                        RETRY_DELAY_SECS,
                     )
                     await asyncio.sleep(RETRY_DELAY_SECS)
                 else:
                     logger.error(
                         "Upstream connect failed after %d attempts: %s: %s",
-                        MAX_UPSTREAM_RETRIES, type(exc).__name__, exc,
+                        MAX_UPSTREAM_RETRIES,
+                        type(exc).__name__,
+                        exc,
                     )
 
         if last_exc is not None:
             return Response(
-                content=json.dumps({
-                    "type": "error",
-                    "error": {
-                        "type": "overloaded_error",
-                        "message": f"Upstream server unavailable after {MAX_UPSTREAM_RETRIES} retries: {last_exc}",
-                    },
-                }),
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "overloaded_error",
+                            "message": f"Upstream server unavailable after {MAX_UPSTREAM_RETRIES} retries: {last_exc}",
+                        },
+                    }
+                ),
+                status_code=529,
+                media_type="application/json",
+            )
+
+        if resp is None:
+            return Response(
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "overloaded_error",
+                            "message": "Upstream response unavailable",
+                        },
+                    }
+                ),
                 status_code=529,
                 media_type="application/json",
             )
@@ -1232,9 +1554,7 @@ async def messages(request: Request):
             error_body = await resp.aread()
             await resp.aclose()
             error_text = error_body.decode("utf-8", errors="replace")[:1000]
-            logger.error(
-                "Upstream HTTP %d: %s", resp.status_code, error_text
-            )
+            logger.error("Upstream HTTP %d: %s", resp.status_code, error_text)
 
             # Parse the error for a user-friendly message
             error_message = f"Upstream server error (HTTP {resp.status_code})"
@@ -1257,47 +1577,57 @@ async def messages(request: Request):
             )
 
             if is_context_overflow:
-                session_monitor.overflow_count += 1
+                monitor.overflow_count += 1
                 logger.error(
                     "CONTEXT OVERFLOW detected (count=%d). "
                     "Estimated input: %d tokens, context window: %d tokens. "
                     "Conversation needs pruning or context window increase.",
-                    session_monitor.overflow_count, estimated_tokens, ctx_window,
+                    monitor.overflow_count,
+                    estimated_tokens,
+                    ctx_window,
                 )
                 # Return Anthropic-format error that Claude Code can handle
                 return Response(
-                    content=json.dumps({
-                        "type": "error",
-                        "error": {
-                            "type": "overloaded_error",
-                            "message": (
-                                f"Context window exceeded: request requires ~{estimated_tokens} tokens "
-                                f"but only {ctx_window} are available. "
-                                f"The conversation is too long. Please start a new session or "
-                                f"reduce conversation length."
-                            ),
-                        },
-                    }),
+                    content=json.dumps(
+                        {
+                            "type": "error",
+                            "error": {
+                                "type": "overloaded_error",
+                                "message": (
+                                    f"Context window exceeded: request requires ~{estimated_tokens} tokens "
+                                    f"but only {ctx_window} are available. "
+                                    f"The conversation is too long. Please start a new session or "
+                                    f"reduce conversation length."
+                                ),
+                            },
+                        }
+                    ),
                     status_code=529,
                     media_type="application/json",
                 )
 
             # Generic upstream error -- return as Anthropic error format
-            error_type = "overloaded_error" if resp.status_code >= 500 else "invalid_request_error"
+            error_type = (
+                "overloaded_error"
+                if resp.status_code >= 500
+                else "invalid_request_error"
+            )
             return Response(
-                content=json.dumps({
-                    "type": "error",
-                    "error": {
-                        "type": error_type,
-                        "message": error_message,
-                    },
-                }),
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": error_type,
+                            "message": error_message,
+                        },
+                    }
+                ),
                 status_code=529 if resp.status_code >= 500 else 400,
                 media_type="application/json",
             )
 
         return StreamingResponse(
-            stream_anthropic_response(resp, model),
+            stream_anthropic_response(resp, model, monitor, body),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1314,25 +1644,56 @@ async def messages(request: Request):
         # Option B: Handle non-streaming errors too
         if resp.status_code != 200:
             error_text = resp.text[:1000]
-            logger.error("Upstream HTTP %d (non-stream): %s", resp.status_code, error_text)
+            logger.error(
+                "Upstream HTTP %d (non-stream): %s", resp.status_code, error_text
+            )
             return Response(
-                content=json.dumps({
-                    "type": "error",
-                    "error": {
-                        "type": "overloaded_error",
-                        "message": f"Upstream error (HTTP {resp.status_code}): {error_text[:500]}",
-                    },
-                }),
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "overloaded_error",
+                            "message": f"Upstream error (HTTP {resp.status_code}): {error_text[:500]}",
+                        },
+                    }
+                ),
                 status_code=529,
                 media_type="application/json",
             )
 
         openai_resp = resp.json()
+
+        if PROXY_GUARDRAIL_RETRY and _is_unexpected_end_turn(openai_resp, body):
+            monitor.unexpected_end_turn_count += 1
+            logger.warning(
+                "GUARDRAIL: unexpected end_turn without tool_use in active loop (session=%s), retrying once with tool_choice=required",
+                session_id,
+            )
+
+            retry_body = dict(openai_body)
+            retry_body["tool_choice"] = "required"
+            retry_body["stream"] = False
+
+            retry_resp = await client.post(
+                f"{LLAMA_CPP_BASE}/chat/completions",
+                json=retry_body,
+                headers={"Content-Type": "application/json"},
+            )
+            if retry_resp.status_code == 200:
+                retry_json = retry_resp.json()
+                retry_choice = (retry_json.get("choices") or [{}])[0]
+                retry_message = retry_choice.get("message", {})
+                if retry_message.get("tool_calls"):
+                    openai_resp = retry_json
+                    logger.info(
+                        "GUARDRAIL: retry produced tool_use; using retried response"
+                    )
+
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
 
         # Track output tokens in session monitor
         output_tokens = anthropic_resp.get("usage", {}).get("output_tokens", 0)
-        session_monitor.record_response(output_tokens)
+        monitor.record_response(output_tokens)
 
         return anthropic_resp
 
@@ -1377,37 +1738,49 @@ async def health():
 
 
 @app.get("/v1/context")
-async def context_status():
+async def context_status(request: Request):
     """Option F: Context window monitoring endpoint.
 
     Returns current session token usage, utilization, warnings, and
     estimated remaining turns. Useful for dashboards and debugging.
     """
-    warning = session_monitor.get_warning_level()
-    turns = session_monitor.estimate_turns_remaining()
+    requested_session = request.query_params.get("session_id", "")
+    session_id = requested_session or last_session_id
+    monitor = session_monitors.get(session_id) if session_id else None
+
+    if monitor is None:
+        monitor = SessionMonitor(context_window=default_context_window)
+
+    warning = monitor.get_warning_level()
+    turns = monitor.estimate_turns_remaining()
 
     return {
-        "context_window": session_monitor.context_window,
-        "last_input_tokens": session_monitor.last_input_tokens,
-        "last_output_tokens": session_monitor.last_output_tokens,
-        "peak_input_tokens": session_monitor.peak_input_tokens,
-        "utilization": round(session_monitor.get_utilization(), 4),
-        "utilization_pct": f"{session_monitor.get_utilization() * 100:.1f}%",
+        "active_session_id": session_id,
+        "session_count": len(session_monitors),
+        "context_window": monitor.context_window,
+        "last_input_tokens": monitor.last_input_tokens,
+        "last_output_tokens": monitor.last_output_tokens,
+        "peak_input_tokens": monitor.peak_input_tokens,
+        "utilization": round(monitor.get_utilization(), 4),
+        "utilization_pct": f"{monitor.get_utilization() * 100:.1f}%",
         "warning_level": warning,
         "estimated_turns_remaining": turns,
-        "total_requests": session_monitor.total_requests,
-        "prune_count": session_monitor.prune_count,
-        "overflow_count": session_monitor.overflow_count,
+        "total_requests": monitor.total_requests,
+        "prune_count": monitor.prune_count,
+        "overflow_count": monitor.overflow_count,
         "prune_threshold": PROXY_CONTEXT_PRUNE_THRESHOLD,
-        "recent_history": session_monitor.context_history[-10:],
+        "recent_history": monitor.context_history[-10:],
         # Loop protection stats
         "loop_protection": {
-            "consecutive_forced_count": session_monitor.consecutive_forced_count,
-            "loop_warnings_emitted": session_monitor.loop_warnings_emitted,
-            "tool_call_history_len": len(session_monitor.tool_call_history),
-            "is_looping": session_monitor.detect_tool_loop()[0],
-            "loop_repeat_count": session_monitor.detect_tool_loop()[1],
-            "recent_tool_patterns": session_monitor.tool_call_history[-5:],
+            "enabled": PROXY_LOOP_BREAKER,
+            "consecutive_forced_count": monitor.consecutive_forced_count,
+            "no_progress_streak": monitor.no_progress_streak,
+            "loop_warnings_emitted": monitor.loop_warnings_emitted,
+            "unexpected_end_turn_count": monitor.unexpected_end_turn_count,
+            "tool_call_history_len": len(monitor.tool_call_history),
+            "is_looping": monitor.detect_tool_loop(window=PROXY_LOOP_WINDOW)[0],
+            "loop_repeat_count": monitor.detect_tool_loop(window=PROXY_LOOP_WINDOW)[1],
+            "recent_tool_patterns": monitor.tool_call_history[-5:],
         },
     }
 
