@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.13.13 (2026-03-22)
+
+- feat: add token loop protection mechanism to prevent runaway hook/proxy loops
+
+
 ## v1.13.12 (2026-03-21)
 
 - fix: remove synthetic analytics re-seeding from routing decisions, derive router enabled from real data
