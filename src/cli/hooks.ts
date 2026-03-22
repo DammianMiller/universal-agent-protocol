@@ -113,6 +113,38 @@ function updateGitignore(cwd: string, entries: string[]): void {
   }
 }
 
+interface LegacyHookEntry {
+  hooks?: unknown;
+  matcher?: unknown;
+}
+
+function normalizeLegacyHookEntry(entry: unknown): unknown {
+  if (Array.isArray(entry)) {
+    return entry;
+  }
+
+  if (entry && typeof entry === 'object' && Array.isArray((entry as LegacyHookEntry).hooks)) {
+    const legacy = entry as LegacyHookEntry;
+    const matcher = typeof legacy.matcher === 'string' ? legacy.matcher : '';
+    return [{ matcher, hooks: legacy.hooks }];
+  }
+
+  return entry;
+}
+
+function normalizeLegacyHooksConfig(hooks: unknown): Record<string, unknown> {
+  if (!hooks || typeof hooks !== 'object') {
+    return {};
+  }
+
+  const entries = Object.entries(hooks as Record<string, unknown>).map(([event, config]) => [
+    event,
+    normalizeLegacyHookEntry(config),
+  ]);
+
+  return Object.fromEntries(entries);
+}
+
 // --- Claude Code ---
 
 async function installClaudeHooks(cwd: string): Promise<void> {
@@ -182,7 +214,7 @@ async function installClaudeHooks(cwd: string): Promise<void> {
     ],
   };
 
-  const existingHooks = (settings.hooks || {}) as Record<string, unknown>;
+  const existingHooks = normalizeLegacyHooksConfig(settings.hooks);
   settings.hooks = { ...existingHooks, ...hooksConfig };
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
   console.log(chalk.green('  + settings.local.json (hooks configured)'));
@@ -269,7 +301,7 @@ async function installFactoryHooks(cwd: string): Promise<void> {
     ],
   };
 
-  const existingHooks = (settings.hooks || {}) as Record<string, unknown>;
+  const existingHooks = normalizeLegacyHooksConfig(settings.hooks);
   settings.hooks = { ...existingHooks, ...hooksConfig };
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
   console.log(chalk.green('  + settings.local.json (hooks configured)'));
@@ -393,7 +425,7 @@ async function installVscodeHooks(cwd: string): Promise<void> {
     ],
   };
 
-  const existingHooks = (settings.hooks || {}) as Record<string, unknown>;
+  const existingHooks = normalizeLegacyHooksConfig(settings.hooks);
   settings.hooks = { ...existingHooks, ...hooksConfig };
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
   console.log(chalk.green('  + .claude/settings.local.json (hooks configured)'));

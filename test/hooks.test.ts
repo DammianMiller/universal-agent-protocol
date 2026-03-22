@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { tmpdir } from 'os';
+import { hooksCommand } from '../src/cli/hooks.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -112,6 +114,54 @@ describe('Session Hooks', () => {
       for (const event of requiredEvents) {
         expect(settings.hooks[event]).toBeDefined();
       }
+    });
+  });
+
+  describe('legacy settings.local schema migration', () => {
+    it('migrates legacy claude SessionStart object to matcher array', async () => {
+      const projectDir = mkdtempSync(join(tmpdir(), 'uap-claude-hooks-'));
+      const claudeDir = join(projectDir, '.claude');
+      mkdirSync(claudeDir, { recursive: true });
+
+      const legacySettings = {
+        hooks: {
+          SessionStart: {
+            hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
+          },
+        },
+      };
+      writeFileSync(join(claudeDir, 'settings.local.json'), JSON.stringify(legacySettings, null, 2));
+
+      await hooksCommand('install', { projectDir, target: 'claude' });
+
+      const updated = JSON.parse(readFileSync(join(claudeDir, 'settings.local.json'), 'utf-8'));
+      expect(Array.isArray(updated.hooks.SessionStart)).toBe(true);
+      expect(updated.hooks.SessionStart[0].matcher).toBe('');
+
+      rmSync(projectDir, { recursive: true, force: true });
+    });
+
+    it('migrates legacy claude PreCompact object to matcher array', async () => {
+      const projectDir = mkdtempSync(join(tmpdir(), 'uap-claude-hooks-'));
+      const claudeDir = join(projectDir, '.claude');
+      mkdirSync(claudeDir, { recursive: true });
+
+      const legacySettings = {
+        hooks: {
+          PreCompact: {
+            hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-compact.sh' }],
+          },
+        },
+      };
+      writeFileSync(join(claudeDir, 'settings.local.json'), JSON.stringify(legacySettings, null, 2));
+
+      await hooksCommand('install', { projectDir, target: 'claude' });
+
+      const updated = JSON.parse(readFileSync(join(claudeDir, 'settings.local.json'), 'utf-8'));
+      expect(Array.isArray(updated.hooks.PreCompact)).toBe(true);
+      expect(updated.hooks.PreCompact[0].matcher).toBe('');
+
+      rmSync(projectDir, { recursive: true, force: true });
     });
   });
 });
