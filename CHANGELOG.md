@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.13.14 (2026-03-22)
+
+- fix: migrate legacy settings.local hook objects to matcher arrays
+
+
 ## v1.13.13 (2026-03-22)
 
 - feat: add token loop protection mechanism to prevent runaway hook/proxy loops
