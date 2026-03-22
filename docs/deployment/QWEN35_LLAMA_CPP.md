@@ -116,6 +116,50 @@ llama-server \
 | `--draft-max`   | `16`                             | Max tokens to draft per iteration. Higher = more throughput, more VRAM. |
 | `--draft-p-min` | `0.75`                           | Minimum acceptance probability. Lower = more aggressive drafting.       |
 
+## Extension Options for Speculative Decoding
+
+### Option 1: Adaptive Runtime Tuning (implemented)
+
+Use acceptance and rollback rates to auto-adjust `draft-max`, `draft-min`, and `draft-p-min` over time.
+
+- Best for immediate gains without kernel changes
+- Reduces bad bursts when acceptance drops
+- Increases burst length automatically during high-acceptance windows
+
+Commands:
+
+```bash
+# Tune once from observed metrics
+llama-optimize spec-autotune --acceptance 0.71 --rollback 0.14 --profile throughput
+
+# Compare static defaults vs adaptive tuning using deterministic simulation
+llama-optimize spec-benchmark --profile throughput --trace mixed --steps 180
+
+# Live benchmark active server and get tuned flag recommendation
+llama-optimize spec-benchmark-live \
+  --endpoint http://127.0.0.1:8080/v1 \
+  --model qwen3.5-a3b-iq4xs \
+  --runs 5 --max-tokens 256 --profile throughput
+```
+
+Recommended workflow:
+
+1. Run `spec-benchmark-live` with your current startup flags and note `Throughput`.
+2. Restart `llama-server` with the `Suggested params` flags.
+3. Re-run `spec-benchmark-live` with the same settings to measure actual gain.
+
+### Option 2: GPU Residency + Overlap
+
+- Keep draft model and draft KV fully on GPU
+- Preallocate buffers and overlap draft + verify passes with CUDA streams
+- Improves p95 latency consistency on long runs
+
+### Option 3: GPU Checkpoint/Rollback
+
+- Move speculative checkpoint snapshots from CPU RAM to GPU buffers
+- Remove host-device copy overhead from rollback paths
+- Highest upside, but requires deeper runtime changes
+
 ### Sampling
 
 | Flag               | Value  | Purpose                                           |
@@ -339,3 +383,4 @@ Two possible causes:
 - `tools/agents/scripts/qwen_tool_call_test.py` - Test suite using OpenAI-compatible API
 - `src/cli/tool-calls.ts` - CLI command for template management
 - `src/bin/llama-server-optimize.ts` - llama-server startup optimizer
+- `docs/deployment/UAP_LLAMA_ANTHROPIC_PROXY_BOOTSTRAP.md` - service bootstrap + ngram-cache A/B benchmarking

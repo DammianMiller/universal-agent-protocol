@@ -21,6 +21,16 @@ import * as readline from 'readline';
 import * as os from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import {
+  recommendAdaptiveFromLive,
+  runSimulationBenchmark,
+  summarizeLiveBenchmark,
+  tuneSpeculativeParams,
+  type LiveBenchmarkSample,
+  type RuntimeMetrics,
+  type SpeculativeParams,
+  type TuningProfile,
+} from '../benchmarks/speculative-autotune.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -276,6 +286,56 @@ interface Config {
   loraPath: string;
   loraScale: number;
   chatTemplatePath: string;
+}
+
+interface SpecAutotuneOptions {
+  acceptance: string;
+  rollback: string;
+  profile: TuningProfile;
+  draftMax: string;
+  draftMin: string;
+  draftPMin: string;
+  json?: boolean;
+}
+
+interface SpecBenchmarkOptions {
+  profile: TuningProfile;
+  trace: 'stable' | 'volatile' | 'mixed';
+  steps: string;
+  seed: string;
+  json?: boolean;
+}
+
+interface SpecBenchmarkLiveOptions {
+  endpoint: string;
+  model: string;
+  runs: string;
+  prompt: string;
+  maxTokens: string;
+  temperature: string;
+  profile: TuningProfile;
+  draftMax: string;
+  draftMin: string;
+  draftPMin: string;
+  json?: boolean;
+}
+
+function readCompletionTokens(payload: unknown): number {
+  if (!payload || typeof payload !== 'object') return 0;
+  const response = payload as {
+    usage?: { completion_tokens?: number; completionTokens?: number };
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+
+  if (typeof response.usage?.completion_tokens === 'number') return response.usage.completion_tokens;
+  if (typeof response.usage?.completionTokens === 'number') return response.usage.completionTokens;
+
+  const text = response.choices?.[0]?.message?.content;
+  if (typeof text === 'string' && text.length > 0) {
+    return Math.max(1, Math.ceil(text.length / 4));
+  }
+
+  return 0;
 }
 
 const rl = readline.createInterface({
@@ -860,6 +920,200 @@ program
     console.log('\nUpgrade path for better tool call reliability:');
     console.log('  IQ4_XS (94%) -> Q4_K_M (95%) -> Q5_K_M (97%) -> Q6_K (98%)');
     console.log('  Each step up requires ~4-7GB more VRAM');
+  });
+
+program
+  .command('spec-autotune')
+  .description('Option 1: tune draft settings from acceptance + rollback metrics')
+  .option('--acceptance <rate>', 'Acceptance rate from 0.0 to 1.0', '0.7')
+  .option('--rollback <rate>', 'Rollback rate from 0.0 to 1.0', '0.15')
+  .option('--profile <name>', 'throughput|latency|stable', 'throughput')
+  .option('--draft-max <value>', 'Base draft-max', '16')
+  .option('--draft-min <value>', 'Base draft-min', '3')
+  .option('--draft-p-min <value>', 'Base draft-p-min', '0.8')
+  .option('--json', 'Output as JSON')
+  .action((options: SpecAutotuneOptions) => {
+    const base: SpeculativeParams = {
+      draftMax: parseInt(options.draftMax, 10),
+      draftMin: parseInt(options.draftMin, 10),
+      draftPMin: parseFloat(options.draftPMin),
+    };
+
+    const metrics: RuntimeMetrics = {
+      acceptanceRate: parseFloat(options.acceptance),
+      rollbackRate: parseFloat(options.rollback),
+    };
+
+    const profile = (options.profile || 'throughput') as TuningProfile;
+    const tuned = tuneSpeculativeParams(base, metrics, profile);
+
+    if (options.json) {
+      console.log(
+        JSON.stringify(
+          {
+            profile,
+            metrics,
+            base,
+            tuned,
+            startupFlags: `--draft-max ${tuned.draftMax} --draft-min ${tuned.draftMin} --draft-p-min ${tuned.draftPMin}`,
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+
+    console.log('\n=== Speculative Option 1 Autotune ===');
+    console.log(`Profile:      ${profile}`);
+    console.log(`Acceptance:   ${(metrics.acceptanceRate * 100).toFixed(1)}%`);
+    console.log(`Rollback:     ${(metrics.rollbackRate * 100).toFixed(1)}%`);
+    console.log(`Base:         --draft-max ${base.draftMax} --draft-min ${base.draftMin} --draft-p-min ${base.draftPMin}`);
+    console.log(
+      `Recommended:  --draft-max ${tuned.draftMax} --draft-min ${tuned.draftMin} --draft-p-min ${tuned.draftPMin}`
+    );
+  });
+
+program
+  .command('spec-benchmark')
+  .description('Benchmark static vs Option 1 adaptive speculative tuning (simulation)')
+  .option('--profile <name>', 'throughput|latency|stable', 'throughput')
+  .option('--trace <name>', 'stable|volatile|mixed acceptance trace', 'mixed')
+  .option('--steps <count>', 'Number of simulation steps', '120')
+  .option('--seed <value>', 'Deterministic random seed', '42')
+  .option('--json', 'Output as JSON')
+  .action((options: SpecBenchmarkOptions) => {
+    const result = runSimulationBenchmark({
+      profile: (options.profile || 'throughput') as TuningProfile,
+      trace: (options.trace || 'mixed') as 'stable' | 'volatile' | 'mixed',
+      steps: parseInt(options.steps, 10),
+      seed: parseInt(options.seed, 10),
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    console.log('\n=== Speculative Option 1 Benchmark (Simulation) ===');
+    console.log(`Profile:           ${result.profile}`);
+    console.log(`Trace:             ${result.trace}`);
+    console.log(`Steps:             ${result.steps}`);
+    console.log(`Static avg TPS:    ${result.staticAvgTps}`);
+    console.log(`Adaptive avg TPS:  ${result.adaptiveAvgTps}`);
+    console.log(`Improvement:       ${result.improvementPct}%`);
+    console.log(
+      `Final adaptive:    --draft-max ${result.finalAdaptiveParams.draftMax} --draft-min ${result.finalAdaptiveParams.draftMin} --draft-p-min ${result.finalAdaptiveParams.draftPMin}`
+    );
+    console.log('\nNote: This command is a deterministic simulation benchmark for rapid tuning iteration.');
+  });
+
+program
+  .command('spec-benchmark-live')
+  .description('Benchmark active llama-server and produce Option 1 adaptive recommendation')
+  .option('--endpoint <url>', 'OpenAI-compatible endpoint', 'http://127.0.0.1:8080/v1')
+  .option('--model <id>', 'Model id for /chat/completions', 'qwen3.5-a3b-iq4xs')
+  .option('--runs <count>', 'Number of benchmark requests', '5')
+  .option(
+    '--prompt <text>',
+    'Benchmark prompt text',
+    'Write a concise explanation of speculative decoding performance tuning in 6 bullet points.'
+  )
+  .option('--max-tokens <count>', 'Completion tokens per run', '256')
+  .option('--temperature <value>', 'Sampling temperature', '0.2')
+  .option('--profile <name>', 'throughput|latency|stable', 'throughput')
+  .option('--draft-max <value>', 'Current draft-max', '16')
+  .option('--draft-min <value>', 'Current draft-min', '3')
+  .option('--draft-p-min <value>', 'Current draft-p-min', '0.8')
+  .option('--json', 'Output as JSON')
+  .action(async (options: SpecBenchmarkLiveOptions) => {
+    const runs = Math.max(1, parseInt(options.runs, 10));
+    const endpoint = options.endpoint.replace(/\/$/, '');
+    const model = options.model;
+    const profile = (options.profile || 'throughput') as TuningProfile;
+    const baseParams: SpeculativeParams = {
+      draftMax: parseInt(options.draftMax, 10),
+      draftMin: parseInt(options.draftMin, 10),
+      draftPMin: parseFloat(options.draftPMin),
+    };
+
+    const samples: LiveBenchmarkSample[] = [];
+    const failures: string[] = [];
+
+    for (let i = 0; i < runs; i += 1) {
+      const start = Date.now();
+      try {
+        const response = await fetch(`${endpoint}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: options.prompt }],
+            max_tokens: parseInt(options.maxTokens, 10),
+            temperature: parseFloat(options.temperature),
+          }),
+        });
+
+        if (!response.ok) {
+          const errorBody = await response.text();
+          failures.push(`run ${i + 1}: HTTP ${response.status} ${errorBody.slice(0, 120)}`);
+          continue;
+        }
+
+        const payload = (await response.json()) as unknown;
+        const completionTokens = readCompletionTokens(payload);
+        const latencyMs = Date.now() - start;
+
+        samples.push({ latencyMs, completionTokens });
+      } catch (error) {
+        failures.push(`run ${i + 1}: ${String(error)}`);
+      }
+    }
+
+    const summary = summarizeLiveBenchmark(samples);
+    const recommendation = recommendAdaptiveFromLive(summary, profile, baseParams);
+
+    const output = {
+      endpoint,
+      model,
+      profile,
+      requestedRuns: runs,
+      successfulRuns: summary.runs,
+      failedRuns: failures.length,
+      baseParams,
+      liveSummary: summary,
+      inferredMetrics: {
+        acceptanceRate: Number((recommendation.inferredMetrics.acceptanceRate * 100).toFixed(2)),
+        rollbackRate: Number((recommendation.inferredMetrics.rollbackRate * 100).toFixed(2)),
+      },
+      tunedParams: recommendation.tunedParams,
+      recommendationFlags: `--draft-max ${recommendation.tunedParams.draftMax} --draft-min ${recommendation.tunedParams.draftMin} --draft-p-min ${recommendation.tunedParams.draftPMin}`,
+      failures,
+    };
+
+    if (options.json) {
+      console.log(JSON.stringify(output, null, 2));
+      return;
+    }
+
+    console.log('\n=== Speculative Option 1 Live Benchmark ===');
+    console.log(`Endpoint:           ${endpoint}`);
+    console.log(`Model:              ${model}`);
+    console.log(`Profile:            ${profile}`);
+    console.log(`Runs:               ${summary.runs}/${runs}`);
+    console.log(`Avg latency:        ${summary.avgLatencyMs} ms`);
+    console.log(`Completion tokens:  ${summary.totalCompletionTokens}`);
+    console.log(`Throughput:         ${summary.tokensPerSecond} tok/s`);
+    console.log(`Inferred acceptance:${(recommendation.inferredMetrics.acceptanceRate * 100).toFixed(2)}%`);
+    console.log(`Inferred rollback:  ${(recommendation.inferredMetrics.rollbackRate * 100).toFixed(2)}%`);
+    console.log(`Base params:        --draft-max ${baseParams.draftMax} --draft-min ${baseParams.draftMin} --draft-p-min ${baseParams.draftPMin}`);
+    console.log(
+      `Suggested params:   --draft-max ${recommendation.tunedParams.draftMax} --draft-min ${recommendation.tunedParams.draftMin} --draft-p-min ${recommendation.tunedParams.draftPMin}`
+    );
+    if (failures.length > 0) {
+      console.log(`Failures:           ${failures.length} (use --json for details)`);
+    }
+    console.log('\nRun this benchmark before and after restarting llama-server with suggested flags to measure actual gain.');
   });
 
 program.parse(process.argv);
