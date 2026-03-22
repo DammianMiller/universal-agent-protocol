@@ -5,6 +5,12 @@
 # Enforces: iac-pipeline-enforcement, worktree-enforcement, git safety policies.
 set -euo pipefail
 
+# --- Loop Protection: track frequency of blocking events ---
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${HOOK_DIR}/loop-protection.sh" ]; then
+  source "${HOOK_DIR}/loop-protection.sh"
+fi
+
 # Read tool input from stdin (JSON)
 INPUT=$(cat)
 

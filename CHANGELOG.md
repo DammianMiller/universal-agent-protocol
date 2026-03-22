@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.13.12 (2026-03-21)
+
+- fix: remove synthetic analytics re-seeding from routing decisions, derive router enabled from real data
+- refactor: replace synthetic data seeder with real-data-only dashboard, clean all fake data, add worktree enforcement gate
+
+
+## v1.13.11 (2026-03-21)
+
+- fix(dashboard): live data for all panels, per-agent model/token breakdown, correct model routing
+
+
+## v1.13.10 (2026-03-21)
+
+- fix: add performance data rendering to dashboard (hotPaths, metrics)
+
+
+## v1.13.9 (2026-03-21)
+
+- fix: rebuild memories table CHECK constraint to allow lesson and decision types
+
+
+## v1.13.8 (2026-03-21)
+
+- fix: add worktree enforcement gate, policy categories, dashboard improvements
+
+
 ## v1.13.7 (2026-03-21)
 
 - feat: add GLM 4.7 model preset, Qwen3.5 optimizations, dashboard enhancements

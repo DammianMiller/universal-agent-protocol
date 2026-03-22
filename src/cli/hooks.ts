@@ -72,6 +72,7 @@ function copyHookScripts(targetHooksDir: string): void {
   }
 
   const hookFiles = [
+    'loop-protection.sh',
     'session-start.sh',
     'pre-compact.sh',
     'pre-tool-use-edit-write.sh',
