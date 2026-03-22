@@ -6,6 +6,16 @@
 # Always exits 0 (never blocks).
 set -euo pipefail
 
+# --- Loop Protection: suppress output if firing too fast ---
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${HOOK_DIR}/loop-protection.sh" ]; then
+  source "${HOOK_DIR}/loop-protection.sh"
+  if lp_should_suppress "post-tool-edit-write"; then
+    cat > /dev/null  # drain stdin
+    exit 0
+  fi
+fi
+
 # Read tool input from stdin (JSON)
 INPUT=$(cat)
 
@@ -33,6 +43,11 @@ if [ ! -f "${BACKUP_DIR}/${RELATIVE_PATH}" ] 2>/dev/null; then
   if ! echo "$FILE_PATH" | grep -qE '(node_modules|dist|\.uap-backups|agents/data|\.git)/'; then
     echo "[BACKUP REMINDER] No backup found for $(basename "$FILE_PATH"). Policy requires: mkdir -p $(dirname "${BACKUP_DIR}/${RELATIVE_PATH}") && cp \"$FILE_PATH\" \"${BACKUP_DIR}/${RELATIVE_PATH}\""
   fi
+fi
+
+# --- Record invocation for loop tracking ---
+if type lp_record_invocation &>/dev/null; then
+  lp_record_invocation "post-tool-edit-write"
 fi
 
 exit 0

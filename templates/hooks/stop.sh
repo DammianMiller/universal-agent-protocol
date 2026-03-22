@@ -6,6 +6,15 @@
 # Enforces: completion-gate, mandatory-testing-deployment policies.
 set -euo pipefail
 
+# --- Loop Protection ---
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${HOOK_DIR}/loop-protection.sh" ]; then
+  source "${HOOK_DIR}/loop-protection.sh"
+  if lp_should_suppress "stop"; then
+    exit 0
+  fi
+fi
+
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
 COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"

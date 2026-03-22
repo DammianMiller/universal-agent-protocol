@@ -130,6 +130,11 @@ class SessionMonitor:
     overflow_count: int = 0          # How many context overflow errors caught
     context_history: list = field(default_factory=list)  # Recent token counts
 
+    # --- Token Loop Protection ---
+    tool_call_history: list = field(default_factory=list)  # Recent tool call fingerprints
+    consecutive_forced_count: int = 0   # How many times tool_choice was forced consecutively
+    loop_warnings_emitted: int = 0      # How many loop warnings sent to the model
+
     def record_request(self, estimated_tokens: int):
         """Record an outgoing request's estimated token count."""
         self.total_requests += 1
@@ -212,6 +217,85 @@ class SessionMonitor:
                 self.last_input_tokens, self.context_window, util * 100,
                 turns_str,
             )
+
+    # --- Token Loop Protection Methods ---
+
+    def record_tool_calls(self, tool_names: list[str]):
+        """Record tool call names for loop detection."""
+        fingerprint = "|".join(sorted(tool_names)) if tool_names else ""
+        self.tool_call_history.append(fingerprint)
+        # Keep last 30 entries
+        if len(self.tool_call_history) > 30:
+            self.tool_call_history = self.tool_call_history[-30:]
+
+    def detect_tool_loop(self, window: int = 6) -> tuple[bool, int]:
+        """Detect if the model is stuck in a tool call loop.
+
+        Checks if the last `window` tool call fingerprints are identical.
+        Returns (is_looping, repeat_count).
+        """
+        if len(self.tool_call_history) < window:
+            return False, 0
+
+        recent = self.tool_call_history[-window:]
+        if not recent[0]:
+            return False, 0
+
+        # Check if all recent entries are the same fingerprint
+        if all(fp == recent[0] for fp in recent):
+            # Count total consecutive repeats from the end
+            count = 0
+            target = recent[0]
+            for fp in reversed(self.tool_call_history):
+                if fp == target:
+                    count += 1
+                else:
+                    break
+            return True, count
+
+        return False, 0
+
+    def should_release_tool_choice(self) -> bool:
+        """Determine if tool_choice should be relaxed to 'auto' to break a loop.
+
+        Returns True if the model appears stuck and forcing tool_choice=required
+        is making it worse. Thresholds:
+          - 8+ consecutive forced requests with same tool pattern -> release
+          - 15+ consecutive forced requests regardless -> release
+          - Context utilization > 90% -> release (let model wrap up)
+        """
+        is_looping, repeat_count = self.detect_tool_loop(window=6)
+
+        # Pattern 1: Detected tool call loop
+        if is_looping and repeat_count >= 8:
+            logger.warning(
+                "LOOP BREAKER: Same tool pattern repeated %d times. "
+                "Releasing tool_choice to 'auto'.",
+                repeat_count,
+            )
+            self.loop_warnings_emitted += 1
+            return True
+
+        # Pattern 2: Too many consecutive forced requests
+        if self.consecutive_forced_count >= 15:
+            logger.warning(
+                "LOOP BREAKER: %d consecutive forced tool_choice requests. "
+                "Releasing to 'auto'.",
+                self.consecutive_forced_count,
+            )
+            self.loop_warnings_emitted += 1
+            return True
+
+        # Pattern 3: Context almost full -- let model wrap up naturally
+        if self.get_utilization() >= 0.90:
+            logger.warning(
+                "LOOP BREAKER: Context utilization %.1f%% -- releasing "
+                "tool_choice to let model wrap up.",
+                self.get_utilization() * 100,
+            )
+            return True
+
+        return False
 
 
 session_monitor = SessionMonitor()
@@ -684,6 +768,10 @@ def build_openai_request(anthropic_body: dict) -> dict:
         #   - More than 1 message (conversation is in progress)
         #   - Last assistant was text-only (would cause premature stop)
         #   - OR conversation has tool_result messages (active agentic loop)
+        #
+        # LOOP PROTECTION: Release to "auto" if the session monitor detects
+        # a tool call loop (same tools called repeatedly), to prevent
+        # runaway token consumption.
         n_msgs = len(anthropic_body.get("messages", []))
         has_tool_results = any(
             isinstance(m.get("content"), list) and any(
@@ -692,14 +780,45 @@ def build_openai_request(anthropic_body: dict) -> dict:
             )
             for m in anthropic_body.get("messages", [])
         )
-        if _last_assistant_was_text_only(anthropic_body):
+
+        # Record tool calls from the last assistant message for loop detection
+        _record_last_assistant_tool_calls(anthropic_body)
+
+        # Check if loop breaker should override tool_choice
+        if session_monitor.should_release_tool_choice():
+            openai_body["tool_choice"] = "auto"
+            session_monitor.consecutive_forced_count = 0
+            logger.warning("tool_choice set to 'auto' by LOOP BREAKER")
+        elif _last_assistant_was_text_only(anthropic_body):
             openai_body["tool_choice"] = "required"
+            session_monitor.consecutive_forced_count += 1
             logger.info("tool_choice forced to 'required' (last assistant was text-only)")
         elif has_tool_results and n_msgs > 2:
             openai_body["tool_choice"] = "required"
+            session_monitor.consecutive_forced_count += 1
             logger.info("tool_choice forced to 'required' (active agentic loop with tool results)")
+        else:
+            session_monitor.consecutive_forced_count = 0
 
     return openai_body
+
+
+def _record_last_assistant_tool_calls(anthropic_body: dict):
+    """Extract tool call names from the last assistant message and record
+    them in the session monitor for loop detection."""
+    messages = anthropic_body.get("messages", [])
+    tool_names = []
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tool_names.append(block.get("name", "unknown"))
+        break
+    if tool_names:
+        session_monitor.record_tool_calls(tool_names)
 
 
 def _last_assistant_was_text_only(anthropic_body: dict) -> bool:
@@ -1281,6 +1400,15 @@ async def context_status():
         "overflow_count": session_monitor.overflow_count,
         "prune_threshold": PROXY_CONTEXT_PRUNE_THRESHOLD,
         "recent_history": session_monitor.context_history[-10:],
+        # Loop protection stats
+        "loop_protection": {
+            "consecutive_forced_count": session_monitor.consecutive_forced_count,
+            "loop_warnings_emitted": session_monitor.loop_warnings_emitted,
+            "tool_call_history_len": len(session_monitor.tool_call_history),
+            "is_looping": session_monitor.detect_tool_loop()[0],
+            "loop_repeat_count": session_monitor.detect_tool_loop()[1],
+            "recent_tool_patterns": session_monitor.tool_call_history[-5:],
+        },
     }
 
 
