@@ -221,10 +221,37 @@ All settings are via environment variables:
 | `PROXY_LOG_LEVEL`       | `INFO`                               | Logging level (DEBUG/INFO/WARNING/ERROR) |
 | `PROXY_READ_TIMEOUT`    | `600`                                | Read timeout (seconds) for LLM streaming |
 | `PROXY_MAX_CONNECTIONS` | `20`                                 | Max concurrent upstream connections      |
+| `PROXY_MAX_TOKENS_FLOOR` | `16384`                             | Minimum floor applied to incoming `max_tokens` (`0` disables floor) |
+| `PROXY_CONTEXT_PRUNE_TARGET_FRACTION` | `0.65`            | Target context utilization after pruning (`0.0 < value < 1.0`) |
 | `PROXY_STREAM_REASONING_FALLBACK` | `off`                      | Streaming behavior for reasoning-only empty turns (`off`, `sanitized`, `visible`) |
 | `PROXY_STREAM_REASONING_MAX_CHARS` | `240`                      | Max fallback length when `PROXY_STREAM_REASONING_FALLBACK=sanitized` |
+| `PROXY_TOOL_NARROWING` | `off`                                | Narrow large tool lists to top relevant tools per turn |
+| `PROXY_TOOL_NARROWING_KEEP` | `8`                             | Number of tools to keep when narrowing is enabled |
+| `PROXY_TOOL_NARROWING_MIN_TOOLS` | `12`                       | Minimum tool count before narrowing activates |
+| `PROXY_DISABLE_THINKING_ON_TOOL_TURNS` | `off`                 | Sends `enable_thinking=false` when tools are present |
+| `PROXY_MALFORMED_TOOL_GUARDRAIL` | `on`                      | Detects malformed pseudo tool payloads and retries with strict settings |
+| `PROXY_MALFORMED_TOOL_RETRY_MAX` | `1`                        | Number of malformed-tool retries |
+| `PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS` | `2048`             | Retry cap for `max_tokens` during malformed-tool recovery |
+| `PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE` | `0`                | Retry temperature for malformed-tool recovery |
+| `PROXY_MALFORMED_TOOL_STREAM_STRICT` | `off`                 | For stream+tools requests, use guarded non-stream upstream path then replay SSE |
+| `PROXY_SESSION_CONTAMINATION_BREAKER` | `on`                 | Resets long-running malformed sessions to recent context |
+| `PROXY_SESSION_CONTAMINATION_THRESHOLD` | `3`                | Consecutive malformed turns before reset |
+| `PROXY_SESSION_CONTAMINATION_KEEP_LAST` | `8`                 | Number of latest messages to preserve during contamination reset |
+| `PROXY_AGENTIC_SUPPLEMENT_MODE` | `clean`                   | Agentic system supplement variant (`clean`, `legacy`) |
 
 For agentic coding workloads, keep `PROXY_STREAM_REASONING_FALLBACK=off` (default) to avoid leaking malformed internal reasoning as user-visible output. Use `sanitized` only for debugging.
+
+For Claude Code + Qwen malformed-tool loops, recommended starting profile:
+
+```bash
+PROXY_STREAM_REASONING_FALLBACK=off
+PROXY_MAX_TOKENS_FLOOR=4096
+PROXY_MALFORMED_TOOL_GUARDRAIL=on
+PROXY_TOOL_NARROWING=on
+PROXY_DISABLE_THINKING_ON_TOOL_TURNS=on
+PROXY_SESSION_CONTAMINATION_BREAKER=on
+PROXY_AGENTIC_SUPPLEMENT_MODE=clean
+```
 
 ### Example: Custom upstream
 
