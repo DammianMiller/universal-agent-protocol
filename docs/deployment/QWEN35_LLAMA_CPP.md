@@ -177,6 +177,10 @@ All settings are via environment variables:
 | `PROXY_LOG_LEVEL`       | `INFO`                               | Logging level (DEBUG/INFO/WARNING/ERROR) |
 | `PROXY_READ_TIMEOUT`    | `600`                                | Read timeout (seconds) for LLM streaming |
 | `PROXY_MAX_CONNECTIONS` | `20`                                 | Max concurrent upstream connections      |
+| `PROXY_STREAM_REASONING_FALLBACK` | `off`                      | Streaming behavior for reasoning-only empty turns (`off`, `sanitized`, `visible`) |
+| `PROXY_STREAM_REASONING_MAX_CHARS` | `240`                      | Max fallback length when `PROXY_STREAM_REASONING_FALLBACK=sanitized` |
+
+For agentic coding workloads, keep `PROXY_STREAM_REASONING_FALLBACK=off` (default) to avoid leaking malformed internal reasoning as user-visible output. Use `sanitized` only for debugging.
 
 ### Example: Custom upstream
 

@@ -80,6 +80,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -124,6 +125,12 @@ PROXY_GUARDRAIL_RETRY = os.environ.get("PROXY_GUARDRAIL_RETRY", "on").lower() no
     "no",
 }
 PROXY_SESSION_TTL_SECS = int(os.environ.get("PROXY_SESSION_TTL_SECS", "7200"))
+PROXY_STREAM_REASONING_FALLBACK = (
+    os.environ.get("PROXY_STREAM_REASONING_FALLBACK", "off").strip().lower()
+)
+PROXY_STREAM_REASONING_MAX_CHARS = int(
+    os.environ.get("PROXY_STREAM_REASONING_MAX_CHARS", "240")
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1059,6 +1066,40 @@ def _is_unexpected_end_turn(openai_resp: dict, anthropic_body: dict) -> bool:
     return has_tool_results or _last_assistant_was_text_only(anthropic_body)
 
 
+def _sanitize_reasoning_fallback_text(reasoning_text: str) -> str:
+    cleaned = re.sub(r"</?think>", "", reasoning_text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) > PROXY_STREAM_REASONING_MAX_CHARS:
+        return cleaned[:PROXY_STREAM_REASONING_MAX_CHARS].rstrip() + "..."
+    return cleaned
+
+
+def _build_reasoning_fallback_text(
+    reasoning_chunks: list[str], mode: str | None = None
+) -> str | None:
+    fallback_mode = (mode or PROXY_STREAM_REASONING_FALLBACK).strip().lower()
+    if fallback_mode == "off":
+        return None
+
+    raw_text = "".join(reasoning_chunks).strip()
+    if not raw_text:
+        return None
+
+    if fallback_mode == "visible":
+        return raw_text
+    if fallback_mode == "sanitized":
+        sanitized = _sanitize_reasoning_fallback_text(raw_text)
+        return sanitized or None
+
+    logger.warning(
+        "Unknown PROXY_STREAM_REASONING_FALLBACK=%r; disabling reasoning fallback",
+        fallback_mode,
+    )
+    return None
+
+
 def _last_assistant_was_text_only(anthropic_body: dict) -> bool:
     """Check if the last assistant message in the conversation was text-only
     (no tool_use blocks). This indicates the model may be prematurely ending
@@ -1308,21 +1349,29 @@ async def stream_anthropic_response(
                 f"data: {json.dumps({'type': 'content_block_stop', 'index': tc['block_index']})}\n\n"
             )
     else:
-        # Option E: If the response has no text AND no tool calls, but the
-        # model produced reasoning_content, forward the reasoning as visible
-        # text so the client doesn't receive a completely empty turn.
+        # If the response has no text and no tool calls, optionally emit a
+        # reasoning fallback (configurable) to avoid leaking malformed
+        # internal chain-of-thought content by default.
         accumulated_text = "".join(text_chunks)
         if not accumulated_text and reasoning_chunks:
-            fallback_text = "".join(reasoning_chunks)
-            logger.warning(
-                "Empty response with %d reasoning tokens – forwarding reasoning as fallback text",
-                len(reasoning_chunks),
-            )
-            text_chunks.append(fallback_text)
-            yield (
-                f"event: content_block_delta\n"
-                f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': fallback_text}})}\n\n"
-            )
+            fallback_text = _build_reasoning_fallback_text(reasoning_chunks)
+            if fallback_text:
+                logger.warning(
+                    "Empty response with %d reasoning chunks – emitting fallback text (mode=%s)",
+                    len(reasoning_chunks),
+                    PROXY_STREAM_REASONING_FALLBACK,
+                )
+                text_chunks.append(fallback_text)
+                yield (
+                    f"event: content_block_delta\n"
+                    f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': fallback_text}})}\n\n"
+                )
+            else:
+                logger.warning(
+                    "Empty response with %d reasoning chunks – fallback suppressed (mode=%s)",
+                    len(reasoning_chunks),
+                    PROXY_STREAM_REASONING_FALLBACK,
+                )
 
         yield (
             f"event: content_block_stop\n"
