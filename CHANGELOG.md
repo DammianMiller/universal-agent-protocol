@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.13.14 (2026-03-23)
+
+- fix: suppress malformed reasoning fallback in streaming responses
+- docs: expand llama proxy bootstrap and tuning runbook
+- feat: add speculative autotune and repeatable llama/proxy benchmarking stack
+- feat: add optional systemd setup for llama and proxy
+- fix: isolate proxy loop protection by session
+
+
 ## v1.13.13 (2026-03-22)
 
 - feat: add token loop protection mechanism to prevent runaway hook/proxy loops
