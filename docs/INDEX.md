@@ -43,6 +43,7 @@
 
 - [Validation Plan](benchmarks/VALIDATION_PLAN.md) -- Benchmark methodology and test cases
 - [Validation Results](benchmarks/VALIDATION_RESULTS.md) -- Benchmark results
+- [Speculative Decoding Journey (2026-03)](benchmarks/SPECULATIVE_DECODING_JOURNEY_2026-03.md) -- End-to-end tuning, fixes, and soak outcomes
 - [Token Optimization](benchmarks/TOKEN_OPTIMIZATION.md) -- Per-feature token savings analysis
 - [Accuracy Analysis](benchmarks/ACCURACY_ANALYSIS.md) -- Internal vs Terminal-Bench comparison
 
