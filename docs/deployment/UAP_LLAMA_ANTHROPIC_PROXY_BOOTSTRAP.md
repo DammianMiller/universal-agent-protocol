@@ -6,6 +6,8 @@ This guide captures the local continuity stack as a repeatable bootstrap:
 - `uap-anthropic-proxy.service` (Anthropic API compatibility)
 - A/B benchmark workflow for speculative decoding with `ngram-cache`
 
+It also documents the UAP-side support changes needed to keep llama.cpp speculative decoding stable in agentic workflows.
+
 ## 1) Bootstrap services
 
 Run:
@@ -51,6 +53,7 @@ Important variables:
 
 - `PROXY_PORT`
 - `LLAMA_CPP_BASE`
+- `PROXY_CONTEXT_WINDOW` (set to `262144` to match llama context)
 - Loop/guardrail options (`PROXY_LOOP_BREAKER`, `PROXY_FORCED_THRESHOLD`, etc.)
 
 ## 4) Run ngram-cache signal benchmark
@@ -113,9 +116,9 @@ This profile prioritizes long, coherent coding sessions and minimizes `find_slot
 ```env
 LLAMA_CTX_SIZE=262144
 LLAMA_SPEC_TYPE=ngram-cache
-LLAMA_DRAFT_MAX=8
-LLAMA_DRAFT_MIN=1
-LLAMA_DRAFT_P_MIN=0.85
+LLAMA_DRAFT_MAX=12
+LLAMA_DRAFT_MIN=2
+LLAMA_DRAFT_P_MIN=0.80
 LLAMA_HYBRID_ROLLBACK_MODE=strict
 ```
 
@@ -128,6 +131,7 @@ systemctl --user restart uap-llama-server.service
 `~/.config/uap/anthropic-proxy.env`:
 
 ```env
+PROXY_CONTEXT_WINDOW=262144
 PROXY_LOOP_BREAKER=on
 PROXY_LOOP_WINDOW=6
 PROXY_LOOP_REPEAT_THRESHOLD=10
@@ -167,7 +171,53 @@ LLAMA_HYBRID_ROLLBACK_MODE=hybrid \
 
 Important: this max-speed profile is workload-sensitive and was measured on a pattern-heavy prompt. For real agentic coding, use Profile A.
 
-## 7) Throughput interpretation and loop prevention
+## 7) Validated A/B findings (2026-03-23)
+
+Direct old-vs-new A/B was run against:
+
+- old fast commit: `029edcafc` (first pushed fast state around 21:35)
+- newer commit: `1f8225f8f`
+- model: `Qwen3.5-35B-A3B-UD-IQ4_XS.gguf`
+- speculative: `ngram-cache`, `draft-max=16`, `draft-min=3`, `draft-p-min=0.72`
+
+Notes:
+
+- Standalone launches at `ctx-size=262144` can fail GPU allocation on some runs for the old commit (`failed to allocate compute pp buffers`).
+- For controlled apples-to-apples throughput comparison, A/B was run at `ctx-size=16384`.
+
+Observed results (`/tmp/ab_matrix_ctx16_v2.json`):
+
+| Path            | Old `029edcafc` | New `1f8225f8f` | Delta (new vs old) |
+| --------------- | --------------- | --------------- | ------------------- |
+| Raw coding      | 107.97 tok/s    | 99.23 tok/s     | -8.1%               |
+| Raw pattern     | 158.71 tok/s    | 105.75 tok/s    | -33.4%              |
+| Proxy plain     | 113.74 tok/s    | 109.39 tok/s    | -3.8%               |
+| Agentic tool 2nd turn | `tool_use` (stable) | `tool_use` (stable) | parity on control flow |
+
+Behavioral observations:
+
+- Newer commit emitted many `find_slot: non-consecutive token position` warnings in raw/proxy runs under the same speculative settings.
+- Old commit produced materially cleaner logs and higher throughput in the same benchmark profile.
+- Proxy continuity fixes improved agentic tool-loop stability and no longer force premature stop in the tested loop.
+
+Decision for throughput-sensitive testing:
+
+- Prefer old fast commit `029edcafc` profile for max-throughput benchmarking.
+- Keep a separate continuity profile for long-context agentic coding if warning volume grows.
+
+Additional 27B impact snapshot (`Qwen3.5-27B-IQ4_XS`, `ctx=262144`, q4 KV cache):
+
+- no speculative: ~43 tok/s coding, ~41 tok/s pattern
+- aggressive speculative (`16/3/0.72`): ~44 tok/s coding, ~102 tok/s pattern
+- balanced speculative (`12/2/0.80`): ~43 tok/s coding, ~102 tok/s pattern
+
+Interpretation:
+
+- balanced profile is functionally safer for agentic sessions,
+- aggressive profile can edge higher on some coding runs,
+- both speculative profiles massively outperform no-spec on repetition-heavy drafts.
+
+## 8) Throughput interpretation and loop prevention
 
 When reading llama logs, treat these as different metrics:
 
@@ -192,7 +242,22 @@ Then restart proxy:
 systemctl --user restart uap-anthropic-proxy.service
 ```
 
-## 8) Check service health
+## 9) UAP support changes required for reliable operation
+
+The following UAP-side changes are part of the working stack and should be present:
+
+1. Session-scoped loop protection in Anthropic proxy (no cross-session contamination).
+2. Guardrail retry for unexpected text-only end-turn in active tool loops.
+3. Optional systemd scaffolding from CLI:
+   - `uap init --systemd-services`
+   - `uap setup --systemd-services`
+4. Dedicated launch scripts:
+   - `scripts/run-llama-server-continuity.sh`
+   - `scripts/run-anthropic-proxy-continuity.sh`
+
+These changes ensure llama speculative behavior is evaluated in a stable proxy/control-plane environment.
+
+## 10) Check service health
 
 ```bash
 systemctl --user status uap-llama-server.service --no-pager
@@ -200,3 +265,15 @@ systemctl --user status uap-anthropic-proxy.service --no-pager
 curl -sf http://127.0.0.1:8080/v1/models
 curl -sf http://127.0.0.1:4000/health
 ```
+
+## 11) References and credits
+
+This implementation and tuning flow builds on prior llama.cpp and proxy work:
+
+- llama.cpp speculative docs: `docs/speculative.md`
+- llama.cpp hybrid rollout notes: `docs/development/speculative-hybrid-rollout.md`
+- llama.cpp speculative lineage: #5479, #6828, #6848, #19164
+- checkpoint/SWA context note:
+  - https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055
+
+Thanks to ggml-org/llama.cpp maintainers and contributors for speculative, cache, and memory-path groundwork.
