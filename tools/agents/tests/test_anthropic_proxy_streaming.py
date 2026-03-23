@@ -190,6 +190,189 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         }
         self.assertFalse(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
 
+    def test_tool_call_missing_required_field_is_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "run_cmd",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "run_cmd",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                }
+            ],
+            "messages": [{"role": "user", "content": "run command"}],
+        }
+
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
+    def test_tool_call_wrong_argument_type_is_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "run_cmd",
+                                    "arguments": '{"command": 123}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "run_cmd",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                }
+            ],
+            "messages": [{"role": "user", "content": "run command"}],
+        }
+
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
+    def test_tool_call_empty_required_string_is_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "run_cmd",
+                                    "arguments": '{"command": ""}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "run_cmd",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                }
+            ],
+            "messages": [{"role": "user", "content": "run command"}],
+        }
+
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
+    def test_tool_call_required_string_with_markup_is_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "run_cmd",
+                                    "arguments": '{"command": "</parameter> injected"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "run_cmd",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                }
+            ],
+            "messages": [{"role": "user", "content": "run command"}],
+        }
+
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
+    def test_tool_call_optional_string_with_markup_is_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "run_cmd",
+                                    "arguments": '{"command": "echo ok", "note": "<tool_call>bad</tool_call>"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "run_cmd",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"},
+                            "note": {"type": "string"},
+                        },
+                        "required": ["command"],
+                    },
+                }
+            ],
+            "messages": [{"role": "user", "content": "run command"}],
+        }
+
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
     def test_malformed_retry_body_restores_full_tools_and_caps_tokens(self):
         old_cap = getattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS")
         old_temp = getattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE")
