@@ -178,6 +178,14 @@ PROXY_MALFORMED_TOOL_STREAM_STRICT = os.environ.get(
     "off",
     "no",
 }
+PROXY_FORCE_NON_STREAM = os.environ.get(
+    "PROXY_FORCE_NON_STREAM", "off"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
 PROXY_SESSION_CONTAMINATION_BREAKER = os.environ.get(
     "PROXY_SESSION_CONTAMINATION_BREAKER", "on"
 ).lower() not in {
@@ -760,9 +768,10 @@ async def lifespan(app: FastAPI):
         _resolve_prune_target_fraction() * 100,
     )
     logger.info(
-        "Guardrails: malformed=%s stream_strict=%s tool_narrowing=%s thinking_off_on_tools=%s contamination_breaker=%s(%d)",
+        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s tool_narrowing=%s thinking_off_on_tools=%s contamination_breaker=%s(%d)",
         PROXY_MALFORMED_TOOL_GUARDRAIL,
         PROXY_MALFORMED_TOOL_STREAM_STRICT,
+        PROXY_FORCE_NON_STREAM,
         PROXY_TOOL_NARROWING,
         PROXY_DISABLE_THINKING_ON_TOOL_TURNS,
         PROXY_SESSION_CONTAMINATION_BREAKER,
@@ -2078,7 +2087,11 @@ async def messages(request: Request):
             media_type="application/json",
         )
 
-    if is_stream and PROXY_MALFORMED_TOOL_STREAM_STRICT and "tools" in body:
+    use_guarded_non_stream = is_stream and (
+        PROXY_FORCE_NON_STREAM
+        or (PROXY_MALFORMED_TOOL_STREAM_STRICT and "tools" in body)
+    )
+    if use_guarded_non_stream:
         strict_body = dict(openai_body)
         strict_body["stream"] = False
 
@@ -2129,9 +2142,14 @@ async def messages(request: Request):
 
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
         monitor.record_response(anthropic_resp.get("usage", {}).get("output_tokens", 0))
-        logger.info(
-            "STRICT STREAM GUARDRAIL: served stream response via guarded non-stream path"
-        )
+        if PROXY_FORCE_NON_STREAM:
+            logger.info(
+                "FORCED NON-STREAM: served stream response via guarded non-stream path"
+            )
+        else:
+            logger.info(
+                "STRICT STREAM GUARDRAIL: served stream response via guarded non-stream path"
+            )
 
         return StreamingResponse(
             stream_anthropic_message(anthropic_resp),
