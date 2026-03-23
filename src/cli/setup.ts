@@ -16,6 +16,7 @@ interface SetupOptions {
   verbose?: boolean; // --verbose for detailed output
   projectDir?: string; // -d, --project-dir to override cwd
   interactive?: boolean; // -i, --interactive for wizard mode
+  systemdServices?: boolean; // --systemd-services scaffolds llama/proxy user services
 }
 
 /**
@@ -43,6 +44,7 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
     memory: withMemory,
     patterns: withPatterns,
     worktrees: true,
+    systemdServices: options.systemdServices,
     projectDir: cwd,
   });
 
