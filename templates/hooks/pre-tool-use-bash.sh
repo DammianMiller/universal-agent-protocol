@@ -22,6 +22,15 @@ if [ -z "$CMD" ]; then
   exit 0
 fi
 
+# ─── Protocol Tag Injection Guard ────────────────────────────────
+# Reject Bash payloads that still contain standalone protocol tag lines.
+# These fragments can appear after malformed tool-call rendering and must
+# never reach shell evaluation.
+if printf '%s\n' "$CMD" | grep -qE '^\s*</?(tool_call|tool_response|parameter(=[^>]*)?|function(=[^>]*)?|think)\s*>\s*$'; then
+  echo "BLOCKED [bash-safety]: Command contains standalone XML/protocol tag lines. Remove tool-call tag artifacts before execution." >&2
+  exit 2
+fi
+
 # ─── IaC Pipeline Enforcement ───────────────────────────────────
 # Block local terraform apply/destroy (policies/iac-pipeline-enforcement.md)
 # Allow: terraform fmt, validate, init, plan, output, show, state list, graph

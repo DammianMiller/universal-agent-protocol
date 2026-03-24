@@ -1044,49 +1044,27 @@ def _is_analysis_only_prompt(text: str) -> bool:
     if not text:
         return False
 
-    analysis_markers = (
-        "analy",
-        "review",
-        "audit",
-        "summar",
-        "explain",
-        "plan",
-        "recommend",
-        "assess",
-        "compare",
-        "investigate",
-        "diagnose",
+    normalized = text.lower()
+    has_analysis = bool(
+        re.search(
+            r"\b(?:analy(?:ze|zing|sis)?|review|audit|summar(?:y|ize|ized|ise)|explain|plan|recommend|assess|compare|investigate|diagnos(?:e|is))\b",
+            normalized,
+        )
     )
-    action_markers = (
-        "fix",
-        "edit",
-        "write",
-        "create",
-        "implement",
-        "patch",
-        "change",
-        "update",
-        "run ",
-        "execute",
-        "command",
-        "use tool",
-        "call tool",
-        "apply",
-        "commit",
-        "push",
-        "merge",
-        "publish",
-        "deploy",
-        "test",
-        "build",
-        "refactor",
-        "rename",
-        "delete",
-        "install",
+    has_action = bool(
+        re.search(
+            r"\b(?:fix|edit|write|create|implement|patch|change|update|run|execute|apply|commit|push|merge|publish|deploy|test|build|refactor|rename|delete|install)\b",
+            normalized,
+        )
+    ) or any(
+        phrase in normalized
+        for phrase in (
+            "use tool",
+            "call tool",
+            "run command",
+            "execute command",
+        )
     )
-
-    has_analysis = any(marker in text for marker in analysis_markers)
-    has_action = any(marker in text for marker in action_markers)
     return has_analysis and not has_action
 
 
@@ -1793,6 +1771,11 @@ _TOOL_ARG_MARKERS = (
     "</think>",
 )
 
+_BASH_PROTOCOL_LINE_RE = re.compile(
+    r"^\s*</?(?:tool_call|tool_response|parameter(?:=[^>]*)?|function(?:=[^>]*)?|think)\s*>\s*$",
+    re.IGNORECASE,
+)
+
 
 def _iter_string_leaves(value):
     if isinstance(value, str):
@@ -1820,6 +1803,26 @@ def _strip_tool_markup_artifacts(text: str) -> str:
     cleaned = re.sub(r"<function=[^>]*>", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"</function>", "", cleaned, flags=re.IGNORECASE)
     return cleaned.strip()
+
+
+def _strip_protocol_tag_only_lines(text: str) -> tuple[str, bool]:
+    if not isinstance(text, str):
+        return text, False
+
+    lines = text.splitlines()
+    kept_lines: list[str] = []
+    stripped = False
+    for line in lines:
+        if _BASH_PROTOCOL_LINE_RE.match(line):
+            stripped = True
+            continue
+        kept_lines.append(line)
+
+    if not stripped:
+        return text, False
+
+    cleaned = "\n".join(kept_lines).strip()
+    return cleaned, True
 
 
 def _sanitize_markup_value(value):
@@ -2036,6 +2039,77 @@ def _repair_required_tool_args(
     return repaired_response, repaired_count
 
 
+def _repair_bash_command_artifacts(openai_resp: dict) -> tuple[dict, int]:
+    if not _openai_has_tool_calls(openai_resp):
+        return openai_resp, 0
+
+    choice, message = _extract_openai_choice(openai_resp)
+    tool_calls = message.get("tool_calls") or []
+    if not tool_calls:
+        return openai_resp, 0
+
+    repaired_tool_calls = []
+    repaired_count = 0
+
+    for tool_call in tool_calls:
+        fn = tool_call.get("function") if isinstance(tool_call, dict) else {}
+        if not isinstance(fn, dict):
+            fn = {}
+
+        tool_name = str(fn.get("name", "")).strip().lower()
+        if tool_name != "bash":
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        raw_args = fn.get("arguments", "{}")
+        if isinstance(raw_args, dict):
+            parsed_args = dict(raw_args)
+        else:
+            try:
+                parsed_args = json.loads(str(raw_args))
+            except json.JSONDecodeError:
+                repaired_tool_calls.append(tool_call)
+                continue
+
+        if not isinstance(parsed_args, dict):
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        command = parsed_args.get("command")
+        if not isinstance(command, str):
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        cleaned_command, changed = _strip_protocol_tag_only_lines(command)
+        if not changed:
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        parsed_args["command"] = cleaned_command
+        new_tool_call = dict(tool_call)
+        new_fn = dict(fn)
+        new_fn["arguments"] = json.dumps(parsed_args, separators=(",", ":"))
+        new_tool_call["function"] = new_fn
+        repaired_tool_calls.append(new_tool_call)
+        repaired_count += 1
+
+    if repaired_count == 0:
+        return openai_resp, 0
+
+    repaired_response = dict(openai_resp)
+    choices = list(openai_resp.get("choices") or [])
+    if not choices:
+        return openai_resp, 0
+
+    updated_choice = dict(choice)
+    updated_message = dict(message)
+    updated_message["tool_calls"] = repaired_tool_calls
+    updated_choice["message"] = updated_message
+    choices[0] = updated_choice
+    repaired_response["choices"] = choices
+    return repaired_response, repaired_count
+
+
 def _required_value_is_empty(value) -> bool:
     if value is None:
         return True
@@ -2131,6 +2205,22 @@ def _validate_tool_call_arguments(
                 f"Emit exactly one `{tool_name}` tool call with `arguments` set to a JSON object (not a string or list)."
             ),
         )
+
+    if tool_name.strip().lower() == "bash":
+        command = parsed.get("command")
+        if isinstance(command, str):
+            cleaned_command, had_protocol_lines = _strip_protocol_tag_only_lines(
+                command
+            )
+            if had_protocol_lines and not cleaned_command:
+                return ToolResponseIssue(
+                    kind="invalid_tool_args",
+                    reason="arguments for 'Bash' contained only protocol tag lines",
+                    retry_hint=(
+                        "Emit exactly one `Bash` tool call with a valid shell command in `arguments.command`. "
+                        "Do not include standalone XML/protocol tags."
+                    ),
+                )
 
     if _contains_tool_markup(parsed):
         return ToolResponseIssue(
@@ -2345,20 +2435,34 @@ def _is_malformed_tool_response(openai_resp: dict, anthropic_body: dict) -> bool
 
 
 def _build_malformed_retry_body(
-    openai_body: dict, anthropic_body: dict, retry_hint: str = ""
+    openai_body: dict,
+    anthropic_body: dict,
+    retry_hint: str = "",
+    tool_choice: str = "required",
+    attempt: int = 1,
+    total_attempts: int = 1,
 ) -> dict:
     retry_body = dict(openai_body)
     retry_body["stream"] = False
-    retry_body["tool_choice"] = "required"
+    retry_body["tool_choice"] = tool_choice
     retry_body["temperature"] = PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE
 
-    malformed_retry_instruction = {
-        "role": "user",
-        "content": (
+    if tool_choice == "required":
+        retry_instruction = (
             "Your previous response had invalid tool-call formatting. "
             "Respond with exactly one valid tool call using the provided tools. "
             "Do not output prose, markdown, XML tags, or schema snippets."
-        ),
+        )
+    else:
+        retry_instruction = (
+            "Your previous response had invalid tool-call formatting. "
+            "If a tool is needed, emit exactly one valid tool call with strict JSON arguments. "
+            "If no tool is needed for this turn, return concise plain text with no protocol tags."
+        )
+
+    malformed_retry_instruction = {
+        "role": "user",
+        "content": retry_instruction,
     }
     existing_messages = retry_body.get("messages")
     if isinstance(existing_messages, list) and existing_messages:
@@ -2383,15 +2487,45 @@ def _build_malformed_retry_body(
 
     if retry_hint:
         repair_prompt = (
-            "[TOOL CALL REPAIR]\n"
+            f"[TOOL CALL REPAIR attempt {attempt}/{total_attempts}]\n"
             f"{retry_hint}\n"
-            "Return exactly one valid tool call object and no explanatory prose."
+            "Return a valid response for this turn without protocol artifacts."
         )
         retry_messages = list(retry_body.get("messages", []))
-        retry_messages.append({"role": "system", "content": repair_prompt})
+        retry_messages.append({"role": "user", "content": repair_prompt})
         retry_body["messages"] = retry_messages
 
     return retry_body
+
+
+def _retry_tool_choice_for_attempt(
+    required_tool_choice: bool, attempt: int, total_attempts: int
+) -> str:
+    if not required_tool_choice:
+        return "auto"
+    if total_attempts <= 1:
+        return "required"
+    return "auto" if attempt == total_attempts - 1 else "required"
+
+
+def _build_safe_text_openai_response(openai_resp: dict, text: str) -> dict:
+    return {
+        "id": openai_resp.get("id", f"chatcmpl_{uuid.uuid4().hex[:12]}"),
+        "object": openai_resp.get("object", "chat.completion"),
+        "created": openai_resp.get("created", int(time.time())),
+        "model": openai_resp.get("model", "unknown"),
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": text,
+                },
+            }
+        ],
+        "usage": openai_resp.get("usage", {}),
+    }
 
 
 def _build_clean_guardrail_openai_response(openai_resp: dict) -> dict:
@@ -2486,7 +2620,8 @@ async def _apply_malformed_tool_guardrail(
         working_resp, required_repairs = _repair_required_tool_args(
             working_resp, anthropic_body
         )
-        repair_count = markup_repairs + required_repairs
+        working_resp, bash_repairs = _repair_bash_command_artifacts(working_resp)
+        repair_count = markup_repairs + required_repairs + bash_repairs
 
     required_tool_choice = openai_body.get("tool_choice") == "required"
     has_tool_calls = _openai_has_tool_calls(working_resp)
@@ -2536,10 +2671,18 @@ async def _apply_malformed_tool_guardrail(
     attempts = max(0, PROXY_MALFORMED_TOOL_RETRY_MAX)
     current_issue = issue
     for attempt in range(attempts):
+        attempt_tool_choice = _retry_tool_choice_for_attempt(
+            required_tool_choice,
+            attempt,
+            attempts,
+        )
         retry_body = _build_malformed_retry_body(
             openai_body,
             anthropic_body,
             retry_hint=current_issue.retry_hint,
+            tool_choice=attempt_tool_choice,
+            attempt=attempt + 1,
+            total_attempts=attempts,
         )
         retry_resp = await client.post(
             f"{LLAMA_CPP_BASE}/chat/completions",
@@ -2563,7 +2706,14 @@ async def _apply_malformed_tool_guardrail(
             retry_working, retry_required_repairs = _repair_required_tool_args(
                 retry_working, anthropic_body
             )
-            retry_repairs = retry_markup_repairs + retry_required_repairs
+            retry_working, retry_bash_repairs = _repair_bash_command_artifacts(
+                retry_working
+            )
+            retry_repairs = (
+                retry_markup_repairs + retry_required_repairs + retry_bash_repairs
+            )
+
+        working_resp = retry_working
 
         retry_has_tool_calls = _openai_has_tool_calls(retry_working)
         retry_required = retry_body.get("tool_choice") == "required"
@@ -2620,6 +2770,17 @@ async def _apply_malformed_tool_guardrail(
         monitor.invalid_tool_call_streak,
         monitor.required_tool_miss_streak,
     )
+
+    degraded_text = _sanitize_tool_call_apology_text(
+        _openai_message_text(working_resp)
+    ).strip()
+    if degraded_text and not _looks_malformed_tool_payload(degraded_text):
+        logger.warning(
+            "TOOL RESPONSE degrade: session=%s returning safe text fallback after retry exhaustion",
+            session_id,
+        )
+        return _build_safe_text_openai_response(working_resp, degraded_text)
+
     return _build_clean_guardrail_openai_response(working_resp)
 
 
@@ -2720,6 +2881,18 @@ def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
             args = json.loads(fn.get("arguments", "{}"))
         except json.JSONDecodeError:
             args = {}
+        if fn.get("name", "").strip().lower() == "bash" and isinstance(args, dict):
+            command = args.get("command")
+            if isinstance(command, str):
+                cleaned_command, had_protocol_lines = _strip_protocol_tag_only_lines(
+                    command
+                )
+                if had_protocol_lines:
+                    args = dict(args)
+                    args["command"] = cleaned_command
+                    logger.warning(
+                        "BASH SAFETY: stripped standalone protocol-tag lines from command before tool execution"
+                    )
         content.append(
             {
                 "type": "tool_use",

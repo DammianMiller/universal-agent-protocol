@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 LLAMA_BIN="${LLAMA_BIN:-/home/cogtek/llama.cpp/build-cuda/bin/llama-server}"
 LLAMA_MODEL="${LLAMA_MODEL:-/home/cogtek/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf}"
 
@@ -27,7 +30,13 @@ export LLAMA_DRAFT_MIN="${LLAMA_DRAFT_MIN:-3}"
 export LLAMA_DRAFT_P_MIN="${LLAMA_DRAFT_P_MIN:-0.75}"
 export LLAMA_HYBRID_ROLLBACK_MODE="${LLAMA_HYBRID_ROLLBACK_MODE:-strict}"
 export LLAMA_LOG_FILE="${LLAMA_LOG_FILE:-llama-server.log}"
+export LLAMA_CHAT_TEMPLATE_FILE="${LLAMA_CHAT_TEMPLATE_FILE:-${ROOT_DIR}/tools/agents/config/chat_template.jinja}"
 export LLAMA_EXTRA_ARGS="${LLAMA_EXTRA_ARGS:-}"
+
+if [[ ! -f "$LLAMA_CHAT_TEMPLATE_FILE" ]]; then
+  echo "ERROR: LLAMA_CHAT_TEMPLATE_FILE not found: $LLAMA_CHAT_TEMPLATE_FILE" >&2
+  exit 1
+fi
 
 args=(
   --model "$LLAMA_MODEL"
@@ -50,6 +59,7 @@ args=(
   --draft-max "$LLAMA_DRAFT_MAX"
   --draft-min "$LLAMA_DRAFT_MIN"
   --draft-p-min "$LLAMA_DRAFT_P_MIN"
+  --chat-template-file "$LLAMA_CHAT_TEMPLATE_FILE"
   --log-file "$LLAMA_LOG_FILE"
 )
 
