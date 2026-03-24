@@ -187,6 +187,35 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         }
         self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
 
+    def test_detects_tool_call_apology_text_as_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            "I could not produce a valid tool-call format in this turn. "
+                            "Please continue; I will issue exactly one valid tool call next."
+                        ),
+                        "tool_calls": [],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": "fix this"}],
+        }
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
+    def test_tool_call_apology_helper_detects_phrase(self):
+        apology_text = (
+            "I could not produce a valid tool-call format in this turn. "
+            "Please continue; I will issue exactly one valid tool call next."
+        )
+        self.assertTrue(proxy._contains_tool_call_apology(apology_text))
+        self.assertFalse(proxy._contains_tool_call_apology("normal assistant response"))
+
     def test_clean_tool_call_response_is_not_malformed(self):
         openai_resp = {
             "choices": [
@@ -213,6 +242,189 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         }
         self.assertFalse(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
 
+    def test_tool_call_missing_required_field_is_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "run_cmd",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "run_cmd",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                }
+            ],
+            "messages": [{"role": "user", "content": "run command"}],
+        }
+
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
+    def test_tool_call_wrong_argument_type_is_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "run_cmd",
+                                    "arguments": '{"command": 123}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "run_cmd",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                }
+            ],
+            "messages": [{"role": "user", "content": "run command"}],
+        }
+
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
+    def test_tool_call_empty_required_string_is_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "run_cmd",
+                                    "arguments": '{"command": ""}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "run_cmd",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                }
+            ],
+            "messages": [{"role": "user", "content": "run command"}],
+        }
+
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
+    def test_tool_call_required_string_with_markup_is_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "run_cmd",
+                                    "arguments": '{"command": "</parameter> injected"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "run_cmd",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                }
+            ],
+            "messages": [{"role": "user", "content": "run command"}],
+        }
+
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
+    def test_tool_call_optional_string_with_markup_is_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "run_cmd",
+                                    "arguments": '{"command": "echo ok", "note": "<tool_call>bad</tool_call>"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "run_cmd",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"},
+                            "note": {"type": "string"},
+                        },
+                        "required": ["command"],
+                    },
+                }
+            ],
+            "messages": [{"role": "user", "content": "run command"}],
+        }
+
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
     def test_malformed_retry_body_restores_full_tools_and_caps_tokens(self):
         old_cap = getattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS")
         old_temp = getattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE")
@@ -225,6 +437,7 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             openai_body = {
                 "model": "test",
                 "max_tokens": 4000,
+                "messages": [{"role": "user", "content": "fix the issue"}],
                 "tools": [{"type": "function", "function": {"name": "Read"}}],
             }
             anthropic_body = {
@@ -242,10 +455,44 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             self.assertEqual(retry["max_tokens"], 512)
             self.assertEqual(len(retry["tools"]), 3)
             self.assertFalse(retry["enable_thinking"])
+            self.assertEqual(retry["messages"][-1]["role"], "user")
+            self.assertIn(
+                "invalid tool-call formatting",
+                retry["messages"][-1]["content"],
+            )
         finally:
             setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS", old_cap)
             setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE", old_temp)
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
+
+    def test_clean_guardrail_response_does_not_promise_future_tool_call(self):
+        guardrail = proxy._build_clean_guardrail_openai_response(
+            {"model": "test-model"}
+        )
+        text = guardrail["choices"][0]["message"]["content"]
+        self.assertIn("Please retry the same request", text)
+        self.assertNotIn("I will issue exactly one valid tool call next", text)
+
+    def test_openai_to_anthropic_response_sanitizes_tool_call_apology(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            "I could not produce a valid tool-call format in this turn. "
+                            "Please continue; I will issue exactly one valid tool call next."
+                        ),
+                        "tool_calls": [],
+                    },
+                }
+            ]
+        }
+
+        converted = proxy.openai_to_anthropic_response(openai_resp, "test-model")
+        text = converted["content"][0]["text"]
+        self.assertIn("Please retry the same request", text)
+        self.assertNotIn("I will issue exactly one valid tool call next", text)
 
     def test_preflight_flags_invalid_json_tool_arguments(self):
         openai_resp = {
@@ -281,8 +528,8 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         }
 
         issue = proxy._classify_tool_response_issue(openai_resp, anthropic_body)
-        self.assertEqual(issue.kind, "invalid_tool_args")
-        self.assertIn("invalid JSON arguments", issue.reason)
+        self.assertEqual(issue.kind, "malformed_payload")
+        self.assertIn("malformed pseudo tool payload", issue.reason)
 
     def test_preflight_flags_empty_required_field(self):
         openai_resp = {
@@ -321,8 +568,8 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         }
 
         issue = proxy._classify_tool_response_issue(openai_resp, anthropic_body)
-        self.assertEqual(issue.kind, "invalid_tool_args")
-        self.assertIn("empty: cron", issue.reason)
+        self.assertEqual(issue.kind, "malformed_payload")
+        self.assertIn("malformed pseudo tool payload", issue.reason)
 
     def test_preflight_flags_markup_inside_arguments(self):
         openai_resp = {
@@ -361,8 +608,8 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         }
 
         issue = proxy._classify_tool_response_issue(openai_resp, anthropic_body)
-        self.assertEqual(issue.kind, "invalid_tool_args")
-        self.assertIn("markup", issue.reason)
+        self.assertEqual(issue.kind, "malformed_payload")
+        self.assertIn("malformed pseudo tool payload", issue.reason)
 
     def test_required_tool_turn_without_tool_call_is_flagged(self):
         openai_resp = {
@@ -883,6 +1130,82 @@ class TestToolTurnControls(unittest.TestCase):
             setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK", old_empty_streak)
             setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_REJECTIONS", old_rejections)
             setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS", old_auto_turns)
+
+    def test_no_tools_does_not_inject_agentic_system_message(self):
+        body = {
+            "model": "test",
+            "messages": [{"role": "user", "content": "analyze architecture"}],
+        }
+        openai = proxy.build_openai_request(
+            body, proxy.SessionMonitor(context_window=262144)
+        )
+
+        self.assertEqual(openai["messages"][0]["role"], "user")
+        self.assertNotIn("tools", openai)
+
+    def test_analysis_only_route_removes_tools(self):
+        old_route = getattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE")
+        old_min_tools = getattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS")
+        old_max_messages = getattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES")
+        try:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", True)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", 4)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", 2)
+
+            body = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "analyze lifecycle and plan options to improve performance and compliance",
+                    }
+                ],
+                "tools": [
+                    {"name": "Read", "input_schema": {"type": "object"}},
+                    {"name": "Edit", "input_schema": {"type": "object"}},
+                    {"name": "Write", "input_schema": {"type": "object"}},
+                    {"name": "Bash", "input_schema": {"type": "object"}},
+                ],
+            }
+
+            updated, removed = proxy._maybe_route_analysis_without_tools(body)
+            self.assertEqual(removed, 4)
+            self.assertNotIn("tools", updated)
+        finally:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", old_max_messages)
+
+    def test_analysis_only_route_keeps_tools_for_action_prompt(self):
+        old_route = getattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE")
+        old_min_tools = getattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS")
+        old_max_messages = getattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES")
+        try:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", True)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", 4)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", 2)
+
+            body = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "analyze failing run and fix the bug",
+                    }
+                ],
+                "tools": [
+                    {"name": "Read", "input_schema": {"type": "object"}},
+                    {"name": "Edit", "input_schema": {"type": "object"}},
+                    {"name": "Write", "input_schema": {"type": "object"}},
+                    {"name": "Bash", "input_schema": {"type": "object"}},
+                ],
+            }
+
+            updated, removed = proxy._maybe_route_analysis_without_tools(body)
+            self.assertEqual(removed, 0)
+            self.assertIn("tools", updated)
+        finally:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", old_max_messages)
 
 
 class TestSessionContaminationBreaker(unittest.TestCase):

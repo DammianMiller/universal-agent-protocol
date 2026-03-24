@@ -231,7 +231,7 @@ uap worktree create hotfix-auth-bug --from develop
 
 #### `uap worktree pr`
 
-Create a pull request for the current worktree.
+Create a pull request for a worktree. This command now syncs the branch with `origin/master` before push/PR creation to reduce mergeability issues.
 
 ```bash
 uap worktree pr <worktree-id> [options]
@@ -239,15 +239,35 @@ uap worktree pr <worktree-id> [options]
 
 **Options:**
 
-- `--title, -t` - PR title
-- `--body, -b` - PR body file or text
-- `--base, -B` - Target branch (default: main)
+- `--draft` - Create as draft PR
 
 **Example:**
 
 ```bash
-uap worktree pr 123 --title "Add rate limiting to API"
-uap worktree pr 123 --body PR_BODY.md
+uap worktree pr 123
+uap worktree pr 123 --draft
+```
+
+#### `uap worktree finish`
+
+Recommended completion flow for worktrees. This command enforces the safe sequence to prevent sync/merge problems:
+
+1. Sync branch with `origin/master`
+2. Push branch
+3. Create PR if missing
+4. Merge PR
+5. Auto-clean local worktree and branch
+
+If GitHub cannot delete the local branch due worktree branch locks, `uap worktree finish` automatically falls back to merge + local cleanup, so local branch deletion still completes.
+
+```bash
+uap worktree finish <worktree-id>
+```
+
+**Example:**
+
+```bash
+uap worktree finish 123
 ```
 
 #### `uap worktree cleanup`

@@ -265,6 +265,14 @@ program
       })
   )
   .addCommand(
+    new Command('finish')
+      .description('Sync, merge PR, and auto-cleanup worktree')
+      .argument('<id>', 'Worktree ID')
+      .action(async (id) => {
+        (await lazy.worktree())('finish', { id });
+      })
+  )
+  .addCommand(
     new Command('cleanup')
       .description('Remove worktree and delete branch')
       .argument('<id>', 'Worktree ID')

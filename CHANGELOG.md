@@ -1,5 +1,59 @@
 # Changelog
 
+## v1.15.2 (2026-03-24)
+
+- fix: sanitize malformed tool-call apology responses
+
+
+## v1.15.1 (2026-03-24)
+
+- fix: harden malformed tool-call fallback retries
+- chore: bump version to 1.15.0
+
+
+## v1.15.0 (2026-03-24)
+
+- fix: route analysis-only prompts away from tool loops
+- chore: bump version to 1.14.1
+- fix: avoid gh delete-branch failures in worktree finish flow
+
+
+## v1.14.1 (2026-03-24)
+
+- fix: avoid gh delete-branch failures in worktree finish flow
+
+
+## v1.14.0 (2026-03-24)
+
+- feat: add worktree finish flow with sync and safe cleanup
+
+
+## v1.13.18 (2026-03-24)
+
+- chore: bump version to 1.13.15
+- fix: auto-register agents to prevent announce FK failures
+
+
+## v1.13.17 (2026-03-24)
+
+- fix: make reinforcement db validation tests deterministic
+- chore: bump version to 1.13.16
+- chore: bump version to 1.13.15
+- fix: normalize legacy hook schema during hooks install
+
+
+## v1.13.16 (2026-03-24)
+
+- fix: normalize legacy hook schema during hooks install
+
+
+## v1.13.15 (2026-03-24)
+
+- fix: reject malformed tool-call args before accepting retries
+- fix: route qwen through local guardrail proxy
+- fix: harden qwen tool-call guardrails and document decoding journey
+
+
 ## v1.13.14 (2026-03-23)
 
 - fix: suppress malformed reasoning fallback in streaming responses

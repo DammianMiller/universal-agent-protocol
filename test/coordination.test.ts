@@ -181,6 +181,34 @@ describe('CoordinationService', () => {
 
       expect(result.overlaps.length).toBeGreaterThan(0);
     });
+
+    it('should auto-register unknown agent IDs when announcing work', () => {
+      const unknownAgentId = 'claude-1f37071d1559';
+
+      const result = service.announceWork(unknownAgentId, 'src/cli/agent.ts', 'editing', {
+        description: 'Fix announcement flow',
+      });
+
+      const agent = service.getAgent(unknownAgentId);
+      expect(agent).not.toBeNull();
+      expect(agent!.name).toBe(unknownAgentId);
+      expect(agent!.status).toBe('active');
+      expect(result.announcement.agentName).toBe(unknownAgentId);
+    });
+
+    it('should reactivate completed agents when they announce work again', () => {
+      const agentId = service.register('agent-1');
+      service.deregister(agentId);
+      expect(service.getAgent(agentId)?.status).toBe('completed');
+
+      service.announceWork(agentId, 'src/main.ts', 'testing');
+
+      const reactivated = service.getAgent(agentId);
+      expect(reactivated).not.toBeNull();
+      expect(reactivated!.status).toBe('active');
+      const activeWork = service.getActiveWork().filter((work) => work.agentId === agentId);
+      expect(activeWork.length).toBe(1);
+    });
   });
 
   describe('Messaging', () => {

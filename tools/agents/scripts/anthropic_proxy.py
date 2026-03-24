@@ -186,6 +186,14 @@ PROXY_TOOL_ARGS_PREFLIGHT = os.environ.get(
     "off",
     "no",
 }
+PROXY_FORCE_NON_STREAM = os.environ.get(
+    "PROXY_FORCE_NON_STREAM", "off"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
 PROXY_FORCED_TOOL_DAMPENER = os.environ.get(
     "PROXY_FORCED_TOOL_DAMPENER", "on"
 ).lower() not in {
@@ -231,6 +239,20 @@ PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD = int(
 )
 PROXY_AGENTIC_SUPPLEMENT_MODE = (
     os.environ.get("PROXY_AGENTIC_SUPPLEMENT_MODE", "clean").strip().lower()
+)
+PROXY_ANALYSIS_ONLY_ROUTE = os.environ.get(
+    "PROXY_ANALYSIS_ONLY_ROUTE", "off"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+PROXY_ANALYSIS_ONLY_MIN_TOOLS = int(
+    os.environ.get("PROXY_ANALYSIS_ONLY_MIN_TOOLS", "12")
+)
+PROXY_ANALYSIS_ONLY_MAX_MESSAGES = int(
+    os.environ.get("PROXY_ANALYSIS_ONLY_MAX_MESSAGES", "2")
 )
 
 # ---------------------------------------------------------------------------
@@ -633,8 +655,9 @@ def estimate_total_tokens(anthropic_body: dict) -> int:
             if isinstance(block, dict) and block.get("type") == "text":
                 tokens += estimate_tokens(block.get("text", ""))
 
-    # Agentic supplement tokens (always injected)
-    tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
+    # Agentic supplement tokens (only when tool mode is active)
+    if _has_tool_definitions(anthropic_body):
+        tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
 
     # Messages
     for msg in anthropic_body.get("messages", []):
@@ -684,7 +707,8 @@ def prune_conversation(
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
                 overhead_tokens += estimate_tokens(block.get("text", ""))
-    overhead_tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
+    if _has_tool_definitions(anthropic_body):
+        overhead_tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
     tools = anthropic_body.get("tools", [])
     if tools:
         overhead_tokens += estimate_tokens(json.dumps(tools))
@@ -852,9 +876,10 @@ async def lifespan(app: FastAPI):
         _resolve_prune_target_fraction() * 100,
     )
     logger.info(
-        "Guardrails: malformed=%s stream_strict=%s args_preflight=%s tool_narrowing=%s thinking_off_on_tools=%s dampener=%s(%d/%d/%d/%d->%d) contamination_breaker=%s(%d forced=%d required_miss=%d)",
+        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s args_preflight=%s tool_narrowing=%s thinking_off_on_tools=%s dampener=%s(%d/%d/%d/%d->%d) contamination_breaker=%s(%d forced=%d required_miss=%d) analysis_only_route=%s(min_tools=%d,max_msgs=%d)",
         PROXY_MALFORMED_TOOL_GUARDRAIL,
         PROXY_MALFORMED_TOOL_STREAM_STRICT,
+        PROXY_FORCE_NON_STREAM,
         PROXY_TOOL_ARGS_PREFLIGHT,
         PROXY_TOOL_NARROWING,
         PROXY_DISABLE_THINKING_ON_TOOL_TURNS,
@@ -868,6 +893,9 @@ async def lifespan(app: FastAPI):
         PROXY_SESSION_CONTAMINATION_THRESHOLD,
         PROXY_SESSION_CONTAMINATION_FORCED_THRESHOLD,
         PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD,
+        PROXY_ANALYSIS_ONLY_ROUTE,
+        PROXY_ANALYSIS_ONLY_MIN_TOOLS,
+        PROXY_ANALYSIS_ONLY_MAX_MESSAGES,
     )
 
     yield
@@ -969,6 +997,134 @@ def _extract_text(content) -> str:
             b.get("text", "") if isinstance(b, dict) else str(b) for b in content
         )
     return str(content)
+
+
+_TOOL_CALL_APOLOGY_MARKERS = (
+    "i could not produce a valid tool-call format in this turn",
+    "i will issue exactly one valid tool call next",
+)
+
+_TOOL_CALL_RETRY_MESSAGE = (
+    "Tool-call formatting failed after automatic retries. "
+    "Please retry the same request."
+)
+
+
+def _contains_tool_call_apology(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in _TOOL_CALL_APOLOGY_MARKERS)
+
+
+def _sanitize_tool_call_apology_text(text: str) -> str:
+    return _TOOL_CALL_RETRY_MESSAGE if _contains_tool_call_apology(text) else text
+
+
+def _has_tool_definitions(anthropic_body: dict) -> bool:
+    tools = anthropic_body.get("tools")
+    return isinstance(tools, list) and len(tools) > 0
+
+
+def _message_has_tool_result(content) -> bool:
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        for block in content
+    )
+
+
+def _last_user_text(anthropic_body: dict) -> str:
+    for msg in reversed(anthropic_body.get("messages", [])):
+        if msg.get("role") == "user":
+            return _extract_text(msg.get("content", "")).strip().lower()
+    return ""
+
+
+def _is_analysis_only_prompt(text: str) -> bool:
+    if not text:
+        return False
+
+    analysis_markers = (
+        "analy",
+        "review",
+        "audit",
+        "summar",
+        "explain",
+        "plan",
+        "recommend",
+        "assess",
+        "compare",
+        "investigate",
+        "diagnose",
+    )
+    action_markers = (
+        "fix",
+        "edit",
+        "write",
+        "create",
+        "implement",
+        "patch",
+        "change",
+        "update",
+        "run ",
+        "execute",
+        "command",
+        "use tool",
+        "call tool",
+        "apply",
+        "commit",
+        "push",
+        "merge",
+        "publish",
+        "deploy",
+        "test",
+        "build",
+        "refactor",
+        "rename",
+        "delete",
+        "install",
+    )
+
+    has_analysis = any(marker in text for marker in analysis_markers)
+    has_action = any(marker in text for marker in action_markers)
+    return has_analysis and not has_action
+
+
+def _should_route_analysis_without_tools(anthropic_body: dict) -> bool:
+    if not PROXY_ANALYSIS_ONLY_ROUTE:
+        return False
+
+    tools = anthropic_body.get("tools")
+    if not isinstance(tools, list) or len(tools) < max(
+        1, PROXY_ANALYSIS_ONLY_MIN_TOOLS
+    ):
+        return False
+
+    messages = anthropic_body.get("messages", [])
+    if not isinstance(messages, list) or not messages:
+        return False
+
+    if len(messages) > max(1, PROXY_ANALYSIS_ONLY_MAX_MESSAGES):
+        return False
+
+    if any(msg.get("role") == "assistant" for msg in messages):
+        return False
+
+    if any(_message_has_tool_result(msg.get("content")) for msg in messages):
+        return False
+
+    return _is_analysis_only_prompt(_last_user_text(anthropic_body))
+
+
+def _maybe_route_analysis_without_tools(anthropic_body: dict) -> tuple[dict, int]:
+    if not _should_route_analysis_without_tools(anthropic_body):
+        return anthropic_body, 0
+
+    tools = anthropic_body.get("tools")
+    removed = len(tools) if isinstance(tools, list) else 0
+    updated = dict(anthropic_body)
+    updated.pop("tools", None)
+    return updated, removed
 
 
 _AGENTIC_SYSTEM_SUPPLEMENT_LEGACY = (
@@ -1168,19 +1324,24 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
         "stream": anthropic_body.get("stream", False),
     }
 
-    # Inject agentic protocol instructions into the system message so
-    # the model knows it must use tools to complete work, not just explain.
-    if openai_body["messages"] and openai_body["messages"][0].get("role") == "system":
-        openai_body["messages"][0]["content"] += _AGENTIC_SYSTEM_SUPPLEMENT
-    else:
-        # No system message from the client; inject one.
-        openai_body["messages"].insert(
-            0,
-            {
-                "role": "system",
-                "content": _AGENTIC_SYSTEM_SUPPLEMENT.strip(),
-            },
-        )
+    has_tools = _has_tool_definitions(anthropic_body)
+
+    # Inject agentic protocol instructions only for tool-enabled turns.
+    if has_tools:
+        if (
+            openai_body["messages"]
+            and openai_body["messages"][0].get("role") == "system"
+        ):
+            openai_body["messages"][0]["content"] += _AGENTIC_SYSTEM_SUPPLEMENT
+        else:
+            # No system message from the client; inject one.
+            openai_body["messages"].insert(
+                0,
+                {
+                    "role": "system",
+                    "content": _AGENTIC_SYSTEM_SUPPLEMENT.strip(),
+                },
+            )
 
     if "max_tokens" in anthropic_body:
         # Enforce configurable minimum floor for thinking mode: model needs
@@ -1229,7 +1390,7 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
         openai_body["stop"] = anthropic_body["stop_sequences"]
 
     # Convert Anthropic tools to OpenAI function-calling tools
-    if "tools" in anthropic_body:
+    if has_tools:
         openai_body["tools"] = _convert_anthropic_tools_to_openai(
             anthropic_body.get("tools", [])
         )
@@ -1452,10 +1613,164 @@ def _openai_message_text(openai_resp: dict) -> str:
     return content if isinstance(content, str) else str(content)
 
 
-def _openai_has_tool_calls(openai_resp: dict) -> bool:
+def _extract_openai_tool_calls(openai_resp: dict) -> list[dict]:
     _, message = _extract_openai_choice(openai_resp)
     tool_calls = message.get("tool_calls") or []
-    return bool(tool_calls)
+    return tool_calls if isinstance(tool_calls, list) else []
+
+
+def _openai_has_tool_calls(openai_resp: dict) -> bool:
+    return bool(_extract_openai_tool_calls(openai_resp))
+
+
+def _parse_openai_function_arguments(raw_args) -> tuple[dict | None, str | None]:
+    if isinstance(raw_args, dict):
+        return raw_args, None
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+        except json.JSONDecodeError:
+            return None, "invalid_json"
+        if not isinstance(parsed, dict):
+            return None, "arguments_not_object"
+        return parsed, None
+    return None, "invalid_arguments_type"
+
+
+def _schema_type_matches(value, expected_type: str) -> bool:
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "null":
+        return value is None
+    return True
+
+
+def _string_contains_tool_markup(value: str) -> bool:
+    lowered = value.lower()
+    markers = ("<parameter", "</parameter", "<tool_call", "<function=", "</function")
+    return any(marker in lowered for marker in markers)
+
+
+def _validate_tool_arguments_against_schema(
+    args: dict, input_schema: dict
+) -> tuple[bool, str]:
+    if not isinstance(input_schema, dict):
+        return True, ""
+
+    required = input_schema.get("required") or []
+    if isinstance(required, list):
+        for field in required:
+            if not isinstance(field, str):
+                continue
+            if field not in args:
+                return False, f"missing required field '{field}'"
+            value = args.get(field)
+            if value is None:
+                return False, f"required field '{field}' is null"
+            if isinstance(value, str) and not value.strip():
+                return False, f"required field '{field}' is empty"
+            if isinstance(value, str) and _string_contains_tool_markup(value):
+                return (
+                    False,
+                    f"required field '{field}' contains malformed tool markup",
+                )
+
+    properties = input_schema.get("properties") or {}
+    if isinstance(properties, dict):
+        for key, prop_schema in properties.items():
+            if key not in args:
+                continue
+            if not isinstance(prop_schema, dict):
+                continue
+            expected = prop_schema.get("type")
+            if isinstance(expected, str):
+                if not _schema_type_matches(args[key], expected):
+                    return (
+                        False,
+                        f"type mismatch for '{key}' (expected {expected})",
+                    )
+                if expected == "string" and isinstance(args[key], str):
+                    if _string_contains_tool_markup(args[key]):
+                        return (
+                            False,
+                            f"string field '{key}' contains malformed tool markup",
+                        )
+            elif isinstance(expected, list) and expected:
+                if not any(_schema_type_matches(args[key], t) for t in expected):
+                    expected_str = ",".join(str(t) for t in expected)
+                    return (
+                        False,
+                        f"type mismatch for '{key}' (expected one of {expected_str})",
+                    )
+
+    return True, ""
+
+
+def _tool_schema_map_from_anthropic_body(anthropic_body: dict) -> dict[str, dict]:
+    schema_map: dict[str, dict] = {}
+    for tool in anthropic_body.get("tools", []) or []:
+        if not isinstance(tool, dict):
+            continue
+        name = tool.get("name")
+        if isinstance(name, str) and name:
+            schema = tool.get("input_schema")
+            schema_map[name] = schema if isinstance(schema, dict) else {}
+    return schema_map
+
+
+def _invalid_tool_call_reason(openai_resp: dict, anthropic_body: dict) -> str | None:
+    if "tools" not in anthropic_body:
+        return None
+
+    tool_calls = _extract_openai_tool_calls(openai_resp)
+    if not tool_calls:
+        return None
+
+    schema_map = _tool_schema_map_from_anthropic_body(anthropic_body)
+    if not schema_map:
+        return None
+
+    for idx, tc in enumerate(tool_calls):
+        if not isinstance(tc, dict):
+            return f"tool call {idx} is not an object"
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            return f"tool call {idx} missing function payload"
+
+        name = fn.get("name")
+        if not isinstance(name, str) or not name:
+            return f"tool call {idx} missing function name"
+        if name not in schema_map:
+            return f"tool call {idx} uses unknown tool '{name}'"
+
+        args, parse_error = _parse_openai_function_arguments(fn.get("arguments", "{}"))
+        if parse_error:
+            return f"tool call {idx} invalid arguments ({parse_error})"
+        if args is None:
+            return f"tool call {idx} has empty arguments"
+
+        valid, reason = _validate_tool_arguments_against_schema(args, schema_map[name])
+        if not valid:
+            return f"tool call {idx} failed schema validation: {reason}"
+
+    return None
+
+
+def _openai_has_valid_tool_calls(openai_resp: dict, anthropic_body: dict) -> bool:
+    return (
+        _openai_has_tool_calls(openai_resp)
+        and _invalid_tool_call_reason(openai_resp, anthropic_body) is None
+    )
 
 
 @dataclass
@@ -1966,6 +2281,9 @@ def _looks_malformed_tool_payload(text: str) -> bool:
         return False
 
     lowered = text.lower()
+    if _contains_tool_call_apology(text):
+        return True
+
     primary_markers = ("</parameter", "<parameter", "<tool_call", "<function=")
     if any(marker in lowered for marker in primary_markers):
         return True
@@ -2008,8 +2326,13 @@ def _looks_malformed_tool_payload(text: str) -> bool:
 def _is_malformed_tool_response(openai_resp: dict, anthropic_body: dict) -> bool:
     if "tools" not in anthropic_body:
         return False
+
+    if _invalid_tool_call_reason(openai_resp, anthropic_body):
+        return True
+
     if _openai_has_tool_calls(openai_resp):
         return False
+
     return _looks_malformed_tool_payload(_openai_message_text(openai_resp))
 
 
@@ -2020,6 +2343,18 @@ def _build_malformed_retry_body(
     retry_body["stream"] = False
     retry_body["tool_choice"] = "required"
     retry_body["temperature"] = PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE
+
+    malformed_retry_instruction = {
+        "role": "user",
+        "content": (
+            "Your previous response had invalid tool-call formatting. "
+            "Respond with exactly one valid tool call using the provided tools. "
+            "Do not output prose, markdown, XML tags, or schema snippets."
+        ),
+    }
+    existing_messages = retry_body.get("messages")
+    if isinstance(existing_messages, list) and existing_messages:
+        retry_body["messages"] = [*existing_messages, malformed_retry_instruction]
 
     if PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS > 0:
         current_max = int(
@@ -2063,10 +2398,7 @@ def _build_clean_guardrail_openai_response(openai_resp: dict) -> dict:
                 "finish_reason": "stop",
                 "message": {
                     "role": "assistant",
-                    "content": (
-                        "I could not produce a valid tool-call format in this turn. "
-                        "Please continue; I will issue exactly one valid tool call next."
-                    ),
+                    "content": _TOOL_CALL_RETRY_MESSAGE,
                 },
             }
         ],
@@ -2106,9 +2438,15 @@ async def _apply_unexpected_end_turn_guardrail(
     if retry_resp.status_code == 200:
         retry_json = retry_resp.json()
         retry_choice, retry_message = _extract_openai_choice(retry_json)
-        if retry_message.get("tool_calls"):
+        if _openai_has_valid_tool_calls(retry_json, anthropic_body):
             logger.info("GUARDRAIL: retry produced tool_use; using retried response")
             return retry_json
+        invalid_reason = _invalid_tool_call_reason(retry_json, anthropic_body)
+        if invalid_reason:
+            logger.warning(
+                "GUARDRAIL: retry produced invalid tool_call payload (%s)",
+                invalid_reason,
+            )
         logger.info(
             "GUARDRAIL: retry returned finish_reason=%s without tool_use",
             retry_choice.get("finish_reason"),
@@ -2355,7 +2693,17 @@ def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
 
     content = []
     if message.get("content"):
-        content.append({"type": "text", "text": message["content"]})
+        raw_text = (
+            message["content"]
+            if isinstance(message["content"], str)
+            else str(message["content"])
+        )
+        sanitized_text = _sanitize_tool_call_apology_text(raw_text)
+        if sanitized_text != raw_text:
+            logger.warning(
+                "SANITIZE: replaced known malformed tool-call apology text in assistant response"
+            )
+        content.append({"type": "text", "text": sanitized_text})
 
     # Convert tool calls
     for tc in message.get("tool_calls", []):
@@ -2756,6 +3104,14 @@ async def messages(request: Request):
     last_session_id = session_id
 
     body = _maybe_apply_session_contamination_breaker(body, monitor, session_id)
+    body, analysis_tools_removed = _maybe_route_analysis_without_tools(body)
+    if analysis_tools_removed > 0:
+        monitor.consecutive_forced_count = 0
+        monitor.no_progress_streak = 0
+        logger.info(
+            "ANALYSIS ROUTE: disabled %d tools for analysis-only prompt",
+            analysis_tools_removed,
+        )
 
     # Debug: log request summary
     n_messages = len(body.get("messages", []))
@@ -2821,7 +3177,11 @@ async def messages(request: Request):
             media_type="application/json",
         )
 
-    if is_stream and PROXY_MALFORMED_TOOL_STREAM_STRICT and "tools" in body:
+    use_guarded_non_stream = is_stream and (
+        PROXY_FORCE_NON_STREAM
+        or (PROXY_MALFORMED_TOOL_STREAM_STRICT and "tools" in body)
+    )
+    if use_guarded_non_stream:
         strict_body = dict(openai_body)
         strict_body["stream"] = False
 
@@ -2872,9 +3232,14 @@ async def messages(request: Request):
 
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
         monitor.record_response(anthropic_resp.get("usage", {}).get("output_tokens", 0))
-        logger.info(
-            "STRICT STREAM GUARDRAIL: served stream response via guarded non-stream path"
-        )
+        if PROXY_FORCE_NON_STREAM:
+            logger.info(
+                "FORCED NON-STREAM: served stream response via guarded non-stream path"
+            )
+        else:
+            logger.info(
+                "STRICT STREAM GUARDRAIL: served stream response via guarded non-stream path"
+            )
 
         return StreamingResponse(
             stream_anthropic_message(anthropic_resp),
