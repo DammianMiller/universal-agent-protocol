@@ -483,6 +483,82 @@ class TestToolTurnControls(unittest.TestCase):
         finally:
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
 
+    def test_no_tools_does_not_inject_agentic_system_message(self):
+        body = {
+            "model": "test",
+            "messages": [{"role": "user", "content": "analyze architecture"}],
+        }
+        openai = proxy.build_openai_request(
+            body, proxy.SessionMonitor(context_window=262144)
+        )
+
+        self.assertEqual(openai["messages"][0]["role"], "user")
+        self.assertNotIn("tools", openai)
+
+    def test_analysis_only_route_removes_tools(self):
+        old_route = getattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE")
+        old_min_tools = getattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS")
+        old_max_messages = getattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES")
+        try:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", True)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", 4)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", 2)
+
+            body = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "analyze lifecycle and plan options to improve performance and compliance",
+                    }
+                ],
+                "tools": [
+                    {"name": "Read", "input_schema": {"type": "object"}},
+                    {"name": "Edit", "input_schema": {"type": "object"}},
+                    {"name": "Write", "input_schema": {"type": "object"}},
+                    {"name": "Bash", "input_schema": {"type": "object"}},
+                ],
+            }
+
+            updated, removed = proxy._maybe_route_analysis_without_tools(body)
+            self.assertEqual(removed, 4)
+            self.assertNotIn("tools", updated)
+        finally:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", old_max_messages)
+
+    def test_analysis_only_route_keeps_tools_for_action_prompt(self):
+        old_route = getattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE")
+        old_min_tools = getattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS")
+        old_max_messages = getattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES")
+        try:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", True)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", 4)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", 2)
+
+            body = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "analyze failing run and fix the bug",
+                    }
+                ],
+                "tools": [
+                    {"name": "Read", "input_schema": {"type": "object"}},
+                    {"name": "Edit", "input_schema": {"type": "object"}},
+                    {"name": "Write", "input_schema": {"type": "object"}},
+                    {"name": "Bash", "input_schema": {"type": "object"}},
+                ],
+            }
+
+            updated, removed = proxy._maybe_route_analysis_without_tools(body)
+            self.assertEqual(removed, 0)
+            self.assertIn("tools", updated)
+        finally:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", old_max_messages)
+
 
 class TestSessionContaminationBreaker(unittest.TestCase):
     def test_contamination_breaker_trims_and_resets_streak(self):
