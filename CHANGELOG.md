@@ -2,14 +2,13 @@
 
 ## v1.13.16 (2026-03-24)
 
-- chore: bump version to 1.13.15
 - fix: normalize legacy hook schema during hooks install
-- fix: harden qwen tool-call guardrails and document decoding journey
 
 
 ## v1.13.15 (2026-03-24)
 
-- fix: normalize legacy hook schema during hooks install
+- fix: reject malformed tool-call args before accepting retries
+- fix: route qwen through local guardrail proxy
 - fix: harden qwen tool-call guardrails and document decoding journey
 
 
