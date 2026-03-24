@@ -254,6 +254,28 @@ PROXY_ANALYSIS_ONLY_MIN_TOOLS = int(
 PROXY_ANALYSIS_ONLY_MAX_MESSAGES = int(
     os.environ.get("PROXY_ANALYSIS_ONLY_MAX_MESSAGES", "2")
 )
+PROXY_TOOL_CALL_GRAMMAR = os.environ.get(
+    "PROXY_TOOL_CALL_GRAMMAR", "on"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY = os.environ.get(
+    "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", "on"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+PROXY_TOOL_CALL_GRAMMAR_PATH = os.path.abspath(
+    os.environ.get(
+        "PROXY_TOOL_CALL_GRAMMAR_PATH",
+        os.path.join(os.path.dirname(__file__), "..", "config", "tool-call.gbnf"),
+    )
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -264,6 +286,45 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("uap.anthropic_proxy")
+
+
+def _load_tool_call_grammar(path: str) -> str:
+    if not PROXY_TOOL_CALL_GRAMMAR:
+        return ""
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError as exc:
+        logger.warning(
+            "Tool-call grammar disabled: failed to read %s (%s)",
+            path,
+            exc,
+        )
+        return ""
+
+
+TOOL_CALL_GBNF = _load_tool_call_grammar(PROXY_TOOL_CALL_GRAMMAR_PATH)
+
+
+def _apply_tool_call_grammar(
+    request_body: dict, tool_choice: str | None = None
+) -> None:
+    request_body.pop("grammar", None)
+
+    if not PROXY_TOOL_CALL_GRAMMAR or not TOOL_CALL_GBNF:
+        return
+
+    if not request_body.get("tools"):
+        return
+
+    effective_tool_choice = (
+        tool_choice if tool_choice is not None else request_body.get("tool_choice")
+    )
+    if PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY and effective_tool_choice != "required":
+        return
+
+    request_body["grammar"] = TOOL_CALL_GBNF
 
 
 # ---------------------------------------------------------------------------
@@ -876,7 +937,7 @@ async def lifespan(app: FastAPI):
         _resolve_prune_target_fraction() * 100,
     )
     logger.info(
-        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s args_preflight=%s tool_narrowing=%s thinking_off_on_tools=%s dampener=%s(%d/%d/%d/%d->%d) contamination_breaker=%s(%d forced=%d required_miss=%d) analysis_only_route=%s(min_tools=%d,max_msgs=%d)",
+        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s args_preflight=%s tool_narrowing=%s thinking_off_on_tools=%s dampener=%s(%d/%d/%d/%d->%d) contamination_breaker=%s(%d forced=%d required_miss=%d) analysis_only_route=%s(min_tools=%d,max_msgs=%d) grammar=%s(required_only=%s loaded=%s path=%s)",
         PROXY_MALFORMED_TOOL_GUARDRAIL,
         PROXY_MALFORMED_TOOL_STREAM_STRICT,
         PROXY_FORCE_NON_STREAM,
@@ -896,6 +957,10 @@ async def lifespan(app: FastAPI):
         PROXY_ANALYSIS_ONLY_ROUTE,
         PROXY_ANALYSIS_ONLY_MIN_TOOLS,
         PROXY_ANALYSIS_ONLY_MAX_MESSAGES,
+        PROXY_TOOL_CALL_GRAMMAR,
+        PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY,
+        bool(TOOL_CALL_GBNF),
+        PROXY_TOOL_CALL_GRAMMAR_PATH,
     )
 
     yield
@@ -1444,6 +1509,8 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
             logger.info(
                 "Thinking disabled for tool turn (PROXY_DISABLE_THINKING_ON_TOOL_TURNS=on)"
             )
+
+        _apply_tool_call_grammar(openai_body)
 
     return openai_body
 
@@ -2485,6 +2552,8 @@ def _build_malformed_retry_body(
     if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
         retry_body["enable_thinking"] = False
 
+    _apply_tool_call_grammar(retry_body, tool_choice=tool_choice)
+
     if retry_hint:
         repair_prompt = (
             f"[TOOL CALL REPAIR attempt {attempt}/{total_attempts}]\n"
@@ -2571,6 +2640,7 @@ async def _apply_unexpected_end_turn_guardrail(
     retry_body = dict(openai_body)
     retry_body["tool_choice"] = "required"
     retry_body["stream"] = False
+    _apply_tool_call_grammar(retry_body, tool_choice="required")
 
     retry_resp = await client.post(
         f"{LLAMA_CPP_BASE}/chat/completions",
@@ -3737,6 +3807,12 @@ async def context_status(request: Request):
         "overflow_count": monitor.overflow_count,
         "prune_threshold": PROXY_CONTEXT_PRUNE_THRESHOLD,
         "recent_history": monitor.context_history[-10:],
+        "tool_call_grammar": {
+            "enabled": PROXY_TOOL_CALL_GRAMMAR,
+            "required_only": PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY,
+            "path": PROXY_TOOL_CALL_GRAMMAR_PATH,
+            "loaded": bool(TOOL_CALL_GBNF),
+        },
         # Loop protection stats
         "loop_protection": {
             "enabled": PROXY_LOOP_BREAKER,

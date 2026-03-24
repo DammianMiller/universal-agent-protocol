@@ -514,6 +514,41 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         self.assertEqual(proxy._retry_tool_choice_for_attempt(True, 2, 3), "auto")
         self.assertEqual(proxy._retry_tool_choice_for_attempt(False, 0, 3), "auto")
 
+    def test_malformed_retry_body_applies_grammar_only_for_required_tool_choice(self):
+        old_enabled = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR")
+        old_required_only = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY")
+        old_grammar = getattr(proxy, "TOOL_CALL_GBNF")
+        try:
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", True)
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", True)
+            setattr(proxy, "TOOL_CALL_GBNF", 'root ::= "<tool_call>"')
+
+            openai_body = {
+                "model": "test",
+                "messages": [{"role": "user", "content": "fix"}],
+            }
+            anthropic_body = {
+                "tools": [{"name": "Read", "input_schema": {"type": "object"}}]
+            }
+
+            required_retry = proxy._build_malformed_retry_body(
+                openai_body,
+                anthropic_body,
+                tool_choice="required",
+            )
+            auto_retry = proxy._build_malformed_retry_body(
+                openai_body,
+                anthropic_body,
+                tool_choice="auto",
+            )
+
+            self.assertEqual(required_retry.get("grammar"), 'root ::= "<tool_call>"')
+            self.assertNotIn("grammar", auto_retry)
+        finally:
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", old_enabled)
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", old_required_only)
+            setattr(proxy, "TOOL_CALL_GBNF", old_grammar)
+
     def test_clean_guardrail_response_does_not_promise_future_tool_call(self):
         guardrail = proxy._build_clean_guardrail_openai_response(
             {"model": "test-model"}
@@ -1268,6 +1303,81 @@ class TestToolTurnControls(unittest.TestCase):
             setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK", old_empty_streak)
             setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_REJECTIONS", old_rejections)
             setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS", old_auto_turns)
+
+    def test_build_request_applies_grammar_when_tool_choice_required(self):
+        old_enabled = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR")
+        old_required_only = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY")
+        old_grammar = getattr(proxy, "TOOL_CALL_GBNF")
+        try:
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", True)
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", True)
+            setattr(proxy, "TOOL_CALL_GBNF", 'root ::= "<tool_call>"')
+
+            body = {
+                "model": "test",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "I will continue."}],
+                    },
+                    {"role": "user", "content": "continue"},
+                ],
+                "tools": [
+                    {
+                        "name": "Read",
+                        "description": "Read file",
+                        "input_schema": {"type": "object"},
+                    }
+                ],
+            }
+
+            openai = proxy.build_openai_request(
+                body, proxy.SessionMonitor(context_window=262144)
+            )
+            self.assertEqual(openai.get("tool_choice"), "required")
+            self.assertEqual(openai.get("grammar"), 'root ::= "<tool_call>"')
+        finally:
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", old_enabled)
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", old_required_only)
+            setattr(proxy, "TOOL_CALL_GBNF", old_grammar)
+
+    def test_build_request_omits_grammar_when_tool_choice_released_to_auto(self):
+        old_enabled = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR")
+        old_required_only = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY")
+        old_grammar = getattr(proxy, "TOOL_CALL_GBNF")
+        try:
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", True)
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", True)
+            setattr(proxy, "TOOL_CALL_GBNF", 'root ::= "<tool_call>"')
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.forced_auto_cooldown_turns = 1
+
+            body = {
+                "model": "test",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "I will continue."}],
+                    },
+                    {"role": "user", "content": "continue"},
+                ],
+                "tools": [
+                    {
+                        "name": "Read",
+                        "description": "Read file",
+                        "input_schema": {"type": "object"},
+                    }
+                ],
+            }
+
+            openai = proxy.build_openai_request(body, monitor)
+            self.assertEqual(openai.get("tool_choice"), "auto")
+            self.assertNotIn("grammar", openai)
+        finally:
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", old_enabled)
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", old_required_only)
+            setattr(proxy, "TOOL_CALL_GBNF", old_grammar)
 
     def test_no_tools_does_not_inject_agentic_system_message(self):
         body = {
