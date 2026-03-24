@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.13.16 (2026-03-24)
+
+- fix: normalize legacy hook schema during hooks install
+
+
 ## v1.13.15 (2026-03-24)
 
 - fix: reject malformed tool-call args before accepting retries
