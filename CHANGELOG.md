@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.13.17 (2026-03-24)
+
+- fix: make reinforcement db validation tests deterministic
+- chore: bump version to 1.13.16
+- chore: bump version to 1.13.15
+- fix: normalize legacy hook schema during hooks install
+
+
 ## v1.13.16 (2026-03-24)
 
 - fix: normalize legacy hook schema during hooks install
