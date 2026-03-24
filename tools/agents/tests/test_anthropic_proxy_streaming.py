@@ -185,6 +185,14 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         }
         self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
 
+    def test_tool_call_apology_helper_detects_phrase(self):
+        apology_text = (
+            "I could not produce a valid tool-call format in this turn. "
+            "Please continue; I will issue exactly one valid tool call next."
+        )
+        self.assertTrue(proxy._contains_tool_call_apology(apology_text))
+        self.assertFalse(proxy._contains_tool_call_apology("normal assistant response"))
+
     def test_clean_tool_call_response_is_not_malformed(self):
         openai_resp = {
             "choices": [
@@ -439,6 +447,27 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             {"model": "test-model"}
         )
         text = guardrail["choices"][0]["message"]["content"]
+        self.assertIn("Please retry the same request", text)
+        self.assertNotIn("I will issue exactly one valid tool call next", text)
+
+    def test_openai_to_anthropic_response_sanitizes_tool_call_apology(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            "I could not produce a valid tool-call format in this turn. "
+                            "Please continue; I will issue exactly one valid tool call next."
+                        ),
+                        "tool_calls": [],
+                    },
+                }
+            ]
+        }
+
+        converted = proxy.openai_to_anthropic_response(openai_resp, "test-model")
+        text = converted["content"][0]["text"]
         self.assertIn("Please retry the same request", text)
         self.assertNotIn("I will issue exactly one valid tool call next", text)
 

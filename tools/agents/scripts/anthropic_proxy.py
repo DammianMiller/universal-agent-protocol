@@ -898,6 +898,28 @@ def _extract_text(content) -> str:
     return str(content)
 
 
+_TOOL_CALL_APOLOGY_MARKERS = (
+    "i could not produce a valid tool-call format in this turn",
+    "i will issue exactly one valid tool call next",
+)
+
+_TOOL_CALL_RETRY_MESSAGE = (
+    "Tool-call formatting failed after automatic retries. "
+    "Please retry the same request."
+)
+
+
+def _contains_tool_call_apology(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in _TOOL_CALL_APOLOGY_MARKERS)
+
+
+def _sanitize_tool_call_apology_text(text: str) -> str:
+    return _TOOL_CALL_RETRY_MESSAGE if _contains_tool_call_apology(text) else text
+
+
 def _has_tool_definitions(anthropic_body: dict) -> bool:
     tools = anthropic_body.get("tools")
     return isinstance(tools, list) and len(tools) > 0
@@ -1647,11 +1669,7 @@ def _looks_malformed_tool_payload(text: str) -> bool:
         return False
 
     lowered = text.lower()
-    apology_markers = (
-        "i could not produce a valid tool-call format in this turn",
-        "i will issue exactly one valid tool call next",
-    )
-    if any(marker in lowered for marker in apology_markers):
+    if _contains_tool_call_apology(text):
         return True
 
     primary_markers = ("</parameter", "<parameter", "<tool_call", "<function=")
@@ -1756,10 +1774,7 @@ def _build_clean_guardrail_openai_response(openai_resp: dict) -> dict:
                 "finish_reason": "stop",
                 "message": {
                     "role": "assistant",
-                    "content": (
-                        "Tool-call formatting failed after automatic retries. "
-                        "Please retry the same request."
-                    ),
+                    "content": _TOOL_CALL_RETRY_MESSAGE,
                 },
             }
         ],
@@ -1959,7 +1974,17 @@ def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
 
     content = []
     if message.get("content"):
-        content.append({"type": "text", "text": message["content"]})
+        raw_text = (
+            message["content"]
+            if isinstance(message["content"], str)
+            else str(message["content"])
+        )
+        sanitized_text = _sanitize_tool_call_apology_text(raw_text)
+        if sanitized_text != raw_text:
+            logger.warning(
+                "SANITIZE: replaced known malformed tool-call apology text in assistant response"
+            )
+        content.append({"type": "text", "text": sanitized_text})
 
     # Convert tool calls
     for tc in message.get("tool_calls", []):
