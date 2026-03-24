@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.7 (2026-03-25)
+
+- fix: enforce tool-call grammar on required tool turns
+
+
 ## v1.15.6 (2026-03-25)
 
 - fix: harden proxy retry flow and bash safety
