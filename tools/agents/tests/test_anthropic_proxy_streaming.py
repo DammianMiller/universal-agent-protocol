@@ -122,6 +122,28 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         }
         self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
 
+    def test_detects_closing_function_tag_payload(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            "Bash(find /home/cogtek/dev/miller-tech/universal-agent-protocol -maxdepth 1 "
+                            '\\( -type f -name "*.md" -o -type f -name "*.json" \\)\n'
+                            "</function>"
+                        ),
+                        "tool_calls": [],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": "list root docs/json files"}],
+        }
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
     def test_detects_think_tag_with_repeated_policy_phrase(self):
         openai_resp = {
             "choices": [
@@ -611,6 +633,39 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         self.assertEqual(issue.kind, "malformed_payload")
         self.assertIn("malformed pseudo tool payload", issue.reason)
 
+    def test_preflight_flags_closing_function_tag_inside_arguments(self):
+        old_preflight = getattr(proxy, "PROXY_TOOL_ARGS_PREFLIGHT")
+        try:
+            setattr(proxy, "PROXY_TOOL_ARGS_PREFLIGHT", True)
+            openai_resp = {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "Bash",
+                                        "arguments": '{"command":"pwd\\n</function>"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+            anthropic_body = {
+                "tools": [{"name": "Bash", "input_schema": {"type": "object"}}]
+            }
+
+            issue = proxy._classify_tool_response_issue(openai_resp, anthropic_body)
+            self.assertEqual(issue.kind, "invalid_tool_args")
+            self.assertIn("malformed markup fragments", issue.reason)
+        finally:
+            setattr(proxy, "PROXY_TOOL_ARGS_PREFLIGHT", old_preflight)
+
     def test_required_tool_turn_without_tool_call_is_flagged(self):
         openai_resp = {
             "choices": [
@@ -660,6 +715,34 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         ]
         self.assertNotIn("</think>", args)
         self.assertNotIn("</parameter>", args)
+
+    def test_markup_repair_strips_closing_function_tag(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "Bash",
+                                    "arguments": '{"command":"pwd\\n</function>"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+        repaired, count = proxy._repair_tool_call_markup(openai_resp)
+        self.assertEqual(count, 1)
+        args = json.loads(
+            repaired["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        )
+        self.assertEqual(args["command"], "pwd")
 
     def test_markup_repair_recovers_json_after_tag_stripping(self):
         openai_resp = {

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.5 (2026-03-25)
+
+- fix: harden proxy against leaked closing function tags
+
+
 ## v1.15.4 (2026-03-24)
 
 - test: guard SessionStart and PreCompact hook array shape

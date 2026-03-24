@@ -1789,6 +1789,7 @@ _TOOL_ARG_MARKERS = (
     "<tool_call",
     "</tool_call",
     "<function=",
+    "</function",
     "</think>",
 )
 
@@ -1817,6 +1818,7 @@ def _strip_tool_markup_artifacts(text: str) -> str:
     cleaned = re.sub(r"</?tool_call[^>]*>", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"</?think>", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"<function=[^>]*>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"</function>", "", cleaned, flags=re.IGNORECASE)
     return cleaned.strip()
 
 
@@ -2284,7 +2286,13 @@ def _looks_malformed_tool_payload(text: str) -> bool:
     if _contains_tool_call_apology(text):
         return True
 
-    primary_markers = ("</parameter", "<parameter", "<tool_call", "<function=")
+    primary_markers = (
+        "</parameter",
+        "<parameter",
+        "<tool_call",
+        "<function=",
+        "</function",
+    )
     if any(marker in lowered for marker in primary_markers):
         return True
 
