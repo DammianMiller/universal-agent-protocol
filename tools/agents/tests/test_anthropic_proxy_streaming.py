@@ -487,6 +487,33 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE", old_temp)
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
 
+    def test_malformed_retry_body_appends_retry_hint_as_user_message(self):
+        openai_body = {
+            "model": "test",
+            "messages": [{"role": "user", "content": "fix"}],
+        }
+        anthropic_body = {
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}]
+        }
+
+        retry = proxy._build_malformed_retry_body(
+            openai_body,
+            anthropic_body,
+            retry_hint="Use strict JSON",
+            tool_choice="required",
+            attempt=1,
+            total_attempts=2,
+        )
+
+        self.assertEqual(retry["messages"][-1]["role"], "user")
+        self.assertIn("TOOL CALL REPAIR attempt 1/2", retry["messages"][-1]["content"])
+
+    def test_retry_ladder_releases_last_attempt_to_auto(self):
+        self.assertEqual(proxy._retry_tool_choice_for_attempt(True, 0, 3), "required")
+        self.assertEqual(proxy._retry_tool_choice_for_attempt(True, 1, 3), "required")
+        self.assertEqual(proxy._retry_tool_choice_for_attempt(True, 2, 3), "auto")
+        self.assertEqual(proxy._retry_tool_choice_for_attempt(False, 0, 3), "auto")
+
     def test_clean_guardrail_response_does_not_promise_future_tool_call(self):
         guardrail = proxy._build_clean_guardrail_openai_response(
             {"model": "test-model"}
@@ -771,6 +798,34 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             repaired["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
         )
         self.assertEqual(args["command"], "ls")
+
+    def test_bash_command_repair_strips_protocol_tag_only_lines(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "Bash",
+                                    "arguments": '{"command":"pwd\\n</function>\\n<tool_call>"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+        repaired, count = proxy._repair_bash_command_artifacts(openai_resp)
+        self.assertEqual(count, 1)
+        args = json.loads(
+            repaired["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        )
+        self.assertEqual(args["command"], "pwd")
 
     def test_guardrail_accepts_repaired_markup_without_fallback(self):
         old_retry = getattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX")
@@ -1285,6 +1340,38 @@ class TestToolTurnControls(unittest.TestCase):
             updated, removed = proxy._maybe_route_analysis_without_tools(body)
             self.assertEqual(removed, 0)
             self.assertIn("tools", updated)
+        finally:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", old_max_messages)
+
+    def test_analysis_only_route_does_not_treat_implementation_as_action(self):
+        old_route = getattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE")
+        old_min_tools = getattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS")
+        old_max_messages = getattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES")
+        try:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", True)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", 4)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", 2)
+
+            body = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "analyze implementation options and summarize tradeoffs",
+                    }
+                ],
+                "tools": [
+                    {"name": "Read", "input_schema": {"type": "object"}},
+                    {"name": "Edit", "input_schema": {"type": "object"}},
+                    {"name": "Write", "input_schema": {"type": "object"}},
+                    {"name": "Bash", "input_schema": {"type": "object"}},
+                ],
+            }
+
+            updated, removed = proxy._maybe_route_analysis_without_tools(body)
+            self.assertEqual(removed, 4)
+            self.assertNotIn("tools", updated)
         finally:
             setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
             setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
