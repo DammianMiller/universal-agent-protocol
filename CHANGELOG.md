@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.15.1 (2026-03-24)
+
+- fix: harden malformed tool-call fallback retries
+- chore: bump version to 1.15.0
+
+
 ## v1.15.0 (2026-03-24)
 
 - fix: route analysis-only prompts away from tool loops
