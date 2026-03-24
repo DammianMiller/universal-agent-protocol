@@ -178,6 +178,8 @@ export class CoordinationService {
   // ==================== Work Claims ====================
 
   claimResource(agentId: string, resource: string, claimType: ClaimType = 'exclusive'): boolean {
+    this.ensureAgentIsRegistered(agentId);
+
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + this.claimExpiryMs).toISOString();
 
@@ -287,8 +289,11 @@ export class CoordinationService {
     overlaps: WorkOverlap[];
     suggestions: CollaborationSuggestion[];
   } {
-    const agent = this.getAgent(agentId);
     const now = new Date().toISOString();
+    const agent = this.ensureAgentIsRegistered(agentId, {
+      fallbackName: agentId,
+      lastHeartbeat: now,
+    });
     const estimatedCompletion = options.estimatedMinutes
       ? new Date(Date.now() + options.estimatedMinutes * 60000).toISOString()
       : null;
@@ -299,9 +304,8 @@ export class CoordinationService {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    // Use agentId as fallback name when agent is not registered (e.g., auto-created MCP agents)
-    const agentName = agent?.name || agentId;
-    const worktreeBranch = agent?.worktreeBranch || null;
+    const agentName = agent.name || agentId;
+    const worktreeBranch = agent.worktreeBranch || null;
 
     const result = stmt.run(
       agentId,
@@ -318,8 +322,8 @@ export class CoordinationService {
     const announcement: WorkAnnouncement = {
       id: result.lastInsertRowid as number,
       agentId,
-      agentName: agent?.name,
-      worktreeBranch: agent?.worktreeBranch,
+      agentName: agent.name,
+      worktreeBranch: agent.worktreeBranch,
       intentType,
       resource,
       description: options.description,
@@ -871,5 +875,76 @@ export class CoordinationService {
     `
       )
       .run(cutoff);
+  }
+
+  private ensureAgentIsRegistered(
+    agentId: string,
+    options: { fallbackName?: string; worktreeBranch?: string | null; lastHeartbeat?: string } = {}
+  ): AgentRegistryEntry {
+    const existing = this.getAgent(agentId);
+    const now = options.lastHeartbeat || new Date().toISOString();
+
+    if (!existing) {
+      this.db
+        .prepare(
+          `
+        INSERT INTO agent_registry (id, name, session_id, status, worktree_branch, started_at, last_heartbeat, capabilities)
+        VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
+      `
+        )
+        .run(
+          agentId,
+          options.fallbackName || agentId,
+          this.sessionId,
+          options.worktreeBranch || null,
+          now,
+          now,
+          null
+        );
+
+      return {
+        id: agentId,
+        name: options.fallbackName || agentId,
+        sessionId: this.sessionId,
+        status: 'active',
+        worktreeBranch: options.worktreeBranch || undefined,
+        startedAt: now,
+        lastHeartbeat: now,
+      };
+    }
+
+    if (existing.status === 'completed' || existing.status === 'failed') {
+      this.db
+        .prepare(
+          `
+        UPDATE agent_registry
+        SET status = 'active', current_task = NULL, last_heartbeat = ?
+        WHERE id = ?
+      `
+        )
+        .run(now, agentId);
+
+      return {
+        ...existing,
+        status: 'active',
+        currentTask: undefined,
+        lastHeartbeat: now,
+      };
+    }
+
+    this.db
+      .prepare(
+        `
+      UPDATE agent_registry
+      SET last_heartbeat = ?
+      WHERE id = ?
+    `
+      )
+      .run(now, agentId);
+
+    return {
+      ...existing,
+      lastHeartbeat: now,
+    };
   }
 }
