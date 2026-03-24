@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.15.0 (2026-03-24)
+
+- fix: route analysis-only prompts away from tool loops
+- chore: bump version to 1.14.1
+- fix: avoid gh delete-branch failures in worktree finish flow
+
+
 ## v1.14.1 (2026-03-24)
 
 - fix: avoid gh delete-branch failures in worktree finish flow
