@@ -47,6 +47,14 @@
 - [Token Optimization](benchmarks/TOKEN_OPTIMIZATION.md) -- Per-feature token savings analysis
 - [Accuracy Analysis](benchmarks/ACCURACY_ANALYSIS.md) -- Internal vs Terminal-Bench comparison
 
+## Blog
+
+- [Speculative Decoding Production Playbook](blog/SPECULATIVE_DECODING_PRODUCTION_PLAYBOOK.md) -- Long-form narrative on throughput gains, failure modes, and stable profiles
+
+## PR Templates
+
+- [Speculative Docs PR Template](pr/PR_SPECULATIVE_DOCS_TEMPLATE.md) -- Ready-to-submit PR copy, checklist, and reviewer guidance
+
 ## Research
 
 - [Memory Systems Comparison](research/MEMORY_SYSTEMS_COMPARISON.md) -- MemGPT, LangGraph, Mem0, A-MEM analysis
