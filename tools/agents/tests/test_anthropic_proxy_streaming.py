@@ -164,6 +164,27 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         }
         self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
 
+    def test_detects_tool_call_apology_text_as_malformed(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            "I could not produce a valid tool-call format in this turn. "
+                            "Please continue; I will issue exactly one valid tool call next."
+                        ),
+                        "tool_calls": [],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": "fix this"}],
+        }
+        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+
     def test_clean_tool_call_response_is_not_malformed(self):
         openai_resp = {
             "choices": [
@@ -385,6 +406,7 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             openai_body = {
                 "model": "test",
                 "max_tokens": 4000,
+                "messages": [{"role": "user", "content": "fix the issue"}],
                 "tools": [{"type": "function", "function": {"name": "Read"}}],
             }
             anthropic_body = {
@@ -402,10 +424,23 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             self.assertEqual(retry["max_tokens"], 512)
             self.assertEqual(len(retry["tools"]), 3)
             self.assertFalse(retry["enable_thinking"])
+            self.assertEqual(retry["messages"][-1]["role"], "user")
+            self.assertIn(
+                "invalid tool-call formatting",
+                retry["messages"][-1]["content"],
+            )
         finally:
             setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS", old_cap)
             setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE", old_temp)
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
+
+    def test_clean_guardrail_response_does_not_promise_future_tool_call(self):
+        guardrail = proxy._build_clean_guardrail_openai_response(
+            {"model": "test-model"}
+        )
+        text = guardrail["choices"][0]["message"]["content"]
+        self.assertIn("Please retry the same request", text)
+        self.assertNotIn("I will issue exactly one valid tool call next", text)
 
 
 class TestToolTurnControls(unittest.TestCase):
