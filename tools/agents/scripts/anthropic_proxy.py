@@ -162,7 +162,7 @@ PROXY_MALFORMED_TOOL_GUARDRAIL = os.environ.get(
     "no",
 }
 PROXY_MALFORMED_TOOL_RETRY_MAX = int(
-    os.environ.get("PROXY_MALFORMED_TOOL_RETRY_MAX", "1")
+    os.environ.get("PROXY_MALFORMED_TOOL_RETRY_MAX", "2")
 )
 PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS = int(
     os.environ.get("PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS", "2048")
@@ -178,6 +178,37 @@ PROXY_MALFORMED_TOOL_STREAM_STRICT = os.environ.get(
     "off",
     "no",
 }
+PROXY_TOOL_ARGS_PREFLIGHT = os.environ.get(
+    "PROXY_TOOL_ARGS_PREFLIGHT", "on"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+PROXY_FORCED_TOOL_DAMPENER = os.environ.get(
+    "PROXY_FORCED_TOOL_DAMPENER", "on"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED = int(
+    os.environ.get("PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED", "4")
+)
+PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK = int(
+    os.environ.get("PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK", "1")
+)
+PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK = int(
+    os.environ.get("PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK", "2")
+)
+PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS = int(
+    os.environ.get("PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS", "2")
+)
+PROXY_FORCED_TOOL_DAMPENER_REJECTIONS = int(
+    os.environ.get("PROXY_FORCED_TOOL_DAMPENER_REJECTIONS", "2")
+)
 PROXY_SESSION_CONTAMINATION_BREAKER = os.environ.get(
     "PROXY_SESSION_CONTAMINATION_BREAKER", "on"
 ).lower() not in {
@@ -191,6 +222,12 @@ PROXY_SESSION_CONTAMINATION_THRESHOLD = int(
 )
 PROXY_SESSION_CONTAMINATION_KEEP_LAST = int(
     os.environ.get("PROXY_SESSION_CONTAMINATION_KEEP_LAST", "8")
+)
+PROXY_SESSION_CONTAMINATION_FORCED_THRESHOLD = int(
+    os.environ.get("PROXY_SESSION_CONTAMINATION_FORCED_THRESHOLD", "8")
+)
+PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD = int(
+    os.environ.get("PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD", "2")
 )
 PROXY_AGENTIC_SUPPLEMENT_MODE = (
     os.environ.get("PROXY_AGENTIC_SUPPLEMENT_MODE", "clean").strip().lower()
@@ -235,7 +272,13 @@ class SessionMonitor:
     no_progress_streak: int = 0  # Forced tool turns without new tool_result
     unexpected_end_turn_count: int = 0  # end_turn without tool_use in active loop
     malformed_tool_streak: int = 0  # consecutive malformed pseudo tool payloads
+    invalid_tool_call_streak: int = 0  # consecutive invalid tool arg payloads
+    required_tool_miss_streak: int = 0  # required tool turns with no tool call
     contamination_resets: int = 0  # how many contamination resets were applied
+    forced_auto_cooldown_turns: int = 0  # temporary auto override turns remaining
+    forced_dampener_triggers: int = 0  # number of dampener activations
+    arg_preflight_rejections: int = 0  # rejected tool calls from arg preflight
+    arg_preflight_repairs: int = 0  # sanitized tool call args accepted
     last_seen_ts: float = 0.0
 
     def record_request(self, estimated_tokens: int):
@@ -371,6 +414,55 @@ class SessionMonitor:
             return True, count
 
         return False, 0
+
+    def guardrail_streak(self) -> int:
+        """Highest current streak among malformed/invalid tool outputs."""
+        return max(self.malformed_tool_streak, self.invalid_tool_call_streak)
+
+    def consume_forced_auto_turn(self) -> bool:
+        """Consume one dampener turn that temporarily sets tool_choice=auto."""
+        if self.forced_auto_cooldown_turns <= 0:
+            return False
+        self.forced_auto_cooldown_turns -= 1
+        return True
+
+    def maybe_activate_forced_tool_dampener(self, reason: str) -> bool:
+        """Temporarily release forced tool choice when quality collapses."""
+        if not PROXY_FORCED_TOOL_DAMPENER:
+            return False
+        if self.forced_auto_cooldown_turns > 0:
+            return False
+
+        min_forced = max(1, PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED)
+        if self.consecutive_forced_count < min_forced:
+            return False
+
+        bad_streak = self.guardrail_streak()
+        bad_threshold = max(1, PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK)
+        empty_threshold = max(1, PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK)
+        rejection_threshold = max(1, PROXY_FORCED_TOOL_DAMPENER_REJECTIONS)
+        rejection_pressure = self.arg_preflight_rejections >= rejection_threshold
+        if (
+            bad_streak < bad_threshold
+            and self.required_tool_miss_streak < empty_threshold
+            and not rejection_pressure
+        ):
+            return False
+
+        self.forced_auto_cooldown_turns = max(1, PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS)
+        self.forced_dampener_triggers += 1
+        if rejection_pressure:
+            self.arg_preflight_rejections = 0
+        logger.warning(
+            "FORCED-TOOL DAMPENER: activated reason=%s forced=%d bad_streak=%d required_miss=%d rejection_pressure=%s auto_turns=%d",
+            reason,
+            self.consecutive_forced_count,
+            bad_streak,
+            self.required_tool_miss_streak,
+            rejection_pressure,
+            self.forced_auto_cooldown_turns,
+        )
+        return True
 
     def should_release_tool_choice(self) -> bool:
         """Determine if tool_choice should be relaxed to 'auto' to break a loop.
@@ -760,13 +852,22 @@ async def lifespan(app: FastAPI):
         _resolve_prune_target_fraction() * 100,
     )
     logger.info(
-        "Guardrails: malformed=%s stream_strict=%s tool_narrowing=%s thinking_off_on_tools=%s contamination_breaker=%s(%d)",
+        "Guardrails: malformed=%s stream_strict=%s args_preflight=%s tool_narrowing=%s thinking_off_on_tools=%s dampener=%s(%d/%d/%d/%d->%d) contamination_breaker=%s(%d forced=%d required_miss=%d)",
         PROXY_MALFORMED_TOOL_GUARDRAIL,
         PROXY_MALFORMED_TOOL_STREAM_STRICT,
+        PROXY_TOOL_ARGS_PREFLIGHT,
         PROXY_TOOL_NARROWING,
         PROXY_DISABLE_THINKING_ON_TOOL_TURNS,
+        PROXY_FORCED_TOOL_DAMPENER,
+        PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED,
+        PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK,
+        PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK,
+        PROXY_FORCED_TOOL_DAMPENER_REJECTIONS,
+        PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS,
         PROXY_SESSION_CONTAMINATION_BREAKER,
         PROXY_SESSION_CONTAMINATION_THRESHOLD,
+        PROXY_SESSION_CONTAMINATION_FORCED_THRESHOLD,
+        PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD,
     )
 
     yield
@@ -1163,8 +1264,16 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
         _record_last_assistant_tool_calls(anthropic_body, monitor)
         last_user_has_tool_result = _last_user_has_tool_result(anthropic_body)
 
-        # Check if loop breaker should override tool_choice
-        if monitor.should_release_tool_choice():
+        # Check if forced-tool dampener or loop breaker should override tool_choice
+        if monitor.consume_forced_auto_turn():
+            openai_body["tool_choice"] = "auto"
+            monitor.consecutive_forced_count = 0
+            monitor.no_progress_streak = 0
+            logger.warning(
+                "tool_choice set to 'auto' by FORCED-TOOL DAMPENER (remaining=%d)",
+                monitor.forced_auto_cooldown_turns,
+            )
+        elif monitor.should_release_tool_choice():
             openai_body["tool_choice"] = "auto"
             monitor.consecutive_forced_count = 0
             monitor.no_progress_streak = 0
@@ -1349,6 +1458,509 @@ def _openai_has_tool_calls(openai_resp: dict) -> bool:
     return bool(tool_calls)
 
 
+@dataclass
+class ToolResponseIssue:
+    kind: str = ""
+    reason: str = ""
+    retry_hint: str = ""
+
+    def has_issue(self) -> bool:
+        return bool(self.kind)
+
+
+_TOOL_ARG_MARKERS = (
+    "</parameter",
+    "<parameter",
+    "<tool_call",
+    "</tool_call",
+    "<function=",
+    "</think>",
+)
+
+
+def _iter_string_leaves(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_string_leaves(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_string_leaves(item)
+
+
+def _contains_tool_markup(value) -> bool:
+    for text in _iter_string_leaves(value):
+        lowered = text.lower()
+        if any(marker in lowered for marker in _TOOL_ARG_MARKERS):
+            return True
+    return False
+
+
+def _strip_tool_markup_artifacts(text: str) -> str:
+    cleaned = re.sub(r"</?parameter[^>]*>", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"</?tool_call[^>]*>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"</?think>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<function=[^>]*>", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
+def _sanitize_markup_value(value):
+    if isinstance(value, str):
+        cleaned = _strip_tool_markup_artifacts(value)
+        return cleaned, cleaned != value
+    if isinstance(value, list):
+        changed = False
+        cleaned_items = []
+        for item in value:
+            cleaned_item, item_changed = _sanitize_markup_value(item)
+            cleaned_items.append(cleaned_item)
+            changed = changed or item_changed
+        return cleaned_items, changed
+    if isinstance(value, dict):
+        changed = False
+        cleaned_obj = {}
+        for key, item in value.items():
+            cleaned_item, item_changed = _sanitize_markup_value(item)
+            cleaned_obj[key] = cleaned_item
+            changed = changed or item_changed
+        return cleaned_obj, changed
+    return value, False
+
+
+def _repair_tool_call_markup(openai_resp: dict) -> tuple[dict, int]:
+    if not _openai_has_tool_calls(openai_resp):
+        return openai_resp, 0
+
+    choice, message = _extract_openai_choice(openai_resp)
+    tool_calls = message.get("tool_calls") or []
+    if not tool_calls:
+        return openai_resp, 0
+
+    repaired_tool_calls = []
+    repaired_count = 0
+
+    for tool_call in tool_calls:
+        fn = tool_call.get("function") if isinstance(tool_call, dict) else {}
+        if not isinstance(fn, dict):
+            fn = {}
+        raw_args = fn.get("arguments", "{}")
+
+        if isinstance(raw_args, (dict, list)):
+            parsed_args = raw_args
+            parse_recovered = False
+        else:
+            try:
+                parsed_args = json.loads(str(raw_args))
+                parse_recovered = False
+            except json.JSONDecodeError:
+                cleaned_text = _strip_tool_markup_artifacts(str(raw_args))
+                candidate = cleaned_text
+                if "{" in candidate and "}" in candidate:
+                    candidate = candidate[
+                        candidate.find("{") : candidate.rfind("}") + 1
+                    ]
+                try:
+                    parsed_args = json.loads(candidate)
+                    parse_recovered = True
+                except json.JSONDecodeError:
+                    repaired_tool_calls.append(tool_call)
+                    continue
+
+        cleaned_args, changed = _sanitize_markup_value(parsed_args)
+        if parse_recovered:
+            changed = True
+        if not changed:
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        new_tool_call = dict(tool_call)
+        new_fn = dict(fn)
+        new_fn["arguments"] = json.dumps(cleaned_args, separators=(",", ":"))
+        new_tool_call["function"] = new_fn
+        repaired_tool_calls.append(new_tool_call)
+        repaired_count += 1
+
+    if repaired_count == 0:
+        return openai_resp, 0
+
+    repaired_response = dict(openai_resp)
+    choices = list(openai_resp.get("choices") or [])
+    if not choices:
+        return openai_resp, 0
+
+    updated_choice = dict(choice)
+    updated_message = dict(message)
+    updated_message["tool_calls"] = repaired_tool_calls
+    updated_choice["message"] = updated_message
+    choices[0] = updated_choice
+    repaired_response["choices"] = choices
+    return repaired_response, repaired_count
+
+
+def _default_required_value(field_name: str, field_schema: dict):
+    expected_type = field_schema.get("type") if isinstance(field_schema, dict) else None
+    if isinstance(expected_type, list):
+        expected_type = expected_type[0] if expected_type else "string"
+
+    if expected_type == "integer":
+        return 0
+    if expected_type == "number":
+        return 0
+    if expected_type == "boolean":
+        return False
+    if expected_type == "object":
+        return {"value": "__uap_required__"}
+    if expected_type == "array":
+        return ["__uap_required__"]
+
+    key = (field_name or "").lower()
+    if key in {"command", "cmd"}:
+        return "pwd"
+    if key == "cron":
+        return "* * * * *"
+    if key in {"pattern", "glob"}:
+        return "*"
+    if key == "subject":
+        return "task"
+    if key in {"path", "file", "filepath", "file_path"} or key.endswith("_path"):
+        return "."
+    return "__uap_required__"
+
+
+def _repair_required_tool_args(
+    openai_resp: dict, anthropic_body: dict
+) -> tuple[dict, int]:
+    if not _openai_has_tool_calls(openai_resp):
+        return openai_resp, 0
+
+    tools_by_name = _anthropic_tools_by_name(anthropic_body)
+    if not tools_by_name:
+        return openai_resp, 0
+
+    choice, message = _extract_openai_choice(openai_resp)
+    tool_calls = message.get("tool_calls") or []
+    if not tool_calls:
+        return openai_resp, 0
+
+    repaired_tool_calls = []
+    repaired_count = 0
+
+    for tool_call in tool_calls:
+        fn = tool_call.get("function") if isinstance(tool_call, dict) else {}
+        if not isinstance(fn, dict):
+            fn = {}
+        tool_name = fn.get("name", "")
+        schema = tools_by_name.get(tool_name, {})
+        required = schema.get("required", []) if isinstance(schema, dict) else []
+        if not isinstance(required, list) or not required:
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+        if not isinstance(properties, dict):
+            properties = {}
+
+        raw_args = fn.get("arguments", "{}")
+        if isinstance(raw_args, dict):
+            parsed_args = dict(raw_args)
+            parse_failed = False
+        else:
+            try:
+                parsed_args = json.loads(str(raw_args))
+                parse_failed = False
+            except json.JSONDecodeError:
+                parsed_args = {}
+                parse_failed = True
+
+        if not isinstance(parsed_args, dict):
+            parsed_args = {}
+            parse_failed = True
+
+        changed = parse_failed
+        for field in required:
+            if not isinstance(field, str):
+                continue
+            current = parsed_args.get(field)
+            if field not in parsed_args or _required_value_is_empty(current):
+                field_schema = (
+                    properties.get(field, {})
+                    if isinstance(properties.get(field), dict)
+                    else {}
+                )
+                parsed_args[field] = _default_required_value(field, field_schema)
+                changed = True
+
+        if not changed:
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        new_tool_call = dict(tool_call)
+        new_fn = dict(fn)
+        new_fn["arguments"] = json.dumps(parsed_args, separators=(",", ":"))
+        new_tool_call["function"] = new_fn
+        repaired_tool_calls.append(new_tool_call)
+        repaired_count += 1
+
+    if repaired_count == 0:
+        return openai_resp, 0
+
+    repaired_response = dict(openai_resp)
+    choices = list(openai_resp.get("choices") or [])
+    if not choices:
+        return openai_resp, 0
+
+    updated_choice = dict(choice)
+    updated_message = dict(message)
+    updated_message["tool_calls"] = repaired_tool_calls
+    updated_choice["message"] = updated_message
+    choices[0] = updated_choice
+    repaired_response["choices"] = choices
+    return repaired_response, repaired_count
+
+
+def _required_value_is_empty(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return False
+
+
+def _matches_json_schema_type(value, expected_type) -> bool:
+    if not expected_type:
+        return True
+
+    if isinstance(expected_type, list):
+        return any(
+            _matches_json_schema_type(value, candidate) for candidate in expected_type
+        )
+
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return (isinstance(value, int) and not isinstance(value, bool)) or isinstance(
+            value, float
+        )
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    return True
+
+
+def _anthropic_tools_by_name(anthropic_body: dict) -> dict[str, dict]:
+    tool_map: dict[str, dict] = {}
+    for tool in anthropic_body.get("tools", []) or []:
+        if not isinstance(tool, dict):
+            continue
+        name = tool.get("name", "")
+        if not name:
+            continue
+        schema = tool.get("input_schema")
+        if not isinstance(schema, dict):
+            schema = (
+                tool.get("parameters")
+                if isinstance(tool.get("parameters"), dict)
+                else {}
+            )
+        tool_map[name] = schema or {}
+    return tool_map
+
+
+def _validate_tool_call_arguments(
+    tool_name: str,
+    raw_arguments,
+    tool_schema: dict,
+    allowed_tools: set[str],
+) -> ToolResponseIssue:
+    if allowed_tools and tool_name not in allowed_tools:
+        return ToolResponseIssue(
+            kind="invalid_tool_args",
+            reason=f"unknown tool '{tool_name}'",
+            retry_hint="Use exactly one tool from the provided tool list.",
+        )
+
+    if isinstance(raw_arguments, (dict, list)):
+        arg_text = json.dumps(raw_arguments)
+    elif raw_arguments is None:
+        arg_text = "{}"
+    else:
+        arg_text = str(raw_arguments)
+
+    try:
+        parsed = json.loads(arg_text)
+    except json.JSONDecodeError as exc:
+        return ToolResponseIssue(
+            kind="invalid_tool_args",
+            reason=f"invalid JSON arguments for '{tool_name}': {exc.msg}",
+            retry_hint=(
+                f"Emit exactly one `{tool_name}` tool call with `arguments` as a strict JSON object. "
+                "Do not include prose before or after JSON."
+            ),
+        )
+
+    if not isinstance(parsed, dict):
+        return ToolResponseIssue(
+            kind="invalid_tool_args",
+            reason=f"arguments for '{tool_name}' must be a JSON object",
+            retry_hint=(
+                f"Emit exactly one `{tool_name}` tool call with `arguments` set to a JSON object (not a string or list)."
+            ),
+        )
+
+    if _contains_tool_markup(parsed):
+        return ToolResponseIssue(
+            kind="invalid_tool_args",
+            reason=f"arguments for '{tool_name}' contain malformed markup fragments",
+            retry_hint=(
+                f"Remove tag fragments from `{tool_name}` arguments and emit only plain JSON key/value pairs."
+            ),
+        )
+
+    if not isinstance(tool_schema, dict):
+        tool_schema = {}
+
+    required = tool_schema.get("required", [])
+    if not isinstance(required, list):
+        required = []
+
+    properties = tool_schema.get("properties", {})
+    if not isinstance(properties, dict):
+        properties = {}
+
+    missing: list[str] = []
+    empty: list[str] = []
+    wrong_type: list[str] = []
+
+    for field in required:
+        if not isinstance(field, str):
+            continue
+
+        if field not in parsed:
+            missing.append(field)
+            continue
+
+        value = parsed.get(field)
+        if _required_value_is_empty(value):
+            empty.append(field)
+            continue
+
+        schema = (
+            properties.get(field, {}) if isinstance(properties.get(field), dict) else {}
+        )
+        expected_type = schema.get("type")
+        if expected_type and not _matches_json_schema_type(value, expected_type):
+            wrong_type.append(field)
+            continue
+
+        min_length = schema.get("minLength")
+        if (
+            isinstance(min_length, int)
+            and isinstance(value, str)
+            and len(value.strip()) < min_length
+        ):
+            empty.append(field)
+            continue
+
+        min_items = schema.get("minItems")
+        if (
+            isinstance(min_items, int)
+            and isinstance(value, list)
+            and len(value) < min_items
+        ):
+            empty.append(field)
+
+    if missing or empty or wrong_type:
+        details = []
+        if missing:
+            details.append(f"missing: {', '.join(missing)}")
+        if empty:
+            details.append(f"empty: {', '.join(empty)}")
+        if wrong_type:
+            details.append(f"type mismatch: {', '.join(wrong_type)}")
+        required_fields = ", ".join(str(f) for f in required if isinstance(f, str))
+        required_hint = (
+            f"Required fields must be non-empty: {required_fields}. "
+            if required_fields
+            else ""
+        )
+        return ToolResponseIssue(
+            kind="invalid_tool_args",
+            reason=f"invalid arguments for '{tool_name}' ({'; '.join(details)})",
+            retry_hint=(
+                f"Emit exactly one `{tool_name}` tool call with strict JSON arguments. "
+                f"{required_hint}Do not include protocol tags or commentary."
+            ).strip(),
+        )
+
+    return ToolResponseIssue()
+
+
+def _classify_tool_response_issue(
+    openai_resp: dict,
+    anthropic_body: dict,
+    required_tool_choice: bool = False,
+) -> ToolResponseIssue:
+    if "tools" not in anthropic_body:
+        return ToolResponseIssue()
+
+    if _is_malformed_tool_response(openai_resp, anthropic_body):
+        return ToolResponseIssue(
+            kind="malformed_payload",
+            reason="malformed pseudo tool payload detected in assistant text",
+            retry_hint=(
+                "Return exactly one valid tool call with strict JSON arguments. "
+                "Do not output raw protocol tags, schema fragments, or apologies about formatting."
+            ),
+        )
+
+    has_tool_calls = _openai_has_tool_calls(openai_resp)
+    if not has_tool_calls:
+        if required_tool_choice:
+            text = _openai_message_text(openai_resp).strip()
+            if not text or len(text) <= 48:
+                return ToolResponseIssue(
+                    kind="required_tool_miss",
+                    reason="required tool turn returned no tool calls",
+                    retry_hint=(
+                        "A tool call is mandatory for this turn. Emit exactly one valid tool call now "
+                        "with a strict JSON object in `arguments`."
+                    ),
+                )
+        return ToolResponseIssue()
+
+    if not PROXY_TOOL_ARGS_PREFLIGHT:
+        return ToolResponseIssue()
+
+    _, message = _extract_openai_choice(openai_resp)
+    tool_calls = message.get("tool_calls") or []
+    tools_by_name = _anthropic_tools_by_name(anthropic_body)
+    allowed_tools = set(tools_by_name.keys())
+
+    for tc in tool_calls:
+        fn = tc.get("function") if isinstance(tc, dict) else {}
+        if not isinstance(fn, dict):
+            fn = {}
+        tool_name = fn.get("name", "")
+        issue = _validate_tool_call_arguments(
+            tool_name,
+            fn.get("arguments", "{}"),
+            tools_by_name.get(tool_name, {}),
+            allowed_tools,
+        )
+        if issue.has_issue():
+            return issue
+
+    return ToolResponseIssue()
+
+
 def _looks_malformed_tool_payload(text: str) -> bool:
     if not text:
         return False
@@ -1401,7 +2013,9 @@ def _is_malformed_tool_response(openai_resp: dict, anthropic_body: dict) -> bool
     return _looks_malformed_tool_payload(_openai_message_text(openai_resp))
 
 
-def _build_malformed_retry_body(openai_body: dict, anthropic_body: dict) -> dict:
+def _build_malformed_retry_body(
+    openai_body: dict, anthropic_body: dict, retry_hint: str = ""
+) -> dict:
     retry_body = dict(openai_body)
     retry_body["stream"] = False
     retry_body["tool_choice"] = "required"
@@ -1423,6 +2037,16 @@ def _build_malformed_retry_body(openai_body: dict, anthropic_body: dict) -> dict
 
     if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
         retry_body["enable_thinking"] = False
+
+    if retry_hint:
+        repair_prompt = (
+            "[TOOL CALL REPAIR]\n"
+            f"{retry_hint}\n"
+            "Return exactly one valid tool call object and no explanatory prose."
+        )
+        retry_messages = list(retry_body.get("messages", []))
+        retry_messages.append({"role": "system", "content": repair_prompt})
+        retry_body["messages"] = retry_messages
 
     return retry_body
 
@@ -1509,23 +2133,68 @@ async def _apply_malformed_tool_guardrail(
     if not PROXY_MALFORMED_TOOL_GUARDRAIL:
         return openai_resp
 
-    if not _is_malformed_tool_response(openai_resp, anthropic_body):
-        if _openai_has_tool_calls(openai_resp):
-            monitor.malformed_tool_streak = 0
-        return openai_resp
+    working_resp = openai_resp
+    repair_count = 0
+    if PROXY_TOOL_ARGS_PREFLIGHT and _openai_has_tool_calls(openai_resp):
+        working_resp, markup_repairs = _repair_tool_call_markup(openai_resp)
+        working_resp, required_repairs = _repair_required_tool_args(
+            working_resp, anthropic_body
+        )
+        repair_count = markup_repairs + required_repairs
 
-    monitor.malformed_tool_streak += 1
-    excerpt = _openai_message_text(openai_resp)[:220].replace("\n", " ")
+    required_tool_choice = openai_body.get("tool_choice") == "required"
+    has_tool_calls = _openai_has_tool_calls(working_resp)
+    if required_tool_choice and not has_tool_calls:
+        monitor.required_tool_miss_streak += 1
+
+    issue = _classify_tool_response_issue(
+        working_resp,
+        anthropic_body,
+        required_tool_choice=required_tool_choice,
+    )
+    if not issue.has_issue():
+        if required_tool_choice and not has_tool_calls:
+            monitor.maybe_activate_forced_tool_dampener("required_tool_miss")
+        if has_tool_calls:
+            monitor.malformed_tool_streak = 0
+            monitor.invalid_tool_call_streak = 0
+            monitor.required_tool_miss_streak = 0
+        if repair_count > 0:
+            monitor.arg_preflight_repairs += repair_count
+            logger.info(
+                "TOOL ARG REPAIR: session=%s repaired=%d source=initial",
+                session_id,
+                repair_count,
+            )
+        return working_resp
+
+    if issue.kind == "malformed_payload":
+        monitor.malformed_tool_streak += 1
+    elif issue.kind == "invalid_tool_args":
+        monitor.invalid_tool_call_streak += 1
+        monitor.arg_preflight_rejections += 1
+
+    monitor.maybe_activate_forced_tool_dampener(issue.kind)
+    excerpt = _openai_message_text(working_resp)[:220].replace("\n", " ")
     logger.warning(
-        "MALFORMED TOOL PAYLOAD: session=%s streak=%d excerpt=%.220s",
+        "TOOL RESPONSE ISSUE: session=%s kind=%s reason=%s malformed=%d invalid=%d required_miss=%d excerpt=%.220s",
         session_id,
+        issue.kind,
+        issue.reason,
         monitor.malformed_tool_streak,
+        monitor.invalid_tool_call_streak,
+        monitor.required_tool_miss_streak,
         excerpt,
     )
 
     attempts = max(0, PROXY_MALFORMED_TOOL_RETRY_MAX)
+    current_issue = issue
     for attempt in range(attempts):
-        retry_body = _build_malformed_retry_body(openai_body, anthropic_body)
+        retry_body = _build_malformed_retry_body(
+            openai_body,
+            anthropic_body,
+            retry_hint=current_issue.retry_hint,
+        )
         retry_resp = await client.post(
             f"{LLAMA_CPP_BASE}/chat/completions",
             json=retry_body,
@@ -1541,31 +2210,71 @@ async def _apply_malformed_tool_guardrail(
             continue
 
         retry_json = retry_resp.json()
-        if _openai_has_tool_calls(retry_json):
+        retry_working = retry_json
+        retry_repairs = 0
+        if PROXY_TOOL_ARGS_PREFLIGHT and _openai_has_tool_calls(retry_json):
+            retry_working, retry_markup_repairs = _repair_tool_call_markup(retry_json)
+            retry_working, retry_required_repairs = _repair_required_tool_args(
+                retry_working, anthropic_body
+            )
+            retry_repairs = retry_markup_repairs + retry_required_repairs
+
+        retry_has_tool_calls = _openai_has_tool_calls(retry_working)
+        retry_required = retry_body.get("tool_choice") == "required"
+        if retry_required and not retry_has_tool_calls:
+            monitor.required_tool_miss_streak += 1
+
+        retry_issue = _classify_tool_response_issue(
+            retry_working,
+            anthropic_body,
+            required_tool_choice=retry_required,
+        )
+
+        if not retry_issue.has_issue():
             monitor.malformed_tool_streak = 0
+            monitor.invalid_tool_call_streak = 0
+            monitor.required_tool_miss_streak = 0
             logger.info(
-                "MALFORMED RETRY success: produced tool_use (attempt %d/%d)",
+                "TOOL RESPONSE RETRY success: kind=%s attempt=%d/%d",
+                current_issue.kind,
                 attempt + 1,
                 attempts,
             )
-            return retry_json
+            if retry_repairs > 0:
+                monitor.arg_preflight_repairs += retry_repairs
+                logger.info(
+                    "TOOL ARG REPAIR: session=%s repaired=%d source=retry",
+                    session_id,
+                    retry_repairs,
+                )
+            return retry_working
 
-        if not _is_malformed_tool_response(retry_json, anthropic_body):
-            monitor.malformed_tool_streak = 0
-            logger.info(
-                "MALFORMED RETRY produced clean text response (attempt %d/%d)",
-                attempt + 1,
-                attempts,
-            )
-            return retry_json
+        if retry_issue.kind == "malformed_payload":
+            monitor.malformed_tool_streak += 1
+        elif retry_issue.kind == "invalid_tool_args":
+            monitor.invalid_tool_call_streak += 1
+            monitor.arg_preflight_rejections += 1
 
-        monitor.malformed_tool_streak += 1
+        monitor.maybe_activate_forced_tool_dampener(retry_issue.kind)
+        logger.warning(
+            "TOOL RESPONSE RETRY invalid: session=%s attempt=%d/%d kind=%s reason=%s",
+            session_id,
+            attempt + 1,
+            attempts,
+            retry_issue.kind,
+            retry_issue.reason,
+        )
+        current_issue = retry_issue
 
     logger.error(
-        "MALFORMED TOOL PAYLOAD persisted after retries (session=%s); returning clean guardrail response",
+        "TOOL RESPONSE issue persisted after retries (session=%s kind=%s malformed=%d invalid=%d required_miss=%d); returning clean guardrail response",
         session_id,
+        current_issue.kind or issue.kind,
+        monitor.malformed_tool_streak,
+        monitor.invalid_tool_call_streak,
+        monitor.required_tool_miss_streak,
     )
-    return _build_clean_guardrail_openai_response(openai_resp)
+    return _build_clean_guardrail_openai_response(working_resp)
 
 
 def _maybe_apply_session_contamination_breaker(
@@ -1575,13 +2284,28 @@ def _maybe_apply_session_contamination_breaker(
         return anthropic_body
 
     threshold = max(1, PROXY_SESSION_CONTAMINATION_THRESHOLD)
-    if monitor.malformed_tool_streak < threshold:
+    forced_threshold = max(1, PROXY_SESSION_CONTAMINATION_FORCED_THRESHOLD)
+    required_miss_threshold = max(
+        1, PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD
+    )
+    bad_streak = monitor.guardrail_streak()
+    should_reset = (
+        bad_streak >= threshold
+        or (
+            bad_streak >= max(1, threshold - 1)
+            and monitor.consecutive_forced_count >= forced_threshold
+        )
+        or monitor.required_tool_miss_streak >= required_miss_threshold
+    )
+    if not should_reset:
         return anthropic_body
 
     messages = anthropic_body.get("messages", [])
     keep_last = max(2, PROXY_SESSION_CONTAMINATION_KEEP_LAST)
     if len(messages) <= keep_last + 1:
         monitor.malformed_tool_streak = 0
+        monitor.invalid_tool_call_streak = 0
+        monitor.required_tool_miss_streak = 0
         return anthropic_body
 
     head = messages[:1]
@@ -1589,22 +2313,30 @@ def _maybe_apply_session_contamination_breaker(
     reset_marker = {
         "role": "user",
         "content": (
-            "[SESSION RESET: previous turns contained malformed tool-call formatting "
-            "artifacts. Continue from the recent context below and emit valid tool calls only.]"
+            "[SESSION RESET: tool-call quality degraded in earlier turns. "
+            "Continue from the recent context and emit valid tool calls with strict JSON arguments only.]"
         ),
     }
 
     updated_body = dict(anthropic_body)
     updated_body["messages"] = head + [reset_marker] + tail
 
+    forced_before = monitor.consecutive_forced_count
+    required_miss_before = monitor.required_tool_miss_streak
     monitor.contamination_resets += 1
     monitor.malformed_tool_streak = 0
+    monitor.invalid_tool_call_streak = 0
+    monitor.required_tool_miss_streak = 0
     monitor.no_progress_streak = 0
     monitor.consecutive_forced_count = 0
+    monitor.forced_auto_cooldown_turns = 0
     logger.warning(
-        "SESSION CONTAMINATION BREAKER: session=%s reset applied, kept=%d messages",
+        "SESSION CONTAMINATION BREAKER: session=%s reset applied, kept=%d messages (bad_streak=%d forced=%d required_miss=%d)",
         session_id,
         len(updated_body["messages"]),
+        bad_streak,
+        forced_before,
+        required_miss_before,
     )
 
     return updated_body
@@ -1961,8 +2693,17 @@ async def stream_anthropic_response(
         ]
     }
 
-    if _is_malformed_tool_response(synthetic_openai_resp, anthropic_body):
+    stream_issue = _classify_tool_response_issue(
+        synthetic_openai_resp,
+        anthropic_body,
+        required_tool_choice=False,
+    )
+
+    if stream_issue.kind == "malformed_payload":
         monitor.malformed_tool_streak += 1
+    elif stream_issue.kind == "invalid_tool_args":
+        monitor.invalid_tool_call_streak += 1
+        monitor.arg_preflight_rejections += 1
     elif (
         "tools" in anthropic_body
         and not tool_calls_by_index
@@ -1974,6 +2715,8 @@ async def stream_anthropic_response(
         monitor.malformed_tool_streak += 1
     elif tool_calls_by_index:
         monitor.malformed_tool_streak = 0
+        monitor.invalid_tool_call_streak = 0
+        monitor.required_tool_miss_streak = 0
 
     if _is_unexpected_end_turn(synthetic_openai_resp, anthropic_body):
         monitor.unexpected_end_turn_count += 1
@@ -2364,6 +3107,8 @@ async def messages(request: Request):
             monitor.malformed_tool_streak += 1
         elif _openai_has_tool_calls(openai_resp):
             monitor.malformed_tool_streak = 0
+            monitor.invalid_tool_call_streak = 0
+            monitor.required_tool_miss_streak = 0
 
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
 
@@ -2454,6 +3199,13 @@ async def context_status(request: Request):
             "loop_warnings_emitted": monitor.loop_warnings_emitted,
             "unexpected_end_turn_count": monitor.unexpected_end_turn_count,
             "malformed_tool_streak": monitor.malformed_tool_streak,
+            "invalid_tool_call_streak": monitor.invalid_tool_call_streak,
+            "required_tool_miss_streak": monitor.required_tool_miss_streak,
+            "guardrail_streak": monitor.guardrail_streak(),
+            "arg_preflight_rejections": monitor.arg_preflight_rejections,
+            "arg_preflight_repairs": monitor.arg_preflight_repairs,
+            "forced_auto_cooldown_turns": monitor.forced_auto_cooldown_turns,
+            "forced_dampener_triggers": monitor.forced_dampener_triggers,
             "contamination_resets": monitor.contamination_resets,
             "tool_call_history_len": len(monitor.tool_call_history),
             "is_looping": monitor.detect_tool_loop(window=PROXY_LOOP_WINDOW)[0],
