@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isBranchInUseWorktreeError, parseRevListCount } from '../src/cli/worktree.js';
+import { isAlreadyMergedMessage, parseRevListCount } from '../src/cli/worktree.js';
 
 describe('worktree process helpers', () => {
   it('parses rev-list count output safely', () => {
@@ -12,9 +12,13 @@ describe('worktree process helpers', () => {
     expect(parseRevListCount('-2')).toBe(0);
   });
 
-  it('detects gh local branch lock error for worktrees', () => {
-    const err = "failed to run git: fatal: 'master' is already used by worktree";
-    expect(isBranchInUseWorktreeError(err)).toBe(true);
-    expect(isBranchInUseWorktreeError('some other git failure')).toBe(false);
+  it('detects already-merged gh message', () => {
+    const message = 'Pull request owner/repo#123 was already merged';
+    expect(isAlreadyMergedMessage(message)).toBe(true);
+  });
+
+  it('ignores unrelated merge error text', () => {
+    const message = "failed to run git: fatal: 'master' is already used by worktree";
+    expect(isAlreadyMergedMessage(message)).toBe(false);
   });
 });

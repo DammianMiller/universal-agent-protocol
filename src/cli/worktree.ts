@@ -263,16 +263,16 @@ async function finishWorktree(cwd: string, git: SimpleGit, id: string): Promise<
 
     spinner.text = `Merging PR #${prNumber}...`;
     try {
-      runGh(`gh pr merge ${prNumber} --merge --delete-branch`, worktreePath);
+      runGh(`gh pr merge ${prNumber} --merge`, worktreePath);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      if (isBranchInUseWorktreeError(message)) {
-        runGh(`gh pr merge ${prNumber} --merge`, worktreePath);
-      } else if (!message.includes('was already merged')) {
+      const message = extractErrorMessage(error);
+      if (!isAlreadyMergedMessage(message)) {
         throw error;
       }
     }
+
+    spinner.text = 'Deleting remote branch...';
+    await deleteRemoteBranch(worktreeGit, branch);
 
     spinner.succeed(`PR #${prNumber} merged`);
     await cleanupWorktree(cwd, git, id);
@@ -321,8 +321,20 @@ export function parseRevListCount(output: string): number {
   return parsed;
 }
 
-export function isBranchInUseWorktreeError(message: string): boolean {
-  return message.includes('already used by worktree');
+function extractErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function deleteRemoteBranch(worktreeGit: SimpleGit, branch: string): Promise<void> {
+  try {
+    await worktreeGit.push(['origin', '--delete', branch]);
+  } catch {
+    // Branch may already be deleted, protected, or auto-deleted by repo settings.
+  }
+}
+
+export function isAlreadyMergedMessage(message: string): boolean {
+  return message.includes('was already merged');
 }
 
 async function cleanupWorktree(cwd: string, git: SimpleGit, id: string): Promise<void> {

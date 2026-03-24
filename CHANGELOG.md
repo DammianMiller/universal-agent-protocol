@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.14.1 (2026-03-24)
+
+- fix: avoid gh delete-branch failures in worktree finish flow
+
+
 ## v1.14.0 (2026-03-24)
 
 - feat: add worktree finish flow with sync and safe cleanup
