@@ -178,6 +178,14 @@ PROXY_MALFORMED_TOOL_STREAM_STRICT = os.environ.get(
     "off",
     "no",
 }
+PROXY_FORCE_NON_STREAM = os.environ.get(
+    "PROXY_FORCE_NON_STREAM", "off"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
 PROXY_SESSION_CONTAMINATION_BREAKER = os.environ.get(
     "PROXY_SESSION_CONTAMINATION_BREAKER", "on"
 ).lower() not in {
@@ -760,9 +768,10 @@ async def lifespan(app: FastAPI):
         _resolve_prune_target_fraction() * 100,
     )
     logger.info(
-        "Guardrails: malformed=%s stream_strict=%s tool_narrowing=%s thinking_off_on_tools=%s contamination_breaker=%s(%d)",
+        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s tool_narrowing=%s thinking_off_on_tools=%s contamination_breaker=%s(%d)",
         PROXY_MALFORMED_TOOL_GUARDRAIL,
         PROXY_MALFORMED_TOOL_STREAM_STRICT,
+        PROXY_FORCE_NON_STREAM,
         PROXY_TOOL_NARROWING,
         PROXY_DISABLE_THINKING_ON_TOOL_TURNS,
         PROXY_SESSION_CONTAMINATION_BREAKER,
@@ -1343,10 +1352,164 @@ def _openai_message_text(openai_resp: dict) -> str:
     return content if isinstance(content, str) else str(content)
 
 
-def _openai_has_tool_calls(openai_resp: dict) -> bool:
+def _extract_openai_tool_calls(openai_resp: dict) -> list[dict]:
     _, message = _extract_openai_choice(openai_resp)
     tool_calls = message.get("tool_calls") or []
-    return bool(tool_calls)
+    return tool_calls if isinstance(tool_calls, list) else []
+
+
+def _openai_has_tool_calls(openai_resp: dict) -> bool:
+    return bool(_extract_openai_tool_calls(openai_resp))
+
+
+def _parse_openai_function_arguments(raw_args) -> tuple[dict | None, str | None]:
+    if isinstance(raw_args, dict):
+        return raw_args, None
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+        except json.JSONDecodeError:
+            return None, "invalid_json"
+        if not isinstance(parsed, dict):
+            return None, "arguments_not_object"
+        return parsed, None
+    return None, "invalid_arguments_type"
+
+
+def _schema_type_matches(value, expected_type: str) -> bool:
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "null":
+        return value is None
+    return True
+
+
+def _string_contains_tool_markup(value: str) -> bool:
+    lowered = value.lower()
+    markers = ("<parameter", "</parameter", "<tool_call", "<function=", "</function")
+    return any(marker in lowered for marker in markers)
+
+
+def _validate_tool_arguments_against_schema(
+    args: dict, input_schema: dict
+) -> tuple[bool, str]:
+    if not isinstance(input_schema, dict):
+        return True, ""
+
+    required = input_schema.get("required") or []
+    if isinstance(required, list):
+        for field in required:
+            if not isinstance(field, str):
+                continue
+            if field not in args:
+                return False, f"missing required field '{field}'"
+            value = args.get(field)
+            if value is None:
+                return False, f"required field '{field}' is null"
+            if isinstance(value, str) and not value.strip():
+                return False, f"required field '{field}' is empty"
+            if isinstance(value, str) and _string_contains_tool_markup(value):
+                return (
+                    False,
+                    f"required field '{field}' contains malformed tool markup",
+                )
+
+    properties = input_schema.get("properties") or {}
+    if isinstance(properties, dict):
+        for key, prop_schema in properties.items():
+            if key not in args:
+                continue
+            if not isinstance(prop_schema, dict):
+                continue
+            expected = prop_schema.get("type")
+            if isinstance(expected, str):
+                if not _schema_type_matches(args[key], expected):
+                    return (
+                        False,
+                        f"type mismatch for '{key}' (expected {expected})",
+                    )
+                if expected == "string" and isinstance(args[key], str):
+                    if _string_contains_tool_markup(args[key]):
+                        return (
+                            False,
+                            f"string field '{key}' contains malformed tool markup",
+                        )
+            elif isinstance(expected, list) and expected:
+                if not any(_schema_type_matches(args[key], t) for t in expected):
+                    expected_str = ",".join(str(t) for t in expected)
+                    return (
+                        False,
+                        f"type mismatch for '{key}' (expected one of {expected_str})",
+                    )
+
+    return True, ""
+
+
+def _tool_schema_map_from_anthropic_body(anthropic_body: dict) -> dict[str, dict]:
+    schema_map: dict[str, dict] = {}
+    for tool in anthropic_body.get("tools", []) or []:
+        if not isinstance(tool, dict):
+            continue
+        name = tool.get("name")
+        if isinstance(name, str) and name:
+            schema = tool.get("input_schema")
+            schema_map[name] = schema if isinstance(schema, dict) else {}
+    return schema_map
+
+
+def _invalid_tool_call_reason(openai_resp: dict, anthropic_body: dict) -> str | None:
+    if "tools" not in anthropic_body:
+        return None
+
+    tool_calls = _extract_openai_tool_calls(openai_resp)
+    if not tool_calls:
+        return None
+
+    schema_map = _tool_schema_map_from_anthropic_body(anthropic_body)
+    if not schema_map:
+        return None
+
+    for idx, tc in enumerate(tool_calls):
+        if not isinstance(tc, dict):
+            return f"tool call {idx} is not an object"
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            return f"tool call {idx} missing function payload"
+
+        name = fn.get("name")
+        if not isinstance(name, str) or not name:
+            return f"tool call {idx} missing function name"
+        if name not in schema_map:
+            return f"tool call {idx} uses unknown tool '{name}'"
+
+        args, parse_error = _parse_openai_function_arguments(fn.get("arguments", "{}"))
+        if parse_error:
+            return f"tool call {idx} invalid arguments ({parse_error})"
+        if args is None:
+            return f"tool call {idx} has empty arguments"
+
+        valid, reason = _validate_tool_arguments_against_schema(args, schema_map[name])
+        if not valid:
+            return f"tool call {idx} failed schema validation: {reason}"
+
+    return None
+
+
+def _openai_has_valid_tool_calls(openai_resp: dict, anthropic_body: dict) -> bool:
+    return (
+        _openai_has_tool_calls(openai_resp)
+        and _invalid_tool_call_reason(openai_resp, anthropic_body) is None
+    )
 
 
 def _looks_malformed_tool_payload(text: str) -> bool:
@@ -1396,8 +1559,13 @@ def _looks_malformed_tool_payload(text: str) -> bool:
 def _is_malformed_tool_response(openai_resp: dict, anthropic_body: dict) -> bool:
     if "tools" not in anthropic_body:
         return False
+
+    if _invalid_tool_call_reason(openai_resp, anthropic_body):
+        return True
+
     if _openai_has_tool_calls(openai_resp):
         return False
+
     return _looks_malformed_tool_payload(_openai_message_text(openai_resp))
 
 
@@ -1482,9 +1650,15 @@ async def _apply_unexpected_end_turn_guardrail(
     if retry_resp.status_code == 200:
         retry_json = retry_resp.json()
         retry_choice, retry_message = _extract_openai_choice(retry_json)
-        if retry_message.get("tool_calls"):
+        if _openai_has_valid_tool_calls(retry_json, anthropic_body):
             logger.info("GUARDRAIL: retry produced tool_use; using retried response")
             return retry_json
+        invalid_reason = _invalid_tool_call_reason(retry_json, anthropic_body)
+        if invalid_reason:
+            logger.warning(
+                "GUARDRAIL: retry produced invalid tool_call payload (%s)",
+                invalid_reason,
+            )
         logger.info(
             "GUARDRAIL: retry returned finish_reason=%s without tool_use",
             retry_choice.get("finish_reason"),
@@ -1510,12 +1684,16 @@ async def _apply_malformed_tool_guardrail(
         return openai_resp
 
     if not _is_malformed_tool_response(openai_resp, anthropic_body):
-        if _openai_has_tool_calls(openai_resp):
+        if _openai_has_valid_tool_calls(openai_resp, anthropic_body):
             monitor.malformed_tool_streak = 0
         return openai_resp
 
     monitor.malformed_tool_streak += 1
-    excerpt = _openai_message_text(openai_resp)[:220].replace("\n", " ")
+    invalid_reason = _invalid_tool_call_reason(openai_resp, anthropic_body)
+    if invalid_reason:
+        excerpt = invalid_reason[:220]
+    else:
+        excerpt = _openai_message_text(openai_resp)[:220].replace("\n", " ")
     logger.warning(
         "MALFORMED TOOL PAYLOAD: session=%s streak=%d excerpt=%.220s",
         session_id,
@@ -1541,7 +1719,7 @@ async def _apply_malformed_tool_guardrail(
             continue
 
         retry_json = retry_resp.json()
-        if _openai_has_tool_calls(retry_json):
+        if _openai_has_valid_tool_calls(retry_json, anthropic_body):
             monitor.malformed_tool_streak = 0
             logger.info(
                 "MALFORMED RETRY success: produced tool_use (attempt %d/%d)",
@@ -1549,6 +1727,15 @@ async def _apply_malformed_tool_guardrail(
                 attempts,
             )
             return retry_json
+
+        retry_invalid_reason = _invalid_tool_call_reason(retry_json, anthropic_body)
+        if retry_invalid_reason:
+            logger.warning(
+                "MALFORMED RETRY invalid tool_call payload (attempt %d/%d): %s",
+                attempt + 1,
+                attempts,
+                retry_invalid_reason,
+            )
 
         if not _is_malformed_tool_response(retry_json, anthropic_body):
             monitor.malformed_tool_streak = 0
@@ -2078,7 +2265,11 @@ async def messages(request: Request):
             media_type="application/json",
         )
 
-    if is_stream and PROXY_MALFORMED_TOOL_STREAM_STRICT and "tools" in body:
+    use_guarded_non_stream = is_stream and (
+        PROXY_FORCE_NON_STREAM
+        or (PROXY_MALFORMED_TOOL_STREAM_STRICT and "tools" in body)
+    )
+    if use_guarded_non_stream:
         strict_body = dict(openai_body)
         strict_body["stream"] = False
 
@@ -2129,9 +2320,14 @@ async def messages(request: Request):
 
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
         monitor.record_response(anthropic_resp.get("usage", {}).get("output_tokens", 0))
-        logger.info(
-            "STRICT STREAM GUARDRAIL: served stream response via guarded non-stream path"
-        )
+        if PROXY_FORCE_NON_STREAM:
+            logger.info(
+                "FORCED NON-STREAM: served stream response via guarded non-stream path"
+            )
+        else:
+            logger.info(
+                "STRICT STREAM GUARDRAIL: served stream response via guarded non-stream path"
+            )
 
         return StreamingResponse(
             stream_anthropic_message(anthropic_resp),

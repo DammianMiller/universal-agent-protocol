@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
@@ -105,6 +105,7 @@ describe('Validation Fixes', () => {
   describe('Reinforcement Database', () => {
     it('reinforcement.db can be created with correct schema', () => {
       const dbPath = join(rootDir, 'agents/data/memory/reinforcement.db');
+      mkdirSync(dirname(dbPath), { recursive: true });
       // Ensure the DB exists and has the schema (initialize if empty)
       execSync(
         `sqlite3 "${dbPath}" "CREATE TABLE IF NOT EXISTS reinforcement_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL DEFAULT (datetime('now')), task_type TEXT NOT NULL, patterns_selected TEXT NOT NULL DEFAULT '[]', success INTEGER NOT NULL DEFAULT 0, reward_score REAL NOT NULL DEFAULT 0.0, duration_ms INTEGER, model_id TEXT, notes TEXT); CREATE TABLE IF NOT EXISTS pattern_weights (pattern_id TEXT PRIMARY KEY, weight REAL NOT NULL DEFAULT 1.0, uses INTEGER NOT NULL DEFAULT 0, successes INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE VIEW IF NOT EXISTS v_pattern_effectiveness AS SELECT pattern_id, weight, uses, successes, CASE WHEN uses > 0 THEN CAST(successes AS REAL) / uses ELSE 0 END as success_rate FROM pattern_weights;"`,
@@ -119,6 +120,7 @@ describe('Validation Fixes', () => {
 
     it('reinforcement_log table has correct columns', () => {
       const dbPath = join(rootDir, 'agents/data/memory/reinforcement.db');
+      mkdirSync(dirname(dbPath), { recursive: true });
       const schema = execSync(`sqlite3 "${dbPath}" "PRAGMA table_info(reinforcement_log);"`, {
         encoding: 'utf-8',
       });
