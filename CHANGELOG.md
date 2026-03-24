@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.14.0 (2026-03-24)
+
+- feat: add worktree finish flow with sync and safe cleanup
+
+
 ## v1.13.18 (2026-03-24)
 
 - chore: bump version to 1.13.15
