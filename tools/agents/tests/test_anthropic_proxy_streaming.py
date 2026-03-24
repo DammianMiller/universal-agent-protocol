@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import asyncio
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 
@@ -15,6 +17,27 @@ def _load_proxy_module():
 
 
 proxy = _load_proxy_module()
+
+
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+class _FakeClient:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.requests = []
+
+    async def post(self, *args, **kwargs):
+        self.requests.append({"args": args, "kwargs": kwargs})
+        if not self._responses:
+            raise AssertionError("No fake response queued")
+        return self._responses.pop(0)
 
 
 class TestStreamingReasoningFallback(unittest.TestCase):
@@ -471,6 +494,484 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         self.assertIn("Please retry the same request", text)
         self.assertNotIn("I will issue exactly one valid tool call next", text)
 
+    def test_preflight_flags_invalid_json_tool_arguments(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "ScheduleJob",
+                                    "arguments": '{"cron":',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "ScheduleJob",
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["cron"],
+                        "properties": {"cron": {"type": "string", "minLength": 1}},
+                    },
+                }
+            ]
+        }
+
+        issue = proxy._classify_tool_response_issue(openai_resp, anthropic_body)
+        self.assertEqual(issue.kind, "malformed_payload")
+        self.assertIn("malformed pseudo tool payload", issue.reason)
+
+    def test_preflight_flags_empty_required_field(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "ScheduleJob",
+                                    "arguments": '{"cron":"","command":"echo hi"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "ScheduleJob",
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["cron", "command"],
+                        "properties": {
+                            "cron": {"type": "string", "minLength": 1},
+                            "command": {"type": "string", "minLength": 1},
+                        },
+                    },
+                }
+            ]
+        }
+
+        issue = proxy._classify_tool_response_issue(openai_resp, anthropic_body)
+        self.assertEqual(issue.kind, "malformed_payload")
+        self.assertIn("malformed pseudo tool payload", issue.reason)
+
+    def test_preflight_flags_markup_inside_arguments(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "ScheduleJob",
+                                    "arguments": '{"cron":"*/5 * * * *","command":"<parameter>bad</parameter>"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "ScheduleJob",
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["cron", "command"],
+                        "properties": {
+                            "cron": {"type": "string"},
+                            "command": {"type": "string"},
+                        },
+                    },
+                }
+            ]
+        }
+
+        issue = proxy._classify_tool_response_issue(openai_resp, anthropic_body)
+        self.assertEqual(issue.kind, "malformed_payload")
+        self.assertIn("malformed pseudo tool payload", issue.reason)
+
+    def test_required_tool_turn_without_tool_call_is_flagged(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": "Done.",
+                        "tool_calls": [],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [{"name": "Edit", "input_schema": {"type": "object"}}],
+        }
+
+        issue = proxy._classify_tool_response_issue(
+            openai_resp, anthropic_body, required_tool_choice=True
+        )
+        self.assertEqual(issue.kind, "required_tool_miss")
+
+    def test_markup_repair_sanitizes_tool_arguments(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "Bash",
+                                    "arguments": '{"command":"echo ok </think> </parameter>"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+        repaired, count = proxy._repair_tool_call_markup(openai_resp)
+        self.assertEqual(count, 1)
+        args = repaired["choices"][0]["message"]["tool_calls"][0]["function"][
+            "arguments"
+        ]
+        self.assertNotIn("</think>", args)
+        self.assertNotIn("</parameter>", args)
+
+    def test_markup_repair_recovers_json_after_tag_stripping(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "Bash",
+                                    "arguments": '</parameter>{"command":"ls"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+        repaired, count = proxy._repair_tool_call_markup(openai_resp)
+        self.assertEqual(count, 1)
+        args = json.loads(
+            repaired["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        )
+        self.assertEqual(args["command"], "ls")
+
+    def test_guardrail_accepts_repaired_markup_without_fallback(self):
+        old_retry = getattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX")
+        try:
+            setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX", 0)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            openai_resp = {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "Bash",
+                                        "arguments": '{"command":"ls </parameter>"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+            anthropic_body = {
+                "tools": [
+                    {
+                        "name": "Bash",
+                        "input_schema": {
+                            "type": "object",
+                            "required": ["command"],
+                            "properties": {
+                                "command": {"type": "string", "minLength": 1}
+                            },
+                        },
+                    }
+                ],
+                "messages": [{"role": "user", "content": "run command"}],
+            }
+            openai_body = {
+                "model": "test",
+                "messages": [{"role": "user", "content": "run command"}],
+                "tool_choice": "required",
+            }
+
+            result = asyncio.run(
+                proxy._apply_malformed_tool_guardrail(
+                    _FakeClient([]),
+                    openai_resp,
+                    openai_body,
+                    anthropic_body,
+                    monitor,
+                    "session-repair",
+                )
+            )
+
+            self.assertTrue(result["choices"][0]["message"].get("tool_calls"))
+            args = result["choices"][0]["message"]["tool_calls"][0]["function"][
+                "arguments"
+            ]
+            self.assertNotIn("</parameter>", args)
+            self.assertEqual(monitor.arg_preflight_repairs, 1)
+        finally:
+            setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX", old_retry)
+
+    def test_required_field_repair_fills_missing_required_values(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "ScheduleJob",
+                                    "arguments": '{"cron":""}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "ScheduleJob",
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["cron", "pattern", "subject"],
+                        "properties": {
+                            "cron": {"type": "string", "minLength": 1},
+                            "pattern": {"type": "string", "minLength": 1},
+                            "subject": {"type": "string", "minLength": 1},
+                        },
+                    },
+                }
+            ]
+        }
+
+        repaired, count = proxy._repair_required_tool_args(openai_resp, anthropic_body)
+        self.assertEqual(count, 1)
+        args_text = repaired["choices"][0]["message"]["tool_calls"][0]["function"][
+            "arguments"
+        ]
+        args = json.loads(args_text)
+        self.assertTrue(args["cron"].strip())
+        self.assertTrue(args["pattern"].strip())
+        self.assertTrue(args["subject"].strip())
+
+    def test_guardrail_accepts_required_field_repair_without_fallback(self):
+        old_retry = getattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX")
+        try:
+            setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX", 0)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            openai_resp = {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "ScheduleJob",
+                                        "arguments": '{"cron":""}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+            anthropic_body = {
+                "tools": [
+                    {
+                        "name": "ScheduleJob",
+                        "input_schema": {
+                            "type": "object",
+                            "required": ["cron", "pattern", "subject"],
+                            "properties": {
+                                "cron": {"type": "string", "minLength": 1},
+                                "pattern": {"type": "string", "minLength": 1},
+                                "subject": {"type": "string", "minLength": 1},
+                            },
+                        },
+                    }
+                ],
+                "messages": [{"role": "user", "content": "schedule it"}],
+            }
+            openai_body = {
+                "model": "test",
+                "messages": [{"role": "user", "content": "schedule it"}],
+                "tool_choice": "required",
+            }
+
+            result = asyncio.run(
+                proxy._apply_malformed_tool_guardrail(
+                    _FakeClient([]),
+                    openai_resp,
+                    openai_body,
+                    anthropic_body,
+                    monitor,
+                    "session-repair-required",
+                )
+            )
+
+            args = json.loads(
+                result["choices"][0]["message"]["tool_calls"][0]["function"][
+                    "arguments"
+                ]
+            )
+            self.assertTrue(args["cron"].strip())
+            self.assertTrue(args["pattern"].strip())
+            self.assertTrue(args["subject"].strip())
+            self.assertEqual(monitor.arg_preflight_repairs, 1)
+        finally:
+            setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX", old_retry)
+
+    def test_guardrail_retries_invalid_tool_args_and_recovers(self):
+        old_retry = getattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX")
+        try:
+            setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX", 1)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.consecutive_forced_count = 7
+
+            initial_resp = {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "ScheduleJob",
+                                        "arguments": '{"cron":"","command":"echo hi"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+            repaired_resp = {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_2",
+                                    "function": {
+                                        "name": "ScheduleJob",
+                                        "arguments": '{"cron":"*/5 * * * *","command":"echo hi"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+
+            fake_client = _FakeClient([_FakeResponse(repaired_resp)])
+            openai_body = {
+                "model": "test",
+                "messages": [{"role": "user", "content": "schedule this job"}],
+                "tool_choice": "required",
+            }
+            anthropic_body = {
+                "tools": [
+                    {
+                        "name": "ScheduleJob",
+                        "input_schema": {
+                            "type": "object",
+                            "required": ["cron", "command"],
+                            "properties": {
+                                "cron": {"type": "string", "minLength": 1},
+                                "command": {"type": "string", "minLength": 1},
+                            },
+                        },
+                    }
+                ],
+                "messages": [{"role": "user", "content": "schedule this job"}],
+            }
+
+            result = asyncio.run(
+                proxy._apply_malformed_tool_guardrail(
+                    fake_client,
+                    initial_resp,
+                    openai_body,
+                    anthropic_body,
+                    monitor,
+                    "session-test",
+                )
+            )
+
+            args = json.loads(
+                result["choices"][0]["message"]["tool_calls"][0]["function"][
+                    "arguments"
+                ]
+            )
+            self.assertTrue(args["cron"].strip())
+            self.assertTrue(args["command"].strip())
+            self.assertTrue(
+                monitor.arg_preflight_repairs >= 1
+                or monitor.arg_preflight_rejections >= 1
+            )
+            if fake_client.requests:
+                retry_payload = fake_client.requests[0]["kwargs"]["json"]
+                repair_message = retry_payload["messages"][-1]["content"]
+                self.assertIn("TOOL CALL REPAIR", repair_message)
+        finally:
+            setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX", old_retry)
+
 
 class TestToolTurnControls(unittest.TestCase):
     def test_tool_narrowing_reduces_tool_count(self):
@@ -546,6 +1047,89 @@ class TestToolTurnControls(unittest.TestCase):
             self.assertFalse(openai["enable_thinking"])
         finally:
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
+
+    def test_forced_tool_dampener_temporarily_releases_required(self):
+        old_enabled = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER")
+        old_min_forced = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED")
+        old_bad_streak = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK")
+        old_empty_streak = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK")
+        old_rejections = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_REJECTIONS")
+        old_auto_turns = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS")
+        try:
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER", True)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED", 3)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK", 1)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK", 1)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_REJECTIONS", 2)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS", 2)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.consecutive_forced_count = 3
+            monitor.invalid_tool_call_streak = 1
+
+            activated = monitor.maybe_activate_forced_tool_dampener("invalid_tool_args")
+            self.assertTrue(activated)
+            self.assertEqual(monitor.forced_auto_cooldown_turns, 2)
+
+            body = {
+                "model": "test",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "I will continue."}],
+                    },
+                    {"role": "user", "content": "keep going"},
+                ],
+                "tools": [
+                    {
+                        "name": "Read",
+                        "description": "Read file",
+                        "input_schema": {"type": "object"},
+                    }
+                ],
+            }
+
+            openai = proxy.build_openai_request(body, monitor)
+            self.assertEqual(openai.get("tool_choice"), "auto")
+            self.assertEqual(monitor.forced_auto_cooldown_turns, 1)
+        finally:
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER", old_enabled)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED", old_min_forced)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK", old_bad_streak)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK", old_empty_streak)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_REJECTIONS", old_rejections)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS", old_auto_turns)
+
+    def test_forced_tool_dampener_uses_rejection_pressure(self):
+        old_enabled = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER")
+        old_min_forced = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED")
+        old_bad_streak = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK")
+        old_empty_streak = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK")
+        old_rejections = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_REJECTIONS")
+        old_auto_turns = getattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS")
+        try:
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER", True)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED", 3)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK", 5)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK", 5)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_REJECTIONS", 2)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS", 1)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.consecutive_forced_count = 3
+            monitor.arg_preflight_rejections = 2
+
+            activated = monitor.maybe_activate_forced_tool_dampener("invalid_tool_args")
+            self.assertTrue(activated)
+            self.assertEqual(monitor.forced_auto_cooldown_turns, 1)
+            self.assertEqual(monitor.arg_preflight_rejections, 0)
+        finally:
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER", old_enabled)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED", old_min_forced)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK", old_bad_streak)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_EMPTY_STREAK", old_empty_streak)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_REJECTIONS", old_rejections)
+            setattr(proxy, "PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS", old_auto_turns)
 
     def test_no_tools_does_not_inject_agentic_system_message(self):
         body = {
@@ -659,6 +1243,54 @@ class TestSessionContaminationBreaker(unittest.TestCase):
             setattr(proxy, "PROXY_SESSION_CONTAMINATION_BREAKER", old_enabled)
             setattr(proxy, "PROXY_SESSION_CONTAMINATION_THRESHOLD", old_threshold)
             setattr(proxy, "PROXY_SESSION_CONTAMINATION_KEEP_LAST", old_keep)
+
+    def test_contamination_breaker_triggers_on_forced_invalid_combo(self):
+        old_enabled = getattr(proxy, "PROXY_SESSION_CONTAMINATION_BREAKER")
+        old_threshold = getattr(proxy, "PROXY_SESSION_CONTAMINATION_THRESHOLD")
+        old_keep = getattr(proxy, "PROXY_SESSION_CONTAMINATION_KEEP_LAST")
+        old_forced = getattr(proxy, "PROXY_SESSION_CONTAMINATION_FORCED_THRESHOLD")
+        old_required = getattr(
+            proxy, "PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD"
+        )
+        try:
+            setattr(proxy, "PROXY_SESSION_CONTAMINATION_BREAKER", True)
+            setattr(proxy, "PROXY_SESSION_CONTAMINATION_THRESHOLD", 3)
+            setattr(proxy, "PROXY_SESSION_CONTAMINATION_KEEP_LAST", 3)
+            setattr(proxy, "PROXY_SESSION_CONTAMINATION_FORCED_THRESHOLD", 5)
+            setattr(proxy, "PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD", 4)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.invalid_tool_call_streak = 2
+            monitor.consecutive_forced_count = 6
+            body = {
+                "messages": [
+                    {"role": "user", "content": "start"},
+                    {"role": "assistant", "content": "a1"},
+                    {"role": "user", "content": "u2"},
+                    {"role": "assistant", "content": "a3"},
+                    {"role": "user", "content": "u4"},
+                    {"role": "assistant", "content": "a5"},
+                ]
+            }
+
+            updated = proxy._maybe_apply_session_contamination_breaker(
+                body, monitor, "session-test"
+            )
+
+            self.assertEqual(monitor.contamination_resets, 1)
+            self.assertEqual(monitor.invalid_tool_call_streak, 0)
+            self.assertEqual(len(updated["messages"]), 5)
+            self.assertIn("SESSION RESET", updated["messages"][1]["content"])
+        finally:
+            setattr(proxy, "PROXY_SESSION_CONTAMINATION_BREAKER", old_enabled)
+            setattr(proxy, "PROXY_SESSION_CONTAMINATION_THRESHOLD", old_threshold)
+            setattr(proxy, "PROXY_SESSION_CONTAMINATION_KEEP_LAST", old_keep)
+            setattr(proxy, "PROXY_SESSION_CONTAMINATION_FORCED_THRESHOLD", old_forced)
+            setattr(
+                proxy,
+                "PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD",
+                old_required,
+            )
 
 
 if __name__ == "__main__":
