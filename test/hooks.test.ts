@@ -137,6 +137,30 @@ describe('Session Hooks', () => {
   });
 
   describe('settings.local.json normalization during install', () => {
+    it('writes SessionStart and PreCompact in matcher + hooks array shape on fresh Claude install', async () => {
+      const testDir = join(tmpdir(), `uap-claude-hooks-fresh-${Date.now()}`);
+      mkdirSync(join(testDir, 'templates', 'hooks'), { recursive: true });
+      mkdirSync(join(testDir, '.claude'), { recursive: true });
+
+      try {
+        const { hooksCommand } = await import('../src/cli/hooks.js');
+        await hooksCommand('install', { projectDir: testDir, target: 'claude' });
+
+        const settings = JSON.parse(
+          readFileSync(join(testDir, '.claude', 'settings.local.json'), 'utf-8'),
+        );
+        expect(Array.isArray(settings.hooks.SessionStart)).toBe(true);
+        expect(settings.hooks.SessionStart[0].matcher).toBe('');
+        expect(Array.isArray(settings.hooks.SessionStart[0].hooks)).toBe(true);
+
+        expect(Array.isArray(settings.hooks.PreCompact)).toBe(true);
+        expect(settings.hooks.PreCompact[0].matcher).toBe('');
+        expect(Array.isArray(settings.hooks.PreCompact[0].hooks)).toBe(true);
+      } finally {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
     it('normalizes legacy object-shaped hooks for Claude install', async () => {
       const testDir = join(tmpdir(), `uap-claude-hooks-normalize-${Date.now()}`);
       mkdirSync(join(testDir, 'templates', 'hooks'), { recursive: true });

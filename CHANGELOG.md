@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.4 (2026-03-24)
+
+- test: guard SessionStart and PreCompact hook array shape
+
+
 ## v1.15.3 (2026-03-24)
 
 - fix: harden proxy tool-call recovery under forced turns
