@@ -162,7 +162,7 @@ PROXY_MALFORMED_TOOL_GUARDRAIL = os.environ.get(
     "no",
 }
 PROXY_MALFORMED_TOOL_RETRY_MAX = int(
-    os.environ.get("PROXY_MALFORMED_TOOL_RETRY_MAX", "1")
+    os.environ.get("PROXY_MALFORMED_TOOL_RETRY_MAX", "2")
 )
 PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS = int(
     os.environ.get("PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS", "2048")
@@ -1647,6 +1647,13 @@ def _looks_malformed_tool_payload(text: str) -> bool:
         return False
 
     lowered = text.lower()
+    apology_markers = (
+        "i could not produce a valid tool-call format in this turn",
+        "i will issue exactly one valid tool call next",
+    )
+    if any(marker in lowered for marker in apology_markers):
+        return True
+
     primary_markers = ("</parameter", "<parameter", "<tool_call", "<function=")
     if any(marker in lowered for marker in primary_markers):
         return True
@@ -1705,6 +1712,18 @@ def _build_malformed_retry_body(openai_body: dict, anthropic_body: dict) -> dict
     retry_body["tool_choice"] = "required"
     retry_body["temperature"] = PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE
 
+    malformed_retry_instruction = {
+        "role": "user",
+        "content": (
+            "Your previous response had invalid tool-call formatting. "
+            "Respond with exactly one valid tool call using the provided tools. "
+            "Do not output prose, markdown, XML tags, or schema snippets."
+        ),
+    }
+    existing_messages = retry_body.get("messages")
+    if isinstance(existing_messages, list) and existing_messages:
+        retry_body["messages"] = [*existing_messages, malformed_retry_instruction]
+
     if PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS > 0:
         current_max = int(
             retry_body.get("max_tokens", PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS)
@@ -1738,8 +1757,8 @@ def _build_clean_guardrail_openai_response(openai_resp: dict) -> dict:
                 "message": {
                     "role": "assistant",
                     "content": (
-                        "I could not produce a valid tool-call format in this turn. "
-                        "Please continue; I will issue exactly one valid tool call next."
+                        "Tool-call formatting failed after automatic retries. "
+                        "Please retry the same request."
                     ),
                 },
             }
