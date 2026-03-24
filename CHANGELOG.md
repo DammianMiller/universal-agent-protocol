@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.2 (2026-03-24)
+
+- fix: sanitize malformed tool-call apology responses
+
+
 ## v1.15.1 (2026-03-24)
 
 - fix: harden malformed tool-call fallback retries
