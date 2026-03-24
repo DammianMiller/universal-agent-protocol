@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.13.15 (2026-03-24)
+
+- fix: auto-register agents to prevent announce FK failures
+- fix: harden qwen tool-call guardrails and document decoding journey
+
+
 ## v1.13.14 (2026-03-23)
 
 - fix: suppress malformed reasoning fallback in streaming responses
