@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.3 (2026-03-24)
+
+- fix: harden proxy tool-call recovery under forced turns
+
+
 ## v1.15.2 (2026-03-24)
 
 - fix: sanitize malformed tool-call apology responses
