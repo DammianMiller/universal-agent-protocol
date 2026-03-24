@@ -203,6 +203,20 @@ PROXY_SESSION_CONTAMINATION_KEEP_LAST = int(
 PROXY_AGENTIC_SUPPLEMENT_MODE = (
     os.environ.get("PROXY_AGENTIC_SUPPLEMENT_MODE", "clean").strip().lower()
 )
+PROXY_ANALYSIS_ONLY_ROUTE = os.environ.get(
+    "PROXY_ANALYSIS_ONLY_ROUTE", "off"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+PROXY_ANALYSIS_ONLY_MIN_TOOLS = int(
+    os.environ.get("PROXY_ANALYSIS_ONLY_MIN_TOOLS", "12")
+)
+PROXY_ANALYSIS_ONLY_MAX_MESSAGES = int(
+    os.environ.get("PROXY_ANALYSIS_ONLY_MAX_MESSAGES", "2")
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -549,8 +563,9 @@ def estimate_total_tokens(anthropic_body: dict) -> int:
             if isinstance(block, dict) and block.get("type") == "text":
                 tokens += estimate_tokens(block.get("text", ""))
 
-    # Agentic supplement tokens (always injected)
-    tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
+    # Agentic supplement tokens (only when tool mode is active)
+    if _has_tool_definitions(anthropic_body):
+        tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
 
     # Messages
     for msg in anthropic_body.get("messages", []):
@@ -600,7 +615,8 @@ def prune_conversation(
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
                 overhead_tokens += estimate_tokens(block.get("text", ""))
-    overhead_tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
+    if _has_tool_definitions(anthropic_body):
+        overhead_tokens += estimate_tokens(_AGENTIC_SYSTEM_SUPPLEMENT)
     tools = anthropic_body.get("tools", [])
     if tools:
         overhead_tokens += estimate_tokens(json.dumps(tools))
@@ -768,7 +784,7 @@ async def lifespan(app: FastAPI):
         _resolve_prune_target_fraction() * 100,
     )
     logger.info(
-        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s tool_narrowing=%s thinking_off_on_tools=%s contamination_breaker=%s(%d)",
+        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s tool_narrowing=%s thinking_off_on_tools=%s contamination_breaker=%s(%d) analysis_only_route=%s(min_tools=%d,max_msgs=%d)",
         PROXY_MALFORMED_TOOL_GUARDRAIL,
         PROXY_MALFORMED_TOOL_STREAM_STRICT,
         PROXY_FORCE_NON_STREAM,
@@ -776,6 +792,9 @@ async def lifespan(app: FastAPI):
         PROXY_DISABLE_THINKING_ON_TOOL_TURNS,
         PROXY_SESSION_CONTAMINATION_BREAKER,
         PROXY_SESSION_CONTAMINATION_THRESHOLD,
+        PROXY_ANALYSIS_ONLY_ROUTE,
+        PROXY_ANALYSIS_ONLY_MIN_TOOLS,
+        PROXY_ANALYSIS_ONLY_MAX_MESSAGES,
     )
 
     yield
@@ -877,6 +896,112 @@ def _extract_text(content) -> str:
             b.get("text", "") if isinstance(b, dict) else str(b) for b in content
         )
     return str(content)
+
+
+def _has_tool_definitions(anthropic_body: dict) -> bool:
+    tools = anthropic_body.get("tools")
+    return isinstance(tools, list) and len(tools) > 0
+
+
+def _message_has_tool_result(content) -> bool:
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        for block in content
+    )
+
+
+def _last_user_text(anthropic_body: dict) -> str:
+    for msg in reversed(anthropic_body.get("messages", [])):
+        if msg.get("role") == "user":
+            return _extract_text(msg.get("content", "")).strip().lower()
+    return ""
+
+
+def _is_analysis_only_prompt(text: str) -> bool:
+    if not text:
+        return False
+
+    analysis_markers = (
+        "analy",
+        "review",
+        "audit",
+        "summar",
+        "explain",
+        "plan",
+        "recommend",
+        "assess",
+        "compare",
+        "investigate",
+        "diagnose",
+    )
+    action_markers = (
+        "fix",
+        "edit",
+        "write",
+        "create",
+        "implement",
+        "patch",
+        "change",
+        "update",
+        "run ",
+        "execute",
+        "command",
+        "use tool",
+        "call tool",
+        "apply",
+        "commit",
+        "push",
+        "merge",
+        "publish",
+        "deploy",
+        "test",
+        "build",
+        "refactor",
+        "rename",
+        "delete",
+        "install",
+    )
+
+    has_analysis = any(marker in text for marker in analysis_markers)
+    has_action = any(marker in text for marker in action_markers)
+    return has_analysis and not has_action
+
+
+def _should_route_analysis_without_tools(anthropic_body: dict) -> bool:
+    if not PROXY_ANALYSIS_ONLY_ROUTE:
+        return False
+
+    tools = anthropic_body.get("tools")
+    if not isinstance(tools, list) or len(tools) < max(
+        1, PROXY_ANALYSIS_ONLY_MIN_TOOLS
+    ):
+        return False
+
+    messages = anthropic_body.get("messages", [])
+    if not isinstance(messages, list) or not messages:
+        return False
+
+    if len(messages) > max(1, PROXY_ANALYSIS_ONLY_MAX_MESSAGES):
+        return False
+
+    if any(msg.get("role") == "assistant" for msg in messages):
+        return False
+
+    if any(_message_has_tool_result(msg.get("content")) for msg in messages):
+        return False
+
+    return _is_analysis_only_prompt(_last_user_text(anthropic_body))
+
+
+def _maybe_route_analysis_without_tools(anthropic_body: dict) -> tuple[dict, int]:
+    if not _should_route_analysis_without_tools(anthropic_body):
+        return anthropic_body, 0
+
+    tools = anthropic_body.get("tools")
+    removed = len(tools) if isinstance(tools, list) else 0
+    updated = dict(anthropic_body)
+    updated.pop("tools", None)
+    return updated, removed
 
 
 _AGENTIC_SYSTEM_SUPPLEMENT_LEGACY = (
@@ -1076,19 +1201,24 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
         "stream": anthropic_body.get("stream", False),
     }
 
-    # Inject agentic protocol instructions into the system message so
-    # the model knows it must use tools to complete work, not just explain.
-    if openai_body["messages"] and openai_body["messages"][0].get("role") == "system":
-        openai_body["messages"][0]["content"] += _AGENTIC_SYSTEM_SUPPLEMENT
-    else:
-        # No system message from the client; inject one.
-        openai_body["messages"].insert(
-            0,
-            {
-                "role": "system",
-                "content": _AGENTIC_SYSTEM_SUPPLEMENT.strip(),
-            },
-        )
+    has_tools = _has_tool_definitions(anthropic_body)
+
+    # Inject agentic protocol instructions only for tool-enabled turns.
+    if has_tools:
+        if (
+            openai_body["messages"]
+            and openai_body["messages"][0].get("role") == "system"
+        ):
+            openai_body["messages"][0]["content"] += _AGENTIC_SYSTEM_SUPPLEMENT
+        else:
+            # No system message from the client; inject one.
+            openai_body["messages"].insert(
+                0,
+                {
+                    "role": "system",
+                    "content": _AGENTIC_SYSTEM_SUPPLEMENT.strip(),
+                },
+            )
 
     if "max_tokens" in anthropic_body:
         # Enforce configurable minimum floor for thinking mode: model needs
@@ -1137,7 +1267,7 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
         openai_body["stop"] = anthropic_body["stop_sequences"]
 
     # Convert Anthropic tools to OpenAI function-calling tools
-    if "tools" in anthropic_body:
+    if has_tools:
         openai_body["tools"] = _convert_anthropic_tools_to_openai(
             anthropic_body.get("tools", [])
         )
@@ -2200,6 +2330,14 @@ async def messages(request: Request):
     last_session_id = session_id
 
     body = _maybe_apply_session_contamination_breaker(body, monitor, session_id)
+    body, analysis_tools_removed = _maybe_route_analysis_without_tools(body)
+    if analysis_tools_removed > 0:
+        monitor.consecutive_forced_count = 0
+        monitor.no_progress_streak = 0
+        logger.info(
+            "ANALYSIS ROUTE: disabled %d tools for analysis-only prompt",
+            analysis_tools_removed,
+        )
 
     # Debug: log request summary
     n_messages = len(body.get("messages", []))
