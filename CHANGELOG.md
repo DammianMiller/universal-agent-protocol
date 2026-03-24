@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.15.6 (2026-03-25)
+
+- fix: harden proxy retry flow and bash safety
+- docs: add speculative blog and PR templates
+
+
 ## v1.15.5 (2026-03-25)
 
 - fix: harden proxy against leaked closing function tags
