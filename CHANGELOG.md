@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.13.18 (2026-03-24)
+
+- chore: bump version to 1.13.15
+- fix: auto-register agents to prevent announce FK failures
+
+
 ## v1.13.17 (2026-03-24)
 
 - fix: make reinforcement db validation tests deterministic
