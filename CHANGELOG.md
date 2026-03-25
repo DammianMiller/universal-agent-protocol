@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.9 (2026-03-25)
+
+- fix: fallback when grammar is rejected with tools
+
+
 ## v1.15.8 (2026-03-25)
 
 - fix: fail closed required tool arg autofill
