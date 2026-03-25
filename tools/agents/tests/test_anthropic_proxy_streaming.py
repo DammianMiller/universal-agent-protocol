@@ -643,7 +643,11 @@ class TestMalformedToolGuardrail(unittest.TestCase):
                         "type": "object",
                         "required": ["cron", "command"],
                         "properties": {
-                            "cron": {"type": "string", "minLength": 1},
+                            "cron": {
+                                "type": "string",
+                                "minLength": 1,
+                                "default": "* * * * *",
+                            },
                             "command": {"type": "string", "minLength": 1},
                         },
                     },
@@ -956,9 +960,21 @@ class TestMalformedToolGuardrail(unittest.TestCase):
                         "type": "object",
                         "required": ["cron", "pattern", "subject"],
                         "properties": {
-                            "cron": {"type": "string", "minLength": 1},
-                            "pattern": {"type": "string", "minLength": 1},
-                            "subject": {"type": "string", "minLength": 1},
+                            "cron": {
+                                "type": "string",
+                                "minLength": 1,
+                                "default": "* * * * *",
+                            },
+                            "pattern": {
+                                "type": "string",
+                                "minLength": 1,
+                                "default": "*",
+                            },
+                            "subject": {
+                                "type": "string",
+                                "minLength": 1,
+                                "default": "task",
+                            },
                         },
                     },
                 }
@@ -1008,9 +1024,21 @@ class TestMalformedToolGuardrail(unittest.TestCase):
                             "type": "object",
                             "required": ["cron", "pattern", "subject"],
                             "properties": {
-                                "cron": {"type": "string", "minLength": 1},
-                                "pattern": {"type": "string", "minLength": 1},
-                                "subject": {"type": "string", "minLength": 1},
+                                "cron": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "default": "* * * * *",
+                                },
+                                "pattern": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "default": "*",
+                                },
+                                "subject": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "default": "task",
+                                },
                             },
                         },
                     }
@@ -1134,10 +1162,7 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             )
             self.assertTrue(args["cron"].strip())
             self.assertTrue(args["command"].strip())
-            self.assertTrue(
-                monitor.arg_preflight_repairs >= 1
-                or monitor.arg_preflight_rejections >= 1
-            )
+            self.assertGreaterEqual(len(fake_client.requests), 1)
             if fake_client.requests:
                 retry_payload = fake_client.requests[0]["kwargs"]["json"]
                 repair_message = retry_payload["messages"][-1]["content"]
@@ -1486,6 +1511,139 @@ class TestToolTurnControls(unittest.TestCase):
             setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
             setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
             setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", old_max_messages)
+
+
+class TestRequiredArgRepair(unittest.TestCase):
+    def test_repair_required_args_uses_schema_enum_value(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "omp_task",
+                                    "arguments": '{"prompt":"analyze"}',
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "omp_task",
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["agent", "prompt"],
+                        "properties": {
+                            "agent": {
+                                "type": "string",
+                                "enum": ["task", "explore", "plan"],
+                            },
+                            "prompt": {"type": "string"},
+                        },
+                    },
+                }
+            ]
+        }
+
+        repaired, repaired_count = proxy._repair_required_tool_args(
+            openai_resp, anthropic_body
+        )
+
+        self.assertEqual(repaired_count, 1)
+        args = json.loads(
+            repaired["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        )
+        self.assertEqual(args["agent"], "task")
+
+    def test_repair_required_args_does_not_inject_placeholder_without_schema_defaults(
+        self,
+    ):
+        openai_resp = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "omp_task",
+                                    "arguments": '{"prompt":"analyze"}',
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [
+                {
+                    "name": "omp_task",
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["agent", "prompt"],
+                        "properties": {
+                            "agent": {"type": "string"},
+                            "prompt": {"type": "string"},
+                        },
+                    },
+                }
+            ]
+        }
+
+        repaired, repaired_count = proxy._repair_required_tool_args(
+            openai_resp, anthropic_body
+        )
+
+        self.assertEqual(repaired_count, 0)
+        args = json.loads(
+            repaired["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        )
+        self.assertNotIn("agent", args)
+
+    def test_validate_tool_args_rejects_placeholder_values(self):
+        issue = proxy._validate_tool_call_arguments(
+            "omp_task",
+            '{"agent":"__uap_required__","prompt":"analyze"}',
+            {
+                "type": "object",
+                "required": ["agent", "prompt"],
+                "properties": {
+                    "agent": {"type": "string", "enum": ["task", "explore"]},
+                    "prompt": {"type": "string"},
+                },
+            },
+            {"omp_task"},
+        )
+
+        self.assertTrue(issue.has_issue())
+        self.assertEqual(issue.kind, "invalid_tool_args")
+        self.assertIn("placeholder", issue.reason)
+
+    def test_validate_tool_args_rejects_enum_mismatch(self):
+        issue = proxy._validate_tool_call_arguments(
+            "omp_task",
+            '{"agent":"planner","prompt":"analyze"}',
+            {
+                "type": "object",
+                "required": ["agent", "prompt"],
+                "properties": {
+                    "agent": {"type": "string", "enum": ["task", "explore"]},
+                    "prompt": {"type": "string"},
+                },
+            },
+            {"omp_task"},
+        )
+
+        self.assertTrue(issue.has_issue())
+        self.assertEqual(issue.kind, "invalid_tool_args")
+        self.assertIn("enum mismatch", issue.reason)
 
 
 class TestSessionContaminationBreaker(unittest.TestCase):

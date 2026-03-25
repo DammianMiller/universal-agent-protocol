@@ -76,6 +76,7 @@ Dependencies
 """
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -1915,6 +1916,20 @@ def _sanitize_markup_value(value):
     return value, False
 
 
+_REQUIRED_PLACEHOLDER = "__uap_required__"
+_MISSING_REQUIRED_VALUE = object()
+
+
+def _contains_required_placeholder(value) -> bool:
+    if isinstance(value, str):
+        return value.strip() == _REQUIRED_PLACEHOLDER
+    if isinstance(value, list):
+        return any(_contains_required_placeholder(item) for item in value)
+    if isinstance(value, dict):
+        return any(_contains_required_placeholder(item) for item in value.values())
+    return False
+
+
 def _repair_tool_call_markup(openai_resp: dict) -> tuple[dict, int]:
     if not _openai_has_tool_calls(openai_resp):
         return openai_resp, 0
@@ -1986,33 +2001,30 @@ def _repair_tool_call_markup(openai_resp: dict) -> tuple[dict, int]:
 
 
 def _default_required_value(field_name: str, field_schema: dict):
-    expected_type = field_schema.get("type") if isinstance(field_schema, dict) else None
-    if isinstance(expected_type, list):
-        expected_type = expected_type[0] if expected_type else "string"
+    _ = field_name
+    if not isinstance(field_schema, dict):
+        return _MISSING_REQUIRED_VALUE
 
-    if expected_type == "integer":
-        return 0
-    if expected_type == "number":
-        return 0
-    if expected_type == "boolean":
-        return False
-    if expected_type == "object":
-        return {"value": "__uap_required__"}
-    if expected_type == "array":
-        return ["__uap_required__"]
+    if "default" in field_schema:
+        default_value = copy.deepcopy(field_schema.get("default"))
+        if not _contains_required_placeholder(default_value):
+            return default_value
 
-    key = (field_name or "").lower()
-    if key in {"command", "cmd"}:
-        return "pwd"
-    if key == "cron":
-        return "* * * * *"
-    if key in {"pattern", "glob"}:
-        return "*"
-    if key == "subject":
-        return "task"
-    if key in {"path", "file", "filepath", "file_path"} or key.endswith("_path"):
-        return "."
-    return "__uap_required__"
+    enum_values = field_schema.get("enum")
+    if isinstance(enum_values, list):
+        for candidate in enum_values:
+            if _required_value_is_empty(candidate):
+                continue
+            if _contains_required_placeholder(candidate):
+                continue
+            return copy.deepcopy(candidate)
+
+    if "const" in field_schema:
+        const_value = copy.deepcopy(field_schema.get("const"))
+        if not _contains_required_placeholder(const_value):
+            return const_value
+
+    return _MISSING_REQUIRED_VALUE
 
 
 def _repair_required_tool_args(
@@ -2075,7 +2087,10 @@ def _repair_required_tool_args(
                     if isinstance(properties.get(field), dict)
                     else {}
                 )
-                parsed_args[field] = _default_required_value(field, field_schema)
+                fallback_value = _default_required_value(field, field_schema)
+                if fallback_value is _MISSING_REQUIRED_VALUE:
+                    continue
+                parsed_args[field] = fallback_value
                 changed = True
 
         if not changed:
@@ -2298,6 +2313,18 @@ def _validate_tool_call_arguments(
             ),
         )
 
+    if _contains_required_placeholder(parsed):
+        return ToolResponseIssue(
+            kind="invalid_tool_args",
+            reason=(
+                f"arguments for '{tool_name}' contain unresolved placeholder values"
+            ),
+            retry_hint=(
+                f"Emit exactly one `{tool_name}` tool call with real schema-valid arguments. "
+                f"Never emit `{_REQUIRED_PLACEHOLDER}` placeholders."
+            ),
+        )
+
     if not isinstance(tool_schema, dict):
         tool_schema = {}
 
@@ -2312,6 +2339,7 @@ def _validate_tool_call_arguments(
     missing: list[str] = []
     empty: list[str] = []
     wrong_type: list[str] = []
+    enum_mismatch: list[str] = []
 
     for field in required:
         if not isinstance(field, str):
@@ -2334,6 +2362,15 @@ def _validate_tool_call_arguments(
             wrong_type.append(field)
             continue
 
+        enum_values = schema.get("enum")
+        if isinstance(enum_values, list) and enum_values and value not in enum_values:
+            enum_mismatch.append(field)
+            continue
+
+        if "const" in schema and value != schema.get("const"):
+            enum_mismatch.append(field)
+            continue
+
         min_length = schema.get("minLength")
         if (
             isinstance(min_length, int)
@@ -2351,7 +2388,7 @@ def _validate_tool_call_arguments(
         ):
             empty.append(field)
 
-    if missing or empty or wrong_type:
+    if missing or empty or wrong_type or enum_mismatch:
         details = []
         if missing:
             details.append(f"missing: {', '.join(missing)}")
@@ -2359,6 +2396,8 @@ def _validate_tool_call_arguments(
             details.append(f"empty: {', '.join(empty)}")
         if wrong_type:
             details.append(f"type mismatch: {', '.join(wrong_type)}")
+        if enum_mismatch:
+            details.append(f"enum mismatch: {', '.join(enum_mismatch)}")
         required_fields = ", ".join(str(f) for f in required if isinstance(f, str))
         required_hint = (
             f"Required fields must be non-empty: {required_fields}. "
