@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.15.12 (2026-03-25)
+
+- fix: restore required CLAUDE compliance sections
+- fix: sanitize regex tool schema fields for llama grammar
+
+
 ## v1.15.11 (2026-03-25)
 
 - fix: guard required stream tool turns
