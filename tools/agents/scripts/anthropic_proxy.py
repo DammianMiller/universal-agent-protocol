@@ -1655,13 +1655,20 @@ def _resolve_state_machine_tool_choice(
     if not PROXY_TOOL_STATE_MACHINE:
         return None, "disabled"
 
+    n_msgs = len(anthropic_body.get("messages", []))
     latest_user_text = _latest_user_text(anthropic_body).strip()
     if latest_user_text and not last_user_has_tool_result:
         monitor.tool_call_history = []
+        if n_msgs <= 1:
+            monitor.forced_auto_cooldown_turns = 0
+            monitor.consecutive_forced_count = 0
+            monitor.no_progress_streak = 0
+            monitor.malformed_tool_streak = 0
+            monitor.invalid_tool_call_streak = 0
+            monitor.required_tool_miss_streak = 0
         monitor.reset_tool_turn_state(reason="fresh_user_text")
         return None, "fresh_user_text"
 
-    n_msgs = len(anthropic_body.get("messages", []))
     active_loop = (
         has_tool_results
         and last_user_has_tool_result
@@ -1670,6 +1677,13 @@ def _resolve_state_machine_tool_choice(
     if not active_loop:
         if not has_tool_results:
             monitor.tool_call_history = []
+            if n_msgs <= 1:
+                monitor.forced_auto_cooldown_turns = 0
+                monitor.consecutive_forced_count = 0
+                monitor.no_progress_streak = 0
+                monitor.malformed_tool_streak = 0
+                monitor.invalid_tool_call_streak = 0
+                monitor.required_tool_miss_streak = 0
         monitor.reset_tool_turn_state(reason="inactive_loop")
         return None, "inactive_loop"
 
@@ -1957,6 +1971,14 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
                 monitor.tool_turn_phase,
                 state_reason,
                 monitor.tool_state_forced_budget_remaining,
+            )
+        elif state_reason in {"fresh_user_text", "inactive_loop"} and n_msgs <= 1:
+            monitor.consecutive_forced_count = 0
+            monitor.no_progress_streak = 0
+            logger.info(
+                "tool_choice left unchanged after state reset (reason=%s n_msgs=%d)",
+                state_reason,
+                n_msgs,
             )
         elif monitor.should_release_tool_choice():
             openai_body["tool_choice"] = "auto"
