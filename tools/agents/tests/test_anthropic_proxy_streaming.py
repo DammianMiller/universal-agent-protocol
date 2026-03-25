@@ -1577,6 +1577,66 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         self.assertEqual(result, openai_resp)
         self.assertEqual(len(fake_client.requests), 0)
 
+    def test_unexpected_end_turn_guardrail_skips_act_auto_release_turn(self):
+        monitor = proxy.SessionMonitor(context_window=262144)
+        monitor.tool_turn_phase = "act"
+
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "done", "tool_calls": []},
+                }
+            ]
+        }
+        openai_body = {
+            "model": "test",
+            "tool_choice": "auto",
+            "messages": [{"role": "user", "content": "continue"}],
+        }
+        anthropic_body = {
+            "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
+            "messages": [
+                {"role": "user", "content": "start"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_3",
+                            "name": "Bash",
+                            "input": {"command": "pwd"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_3",
+                            "content": "ok",
+                        }
+                    ],
+                },
+            ],
+        }
+
+        fake_client = _FakeClient([_FakeResponse({"choices": []})])
+        result = asyncio.run(
+            proxy._apply_unexpected_end_turn_guardrail(
+                fake_client,
+                openai_resp,
+                openai_body,
+                anthropic_body,
+                monitor,
+                "session-act-auto",
+            )
+        )
+
+        self.assertEqual(result, openai_resp)
+        self.assertEqual(len(fake_client.requests), 0)
+
 
 class TestToolTurnControls(unittest.TestCase):
     def test_tool_narrowing_reduces_tool_count(self):
