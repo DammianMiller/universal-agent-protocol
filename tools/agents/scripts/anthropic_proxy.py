@@ -122,6 +122,38 @@ PROXY_NO_PROGRESS_THRESHOLD = int(os.environ.get("PROXY_NO_PROGRESS_THRESHOLD", 
 PROXY_CONTEXT_RELEASE_THRESHOLD = float(
     os.environ.get("PROXY_CONTEXT_RELEASE_THRESHOLD", "0.90")
 )
+PROXY_TOOL_STATE_MACHINE = os.environ.get(
+    "PROXY_TOOL_STATE_MACHINE", "on"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+PROXY_TOOL_STATE_MIN_MESSAGES = int(
+    os.environ.get("PROXY_TOOL_STATE_MIN_MESSAGES", "6")
+)
+PROXY_TOOL_STATE_FORCED_BUDGET = int(
+    os.environ.get("PROXY_TOOL_STATE_FORCED_BUDGET", "24")
+)
+PROXY_TOOL_STATE_AUTO_BUDGET = int(os.environ.get("PROXY_TOOL_STATE_AUTO_BUDGET", "2"))
+PROXY_TOOL_STATE_STAGNATION_THRESHOLD = int(
+    os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "12")
+)
+PROXY_TOOL_STATE_CYCLE_WINDOW = int(
+    os.environ.get("PROXY_TOOL_STATE_CYCLE_WINDOW", "8")
+)
+PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
+    os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "24")
+)
+PROXY_TOOL_NARROWING_EXPAND_ON_LOOP = os.environ.get(
+    "PROXY_TOOL_NARROWING_EXPAND_ON_LOOP", "on"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
 PROXY_GUARDRAIL_RETRY = os.environ.get("PROXY_GUARDRAIL_RETRY", "on").lower() not in {
     "0",
     "false",
@@ -404,6 +436,13 @@ class SessionMonitor:
     forced_dampener_triggers: int = 0  # number of dampener activations
     arg_preflight_rejections: int = 0  # rejected tool calls from arg preflight
     arg_preflight_repairs: int = 0  # sanitized tool call args accepted
+    tool_turn_phase: str = "bootstrap"  # bootstrap -> act -> review
+    tool_state_forced_budget_remaining: int = 0
+    tool_state_auto_budget_remaining: int = 0
+    tool_state_stagnation_streak: int = 0
+    tool_state_transitions: int = 0
+    last_tool_fingerprint: str = ""
+    finalize_turn_active: bool = False
     last_seen_ts: float = 0.0
 
     def record_request(self, estimated_tokens: int):
@@ -540,6 +579,68 @@ class SessionMonitor:
 
         return False, 0
 
+    def detect_tool_cycle(self, window: int = 8) -> tuple[bool, int]:
+        """Detect low-entropy tool cycles (A/B oscillation style loops)."""
+        if len(self.tool_call_history) < window:
+            return False, 0
+
+        recent = [fp for fp in self.tool_call_history[-window:] if fp]
+        if len(recent) < window:
+            return False, 0
+
+        unique = list(dict.fromkeys(recent))
+        if len(unique) == 1:
+            target = unique[0]
+            count = 0
+            for fp in reversed(self.tool_call_history):
+                if fp == target:
+                    count += 1
+                else:
+                    break
+            return True, count
+
+        if len(unique) > 2:
+            return False, 0
+
+        counts: dict[str, int] = {}
+        for fp in recent:
+            counts[fp] = counts.get(fp, 0) + 1
+        if counts and min(counts.values()) < 2:
+            return False, 0
+
+        transitions = sum(1 for a, b in zip(recent, recent[1:]) if a != b)
+        if transitions < window // 2:
+            return False, 0
+
+        allowed = set(counts.keys())
+        count = 0
+        for fp in reversed(self.tool_call_history):
+            if fp in allowed:
+                count += 1
+            else:
+                break
+        return True, count
+
+    def set_tool_turn_phase(self, phase: str, reason: str = ""):
+        if phase == self.tool_turn_phase:
+            return
+        old_phase = self.tool_turn_phase
+        self.tool_turn_phase = phase
+        self.tool_state_transitions += 1
+        logger.info(
+            "TOOL STATE MACHINE: phase %s -> %s%s",
+            old_phase,
+            phase,
+            f" reason={reason}" if reason else "",
+        )
+
+    def reset_tool_turn_state(self, reason: str = ""):
+        self.set_tool_turn_phase("bootstrap", reason=reason)
+        self.tool_state_forced_budget_remaining = 0
+        self.tool_state_auto_budget_remaining = 0
+        self.tool_state_stagnation_streak = 0
+        self.last_tool_fingerprint = ""
+
     def guardrail_streak(self) -> int:
         """Highest current streak among malformed/invalid tool outputs."""
         return max(self.malformed_tool_streak, self.invalid_tool_call_streak)
@@ -602,6 +703,9 @@ class SessionMonitor:
             return False
 
         is_looping, repeat_count = self.detect_tool_loop(window=PROXY_LOOP_WINDOW)
+        cycle_looping, cycle_repeat = self.detect_tool_cycle(
+            window=max(PROXY_LOOP_WINDOW, PROXY_TOOL_STATE_CYCLE_WINDOW)
+        )
 
         # Pattern 1: Detected tool call loop
         if (
@@ -614,6 +718,20 @@ class SessionMonitor:
                 "Releasing tool_choice to 'auto'.",
                 repeat_count,
                 self.no_progress_streak,
+            )
+            self.loop_warnings_emitted += 1
+            return True
+
+        if (
+            cycle_looping
+            and cycle_repeat >= PROXY_LOOP_REPEAT_THRESHOLD
+            and self.tool_state_stagnation_streak >= max(1, PROXY_NO_PROGRESS_THRESHOLD)
+        ):
+            logger.warning(
+                "LOOP BREAKER: low-entropy tool cycle repeated %d turns with stagnation=%d. "
+                "Releasing tool_choice to 'auto'.",
+                cycle_repeat,
+                self.tool_state_stagnation_streak,
             )
             self.loop_warnings_emitted += 1
             return True
@@ -979,13 +1097,21 @@ async def lifespan(app: FastAPI):
         _resolve_prune_target_fraction() * 100,
     )
     logger.info(
-        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s args_preflight=%s tool_narrowing=%s thinking_off_on_tools=%s dampener=%s(%d/%d/%d/%d->%d) contamination_breaker=%s(%d forced=%d required_miss=%d) analysis_only_route=%s(min_tools=%d,max_msgs=%d) grammar=%s(required_only=%s loaded=%s tools_compatible=%s path=%s)",
+        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s args_preflight=%s tool_narrowing=%s expand_on_loop=%s thinking_off_on_tools=%s state_machine=%s(min_msgs=%d forced=%d auto=%d stagnation=%d cycle=%d finalize=%d) dampener=%s(%d/%d/%d/%d->%d) contamination_breaker=%s(%d forced=%d required_miss=%d) analysis_only_route=%s(min_tools=%d,max_msgs=%d) grammar=%s(required_only=%s loaded=%s tools_compatible=%s path=%s)",
         PROXY_MALFORMED_TOOL_GUARDRAIL,
         PROXY_MALFORMED_TOOL_STREAM_STRICT,
         PROXY_FORCE_NON_STREAM,
         PROXY_TOOL_ARGS_PREFLIGHT,
         PROXY_TOOL_NARROWING,
+        PROXY_TOOL_NARROWING_EXPAND_ON_LOOP,
         PROXY_DISABLE_THINKING_ON_TOOL_TURNS,
+        PROXY_TOOL_STATE_MACHINE,
+        PROXY_TOOL_STATE_MIN_MESSAGES,
+        PROXY_TOOL_STATE_FORCED_BUDGET,
+        PROXY_TOOL_STATE_AUTO_BUDGET,
+        PROXY_TOOL_STATE_STAGNATION_THRESHOLD,
+        PROXY_TOOL_STATE_CYCLE_WINDOW,
+        PROXY_TOOL_STATE_FINALIZE_THRESHOLD,
         PROXY_FORCED_TOOL_DAMPENER,
         PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED,
         PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK,
@@ -1343,6 +1469,14 @@ def _last_user_has_tool_result(anthropic_body: dict) -> bool:
     return False
 
 
+def _conversation_has_tool_results(anthropic_body: dict) -> bool:
+    return any(
+        _message_has_tool_result(msg.get("content"))
+        for msg in anthropic_body.get("messages", [])
+        if isinstance(msg, dict)
+    )
+
+
 def _sanitize_tool_schema_for_llama(schema):
     """Remove JSON Schema keywords that generate unsupported regex grammar.
 
@@ -1433,6 +1567,18 @@ def _narrow_tools_for_request(
     query_text = _latest_user_text(anthropic_body).lower()
     query_tokens = _tokenize_for_tool_ranking(query_text)
     if not query_tokens:
+        n_msgs = len(anthropic_body.get("messages", []))
+        if (
+            PROXY_TOOL_NARROWING_EXPAND_ON_LOOP
+            and _conversation_has_tool_results(anthropic_body)
+            and n_msgs >= 3
+        ):
+            logger.info(
+                "TOOL NARROWING: %d tools retained (no query tokens during active loop)",
+                len(openai_tools),
+            )
+            return openai_tools
+
         narrowed = openai_tools[:keep]
         logger.info(
             "TOOL NARROWING: %d -> %d tools (no query tokens)",
@@ -1468,6 +1614,147 @@ def _narrow_tools_for_request(
         top_names,
     )
     return narrowed
+
+
+def _update_tool_state_stagnation(
+    monitor: SessionMonitor,
+    latest_tool_fingerprint: str,
+    last_user_has_tool_result: bool,
+) -> None:
+    if not PROXY_TOOL_STATE_MACHINE:
+        return
+
+    if not latest_tool_fingerprint or not last_user_has_tool_result:
+        monitor.tool_state_stagnation_streak = 0
+        monitor.last_tool_fingerprint = latest_tool_fingerprint
+        return
+
+    repeated = latest_tool_fingerprint == monitor.last_tool_fingerprint
+    recently_seen = latest_tool_fingerprint in monitor.tool_call_history[-4:-1]
+
+    if repeated or recently_seen:
+        monitor.tool_state_stagnation_streak += 1
+    else:
+        monitor.tool_state_stagnation_streak = 0
+
+    monitor.last_tool_fingerprint = latest_tool_fingerprint
+
+
+def _resolve_state_machine_tool_choice(
+    anthropic_body: dict,
+    monitor: SessionMonitor,
+    has_tool_results: bool,
+    last_user_has_tool_result: bool,
+) -> tuple[str | None, str]:
+    if not PROXY_TOOL_STATE_MACHINE:
+        return None, "disabled"
+
+    latest_user_text = _latest_user_text(anthropic_body).strip()
+    if latest_user_text and not last_user_has_tool_result:
+        monitor.reset_tool_turn_state(reason="fresh_user_text")
+        return None, "fresh_user_text"
+
+    n_msgs = len(anthropic_body.get("messages", []))
+    active_loop = (
+        has_tool_results
+        and last_user_has_tool_result
+        and n_msgs >= max(3, PROXY_TOOL_STATE_MIN_MESSAGES)
+    )
+    if not active_loop:
+        monitor.reset_tool_turn_state(reason="inactive_loop")
+        return None, "inactive_loop"
+
+    if monitor.tool_turn_phase == "bootstrap":
+        monitor.set_tool_turn_phase("act", reason="loop_detected")
+        monitor.tool_state_forced_budget_remaining = max(
+            1, PROXY_TOOL_STATE_FORCED_BUDGET
+        )
+        monitor.tool_state_auto_budget_remaining = 0
+
+    cycle_looping, cycle_repeat = monitor.detect_tool_cycle(
+        window=max(2, PROXY_TOOL_STATE_CYCLE_WINDOW)
+    )
+    stagnating = monitor.tool_state_stagnation_streak >= max(
+        1, PROXY_TOOL_STATE_STAGNATION_THRESHOLD
+    )
+    finalize_threshold = max(
+        max(1, PROXY_TOOL_STATE_FINALIZE_THRESHOLD),
+        max(1, PROXY_TOOL_STATE_STAGNATION_THRESHOLD) * 2,
+    )
+
+    if cycle_looping and monitor.tool_state_stagnation_streak >= finalize_threshold:
+        monitor.set_tool_turn_phase("finalize", reason="stagnation_limit")
+        monitor.tool_state_auto_budget_remaining = 1
+        logger.warning(
+            "TOOL STATE MACHINE: forcing finalize turn after prolonged cycle (repeat=%d stagnation=%d)",
+            cycle_repeat,
+            monitor.tool_state_stagnation_streak,
+        )
+        return "finalize", "stagnation_limit"
+
+    if monitor.tool_turn_phase == "act":
+        if cycle_looping or stagnating:
+            reason = "cycle_detected" if cycle_looping else "stagnation"
+            monitor.set_tool_turn_phase("review", reason=reason)
+            monitor.tool_state_auto_budget_remaining = max(
+                1, PROXY_TOOL_STATE_AUTO_BUDGET
+            )
+            monitor.tool_state_forced_budget_remaining = max(
+                1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
+            )
+            logger.warning(
+                "TOOL STATE MACHINE: entering review (cycle=%s repeat=%d stagnation=%d)",
+                cycle_looping,
+                cycle_repeat,
+                monitor.tool_state_stagnation_streak,
+            )
+            return "auto", reason
+
+        if monitor.tool_state_forced_budget_remaining <= 0:
+            monitor.set_tool_turn_phase("review", reason="forced_budget_exhausted")
+            monitor.tool_state_auto_budget_remaining = max(
+                1, PROXY_TOOL_STATE_AUTO_BUDGET
+            )
+            monitor.tool_state_forced_budget_remaining = max(
+                1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
+            )
+            logger.warning(
+                "TOOL STATE MACHINE: forced budget exhausted, entering review"
+            )
+            return "auto", "forced_budget_exhausted"
+
+        monitor.tool_state_forced_budget_remaining -= 1
+        return "required", "act"
+
+    if monitor.tool_turn_phase == "review":
+        if monitor.tool_state_auto_budget_remaining <= 0:
+            monitor.set_tool_turn_phase("act", reason="review_budget_spent")
+            monitor.tool_state_forced_budget_remaining = max(
+                1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
+            )
+            return "required", "review_complete"
+
+        monitor.tool_state_auto_budget_remaining -= 1
+        if monitor.tool_state_auto_budget_remaining == 0:
+            monitor.set_tool_turn_phase("act", reason="review_budget_spent")
+            monitor.tool_state_forced_budget_remaining = max(
+                1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
+            )
+            return "required", "review_complete"
+        return "auto", "review"
+
+    if monitor.tool_turn_phase == "finalize":
+        if monitor.tool_state_auto_budget_remaining <= 0:
+            monitor.reset_tool_turn_state(reason="finalize_complete")
+            return None, "finalize_complete"
+
+        monitor.tool_state_auto_budget_remaining -= 1
+        if monitor.tool_state_auto_budget_remaining == 0:
+            monitor.reset_tool_turn_state(reason="finalize_complete")
+        return "finalize", "finalize"
+
+    monitor.reset_tool_turn_state(reason="unknown_phase")
+    return None, "unknown_phase"
 
 
 def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
@@ -1566,18 +1853,25 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
         # a tool call loop (same tools called repeatedly), to prevent
         # runaway token consumption.
         n_msgs = len(anthropic_body.get("messages", []))
-        has_tool_results = any(
-            isinstance(m.get("content"), list)
-            and any(
-                isinstance(b, dict) and b.get("type") == "tool_result"
-                for b in m.get("content", [])
-            )
-            for m in anthropic_body.get("messages", [])
-        )
+        has_tool_results = _conversation_has_tool_results(anthropic_body)
 
         # Record tool calls from the last assistant message for loop detection
-        _record_last_assistant_tool_calls(anthropic_body, monitor)
+        latest_tool_fingerprint = _record_last_assistant_tool_calls(
+            anthropic_body, monitor
+        )
         last_user_has_tool_result = _last_user_has_tool_result(anthropic_body)
+        _update_tool_state_stagnation(
+            monitor,
+            latest_tool_fingerprint,
+            last_user_has_tool_result,
+        )
+        monitor.finalize_turn_active = False
+        state_choice, state_reason = _resolve_state_machine_tool_choice(
+            anthropic_body,
+            monitor,
+            has_tool_results,
+            last_user_has_tool_result,
+        )
 
         # Check if forced-tool dampener or loop breaker should override tool_choice
         if monitor.consume_forced_auto_turn():
@@ -1587,6 +1881,39 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
             logger.warning(
                 "tool_choice set to 'auto' by FORCED-TOOL DAMPENER (remaining=%d)",
                 monitor.forced_auto_cooldown_turns,
+            )
+        elif state_choice == "auto":
+            openai_body["tool_choice"] = "auto"
+            monitor.consecutive_forced_count = 0
+            monitor.no_progress_streak = 0
+            logger.info(
+                "tool_choice set to 'auto' by TOOL STATE MACHINE (phase=%s reason=%s auto_budget=%d stagnation=%d)",
+                monitor.tool_turn_phase,
+                state_reason,
+                monitor.tool_state_auto_budget_remaining,
+                monitor.tool_state_stagnation_streak,
+            )
+        elif state_choice == "finalize":
+            openai_body.pop("tool_choice", None)
+            openai_body.pop("tools", None)
+            monitor.finalize_turn_active = True
+            monitor.consecutive_forced_count = 0
+            monitor.no_progress_streak = 0
+            logger.warning(
+                "TOOL STATE MACHINE: tools temporarily disabled for finalize turn (reason=%s)",
+                state_reason,
+            )
+        elif state_choice == "required":
+            openai_body["tool_choice"] = "required"
+            monitor.consecutive_forced_count += 1
+            monitor.no_progress_streak = (
+                0 if last_user_has_tool_result else monitor.no_progress_streak + 1
+            )
+            logger.info(
+                "tool_choice forced to 'required' by TOOL STATE MACHINE (phase=%s reason=%s forced_budget=%d)",
+                monitor.tool_turn_phase,
+                state_reason,
+                monitor.tool_state_forced_budget_remaining,
             )
         elif monitor.should_release_tool_choice():
             openai_body["tool_choice"] = "auto"
@@ -1614,6 +1941,8 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
         else:
             monitor.consecutive_forced_count = 0
             monitor.no_progress_streak = 0
+            if not has_tool_results:
+                monitor.reset_tool_turn_state(reason="no_tool_results")
 
         if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
             openai_body["enable_thinking"] = False
@@ -1626,7 +1955,9 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
     return openai_body
 
 
-def _record_last_assistant_tool_calls(anthropic_body: dict, monitor: SessionMonitor):
+def _record_last_assistant_tool_calls(
+    anthropic_body: dict, monitor: SessionMonitor
+) -> str:
     """Extract tool call names from the last assistant message and record
     them in the session monitor for loop detection."""
     messages = anthropic_body.get("messages", [])
@@ -1642,6 +1973,8 @@ def _record_last_assistant_tool_calls(anthropic_body: dict, monitor: SessionMoni
         break
     if tool_names:
         monitor.record_tool_calls(tool_names)
+        return "|".join(sorted(tool_names))
+    return ""
 
 
 def _is_unexpected_end_turn(openai_resp: dict, anthropic_body: dict) -> bool:
@@ -1661,14 +1994,7 @@ def _is_unexpected_end_turn(openai_resp: dict, anthropic_body: dict) -> bool:
     if "tools" not in anthropic_body:
         return False
 
-    has_tool_results = any(
-        isinstance(m.get("content"), list)
-        and any(
-            isinstance(b, dict) and b.get("type") == "tool_result"
-            for b in m.get("content", [])
-        )
-        for m in anthropic_body.get("messages", [])
-    )
+    has_tool_results = _conversation_has_tool_results(anthropic_body)
 
     return has_tool_results or _last_assistant_was_text_only(anthropic_body)
 
@@ -2818,6 +3144,16 @@ async def _apply_unexpected_end_turn_guardrail(
     if not PROXY_GUARDRAIL_RETRY:
         return openai_resp
 
+    if monitor.finalize_turn_active:
+        logger.info("GUARDRAIL: skipped unexpected_end_turn retry on finalize turn")
+        return openai_resp
+
+    if monitor.tool_turn_phase == "review" and openai_body.get("tool_choice") == "auto":
+        logger.info(
+            "GUARDRAIL: skipped unexpected_end_turn retry during review auto turn"
+        )
+        return openai_resp
+
     if not _is_unexpected_end_turn(openai_resp, anthropic_body):
         return openai_resp
 
@@ -2871,6 +3207,10 @@ async def _apply_malformed_tool_guardrail(
     session_id: str,
 ) -> dict:
     if not PROXY_MALFORMED_TOOL_GUARDRAIL:
+        return openai_resp
+
+    if monitor.finalize_turn_active:
+        logger.info("GUARDRAIL: skipped malformed-tool retries on finalize turn")
         return openai_resp
 
     working_resp = openai_resp
@@ -3073,6 +3413,7 @@ def _maybe_apply_session_contamination_breaker(
         monitor.malformed_tool_streak = 0
         monitor.invalid_tool_call_streak = 0
         monitor.required_tool_miss_streak = 0
+        monitor.reset_tool_turn_state(reason="contamination_guardrail_soft_reset")
         return anthropic_body
 
     head = messages[:1]
@@ -3097,6 +3438,7 @@ def _maybe_apply_session_contamination_breaker(
     monitor.no_progress_streak = 0
     monitor.consecutive_forced_count = 0
     monitor.forced_auto_cooldown_turns = 0
+    monitor.reset_tool_turn_state(reason="contamination_guardrail_reset")
     logger.warning(
         "SESSION CONTAMINATION BREAKER: session=%s reset applied, kept=%d messages (bad_streak=%d forced=%d required_miss=%d)",
         session_id,
@@ -4082,9 +4424,21 @@ async def context_status(request: Request):
             "forced_auto_cooldown_turns": monitor.forced_auto_cooldown_turns,
             "forced_dampener_triggers": monitor.forced_dampener_triggers,
             "contamination_resets": monitor.contamination_resets,
+            "tool_turn_phase": monitor.tool_turn_phase,
+            "tool_state_forced_budget_remaining": monitor.tool_state_forced_budget_remaining,
+            "tool_state_auto_budget_remaining": monitor.tool_state_auto_budget_remaining,
+            "tool_state_stagnation_streak": monitor.tool_state_stagnation_streak,
+            "tool_state_transitions": monitor.tool_state_transitions,
+            "finalize_turn_active": monitor.finalize_turn_active,
             "tool_call_history_len": len(monitor.tool_call_history),
             "is_looping": monitor.detect_tool_loop(window=PROXY_LOOP_WINDOW)[0],
             "loop_repeat_count": monitor.detect_tool_loop(window=PROXY_LOOP_WINDOW)[1],
+            "is_cycle_looping": monitor.detect_tool_cycle(
+                window=max(2, PROXY_TOOL_STATE_CYCLE_WINDOW)
+            )[0],
+            "cycle_repeat_count": monitor.detect_tool_cycle(
+                window=max(2, PROXY_TOOL_STATE_CYCLE_WINDOW)
+            )[1],
             "recent_tool_patterns": monitor.tool_call_history[-5:],
         },
     }
