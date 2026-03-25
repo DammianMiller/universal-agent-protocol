@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.13 (2026-03-25)
+
+- fix: preserve property name 'pattern' in tool schema sanitizer
+
+
 ## v1.15.12 (2026-03-25)
 
 - fix: restore required CLAUDE compliance sections
