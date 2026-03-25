@@ -1,1 +1,1 @@
-../../templates/hooks/pre-compact.sh
+../../.factory/hooks/pre-compact.sh
