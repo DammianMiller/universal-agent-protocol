@@ -5,6 +5,12 @@
 # Enforces: worktree-file-guard, worktree-enforcement policies.
 set -euo pipefail
 
+# --- Loop Protection: track frequency of blocking events ---
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${HOOK_DIR}/loop-protection.sh" ]; then
+  source "${HOOK_DIR}/loop-protection.sh"
+fi
+
 # Read tool input from stdin (JSON)
 INPUT=$(cat)
 
@@ -40,5 +46,9 @@ if echo "$FILE_PATH" | grep -q '\.worktrees/'; then
 fi
 
 # BLOCK: path is outside worktrees and not exempt
+# Record the block event for loop detection
+if type lp_record_invocation &>/dev/null; then
+  lp_record_invocation "pre-tool-edit-block"
+fi
 echo '{"decision":"block","reason":"WORKTREE POLICY VIOLATION: File path is outside .worktrees/. All edits must target files inside a worktree. Run: uap worktree create <slug> then edit files in .worktrees/NNN-<slug>/. See policies/worktree-file-guard.md"}' >&2
 exit 2
