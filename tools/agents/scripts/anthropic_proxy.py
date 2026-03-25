@@ -1351,19 +1351,28 @@ def _sanitize_tool_schema_for_llama(schema):
     """
 
     removed = 0
+    property_map_keys = {"properties", "definitions", "$defs", "dependentSchemas"}
 
-    def _walk(node):
+    def _walk(node, parent_key=None):
         nonlocal removed
         if isinstance(node, dict):
             cleaned = {}
             for key, value in node.items():
-                if key in {"pattern", "patternProperties"}:
+                key_is_property_name = parent_key in property_map_keys
+                if (
+                    key == "pattern"
+                    and isinstance(value, str)
+                    and not key_is_property_name
+                ):
                     removed += 1
                     continue
-                cleaned[key] = _walk(value)
+                if key == "patternProperties" and not key_is_property_name:
+                    removed += 1
+                    continue
+                cleaned[key] = _walk(value, key)
             return cleaned
         if isinstance(node, list):
-            return [_walk(item) for item in node]
+            return [_walk(item, parent_key) for item in node]
         return node
 
     return _walk(schema), removed

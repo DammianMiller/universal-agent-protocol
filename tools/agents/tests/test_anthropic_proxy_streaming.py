@@ -154,6 +154,30 @@ class TestToolSchemaSanitization(unittest.TestCase):
         self.assertNotIn("patternProperties", params)
         self.assertNotIn("pattern", params["properties"]["meta"]["properties"]["tag"])
 
+    def test_convert_tools_keeps_property_named_pattern(self):
+        anthropic_tools = [
+            {
+                "name": "ScheduleTool",
+                "description": "test",
+                "input_schema": {
+                    "type": "object",
+                    "required": ["pattern", "subject"],
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "User-provided matching pattern",
+                        },
+                        "subject": {"type": "string"},
+                    },
+                },
+            }
+        ]
+
+        converted = proxy._convert_anthropic_tools_to_openai(anthropic_tools)
+        params = converted[0]["function"]["parameters"]
+        self.assertIn("pattern", params["required"])
+        self.assertEqual(params["properties"]["pattern"]["type"], "string")
+
 
 class TestStreamGuardedPathSelection(unittest.TestCase):
     def test_required_tool_turn_uses_guarded_non_stream(self):
