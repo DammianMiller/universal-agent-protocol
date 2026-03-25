@@ -2056,6 +2056,12 @@ class TestToolTurnControls(unittest.TestCase):
             monitor = proxy.SessionMonitor(context_window=262144)
             monitor.tool_call_history = ["Bash", "Bash", "Bash"]
             monitor.tool_turn_phase = "review"
+            monitor.forced_auto_cooldown_turns = 3
+            monitor.consecutive_forced_count = 5
+            monitor.no_progress_streak = 2
+            monitor.malformed_tool_streak = 1
+            monitor.invalid_tool_call_streak = 1
+            monitor.required_tool_miss_streak = 1
 
             body = {
                 "model": "test",
@@ -2069,9 +2075,14 @@ class TestToolTurnControls(unittest.TestCase):
                 ],
             }
 
-            proxy.build_openai_request(body, monitor)
+            openai = proxy.build_openai_request(body, monitor)
             self.assertEqual(monitor.tool_call_history, [])
             self.assertEqual(monitor.tool_turn_phase, "bootstrap")
+            self.assertEqual(monitor.forced_auto_cooldown_turns, 0)
+            self.assertEqual(monitor.malformed_tool_streak, 0)
+            self.assertEqual(monitor.invalid_tool_call_streak, 0)
+            self.assertEqual(monitor.required_tool_miss_streak, 0)
+            self.assertNotEqual(openai.get("tool_choice"), "auto")
         finally:
             setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
 
@@ -2083,6 +2094,12 @@ class TestToolTurnControls(unittest.TestCase):
             monitor = proxy.SessionMonitor(context_window=262144)
             monitor.tool_call_history = ["Bash", "TaskOutput"]
             monitor.tool_turn_phase = "act"
+            monitor.forced_auto_cooldown_turns = 2
+            monitor.consecutive_forced_count = 4
+            monitor.no_progress_streak = 3
+            monitor.malformed_tool_streak = 1
+            monitor.invalid_tool_call_streak = 1
+            monitor.required_tool_miss_streak = 1
 
             body = {
                 "model": "test",
@@ -2096,9 +2113,16 @@ class TestToolTurnControls(unittest.TestCase):
                 ],
             }
 
-            proxy.build_openai_request(body, monitor)
+            openai = proxy.build_openai_request(body, monitor)
             self.assertEqual(monitor.tool_call_history, [])
             self.assertEqual(monitor.tool_turn_phase, "bootstrap")
+            self.assertEqual(monitor.forced_auto_cooldown_turns, 0)
+            self.assertEqual(monitor.consecutive_forced_count, 0)
+            self.assertEqual(monitor.no_progress_streak, 0)
+            self.assertEqual(monitor.malformed_tool_streak, 0)
+            self.assertEqual(monitor.invalid_tool_call_streak, 0)
+            self.assertEqual(monitor.required_tool_miss_streak, 0)
+            self.assertNotEqual(openai.get("tool_choice"), "auto")
         finally:
             setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
 
