@@ -1343,18 +1343,55 @@ def _last_user_has_tool_result(anthropic_body: dict) -> bool:
     return False
 
 
+def _sanitize_tool_schema_for_llama(schema):
+    """Remove JSON Schema keywords that generate unsupported regex grammar.
+
+    llama.cpp's tool grammar generator can fail on regex-heavy schema fields
+    such as "pattern" and "patternProperties" (for example "\\w").
+    """
+
+    removed = 0
+
+    def _walk(node):
+        nonlocal removed
+        if isinstance(node, dict):
+            cleaned = {}
+            for key, value in node.items():
+                if key in {"pattern", "patternProperties"}:
+                    removed += 1
+                    continue
+                cleaned[key] = _walk(value)
+            return cleaned
+        if isinstance(node, list):
+            return [_walk(item) for item in node]
+        return node
+
+    return _walk(schema), removed
+
+
 def _convert_anthropic_tools_to_openai(anthropic_tools: list[dict]) -> list[dict]:
     converted = []
+    removed_pattern_fields = 0
     for tool in anthropic_tools:
+        input_schema, removed = _sanitize_tool_schema_for_llama(
+            tool.get("input_schema", {})
+        )
+        removed_pattern_fields += removed
         converted.append(
             {
                 "type": "function",
                 "function": {
                     "name": tool.get("name", ""),
                     "description": tool.get("description", ""),
-                    "parameters": tool.get("input_schema", {}),
+                    "parameters": input_schema,
                 },
             }
+        )
+    if removed_pattern_fields > 0:
+        logger.warning(
+            "TOOL SCHEMA SANITIZE: removed %d regex pattern fields from %d tools",
+            removed_pattern_fields,
+            len(anthropic_tools),
         )
     return converted
 

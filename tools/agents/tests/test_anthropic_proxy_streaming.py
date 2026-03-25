@@ -100,6 +100,61 @@ class TestProxyConfigTuning(unittest.TestCase):
             setattr(proxy, "PROXY_CONTEXT_PRUNE_TARGET_FRACTION", old_target)
 
 
+class TestToolSchemaSanitization(unittest.TestCase):
+    def test_convert_tools_strips_pattern_fields(self):
+        anthropic_tools = [
+            {
+                "name": "Sample",
+                "description": "test",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "pattern": "^[\\w-]+$",
+                        }
+                    },
+                    "required": ["id"],
+                },
+            }
+        ]
+
+        converted = proxy._convert_anthropic_tools_to_openai(anthropic_tools)
+        params = converted[0]["function"]["parameters"]
+        self.assertEqual(params["properties"]["id"]["type"], "string")
+        self.assertNotIn("pattern", params["properties"]["id"])
+
+    def test_convert_tools_strips_pattern_properties_fields(self):
+        anthropic_tools = [
+            {
+                "name": "Sample",
+                "description": "test",
+                "input_schema": {
+                    "type": "object",
+                    "patternProperties": {
+                        "^x-": {"type": "string"},
+                    },
+                    "properties": {
+                        "meta": {
+                            "type": "object",
+                            "properties": {
+                                "tag": {
+                                    "type": "string",
+                                    "pattern": "^[a-z]+$",
+                                }
+                            },
+                        }
+                    },
+                },
+            }
+        ]
+
+        converted = proxy._convert_anthropic_tools_to_openai(anthropic_tools)
+        params = converted[0]["function"]["parameters"]
+        self.assertNotIn("patternProperties", params)
+        self.assertNotIn("pattern", params["properties"]["meta"]["properties"]["tag"])
+
+
 class TestStreamGuardedPathSelection(unittest.TestCase):
     def test_required_tool_turn_uses_guarded_non_stream(self):
         old_force = getattr(proxy, "PROXY_FORCE_NON_STREAM")
