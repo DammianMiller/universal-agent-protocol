@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.8 (2026-03-25)
+
+- fix: fail closed required tool arg autofill
+
+
 ## v1.15.7 (2026-03-25)
 
 - fix: enforce tool-call grammar on required tool turns
