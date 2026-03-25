@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.10 (2026-03-25)
+
+- fix: block repeated policy-echo responses on tool turns
+
+
 ## v1.15.9 (2026-03-25)
 
 - fix: fallback when grammar is rejected with tools
