@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.16.0 (2026-03-25)
+
+- feat: add 16 test files improving coverage across utils, tasks, coordination, memory, models, and mcp-router
+- fix: clear stale dampener state on fresh loop resets
+- fix: allow act-phase auto release to terminate loops
+- fix: tighten proxy loop exits and tool-turn token budgets
+- fix: harden anthropic proxy loop state transitions
+
+
 ## v1.15.13 (2026-03-25)
 
 - fix: preserve property name 'pattern' in tool schema sanitizer
