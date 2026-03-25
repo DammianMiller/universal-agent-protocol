@@ -11,6 +11,42 @@
 
 <!-- Custom Sections (preserved from existing file) -->
 
+## SESSION START
+
+At the beginning of each session, run the baseline context flow:
+
+1. `bash .codex/hooks/session-start.sh`
+2. `uap task ready`
+3. `uap memory query "<task context>"`
+
+## DECISION LOOP
+
+For each non-trivial task, follow this loop:
+
+1. Classify task complexity and constraints.
+2. Protect state with backups before edits.
+3. Query memory and patterns relevant to the task.
+4. Use skill routing when domain workflows apply (`@Skill:name.md`).
+5. Validate changes with build/tests before finalizing.
+
+## WORKTREE WORKFLOW — MANDATORY
+
+All edits must happen inside a feature worktree.
+
+1. Verify with `uap worktree ensure --strict`.
+2. If needed, create one via `uap worktree create <slug>`.
+3. Edit only files under `.worktrees/NNN-<slug>/`.
+4. Use PRs for integration; do not commit directly to `main`/`master`.
+
+## PARALLEL REVIEW PROTOCOL
+
+For substantial changes, run parallel review before merging:
+
+1. Functional correctness and regression risk.
+2. Policy/compliance gate coverage.
+3. Build/test output verification.
+4. Final diff self-review for secrets, debug artifacts, and unresolved TODOs.
+
 ## Pre-Edit Worktree Gate [REQUIRED]
 
 Before editing ANY file, verify you are working inside a worktree:
