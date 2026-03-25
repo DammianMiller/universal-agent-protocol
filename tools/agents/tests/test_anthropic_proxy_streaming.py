@@ -100,6 +100,54 @@ class TestProxyConfigTuning(unittest.TestCase):
             setattr(proxy, "PROXY_CONTEXT_PRUNE_TARGET_FRACTION", old_target)
 
 
+class TestStreamGuardedPathSelection(unittest.TestCase):
+    def test_required_tool_turn_uses_guarded_non_stream(self):
+        old_force = getattr(proxy, "PROXY_FORCE_NON_STREAM")
+        old_strict = getattr(proxy, "PROXY_MALFORMED_TOOL_STREAM_STRICT")
+        old_guard = getattr(proxy, "PROXY_MALFORMED_TOOL_GUARDRAIL")
+        old_retry = getattr(proxy, "PROXY_GUARDRAIL_RETRY")
+        try:
+            setattr(proxy, "PROXY_FORCE_NON_STREAM", False)
+            setattr(proxy, "PROXY_MALFORMED_TOOL_STREAM_STRICT", False)
+            setattr(proxy, "PROXY_MALFORMED_TOOL_GUARDRAIL", True)
+            setattr(proxy, "PROXY_GUARDRAIL_RETRY", True)
+
+            selected = proxy._should_use_guarded_non_stream(
+                True,
+                {"tools": [{"name": "Read", "input_schema": {"type": "object"}}]},
+                {"tool_choice": "required"},
+            )
+            self.assertTrue(selected)
+        finally:
+            setattr(proxy, "PROXY_FORCE_NON_STREAM", old_force)
+            setattr(proxy, "PROXY_MALFORMED_TOOL_STREAM_STRICT", old_strict)
+            setattr(proxy, "PROXY_MALFORMED_TOOL_GUARDRAIL", old_guard)
+            setattr(proxy, "PROXY_GUARDRAIL_RETRY", old_retry)
+
+    def test_auto_tool_turn_keeps_true_stream_when_strict_off(self):
+        old_force = getattr(proxy, "PROXY_FORCE_NON_STREAM")
+        old_strict = getattr(proxy, "PROXY_MALFORMED_TOOL_STREAM_STRICT")
+        old_guard = getattr(proxy, "PROXY_MALFORMED_TOOL_GUARDRAIL")
+        old_retry = getattr(proxy, "PROXY_GUARDRAIL_RETRY")
+        try:
+            setattr(proxy, "PROXY_FORCE_NON_STREAM", False)
+            setattr(proxy, "PROXY_MALFORMED_TOOL_STREAM_STRICT", False)
+            setattr(proxy, "PROXY_MALFORMED_TOOL_GUARDRAIL", True)
+            setattr(proxy, "PROXY_GUARDRAIL_RETRY", True)
+
+            selected = proxy._should_use_guarded_non_stream(
+                True,
+                {"tools": [{"name": "Read", "input_schema": {"type": "object"}}]},
+                {"tool_choice": "auto"},
+            )
+            self.assertFalse(selected)
+        finally:
+            setattr(proxy, "PROXY_FORCE_NON_STREAM", old_force)
+            setattr(proxy, "PROXY_MALFORMED_TOOL_STREAM_STRICT", old_strict)
+            setattr(proxy, "PROXY_MALFORMED_TOOL_GUARDRAIL", old_guard)
+            setattr(proxy, "PROXY_GUARDRAIL_RETRY", old_retry)
+
+
 class TestMalformedToolGuardrail(unittest.TestCase):
     def test_detects_malformed_tool_payload(self):
         openai_resp = {

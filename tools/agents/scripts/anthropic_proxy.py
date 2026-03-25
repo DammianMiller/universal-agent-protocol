@@ -1134,6 +1134,28 @@ def _has_tool_definitions(anthropic_body: dict) -> bool:
     return isinstance(tools, list) and len(tools) > 0
 
 
+def _should_use_guarded_non_stream(
+    is_stream: bool,
+    anthropic_body: dict,
+    openai_body: dict,
+) -> bool:
+    if not is_stream:
+        return False
+
+    if PROXY_FORCE_NON_STREAM:
+        return True
+
+    has_tools = _has_tool_definitions(anthropic_body)
+    if PROXY_MALFORMED_TOOL_STREAM_STRICT and has_tools:
+        return True
+
+    return (
+        has_tools
+        and openai_body.get("tool_choice") == "required"
+        and (PROXY_MALFORMED_TOOL_GUARDRAIL or PROXY_GUARDRAIL_RETRY)
+    )
+
+
 def _message_has_tool_result(content) -> bool:
     return isinstance(content, list) and any(
         isinstance(block, dict) and block.get("type") == "tool_result"
@@ -3550,9 +3572,10 @@ async def messages(request: Request):
             media_type="application/json",
         )
 
-    use_guarded_non_stream = is_stream and (
-        PROXY_FORCE_NON_STREAM
-        or (PROXY_MALFORMED_TOOL_STREAM_STRICT and "tools" in body)
+    use_guarded_non_stream = _should_use_guarded_non_stream(
+        is_stream,
+        body,
+        openai_body,
     )
     if use_guarded_non_stream:
         strict_body = dict(openai_body)
@@ -3623,9 +3646,13 @@ async def messages(request: Request):
             logger.info(
                 "FORCED NON-STREAM: served stream response via guarded non-stream path"
             )
-        else:
+        elif PROXY_MALFORMED_TOOL_STREAM_STRICT and _has_tool_definitions(body):
             logger.info(
                 "STRICT STREAM GUARDRAIL: served stream response via guarded non-stream path"
+            )
+        else:
+            logger.info(
+                "REQUIRED TOOL STREAM GUARDRAIL: served stream response via guarded non-stream path"
             )
 
         return StreamingResponse(
