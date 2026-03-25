@@ -2479,16 +2479,14 @@ def _classify_tool_response_issue(
     has_tool_calls = _openai_has_tool_calls(openai_resp)
     if not has_tool_calls:
         if required_tool_choice:
-            text = _openai_message_text(openai_resp).strip()
-            if not text or len(text) <= 48:
-                return ToolResponseIssue(
-                    kind="required_tool_miss",
-                    reason="required tool turn returned no tool calls",
-                    retry_hint=(
-                        "A tool call is mandatory for this turn. Emit exactly one valid tool call now "
-                        "with a strict JSON object in `arguments`."
-                    ),
-                )
+            return ToolResponseIssue(
+                kind="required_tool_miss",
+                reason="required tool turn returned no tool calls",
+                retry_hint=(
+                    "A tool call is mandatory for this turn. Emit exactly one valid tool call now "
+                    "with a strict JSON object in `arguments`."
+                ),
+            )
         return ToolResponseIssue()
 
     if not PROXY_TOOL_ARGS_PREFLIGHT:
@@ -2566,6 +2564,49 @@ def _looks_malformed_tool_payload(text: str) -> bool:
         return True
     if lowered.count("</parameter") >= 1 and lowered.count('{"description"') >= 1:
         return True
+    if _looks_repetitive_policy_echo(text):
+        return True
+    return False
+
+
+def _looks_repetitive_policy_echo(text: str) -> bool:
+    if not text:
+        return False
+
+    lowered = text.lower()
+    compact = re.sub(r"\s+", " ", lowered).strip()
+    if not compact:
+        return False
+
+    policy_phrase_markers = (
+        "at least 2 new test cases",
+        "tests must be in test/",
+        "describe/it/expect using vitest",
+    )
+    if any(compact.count(marker) >= 4 for marker in policy_phrase_markers):
+        return True
+
+    lines = [
+        re.sub(r"\s+", " ", line.strip().lower())
+        for line in text.splitlines()
+        if line.strip()
+    ]
+    if lines:
+        line_counts: dict[str, int] = {}
+        for line in lines:
+            if len(line) < 24:
+                continue
+            line_counts[line] = line_counts.get(line, 0) + 1
+        if line_counts and max(line_counts.values()) >= 8:
+            return True
+
+    repeated_phrase_match = re.search(
+        r"((?:[a-z0-9_./-]+\s+){2,8}[a-z0-9_./-]+)(?:\s+\1){7,}",
+        compact,
+    )
+    if repeated_phrase_match:
+        return True
+
     return False
 
 

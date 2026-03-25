@@ -805,6 +805,54 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         )
         self.assertEqual(issue.kind, "required_tool_miss")
 
+    def test_required_tool_turn_with_long_text_without_tool_call_is_flagged(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            "I reviewed the repository and here is a long explanation that still "
+                            "does not include any valid tool call payload for this required turn."
+                        ),
+                        "tool_calls": [],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [{"name": "Edit", "input_schema": {"type": "object"}}],
+        }
+
+        issue = proxy._classify_tool_response_issue(
+            openai_resp, anthropic_body, required_tool_choice=True
+        )
+        self.assertEqual(issue.kind, "required_tool_miss")
+
+    def test_preflight_flags_repetitive_policy_echo_without_tool_call(self):
+        repeated = " (describe/it/expect using vitest" * 24
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            "- At least 2 new test cases before claiming done. "
+                            "- Tests must be in test/ following existing patterns."
+                            f"{repeated}"
+                        ),
+                        "tool_calls": [],
+                    },
+                }
+            ]
+        }
+        anthropic_body = {
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+        }
+
+        issue = proxy._classify_tool_response_issue(openai_resp, anthropic_body)
+        self.assertEqual(issue.kind, "malformed_payload")
+
     def test_markup_repair_sanitizes_tool_arguments(self):
         openai_resp = {
             "choices": [
