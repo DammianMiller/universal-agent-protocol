@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.11 (2026-03-25)
+
+- fix: guard required stream tool turns
+
+
 ## v1.15.10 (2026-03-25)
 
 - fix: block repeated policy-echo responses on tool turns
