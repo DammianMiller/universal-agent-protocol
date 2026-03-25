@@ -306,6 +306,44 @@ def _load_tool_call_grammar(path: str) -> str:
 
 
 TOOL_CALL_GBNF = _load_tool_call_grammar(PROXY_TOOL_CALL_GRAMMAR_PATH)
+TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE = True
+
+
+def _is_grammar_tools_incompatibility(status_code: int, error_text: str) -> bool:
+    if status_code != 400:
+        return False
+    lowered = (error_text or "").lower()
+    return "custom grammar constraints" in lowered and "with tools" in lowered
+
+
+def _maybe_disable_grammar_for_tools_error(
+    request_body: dict,
+    status_code: int,
+    error_text: str,
+    source: str,
+) -> bool:
+    global TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE
+
+    if "grammar" not in request_body or not request_body.get("tools"):
+        return False
+    if not _is_grammar_tools_incompatibility(status_code, error_text):
+        return False
+
+    request_body.pop("grammar", None)
+    if TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE:
+        TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE = False
+        logger.warning(
+            "Tool-call grammar rejected by upstream for tool turns; "
+            "disabling grammar-on-tools for this proxy process (%s)",
+            source,
+        )
+    else:
+        logger.warning(
+            "Tool-call grammar already disabled for tool turns; retrying %s without grammar",
+            source,
+        )
+
+    return True
 
 
 def _apply_tool_call_grammar(
@@ -317,6 +355,9 @@ def _apply_tool_call_grammar(
         return
 
     if not request_body.get("tools"):
+        return
+
+    if not TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE:
         return
 
     effective_tool_choice = (
@@ -938,7 +979,7 @@ async def lifespan(app: FastAPI):
         _resolve_prune_target_fraction() * 100,
     )
     logger.info(
-        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s args_preflight=%s tool_narrowing=%s thinking_off_on_tools=%s dampener=%s(%d/%d/%d/%d->%d) contamination_breaker=%s(%d forced=%d required_miss=%d) analysis_only_route=%s(min_tools=%d,max_msgs=%d) grammar=%s(required_only=%s loaded=%s path=%s)",
+        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s args_preflight=%s tool_narrowing=%s thinking_off_on_tools=%s dampener=%s(%d/%d/%d/%d->%d) contamination_breaker=%s(%d forced=%d required_miss=%d) analysis_only_route=%s(min_tools=%d,max_msgs=%d) grammar=%s(required_only=%s loaded=%s tools_compatible=%s path=%s)",
         PROXY_MALFORMED_TOOL_GUARDRAIL,
         PROXY_MALFORMED_TOOL_STREAM_STRICT,
         PROXY_FORCE_NON_STREAM,
@@ -961,6 +1002,7 @@ async def lifespan(app: FastAPI):
         PROXY_TOOL_CALL_GRAMMAR,
         PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY,
         bool(TOOL_CALL_GBNF),
+        TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE,
         PROXY_TOOL_CALL_GRAMMAR_PATH,
     )
 
@@ -3483,6 +3525,20 @@ async def messages(request: Request):
 
         if strict_resp.status_code != 200:
             error_text = strict_resp.text[:1000]
+            if _maybe_disable_grammar_for_tools_error(
+                strict_body,
+                strict_resp.status_code,
+                error_text,
+                "strict-stream",
+            ):
+                strict_resp = await client.post(
+                    f"{LLAMA_CPP_BASE}/chat/completions",
+                    json=strict_body,
+                    headers={"Content-Type": "application/json"},
+                )
+
+        if strict_resp.status_code != 200:
+            error_text = strict_resp.text[:1000]
             logger.error(
                 "Upstream HTTP %d (strict-stream): %s",
                 strict_resp.status_code,
@@ -3621,6 +3677,35 @@ async def messages(request: Request):
             error_body = await resp.aread()
             await resp.aclose()
             error_text = error_body.decode("utf-8", errors="replace")[:1000]
+            if _maybe_disable_grammar_for_tools_error(
+                openai_body,
+                resp.status_code,
+                error_text,
+                "stream",
+            ):
+                resp = await client.send(
+                    client.build_request(
+                        "POST",
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        json=openai_body,
+                        headers={"Content-Type": "application/json"},
+                    ),
+                    stream=True,
+                )
+                if resp.status_code == 200:
+                    return StreamingResponse(
+                        stream_anthropic_response(resp, model, monitor, body),
+                        media_type="text/event-stream",
+                        headers={
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                        },
+                    )
+
+                error_body = await resp.aread()
+                await resp.aclose()
+                error_text = error_body.decode("utf-8", errors="replace")[:1000]
+
             logger.error("Upstream HTTP %d: %s", resp.status_code, error_text)
 
             # Parse the error for a user-friendly message
@@ -3707,6 +3792,20 @@ async def messages(request: Request):
             json=openai_body,
             headers={"Content-Type": "application/json"},
         )
+
+        if resp.status_code != 200:
+            error_text = resp.text[:1000]
+            if _maybe_disable_grammar_for_tools_error(
+                openai_body,
+                resp.status_code,
+                error_text,
+                "non-stream",
+            ):
+                resp = await client.post(
+                    f"{LLAMA_CPP_BASE}/chat/completions",
+                    json=openai_body,
+                    headers={"Content-Type": "application/json"},
+                )
 
         # Option B: Handle non-streaming errors too
         if resp.status_code != 200:
@@ -3851,6 +3950,7 @@ async def context_status(request: Request):
             "required_only": PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY,
             "path": PROXY_TOOL_CALL_GRAMMAR_PATH,
             "loaded": bool(TOOL_CALL_GBNF),
+            "tools_compatible": TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE,
         },
         # Loop protection stats
         "loop_protection": {

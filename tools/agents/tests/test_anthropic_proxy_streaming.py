@@ -518,10 +518,12 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         old_enabled = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR")
         old_required_only = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY")
         old_grammar = getattr(proxy, "TOOL_CALL_GBNF")
+        old_tools_compatible = getattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE")
         try:
             setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", True)
             setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", True)
             setattr(proxy, "TOOL_CALL_GBNF", 'root ::= "<tool_call>"')
+            setattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE", True)
 
             openai_body = {
                 "model": "test",
@@ -548,6 +550,56 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", old_enabled)
             setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", old_required_only)
             setattr(proxy, "TOOL_CALL_GBNF", old_grammar)
+            setattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE", old_tools_compatible)
+
+    def test_apply_tool_call_grammar_skips_when_upstream_tools_are_incompatible(self):
+        old_enabled = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR")
+        old_required_only = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY")
+        old_grammar = getattr(proxy, "TOOL_CALL_GBNF")
+        old_tools_compatible = getattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE")
+        try:
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", True)
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", True)
+            setattr(proxy, "TOOL_CALL_GBNF", 'root ::= "<tool_call>"')
+            setattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE", False)
+
+            request = {
+                "tools": [{"type": "function", "function": {"name": "Read"}}],
+                "tool_choice": "required",
+            }
+            proxy._apply_tool_call_grammar(request)
+
+            self.assertNotIn("grammar", request)
+        finally:
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", old_enabled)
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", old_required_only)
+            setattr(proxy, "TOOL_CALL_GBNF", old_grammar)
+            setattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE", old_tools_compatible)
+
+    def test_maybe_disable_grammar_for_tools_error_strips_grammar_and_disables_flag(
+        self,
+    ):
+        old_tools_compatible = getattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE")
+        try:
+            setattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE", True)
+
+            request = {
+                "tools": [{"type": "function", "function": {"name": "Read"}}],
+                "grammar": 'root ::= "<tool_call>"',
+            }
+
+            retried = proxy._maybe_disable_grammar_for_tools_error(
+                request,
+                400,
+                '{"error":{"message":"Cannot use custom grammar constraints with tools."}}',
+                "unit-test",
+            )
+
+            self.assertTrue(retried)
+            self.assertNotIn("grammar", request)
+            self.assertFalse(getattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE"))
+        finally:
+            setattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE", old_tools_compatible)
 
     def test_clean_guardrail_response_does_not_promise_future_tool_call(self):
         guardrail = proxy._build_clean_guardrail_openai_response(
