@@ -146,6 +146,9 @@ PROXY_TOOL_STATE_CYCLE_WINDOW = int(
 PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
     os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "24")
 )
+PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT = int(
+    os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "3")
+)
 PROXY_TOOL_NARROWING_EXPAND_ON_LOOP = os.environ.get(
     "PROXY_TOOL_NARROWING_EXPAND_ON_LOOP", "on"
 ).lower() not in {
@@ -441,6 +444,7 @@ class SessionMonitor:
     tool_state_auto_budget_remaining: int = 0
     tool_state_stagnation_streak: int = 0
     tool_state_transitions: int = 0
+    tool_state_review_cycles: int = 0
     last_tool_fingerprint: str = ""
     finalize_turn_active: bool = False
     last_seen_ts: float = 0.0
@@ -639,6 +643,7 @@ class SessionMonitor:
         self.tool_state_forced_budget_remaining = 0
         self.tool_state_auto_budget_remaining = 0
         self.tool_state_stagnation_streak = 0
+        self.tool_state_review_cycles = 0
         self.last_tool_fingerprint = ""
 
     def guardrail_streak(self) -> int:
@@ -1097,7 +1102,7 @@ async def lifespan(app: FastAPI):
         _resolve_prune_target_fraction() * 100,
     )
     logger.info(
-        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s args_preflight=%s tool_narrowing=%s expand_on_loop=%s thinking_off_on_tools=%s state_machine=%s(min_msgs=%d forced=%d auto=%d stagnation=%d cycle=%d finalize=%d) dampener=%s(%d/%d/%d/%d->%d) contamination_breaker=%s(%d forced=%d required_miss=%d) analysis_only_route=%s(min_tools=%d,max_msgs=%d) grammar=%s(required_only=%s loaded=%s tools_compatible=%s path=%s)",
+        "Guardrails: malformed=%s stream_strict=%s force_non_stream=%s args_preflight=%s tool_narrowing=%s expand_on_loop=%s thinking_off_on_tools=%s state_machine=%s(min_msgs=%d forced=%d auto=%d stagnation=%d cycle=%d finalize=%d review_cycles=%d) dampener=%s(%d/%d/%d/%d->%d) contamination_breaker=%s(%d forced=%d required_miss=%d) analysis_only_route=%s(min_tools=%d,max_msgs=%d) grammar=%s(required_only=%s loaded=%s tools_compatible=%s path=%s)",
         PROXY_MALFORMED_TOOL_GUARDRAIL,
         PROXY_MALFORMED_TOOL_STREAM_STRICT,
         PROXY_FORCE_NON_STREAM,
@@ -1112,6 +1117,7 @@ async def lifespan(app: FastAPI):
         PROXY_TOOL_STATE_STAGNATION_THRESHOLD,
         PROXY_TOOL_STATE_CYCLE_WINDOW,
         PROXY_TOOL_STATE_FINALIZE_THRESHOLD,
+        PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT,
         PROXY_FORCED_TOOL_DAMPENER,
         PROXY_FORCED_TOOL_DAMPENER_MIN_FORCED,
         PROXY_FORCED_TOOL_DAMPENER_BAD_STREAK,
@@ -1651,6 +1657,7 @@ def _resolve_state_machine_tool_choice(
 
     latest_user_text = _latest_user_text(anthropic_body).strip()
     if latest_user_text and not last_user_has_tool_result:
+        monitor.tool_call_history = []
         monitor.reset_tool_turn_state(reason="fresh_user_text")
         return None, "fresh_user_text"
 
@@ -1661,6 +1668,8 @@ def _resolve_state_machine_tool_choice(
         and n_msgs >= max(3, PROXY_TOOL_STATE_MIN_MESSAGES)
     )
     if not active_loop:
+        if not has_tool_results:
+            monitor.tool_call_history = []
         monitor.reset_tool_turn_state(reason="inactive_loop")
         return None, "inactive_loop"
 
@@ -1681,6 +1690,7 @@ def _resolve_state_machine_tool_choice(
         max(1, PROXY_TOOL_STATE_FINALIZE_THRESHOLD),
         max(1, PROXY_TOOL_STATE_STAGNATION_THRESHOLD) * 2,
     )
+    review_cycle_limit = max(1, PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT)
 
     if cycle_looping and monitor.tool_state_stagnation_streak >= finalize_threshold:
         monitor.set_tool_turn_phase("finalize", reason="stagnation_limit")
@@ -1692,10 +1702,24 @@ def _resolve_state_machine_tool_choice(
         )
         return "finalize", "stagnation_limit"
 
+    if (
+        monitor.tool_turn_phase in {"act", "review"}
+        and monitor.tool_state_review_cycles >= review_cycle_limit
+    ):
+        monitor.set_tool_turn_phase("finalize", reason="review_cycle_limit")
+        monitor.tool_state_auto_budget_remaining = 1
+        logger.warning(
+            "TOOL STATE MACHINE: forcing finalize turn after repeated review cycles (cycles=%d stagnation=%d)",
+            monitor.tool_state_review_cycles,
+            monitor.tool_state_stagnation_streak,
+        )
+        return "finalize", "review_cycle_limit"
+
     if monitor.tool_turn_phase == "act":
         if cycle_looping or stagnating:
             reason = "cycle_detected" if cycle_looping else "stagnation"
             monitor.set_tool_turn_phase("review", reason=reason)
+            monitor.tool_state_review_cycles += 1
             monitor.tool_state_auto_budget_remaining = max(
                 1, PROXY_TOOL_STATE_AUTO_BUDGET
             )
@@ -1703,15 +1727,17 @@ def _resolve_state_machine_tool_choice(
                 1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
             )
             logger.warning(
-                "TOOL STATE MACHINE: entering review (cycle=%s repeat=%d stagnation=%d)",
+                "TOOL STATE MACHINE: entering review (cycle=%s repeat=%d stagnation=%d cycles=%d)",
                 cycle_looping,
                 cycle_repeat,
                 monitor.tool_state_stagnation_streak,
+                monitor.tool_state_review_cycles,
             )
             return "auto", reason
 
         if monitor.tool_state_forced_budget_remaining <= 0:
             monitor.set_tool_turn_phase("review", reason="forced_budget_exhausted")
+            monitor.tool_state_review_cycles += 1
             monitor.tool_state_auto_budget_remaining = max(
                 1, PROXY_TOOL_STATE_AUTO_BUDGET
             )
@@ -1719,7 +1745,8 @@ def _resolve_state_machine_tool_choice(
                 1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
             )
             logger.warning(
-                "TOOL STATE MACHINE: forced budget exhausted, entering review"
+                "TOOL STATE MACHINE: forced budget exhausted, entering review (cycles=%d)",
+                monitor.tool_state_review_cycles,
             )
             return "auto", "forced_budget_exhausted"
 
@@ -1785,10 +1812,26 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
             )
 
     if "max_tokens" in anthropic_body:
+        requested_raw = max(1, int(anthropic_body["max_tokens"]))
+
         # Enforce configurable minimum floor for thinking mode: model needs
         # tokens for reasoning (<think>...</think>) plus actual response/tool
         # calls. Set PROXY_MAX_TOKENS_FLOOR=0 to disable this floor.
-        requested_max = _resolve_max_tokens_request(anthropic_body["max_tokens"])
+        floor_bypassed_for_tool_turn = (
+            has_tools
+            and PROXY_DISABLE_THINKING_ON_TOOL_TURNS
+            and PROXY_MAX_TOKENS_FLOOR > 0
+        )
+        if floor_bypassed_for_tool_turn:
+            requested_max = requested_raw
+            if requested_raw < PROXY_MAX_TOKENS_FLOOR:
+                logger.info(
+                    "MAX_TOKENS floor bypassed for tool turn with thinking disabled: requested=%d floor=%d",
+                    requested_raw,
+                    PROXY_MAX_TOKENS_FLOOR,
+                )
+        else:
+            requested_max = _resolve_max_tokens_request(requested_raw)
 
         # Option E: Smart max_tokens capping — prevent the response from
         # consuming so many tokens that the NEXT turn's input won't fit.
@@ -4429,6 +4472,7 @@ async def context_status(request: Request):
             "tool_state_auto_budget_remaining": monitor.tool_state_auto_budget_remaining,
             "tool_state_stagnation_streak": monitor.tool_state_stagnation_streak,
             "tool_state_transitions": monitor.tool_state_transitions,
+            "tool_state_review_cycles": monitor.tool_state_review_cycles,
             "finalize_turn_active": monitor.finalize_turn_active,
             "tool_call_history_len": len(monitor.tool_call_history),
             "is_looping": monitor.detect_tool_loop(window=PROXY_LOOP_WINDOW)[0],

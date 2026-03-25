@@ -88,6 +88,55 @@ class TestProxyConfigTuning(unittest.TestCase):
         finally:
             setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
 
+    def test_build_request_bypasses_floor_for_tool_turns_when_thinking_disabled(self):
+        old_floor = getattr(proxy, "PROXY_MAX_TOKENS_FLOOR")
+        old_disable = getattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS")
+        try:
+            setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", 4096)
+            setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", True)
+
+            body = {
+                "model": "test",
+                "max_tokens": 512,
+                "messages": [{"role": "user", "content": "run pwd"}],
+                "tools": [
+                    {
+                        "name": "Bash",
+                        "description": "run command",
+                        "input_schema": {"type": "object"},
+                    }
+                ],
+            }
+
+            openai = proxy.build_openai_request(
+                body, proxy.SessionMonitor(context_window=0)
+            )
+            self.assertEqual(openai.get("max_tokens"), 512)
+        finally:
+            setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
+            setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
+
+    def test_build_request_keeps_floor_for_non_tool_turns(self):
+        old_floor = getattr(proxy, "PROXY_MAX_TOKENS_FLOOR")
+        old_disable = getattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS")
+        try:
+            setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", 4096)
+            setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", True)
+
+            body = {
+                "model": "test",
+                "max_tokens": 512,
+                "messages": [{"role": "user", "content": "say ok"}],
+            }
+
+            openai = proxy.build_openai_request(
+                body, proxy.SessionMonitor(context_window=0)
+            )
+            self.assertEqual(openai.get("max_tokens"), 4096)
+        finally:
+            setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
+            setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
+
     def test_prune_target_fraction_uses_config_or_default(self):
         old_target = getattr(proxy, "PROXY_CONTEXT_PRUNE_TARGET_FRACTION")
         try:
@@ -1811,6 +1860,187 @@ class TestToolTurnControls(unittest.TestCase):
             setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", old_forced)
             setattr(proxy, "PROXY_TOOL_STATE_AUTO_BUDGET", old_auto)
             setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", old_stagnation)
+
+    def test_state_machine_review_cycles_increment_on_forced_budget_exhausted(self):
+        old_state = getattr(proxy, "PROXY_TOOL_STATE_MACHINE")
+        old_min_msgs = getattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES")
+        old_forced = getattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET")
+        old_auto = getattr(proxy, "PROXY_TOOL_STATE_AUTO_BUDGET")
+        old_stagnation = getattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD")
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", 20)
+            setattr(proxy, "PROXY_TOOL_STATE_AUTO_BUDGET", 2)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", 99)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.tool_turn_phase = "act"
+            monitor.tool_state_forced_budget_remaining = 0
+
+            body = {
+                "model": "test",
+                "messages": [
+                    {"role": "user", "content": "start"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_cycle_1",
+                                "name": "Bash",
+                                "input": {"command": "pwd"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_cycle_1",
+                                "content": "ok",
+                            }
+                        ],
+                    },
+                ],
+                "tools": [
+                    {
+                        "name": "Bash",
+                        "description": "Run command",
+                        "input_schema": {"type": "object"},
+                    }
+                ],
+            }
+
+            openai = proxy.build_openai_request(body, monitor)
+            self.assertEqual(openai.get("tool_choice"), "auto")
+            self.assertEqual(monitor.tool_turn_phase, "review")
+            self.assertEqual(monitor.tool_state_review_cycles, 1)
+        finally:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", old_min_msgs)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", old_forced)
+            setattr(proxy, "PROXY_TOOL_STATE_AUTO_BUDGET", old_auto)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", old_stagnation)
+
+    def test_state_machine_finalize_after_review_cycle_limit(self):
+        old_state = getattr(proxy, "PROXY_TOOL_STATE_MACHINE")
+        old_min_msgs = getattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES")
+        old_stagnation = getattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD")
+        old_cycle_window = getattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW")
+        old_review_cycles = getattr(proxy, "PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT")
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", 99)
+            setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", 8)
+            setattr(proxy, "PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", 2)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.tool_turn_phase = "act"
+            monitor.tool_state_review_cycles = 2
+
+            body = {
+                "model": "test",
+                "messages": [
+                    {"role": "user", "content": "start"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_cycle_2",
+                                "name": "Bash",
+                                "input": {"command": "pwd"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_cycle_2",
+                                "content": "ok",
+                            }
+                        ],
+                    },
+                ],
+                "tools": [
+                    {
+                        "name": "Bash",
+                        "description": "Run command",
+                        "input_schema": {"type": "object"},
+                    }
+                ],
+            }
+
+            openai = proxy.build_openai_request(body, monitor)
+            self.assertNotIn("tools", openai)
+            self.assertNotIn("tool_choice", openai)
+            self.assertEqual(monitor.tool_turn_phase, "finalize")
+            self.assertTrue(monitor.finalize_turn_active)
+        finally:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", old_min_msgs)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", old_stagnation)
+            setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", old_cycle_window)
+            setattr(proxy, "PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", old_review_cycles)
+
+    def test_state_machine_fresh_user_text_clears_stale_tool_history(self):
+        old_state = getattr(proxy, "PROXY_TOOL_STATE_MACHINE")
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.tool_call_history = ["Bash", "Bash", "Bash"]
+            monitor.tool_turn_phase = "review"
+
+            body = {
+                "model": "test",
+                "messages": [{"role": "user", "content": "new task"}],
+                "tools": [
+                    {
+                        "name": "Bash",
+                        "description": "Run command",
+                        "input_schema": {"type": "object"},
+                    }
+                ],
+            }
+
+            proxy.build_openai_request(body, monitor)
+            self.assertEqual(monitor.tool_call_history, [])
+            self.assertEqual(monitor.tool_turn_phase, "bootstrap")
+        finally:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
+
+    def test_state_machine_inactive_loop_clears_stale_tool_history(self):
+        old_state = getattr(proxy, "PROXY_TOOL_STATE_MACHINE")
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.tool_call_history = ["Bash", "TaskOutput"]
+            monitor.tool_turn_phase = "act"
+
+            body = {
+                "model": "test",
+                "messages": [{"role": "assistant", "content": "done"}],
+                "tools": [
+                    {
+                        "name": "Bash",
+                        "description": "Run command",
+                        "input_schema": {"type": "object"},
+                    }
+                ],
+            }
+
+            proxy.build_openai_request(body, monitor)
+            self.assertEqual(monitor.tool_call_history, [])
+            self.assertEqual(monitor.tool_turn_phase, "bootstrap")
+        finally:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
 
     def test_state_machine_finalize_temporarily_disables_tools(self):
         old_state = getattr(proxy, "PROXY_TOOL_STATE_MACHINE")
