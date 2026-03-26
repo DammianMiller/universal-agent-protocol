@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.17.2 (2026-03-26)
+
+- fix: update documentation parity - skills (24→33), dashboard views (13→11)
+
+
 ## v1.17.1 (2026-03-26)
 
 - fix: streamline CLAUDE.md and hooks to prevent session deadlocks
