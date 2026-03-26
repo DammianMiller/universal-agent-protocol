@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.17.0 (2026-03-26)
+
+- refactor: consolidate hooks/skills/policies, remove stale dirs, fix broken README links
+- feat: add mission artifacts for spec decoding fix + infra + reorg
+
+
 ## v1.16.0 (2026-03-25)
 
 - feat: add 16 test files improving coverage across utils, tasks, coordination, memory, models, and mcp-router
