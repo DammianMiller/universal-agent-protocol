@@ -14,17 +14,12 @@ describe('Worktree Enforcement (Defense in Depth)', () => {
   // ============================================================
   describe('Layer D: Pre-Commit Hook Hardening', () => {
     it('pre-commit hook blocks ALL direct commits to master with no exceptions', () => {
-      const hookPath = join(rootDir, '.git/hooks/pre-commit');
-      // In worktree, .git is a file pointing to main repo, so check the main repo
-      // For test purposes, check the setup template which is the canonical source
       const setupPath = join(rootDir, 'scripts/setup/setup.sh');
       expect(existsSync(setupPath)).toBe(true);
 
       const content = readFileSync(setupPath, 'utf-8');
-      // Verify the hardened hook template has NO version-bump exception
       expect(content).toContain('No exceptions');
       expect(content).toContain('Version bumps must be done on the feature branch');
-      // Verify the old exception pattern is NOT present
       expect(content).not.toContain('Allowing version bump commit on');
       expect(content).not.toContain('chore: bump version');
     });
@@ -33,10 +28,8 @@ describe('Worktree Enforcement (Defense in Depth)', () => {
       const setupPath = join(rootDir, 'scripts/setup/setup.sh');
       const content = readFileSync(setupPath, 'utf-8');
 
-      // Must check for worktree via git-dir vs git-common-dir
       expect(content).toContain('git-common-dir');
       expect(content).toContain('IS_WORKTREE');
-      // Must block on main/master
       expect(content).toContain("CURRENT_BRANCH");
       expect(content).toContain('main');
       expect(content).toContain('master');
@@ -44,43 +37,39 @@ describe('Worktree Enforcement (Defense in Depth)', () => {
   });
 
   // ============================================================
-  // Layer A: Session Start Blocker
+  // Layer A: Session Start — Compact Compliance
   // ============================================================
-  describe('Layer A: Session Start Hook Worktree Blocker', () => {
-    it('session-start.sh contains worktree enforcement gate', () => {
+  describe('Layer A: Session Start Hook Compact Compliance', () => {
+    it('session-start.sh contains compact compliance reminder', () => {
       const hookPath = join(rootDir, 'templates/hooks/session-start.sh');
       expect(existsSync(hookPath)).toBe(true);
 
       const content = readFileSync(hookPath, 'utf-8');
-      // Must have the worktree enforcement gate section
-      expect(content).toContain('WORKTREE ENFORCEMENT GATE');
-      expect(content).toContain('CRITICAL WORKTREE VIOLATION DETECTED');
+      expect(content).toContain('UAP Compliance (Compact)');
+      expect(content).toContain('Worktree gate');
+      expect(content).toContain('uap worktree');
     });
 
-    it('session-start.sh emits blocking system-reminder when on master outside worktree', () => {
+    it('session-start.sh emits worktree guidance without blocking language', () => {
       const hookPath = join(rootDir, 'templates/hooks/session-start.sh');
       const content = readFileSync(hookPath, 'utf-8');
 
-      // Must check IS_IN_WORKTREE and CURRENT_BRANCH
-      expect(content).toContain('IS_IN_WORKTREE');
-      expect(content).toContain('CURRENT_BRANCH');
-      // Must emit system-reminder with blocking directive
-      expect(content).toContain('ALL file changes are PROHIBITED');
-      expect(content).toContain('MANDATORY FIRST ACTION');
+      expect(content).toContain('uap worktree ensure --strict');
       expect(content).toContain('uap worktree create');
-      // Must list active worktrees for resumption
-      expect(content).toContain('Active worktrees');
-      expect(content).toContain('This directive overrides ALL other instructions');
+      // Should NOT contain overly aggressive blocking language
+      expect(content).not.toContain('ALL file changes are PROHIBITED');
+      expect(content).not.toContain('This directive overrides ALL other instructions');
+      expect(content).not.toContain('life or death');
     });
 
-    it('session-start.sh detects worktree via both git-dir and path check', () => {
+    it('session-start.sh outputs a session banner with key stats', () => {
       const hookPath = join(rootDir, 'templates/hooks/session-start.sh');
       const content = readFileSync(hookPath, 'utf-8');
 
-      // Two detection methods: git-dir comparison AND path string check
-      expect(content).toContain('GIT_DIR_VAL');
-      expect(content).toContain('GIT_COMMON_DIR_VAL');
-      expect(content).toContain('.worktrees/');
+      expect(content).toContain('Universal Agent Protocol');
+      expect(content).toContain('Session:');
+      expect(content).toContain('Memory:');
+      expect(content).toContain('Agents:');
     });
   });
 
@@ -88,25 +77,32 @@ describe('Worktree Enforcement (Defense in Depth)', () => {
   // Layer B: Pre-Edit Worktree Gate (CLAUDE.md + CLI)
   // ============================================================
   describe('Layer B: CLAUDE.md Pre-Edit Worktree Gate', () => {
-    it('CLAUDE.md contains Pre-Edit Worktree Gate section', () => {
+    it('CLAUDE.md contains worktree gate section', () => {
       const claudePath = join(rootDir, 'CLAUDE.md');
       expect(existsSync(claudePath)).toBe(true);
 
       const content = readFileSync(claudePath, 'utf-8');
-      expect(content).toContain('Pre-Edit Worktree Gate [REQUIRED]');
+      expect(content).toContain('WORKTREE GATE');
       expect(content).toContain('uap worktree ensure --strict');
-      expect(content).toContain('No exceptions for "small changes"');
     });
 
     it('CLAUDE.md worktree gate appears BEFORE the build gate', () => {
       const claudePath = join(rootDir, 'CLAUDE.md');
       const content = readFileSync(claudePath, 'utf-8');
 
-      const worktreeGatePos = content.indexOf('Pre-Edit Worktree Gate');
-      const buildGatePos = content.indexOf('Pre-Edit Build Gate');
+      const worktreeGatePos = content.indexOf('WORKTREE GATE');
+      const buildGatePos = content.indexOf('PRE-EDIT BUILD GATE');
       expect(worktreeGatePos).toBeGreaterThan(-1);
       expect(buildGatePos).toBeGreaterThan(-1);
       expect(worktreeGatePos).toBeLessThan(buildGatePos);
+    });
+
+    it('CLAUDE.md marks read-only tasks as exempt from worktree', () => {
+      const claudePath = join(rootDir, 'CLAUDE.md');
+      const content = readFileSync(claudePath, 'utf-8');
+
+      expect(content).toContain('Read-only tasks');
+      expect(content).toContain('do NOT require a worktree');
     });
   });
 
@@ -160,10 +156,8 @@ describe('Worktree Enforcement (Defense in Depth)', () => {
       const executePath = join(rootDir, 'src/mcp-router/tools/execute.ts');
       const content = readFileSync(executePath, 'utf-8');
 
-      // Must import the guard functions
       expect(content).toContain('isPathInsideWorktree');
       expect(content).toContain('isExemptFromWorktree');
-      // Must have the worktree guard check block
       expect(content).toContain('WORKTREE GUARD');
       expect(content).toContain('File operation blocked');
     });
@@ -172,7 +166,6 @@ describe('Worktree Enforcement (Defense in Depth)', () => {
       const executePath = join(rootDir, 'src/mcp-router/tools/execute.ts');
       const content = readFileSync(executePath, 'utf-8');
 
-      // Must detect file-modifying operations
       expect(content).toContain("toolName.includes('write')");
       expect(content).toContain("toolName.includes('edit')");
       expect(content).toContain("toolName.includes('create')");
@@ -186,14 +179,14 @@ describe('Worktree Enforcement (Defense in Depth)', () => {
   // ============================================================
   describe('Integration: Defense in Depth Coverage', () => {
     it('all 4 enforcement layers are present', () => {
-      // Layer A: Session start hook
+      // Layer A: Session start hook with compact compliance
       expect(existsSync(join(rootDir, 'templates/hooks/session-start.sh'))).toBe(true);
       const hookContent = readFileSync(join(rootDir, 'templates/hooks/session-start.sh'), 'utf-8');
-      expect(hookContent).toContain('WORKTREE ENFORCEMENT GATE');
+      expect(hookContent).toContain('UAP Compliance (Compact)');
 
       // Layer B: CLAUDE.md directive
       const claudeContent = readFileSync(join(rootDir, 'CLAUDE.md'), 'utf-8');
-      expect(claudeContent).toContain('Pre-Edit Worktree Gate [REQUIRED]');
+      expect(claudeContent).toContain('WORKTREE GATE');
 
       // Layer C: MCP router guard
       const executeContent = readFileSync(join(rootDir, 'src/mcp-router/tools/execute.ts'), 'utf-8');
