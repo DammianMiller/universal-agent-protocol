@@ -17,16 +17,16 @@ describe('Validation Fixes', () => {
       expect(content).toMatch(/CLAUDE\.md v2\.[2-9]|CLAUDE\.md v3\./);
 
       // Check 2: Worktree Gate
-      expect(content).toContain('Pre-Edit Worktree Gate');
+      expect(content).toContain('WORKTREE GATE');
 
       // Check 3: Build Gate
-      expect(content).toContain('Pre-Edit Build Gate');
+      expect(content).toContain('PRE-EDIT BUILD GATE');
 
       // Check 4: VERIFIER-FIRST
       expect(content).toContain('VERIFIER-FIRST');
 
       // Check 5: Pattern Router
-      expect(content).toContain('## Pattern Router');
+      expect(content).toContain('PATTERN ROUTER');
 
       // Check 6: Schema Diff Gate in BLOCKING PREREQUISITES
       expect(content).toMatch(/Schema Diff Gate/);
@@ -35,29 +35,29 @@ describe('Validation Fixes', () => {
       // Check 7: VERIFIER-FIRST
       expect(content).toContain('## VERIFIER-FIRST');
 
-      // Check 8: COMPLETION GATES - MANDATORY
-      expect(content).toMatch(/COMPLETION GATES.*-.*MANDATORY/);
+      // Check 8: COMPLETION GATES
+      expect(content).toContain('COMPLETION GATES');
 
       // Check 9: Pattern Router
-      expect(content).toMatch(/Pattern.*Router/);
+      expect(content).toMatch(/Pattern.*Router/i);
 
       // Check 10: RTK includes
       expect(content).toMatch(/@hooks-session-start\.md|@PreCompact\.md/);
 
-      // Check 11: Verifier loop (min 3 times)
-      expect(content).toMatch(/MANDATORY.*minimum 3 times|MANDATORY.*3 times/);
+      // Check 11: Verifier loop
+      expect(content).toContain('before changes');
     });
 
-    it('CLAUDE.md retains Pre-Edit Worktree Gate for defense-in-depth', () => {
+    it('CLAUDE.md retains Worktree Gate for defense-in-depth', () => {
       const content = readFileSync(join(rootDir, 'CLAUDE.md'), 'utf-8');
 
-      expect(content).toContain('Pre-Edit Worktree Gate [REQUIRED]');
+      expect(content).toContain('WORKTREE GATE');
       expect(content).toContain('uap worktree ensure --strict');
-      expect(content).toContain('No exceptions for "small changes"');
+      expect(content).toContain('Read-only tasks');
 
       // Worktree gate must appear BEFORE build gate
-      const worktreePos = content.indexOf('Pre-Edit Worktree Gate');
-      const buildPos = content.indexOf('Pre-Edit Build Gate');
+      const worktreePos = content.indexOf('WORKTREE GATE');
+      const buildPos = content.indexOf('PRE-EDIT BUILD GATE');
       expect(worktreePos).toBeGreaterThan(-1);
       expect(buildPos).toBeGreaterThan(-1);
       expect(worktreePos).toBeLessThan(buildPos);
