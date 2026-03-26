@@ -1,0 +1,38 @@
+commands:
+  install: npm install
+  build: npm run build
+  test: npm test
+  lint: npm run lint
+  typecheck: npx tsc --noEmit
+
+services:
+  llama-server:
+    start: |
+      /home/cogtek/llama.cpp/.worktrees/003-faststate-029/build-cuda/bin/llama-server \
+        --model /home/cogtek/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf \
+        --host 0.0.0.0 --port 8080 --threads 32 --ctx-size 262144 \
+        --cache-type-k q4_0 --cache-type-v q4_0 --gpu-layers 99 \
+        --flash-attn on --batch-size 512 --ubatch-size 512 --parallel 1 \
+        --no-context-shift --n-predict 32768 --repeat-penalty 1.0 \
+        --defrag-thold 0.1 --spec-type ngram-cache --draft-max 12 \
+        --draft-min 2 --draft-p-min 0.80 --jinja \
+        --chat-template-file /home/cogtek/dev/miller-tech/universal-agent-protocol/tools/agents/config/chat_template.jinja \
+        --log-file /home/cogtek/llama.cpp/llama-server.log --metrics
+    stop: kill $(ps aux | grep 'llama-server.*8080' | grep -v grep | awk '{print $2}') 2>/dev/null
+    healthcheck: curl -sf http://localhost:8080/health
+    port: 8080
+    depends_on: []
+
+  anthropic-proxy:
+    start: cd /home/cogtek/dev/miller-tech/universal-agent-protocol && python3 tools/agents/scripts/anthropic_proxy.py
+    stop: kill $(ps aux | grep 'anthropic_proxy.py' | grep -v grep | awk '{print $2}') 2>/dev/null
+    healthcheck: curl -sf http://localhost:4000/v1/models
+    port: 4000
+    depends_on: [llama-server]
+
+  qdrant:
+    start: docker start uap-qdrant
+    stop: docker stop uap-qdrant
+    healthcheck: curl -sf http://localhost:6333/healthz
+    port: 6333
+    depends_on: []

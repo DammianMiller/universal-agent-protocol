@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -111,6 +112,151 @@ describe('Session Hooks', () => {
       ];
       for (const event of requiredEvents) {
         expect(settings.hooks[event]).toBeDefined();
+      }
+    });
+
+    it('SessionStart hook uses matcher + hooks array shape', () => {
+      const settings = JSON.parse(
+        readFileSync(join(rootDir, '.claude/settings.json'), 'utf-8'),
+      );
+
+      expect(Array.isArray(settings.hooks.SessionStart)).toBe(true);
+      expect(settings.hooks.SessionStart[0].matcher).toBe('');
+      expect(Array.isArray(settings.hooks.SessionStart[0].hooks)).toBe(true);
+    });
+
+    it('PreCompact hook uses matcher + hooks array shape', () => {
+      const settings = JSON.parse(
+        readFileSync(join(rootDir, '.claude/settings.json'), 'utf-8'),
+      );
+
+      expect(Array.isArray(settings.hooks.PreCompact)).toBe(true);
+      expect(settings.hooks.PreCompact[0].matcher).toBe('');
+      expect(Array.isArray(settings.hooks.PreCompact[0].hooks)).toBe(true);
+    });
+  });
+
+  describe('settings.local.json normalization during install', () => {
+    it('writes SessionStart and PreCompact in matcher + hooks array shape on fresh Claude install', async () => {
+      const testDir = join(tmpdir(), `uap-claude-hooks-fresh-${Date.now()}`);
+      mkdirSync(join(testDir, 'templates', 'hooks'), { recursive: true });
+      mkdirSync(join(testDir, '.claude'), { recursive: true });
+
+      try {
+        const { hooksCommand } = await import('../src/cli/hooks.js');
+        await hooksCommand('install', { projectDir: testDir, target: 'claude' });
+
+        const settings = JSON.parse(
+          readFileSync(join(testDir, '.claude', 'settings.local.json'), 'utf-8'),
+        );
+        expect(Array.isArray(settings.hooks.SessionStart)).toBe(true);
+        expect(settings.hooks.SessionStart[0].matcher).toBe('');
+        expect(Array.isArray(settings.hooks.SessionStart[0].hooks)).toBe(true);
+
+        expect(Array.isArray(settings.hooks.PreCompact)).toBe(true);
+        expect(settings.hooks.PreCompact[0].matcher).toBe('');
+        expect(Array.isArray(settings.hooks.PreCompact[0].hooks)).toBe(true);
+      } finally {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    it('normalizes legacy object-shaped hooks for Claude install', async () => {
+      const testDir = join(tmpdir(), `uap-claude-hooks-normalize-${Date.now()}`);
+      mkdirSync(join(testDir, 'templates', 'hooks'), { recursive: true });
+      mkdirSync(join(testDir, '.claude'), { recursive: true });
+
+      writeFileSync(
+        join(testDir, '.claude', 'settings.local.json'),
+        JSON.stringify(
+          {
+            hooks: {
+              SessionStart: {
+                hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
+              },
+              PreCompact: {
+                hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-compact.sh' }],
+              },
+              UserPromptSubmit: {
+                hooks: [{ type: 'command', command: 'bash .claude/hooks/prompt.sh' }],
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+
+      try {
+        const { hooksCommand } = await import('../src/cli/hooks.js');
+        await hooksCommand('install', { projectDir: testDir, target: 'claude' });
+
+        const settings = JSON.parse(
+          readFileSync(join(testDir, '.claude', 'settings.local.json'), 'utf-8'),
+        );
+        expect(Array.isArray(settings.hooks.SessionStart)).toBe(true);
+        expect(Array.isArray(settings.hooks.PreCompact)).toBe(true);
+        expect(Array.isArray(settings.hooks.UserPromptSubmit)).toBe(true);
+        expect(settings.hooks.UserPromptSubmit[0].matcher).toBe('');
+      } finally {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    it('normalizes legacy object-shaped hooks for Factory install', async () => {
+      const testDir = join(tmpdir(), `uap-factory-hooks-normalize-${Date.now()}`);
+      mkdirSync(join(testDir, 'templates', 'hooks'), { recursive: true });
+      mkdirSync(join(testDir, '.factory'), { recursive: true });
+
+      writeFileSync(
+        join(testDir, '.factory', 'settings.local.json'),
+        JSON.stringify(
+          {
+            hooks: {
+              SessionStart: {
+                hooks: [
+                  {
+                    type: 'command',
+                    command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/session-start.sh',
+                  },
+                ],
+              },
+              PreCompact: {
+                hooks: [
+                  {
+                    type: 'command',
+                    command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-compact.sh',
+                  },
+                ],
+              },
+              UserPromptSubmit: {
+                hooks: [
+                  {
+                    type: 'command',
+                    command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pattern-rag-prompt.sh',
+                  },
+                ],
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+
+      try {
+        const { hooksCommand } = await import('../src/cli/hooks.js');
+        await hooksCommand('install', { projectDir: testDir, target: 'factory' });
+
+        const settings = JSON.parse(
+          readFileSync(join(testDir, '.factory', 'settings.local.json'), 'utf-8'),
+        );
+        expect(Array.isArray(settings.hooks.SessionStart)).toBe(true);
+        expect(Array.isArray(settings.hooks.PreCompact)).toBe(true);
+        expect(Array.isArray(settings.hooks.UserPromptSubmit)).toBe(true);
+        expect(settings.hooks.UserPromptSubmit[0].matcher).toBe('');
+      } finally {
+        rmSync(testDir, { recursive: true, force: true });
       }
     });
   });

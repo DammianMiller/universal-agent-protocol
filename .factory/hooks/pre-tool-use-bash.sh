@@ -5,6 +5,12 @@
 # Enforces: iac-pipeline-enforcement, worktree-enforcement, git safety policies.
 set -euo pipefail
 
+# --- Loop Protection: track frequency of blocking events ---
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${HOOK_DIR}/loop-protection.sh" ]; then
+  source "${HOOK_DIR}/loop-protection.sh"
+fi
+
 # Read tool input from stdin (JSON)
 INPUT=$(cat)
 
@@ -14,6 +20,15 @@ CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
 # If we can't determine the command, fail open
 if [ -z "$CMD" ]; then
   exit 0
+fi
+
+# ─── Protocol Tag Injection Guard ────────────────────────────────
+# Reject Bash payloads that still contain standalone protocol tag lines.
+# These fragments can appear after malformed tool-call rendering and must
+# never reach shell evaluation.
+if printf '%s\n' "$CMD" | grep -qE '^\s*</?(tool_call|tool_response|parameter(=[^>]*)?|function(=[^>]*)?|think)\s*>\s*$'; then
+  echo "BLOCKED [bash-safety]: Command contains standalone XML/protocol tag lines. Remove tool-call tag artifacts before execution." >&2
+  exit 2
 fi
 
 # ─── IaC Pipeline Enforcement ───────────────────────────────────
@@ -42,6 +57,10 @@ if echo "$CMD" | grep -qE '\bgit\s+commit\b'; then
   if ! echo "$CHECK_DIR" | grep -q '\.worktrees/'; then
     CURRENT_BRANCH=$(git -C "$CHECK_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     if [ "$CURRENT_BRANCH" = "main" ] || [ "$CURRENT_BRANCH" = "master" ]; then
+      # Allow automated version bump commits (message contains "bump version")
+      if echo "$CMD" | grep -qE 'chore: bump version|version:patch|version:minor|version:major|version-bump'; then
+        exit 0
+      fi
       echo "BLOCKED [worktree-enforcement]: Direct commits to ${CURRENT_BRANCH} are prohibited. Create a worktree first: uap worktree create <slug>. See policies/worktree-enforcement.md" >&2
       exit 2
     fi
@@ -53,6 +72,10 @@ fi
 if echo "$CMD" | grep -qE '\bgit\s+push\b'; then
   # Block explicit pushes to main/master
   if echo "$CMD" | grep -qE '\bgit\s+push\s+(origin\s+)?(main|master)\b'; then
+    # Allow push after version bump (git push && git push --tags pattern)
+    if echo "$CMD" | grep -qE 'git\s+push\s+--tags|git\s+push\s*&&\s*git\s+push\s+--tags'; then
+      exit 0
+    fi
     echo "BLOCKED [worktree-enforcement]: Direct push to main/master is prohibited. Use: uap worktree pr <id> to create a PR instead. See policies/worktree-enforcement.md" >&2
     exit 2
   fi

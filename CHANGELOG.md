@@ -1,5 +1,131 @@
 # Changelog
 
+## v1.17.0 (2026-03-26)
+
+- refactor: consolidate hooks/skills/policies, remove stale dirs, fix broken README links
+- feat: add mission artifacts for spec decoding fix + infra + reorg
+
+
+## v1.16.0 (2026-03-25)
+
+- feat: add 16 test files improving coverage across utils, tasks, coordination, memory, models, and mcp-router
+- fix: clear stale dampener state on fresh loop resets
+- fix: allow act-phase auto release to terminate loops
+- fix: tighten proxy loop exits and tool-turn token budgets
+- fix: harden anthropic proxy loop state transitions
+
+
+## v1.15.13 (2026-03-25)
+
+- fix: preserve property name 'pattern' in tool schema sanitizer
+
+
+## v1.15.12 (2026-03-25)
+
+- fix: restore required CLAUDE compliance sections
+- fix: sanitize regex tool schema fields for llama grammar
+
+
+## v1.15.11 (2026-03-25)
+
+- fix: guard required stream tool turns
+
+
+## v1.15.10 (2026-03-25)
+
+- fix: block repeated policy-echo responses on tool turns
+
+
+## v1.15.9 (2026-03-25)
+
+- fix: fallback when grammar is rejected with tools
+
+
+## v1.15.8 (2026-03-25)
+
+- fix: fail closed required tool arg autofill
+
+
+## v1.15.7 (2026-03-25)
+
+- fix: enforce tool-call grammar on required tool turns
+
+
+## v1.15.6 (2026-03-25)
+
+- fix: harden proxy retry flow and bash safety
+- docs: add speculative blog and PR templates
+
+
+## v1.15.5 (2026-03-25)
+
+- fix: harden proxy against leaked closing function tags
+
+
+## v1.15.4 (2026-03-24)
+
+- test: guard SessionStart and PreCompact hook array shape
+
+
+## v1.15.3 (2026-03-24)
+
+- fix: harden proxy tool-call recovery under forced turns
+
+
+## v1.15.2 (2026-03-24)
+
+- fix: sanitize malformed tool-call apology responses
+
+
+## v1.15.1 (2026-03-24)
+
+- fix: harden malformed tool-call fallback retries
+- chore: bump version to 1.15.0
+
+
+## v1.15.0 (2026-03-24)
+
+- fix: route analysis-only prompts away from tool loops
+- chore: bump version to 1.14.1
+- fix: avoid gh delete-branch failures in worktree finish flow
+
+
+## v1.14.1 (2026-03-24)
+
+- fix: avoid gh delete-branch failures in worktree finish flow
+
+
+## v1.14.0 (2026-03-24)
+
+- feat: add worktree finish flow with sync and safe cleanup
+
+
+## v1.13.18 (2026-03-24)
+
+- chore: bump version to 1.13.15
+- fix: auto-register agents to prevent announce FK failures
+
+
+## v1.13.17 (2026-03-24)
+
+- fix: make reinforcement db validation tests deterministic
+- chore: bump version to 1.13.16
+- chore: bump version to 1.13.15
+- fix: normalize legacy hook schema during hooks install
+
+
+## v1.13.16 (2026-03-24)
+
+- fix: normalize legacy hook schema during hooks install
+
+
+## v1.13.15 (2026-03-24)
+
+- fix: reject malformed tool-call args before accepting retries
+- fix: route qwen through local guardrail proxy
+- fix: harden qwen tool-call guardrails and document decoding journey
+
+
 ## v1.13.14 (2026-03-23)
 
 - fix: suppress malformed reasoning fallback in streaming responses

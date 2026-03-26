@@ -4,8 +4,9 @@ import { cpSync, existsSync, readdirSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { simpleGit, SimpleGit } from 'simple-git';
 import Database from 'better-sqlite3';
+import { execSync } from 'child_process';
 
-type WorktreeAction = 'create' | 'list' | 'pr' | 'cleanup' | 'ensure' | 'prune';
+type WorktreeAction = 'create' | 'list' | 'pr' | 'finish' | 'cleanup' | 'ensure' | 'prune';
 
 interface WorktreeOptions {
   slug?: string;
@@ -85,6 +86,9 @@ export async function worktreeCommand(
       break;
     case 'pr':
       await createPR(cwd, git, options.id!, options.draft);
+      break;
+    case 'finish':
+      await finishWorktree(cwd, git, options.id!);
       break;
     case 'cleanup':
       await cleanupWorktree(cwd, git, options.id!);
@@ -199,6 +203,10 @@ async function createPR(cwd: string, _git: SimpleGit, id: string, draft?: boolea
     // Get branch name
     const branch = await worktreeGit.revparse(['--abbrev-ref', 'HEAD']);
 
+    // Sync branch with latest master before push/PR to reduce mergeability issues
+    spinner.text = 'Syncing with origin/master...';
+    await syncBranchWithMaster(worktreeGit, branch.trim());
+
     // Push branch
     spinner.text = 'Pushing branch...';
     await worktreeGit.push(['-u', 'origin', branch.trim()]);
@@ -225,6 +233,108 @@ async function createPR(cwd: string, _git: SimpleGit, id: string, draft?: boolea
     spinner.fail('Failed to create PR');
     console.error(chalk.red(error));
   }
+}
+
+async function finishWorktree(cwd: string, git: SimpleGit, id: string): Promise<void> {
+  const spinner = ora('Finishing worktree (sync, merge, cleanup)...').start();
+
+  try {
+    const worktreesDir = join(cwd, '.worktrees');
+    const entries = readdirSync(worktreesDir);
+    const worktree = entries.find((e) => e.startsWith(`${id.padStart(3, '0')}-`));
+
+    if (!worktree) {
+      spinner.fail(`Worktree with ID ${id} not found`);
+      return;
+    }
+
+    const worktreePath = join(worktreesDir, worktree);
+    const worktreeGit = simpleGit(worktreePath);
+    const branch = (await worktreeGit.revparse(['--abbrev-ref', 'HEAD'])).trim();
+
+    spinner.text = 'Syncing with origin/master...';
+    await syncBranchWithMaster(worktreeGit, branch);
+
+    spinner.text = 'Pushing branch...';
+    await worktreeGit.push(['-u', 'origin', branch]);
+
+    spinner.text = 'Ensuring PR exists...';
+    const prNumber = ensurePrNumber(worktreePath);
+
+    spinner.text = `Merging PR #${prNumber}...`;
+    try {
+      runGh(`gh pr merge ${prNumber} --merge`, worktreePath);
+    } catch (error) {
+      const message = extractErrorMessage(error);
+      if (!isAlreadyMergedMessage(message)) {
+        throw error;
+      }
+    }
+
+    spinner.text = 'Deleting remote branch...';
+    await deleteRemoteBranch(worktreeGit, branch);
+
+    spinner.succeed(`PR #${prNumber} merged`);
+    await cleanupWorktree(cwd, git, id);
+  } catch (error) {
+    spinner.fail('Failed to finish worktree');
+    console.error(chalk.red(error));
+  }
+}
+
+function runGh(command: string, cwd: string): string {
+  return execSync(command, { cwd, encoding: 'utf-8' }).trim();
+}
+
+function ensurePrNumber(worktreePath: string): string {
+  try {
+    return runGh('gh pr view --json number --jq ".number"', worktreePath);
+  } catch {
+    runGh('gh pr create --fill', worktreePath);
+    return runGh('gh pr view --json number --jq ".number"', worktreePath);
+  }
+}
+
+async function syncBranchWithMaster(worktreeGit: SimpleGit, branch: string): Promise<void> {
+  await worktreeGit.fetch(['origin', 'master']);
+  const behindRaw = await worktreeGit.raw(['rev-list', '--count', `${branch}..origin/master`]);
+  const behind = parseRevListCount(behindRaw);
+
+  if (behind === 0) {
+    return;
+  }
+
+  try {
+    await worktreeGit.raw(['merge', '--no-edit', 'origin/master']);
+  } catch {
+    throw new Error(
+      'Worktree branch is behind origin/master and automatic sync failed. Resolve merge conflicts in the worktree, then rerun the command.'
+    );
+  }
+}
+
+export function parseRevListCount(output: string): number {
+  const parsed = Number.parseInt(output.trim(), 10);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    return 0;
+  }
+  return parsed;
+}
+
+function extractErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function deleteRemoteBranch(worktreeGit: SimpleGit, branch: string): Promise<void> {
+  try {
+    await worktreeGit.push(['origin', '--delete', branch]);
+  } catch {
+    // Branch may already be deleted, protected, or auto-deleted by repo settings.
+  }
+}
+
+export function isAlreadyMergedMessage(message: string): boolean {
+  return message.includes('was already merged');
 }
 
 async function cleanupWorktree(cwd: string, git: SimpleGit, id: string): Promise<void> {

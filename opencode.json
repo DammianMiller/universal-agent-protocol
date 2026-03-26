@@ -1,40 +1,60 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "llama.cpp": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "llama-server (local)",
+    "qwen-proxy": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "llama guardrail proxy (local)",
       "options": {
-        "baseURL": "http://192.168.1.165:8080/v1",
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "apiKey": "sk-qwen35b",
+        "chunkTimeout": 45000
+      },
+      "models": {
+        "qwen35-a3b-iq4xs": {
+          "name": "Qwen3.5 35B A3B (IQ4_XS via proxy)",
+          "reasoning": false,
+          "tool_call": true,
+          "limit": {
+            "context": 262144,
+            "output": 4096
+          }
+        }
+      }
+    },
+    "llama.cpp-direct": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "llama-server direct (fallback)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8080/v1",
         "apiKey": "sk-qwen35b"
       },
       "models": {
         "qwen35-a3b-iq4xs": {
-          "name": "Qwen3.5 35B A3B (IQ4_XS)",
+          "name": "Qwen3.5 35B A3B (IQ4_XS direct)",
           "limit": {
             "context": 262144,
-            "output": 81920
+            "output": 4096
           }
         }
       }
     }
   },
-  "model": "llama.cpp/qwen35-a3b-iq4xs",
+  "model": "qwen-proxy/qwen35-a3b-iq4xs",
   "agent": {
     "build": {
-      "model": "llama.cpp/qwen35-a3b-iq4xs",
+      "model": "qwen-proxy/qwen35-a3b-iq4xs",
       "temperature": 0.1
     },
     "plan": {
-      "model": "llama.cpp/qwen35-a3b-iq4xs",
+      "model": "qwen-proxy/qwen35-a3b-iq4xs",
       "temperature": 0.2
     },
     "memory": {
-      "model": "llama.cpp/qwen35-a3b-iq4xs",
+      "model": "qwen-proxy/qwen35-a3b-iq4xs",
       "temperature": 0
     },
     "review": {
-      "model": "llama.cpp/qwen35-a3b-iq4xs",
+      "model": "qwen-proxy/qwen35-a3b-iq4xs",
       "temperature": 0.1
     }
   }
