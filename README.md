@@ -70,7 +70,7 @@ uap setup -p all
 | Models             | 10 modules     | Multi-model routing, planning, execution, validation, 13 model profiles          |
 | Patterns           | 23 patterns    | Battle-tested workflows from Terminal-Bench 2.0                                  |
 | Droids             | 8 experts      | Specialized agents for security, performance, docs, testing                      |
-| Skills             | 24 skills      | Reusable domain expertise (chess, polyglot, compression, etc.)                   |
+| Skills             | 33 skills      | Reusable domain expertise (chess, polyglot, compression, etc.)                   |
 | Tasks              | 7 modules      | Full task lifecycle with dependencies, claims, JSONL sync                        |
 | Worktrees          | 1 module       | Isolated git branches per agent, auto-numbered                                   |
 | Hooks              | 2 hooks        | Session start (memory injection) and pre-compact (preservation)                  |
@@ -364,13 +364,13 @@ Battle-tested patterns from Terminal-Bench 2.0, stored in `.factory/patterns/`.
 | Sysadmin Expert          | System administration            |
 | Terminal-Bench Optimizer | Benchmark optimization           |
 
-### Skills (24)
+### Skills (33)
 
 **Project Skills** (5): codebase-navigator, memory-management, near-miss-iteration, terminal-bench, worktree-workflow
 
 **Claude Skills** (5): hooks-session-start, hooks-pre-compact, scripts-tool-router, scripts-preload-memory, session-context-preservation-droid
 
-**Factory Skills** (14): adversarial, balls-mode, batch-review, chess-engine, cli-design-expert, codebase-navigator, compression, git-forensics, near-miss, polyglot, service-config, terminal-bench-strategies, typescript-node-expert, unreal-engine-developer
+**Factory Skills** (23): adversarial, balls-mode, batch-review, chess-engine, cli-design-expert, codebase-navigator, compression, git-forensics, near-miss, polyglot, service-config, terminal-bench-strategies, typescript-node-expert, unreal-engine-developer, tuistory, agent-browser, figma-mcp-promotion, infra-worker, uap-coordination, uap-patterns, uap-tasks, uap-worktree
 
 ---
 
@@ -446,7 +446,7 @@ uap hooks install omp         # Oh-My-Pi
 | `uap update`              | Update all components                        |
 | `uap analyze`             | Analyze project structure                    |
 | `uap compliance check`    | Verify UAP compliance                        |
-| `uap dashboard`           | Rich terminal dashboard (13 views)           |
+| `uap dashboard`           | Rich terminal dashboard (11 views)           |
 | `uap memory <action>`     | Memory management (9 subcommands)            |
 | `uap patterns <action>`   | Pattern RAG management (4 subcommands)       |
 | `uap worktree <action>`   | Git worktree management (5 subcommands)      |
