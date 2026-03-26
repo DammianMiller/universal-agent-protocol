@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.17.1 (2026-03-26)
+
+- fix: streamline CLAUDE.md and hooks to prevent session deadlocks
+
+
 ## v1.17.0 (2026-03-26)
 
 - refactor: consolidate hooks/skills/policies, remove stale dirs, fix broken README links
