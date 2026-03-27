@@ -1,27 +1,15 @@
-<!-- CLAUDE.md v2.4.0 - Streamlined policies, conditional ceremony -->
-<!-- TEMPLATE_VERSION: 2.4.0 -->
-<!-- LAST_VALIDATED: 2026-03-26 -->
+<!-- CLAUDE.md v2.3.0 - 34 Model Outcome Success Optimizations + Hooks Enforcement -->
+<!-- Optimizations #22-27: Template Compression, Structured Iteration, Inline Domain Knowledge, Early Impossibility Exit, Conditional Context, Remove Emphasis Theater -->
+<!-- Optimizations #28-34: Mandatory Verifier Loop, Decoder-First Gate, Context Stripping, Environment Check, Schema Diff, State Protection, Conditional Domain -->
+
+<!-- ENFORCEMENT_CHECKS: SESSION_START,DECISION_LOOP,MANDATORY_WORKTREE,PARALLEL_REVIEW,SCHEMA_DIFF,GATES,RTK_INCLUDES,PATTERN_ROUTER,VALIDATE_PLAN -->
+<!-- TEMPLATE_VERSION: 2.3.0 -->
+<!-- LAST_VALIDATED: 2026-03-09 -->
 
 @hooks-session-start.md
 @PreCompact.md
 
-## SESSION START
-
-At the beginning of each session, run the baseline context flow:
-
-1. `bash .codex/hooks/session-start.sh`
-2. `uap task ready`
-3. `uap memory query "<task context>"`
-
-## DECISION LOOP
-
-For each non-trivial task, follow this loop:
-
-1. Classify task complexity and constraints.
-2. Protect state with backups before edits.
-3. Query memory and patterns relevant to the task.
-4. Use skill routing when domain workflows apply (`@Skill:name.md`).
-5. Validate changes with build/tests before finalizing.
+<!-- Custom Sections (preserved from existing file) -->
 
 ## WORKTREE GATE [REQUIRED — code changes only]
 
@@ -38,6 +26,12 @@ No exceptions for "small changes", "just docs", or "version bumps".
 
 **Read-only tasks** (analysis, diagnostics, queries) do NOT require a worktree.
 
+---
+
+---
+
+---
+
 ## PRE-EDIT BUILD GATE [REQUIRED — .ts files only]
 
 Before editing any `.ts` file, run `npm run build` to confirm the project compiles.
@@ -47,6 +41,12 @@ If the build fails, fix the error before making any further edits.
 - Prefer atomic file writes over multiple incremental edits for complex changes
 - Always read the target region + surrounding context before editing to ensure unique anchors
 - Never leave the project in a broken build state between edits
+
+---
+
+---
+
+---
 
 ## VERIFIER-FIRST
 
@@ -59,10 +59,22 @@ Before implementing any change, verify the current state first:
 
 Run verification at least: before changes, after changes, and after all fixes.
 
+---
+
+---
+
+---
+
 ## PATTERN ROUTER
 
 The pattern router automatically matches tasks to execution patterns from `.factory/patterns/index.json`.
 Critical patterns P12 (Output Existence) and P35 (Decoder-First) are always enforced.
+
+---
+
+---
+
+---
 
 ## BLOCKING PREREQUISITES [code changes only]
 
@@ -73,9 +85,21 @@ Before any code change can proceed, these gates must pass in order:
 3. **Build Gate** -- `npm run build` must pass
 4. **Test Gate** -- `npm test` must pass
 
+---
+
+---
+
+---
+
 ## PLAN VALIDATION [REQUIRED — non-trivial tasks]
 
 After generating any implementation plan, prompt for user validation before proceeding.
+
+---
+
+---
+
+---
 
 ## COMPLETION GATES [REQUIRED — code changes only]
 
@@ -97,12 +121,24 @@ npm run version:minor   # feat (new backwards-compatible functionality)
 npm run version:major   # breaking changes (feat! or BREAKING CHANGE)
 ```
 
+---
+
+---
+
+---
+
 ## SESSION ANALYSIS [REQUIRED]
 
 Before ending a session, document:
 - Completed tasks
 - Incomplete/stopped work with reasons
 - Pattern observations (sudden stops, blockers)
+
+---
+
+---
+
+---
 
 ## PHANTOM ERROR INVESTIGATION [REQUIRED]
 

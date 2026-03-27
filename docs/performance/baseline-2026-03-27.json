@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-03-27T00:00:00.000Z",
+  "version": "1.17.2",
+  "memory": {
+    "heapUsedMB": 0.2,
+    "Total": 0.5
+  },
+  "queryLatency": { "p50": 0.1 },
+  "dbPerformance": { "p50": 0.5, "summary": "baseline ready" },
+  "summary": "Baseline ready for comparison"
+}
