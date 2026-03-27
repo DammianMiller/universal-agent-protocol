@@ -1,0 +1,60 @@
+{
+  "_profile": "gpt-5.3-codex",
+  "_description": "OpenAI GPT 5.3 Codex. Code-specialized model with excellent syntax accuracy, context awareness, and agentic capabilities. 192K context window.",
+
+  "model": "gpt-5.3-codex",
+  "provider": "openai",
+  "api_base_url": "https://api.openai.com/v1",
+  "max_tokens": 32768,
+  "temperature": 0.4,
+  "top_p": 1.0,
+  "timeout_ms": 180000,
+  "context_window": 192000,
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": false,
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "max_tool_calls_per_turn": 128,
+    "_comment": "Codex models excel at tool-heavy agentic workflows."
+  },
+
+  "extended_thinking": {
+    "enabled": false,
+    "_comment": "Codex uses internal reasoning optimized for code tasks."
+  },
+
+  "dynamic_temperature": {
+    "enabled": false,
+    "_comment": "Lower temperature (0.4) for more deterministic code output."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response.",
+    "_comment": "GPT 5.3 Codex supports parallel tool calls with high reliability."
+  },
+
+  "pricing": {
+    "input_per_1m": 3.0,
+    "output_per_1m": 12.0,
+    "currency": "USD",
+    "_comment": "As of 2026. Premium pricing for code-specialized performance."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 2000,
+    "tokens_per_minute": 150000,
+    "_comment": "Default tier limits."
+  },
+
+  "running_config": {
+    "description": "OpenAI hosted API. Requires OPENAI_API_KEY environment variable.",
+    "env_vars": {
+      "OPENAI_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "gpt-5.3-codex"
+    }
+  }
+}

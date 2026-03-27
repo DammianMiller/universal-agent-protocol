@@ -1,0 +1,60 @@
+{
+  "_profile": "gpt-5.4",
+  "_description": "OpenAI GPT 5.4. Strong general-purpose model with excellent coding, reasoning, and multi-step planning. 128K context window.",
+
+  "model": "gpt-5.4",
+  "provider": "openai",
+  "api_base_url": "https://api.openai.com/v1",
+  "max_tokens": 16384,
+  "temperature": 0.7,
+  "top_p": 1.0,
+  "timeout_ms": 120000,
+  "context_window": 128000,
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": false,
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "max_tool_calls_per_turn": 128,
+    "_comment": "GPT 5.4 has native parallel tool use with strong reliability."
+  },
+
+  "extended_thinking": {
+    "enabled": false,
+    "_comment": "GPT 5.4 uses internal chain-of-thought natively."
+  },
+
+  "dynamic_temperature": {
+    "enabled": false,
+    "_comment": "Default temperature 0.7 works well for most tasks."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response.",
+    "_comment": "GPT 5.4 supports parallel tool calls natively."
+  },
+
+  "pricing": {
+    "input_per_1m": 2.5,
+    "output_per_1m": 10.0,
+    "currency": "USD",
+    "_comment": "As of 2026. Competitive pricing for frontier performance."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 3000,
+    "tokens_per_minute": 200000,
+    "_comment": "Default tier limits."
+  },
+
+  "running_config": {
+    "description": "OpenAI hosted API. Requires OPENAI_API_KEY environment variable.",
+    "env_vars": {
+      "OPENAI_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "gpt-5.4"
+    }
+  }
+}

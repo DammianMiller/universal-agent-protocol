@@ -1030,8 +1030,8 @@ async function installOmpHooks(cwd: string): Promise<void> {
       },
       modelRouting: {
         planner: 'opus-4.6',
-        executor: 'qwen35',
-        fallback: 'qwen35',
+        executor: 'qwen35-a3b',
+        fallback: 'qwen35-a3b',
         strategy: 'balanced',
       },
     },

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.19.2 (2026-03-27)
+
+- fix: avoid task id collisions
+- feat: update supported Droid models to latest versions
+
+
 ## v1.19.1 (2026-03-27)
 
 - chore: bump version to 1.19.0

@@ -277,7 +277,7 @@ describe('Session Telemetry Snapshot', () => {
   });
 
   it('should track cost data in snapshot', () => {
-    costTrack('claude-sonnet-4', 5000, 1000, 'task-execution');
+    costTrack('sonnet-4.6', 5000, 1000, 'task-execution');
 
     const snapshot = getSessionSnapshot();
     expect(snapshot).not.toBeNull();

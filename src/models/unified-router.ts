@@ -30,26 +30,24 @@ import type {
 
 /**
  * Mapping from benchmark-data ModelId values to rule-based router model IDs.
- * The benchmark router uses 'claude-opus-4.5' while the rule-based router uses 'opus-4.5'.
+ * Both routers now use the same model IDs (opus-4.6, sonnet-4.6, etc.).
  */
 const BENCHMARK_TO_RULE_MODEL_MAP: Record<string, string> = {
-  'claude-opus-4.5': 'opus-4.5',
-  'gpt-5.2': 'gpt-5.2',
-  'glm-4.7': 'glm-4.7',
-  'gpt-5.2-codex': 'gpt-5.2',
-  'claude-opus-4.6': 'opus-4.6',
-  qwen35: 'qwen35',
+  'opus-4.6': 'opus-4.6',
+  'sonnet-4.6': 'sonnet-4.6',
+  haiku: 'haiku',
+  'qwen35-a3b': 'qwen35-a3b',
+  'gpt-5.4': 'gpt-5.4',
+  'gpt-5.3-codex': 'gpt-5.3-codex',
 };
 
 const RULE_TO_BENCHMARK_MODEL_MAP: Record<string, ModelId> = {
-  'opus-4.5': 'claude-opus-4.5',
-  'gpt-5.2': 'gpt-5.2',
-  'glm-4.7': 'glm-4.7',
-  'deepseek-v3.2': 'gpt-5.2', // No benchmark equivalent; map to closest general-purpose model
-  'deepseek-v3.2-exp': 'gpt-5.2',
-  'qwen35-a3b': 'glm-4.7',
   'opus-4.6': 'opus-4.6',
-  qwen35: 'qwen35',
+  'sonnet-4.6': 'sonnet-4.6',
+  haiku: 'haiku',
+  'qwen35-a3b': 'qwen35-a3b',
+  'gpt-5.4': 'gpt-5.4',
+  'gpt-5.3-codex': 'gpt-5.3-codex',
 };
 
 /**

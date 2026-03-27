@@ -111,6 +111,22 @@ describe('TaskService', () => {
     it('should return false when deleting non-existent task', () => {
       expect(service.delete('uap-0000')).toBe(false);
     });
+
+    it('should generate unique ids for many tasks', () => {
+      const ids = new Set<string>();
+      for (let i = 0; i < 200; i += 1) {
+        ids.add(service.create({ title: `Task ${i}` }).id);
+      }
+      expect(ids.size).toBe(200);
+    });
+
+    it('should allow bulk creation without id collisions', () => {
+      const tasks = Array.from({ length: 50 }, (_, idx) =>
+        service.create({ title: `Bulk ${idx}` })
+      );
+      const uniqueIds = new Set(tasks.map((task) => task.id));
+      expect(uniqueIds.size).toBe(tasks.length);
+    });
   });
 
   describe('Queries', () => {

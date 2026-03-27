@@ -24,12 +24,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 export type ModelId =
-  | 'glm-4.7'
-  | 'gpt-5.2'
-  | 'claude-opus-4.5'
-  | 'gpt-5.2-codex'
   | 'opus-4.6'
-  | 'qwen35';
+  | 'sonnet-4.6'
+  | 'haiku'
+  | 'qwen35-a3b'
+  | 'gpt-5.4'
+  | 'gpt-5.3-codex';
 
 export interface CategoryStats {
   attempts: number;
@@ -70,83 +70,11 @@ const DEFAULT_CONFIG: RoutingConfig = {
   preferAccuracy: true,
   maxCostPerTask: 0.05,
   maxLatencyMs: 120000,
-  availableModels: ['glm-4.7', 'gpt-5.2', 'claude-opus-4.5', 'gpt-5.2-codex', 'opus-4.6', 'qwen35'],
+  availableModels: ['opus-4.6', 'sonnet-4.6', 'haiku', 'qwen35-a3b', 'gpt-5.4', 'gpt-5.3-codex'],
 };
 
 // OPTIMIZATION 5: Pre-seeded with benchmark data for per-category routing
 const MODEL_FINGERPRINTS: Record<ModelId, ModelFingerprint> = {
-  'glm-4.7': {
-    id: 'glm-4.7',
-    strengths: ['speed', 'simple-code', 'patterns', 'typescript', 'bug-detection'],
-    weaknesses: ['complex-algorithms', 'long-context', 'multi-step-code', 'context-awareness'],
-    avgLatencyMs: 11373,
-    successRate: 0.625,
-    costPerTask: 0.001,
-    maxComplexity: 'medium',
-    bestCategories: ['coding', 'testing', 'debugging'],
-    categoryStats: {
-      coding: { attempts: 8, successes: 5 },
-      testing: { attempts: 5, successes: 4 },
-      debugging: { attempts: 4, successes: 3 },
-      security: { attempts: 4, successes: 2 },
-      'file-ops': { attempts: 3, successes: 1 },
-      sysadmin: { attempts: 3, successes: 1 },
-    },
-  },
-  'gpt-5.2': {
-    id: 'gpt-5.2',
-    strengths: ['balance', 'consistency', 'general-purpose', 'algorithm', 'multi-step'],
-    weaknesses: ['refactoring', 'latency-sensitive'],
-    avgLatencyMs: 21286,
-    successRate: 0.875,
-    costPerTask: 0.005,
-    maxComplexity: 'hard',
-    bestCategories: ['coding', 'security', 'file-ops', 'debugging'],
-    categoryStats: {
-      coding: { attempts: 8, successes: 7 },
-      security: { attempts: 6, successes: 5 },
-      'file-ops': { attempts: 5, successes: 4 },
-      debugging: { attempts: 5, successes: 5 },
-      sysadmin: { attempts: 4, successes: 3 },
-      'ml-training': { attempts: 3, successes: 2 },
-      'constraint-satisfaction': { attempts: 3, successes: 3 },
-    },
-  },
-  'claude-opus-4.5': {
-    id: 'claude-opus-4.5',
-    strengths: ['accuracy', 'complex-reasoning', 'edge-cases', 'error-handling', 'refactoring'],
-    weaknesses: ['latency', 'cost'],
-    avgLatencyMs: 26359,
-    successRate: 0.875,
-    costPerTask: 0.02,
-    maxComplexity: 'hard',
-    bestCategories: ['security', 'coding', 'sysadmin', 'debugging'],
-    categoryStats: {
-      security: { attempts: 8, successes: 7 },
-      coding: { attempts: 8, successes: 7 },
-      sysadmin: { attempts: 5, successes: 5 },
-      debugging: { attempts: 5, successes: 4 },
-      'file-ops': { attempts: 5, successes: 4 },
-      'ml-training': { attempts: 3, successes: 2 },
-      'constraint-satisfaction': { attempts: 3, successes: 2 },
-    },
-  },
-  'gpt-5.2-codex': {
-    id: 'gpt-5.2-codex',
-    strengths: ['code-specific', 'syntax-accuracy', 'context-awareness', 'all-difficulties'],
-    weaknesses: ['latency', 'cost', 'non-code-tasks'],
-    avgLatencyMs: 102399,
-    successRate: 1.0,
-    costPerTask: 0.01,
-    maxComplexity: 'hard',
-    bestCategories: ['coding', 'testing'],
-    categoryStats: {
-      coding: { attempts: 8, successes: 8 },
-      testing: { attempts: 5, successes: 5 },
-      security: { attempts: 3, successes: 3 },
-      'file-ops': { attempts: 3, successes: 2 },
-    },
-  },
   'opus-4.6': {
     id: 'opus-4.6',
     strengths: [
@@ -173,8 +101,44 @@ const MODEL_FINGERPRINTS: Record<ModelId, ModelFingerprint> = {
       'constraint-satisfaction': { attempts: 3, successes: 3 },
     },
   },
-  qwen35: {
-    id: 'qwen35',
+  'sonnet-4.6': {
+    id: 'sonnet-4.6',
+    strengths: ['balance', 'code-generation', 'review', 'agentic', 'tool-use'],
+    weaknesses: ['complex-algorithms'],
+    avgLatencyMs: 18000,
+    successRate: 0.85,
+    costPerTask: 0.01,
+    maxComplexity: 'hard',
+    bestCategories: ['coding', 'debugging', 'testing', 'file-ops'],
+    categoryStats: {
+      coding: { attempts: 8, successes: 7 },
+      debugging: { attempts: 5, successes: 4 },
+      testing: { attempts: 5, successes: 5 },
+      'file-ops': { attempts: 5, successes: 4 },
+      security: { attempts: 4, successes: 3 },
+      sysadmin: { attempts: 3, successes: 3 },
+    },
+  },
+  haiku: {
+    id: 'haiku',
+    strengths: ['speed', 'simple-tasks', 'low-cost', 'high-throughput'],
+    weaknesses: ['complex-reasoning', 'long-context', 'multi-step-code'],
+    avgLatencyMs: 5000,
+    successRate: 0.7,
+    costPerTask: 0.002,
+    maxComplexity: 'medium',
+    bestCategories: ['coding', 'testing', 'debugging'],
+    categoryStats: {
+      coding: { attempts: 8, successes: 6 },
+      testing: { attempts: 5, successes: 4 },
+      debugging: { attempts: 4, successes: 3 },
+      security: { attempts: 4, successes: 2 },
+      'file-ops': { attempts: 3, successes: 2 },
+      sysadmin: { attempts: 3, successes: 1 },
+    },
+  },
+  'qwen35-a3b': {
+    id: 'qwen35-a3b',
     strengths: ['speed', 'code-generation', 'simple-tasks', 'low-cost'],
     weaknesses: ['complex-reasoning', 'long-context', 'multi-step-code'],
     avgLatencyMs: 8000,
@@ -189,6 +153,41 @@ const MODEL_FINGERPRINTS: Record<ModelId, ModelFingerprint> = {
       debugging: { attempts: 4, successes: 2 },
       security: { attempts: 3, successes: 1 },
       sysadmin: { attempts: 3, successes: 1 },
+    },
+  },
+  'gpt-5.4': {
+    id: 'gpt-5.4',
+    strengths: ['balance', 'consistency', 'general-purpose', 'algorithm', 'multi-step'],
+    weaknesses: ['refactoring', 'latency-sensitive'],
+    avgLatencyMs: 20000,
+    successRate: 0.9,
+    costPerTask: 0.005,
+    maxComplexity: 'hard',
+    bestCategories: ['coding', 'security', 'file-ops', 'debugging'],
+    categoryStats: {
+      coding: { attempts: 8, successes: 7 },
+      security: { attempts: 6, successes: 5 },
+      'file-ops': { attempts: 5, successes: 5 },
+      debugging: { attempts: 5, successes: 5 },
+      sysadmin: { attempts: 4, successes: 3 },
+      'ml-training': { attempts: 3, successes: 3 },
+      'constraint-satisfaction': { attempts: 3, successes: 3 },
+    },
+  },
+  'gpt-5.3-codex': {
+    id: 'gpt-5.3-codex',
+    strengths: ['code-specific', 'syntax-accuracy', 'context-awareness', 'all-difficulties'],
+    weaknesses: ['latency', 'cost', 'non-code-tasks'],
+    avgLatencyMs: 30000,
+    successRate: 0.95,
+    costPerTask: 0.008,
+    maxComplexity: 'hard',
+    bestCategories: ['coding', 'testing'],
+    categoryStats: {
+      coding: { attempts: 8, successes: 8 },
+      testing: { attempts: 5, successes: 5 },
+      security: { attempts: 3, successes: 3 },
+      'file-ops': { attempts: 3, successes: 2 },
     },
   },
 };
@@ -361,18 +360,26 @@ const FAILURE_HANDLERS: Record<
     fallbackModel?: ModelId;
   }
 > = {
-  'gpt-5.2-codex:permission_denied': {
+  'gpt-5.3-codex:permission_denied': {
     action: 'add_context',
     context: 'Do not attempt file operations. Return code only.',
-    fallbackModel: 'gpt-5.2',
+    fallbackModel: 'gpt-5.4',
   },
-  'glm-4.7:timeout': {
+  'haiku:timeout': {
     action: 'reduce_context',
-    fallbackModel: 'gpt-5.2',
+    fallbackModel: 'sonnet-4.6',
   },
-  'glm-4.7:context_overflow': {
+  'haiku:context_overflow': {
     action: 'reduce_context',
-    fallbackModel: 'gpt-5.2',
+    fallbackModel: 'sonnet-4.6',
+  },
+  'qwen35-a3b:timeout': {
+    action: 'reduce_context',
+    fallbackModel: 'haiku',
+  },
+  'qwen35-a3b:context_overflow': {
+    action: 'reduce_context',
+    fallbackModel: 'haiku',
   },
 };
 
@@ -485,11 +492,11 @@ export function routeTask(
 
   if (scored.length === 0) {
     return {
-      primary: 'gpt-5.2',
-      fallback: ['claude-opus-4.5'],
-      reason: 'No available models matched, defaulting to GPT 5.2',
-      estimatedLatencyMs: 21286,
-      estimatedSuccessRate: 0.875,
+      primary: 'gpt-5.4',
+      fallback: ['opus-4.6'],
+      reason: 'No available models matched, defaulting to GPT 5.4',
+      estimatedLatencyMs: 20000,
+      estimatedSuccessRate: 0.9,
       estimatedCost: 0.005,
     };
   }

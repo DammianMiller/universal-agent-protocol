@@ -1618,8 +1618,8 @@ async function showModelsDashboard(options: DashboardOptions): Promise<void> {
     const { loadUapConfig: loadCfg } = await import('../utils/config-loader.js');
     let mmConfig: MultiModelConfig = {
       enabled: true,
-      models: ['opus-4.6', 'qwen35'],
-      roles: { planner: 'opus-4.6', executor: 'qwen35', fallback: 'qwen35' },
+      models: ['opus-4.6', 'qwen35-a3b'],
+      roles: { planner: 'opus-4.6', executor: 'qwen35-a3b', fallback: 'qwen35-a3b' },
       routingStrategy: 'balanced',
     };
     try {
@@ -1642,10 +1642,10 @@ async function showModelsDashboard(options: DashboardOptions): Promise<void> {
     // Active configuration
     console.log(sectionHeader('Active Configuration'));
     console.log('');
-    const roles = mmConfig.roles || { planner: 'opus-4.6', executor: 'qwen35', fallback: 'qwen35' };
+    const roles = mmConfig.roles || { planner: 'opus-4.6', executor: 'qwen35-a3b', fallback: 'qwen35-a3b' };
     const plannerPreset = ModelPresets[roles.planner || 'opus-4.6'];
-    const executorPreset = ModelPresets[roles.executor || 'qwen35'];
-    const fallbackPreset = ModelPresets[roles.fallback || 'qwen35'];
+    const executorPreset = ModelPresets[roles.executor || 'qwen35-a3b'];
+    const fallbackPreset = ModelPresets[roles.fallback || 'qwen35-a3b'];
 
     const roleRows: Array<[string, string, string, string]> = [
       [
@@ -1656,12 +1656,12 @@ async function showModelsDashboard(options: DashboardOptions): Promise<void> {
       ],
       [
         'Executor',
-        roles.executor || 'qwen35',
+        roles.executor || 'qwen35-a3b',
         executorPreset?.name || '?',
         `$${(executorPreset?.costPer1MInput || 0).toFixed(2)}/$${(executorPreset?.costPer1MOutput || 0).toFixed(2)}`,
       ],
       ['Reviewer', roles.reviewer || roles.planner || 'opus-4.6', plannerPreset?.name || '?', ''],
-      ['Fallback', roles.fallback || 'qwen35', fallbackPreset?.name || '?', ''],
+      ['Fallback', roles.fallback || 'qwen35-a3b', fallbackPreset?.name || '?', ''],
     ];
     for (const [role, id, name, cost] of roleRows) {
       const roleColor =
@@ -1725,7 +1725,7 @@ async function showModelsDashboard(options: DashboardOptions): Promise<void> {
     }
 
     // Execution profile for executor
-    const executorModel = roles.executor || 'qwen35';
+    const executorModel = roles.executor || 'qwen35-a3b';
     const executorApiModel = ModelPresets[executorModel]?.apiModel || executorModel;
     const profile = detectExecutionProfile(executorApiModel);
     console.log(sectionHeader(`Execution Profile: ${profile.name}`));
