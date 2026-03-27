@@ -165,9 +165,6 @@ export interface AgentMatch {
  */
 export class CapabilityRouter {
   private mappings: CapabilityMapping[];
-  private routeCache = new Map<string, { result: RoutingResult; expiresAt: number }>();
-  private readonly cacheTtlMs = 5 * 60 * 1000;
-  private readonly cacheMaxEntries = 200;
 
   constructor(customMappings?: CapabilityMapping[]) {
     this.mappings = customMappings || DEFAULT_CAPABILITY_MAPPINGS;
@@ -177,12 +174,6 @@ export class CapabilityRouter {
    * Route a task to the best droids/skills based on task content and affected files.
    */
   routeTask(task: Task, affectedFiles?: string[]): RoutingResult {
-    const cacheKey = this.buildRouteCacheKey(task, affectedFiles);
-    const cached = this.routeCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      return cached.result;
-    }
-
     const matchedCapabilities: AgentCapability[] = [];
     const droidScores = new Map<string, number>();
     const skillScores = new Map<string, number>();
@@ -257,7 +248,7 @@ export class CapabilityRouter {
     const actualScore = [...droidScores.values()].reduce((sum, s) => sum + s, 0);
     const confidence = Math.min(1, actualScore / (maxPossibleScore / 2));
 
-    const result = {
+    return {
       recommendedDroids: sortedDroids.slice(0, 3),
       recommendedSkills: sortedSkills.slice(0, 2),
       matchedCapabilities: [...new Set(matchedCapabilities)],
@@ -265,14 +256,6 @@ export class CapabilityRouter {
       reasoning:
         reasons.length > 0 ? reasons.join('; ') : 'No specific matches, using general routing',
     };
-
-    this.routeCache.set(cacheKey, { result, expiresAt: Date.now() + this.cacheTtlMs });
-    if (this.routeCache.size > this.cacheMaxEntries) {
-      const oldestKey = this.routeCache.keys().next().value;
-      if (oldestKey) this.routeCache.delete(oldestKey);
-    }
-
-    return result;
   }
 
   /**
@@ -439,16 +422,6 @@ export class CapabilityRouter {
    */
   getMappings(): CapabilityMapping[] {
     return [...this.mappings];
-  }
-
-  private buildRouteCacheKey(task: Task, affectedFiles?: string[]): string {
-    return JSON.stringify({
-      id: task.id,
-      title: task.title,
-      type: task.type,
-      labels: [...task.labels].sort(),
-      files: (affectedFiles ?? []).slice().sort(),
-    });
   }
 }
 
