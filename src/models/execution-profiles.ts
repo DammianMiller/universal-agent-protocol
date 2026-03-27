@@ -394,7 +394,7 @@ export function getExecutionProfile(profileId: string): ExecutionProfile | undef
  * Matches against model patterns in order of specificity.
  * Falls back to size-based heuristic if no pattern matches.
  *
- * @param modelName - Model name or ID (e.g., "claude-opus-4", "qwen/qwen35-a3b-iq4xs")
+ * @param modelName - Model name or ID (e.g., "claude-opus-4.6", "qwen/qwen35-a3b-iq4xs")
  * @returns The best matching profile
  */
 export function detectExecutionProfile(modelName: string): ExecutionProfile {

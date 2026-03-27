@@ -62,11 +62,11 @@ describe('PlanValidator - Automatic Validation', () => {
   beforeEach(() => {
     config = {
       enabled: true,
-      models: ['opus-4.5', 'glm-4.7'],
+      models: ['opus-4.6', 'sonnet-4.6'],
       roles: {
-        planner: 'opus-4.5',
-        executor: 'glm-4.7',
-        fallback: 'opus-4.5',
+        planner: 'opus-4.6',
+        executor: 'sonnet-4.6',
+        fallback: 'opus-4.6',
       },
       routingStrategy: 'balanced',
     };
@@ -162,7 +162,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Test task',
         [createSubtask('subtask-1', '', 'This is a test subtask')],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']])
+        new Map([['subtask-1', 'opus-4.6']])
       );
 
       const result = await validator.validatePlan(plan, { skipIfTrivial: false });
@@ -179,7 +179,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Test task',
         [createSubtask('subtask-1', 'Test subtask', '', 'medium', 'coding')],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']])
+        new Map([['subtask-1', 'opus-4.6']])
       );
 
       const result = await validator.validatePlan(plan, { skipIfTrivial: false });
@@ -208,7 +208,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Test task',
         [invalidSubtask],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']])
+        new Map([['subtask-1', 'opus-4.6']])
       );
 
       const result = await validator.validatePlan(plan, { skipIfTrivial: false });
@@ -251,9 +251,9 @@ describe('PlanValidator - Automatic Validation', () => {
           ['subtask-c', ['subtask-b']],
         ]),
         new Map([
-          ['subtask-a', 'opus-4.5'],
-          ['subtask-b', 'glm-4.7'],
-          ['subtask-c', 'opus-4.5'],
+          ['subtask-a', 'opus-4.6'],
+          ['subtask-b', 'sonnet-4.6'],
+          ['subtask-c', 'opus-4.6'],
         ])
       );
 
@@ -271,7 +271,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Test task',
         [createSubtask('subtask-1', 'Subtask 1', 'Depends on non-existent subtask')],
         new Map([['subtask-1', ['non-existent']]]),
-        new Map([['subtask-1', 'opus-4.5']])
+        new Map([['subtask-1', 'opus-4.6']])
       );
 
       const result = await validator.validatePlan(plan, { skipIfTrivial: false });
@@ -288,7 +288,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Test task',
         [createSubtask('subtask-1', 'Subtask 1', 'Valid subtask')],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']]),
+        new Map([['subtask-1', 'opus-4.6']]),
         -10 // Negative cost
       );
 
@@ -306,7 +306,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Test task',
         [createSubtask('subtask-1', 'Subtask 1', 'Valid subtask')],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']]),
+        new Map([['subtask-1', 'opus-4.6']]),
         0.5,
         -30000 // Negative duration
       );
@@ -339,7 +339,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Test task',
         [invalidSubtask],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']])
+        new Map([['subtask-1', 'opus-4.6']])
       );
 
       const result = await validator.validatePlan(plan, { skipIfTrivial: false });
@@ -357,7 +357,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Test task',
         [{ ...createSubtask('subtask-1', 'Subtask 1', 'Valid subtask'), outputs: [] }],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']])
+        new Map([['subtask-1', 'opus-4.6']])
       );
 
       const result = await validator.validatePlan(plan, { skipIfTrivial: false });
@@ -379,7 +379,7 @@ describe('PlanValidator - Automatic Validation', () => {
           },
         ],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']])
+        new Map([['subtask-1', 'opus-4.6']])
       );
 
       const result = await validator.validatePlan(plan, { skipIfTrivial: false });
@@ -398,7 +398,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Large refactoring task',
         [createSubtask('subtask-1', 'Subtask 1', 'Very expensive operation', 'critical')],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']]),
+        new Map([['subtask-1', 'opus-4.6']]),
         1500 // High cost
       );
 
@@ -422,7 +422,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Simple task',
         [createSubtask('subtask-1', 'Single low-complexity task', 'Very simple', 'low')],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']])
+        new Map([['subtask-1', 'opus-4.6']])
       );
 
       // With skipIfTrivial: true, should return suggestion about skipping
@@ -442,7 +442,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Simple task',
         [{ ...createSubtask('subtask-1', '', 'Should still validate'), title: '' }],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']])
+        new Map([['subtask-1', 'opus-4.6']])
       );
 
       // Should still validate and find errors
@@ -464,7 +464,7 @@ describe('PlanValidator - Automatic Validation', () => {
         'Test task',
         [createSubtask('subtask-1', 'Subtask 1', 'Valid subtask')],
         new Map(),
-        new Map([['subtask-1', 'opus-4.5']])
+        new Map([['subtask-1', 'opus-4.6']])
       );
 
       // Should complete within timeout

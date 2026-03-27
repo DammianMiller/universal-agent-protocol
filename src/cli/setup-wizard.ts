@@ -386,19 +386,14 @@ async function promptModelConfig(): Promise<ModelConfig> {
   } else if (provider === 'openai') {
     profileChoices.push(
       {
-        name: `${chalk.bold('gpt-4.1')} - GPT-4.1 (recommended for coding)\n    ${chalk.dim('Purpose-built for coding and agentic use. 1M ctx, structured outputs, parallel function calling. $2/$8.')}`,
-        value: 'gpt-4.1',
-        short: 'gpt-4.1',
+        name: `${chalk.bold('gpt-5.4')} - GPT 5.4 (recommended)\n    ${chalk.dim('Strong general-purpose model. 128K ctx, parallel tools. $2.50/$10 per 1M tokens.')}`,
+        value: 'gpt-5.4',
+        short: 'gpt-5.4',
       },
       {
-        name: `${chalk.bold('gpt-4o')} - GPT-4o\n    ${chalk.dim('Multimodal flagship. 128K ctx, JSON mode, parallel function calling. Fast and cost-effective. $2.50/$10.')}`,
-        value: 'gpt-4o',
-        short: 'gpt-4o',
-      },
-      {
-        name: `${chalk.bold('gpt-o3')} - o3 (reasoning)\n    ${chalk.dim('Chain-of-thought reasoning model. 200K ctx, configurable reasoning effort. Best for complex analysis. $2/$8.')}`,
-        value: 'gpt-o3',
-        short: 'gpt-o3',
+        name: `${chalk.bold('gpt-5.3-codex')} - GPT 5.3 Codex\n    ${chalk.dim('Code-specialized model. 192K ctx, deterministic coding output. $3/$12 per 1M tokens.')}`,
+        value: 'gpt-5.3-codex',
+        short: 'gpt-5.3-codex',
       }
     );
   } else if (provider === 'local') {
@@ -409,24 +404,9 @@ async function promptModelConfig(): Promise<ModelConfig> {
         short: 'generic',
       },
       {
-        name: `${chalk.bold('qwen35')} - Qwen 3 / Qwen 3.5 (recommended for local)\n    ${chalk.dim('Thinking-mode suppression, tool call batching, speculative decoding, 262K context. Tuned for 16-48GB VRAM.')}`,
-        value: 'qwen35',
-        short: 'qwen35',
-      },
-      {
-        name: `${chalk.bold('llama')} - Meta Llama 3.x / Llama 4\n    ${chalk.dim('Flash attention, KV cache optimization, 131K context. Works with 8B through 405B at any quantization.')}`,
-        value: 'llama',
-        short: 'llama',
-      },
-      {
-        name: `${chalk.bold('kimi-k2.5')} - Moonshot Kimi K2.5\n    ${chalk.dim('Open-weight MoE (1T/32B active). 128K ctx, strong coding. Runs via vLLM or Moonshot API.')}`,
-        value: 'kimi-k2.5',
-        short: 'kimi-k2.5',
-      },
-      {
-        name: `${chalk.bold('glm-5')} - Zhipu GLM-5\n    ${chalk.dim('Chinese-English bilingual reasoning model. 128K ctx, deep thinking, tool calling. Via Zhipu API.')}`,
-        value: 'glm-5',
-        short: 'glm-5',
+        name: `${chalk.bold('qwen35-a3b')} - Qwen 3.5 35B A3B (recommended for local)\n    ${chalk.dim('Thinking-mode suppression, tool call batching, speculative decoding, 262K context. Tuned for 16-48GB VRAM.')}`,
+        value: 'qwen35-a3b',
+        short: 'qwen35-a3b',
       }
     );
   } else {
@@ -451,7 +431,7 @@ async function promptModelConfig(): Promise<ModelConfig> {
       },
     ]);
     toolCallProfile = profileAnswer.toolCallProfile;
-    qwenOptimizations = toolCallProfile === 'qwen35';
+    qwenOptimizations = toolCallProfile === 'qwen35-a3b';
 
     console.log('');
     console.log(chalk.cyan(`  Profile "${toolCallProfile}" will be saved to .uap.json.`));

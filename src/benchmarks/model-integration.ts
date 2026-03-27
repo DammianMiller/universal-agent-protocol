@@ -337,33 +337,39 @@ function getUAPMemoryContext(): string {
 
 const MODELS: ModelConfig[] = [
   {
-    id: 'opus-4.5',
-    name: 'Claude Opus 4.5',
+    id: 'opus-4.6',
+    name: 'Claude Opus 4.6',
     provider: 'anthropic',
-    apiModel: 'claude-opus-4-5-20251101',
+    apiModel: 'claude-opus-4-6-20260101',
   },
   {
-    id: 'glm-4.7',
-    name: 'GLM 4.7 (Droid Core)',
-    provider: 'zhipu',
-    apiModel: 'glm-4.7',
+    id: 'sonnet-4.6',
+    name: 'Claude Sonnet 4.6',
+    provider: 'anthropic',
+    apiModel: 'claude-sonnet-4-6-20250514',
   },
   {
-    id: 'gpt-5.2-codex',
-    name: 'GPT 5.2 Codex',
+    id: 'haiku',
+    name: 'Claude Haiku (Latest)',
+    provider: 'anthropic',
+    apiModel: 'claude-3-5-haiku-20241022',
+  },
+  {
+    id: 'gpt-5.3-codex',
+    name: 'GPT 5.3 Codex',
     provider: 'openai',
-    apiModel: 'gpt-5.2-codex',
+    apiModel: 'gpt-5.3-codex',
   },
   {
-    id: 'gpt-5.2',
-    name: 'GPT 5.2',
+    id: 'gpt-5.4',
+    name: 'GPT 5.4',
     provider: 'openai',
-    apiModel: 'gpt-5.2',
+    apiModel: 'gpt-5.4',
   },
   {
     id: 'qwen35-a3b',
     name: 'Qwen 3.5 35B A3B',
-    provider: 'local',
+    provider: 'custom',
     apiModel: 'qwen35-a3b-iq4xs',
   },
 ];

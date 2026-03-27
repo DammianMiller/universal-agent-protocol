@@ -242,7 +242,7 @@ export const TimeOptimizationSchema = z.object({
 export const ModelConfigSchema = z.object({
   id: z.string(),
   name: z.string(),
-  provider: z.enum(['anthropic', 'deepseek', 'openai', 'zhipu', 'ollama', 'custom']),
+  provider: z.enum(['anthropic', 'openai', 'ollama', 'custom']),
   apiModel: z.string(),
   endpoint: z.string().optional(),
   apiKeyEnvVar: z.string().optional(),

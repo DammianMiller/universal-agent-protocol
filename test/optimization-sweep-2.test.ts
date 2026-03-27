@@ -139,7 +139,7 @@ describe('T6: Agent execution config loading', () => {
     expect(typeof getExecutionConfigWithProjectOverrides).toBe('function');
 
     // Should return a valid config for any model
-    const result = getExecutionConfigWithProjectOverrides('claude-opus-4');
+    const result = getExecutionConfigWithProjectOverrides('claude-opus-4.6');
     expect(result).toHaveProperty('profile');
     expect(result).toHaveProperty('config');
     expect(result.profile.id).toBe('claude');

@@ -42,7 +42,7 @@ export interface MultiTurnConfig {
 const DEFAULT_CONFIG: MultiTurnConfig = {
   maxTurns: 3,
   timeout: 300000,
-  model: 'claude-opus-4-5-20251101',
+  model: 'claude-opus-4-6-20260101',
   apiKey: '',
   useMemory: true,
   projectRoot: process.cwd(),

@@ -6,7 +6,7 @@
  * Manages chat templates, wrapper scripts, proxy configuration, and testing
  * for reliable tool calling across any OpenAI-compatible model.
  *
- * Supports model profiles (e.g. qwen35, llama, generic) for model-specific
+ * Supports model profiles (e.g. qwen35-a3b, generic) for model-specific
  * tuning while keeping the core infrastructure generic.
  */
 
@@ -68,7 +68,7 @@ function detectModelProfile(): string {
   // 3. Check if a model-specific settings file exists
   const settingsPath = join(UAP_ROOT, 'config', 'qwen35-settings.json');
   if (existsSync(settingsPath)) {
-    return 'qwen35';
+    return 'qwen35-a3b';
   }
 
   return 'generic';
@@ -630,7 +630,7 @@ Commands:
 
 Model Profiles:
   Set UAP_MODEL_PROFILE env var or configure in .uap.json:
-    { "toolCalls": { "modelProfile": "qwen35" } }
+    { "toolCalls": { "modelProfile": "qwen35-a3b" } }
 
   Available profiles are stored in config/model-profiles/<name>.json
 

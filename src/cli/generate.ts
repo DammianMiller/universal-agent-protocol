@@ -331,7 +331,7 @@ async function generatePlatformFiles(
         // .claude/settings.json - workspace-specific settings
         const settings = {
           autoApprove: ['read', 'write', 'shell'],
-          defaultModel: 'claude-sonnet-4',
+          defaultModel: 'claude-sonnet-4-6-20250514',
           contextWindow: 200000,
           memoryPath: config.memory?.shortTerm?.path || 'agents/data/memory/short_term.db',
           worktreeDirectory: config.worktrees?.directory || '.worktrees',

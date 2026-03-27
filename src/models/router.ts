@@ -154,12 +154,12 @@ export class ModelRouter {
     // Ensure we have at least the default models
     if (this.models.size === 0) {
       const defaultPlanner = ModelPresets['opus-4.6'];
-      const defaultExecutor = ModelPresets['qwen35'];
+      const defaultExecutor = ModelPresets['qwen35-a3b'];
       if (defaultPlanner) {
         this.models.set('opus-4.6', defaultPlanner);
       }
       if (defaultExecutor) {
-        this.models.set('qwen35', defaultExecutor);
+        this.models.set('qwen35-a3b', defaultExecutor);
       }
     }
   }
@@ -167,14 +167,14 @@ export class ModelRouter {
   private initializeRoles(): void {
     const roles = this.config.roles || {
       planner: 'opus-4.6',
-      executor: 'qwen35',
-      fallback: 'qwen35',
+      executor: 'qwen35-a3b',
+      fallback: 'qwen35-a3b',
     };
 
     this.roleAssignments.set('planner', roles.planner || 'opus-4.6');
-    this.roleAssignments.set('executor', roles.executor || 'qwen35');
+    this.roleAssignments.set('executor', roles.executor || 'qwen35-a3b');
     this.roleAssignments.set('reviewer', roles.reviewer || roles.planner || 'opus-4.6');
-    this.roleAssignments.set('fallback', roles.fallback || 'qwen35');
+    this.roleAssignments.set('fallback', roles.fallback || 'qwen35-a3b');
   }
 
   private validateRoleAssignments(): void {
@@ -442,8 +442,8 @@ export class ModelRouter {
 
     // Medium complexity → balanced approach (use configured executor)
     if (complexity === 'medium') {
-      const executorId = this.roleAssignments.get('executor') || 'qwen35';
-      const executor = this.models.get(executorId) || ModelPresets['qwen35'];
+      const executorId = this.roleAssignments.get('executor') || 'qwen35-a3b';
+      const executor = this.models.get(executorId) || ModelPresets['qwen35-a3b'];
       const fallbackId = this.roleAssignments.get('fallback');
       const fallback = fallbackId ? this.models.get(fallbackId) : undefined;
 
@@ -529,8 +529,8 @@ export class ModelRouter {
     }
 
     // Default to executor
-    const executorId = this.roleAssignments.get('executor') || 'qwen35';
-    const defaultExecutor = ModelPresets['qwen35'];
+    const executorId = this.roleAssignments.get('executor') || 'qwen35-a3b';
+    const defaultExecutor = ModelPresets['qwen35-a3b'];
     const executor = this.models.get(executorId) || defaultExecutor;
     const fallbackId = this.roleAssignments.get('fallback');
     const fallback = fallbackId ? this.models.get(fallbackId) : undefined;
@@ -654,11 +654,11 @@ export class ModelRouter {
   public static getDefaultUAPConfig(): MultiModelConfig {
     return {
       enabled: true,
-      models: ['opus-4.6', 'qwen35', 'glm-4.7'],
+      models: ['opus-4.6', 'qwen35-a3b', 'sonnet-4.6'],
       roles: {
         planner: 'opus-4.6',
-        executor: 'qwen35',
-        fallback: 'qwen35',
+        executor: 'qwen35-a3b',
+        fallback: 'qwen35-a3b',
       },
       routingStrategy: 'balanced',
     };
@@ -678,12 +678,12 @@ export function createRouter(config: MultiModelConfig): ModelRouter {
 export function createCostOptimizedRouter(): ModelRouter {
   return new ModelRouter({
     enabled: true,
-    models: ['deepseek-v3.2', 'glm-4.7', 'opus-4.5'],
+    models: ['haiku', 'qwen35-a3b', 'opus-4.6'],
     roles: {
-      planner: 'deepseek-v3.2',
-      executor: 'glm-4.7',
-      reviewer: 'deepseek-v3.2',
-      fallback: 'opus-4.5',
+      planner: 'haiku',
+      executor: 'qwen35-a3b',
+      reviewer: 'haiku',
+      fallback: 'opus-4.6',
     },
     routingStrategy: 'cost-optimized',
     costOptimization: {
@@ -701,12 +701,12 @@ export function createCostOptimizedRouter(): ModelRouter {
 export function createPerformanceRouter(): ModelRouter {
   return new ModelRouter({
     enabled: true,
-    models: ['opus-4.5', 'gpt-5.2'],
+    models: ['opus-4.6', 'gpt-5.4'],
     roles: {
-      planner: 'opus-4.5',
-      executor: 'opus-4.5',
-      reviewer: 'opus-4.5',
-      fallback: 'opus-4.5',
+      planner: 'opus-4.6',
+      executor: 'opus-4.6',
+      reviewer: 'opus-4.6',
+      fallback: 'gpt-5.4',
     },
     routingStrategy: 'performance-first',
   });

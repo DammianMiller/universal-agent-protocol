@@ -729,12 +729,12 @@ export function showDeployWindow(): void {
 
 const MODEL_COSTS: Record<string, { input: number; output: number }> = {
   // Cost per 1M tokens (USD)
-  'claude-opus-4': { input: 15.0, output: 75.0 },
-  'claude-sonnet-4': { input: 3.0, output: 15.0 },
-  'claude-haiku': { input: 0.25, output: 1.25 },
-  'gpt-4o': { input: 2.5, output: 10.0 },
-  'gpt-4o-mini': { input: 0.15, output: 0.6 },
-  'qwen3.5': { input: 0.0, output: 0.0 }, // local model, no API cost
+  'opus-4.6': { input: 7.5, output: 37.5 },
+  'sonnet-4.6': { input: 3.0, output: 15.0 },
+  haiku: { input: 0.8, output: 4.0 },
+  'gpt-5.4': { input: 2.5, output: 10.0 },
+  'gpt-5.3-codex': { input: 3.0, output: 12.0 },
+  'qwen35-a3b': { input: 0.0, output: 0.0 },
   local: { input: 0.0, output: 0.0 },
 };
 
@@ -745,7 +745,7 @@ export function costTrack(
   operation: string
 ): void {
   const s = getStats();
-  const rates = MODEL_COSTS[model] || MODEL_COSTS['claude-sonnet-4']; // default assumption
+  const rates = MODEL_COSTS[model] || MODEL_COSTS['sonnet-4.6']; // default assumption
   const costUsd = (inputTokens * rates.input + outputTokens * rates.output) / 1_000_000;
 
   const entry: CostEntry = {
@@ -776,7 +776,7 @@ export function costTrack(
 
 export function costFromSavedTokens(savedTokens: number, model?: string): void {
   const s = getStats();
-  const rates = MODEL_COSTS[model || 'claude-sonnet-4'];
+  const rates = MODEL_COSTS[model || 'sonnet-4.6'];
   // Assume saved tokens are roughly 70% input, 30% output
   const savedCost =
     (savedTokens * 0.7 * rates.input + savedTokens * 0.3 * rates.output) / 1_000_000;

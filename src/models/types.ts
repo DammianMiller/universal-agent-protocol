@@ -9,7 +9,7 @@
 import { z } from 'zod';
 
 // Model provider identifiers
-export type ModelProvider = 'anthropic' | 'deepseek' | 'openai' | 'zhipu' | 'ollama' | 'custom';
+export type ModelProvider = 'anthropic' | 'openai' | 'ollama' | 'custom';
 
 // Model role in the architecture
 export type ModelRole = 'planner' | 'executor' | 'reviewer' | 'fallback' | 'task';
@@ -23,7 +23,7 @@ export type TaskComplexity = 'low' | 'medium' | 'high' | 'critical';
 export const ModelConfigSchemaModels = z.object({
   id: z.string(),
   name: z.string(),
-  provider: z.enum(['anthropic', 'deepseek', 'openai', 'zhipu', 'ollama', 'custom']),
+  provider: z.enum(['anthropic', 'openai', 'ollama', 'custom']),
   apiModel: z.string(),
   endpoint: z.string().optional(),
   apiKeyEnvVar: z.string().optional(),
@@ -40,17 +40,6 @@ export type ModelConfig = z.infer<typeof ModelConfigSchemaModels>;
  * Pre-defined model presets for common configurations
  */
 export const ModelPresets: Record<string, ModelConfig> = {
-  'opus-4.5': {
-    id: 'opus-4.5',
-    name: 'Claude Opus 4.5',
-    provider: 'anthropic',
-    apiModel: 'claude-opus-4-5-20251101',
-    apiKeyEnvVar: 'ANTHROPIC_API_KEY',
-    maxContextTokens: 200000,
-    costPer1MInput: 5.0,
-    costPer1MOutput: 25.0,
-    capabilities: ['planning', 'complex-reasoning', 'code-generation', 'review'],
-  },
   'opus-4.6': {
     id: 'opus-4.6',
     name: 'Claude Opus 4.6',
@@ -69,60 +58,28 @@ export const ModelPresets: Record<string, ModelConfig> = {
     ],
     modelContextBudget: 180000,
   },
-   'deepseek-v3.2': {
-    id: 'deepseek-v3.2',
-    name: 'DeepSeek V3.2 Speciale',
-    provider: 'deepseek',
-    apiModel: 'deepseek-chat',
-    apiKeyEnvVar: 'DEEPSEEK_API_KEY',
-    maxContextTokens: 164000,
-    costPer1MInput: 0.25,
-    costPer1MOutput: 0.38,
-    capabilities: ['planning', 'code-generation', 'complex-reasoning'],
-  },
-  'deepseek-v3.2-exp': {
-    id: 'deepseek-v3.2-exp',
-    name: 'DeepSeek V3.2 Experimental',
-    provider: 'deepseek',
-    apiModel: 'deepseek-coder',
-    apiKeyEnvVar: 'DEEPSEEK_API_KEY',
-    maxContextTokens: 164000,
-    costPer1MInput: 0.21,
-    costPer1MOutput: 0.32,
-    capabilities: ['code-generation', 'execution'],
-  },
-  'gpt-5.2': {
-    id: 'gpt-5.2',
-    name: 'GPT 5.2',
-    provider: 'openai',
-    apiModel: 'gpt-5.2',
-    apiKeyEnvVar: 'OPENAI_API_KEY',
-    maxContextTokens: 128000,
-    costPer1MInput: 2.5,
-    costPer1MOutput: 10.0,
-    capabilities: ['planning', 'code-generation', 'complex-reasoning'],
-  },
-  'claude-opus-4': {
-    id: 'claude-opus-4',
-    name: 'Claude Opus 4',
+  'sonnet-4.6': {
+    id: 'sonnet-4.6',
+    name: 'Claude Sonnet 4.6',
     provider: 'anthropic',
-    apiModel: 'claude-opus-4-20250514',
-    apiKeyEnvVar: 'ANTHROPIC_API_KEY',
-    maxContextTokens: 200000,
-    costPer1MInput: 15.0,
-    costPer1MOutput: 75.0,
-    capabilities: ['planning', 'complex-reasoning', 'code-generation', 'review', 'agentic'],
-  },
-  'claude-sonnet-4': {
-    id: 'claude-sonnet-4',
-    name: 'Claude Sonnet 4',
-    provider: 'anthropic',
-    apiModel: 'claude-sonnet-4-20250514',
+    apiModel: 'claude-sonnet-4-6-20250514',
     apiKeyEnvVar: 'ANTHROPIC_API_KEY',
     maxContextTokens: 200000,
     costPer1MInput: 3.0,
     costPer1MOutput: 15.0,
     capabilities: ['code-generation', 'execution', 'review', 'agentic'],
+    modelContextBudget: 180000,
+  },
+  haiku: {
+    id: 'haiku',
+    name: 'Claude Haiku (Latest)',
+    provider: 'anthropic',
+    apiModel: 'claude-3-5-haiku-20241022',
+    apiKeyEnvVar: 'ANTHROPIC_API_KEY',
+    maxContextTokens: 200000,
+    costPer1MInput: 0.8,
+    costPer1MOutput: 4.0,
+    capabilities: ['code-generation', 'execution', 'simple-tasks'],
   },
   'qwen35-a3b': {
     id: 'qwen35-a3b',
@@ -136,28 +93,27 @@ export const ModelPresets: Record<string, ModelConfig> = {
     capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
     modelContextBudget: 131072,
   },
-  'glm-4.7': {
-    id: 'glm-4.7',
-    name: 'GLM 4.7',
-    provider: 'zhipu',
-    apiModel: 'glm-4.7',
-    apiKeyEnvVar: 'ZHIPU_API_KEY',
+  'gpt-5.4': {
+    id: 'gpt-5.4',
+    name: 'GPT 5.4',
+    provider: 'openai',
+    apiModel: 'gpt-5.4',
+    apiKeyEnvVar: 'OPENAI_API_KEY',
     maxContextTokens: 128000,
-    costPer1MInput: 0.10,
-    costPer1MOutput: 0.10,
-    capabilities: ['code-generation', 'execution', 'simple-tasks'],
+    costPer1MInput: 2.5,
+    costPer1MOutput: 10.0,
+    capabilities: ['planning', 'code-generation', 'complex-reasoning'],
   },
-  qwen35: {
-    id: 'qwen35',
-    name: 'Qwen 3.5 35B A3B (iq4xs)',
-    provider: 'custom',
-    apiModel: 'qwen35-a3b-iq4xs',
-    endpoint: 'http://localhost:8080/v1',
-    maxContextTokens: 262144,
-    costPer1MInput: 0,
-    costPer1MOutput: 0,
-    capabilities: ['code-generation', 'execution', 'planning'],
-    modelContextBudget: 131072,
+  'gpt-5.3-codex': {
+    id: 'gpt-5.3-codex',
+    name: 'GPT 5.3 Codex',
+    provider: 'openai',
+    apiModel: 'gpt-5.3-codex',
+    apiKeyEnvVar: 'OPENAI_API_KEY',
+    maxContextTokens: 192000,
+    costPer1MInput: 3.0,
+    costPer1MOutput: 12.0,
+    capabilities: ['code-generation', 'execution', 'complex-reasoning', 'agentic'],
   },
 };
 
@@ -204,19 +160,19 @@ export const MultiModelConfigSchema = z.object({
   models: z
     .array(
       z.union([
-        z.string(), // Preset ID like 'opus-4.5'
+        z.string(), // Preset ID like 'opus-4.6'
         ModelConfigSchemaModels, // Full custom config
       ])
     )
-    .default(['opus-4.6', 'qwen35']),
+    .default(['opus-4.6', 'qwen35-a3b']),
 
   // Role assignments
   roles: z
     .object({
       planner: z.string().default('opus-4.6'),
-      executor: z.string().default('qwen35'),
+      executor: z.string().default('qwen35-a3b'),
       reviewer: z.string().optional(),
-      fallback: z.string().default('qwen35'),
+      fallback: z.string().default('qwen35-a3b'),
     })
     .optional(),
 
