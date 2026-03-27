@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.19.0 (2026-03-27)
+
+- feat: add context level defaults and token usage guard
+- fix: remove agents/docker-compose.yml for test D10
+- chore: clean up CHANGELOG duplicates
+
+
 ## v1.18.0 (2026-03-27)
 
 - feat: implement full optimization suite - adaptive cache O(1) eviction, SQLite WAL mode, query caching, pattern router LRU cache, async hook execution
