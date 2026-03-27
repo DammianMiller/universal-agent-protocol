@@ -85,6 +85,7 @@ import re
 import sys
 import time
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 import httpx
@@ -116,9 +117,9 @@ PROXY_LOOP_BREAKER = os.environ.get("PROXY_LOOP_BREAKER", "on").lower() not in {
     "no",
 }
 PROXY_LOOP_WINDOW = int(os.environ.get("PROXY_LOOP_WINDOW", "6"))
-PROXY_LOOP_REPEAT_THRESHOLD = int(os.environ.get("PROXY_LOOP_REPEAT_THRESHOLD", "8"))
+PROXY_LOOP_REPEAT_THRESHOLD = int(os.environ.get("PROXY_LOOP_REPEAT_THRESHOLD", "6"))
 PROXY_FORCED_THRESHOLD = int(os.environ.get("PROXY_FORCED_THRESHOLD", "15"))
-PROXY_NO_PROGRESS_THRESHOLD = int(os.environ.get("PROXY_NO_PROGRESS_THRESHOLD", "4"))
+PROXY_NO_PROGRESS_THRESHOLD = int(os.environ.get("PROXY_NO_PROGRESS_THRESHOLD", "3"))
 PROXY_CONTEXT_RELEASE_THRESHOLD = float(
     os.environ.get("PROXY_CONTEXT_RELEASE_THRESHOLD", "0.90")
 )
@@ -138,16 +139,28 @@ PROXY_TOOL_STATE_FORCED_BUDGET = int(
 )
 PROXY_TOOL_STATE_AUTO_BUDGET = int(os.environ.get("PROXY_TOOL_STATE_AUTO_BUDGET", "2"))
 PROXY_TOOL_STATE_STAGNATION_THRESHOLD = int(
-    os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "12")
+    os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "9")
 )
 PROXY_TOOL_STATE_CYCLE_WINDOW = int(
     os.environ.get("PROXY_TOOL_STATE_CYCLE_WINDOW", "8")
 )
 PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
-    os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "24")
+    os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "18")
 )
 PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT = int(
-    os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "3")
+    os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "2")
+)
+PROXY_CLIENT_RATE_WINDOW_SECS = int(
+    os.environ.get("PROXY_CLIENT_RATE_WINDOW_SECS", "60")
+)
+PROXY_CLIENT_RATE_LOG_MIN_SECS = float(
+    os.environ.get("PROXY_CLIENT_RATE_LOG_MIN_SECS", "15")
+)
+PROXY_OPUS46_CTX_THRESHOLD = float(
+    os.environ.get("PROXY_OPUS46_CTX_THRESHOLD", "0.8")
+)
+PROXY_OPUS46_MAX_TOKENS_HIGH_CTX = int(
+    os.environ.get("PROXY_OPUS46_MAX_TOKENS_HIGH_CTX", "4096")
 )
 PROXY_TOOL_NARROWING_EXPAND_ON_LOOP = os.environ.get(
     "PROXY_TOOL_NARROWING_EXPAND_ON_LOOP", "on"
@@ -322,6 +335,51 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("uap.anthropic_proxy")
+
+_client_request_times: dict[str, deque[float]] = defaultdict(deque)
+_client_rate_last_log: dict[str, float] = defaultdict(float)
+
+
+def resolve_client_id(request: Request) -> str:
+    header_keys = ("x-uap-client-id", "x-forwarded-for", "x-real-ip")
+    for key in header_keys:
+        value = request.headers.get(key)
+        if value:
+            return f"{key}:{value.split(',')[0].strip()}"
+    if request.client:
+        return f"remote:{request.client.host}"
+    return "remote:unknown"
+
+
+def log_client_rate(client_id: str) -> int:
+    if PROXY_CLIENT_RATE_WINDOW_SECS <= 0:
+        return 0
+    now = time.time()
+    window = PROXY_CLIENT_RATE_WINDOW_SECS
+    request_times = _client_request_times[client_id]
+    request_times.append(now)
+    cutoff = now - window
+    while request_times and request_times[0] < cutoff:
+        request_times.popleft()
+    count = len(request_times)
+    if PROXY_CLIENT_RATE_LOG_MIN_SECS <= 0:
+        logger.info(
+            "CLIENT_RATE: id=%s window=%ss count=%d",
+            client_id,
+            window,
+            count,
+        )
+        return count
+    last_log = _client_rate_last_log.get(client_id, 0.0)
+    if now - last_log >= PROXY_CLIENT_RATE_LOG_MIN_SECS:
+        _client_rate_last_log[client_id] = now
+        logger.info(
+            "CLIENT_RATE: id=%s window=%ss count=%d",
+            client_id,
+            window,
+            count,
+        )
+    return count
 
 
 def _load_tool_call_grammar(path: str) -> str:
@@ -1878,6 +1936,25 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
                     estimated_input,
                 )
                 requested_max = max(1024, available_for_output)
+
+            model_name = str(anthropic_body.get("model", "")).lower()
+            utilization = estimated_input / ctx_window if ctx_window else 0.0
+            if (
+                PROXY_OPUS46_MAX_TOKENS_HIGH_CTX > 0
+                and "opus" in model_name
+                and "4.6" in model_name
+                and utilization >= PROXY_OPUS46_CTX_THRESHOLD
+                and requested_max > PROXY_OPUS46_MAX_TOKENS_HIGH_CTX
+            ):
+                logger.warning(
+                    "MAX_TOKENS capped for Opus 4.6 at high context: %d -> %d (ctx=%d input~%d util=%.1f%%)",
+                    requested_max,
+                    PROXY_OPUS46_MAX_TOKENS_HIGH_CTX,
+                    ctx_window,
+                    estimated_input,
+                    utilization * 100,
+                )
+                requested_max = PROXY_OPUS46_MAX_TOKENS_HIGH_CTX
 
         openai_body["max_tokens"] = requested_max
     if "temperature" in anthropic_body:
@@ -3953,6 +4030,7 @@ async def messages(request: Request):
     body = await request.json()
     model = body.get("model", "default")
     is_stream = body.get("stream", False)
+    client_id = resolve_client_id(request)
     session_id = resolve_session_id(request, body)
     monitor = get_session_monitor(session_id)
     last_session_id = session_id
@@ -3982,8 +4060,12 @@ async def messages(request: Request):
         last_text = last_content[:200]
     else:
         last_text = str(last_content)[:200]
+    rate_count = log_client_rate(client_id)
     logger.info(
-        "REQ: stream=%s msgs=%d tools=%d max_tokens=%s last_role=%s last_content=%.200s",
+        "REQ: client=%s rate_%ss=%d stream=%s msgs=%d tools=%d max_tokens=%s last_role=%s last_content=%.200s",
+        client_id,
+        PROXY_CLIENT_RATE_WINDOW_SECS,
+        rate_count,
         is_stream,
         n_messages,
         n_tools,
