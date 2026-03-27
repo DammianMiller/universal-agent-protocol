@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.18.1 (2026-03-27)
+
+- fix: add verbosity controls for hooks
+
+
 ## v1.18.0 (2026-03-27)
 
 - fix: remove duplicate docker-compose file
