@@ -56,9 +56,11 @@ export class AdaptiveCache<K, V> {
       return null;
     }
 
-    // Update access metadata
+    // Update access metadata + LRU order
     entry.lastAccessed = new Date();
     entry.usageCount++;
+    this.cache.delete(key);
+    this.cache.set(key, entry);
 
     return entry.value;
   }
@@ -67,8 +69,9 @@ export class AdaptiveCache<K, V> {
    * Set value in cache
    */
   set(key: K, value: V, priority: number = 1): void {
-    // Evict if at capacity
-    if (this.cache.size >= this.options.maxEntries) {
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.options.maxEntries) {
       this.evict();
     }
 
@@ -119,34 +122,11 @@ export class AdaptiveCache<K, V> {
    * Evict entries based on priority and access patterns
    */
   private evict(): void {
-    const entries = [...this.cache.entries()];
-
-    if (entries.length === 0) return;
-
-    // Separate hot vs cold entries
-    const coldEntries = entries.filter(
-      ([_, entry]) => entry.usageCount < this.options.hotThreshold / 2
-    );
-    // hotEntries unused - kept for future expansion
-
-    // Evict cold first
-    if (coldEntries.length > Math.floor(this.options.maxEntries * this.options.coldEvictionRatio)) {
-      // Sort by last access time
-      coldEntries.sort((a, b) => a[1].lastAccessed.getTime() - b[1].lastAccessed.getTime());
-
-      const toRemove = Math.floor(coldEntries.length / 2);
-      for (let i = 0; i < toRemove; i++) {
-        this.cache.delete(coldEntries[i][0]);
-      }
-      return;
-    }
-
-    // If not enough cold entries, evict LRU from all
-    entries.sort((a, b) => a[1].lastAccessed.getTime() - b[1].lastAccessed.getTime());
-
-    const toRemove = Math.ceil(entries.length * 0.3);
+    const toRemove = Math.ceil(this.cache.size * 0.3);
     for (let i = 0; i < toRemove; i++) {
-      this.cache.delete(entries[i][0]);
+      const oldestKey = this.cache.keys().next().value as K | undefined;
+      if (oldestKey === undefined) return;
+      this.cache.delete(oldestKey);
     }
   }
 
