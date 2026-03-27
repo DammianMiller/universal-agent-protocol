@@ -816,12 +816,12 @@ export function recordOutcome(
   // OPT 8: Also update model router fingerprints
   if (modelId) {
     const validModelIds: ModelId[] = [
-      'glm-4.7',
-      'gpt-5.2',
-      'claude-opus-4.5',
-      'gpt-5.2-codex',
       'opus-4.6',
-      'qwen35',
+      'sonnet-4.6',
+      'haiku',
+      'qwen35-a3b',
+      'gpt-5.4',
+      'gpt-5.3-codex',
     ];
     if (validModelIds.includes(modelId as ModelId)) {
       updateModelRouterFingerprint(modelId as ModelId, success, durationMs, taskType);
@@ -1269,9 +1269,9 @@ export function getModelFingerprintForTask(
   taskType: string
 ): { recommended: ModelId; reason: string } | null {
   // Check per-category success rates from model router
-  const models: ModelId[] = ['claude-opus-4.5', 'gpt-5.2', 'glm-4.7', 'gpt-5.2-codex'];
+  const models: ModelId[] = ['opus-4.6', 'sonnet-4.6', 'gpt-5.4', 'gpt-5.3-codex'];
 
-  let bestModel: ModelId = 'claude-opus-4.5';
+  let bestModel: ModelId = 'opus-4.6';
   let bestScore = 0;
 
   for (const modelId of models) {

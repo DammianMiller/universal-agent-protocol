@@ -34,11 +34,11 @@ function getMultiModelConfig(config: AgentContextConfig | null): MultiModelConfi
   // Return default config
   return MultiModelSchema.parse({
     enabled: true,
-    models: ['opus-4.6', 'qwen35'],
+    models: ['opus-4.6', 'qwen35-a3b'],
     roles: {
       planner: 'opus-4.6',
-      executor: 'qwen35',
-      fallback: 'qwen35',
+      executor: 'qwen35-a3b',
+      fallback: 'qwen35-a3b',
     },
     routingStrategy: 'balanced',
   });
@@ -77,13 +77,13 @@ async function statusCommand(): Promise<void> {
   console.log(chalk.bold('Role Assignments:'));
   const roles = mmConfig.roles || {
     planner: 'opus-4.6',
-    executor: 'qwen35',
-    fallback: 'qwen35',
+    executor: 'qwen35-a3b',
+    fallback: 'qwen35-a3b',
   };
   console.log(`  Planner:  ${chalk.green(roles.planner || 'opus-4.6')}`);
-  console.log(`  Executor: ${chalk.blue(roles.executor || 'qwen35')}`);
+  console.log(`  Executor: ${chalk.blue(roles.executor || 'qwen35-a3b')}`);
   console.log(`  Reviewer: ${chalk.yellow(roles.reviewer || roles.planner || 'opus-4.6')}`);
-  console.log(`  Fallback: ${chalk.red(roles.fallback || 'qwen35')}`);
+  console.log(`  Fallback: ${chalk.red(roles.fallback || 'qwen35-a3b')}`);
   console.log();
 
   if (mmConfig.costOptimization?.enabled) {
@@ -228,8 +228,8 @@ async function compareCommand(): Promise<void> {
       name: 'Performance First',
       config: {
         enabled: true,
-        models: ['opus-4.5'],
-        roles: { planner: 'opus-4.5', executor: 'opus-4.5', fallback: 'opus-4.5' },
+        models: ['opus-4.6', 'gpt-5.4'],
+        roles: { planner: 'opus-4.6', executor: 'opus-4.6', fallback: 'gpt-5.4' },
         routingStrategy: 'performance-first',
       },
     },
@@ -237,8 +237,8 @@ async function compareCommand(): Promise<void> {
       name: 'Cost Optimized',
       config: {
         enabled: true,
-        models: ['deepseek-v3.2', 'glm-4.7', 'opus-4.5'],
-        roles: { planner: 'deepseek-v3.2', executor: 'glm-4.7', fallback: 'opus-4.5' },
+        models: ['haiku', 'qwen35-a3b', 'opus-4.6'],
+        roles: { planner: 'haiku', executor: 'qwen35-a3b', fallback: 'opus-4.6' },
         routingStrategy: 'cost-optimized',
         costOptimization: {
           enabled: true,
@@ -252,8 +252,8 @@ async function compareCommand(): Promise<void> {
       name: 'Balanced',
       config: {
         enabled: true,
-        models: ['opus-4.5', 'glm-4.7'],
-        roles: { planner: 'opus-4.5', executor: 'glm-4.7', fallback: 'opus-4.5' },
+        models: ['opus-4.6', 'sonnet-4.6', 'qwen35-a3b'],
+        roles: { planner: 'opus-4.6', executor: 'qwen35-a3b', fallback: 'sonnet-4.6' },
         routingStrategy: 'balanced',
       },
     },
@@ -271,8 +271,8 @@ async function compareCommand(): Promise<void> {
     const planner = createPlanner(router, config);
     const plan = await planner.createPlan(sampleTask);
 
-    const plannerModel = config.roles?.planner || 'opus-4.5';
-    const executorModel = config.roles?.executor || 'glm-4.7';
+    const plannerModel = config.roles?.planner || 'opus-4.6';
+    const executorModel = config.roles?.executor || 'qwen35-a3b';
 
     console.log(
       `${name.padEnd(20)} | ` +
@@ -357,13 +357,13 @@ async function selectCommand(options: { save?: boolean }): Promise<void> {
   console.log('Current Configuration:');
   const roles = mmConfig.roles || {
     planner: 'opus-4.6',
-    executor: 'qwen35',
-    fallback: 'qwen35',
+    executor: 'qwen35-a3b',
+    fallback: 'qwen35-a3b',
   };
   console.log(`  Planner:  ${chalk.green(roles.planner)}`);
   console.log(`  Executor: ${chalk.blue(roles.executor)}`);
   console.log(`  Reviewer: ${chalk.yellow(roles.reviewer || roles.planner || 'opus-4.6')}`);
-  console.log(`  Fallback: ${chalk.red(roles.fallback || 'qwen35')}`);
+  console.log(`  Fallback: ${chalk.red(roles.fallback || 'qwen35-a3b')}`);
   console.log();
 
   // Show available presets

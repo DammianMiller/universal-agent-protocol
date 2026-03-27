@@ -806,7 +806,7 @@ function buildSessionTelemetry(
     // Seed agents from coordination data if the agents table is empty
     const agentCount = (db.prepare('SELECT COUNT(*) as cnt FROM agents').get() as any)?.cnt || 0;
     if (agentCount === 0 && coordination.agents.length > 0) {
-      const models = ['opus-4.6', 'qwen35'];
+      const models = ['opus-4.6', 'qwen35-a3b'];
       const insertAgent = db.prepare(
         `INSERT OR IGNORE INTO agents (id, name, type, status, currentTask, tokensUsed, model, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       );
@@ -1424,10 +1424,10 @@ function getMemoryData(cwd: string): MemoryData {
 }
 
 function getModelData(cwd: string): ModelData {
-  let roles = { planner: 'opus-4.6', executor: 'qwen35', reviewer: 'opus-4.6', fallback: 'qwen35' };
+  let roles = { planner: 'opus-4.6', executor: 'qwen35-a3b', reviewer: 'opus-4.6', fallback: 'qwen35-a3b' };
   let strategy = 'balanced';
   let enabled = false;
-  let availableModels: string[] = ['opus-4.6', 'qwen35'];
+  let availableModels: string[] = ['opus-4.6', 'qwen35-a3b'];
   let routingMatrix: Record<string, { planner: string; executor: string }> = {};
   let routingRules: ModelData['routingRules'] = [];
   let costOptimization: ModelData['costOptimization'] = {
@@ -1528,7 +1528,7 @@ function getModelData(cwd: string): ModelData {
   }
 
   // Ensure defaults are returned if not loaded from config
-  const finalAvailableModels = (availableModels && availableModels.length > 0) ? availableModels : ['opus-4.6', 'qwen35'];
+  const finalAvailableModels = (availableModels && availableModels.length > 0) ? availableModels : ['opus-4.6', 'qwen35-a3b'];
   const finalRoutingRules = (routingRules && routingRules.length > 0) ? routingRules : [];
 
   // Router is effectively enabled if explicitly configured OR if there are

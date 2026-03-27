@@ -20,11 +20,11 @@ describe('ModelRouter', () => {
   beforeEach(() => {
     config = {
       enabled: true,
-      models: ['opus-4.5', 'deepseek-v3.2', 'glm-4.7'],
+      models: ['opus-4.6', 'sonnet-4.6', 'haiku'],
       roles: {
-        planner: 'deepseek-v3.2',
-        executor: 'glm-4.7',
-        fallback: 'opus-4.5',
+        planner: 'opus-4.6',
+        executor: 'sonnet-4.6',
+        fallback: 'haiku',
       },
       routingStrategy: 'balanced',
     };
@@ -82,22 +82,22 @@ describe('ModelRouter', () => {
     it('should include fallback model', () => {
       const selection = router.selectModel('medium', 'coding', []);
       expect(selection.fallback).toBeDefined();
-      expect(selection.fallback?.id).toBe('opus-4.5');
+      expect(selection.fallback?.id).toBe('haiku');
     });
   });
 
   describe('estimateCost', () => {
     it('should calculate cost correctly', () => {
-      const model = ModelPresets['opus-4.5'];
+      const model = ModelPresets['opus-4.6'];
       const cost = router.estimateCost(model, 10000, 5000);
-      // Input: 10K * $5/1M = $0.05
-      // Output: 5K * $25/1M = $0.125
-      // Total: $0.175
-      expect(cost).toBeCloseTo(0.175, 4);
+      // Input: 10K * $7.5/1M = $0.075
+      // Output: 5K * $37.5/1M = $0.1875
+      // Total: $0.2625
+      expect(cost).toBeCloseTo(0.2625, 4);
     });
 
     it('should return 0 for models without cost info', () => {
-      const model = { ...ModelPresets['opus-4.5'], costPer1MInput: undefined, costPer1MOutput: undefined };
+      const model = { ...ModelPresets['opus-4.6'], costPer1MInput: undefined, costPer1MOutput: undefined };
       const cost = router.estimateCost(model, 10000, 5000);
       expect(cost).toBe(0);
     });
@@ -124,11 +124,11 @@ describe('TaskPlanner', () => {
   beforeEach(() => {
     config = {
       enabled: true,
-      models: ['opus-4.5', 'qwen35'],
+      models: ['opus-4.6', 'qwen35-a3b'],
       roles: {
-        planner: 'opus-4.5',
-        executor: 'qwen35',
-        fallback: 'opus-4.5',
+        planner: 'opus-4.6',
+        executor: 'qwen35-a3b',
+        fallback: 'opus-4.6',
       },
       routingStrategy: 'balanced',
     };
@@ -206,11 +206,11 @@ describe('TaskExecutor', () => {
   beforeEach(() => {
     config = {
       enabled: true,
-      models: ['opus-4.5', 'glm-4.7'],
+      models: ['opus-4.6', 'haiku'],
       roles: {
-        planner: 'opus-4.5',
-        executor: 'glm-4.7',
-        fallback: 'opus-4.5',
+        planner: 'opus-4.6',
+        executor: 'haiku',
+        fallback: 'opus-4.6',
       },
       routingStrategy: 'balanced',
     };
@@ -268,8 +268,8 @@ describe('Factory Functions', () => {
       const router = createCostOptimizedRouter();
       const models = router.getAllModels();
 
-      expect(models.some(m => m.id === 'deepseek-v3.2')).toBe(true);
-      expect(models.some(m => m.id === 'glm-4.7')).toBe(true);
+      expect(models.some(m => m.id === 'haiku')).toBe(true);
+      expect(models.some(m => m.id === 'qwen35-a3b')).toBe(true);
     });
   });
 
@@ -278,27 +278,45 @@ describe('Factory Functions', () => {
       const router = createPerformanceRouter();
       const models = router.getAllModels();
       
-      expect(models.some(m => m.id === 'opus-4.5')).toBe(true);
+      expect(models.some(m => m.id === 'opus-4.6')).toBe(true);
     });
   });
 });
 
 describe('ModelPresets', () => {
-  it('should have opus-4.5 preset', () => {
-    expect(ModelPresets['opus-4.5']).toBeDefined();
-    expect(ModelPresets['opus-4.5'].provider).toBe('anthropic');
-    expect(ModelPresets['opus-4.5'].costPer1MInput).toBe(5.0);
+  it('should have opus-4.6 preset', () => {
+    expect(ModelPresets['opus-4.6']).toBeDefined();
+    expect(ModelPresets['opus-4.6'].provider).toBe('anthropic');
+    expect(ModelPresets['opus-4.6'].costPer1MInput).toBe(7.5);
   });
 
-  it('should have deepseek-v3.2 preset', () => {
-    expect(ModelPresets['deepseek-v3.2']).toBeDefined();
-    expect(ModelPresets['deepseek-v3.2'].provider).toBe('deepseek');
-    expect(ModelPresets['deepseek-v3.2'].costPer1MInput).toBe(0.25);
+  it('should have sonnet-4.6 preset', () => {
+    expect(ModelPresets['sonnet-4.6']).toBeDefined();
+    expect(ModelPresets['sonnet-4.6'].provider).toBe('anthropic');
+    expect(ModelPresets['sonnet-4.6'].costPer1MInput).toBe(3.0);
+  });
+
+  it('should have haiku preset', () => {
+    expect(ModelPresets['haiku']).toBeDefined();
+    expect(ModelPresets['haiku'].provider).toBe('anthropic');
+    expect(ModelPresets['haiku'].costPer1MInput).toBe(0.8);
   });
 
   it('should have qwen35-a3b preset', () => {
     expect(ModelPresets['qwen35-a3b']).toBeDefined();
     expect(ModelPresets['qwen35-a3b'].provider).toBe('custom');
     expect(ModelPresets['qwen35-a3b'].apiModel).toBe('qwen35-a3b-iq4xs');
+  });
+
+  it('should have gpt-5.4 preset', () => {
+    expect(ModelPresets['gpt-5.4']).toBeDefined();
+    expect(ModelPresets['gpt-5.4'].provider).toBe('openai');
+    expect(ModelPresets['gpt-5.4'].costPer1MInput).toBe(2.5);
+  });
+
+  it('should have gpt-5.3-codex preset', () => {
+    expect(ModelPresets['gpt-5.3-codex']).toBeDefined();
+    expect(ModelPresets['gpt-5.3-codex'].provider).toBe('openai');
+    expect(ModelPresets['gpt-5.3-codex'].costPer1MInput).toBe(3.0);
   });
 });

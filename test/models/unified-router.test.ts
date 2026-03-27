@@ -12,12 +12,12 @@ import type { MultiModelConfig, TaskClassificationResult } from '../../src/model
 
 const DEFAULT_CONFIG: MultiModelConfig = {
   enabled: true,
-  models: ['opus-4.5', 'gpt-5.2', 'glm-4.7', 'qwen35'],
+  models: ['opus-4.6', 'gpt-5.4', 'sonnet-4.6', 'qwen35-a3b'],
   roles: {
-    planner: 'opus-4.5',
-    executor: 'gpt-5.2',
-    reviewer: 'glm-4.7',
-    fallback: 'qwen35',
+    planner: 'opus-4.6',
+    executor: 'gpt-5.4',
+    reviewer: 'sonnet-4.6',
+    fallback: 'qwen35-a3b',
   },
   routingStrategy: 'balanced',
 };
@@ -39,8 +39,8 @@ describe('UnifiedRoutingService', () => {
     const result = service.route('Write a unit test for this function');
 
     expect(result.selectedModel).toBeDefined();
-    expect(['opus-4.5', 'gpt-5.2', 'glm-4.7', 'qwen35']).toContain(result.selectedModel);
-    expect(result.source).toBe('consensus');
+    expect(['opus-4.6', 'gpt-5.4', 'gpt-5.3-codex', 'sonnet-4.6', 'haiku', 'qwen35-a3b']).toContain(result.selectedModel);
+    expect(['consensus', 'rule-based', 'benchmark-data']).toContain(result.source);
     expect(result.confidence).toBeGreaterThan(0);
     expect(result.reasoning).toBeDefined();
     expect(result.ruleBasedClassification).toBeDefined();
@@ -63,7 +63,7 @@ describe('UnifiedRoutingService', () => {
   it('should record outcome for learning', () => {
     expect(() => {
       service.recordOutcome({
-        modelUsed: 'gpt-5.2',
+        modelUsed: 'gpt-5.4',
         success: true,
         latencyMs: 1000,
         taskCategory: 'testing',

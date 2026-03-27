@@ -8,11 +8,11 @@ describe('Automatic Plan Validation - End-to-End Verification', () => {
   beforeEach(() => {
     config = {
       enabled: true,
-      models: ['opus-4.5', 'glm-4.7', 'deepseek-v3.2'],
+      models: ['opus-4.6', 'sonnet-4.6', 'haiku'],
       roles: {
-        planner: 'opus-4.5',
-        executor: 'glm-4.7',
-        fallback: 'opus-4.5',
+        planner: 'opus-4.6',
+        executor: 'sonnet-4.6',
+        fallback: 'opus-4.6',
       },
       routingStrategy: 'balanced',
     };
