@@ -45,9 +45,18 @@ export class TaskService {
   // ==================== ID Generation ====================
 
   private generateId(): string {
-    const bytes = randomBytes(4);
-    const hash = createHash('md5').update(bytes).digest('hex').slice(0, 4);
-    return `uap-${hash}`;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const bytes = randomBytes(8);
+      const hash = createHash('sha256').update(bytes).digest('hex').slice(0, 8);
+      const id = `uap-${hash}`;
+      const exists = this.db
+        .prepare('SELECT 1 FROM tasks WHERE id = ?')
+        .get(id);
+      if (!exists) {
+        return id;
+      }
+    }
+    throw new Error('Failed to generate unique task id');
   }
 
   // ==================== CRUD Operations ====================
