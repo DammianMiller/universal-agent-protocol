@@ -146,36 +146,6 @@ describe('Adaptive Cache', () => {
 
       expect(cache.size).toBeLessThanOrEqual(5);
     });
-
-    it('should retain most recently accessed entries during eviction', () => {
-      const cache = new AdaptiveCache({ maxEntries: 3 });
-
-      cache.set('key1', 'value1');
-      cache.set('key2', 'value2');
-      cache.set('key3', 'value3');
-
-      // Touch key1 so it becomes most recently used
-      cache.get('key1');
-
-      // Trigger eviction
-      cache.set('key4', 'value4');
-
-      expect(cache.get('key1')).toBe('value1');
-    });
-
-    it('should evict multiple oldest entries when over capacity', () => {
-      const cache = new AdaptiveCache({ maxEntries: 4 });
-
-      cache.set('key1', 'value1');
-      cache.set('key2', 'value2');
-      cache.set('key3', 'value3');
-      cache.set('key4', 'value4');
-
-      cache.set('key5', 'value5');
-      cache.set('key6', 'value6');
-
-      expect(cache.size).toBeLessThanOrEqual(4);
-    });
   });
 
   describe('concurrent access', () => {

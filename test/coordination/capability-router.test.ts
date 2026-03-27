@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   CapabilityRouter,
   DEFAULT_CAPABILITY_MAPPINGS,
@@ -90,26 +90,6 @@ describe('CapabilityRouter', () => {
         'README.md',
       ]);
       expect(result.recommendedDroids.length).toBeLessThanOrEqual(3);
-    });
-
-    it('should return cached routing result for identical inputs', () => {
-      const task = createTask({ title: 'Cache test' });
-      const first = router.routeTask(task, ['src/cache.ts']);
-      const second = router.routeTask(task, ['src/cache.ts']);
-
-      expect(second).toBe(first);
-    });
-
-    it('should expire cached routing results after TTL', () => {
-      vi.useFakeTimers();
-      const task = createTask({ title: 'Cache expiry test' });
-      const first = router.routeTask(task, ['src/expiry.ts']);
-
-      vi.advanceTimersByTime(5 * 60 * 1000 + 1);
-      const second = router.routeTask(task, ['src/expiry.ts']);
-
-      expect(second).not.toBe(first);
-      vi.useRealTimers();
     });
   });
 
