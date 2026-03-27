@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.18.2 (2026-03-27)
+
+- chore: bump version to 1.18.1
+- fix: default factory context level to quiet
+- fix: remove agents/docker-compose.yml for test D10
+- chore: clean up CHANGELOG duplicates
+
+
 ## v1.18.1 (2026-03-27)
 
 - fix: default factory context level to quiet
