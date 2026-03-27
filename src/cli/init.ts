@@ -210,6 +210,41 @@ export async function initCommand(options: InitOptions): Promise<void> {
     return;
   }
 
+  // Ensure Factory config exists with default context level
+  if (platforms.includes('factory')) {
+    const factoryDir = join(cwd, '.factory');
+    if (!existsSync(factoryDir)) {
+      mkdirSync(factoryDir, { recursive: true });
+    }
+
+    const factoryConfigPath = join(factoryDir, 'config.json');
+    let existingFactoryConfig: Record<string, unknown> = {};
+    if (existsSync(factoryConfigPath)) {
+      try {
+        existingFactoryConfig = JSON.parse(readFileSync(factoryConfigPath, 'utf-8'));
+      } catch {
+        existingFactoryConfig = {};
+      }
+    }
+
+    const factoryConfig = {
+      name: config.project.name,
+      version: config.version,
+      defaultBranch: config.project.defaultBranch || 'main',
+      memory: {
+        enabled: config.memory?.shortTerm?.enabled ?? true,
+        path: config.memory?.shortTerm?.path || 'agents/data/memory/short_term.db',
+      },
+      worktrees: {
+        enabled: true,
+        directory: config.worktrees?.directory || '.worktrees',
+      },
+      contextLevel: (existingFactoryConfig.contextLevel as string) || 'quiet',
+    };
+
+    writeFileSync(factoryConfigPath, JSON.stringify(factoryConfig, null, 2));
+  }
+
   // Create directory structure (never deletes existing)
   const dirsSpinner = ora('Creating directory structure...').start();
   try {
