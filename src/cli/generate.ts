@@ -371,6 +371,7 @@ async function generatePlatformFiles(
             enabled: true,
             directory: config.worktrees?.directory || '.worktrees',
           },
+          contextLevel: 'quiet',
         };
         writeFileSync(join(factoryDir, 'config.json'), JSON.stringify(factoryConfig, null, 2));
 

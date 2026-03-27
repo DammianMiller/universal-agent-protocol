@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   ModelRouter,
   createRouter,
@@ -12,6 +12,7 @@ import {
   ModelPresets,
   MultiModelConfig,
 } from '../src/models/index.js';
+import { setLogLevel } from '../src/utils/logger.js';
 
 describe('ModelRouter', () => {
   let router: ModelRouter;
@@ -258,6 +259,56 @@ describe('TaskExecutor', () => {
       const summary = executor.generateSummary(plan.id);
       expect(summary).toContain('Execution Summary');
       expect(summary).toContain('Success Rate');
+    });
+
+    it('should warn when token usage exceeds soft limit', async () => {
+      setLogLevel('warn');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const guardedConfig: MultiModelConfig = {
+        ...config,
+        executorSettings: {
+          maxRetries: 0,
+          retryWithFallback: false,
+          tokenUsageGuard: { softLimit: 10, hardLimit: 1000 },
+        },
+      };
+      const largeResponse = 'x'.repeat(200);
+      const guardedExecutor = createExecutor(
+        router,
+        guardedConfig,
+        new MockModelClient({ implement: largeResponse }, 10)
+      );
+
+      const plan = await planner.createPlan('implement feature');
+      const results = await guardedExecutor.executePlan(plan, planner);
+
+      expect(results[0].success).toBe(true);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('should stop when token usage exceeds hard limit', async () => {
+      const guardedConfig: MultiModelConfig = {
+        ...config,
+        executorSettings: {
+          maxRetries: 0,
+          retryWithFallback: false,
+          tokenUsageGuard: { softLimit: 10, hardLimit: 20 },
+        },
+      };
+      const largeResponse = 'x'.repeat(200);
+      const guardedExecutor = createExecutor(
+        router,
+        guardedConfig,
+        new MockModelClient({ implement: largeResponse }, 10)
+      );
+
+      const plan = await planner.createPlan('implement feature');
+      const results = await guardedExecutor.executePlan(plan, planner);
+
+      expect(results[0].success).toBe(false);
+      expect(results[0].error).toContain('hard limit');
     });
   });
 });

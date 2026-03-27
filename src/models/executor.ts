@@ -19,6 +19,9 @@ import { withTimeout } from '../utils/concurrency.js';
 import { getPerformanceMonitor } from '../utils/performance-monitor.js';
 import { recordTaskOutcome as recordModelRouterOutcome } from '../memory/model-router.js';
 import type { ModelId } from '../memory/model-router.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('task-executor');
 
 /**
  * Model client interface for executing prompts
@@ -330,6 +333,21 @@ export class TaskExecutor {
     // Record performance metrics
     monitor.record(`executor.${model.id}`, duration);
     monitor.record(`executor.subtask.${subtask.type || 'unknown'}`, duration);
+
+    const tokenGuard = this.config.executorSettings?.tokenUsageGuard;
+    if (tokenGuard) {
+      const totalTokens = response.tokensUsed.input + response.tokensUsed.output;
+      if (totalTokens >= tokenGuard.hardLimit) {
+        throw new Error(
+          `Token usage ${totalTokens} exceeded hard limit ${tokenGuard.hardLimit} for subtask "${subtask.title}" (model ${model.id}).`
+        );
+      }
+      if (totalTokens >= tokenGuard.softLimit) {
+        log.warn(
+          `Token usage ${totalTokens} exceeded soft limit ${tokenGuard.softLimit} for subtask "${subtask.title}" (model ${model.id}).`
+        );
+      }
+    }
 
     // Calculate cost
     const cost = this.router.estimateCost(

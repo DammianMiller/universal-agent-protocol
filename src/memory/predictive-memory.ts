@@ -6,6 +6,8 @@
  * patterns to improve predictions over time.
  */
 
+import { existsSync } from 'fs';
+import Database from 'better-sqlite3';
 import { jaccardSimilarity } from '../utils/string-similarity.js';
 import { concurrentMap } from '../utils/concurrency-pool.js';
 
@@ -329,7 +331,6 @@ export class PredictiveMemoryService {
    */
   saveToDb(dbPath: string): void {
     try {
-      const Database = require('better-sqlite3');
       const db = new Database(dbPath);
       db.exec(`
         CREATE TABLE IF NOT EXISTS predictive_queries (
@@ -376,8 +377,6 @@ export class PredictiveMemoryService {
    */
   loadFromDb(dbPath: string): void {
     try {
-      const Database = require('better-sqlite3');
-      const { existsSync } = require('fs');
       if (!existsSync(dbPath)) return;
 
       const db = new Database(dbPath, { readonly: true });

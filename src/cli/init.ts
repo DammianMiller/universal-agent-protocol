@@ -55,20 +55,56 @@ export async function initCommand(options: InitOptions): Promise<void> {
     ? ['claudeCode', 'factory', 'vscode', 'opencode', 'codex']
     : (options.platform.map((p) => PLATFORM_MAP[p] || p) as Platform[]);
 
+  // Load existing config if present to preserve user customizations
+  let existingConfig: Partial<AgentContextConfig> = {};
+  if (configExists) {
+    try {
+      existingConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      // Ignore parse errors, will create fresh config
+    }
+  }
+
   // Analyze project
   const spinner = ora('Analyzing project structure...').start();
   let analysis;
   try {
     analysis = await analyzeProject(cwd);
+    if (!analysis) {
+      spinner.warn('Project analysis returned undefined. Using defaults.');
+      analysis = {
+        projectName: existingConfig.project?.name || 'unknown-project',
+        description: existingConfig.project?.description || '',
+        defaultBranch: existingConfig.project?.defaultBranch || 'main',
+        languages: [],
+        frameworks: [],
+        packageManagers: [],
+        directories: {
+          source: [],
+          tests: [],
+          infrastructure: [],
+          docs: [],
+          workflows: [],
+        },
+        urls: [],
+        components: [],
+        commands: {},
+        databases: [],
+        infrastructure: {
+          cloud: [],
+        },
+        existingDroids: [],
+        existingSkills: [],
+        existingCommands: [],
+        troubleshootingHints: [],
+        keyFiles: [],
+        securityNotes: [],
+      };
+    }
     spinner.succeed(`Analyzed: ${analysis.projectName}`);
   } catch (error) {
     spinner.fail('Failed to analyze project');
     console.error(chalk.red(error));
-    return;
-  }
-  if (!analysis) {
-    spinner.fail('Failed to analyze project');
-    console.error(chalk.red('Project analysis returned undefined'));
     return;
   }
 
@@ -91,16 +127,6 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const withMemory = options.memory !== false;
   const withWorktrees = options.worktrees !== false;
   const withPipelineOnly = options.pipelineOnly === true;
-
-  // Load existing config if present to preserve user customizations
-  let existingConfig: Partial<AgentContextConfig> = {};
-  if (configExists) {
-    try {
-      existingConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
-    } catch {
-      // Ignore parse errors, will create fresh config
-    }
-  }
 
   // Patterns: default to enabled when Qdrant is available, otherwise check existing config
   const withPatterns =
@@ -208,6 +234,41 @@ export async function initCommand(options: InitOptions): Promise<void> {
     configSpinner.fail('Failed to write configuration');
     console.error(chalk.red(error));
     return;
+  }
+
+  // Ensure Factory config exists with default context level
+  if (platforms.includes('factory')) {
+    const factoryDir = join(cwd, '.factory');
+    if (!existsSync(factoryDir)) {
+      mkdirSync(factoryDir, { recursive: true });
+    }
+
+    const factoryConfigPath = join(factoryDir, 'config.json');
+    let existingFactoryConfig: Record<string, unknown> = {};
+    if (existsSync(factoryConfigPath)) {
+      try {
+        existingFactoryConfig = JSON.parse(readFileSync(factoryConfigPath, 'utf-8'));
+      } catch {
+        existingFactoryConfig = {};
+      }
+    }
+
+    const factoryConfig = {
+      name: config.project.name,
+      version: config.version,
+      defaultBranch: config.project.defaultBranch || 'main',
+      memory: {
+        enabled: config.memory?.shortTerm?.enabled ?? true,
+        path: config.memory?.shortTerm?.path || 'agents/data/memory/short_term.db',
+      },
+      worktrees: {
+        enabled: true,
+        directory: config.worktrees?.directory || '.worktrees',
+      },
+      contextLevel: (existingFactoryConfig.contextLevel as string) || 'quiet',
+    };
+
+    writeFileSync(factoryConfigPath, JSON.stringify(factoryConfig, null, 2));
   }
 
   // Create directory structure (never deletes existing)

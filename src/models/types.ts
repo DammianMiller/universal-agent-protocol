@@ -278,6 +278,13 @@ export const MultiModelConfigSchema = z.object({
       maxRetries: z.number().default(2),
       // Timeout per execution step
       stepTimeout: z.number().default(120000), // 2 min
+      // Token usage guard (warn at soft limit, stop at hard limit)
+      tokenUsageGuard: z
+        .object({
+          softLimit: z.number(),
+          hardLimit: z.number(),
+        })
+        .optional(),
     })
     .optional(),
 });

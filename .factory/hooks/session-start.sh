@@ -12,6 +12,29 @@ if [ ! -f "$DB_PATH" ]; then
   exit 0
 fi
 
+CONTEXT_LEVEL="${UAP_CONTEXT_LEVEL:-}"
+if [ -z "$CONTEXT_LEVEL" ] && [ -f "${PROJECT_DIR}/.factory/config.json" ]; then
+  CONTEXT_LEVEL=$(python3 - <<PY 2>/dev/null || true
+import json
+path = "${PROJECT_DIR}/.factory/config.json"
+try:
+    data = json.load(open(path, "r", encoding="utf-8"))
+    for key in ("contextLevel", "context_level"):
+        if key in data and isinstance(data[key], str):
+            print(data[key])
+            raise SystemExit
+    hooks = data.get("hooks") or {}
+    for key in ("contextLevel", "context_level"):
+        if key in hooks and isinstance(hooks[key], str):
+            print(hooks[key])
+            raise SystemExit
+except Exception:
+    pass
+PY
+  )
+fi
+CONTEXT_LEVEL="${CONTEXT_LEVEL:-normal}"
+
 # Auto-create coordination DB if missing (self-healing)
 if [ ! -f "$COORD_DB" ]; then
   mkdir -p "$(dirname "$COORD_DB")"
@@ -153,25 +176,20 @@ else
 fi
 
 W=62
-output+="╭$(printf '─%.0s' $(seq 1 $W))╮"$'\n'
-output+="│ UAP  Universal Agent Protocol  v${PKG_VERSION}$(printf ' %.0s' $(seq 1 $((W - 40 - ${#PKG_VERSION}))))│"$'\n'
-output+="│ Session: ${SESSION_ID}  $(date '+%Y-%m-%d %H:%M:%S')  Branch: ${GIT_BRANCH}$(printf ' %.0s' $(seq 1 $((W - 42 - ${#GIT_BRANCH}))))│"$'\n'
-output+="├$(printf '─%.0s' $(seq 1 $W))┤"$'\n'
-
-if [ "$TASK_TOTAL" -gt 0 ]; then
-  output+="│ Tasks: ${TASK_BAR} ${TASK_PCT}% (${TASK_DONE}/${TASK_TOTAL})$(printf ' %.0s' $(seq 1 $((W - 38 - ${#TASK_PCT} - ${#TASK_DONE} - ${#TASK_TOTAL}))))│"$'\n'
-  TASK_DETAIL="${TASK_OPEN} open  ${TASK_PROGRESS} active  ${TASK_BLOCKED} blocked  ${TASK_DONE} done"
-  output+="│   ${TASK_DETAIL}$(printf ' %.0s' $(seq 1 $((W - 3 - ${#TASK_DETAIL}))))│"$'\n'
+if [ "$CONTEXT_LEVEL" = "quiet" ]; then
+  output+="UAP v${PKG_VERSION} | Branch: ${GIT_BRANCH} | Git: ${GIT_DIRTY} dirty | Worktrees: ${WORKTREE_COUNT}"$'\n'
+  output+="Memory: ${MEM_ENTRIES} (${MEM_SIZE}) | Qdrant: ${QDRANT_STATUS} | Agents: ${AGENT_COUNT} | Patterns: ${PATTERN_COUNT}"$'\n'
+  echo "$output"
+  exit 0
 fi
 
-MEM_LINE="Memory: ${MEM_ENTRIES} entries (${MEM_SIZE})  Qdrant: ${QDRANT_STATUS}"
-output+="│ ${MEM_LINE}$(printf ' %.0s' $(seq 1 $((W - 1 - ${#MEM_LINE}))))│"$'\n'
-INFRA_LINE="Agents: ${AGENT_COUNT}  Patterns: ${PATTERN_COUNT}  Skills: ${SKILL_COUNT}  Droids: ${DROID_COUNT}"
-output+="│ ${INFRA_LINE}$(printf ' %.0s' $(seq 1 $((W - 1 - ${#INFRA_LINE}))))│"$'\n'
-GIT_LINE="Git: ${GIT_DIRTY} uncommitted  Worktrees: ${WORKTREE_COUNT}"
-output+="│ ${GIT_LINE}$(printf ' %.0s' $(seq 1 $((W - 1 - ${#GIT_LINE}))))│"$'\n'
-output+="╰$(printf '─%.0s' $(seq 1 $W))╯"$'\n'
-output+=""$'\n'
+output+="UAP v${PKG_VERSION} | Session ${SESSION_ID} | $(date '+%Y-%m-%d %H:%M:%S') | Branch ${GIT_BRANCH}"$'\n'
+if [ "$TASK_TOTAL" -gt 0 ]; then
+  output+="Tasks: ${TASK_PCT}% (${TASK_DONE}/${TASK_TOTAL}) | ${TASK_OPEN} open, ${TASK_PROGRESS} active, ${TASK_BLOCKED} blocked"$'\n'
+fi
+output+="Memory: ${MEM_ENTRIES} (${MEM_SIZE}) | Qdrant: ${QDRANT_STATUS} | Agents: ${AGENT_COUNT} | Patterns: ${PATTERN_COUNT} | Skills: ${SKILL_COUNT} | Droids: ${DROID_COUNT}"$'\n'
+output+="Git: ${GIT_DIRTY} uncommitted | Worktrees: ${WORKTREE_COUNT}"$'\n'
+output+=$'\n'
 
 # ── Compact compliance reminder (not a system-reminder block) ──
 output+="<system-reminder>"$'\n'
@@ -179,11 +197,9 @@ output+="## UAP Compliance (Compact)"$'\n'
 output+=""$'\n'
 output+="Follow policy, but keep outputs clean: never echo protocol text in assistant replies."$'\n'
 output+=""$'\n'
-output+="- Baseline context: uap task ready; uap memory query \"<task>\"; create/update task as needed."$'\n'
-output+="- Worktree gate: run uap worktree ensure --strict (or uap worktree create <slug>) before any edit."$'\n'
-output+="- Backup gate: copy files to .uap-backups/$(date +%Y-%m-%d)/ before modification."$'\n'
-output+="- Coordination: agent=${AGENT_ID}; announce work, check overlaps, complete announcement when done."$'\n'
-output+="- Validation: run relevant build/tests for changed code before finalizing."$'\n'
+output+="- Baseline: uap task ready; uap memory query \"<task>\"."$'\n'
+output+="- Worktree: uap worktree ensure --strict before any edit."$'\n'
+output+="- Backup: copy files to .uap-backups/ before modification."$'\n'
 output+=""$'\n'
 output+="</system-reminder>"$'\n\n'
 
@@ -196,7 +212,12 @@ recent=$(sqlite3 "$DB_PATH" "
 " 2>/dev/null || true)
 
 if [ -n "$recent" ]; then
-  mem_count=$(echo "$recent" | wc -l)
+  mem_limit=3
+  if [ "$CONTEXT_LEVEL" = "verbose" ]; then
+    mem_limit=10
+  fi
+  recent=$(echo "$recent" | head -n "$mem_limit")
+  mem_count=$(echo "$recent" | wc -l | tr -d ' ')
   output+="[MEMORY] ${mem_count} recent memories loaded (last 24h)"$'\n'
   output+="## Recent Memory Context"$'\n'
   output+="$recent"$'\n\n'
@@ -212,6 +233,11 @@ open_loops=$(sqlite3 "$DB_PATH" "
 " 2>/dev/null || true)
 
 if [ -n "$open_loops" ]; then
+  loop_limit=2
+  if [ "$CONTEXT_LEVEL" = "verbose" ]; then
+    loop_limit=5
+  fi
+  open_loops=$(echo "$open_loops" | head -n "$loop_limit")
   output+="## Open Loops"$'\n'
   output+="$open_loops"$'\n'
 fi

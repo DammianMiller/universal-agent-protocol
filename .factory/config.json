@@ -9,5 +9,6 @@
   "worktrees": {
     "enabled": true,
     "directory": ".worktrees"
-  }
+  },
+  "contextLevel": "quiet"
 }
