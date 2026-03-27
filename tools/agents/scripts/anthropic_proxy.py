@@ -102,6 +102,8 @@ PROXY_PORT = int(os.environ.get("PROXY_PORT", "4000"))
 PROXY_HOST = os.environ.get("PROXY_HOST", "0.0.0.0")
 PROXY_LOG_LEVEL = os.environ.get("PROXY_LOG_LEVEL", "INFO").upper()
 PROXY_READ_TIMEOUT = float(os.environ.get("PROXY_READ_TIMEOUT", "600"))
+PROXY_UPSTREAM_RETRY_MAX = int(os.environ.get("PROXY_UPSTREAM_RETRY_MAX", "3"))
+PROXY_UPSTREAM_RETRY_DELAY_SECS = float(os.environ.get("PROXY_UPSTREAM_RETRY_DELAY_SECS", "5"))
 PROXY_MAX_CONNECTIONS = int(os.environ.get("PROXY_MAX_CONNECTIONS", "20"))
 PROXY_CONTEXT_WINDOW = int(os.environ.get("PROXY_CONTEXT_WINDOW", "0"))
 PROXY_CONTEXT_PRUNE_THRESHOLD = float(
@@ -1121,6 +1123,37 @@ def prune_conversation(
 # Module-level httpx.AsyncClient for connection reuse + keep-alive.
 # Granular timeouts: short connect, long read for streaming LLM output.
 http_client: httpx.AsyncClient | None = None
+
+
+async def _post_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict,
+    headers: dict,
+) -> httpx.Response:
+    last_exc: Exception | None = None
+    for attempt in range(PROXY_UPSTREAM_RETRY_MAX):
+        try:
+            return await client.post(url, json=payload, headers=headers)
+        except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadTimeout) as exc:
+            last_exc = exc
+            if attempt < PROXY_UPSTREAM_RETRY_MAX - 1:
+                logger.warning(
+                    "Upstream connect failed (attempt %d/%d): %s – retrying in %.0fs",
+                    attempt + 1,
+                    PROXY_UPSTREAM_RETRY_MAX,
+                    type(exc).__name__,
+                    PROXY_UPSTREAM_RETRY_DELAY_SECS,
+                )
+                await asyncio.sleep(PROXY_UPSTREAM_RETRY_DELAY_SECS)
+            else:
+                logger.error(
+                    "Upstream connect failed after %d attempts: %s: %s",
+                    PROXY_UPSTREAM_RETRY_MAX,
+                    type(exc).__name__,
+                    exc,
+                )
+    raise last_exc if last_exc else RuntimeError("upstream retry failed")
 
 
 @asynccontextmanager
@@ -4122,11 +4155,27 @@ async def messages(request: Request):
         strict_body = dict(openai_body)
         strict_body["stream"] = False
 
-        strict_resp = await client.post(
-            f"{LLAMA_CPP_BASE}/chat/completions",
-            json=strict_body,
-            headers={"Content-Type": "application/json"},
-        )
+        try:
+            strict_resp = await _post_with_retry(
+                client,
+                f"{LLAMA_CPP_BASE}/chat/completions",
+                strict_body,
+                {"Content-Type": "application/json"},
+            )
+        except Exception as exc:
+            return Response(
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "overloaded_error",
+                            "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                        },
+                    }
+                ),
+                status_code=529,
+                media_type="application/json",
+            )
 
         if strict_resp.status_code != 200:
             error_text = strict_resp.text[:1000]
@@ -4136,11 +4185,27 @@ async def messages(request: Request):
                 error_text,
                 "strict-stream",
             ):
-                strict_resp = await client.post(
-                    f"{LLAMA_CPP_BASE}/chat/completions",
-                    json=strict_body,
-                    headers={"Content-Type": "application/json"},
-                )
+                try:
+                    strict_resp = await _post_with_retry(
+                        client,
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        strict_body,
+                        {"Content-Type": "application/json"},
+                    )
+                except Exception as exc:
+                    return Response(
+                        content=json.dumps(
+                            {
+                                "type": "error",
+                                "error": {
+                                    "type": "overloaded_error",
+                                    "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                                },
+                            }
+                        ),
+                        status_code=529,
+                        media_type="application/json",
+                    )
 
         if strict_resp.status_code != 200:
             error_text = strict_resp.text[:1000]
@@ -4210,8 +4275,8 @@ async def messages(request: Request):
 
         # Retry upstream connection with backoff to handle
         # llama-server restarts gracefully instead of 500-ing to the client.
-        MAX_UPSTREAM_RETRIES = 3
-        RETRY_DELAY_SECS = 5.0
+        MAX_UPSTREAM_RETRIES = PROXY_UPSTREAM_RETRY_MAX
+        RETRY_DELAY_SECS = PROXY_UPSTREAM_RETRY_DELAY_SECS
         last_exc: Exception | None = None
         resp: httpx.Response | None = None
 
@@ -4229,7 +4294,7 @@ async def messages(request: Request):
                 # Connection succeeded – break out of retry loop
                 last_exc = None
                 break
-            except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadTimeout) as exc:
                 last_exc = exc
                 if attempt < MAX_UPSTREAM_RETRIES - 1:
                     logger.warning(
@@ -4396,11 +4461,27 @@ async def messages(request: Request):
             },
         )
     else:
-        resp = await client.post(
-            f"{LLAMA_CPP_BASE}/chat/completions",
-            json=openai_body,
-            headers={"Content-Type": "application/json"},
-        )
+        try:
+            resp = await _post_with_retry(
+                client,
+                f"{LLAMA_CPP_BASE}/chat/completions",
+                openai_body,
+                {"Content-Type": "application/json"},
+            )
+        except Exception as exc:
+            return Response(
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "overloaded_error",
+                            "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                        },
+                    }
+                ),
+                status_code=529,
+                media_type="application/json",
+            )
 
         if resp.status_code != 200:
             error_text = resp.text[:1000]
@@ -4410,11 +4491,27 @@ async def messages(request: Request):
                 error_text,
                 "non-stream",
             ):
-                resp = await client.post(
-                    f"{LLAMA_CPP_BASE}/chat/completions",
-                    json=openai_body,
-                    headers={"Content-Type": "application/json"},
-                )
+                try:
+                    resp = await _post_with_retry(
+                        client,
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        openai_body,
+                        {"Content-Type": "application/json"},
+                    )
+                except Exception as exc:
+                    return Response(
+                        content=json.dumps(
+                            {
+                                "type": "error",
+                                "error": {
+                                    "type": "overloaded_error",
+                                    "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                                },
+                            }
+                        ),
+                        status_code=529,
+                        media_type="application/json",
+                    )
 
         # Option B: Handle non-streaming errors too
         if resp.status_code != 200:

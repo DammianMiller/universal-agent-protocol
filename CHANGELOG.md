@@ -5,6 +5,7 @@
 - fix: tighten proxy token guards
 - fix: remove agents/docker-compose.yml for test D10
 - chore: clean up CHANGELOG duplicates
+- fix: add verbosity controls for hooks
 
 
 ## v1.18.0 (2026-03-27)
