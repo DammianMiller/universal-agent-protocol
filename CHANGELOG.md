@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.19.1 (2026-03-27)
+
+- chore: bump version to 1.19.0
+- chore: bump version to 1.18.1
+- fix: tighten proxy token guards
+- fix: remove agents/docker-compose.yml for test D10
+- fix: add upstream retry backoff for proxy
+- chore: clean up CHANGELOG duplicates
+- chore: update package-lock.json
+
+
+## v1.19.0 (2026-03-27)
+
+- chore: bump version to 1.18.1
+- fix: tighten proxy token guards
+- fix: remove agents/docker-compose.yml for test D10
+- fix: add upstream retry backoff for proxy
+- chore: clean up CHANGELOG duplicates
+- chore: update package-lock.json
+
+
 ## v1.18.1 (2026-03-27)
 
 - fix: tighten proxy token guards
