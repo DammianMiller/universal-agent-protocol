@@ -48,6 +48,13 @@
       "sourceFile": "CLAUDE.md",
       "sourceFiles": [],
       "maxBodyChars": 400
+    },
+    "knowledgeGraph": {
+      "enabled": true
+    },
+    "prepopulation": {
+      "docs": true,
+      "gitHistory": true
     }
   },
   "worktrees": {

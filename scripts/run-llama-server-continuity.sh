@@ -50,17 +50,17 @@ args=(
   --flash-attn on
   --batch-size "$LLAMA_BATCH_SIZE"
   --ubatch-size "$LLAMA_UBATCH_SIZE"
-  --parallel 1
+  --parallel 2
   --no-context-shift
   --n-predict 32768
   --repeat-penalty 1.0
-  --defrag-thold 0.1
   --spec-type "$LLAMA_SPEC_TYPE"
   --draft-max "$LLAMA_DRAFT_MAX"
   --draft-min "$LLAMA_DRAFT_MIN"
   --draft-p-min "$LLAMA_DRAFT_P_MIN"
   --chat-template-file "$LLAMA_CHAT_TEMPLATE_FILE"
   --log-file "$LLAMA_LOG_FILE"
+  --temp 0.7
 )
 
 if [[ -n "$LLAMA_EXTRA_ARGS" ]]; then
