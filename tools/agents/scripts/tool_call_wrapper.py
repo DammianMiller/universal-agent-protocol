@@ -153,6 +153,12 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
     },
 }
 
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROFILE_DIR = PROJECT_ROOT / "config" / "model-profiles"
+PROFILE_CACHE: Dict[str, Dict[str, Any]] = {}
+PROFILE_WARNED: set[str] = set()
+GRAMMAR_CACHE: Dict[str, str] = {}
+
 # Default batch system prompt (used when batch_tool_calls is True and no profile-specific one)
 DEFAULT_BATCH_SYSTEM_PROMPT = (
     "When multiple tools are needed, call ALL of them in a single response. "
@@ -160,11 +166,102 @@ DEFAULT_BATCH_SYSTEM_PROMPT = (
 )
 
 
+def _load_profile_from_disk(profile_name: str) -> Optional[Dict[str, Any]]:
+    cache_key = profile_name.strip().lower()
+    if cache_key in PROFILE_CACHE:
+        return PROFILE_CACHE[cache_key]
+
+    profile_path = PROFILE_DIR / f"{profile_name}.json"
+    legacy_path = PROJECT_ROOT / "config" / f"{profile_name}-settings.json"
+    for path in (profile_path, legacy_path):
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            PROFILE_CACHE[cache_key] = data
+            return data
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to parse profile %s (%s)", path.name, exc)
+            break
+
+    PROFILE_CACHE[cache_key] = None
+    return None
+
+
+def _resolve_profile_name(profile_name: Optional[str]) -> str:
+    if not profile_name:
+        return "generic"
+    if profile_name in MODEL_PROFILES or _load_profile_from_disk(profile_name):
+        return profile_name
+    if profile_name not in PROFILE_WARNED:
+        logger.warning("Profile %s not found; falling back to generic", profile_name)
+        PROFILE_WARNED.add(profile_name)
+    return "generic"
+
+
+def _normalize_profile_settings(profile: Dict[str, Any]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    for key in ["model", "max_tokens", "temperature", "top_p", "top_k", "min_p"]:
+        if key in profile:
+            normalized[key] = profile[key]
+    if "enable_thinking" in profile:
+        normalized["enable_thinking"] = profile["enable_thinking"]
+    if "stop_sequences" in profile:
+        normalized["stop_sequences"] = profile["stop_sequences"]
+    if "context_window" in profile:
+        normalized["context_window"] = profile["context_window"]
+
+    if profile.get("optimize_for_tool_calls") is True:
+        normalized["default_tool_choice"] = "required"
+
+    tool_call_batching = profile.get("tool_call_batching")
+    if isinstance(tool_call_batching, dict):
+        if "enabled" in tool_call_batching:
+            normalized["batch_tool_calls"] = bool(tool_call_batching["enabled"])
+        if tool_call_batching.get("system_prompt_suffix"):
+            normalized["batch_system_prompt"] = tool_call_batching["system_prompt_suffix"]
+
+    dynamic_temp = profile.get("dynamic_temperature")
+    if isinstance(dynamic_temp, dict):
+        if "enabled" in dynamic_temp:
+            normalized["dynamic_temperature"] = bool(dynamic_temp["enabled"])
+        if "decay" in dynamic_temp:
+            normalized["dynamic_temp_decay"] = dynamic_temp["decay"]
+        if "floor" in dynamic_temp:
+            normalized["dynamic_temp_floor"] = dynamic_temp["floor"]
+
+    structured_output = profile.get("structured_output")
+    if isinstance(structured_output, dict) and structured_output.get("grammar_file"):
+        normalized["tool_call_grammar_path"] = structured_output["grammar_file"]
+
+    return normalized
+
+
+def _load_grammar_text(path_value: str) -> str:
+    cache_key = path_value.strip()
+    if cache_key in GRAMMAR_CACHE:
+        return GRAMMAR_CACHE[cache_key]
+
+    path = Path(path_value)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    try:
+        grammar = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.warning("Failed to read grammar file %s (%s)", path, exc)
+        grammar = ""
+    GRAMMAR_CACHE[cache_key] = grammar
+    return grammar
+
+
 def _load_profile(profile_name: str) -> Dict[str, Any]:
     """Load a model profile by name, falling back to generic."""
     base = MODEL_PROFILES.get("generic", {}).copy()
-    profile = MODEL_PROFILES.get(profile_name, {})
-    base.update(profile)
+    profile = _load_profile_from_disk(profile_name)
+    if profile:
+        base.update(_normalize_profile_settings(profile))
+    else:
+        base.update(MODEL_PROFILES.get(profile_name, {}))
     return base
 
 
@@ -227,6 +324,8 @@ class ToolCallClient:
     DEFAULT_CONFIG = {
         "temperature": 0.6,
         "top_p": 0.9,
+        "top_k": None,
+        "min_p": None,
         "presence_penalty": 0.0,
         "max_tokens": 4096,
         "enable_thinking": False,
@@ -245,6 +344,9 @@ class ToolCallClient:
         "dynamic_temp_decay": 0.5,
         "dynamic_temp_floor": 0.2,
         "suppress_thinking": False,
+        "stop_sequences": None,
+        "tool_call_grammar_path": None,
+        "context_window": None,
     }
 
     def __init__(
@@ -259,13 +361,17 @@ class ToolCallClient:
             enable_metrics: Enable performance metrics tracking
         """
         # Determine base config from profile
-        user_config = config or {}
-        profile_name = user_config.pop("model_profile", None) or _detect_profile()
+        raw_config = config or {}
+        user_config = dict(raw_config)
+        profile_name = _resolve_profile_name(
+            user_config.pop("model_profile", None) or _detect_profile()
+        )
         profile_config = _load_profile(profile_name)
 
         # Layer: defaults < profile < user overrides
         self.config = {**self.DEFAULT_CONFIG, **profile_config, **user_config}
         self.profile_name = profile_name
+        self._user_config = user_config
         self.enable_metrics = enable_metrics
         self.metrics = ToolCallMetrics()
         self._client = None
@@ -277,6 +383,17 @@ class ToolCallClient:
             f"ToolCallClient initialized (profile: {profile_name}, "
             f"model: {self.config['model']}, base_url: {self.config['base_url']})"
         )
+
+    def _resolve_request_config(
+        self, profile_override: Optional[str]
+    ) -> tuple[Dict[str, Any], str]:
+        if not profile_override or profile_override == self.profile_name:
+            return self.config, self.profile_name
+
+        resolved_profile = _resolve_profile_name(profile_override)
+        profile_config = _load_profile(resolved_profile)
+        merged = {**self.DEFAULT_CONFIG, **profile_config, **self._user_config}
+        return merged, resolved_profile
 
     def _init_client(self):
         """Initialize OpenAI-compatible client"""
@@ -294,6 +411,7 @@ class ToolCallClient:
         tools: List[Dict[str, Any]],
         attempt: int,
         expected_tool: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Determine tool_choice based on strategy and attempt number.
@@ -306,7 +424,8 @@ class ToolCallClient:
           - If expected_tool is set and only one tool matches, use per-tool choice
         """
         # Strategy 5: Per-tool choice for single expected tool
-        if expected_tool and self.config.get("use_per_tool_choice") and attempt == 0:
+        config = config or self.config
+        if expected_tool and config.get("use_per_tool_choice") and attempt == 0:
             for tool in tools:
                 func = tool.get("function", {})
                 if func.get("name") == expected_tool:
@@ -317,12 +436,12 @@ class ToolCallClient:
                     }
 
         # Strategy 3: Escalation on retries
-        if attempt > 0 and self.config.get("escalate_tool_choice"):
+        if attempt > 0 and config.get("escalate_tool_choice"):
             self.metrics.tool_choice_escalations += 1
             logger.info(f"Escalating tool_choice to 'required' (attempt {attempt + 1})")
             return "required"
 
-        return self.config.get("default_tool_choice", "auto")
+        return config.get("default_tool_choice", "auto")
 
     def chat_with_tools(
         self,
@@ -354,7 +473,15 @@ class ToolCallClient:
         Raises:
             ToolCallError: After max retries exhausted
         """
-        max_retries = max_retries or self.config["max_retries"]
+        profile_override = kwargs.pop("model_profile", None) or kwargs.pop(
+            "uap_model_profile", None
+        )
+        request_config, profile_used = self._resolve_request_config(profile_override)
+
+        if profile_override:
+            logger.info("Using per-request profile: %s", profile_used)
+
+        max_retries = max_retries or request_config["max_retries"]
 
         # Track timing
         start_time = time.time()
@@ -364,11 +491,11 @@ class ToolCallClient:
 
         # Strategy 2: Inject multi-tool system prompt (only when multiple tool calls expected)
         if (
-            self.config.get("batch_tool_calls")
+            request_config.get("batch_tool_calls")
             and expected_tool_calls
             and expected_tool_calls > 1
         ):
-            batch_prompt = self.config.get(
+            batch_prompt = request_config.get(
                 "batch_system_prompt", DEFAULT_BATCH_SYSTEM_PROMPT
             )
             if batch_prompt:
@@ -389,15 +516,15 @@ class ToolCallClient:
             self.metrics.parallel_calls_requested += 1
 
         # Base temperature for dynamic adjustment
-        base_temperature = self.config["temperature"]
+        base_temperature = request_config["temperature"]
 
         for attempt in range(max_retries):
             self.metrics.total_attempts += 1
 
             # Strategy 6: Dynamic temperature - reduce on retries
-            if self.config.get("dynamic_temperature") and attempt > 0:
-                decay = self.config.get("dynamic_temp_decay", 0.5)
-                floor = self.config.get("dynamic_temp_floor", 0.2)
+            if request_config.get("dynamic_temperature") and attempt > 0:
+                decay = request_config.get("dynamic_temp_decay", 0.5)
+                floor = request_config.get("dynamic_temp_floor", 0.2)
                 current_temp = max(floor, base_temperature * (decay**attempt))
                 logger.info(
                     f"Dynamic temperature: {current_temp:.2f} (attempt {attempt + 1})"
@@ -406,29 +533,41 @@ class ToolCallClient:
                 current_temp = base_temperature
 
             # Strategy 1 + 3 + 5: Determine tool_choice
-            tool_choice = self._get_tool_choice(tools, attempt, expected_tool)
+            tool_choice = self._get_tool_choice(
+                tools, attempt, expected_tool, config=request_config
+            )
 
             try:
+                grammar_text = ""
+                if request_config.get("tool_call_grammar_path"):
+                    grammar_text = _load_grammar_text(
+                        request_config["tool_call_grammar_path"]
+                    )
+
                 # Build request with all strategies applied
                 request_params = {
-                    "model": self.config["model"],
+                    "model": request_config["model"],
                     "messages": current_messages,
                     "tools": tools,
                     "tool_choice": tool_choice,
-                    "parallel_tool_calls": self.config.get("parallel_tool_calls", True),
+                    "parallel_tool_calls": request_config.get(
+                        "parallel_tool_calls", True
+                    ),
                     "temperature": current_temp,
-                    "top_p": self.config["top_p"],
-                    "presence_penalty": self.config["presence_penalty"],
-                    "max_tokens": self.config["max_tokens"],
+                    "top_p": request_config["top_p"],
+                    "presence_penalty": request_config["presence_penalty"],
+                    "max_tokens": request_config["max_tokens"],
                     "timeout": timeout,
                     **kwargs,
                 }
 
                 # Strategy 5: Thinking mode suppression (model-specific)
-                if self.config.get("suppress_thinking"):
+                if request_config.get("suppress_thinking"):
                     request_params["extra_body"] = {
                         "chat_template_kwargs": {
-                            "enable_thinking": self.config.get("enable_thinking", False)
+                            "enable_thinking": request_config.get(
+                                "enable_thinking", False
+                            )
                         }
                     }
                     # Version check: llama.cpp >= 3761 supports chat_template_kwargs
@@ -440,8 +579,17 @@ class ToolCallClient:
                 logger.debug(
                     f"Attempt {attempt + 1}/{max_retries}: "
                     f"tool_choice={tool_choice}, temp={current_temp:.2f}, "
-                    f"parallel={self.config.get('parallel_tool_calls', True)}"
+                    f"parallel={request_config.get('parallel_tool_calls', True)}"
                 )
+
+                if request_config.get("stop_sequences"):
+                    request_params["stop"] = request_config["stop_sequences"]
+                if request_config.get("top_k") is not None:
+                    request_params["top_k"] = request_config["top_k"]
+                if request_config.get("min_p") is not None:
+                    request_params["min_p"] = request_config["min_p"]
+                if grammar_text and tools:
+                    request_params["grammar"] = grammar_text
 
                 # Make API call
                 response = self._client.chat.completions.create(**request_params)

@@ -87,6 +87,7 @@ import time
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 from contextlib import asynccontextmanager
@@ -332,6 +333,12 @@ PROXY_TOOL_CALL_GRAMMAR_PATH = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "config", "tool-call.gbnf"),
     )
 )
+PROXY_MODEL_PROFILE_HEADER = os.environ.get(
+    "PROXY_MODEL_PROFILE_HEADER", "x-uap-model-profile"
+)
+PROXY_MODEL_PROFILE_PARAM = os.environ.get(
+    "PROXY_MODEL_PROFILE_PARAM", "uap_model_profile"
+)
 
 DEFAULT_PASSTHROUGH_MODEL_PATTERNS = (
     re.compile(r"^claude-opus-4-6", re.IGNORECASE),
@@ -347,6 +354,10 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("uap.anthropic_proxy")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROFILE_DIR = PROJECT_ROOT / "config" / "model-profiles"
+PROFILE_CACHE: dict[str, dict | None] = {}
+PROFILE_WARNED: set[str] = set()
 
 _client_request_times: dict[str, deque[float]] = defaultdict(deque)
 _client_rate_last_log: dict[str, float] = defaultdict(float)
@@ -413,7 +424,6 @@ def _load_tool_call_grammar(path: str) -> str:
 TOOL_CALL_GBNF = _load_tool_call_grammar(PROXY_TOOL_CALL_GRAMMAR_PATH)
 TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE = True
 
-
 def _resolve_passthrough_models() -> list[str]:
     raw = ANTHROPIC_PASSTHROUGH_MODELS.strip()
     if not raw:
@@ -428,6 +438,84 @@ def _should_passthrough_model(model: str) -> bool:
     if overrides:
         return model in overrides
     return any(pattern.match(model) for pattern in DEFAULT_PASSTHROUGH_MODEL_PATTERNS)
+
+
+def _load_profile_config(profile_name: str) -> dict | None:
+    if not profile_name:
+        return None
+
+    cache_key = profile_name.strip().lower()
+    if cache_key in PROFILE_CACHE:
+        return PROFILE_CACHE[cache_key]
+
+    profile_path = PROFILE_DIR / f"{profile_name}.json"
+    legacy_path = PROJECT_ROOT / "config" / f"{profile_name}-settings.json"
+    for path in (profile_path, legacy_path):
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            PROFILE_CACHE[cache_key] = data
+            return data
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to parse profile %s (%s)", path.name, exc)
+            break
+
+    PROFILE_CACHE[cache_key] = None
+    return None
+
+
+def _resolve_profile_name(headers: dict, body: dict) -> str | None:
+    header_key = PROXY_MODEL_PROFILE_HEADER.lower()
+    header_value = None
+    for key, value in headers.items():
+        if key.lower() == header_key:
+            header_value = value
+            break
+
+    body_value = body.get(PROXY_MODEL_PROFILE_PARAM)
+    candidate = header_value or body_value
+    if not candidate:
+        return None
+    return str(candidate).strip()
+
+
+def _apply_profile_overrides(
+    body: dict, profile: dict
+) -> tuple[dict, str | None, str | None]:
+    updated = dict(body)
+    updated.pop(PROXY_MODEL_PROFILE_PARAM, None)
+
+    if profile.get("model"):
+        updated["model"] = profile["model"]
+    if "max_tokens" in profile:
+        updated["max_tokens"] = profile["max_tokens"]
+    if "temperature" in profile:
+        updated["temperature"] = profile["temperature"]
+    if "top_p" in profile:
+        updated["top_p"] = profile["top_p"]
+    if "stop_sequences" in profile:
+        updated["stop_sequences"] = profile["stop_sequences"]
+    if "enable_thinking" in profile:
+        updated["enable_thinking"] = profile["enable_thinking"]
+
+    tool_call_batching = profile.get("tool_call_batching") or {}
+    prompt_suffix = None
+    if isinstance(tool_call_batching, dict) and tool_call_batching.get("enabled"):
+        prompt_suffix = tool_call_batching.get("system_prompt_suffix")
+
+    structured_output = profile.get("structured_output") or {}
+    grammar_text = None
+    grammar_path = None
+    if isinstance(structured_output, dict):
+        grammar_path = structured_output.get("grammar_file")
+    if grammar_path:
+        resolved = Path(grammar_path)
+        if not resolved.is_absolute():
+            resolved = PROJECT_ROOT / resolved
+        grammar_text = _load_tool_call_grammar(str(resolved))
+
+    return updated, prompt_suffix, grammar_text
 
 
 def _is_grammar_tools_incompatibility(status_code: int, error_text: str) -> bool:
@@ -468,11 +556,12 @@ def _maybe_disable_grammar_for_tools_error(
 
 
 def _apply_tool_call_grammar(
-    request_body: dict, tool_choice: str | None = None
+    request_body: dict, tool_choice: str | None = None, grammar_override: str | None = None
 ) -> None:
-    request_body.pop("grammar", None)
+    existing_grammar = request_body.pop("grammar", None)
 
-    if not PROXY_TOOL_CALL_GRAMMAR or not TOOL_CALL_GBNF:
+    grammar_text = grammar_override or existing_grammar or TOOL_CALL_GBNF
+    if not PROXY_TOOL_CALL_GRAMMAR or not grammar_text:
         return
 
     if not request_body.get("tools"):
@@ -487,7 +576,7 @@ def _apply_tool_call_grammar(
     if PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY and effective_tool_choice != "required":
         return
 
-    request_body["grammar"] = TOOL_CALL_GBNF
+    request_body["grammar"] = grammar_text
 
 
 # ---------------------------------------------------------------------------
@@ -1915,7 +2004,12 @@ def _resolve_state_machine_tool_choice(
     return None, "unknown_phase"
 
 
-def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
+def build_openai_request(
+    anthropic_body: dict,
+    monitor: SessionMonitor,
+    profile_prompt_suffix: str | None = None,
+    profile_grammar: str | None = None,
+) -> dict:
     """Build an OpenAI Chat Completions request from an Anthropic Messages request."""
     openai_body = {
         "model": anthropic_body.get("model", "default"),
@@ -1941,6 +2035,8 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
                     "content": _AGENTIC_SYSTEM_SUPPLEMENT.strip(),
                 },
             )
+        if profile_prompt_suffix:
+            openai_body["messages"][0]["content"] += f"\n\n{profile_prompt_suffix}"
 
     if "max_tokens" in anthropic_body:
         requested_raw = max(1, int(anthropic_body["max_tokens"]))
@@ -2151,7 +2247,7 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
                 "Thinking disabled for tool turn (PROXY_DISABLE_THINKING_ON_TOOL_TURNS=on)"
             )
 
-        _apply_tool_call_grammar(openai_body)
+        _apply_tool_call_grammar(openai_body, grammar_override=profile_grammar)
 
     return openai_body
 
@@ -4161,7 +4257,6 @@ async def messages(request: Request):
     global last_session_id
 
     body = await request.json()
-    model = body.get("model", "default")
     is_stream = body.get("stream", False)
     client_id = resolve_client_id(request)
     if _should_passthrough_model(model):
@@ -4171,6 +4266,29 @@ async def messages(request: Request):
     monitor = get_session_monitor(session_id)
     last_session_id = session_id
 
+    profile_prompt_suffix = None
+    profile_grammar = None
+    requested_profile = _resolve_profile_name(request.headers, body)
+    if requested_profile:
+        profile_config = _load_profile_config(requested_profile)
+        if not profile_config and requested_profile != "generic":
+            profile_config = _load_profile_config("generic")
+            if requested_profile not in PROFILE_WARNED:
+                logger.warning(
+                    "Profile %s not found; falling back to generic",
+                    requested_profile,
+                )
+                PROFILE_WARNED.add(requested_profile)
+            requested_profile = "generic"
+        if profile_config:
+            body, profile_prompt_suffix, profile_grammar = _apply_profile_overrides(
+                body, profile_config
+            )
+            if profile_config.get("context_window"):
+                monitor.context_window = int(profile_config["context_window"])
+            logger.info("PROFILE: request=%s model=%s", requested_profile, body.get("model"))
+
+    model = body.get("model", "default")
     body = _maybe_apply_session_contamination_breaker(body, monitor, session_id)
     body, analysis_tools_removed = _maybe_route_analysis_without_tools(body)
     if analysis_tools_removed > 0:
@@ -4239,7 +4357,12 @@ async def messages(request: Request):
                 n_messages,
             )
 
-    openai_body = build_openai_request(body, monitor)
+    openai_body = build_openai_request(
+        body,
+        monitor,
+        profile_prompt_suffix=profile_prompt_suffix,
+        profile_grammar=profile_grammar,
+    )
 
     client = http_client
     if client is None:
