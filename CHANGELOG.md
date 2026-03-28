@@ -2,19 +2,40 @@
 
 ## v1.20.0 (2026-03-28)
 
+- feat: add CLI parity commands and aliases
+## v1.19.2 (2026-03-27)
+
+- fix: avoid task id collisions
+- feat: update supported Droid models to latest versions
+
+
+## v1.19.1 (2026-03-27)
+
 - chore: bump version to 1.19.0
-- feat: add CLI parity commands and aliases
-- feat: update supported Droid models to latest versions
+- chore: bump version to 1.18.1
+- fix: tighten proxy token guards
+- fix: remove agents/docker-compose.yml for test D10
+- fix: add upstream retry backoff for proxy
+- chore: clean up CHANGELOG duplicates
+- chore: update package-lock.json
+
+
+## v1.19.0 (2026-03-27)
+
+- chore: bump version to 1.18.1
+- fix: tighten proxy token guards
+- fix: remove agents/docker-compose.yml for test D10
+- fix: add upstream retry backoff for proxy
+- chore: clean up CHANGELOG duplicates
+- chore: update package-lock.json
+
+
+## v1.18.1 (2026-03-27)
+
+- fix: tighten proxy token guards
 - fix: remove agents/docker-compose.yml for test D10
 - chore: clean up CHANGELOG duplicates
-
-
-## v1.19.0 (2026-03-28)
-
-- feat: add CLI parity commands and aliases
-- feat: update supported Droid models to latest versions
-- fix: remove agents/docker-compose.yml for test D10
-- chore: clean up CHANGELOG duplicates
+- fix: add verbosity controls for hooks
 
 
 ## v1.18.0 (2026-03-27)
