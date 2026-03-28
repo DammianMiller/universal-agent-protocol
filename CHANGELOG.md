@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.2 (2026-03-28)
+
+- Version bump
+
+
 ## v1.20.1 (2026-03-28)
 
 - fix: expand anthropic proxy model list for updated Droid models
