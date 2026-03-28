@@ -95,9 +95,9 @@ interface BenchmarkReport {
 // ============================================================================
 
 const MODELS: ModelConfig[] = [
-  { id: 'opus-4.5', name: 'Claude Opus 4.5', apiModel: 'claude-opus-4-5-20251101' },
-  { id: 'glm-4.7', name: 'GLM 4.7', apiModel: 'glm-4.7' },
-  { id: 'gpt-5.2-codex', name: 'GPT 5.2 Codex', apiModel: 'gpt-5.2-codex' },
+  { id: 'opus-4.6', name: 'Claude Opus 4.6', apiModel: 'claude-opus-4-6-20260101' },
+  { id: 'sonnet-4.6', name: 'Claude Sonnet 4.6', apiModel: 'claude-sonnet-4-6-20250514' },
+  { id: 'gpt-5.3-codex', name: 'GPT 5.3 Codex', apiModel: 'gpt-5.3-codex' },
   { id: 'qwen35-a3b', name: 'Qwen 3.5 35B A3B', apiModel: 'qwen35-a3b-iq4xs' },
 ];
 
