@@ -61,7 +61,7 @@ uap task create --title "<name>" --type <task|bug|feature> [options]
 
 **Options:**
 
-- `--priority, -p` - Priority level: low, medium, high, critical
+- `--priority, -p` - Priority level: low, medium, high, critical (also accepts P0-P4)
 - `--estimate` - Estimated time in minutes
 - `--depends` - Task ID this task depends on
 - `--label, -l` - Add label (can be specified multiple times)
@@ -83,7 +83,7 @@ uap task list [options]
 
 **Options:**
 
-- `--status, -s` - Filter by status: pending, in_progress, completed, blocked
+- `--status, -s` - Filter by status: pending/open, in_progress, completed/done, blocked
 - `--type, -t` - Filter by type: task, bug, feature
 - `--priority, -p` - Filter by priority
 - `--json` - Output as JSON
@@ -177,7 +177,7 @@ uap memory query "<query>" [options]
 
 **Options:**
 
-- `--top-k, -k` - Number of results (default: 5)
+- `--top-k, -k` - Number of results (default: 10, alias for --limit)
 - `--threshold, -t` - Minimum similarity score (0-1, default: 0.35)
 - `--type, -t` - Filter by memory type
 - `--tags, -T` - Filter by tags
@@ -219,7 +219,7 @@ uap worktree create <slug> [options]
 
 **Options:**
 
-- `--from, -f` - Base branch (default: main)
+- `--from, -f` - Base branch (default: current)
 - `--description, -d` - Worktree description
 
 **Example:**
@@ -316,7 +316,7 @@ uap hooks install [options]
 
 **Options:**
 
-- `--platform, -p` - Platform: claude-code, factory, vscode, opencode
+- `--platform, -p` - Platform: claude/claude-code, factory, vscode, opencode
 - `--force, -f` - Overwrite existing hooks
 
 **Example:**

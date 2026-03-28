@@ -15,6 +15,29 @@ if [ ! -f "$DB_PATH" ]; then
   exit 0
 fi
 
+CONTEXT_LEVEL="${UAP_CONTEXT_LEVEL:-}"
+if [ -z "$CONTEXT_LEVEL" ] && [ -f "${PROJECT_DIR}/.factory/config.json" ]; then
+  CONTEXT_LEVEL=$(python3 - <<PY 2>/dev/null || true
+import json
+path = "${PROJECT_DIR}/.factory/config.json"
+try:
+    data = json.load(open(path, "r", encoding="utf-8"))
+    for key in ("contextLevel", "context_level"):
+        if key in data and isinstance(data[key], str):
+            print(data[key])
+            raise SystemExit
+    hooks = data.get("hooks") or {}
+    for key in ("contextLevel", "context_level"):
+        if key in hooks and isinstance(hooks[key], str):
+            print(hooks[key])
+            raise SystemExit
+except Exception:
+    pass
+PY
+  )
+fi
+CONTEXT_LEVEL="${CONTEXT_LEVEL:-normal}"
+
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Record a compaction marker in memory so sessions can detect context resets
@@ -36,15 +59,20 @@ output=""
 output+="<system-reminder>"$'\n'
 output+="## UAP COMPLIANCE REMINDER (Pre-Compact)"$'\n'
 output+=""$'\n'
-output+="Context is being compacted. Before continuing work after compaction:"$'\n'
-output+="1. Re-run: uap task ready"$'\n'
-output+="2. Re-query memory for current task context"$'\n'
-output+="3. Check for stale worktrees: uap worktree list"$'\n'
-output+=""$'\n'
+if [ "$CONTEXT_LEVEL" = "quiet" ]; then
+  output+="Context compacting. After compaction: uap task ready; uap memory query \"<task>\"; uap worktree list."$'\n'
+  output+=""$'\n'
+else
+  output+="Context is being compacted. Before continuing work after compaction:"$'\n'
+  output+="1. Re-run: uap task ready"$'\n'
+  output+="2. Re-query memory for current task context"$'\n'
+  output+="3. Check for stale worktrees: uap worktree list"$'\n'
+  output+=""$'\n'
+fi
 
 if [ "$recent_lessons" = "0" ]; then
-  output+="WARNING: No lessons stored this session. Before compaction completes,"$'\n'
-  output+="store a summary: sqlite3 ./agents/data/memory/short_term.db \"INSERT INTO session_memories (session_id,timestamp,type,content,importance) VALUES ('current',datetime('now'),'decision','<summary>',7);\""$'\n'
+  output+="WARNING: No lessons stored this session. Before compaction completes, store a summary:"$'\n'
+  output+="uap memory store \"<summary>\" --importance 7"$'\n'
 fi
 
 output+="</system-reminder>"$'\n'
@@ -52,7 +80,7 @@ output+="</system-reminder>"$'\n'
 echo "$output"
 
 # Session summary panel (rich UAP state snapshot before compaction)
-if [ -f "${PROJECT_DIR}/dist/bin/cli.js" ]; then
+if [ "$CONTEXT_LEVEL" = "verbose" ] && [ -f "${PROJECT_DIR}/dist/bin/cli.js" ]; then
   node "${PROJECT_DIR}/dist/bin/cli.js" dash session --compact 2>/dev/null || true
 fi
 

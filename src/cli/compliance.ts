@@ -12,11 +12,13 @@ import {
   initializeMemoryDatabase,
 } from '../memory/short-term/schema.js';
 
-type ComplianceAction = 'check' | 'audit' | 'fix';
+type ComplianceAction = 'check' | 'audit' | 'fix' | 'report';
 
 interface ComplianceOptions {
   verbose?: boolean;
   fix?: boolean;
+  output?: string;
+  format?: string;
 }
 
 interface CheckResult {
@@ -42,12 +44,272 @@ export async function complianceCommand(
     case 'fix':
       await runComplianceFix(cwd, options);
       break;
+    case 'report':
+      await runComplianceReport(cwd, options);
+      break;
   }
 }
 
 async function runComplianceCheck(cwd: string, options: ComplianceOptions = {}): Promise<void> {
   console.log(chalk.bold('\n=== UAP Protocol Compliance Check ===\n'));
 
+  const results = await collectComplianceResults(cwd);
+  const { passes, warns, fails } = summarizeResults(results);
+
+  for (const r of results) {
+    const icon =
+      r.status === 'pass'
+        ? chalk.green('✅')
+        : r.status === 'warn'
+          ? chalk.yellow('⚠️')
+          : chalk.red('❌');
+    console.log(`${icon} ${r.name}: ${r.message}`);
+    if (options.verbose && r.status !== 'pass') {
+      if (r.fixable) {
+        console.log(chalk.dim(`     → Auto-fixable: run 'uap compliance fix'`));
+      }
+      if (r.status === 'fail') {
+        console.log(chalk.dim(`     → This gate blocks compliance`));
+      }
+    }
+  }
+
+  console.log('');
+  console.log(chalk.bold('========================================'));
+  console.log(
+    chalk.bold(
+      `  COMPLIANCE: ${passes}/${results.length} passed, ${warns} warnings, ${fails} failures`
+    )
+  );
+  console.log(chalk.bold('========================================'));
+
+  if (fails > 0) {
+    console.log(chalk.red('\n❌ UAP Protocol NON-COMPLIANT'));
+    const fixable = results.filter((r) => r.fixable && r.status !== 'pass');
+    if (fixable.length > 0) {
+      console.log(
+        chalk.yellow(`\n${fixable.length} issues are auto-fixable. Run: uap compliance fix`)
+      );
+    }
+  } else if (warns > 0) {
+    console.log(chalk.yellow('\n⚠️  UAP Protocol COMPLIANT with warnings'));
+  } else {
+    console.log(chalk.green('\n✅ UAP Protocol FULLY COMPLIANT'));
+  }
+  console.log('');
+}
+
+async function runComplianceReport(cwd: string, options: ComplianceOptions = {}): Promise<void> {
+  const results = await collectComplianceResults(cwd);
+  const summary = summarizeResults(results);
+  const format = options.format || 'text';
+
+  const payload = {
+    generatedAt: new Date().toISOString(),
+    summary,
+    results,
+  };
+
+  let output = '';
+  if (format === 'json') {
+    output = JSON.stringify(payload, null, 2);
+  } else if (format === 'markdown') {
+    output = [
+      '# UAP Compliance Report',
+      '',
+      `Generated: ${payload.generatedAt}`,
+      '',
+      `**Summary:** ${summary.passes}/${results.length} passed, ${summary.warns} warnings, ${summary.fails} failures`,
+      '',
+      '| Status | Check | Message |',
+      '| --- | --- | --- |',
+      ...results.map((r) => `| ${r.status.toUpperCase()} | ${r.name} | ${r.message} |`),
+      '',
+    ].join('\n');
+  } else {
+    output = [
+      'UAP Compliance Report',
+      `Generated: ${payload.generatedAt}`,
+      `Summary: ${summary.passes}/${results.length} passed, ${summary.warns} warnings, ${summary.fails} failures`,
+      '',
+      ...results.map((r) => `${r.status.toUpperCase()} - ${r.name}: ${r.message}`),
+      '',
+    ].join('\n');
+  }
+
+  if (options.output) {
+    const fs = await import('fs');
+    fs.writeFileSync(options.output, output);
+    console.log(chalk.green(`Report written to ${options.output}`));
+    return;
+  }
+
+  console.log(output);
+}
+
+async function runComplianceAudit(cwd: string, _options: ComplianceOptions): Promise<void> {
+  console.log(chalk.bold('\n=== UAP Protocol Deep Audit ===\n'));
+
+  // Run check with verbose output
+  await runComplianceCheck(cwd, { verbose: true });
+
+  // Additional audit-only information
+  const config = loadConfig(cwd);
+  const dbPath = config?.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
+
+  if (existsSync(dbPath)) {
+    try {
+      const db = new Database(dbPath, { readonly: true });
+
+      console.log(chalk.bold('\n--- Memory Statistics ---'));
+      const totalMemories = (
+        db.prepare('SELECT COUNT(*) as cnt FROM memories').get() as { cnt: number }
+      ).cnt;
+      const totalSessions = (
+        db.prepare('SELECT COUNT(*) as cnt FROM session_memories').get() as { cnt: number }
+      ).cnt;
+      const totalEntities = (
+        db.prepare('SELECT COUNT(*) as cnt FROM entities').get() as { cnt: number }
+      ).cnt;
+      const totalRelationships = (
+        db.prepare('SELECT COUNT(*) as cnt FROM relationships').get() as { cnt: number }
+      ).cnt;
+
+      console.log(`  Memories:      ${totalMemories}`);
+      console.log(`  Sessions:      ${totalSessions}`);
+      console.log(`  Entities:      ${totalEntities}`);
+      console.log(`  Relationships: ${totalRelationships}`);
+
+      // Memory type breakdown
+      const types = db
+        .prepare('SELECT type, COUNT(*) as cnt FROM memories GROUP BY type ORDER BY cnt DESC')
+        .all() as Array<{ type: string; cnt: number }>;
+      if (types.length > 0) {
+        console.log(chalk.bold('\n--- Memory Type Breakdown ---'));
+        for (const t of types) {
+          console.log(`  ${t.type}: ${t.cnt}`);
+        }
+      }
+
+      // Oldest and newest memory
+      const oldest = db.prepare('SELECT timestamp FROM memories ORDER BY id ASC LIMIT 1').get() as
+        | { timestamp: string }
+        | undefined;
+      const newest = db.prepare('SELECT timestamp FROM memories ORDER BY id DESC LIMIT 1').get() as
+        | { timestamp: string }
+        | undefined;
+      if (oldest && newest) {
+        console.log(chalk.bold('\n--- Memory Timeline ---'));
+        console.log(`  Oldest: ${oldest.timestamp}`);
+        console.log(`  Newest: ${newest.timestamp}`);
+      }
+
+      db.close();
+    } catch {
+      // ignore audit stats errors
+    }
+  }
+
+  console.log('');
+}
+
+async function runComplianceFix(cwd: string, _options: ComplianceOptions): Promise<void> {
+  console.log(chalk.bold('\n=== UAP Protocol Compliance Fix ===\n'));
+
+  const config = loadConfig(cwd);
+  const dbPath = config?.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
+
+  // Fix 1: Initialize database if missing
+  if (!existsSync(dbPath)) {
+    console.log(chalk.cyan('Creating memory database...'));
+    initializeMemoryDatabase(dbPath);
+    console.log(chalk.green('✅ Memory database created'));
+  }
+
+  // Fix 2: Run schema migrations (adds missing columns, widens CHECK constraints)
+  console.log(chalk.cyan('Running schema migrations...'));
+  try {
+    const db = new Database(dbPath);
+    ensureShortTermSchema(db);
+    ensureSessionSchema(db);
+    ensureKnowledgeSchema(db);
+    db.close();
+    console.log(chalk.green('✅ Schema migrations applied'));
+  } catch (err) {
+    console.log(
+      chalk.red(`❌ Schema migration failed: ${err instanceof Error ? err.message : String(err)}`)
+    );
+  }
+
+  // Fix 3: Create Qdrant collections if missing
+  try {
+    const endpoint = config?.memory?.longTerm?.endpoint || 'localhost:6333';
+    const url = endpoint.startsWith('http') ? endpoint : `http://${endpoint}`;
+    const res = await fetch(`${url}/collections`, { signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      const data = (await res.json()) as { result: { collections: Array<{ name: string }> } };
+      const existing = data.result.collections.map((c) => c.name);
+
+      // Create agent_memory if missing
+      const ltCollection = config?.memory?.longTerm?.collection || 'agent_memory';
+      if (!existing.includes(ltCollection)) {
+        console.log(chalk.cyan(`Creating Qdrant collection '${ltCollection}'...`));
+        const createRes = await fetch(`${url}/collections/${ltCollection}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vectors: { size: 384, distance: 'Cosine' } }),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (createRes.ok) {
+          console.log(chalk.green(`✅ Created Qdrant collection '${ltCollection}'`));
+        } else {
+          console.log(chalk.yellow(`⚠️  Could not create collection: ${await createRes.text()}`));
+        }
+      }
+
+      // Create agent_patterns if missing
+      const patternCollection = config?.memory?.patternRag?.collection || 'agent_patterns';
+      if (!existing.includes(patternCollection)) {
+        console.log(chalk.cyan(`Creating Qdrant collection '${patternCollection}'...`));
+        const createRes = await fetch(`${url}/collections/${patternCollection}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vectors: { size: 384, distance: 'Cosine' } }),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (createRes.ok) {
+          console.log(chalk.green(`✅ Created Qdrant collection '${patternCollection}'`));
+        } else {
+          console.log(chalk.yellow(`⚠️  Could not create collection: ${await createRes.text()}`));
+        }
+      }
+    }
+  } catch {
+    console.log(chalk.yellow('⚠️  Qdrant not reachable — skipping collection creation'));
+  }
+
+  // Fix 4: Prune stale worktrees
+  try {
+    const worktreeOutput = execSync('git worktree list --porcelain', {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const prunable = (worktreeOutput.match(/prunable/g) || []).length;
+    if (prunable > 0) {
+      console.log(chalk.cyan(`Pruning ${prunable} stale worktrees...`));
+      execSync('git worktree prune', { stdio: 'pipe' });
+      console.log(chalk.green(`✅ Pruned ${prunable} stale worktrees`));
+    }
+  } catch {
+    // Not a git repo or no worktrees
+  }
+
+  console.log(
+    chalk.green('\n✅ Compliance fixes applied. Run `uap compliance check` to verify.\n')
+  );
+}
+
+async function collectComplianceResults(cwd: string): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   const config = loadConfig(cwd);
   const dbPath = config?.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
@@ -359,214 +621,14 @@ async function runComplianceCheck(cwd: string, options: ComplianceOptions = {}):
     results.push({ name: 'Secret detection', status: 'pass', message: 'No staged changes' });
   }
 
-  // Print results
+  return results;
+}
+
+function summarizeResults(results: CheckResult[]): { passes: number; warns: number; fails: number } {
   const passes = results.filter((r) => r.status === 'pass').length;
   const warns = results.filter((r) => r.status === 'warn').length;
   const fails = results.filter((r) => r.status === 'fail').length;
-
-  for (const r of results) {
-    const icon =
-      r.status === 'pass'
-        ? chalk.green('✅')
-        : r.status === 'warn'
-          ? chalk.yellow('⚠️')
-          : chalk.red('❌');
-    console.log(`${icon} ${r.name}: ${r.message}`);
-    if (options.verbose && r.status !== 'pass') {
-      if (r.fixable) {
-        console.log(chalk.dim(`     → Auto-fixable: run 'uap compliance fix'`));
-      }
-      if (r.status === 'fail') {
-        console.log(chalk.dim(`     → This gate blocks compliance`));
-      }
-    }
-  }
-
-  console.log('');
-  console.log(chalk.bold('========================================'));
-  console.log(
-    chalk.bold(
-      `  COMPLIANCE: ${passes}/${results.length} passed, ${warns} warnings, ${fails} failures`
-    )
-  );
-  console.log(chalk.bold('========================================'));
-
-  if (fails > 0) {
-    console.log(chalk.red('\n❌ UAP Protocol NON-COMPLIANT'));
-    const fixable = results.filter((r) => r.fixable && r.status !== 'pass');
-    if (fixable.length > 0) {
-      console.log(
-        chalk.yellow(`\n${fixable.length} issues are auto-fixable. Run: uap compliance fix`)
-      );
-    }
-  } else if (warns > 0) {
-    console.log(chalk.yellow('\n⚠️  UAP Protocol COMPLIANT with warnings'));
-  } else {
-    console.log(chalk.green('\n✅ UAP Protocol FULLY COMPLIANT'));
-  }
-  console.log('');
-}
-
-async function runComplianceAudit(cwd: string, _options: ComplianceOptions): Promise<void> {
-  console.log(chalk.bold('\n=== UAP Protocol Deep Audit ===\n'));
-
-  // Run check with verbose output
-  await runComplianceCheck(cwd, { verbose: true });
-
-  // Additional audit-only information
-  const config = loadConfig(cwd);
-  const dbPath = config?.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
-
-  if (existsSync(dbPath)) {
-    try {
-      const db = new Database(dbPath, { readonly: true });
-
-      console.log(chalk.bold('\n--- Memory Statistics ---'));
-      const totalMemories = (
-        db.prepare('SELECT COUNT(*) as cnt FROM memories').get() as { cnt: number }
-      ).cnt;
-      const totalSessions = (
-        db.prepare('SELECT COUNT(*) as cnt FROM session_memories').get() as { cnt: number }
-      ).cnt;
-      const totalEntities = (
-        db.prepare('SELECT COUNT(*) as cnt FROM entities').get() as { cnt: number }
-      ).cnt;
-      const totalRelationships = (
-        db.prepare('SELECT COUNT(*) as cnt FROM relationships').get() as { cnt: number }
-      ).cnt;
-
-      console.log(`  Memories:      ${totalMemories}`);
-      console.log(`  Sessions:      ${totalSessions}`);
-      console.log(`  Entities:      ${totalEntities}`);
-      console.log(`  Relationships: ${totalRelationships}`);
-
-      // Memory type breakdown
-      const types = db
-        .prepare('SELECT type, COUNT(*) as cnt FROM memories GROUP BY type ORDER BY cnt DESC')
-        .all() as Array<{ type: string; cnt: number }>;
-      if (types.length > 0) {
-        console.log(chalk.bold('\n--- Memory Type Breakdown ---'));
-        for (const t of types) {
-          console.log(`  ${t.type}: ${t.cnt}`);
-        }
-      }
-
-      // Oldest and newest memory
-      const oldest = db.prepare('SELECT timestamp FROM memories ORDER BY id ASC LIMIT 1').get() as
-        | { timestamp: string }
-        | undefined;
-      const newest = db.prepare('SELECT timestamp FROM memories ORDER BY id DESC LIMIT 1').get() as
-        | { timestamp: string }
-        | undefined;
-      if (oldest && newest) {
-        console.log(chalk.bold('\n--- Memory Timeline ---'));
-        console.log(`  Oldest: ${oldest.timestamp}`);
-        console.log(`  Newest: ${newest.timestamp}`);
-      }
-
-      db.close();
-    } catch {
-      // ignore audit stats errors
-    }
-  }
-
-  console.log('');
-}
-
-async function runComplianceFix(cwd: string, _options: ComplianceOptions): Promise<void> {
-  console.log(chalk.bold('\n=== UAP Protocol Compliance Fix ===\n'));
-
-  const config = loadConfig(cwd);
-  const dbPath = config?.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
-
-  // Fix 1: Initialize database if missing
-  if (!existsSync(dbPath)) {
-    console.log(chalk.cyan('Creating memory database...'));
-    initializeMemoryDatabase(dbPath);
-    console.log(chalk.green('✅ Memory database created'));
-  }
-
-  // Fix 2: Run schema migrations (adds missing columns, widens CHECK constraints)
-  console.log(chalk.cyan('Running schema migrations...'));
-  try {
-    const db = new Database(dbPath);
-    ensureShortTermSchema(db);
-    ensureSessionSchema(db);
-    ensureKnowledgeSchema(db);
-    db.close();
-    console.log(chalk.green('✅ Schema migrations applied'));
-  } catch (err) {
-    console.log(
-      chalk.red(`❌ Schema migration failed: ${err instanceof Error ? err.message : String(err)}`)
-    );
-  }
-
-  // Fix 3: Create Qdrant collections if missing
-  try {
-    const endpoint = config?.memory?.longTerm?.endpoint || 'localhost:6333';
-    const url = endpoint.startsWith('http') ? endpoint : `http://${endpoint}`;
-    const res = await fetch(`${url}/collections`, { signal: AbortSignal.timeout(2000) });
-    if (res.ok) {
-      const data = (await res.json()) as { result: { collections: Array<{ name: string }> } };
-      const existing = data.result.collections.map((c) => c.name);
-
-      // Create agent_memory if missing
-      const ltCollection = config?.memory?.longTerm?.collection || 'agent_memory';
-      if (!existing.includes(ltCollection)) {
-        console.log(chalk.cyan(`Creating Qdrant collection '${ltCollection}'...`));
-        const createRes = await fetch(`${url}/collections/${ltCollection}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ vectors: { size: 384, distance: 'Cosine' } }),
-          signal: AbortSignal.timeout(5000),
-        });
-        if (createRes.ok) {
-          console.log(chalk.green(`✅ Created Qdrant collection '${ltCollection}'`));
-        } else {
-          console.log(chalk.yellow(`⚠️  Could not create collection: ${await createRes.text()}`));
-        }
-      }
-
-      // Create agent_patterns if missing
-      const patternCollection = config?.memory?.patternRag?.collection || 'agent_patterns';
-      if (!existing.includes(patternCollection)) {
-        console.log(chalk.cyan(`Creating Qdrant collection '${patternCollection}'...`));
-        const createRes = await fetch(`${url}/collections/${patternCollection}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ vectors: { size: 384, distance: 'Cosine' } }),
-          signal: AbortSignal.timeout(5000),
-        });
-        if (createRes.ok) {
-          console.log(chalk.green(`✅ Created Qdrant collection '${patternCollection}'`));
-        } else {
-          console.log(chalk.yellow(`⚠️  Could not create collection: ${await createRes.text()}`));
-        }
-      }
-    }
-  } catch {
-    console.log(chalk.yellow('⚠️  Qdrant not reachable — skipping collection creation'));
-  }
-
-  // Fix 4: Prune stale worktrees
-  try {
-    const worktreeOutput = execSync('git worktree list --porcelain', {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    const prunable = (worktreeOutput.match(/prunable/g) || []).length;
-    if (prunable > 0) {
-      console.log(chalk.cyan(`Pruning ${prunable} stale worktrees...`));
-      execSync('git worktree prune', { stdio: 'pipe' });
-      console.log(chalk.green(`✅ Pruned ${prunable} stale worktrees`));
-    }
-  } catch {
-    // Not a git repo or no worktrees
-  }
-
-  console.log(
-    chalk.green('\n✅ Compliance fixes applied. Run `uap compliance check` to verify.\n')
-  );
+  return { passes, warns, fails };
 }
 
 function loadConfig(cwd: string): AgentContextConfig | null {

@@ -38,6 +38,8 @@ type MemoryAction =
 interface MemoryOptions {
   search?: string;
   limit?: string;
+  topK?: string;
+  threshold?: string;
   content?: string;
   tags?: string;
   importance?: string;
@@ -71,7 +73,12 @@ export async function memoryCommand(
         console.log(chalk.red('Search query is required. Usage: uap memory query <search>'));
         return;
       }
-      await queryMemory(cwd, options.search, parseInt(options.limit || '10'));
+      await queryMemory(
+        cwd,
+        options.search,
+        parseInt(options.limit || options.topK || '10'),
+        options.threshold ? parseFloat(options.threshold) : undefined
+      );
       break;
     case 'store':
       if (!options.content) {
@@ -384,7 +391,12 @@ export async function checkQdrantHealth(
   return { healthy: false, started: false };
 }
 
-async function queryMemory(cwd: string, search: string, limit: number): Promise<void> {
+async function queryMemory(
+  cwd: string,
+  search: string,
+  limit: number,
+  threshold?: number
+): Promise<void> {
   console.log(chalk.bold(`\n🔍 Searching for: "${search}" (limit: ${limit})\n`));
 
   // Load config via shared utility
@@ -429,14 +441,15 @@ async function queryMemory(cwd: string, search: string, limit: number): Promise<
   }
 
   // Query long-term memory (Qdrant) if available
-  await queryQdrant(cwd, config, search, limit);
+  await queryQdrant(cwd, config, search, limit, threshold);
 }
 
 async function queryQdrant(
   _cwd: string,
   config: AgentContextConfig,
   search: string,
-  limit: number
+  limit: number,
+  threshold?: number
 ): Promise<void> {
   const endpoint = config.memory?.longTerm?.endpoint || 'localhost:6333';
   const url =
@@ -499,6 +512,7 @@ async function queryQdrant(
         seen.add(key);
         return true;
       })
+      .filter((r) => (threshold !== undefined ? r.score >= threshold : true))
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
 
