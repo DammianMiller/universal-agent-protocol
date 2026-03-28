@@ -11,6 +11,8 @@ type WorktreeAction = 'create' | 'list' | 'pr' | 'finish' | 'cleanup' | 'ensure'
 interface WorktreeOptions {
   slug?: string;
   id?: string;
+  from?: string;
+  description?: string;
   draft?: boolean;
   strict?: boolean;
   olderThan?: number;
@@ -79,7 +81,7 @@ export async function worktreeCommand(
 
   switch (action) {
     case 'create':
-      await createWorktree(cwd, git, options.slug!);
+      await createWorktree(cwd, git, options.slug!, options.from);
       break;
     case 'list':
       await listWorktrees(cwd, git);
@@ -106,7 +108,12 @@ export async function worktreeCommand(
   }
 }
 
-async function createWorktree(cwd: string, git: SimpleGit, slug: string): Promise<void> {
+async function createWorktree(
+  cwd: string,
+  git: SimpleGit,
+  slug: string,
+  baseBranch?: string
+): Promise<void> {
   const spinner = ora('Creating worktree...').start();
 
   try {
@@ -118,12 +125,22 @@ async function createWorktree(cwd: string, git: SimpleGit, slug: string): Promis
     const worktreePath = join(cwd, '.worktrees', worktreeName);
 
     // Get current branch (base)
-    spinner.text = 'Resolving current branch...';
+    spinner.text = 'Resolving base branch...';
     const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
+    let branchBase = currentBranch.trim();
+    if (baseBranch) {
+      try {
+        await git.revparse([baseBranch]);
+        branchBase = baseBranch;
+      } catch {
+        spinner.fail(`Base branch not found: ${baseBranch}`);
+        process.exit(1);
+      }
+    }
 
     // Create worktree with new branch
     spinner.text = `Creating branch ${branchName}...`;
-    await git.raw(['worktree', 'add', '-b', branchName, worktreePath, currentBranch.trim()]);
+    await git.raw(['worktree', 'add', '-b', branchName, worktreePath, branchBase]);
 
     // Register in DB to prevent race conditions
     const db = getWorktreeDb(cwd);

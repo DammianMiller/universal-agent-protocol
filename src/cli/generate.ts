@@ -21,6 +21,8 @@ interface GenerateOptions {
   platform?: string;
   web?: boolean;
   pipelineOnly?: boolean;
+  template?: string;
+  sections?: string;
 }
 
 interface DependencyStatus {
@@ -107,6 +109,50 @@ export async function generateCommand(options: GenerateOptions): Promise<void> {
       template: {
         extends: 'default',
       },
+    };
+  }
+
+  if (options.template) {
+    config.template = { ...(config.template || {}), extends: options.template };
+  }
+
+  if (options.sections) {
+    const normalizedSections = options.sections
+      .split(',')
+      .map((section) => section.trim())
+      .filter(Boolean);
+
+    const defaultSections = {
+      memorySystem: false,
+      browserUsage: false,
+      decisionLoop: false,
+      worktreeWorkflow: false,
+      troubleshooting: false,
+      augmentedCapabilities: false,
+      pipelineOnly: false,
+      benchmark: false,
+    };
+
+    const sectionMap: Record<string, keyof typeof defaultSections> = {
+      memorysystem: 'memorySystem',
+      browserusage: 'browserUsage',
+      decisionloop: 'decisionLoop',
+      worktreeworkflow: 'worktreeWorkflow',
+      troubleshooting: 'troubleshooting',
+      augmentedcapabilities: 'augmentedCapabilities',
+      pipelineonly: 'pipelineOnly',
+      benchmark: 'benchmark',
+    };
+
+    const sections = normalizedSections.reduce((acc, name) => {
+      const key = sectionMap[name.replace(/[^a-z]/gi, '').toLowerCase()];
+      if (key) acc[key] = true;
+      return acc;
+    }, { ...defaultSections });
+
+    config.template = {
+      ...(config.template || { extends: 'default' }),
+      sections,
     };
   }
 

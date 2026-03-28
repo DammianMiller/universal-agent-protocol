@@ -33,9 +33,16 @@ const ALL_TARGETS: HooksTarget[] = [
   'omp',
 ];
 
+function normalizeTarget(target?: string): HooksTarget | undefined {
+  if (!target) return undefined;
+  if (target === 'claude-code') return 'claude';
+  return target as HooksTarget;
+}
+
 export async function hooksCommand(action: HooksAction, options: HooksOptions = {}): Promise<void> {
   const cwd = options.projectDir || process.cwd();
-  const targets = options.target ? [options.target] : ALL_TARGETS;
+  const normalized = normalizeTarget(options.target);
+  const targets = normalized ? [normalized] : ALL_TARGETS;
 
   switch (action) {
     case 'install':

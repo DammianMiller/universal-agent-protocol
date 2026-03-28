@@ -85,6 +85,7 @@ import re
 import sys
 import time
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 import httpx
@@ -101,6 +102,8 @@ PROXY_PORT = int(os.environ.get("PROXY_PORT", "4000"))
 PROXY_HOST = os.environ.get("PROXY_HOST", "0.0.0.0")
 PROXY_LOG_LEVEL = os.environ.get("PROXY_LOG_LEVEL", "INFO").upper()
 PROXY_READ_TIMEOUT = float(os.environ.get("PROXY_READ_TIMEOUT", "600"))
+PROXY_UPSTREAM_RETRY_MAX = int(os.environ.get("PROXY_UPSTREAM_RETRY_MAX", "3"))
+PROXY_UPSTREAM_RETRY_DELAY_SECS = float(os.environ.get("PROXY_UPSTREAM_RETRY_DELAY_SECS", "5"))
 PROXY_MAX_CONNECTIONS = int(os.environ.get("PROXY_MAX_CONNECTIONS", "20"))
 PROXY_CONTEXT_WINDOW = int(os.environ.get("PROXY_CONTEXT_WINDOW", "0"))
 PROXY_CONTEXT_PRUNE_THRESHOLD = float(
@@ -116,9 +119,9 @@ PROXY_LOOP_BREAKER = os.environ.get("PROXY_LOOP_BREAKER", "on").lower() not in {
     "no",
 }
 PROXY_LOOP_WINDOW = int(os.environ.get("PROXY_LOOP_WINDOW", "6"))
-PROXY_LOOP_REPEAT_THRESHOLD = int(os.environ.get("PROXY_LOOP_REPEAT_THRESHOLD", "8"))
+PROXY_LOOP_REPEAT_THRESHOLD = int(os.environ.get("PROXY_LOOP_REPEAT_THRESHOLD", "6"))
 PROXY_FORCED_THRESHOLD = int(os.environ.get("PROXY_FORCED_THRESHOLD", "15"))
-PROXY_NO_PROGRESS_THRESHOLD = int(os.environ.get("PROXY_NO_PROGRESS_THRESHOLD", "4"))
+PROXY_NO_PROGRESS_THRESHOLD = int(os.environ.get("PROXY_NO_PROGRESS_THRESHOLD", "3"))
 PROXY_CONTEXT_RELEASE_THRESHOLD = float(
     os.environ.get("PROXY_CONTEXT_RELEASE_THRESHOLD", "0.90")
 )
@@ -138,16 +141,28 @@ PROXY_TOOL_STATE_FORCED_BUDGET = int(
 )
 PROXY_TOOL_STATE_AUTO_BUDGET = int(os.environ.get("PROXY_TOOL_STATE_AUTO_BUDGET", "2"))
 PROXY_TOOL_STATE_STAGNATION_THRESHOLD = int(
-    os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "12")
+    os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "9")
 )
 PROXY_TOOL_STATE_CYCLE_WINDOW = int(
     os.environ.get("PROXY_TOOL_STATE_CYCLE_WINDOW", "8")
 )
 PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
-    os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "24")
+    os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "18")
 )
 PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT = int(
-    os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "3")
+    os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "2")
+)
+PROXY_CLIENT_RATE_WINDOW_SECS = int(
+    os.environ.get("PROXY_CLIENT_RATE_WINDOW_SECS", "60")
+)
+PROXY_CLIENT_RATE_LOG_MIN_SECS = float(
+    os.environ.get("PROXY_CLIENT_RATE_LOG_MIN_SECS", "15")
+)
+PROXY_OPUS46_CTX_THRESHOLD = float(
+    os.environ.get("PROXY_OPUS46_CTX_THRESHOLD", "0.8")
+)
+PROXY_OPUS46_MAX_TOKENS_HIGH_CTX = int(
+    os.environ.get("PROXY_OPUS46_MAX_TOKENS_HIGH_CTX", "4096")
 )
 PROXY_TOOL_NARROWING_EXPAND_ON_LOOP = os.environ.get(
     "PROXY_TOOL_NARROWING_EXPAND_ON_LOOP", "on"
@@ -322,6 +337,51 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("uap.anthropic_proxy")
+
+_client_request_times: dict[str, deque[float]] = defaultdict(deque)
+_client_rate_last_log: dict[str, float] = defaultdict(float)
+
+
+def resolve_client_id(request: Request) -> str:
+    header_keys = ("x-uap-client-id", "x-forwarded-for", "x-real-ip")
+    for key in header_keys:
+        value = request.headers.get(key)
+        if value:
+            return f"{key}:{value.split(',')[0].strip()}"
+    if request.client:
+        return f"remote:{request.client.host}"
+    return "remote:unknown"
+
+
+def log_client_rate(client_id: str) -> int:
+    if PROXY_CLIENT_RATE_WINDOW_SECS <= 0:
+        return 0
+    now = time.time()
+    window = PROXY_CLIENT_RATE_WINDOW_SECS
+    request_times = _client_request_times[client_id]
+    request_times.append(now)
+    cutoff = now - window
+    while request_times and request_times[0] < cutoff:
+        request_times.popleft()
+    count = len(request_times)
+    if PROXY_CLIENT_RATE_LOG_MIN_SECS <= 0:
+        logger.info(
+            "CLIENT_RATE: id=%s window=%ss count=%d",
+            client_id,
+            window,
+            count,
+        )
+        return count
+    last_log = _client_rate_last_log.get(client_id, 0.0)
+    if now - last_log >= PROXY_CLIENT_RATE_LOG_MIN_SECS:
+        _client_rate_last_log[client_id] = now
+        logger.info(
+            "CLIENT_RATE: id=%s window=%ss count=%d",
+            client_id,
+            window,
+            count,
+        )
+    return count
 
 
 def _load_tool_call_grammar(path: str) -> str:
@@ -1063,6 +1123,37 @@ def prune_conversation(
 # Module-level httpx.AsyncClient for connection reuse + keep-alive.
 # Granular timeouts: short connect, long read for streaming LLM output.
 http_client: httpx.AsyncClient | None = None
+
+
+async def _post_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict,
+    headers: dict,
+) -> httpx.Response:
+    last_exc: Exception | None = None
+    for attempt in range(PROXY_UPSTREAM_RETRY_MAX):
+        try:
+            return await client.post(url, json=payload, headers=headers)
+        except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadTimeout) as exc:
+            last_exc = exc
+            if attempt < PROXY_UPSTREAM_RETRY_MAX - 1:
+                logger.warning(
+                    "Upstream connect failed (attempt %d/%d): %s – retrying in %.0fs",
+                    attempt + 1,
+                    PROXY_UPSTREAM_RETRY_MAX,
+                    type(exc).__name__,
+                    PROXY_UPSTREAM_RETRY_DELAY_SECS,
+                )
+                await asyncio.sleep(PROXY_UPSTREAM_RETRY_DELAY_SECS)
+            else:
+                logger.error(
+                    "Upstream connect failed after %d attempts: %s: %s",
+                    PROXY_UPSTREAM_RETRY_MAX,
+                    type(exc).__name__,
+                    exc,
+                )
+    raise last_exc if last_exc else RuntimeError("upstream retry failed")
 
 
 @asynccontextmanager
@@ -1878,6 +1969,25 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
                     estimated_input,
                 )
                 requested_max = max(1024, available_for_output)
+
+            model_name = str(anthropic_body.get("model", "")).lower()
+            utilization = estimated_input / ctx_window if ctx_window else 0.0
+            if (
+                PROXY_OPUS46_MAX_TOKENS_HIGH_CTX > 0
+                and "opus" in model_name
+                and "4.6" in model_name
+                and utilization >= PROXY_OPUS46_CTX_THRESHOLD
+                and requested_max > PROXY_OPUS46_MAX_TOKENS_HIGH_CTX
+            ):
+                logger.warning(
+                    "MAX_TOKENS capped for Opus 4.6 at high context: %d -> %d (ctx=%d input~%d util=%.1f%%)",
+                    requested_max,
+                    PROXY_OPUS46_MAX_TOKENS_HIGH_CTX,
+                    ctx_window,
+                    estimated_input,
+                    utilization * 100,
+                )
+                requested_max = PROXY_OPUS46_MAX_TOKENS_HIGH_CTX
 
         openai_body["max_tokens"] = requested_max
     if "temperature" in anthropic_body:
@@ -3953,6 +4063,7 @@ async def messages(request: Request):
     body = await request.json()
     model = body.get("model", "default")
     is_stream = body.get("stream", False)
+    client_id = resolve_client_id(request)
     session_id = resolve_session_id(request, body)
     monitor = get_session_monitor(session_id)
     last_session_id = session_id
@@ -3982,8 +4093,12 @@ async def messages(request: Request):
         last_text = last_content[:200]
     else:
         last_text = str(last_content)[:200]
+    rate_count = log_client_rate(client_id)
     logger.info(
-        "REQ: stream=%s msgs=%d tools=%d max_tokens=%s last_role=%s last_content=%.200s",
+        "REQ: client=%s rate_%ss=%d stream=%s msgs=%d tools=%d max_tokens=%s last_role=%s last_content=%.200s",
+        client_id,
+        PROXY_CLIENT_RATE_WINDOW_SECS,
+        rate_count,
         is_stream,
         n_messages,
         n_tools,
@@ -4040,11 +4155,27 @@ async def messages(request: Request):
         strict_body = dict(openai_body)
         strict_body["stream"] = False
 
-        strict_resp = await client.post(
-            f"{LLAMA_CPP_BASE}/chat/completions",
-            json=strict_body,
-            headers={"Content-Type": "application/json"},
-        )
+        try:
+            strict_resp = await _post_with_retry(
+                client,
+                f"{LLAMA_CPP_BASE}/chat/completions",
+                strict_body,
+                {"Content-Type": "application/json"},
+            )
+        except Exception as exc:
+            return Response(
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "overloaded_error",
+                            "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                        },
+                    }
+                ),
+                status_code=529,
+                media_type="application/json",
+            )
 
         if strict_resp.status_code != 200:
             error_text = strict_resp.text[:1000]
@@ -4054,11 +4185,27 @@ async def messages(request: Request):
                 error_text,
                 "strict-stream",
             ):
-                strict_resp = await client.post(
-                    f"{LLAMA_CPP_BASE}/chat/completions",
-                    json=strict_body,
-                    headers={"Content-Type": "application/json"},
-                )
+                try:
+                    strict_resp = await _post_with_retry(
+                        client,
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        strict_body,
+                        {"Content-Type": "application/json"},
+                    )
+                except Exception as exc:
+                    return Response(
+                        content=json.dumps(
+                            {
+                                "type": "error",
+                                "error": {
+                                    "type": "overloaded_error",
+                                    "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                                },
+                            }
+                        ),
+                        status_code=529,
+                        media_type="application/json",
+                    )
 
         if strict_resp.status_code != 200:
             error_text = strict_resp.text[:1000]
@@ -4128,8 +4275,8 @@ async def messages(request: Request):
 
         # Retry upstream connection with backoff to handle
         # llama-server restarts gracefully instead of 500-ing to the client.
-        MAX_UPSTREAM_RETRIES = 3
-        RETRY_DELAY_SECS = 5.0
+        MAX_UPSTREAM_RETRIES = PROXY_UPSTREAM_RETRY_MAX
+        RETRY_DELAY_SECS = PROXY_UPSTREAM_RETRY_DELAY_SECS
         last_exc: Exception | None = None
         resp: httpx.Response | None = None
 
@@ -4147,7 +4294,7 @@ async def messages(request: Request):
                 # Connection succeeded – break out of retry loop
                 last_exc = None
                 break
-            except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadTimeout) as exc:
                 last_exc = exc
                 if attempt < MAX_UPSTREAM_RETRIES - 1:
                     logger.warning(
@@ -4314,11 +4461,27 @@ async def messages(request: Request):
             },
         )
     else:
-        resp = await client.post(
-            f"{LLAMA_CPP_BASE}/chat/completions",
-            json=openai_body,
-            headers={"Content-Type": "application/json"},
-        )
+        try:
+            resp = await _post_with_retry(
+                client,
+                f"{LLAMA_CPP_BASE}/chat/completions",
+                openai_body,
+                {"Content-Type": "application/json"},
+            )
+        except Exception as exc:
+            return Response(
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "overloaded_error",
+                            "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                        },
+                    }
+                ),
+                status_code=529,
+                media_type="application/json",
+            )
 
         if resp.status_code != 200:
             error_text = resp.text[:1000]
@@ -4328,11 +4491,27 @@ async def messages(request: Request):
                 error_text,
                 "non-stream",
             ):
-                resp = await client.post(
-                    f"{LLAMA_CPP_BASE}/chat/completions",
-                    json=openai_body,
-                    headers={"Content-Type": "application/json"},
-                )
+                try:
+                    resp = await _post_with_retry(
+                        client,
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        openai_body,
+                        {"Content-Type": "application/json"},
+                    )
+                except Exception as exc:
+                    return Response(
+                        content=json.dumps(
+                            {
+                                "type": "error",
+                                "error": {
+                                    "type": "overloaded_error",
+                                    "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                                },
+                            }
+                        ),
+                        status_code=529,
+                        media_type="application/json",
+                    )
 
         # Option B: Handle non-streaming errors too
         if resp.status_code != 200:

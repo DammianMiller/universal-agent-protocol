@@ -157,7 +157,7 @@ async function createTask(service: TaskService, options: TaskOptions): Promise<v
       title: options.title,
       description: options.description,
       type: (options.type as TaskType) || 'task',
-      priority: options.priority ? (parseInt(options.priority, 10) as TaskPriority) : 2,
+      priority: parsePriority(options.priority) ?? 2,
       labels: options.labels ? options.labels.split(',').map((l) => l.trim()) : [],
       parentId: options.parent,
       notes: options.notes,
@@ -194,7 +194,7 @@ async function listTasks(service: TaskService, options: TaskOptions): Promise<vo
   const filter: TaskFilter = {};
 
   if (options.filterStatus) {
-    filter.status = options.filterStatus.split(',') as TaskStatus[];
+    filter.status = normalizeStatusList(options.filterStatus);
   }
   if (options.filterType) {
     filter.type = options.filterType.split(',') as TaskType[];
@@ -202,7 +202,8 @@ async function listTasks(service: TaskService, options: TaskOptions): Promise<vo
   if (options.filterPriority) {
     filter.priority = options.filterPriority
       .split(',')
-      .map((p) => parseInt(p, 10)) as TaskPriority[];
+      .map((p) => parsePriority(p))
+      .filter((p): p is TaskPriority => p !== undefined);
   }
   if (options.filterAssignee) {
     filter.assignee = options.filterAssignee;
@@ -390,8 +391,11 @@ async function updateTask(service: TaskService, options: TaskOptions): Promise<v
   if (options.title) input.title = options.title;
   if (options.description) input.description = options.description;
   if (options.type) input.type = options.type as TaskType;
-  if (options.status) input.status = options.status as TaskStatus;
-  if (options.priority) input.priority = parseInt(options.priority, 10) as TaskPriority;
+  if (options.status) input.status = normalizeStatus(options.status);
+  if (options.priority) {
+    const priority = parsePriority(options.priority);
+    if (priority !== undefined) input.priority = priority;
+  }
   if (options.assignee) input.assignee = options.assignee === 'none' ? undefined : options.assignee;
   if (options.worktree)
     input.worktreeBranch = options.worktree === 'none' ? undefined : options.worktree;
@@ -955,4 +959,44 @@ function getPriorityColor(priority: TaskPriority): (text: string) => string {
     default:
       return chalk.white;
   }
+}
+
+function parsePriority(value?: string): TaskPriority | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  const map: Record<string, TaskPriority> = {
+    p0: 0,
+    critical: 0,
+    high: 1,
+    p1: 1,
+    medium: 2,
+    p2: 2,
+    low: 3,
+    p3: 3,
+    backlog: 4,
+    p4: 4,
+  };
+
+  if (map[normalized] !== undefined) return map[normalized];
+  const parsed = parseInt(normalized, 10);
+  if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 4) {
+    return parsed as TaskPriority;
+  }
+  return undefined;
+}
+
+function normalizeStatus(value: string): TaskStatus {
+  const normalized = value.trim().toLowerCase();
+  const map: Record<string, TaskStatus> = {
+    pending: 'open',
+    completed: 'done',
+  };
+  return (map[normalized] || normalized) as TaskStatus;
+}
+
+function normalizeStatusList(value: string): TaskStatus[] {
+  return value
+    .split(',')
+    .map((status) => normalizeStatus(status))
+    .filter((status) => status.length > 0);
 }

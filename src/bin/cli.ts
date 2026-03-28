@@ -24,6 +24,7 @@ const lazy = {
   dashboard: () => import('../cli/dashboard.js').then((m) => m.dashboardCommand),
   hooks: () => import('../cli/hooks.js'),
   patterns: () => import('../cli/patterns.js').then((m) => m.patternsCommand),
+  skill: () => import('../cli/skill.js').then((m) => m.skillCommand),
   setup: () => import('../cli/setup.js').then((m) => m.setupCommand),
   setupMcpRouter: () => import('../cli/setup-mcp-router.js').then((m) => m.setupMcpRouter),
   compliance: () => import('../cli/compliance.js').then((m) => m.complianceCommand),
@@ -113,6 +114,8 @@ program
   .option('-f, --force', 'Overwrite existing files without confirmation')
   .option('-d, --dry-run', 'Show what would be generated without writing')
   .option('-p, --platform <platform>', 'Generate for specific platform only')
+  .option('--template <template>', 'Template to use (default or custom)')
+  .option('--sections <sections>', 'Comma-separated sections to include')
   .option('--web', 'Generate AGENT.md for web platforms (claude.ai, factory.ai)')
   .option(
     '--pipeline-only',
@@ -147,6 +150,8 @@ program
       .description('Query long-term memory')
       .argument('<search>', 'Search term')
       .option('-n, --limit <number>', 'Max results', '10')
+      .option('-k, --top-k <number>', 'Alias for --limit', '10')
+      .option('-t, --threshold <number>', 'Minimum similarity score (0-1)', '0.35')
       .action(async (search, options) => {
         (await lazy.memory())('query', { search, ...options });
       })
@@ -246,8 +251,10 @@ program
     new Command('create')
       .description('Create a new worktree for a feature')
       .argument('<slug>', 'Feature slug (e.g., add-user-auth)')
-      .action(async (slug) => {
-        (await lazy.worktree())('create', { slug });
+      .option('-f, --from <branch>', 'Base branch (defaults to current)')
+      .option('-d, --description <description>', 'Optional worktree description')
+      .action(async (slug, options) => {
+        (await lazy.worktree())('create', { slug, ...options });
       })
   )
   .addCommand(
@@ -576,6 +583,7 @@ program
     new Command('list')
       .description('List tasks')
       .option('-s, --filter-status <status>', 'Filter by status (comma-separated)')
+      .option('--status <status>', 'Alias for --filter-status')
       .option('--filter-type <type>', 'Filter by type (comma-separated)')
       .option('--filter-priority <priority>', 'Filter by priority (comma-separated)')
       .option('-a, --filter-assignee <assignee>', 'Filter by assignee')
@@ -586,7 +594,8 @@ program
       .option('-v, --verbose', 'Show more details')
       .option('--json', 'Output as JSON')
       .action(async (options) => {
-        (await lazy.task())('list', options);
+        const filterStatus = options.filterStatus ?? options.status;
+        (await lazy.task())('list', { ...options, filterStatus });
       })
   )
   .addCommand(
@@ -730,6 +739,16 @@ program
       })
   )
   .addCommand(
+    new Command('report')
+      .description('Generate detailed compliance report')
+      .option('-o, --output <path>', 'Output file path')
+      .option('-f, --format <format>', 'Format: text, markdown, json', 'text')
+      .option('-v, --verbose', 'Show detailed information')
+      .action(async (options) => {
+        (await lazy.compliance())('report', options);
+      })
+  )
+  .addCommand(
     new Command('audit')
       .description('Deep compliance audit with verbose output')
       .option('-v, --verbose', 'Show detailed information')
@@ -745,6 +764,53 @@ program
       .option('-v, --verbose', 'Show detailed information')
       .action(async (options) => {
         (await lazy.compliance())('fix', options);
+      })
+  );
+
+program
+  .command('coordination')
+  .description('Coordination overlap checks and resolution')
+  .addCommand(
+    new Command('check')
+      .description('Check for overlapping work between agents')
+      .option('--agents <agents>', 'Comma-separated agent ids or names')
+      .option('-r, --resource <resource>', 'Resource to check')
+      .option('-v, --verbose', 'Show detailed overlap analysis')
+      .option('--json', 'Output as JSON')
+      .action(async (options) => {
+        (await lazy.coord())('check', options);
+      })
+  )
+  .addCommand(
+    new Command('resolve')
+      .description('Resolve identified overlaps')
+      .argument('<overlapId>', 'Overlap identifier (resource path)')
+      .option('--action <action>', 'Resolution action: assign, merge, delegate')
+      .option('--json', 'Output as JSON')
+      .action(async (overlapId, options) => {
+        (await lazy.coord())('resolve', { overlapId, ...options });
+      })
+  );
+
+program
+  .command('skill')
+  .description('Skill management and loading')
+  .addCommand(
+    new Command('list')
+      .description('List available skills')
+      .option('-c, --category <category>', 'Filter by category')
+      .option('--json', 'Output as JSON')
+      .action(async (options) => {
+        (await lazy.skill())('list', options);
+      })
+  )
+  .addCommand(
+    new Command('load')
+      .description('Load a specific skill for current session')
+      .argument('<skill>', 'Skill name')
+      .option('-c, --category <category>', 'Filter by category')
+      .action(async (skill, options) => {
+        (await lazy.skill())('load', { skill, ...options });
       })
   );
 
@@ -956,11 +1022,17 @@ program
         '-t, --target <target>',
         'Target platform: claude, factory, cursor, vscode, opencode, omp (default: all)'
       )
+      .option(
+        '-p, --platform <platform>',
+        'Alias for --target (claude, factory, cursor, vscode, opencode, omp)'
+      )
       .action((options) =>
         lazy
           .hooks()
           .then((m) =>
-            m.hooksCommand('install', { target: options.target as HooksTarget | undefined })
+            m.hooksCommand('install', {
+              target: (options.target ?? options.platform) as HooksTarget | undefined,
+            })
           )
       )
   )
@@ -971,11 +1043,17 @@ program
         '-t, --target <target>',
         'Target platform: claude, factory, cursor, vscode, opencode, omp (default: all)'
       )
+      .option(
+        '-p, --platform <platform>',
+        'Alias for --target (claude, factory, cursor, vscode, opencode, omp)'
+      )
       .action((options) =>
         lazy
           .hooks()
           .then((m) =>
-            m.hooksCommand('status', { target: options.target as HooksTarget | undefined })
+            m.hooksCommand('status', {
+              target: (options.target ?? options.platform) as HooksTarget | undefined,
+            })
           )
       )
   );
