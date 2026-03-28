@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.19.0 (2026-03-28)
+
+- chore: bump version to 1.18.1
+- feat: update supported Droid models to latest versions
+- fix: remove agents/docker-compose.yml for test D10
+- chore: clean up CHANGELOG duplicates
+
+
 ## v1.18.1 (2026-03-28)
 
 - feat: update supported Droid models to latest versions
