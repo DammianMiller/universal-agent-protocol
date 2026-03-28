@@ -1,0 +1,404 @@
+{
+  "hooks": {
+    "claudeHooksImported": true,
+    "importedClaudeHooks": [
+      "bd prime",
+      "bd prime",
+      "if [[ \"$CLAUDE_TOOL_FILE_PATH\" == *.js || \"$CLAUDE_TOOL_FILE_PATH\" == *.ts || \"$CLAUDE_TOOL_FILE_PATH\" == *.jsx || \"$CLAUDE_TOOL_FILE_PATH\" == *.tsx ]]; then npx eslint \"$CLAUDE_TOOL_FILE_PATH\" --fix 2>/dev/null || true; elif [[ \"$CLAUDE_TOOL_FILE_PATH\" == *.py ]]; then pylint \"$CLAUDE_TOOL_FILE_PATH\" 2>/dev/null || true; elif [[ \"$CLAUDE_TOOL_FILE_PATH\" == *.rb ]]; then rubocop \"$CLAUDE_TOOL_FILE_PATH\" --auto-correct 2>/dev/null || true; fi"
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cogtek/.factory/hooks/peon-ping/peon.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cogtek/.factory/hooks/peon-ping/peon.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cogtek/.factory/hooks/peon-ping/peon.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cogtek/.factory/hooks/peon-ping/peon.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cogtek/.factory/hooks/peon-ping/peon.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "enableDroidShield": false,
+  "showThinkingInMainView": true,
+  "showTokenUsageIndicator": true,
+  "ideAutoConnect": true,
+  "allowBackgroundProcesses": true,
+  "customModels": [
+    {
+      "model": "claude-opus-4-5-20251101-thinking-32000",
+      "id": "custom:CC:-Opus-4.5-(High)-0",
+      "index": 0,
+      "baseUrl": "http://localhost:8317",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "CC: Opus 4.5 (High)",
+      "noImageSupport": false,
+      "provider": "anthropic"
+    },
+    {
+      "model": "claude-opus-4-5-20251101-thinking-10000",
+      "id": "custom:CC:-Opus-4.5-(Medium)-1",
+      "index": 1,
+      "baseUrl": "http://localhost:8317",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "CC: Opus 4.5 (Medium)",
+      "noImageSupport": false,
+      "provider": "anthropic"
+    },
+    {
+      "model": "claude-opus-4-5-20251101-thinking-4000",
+      "id": "custom:CC:-Opus-4.5-(Low)-2",
+      "index": 2,
+      "baseUrl": "http://localhost:8317",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "CC: Opus 4.5 (Low)",
+      "noImageSupport": false,
+      "provider": "anthropic"
+    },
+    {
+      "model": "claude-opus-4-6",
+      "id": "custom:CC:-Opus-4.6-3",
+      "index": 3,
+      "baseUrl": "http://localhost:8317",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "CC: Opus 4.6",
+      "noImageSupport": false,
+      "provider": "anthropic"
+    },
+    {
+      "model": "claude-sonnet-4-5-20250929",
+      "id": "custom:CC:-Sonnet-4.5-4",
+      "index": 4,
+      "baseUrl": "http://localhost:8317",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "CC: Sonnet 4.5",
+      "noImageSupport": false,
+      "provider": "anthropic"
+    },
+    {
+      "model": "claude-sonnet-4-5-20250929-thinking-4000",
+      "id": "custom:CC:-Sonnet-4.5-(Low)-5",
+      "index": 5,
+      "baseUrl": "http://localhost:8317",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "CC: Sonnet 4.5 (Low)",
+      "noImageSupport": false,
+      "provider": "anthropic"
+    },
+    {
+      "model": "claude-sonnet-4-5-20250929-thinking-10000",
+      "id": "custom:CC:-Sonnet-4.5-(Medium)-6",
+      "index": 6,
+      "baseUrl": "http://localhost:8317",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "CC: Sonnet 4.5 (Medium)",
+      "noImageSupport": false,
+      "provider": "anthropic"
+    },
+    {
+      "model": "claude-sonnet-4-5-20250929-thinking-32000",
+      "id": "custom:CC:-Sonnet-4.5-(High)-7",
+      "index": 7,
+      "baseUrl": "http://localhost:8317",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "CC: Sonnet 4.5 (High)",
+      "noImageSupport": false,
+      "provider": "anthropic"
+    },
+    {
+      "model": "gemini-claude-opus-4-5-thinking",
+      "id": "custom:AG:-Opus-4.5-Thinking-8",
+      "index": 8,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "AG: Opus 4.5 Thinking",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gemini-claude-sonnet-4-5-thinking",
+      "id": "custom:AG:-Sonnet-4.5-Thinking-9",
+      "index": 9,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "AG: Sonnet 4.5 Thinking",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gemini-claude-sonnet-4-5",
+      "id": "custom:AG:-Sonnet-4.5-10",
+      "index": 10,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "AG: Sonnet 4.5",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gpt-5.1-codex",
+      "id": "custom:GPT-5.1-Codex-11",
+      "index": 11,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "GPT-5.1 Codex",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gpt-5.1-codex(high)",
+      "id": "custom:GPT-5.1-Codex-(High)-12",
+      "index": 12,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "GPT-5.1 Codex (High)",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gpt-5.1-codex-max",
+      "id": "custom:GPT-5.1-Codex-Max-13",
+      "index": 13,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "GPT-5.1 Codex Max",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gpt-5.1",
+      "id": "custom:GPT-5.1-14",
+      "index": 14,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "GPT-5.1",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gpt-5.1(low)",
+      "id": "custom:GPT-5.1-(Low)-15",
+      "index": 15,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "GPT-5.1 (Low)",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gpt-5.1(high)",
+      "id": "custom:GPT-5.1-(High)-16",
+      "index": 16,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "GPT-5.1 (High)",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gpt-5.2",
+      "id": "custom:GPT-5.2-17",
+      "index": 17,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "GPT-5.2",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gpt-5.2-codex",
+      "id": "custom:GPT-5.2-Codex-18",
+      "index": 18,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "GPT-5.2 Codex",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gemini-3-pro-preview",
+      "id": "custom:Gemini-3-Pro-19",
+      "index": 19,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "Gemini 3 Pro",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gemini-3-pro-image-preview",
+      "id": "custom:Gemini-3-Pro-(Image)-20",
+      "index": 20,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "Gemini 3 Pro (Image)",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "id": "custom:Gemini-2.5-Pro-21",
+      "index": 21,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "Gemini 2.5 Pro",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "id": "custom:Gemini-2.5-Flash-22",
+      "index": 22,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "Gemini 2.5 Flash",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gemini-2.5-flash-lite",
+      "id": "custom:Gemini-2.5-Flash-Lite-23",
+      "index": 23,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "Gemini 2.5 Flash Lite",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "qwen3-coder-plus",
+      "id": "custom:Qwen3-Coder-Plus-24",
+      "index": 24,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "Qwen3 Coder Plus",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "qwen35-a3b-iq4xs",
+      "id": "custom:Qwen3.5-35B-A3B-25",
+      "index": 25,
+      "baseUrl": "http://localhost:8080/v1",
+      "apiKey": "sk-qwen35b",
+      "displayName": "Qwen3.5 35B A3B",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "ubergarm/glm-4.7-flash",
+      "id": "custom:GLM-4.7-Flash-(Local)-26",
+      "index": 26,
+      "baseUrl": "http://192.168.8.229:3005/v1",
+      "apiKey": "sk-local-glm47",
+      "displayName": "GLM-4.7 Flash (Local)",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "qwen35-a3b-iq4xs",
+      "id": "custom:Qwen3.5-Proxy-27",
+      "index": 27,
+      "baseUrl": "http://localhost:4000",
+      "apiKey": "not-needed",
+      "displayName": "Qwen3.5 35B (Proxy)",
+      "noImageSupport": true,
+      "provider": "anthropic"
+    },
+    {
+      "model": "gpt-5.4",
+      "id": "custom:GPT-5.4-28",
+      "index": 28,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "GPT-5.4",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gpt-5.3-codex",
+      "id": "custom:GPT-5.3-Codex-29",
+      "index": 29,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "GPT-5.3 Codex",
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "claude-sonnet-4-6-20250514",
+      "id": "custom:CC:-Sonnet-4.6-Proxy-30",
+      "index": 30,
+      "baseUrl": "http://localhost:8317",
+      "apiKey": "sk-y3IUdvQoFCqYr2i2jZkRlXm37ScWIyvyGiF0WhJIQa7Uq",
+      "displayName": "CC: Sonnet 4.6 (Proxy)",
+      "noImageSupport": false,
+      "provider": "anthropic"
+    }
+  ],
+  "logoAnimation": "off",
+  "sessionDefaultSettings": {
+    "interactionMode": "spec",
+    "autonomyLevel": "high",
+    "autonomyMode": "spec",
+    "model": "custom:Qwen3.5-Proxy-27",
+    "reasoningEffort": "none"
+  },
+  "includeCoAuthoredByDroid": false,
+  "hasSeenMissionOnboarding": true,
+  "todoDisplayMode": "inline",
+  "missionModelSettings": {
+    "workerModel": "custom:Qwen3.5-Proxy-27",
+    "workerReasoningEffort": "none",
+    "validationWorkerModel": "custom:GPT-5.2-Codex-18",
+    "validationWorkerReasoningEffort": "none"
+  }
+}
