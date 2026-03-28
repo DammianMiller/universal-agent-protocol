@@ -2,12 +2,18 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { CoordinationService } from '../coordination/service.js';
 import { DeployBatcher } from '../coordination/deploy-batcher.js';
+import type { WorkOverlap } from '../types/coordination.js';
 import { statusBadge, divider, keyValue, horizontalBarChart, bulletList } from './visualize.js';
 
-type CoordAction = 'status' | 'flush' | 'cleanup';
+type CoordAction = 'status' | 'flush' | 'cleanup' | 'check' | 'resolve';
 
 interface CoordOptions {
   verbose?: boolean;
+  agents?: string;
+  resource?: string;
+  json?: boolean;
+  overlapId?: string;
+  action?: string;
 }
 
 export async function coordCommand(action: CoordAction, options: CoordOptions = {}): Promise<void> {
@@ -20,6 +26,12 @@ export async function coordCommand(action: CoordAction, options: CoordOptions = 
       break;
     case 'cleanup':
       await cleanupCoordination(options);
+      break;
+    case 'check':
+      await checkCoordination(options);
+      break;
+    case 'resolve':
+      await resolveOverlap(options);
       break;
   }
 }
@@ -156,6 +168,87 @@ async function cleanupCoordination(_options: CoordOptions): Promise<void> {
     spinner.fail('Cleanup failed');
     console.error(chalk.red(error instanceof Error ? error.message : String(error)));
   }
+}
+
+async function checkCoordination(options: CoordOptions): Promise<void> {
+  const service = new CoordinationService();
+  const activeWork = service.getActiveWork();
+  const agentFilter = options.agents
+    ? options.agents.split(',').map((agent) => agent.trim().toLowerCase())
+    : [];
+
+  const scopedWork = activeWork.filter((work) => {
+    if (agentFilter.length === 0) return true;
+    const name = work.agentName?.toLowerCase() || '';
+    const id = work.agentId.toLowerCase();
+    return agentFilter.includes(id) || agentFilter.includes(name);
+  });
+
+  const resourceFilter = options.resource;
+  const resources = new Set(
+    scopedWork
+      .filter((work) => (resourceFilter ? work.resource.includes(resourceFilter) : true))
+      .map((work) => work.resource)
+  );
+
+  const overlaps: WorkOverlap[] = [];
+  for (const resource of resources) {
+    overlaps.push(...service.detectOverlaps(resource));
+  }
+
+  if (options.json) {
+    console.log(JSON.stringify({ overlaps }, null, 2));
+    return;
+  }
+
+  if (overlaps.length === 0) {
+    console.log(chalk.green('No overlaps detected'));
+    return;
+  }
+
+  console.log(chalk.bold('\nCoordination Overlaps\n'));
+  overlaps.forEach((overlap, index) => {
+    const risk = overlap.conflictRisk.toUpperCase();
+    console.log(`${chalk.cyan(`[${index + 1}]`)} ${overlap.resource} (${risk})`);
+    overlap.agents.forEach((agent) => {
+      console.log(`  - ${agent.name || agent.id} (${agent.intentType})`);
+    });
+    if (overlap.suggestion) {
+      console.log(chalk.dim(`  Suggestion: ${overlap.suggestion}`));
+    }
+    console.log('');
+  });
+}
+
+async function resolveOverlap(options: CoordOptions): Promise<void> {
+  const overlapId = options.overlapId;
+  if (!overlapId) {
+    console.error(chalk.red('Error: overlapId is required'));
+    process.exit(1);
+  }
+
+  const service = new CoordinationService();
+  const overlaps = service.detectOverlaps(overlapId);
+  if (overlaps.length === 0) {
+    console.log(chalk.yellow(`No overlaps found for resource: ${overlapId}`));
+    return;
+  }
+
+  const action = options.action || 'merge';
+  const payload = {
+    action,
+    resource: overlapId,
+    overlaps,
+    suggestion: overlaps.map((o) => o.suggestion).filter(Boolean),
+  };
+
+  if (options.json) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  service.broadcast('coordination-cli', 'coordination', payload, 6);
+  console.log(chalk.green(`Resolution '${action}' broadcast for ${overlapId}`));
 }
 
 

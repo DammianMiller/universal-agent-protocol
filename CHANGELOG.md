@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.20.0 (2026-03-28)
+
+- feat: add CLI parity commands and aliases
 ## v1.19.2 (2026-03-27)
 
 - fix: avoid task id collisions
