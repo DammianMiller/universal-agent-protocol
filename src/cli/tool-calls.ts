@@ -74,6 +74,26 @@ function detectModelProfile(): string {
   return 'generic';
 }
 
+function detectLlmServer(): string {
+  if (process.env.UAP_LLM_SERVER) {
+    return process.env.UAP_LLM_SERVER;
+  }
+
+  const uapConfigPath = join(UAP_ROOT, '.uap.json');
+  if (existsSync(uapConfigPath)) {
+    try {
+      const config = JSON.parse(readFileSync(uapConfigPath, 'utf-8'));
+      if (config?.toolCalls?.llmServer) {
+        return config.toolCalls.llmServer;
+      }
+    } catch {
+      // ignore parse errors
+    }
+  }
+
+  return 'http://192.168.1.165:4000';
+}
+
 /**
  * Load model profile settings from config/model-profiles/<profile>.json
  * or fall back to legacy config/<profile>-settings.json.
@@ -347,6 +367,7 @@ print('OK')
 
   console.log(chalk.bold('Environment Variables:'));
   console.log('  UAP_MODEL_PROFILE   Model profile name (default: auto-detect)');
+  console.log('  UAP_LLM_SERVER      LLM server base URL (default: http://192.168.1.165:4000)');
   console.log('  TARGET_URL          Inference server URL (default: http://127.0.0.1:8080)');
   console.log('  PROXY_PORT          Proxy listen port (default: 11435)');
   console.log('  FORCE_TOOL_CHOICE   tool_choice value (default: required)\n');
@@ -375,6 +396,7 @@ function findTestScript(): { script: string; python: string } {
 
 async function test(): Promise<void> {
   const profile = detectModelProfile();
+  const llmServer = detectLlmServer();
   console.log(chalk.cyan(`\nRunning Tool Call Tests (profile: ${profile})...\n`));
 
   const { script: testScript, python } = findTestScript();
@@ -382,12 +404,18 @@ async function test(): Promise<void> {
   console.log(chalk.dim(`  Script: ${testScript}`));
   console.log(chalk.dim(`  Python: ${python}`));
   console.log(chalk.dim(`  CWD:    ${SCRIPTS_DIR}\n`));
+  console.log(chalk.dim(`  LLM:    ${llmServer}\n`));
 
   try {
     execSync(`${python} "${testScript}" --verbose`, {
       cwd: SCRIPTS_DIR,
       stdio: 'inherit',
-      env: { ...process.env, UAP_MODEL_PROFILE: profile, PYTHONPATH: SCRIPTS_DIR },
+      env: {
+        ...process.env,
+        UAP_MODEL_PROFILE: profile,
+        UAP_LLM_SERVER: llmServer,
+        PYTHONPATH: SCRIPTS_DIR,
+      },
     });
   } catch {
     console.log(chalk.yellow('\nTest completed with some failures'));
@@ -397,6 +425,7 @@ async function test(): Promise<void> {
 
 async function check(): Promise<void> {
   const profile = detectModelProfile();
+  const llmServer = detectLlmServer();
   console.log(chalk.cyan(`\nValidating Tool Call Setup (profile: ${profile})...\n`));
 
   const { script: testScript, python } = findTestScript();
@@ -405,7 +434,12 @@ async function check(): Promise<void> {
     execSync(`${python} "${testScript}" --check`, {
       cwd: SCRIPTS_DIR,
       stdio: 'inherit',
-      env: { ...process.env, UAP_MODEL_PROFILE: profile, PYTHONPATH: SCRIPTS_DIR },
+      env: {
+        ...process.env,
+        UAP_MODEL_PROFILE: profile,
+        UAP_LLM_SERVER: llmServer,
+        PYTHONPATH: SCRIPTS_DIR,
+      },
     });
   } catch {
     console.log(chalk.yellow('\nSetup check completed with issues.\n'));
@@ -414,9 +448,13 @@ async function check(): Promise<void> {
 
 async function status(): Promise<void> {
   const profile = detectModelProfile();
+  const llmServer = detectLlmServer();
   console.log(chalk.cyan('\n' + '='.repeat(70)));
   console.log(chalk.bold(`Tool Call Configuration Status (profile: ${profile})`));
   console.log(chalk.cyan('='.repeat(70) + '\n'));
+
+  console.log(chalk.bold('LLM Server:'));
+  console.log(`  Base URL: ${llmServer}\n`);
 
   // Check templates
   for (const [label, path] of [
@@ -636,6 +674,7 @@ Model Profiles:
 
 Environment Variables:
   UAP_MODEL_PROFILE     Model profile (default: auto-detect)
+  UAP_LLM_SERVER        LLM server base URL (default: http://192.168.1.165:4000)
   TARGET_URL            Inference server URL (default: http://127.0.0.1:8080)
   PROXY_PORT            Proxy listen port (default: 11435)
   FORCE_TOOL_CHOICE     tool_choice value (default: required)
@@ -645,6 +684,7 @@ Examples:
   ${chalk.gray('uap-tool-calls setup')}
   ${chalk.gray('uap-tool-calls test')}
   ${chalk.gray('uap-tool-calls status')}
+  ${chalk.gray('UAP_LLM_SERVER=http://192.168.1.165:4000 uap-tool-calls test')}
   ${chalk.gray('UAP_MODEL_PROFILE=qwen35 uap-tool-calls test')}
   ${chalk.gray('TARGET_URL=http://localhost:11434 uap-tool-calls proxy')}
 `);

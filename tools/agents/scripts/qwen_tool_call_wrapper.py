@@ -34,6 +34,7 @@ import openai
 import time
 import json
 import logging
+import os
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -44,6 +45,25 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("qwen35_tool_call")
+
+DEFAULT_LLM_SERVER = "http://192.168.1.165:4000"
+
+
+def _normalize_base_url(url: str) -> str:
+    url = url.rstrip("/")
+    if not url.endswith("/v1"):
+        return f"{url}/v1"
+    return url
+
+
+def _resolve_base_url() -> str:
+    raw = (
+        os.environ.get("UAP_LLM_SERVER")
+        or os.environ.get("UAP_TOOL_CALL_SERVER")
+        or os.environ.get("LLM_SERVER")
+        or os.environ.get("TOOL_CALL_BASE_URL")
+    )
+    return _normalize_base_url(raw or DEFAULT_LLM_SERVER)
 
 
 class ToolCallStatus(Enum):
@@ -102,7 +122,7 @@ class Qwen35ToolCallClient:
         "enable_thinking": False,
         "max_retries": 3,
         "backoff_factor": 2.0,
-        "base_url": "http://127.0.0.1:8080/v1",
+        "base_url": _resolve_base_url(),
         "api_key": "not-needed",
         "model": "qwen35-a3b-iq4xs",
         # Strategy 1: Always pass tool_choice and parallel_tool_calls
