@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.20.0 (2026-03-28)
+
+- chore: bump version to 1.19.0
+- feat: add CLI parity commands and aliases
+- feat: update supported Droid models to latest versions
+- fix: remove agents/docker-compose.yml for test D10
+- chore: clean up CHANGELOG duplicates
+
+
 ## v1.19.0 (2026-03-28)
 
 - feat: add CLI parity commands and aliases
