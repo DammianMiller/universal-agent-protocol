@@ -24,7 +24,7 @@ export LLAMA_THREADS="${LLAMA_THREADS:-32}"
 export LLAMA_GPU_LAYERS="${LLAMA_GPU_LAYERS:-99}"
 export LLAMA_BATCH_SIZE="${LLAMA_BATCH_SIZE:-512}"
 export LLAMA_UBATCH_SIZE="${LLAMA_UBATCH_SIZE:-512}"
-export LLAMA_SPEC_TYPE="${LLAMA_SPEC_TYPE:-ngram-cache}"
+export LLAMA_SPEC_TYPE="${LLAMA_SPEC_TYPE:-none}"
 export LLAMA_DRAFT_MAX="${LLAMA_DRAFT_MAX:-16}"
 export LLAMA_DRAFT_MIN="${LLAMA_DRAFT_MIN:-3}"
 export LLAMA_DRAFT_P_MIN="${LLAMA_DRAFT_P_MIN:-0.75}"
@@ -55,13 +55,18 @@ args=(
   --n-predict 32768
   --repeat-penalty 1.0
   --defrag-thold 0.1
-  --spec-type "$LLAMA_SPEC_TYPE"
-  --draft-max "$LLAMA_DRAFT_MAX"
-  --draft-min "$LLAMA_DRAFT_MIN"
-  --draft-p-min "$LLAMA_DRAFT_P_MIN"
   --chat-template-file "$LLAMA_CHAT_TEMPLATE_FILE"
   --log-file "$LLAMA_LOG_FILE"
 )
+
+if [[ "$LLAMA_SPEC_TYPE" != "none" ]]; then
+  args+=(
+    --spec-type "$LLAMA_SPEC_TYPE"
+    --draft-max "$LLAMA_DRAFT_MAX"
+    --draft-min "$LLAMA_DRAFT_MIN"
+    --draft-p-min "$LLAMA_DRAFT_P_MIN"
+  )
+fi
 
 if [[ -n "$LLAMA_EXTRA_ARGS" ]]; then
   # shellcheck disable=SC2206

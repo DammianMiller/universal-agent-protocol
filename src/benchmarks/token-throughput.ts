@@ -5,6 +5,7 @@
  * Uses actual model inference via the local API endpoint.
  */
 
+import { writeFileSync } from 'fs';
 import { z } from 'zod';
 
 // ============================================================================
@@ -280,7 +281,7 @@ if (import.meta.url.endsWith(process.argv[1] ?? '')) {
 
     // Save results
     const outputPath = process.env.OUTPUT_FILE || './token_throughput_results.json';
-    require('fs').writeFileSync(outputPath, JSON.stringify(benchmark, null, 2));
+    writeFileSync(outputPath, JSON.stringify(benchmark, null, 2));
     console.log(`\n💾 Results saved to: ${outputPath}`);
   } catch (error) {
     console.error('Benchmark failed:', error);
