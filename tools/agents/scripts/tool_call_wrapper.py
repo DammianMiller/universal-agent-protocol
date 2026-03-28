@@ -15,6 +15,7 @@ Strategies implemented:
 
 Model Profiles:
   Set UAP_MODEL_PROFILE env var to load model-specific defaults.
+  Set UAP_LLM_SERVER env var to override the base URL for the LLM server.
   Supported profiles: qwen35, llama, generic (default)
   Or pass a custom config dict to override any setting.
 
@@ -63,6 +64,26 @@ logger = logging.getLogger("uap_tool_call")
 
 # ── Model Profiles ──────────────────────────────────────────────────────────
 
+DEFAULT_LLM_SERVER = "http://192.168.1.165:4000"
+
+
+def _normalize_base_url(url: str) -> str:
+    url = url.rstrip("/")
+    if not url.endswith("/v1"):
+        return f"{url}/v1"
+    return url
+
+
+def _resolve_base_url() -> str:
+    raw = (
+        os.environ.get("UAP_LLM_SERVER")
+        or os.environ.get("UAP_TOOL_CALL_SERVER")
+        or os.environ.get("LLM_SERVER")
+        or os.environ.get("TOOL_CALL_BASE_URL")
+    )
+    return _normalize_base_url(raw or DEFAULT_LLM_SERVER)
+
+
 MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
     "generic": {
         "temperature": 0.6,
@@ -71,7 +92,7 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         "max_tokens": 4096,
         "enable_thinking": False,
         "model": "default",
-        "base_url": "http://127.0.0.1:8080/v1",
+        "base_url": _resolve_base_url(),
         "api_key": "not-needed",
         "default_tool_choice": "auto",
         "parallel_tool_calls": True,
@@ -89,7 +110,7 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         "max_tokens": 16384,
         "enable_thinking": True,
         "model": "qwen35-a3b-iq4xs",
-        "base_url": "http://127.0.0.1:8080/v1",
+        "base_url": _resolve_base_url(),
         "api_key": "not-needed",
         "default_tool_choice": "required",
         "parallel_tool_calls": True,
@@ -119,7 +140,7 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         "max_tokens": 4096,
         "enable_thinking": False,
         "model": "default",
-        "base_url": "http://127.0.0.1:8080/v1",
+        "base_url": _resolve_base_url(),
         "api_key": "not-needed",
         "default_tool_choice": "auto",
         "parallel_tool_calls": True,
@@ -211,7 +232,7 @@ class ToolCallClient:
         "enable_thinking": False,
         "max_retries": 3,
         "backoff_factor": 1.0,
-        "base_url": "http://127.0.0.1:8080/v1",
+        "base_url": _resolve_base_url(),
         "api_key": "not-needed",
         "model": "default",
         "default_tool_choice": "auto",

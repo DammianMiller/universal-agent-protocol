@@ -98,6 +98,11 @@ import uvicorn
 # Configuration (all configurable via environment variables)
 # ---------------------------------------------------------------------------
 LLAMA_CPP_BASE = os.environ.get("LLAMA_CPP_BASE", "http://192.168.1.165:8080/v1")
+ANTHROPIC_API_BASE = os.environ.get(
+    "ANTHROPIC_API_BASE", "https://api.anthropic.com"
+)
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_PASSTHROUGH_MODELS = os.environ.get("ANTHROPIC_PASSTHROUGH_MODELS", "")
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4000"))
 PROXY_HOST = os.environ.get("PROXY_HOST", "0.0.0.0")
 PROXY_LOG_LEVEL = os.environ.get("PROXY_LOG_LEVEL", "INFO").upper()
@@ -328,6 +333,11 @@ PROXY_TOOL_CALL_GRAMMAR_PATH = os.path.abspath(
     )
 )
 
+DEFAULT_PASSTHROUGH_MODEL_PATTERNS = (
+    re.compile(r"^claude-opus-4-6", re.IGNORECASE),
+    re.compile(r"^claude-sonnet-4-6", re.IGNORECASE),
+)
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -402,6 +412,22 @@ def _load_tool_call_grammar(path: str) -> str:
 
 TOOL_CALL_GBNF = _load_tool_call_grammar(PROXY_TOOL_CALL_GRAMMAR_PATH)
 TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE = True
+
+
+def _resolve_passthrough_models() -> list[str]:
+    raw = ANTHROPIC_PASSTHROUGH_MODELS.strip()
+    if not raw:
+        return []
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def _should_passthrough_model(model: str) -> bool:
+    if not model:
+        return False
+    overrides = _resolve_passthrough_models()
+    if overrides:
+        return model in overrides
+    return any(pattern.match(model) for pattern in DEFAULT_PASSTHROUGH_MODEL_PATTERNS)
 
 
 def _is_grammar_tools_incompatibility(status_code: int, error_text: str) -> bool:
@@ -4048,6 +4074,80 @@ async def stream_anthropic_response(
 # ===========================================================================
 
 
+def _build_passthrough_headers(request: Request) -> dict | None:
+    api_key = request.headers.get("x-api-key") or ANTHROPIC_API_KEY
+    if not api_key:
+        return None
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": request.headers.get("anthropic-version", "2023-06-01"),
+    }
+    beta = request.headers.get("anthropic-beta")
+    if beta:
+        headers["anthropic-beta"] = beta
+    return headers
+
+
+async def _stream_passthrough(resp: httpx.Response):
+    async for chunk in resp.aiter_bytes():
+        yield chunk
+    await resp.aclose()
+
+
+async def _passthrough_anthropic_request(
+    request: Request, body: dict, is_stream: bool
+) -> Response:
+    headers = _build_passthrough_headers(request)
+    if not headers:
+        return Response(
+            content=json.dumps(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "authentication_error",
+                        "message": "Missing Anthropic API key for passthrough request",
+                    },
+                }
+            ),
+            status_code=401,
+            media_type="application/json",
+        )
+
+    client = http_client
+    if client is None:
+        return Response(
+            content=json.dumps({"error": "Proxy not initialized"}),
+            status_code=503,
+            media_type="application/json",
+        )
+
+    url = f"{ANTHROPIC_API_BASE.rstrip('/')}/v1/messages"
+
+    if is_stream:
+        resp = await client.send(
+            client.build_request("POST", url, json=body, headers=headers)
+        )
+        if resp.status_code != 200:
+            return Response(
+                content=resp.text,
+                status_code=resp.status_code,
+                media_type=resp.headers.get("content-type", "application/json"),
+            )
+        return StreamingResponse(
+            _stream_passthrough(resp),
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "text/event-stream"),
+        )
+
+    resp = await client.post(url, json=body, headers=headers)
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        media_type=resp.headers.get("content-type", "application/json"),
+    )
+
+
 @app.post("/v1/messages")
 async def messages(request: Request):
     """Handle Anthropic Messages API requests (streaming and non-streaming).
@@ -4064,6 +4164,9 @@ async def messages(request: Request):
     model = body.get("model", "default")
     is_stream = body.get("stream", False)
     client_id = resolve_client_id(request)
+    if _should_passthrough_model(model):
+        logger.info("PASSTHROUGH: model=%s -> %s", model, ANTHROPIC_API_BASE)
+        return await _passthrough_anthropic_request(request, body, is_stream)
     session_id = resolve_session_id(request, body)
     monitor = get_session_monitor(session_id)
     last_session_id = session_id
@@ -4594,6 +4697,7 @@ async def models():
             {"id": "claude-sonnet-4-6-20250514", "object": "model"},
             {"id": "gpt-5.4", "object": "model"},
             {"id": "gpt-5.3-codex", "object": "model"},
+            {"id": "claude-opus-4-6-20250616", "object": "model"},
             {"id": "qwen35-a3b-iq4xs", "object": "model"},
         ]
     }
