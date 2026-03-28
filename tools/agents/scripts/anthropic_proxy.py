@@ -4411,8 +4411,11 @@ async def models():
     """Return available model list (spoofs Anthropic model IDs for client compatibility)."""
     return {
         "data": [
-            {"id": "claude-sonnet-4-20250514", "object": "model"},
-            {"id": "claude-3-5-sonnet-20241022", "object": "model"},
+            {"id": "claude-opus-4-6-20260101", "object": "model"},
+            {"id": "claude-sonnet-4-6-20250514", "object": "model"},
+            {"id": "gpt-5.4", "object": "model"},
+            {"id": "gpt-5.3-codex", "object": "model"},
+            {"id": "qwen35-a3b-iq4xs", "object": "model"},
         ]
     }
 

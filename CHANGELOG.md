@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.20.1 (2026-03-28)
+
+- fix: expand anthropic proxy model list for updated Droid models
+- fix: replace require usage in throughput and predictive memory modules
+- test: cover proxy model list entries
+
 ## v1.19.0 (2026-03-28)
 
 - chore: bump version to 1.18.1
