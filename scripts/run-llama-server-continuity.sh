@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-LLAMA_BIN="${LLAMA_BIN:-/home/cogtek/llama.cpp/build-cuda/bin/llama-server}"
+LLAMA_BIN="${LLAMA_BIN:-/home/cogtek/llama.cpp/.worktrees/turboquant-cuda/build/bin/llama-server}"
 LLAMA_MODEL="${LLAMA_MODEL:-/home/cogtek/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf}"
 
 if [[ ! -x "$LLAMA_BIN" ]]; then
@@ -31,6 +31,7 @@ export LLAMA_DRAFT_P_MIN="${LLAMA_DRAFT_P_MIN:-0.75}"
 export LLAMA_HYBRID_ROLLBACK_MODE="${LLAMA_HYBRID_ROLLBACK_MODE:-strict}"
 export LLAMA_LOG_FILE="${LLAMA_LOG_FILE:-llama-server.log}"
 export LLAMA_CHAT_TEMPLATE_FILE="${LLAMA_CHAT_TEMPLATE_FILE:-${ROOT_DIR}/tools/agents/config/chat_template.jinja}"
+export LLAMA_KV_UNIFIED="${LLAMA_KV_UNIFIED:-on}"
 export LLAMA_EXTRA_ARGS="${LLAMA_EXTRA_ARGS:-}"
 
 if [[ ! -f "$LLAMA_CHAT_TEMPLATE_FILE" ]]; then
@@ -62,6 +63,10 @@ args=(
   --chat-template-file "$LLAMA_CHAT_TEMPLATE_FILE"
   --log-file "$LLAMA_LOG_FILE"
 )
+
+if [[ "$LLAMA_KV_UNIFIED" == "on" ]]; then
+  args+=(--kv-unified)
+fi
 
 if [[ -n "$LLAMA_EXTRA_ARGS" ]]; then
   # shellcheck disable=SC2206
