@@ -6,8 +6,8 @@
  * patterns to improve predictions over time.
  */
 
-import { existsSync } from 'fs';
 import Database from 'better-sqlite3';
+import { existsSync } from 'fs';
 import { jaccardSimilarity } from '../utils/string-similarity.js';
 import { concurrentMap } from '../utils/concurrency-pool.js';
 
