@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.18.3 (2026-03-29)
+
+- fix: stabilize release validation flow
+- fix: build before tests in version bump pipeline
+- fix: remove duplicate agents docker compose file
+- fix: restore unexpected end-turn retries for active qwen loops
+- fix: keep proxy guardrail fallbacks non-terminal in active loops
+- fix: add PreCompact hook registration to settings.local.json
+- feat: add knowledge graph, prepopulation settings, and optimization tweaks
+- feat: update supported Droid models to latest versions
+- fix: remove agents/docker-compose.yml for test D10
+- chore: clean up CHANGELOG duplicates
+
+
 ## v1.18.0 (2026-03-27)
 
 - feat: implement full optimization suite - adaptive cache O(1) eviction, SQLite WAL mode, query caching, pattern router LRU cache, async hook execution
