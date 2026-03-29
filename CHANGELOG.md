@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.20.4 (2026-03-29)
+
+- feat: add benchmark automation tooling
+- fix: align local qwen runtime defaults
+
+
 ## v1.20.3 (2026-03-29)
 
 - chore: bump version to 1.20.3
