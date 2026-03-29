@@ -1517,7 +1517,7 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         self.assertEqual(malformed, openai_resp)
         self.assertEqual(len(fake_client.requests), 0)
 
-    def test_unexpected_end_turn_guardrail_skips_review_auto_turn(self):
+    def test_unexpected_end_turn_guardrail_retries_review_auto_turn_in_active_loop(self):
         monitor = proxy.SessionMonitor(context_window=262144)
         monitor.tool_turn_phase = "review"
 
@@ -1562,7 +1562,27 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             ],
         }
 
-        fake_client = _FakeClient([_FakeResponse({"choices": []})])
+        retried_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "Bash",
+                                    "arguments": '{"command":"pwd"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+        fake_client = _FakeClient([_FakeResponse(retried_resp)])
         result = asyncio.run(
             proxy._apply_unexpected_end_turn_guardrail(
                 fake_client,
@@ -1574,10 +1594,10 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result, openai_resp)
-        self.assertEqual(len(fake_client.requests), 0)
+        self.assertEqual(result, retried_resp)
+        self.assertEqual(len(fake_client.requests), 1)
 
-    def test_unexpected_end_turn_guardrail_skips_act_auto_release_turn(self):
+    def test_unexpected_end_turn_guardrail_retries_act_auto_turn_in_active_loop(self):
         monitor = proxy.SessionMonitor(context_window=262144)
         monitor.tool_turn_phase = "act"
 
@@ -1622,7 +1642,27 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             ],
         }
 
-        fake_client = _FakeClient([_FakeResponse({"choices": []})])
+        retried_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_2",
+                                "function": {
+                                    "name": "Bash",
+                                    "arguments": '{"command":"pwd"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+        fake_client = _FakeClient([_FakeResponse(retried_resp)])
         result = asyncio.run(
             proxy._apply_unexpected_end_turn_guardrail(
                 fake_client,
@@ -1634,8 +1674,8 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result, openai_resp)
-        self.assertEqual(len(fake_client.requests), 0)
+        self.assertEqual(result, retried_resp)
+        self.assertEqual(len(fake_client.requests), 1)
 
 
 class TestToolTurnControls(unittest.TestCase):
