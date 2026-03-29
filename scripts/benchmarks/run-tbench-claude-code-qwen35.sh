@@ -1,4 +1,3 @@
-#!/bin/bash
 #
 # Harbor Terminal-Bench 2.0: UAP + Claude Code via Anthropic Proxy -> Qwen3.5
 #
@@ -105,11 +104,7 @@ if curl -sf --max-time 3 "${PROXY_URL}/health" >/dev/null; then
 elif [ "$START_PROXY" = true ]; then
     echo -e "${YELLOW}STARTING${NC}"
     mkdir -p "$PROJECT_ROOT/benchmark-results"
-    LLAMA_CPP_BASE="$LLAMA_CPP_BASE" \
-    PROXY_PORT="$PROXY_PORT" \
-    PROXY_HOST="$PROXY_HOST" \
-    PROXY_LOG_LEVEL="INFO" \
-    nohup python3 "$PROJECT_ROOT/tools/agents/scripts/anthropic_proxy.py" > "$PROJECT_ROOT/benchmark-results/proxy_${TIMESTAMP}.log" 2>&1 &
+    LLAMA_CPP_BASE="$LLAMA_CPP_BASE"     PROXY_PORT="$PROXY_PORT"     PROXY_HOST="$PROXY_HOST"     PROXY_LOG_LEVEL="INFO"     nohup python3 "$PROJECT_ROOT/tools/agents/scripts/anthropic_proxy.py" > "$PROJECT_ROOT/benchmark-results/proxy_${TIMESTAMP}.log" 2>&1 &
     for i in $(seq 1 20); do
         if curl -sf --max-time 2 "${PROXY_URL}/health" >/dev/null; then
             echo -e "${GREEN}Proxy ready${NC}"
@@ -153,16 +148,4 @@ export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 mkdir -p "$RESULTS_DIR"
 JOB_NAME="uap_claude_code_qwen35_${TIMESTAMP}"
 
-harbor run \
-    --orchestrator local \
-    -d terminal-bench@2.0 \
-    --agent-import-path tools.uap_harbor.uap_agent:UAPAgent \
-    -m "$MODEL_NAME" \
-    $TASK_ARGS \
-    -n 1 \
-    --max-retries 2 \
-    --timeout-multiplier "$TIMEOUT_MULT" \
-    --jobs-dir "$RESULTS_DIR" \
-    --job-name "$JOB_NAME" \
-    --ak "api_endpoint=http://host.docker.internal:${PROXY_PORT}/v1" \
-    --debug 2>&1 | tee "$RESULTS_DIR/${JOB_NAME}.log"
+harbor run     --orchestrator local     -d terminal-bench@2.0     --agent-import-path tools.uap_harbor.uap_agent:UAPAgent     -m "$MODEL_NAME"     $TASK_ARGS     -n 1     --max-retries 2     --timeout-multiplier "$TIMEOUT_MULT"     --jobs-dir "$RESULTS_DIR"     --job-name "$JOB_NAME"     --ak "api_endpoint=http://host.docker.internal:${PROXY_PORT}/v1"     --debug 2>&1 | tee "$RESULTS_DIR/${JOB_NAME}.log"
