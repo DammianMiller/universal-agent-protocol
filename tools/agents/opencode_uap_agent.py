@@ -13,8 +13,8 @@ Two agents for A/B comparison:
     + pre-execution hooks + recency-bias prompting + agentic forcing
 
 Both inject opencode.json into the container so opencode can reach the local
-Qwen3.5 llama-server at http://192.168.1.165:8080/v1 via the custom
-@ai-sdk/openai-compatible provider.
+Qwen3.5 runtime through either the Anthropic proxy on :4000 or direct
+llama.cpp on :8080 via the injected OpenCode provider config.
 """
 
 import json
@@ -816,7 +816,7 @@ def build_enhanced_instruction(instruction: str) -> str:
 # Shared helpers
 # --------------------------------------------------------------------------- #
 
-DEFAULT_API = "http://192.168.1.165:8080/v1"
+DEFAULT_API = "http://127.0.0.1:4000/v1"
 
 
 def _get_api_endpoint(override: str = "") -> str:

@@ -16,7 +16,7 @@
           "tool_call": true,
           "limit": {
             "context": 262144,
-            "output": 4096
+            "output": 81920
           }
         }
       }
@@ -33,7 +33,7 @@
           "name": "Qwen3.5 35B A3B (IQ4_XS direct)",
           "limit": {
             "context": 262144,
-            "output": 4096
+            "output": 81920
           }
         }
       }
