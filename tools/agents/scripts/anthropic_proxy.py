@@ -3217,20 +3217,22 @@ async def _apply_unexpected_end_turn_guardrail(
         logger.info("GUARDRAIL: skipped unexpected_end_turn retry on finalize turn")
         return openai_resp
 
-    if monitor.tool_turn_phase == "act" and openai_body.get("tool_choice") == "auto":
-        logger.info(
-            "GUARDRAIL: skipped unexpected_end_turn retry during act auto release"
-        )
-        return openai_resp
-
-    if monitor.tool_turn_phase == "review" and openai_body.get("tool_choice") == "auto":
-        logger.info(
-            "GUARDRAIL: skipped unexpected_end_turn retry during review auto turn"
-        )
-        return openai_resp
-
     if not _is_unexpected_end_turn(openai_resp, anthropic_body):
         return openai_resp
+
+    active_loop = _conversation_has_tool_results(anthropic_body) or _last_assistant_was_text_only(
+        anthropic_body
+    )
+
+    if (
+        active_loop
+        and openai_body.get("tool_choice") == "auto"
+        and monitor.tool_turn_phase in {"act", "review"}
+    ):
+        logger.warning(
+            "GUARDRAIL: overriding %s auto-turn skip because active loop ended unexpectedly",
+            monitor.tool_turn_phase,
+        )
 
     monitor.unexpected_end_turn_count += 1
     logger.warning(
