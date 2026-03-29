@@ -1,21 +1,19 @@
 #!/bin/bash
 #
-# Harbor Terminal-Bench 2.0: UAP + Claude Code via Anthropic Proxy -> Qwen3.5
+# Harbor Terminal-Bench 2.0: latest UAP + OpenCode -> Qwen3.5
 #
 # Architecture:
-#   Claude Code --(Anthropic :4000)--> Anthropic Proxy --(OpenAI :8080)--> llama.cpp (Qwen3.5)
+#   OpenCode --(OpenAI-compatible :4000)--> Qwen3.5 35B A3B IQ4_XS
 #
 # This script:
 #   1. Verifies prerequisites (harbor, docker, model server, proxy)
-#   2. Optionally starts the Anthropic proxy if not running
-#   3. Runs the Harbor tbench benchmark with the UAPAgent (Claude Code)
+#   2. Runs the Harbor tbench benchmark with the OpenCodeUAP agent
 #   4. Compares results against baseline (if available)
 #
 # Usage:
 #   ./scripts/benchmarks/run-tbench-claude-code-qwen35.sh [options]
 #
 # Options:
-#   --start-proxy       Start the Anthropic proxy before benchmarking
 #   --baseline          Also run a baseline (no UAP) for comparison
 #   --quick             Run only 5 quick tasks instead of the full 12
 #   --full-suite        Run all terminal-bench@2.0 tasks
@@ -79,8 +77,6 @@ NC='\033[0m'
 # ==============================================================================
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --start-proxy)
-            START_PROXY=true; shift ;;
         --baseline)
             RUN_BASELINE=true; shift ;;
         --quick)
@@ -95,7 +91,6 @@ while [[ $# -gt 0 ]]; do
             echo "Run Terminal-Bench 2.0 with UAP + Claude Code via Anthropic Proxy -> Qwen3.5"
             echo ""
             echo "Options:"
-            echo "  --start-proxy    Start the Anthropic proxy before benchmarking"
             echo "  --baseline       Also run a no-UAP baseline for A/B comparison"
             echo "  --quick          Run only 5 tasks (smoke test)"
             echo "  --full-suite     Run all terminal-bench@2.0 tasks"
@@ -103,12 +98,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --help           Show this help"
             echo ""
             echo "Environment Variables:"
-            echo "  LLAMA_CPP_BASE   Qwen3.5 endpoint (default: http://192.168.1.165:8080/v1)"
-            echo "  PROXY_PORT       Anthropic proxy port (default: 4000)"
+            echo "  LLAMA_CPP_BASE   Qwen3.5 endpoint (default: http://192.168.1.165:4000/v1)"
             echo "  TIMEOUT_MULT     Timeout multiplier (default: 6.0)"
             echo ""
             echo "Architecture:"
-            echo "  Claude Code --(Anthropic API)--> Proxy :${PROXY_PORT} --(OpenAI API)--> llama.cpp :8080"
+            echo "  OpenCode --(OpenAI-compatible API)--> Qwen3.5 @ :4000"
             exit 0
             ;;
         *)
@@ -121,7 +115,7 @@ done
 # ==============================================================================
 echo -e "${CYAN}${BOLD}"
 echo "=================================================================="
-echo "  Terminal-Bench 2.0: UAP + Claude Code via Anthropic Proxy"
+echo "  Terminal-Bench 2.0: latest UAP + OpenCode"
 echo "  Model: Qwen3.5 35B A3B (IQ4_XS) @ $LLAMA_CPP_BASE"
 echo "  Proxy: $PROXY_URL"
 echo "  Timestamp: $TIMESTAMP"
@@ -143,9 +137,9 @@ if ! docker info > /dev/null 2>&1; then
 fi
 echo -e "${GREEN}[OK]${NC} Docker available"
 
-# Check Claude Code
-if ! command -v claude &> /dev/null; then
-    echo -e "${YELLOW}[WARN]${NC} Claude Code CLI not found -- Harbor UAPAgent will install it in container"
+# Check Node/NPM for opencode installation inside container templates
+if ! command -v node &> /dev/null; then
+    echo -e "${YELLOW}[WARN]${NC} node not found on host; Harbor container setup will install runtime as needed"
 fi
 
 # Check Qwen3.5 model server
@@ -157,52 +151,6 @@ else
     echo -e "${RED}[FAIL] Cannot reach llama-server at ${LLAMA_CPP_BASE}${NC}" >&2
     echo "  Start it with: llama-server --model qwen3.5-a3b-iq4xs.gguf ..." >&2
     exit 1
-fi
-
-# ==============================================================================
-# Anthropic Proxy
-# ==============================================================================
-echo ""
-echo -n "Checking Anthropic proxy at $PROXY_URL... "
-if curl -sf --max-time 3 "${PROXY_URL}/health" > /dev/null 2>&1; then
-    echo -e "${GREEN}OK${NC}"
-    PROXY_HEALTH=$(curl -sf "${PROXY_URL}/health" 2>/dev/null)
-    echo "  Health: $PROXY_HEALTH"
-else
-    echo -e "${YELLOW}NOT RUNNING${NC}"
-    if [ "$START_PROXY" = true ]; then
-        echo -e "${CYAN}Starting Anthropic proxy...${NC}"
-        LLAMA_CPP_BASE="$LLAMA_CPP_BASE" \
-        PROXY_PORT="$PROXY_PORT" \
-        PROXY_HOST="$PROXY_HOST" \
-        PROXY_LOG_LEVEL="INFO" \
-        nohup python3 "$PROJECT_ROOT/tools/agents/scripts/anthropic_proxy.py" \
-            > "$PROJECT_ROOT/benchmark-results/proxy_${TIMESTAMP}.log" 2>&1 &
-        PROXY_PID=$!
-        echo "  Proxy PID: $PROXY_PID"
-        echo "  Log: benchmark-results/proxy_${TIMESTAMP}.log"
-
-        # Wait for proxy to become ready
-        for i in $(seq 1 20); do
-            if curl -sf --max-time 2 "${PROXY_URL}/health" > /dev/null 2>&1; then
-                echo -e "  ${GREEN}Proxy ready${NC}"
-                break
-            fi
-            sleep 1
-        done
-
-        if ! curl -sf --max-time 3 "${PROXY_URL}/health" > /dev/null 2>&1; then
-            echo -e "  ${RED}Proxy failed to start -- check log${NC}" >&2
-            exit 1
-        fi
-    else
-        echo -e "${RED}[FAIL] Anthropic proxy not running${NC}" >&2
-        echo "  Start it manually:" >&2
-        echo "    python tools/agents/scripts/anthropic_proxy.py" >&2
-        echo "  Or re-run with --start-proxy:" >&2
-        echo "    $0 --start-proxy" >&2
-        exit 1
-    fi
 fi
 
 # ==============================================================================
@@ -239,16 +187,8 @@ for task in "${TASKS[@]}"; do
 done
 
 # ==============================================================================
-# Export environment for UAP + Claude Code + proxy
+# Export environment for UAP + OpenCode
 # ==============================================================================
-export ANTHROPIC_BASE_URL="$PROXY_URL"
-export ANTHROPIC_API_KEY="sk-uap-proxy"
-export ANTHROPIC_MODEL="$MODEL_NAME"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL_NAME"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL_NAME"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL_NAME"
-export CLAUDE_CODE_SUBAGENT_MODEL="$MODEL_NAME"
-export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
 export LLAMA_CPP_BASE="$LLAMA_CPP_BASE"
 export USE_UAP="true"
 export UAP_MEMORY_ENABLED="true"
@@ -262,23 +202,23 @@ export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 mkdir -p "$RESULTS_DIR"
 
 # ==============================================================================
-# Run UAP + Claude Code benchmark
+# Run UAP + OpenCode benchmark
 # ==============================================================================
 echo ""
-echo -e "${CYAN}${BOLD}Starting UAP + Claude Code benchmark...${NC}"
-echo -e "  Agent:    tools.uap_harbor.uap_agent:UAPAgent"
-echo -e "  Model:    $MODEL_NAME (via proxy -> Qwen3.5)"
+echo -e "${CYAN}${BOLD}Starting UAP + OpenCode benchmark...${NC}"
+echo -e "  Agent:    tools.agents.opencode_uap_agent:OpenCodeUAP"
+echo -e "  Model:    qwen-proxy/qwen35-a3b-iq4xs"
 echo -e "  Timeout:  ${TIMEOUT_MULT}x"
 echo -e "  Results:  $RESULTS_DIR/"
 echo ""
 
-JOB_NAME="uap_claude_code_qwen35_${TIMESTAMP}"
+JOB_NAME="uap_opencode_qwen35_${TIMESTAMP}"
 
 harbor run \
     --orchestrator local \
     -d terminal-bench@2.0 \
-    --agent-import-path tools.uap_harbor.uap_agent:UAPAgent \
-    -m "$MODEL_NAME" \
+    --agent-import-path tools.agents.opencode_uap_agent:OpenCodeUAP \
+    -m "qwen-proxy/qwen35-a3b-iq4xs" \
     $TASK_ARGS \
     -n 1 \
     --max-retries 2 \
@@ -289,7 +229,7 @@ harbor run \
     --debug 2>&1 | tee "$RESULTS_DIR/${JOB_NAME}.log"
 
 echo ""
-echo -e "${GREEN}UAP + Claude Code benchmark complete${NC}"
+echo -e "${GREEN}UAP + OpenCode benchmark complete${NC}"
 echo "  Results: $RESULTS_DIR/$JOB_NAME/"
 
 # ==============================================================================
@@ -303,13 +243,13 @@ if [ "$RUN_BASELINE" = true ]; then
     unset UAP_MEMORY_ENABLED
     unset UAP_PATTERNS_RAG_ENABLED
 
-    BASELINE_JOB="baseline_claude_code_qwen35_${TIMESTAMP}"
+    BASELINE_JOB="baseline_opencode_qwen35_${TIMESTAMP}"
 
     harbor run \
         --orchestrator local \
         -d terminal-bench@2.0 \
-        --agent-import-path tools.uap_harbor.uap_agent:UAPAgentWithoutMemory \
-        -m "$MODEL_NAME" \
+        --agent-import-path tools.agents.opencode_uap_agent:OpenCodeBaseline \
+        -m "llama.cpp/qwen35-a3b-iq4xs" \
         $TASK_ARGS \
         -n 1 \
         --max-retries 2 \
@@ -331,7 +271,7 @@ echo -e "${CYAN}${BOLD}=========================================================
 echo -e "${CYAN}${BOLD}  Benchmark Results Summary${NC}"
 echo -e "${CYAN}${BOLD}=================================================================${NC}"
 echo ""
-echo "  Architecture: Claude Code -> Proxy :${PROXY_PORT} -> Qwen3.5 @ ${LLAMA_CPP_BASE}"
+echo "  Architecture: OpenCode -> Qwen3.5 @ ${LLAMA_CPP_BASE}"
 echo "  Task set: $TASK_SET (${#TASKS[@]} tasks)"
 echo "  Timeout: ${TIMEOUT_MULT}x"
 echo ""

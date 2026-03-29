@@ -1,11 +1,40 @@
 name: uap-quick-test-suite
+
 datasets:
-  - name: terminal-bench@2.0
-    tasks: [git-recovery-test, tls-certificate-setup, multi-container-deployment, ml-model-training]
+  - path: /home/cogtek/dev/miller-tech/universal-agent-protocol/benchmarks/harbor-tasks/harbor-tasks
+
 agents:
   - name: uap-v3.0+
     type: installed_agent
     import_path: tools.agents.uap_agent:UAPAgent
-trial_config: { timeout_multiplier: 2.0 }
-job_settings: { n_concurrent: 1, max_retries: 2, disable_verification: false }
+    model_config:
+      type: openai
+      base_url: http://192.168.1.165:4000/v1
+      model: qwen/qwen3.5:latest
+
+trial_config:
+  timeout_multiplier: 2.0
+
+job_settings:
+  n_concurrent: 1
+  max_retries: 2
+  disable_verification: false
+
 output_dir: results/harbor-benchmark
+
+orchestrator:
+  type: local
+  n_concurrent_trials: 1
+  quiet: true
+
+environment:
+  type: docker
+  override_gpus: 1
+  override_memory_mb: 8192
+  override_storage_mb: 10240
+
+verifier:
+  disable: false
+  override_timeout_sec: 300
+
+metrics: []

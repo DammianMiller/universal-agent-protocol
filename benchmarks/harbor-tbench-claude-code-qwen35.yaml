@@ -2,7 +2,7 @@
 #
 # Architecture:
 #   Claude Code --(Anthropic API :4000)--> UAP Anthropic Proxy --(OpenAI API)--> llama.cpp Qwen3.5
-#   Host endpoint: http://192.168.1.165:8080/v1
+#   Host endpoint: http://host.docker.internal:8080/v1
 #
 # This job uses the UAPAgent (extends Harbor ClaudeCode) with classified preamble
 # and pre-execution hooks, routed through the Anthropic proxy so Claude Code
@@ -42,7 +42,7 @@ agents:
     type: installed_agent
     import_path: tools.uap_harbor.uap_agent:UAPAgent
     kwargs:
-      api_endpoint: "${LLAMA_CPP_BASE:-http://192.168.1.165:8080/v1}"
+      api_endpoint: "${LLAMA_CPP_BASE:-http://192.168.1.165:4000/v1}"
 
 trial_config:
   timeout_multiplier: 6.0  # Local model needs more time than cloud APIs

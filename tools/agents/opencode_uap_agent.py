@@ -1163,12 +1163,29 @@ class OpenCodeUAP(BaseInstalledAgent):
             "package.json",
         ]
 
+        created_dirs = {"/uap-local"}
+
+        async def ensure_parent_dir(target_path: str) -> None:
+            parent = str(Path(target_path).parent)
+            missing = []
+            while parent not in created_dirs:
+                missing.append(parent)
+                next_parent = str(Path(parent).parent)
+                if next_parent == parent:
+                    break
+                parent = next_parent
+            for directory in reversed(missing):
+                await environment.exec(f"mkdir -p {shlex.quote(directory)}")
+                created_dirs.add(directory)
+
         for src_rel in local_upload_files:
             src = uap_project_path / src_rel
             if src.exists():
+                target_path = f"/uap-local/{src_rel}"
+                await ensure_parent_dir(target_path)
                 await environment.upload_file(
                     source_path=src,
-                    target_path=f"/uap-local/{src_rel}",
+                    target_path=target_path,
                 )
 
         for src_rel in local_upload_dirs:
@@ -1177,9 +1194,11 @@ class OpenCodeUAP(BaseInstalledAgent):
                 for fpath in src_dir.rglob("*"):
                     if fpath.is_file() and "__pycache__" not in str(fpath):
                         rel = fpath.relative_to(uap_project_path)
+                        target_path = f"/uap-local/{rel}"
+                        await ensure_parent_dir(target_path)
                         await environment.upload_file(
                             source_path=fpath,
-                            target_path=f"/uap-local/{rel}",
+                            target_path=target_path,
                         )
 
         logger.info("[Local UAP] Local project uploaded to /uap-local/")
