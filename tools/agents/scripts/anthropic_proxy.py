@@ -3158,7 +3158,9 @@ def _retry_tool_choice_for_attempt(
     return "auto" if attempt == total_attempts - 1 else "required"
 
 
-def _build_safe_text_openai_response(openai_resp: dict, text: str) -> dict:
+def _build_safe_text_openai_response(
+    openai_resp: dict, text: str, finish_reason: str = "stop"
+) -> dict:
     return {
         "id": openai_resp.get("id", f"chatcmpl_{uuid.uuid4().hex[:12]}"),
         "object": openai_resp.get("object", "chat.completion"),
@@ -3167,7 +3169,7 @@ def _build_safe_text_openai_response(openai_resp: dict, text: str) -> dict:
         "choices": [
             {
                 "index": 0,
-                "finish_reason": "stop",
+                "finish_reason": finish_reason,
                 "message": {
                     "role": "assistant",
                     "content": text,
@@ -3178,7 +3180,9 @@ def _build_safe_text_openai_response(openai_resp: dict, text: str) -> dict:
     }
 
 
-def _build_clean_guardrail_openai_response(openai_resp: dict) -> dict:
+def _build_clean_guardrail_openai_response(
+    openai_resp: dict, finish_reason: str = "stop"
+) -> dict:
     return {
         "id": openai_resp.get("id", f"chatcmpl_{uuid.uuid4().hex[:12]}"),
         "object": openai_resp.get("object", "chat.completion"),
@@ -3187,7 +3191,7 @@ def _build_clean_guardrail_openai_response(openai_resp: dict) -> dict:
         "choices": [
             {
                 "index": 0,
-                "finish_reason": "stop",
+                "finish_reason": finish_reason,
                 "message": {
                     "role": "assistant",
                     "content": _TOOL_CALL_RETRY_MESSAGE,
@@ -3442,17 +3446,36 @@ async def _apply_malformed_tool_guardrail(
         monitor.required_tool_miss_streak,
     )
 
+    active_loop = _conversation_has_tool_results(anthropic_body) or _last_assistant_was_text_only(
+        anthropic_body
+    )
+    fallback_finish_reason = "tool_calls" if active_loop else "stop"
+
     degraded_text = _sanitize_tool_call_apology_text(
         _openai_message_text(working_resp)
     ).strip()
     if degraded_text and not _looks_malformed_tool_payload(degraded_text):
         logger.warning(
-            "TOOL RESPONSE degrade: session=%s returning safe text fallback after retry exhaustion",
+            "TOOL RESPONSE degrade: session=%s returning %s safe fallback after retry exhaustion",
+            session_id,
+            "non-terminal active-loop" if active_loop else "terminal",
+        )
+        return _build_safe_text_openai_response(
+            working_resp,
+            degraded_text,
+            finish_reason=fallback_finish_reason,
+        )
+
+    if active_loop:
+        logger.warning(
+            "TOOL RESPONSE guardrail: session=%s returning non-terminal active-loop fallback",
             session_id,
         )
-        return _build_safe_text_openai_response(working_resp, degraded_text)
 
-    return _build_clean_guardrail_openai_response(working_resp)
+    return _build_clean_guardrail_openai_response(
+        working_resp,
+        finish_reason=fallback_finish_reason,
+    )
 
 
 def _maybe_apply_session_contamination_breaker(
