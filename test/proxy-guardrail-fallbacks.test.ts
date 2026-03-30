@@ -62,6 +62,15 @@ describe('Anthropic proxy guardrail fallbacks', () => {
     expect(source).toContain('def _is_grounded_benchmark_tool_preservation_prompt');
     expect(source).toContain('if _is_grounded_benchmark_tool_preservation_prompt(anthropic_body):');
     expect(source).toContain('inject_grounded_analysis_prompt = _is_analysis_only_prompt(');
+    expect(source).toContain('ANALYSIS ROUTE: preserving tools for grounded benchmark prompt');
+  });
+
+  it('logs raw content shape, normalized prompt fingerprint, and tool count before analysis-only routing', () => {
+    expect(source).toContain('def _log_analysis_route_probe');
+    expect(source).toContain('ANALYSIS ROUTE PROBE: first_content_shape=%s normalized_fingerprint=%s tool_count=%d raw_first_content=%s');
+    expect(source).toContain('_log_analysis_route_probe(anthropic_body)');
+    expect(source).toContain('def _first_message_content_debug_shape');
+    expect(source).toContain('def _grounded_benchmark_prompt_fingerprint');
   });
 
   it('captures active proxy and llama runtime facts in the grounding prompt', () => {

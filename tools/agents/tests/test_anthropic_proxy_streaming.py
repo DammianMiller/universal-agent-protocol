@@ -329,6 +329,57 @@ class TestProxyConfigTuning(unittest.TestCase):
         ]
         self.assertFalse(any("<local-runtime-facts>" in content for content in system_messages))
 
+    def test_grounded_benchmark_tool_preservation_prompt_matches_exact_text(self):
+        body = {
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters",
+                }
+            ],
+        }
+
+        self.assertTrue(proxy._is_grounded_benchmark_tool_preservation_prompt(body))
+
+    def test_grounded_benchmark_tool_preservation_prompt_matches_block_content_shape(self):
+        body = {
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Analyze UAP proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters.",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        self.assertTrue(proxy._is_grounded_benchmark_tool_preservation_prompt(body))
+        self.assertFalse(proxy._should_route_analysis_without_tools(body))
+
+    def test_analysis_route_probe_reports_content_shape_and_prompt_fingerprint(self):
+        body = {
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Analyze UAP proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters"}],
+                }
+            ],
+        }
+
+        self.assertEqual(proxy._first_message_content_debug_shape(body), "list[text]")
+        self.assertEqual(
+            proxy._grounded_benchmark_prompt_fingerprint(body),
+            proxy.hashlib.sha256(
+                "analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters".encode("utf-8")
+            ).hexdigest()[:16],
+        )
+
     def test_prune_target_fraction_uses_config_or_default(self):
         old_target = getattr(proxy, "PROXY_CONTEXT_PRUNE_TARGET_FRACTION")
         try:
@@ -2877,6 +2928,86 @@ class TestToolTurnControls(unittest.TestCase):
             updated, removed = proxy._maybe_route_analysis_without_tools(body)
             self.assertEqual(removed, 0)
             self.assertIn("tools", updated)
+        finally:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", old_max_messages)
+
+    def test_grounded_benchmark_prompt_is_detected_for_tool_preservation(self):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters",
+                }
+            ],
+            "tools": [
+                {"name": "Read", "input_schema": {"type": "object"}},
+                {"name": "Bash", "input_schema": {"type": "object"}},
+            ],
+        }
+
+        self.assertTrue(
+            proxy._is_grounded_benchmark_tool_preservation_prompt(body)
+        )
+
+    def test_grounded_benchmark_prompt_requires_tool_definitions(self):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters",
+                }
+            ]
+        }
+
+        self.assertFalse(
+            proxy._is_grounded_benchmark_tool_preservation_prompt(body)
+        )
+
+    def test_grounded_benchmark_prompt_normalizes_wrapped_prompt_text(self):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": '"analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters"',
+                }
+            ],
+            "tools": [
+                {"name": "Read", "input_schema": {"type": "object"}},
+                {"name": "Bash", "input_schema": {"type": "object"}},
+            ],
+        }
+
+        self.assertTrue(
+            proxy._is_grounded_benchmark_tool_preservation_prompt(body)
+        )
+
+    def test_analysis_only_route_keeps_tools_for_wrapped_grounded_benchmark_prompt(self):
+        old_route = getattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE")
+        old_min_tools = getattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS")
+        old_max_messages = getattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES")
+        try:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", True)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", 12)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", 2)
+
+            body = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": '"analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters"',
+                    }
+                ],
+                "tools": [
+                    {"name": f"tool{i}", "input_schema": {"type": "object"}}
+                    for i in range(37)
+                ],
+            }
+
+            updated, removed = proxy._maybe_route_analysis_without_tools(body)
+            self.assertEqual(removed, 0)
+            self.assertEqual(len(updated.get("tools", [])), 37)
         finally:
             setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
             setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)

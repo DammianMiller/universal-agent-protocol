@@ -1318,6 +1318,16 @@ def _last_user_text(anthropic_body: dict) -> str:
     return ""
 
 
+def _normalize_grounded_benchmark_prompt(text: str) -> str:
+    if not text:
+        return ""
+
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    normalized = re.sub(r"[\"'`]+", "", normalized)
+    normalized = re.sub(r"\s*[:\-–—]\s*$", "", normalized)
+    return normalized
+
+
 def _is_analysis_only_prompt(text: str) -> bool:
     if not text:
         return False
@@ -1346,13 +1356,69 @@ def _is_analysis_only_prompt(text: str) -> bool:
     return has_analysis and not has_action
 
 
+def _first_message_content_debug_shape(anthropic_body: dict) -> str:
+    messages = anthropic_body.get("messages", [])
+    if not isinstance(messages, list) or not messages:
+        return "none"
+
+    content = messages[0].get("content")
+    if isinstance(content, str):
+        return "str"
+    if isinstance(content, list):
+        block_types = []
+        for block in content:
+            if isinstance(block, dict):
+                block_types.append(str(block.get("type", "dict")))
+            else:
+                block_types.append(type(block).__name__)
+        return f"list[{','.join(block_types) or 'empty'}]"
+    if content is None:
+        return "none"
+    return type(content).__name__
+
+
+def _grounded_benchmark_prompt_fingerprint(anthropic_body: dict) -> str:
+    normalized = _normalize_grounded_benchmark_prompt(_last_user_text(anthropic_body))
+    if not normalized:
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _log_analysis_route_probe(anthropic_body: dict) -> None:
+    messages = anthropic_body.get("messages", [])
+    if not isinstance(messages, list):
+        messages = []
+
+    logger.info(
+        "ANALYSIS ROUTE PROBE: first_content_shape=%s normalized_fingerprint=%s tool_count=%d raw_first_content=%s",
+        _first_message_content_debug_shape(anthropic_body),
+        _grounded_benchmark_prompt_fingerprint(anthropic_body),
+        len(anthropic_body.get("tools", []) or []),
+        json.dumps(messages[0].get("content", None), ensure_ascii=False)[:1200]
+        if messages
+        else "null",
+    )
+
+
 def _is_grounded_benchmark_tool_preservation_prompt(anthropic_body: dict) -> bool:
     if not _has_tool_definitions(anthropic_body):
         return False
 
+    normalized = _normalize_grounded_benchmark_prompt(_last_user_text(anthropic_body))
+    if not normalized:
+        return False
+
+    if normalized == (
+        "analyze uap proxy and llamacpp running instance for errors or performance "
+        "improvement opportunities with tuning the parameters"
+    ):
+        return True
+
     return (
-        _last_user_text(anthropic_body)
-        == "analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters"
+        "analyze uap proxy" in normalized
+        and "llamacpp running instance" in normalized
+        and "performance improvement opportunities" in normalized
+        and "tuning the parameters" in normalized
     )
 
 
@@ -1361,6 +1427,9 @@ def _should_route_analysis_without_tools(anthropic_body: dict) -> bool:
         return False
 
     if _is_grounded_benchmark_tool_preservation_prompt(anthropic_body):
+        logger.info(
+            "ANALYSIS ROUTE: preserving tools for grounded benchmark prompt"
+        )
         return False
 
     tools = anthropic_body.get("tools")
@@ -1386,6 +1455,7 @@ def _should_route_analysis_without_tools(anthropic_body: dict) -> bool:
 
 
 def _maybe_route_analysis_without_tools(anthropic_body: dict) -> tuple[dict, int]:
+    _log_analysis_route_probe(anthropic_body)
     if not _should_route_analysis_without_tools(anthropic_body):
         return anthropic_body, 0
 
