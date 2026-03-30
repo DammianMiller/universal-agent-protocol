@@ -2247,6 +2247,52 @@ def _build_empty_visible_stream_fallback_response(message: str | None = None) ->
     }
 
 
+def _looks_like_success_shaped_stub(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (text or "")).strip().lower()
+    if not normalized or len(normalized) > 220:
+        return False
+
+    stub_markers = (
+        "i'll analyze",
+        "i will analyze",
+        "let me help you analyze",
+        "let me analyze",
+        "i'll help analyze",
+        "i will help analyze",
+    )
+    actionable_markers = (
+        "findings:",
+        "recommendations:",
+        "issue:",
+        "issues:",
+        "problem:",
+        "problems:",
+        "tuning",
+        "latency",
+        "throughput",
+        "retry",
+        "because",
+        "should",
+    )
+    return any(marker in normalized for marker in stub_markers) and not any(
+        marker in normalized for marker in actionable_markers
+    )
+
+
+def _is_rate_limit_finish_reason(finish_reason: str | None) -> bool:
+    normalized = (finish_reason or "").strip().lower()
+    return normalized in {"too_many_requests", "rate_limit", "rate_limited"}
+
+
+def _build_rate_limit_error_response(message: str | None = None) -> Response:
+    return _transport_error_response(
+        message
+        or "Upstream rate limiting prevented a substantive answer for this turn. Please retry the request.",
+        status_code=529,
+        error_type="rate_limit_error",
+    )
+
+
 def _build_tool_turn_no_tool_use_error_response(message: str | None = None) -> Response:
     return _transport_error_response(
         message
@@ -2542,13 +2588,18 @@ def _build_reasoning_retry_nudge_message() -> dict:
     }
 
 
-def _transport_error_response(message: str, *, status_code: int = 529) -> Response:
+def _transport_error_response(
+    message: str,
+    *,
+    status_code: int = 529,
+    error_type: str = "overloaded_error",
+) -> Response:
     return Response(
         content=json.dumps(
             {
                 "type": "error",
                 "error": {
-                    "type": "overloaded_error",
+                    "type": error_type,
                     "message": message,
                 },
             }
@@ -4997,6 +5048,12 @@ async def messages(request: Request):
                 strict_resp.status_code,
                 error_text,
             )
+            if _is_rate_limit_finish_reason(strict_resp.headers.get("x-llama-finish-reason")):
+                logger.warning(
+                    "Upstream strict-stream request reported rate limiting via x-llama-finish-reason=%s",
+                    strict_resp.headers.get("x-llama-finish-reason"),
+                )
+                return _build_rate_limit_error_response()
             return Response(
                 content=json.dumps(
                     {
@@ -5048,6 +5105,22 @@ async def messages(request: Request):
             strict_body,
             session_id,
         )
+        choice, _ = _extract_openai_choice(openai_resp)
+        finish_reason = choice.get("finish_reason")
+        text = _openai_message_text(openai_resp).strip()
+        if _is_rate_limit_finish_reason(finish_reason):
+            logger.warning(
+                "Rate-limited strict-stream turn detected via finish_reason=%s; returning bounded explicit failure",
+                finish_reason,
+            )
+            return _build_rate_limit_error_response()
+        if _looks_like_success_shaped_stub(text):
+            logger.warning(
+                "Rejecting success-shaped stub transcript from strict-stream guarded path"
+            )
+            return _build_rate_limit_error_response(
+                "Upstream produced only a planning stub instead of substantive output for this turn. Please retry the request."
+            )
         if _should_reject_tiny_post_tool_non_tool_completion(body, monitor, openai_resp):
             monitor.last_rejected_tiny_prompt_fingerprint = _tiny_non_tool_prompt_fingerprint(body)
             monitor.last_rejected_tiny_prompt_ts = time.time()
@@ -5176,6 +5249,12 @@ async def messages(request: Request):
             error_body = await resp.aread()
             await resp.aclose()
             error_text = error_body.decode("utf-8", errors="replace")[:1000]
+            if _is_rate_limit_finish_reason(resp.headers.get("x-llama-finish-reason")):
+                logger.warning(
+                    "Upstream stream request reported rate limiting via x-llama-finish-reason=%s",
+                    resp.headers.get("x-llama-finish-reason"),
+                )
+                return _build_rate_limit_error_response()
             if _maybe_disable_grammar_for_tools_error(
                 openai_body,
                 resp.status_code,
@@ -5204,6 +5283,12 @@ async def messages(request: Request):
                 error_body = await resp.aread()
                 await resp.aclose()
                 error_text = error_body.decode("utf-8", errors="replace")[:1000]
+                if _is_rate_limit_finish_reason(resp.headers.get("x-llama-finish-reason")):
+                    logger.warning(
+                        "Upstream stream grammar retry reported rate limiting via x-llama-finish-reason=%s",
+                        resp.headers.get("x-llama-finish-reason"),
+                    )
+                    return _build_rate_limit_error_response()
 
             logger.error("Upstream HTTP %d: %s", resp.status_code, error_text)
 
@@ -5299,13 +5384,31 @@ async def messages(request: Request):
                 preview_json = preview_resp.json()
                 preview_choice = (preview_json.get("choices") or [{}])[0]
                 preview_message = preview_choice.get("message") or {}
+                preview_finish = preview_choice.get("finish_reason")
                 preview_content = preview_message.get("content")
+                preview_text = preview_content if isinstance(preview_content, str) else ""
+                if _is_rate_limit_finish_reason(preview_finish):
+                    logger.warning(
+                        "Preview detected upstream rate limiting via finish_reason=%s; returning bounded explicit failure",
+                        preview_finish,
+                    )
+                    await resp.aclose()
+                    monitor.last_completion_classification = "stream:rate_limited"
+                    return _build_rate_limit_error_response()
+                if _looks_like_success_shaped_stub(preview_text):
+                    logger.warning(
+                        "Preview detected success-shaped stub transcript on streaming request; returning bounded explicit failure"
+                    )
+                    await resp.aclose()
+                    monitor.last_completion_classification = "stream:success_stub_rejected"
+                    return _build_rate_limit_error_response(
+                        "Upstream produced only a planning stub instead of substantive output for this turn. Please retry the request."
+                    )
                 if _is_empty_visible_response(preview_message):
                     preview_reasoning_chunks = []
                     preview_reasoning = preview_message.get("reasoning_content", "")
                     if preview_reasoning:
                         preview_reasoning_chunks.append(preview_reasoning)
-                    preview_text = preview_content if isinstance(preview_content, str) else ""
                     if preview_text:
                         preview_reasoning_chunks.append(preview_text)
 
@@ -5393,6 +5496,12 @@ async def messages(request: Request):
             logger.error(
                 "Upstream HTTP %d (non-stream): %s", resp.status_code, error_text
             )
+            if _is_rate_limit_finish_reason(resp.headers.get("x-llama-finish-reason")):
+                logger.warning(
+                    "Upstream non-stream request reported rate limiting via x-llama-finish-reason=%s",
+                    resp.headers.get("x-llama-finish-reason"),
+                )
+                return _build_rate_limit_error_response()
             return Response(
                 content=json.dumps(
                     {
@@ -5424,6 +5533,22 @@ async def messages(request: Request):
             monitor,
             session_id,
         )
+        choice, _ = _extract_openai_choice(openai_resp)
+        finish_reason = choice.get("finish_reason")
+        text = _openai_message_text(openai_resp).strip()
+        if _is_rate_limit_finish_reason(finish_reason):
+            logger.warning(
+                "Rate-limited non-stream turn detected via finish_reason=%s; returning bounded explicit failure",
+                finish_reason,
+            )
+            return _build_rate_limit_error_response()
+        if _looks_like_success_shaped_stub(text):
+            logger.warning(
+                "Rejecting success-shaped stub transcript from non-stream path"
+            )
+            return _build_rate_limit_error_response(
+                "Upstream produced only a planning stub instead of substantive output for this turn. Please retry the request."
+            )
         if _should_hard_fail_tool_turn_without_tool_use(body, openai_resp):
             _record_tool_turn_rejection(body, monitor)
             monitor.last_completion_classification = "non_stream:tool_turn_no_tool_use_rejected"

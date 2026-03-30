@@ -91,6 +91,30 @@ class TestStreamingReasoningFallback(unittest.TestCase):
         self.assertEqual(response["content"][0]["text"], "fallback")
         self.assertEqual(response["stop_reason"], "end_turn")
 
+    def test_success_shaped_stub_detection_flags_brief_planning_stub(self):
+        self.assertTrue(
+            proxy._looks_like_success_shaped_stub(
+                "I'll analyze the UAP proxy and llamacpp instances and performance improvement opportunities."
+            )
+        )
+        self.assertFalse(
+            proxy._looks_like_success_shaped_stub(
+                "Findings: proxy retries spike latency. Recommendations: lower forced retries."
+            )
+        )
+
+    def test_rate_limit_finish_reason_detection_accepts_known_variants(self):
+        self.assertTrue(proxy._is_rate_limit_finish_reason("too_many_requests"))
+        self.assertTrue(proxy._is_rate_limit_finish_reason("rate_limit"))
+        self.assertFalse(proxy._is_rate_limit_finish_reason("stop"))
+
+    def test_rate_limit_error_response_uses_explicit_rate_limit_error_type(self):
+        response = proxy._build_rate_limit_error_response("rate limited")
+        self.assertEqual(response.status_code, 529)
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["error"]["type"], "rate_limit_error")
+        self.assertEqual(payload["error"]["message"], "rate limited")
+
     def test_actionable_reasoning_summary_extracts_findings_and_recommendations(self):
         summary = proxy._build_actionable_reasoning_summary(
             [

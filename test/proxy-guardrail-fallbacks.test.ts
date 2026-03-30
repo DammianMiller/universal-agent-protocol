@@ -43,6 +43,14 @@ describe('Anthropic proxy guardrail fallbacks', () => {
     expect(source).toContain('Actionable summary from model reasoning:');
   });
 
+  it('rejects rate-limited and success-shaped stub completions as explicit failures', () => {
+    expect(source).toContain('def _looks_like_success_shaped_stub');
+    expect(source).toContain('def _is_rate_limit_finish_reason');
+    expect(source).toContain('def _build_rate_limit_error_response');
+    expect(source).toContain('return _build_rate_limit_error_response()');
+    expect(source).toContain('Rejecting success-shaped stub transcript');
+  });
+
   it('pins opencode proxy endpoint to the local proxy on 127.0.0.1:4000', () => {
     expect(opencode.provider['qwen-proxy'].options.baseURL).toBe('http://127.0.0.1:4000/v1');
     expect(opencodeConfig.agent.api_endpoint).toBe('http://127.0.0.1:4000/v1');
