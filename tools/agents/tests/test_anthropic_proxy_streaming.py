@@ -52,22 +52,44 @@ class TestStreamingReasoningFallback(unittest.TestCase):
         text = proxy._build_reasoning_fallback_text([raw], mode="visible")
         self.assertEqual(text, raw)
 
-    def test_sanitized_mode_strips_think_tags(self):
+    def test_sanitized_mode_returns_bounded_retry_text(self):
         text = proxy._build_reasoning_fallback_text(
             ["<think>plan</think>\n   user visible output"], mode="sanitized"
         )
-        self.assertEqual(text, "plan user visible output")
+        self.assertEqual(
+            text,
+            "I couldn't produce a usable answer on that turn. Please retry the request.",
+        )
 
-    def test_sanitized_mode_truncates_long_text(self):
+    def test_sanitized_mode_ignores_long_reasoning_and_returns_bounded_text(self):
         old_limit = getattr(proxy, "PROXY_STREAM_REASONING_MAX_CHARS")
         setattr(proxy, "PROXY_STREAM_REASONING_MAX_CHARS", 12)
         try:
             text = proxy._build_reasoning_fallback_text(
                 ["1234567890ABCDE"], mode="sanitized"
             )
-            self.assertEqual(text, "1234567890AB...")
+            self.assertEqual(
+                text,
+                "I couldn't produce a usable answer on that turn. Please retry the request.",
+            )
         finally:
             setattr(proxy, "PROXY_STREAM_REASONING_MAX_CHARS", old_limit)
+
+    def test_empty_visible_response_helper_detects_blank_text_without_tools(self):
+        self.assertTrue(
+            proxy._is_empty_visible_response({"content": "   ", "tool_calls": []})
+        )
+        self.assertFalse(
+            proxy._is_empty_visible_response(
+                {"content": "visible", "tool_calls": []}
+            )
+        )
+
+    def test_empty_visible_stream_fallback_response_is_assistant_text(self):
+        response = proxy._build_empty_visible_stream_fallback_response("fallback")
+        self.assertEqual(response["role"], "assistant")
+        self.assertEqual(response["content"][0]["text"], "fallback")
+        self.assertEqual(response["stop_reason"], "end_turn")
 
 
 class TestProxyConfigTuning(unittest.TestCase):
@@ -695,11 +717,13 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         old_required_only = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY")
         old_grammar = getattr(proxy, "TOOL_CALL_GBNF")
         old_tools_compatible = getattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE")
+        old_probe_done = getattr(proxy, "TOOL_CALL_GRAMMAR_PROBE_DONE")
         try:
             setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", True)
             setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", True)
             setattr(proxy, "TOOL_CALL_GBNF", 'root ::= "<tool_call>"')
             setattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE", True)
+            setattr(proxy, "TOOL_CALL_GRAMMAR_PROBE_DONE", False)
 
             openai_body = {
                 "model": "test",
@@ -727,6 +751,7 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", old_required_only)
             setattr(proxy, "TOOL_CALL_GBNF", old_grammar)
             setattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE", old_tools_compatible)
+            setattr(proxy, "TOOL_CALL_GRAMMAR_PROBE_DONE", old_probe_done)
 
     def test_apply_tool_call_grammar_skips_when_upstream_tools_are_incompatible(self):
         old_enabled = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR")
@@ -2380,10 +2405,14 @@ class TestToolTurnControls(unittest.TestCase):
         old_enabled = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR")
         old_required_only = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY")
         old_grammar = getattr(proxy, "TOOL_CALL_GBNF")
+        old_tools_compatible = getattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE")
+        old_probe_done = getattr(proxy, "TOOL_CALL_GRAMMAR_PROBE_DONE")
         try:
             setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", True)
             setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", True)
             setattr(proxy, "TOOL_CALL_GBNF", 'root ::= "<tool_call>"')
+            setattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE", True)
+            setattr(proxy, "TOOL_CALL_GRAMMAR_PROBE_DONE", False)
 
             body = {
                 "model": "test",
@@ -2412,6 +2441,8 @@ class TestToolTurnControls(unittest.TestCase):
             setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", old_enabled)
             setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", old_required_only)
             setattr(proxy, "TOOL_CALL_GBNF", old_grammar)
+            setattr(proxy, "TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE", old_tools_compatible)
+            setattr(proxy, "TOOL_CALL_GRAMMAR_PROBE_DONE", old_probe_done)
 
     def test_build_request_omits_grammar_when_tool_choice_released_to_auto(self):
         old_enabled = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR")

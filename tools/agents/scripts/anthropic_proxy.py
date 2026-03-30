@@ -342,6 +342,7 @@ def _load_tool_call_grammar(path: str) -> str:
 
 TOOL_CALL_GBNF = _load_tool_call_grammar(PROXY_TOOL_CALL_GRAMMAR_PATH)
 TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE = True
+TOOL_CALL_GRAMMAR_PROBE_DONE = False
 
 
 def _is_grammar_tools_incompatibility(status_code: int, error_text: str) -> bool:
@@ -384,6 +385,8 @@ def _maybe_disable_grammar_for_tools_error(
 def _apply_tool_call_grammar(
     request_body: dict, tool_choice: str | None = None
 ) -> None:
+    global TOOL_CALL_GRAMMAR_PROBE_DONE
+
     request_body.pop("grammar", None)
 
     if not PROXY_TOOL_CALL_GRAMMAR or not TOOL_CALL_GBNF:
@@ -392,7 +395,7 @@ def _apply_tool_call_grammar(
     if not request_body.get("tools"):
         return
 
-    if not TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE:
+    if TOOL_CALL_GRAMMAR_PROBE_DONE or not TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE:
         return
 
     effective_tool_choice = (
@@ -401,6 +404,7 @@ def _apply_tool_call_grammar(
     if PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY and effective_tool_choice != "required":
         return
 
+    TOOL_CALL_GRAMMAR_PROBE_DONE = True
     request_body["grammar"] = TOOL_CALL_GBNF
 
 
@@ -448,6 +452,18 @@ class SessionMonitor:
     last_tool_fingerprint: str = ""
     finalize_turn_active: bool = False
     last_seen_ts: float = 0.0
+    last_request_had_tools: bool = False
+    last_request_max_tokens: int = 0
+    last_response_had_tool_calls: bool = False
+    last_rejected_tiny_prompt_fingerprint: str = ""
+    last_rejected_tiny_prompt_ts: float = 0.0
+    last_completion_classification: str = ""
+    last_rejected_tool_turn_fingerprint: str = ""
+    last_rejected_tool_turn_ts: float = 0.0
+    repeated_tool_turn_rejection_count: int = 0
+    last_continuation_prompt_fingerprint: str = ""
+    last_continuation_prompt_ts: float = 0.0
+    repeated_continuation_prompt_count: int = 0
 
     def record_request(self, estimated_tokens: int):
         """Record an outgoing request's estimated token count."""
@@ -2106,14 +2122,391 @@ def _build_reasoning_fallback_text(
     if fallback_mode == "visible":
         return raw_text
     if fallback_mode == "sanitized":
-        sanitized = _sanitize_reasoning_fallback_text(raw_text)
-        return sanitized or None
+        return "I couldn't produce a usable answer on that turn. Please retry the request."
 
     logger.warning(
         "Unknown PROXY_STREAM_REASONING_FALLBACK=%r; disabling reasoning fallback",
         fallback_mode,
     )
     return None
+
+
+def _build_reasoning_fallback_error_response(message: str | None = None) -> Response:
+    return _transport_error_response(
+        message
+        or "Upstream produced no usable visible answer for this turn. Please retry the request."
+    )
+
+
+def _build_tiny_non_tool_terminal_response(message: str | None = None) -> Response:
+    return _transport_error_response(
+        message
+        or "A tiny non-tool retry loop was terminated. Restart the session or send a fresh substantive request."
+    )
+
+
+def _build_empty_visible_stream_terminal_response(message: str | None = None) -> Response:
+    return _transport_error_response(
+        message
+        or "An empty visible streaming retry loop was terminated. Restart the session or send a fresh request."
+    )
+
+
+def _build_empty_visible_stream_fallback_response(message: str | None = None) -> dict:
+    fallback_text = (
+        message
+        or "I couldn't produce a direct visible answer from the streaming path on that turn. "
+        "Here is the bounded fallback result instead."
+    )
+    return {
+        "id": f"msg_{uuid.uuid4().hex[:24]}",
+        "type": "message",
+        "role": "assistant",
+        "model": "proxy-fallback",
+        "content": [{"type": "text", "text": fallback_text}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+
+
+def _build_tool_turn_no_tool_use_error_response(message: str | None = None) -> Response:
+    return _transport_error_response(
+        message
+        or "A tool-enabled turn ended without any usable tool call. Please retry the request."
+    )
+
+
+def _should_hard_fail_tool_turn_without_tool_use(
+    anthropic_body: dict,
+    openai_resp: dict,
+) -> bool:
+    if not _has_tool_definitions(anthropic_body):
+        return False
+
+    if _openai_has_tool_calls(openai_resp):
+        return False
+
+    choice, _ = _extract_openai_choice(openai_resp)
+    finish_reason = choice.get("finish_reason")
+    if finish_reason not in {"stop", "end_turn", "length", "max_tokens"}:
+        return False
+
+    return True
+
+
+def _should_reject_tiny_post_tool_non_tool_completion(
+    anthropic_body: dict,
+    monitor: SessionMonitor,
+    openai_resp: dict,
+) -> bool:
+    if _has_tool_definitions(anthropic_body):
+        return False
+
+    if monitor.last_request_had_tools is not True:
+        return False
+
+    if monitor.last_response_had_tool_calls is not True:
+        return False
+
+    if monitor.last_request_max_tokens > 256:
+        return False
+
+    messages = anthropic_body.get("messages") or []
+    if len(messages) > 1:
+        return False
+
+    text = _openai_message_text(openai_resp).strip()
+    if not text:
+        return True
+
+    if len(text) <= 96 and len(text.split()) <= 16:
+        return True
+
+    return False
+
+
+def _tiny_non_tool_prompt_fingerprint(anthropic_body: dict) -> str:
+    messages = anthropic_body.get("messages") or []
+    if len(messages) != 1:
+        return ""
+
+    msg = messages[0] or {}
+    if msg.get("role") != "user":
+        return ""
+
+    content = msg.get("content")
+    if isinstance(content, str):
+        text = content.strip()
+    elif isinstance(content, list):
+        text = " ".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ).strip()
+    else:
+        text = str(content).strip()
+
+    if not text:
+        return ""
+
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _tool_turn_prompt_fingerprint(anthropic_body: dict) -> str:
+    messages = anthropic_body.get("messages") or []
+    tools = anthropic_body.get("tools") or []
+    payload = {
+        "messages": messages,
+        "tools": tools,
+        "max_tokens": anthropic_body.get("max_tokens"),
+    }
+    return hashlib.sha1(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _is_continuation_prompt_text(text: str) -> bool:
+    normalized = " ".join((text or "").strip().lower().split())
+    if not normalized:
+        return False
+    return (
+        "previous response was truncated" in normalized
+        and "continue where you left off" in normalized
+    )
+
+
+def _continuation_prompt_fingerprint(anthropic_body: dict) -> str:
+    if not _has_tool_definitions(anthropic_body):
+        return ""
+
+    messages = anthropic_body.get("messages") or []
+    if not messages:
+        return ""
+
+    last_msg = messages[-1] or {}
+    if last_msg.get("role") != "user":
+        return ""
+
+    text = _extract_text(last_msg.get("content", ""))
+    if not _is_continuation_prompt_text(text):
+        return ""
+
+    payload = {
+        "messages": messages,
+        "tools": anthropic_body.get("tools") or [],
+        "max_tokens": anthropic_body.get("max_tokens"),
+    }
+    return hashlib.sha1(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _record_continuation_prompt(anthropic_body: dict, monitor: SessionMonitor) -> None:
+    fingerprint = _continuation_prompt_fingerprint(anthropic_body)
+    if not fingerprint:
+        return
+
+    now = time.time()
+    if fingerprint == monitor.last_continuation_prompt_fingerprint and (
+        now - monitor.last_continuation_prompt_ts
+    ) <= 90:
+        monitor.repeated_continuation_prompt_count += 1
+    else:
+        monitor.repeated_continuation_prompt_count = 1
+    monitor.last_continuation_prompt_fingerprint = fingerprint
+    monitor.last_continuation_prompt_ts = now
+
+
+def _should_suppress_repeated_continuation_prompt(
+    anthropic_body: dict,
+    monitor: SessionMonitor,
+) -> bool:
+    fingerprint = _continuation_prompt_fingerprint(anthropic_body)
+    if not fingerprint:
+        return False
+
+    if fingerprint != monitor.last_continuation_prompt_fingerprint:
+        return False
+
+    if (time.time() - monitor.last_continuation_prompt_ts) > 90:
+        return False
+
+    return monitor.repeated_continuation_prompt_count >= 2
+
+
+def _should_suppress_repeated_tiny_non_tool_retry(
+    anthropic_body: dict,
+    monitor: SessionMonitor,
+) -> bool:
+    if _has_tool_definitions(anthropic_body):
+        return False
+
+    max_tokens = int(anthropic_body.get("max_tokens", 0) or 0)
+    if max_tokens > 256:
+        return False
+
+    fingerprint = _tiny_non_tool_prompt_fingerprint(anthropic_body)
+    if not fingerprint:
+        return False
+
+    if fingerprint != monitor.last_rejected_tiny_prompt_fingerprint:
+        return False
+
+    if (time.time() - monitor.last_rejected_tiny_prompt_ts) > 30:
+        return False
+
+    return True
+
+
+def _record_tool_turn_rejection(anthropic_body: dict, monitor: SessionMonitor) -> None:
+    _record_continuation_prompt(anthropic_body, monitor)
+    monitor.forced_auto_cooldown_turns = max(monitor.forced_auto_cooldown_turns, 1)
+    fingerprint = _tool_turn_prompt_fingerprint(anthropic_body)
+    now = time.time()
+    if fingerprint == monitor.last_rejected_tool_turn_fingerprint and (
+        now - monitor.last_rejected_tool_turn_ts
+    ) <= 30:
+        monitor.repeated_tool_turn_rejection_count += 1
+    else:
+        monitor.repeated_tool_turn_rejection_count = 1
+    monitor.last_rejected_tool_turn_fingerprint = fingerprint
+    monitor.last_rejected_tool_turn_ts = now
+
+
+def _should_suppress_repeated_tool_turn_rejection(
+    anthropic_body: dict,
+    monitor: SessionMonitor,
+) -> bool:
+    if not _has_tool_definitions(anthropic_body):
+        return False
+
+    fingerprint = _tool_turn_prompt_fingerprint(anthropic_body)
+    if fingerprint != monitor.last_rejected_tool_turn_fingerprint:
+        return False
+
+    if (time.time() - monitor.last_rejected_tool_turn_ts) > 30:
+        return False
+
+    return monitor.repeated_tool_turn_rejection_count >= 2
+
+
+def _is_tiny_non_tool_followup_request(anthropic_body: dict) -> bool:
+    if _has_tool_definitions(anthropic_body):
+        return False
+
+    max_tokens = int(anthropic_body.get("max_tokens", 0) or 0)
+    if max_tokens > 256:
+        return False
+
+    messages = anthropic_body.get("messages") or []
+    return len(messages) == 1
+
+
+def _should_terminalize_tiny_followup_after_completed_analysis(monitor: SessionMonitor, anthropic_body: dict) -> bool:
+    if not _is_tiny_non_tool_followup_request(anthropic_body):
+        return False
+
+    last_class = monitor.last_completion_classification or ""
+    return last_class.endswith(":tiny_non_tool_text") or last_class.endswith(":text")
+
+
+def _should_terminalize_empty_visible_stream_retry(monitor: SessionMonitor, anthropic_body: dict) -> bool:
+    if not _has_tool_definitions(anthropic_body):
+        return False
+
+    last_class = monitor.last_completion_classification or ""
+    return last_class == "stream:empty_visible_retryable"
+
+
+def _is_empty_visible_response(message: dict | None) -> bool:
+    if not isinstance(message, dict):
+        return False
+
+    content = message.get("content")
+    return (
+        isinstance(content, str)
+        and not content.strip()
+        and not message.get("tool_calls")
+    )
+
+
+def _classify_completion(
+    anthropic_body: dict,
+    openai_resp: dict,
+    *,
+    guardrail_path: str,
+) -> str:
+    if _has_tool_definitions(anthropic_body):
+        if _openai_has_tool_calls(openai_resp):
+            return f"{guardrail_path}:tool_use"
+        return f"{guardrail_path}:tool_turn_no_tool_use"
+
+    if _is_tiny_non_tool_followup_request(anthropic_body):
+        text = _openai_message_text(openai_resp).strip()
+        if not text:
+            return f"{guardrail_path}:tiny_non_tool_empty"
+        return f"{guardrail_path}:tiny_non_tool_text"
+
+    if _openai_has_tool_calls(openai_resp):
+        return f"{guardrail_path}:unexpected_tool_use"
+
+    return f"{guardrail_path}:plain_text"
+
+
+def _build_reasoning_retry_nudge_message() -> dict:
+    return {
+        "role": "system",
+        "content": (
+            "Your previous reply was empty or contained only hidden reasoning. "
+            "Respond directly to the user in 1-3 short sentences. "
+            "Do not emit hidden reasoning, titles, or placeholders."
+        ),
+    }
+
+
+def _transport_error_response(message: str, *, status_code: int = 529) -> Response:
+    return Response(
+        content=json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "type": "overloaded_error",
+                    "message": message,
+                },
+            }
+        ),
+        status_code=status_code,
+        media_type="application/json",
+    )
+
+
+async def _safe_post_chat_completions(
+    client: httpx.AsyncClient,
+    payload: dict,
+    *,
+    context_label: str,
+) -> httpx.Response | None:
+    try:
+        return await client.post(
+            f"{LLAMA_CPP_BASE}/chat/completions",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+    except (
+        httpx.ConnectError,
+        httpx.RemoteProtocolError,
+        httpx.ReadError,
+        httpx.WriteError,
+        httpx.TimeoutException,
+    ) as exc:
+        logger.warning(
+            "Upstream transport failure during %s: %s: %s",
+            context_label,
+            type(exc).__name__,
+            exc,
+        )
+        return None
 
 
 def _last_assistant_was_text_only(anthropic_body: dict) -> bool:
@@ -2383,6 +2776,31 @@ def _strip_protocol_tag_only_lines(text: str) -> tuple[str, bool]:
     stripped = False
     for line in lines:
         if _BASH_PROTOCOL_LINE_RE.match(line):
+            stripped = True
+            continue
+        kept_lines.append(line)
+
+    if not stripped:
+        return text, False
+
+    cleaned = "\n".join(kept_lines).strip()
+    return cleaned, True
+
+
+def _strip_bash_noise_lines(text: str) -> tuple[str, bool]:
+    if not isinstance(text, str):
+        return text, False
+
+    noise_patterns = (
+        re.compile(r"^\s*bash:\s+line\s+\d+:\s+fg:\s+no job control\s*$", re.IGNORECASE),
+        re.compile(r"^\s*bash:\s+line\s+\d+:\s+.+:\s+command not found\s*$", re.IGNORECASE),
+    )
+
+    lines = text.splitlines()
+    kept_lines: list[str] = []
+    stripped = False
+    for line in lines:
+        if any(p.match(line) for p in noise_patterns):
             stripped = True
             continue
         kept_lines.append(line)
@@ -2664,7 +3082,8 @@ def _repair_bash_command_artifacts(openai_resp: dict) -> tuple[dict, int]:
             continue
 
         cleaned_command, changed = _strip_protocol_tag_only_lines(command)
-        if not changed:
+        cleaned_command, noise_changed = _strip_bash_noise_lines(cleaned_command)
+        if not changed and not noise_changed:
             repaired_tool_calls.append(tool_call)
             continue
 
@@ -2795,13 +3214,14 @@ def _validate_tool_call_arguments(
             cleaned_command, had_protocol_lines = _strip_protocol_tag_only_lines(
                 command
             )
-            if had_protocol_lines and not cleaned_command:
+            cleaned_command, had_noise_lines = _strip_bash_noise_lines(cleaned_command)
+            if (had_protocol_lines or had_noise_lines) and not cleaned_command:
                 return ToolResponseIssue(
                     kind="invalid_tool_args",
-                    reason="arguments for 'Bash' contained only protocol tag lines",
+                    reason="arguments for 'Bash' contained only malformed protocol/noise lines",
                     retry_hint=(
                         "Emit exactly one `Bash` tool call with a valid shell command in `arguments.command`. "
-                        "Do not include standalone XML/protocol tags."
+                        "Do not include standalone XML/protocol tags or shell error output."
                     ),
                 )
 
@@ -3202,6 +3622,90 @@ def _build_clean_guardrail_openai_response(
     }
 
 
+def _is_empty_end_turn_response(openai_resp: dict) -> bool:
+    choices = openai_resp.get("choices") or []
+    if not choices:
+        return False
+
+    choice = choices[0]
+    finish = choice.get("finish_reason")
+    if finish not in {"stop", "end_turn"}:
+        return False
+
+    message = choice.get("message") or {}
+    if message.get("tool_calls"):
+        return False
+
+    content = message.get("content")
+    if content is None:
+        return True
+    if isinstance(content, str):
+        return not content.strip()
+
+    return not str(content).strip()
+
+
+def _is_useless_short_end_turn_response(openai_resp: dict) -> bool:
+    choices = openai_resp.get("choices") or []
+    if not choices:
+        return False
+
+    choice = choices[0]
+    finish = choice.get("finish_reason")
+    if finish not in {"stop", "end_turn"}:
+        return False
+
+    message = choice.get("message") or {}
+    if message.get("tool_calls"):
+        return False
+
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+
+    text = re.sub(r"\s+", " ", content).strip()
+    if not text:
+        return False
+
+    if len(text) > 80:
+        return False
+
+    word_count = len(text.split())
+    if word_count > 12:
+        return False
+
+    if any(p in text for p in ".!?;:\n"):
+        return False
+
+    if text.startswith("{") or text.startswith("["):
+        return False
+
+    lowered = text.lower()
+    if lowered.startswith(
+        ("analyze ", "review ", "inspect ", "check ", "investigate ", "debug ")
+    ):
+        return True
+
+    title_case_like = text == text.title()
+    no_verb_markers = not any(
+        marker in lowered
+        for marker in (
+            "here",
+            "found",
+            "because",
+            "error",
+            "issue",
+            "fix",
+            "result",
+            "status",
+            "running",
+            "failed",
+            "success",
+        )
+    )
+    return title_case_like or no_verb_markers
+
+
 async def _apply_unexpected_end_turn_guardrail(
     client: httpx.AsyncClient,
     openai_resp: dict,
@@ -3245,11 +3749,16 @@ async def _apply_unexpected_end_turn_guardrail(
     retry_body["stream"] = False
     _apply_tool_call_grammar(retry_body, tool_choice="required")
 
-    retry_resp = await client.post(
-        f"{LLAMA_CPP_BASE}/chat/completions",
-        json=retry_body,
-        headers={"Content-Type": "application/json"},
+    retry_resp = await _safe_post_chat_completions(
+        client,
+        retry_body,
+        context_label="unexpected end_turn guardrail retry",
     )
+    if retry_resp is None:
+        logger.warning(
+            "GUARDRAIL retry transport failure; keeping original response"
+        )
+        return openai_resp
     if retry_resp.status_code == 200:
         retry_json = retry_resp.json()
         retry_choice, retry_message = _extract_openai_choice(retry_json)
@@ -3262,6 +3771,12 @@ async def _apply_unexpected_end_turn_guardrail(
                 "GUARDRAIL: retry produced invalid tool_call payload (%s)",
                 invalid_reason,
             )
+        elif _is_unexpected_end_turn(retry_json, anthropic_body):
+            logger.warning(
+                "GUARDRAIL: retry still ended turn without tool_use; "
+                "marking as tool_turn_no_tool_use for outer rejection handling"
+            )
+            return retry_json
         logger.info(
             "GUARDRAIL: retry returned finish_reason=%s without tool_use",
             retry_choice.get("finish_reason"),
@@ -3269,6 +3784,135 @@ async def _apply_unexpected_end_turn_guardrail(
     else:
         logger.warning(
             "GUARDRAIL retry upstream status=%d; keeping original response",
+            retry_resp.status_code,
+        )
+
+    return openai_resp
+
+
+async def _apply_empty_end_turn_guardrail(
+    client: httpx.AsyncClient,
+    openai_resp: dict,
+    openai_body: dict,
+    anthropic_body: dict,
+    session_id: str,
+) -> dict:
+    if not PROXY_GUARDRAIL_RETRY:
+        return openai_resp
+
+    if not _is_empty_end_turn_response(openai_resp):
+        return openai_resp
+
+    if openai_body.get("tools"):
+        return openai_resp
+
+    logger.warning(
+        "GUARDRAIL: empty end_turn with no tool calls (session=%s), retrying once with a direct-answer nudge",
+        session_id,
+    )
+
+    retry_body = copy.deepcopy(openai_body)
+    messages = list(retry_body.get("messages") or [])
+    messages.append(
+        {
+            "role": "system",
+            "content": (
+                "Your previous reply was empty. Respond with a brief direct user-visible answer. "
+                "Do not leave the response empty."
+            ),
+        }
+    )
+    retry_body["messages"] = messages
+    retry_body["stream"] = False
+
+    retry_resp = await _safe_post_chat_completions(
+        client,
+        retry_body,
+        context_label="empty end_turn guardrail retry",
+    )
+    if retry_resp is None:
+        logger.warning(
+            "GUARDRAIL empty-response retry transport failure; keeping original response"
+        )
+        return openai_resp
+    if retry_resp.status_code == 200:
+        retry_json = retry_resp.json()
+        if not _is_empty_end_turn_response(retry_json):
+            logger.info(
+                "GUARDRAIL: empty end_turn retry produced visible content; using retried response"
+            )
+            return retry_json
+        logger.warning(
+            "GUARDRAIL: empty end_turn retry also returned empty content; keeping original response"
+        )
+    else:
+        logger.warning(
+            "GUARDRAIL empty-response retry upstream status=%d; keeping original response",
+            retry_resp.status_code,
+        )
+
+    return openai_resp
+
+
+async def _apply_useless_short_end_turn_guardrail(
+    client: httpx.AsyncClient,
+    openai_resp: dict,
+    openai_body: dict,
+    session_id: str,
+) -> dict:
+    if not PROXY_GUARDRAIL_RETRY:
+        return openai_resp
+
+    if not _is_useless_short_end_turn_response(openai_resp):
+        return openai_resp
+
+    if openai_body.get("tools"):
+        return openai_resp
+
+    logger.warning(
+        "GUARDRAIL: short/title-like end_turn with no tool calls (session=%s), retrying once with a direct-answer nudge",
+        session_id,
+    )
+
+    retry_body = copy.deepcopy(openai_body)
+    messages = list(retry_body.get("messages") or [])
+    messages.append(
+        {
+            "role": "system",
+            "content": (
+                "Your previous reply was too brief and not useful enough. "
+                "Respond with a direct, user-visible answer in 1-3 full sentences."
+            ),
+        }
+    )
+    retry_body["messages"] = messages
+    retry_body["stream"] = False
+
+    retry_resp = await _safe_post_chat_completions(
+        client,
+        retry_body,
+        context_label="short end_turn guardrail retry",
+    )
+    if retry_resp is None:
+        logger.warning(
+            "GUARDRAIL short-response retry transport failure; keeping original response"
+        )
+        return openai_resp
+    if retry_resp.status_code == 200:
+        retry_json = retry_resp.json()
+        if not _is_empty_end_turn_response(
+            retry_json
+        ) and not _is_useless_short_end_turn_response(retry_json):
+            logger.info(
+                "GUARDRAIL: short/title-like retry produced substantive content; using retried response"
+            )
+            return retry_json
+        logger.warning(
+            "GUARDRAIL: short/title-like retry remained non-substantive; keeping original response"
+        )
+    else:
+        logger.warning(
+            "GUARDRAIL short-response retry upstream status=%d; keeping original response",
             retry_resp.status_code,
         )
 
@@ -3361,11 +4005,18 @@ async def _apply_malformed_tool_guardrail(
             attempt=attempt + 1,
             total_attempts=attempts,
         )
-        retry_resp = await client.post(
-            f"{LLAMA_CPP_BASE}/chat/completions",
-            json=retry_body,
-            headers={"Content-Type": "application/json"},
+        retry_resp = await _safe_post_chat_completions(
+            client,
+            retry_body,
+            context_label="malformed tool retry",
         )
+        if retry_resp is None:
+            logger.warning(
+                "MALFORMED RETRY transport failure (attempt %d/%d)",
+                attempt + 1,
+                attempts,
+            )
+            continue
         if retry_resp.status_code != 200:
             logger.warning(
                 "MALFORMED RETRY failed (attempt %d/%d): HTTP %d",
@@ -3585,11 +4236,14 @@ def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
                 cleaned_command, had_protocol_lines = _strip_protocol_tag_only_lines(
                     command
                 )
-                if had_protocol_lines:
+                cleaned_command, had_noise_lines = _strip_bash_noise_lines(
+                    cleaned_command
+                )
+                if had_protocol_lines or had_noise_lines:
                     args = dict(args)
                     args["command"] = cleaned_command
                     logger.warning(
-                        "BASH SAFETY: stripped standalone protocol-tag lines from command before tool execution"
+                        "BASH SAFETY: stripped malformed protocol/noise lines from command before tool execution"
                     )
         content.append(
             {
@@ -3830,7 +4484,10 @@ async def stream_anthropic_response(
         logger.warning("Upstream stream error: %s: %s", type(exc).__name__, exc)
         finish_reason = "end_turn"
     except asyncio.CancelledError:
-        logger.info("Client disconnected, closing upstream stream")
+        logger.info(
+            "Client disconnected, closing upstream stream (last_class=%s)",
+            monitor.last_completion_classification or "stream_in_progress",
+        )
         raise
     except Exception as exc:
         logger.error("Unexpected stream error: %s: %s", type(exc).__name__, exc)
@@ -3852,7 +4509,11 @@ async def stream_anthropic_response(
         # internal chain-of-thought content by default.
         accumulated_text = "".join(text_chunks)
         if not accumulated_text and reasoning_chunks:
-            fallback_text = _build_reasoning_fallback_text(reasoning_chunks)
+            fallback_text = None
+
+            if not fallback_text:
+                fallback_text = _build_reasoning_fallback_text(reasoning_chunks)
+
             if fallback_text:
                 logger.warning(
                     "Empty response with %d reasoning chunks – emitting fallback text (mode=%s)",
@@ -3981,6 +4642,8 @@ async def messages(request: Request):
     session_id = resolve_session_id(request, body)
     monitor = get_session_monitor(session_id)
     last_session_id = session_id
+    monitor.last_request_had_tools = _has_tool_definitions(body)
+    monitor.last_request_max_tokens = int(body.get("max_tokens", 0) or 0)
 
     body = _maybe_apply_session_contamination_breaker(body, monitor, session_id)
     body, analysis_tools_removed = _maybe_route_analysis_without_tools(body)
@@ -4016,6 +4679,49 @@ async def messages(request: Request):
         last_role,
         last_text,
     )
+
+    if _should_suppress_repeated_tiny_non_tool_retry(body, monitor):
+        logger.warning(
+            "Suppressing repeated tiny non-tool retry after prior rejection"
+        )
+        monitor.last_completion_classification = "guarded_non_stream:tiny_non_tool_terminal"
+        return _build_tiny_non_tool_terminal_response(
+            "Repeated tiny non-tool retry was terminated. Restart the session or send a fresh substantive request instead of retrying the tiny follow-up."
+        )
+    if _should_terminalize_tiny_followup_after_completed_analysis(monitor, body):
+        logger.warning(
+            "Terminalizing tiny non-tool follow-up after completed analysis response"
+        )
+        monitor.last_completion_classification = "guarded_non_stream:tiny_non_tool_completed_analysis_terminal"
+        return _build_tiny_non_tool_terminal_response(
+            "The prior analysis response already completed the turn. This tiny follow-up is being terminated; restart the session or send a fresh substantive request."
+        )
+    if _should_terminalize_empty_visible_stream_retry(monitor, body):
+        logger.warning(
+            "Terminalizing repeated empty-visible streaming retry after prior retryable response"
+        )
+        monitor.last_completion_classification = "guarded_non_stream:empty_visible_terminal"
+        monitor.forced_auto_cooldown_turns = max(monitor.forced_auto_cooldown_turns, 1)
+        return _build_empty_visible_stream_terminal_response(
+            "Repeated empty-visible streaming retries were terminated. Restart the session or send a fresh request instead of retrying the same tool-enabled turn."
+        )
+    if _should_suppress_repeated_continuation_prompt(body, monitor):
+        logger.warning(
+            "Suppressing repeated continuation prompt loop after prior guarded tool-turn failures"
+        )
+        monitor.last_completion_classification = "guarded_non_stream:continuation_loop_terminal"
+        monitor.forced_auto_cooldown_turns = max(monitor.forced_auto_cooldown_turns, 1)
+        return _build_tool_turn_no_tool_use_error_response(
+            "Repeated continuation prompts were suppressed because the session is stuck retrying a tool-required turn without producing a valid tool call. This turn is being terminated; restart the session or send a fresh request instead of continuing."
+        )
+    if _should_suppress_repeated_tool_turn_rejection(body, monitor):
+        logger.warning(
+            "Suppressing repeated guarded tool-turn retry after prior no-tool-use failures"
+        )
+        monitor.last_completion_classification = "guarded_non_stream:tool_turn_no_tool_use_suppressed"
+        return _transport_error_response(
+            "Repeated tool-enabled retries were suppressed because the model is not producing valid tool calls for this turn. Please retry later or restart the session."
+        )
 
     # --- Option F: Estimate tokens and record in session monitor ---
     estimated_tokens = estimate_total_tokens(body)
@@ -4065,11 +4771,15 @@ async def messages(request: Request):
         strict_body = dict(openai_body)
         strict_body["stream"] = False
 
-        strict_resp = await client.post(
-            f"{LLAMA_CPP_BASE}/chat/completions",
-            json=strict_body,
-            headers={"Content-Type": "application/json"},
+        strict_resp = await _safe_post_chat_completions(
+            client,
+            strict_body,
+            context_label="strict guarded non-stream request",
         )
+        if strict_resp is None:
+            return _transport_error_response(
+                "Upstream server disconnected before sending a response during guarded request."
+            )
 
         if strict_resp.status_code != 200:
             error_text = strict_resp.text[:1000]
@@ -4079,11 +4789,15 @@ async def messages(request: Request):
                 error_text,
                 "strict-stream",
             ):
-                strict_resp = await client.post(
-                    f"{LLAMA_CPP_BASE}/chat/completions",
-                    json=strict_body,
-                    headers={"Content-Type": "application/json"},
+                strict_resp = await _safe_post_chat_completions(
+                    client,
+                    strict_body,
+                    context_label="strict guarded non-stream grammar retry",
                 )
+                if strict_resp is None:
+                    return _transport_error_response(
+                        "Upstream server disconnected before sending a response during guarded retry."
+                    )
 
         if strict_resp.status_code != 200:
             error_text = strict_resp.text[:1000]
@@ -4115,6 +4829,13 @@ async def messages(request: Request):
             monitor,
             session_id,
         )
+        if _should_hard_fail_tool_turn_without_tool_use(body, openai_resp):
+            _record_tool_turn_rejection(body, monitor)
+            monitor.last_completion_classification = "guarded_non_stream:tool_turn_no_tool_use_rejected"
+            logger.warning(
+                "Hard-failing guarded tool-enabled response without tool use before further processing"
+            )
+            return _build_tool_turn_no_tool_use_error_response()
         openai_resp = await _apply_malformed_tool_guardrail(
             client,
             openai_resp,
@@ -4123,9 +4844,44 @@ async def messages(request: Request):
             monitor,
             session_id,
         )
+        openai_resp = await _apply_empty_end_turn_guardrail(
+            client,
+            openai_resp,
+            strict_body,
+            body,
+            session_id,
+        )
+        openai_resp = await _apply_useless_short_end_turn_guardrail(
+            client,
+            openai_resp,
+            strict_body,
+            session_id,
+        )
+        if _should_reject_tiny_post_tool_non_tool_completion(body, monitor, openai_resp):
+            monitor.last_rejected_tiny_prompt_fingerprint = _tiny_non_tool_prompt_fingerprint(body)
+            monitor.last_rejected_tiny_prompt_ts = time.time()
+            monitor.last_completion_classification = "guarded_non_stream:tiny_post_tool_rejected"
+            logger.warning(
+                "Rejecting tiny post-tool non-tool completion; returning retryable error instead of terminal response"
+            )
+            return _build_reasoning_fallback_error_response(
+                "A non-substantive follow-up completion was rejected. Please retry the request."
+            )
 
+        monitor.last_completion_classification = _classify_completion(
+            body,
+            openai_resp,
+            guardrail_path="guarded_non_stream",
+        )
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
         monitor.record_response(anthropic_resp.get("usage", {}).get("output_tokens", 0))
+        monitor.last_response_had_tool_calls = _openai_has_tool_calls(openai_resp)
+        logger.info(
+            "SESSION END CLASSIFICATION: session=%s class=%s output_tokens=%d",
+            session_id,
+            monitor.last_completion_classification,
+            anthropic_resp.get("usage", {}).get("output_tokens", 0),
+        )
         if PROXY_FORCE_NON_STREAM:
             logger.info(
                 "FORCED NON-STREAM: served stream response via guarded non-stream path"
@@ -4330,6 +5086,67 @@ async def messages(request: Request):
                 media_type="application/json",
             )
 
+        if _is_tiny_non_tool_followup_request(body):
+            logger.warning(
+                "Fast-path rejecting tiny non-tool follow-up request to avoid slow preview/disconnect path"
+            )
+            await resp.aclose()
+            monitor.last_rejected_tiny_prompt_fingerprint = _tiny_non_tool_prompt_fingerprint(body)
+            monitor.last_rejected_tiny_prompt_ts = time.time()
+            monitor.last_completion_classification = "stream:tiny_non_tool_fast_rejected"
+            return _build_tiny_non_tool_terminal_response(
+                "Tiny non-tool follow-up was terminated early to avoid a stalled terminal completion. Restart the session or send a substantive fresh request."
+            )
+
+        try:
+            preview_resp = await _safe_post_chat_completions(
+                client,
+                {**openai_body, "stream": False},
+                context_label="stream preview for reasoning-only fallback detection",
+            )
+            if preview_resp is not None and preview_resp.status_code == 200:
+                preview_json = preview_resp.json()
+                preview_choice = (preview_json.get("choices") or [{}])[0]
+                preview_message = preview_choice.get("message") or {}
+                preview_content = preview_message.get("content")
+                if _is_empty_visible_response(preview_message):
+                    fallback_text = _build_reasoning_fallback_text(
+                        [preview_message.get("reasoning_content", "")]
+                    )
+                    if not fallback_text:
+                        fallback_text = (
+                            "I couldn't produce a usable direct answer on that turn. "
+                            "Please retry the same request."
+                        )
+                    logger.warning(
+                        "Preview detected empty visible response on streaming request; "
+                        "serving bounded fallback response instead of terminal retry-loop breaker"
+                    )
+                    await resp.aclose()
+                    monitor.last_completion_classification = "stream:empty_visible_fallback"
+                    monitor.forced_auto_cooldown_turns = max(
+                        monitor.forced_auto_cooldown_turns, 1
+                    )
+                    anthropic_resp = _build_empty_visible_stream_fallback_response(
+                        fallback_text
+                    )
+                    monitor.record_response(0)
+                    monitor.last_response_had_tool_calls = False
+                    return StreamingResponse(
+                        stream_anthropic_message(anthropic_resp),
+                        media_type="text/event-stream",
+                        headers={
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                        },
+                    )
+        except Exception as exc:
+            logger.warning(
+                "Streaming preview check failed (%s: %s); continuing with normal stream",
+                type(exc).__name__,
+                exc,
+            )
+
         return StreamingResponse(
             stream_anthropic_response(resp, model, monitor, body),
             media_type="text/event-stream",
@@ -4339,11 +5156,15 @@ async def messages(request: Request):
             },
         )
     else:
-        resp = await client.post(
-            f"{LLAMA_CPP_BASE}/chat/completions",
-            json=openai_body,
-            headers={"Content-Type": "application/json"},
+        resp = await _safe_post_chat_completions(
+            client,
+            openai_body,
+            context_label="non-stream request",
         )
+        if resp is None:
+            return _transport_error_response(
+                "Upstream server disconnected before sending a response."
+            )
 
         if resp.status_code != 200:
             error_text = resp.text[:1000]
@@ -4353,11 +5174,15 @@ async def messages(request: Request):
                 error_text,
                 "non-stream",
             ):
-                resp = await client.post(
-                    f"{LLAMA_CPP_BASE}/chat/completions",
-                    json=openai_body,
-                    headers={"Content-Type": "application/json"},
+                resp = await _safe_post_chat_completions(
+                    client,
+                    openai_body,
+                    context_label="non-stream grammar retry",
                 )
+                if resp is None:
+                    return _transport_error_response(
+                        "Upstream server disconnected before sending a response during retry."
+                    )
 
         # Option B: Handle non-streaming errors too
         if resp.status_code != 200:
@@ -4396,6 +5221,13 @@ async def messages(request: Request):
             monitor,
             session_id,
         )
+        if _should_hard_fail_tool_turn_without_tool_use(body, openai_resp):
+            _record_tool_turn_rejection(body, monitor)
+            monitor.last_completion_classification = "non_stream:tool_turn_no_tool_use_rejected"
+            logger.warning(
+                "Hard-failing non-stream tool-enabled response without tool use"
+            )
+            return _build_tool_turn_no_tool_use_error_response()
 
         choice, _ = _extract_openai_choice(openai_resp)
         finish_reason = choice.get("finish_reason", "")
@@ -4416,11 +5248,34 @@ async def messages(request: Request):
             monitor.invalid_tool_call_streak = 0
             monitor.required_tool_miss_streak = 0
 
+        if _should_reject_tiny_post_tool_non_tool_completion(body, monitor, openai_resp):
+            monitor.last_rejected_tiny_prompt_fingerprint = _tiny_non_tool_prompt_fingerprint(body)
+            monitor.last_rejected_tiny_prompt_ts = time.time()
+            monitor.last_completion_classification = "non_stream:tiny_post_tool_rejected"
+            logger.warning(
+                "Rejecting tiny post-tool non-tool completion; returning retryable error instead of terminal response"
+            )
+            return _build_reasoning_fallback_error_response(
+                "A non-substantive follow-up completion was rejected. Please retry the request."
+            )
+
+        monitor.last_completion_classification = _classify_completion(
+            body,
+            openai_resp,
+            guardrail_path="non_stream",
+        )
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
 
         # Track output tokens in session monitor
         output_tokens = anthropic_resp.get("usage", {}).get("output_tokens", 0)
         monitor.record_response(output_tokens)
+        monitor.last_response_had_tool_calls = _openai_has_tool_calls(openai_resp)
+        logger.info(
+            "SESSION END CLASSIFICATION: session=%s class=%s output_tokens=%d",
+            session_id,
+            monitor.last_completion_classification,
+            output_tokens,
+        )
 
         return anthropic_resp
 
@@ -4433,13 +5288,37 @@ async def messages_anthropic(request: Request):
 
 @app.get("/v1/models")
 async def models():
-    """Return available model list (spoofs Anthropic model IDs for client compatibility)."""
-    return {
-        "data": [
-            {"id": "claude-sonnet-4-20250514", "object": "model"},
-            {"id": "claude-3-5-sonnet-20241022", "object": "model"},
-        ]
-    }
+    """Return the active upstream model list in Anthropic-compatible shape."""
+    data = []
+
+    try:
+        if http_client:
+            resp = await http_client.get(f"{LLAMA_CPP_BASE}/models", timeout=10.0)
+            if resp.status_code == 200:
+                upstream = resp.json()
+                if isinstance(upstream, dict):
+                    models = upstream.get("data")
+                    if isinstance(models, list):
+                        for entry in models:
+                            if not isinstance(entry, dict):
+                                continue
+                            model_id = entry.get("id") or entry.get("model") or entry.get("name")
+                            if model_id:
+                                data.append({"id": model_id, "object": "model"})
+                    elif isinstance(upstream.get("models"), list):
+                        for entry in upstream.get("models", []):
+                            if not isinstance(entry, dict):
+                                continue
+                            model_id = entry.get("id") or entry.get("model") or entry.get("name")
+                            if model_id:
+                                data.append({"id": model_id, "object": "model"})
+    except Exception as exc:
+        logger.warning("Failed to fetch upstream model list for /v1/models: %s", exc)
+
+    if not data:
+        data.append({"id": "unknown-upstream-model", "object": "model"})
+
+    return {"data": data}
 
 
 @app.get("/health")
@@ -4503,6 +5382,7 @@ async def context_status(request: Request):
             "path": PROXY_TOOL_CALL_GRAMMAR_PATH,
             "loaded": bool(TOOL_CALL_GBNF),
             "tools_compatible": TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE,
+            "tools_probe_done": TOOL_CALL_GRAMMAR_PROBE_DONE,
         },
         # Loop protection stats
         "loop_protection": {
