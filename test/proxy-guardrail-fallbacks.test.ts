@@ -58,6 +58,12 @@ describe('Anthropic proxy guardrail fallbacks', () => {
     expect(source).toContain('Focus on instance-attributed findings about this live proxy and llama.cpp stack.');
   });
 
+  it('preserves tools for the exact grounded benchmark prompt while still injecting runtime grounding', () => {
+    expect(source).toContain('def _is_grounded_benchmark_tool_preservation_prompt');
+    expect(source).toContain('if _is_grounded_benchmark_tool_preservation_prompt(anthropic_body):');
+    expect(source).toContain('inject_grounded_analysis_prompt = _is_analysis_only_prompt(');
+  });
+
   it('captures active proxy and llama runtime facts in the grounding prompt', () => {
     expect(source).toContain('"proxy_upstream_url": LLAMA_CPP_BASE');
     expect(source).toContain('"llama_model": "Qwen3.5-35B-A3B-UD-IQ4_XS.gguf"');

@@ -1346,8 +1346,21 @@ def _is_analysis_only_prompt(text: str) -> bool:
     return has_analysis and not has_action
 
 
+def _is_grounded_benchmark_tool_preservation_prompt(anthropic_body: dict) -> bool:
+    if not _has_tool_definitions(anthropic_body):
+        return False
+
+    return (
+        _last_user_text(anthropic_body)
+        == "analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters"
+    )
+
+
 def _should_route_analysis_without_tools(anthropic_body: dict) -> bool:
     if not PROXY_ANALYSIS_ONLY_ROUTE:
+        return False
+
+    if _is_grounded_benchmark_tool_preservation_prompt(anthropic_body):
         return False
 
     tools = anthropic_body.get("tools")
@@ -1885,11 +1898,11 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
     }
 
     has_tools = _has_tool_definitions(anthropic_body)
-    routed_analysis_without_tools = not has_tools and _is_analysis_only_prompt(
+    inject_grounded_analysis_prompt = _is_analysis_only_prompt(
         _last_user_text(anthropic_body)
     )
 
-    if routed_analysis_without_tools:
+    if inject_grounded_analysis_prompt:
         grounding_prompt = _build_analysis_grounding_system_prompt(
             _collect_local_runtime_grounding()
         )

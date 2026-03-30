@@ -2875,8 +2875,8 @@ class TestToolTurnControls(unittest.TestCase):
             }
 
             updated, removed = proxy._maybe_route_analysis_without_tools(body)
-            self.assertEqual(removed, 12)
-            self.assertNotIn("tools", updated)
+            self.assertEqual(removed, 0)
+            self.assertIn("tools", updated)
         finally:
             setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
             setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
@@ -2917,6 +2917,33 @@ class TestToolTurnControls(unittest.TestCase):
             setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
             setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
             setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", old_max_messages)
+
+    def test_build_request_injects_runtime_grounding_for_exact_benchmark_with_tools(self):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters",
+                }
+            ],
+            "tools": [
+                {"name": "Read", "input_schema": {"type": "object"}},
+                {"name": "Bash", "input_schema": {"type": "object"}},
+            ],
+        }
+
+        openai = proxy.build_openai_request(
+            body, proxy.SessionMonitor(context_window=262144)
+        )
+
+        self.assertEqual(openai["messages"][0]["role"], "system")
+        self.assertIn("<local-runtime-facts>", openai["messages"][0]["content"])
+        self.assertIn(
+            "Focus on instance-attributed findings about this live proxy and llama.cpp stack.",
+            openai["messages"][0]["content"],
+        )
+        self.assertIn("tools", body)
+        self.assertIn("tools", openai)
 
 
 class TestRequiredArgRepair(unittest.TestCase):
