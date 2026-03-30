@@ -2,18 +2,17 @@
   "$schema": "./config.schema.json",
   "agent": {
     "default_model": "qwen3.5-a3b-iq4xs",
-    "api_endpoint": "http://192.168.1.165:4000/v1"
+    "api_endpoint": "http://127.0.0.1:4000/v1"
   },
   "prompt_settings": {
     "use_qwen35_optimized_params": true,
-    "default_mode": "thinking",
-    "settings_file": "../config/qwen35-settings.json"
+    "default_mode": "default"
   },
   "model": {
-    "max_tokens": 81920,
-    "timeout_ms": 300000,
+    "max_tokens": 8192,
+    "timeout_ms": 180000,
     "stop_sequences": ["<|im_end|>"],
-    "temperature": 0.3,
-    "top_p": 0.9
+    "temperature": 0.2,
+    "top_p": 0.85
   }
 }
