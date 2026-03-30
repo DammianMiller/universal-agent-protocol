@@ -14,7 +14,7 @@ services:
     depends_on: []
 
   anthropic-proxy:
-    start: env LLAMA_CPP_BASE=http://127.0.0.1:8080/v1 PROXY_TOOL_NARROWING=off PROXY_NO_PROGRESS_THRESHOLD=8 PROXY_FORCED_THRESHOLD=24 PROXY_STREAM_REASONING_FALLBACK=sanitized PROXY_DISABLE_THINKING_ON_TOOL_TURNS=on python3 /home/cogtek/dev/miller-tech/universal-agent-protocol/.worktrees/033-proxy-endturn-retry/tools/agents/scripts/anthropic_proxy.py
+    start: env LLAMA_CPP_BASE=http://127.0.0.1:8080/v1 PROXY_TOOL_NARROWING=off PROXY_NO_PROGRESS_THRESHOLD=8 PROXY_FORCED_THRESHOLD=24 PROXY_STREAM_REASONING_FALLBACK=sanitized PROXY_DISABLE_THINKING_ON_TOOL_TURNS=on PROXY_ANALYSIS_ONLY_ROUTE=on python3 /home/cogtek/dev/miller-tech/universal-agent-protocol/.worktrees/033-proxy-endturn-retry/tools/agents/scripts/anthropic_proxy.py
     stop: lsof -ti :4000 | xargs -r kill
     healthcheck: curl -sf http://127.0.0.1:4000/health
     port: 4000

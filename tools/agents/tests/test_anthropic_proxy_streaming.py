@@ -2802,6 +2802,72 @@ class TestToolTurnControls(unittest.TestCase):
             setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
             setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", old_max_messages)
 
+    def test_analysis_only_route_matches_exact_benchmark_prompt(self):
+        old_route = getattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE")
+        old_min_tools = getattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS")
+        old_max_messages = getattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES")
+        try:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", True)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", 12)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", 2)
+
+            body = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters",
+                    }
+                ],
+                "tools": [
+                    {"name": f"tool{i}", "input_schema": {"type": "object"}}
+                    for i in range(12)
+                ],
+            }
+
+            updated, removed = proxy._maybe_route_analysis_without_tools(body)
+            self.assertEqual(removed, 12)
+            self.assertNotIn("tools", updated)
+        finally:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", old_max_messages)
+
+    def test_analysis_only_route_requires_fresh_conversation(self):
+        old_route = getattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE")
+        old_min_tools = getattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS")
+        old_max_messages = getattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES")
+        try:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", True)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", 4)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", 2)
+
+            body = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Let me inspect the stack.",
+                    },
+                ],
+                "tools": [
+                    {"name": "Read", "input_schema": {"type": "object"}},
+                    {"name": "Edit", "input_schema": {"type": "object"}},
+                    {"name": "Write", "input_schema": {"type": "object"}},
+                    {"name": "Bash", "input_schema": {"type": "object"}},
+                ],
+            }
+
+            updated, removed = proxy._maybe_route_analysis_without_tools(body)
+            self.assertEqual(removed, 0)
+            self.assertIn("tools", updated)
+        finally:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MIN_TOOLS", old_min_tools)
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_MAX_MESSAGES", old_max_messages)
+
 
 class TestRequiredArgRepair(unittest.TestCase):
     def test_repair_required_args_uses_schema_enum_value(self):
