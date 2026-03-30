@@ -51,6 +51,20 @@ describe('Anthropic proxy guardrail fallbacks', () => {
     expect(source).toContain('Rejecting success-shaped stub transcript');
   });
 
+  it('injects concrete local runtime grounding into analysis-only benchmark turns', () => {
+    expect(source).toContain('def _build_analysis_grounding_system_prompt');
+    expect(source).toContain('<local-runtime-facts>');
+    expect(source).toContain('Do not ask for logs, metrics, config dumps, or system access that are already provided.');
+    expect(source).toContain('Focus on instance-attributed findings about this live proxy and llama.cpp stack.');
+  });
+
+  it('captures active proxy and llama runtime facts in the grounding prompt', () => {
+    expect(source).toContain('"proxy_upstream_url": LLAMA_CPP_BASE');
+    expect(source).toContain('"llama_model": "Qwen3.5-35B-A3B-UD-IQ4_XS.gguf"');
+    expect(source).toContain('"llama_context_size": 262144');
+    expect(source).toContain('"llama_repeat_penalty": 1.0');
+  });
+
   it('pins opencode proxy endpoint to the local proxy on 127.0.0.1:4000', () => {
     expect(opencode.provider['qwen-proxy'].options.baseURL).toBe('http://127.0.0.1:4000/v1');
     expect(opencodeConfig.agent.api_endpoint).toBe('http://127.0.0.1:4000/v1');

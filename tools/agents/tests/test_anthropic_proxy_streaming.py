@@ -279,6 +279,56 @@ class TestProxyConfigTuning(unittest.TestCase):
             setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
 
+    def test_build_request_injects_local_runtime_grounding_for_analysis_only_route(self):
+        old_route = getattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE")
+        old_base = getattr(proxy, "LLAMA_CPP_BASE")
+        body = {
+            "model": "test",
+            "max_tokens": 512,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "analyze uap proxy and llamacpp running instance for errors or performance improvement opportunities with tuning the parameters",
+                }
+            ],
+        }
+        try:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", True)
+            setattr(proxy, "LLAMA_CPP_BASE", "http://127.0.0.1:8080/v1")
+
+            openai = proxy.build_openai_request(
+                body, proxy.SessionMonitor(context_window=0)
+            )
+            self.assertEqual(openai["messages"][0]["role"], "system")
+            system_prompt = openai["messages"][0]["content"]
+            self.assertIn("You are analyzing the active local runtime", system_prompt)
+            self.assertIn("<local-runtime-facts>", system_prompt)
+            self.assertIn("Proxy upstream URL", system_prompt)
+            self.assertIn("Qwen3.5-35B-A3B-UD-IQ4_XS.gguf", system_prompt)
+            self.assertIn(
+                "Analysis-only routing for this benchmark prompt: enabled",
+                system_prompt,
+            )
+            self.assertIn("Active llama port: 8080", system_prompt)
+        finally:
+            setattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE", old_route)
+            setattr(proxy, "LLAMA_CPP_BASE", old_base)
+
+    def test_build_request_does_not_inject_runtime_grounding_for_non_analysis_prompt(self):
+        body = {
+            "model": "test",
+            "max_tokens": 512,
+            "messages": [{"role": "user", "content": "run pwd"}],
+        }
+
+        openai = proxy.build_openai_request(body, proxy.SessionMonitor(context_window=0))
+        system_messages = [
+            message["content"]
+            for message in openai["messages"]
+            if message.get("role") == "system"
+        ]
+        self.assertFalse(any("<local-runtime-facts>" in content for content in system_messages))
+
     def test_prune_target_fraction_uses_config_or_default(self):
         old_target = getattr(proxy, "PROXY_CONTEXT_PRUNE_TARGET_FRACTION")
         try:
@@ -2697,7 +2747,7 @@ class TestToolTurnControls(unittest.TestCase):
     def test_no_tools_does_not_inject_agentic_system_message(self):
         body = {
             "model": "test",
-            "messages": [{"role": "user", "content": "analyze architecture"}],
+            "messages": [{"role": "user", "content": "say hello"}],
         }
         openai = proxy.build_openai_request(
             body, proxy.SessionMonitor(context_window=262144)

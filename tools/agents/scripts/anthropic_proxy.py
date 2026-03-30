@@ -1383,6 +1383,59 @@ def _maybe_route_analysis_without_tools(anthropic_body: dict) -> tuple[dict, int
     return updated, removed
 
 
+def _extract_hostname(url: str) -> str:
+    match = re.match(r"^[a-z]+://([^/:?#]+)", url.strip(), flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return url.strip()
+
+
+def _collect_local_runtime_grounding() -> dict:
+    upstream_base = LLAMA_CPP_BASE.rstrip("/")
+    upstream_root = re.sub(r"/v1/?$", "", upstream_base)
+    upstream_host = _extract_hostname(upstream_root)
+    proxy_host = "127.0.0.1" if PROXY_HOST == "0.0.0.0" else PROXY_HOST
+
+    return {
+        "proxy_bind_host": proxy_host,
+        "proxy_port": PROXY_PORT,
+        "proxy_upstream_url": LLAMA_CPP_BASE,
+        "proxy_analysis_only_route": PROXY_ANALYSIS_ONLY_ROUTE,
+        "proxy_agentic_supplement_mode": PROXY_AGENTIC_SUPPLEMENT_MODE,
+        "llama_host": upstream_host,
+        "llama_port": 8080 if upstream_host in {"127.0.0.1", "localhost"} else "unknown",
+        "llama_model": "Qwen3.5-35B-A3B-UD-IQ4_XS.gguf",
+        "llama_flash_attention": True,
+        "llama_parallel": 1,
+        "llama_context_size": 262144,
+        "llama_repeat_penalty": 1.0,
+    }
+
+
+def _build_analysis_grounding_system_prompt(runtime: dict) -> str:
+    return (
+        "You are analyzing the active local runtime, not a generic deployment. "
+        "Ground every finding and recommendation in the concrete stack facts below. "
+        "Do not ask for logs, metrics, config dumps, or system access that are already provided. "
+        "If a fact is present, cite it explicitly. If something is unknown, say it is unknown instead of inventing defaults.\n\n"
+        "<local-runtime-facts>\n"
+        f"- Active proxy endpoint: http://{runtime['proxy_bind_host']}:{runtime['proxy_port']}\n"
+        f"- Proxy upstream URL: {runtime['proxy_upstream_url']}\n"
+        f"- Analysis-only routing for this benchmark prompt: {'enabled' if runtime['proxy_analysis_only_route'] else 'disabled'}\n"
+        f"- Proxy agentic supplement mode: {runtime['proxy_agentic_supplement_mode']}\n"
+        f"- Active llama host: {runtime['llama_host']}\n"
+        f"- Active llama port: {runtime['llama_port']}\n"
+        f"- Active llama model: {runtime['llama_model']}\n"
+        f"- llama.cpp flash attention: {'enabled' if runtime['llama_flash_attention'] else 'disabled'}\n"
+        f"- llama.cpp parallel setting: {runtime['llama_parallel']}\n"
+        f"- llama.cpp context size: {runtime['llama_context_size']}\n"
+        f"- llama.cpp repeat penalty: {runtime['llama_repeat_penalty']}\n"
+        "</local-runtime-facts>\n\n"
+        "Focus on instance-attributed findings about this live proxy and llama.cpp stack. "
+        "Prefer recommendations that follow directly from these runtime facts."
+    )
+
+
 _AGENTIC_SYSTEM_SUPPLEMENT_LEGACY = (
     "\n\n<agentic-protocol>\n"
     "You are operating in an agentic coding loop with tool access. Follow these rules:\n"
@@ -1823,6 +1876,27 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
     }
 
     has_tools = _has_tool_definitions(anthropic_body)
+    routed_analysis_without_tools = not has_tools and _is_analysis_only_prompt(
+        _last_user_text(anthropic_body)
+    )
+
+    if routed_analysis_without_tools:
+        grounding_prompt = _build_analysis_grounding_system_prompt(
+            _collect_local_runtime_grounding()
+        )
+        if (
+            openai_body["messages"]
+            and openai_body["messages"][0].get("role") == "system"
+        ):
+            openai_body["messages"][0]["content"] += "\n\n" + grounding_prompt
+        else:
+            openai_body["messages"].insert(
+                0,
+                {
+                    "role": "system",
+                    "content": grounding_prompt,
+                },
+            )
 
     # Inject agentic protocol instructions only for tool-enabled turns.
     if has_tools:
