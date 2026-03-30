@@ -110,6 +110,83 @@ class TestStreamingReasoningFallback(unittest.TestCase):
         )
         self.assertIsNone(summary)
 
+    def test_preview_empty_visible_fallback_prefers_actionable_reasoning_summary(self):
+        preview_message = {
+            "content": "",
+            "reasoning_content": (
+                "Proxy retry loop causes latency spikes. "
+                "You should disable default thinking on tool turns."
+            ),
+        }
+        chunks = []
+        if preview_message.get("reasoning_content"):
+            chunks.append(preview_message["reasoning_content"])
+        if isinstance(preview_message.get("content"), str) and preview_message["content"]:
+            chunks.append(preview_message["content"])
+
+        fallback = proxy._build_actionable_reasoning_summary(chunks)
+        if not fallback:
+            fallback = proxy._build_reasoning_fallback_text(chunks)
+
+        self.assertIsNotNone(fallback)
+        self.assertIn("Findings:", fallback)
+        self.assertIn("disable default thinking on tool turns", fallback)
+
+    def test_preview_empty_visible_fallback_uses_retry_text_when_reasoning_is_not_actionable(self):
+        preview_message = {
+            "content": "",
+            "reasoning_content": "misc note",
+        }
+        chunks = []
+        if preview_message.get("reasoning_content"):
+            chunks.append(preview_message["reasoning_content"])
+        if isinstance(preview_message.get("content"), str) and preview_message["content"]:
+            chunks.append(preview_message["content"])
+
+        fallback = proxy._build_actionable_reasoning_summary(chunks)
+        if not fallback:
+            fallback = proxy._build_reasoning_fallback_text(chunks, mode="sanitized")
+
+        self.assertEqual(
+            fallback,
+            "I couldn't produce a usable answer on that turn. Please retry the request.",
+        )
+
+    def test_bash_placeholder_command_is_rejected(self):
+        issue = proxy._validate_tool_call_arguments(
+            "bash",
+            {"command": "command", "description": "description"},
+            {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["command"],
+            },
+            {"bash"},
+        )
+
+        self.assertEqual(issue.kind, "invalid_tool_args")
+        self.assertIn("placeholder command value", issue.reason)
+
+    def test_bash_real_command_remains_valid(self):
+        issue = proxy._validate_tool_call_arguments(
+            "bash",
+            {"command": "pwd", "description": "show cwd"},
+            {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["command"],
+            },
+            {"bash"},
+        )
+
+        self.assertFalse(issue.has_issue())
+
 
 class TestProxyConfigTuning(unittest.TestCase):
     def test_max_tokens_floor_is_configurable(self):

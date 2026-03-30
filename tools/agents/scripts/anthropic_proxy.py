@@ -2814,6 +2814,13 @@ _BASH_PROTOCOL_LINE_RE = re.compile(
     r"^\s*</?(?:tool_call|tool_response|parameter(?:=[^>]*)?|function(?:=[^>]*)?|think)\s*>\s*$",
     re.IGNORECASE,
 )
+_BASH_PLACEHOLDER_VALUES = {
+    "command",
+    "description",
+    "timeout",
+    "workdir",
+    "arguments",
+}
 
 
 def _iter_string_leaves(value):
@@ -3199,6 +3206,21 @@ def _required_value_is_empty(value) -> bool:
     return False
 
 
+def _is_placeholder_string(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    lowered = value.strip().lower()
+    if not lowered:
+        return True
+    if lowered in _BASH_PLACEHOLDER_VALUES:
+        return True
+    if lowered in {"string", "number", "integer", "boolean", "object", "array"}:
+        return True
+    if lowered.startswith(_REQUIRED_PLACEHOLDER):
+        return True
+    return False
+
+
 def _matches_json_schema_type(value, expected_type) -> bool:
     if not expected_type:
         return True
@@ -3301,6 +3323,23 @@ def _validate_tool_call_arguments(
                         "Do not include standalone XML/protocol tags or shell error output."
                     ),
                 )
+            if _is_placeholder_string(cleaned_command):
+                return ToolResponseIssue(
+                    kind="invalid_tool_args",
+                    reason="arguments for 'Bash' used a placeholder command value",
+                    retry_hint=(
+                        "Emit exactly one `Bash` tool call with a real shell command in `arguments.command`, "
+                        "not schema field names or placeholders like `command`, `description`, or `timeout`."
+                    ),
+                )
+        else:
+            return ToolResponseIssue(
+                kind="invalid_tool_args",
+                reason="arguments for 'Bash' must include a string command",
+                retry_hint=(
+                    "Emit exactly one `Bash` tool call with a real shell command string in `arguments.command`."
+                ),
+            )
 
     if _contains_tool_markup(parsed):
         return ToolResponseIssue(
@@ -5189,9 +5228,21 @@ async def messages(request: Request):
                 preview_message = preview_choice.get("message") or {}
                 preview_content = preview_message.get("content")
                 if _is_empty_visible_response(preview_message):
-                    fallback_text = _build_reasoning_fallback_text(
-                        [preview_message.get("reasoning_content", "")]
+                    preview_reasoning_chunks = []
+                    preview_reasoning = preview_message.get("reasoning_content", "")
+                    if preview_reasoning:
+                        preview_reasoning_chunks.append(preview_reasoning)
+                    preview_text = preview_content if isinstance(preview_content, str) else ""
+                    if preview_text:
+                        preview_reasoning_chunks.append(preview_text)
+
+                    fallback_text = _build_actionable_reasoning_summary(
+                        preview_reasoning_chunks
                     )
+                    if not fallback_text:
+                        fallback_text = _build_reasoning_fallback_text(
+                            preview_reasoning_chunks
+                        )
                     if not fallback_text:
                         fallback_text = (
                             "I couldn't produce a usable direct answer on that turn. "

@@ -27,6 +27,14 @@ describe('Anthropic proxy guardrail fallbacks', () => {
       'serving bounded fallback response instead of terminal retry-loop breaker'
     );
     expect(source).toContain('monitor.last_completion_classification = "stream:empty_visible_fallback"');
+    expect(source).toContain('fallback_text = _build_actionable_reasoning_summary(');
+    expect(source).toContain('preview_reasoning_chunks');
+  });
+
+  it('rejects placeholder Bash commands before they can loop through the client workflow', () => {
+    expect(source).toContain('_BASH_PLACEHOLDER_VALUES = {');
+    expect(source).toContain("reason=\"arguments for 'Bash' used a placeholder command value\"");
+    expect(source).toContain('not schema field names or placeholders like `command`, `description`, or `timeout`');
   });
 
   it('derives an actionable reasoning summary before generic retry fallback text', () => {
