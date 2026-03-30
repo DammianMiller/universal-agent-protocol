@@ -1567,6 +1567,98 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         finally:
             setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX", old_retry)
 
+    def test_guardrail_terminalizes_invalid_tool_args_after_retry_exhaustion(self):
+        old_retry = getattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX")
+        try:
+            setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX", 1)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            initial_resp = {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "task",
+                                        "arguments": '{"description":"Inspect proxy","prompt":"type","subagent_type":"type"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+            retry_resp = {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_2",
+                                    "function": {
+                                        "name": "task",
+                                        "arguments": '{"description":"Inspect proxy","prompt":"type","subagent_type":"type"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+
+            fake_client = _FakeClient([_FakeResponse(retry_resp)])
+            openai_body = {
+                "model": "test",
+                "messages": [{"role": "user", "content": "inspect the proxy stack"}],
+                "tool_choice": "required",
+            }
+            anthropic_body = {
+                "tools": [
+                    {
+                        "name": "task",
+                        "input_schema": {
+                            "type": "object",
+                            "required": ["subagent_type", "description", "prompt"],
+                            "properties": {
+                                "subagent_type": {"type": "string"},
+                                "description": {"type": "string"},
+                                "prompt": {"type": "string"},
+                            },
+                        },
+                    }
+                ],
+                "messages": [{"role": "user", "content": "inspect the proxy stack"}],
+            }
+
+            result = asyncio.run(
+                proxy._apply_malformed_tool_guardrail(
+                    fake_client,
+                    initial_resp,
+                    openai_body,
+                    anthropic_body,
+                    monitor,
+                    "session-invalid-task",
+                )
+            )
+
+            self.assertEqual(result["choices"][0]["finish_reason"], "stop")
+            self.assertIn(
+                "invalid arguments",
+                result["choices"][0]["message"]["content"],
+            )
+            self.assertIn(
+                "Stop issuing tool calls for this turn",
+                result["choices"][0]["message"]["content"],
+            )
+        finally:
+            setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX", old_retry)
+
     def test_guardrails_skip_finalize_turn(self):
         monitor = proxy.SessionMonitor(context_window=262144)
         monitor.finalize_turn_active = True
@@ -2818,6 +2910,46 @@ class TestRequiredArgRepair(unittest.TestCase):
         self.assertTrue(issue.has_issue())
         self.assertEqual(issue.kind, "invalid_tool_args")
         self.assertIn("enum mismatch", issue.reason)
+
+    def test_validate_task_tool_args_rejects_junk_subagent_type(self):
+        issue = proxy._validate_tool_call_arguments(
+            "task",
+            '{"description":"Search","prompt":"type","subagent_type":"type"}',
+            {
+                "type": "object",
+                "required": ["subagent_type", "description", "prompt"],
+                "properties": {
+                    "subagent_type": {"type": "string"},
+                    "description": {"type": "string"},
+                    "prompt": {"type": "string"},
+                },
+            },
+            {"task"},
+        )
+
+        self.assertTrue(issue.has_issue())
+        self.assertEqual(issue.kind, "invalid_tool_args")
+        self.assertIn("junk subagent value", issue.reason)
+
+    def test_validate_task_tool_args_rejects_fragment_prompt(self):
+        issue = proxy._validate_tool_call_arguments(
+            "task",
+            '{"description":"Inspect proxy","prompt":"type","subagent_type":"worker"}',
+            {
+                "type": "object",
+                "required": ["subagent_type", "description", "prompt"],
+                "properties": {
+                    "subagent_type": {"type": "string"},
+                    "description": {"type": "string"},
+                    "prompt": {"type": "string"},
+                },
+            },
+            {"task"},
+        )
+
+        self.assertTrue(issue.has_issue())
+        self.assertEqual(issue.kind, "invalid_tool_args")
+        self.assertIn("junk prompt value", issue.reason)
 
 
 class TestSessionContaminationBreaker(unittest.TestCase):

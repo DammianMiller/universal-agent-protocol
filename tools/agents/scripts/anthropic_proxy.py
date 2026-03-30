@@ -3307,7 +3307,54 @@ def _validate_tool_call_arguments(
             ),
         )
 
-    if tool_name.strip().lower() == "bash":
+    lowered_tool_name = tool_name.strip().lower()
+    if lowered_tool_name in {"task", "omp_task"}:
+        subagent_value = parsed.get("subagent_type")
+        agent_value = parsed.get("agent")
+        prompt_value = parsed.get("prompt")
+
+        if isinstance(subagent_value, str):
+            cleaned_subagent = subagent_value.strip()
+            if (
+                _is_placeholder_string(cleaned_subagent)
+                or cleaned_subagent.lower() == "type"
+            ):
+                return ToolResponseIssue(
+                    kind="invalid_tool_args",
+                    reason=f"arguments for '{tool_name}' used a junk subagent value",
+                    retry_hint=(
+                        f"Emit exactly one `{tool_name}` tool call with a real subagent selection. "
+                        "Do not use schema fragments like `type` or placeholder values for the agent."
+                    ),
+                )
+
+        if isinstance(agent_value, str):
+            cleaned_agent = agent_value.strip()
+            if _is_placeholder_string(cleaned_agent):
+                return ToolResponseIssue(
+                    kind="invalid_tool_args",
+                    reason=f"arguments for '{tool_name}' used a placeholder agent value",
+                    retry_hint=(
+                        f"Emit exactly one `{tool_name}` tool call with a real agent value from the provided schema."
+                    ),
+                )
+
+        if isinstance(prompt_value, str):
+            cleaned_prompt = prompt_value.strip()
+            if (
+                _is_placeholder_string(cleaned_prompt)
+                or cleaned_prompt.lower() == "type"
+            ):
+                return ToolResponseIssue(
+                    kind="invalid_tool_args",
+                    reason=f"arguments for '{tool_name}' used a junk prompt value",
+                    retry_hint=(
+                        f"Emit exactly one `{tool_name}` tool call with a concrete task prompt, "
+                        "not a schema field name, placeholder, or fragment."
+                    ),
+                )
+
+    if lowered_tool_name == "bash":
         command = parsed.get("command")
         if isinstance(command, str):
             cleaned_command, had_protocol_lines = _strip_protocol_tag_only_lines(
@@ -3451,6 +3498,25 @@ def _validate_tool_call_arguments(
         )
 
     return ToolResponseIssue()
+
+
+def _build_terminal_invalid_tool_call_response(
+    openai_resp: dict, issue: ToolResponseIssue
+) -> dict:
+    reason = issue.reason.strip() if issue.reason else "invalid tool call arguments"
+    guidance = issue.retry_hint.strip() if issue.retry_hint else ""
+    parts = [
+        "The previous tool request was rejected because it contained invalid arguments.",
+        f"Reason: {reason}.",
+        "Stop issuing tool calls for this turn and continue with a normal assistant response grounded in completed results only.",
+    ]
+    if guidance:
+        parts.append(f"Guidance: {guidance}")
+    return _build_safe_text_openai_response(
+        openai_resp,
+        " ".join(parts),
+        finish_reason="stop",
+    )
 
 
 def _classify_tool_response_issue(
@@ -4218,6 +4284,13 @@ async def _apply_malformed_tool_guardrail(
     active_loop = _conversation_has_tool_results(anthropic_body) or _last_assistant_was_text_only(
         anthropic_body
     )
+    if current_issue.kind == "invalid_tool_args":
+        logger.warning(
+            "TOOL RESPONSE guardrail: session=%s terminalizing invalid tool args after retry exhaustion",
+            session_id,
+        )
+        return _build_terminal_invalid_tool_call_response(working_resp, current_issue)
+
     fallback_finish_reason = "tool_calls" if active_loop else "stop"
 
     degraded_text = _sanitize_tool_call_apology_text(
