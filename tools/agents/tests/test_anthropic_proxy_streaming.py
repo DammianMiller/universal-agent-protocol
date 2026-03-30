@@ -91,6 +91,25 @@ class TestStreamingReasoningFallback(unittest.TestCase):
         self.assertEqual(response["content"][0]["text"], "fallback")
         self.assertEqual(response["stop_reason"], "end_turn")
 
+    def test_actionable_reasoning_summary_extracts_findings_and_recommendations(self):
+        summary = proxy._build_actionable_reasoning_summary(
+            [
+                "Proxy retry loop causes latency spikes. ",
+                "You should disable default thinking on tool turns. ",
+                "llama.cpp throughput is slow under the current repeat penalty.",
+            ]
+        )
+        self.assertIsNotNone(summary)
+        self.assertIn("Findings:", summary)
+        self.assertIn("Proxy retry loop causes latency spikes.", summary)
+        self.assertIn("You should disable default thinking on tool turns.", summary)
+
+    def test_actionable_reasoning_summary_returns_none_when_no_actionable_sentences(self):
+        summary = proxy._build_actionable_reasoning_summary(
+            ["short note", "misc", "ok"]
+        )
+        self.assertIsNone(summary)
+
 
 class TestProxyConfigTuning(unittest.TestCase):
     def test_max_tokens_floor_is_configurable(self):

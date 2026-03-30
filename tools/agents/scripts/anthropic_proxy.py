@@ -2131,6 +2131,83 @@ def _build_reasoning_fallback_text(
     return None
 
 
+def _build_actionable_reasoning_summary(reasoning_chunks: list[str]) -> str | None:
+    raw_text = "".join(reasoning_chunks).strip()
+    if not raw_text:
+        return None
+
+    cleaned = _sanitize_reasoning_fallback_text(raw_text)
+    if not cleaned:
+        return None
+
+    findings: list[str] = []
+    recommendations: list[str] = []
+
+    for fragment in re.split(r"(?<=[.!?])\s+|\n+", cleaned):
+        sentence = fragment.strip(" -\t")
+        if len(sentence) < 24:
+            continue
+        lowered = sentence.lower()
+        if any(
+            token in lowered
+            for token in (
+                "error",
+                "issue",
+                "problem",
+                "slow",
+                "latency",
+                "timeout",
+                "retry",
+                "loop",
+                "bottleneck",
+                "throughput",
+                "empty",
+                "thinking",
+            )
+        ):
+            findings.append(sentence)
+        if any(
+            token in lowered
+            for token in (
+                "recommend",
+                "should",
+                "tune",
+                "adjust",
+                "increase",
+                "decrease",
+                "disable",
+                "enable",
+                "use ",
+                "set ",
+            )
+        ):
+            recommendations.append(sentence)
+
+    picked_findings: list[str] = []
+    for sentence in findings:
+        if sentence not in picked_findings:
+            picked_findings.append(sentence)
+        if len(picked_findings) == 2:
+            break
+
+    picked_recommendations: list[str] = []
+    for sentence in recommendations:
+        if sentence not in picked_recommendations and sentence not in picked_findings:
+            picked_recommendations.append(sentence)
+        if len(picked_recommendations) == 2:
+            break
+
+    if not picked_findings and not picked_recommendations:
+        return None
+
+    parts = ["Actionable summary from model reasoning:"]
+    if picked_findings:
+        parts.append("Findings: " + " ".join(picked_findings))
+    if picked_recommendations:
+        parts.append("Recommendations: " + " ".join(picked_recommendations))
+    return " ".join(parts)
+
+
 def _build_reasoning_fallback_error_response(message: str | None = None) -> Response:
     return _transport_error_response(
         message
@@ -4513,6 +4590,8 @@ async def stream_anthropic_response(
 
             if not fallback_text:
                 fallback_text = _build_reasoning_fallback_text(reasoning_chunks)
+            if not fallback_text:
+                fallback_text = _build_actionable_reasoning_summary(reasoning_chunks)
 
             if fallback_text:
                 logger.warning(

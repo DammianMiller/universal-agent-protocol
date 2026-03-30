@@ -29,6 +29,12 @@ describe('Anthropic proxy guardrail fallbacks', () => {
     expect(source).toContain('monitor.last_completion_classification = "stream:empty_visible_fallback"');
   });
 
+  it('derives an actionable reasoning summary before generic retry fallback text', () => {
+    expect(source).toContain('def _build_actionable_reasoning_summary');
+    expect(source).toContain('fallback_text = _build_actionable_reasoning_summary(reasoning_chunks)');
+    expect(source).toContain('Actionable summary from model reasoning:');
+  });
+
   it('pins opencode proxy endpoint to the local proxy on 127.0.0.1:4000', () => {
     expect(opencode.provider['qwen-proxy'].options.baseURL).toBe('http://127.0.0.1:4000/v1');
     expect(opencodeConfig.agent.api_endpoint).toBe('http://127.0.0.1:4000/v1');
