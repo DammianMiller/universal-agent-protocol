@@ -3257,6 +3257,24 @@ def _required_value_is_empty(value) -> bool:
     return False
 
 
+_TASK_TOOL_PLACEHOLDER_FIELDS = {
+    "agent",
+    "arguments",
+    "command",
+    "description",
+    "input",
+    "parameters",
+    "prompt",
+    "properties",
+    "required",
+    "subagent_type",
+    "task_id",
+    "type",
+    "typestring",
+    "additionalproperties",
+}
+
+
 def _is_placeholder_string(value) -> bool:
     if not isinstance(value, str):
         return False
@@ -3266,6 +3284,8 @@ def _is_placeholder_string(value) -> bool:
     if lowered in _BASH_PLACEHOLDER_VALUES:
         return True
     if lowered in {"string", "number", "integer", "boolean", "object", "array"}:
+        return True
+    if lowered in _TASK_TOOL_PLACEHOLDER_FIELDS:
         return True
     if lowered.startswith(_REQUIRED_PLACEHOLDER):
         return True
