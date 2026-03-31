@@ -2831,6 +2831,100 @@ class TestSessionContaminationBreaker(unittest.TestCase):
             )
 
 
+class TestToolCallXMLExtraction(unittest.TestCase):
+    """Tests for recovering tool calls from <tool_call> XML in text content."""
+
+    def test_extract_single_tool_call_from_text(self):
+        text = '<tool_call>\n{"name": "Read", "arguments": {"file_path": "/tmp/foo.py"}}\n</tool_call>'
+        extracted, remaining = proxy._extract_tool_calls_from_text(text)
+        self.assertEqual(len(extracted), 1)
+        self.assertEqual(extracted[0]["function"]["name"], "Read")
+        args = json.loads(extracted[0]["function"]["arguments"])
+        self.assertEqual(args["file_path"], "/tmp/foo.py")
+        self.assertEqual(remaining, "")
+
+    def test_extract_multiple_tool_calls_from_text(self):
+        text = (
+            'Some preamble\n'
+            '<tool_call>{"name": "Read", "arguments": {"file_path": "/a.py"}}</tool_call>\n'
+            'Middle text\n'
+            '<tool_call>{"name": "Bash", "arguments": {"command": "ls"}}</tool_call>'
+        )
+        extracted, remaining = proxy._extract_tool_calls_from_text(text)
+        self.assertEqual(len(extracted), 2)
+        self.assertEqual(extracted[0]["function"]["name"], "Read")
+        self.assertEqual(extracted[1]["function"]["name"], "Bash")
+        self.assertNotIn("<tool_call>", remaining)
+        self.assertIn("Some preamble", remaining)
+
+    def test_no_extraction_without_tool_call_tags(self):
+        text = "Just normal text without any XML"
+        extracted, remaining = proxy._extract_tool_calls_from_text(text)
+        self.assertEqual(len(extracted), 0)
+        self.assertEqual(remaining, text)
+
+    def test_invalid_json_skipped(self):
+        text = '<tool_call>not valid json</tool_call>'
+        extracted, remaining = proxy._extract_tool_calls_from_text(text)
+        self.assertEqual(len(extracted), 0)
+        self.assertEqual(remaining, text)
+
+    def test_missing_name_skipped(self):
+        text = '<tool_call>{"arguments": {"x": 1}}</tool_call>'
+        extracted, remaining = proxy._extract_tool_calls_from_text(text)
+        self.assertEqual(len(extracted), 0)
+
+    def test_maybe_extract_promotes_to_tool_calls(self):
+        openai_resp = {
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": '<tool_call>\n{"name": "Grep", "arguments": {"pattern": "foo"}}\n</tool_call>',
+                },
+            }]
+        }
+        proxy._maybe_extract_text_tool_calls(openai_resp)
+        msg = openai_resp["choices"][0]["message"]
+        self.assertEqual(len(msg["tool_calls"]), 1)
+        self.assertEqual(msg["tool_calls"][0]["function"]["name"], "Grep")
+        self.assertEqual(openai_resp["choices"][0]["finish_reason"], "tool_calls")
+        # Text content should be cleared (or empty)
+        self.assertFalse(msg.get("content"))
+
+    def test_maybe_extract_noop_when_structured_tool_calls_exist(self):
+        openai_resp = {
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": '<tool_call>{"name": "Read", "arguments": {}}</tool_call>',
+                    "tool_calls": [{"function": {"name": "Write", "arguments": "{}"}}],
+                },
+            }]
+        }
+        proxy._maybe_extract_text_tool_calls(openai_resp)
+        msg = openai_resp["choices"][0]["message"]
+        # Should NOT have extracted from text since structured tool_calls exist
+        self.assertEqual(len(msg["tool_calls"]), 1)
+        self.assertEqual(msg["tool_calls"][0]["function"]["name"], "Write")
+
+    def test_anthropic_response_uses_extracted_tool_calls(self):
+        openai_resp = {
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": '<tool_call>\n{"name": "Edit", "arguments": {"file_path": "/x.py", "old_string": "a", "new_string": "b"}}\n</tool_call>',
+                },
+            }],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+        }
+        anthropic = proxy.openai_to_anthropic_response(openai_resp, "qwen3.5")
+        tool_blocks = [b for b in anthropic["content"] if b["type"] == "tool_use"]
+        self.assertEqual(len(tool_blocks), 1)
+        self.assertEqual(tool_blocks[0]["name"], "Edit")
+        self.assertEqual(tool_blocks[0]["input"]["file_path"], "/x.py")
+        self.assertEqual(anthropic["stop_reason"], "tool_use")
+
+
 if __name__ == "__main__":
     unittest.main()
 
