@@ -3027,6 +3027,114 @@ class TestToolTurnTemperature(unittest.TestCase):
         self.assertEqual(result["temperature"], 0.8)
 
 
+class TestSystemPromptLeakDetection(unittest.TestCase):
+    """Tests for detecting and repairing system prompt leaks in tool args."""
+
+    def test_detects_agentic_protocol_leak(self):
+        self.assertTrue(proxy._contains_system_prompt_leak(
+            {"command": "echo test call one or more functions to assist"}
+        ))
+
+    def test_detects_follow_rules_leak(self):
+        self.assertTrue(proxy._contains_system_prompt_leak(
+            {"command": "ls Follow these rules: 1. Use tools"}
+        ))
+
+    def test_detects_xml_tags_leak(self):
+        self.assertTrue(proxy._contains_system_prompt_leak(
+            {"command": "echo function signatures within <tools></tools> XML tags:"}
+        ))
+
+    def test_clean_args_not_flagged(self):
+        self.assertFalse(proxy._contains_system_prompt_leak(
+            {"command": "echo hello world"}
+        ))
+        self.assertFalse(proxy._contains_system_prompt_leak(
+            {"file_path": "/home/user/test.py"}
+        ))
+
+    def test_find_earliest_leak_position(self):
+        text = "echo test-1 call one or more functions to assist"
+        pos = proxy._find_earliest_leak_position(text)
+        self.assertIsNotNone(pos)
+        self.assertEqual(text[:pos].strip(), "echo test-1")
+
+    def test_find_no_leak_returns_none(self):
+        self.assertIsNone(proxy._find_earliest_leak_position("echo hello"))
+
+    def test_repair_truncates_at_leak(self):
+        openai_resp = {
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "Bash",
+                            "arguments": '{"command":"echo test-1 call one or more functions to assist"}'
+                        }
+                    }],
+                },
+            }]
+        }
+        repaired, count = proxy._repair_system_prompt_leak(openai_resp)
+        self.assertEqual(count, 1)
+        fn = repaired["choices"][0]["message"]["tool_calls"][0]["function"]
+        args = json.loads(fn["arguments"])
+        self.assertEqual(args["command"], "echo test-1")
+
+    def test_repair_noop_on_clean_args(self):
+        openai_resp = {
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "tool_calls": [{
+                        "function": {"name": "Bash", "arguments": '{"command":"ls -la"}'}
+                    }],
+                },
+            }]
+        }
+        repaired, count = proxy._repair_system_prompt_leak(openai_resp)
+        self.assertEqual(count, 0)
+
+    def test_validate_rejects_leaked_args(self):
+        result = proxy._validate_tool_call_arguments(
+            "Bash",
+            '{"command":"echo test follow these rules"}',
+            {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+            {"Bash"},
+        )
+        self.assertTrue(result.has_issue())
+        self.assertIn("leaked system prompt", result.reason)
+
+
+class TestMinimalSupplementForQwen(unittest.TestCase):
+    """Tests for model-based supplement selection."""
+
+    def _make_monitor(self):
+        return proxy.SessionMonitor()
+
+    def test_qwen_model_gets_minimal_supplement(self):
+        body = {
+            "model": "qwen3.5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"name": "Bash", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}}}],
+        }
+        result = proxy.build_openai_request(body, self._make_monitor())
+        system_msg = result["messages"][0]["content"]
+        self.assertNotIn("agentic-protocol", system_msg)
+        self.assertIn("Use tools for all actions", system_msg)
+
+    def test_non_qwen_model_gets_full_supplement(self):
+        body = {
+            "model": "claude-3",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"name": "Bash", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}}}],
+        }
+        result = proxy.build_openai_request(body, self._make_monitor())
+        system_msg = result["messages"][0]["content"]
+        self.assertIn("agentic-protocol", system_msg)
+
+
 if __name__ == "__main__":
     unittest.main()
 

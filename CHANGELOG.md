@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.8 (2026-04-01)
+
+- fix: detect and repair system prompt leaking into tool call arguments
+
+
 ## v1.20.7 (2026-04-01)
 
 - fix: align server config with profile, detect garbled tool args, force tool-turn temperature
