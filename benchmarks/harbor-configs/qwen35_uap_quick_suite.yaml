@@ -1,45 +1,57 @@
-# Qwen3.5 + UAP 3.0+OpenCode - Harbor Containerized Benchmark Config
-# Full Terminal-Bench Quick Suite (14 tasks covering all major categories)
+# Qwen3.5 + latest UAP+OpenCode - Harbor quick benchmark
+# 10-task smoke suite using the local OpenAI-compatible endpoint
 
 name: qwen35-uap-quick-suite-v1
-description: 'Qwen3.5 running with full UAP 3.0+OpenCode integration'
+datasets:
+  - registry:
+      url: https://raw.githubusercontent.com/laude-institute/harbor/main/registry.json
+    name: terminal-bench
+    version: "2.0"
+    tasks:
+      - remember-file-locations
+      - apply-pattern-memory
+      - cross-task-context
+      - multistep-coordination
+      - apply-eslint
+      - add-unit-tests
+      - optimize-imports
+      - password-recovery
+      - file-permissions
+      - extract-elf
 
-dataset: terminal-bench@latest
-task_filter: |
-  remember-file-locations,apply-pattern-memory,cross-task-context,multistep-coordination,
-  apply-eslint,add-unit-tests,optimize-imports,password-recovery,file-permissions,extract-elf,gpt2-codegolf,chess-best-move,docker-compose-setup,kubernetes-deploy
+agents:
+  - name: opencode-uap-qwen35
+    type: installed_agent
+    import_path: tools.agents.opencode_uap_agent:OpenCodeUAP
+    model_name: qwen-proxy/qwen35-a3b-iq4xs
+    kwargs:
+      api_endpoint: http://192.168.1.165:4000/v1
 
-# Agent configuration - using Harbor's built-in agent with UAP integration
-agent: harbor.agents.claude_code:ClaudeCodeAgent
-model_config:
-  type: openrouter # or direct API call to qwen3.5 server
-
-adapter_kwargs: {}
-
-run_options:
-  n_attempts_per_trial: 1
-  max_retries: 2
+trial_config:
   timeout_multiplier: 1.5
+
+job_settings:
+  n_concurrent: 1
+  max_retries: 2
   disable_verification: false
 
-# Environment variables for UAP integration
+environment:
+  type: docker
+  override_cpus: 2
+  override_memory_mb: 4096
+  override_storage_mb: 1024
+
+output_dir: benchmark-results/qwen35_harbor_uap_quick_suite
+
 environment_variables:
   USE_UAP: 'true'
   PROJECT_ROOT: '/home/cogtek/dev/miller-tech/universal-agent-protocol'
   UAP_MEMORY_ENABLED: 'true'
   UAP_PATTERNS_RAG_ENABLED: 'true'
   QDRANT_ENDPOINT: 'localhost:6333'
-  # Local UAP project injection (benchmark tests local code, not npm)
   UAP_LOCAL_PROJECT: '/home/cogtek/dev/miller-tech/universal-agent-protocol'
   UAP_LOCAL_PATH: '/uap-local'
-
-# Container resources (adjust based on your system)
-resources:
-  n_cpus: 2
-  memory_mb: 4096
-  storage_mb: 1024
-
-results_dir: benchmark-results/qwen35_harbor_uap_quick_suite
+  OPENCODE_DISABLE_AUTOUPDATE: '1'
 
 traces_config:
   export_traces: true
@@ -50,5 +62,5 @@ retry_policy:
     - AgentTimeoutError
     - VerifierOutputParseError
 
-max_concurrent_trials: 2 # Run fewer concurrently to avoid API rate limits on localhost model server
+max_concurrent_trials: 1
 

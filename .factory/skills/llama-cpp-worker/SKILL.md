@@ -51,6 +51,8 @@ cmake --build build-cuda --config Release -j 32
 - Build MUST succeed before proceeding
 
 ### 5. Restart Server and Test
+
+Use port 8080 for raw llama.cpp validation only. Proxy-first coding-agent flows should still target port 4000.
 ```bash
 # Check if server is idle
 curl -s http://localhost:8080/slots | python3 -c "import sys,json; d=json.load(sys.stdin); print('idle' if all(s.get('state','')!='started' for s in d) else 'BUSY')"

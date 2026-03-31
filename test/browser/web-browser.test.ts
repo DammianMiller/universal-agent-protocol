@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WebBrowser } from '../../src/browser/web-browser.js';
 import { execSync } from 'child_process';
 
@@ -17,12 +17,15 @@ const RUN_BROWSER = canLaunchBrowser();
 
 describe('WebBrowser', () => {
   let browser: WebBrowser;
+  const originalFetch = globalThis.fetch;
 
   beforeEach(async () => {
     browser = new WebBrowser();
   });
 
   afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
     await browser.close();
   });
 
@@ -39,7 +42,12 @@ describe('WebBrowser', () => {
 
   it.skipIf(!RUN_BROWSER)('should get page content', async () => {
     await browser.launch({ headless: true });
-    await browser.goto('https://example.com');
+    const html = '<!DOCTYPE html><html><body><h1>Example Domain</h1></body></html>';
+    globalThis.fetch = vi.fn(async () => new Response(html, {
+      status: 200,
+      headers: { 'Content-Type': 'text/html' },
+    })) as typeof fetch;
+    await browser.goto('data:text/html,' + encodeURIComponent(html));
     const content = await browser.getContent();
     expect(content).toContain('<!DOCTYPE html>');
   });

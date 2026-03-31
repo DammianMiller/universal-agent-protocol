@@ -622,6 +622,12 @@ class SessionMonitor:
     tool_state_review_cycles: int = 0
     last_tool_fingerprint: str = ""
     finalize_turn_active: bool = False
+    completion_required: bool = False
+    completion_pending: bool = False
+    completion_verified: bool = False
+    completion_blockers: list = field(default_factory=list)
+    completion_progress_signals: int = 0
+    completion_recovery_attempts: int = 0
     last_seen_ts: float = 0.0
 
     def record_request(self, estimated_tokens: int):
@@ -820,6 +826,24 @@ class SessionMonitor:
         self.tool_state_stagnation_streak = 0
         self.tool_state_review_cycles = 0
         self.last_tool_fingerprint = ""
+
+    def update_completion_state(self, anthropic_body: dict, has_tool_results: bool):
+        self.completion_required = _should_enforce_completion_contract(anthropic_body)
+        self.completion_progress_signals = _count_completion_progress_signals(anthropic_body)
+        blockers = _completion_blockers(anthropic_body, has_tool_results)
+        self.completion_blockers = blockers
+        self.completion_pending = self.completion_required and bool(blockers)
+        self.completion_verified = self.completion_required and not blockers
+        if not self.completion_required:
+            self.completion_pending = False
+            self.completion_verified = False
+            self.completion_blockers = []
+
+    def note_completion_recovery(self):
+        self.completion_recovery_attempts += 1
+
+    def reset_completion_recovery(self):
+        self.completion_recovery_attempts = 0
 
     def guardrail_streak(self) -> int:
         """Highest current streak among malformed/invalid tool outputs."""
@@ -1689,6 +1713,57 @@ def _conversation_has_tool_results(anthropic_body: dict) -> bool:
     )
 
 
+def _count_completion_progress_signals(anthropic_body: dict) -> int:
+    messages = anthropic_body.get("messages", [])
+    tool_result_count = 0
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if _message_has_tool_result(content):
+            tool_result_count += 1
+
+    user_turns = sum(
+        1
+        for msg in messages
+        if isinstance(msg, dict)
+        and msg.get("role") == "user"
+        and not _message_has_tool_result(msg.get("content"))
+        and _extract_text(msg.get("content", "")).strip()
+    )
+    return max(0, tool_result_count - user_turns)
+
+
+def _should_enforce_completion_contract(anthropic_body: dict) -> bool:
+    if not _has_tool_definitions(anthropic_body):
+        return False
+    latest_text = _latest_user_text(anthropic_body).strip()
+    if latest_text and _is_analysis_only_prompt(latest_text):
+        return False
+
+    messages = anthropic_body.get("messages", [])
+    if len(messages) < 2:
+        return False
+
+    return _conversation_has_tool_results(anthropic_body) or _count_completion_progress_signals(anthropic_body) > 0
+
+
+def _completion_blockers(anthropic_body: dict, has_tool_results: bool) -> list[str]:
+    blockers: list[str] = []
+    progress = _count_completion_progress_signals(anthropic_body)
+    if progress <= 0:
+        blockers.append("no_progress_evidence")
+
+    if has_tool_results:
+        last_user_has_result = _last_user_has_tool_result(anthropic_body)
+        if last_user_has_result:
+            blockers.append("awaiting_post_tool_followup")
+        elif _last_assistant_was_text_only(anthropic_body):
+            blockers.append("text_only_after_tool_results")
+
+    return blockers
+
+
 def _sanitize_tool_schema_for_llama(schema):
     """Remove JSON Schema keywords that generate unsupported regex grammar.
 
@@ -1858,6 +1933,18 @@ def _resolve_state_machine_tool_choice(
     has_tool_results: bool,
     last_user_has_tool_result: bool,
 ) -> tuple[str | None, str]:
+    if monitor.tool_turn_phase == "finalize" and monitor.completion_pending:
+        monitor.note_completion_recovery()
+        monitor.set_tool_turn_phase("review", reason="completion_pending")
+        monitor.tool_state_auto_budget_remaining = max(1, PROXY_TOOL_STATE_AUTO_BUDGET)
+        monitor.tool_state_forced_budget_remaining = max(1, PROXY_TOOL_STATE_FORCED_BUDGET // 2)
+        logger.warning(
+            "TOOL STATE MACHINE: finalize blocked by completion contract (blockers=%s attempts=%d)",
+            ",".join(monitor.completion_blockers),
+            monitor.completion_recovery_attempts,
+        )
+        return "auto", "completion_pending"
+
     if not PROXY_TOOL_STATE_MACHINE:
         return None, "disabled"
 
@@ -1993,11 +2080,13 @@ def _resolve_state_machine_tool_choice(
     if monitor.tool_turn_phase == "finalize":
         if monitor.tool_state_auto_budget_remaining <= 0:
             monitor.reset_tool_turn_state(reason="finalize_complete")
+            monitor.reset_completion_recovery()
             return None, "finalize_complete"
 
         monitor.tool_state_auto_budget_remaining -= 1
         if monitor.tool_state_auto_budget_remaining == 0:
             monitor.reset_tool_turn_state(reason="finalize_complete")
+            monitor.reset_completion_recovery()
         return "finalize", "finalize"
 
     monitor.reset_tool_turn_state(reason="unknown_phase")
@@ -2155,6 +2244,7 @@ def build_openai_request(
             last_user_has_tool_result,
         )
         monitor.finalize_turn_active = False
+        monitor.update_completion_state(anthropic_body, has_tool_results)
         state_choice, state_reason = _resolve_state_machine_tool_choice(
             anthropic_body,
             monitor,
@@ -3314,6 +3404,76 @@ def _is_malformed_tool_response(openai_resp: dict, anthropic_body: dict) -> bool
     return _looks_malformed_tool_payload(_openai_message_text(openai_resp))
 
 
+def _should_retry_for_completion_contract(
+    openai_resp: dict, anthropic_body: dict, monitor: SessionMonitor
+) -> bool:
+    if not monitor.completion_required or not monitor.completion_pending:
+        return False
+
+    finish_reason = (_extract_openai_choice(openai_resp)[0].get("finish_reason") or "").lower()
+    if finish_reason not in {"stop", "end_turn"}:
+        return False
+
+    if _openai_has_tool_calls(openai_resp):
+        return False
+
+    return bool(_openai_message_text(openai_resp).strip())
+
+
+def _build_completion_contract_retry_body(openai_body: dict, monitor: SessionMonitor) -> dict:
+    retry_body = copy.deepcopy(openai_body)
+    retry_body["stream"] = False
+    retry_body["tool_choice"] = "required"
+    blockers = ", ".join(monitor.completion_blockers) or "remaining_work"
+    retry_instruction = (
+        "The task is not complete yet. Continue the agentic loop with exactly one valid tool call. "
+        f"Outstanding completion blockers: {blockers}. "
+        "Do not provide a final summary or end_turn until the blockers are cleared."
+    )
+    retry_body.setdefault("messages", [])
+    retry_body["messages"] = list(retry_body["messages"]) + [
+        {"role": "system", "content": retry_instruction}
+    ]
+    return retry_body
+
+
+async def _apply_completion_contract_guardrail(
+    client: httpx.AsyncClient,
+    openai_resp: dict,
+    openai_body: dict,
+    anthropic_body: dict,
+    monitor: SessionMonitor,
+    session_id: str,
+) -> dict:
+    if not _should_retry_for_completion_contract(openai_resp, anthropic_body, monitor):
+        return openai_resp
+
+    retry_body = _build_completion_contract_retry_body(openai_body, monitor)
+    logger.warning(
+        "COMPLETION CONTRACT retry for session %s (blockers=%s)",
+        session_id,
+        ",".join(monitor.completion_blockers),
+    )
+    retry_resp = await client.post(
+        f"{LLAMA_CPP_BASE}/chat/completions",
+        json=retry_body,
+        headers={"Content-Type": "application/json"},
+    )
+    if retry_resp.status_code != 200:
+        logger.error(
+            "COMPLETION CONTRACT retry failed with HTTP %d for session %s",
+            retry_resp.status_code,
+            session_id,
+        )
+        return openai_resp
+
+    monitor.note_completion_recovery()
+    retried = retry_resp.json()
+    if _openai_has_tool_calls(retried):
+        monitor.completion_pending = False
+    return retried
+
+
 def _build_malformed_retry_body(
     openai_body: dict,
     anthropic_body: dict,
@@ -3390,7 +3550,9 @@ def _retry_tool_choice_for_attempt(
     return "auto" if attempt == total_attempts - 1 else "required"
 
 
-def _build_safe_text_openai_response(openai_resp: dict, text: str) -> dict:
+def _build_safe_text_openai_response(
+    openai_resp: dict, text: str, finish_reason: str = "stop"
+) -> dict:
     return {
         "id": openai_resp.get("id", f"chatcmpl_{uuid.uuid4().hex[:12]}"),
         "object": openai_resp.get("object", "chat.completion"),
@@ -3399,7 +3561,7 @@ def _build_safe_text_openai_response(openai_resp: dict, text: str) -> dict:
         "choices": [
             {
                 "index": 0,
-                "finish_reason": "stop",
+                "finish_reason": finish_reason,
                 "message": {
                     "role": "assistant",
                     "content": text,
@@ -3410,7 +3572,9 @@ def _build_safe_text_openai_response(openai_resp: dict, text: str) -> dict:
     }
 
 
-def _build_clean_guardrail_openai_response(openai_resp: dict) -> dict:
+def _build_clean_guardrail_openai_response(
+    openai_resp: dict, finish_reason: str = "stop"
+) -> dict:
     return {
         "id": openai_resp.get("id", f"chatcmpl_{uuid.uuid4().hex[:12]}"),
         "object": openai_resp.get("object", "chat.completion"),
@@ -3419,7 +3583,7 @@ def _build_clean_guardrail_openai_response(openai_resp: dict) -> dict:
         "choices": [
             {
                 "index": 0,
-                "finish_reason": "stop",
+                "finish_reason": finish_reason,
                 "message": {
                     "role": "assistant",
                     "content": _TOOL_CALL_RETRY_MESSAGE,
@@ -3445,20 +3609,22 @@ async def _apply_unexpected_end_turn_guardrail(
         logger.info("GUARDRAIL: skipped unexpected_end_turn retry on finalize turn")
         return openai_resp
 
-    if monitor.tool_turn_phase == "act" and openai_body.get("tool_choice") == "auto":
-        logger.info(
-            "GUARDRAIL: skipped unexpected_end_turn retry during act auto release"
-        )
-        return openai_resp
-
-    if monitor.tool_turn_phase == "review" and openai_body.get("tool_choice") == "auto":
-        logger.info(
-            "GUARDRAIL: skipped unexpected_end_turn retry during review auto turn"
-        )
-        return openai_resp
-
     if not _is_unexpected_end_turn(openai_resp, anthropic_body):
         return openai_resp
+
+    active_loop = _conversation_has_tool_results(anthropic_body) or _last_assistant_was_text_only(
+        anthropic_body
+    )
+
+    if (
+        active_loop
+        and openai_body.get("tool_choice") == "auto"
+        and monitor.tool_turn_phase in {"act", "review"}
+    ):
+        logger.warning(
+            "GUARDRAIL: overriding %s auto-turn skip because active loop ended unexpectedly",
+            monitor.tool_turn_phase,
+        )
 
     monitor.unexpected_end_turn_count += 1
     logger.warning(
@@ -3674,17 +3840,36 @@ async def _apply_malformed_tool_guardrail(
         monitor.required_tool_miss_streak,
     )
 
+    active_loop = _conversation_has_tool_results(anthropic_body) or _last_assistant_was_text_only(
+        anthropic_body
+    )
+    fallback_finish_reason = "tool_calls" if active_loop else "stop"
+
     degraded_text = _sanitize_tool_call_apology_text(
         _openai_message_text(working_resp)
     ).strip()
     if degraded_text and not _looks_malformed_tool_payload(degraded_text):
         logger.warning(
-            "TOOL RESPONSE degrade: session=%s returning safe text fallback after retry exhaustion",
+            "TOOL RESPONSE degrade: session=%s returning %s safe fallback after retry exhaustion",
+            session_id,
+            "non-terminal active-loop" if active_loop else "terminal",
+        )
+        return _build_safe_text_openai_response(
+            working_resp,
+            degraded_text,
+            finish_reason=fallback_finish_reason,
+        )
+
+    if active_loop:
+        logger.warning(
+            "TOOL RESPONSE guardrail: session=%s returning non-terminal active-loop fallback",
             session_id,
         )
-        return _build_safe_text_openai_response(working_resp, degraded_text)
 
-    return _build_clean_guardrail_openai_response(working_resp)
+    return _build_clean_guardrail_openai_response(
+        working_resp,
+        finish_reason=fallback_finish_reason,
+    )
 
 
 def _maybe_apply_session_contamination_breaker(
@@ -4768,6 +4953,14 @@ async def messages(request: Request):
             monitor,
             session_id,
         )
+        openai_resp = await _apply_completion_contract_guardrail(
+            client,
+            openai_resp,
+            openai_body,
+            body,
+            monitor,
+            session_id,
+        )
         openai_resp = await _apply_malformed_tool_guardrail(
             client,
             openai_resp,
@@ -4911,6 +5104,12 @@ async def context_status(request: Request):
             "tool_state_transitions": monitor.tool_state_transitions,
             "tool_state_review_cycles": monitor.tool_state_review_cycles,
             "finalize_turn_active": monitor.finalize_turn_active,
+            "completion_required": monitor.completion_required,
+            "completion_pending": monitor.completion_pending,
+            "completion_verified": monitor.completion_verified,
+            "completion_blockers": monitor.completion_blockers,
+            "completion_progress_signals": monitor.completion_progress_signals,
+            "completion_recovery_attempts": monitor.completion_recovery_attempts,
             "tool_call_history_len": len(monitor.tool_call_history),
             "is_looping": monitor.detect_tool_loop(window=PROXY_LOOP_WINDOW)[0],
             "loop_repeat_count": monitor.detect_tool_loop(window=PROXY_LOOP_WINDOW)[1],
