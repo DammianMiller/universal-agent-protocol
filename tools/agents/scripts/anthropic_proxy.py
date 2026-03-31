@@ -227,6 +227,9 @@ PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS = int(
 PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE = float(
     os.environ.get("PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE", "0")
 )
+PROXY_TOOL_TURN_TEMPERATURE = float(
+    os.environ.get("PROXY_TOOL_TURN_TEMPERATURE", "0.3")
+)
 PROXY_MALFORMED_TOOL_STREAM_STRICT = os.environ.get(
     "PROXY_MALFORMED_TOOL_STREAM_STRICT", "off"
 ).lower() not in {
@@ -2208,6 +2211,17 @@ def build_openai_request(
     if "stop_sequences" in anthropic_body:
         openai_body["stop"] = anthropic_body["stop_sequences"]
 
+    # Force controlled temperature for tool-call turns to reduce garbled output
+    if has_tools:
+        client_temp = openai_body.get("temperature")
+        if client_temp is None or client_temp > PROXY_TOOL_TURN_TEMPERATURE:
+            openai_body["temperature"] = PROXY_TOOL_TURN_TEMPERATURE
+            logger.info(
+                "TOOL TURN TEMP: forcing temperature=%.2f (was %s) for tool-enabled request",
+                PROXY_TOOL_TURN_TEMPERATURE,
+                client_temp,
+            )
+
     # Convert Anthropic tools to OpenAI function-calling tools
     if has_tools:
         openai_body["tools"] = _convert_anthropic_tools_to_openai(
@@ -2653,6 +2667,91 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[dict], str]:
     )
 
     return extracted, remaining
+
+
+# Pattern: runaway closing braces like }}}}}
+_GARBLED_RUNAWAY_BRACES_RE = re.compile(r"\}{4,}")
+# Pattern: repetitive digit sequences like 000000 or 398859738398859738
+_GARBLED_REPETITIVE_DIGITS_RE = re.compile(r"(\d{3,})\1{2,}")
+# Pattern: long runs of zeros
+_GARBLED_ZEROS_RE = re.compile(r"0{8,}")
+# Pattern: extremely long unbroken digit strings (>30 digits)
+_GARBLED_LONG_DIGITS_RE = re.compile(r"\d{30,}")
+
+
+def _is_garbled_tool_arguments(arguments_str: str) -> bool:
+    """Detect garbled/degenerate tool call arguments.
+
+    Returns True if the arguments string shows signs of degenerate generation:
+    - Runaway closing braces (}}}}})
+    - Repetitive digit patterns (000000, 398859738398859738)
+    - Extremely long digit strings
+    - Unbalanced braces suggesting truncated/corrupt JSON
+    """
+    if not arguments_str or arguments_str == "{}":
+        return False
+
+    if _GARBLED_RUNAWAY_BRACES_RE.search(arguments_str):
+        return True
+    if _GARBLED_REPETITIVE_DIGITS_RE.search(arguments_str):
+        return True
+    if _GARBLED_ZEROS_RE.search(arguments_str):
+        return True
+    if _GARBLED_LONG_DIGITS_RE.search(arguments_str):
+        return True
+
+    # Check brace balance — more than 2 unmatched braces suggests corruption
+    open_count = arguments_str.count("{")
+    close_count = arguments_str.count("}")
+    if abs(open_count - close_count) > 2:
+        return True
+
+    return False
+
+
+def _sanitize_garbled_tool_calls(openai_resp: dict) -> bool:
+    """Check tool calls in an OpenAI response for garbled arguments.
+
+    If garbled arguments are detected, removes the affected tool calls
+    and logs a warning. Returns True if any tool calls were removed.
+    """
+    choice = (openai_resp.get("choices") or [{}])[0]
+    message = choice.get("message", {})
+    tool_calls = message.get("tool_calls")
+    if not tool_calls:
+        return False
+
+    clean = []
+    garbled_count = 0
+    for tc in tool_calls:
+        fn = tc.get("function", {})
+        args_str = fn.get("arguments", "{}")
+        if _is_garbled_tool_arguments(args_str):
+            garbled_count += 1
+            logger.warning(
+                "GARBLED TOOL ARGS: name=%s args_preview=%.120s",
+                fn.get("name", "?"),
+                args_str,
+            )
+        else:
+            clean.append(tc)
+
+    if garbled_count == 0:
+        return False
+
+    if clean:
+        message["tool_calls"] = clean
+    else:
+        # All tool calls were garbled — remove tool_calls entirely
+        message.pop("tool_calls", None)
+        choice["finish_reason"] = "stop"
+
+    logger.warning(
+        "GARBLED TOOL ARGS: removed %d garbled tool call(s), %d clean remaining",
+        garbled_count,
+        len(clean),
+    )
+    return True
 
 
 def _tool_schema_map_from_anthropic_body(anthropic_body: dict) -> dict[str, dict]:
@@ -4048,6 +4147,8 @@ def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
     """Convert an OpenAI Chat Completions response to Anthropic Messages format."""
     # First: try to recover tool calls trapped in text XML tags
     _maybe_extract_text_tool_calls(openai_resp)
+    # Second: strip garbled/degenerate tool call arguments
+    _sanitize_garbled_tool_calls(openai_resp)
 
     choice = openai_resp.get("choices", [{}])[0]
     message = choice.get("message", {})
