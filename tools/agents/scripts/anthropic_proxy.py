@@ -2495,6 +2495,76 @@ def _validate_tool_arguments_against_schema(
     return True, ""
 
 
+# ---------------------------------------------------------------------------
+# Extract tool calls from <tool_call> XML tags in text content
+# ---------------------------------------------------------------------------
+# Qwen3.5 via llama.cpp sometimes emits tool calls as XML-wrapped JSON in the
+# text content field rather than as structured ``tool_calls`` objects in the
+# OpenAI response.  The regex below captures these and converts them to
+# standard OpenAI-format tool_calls so downstream translation works correctly.
+
+_TOOL_CALL_XML_RE = re.compile(
+    r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
+    re.DOTALL,
+)
+
+
+def _extract_tool_calls_from_text(text: str) -> tuple[list[dict], str]:
+    """Parse ``<tool_call>{...}</tool_call>`` blocks out of *text*.
+
+    Returns a tuple of (extracted_openai_tool_calls, remaining_text).
+    Each extracted call is in OpenAI ``tool_calls`` format::
+
+        {"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}
+
+    The *remaining_text* has the matched ``<tool_call>`` blocks removed.
+    If no valid blocks are found the original text is returned unchanged.
+    """
+    if "<tool_call>" not in text:
+        return [], text
+
+    extracted: list[dict] = []
+    for match in _TOOL_CALL_XML_RE.finditer(text):
+        raw_json = match.group(1)
+        try:
+            payload = json.loads(raw_json)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        name = payload.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+
+        arguments = payload.get("arguments", {})
+        if isinstance(arguments, dict):
+            arguments = json.dumps(arguments, separators=(",", ":"))
+        elif not isinstance(arguments, str):
+            arguments = "{}"
+
+        extracted.append(
+            {
+                "id": f"call_{uuid.uuid4().hex[:12]}",
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+        )
+
+    if not extracted:
+        return [], text
+
+    # Strip matched tool_call blocks from the text
+    remaining = _TOOL_CALL_XML_RE.sub("", text).strip()
+
+    logger.info(
+        "TOOL CALL EXTRACTION: recovered %d tool call(s) from <tool_call> XML in text content",
+        len(extracted),
+    )
+
+    return extracted, remaining
+
+
 def _tool_schema_map_from_anthropic_body(anthropic_body: dict) -> dict[str, dict]:
     schema_map: dict[str, dict] = {}
     for tool in anthropic_body.get("tools", []) or []:
@@ -3478,6 +3548,7 @@ async def _apply_unexpected_end_turn_guardrail(
     )
     if retry_resp.status_code == 200:
         retry_json = retry_resp.json()
+        _maybe_extract_text_tool_calls(retry_json)
         retry_choice, retry_message = _extract_openai_choice(retry_json)
         if _openai_has_valid_tool_calls(retry_json, anthropic_body):
             logger.info("GUARDRAIL: retry produced tool_use; using retried response")
@@ -3602,6 +3673,7 @@ async def _apply_malformed_tool_guardrail(
             continue
 
         retry_json = retry_resp.json()
+        _maybe_extract_text_tool_calls(retry_json)
         retry_working = retry_json
         retry_repairs = 0
         if PROXY_TOOL_ARGS_PREFLIGHT and _openai_has_tool_calls(retry_json):
@@ -3759,8 +3831,39 @@ def _maybe_apply_session_contamination_breaker(
 # ===========================================================================
 
 
+def _maybe_extract_text_tool_calls(openai_resp: dict) -> dict:
+    """Mutate *openai_resp* in-place: if the message has no structured
+    ``tool_calls`` but contains ``<tool_call>`` XML in text, extract them
+    and promote to real ``tool_calls`` on the message.  Returns the
+    (possibly-mutated) response for chaining."""
+    choice = (openai_resp.get("choices") or [{}])[0]
+    message = choice.get("message", {})
+
+    # Only attempt extraction when there are NO structured tool calls
+    if message.get("tool_calls"):
+        return openai_resp
+
+    text = message.get("content", "")
+    if not isinstance(text, str) or "<tool_call>" not in text:
+        return openai_resp
+
+    extracted, remaining = _extract_tool_calls_from_text(text)
+    if not extracted:
+        return openai_resp
+
+    # Promote extracted calls to structured tool_calls
+    message["tool_calls"] = extracted
+    message["content"] = remaining if remaining else None
+    # Fix finish_reason so downstream sees tool_calls
+    choice["finish_reason"] = "tool_calls"
+    return openai_resp
+
+
 def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
     """Convert an OpenAI Chat Completions response to Anthropic Messages format."""
+    # First: try to recover tool calls trapped in text XML tags
+    _maybe_extract_text_tool_calls(openai_resp)
+
     choice = openai_resp.get("choices", [{}])[0]
     message = choice.get("message", {})
     finish = choice.get("finish_reason", "stop")
@@ -4046,14 +4149,16 @@ async def stream_anthropic_response(
         # Always close the upstream response to stop LLM generation
         await openai_stream.aclose()
 
-    # Close any open tool call blocks
-    if tool_calls_by_index:
+    # Close any open tool call blocks (skip if XML recovery already emitted them)
+    xml_recovered = tool_calls_by_index.pop("_xml_recovered", False)
+    if tool_calls_by_index and not xml_recovered:
         for tc in tool_calls_by_index.values():
-            yield (
-                f"event: content_block_stop\n"
-                f"data: {json.dumps({'type': 'content_block_stop', 'index': tc['block_index']})}\n\n"
-            )
-    else:
+            if isinstance(tc, dict) and "block_index" in tc:
+                yield (
+                    f"event: content_block_stop\n"
+                    f"data: {json.dumps({'type': 'content_block_stop', 'index': tc['block_index']})}\n\n"
+                )
+    elif not tool_calls_by_index:
         # If the response has no text and no tool calls, optionally emit a
         # reasoning fallback (configurable) to avoid leaking malformed
         # internal chain-of-thought content by default.
@@ -4085,16 +4190,16 @@ async def stream_anthropic_response(
 
     # Log response summary
     accumulated_text = "".join(text_chunks)
-    tc_names = (
-        [tc["name"] for tc in tool_calls_by_index.values()]
-        if tool_calls_by_index
-        else []
-    )
-    tc_args = (
-        [tc.get("arguments", "") for tc in tool_calls_by_index.values()]
-        if tool_calls_by_index
-        else []
-    )
+    tc_names = [
+        tc["name"]
+        for tc in tool_calls_by_index.values()
+        if isinstance(tc, dict) and "name" in tc
+    ]
+    tc_args = [
+        tc.get("arguments", "")
+        for tc in tool_calls_by_index.values()
+        if isinstance(tc, dict) and "name" in tc
+    ]
     logger.info(
         "RESP: finish=%s output_tokens=%d text_len=%d text=%.300s tool_calls=%s args=%s",
         finish_reason,
@@ -4104,6 +4209,47 @@ async def stream_anthropic_response(
         tc_names,
         [a[:200] for a in tc_args],
     )
+
+    # -------------------------------------------------------------------
+    # Post-stream: recover <tool_call> XML from accumulated text
+    # -------------------------------------------------------------------
+    if not tool_calls_by_index and "<tool_call>" in accumulated_text:
+        xml_extracted, remaining_text = _extract_tool_calls_from_text(accumulated_text)
+        if xml_extracted:
+            # We already streamed the text as-is.  We cannot un-stream it,
+            # but we CAN close the text block, emit the recovered tool_use
+            # blocks, and fix the finish_reason so Claude Code sees them.
+            yield (
+                f"event: content_block_stop\n"
+                f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+            )
+            for idx, xtc in enumerate(xml_extracted, start=1):
+                fn = xtc.get("function", {})
+                tc_id = xtc.get("id", f"toolu_{uuid.uuid4().hex[:12]}")
+                tc_name = fn.get("name", "")
+                tc_args = fn.get("arguments", "{}")
+                tool_calls_by_index[idx] = {
+                    "id": tc_id,
+                    "name": tc_name,
+                    "arguments": tc_args,
+                    "block_index": idx,
+                }
+                yield (
+                    f"event: content_block_start\n"
+                    f"data: {json.dumps({'type': 'content_block_start', 'index': idx, 'content_block': {'type': 'tool_use', 'id': tc_id, 'name': tc_name}})}\n\n"
+                )
+                yield (
+                    f"event: content_block_delta\n"
+                    f"data: {json.dumps({'type': 'content_block_delta', 'index': idx, 'delta': {'type': 'input_json_delta', 'partial_json': tc_args}})}\n\n"
+                )
+                yield (
+                    f"event: content_block_stop\n"
+                    f"data: {json.dumps({'type': 'content_block_stop', 'index': idx})}\n\n"
+                )
+            finish_reason = "tool_use"
+            accumulated_text = remaining_text
+            # Skip the normal text block close below
+            tool_calls_by_index["_xml_recovered"] = True
 
     synthetic_openai_resp = {
         "choices": [
@@ -4121,6 +4267,7 @@ async def stream_anthropic_response(
                             }
                         }
                         for tc in tool_calls_by_index.values()
+                        if isinstance(tc, dict) and "name" in tc
                     ],
                 },
             }
@@ -4455,6 +4602,8 @@ async def messages(request: Request):
             )
 
         openai_resp = strict_resp.json()
+        # Recover tool calls from <tool_call> XML before guardrails run
+        _maybe_extract_text_tool_calls(openai_resp)
         openai_resp = await _apply_unexpected_end_turn_guardrail(
             client,
             openai_resp,
@@ -4760,6 +4909,8 @@ async def messages(request: Request):
             )
 
         openai_resp = resp.json()
+        # Recover tool calls from <tool_call> XML before guardrails run
+        _maybe_extract_text_tool_calls(openai_resp)
         openai_resp = await _apply_unexpected_end_turn_guardrail(
             client,
             openai_resp,
