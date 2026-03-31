@@ -11,6 +11,26 @@
 
 <!-- Custom Sections (preserved from existing file) -->
 
+## SESSION START
+
+At session start, run `uap task ready` before making implementation changes.
+
+## DECISION LOOP
+
+Use `@Skill:name.md` references when matching specialized workflows before coding.
+
+## WORKTREE WORKFLOW — MANDATORY
+
+All file edits must follow the required worktree workflow.
+
+## PARALLEL REVIEW PROTOCOL
+
+Run parallel review/verification steps when validating non-trivial changes.
+
+## COMPLETION GATES - MANDATORY
+
+Completion gates are mandatory and must be verified minimum 3 times before claiming done.
+
 ## WORKTREE GATE [REQUIRED — code changes only]
 
 Before editing ANY source file, verify you are working inside a worktree:
