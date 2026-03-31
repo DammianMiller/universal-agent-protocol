@@ -2925,6 +2925,108 @@ class TestToolCallXMLExtraction(unittest.TestCase):
         self.assertEqual(anthropic["stop_reason"], "tool_use")
 
 
+class TestGarbledToolArgDetection(unittest.TestCase):
+    """Tests for detecting and sanitizing garbled tool call arguments."""
+
+    def test_runaway_braces_detected(self):
+        self.assertTrue(proxy._is_garbled_tool_arguments('{"command":"echo test}}}}}'))
+
+    def test_repetitive_digits_detected(self):
+        self.assertTrue(proxy._is_garbled_tool_arguments('{"command":"echo 398398398398398398"}'))
+
+    def test_long_zeros_detected(self):
+        self.assertTrue(proxy._is_garbled_tool_arguments('{"command":"echo 00000000000"}'))
+
+    def test_extremely_long_digits_detected(self):
+        self.assertTrue(proxy._is_garbled_tool_arguments('{"x":"' + "1" * 35 + '"}'))
+
+    def test_unbalanced_braces_detected(self):
+        self.assertTrue(proxy._is_garbled_tool_arguments('{"a":{"b":{"c":"d"'))
+
+    def test_normal_args_not_flagged(self):
+        self.assertFalse(proxy._is_garbled_tool_arguments('{"command":"ls -la /tmp"}'))
+        self.assertFalse(proxy._is_garbled_tool_arguments('{"file_path":"/home/user/test.py"}'))
+
+    def test_empty_args_not_flagged(self):
+        self.assertFalse(proxy._is_garbled_tool_arguments("{}"))
+        self.assertFalse(proxy._is_garbled_tool_arguments(""))
+
+    def test_sanitize_removes_garbled_calls(self):
+        openai_resp = {
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "tool_calls": [
+                        {"function": {"name": "Bash", "arguments": '{"command":"ls"}'}},
+                        {"function": {"name": "Bash", "arguments": '{"command":"echo test}}}}}}'}},
+                    ],
+                },
+            }]
+        }
+        removed = proxy._sanitize_garbled_tool_calls(openai_resp)
+        self.assertTrue(removed)
+        msg = openai_resp["choices"][0]["message"]
+        self.assertEqual(len(msg["tool_calls"]), 1)
+        self.assertEqual(msg["tool_calls"][0]["function"]["name"], "Bash")
+
+    def test_sanitize_all_garbled_removes_tool_calls(self):
+        openai_resp = {
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "tool_calls": [
+                        {"function": {"name": "Bash", "arguments": '{"command":"echo }}}}}}'}},
+                    ],
+                },
+            }]
+        }
+        removed = proxy._sanitize_garbled_tool_calls(openai_resp)
+        self.assertTrue(removed)
+        msg = openai_resp["choices"][0]["message"]
+        self.assertNotIn("tool_calls", msg)
+        self.assertEqual(openai_resp["choices"][0]["finish_reason"], "stop")
+
+    def test_sanitize_clean_args_noop(self):
+        openai_resp = {
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "tool_calls": [
+                        {"function": {"name": "Read", "arguments": '{"file_path":"/x.py"}'}},
+                    ],
+                },
+            }]
+        }
+        removed = proxy._sanitize_garbled_tool_calls(openai_resp)
+        self.assertFalse(removed)
+
+
+class TestToolTurnTemperature(unittest.TestCase):
+    """Tests for per-request temperature forcing on tool-enabled turns."""
+
+    def _make_monitor(self):
+        return proxy.SessionMonitor()
+
+    def test_tool_turn_forces_temperature(self):
+        body = {
+            "model": "qwen3.5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"name": "Bash", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}}}],
+            "temperature": 0.8,
+        }
+        result = proxy.build_openai_request(body, self._make_monitor())
+        self.assertLessEqual(result["temperature"], proxy.PROXY_TOOL_TURN_TEMPERATURE)
+
+    def test_no_tools_preserves_temperature(self):
+        body = {
+            "model": "qwen3.5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0.8,
+        }
+        result = proxy.build_openai_request(body, self._make_monitor())
+        self.assertEqual(result["temperature"], 0.8)
+
+
 if __name__ == "__main__":
     unittest.main()
 
