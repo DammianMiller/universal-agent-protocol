@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.7 (2026-04-01)
+
+- fix: align server config with profile, detect garbled tool args, force tool-turn temperature
+
+
 ## v1.20.6 (2026-04-01)
 
 - chore: bump version to 1.20.5
