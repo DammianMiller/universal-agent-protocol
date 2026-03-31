@@ -43,5 +43,8 @@ Environment variables, external dependencies, and setup notes for the Qwen3.5 op
 - `.opencode/config.json` declares `"$schema": "./config.schema.json"`, but no local `.opencode/config.schema.json` file exists in this worktree. Workers validating config changes should rely on runtime/tests rather than assuming a local schema file is present.
 - The real client path may also load user-level plugins from `~/.opencode/plugin/*.ts`; recent benchmark evidence showed repeated bootstrap failures there (`fn3 is not a function`), so workers must treat that directory as a live runtime input when the assigned feature scopes it in.
 
+## Current Runtime Fact
+- The latest session-stability repair rewrote the active `~/.opencode/plugin/uap-patterns.ts`, `uap-droids.ts`, `uap-skills.ts`, and `uap-commands.ts` stubs into clean-loading OpenCode plugins; current real-client startup failures should now be attributed to later runtime behavior unless those bootstrap errors reappear.
+
 ## Remaining Validation Caveat
 - Even with the client path normalized to `127.0.0.1`, workers must still prove the exact benchmark workflow from real transcripts; config text alone is not evidence that the session-stability contract is satisfied.

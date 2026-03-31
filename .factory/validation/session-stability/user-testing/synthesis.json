@@ -1,0 +1,44 @@
+{
+  "milestone": "session-stability",
+  "round": 1,
+  "status": "fail",
+  "assertionsSummary": {
+    "total": 12,
+    "passed": 11,
+    "failed": 1,
+    "blocked": 0
+  },
+  "passedAssertions": [
+    "VAL-CLI-001",
+    "VAL-CLI-002",
+    "VAL-CLI-003",
+    "VAL-CLI-004",
+    "VAL-CLI-005",
+    "VAL-CLI-006",
+    "VAL-CLI-007",
+    "VAL-CLI-008",
+    "VAL-CLI-009",
+    "VAL-CROSS-001",
+    "VAL-CROSS-007"
+  ],
+  "failedAssertions": [
+    {
+      "id": "VAL-CROSS-002",
+      "reason": "The rerun evidence still does not prove actual end-to-end tool activity for the benchmark workflow. Client artifacts show tool availability only, while proxy evidence still includes `ANALYSIS ROUTE: disabled 37 tools for analysis-only prompt`, so transcript plus proxy/client proof of executed tool turns is still missing."
+    }
+  ],
+  "blockedAssertions": [],
+  "appliedUpdates": [
+    {
+      "target": "validation-state.json",
+      "description": "Recorded pass/fail outcomes for the tested session-stability CLI and cross-area assertions from the cli-benchmark flow report.",
+      "source": "flow-report"
+    },
+    {
+      "target": "user-testing/flows/cli-benchmark.json|synthesis.json",
+      "description": "Updated rerun synthesis using the induced outage artifact (`/tmp/val_cli006_outage.jsonl`) and preserved-tools benchmark artifact (`/tmp/preserve-tool-use-benchmark.jsonl`) so VAL-CLI-006 now passes while VAL-CROSS-002 remains failed pending proof of actual end-to-end executed tool turns.",
+      "source": "flow-report"
+    }
+  ],
+  "previousRound": ".factory/validation/session-stability/user-testing/synthesis.json"
+}

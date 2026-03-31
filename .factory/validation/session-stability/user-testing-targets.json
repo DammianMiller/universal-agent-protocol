@@ -1,0 +1,17 @@
+{
+  "milestone": "session-stability",
+  "assertions": [
+    "VAL-CLI-001",
+    "VAL-CLI-002",
+    "VAL-CLI-003",
+    "VAL-CLI-004",
+    "VAL-CLI-005",
+    "VAL-CLI-006",
+    "VAL-CLI-007",
+    "VAL-CLI-008",
+    "VAL-CLI-009",
+    "VAL-CROSS-001",
+    "VAL-CROSS-002",
+    "VAL-CROSS-007"
+  ]
+}

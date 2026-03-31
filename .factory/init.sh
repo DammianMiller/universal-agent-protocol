@@ -1,33 +1,31 @@
 #!/bin/bash
-# Mission init script - idempotent environment setup
-set -e
+set -euo pipefail
 
-UAP_DIR="/home/cogtek/dev/miller-tech/universal-agent-protocol"
-LLAMA_DIR="/home/cogtek/llama.cpp"
+ROOT_REPO="/home/cogtek/dev/miller-tech/universal-agent-protocol"
+WORKTREE="/home/cogtek/dev/miller-tech/universal-agent-protocol/.worktrees/033-proxy-endturn-retry"
+PROXY_REQS="$WORKTREE/tools/agents/scripts/requirements-proxy.txt"
+LLAMA_BIN="/home/cogtek/llama.cpp/.worktrees/turboquant-cuda-v2/build/bin/llama-server"
+MODEL="/home/cogtek/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf"
 
-# Install UAP dependencies if needed
-if [ ! -d "$UAP_DIR/node_modules" ]; then
-  cd "$UAP_DIR" && npm install
+if [ ! -d "$ROOT_REPO/node_modules" ]; then
+  cd "$ROOT_REPO"
+  npm install
 fi
 
-# Verify llama.cpp worktrees exist
-for wt in 002-baseline-origin-master 003-faststate-029; do
-  if [ ! -d "$LLAMA_DIR/.worktrees/$wt" ]; then
-    echo "ERROR: llama.cpp worktree $wt not found"
-    exit 1
-  fi
-done
-
-# Verify model files exist
-for model in "Qwen3.5-35B-A3B-UD-IQ4_XS.gguf" "Qwen3.5-0.8B-Q8_0.gguf"; do
-  if [ ! -f "/home/cogtek/Downloads/$model" ]; then
-    echo "WARNING: Model $model not found in ~/Downloads"
-  fi
-done
-
-# Verify CUDA build exists for worktree 003
-if [ ! -f "$LLAMA_DIR/.worktrees/003-faststate-029/build-cuda/bin/llama-server" ]; then
-  echo "NOTE: CUDA build not found for worktree 003, will need to build"
+if [ ! -e "$WORKTREE/node_modules" ]; then
+  ln -s "$ROOT_REPO/node_modules" "$WORKTREE/node_modules"
 fi
 
-echo "Init complete"
+python3 -m pip show httpx >/dev/null 2>&1 || python3 -m pip install -r "$PROXY_REQS"
+
+if [ ! -f "$LLAMA_BIN" ]; then
+  echo "ERROR: llama-server binary not found at $LLAMA_BIN"
+  exit 1
+fi
+
+if [ ! -f "$MODEL" ]; then
+  echo "ERROR: model not found at $MODEL"
+  exit 1
+fi
+
+echo "Mission init complete"

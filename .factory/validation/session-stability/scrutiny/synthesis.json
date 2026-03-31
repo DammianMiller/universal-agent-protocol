@@ -1,0 +1,76 @@
+{
+  "milestone": "session-stability",
+  "round": 1,
+  "status": "fail",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "cd \"/home/cogtek/dev/miller-tech/universal-agent-protocol/.worktrees/033-proxy-endturn-retry\" && test -e node_modules || ln -s \"/home/cogtek/dev/miller-tech/universal-agent-protocol/node_modules\" node_modules && npm test",
+      "exitCode": 0
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "cd \"/home/cogtek/dev/miller-tech/universal-agent-protocol/.worktrees/033-proxy-endturn-retry\" && test -e node_modules || ln -s \"/home/cogtek/dev/miller-tech/universal-agent-protocol/node_modules\" node_modules && npx tsc --noEmit",
+      "exitCode": 0
+    },
+    "lint": {
+      "passed": true,
+      "command": "cd \"/home/cogtek/dev/miller-tech/universal-agent-protocol/.worktrees/033-proxy-endturn-retry\" && test -e node_modules || ln -s \"/home/cogtek/dev/miller-tech/universal-agent-protocol/node_modules\" node_modules && npx eslint src test --ext .ts --ignore-pattern src/benchmarks/token-throughput.ts --ignore-pattern src/memory/predictive-memory.ts --ignore-pattern test/memory/knowledge-graph.test.ts --ignore-pattern test/models/analytics.test.ts --ignore-pattern test/policy-hooks-enforcement.test.ts --ignore-pattern test/utils/mock-helpers.ts",
+      "exitCode": 0
+    }
+  },
+  "reviewsSummary": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "failedFeatures": [
+      "tune-opencode-session-behavior",
+      "implement-benchmark-harness-and-run-attribution"
+    ]
+  },
+  "blockingIssues": [
+    {
+      "featureId": "tune-opencode-session-behavior",
+      "severity": "blocking",
+      "description": "The committed OpenCode config normalization is coherent, but the validated benchmark evidence for the feature still ends in explicit proxy 529 retry-loop breaker failures instead of producing actionable final output."
+    },
+    {
+      "featureId": "implement-benchmark-harness-and-run-attribution",
+      "severity": "blocking",
+      "description": "The proxy no longer returns the prior 529 for the empty-visible path, but the recorded exact benchmark run still ends in a generic fallback apology rather than a substantive actionable answer, so the feature does not satisfy the session-stability contract."
+    }
+  ],
+  "appliedUpdates": [
+    {
+      "target": "library",
+      "description": "Updated environment notes to reflect that `.opencode/config.json` is now normalized to `127.0.0.1:4000/v1`, removed stale baseline-drift wording, and documented the missing local `config.schema.json` reference.",
+      "sourceFeature": "tune-opencode-session-behavior"
+    },
+    {
+      "target": "library",
+      "description": "Updated runtime-tuning notes to record that a bounded generic fallback response does not count as benchmark success for the exact-prompt session-stability assertions.",
+      "sourceFeature": "implement-benchmark-harness-and-run-attribution"
+    }
+  ],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "AGENTS.md",
+      "suggestion": "Add an explicit validation rule that a bounded fallback/apology transcript does not satisfy exact-prompt benchmark success assertions when the contract requires a final actionable answer.",
+      "evidence": "Both reviewed session-stability features treated bounded failure behavior as meaningful progress, but the final validated transcript still ended with 'I couldn't produce a usable answer on that turn. Please retry the request.' rather than proxy/llama tuning findings.",
+      "isSystemic": true
+    },
+    {
+      "target": ".factory/skills/stack-runtime-worker",
+      "suggestion": "When a mission assertion requires actionable final output, instruct workers to reject or continue iterating on any solution whose transcript exits 0 via fabricated fallback text instead of substantive model output.",
+      "evidence": "The benchmark-attribution feature replaced a hard 529 with a sanitized fallback string and counted the run as passing despite the transcript lacking required actionable content.",
+      "isSystemic": true
+    }
+  ],
+  "rejectedObservations": [
+    {
+      "observation": "Mission shared state correctly recorded the pre-feature blocker that `/health` could look correct while `/v1/models` was still wrong.",
+      "reason": "already-documented"
+    }
+  ],
+  "previousRound": null
+}

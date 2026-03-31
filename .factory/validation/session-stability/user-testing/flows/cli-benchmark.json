@@ -1,0 +1,140 @@
+{
+  "groupId": "cli-benchmark",
+  "assertions": [
+    {
+      "id": "VAL-CLI-001",
+      "status": "pass",
+      "reason": "Both real opencode runs returned final answers and exited normally in about 12 seconds, well inside the bounded-session and post-answer exit limits.",
+      "evidence": [
+        "evidence/session-stability/cli-benchmark/cli_run_meta.json",
+        "evidence/session-stability/cli-benchmark/cli_run_stdout.txt",
+        "evidence/session-stability/cli-benchmark/cli_run_fresh_meta.json",
+        "evidence/session-stability/cli-benchmark/cli_run_fresh_stdout.txt"
+      ]
+    },
+    {
+      "id": "VAL-CLI-002",
+      "status": "pass",
+      "reason": "Neither transcript showed visible apology loops, duplicate progress chatter, or empty-turn retry spirals; each run produced a single concise answer block.",
+      "evidence": [
+        "evidence/session-stability/cli-benchmark/cli_run_stdout.txt",
+        "evidence/session-stability/cli-benchmark/cli_run_fresh_stdout.txt",
+        "evidence/session-stability/cli-benchmark/cli_assertion_notes.json"
+      ]
+    },
+    {
+      "id": "VAL-CLI-003",
+      "status": "pass",
+      "reason": "Final outputs contained concrete runtime findings and tuning recommendations such as reducing context size, increasing parallelism, and adjusting repeat penalty.",
+      "evidence": [
+        "evidence/session-stability/cli-benchmark/cli_run_stdout.txt",
+        "evidence/session-stability/cli-benchmark/cli_run_fresh_stdout.txt"
+      ]
+    },
+    {
+      "id": "VAL-CLI-004",
+      "status": "pass",
+      "reason": "The exact prompt remained anchored on proxy and llama runtime analysis; responses discussed proxy endpoint, upstream URL, llama model, and tuning parameters without drifting into unrelated project areas.",
+      "evidence": [
+        "evidence/session-stability/cli-benchmark/cli_run_meta.json",
+        "evidence/session-stability/cli-benchmark/cli_run_stdout.txt",
+        "evidence/session-stability/cli-benchmark/cli_run_fresh_stdout.txt"
+      ]
+    },
+    {
+      "id": "VAL-CLI-005",
+      "status": "pass",
+      "reason": "A second fresh session started cleanly and produced a new benchmark answer without stale continuation text or leaked state from the prior run.",
+      "evidence": [
+        "evidence/session-stability/cli-benchmark/cli_run_stdout.txt",
+        "evidence/session-stability/cli-benchmark/cli_run_fresh_stdout.txt",
+        "evidence/session-stability/cli-benchmark/cli_run_fresh_stderr.txt"
+      ]
+    },
+    {
+      "id": "VAL-CLI-006",
+      "status": "pass",
+      "reason": "A bounded backend-outage run was exercised directly: the CLI surfaced a concise operator-usable connection failure (`Unable to connect. Is the computer able to access the url?`) immediately after a `ConnectionRefused` stream error instead of hanging, looping, or falsely reporting success.",
+      "evidence": [
+        "/tmp/val_cli006_baseline.jsonl",
+        "/tmp/val_cli006_outage.jsonl"
+      ]
+    },
+    {
+      "id": "VAL-CLI-007",
+      "status": "pass",
+      "reason": "Final user-visible outputs were clean markdown findings with no leaked raw tool payloads, malformed wrappers, or protocol debris.",
+      "evidence": [
+        "evidence/session-stability/cli-benchmark/cli_run_stdout.txt",
+        "evidence/session-stability/cli-benchmark/cli_run_fresh_stdout.txt",
+        "evidence/session-stability/cli-benchmark/cli_assertion_notes.json"
+      ]
+    },
+    {
+      "id": "VAL-CLI-008",
+      "status": "pass",
+      "reason": "Each run exited immediately after the final answer with no additional empty/progress-only transcript tail.",
+      "evidence": [
+        "evidence/session-stability/cli-benchmark/cli_run_meta.json",
+        "evidence/session-stability/cli-benchmark/cli_run_fresh_meta.json",
+        "evidence/session-stability/cli-benchmark/cli_run_stdout.txt",
+        "evidence/session-stability/cli-benchmark/cli_run_fresh_stdout.txt"
+      ]
+    },
+    {
+      "id": "VAL-CLI-009",
+      "status": "pass",
+      "reason": "Startup logs showed plugin loading without repeated bootstrap exceptions or user-plugin failure spam; startup remained attributable and clean in both runs.",
+      "evidence": [
+        "evidence/session-stability/cli-benchmark/cli_run_stderr.txt",
+        "evidence/session-stability/cli-benchmark/cli_run_fresh_stderr.txt",
+        "evidence/session-stability/cli-benchmark/cli_assertion_notes.json"
+      ]
+    },
+    {
+      "id": "VAL-CROSS-001",
+      "status": "pass",
+      "reason": "The exact benchmark prompt completed through the real client path and proxy-backed local model, with matching proxy and llama evidence for the same session window.",
+      "evidence": [
+        "evidence/session-stability/cli-benchmark/cli_run_stdout.txt",
+        "evidence/session-stability/cli-benchmark/proxy_log_tail.txt",
+        "evidence/session-stability/cli-benchmark/llama_log_tail.txt"
+      ]
+    },
+    {
+      "id": "VAL-CROSS-002",
+      "status": "fail",
+      "reason": "The rerun evidence still does not prove actual end-to-end tool activity for the benchmark workflow. The client JSONL artifacts show tool availability/resolution only, while proxy evidence still includes `ANALYSIS ROUTE: disabled 37 tools for analysis-only prompt`, so the contract's required transcript plus proxy/client proof of executed tool turns is still missing.",
+      "evidence": [
+        "/tmp/preserve-tool-use-benchmark.jsonl",
+        "/tmp/val_cli006_baseline.jsonl",
+        "/home/cogtek/anthropic-proxy-relaxed.log"
+      ]
+    },
+    {
+      "id": "VAL-CROSS-007",
+      "status": "pass",
+      "reason": "Client transcript, proxy health, port ownership, proxy log, and llama log all align on proxy PID 3292797 at 127.0.0.1:4000 and llama PID 3256399 at 127.0.0.1:8080 using model Qwen3.5-35B-A3B-UD-IQ4_XS.gguf.",
+      "evidence": [
+        "evidence/session-stability/cli-benchmark/proxy_ps.txt",
+        "evidence/session-stability/cli-benchmark/llama_ps.txt",
+        "evidence/session-stability/cli-benchmark/proxy_health.json",
+        "evidence/session-stability/cli-benchmark/proxy_log_tail.txt",
+        "evidence/session-stability/cli-benchmark/llama_log_tail.txt",
+        "evidence/session-stability/cli-benchmark/cli_run_stdout.txt"
+      ]
+    }
+  ],
+  "toolsUsed": [
+    "Read",
+    "LS",
+    "Execute",
+    "TodoWrite"
+  ],
+  "frictions": [
+    "Second run stderr recorded an upstream too_many_requests stream error before still yielding a final answer.",
+    "Prompt path still lacks transcript plus proxy/client proof of executed tool turns for the same benchmark session."
+  ],
+  "blockers": [],
+  "summary": "Validated the rerun evidence for the real opencode benchmark against the live proxy and llama runtime. Bounded upstream failure behavior now passes via an induced outage artifact, while tool-use preservation still fails because the evidence surface does not prove executed tool turns end-to-end for the same benchmark session."
+}
