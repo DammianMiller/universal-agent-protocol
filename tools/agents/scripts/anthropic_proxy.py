@@ -85,7 +85,9 @@ import re
 import sys
 import time
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 from contextlib import asynccontextmanager
@@ -97,10 +99,17 @@ import uvicorn
 # Configuration (all configurable via environment variables)
 # ---------------------------------------------------------------------------
 LLAMA_CPP_BASE = os.environ.get("LLAMA_CPP_BASE", "http://192.168.1.165:8080/v1")
+ANTHROPIC_API_BASE = os.environ.get(
+    "ANTHROPIC_API_BASE", "https://api.anthropic.com"
+)
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_PASSTHROUGH_MODELS = os.environ.get("ANTHROPIC_PASSTHROUGH_MODELS", "")
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4000"))
 PROXY_HOST = os.environ.get("PROXY_HOST", "0.0.0.0")
 PROXY_LOG_LEVEL = os.environ.get("PROXY_LOG_LEVEL", "INFO").upper()
 PROXY_READ_TIMEOUT = float(os.environ.get("PROXY_READ_TIMEOUT", "600"))
+PROXY_UPSTREAM_RETRY_MAX = int(os.environ.get("PROXY_UPSTREAM_RETRY_MAX", "3"))
+PROXY_UPSTREAM_RETRY_DELAY_SECS = float(os.environ.get("PROXY_UPSTREAM_RETRY_DELAY_SECS", "5"))
 PROXY_MAX_CONNECTIONS = int(os.environ.get("PROXY_MAX_CONNECTIONS", "20"))
 PROXY_CONTEXT_WINDOW = int(os.environ.get("PROXY_CONTEXT_WINDOW", "0"))
 PROXY_CONTEXT_PRUNE_THRESHOLD = float(
@@ -116,9 +125,9 @@ PROXY_LOOP_BREAKER = os.environ.get("PROXY_LOOP_BREAKER", "on").lower() not in {
     "no",
 }
 PROXY_LOOP_WINDOW = int(os.environ.get("PROXY_LOOP_WINDOW", "6"))
-PROXY_LOOP_REPEAT_THRESHOLD = int(os.environ.get("PROXY_LOOP_REPEAT_THRESHOLD", "8"))
+PROXY_LOOP_REPEAT_THRESHOLD = int(os.environ.get("PROXY_LOOP_REPEAT_THRESHOLD", "6"))
 PROXY_FORCED_THRESHOLD = int(os.environ.get("PROXY_FORCED_THRESHOLD", "15"))
-PROXY_NO_PROGRESS_THRESHOLD = int(os.environ.get("PROXY_NO_PROGRESS_THRESHOLD", "4"))
+PROXY_NO_PROGRESS_THRESHOLD = int(os.environ.get("PROXY_NO_PROGRESS_THRESHOLD", "3"))
 PROXY_CONTEXT_RELEASE_THRESHOLD = float(
     os.environ.get("PROXY_CONTEXT_RELEASE_THRESHOLD", "0.90")
 )
@@ -138,16 +147,28 @@ PROXY_TOOL_STATE_FORCED_BUDGET = int(
 )
 PROXY_TOOL_STATE_AUTO_BUDGET = int(os.environ.get("PROXY_TOOL_STATE_AUTO_BUDGET", "2"))
 PROXY_TOOL_STATE_STAGNATION_THRESHOLD = int(
-    os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "12")
+    os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "9")
 )
 PROXY_TOOL_STATE_CYCLE_WINDOW = int(
     os.environ.get("PROXY_TOOL_STATE_CYCLE_WINDOW", "8")
 )
 PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
-    os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "24")
+    os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "18")
 )
 PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT = int(
-    os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "3")
+    os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "2")
+)
+PROXY_CLIENT_RATE_WINDOW_SECS = int(
+    os.environ.get("PROXY_CLIENT_RATE_WINDOW_SECS", "60")
+)
+PROXY_CLIENT_RATE_LOG_MIN_SECS = float(
+    os.environ.get("PROXY_CLIENT_RATE_LOG_MIN_SECS", "15")
+)
+PROXY_OPUS46_CTX_THRESHOLD = float(
+    os.environ.get("PROXY_OPUS46_CTX_THRESHOLD", "0.8")
+)
+PROXY_OPUS46_MAX_TOKENS_HIGH_CTX = int(
+    os.environ.get("PROXY_OPUS46_MAX_TOKENS_HIGH_CTX", "4096")
 )
 PROXY_TOOL_NARROWING_EXPAND_ON_LOOP = os.environ.get(
     "PROXY_TOOL_NARROWING_EXPAND_ON_LOOP", "on"
@@ -312,6 +333,17 @@ PROXY_TOOL_CALL_GRAMMAR_PATH = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "config", "tool-call.gbnf"),
     )
 )
+PROXY_MODEL_PROFILE_HEADER = os.environ.get(
+    "PROXY_MODEL_PROFILE_HEADER", "x-uap-model-profile"
+)
+PROXY_MODEL_PROFILE_PARAM = os.environ.get(
+    "PROXY_MODEL_PROFILE_PARAM", "uap_model_profile"
+)
+
+DEFAULT_PASSTHROUGH_MODEL_PATTERNS = (
+    re.compile(r"^claude-opus-4-6", re.IGNORECASE),
+    re.compile(r"^claude-sonnet-4-6", re.IGNORECASE),
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -322,6 +354,55 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("uap.anthropic_proxy")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROFILE_DIR = PROJECT_ROOT / "config" / "model-profiles"
+PROFILE_CACHE: dict[str, dict | None] = {}
+PROFILE_WARNED: set[str] = set()
+
+_client_request_times: dict[str, deque[float]] = defaultdict(deque)
+_client_rate_last_log: dict[str, float] = defaultdict(float)
+
+
+def resolve_client_id(request: Request) -> str:
+    header_keys = ("x-uap-client-id", "x-forwarded-for", "x-real-ip")
+    for key in header_keys:
+        value = request.headers.get(key)
+        if value:
+            return f"{key}:{value.split(',')[0].strip()}"
+    if request.client:
+        return f"remote:{request.client.host}"
+    return "remote:unknown"
+
+
+def log_client_rate(client_id: str) -> int:
+    if PROXY_CLIENT_RATE_WINDOW_SECS <= 0:
+        return 0
+    now = time.time()
+    window = PROXY_CLIENT_RATE_WINDOW_SECS
+    request_times = _client_request_times[client_id]
+    request_times.append(now)
+    cutoff = now - window
+    while request_times and request_times[0] < cutoff:
+        request_times.popleft()
+    count = len(request_times)
+    if PROXY_CLIENT_RATE_LOG_MIN_SECS <= 0:
+        logger.info(
+            "CLIENT_RATE: id=%s window=%ss count=%d",
+            client_id,
+            window,
+            count,
+        )
+        return count
+    last_log = _client_rate_last_log.get(client_id, 0.0)
+    if now - last_log >= PROXY_CLIENT_RATE_LOG_MIN_SECS:
+        _client_rate_last_log[client_id] = now
+        logger.info(
+            "CLIENT_RATE: id=%s window=%ss count=%d",
+            client_id,
+            window,
+            count,
+        )
+    return count
 
 
 def _load_tool_call_grammar(path: str) -> str:
@@ -342,6 +423,99 @@ def _load_tool_call_grammar(path: str) -> str:
 
 TOOL_CALL_GBNF = _load_tool_call_grammar(PROXY_TOOL_CALL_GRAMMAR_PATH)
 TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE = True
+
+def _resolve_passthrough_models() -> list[str]:
+    raw = ANTHROPIC_PASSTHROUGH_MODELS.strip()
+    if not raw:
+        return []
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def _should_passthrough_model(model: str) -> bool:
+    if not model:
+        return False
+    overrides = _resolve_passthrough_models()
+    if overrides:
+        return model in overrides
+    return any(pattern.match(model) for pattern in DEFAULT_PASSTHROUGH_MODEL_PATTERNS)
+
+
+def _load_profile_config(profile_name: str) -> dict | None:
+    if not profile_name:
+        return None
+
+    cache_key = profile_name.strip().lower()
+    if cache_key in PROFILE_CACHE:
+        return PROFILE_CACHE[cache_key]
+
+    profile_path = PROFILE_DIR / f"{profile_name}.json"
+    legacy_path = PROJECT_ROOT / "config" / f"{profile_name}-settings.json"
+    for path in (profile_path, legacy_path):
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            PROFILE_CACHE[cache_key] = data
+            return data
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to parse profile %s (%s)", path.name, exc)
+            break
+
+    PROFILE_CACHE[cache_key] = None
+    return None
+
+
+def _resolve_profile_name(headers: dict, body: dict) -> str | None:
+    header_key = PROXY_MODEL_PROFILE_HEADER.lower()
+    header_value = None
+    for key, value in headers.items():
+        if key.lower() == header_key:
+            header_value = value
+            break
+
+    body_value = body.get(PROXY_MODEL_PROFILE_PARAM)
+    candidate = header_value or body_value
+    if not candidate:
+        return None
+    return str(candidate).strip()
+
+
+def _apply_profile_overrides(
+    body: dict, profile: dict
+) -> tuple[dict, str | None, str | None]:
+    updated = dict(body)
+    updated.pop(PROXY_MODEL_PROFILE_PARAM, None)
+
+    if profile.get("model"):
+        updated["model"] = profile["model"]
+    if "max_tokens" in profile:
+        updated["max_tokens"] = profile["max_tokens"]
+    if "temperature" in profile:
+        updated["temperature"] = profile["temperature"]
+    if "top_p" in profile:
+        updated["top_p"] = profile["top_p"]
+    if "stop_sequences" in profile:
+        updated["stop_sequences"] = profile["stop_sequences"]
+    if "enable_thinking" in profile:
+        updated["enable_thinking"] = profile["enable_thinking"]
+
+    tool_call_batching = profile.get("tool_call_batching") or {}
+    prompt_suffix = None
+    if isinstance(tool_call_batching, dict) and tool_call_batching.get("enabled"):
+        prompt_suffix = tool_call_batching.get("system_prompt_suffix")
+
+    structured_output = profile.get("structured_output") or {}
+    grammar_text = None
+    grammar_path = None
+    if isinstance(structured_output, dict):
+        grammar_path = structured_output.get("grammar_file")
+    if grammar_path:
+        resolved = Path(grammar_path)
+        if not resolved.is_absolute():
+            resolved = PROJECT_ROOT / resolved
+        grammar_text = _load_tool_call_grammar(str(resolved))
+
+    return updated, prompt_suffix, grammar_text
 
 
 def _is_grammar_tools_incompatibility(status_code: int, error_text: str) -> bool:
@@ -382,11 +556,12 @@ def _maybe_disable_grammar_for_tools_error(
 
 
 def _apply_tool_call_grammar(
-    request_body: dict, tool_choice: str | None = None
+    request_body: dict, tool_choice: str | None = None, grammar_override: str | None = None
 ) -> None:
-    request_body.pop("grammar", None)
+    existing_grammar = request_body.pop("grammar", None)
 
-    if not PROXY_TOOL_CALL_GRAMMAR or not TOOL_CALL_GBNF:
+    grammar_text = grammar_override or existing_grammar or TOOL_CALL_GBNF
+    if not PROXY_TOOL_CALL_GRAMMAR or not grammar_text:
         return
 
     if not request_body.get("tools"):
@@ -401,7 +576,7 @@ def _apply_tool_call_grammar(
     if PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY and effective_tool_choice != "required":
         return
 
-    request_body["grammar"] = TOOL_CALL_GBNF
+    request_body["grammar"] = grammar_text
 
 
 # ---------------------------------------------------------------------------
@@ -1087,6 +1262,37 @@ def prune_conversation(
 # Module-level httpx.AsyncClient for connection reuse + keep-alive.
 # Granular timeouts: short connect, long read for streaming LLM output.
 http_client: httpx.AsyncClient | None = None
+
+
+async def _post_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict,
+    headers: dict,
+) -> httpx.Response:
+    last_exc: Exception | None = None
+    for attempt in range(PROXY_UPSTREAM_RETRY_MAX):
+        try:
+            return await client.post(url, json=payload, headers=headers)
+        except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadTimeout) as exc:
+            last_exc = exc
+            if attempt < PROXY_UPSTREAM_RETRY_MAX - 1:
+                logger.warning(
+                    "Upstream connect failed (attempt %d/%d): %s – retrying in %.0fs",
+                    attempt + 1,
+                    PROXY_UPSTREAM_RETRY_MAX,
+                    type(exc).__name__,
+                    PROXY_UPSTREAM_RETRY_DELAY_SECS,
+                )
+                await asyncio.sleep(PROXY_UPSTREAM_RETRY_DELAY_SECS)
+            else:
+                logger.error(
+                    "Upstream connect failed after %d attempts: %s: %s",
+                    PROXY_UPSTREAM_RETRY_MAX,
+                    type(exc).__name__,
+                    exc,
+                )
+    raise last_exc if last_exc else RuntimeError("upstream retry failed")
 
 
 @asynccontextmanager
@@ -1887,7 +2093,12 @@ def _resolve_state_machine_tool_choice(
     return None, "unknown_phase"
 
 
-def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
+def build_openai_request(
+    anthropic_body: dict,
+    monitor: SessionMonitor,
+    profile_prompt_suffix: str | None = None,
+    profile_grammar: str | None = None,
+) -> dict:
     """Build an OpenAI Chat Completions request from an Anthropic Messages request."""
     openai_body = {
         "model": anthropic_body.get("model", "default"),
@@ -1913,6 +2124,8 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
                     "content": _AGENTIC_SYSTEM_SUPPLEMENT.strip(),
                 },
             )
+        if profile_prompt_suffix:
+            openai_body["messages"][0]["content"] += f"\n\n{profile_prompt_suffix}"
 
     if "max_tokens" in anthropic_body:
         requested_raw = max(1, int(anthropic_body["max_tokens"]))
@@ -1967,6 +2180,25 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
                     estimated_input,
                 )
                 requested_max = max(1024, available_for_output)
+
+            model_name = str(anthropic_body.get("model", "")).lower()
+            utilization = estimated_input / ctx_window if ctx_window else 0.0
+            if (
+                PROXY_OPUS46_MAX_TOKENS_HIGH_CTX > 0
+                and "opus" in model_name
+                and "4.6" in model_name
+                and utilization >= PROXY_OPUS46_CTX_THRESHOLD
+                and requested_max > PROXY_OPUS46_MAX_TOKENS_HIGH_CTX
+            ):
+                logger.warning(
+                    "MAX_TOKENS capped for Opus 4.6 at high context: %d -> %d (ctx=%d input~%d util=%.1f%%)",
+                    requested_max,
+                    PROXY_OPUS46_MAX_TOKENS_HIGH_CTX,
+                    ctx_window,
+                    estimated_input,
+                    utilization * 100,
+                )
+                requested_max = PROXY_OPUS46_MAX_TOKENS_HIGH_CTX
 
         openai_body["max_tokens"] = requested_max
     if "temperature" in anthropic_body:
@@ -2105,7 +2337,7 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
                 "Thinking disabled for tool turn (PROXY_DISABLE_THINKING_ON_TOOL_TURNS=on)"
             )
 
-        _apply_tool_call_grammar(openai_body)
+        _apply_tool_call_grammar(openai_body, grammar_override=profile_grammar)
 
     return openai_body
 
@@ -4123,6 +4355,80 @@ async def stream_anthropic_response(
 # ===========================================================================
 
 
+def _build_passthrough_headers(request: Request) -> dict | None:
+    api_key = request.headers.get("x-api-key") or ANTHROPIC_API_KEY
+    if not api_key:
+        return None
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": request.headers.get("anthropic-version", "2023-06-01"),
+    }
+    beta = request.headers.get("anthropic-beta")
+    if beta:
+        headers["anthropic-beta"] = beta
+    return headers
+
+
+async def _stream_passthrough(resp: httpx.Response):
+    async for chunk in resp.aiter_bytes():
+        yield chunk
+    await resp.aclose()
+
+
+async def _passthrough_anthropic_request(
+    request: Request, body: dict, is_stream: bool
+) -> Response:
+    headers = _build_passthrough_headers(request)
+    if not headers:
+        return Response(
+            content=json.dumps(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "authentication_error",
+                        "message": "Missing Anthropic API key for passthrough request",
+                    },
+                }
+            ),
+            status_code=401,
+            media_type="application/json",
+        )
+
+    client = http_client
+    if client is None:
+        return Response(
+            content=json.dumps({"error": "Proxy not initialized"}),
+            status_code=503,
+            media_type="application/json",
+        )
+
+    url = f"{ANTHROPIC_API_BASE.rstrip('/')}/v1/messages"
+
+    if is_stream:
+        resp = await client.send(
+            client.build_request("POST", url, json=body, headers=headers)
+        )
+        if resp.status_code != 200:
+            return Response(
+                content=resp.text,
+                status_code=resp.status_code,
+                media_type=resp.headers.get("content-type", "application/json"),
+            )
+        return StreamingResponse(
+            _stream_passthrough(resp),
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "text/event-stream"),
+        )
+
+    resp = await client.post(url, json=body, headers=headers)
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        media_type=resp.headers.get("content-type", "application/json"),
+    )
+
+
 @app.post("/v1/messages")
 async def messages(request: Request):
     """Handle Anthropic Messages API requests (streaming and non-streaming).
@@ -4136,12 +4442,38 @@ async def messages(request: Request):
     global last_session_id
 
     body = await request.json()
-    model = body.get("model", "default")
     is_stream = body.get("stream", False)
+    client_id = resolve_client_id(request)
+    if _should_passthrough_model(model):
+        logger.info("PASSTHROUGH: model=%s -> %s", model, ANTHROPIC_API_BASE)
+        return await _passthrough_anthropic_request(request, body, is_stream)
     session_id = resolve_session_id(request, body)
     monitor = get_session_monitor(session_id)
     last_session_id = session_id
 
+    profile_prompt_suffix = None
+    profile_grammar = None
+    requested_profile = _resolve_profile_name(request.headers, body)
+    if requested_profile:
+        profile_config = _load_profile_config(requested_profile)
+        if not profile_config and requested_profile != "generic":
+            profile_config = _load_profile_config("generic")
+            if requested_profile not in PROFILE_WARNED:
+                logger.warning(
+                    "Profile %s not found; falling back to generic",
+                    requested_profile,
+                )
+                PROFILE_WARNED.add(requested_profile)
+            requested_profile = "generic"
+        if profile_config:
+            body, profile_prompt_suffix, profile_grammar = _apply_profile_overrides(
+                body, profile_config
+            )
+            if profile_config.get("context_window"):
+                monitor.context_window = int(profile_config["context_window"])
+            logger.info("PROFILE: request=%s model=%s", requested_profile, body.get("model"))
+
+    model = body.get("model", "default")
     body = _maybe_apply_session_contamination_breaker(body, monitor, session_id)
     body, analysis_tools_removed = _maybe_route_analysis_without_tools(body)
     if analysis_tools_removed > 0:
@@ -4167,8 +4499,12 @@ async def messages(request: Request):
         last_text = last_content[:200]
     else:
         last_text = str(last_content)[:200]
+    rate_count = log_client_rate(client_id)
     logger.info(
-        "REQ: stream=%s msgs=%d tools=%d max_tokens=%s last_role=%s last_content=%.200s",
+        "REQ: client=%s rate_%ss=%d stream=%s msgs=%d tools=%d max_tokens=%s last_role=%s last_content=%.200s",
+        client_id,
+        PROXY_CLIENT_RATE_WINDOW_SECS,
+        rate_count,
         is_stream,
         n_messages,
         n_tools,
@@ -4206,7 +4542,12 @@ async def messages(request: Request):
                 n_messages,
             )
 
-    openai_body = build_openai_request(body, monitor)
+    openai_body = build_openai_request(
+        body,
+        monitor,
+        profile_prompt_suffix=profile_prompt_suffix,
+        profile_grammar=profile_grammar,
+    )
 
     client = http_client
     if client is None:
@@ -4225,11 +4566,27 @@ async def messages(request: Request):
         strict_body = dict(openai_body)
         strict_body["stream"] = False
 
-        strict_resp = await client.post(
-            f"{LLAMA_CPP_BASE}/chat/completions",
-            json=strict_body,
-            headers={"Content-Type": "application/json"},
-        )
+        try:
+            strict_resp = await _post_with_retry(
+                client,
+                f"{LLAMA_CPP_BASE}/chat/completions",
+                strict_body,
+                {"Content-Type": "application/json"},
+            )
+        except Exception as exc:
+            return Response(
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "overloaded_error",
+                            "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                        },
+                    }
+                ),
+                status_code=529,
+                media_type="application/json",
+            )
 
         if strict_resp.status_code != 200:
             error_text = strict_resp.text[:1000]
@@ -4239,11 +4596,27 @@ async def messages(request: Request):
                 error_text,
                 "strict-stream",
             ):
-                strict_resp = await client.post(
-                    f"{LLAMA_CPP_BASE}/chat/completions",
-                    json=strict_body,
-                    headers={"Content-Type": "application/json"},
-                )
+                try:
+                    strict_resp = await _post_with_retry(
+                        client,
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        strict_body,
+                        {"Content-Type": "application/json"},
+                    )
+                except Exception as exc:
+                    return Response(
+                        content=json.dumps(
+                            {
+                                "type": "error",
+                                "error": {
+                                    "type": "overloaded_error",
+                                    "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                                },
+                            }
+                        ),
+                        status_code=529,
+                        media_type="application/json",
+                    )
 
         if strict_resp.status_code != 200:
             error_text = strict_resp.text[:1000]
@@ -4313,8 +4686,8 @@ async def messages(request: Request):
 
         # Retry upstream connection with backoff to handle
         # llama-server restarts gracefully instead of 500-ing to the client.
-        MAX_UPSTREAM_RETRIES = 3
-        RETRY_DELAY_SECS = 5.0
+        MAX_UPSTREAM_RETRIES = PROXY_UPSTREAM_RETRY_MAX
+        RETRY_DELAY_SECS = PROXY_UPSTREAM_RETRY_DELAY_SECS
         last_exc: Exception | None = None
         resp: httpx.Response | None = None
 
@@ -4332,7 +4705,7 @@ async def messages(request: Request):
                 # Connection succeeded – break out of retry loop
                 last_exc = None
                 break
-            except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadTimeout) as exc:
                 last_exc = exc
                 if attempt < MAX_UPSTREAM_RETRIES - 1:
                     logger.warning(
@@ -4499,11 +4872,27 @@ async def messages(request: Request):
             },
         )
     else:
-        resp = await client.post(
-            f"{LLAMA_CPP_BASE}/chat/completions",
-            json=openai_body,
-            headers={"Content-Type": "application/json"},
-        )
+        try:
+            resp = await _post_with_retry(
+                client,
+                f"{LLAMA_CPP_BASE}/chat/completions",
+                openai_body,
+                {"Content-Type": "application/json"},
+            )
+        except Exception as exc:
+            return Response(
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "overloaded_error",
+                            "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                        },
+                    }
+                ),
+                status_code=529,
+                media_type="application/json",
+            )
 
         if resp.status_code != 200:
             error_text = resp.text[:1000]
@@ -4513,11 +4902,27 @@ async def messages(request: Request):
                 error_text,
                 "non-stream",
             ):
-                resp = await client.post(
-                    f"{LLAMA_CPP_BASE}/chat/completions",
-                    json=openai_body,
-                    headers={"Content-Type": "application/json"},
-                )
+                try:
+                    resp = await _post_with_retry(
+                        client,
+                        f"{LLAMA_CPP_BASE}/chat/completions",
+                        openai_body,
+                        {"Content-Type": "application/json"},
+                    )
+                except Exception as exc:
+                    return Response(
+                        content=json.dumps(
+                            {
+                                "type": "error",
+                                "error": {
+                                    "type": "overloaded_error",
+                                    "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                                },
+                            }
+                        ),
+                        status_code=529,
+                        media_type="application/json",
+                    )
 
         # Option B: Handle non-streaming errors too
         if resp.status_code != 200:
@@ -4604,8 +5009,12 @@ async def models():
     """Return available model list (spoofs Anthropic model IDs for client compatibility)."""
     return {
         "data": [
-            {"id": "claude-sonnet-4-20250514", "object": "model"},
-            {"id": "claude-3-5-sonnet-20241022", "object": "model"},
+            {"id": "claude-opus-4-6-20260101", "object": "model"},
+            {"id": "claude-sonnet-4-6-20250514", "object": "model"},
+            {"id": "gpt-5.4", "object": "model"},
+            {"id": "gpt-5.3-codex", "object": "model"},
+            {"id": "claude-opus-4-6-20250616", "object": "model"},
+            {"id": "qwen35-a3b-iq4xs", "object": "model"},
         ]
     }
 

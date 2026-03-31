@@ -137,6 +137,59 @@ class TestProxyConfigTuning(unittest.TestCase):
             setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
 
+
+class TestProfileSelection(unittest.TestCase):
+    def test_profile_header_overrides_body_param(self):
+        headers = {"X-UAP-Model-Profile": "qwen35"}
+        body = {"uap_model_profile": "generic"}
+        self.assertEqual(proxy._resolve_profile_name(headers, body), "qwen35")
+
+    def test_build_request_injects_profile_prompt_suffix(self):
+        suffix = "Call all tools in one response."
+        body = {
+            "model": "default",
+            "max_tokens": 128,
+            "messages": [{"role": "user", "content": "run pwd"}],
+            "tools": [
+                {
+                    "name": "Bash",
+                    "description": "run command",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+        }
+        openai_body = proxy.build_openai_request(
+            body,
+            proxy.SessionMonitor(context_window=0),
+            profile_prompt_suffix=suffix,
+        )
+        self.assertIn(suffix, openai_body["messages"][0]["content"])
+
+    def test_build_request_uses_profile_grammar_override(self):
+        old_flag = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR")
+        setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", True)
+        try:
+            body = {
+                "model": "default",
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": "run pwd"}],
+                "tools": [
+                    {
+                        "name": "Bash",
+                        "description": "run command",
+                        "input_schema": {"type": "object"},
+                    }
+                ],
+            }
+            openai_body = proxy.build_openai_request(
+                body,
+                proxy.SessionMonitor(context_window=0),
+                profile_grammar="grammar-test",
+            )
+            self.assertEqual(openai_body.get("grammar"), "grammar-test")
+        finally:
+            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", old_flag)
+
     def test_prune_target_fraction_uses_config_or_default(self):
         old_target = getattr(proxy, "PROXY_CONTEXT_PRUNE_TARGET_FRACTION")
         try:
