@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.20.4 (2026-04-01)
+
+- chore: bump version to 1.20.3
+- fix: extract tool calls from <tool_call> XML in text content
+- chore: bump version to 1.20.2
+- feat: enable per-request model profiles
+- fix: make tool-call server configurable + proxy passthrough
+- chore: bump version to 1.18.1
+- fix: expand proxy model list
+- chore: bump version to 1.20.0
+- chore: bump version to 1.19.0
+- chore: bump version to 1.19.0
+- feat: add CLI parity commands and aliases
+- chore: bump version to 1.18.1
+- perf: optimize adaptive cache and capability routing
+- Revert "Merge pull request #123 from DammianMiller/feature/008-optimization-suite"
+- perf: optimize adaptive cache and capability routing
+- feat: update supported Droid models to latest versions
+
+
 ## v1.20.3 (2026-04-01)
 
 - fix: extract tool calls from <tool_call> XML in text content
