@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.21.0 (2026-03-31)
+
+- chore: track node_modules symlink for worktree
+- chore: update factory infrastructure, skills, and validation artifacts
+- feat: add proxy stabilization guardrails and schema-collapse validation
+- fix: preserve tools on grounded benchmark route
+- fix: preserve tools on grounded benchmark route
+- fix: tighten grounded benchmark prompt output
+- fix: ground benchmark analysis route to local runtime
+- fix: re-enable analysis-only benchmark routing
+- fix: reject schema-fragment task tool arguments
+- fix: bound proxy planning stubs after rate limits
+- fix: terminalize invalid proxy task turns
+- fix: reject placeholder proxy tool commands
+- fix: tune llama runtime benchmark output
+- fix: summarize reasoning-only proxy fallbacks
+- fix: bound proxy empty-visible fallback
+- fix: bound opencode session defaults
+- chore: bump version to 1.20.4
+- feat: add benchmark automation tooling
+- fix: align local qwen runtime defaults
+- fix: restore stable qwen coding runtime defaults
+
+
 ## v1.20.4 (2026-03-29)
 
 - feat: add benchmark automation tooling
