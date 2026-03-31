@@ -2780,3 +2780,73 @@ class TestSessionContaminationBreaker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCompletionContractGuardrails(unittest.TestCase):
+    def test_completion_contract_requires_progress_after_tool_results(self):
+        body = {
+            "model": "test",
+            "messages": [
+                {"role": "user", "content": "fix the bug"},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/tmp/x"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "done"}]},
+            ],
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+        }
+        monitor = proxy.SessionMonitor(context_window=0)
+        monitor.update_completion_state(body, has_tool_results=True)
+        self.assertTrue(monitor.completion_required)
+        self.assertTrue(monitor.completion_pending)
+        self.assertIn("awaiting_post_tool_followup", monitor.completion_blockers)
+
+    def test_completion_contract_skips_analysis_only_requests(self):
+        body = {
+            "model": "test",
+            "messages": [
+                {"role": "user", "content": "analyze this session and plan options only"},
+            ],
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+        }
+        self.assertFalse(proxy._should_enforce_completion_contract(body))
+
+    def test_retry_for_completion_contract_detects_premature_final_text(self):
+        body = {
+            "messages": [
+                {"role": "user", "content": "fix the bug"},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/tmp/x"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "done"}]},
+            ],
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+        }
+        monitor = proxy.SessionMonitor(context_window=0)
+        monitor.update_completion_state(body, has_tool_results=True)
+        openai_resp = {
+            "choices": [{"finish_reason": "stop", "message": {"content": "Done, the issue is fixed.", "tool_calls": []}}]
+        }
+        self.assertTrue(proxy._should_retry_for_completion_contract(openai_resp, body, monitor))
+
+    def test_completion_retry_body_forces_required_tool_choice(self):
+        monitor = proxy.SessionMonitor(context_window=0)
+        monitor.completion_blockers = ["awaiting_post_tool_followup"]
+        openai_body = {"messages": [{"role": "user", "content": "fix it"}], "stream": True, "tool_choice": "auto"}
+        retry = proxy._build_completion_contract_retry_body(openai_body, monitor)
+        self.assertFalse(retry["stream"])
+        self.assertEqual(retry["tool_choice"], "required")
+        self.assertIn("awaiting_post_tool_followup", retry["messages"][-1]["content"])
+
+    def test_finalize_phase_returns_to_review_when_completion_pending(self):
+        monitor = proxy.SessionMonitor(context_window=0)
+        monitor.tool_turn_phase = "finalize"
+        monitor.tool_state_auto_budget_remaining = 1
+        monitor.completion_pending = True
+        monitor.completion_blockers = ["awaiting_post_tool_followup"]
+        choice, reason = proxy._resolve_state_machine_tool_choice(
+            {"messages": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "done"}]}]},
+            monitor,
+            has_tool_results=True,
+            last_user_has_tool_result=True,
+        )
+        self.assertEqual(choice, "auto")
+        self.assertEqual(reason, "completion_pending")
+        self.assertEqual(monitor.tool_turn_phase, "review")
+        self.assertEqual(monitor.completion_recovery_attempts, 1)
