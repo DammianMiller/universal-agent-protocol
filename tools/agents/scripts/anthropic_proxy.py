@@ -1626,8 +1626,14 @@ _AGENTIC_SYSTEM_SUPPLEMENT_CLEAN = (
     "</agentic-protocol>"
 )
 
+_AGENTIC_SYSTEM_SUPPLEMENT_MINIMAL = (
+    "\n\nUse tools for all actions. Respond with tool calls, not descriptions of what to do."
+)
+
 if PROXY_AGENTIC_SUPPLEMENT_MODE == "legacy":
     _AGENTIC_SYSTEM_SUPPLEMENT = _AGENTIC_SYSTEM_SUPPLEMENT_LEGACY
+elif PROXY_AGENTIC_SUPPLEMENT_MODE == "minimal":
+    _AGENTIC_SYSTEM_SUPPLEMENT = _AGENTIC_SYSTEM_SUPPLEMENT_MINIMAL
 elif PROXY_AGENTIC_SUPPLEMENT_MODE == "clean":
     _AGENTIC_SYSTEM_SUPPLEMENT = _AGENTIC_SYSTEM_SUPPLEMENT_CLEAN
 else:
@@ -2112,19 +2118,26 @@ def build_openai_request(
     has_tools = _has_tool_definitions(anthropic_body)
 
     # Inject agentic protocol instructions only for tool-enabled turns.
+    # Use minimal supplement for qwen models to reduce prompt leak surface.
     if has_tools:
+        model_name = anthropic_body.get("model", "").lower()
+        supplement = (
+            _AGENTIC_SYSTEM_SUPPLEMENT_MINIMAL
+            if "qwen" in model_name and PROXY_AGENTIC_SUPPLEMENT_MODE != "legacy"
+            else _AGENTIC_SYSTEM_SUPPLEMENT
+        )
         if (
             openai_body["messages"]
             and openai_body["messages"][0].get("role") == "system"
         ):
-            openai_body["messages"][0]["content"] += _AGENTIC_SYSTEM_SUPPLEMENT
+            openai_body["messages"][0]["content"] += supplement
         else:
             # No system message from the client; inject one.
             openai_body["messages"].insert(
                 0,
                 {
                     "role": "system",
-                    "content": _AGENTIC_SYSTEM_SUPPLEMENT.strip(),
+                    "content": supplement.strip(),
                 },
             )
         if profile_prompt_suffix:
@@ -2754,6 +2767,136 @@ def _sanitize_garbled_tool_calls(openai_resp: dict) -> bool:
     return True
 
 
+# Distinctive phrases from the agentic system supplement that Qwen3.5 leaks
+# into tool call arguments.  Keep lowercase for case-insensitive matching.
+_SYSTEM_PROMPT_LEAK_MARKERS = (
+    "agentic-protocol",
+    "agentic coding loop",
+    "follow these rules",
+    "function signatures within",
+    "provided with function signatures",
+    "you are provided with function",
+    "call one or more functions",
+    "xml tags:",
+    "do not summarize the issue",
+    "you must call a tool",
+    "proceed immediately to make the fix",
+    "do not ask for permission or confirmation",
+    "do not give up after one failure",
+    "emit a valid tool call object",
+    "never output protocol fragments",
+    "never emit literal tag artifacts",
+    "use tools for concrete work",
+    "stopping at analysis",
+)
+
+
+def _contains_system_prompt_leak(value) -> bool:
+    """Check if any string leaf in *value* contains system prompt fragments."""
+    for text in _iter_string_leaves(value):
+        lowered = text.lower()
+        if any(marker in lowered for marker in _SYSTEM_PROMPT_LEAK_MARKERS):
+            return True
+    return False
+
+
+def _find_earliest_leak_position(text: str) -> int | None:
+    """Return the character index where the first system prompt leak starts, or None."""
+    lowered = text.lower()
+    earliest = None
+    for marker in _SYSTEM_PROMPT_LEAK_MARKERS:
+        idx = lowered.find(marker)
+        if idx != -1 and (earliest is None or idx < earliest):
+            earliest = idx
+    return earliest
+
+
+def _repair_system_prompt_leak(openai_resp: dict) -> tuple[dict, int]:
+    """Strip system prompt leak fragments from tool call argument values.
+
+    Truncates string values at the first detected leak marker.
+    Returns (possibly-mutated response, repair count).
+    """
+    if not _openai_has_tool_calls(openai_resp):
+        return openai_resp, 0
+
+    choice, message = _extract_openai_choice(openai_resp)
+    tool_calls = message.get("tool_calls") or []
+    if not tool_calls:
+        return openai_resp, 0
+
+    repaired_tool_calls = []
+    repaired_count = 0
+
+    for tool_call in tool_calls:
+        fn = tool_call.get("function") if isinstance(tool_call, dict) else {}
+        if not isinstance(fn, dict):
+            fn = {}
+
+        raw_args = fn.get("arguments", "{}")
+        if isinstance(raw_args, dict):
+            parsed_args = dict(raw_args)
+        else:
+            try:
+                parsed_args = json.loads(str(raw_args))
+            except json.JSONDecodeError:
+                repaired_tool_calls.append(tool_call)
+                continue
+
+        if not isinstance(parsed_args, dict):
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        changed = False
+        cleaned_args = {}
+        for key, val in parsed_args.items():
+            if isinstance(val, str):
+                pos = _find_earliest_leak_position(val)
+                if pos is not None and pos > 0:
+                    cleaned_args[key] = val[:pos].rstrip()
+                    changed = True
+                    logger.warning(
+                        "PROMPT LEAK REPAIR: tool=%s field=%s truncated at pos=%d",
+                        fn.get("name", "?"),
+                        key,
+                        pos,
+                    )
+                elif pos == 0:
+                    # Entire value is leaked content — clear it
+                    cleaned_args[key] = ""
+                    changed = True
+                else:
+                    cleaned_args[key] = val
+            else:
+                cleaned_args[key] = val
+
+        if not changed:
+            repaired_tool_calls.append(tool_call)
+            continue
+
+        new_tool_call = dict(tool_call)
+        new_fn = dict(fn)
+        new_fn["arguments"] = json.dumps(cleaned_args, separators=(",", ":"))
+        new_tool_call["function"] = new_fn
+        repaired_tool_calls.append(new_tool_call)
+        repaired_count += 1
+
+    if repaired_count > 0:
+        repaired_response = dict(openai_resp)
+        repaired_choice = dict(choice)
+        repaired_message = dict(message)
+        repaired_message["tool_calls"] = repaired_tool_calls
+        repaired_choice["message"] = repaired_message
+        repaired_response["choices"] = [repaired_choice]
+        logger.warning(
+            "PROMPT LEAK REPAIR: repaired %d tool call(s)",
+            repaired_count,
+        )
+        return repaired_response, repaired_count
+
+    return openai_resp, 0
+
+
 def _tool_schema_map_from_anthropic_body(anthropic_body: dict) -> dict[str, dict]:
     schema_map: dict[str, dict] = {}
     for tool in anthropic_body.get("tools", []) or []:
@@ -3302,6 +3445,16 @@ def _validate_tool_call_arguments(
             reason=f"arguments for '{tool_name}' contain malformed markup fragments",
             retry_hint=(
                 f"Remove tag fragments from `{tool_name}` arguments and emit only plain JSON key/value pairs."
+            ),
+        )
+
+    if _contains_system_prompt_leak(parsed):
+        return ToolResponseIssue(
+            kind="invalid_tool_args",
+            reason=f"arguments for '{tool_name}' contain leaked system prompt fragments",
+            retry_hint=(
+                f"Emit exactly one `{tool_name}` tool call with only the requested arguments. "
+                "Do not include any system instructions or protocol text in argument values."
             ),
         )
 
@@ -3860,7 +4013,8 @@ async def _apply_malformed_tool_guardrail(
             working_resp, anthropic_body
         )
         working_resp, bash_repairs = _repair_bash_command_artifacts(working_resp)
-        repair_count = markup_repairs + required_repairs + bash_repairs
+        working_resp, leak_repairs = _repair_system_prompt_leak(working_resp)
+        repair_count = markup_repairs + required_repairs + bash_repairs + leak_repairs
 
     required_tool_choice = openai_body.get("tool_choice") == "required"
     has_tool_calls = _openai_has_tool_calls(working_resp)
@@ -3949,8 +4103,11 @@ async def _apply_malformed_tool_guardrail(
             retry_working, retry_bash_repairs = _repair_bash_command_artifacts(
                 retry_working
             )
+            retry_working, retry_leak_repairs = _repair_system_prompt_leak(
+                retry_working
+            )
             retry_repairs = (
-                retry_markup_repairs + retry_required_repairs + retry_bash_repairs
+                retry_markup_repairs + retry_required_repairs + retry_bash_repairs + retry_leak_repairs
             )
 
         working_resp = retry_working
