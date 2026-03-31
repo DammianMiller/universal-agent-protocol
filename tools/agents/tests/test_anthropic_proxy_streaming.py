@@ -279,6 +279,31 @@ class TestProxyConfigTuning(unittest.TestCase):
             setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
 
+    def test_build_request_caps_tool_turn_max_tokens(self):
+        old_cap = getattr(proxy, "PROXY_TOOL_TURN_MAX_TOKENS_CAP")
+        try:
+            setattr(proxy, "PROXY_TOOL_TURN_MAX_TOKENS_CAP", 1024)
+
+            body = {
+                "model": "test",
+                "max_tokens": 5000,
+                "messages": [{"role": "user", "content": "run pwd"}],
+                "tools": [
+                    {
+                        "name": "Bash",
+                        "description": "run command",
+                        "input_schema": {"type": "object"},
+                    }
+                ],
+            }
+
+            openai = proxy.build_openai_request(
+                body, proxy.SessionMonitor(context_window=0)
+            )
+            self.assertEqual(openai.get("max_tokens"), 1024)
+        finally:
+            setattr(proxy, "PROXY_TOOL_TURN_MAX_TOKENS_CAP", old_cap)
+
     def test_build_request_injects_local_runtime_grounding_for_analysis_only_route(self):
         old_route = getattr(proxy, "PROXY_ANALYSIS_ONLY_ROUTE")
         old_base = getattr(proxy, "LLAMA_CPP_BASE")
@@ -1388,6 +1413,42 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         )
         self.assertEqual(args["command"], "pwd")
 
+    def test_bash_command_repair_strips_analysis_grounding_bullets(self):
+        openai_resp = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "Bash",
+                                    "arguments": json.dumps(
+                                        {
+                                            "command": (
+                                                "- Active proxy endpoint: http://127.0.0.1:4000\n"
+                                                "- Proxy upstream URL: http://127.0.0.1:8080/v1\n"
+                                                "curl -s http://127.0.0.1:4000/health"
+                                            )
+                                        }
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+        repaired, count = proxy._repair_bash_command_artifacts(openai_resp)
+        self.assertEqual(count, 0)
+        args = json.loads(
+            repaired["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        )
+        self.assertIn("Active proxy endpoint", args["command"])
+
     def test_guardrail_accepts_repaired_markup_without_fallback(self):
         old_retry = getattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX")
         try:
@@ -1595,6 +1656,70 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             self.assertEqual(monitor.arg_preflight_repairs, 1)
         finally:
             setattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX", old_retry)
+
+
+class TestToolStateMachineStabilization(unittest.TestCase):
+    def test_review_stall_forces_finalize(self):
+        old_enabled = getattr(proxy, "PROXY_TOOL_STATE_MACHINE")
+        old_no_progress = getattr(proxy, "PROXY_NO_PROGRESS_THRESHOLD")
+        old_min_msgs = getattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES")
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_NO_PROGRESS_THRESHOLD", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.tool_turn_phase = "review"
+            monitor.tool_state_auto_budget_remaining = 2
+            monitor.tool_state_stagnation_streak = 6
+
+            choice, reason = proxy._resolve_state_machine_tool_choice(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "call_1",
+                                    "content": "ok",
+                                }
+                            ],
+                        },
+                        {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "call_1",
+                                    "name": "Read",
+                                    "input": {"file_path": "/tmp/x"},
+                                }
+                            ],
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "call_1",
+                                    "content": "ok",
+                                }
+                            ],
+                        },
+                    ]
+                },
+                monitor,
+                has_tool_results=True,
+                last_user_has_tool_result=True,
+            )
+
+            self.assertEqual(choice, "finalize")
+            self.assertEqual(reason, "review_stalled")
+            self.assertEqual(monitor.tool_turn_phase, "finalize")
+        finally:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_enabled)
+            setattr(proxy, "PROXY_NO_PROGRESS_THRESHOLD", old_no_progress)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", old_min_msgs)
 
     def test_guardrail_retries_invalid_tool_args_and_recovers(self):
         old_retry = getattr(proxy, "PROXY_MALFORMED_TOOL_RETRY_MAX")
@@ -3248,6 +3373,57 @@ class TestRequiredArgRepair(unittest.TestCase):
         self.assertTrue(issue.has_issue())
         self.assertEqual(issue.kind, "invalid_tool_args")
         self.assertIn("junk prompt value", issue.reason)
+
+    def test_validate_askuser_rejects_missing_question_entry(self):
+        issue = proxy._validate_tool_call_arguments(
+            "AskUser",
+            '{"questionnaire":"description="}',
+            {
+                "type": "object",
+                "required": ["questionnaire"],
+                "properties": {"questionnaire": {"type": "string"}},
+            },
+            {"AskUser"},
+        )
+
+        self.assertTrue(issue.has_issue())
+        self.assertEqual(issue.kind, "invalid_tool_args")
+        self.assertIn("at least one [question]", issue.reason)
+
+    def test_validate_create_rejects_schema_help_text_as_content(self):
+        issue = proxy._validate_tool_call_arguments(
+            "Create",
+            '{"file_path":"/tmp/x","content":"The content to write to the file"}',
+            {
+                "type": "object",
+                "required": ["file_path", "content"],
+                "properties": {
+                    "file_path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+            },
+            {"Create"},
+        )
+
+        self.assertTrue(issue.has_issue())
+        self.assertEqual(issue.kind, "invalid_tool_args")
+        self.assertIn("schema/documentation text", issue.reason)
+
+    def test_validate_generic_tool_args_reject_schema_doc_strings(self):
+        issue = proxy._validate_tool_call_arguments(
+            "GenerateDroid",
+            '{"description":"The description of what this droid should do and when it should be used"}',
+            {
+                "type": "object",
+                "required": ["description"],
+                "properties": {"description": {"type": "string"}},
+            },
+            {"GenerateDroid"},
+        )
+
+        self.assertTrue(issue.has_issue())
+        self.assertEqual(issue.kind, "invalid_tool_args")
+        self.assertIn("schema/documentation text", issue.reason)
 
 
 class TestSessionContaminationBreaker(unittest.TestCase):

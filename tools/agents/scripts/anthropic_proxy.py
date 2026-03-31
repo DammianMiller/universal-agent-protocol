@@ -149,6 +149,9 @@ PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
 PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT = int(
     os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "3")
 )
+PROXY_TOOL_TURN_MAX_TOKENS_CAP = int(
+    os.environ.get("PROXY_TOOL_TURN_MAX_TOKENS_CAP", "4096")
+)
 PROXY_TOOL_NARROWING_EXPAND_ON_LOOP = os.environ.get(
     "PROXY_TOOL_NARROWING_EXPAND_ON_LOOP", "on"
 ).lower() not in {
@@ -1937,6 +1940,16 @@ def _resolve_state_machine_tool_choice(
             return "required", "review_complete"
 
         monitor.tool_state_auto_budget_remaining -= 1
+        if monitor.tool_state_stagnation_streak >= max(
+            1, PROXY_NO_PROGRESS_THRESHOLD * 2
+        ):
+            monitor.set_tool_turn_phase("finalize", reason="review_stalled")
+            monitor.tool_state_auto_budget_remaining = 1
+            logger.warning(
+                "TOOL STATE MACHINE: forcing finalize turn from review after persistent stagnation=%d",
+                monitor.tool_state_stagnation_streak,
+            )
+            return "finalize", "review_stalled"
         if monitor.tool_state_auto_budget_remaining == 0:
             monitor.set_tool_turn_phase("act", reason="review_budget_spent")
             monitor.tool_state_forced_budget_remaining = max(
@@ -2077,6 +2090,15 @@ def build_openai_request(anthropic_body: dict, monitor: SessionMonitor) -> dict:
         openai_body["tools"] = _narrow_tools_for_request(
             anthropic_body, openai_body["tools"]
         )
+        if PROXY_TOOL_TURN_MAX_TOKENS_CAP > 0 and openai_body.get("max_tokens"):
+            capped = min(openai_body["max_tokens"], PROXY_TOOL_TURN_MAX_TOKENS_CAP)
+            if capped != openai_body["max_tokens"]:
+                logger.info(
+                    "MAX_TOKENS tool-turn cap applied: %d -> %d",
+                    openai_body["max_tokens"],
+                    capped,
+                )
+                openai_body["max_tokens"] = capped
 
         # Smart tool_choice: force tool calls during the agentic loop to
         # prevent the model from producing text-only end_turn responses that
@@ -3458,6 +3480,24 @@ def _is_placeholder_string(value) -> bool:
     return False
 
 
+_SCHEMA_DOC_STRING_MARKERS = (
+    "the command to execute",
+    "the absolute path to the file",
+    "the content to write to the file",
+    "the description of what this droid should do and when it should be used",
+    "at least 1 [question] is required",
+)
+
+
+def _looks_like_schema_doc_string(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    lowered = re.sub(r"\s+", " ", value.strip().lower())
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in _SCHEMA_DOC_STRING_MARKERS)
+
+
 def _matches_json_schema_type(value, expected_type) -> bool:
     if not expected_type:
         return True
@@ -3544,7 +3584,40 @@ def _validate_tool_call_arguments(
             ),
         )
 
+    if any(_looks_like_schema_doc_string(v) for v in parsed.values() if isinstance(v, str)):
+        return ToolResponseIssue(
+            kind="invalid_tool_args",
+            reason=f"arguments for '{tool_name}' reused schema/documentation text instead of real values",
+            retry_hint=(
+                f"Emit exactly one `{tool_name}` tool call with concrete argument values only. "
+                "Do not copy field descriptions, validation errors, or tool schema help text into arguments."
+            ),
+        )
+
     lowered_tool_name = tool_name.strip().lower()
+    if lowered_tool_name == "askuser":
+        questionnaire = parsed.get("questionnaire")
+        if not isinstance(questionnaire, str) or "[question]" not in questionnaire:
+            return ToolResponseIssue(
+                kind="invalid_tool_args",
+                reason="arguments for 'AskUser' must include a questionnaire with at least one [question] entry",
+                retry_hint=(
+                    "Emit exactly one `AskUser` tool call whose `questionnaire` string contains at least one "
+                    "[question] line plus matching [topic] and [option] lines."
+                ),
+            )
+
+    if lowered_tool_name in {"create", "write"}:
+        content = parsed.get("content")
+        if isinstance(content, str) and _looks_like_schema_doc_string(content):
+            return ToolResponseIssue(
+                kind="invalid_tool_args",
+                reason=f"arguments for '{tool_name}' used schema help text as file content",
+                retry_hint=(
+                    f"Emit exactly one `{tool_name}` tool call with real file content, not field descriptions or parameter docs."
+                ),
+            )
+
     if lowered_tool_name in {"task", "omp_task"}:
         subagent_value = parsed.get("subagent_type")
         agent_value = parsed.get("agent")

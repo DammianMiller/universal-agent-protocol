@@ -7,7 +7,7 @@ commands:
 
 services:
   llama-server:
-    start: /home/cogtek/llama.cpp/.worktrees/turboquant-cuda-v2/build/bin/llama-server --model /home/cogtek/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf --host 127.0.0.1 --port 8080 --ctx-size 262144 --parallel 1 --n-predict 1024 --n-gpu-layers all --cache-type-k q4_0 --cache-type-v q4_0 --flash-attn on --spec-type ngram-cache --draft-max 12 --draft-min 2 --draft-p-min 0.80 --repeat-penalty 1.0 --temp 0.6 --top-p 0.9 --top-k 20 --min-p 0.05 --chat-template-file /home/cogtek/dev/miller-tech/universal-agent-protocol/.worktrees/033-proxy-endturn-retry/tools/agents/config/chat_template.jinja --log-file /tmp/turboquant-v2-best.log
+    start: /home/cogtek/llama.cpp/.worktrees/turboquant-cuda-v2/build/bin/llama-server --model /home/cogtek/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf --host 127.0.0.1 --port 8080 --ctx-size 262144 --parallel 2 --n-predict 1024 --n-gpu-layers all --cache-type-k q8_0 --cache-type-v q4_0 --flash-attn on --spec-type ngram-cache --draft-max 12 --draft-min 2 --draft-p-min 0.80 --repeat-penalty 1.0 --temp 0.6 --top-p 0.9 --top-k 20 --min-p 0.05 --chat-template-file /home/cogtek/dev/miller-tech/universal-agent-protocol/.worktrees/033-proxy-endturn-retry/tools/agents/config/chat_template.jinja --log-file /tmp/turboquant-v2-best.log
     stop: lsof -ti :8080 | xargs -r kill
     healthcheck: curl -sf http://127.0.0.1:8080/health
     port: 8080
