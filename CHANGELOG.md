@@ -1,5 +1,6 @@
 # Changelog
 
+<<<<<<< HEAD
 ## v1.20.4 (2026-04-01)
 
 - chore: bump version to 1.20.3
@@ -39,53 +40,17 @@
 - feat: update supported Droid models to latest versions
 
 
-## v1.20.2 (2026-03-28)
+## v1.20.4 (2026-03-29)
 
-- Version bump
-
-
-## v1.20.1 (2026-03-28)
-
-- fix: expand anthropic proxy model list for updated Droid models
-- fix: replace require usage in throughput and predictive memory modules
-- test: cover proxy model list entries
-
-## v1.20.0 (2026-03-28)
-
-- feat: add CLI parity commands and aliases
-## v1.19.2 (2026-03-27)
-
-- fix: avoid task id collisions
-- feat: update supported Droid models to latest versions
+- feat: add benchmark automation tooling
+- fix: align local qwen runtime defaults
 
 
-## v1.19.1 (2026-03-27)
+## v1.20.3 (2026-03-29)
 
-- chore: bump version to 1.19.0
-- chore: bump version to 1.18.1
-- fix: tighten proxy token guards
-- fix: remove agents/docker-compose.yml for test D10
-- fix: add upstream retry backoff for proxy
-- chore: clean up CHANGELOG duplicates
-- chore: update package-lock.json
-
-
-## v1.19.0 (2026-03-27)
-
-- chore: bump version to 1.18.1
-- fix: tighten proxy token guards
-- fix: remove agents/docker-compose.yml for test D10
-- fix: add upstream retry backoff for proxy
-- chore: clean up CHANGELOG duplicates
-- chore: update package-lock.json
-
-
-## v1.18.1 (2026-03-27)
-
-- fix: tighten proxy token guards
-- fix: remove agents/docker-compose.yml for test D10
-- chore: clean up CHANGELOG duplicates
-- fix: add verbosity controls for hooks
+- chore: bump version to 1.20.3
+- fix: stabilize release validation flow
+- fix: build before tests in version bump pipeline
 
 
 ## v1.18.0 (2026-03-27)

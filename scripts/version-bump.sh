@@ -44,14 +44,7 @@ fi
 OLD_VERSION=$(node -p "require('./package.json').version")
 echo "Current version: $OLD_VERSION"
 
-# 2. Run tests and build to confirm project is healthy
-echo ""
-echo "Running tests..."
-npm test -- --run 2>&1 || {
-  echo "Error: tests failed. Fix tests before bumping version."
-  exit 1
-}
-
+# 2. Run build and tests to confirm project is healthy
 echo ""
 echo "Running build..."
 npm run build 2>&1 || {
@@ -59,9 +52,16 @@ npm run build 2>&1 || {
   exit 1
 }
 
+echo ""
+echo "Running tests..."
+npm test -- --run 2>&1 || {
+  echo "Error: tests failed. Fix tests before bumping version."
+  exit 1
+}
+
 # 2b. Restore clean tree (tests may create temp files like test droids)
 git checkout -- . 2>/dev/null || true
-git clean -fd .factory/droids/test-droid-* 2>/dev/null || true
+find .factory/droids -maxdepth 1 -type f -name 'test-droid-*' -delete 2>/dev/null || true
 
 # 3. Bump version in package.json (no git tag yet — we do it after changelog)
 npm version "$LEVEL" --no-git-tag-version > /dev/null 2>&1

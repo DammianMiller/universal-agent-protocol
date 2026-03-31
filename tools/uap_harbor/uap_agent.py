@@ -274,6 +274,7 @@ class UAPAgent(ClaudeCode):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._api_endpoint = kwargs.get("api_endpoint")
 
     @staticmethod
     def name() -> str:
@@ -296,6 +297,8 @@ class UAPAgent(ClaudeCode):
         modifications.
         """
         await super().setup(environment)
+
+        await environment.exec("mkdir -p /uap-local")
 
         # Auto-detect project root: this file is at <project>/tools/uap_harbor/uap_agent.py
         uap_project_root = os.environ.get(
@@ -364,10 +367,11 @@ class UAPAgent(ClaudeCode):
         # Call parent's create_run_agent_commands with enhanced instruction
         escaped_instruction = shlex.quote(enhanced_instruction)
 
-        # Get base URL, but filter out localhost URLs since they won't work inside Docker
-        base_url = os.environ.get("ANTHROPIC_BASE_URL", None)
-        if base_url and ("localhost" in base_url or "127.0.0.1" in base_url):
-            base_url = None  # Can't reach host's localhost from Docker container
+        base_url = self._api_endpoint or os.environ.get("ANTHROPIC_BASE_URL", None)
+        if base_url and "localhost" in base_url:
+            base_url = base_url.replace("localhost", "host.docker.internal")
+        if base_url and "127.0.0.1" in base_url:
+            base_url = base_url.replace("127.0.0.1", "host.docker.internal")
 
         env = {
             "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),

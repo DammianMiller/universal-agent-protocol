@@ -13,8 +13,8 @@ Two agents for A/B comparison:
     + pre-execution hooks + recency-bias prompting + agentic forcing
 
 Both inject opencode.json into the container so opencode can reach the local
-Qwen3.5 llama-server at http://192.168.1.165:8080/v1 via the custom
-@ai-sdk/openai-compatible provider.
+Qwen3.5 runtime through either the Anthropic proxy on :4000 or direct
+llama.cpp on :8080 via the injected OpenCode provider config.
 """
 
 import json
@@ -816,7 +816,7 @@ def build_enhanced_instruction(instruction: str) -> str:
 # Shared helpers
 # --------------------------------------------------------------------------- #
 
-DEFAULT_API = "http://192.168.1.165:8080/v1"
+DEFAULT_API = "http://127.0.0.1:4000/v1"
 
 
 def _get_api_endpoint(override: str = "") -> str:
@@ -1163,12 +1163,29 @@ class OpenCodeUAP(BaseInstalledAgent):
             "package.json",
         ]
 
+        created_dirs = {"/uap-local"}
+
+        async def ensure_parent_dir(target_path: str) -> None:
+            parent = str(Path(target_path).parent)
+            missing = []
+            while parent not in created_dirs:
+                missing.append(parent)
+                next_parent = str(Path(parent).parent)
+                if next_parent == parent:
+                    break
+                parent = next_parent
+            for directory in reversed(missing):
+                await environment.exec(f"mkdir -p {shlex.quote(directory)}")
+                created_dirs.add(directory)
+
         for src_rel in local_upload_files:
             src = uap_project_path / src_rel
             if src.exists():
+                target_path = f"/uap-local/{src_rel}"
+                await ensure_parent_dir(target_path)
                 await environment.upload_file(
                     source_path=src,
-                    target_path=f"/uap-local/{src_rel}",
+                    target_path=target_path,
                 )
 
         for src_rel in local_upload_dirs:
@@ -1177,9 +1194,11 @@ class OpenCodeUAP(BaseInstalledAgent):
                 for fpath in src_dir.rglob("*"):
                     if fpath.is_file() and "__pycache__" not in str(fpath):
                         rel = fpath.relative_to(uap_project_path)
+                        target_path = f"/uap-local/{rel}"
+                        await ensure_parent_dir(target_path)
                         await environment.upload_file(
                             source_path=fpath,
-                            target_path=f"/uap-local/{rel}",
+                            target_path=target_path,
                         )
 
         logger.info("[Local UAP] Local project uploaded to /uap-local/")

@@ -11,6 +11,26 @@
 
 <!-- Custom Sections (preserved from existing file) -->
 
+## SESSION START
+
+At session start, run `uap task ready` before making implementation changes.
+
+## DECISION LOOP
+
+Use `@Skill:name.md` references when matching specialized workflows before coding.
+
+## WORKTREE WORKFLOW — MANDATORY
+
+All file edits must follow the required worktree workflow.
+
+## PARALLEL REVIEW PROTOCOL
+
+Run parallel review/verification steps when validating non-trivial changes.
+
+## COMPLETION GATES - MANDATORY
+
+Completion gates are MANDATORY and must be verified minimum 3 times before claiming done.
+
 ## WORKTREE GATE [REQUIRED — code changes only]
 
 Before editing ANY source file, verify you are working inside a worktree:
@@ -38,6 +58,18 @@ No exceptions for "small changes", "just docs", or "version bumps".
 
 ---
 
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
 ## PRE-EDIT BUILD GATE [REQUIRED — .ts files only]
 
 Before editing any `.ts` file, run `npm run build` to confirm the project compiles.
@@ -47,6 +79,18 @@ If the build fails, fix the error before making any further edits.
 - Prefer atomic file writes over multiple incremental edits for complex changes
 - Always read the target region + surrounding context before editing to ensure unique anchors
 - Never leave the project in a broken build state between edits
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
 
 ---
 
@@ -83,10 +127,34 @@ Run verification at least: before changes, after changes, and after all fixes.
 
 ---
 
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
 ## PATTERN ROUTER
 
 The pattern router automatically matches tasks to execution patterns from `.factory/patterns/index.json`.
 Critical patterns P12 (Output Existence) and P35 (Decoder-First) are always enforced.
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
 
 ---
 
@@ -121,9 +189,33 @@ Before any code change can proceed, these gates must pass in order:
 
 ---
 
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
 ## PLAN VALIDATION [REQUIRED — non-trivial tasks]
 
 After generating any implementation plan, prompt for user validation before proceeding.
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
 
 ---
 
@@ -169,12 +261,36 @@ npm run version:major   # breaking changes (feat! or BREAKING CHANGE)
 
 ---
 
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
 ## SESSION ANALYSIS [REQUIRED]
 
 Before ending a session, document:
 - Completed tasks
 - Incomplete/stopped work with reasons
 - Pattern observations (sudden stops, blockers)
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
 
 ---
 
