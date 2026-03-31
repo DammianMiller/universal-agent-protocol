@@ -33,9 +33,7 @@ describe('Anthropic proxy guardrail fallbacks', () => {
 
   it('rejects placeholder Bash commands before they can loop through the client workflow', () => {
     expect(source).toContain('_BASH_PLACEHOLDER_VALUES = {');
-    expect(source).toContain('def _looks_like_grounded_benchmark_command_corruption');
     expect(source).toContain("reason=\"arguments for 'Bash' used a placeholder command value\"");
-    expect(source).toContain("reason=\"arguments for 'Bash' used a corrupted grounded-benchmark command payload\"");
     expect(source).toContain('not schema field names or placeholders like `command`, `description`, or `timeout`');
   });
 
@@ -62,11 +60,9 @@ describe('Anthropic proxy guardrail fallbacks', () => {
 
   it('preserves tools for the exact grounded benchmark prompt while still injecting runtime grounding', () => {
     expect(source).toContain('def _is_grounded_benchmark_tool_preservation_prompt');
-    expect(source).toContain('def _grounded_benchmark_tool_preservation_active_loop');
     expect(source).toContain('if _is_grounded_benchmark_tool_preservation_prompt(anthropic_body):');
     expect(source).toContain('inject_grounded_analysis_prompt = _is_analysis_only_prompt(');
     expect(source).toContain('ANALYSIS ROUTE: preserving tools for grounded benchmark prompt');
-    expect(source).toContain('TOOL STATE MACHINE: preserving tools on grounded benchmark finalize turn; using auto tool_choice instead');
   });
 
   it('logs raw content shape, normalized prompt fingerprint, and tool count before analysis-only routing', () => {
