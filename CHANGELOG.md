@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.20.6 (2026-04-01)
+
+- chore: bump version to 1.20.5
+- fix: resolve UnboundLocalError for model in proxy messages handler
+- chore: bump version to 1.20.4
+- chore: bump version to 1.20.3
+- fix: extract tool calls from <tool_call> XML in text content
+- fix: satisfy verifier loop compliance wording
+- fix: restore compliance-required CLAUDE sections
+- fix: prevent premature proxy plan completion
+- chore: bump version to 1.20.4
+- feat: add benchmark automation tooling
+- fix: align local qwen runtime defaults
+- fix: restore stable qwen coding runtime defaults
+- chore: bump version to 1.20.3
+- fix: stabilize release validation flow
+- fix: build before tests in version bump pipeline
+- fix: remove duplicate agents docker compose file
+- fix: restore unexpected end-turn retries for active qwen loops
+- fix: keep proxy guardrail fallbacks non-terminal in active loops
+- fix: add PreCompact hook registration to settings.local.json
+- feat: add knowledge graph, prepopulation settings, and optimization tweaks
+- chore: bump version to 1.20.2
+- feat: enable per-request model profiles
+- fix: make tool-call server configurable + proxy passthrough
+- chore: bump version to 1.18.1
+- fix: expand proxy model list
+- chore: bump version to 1.20.0
+- chore: bump version to 1.19.0
+- chore: bump version to 1.19.0
+- feat: add CLI parity commands and aliases
+- chore: bump version to 1.18.1
+- perf: optimize adaptive cache and capability routing
+- Revert "Merge pull request #123 from DammianMiller/feature/008-optimization-suite"
+- perf: optimize adaptive cache and capability routing
+- feat: update supported Droid models to latest versions
+
+
 ## v1.20.5 (2026-04-01)
 
 - fix: resolve UnboundLocalError for model in proxy messages handler
