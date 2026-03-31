@@ -4590,6 +4590,7 @@ async def messages(request: Request):
 
     body = await request.json()
     is_stream = body.get("stream", False)
+    model = body.get("model", "default")
     client_id = resolve_client_id(request)
     if _should_passthrough_model(model):
         logger.info("PASSTHROUGH: model=%s -> %s", model, ANTHROPIC_API_BASE)
