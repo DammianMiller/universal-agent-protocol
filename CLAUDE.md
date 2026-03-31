@@ -29,7 +29,7 @@ Run parallel review/verification steps when validating non-trivial changes.
 
 ## COMPLETION GATES - MANDATORY
 
-Completion gates are mandatory and must be verified minimum 3 times before claiming done.
+Completion gates are MANDATORY and must be verified minimum 3 times before claiming done.
 
 ## WORKTREE GATE [REQUIRED — code changes only]
 
