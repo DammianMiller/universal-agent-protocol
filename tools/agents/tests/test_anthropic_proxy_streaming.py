@@ -116,7 +116,8 @@ class TestProxyConfigTuning(unittest.TestCase):
             setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
 
-    def test_build_request_keeps_floor_for_non_tool_turns(self):
+    def test_build_request_skips_floor_for_non_tool_turns(self):
+        """Non-tool requests should NOT have the max_tokens floor applied."""
         old_floor = getattr(proxy, "PROXY_MAX_TOKENS_FLOOR")
         old_disable = getattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS")
         try:
@@ -132,7 +133,8 @@ class TestProxyConfigTuning(unittest.TestCase):
             openai = proxy.build_openai_request(
                 body, proxy.SessionMonitor(context_window=0)
             )
-            self.assertEqual(openai.get("max_tokens"), 4096)
+            # Floor should NOT inflate max_tokens for non-tool requests
+            self.assertEqual(openai.get("max_tokens"), 512)
         finally:
             setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
@@ -3435,6 +3437,84 @@ class TestMalformedRetryHardening(unittest.TestCase):
         assistant_msgs = [m for m in retry["messages"] if m.get("role") == "assistant"]
         for m in assistant_msgs:
             self.assertNotIn("<tool_call>", m.get("content", ""))
+
+
+class TestDegenerateRepetitionDetection(unittest.TestCase):
+    """Tests for degenerate repetition detection and truncation."""
+
+    def test_detects_and_truncates_repetitive_text(self):
+        """Highly repetitive text should be truncated."""
+        repeated = "Mermaid Diagrams](docs/mermaid-diagrams" * 50
+        openai_resp = {
+            "choices": [{"message": {"content": repeated}, "finish_reason": "length"}]
+        }
+        result = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        truncated_text = result["choices"][0]["message"]["content"]
+        self.assertLess(len(truncated_text), len(repeated))
+        self.assertEqual(result["choices"][0]["finish_reason"], "stop")
+
+    def test_preserves_non_repetitive_text(self):
+        """Normal text should not be modified."""
+        text = "This is a perfectly normal response with varied content. " * 5
+        openai_resp = {
+            "choices": [{"message": {"content": text}, "finish_reason": "stop"}]
+        }
+        result = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        self.assertEqual(result["choices"][0]["message"]["content"], text)
+
+    def test_preserves_short_text(self):
+        """Short text (< 200 chars) should not be processed."""
+        text = "Short response."
+        openai_resp = {
+            "choices": [{"message": {"content": text}, "finish_reason": "stop"}]
+        }
+        result = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        self.assertEqual(result["choices"][0]["message"]["content"], text)
+
+    def test_max_tokens_floor_skipped_for_non_tool_requests(self):
+        """max_tokens floor should not inflate non-tool requests."""
+        old_floor = getattr(proxy, "PROXY_MAX_TOKENS_FLOOR")
+        old_disable = getattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS")
+        try:
+            setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", 16384)
+            setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", False)
+
+            body = {
+                "model": "test",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "generate a title"}],
+            }
+            openai = proxy.build_openai_request(
+                body, proxy.SessionMonitor(context_window=0)
+            )
+            # No tools = no floor inflation
+            self.assertEqual(openai.get("max_tokens"), 100)
+        finally:
+            setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
+            setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
+
+    def test_max_tokens_floor_applied_when_thinking_active(self):
+        """max_tokens floor should apply when tools present and thinking enabled."""
+        old_floor = getattr(proxy, "PROXY_MAX_TOKENS_FLOOR")
+        old_disable = getattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS")
+        try:
+            setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", 4096)
+            setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", False)
+
+            body = {
+                "model": "test",
+                "max_tokens": 512,
+                "messages": [{"role": "user", "content": "run command"}],
+                "tools": [{"name": "Bash", "description": "run", "input_schema": {"type": "object"}}],
+            }
+            openai = proxy.build_openai_request(
+                body, proxy.SessionMonitor(context_window=0)
+            )
+            # Tools + thinking enabled = floor applied
+            self.assertEqual(openai.get("max_tokens"), 4096)
+        finally:
+            setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
+            setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
 
 
 if __name__ == "__main__":
