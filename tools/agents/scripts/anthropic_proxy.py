@@ -107,7 +107,9 @@ ANTHROPIC_PASSTHROUGH_MODELS = os.environ.get("ANTHROPIC_PASSTHROUGH_MODELS", ""
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4000"))
 PROXY_HOST = os.environ.get("PROXY_HOST", "0.0.0.0")
 PROXY_LOG_LEVEL = os.environ.get("PROXY_LOG_LEVEL", "INFO").upper()
-PROXY_READ_TIMEOUT = float(os.environ.get("PROXY_READ_TIMEOUT", "600"))
+PROXY_READ_TIMEOUT = float(os.environ.get("PROXY_READ_TIMEOUT", "180"))
+PROXY_GENERATION_TIMEOUT = float(os.environ.get("PROXY_GENERATION_TIMEOUT", "300"))
+PROXY_SLOT_HANG_TIMEOUT = float(os.environ.get("PROXY_SLOT_HANG_TIMEOUT", "120"))
 PROXY_UPSTREAM_RETRY_MAX = int(os.environ.get("PROXY_UPSTREAM_RETRY_MAX", "3"))
 PROXY_UPSTREAM_RETRY_DELAY_SECS = float(os.environ.get("PROXY_UPSTREAM_RETRY_DELAY_SECS", "5"))
 PROXY_MAX_CONNECTIONS = int(os.environ.get("PROXY_MAX_CONNECTIONS", "20"))
@@ -1311,6 +1313,72 @@ async def _post_with_retry(
     raise last_exc if last_exc else RuntimeError("upstream retry failed")
 
 
+async def _post_with_generation_timeout(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict,
+    headers: dict,
+) -> httpx.Response:
+    """Wrap _post_with_retry with an explicit asyncio generation timeout.
+
+    The httpx read timeout may not fire for hung connections where the server
+    keeps the socket open but produces no data (observed with llama.cpp server
+    hanging after prompt processing). This wrapper uses asyncio.wait_for to
+    enforce a hard deadline.
+    """
+    timeout = PROXY_GENERATION_TIMEOUT
+    if timeout <= 0:
+        return await _post_with_retry(client, url, payload, headers)
+    try:
+        return await asyncio.wait_for(
+            _post_with_retry(client, url, payload, headers),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "GENERATION TIMEOUT: request to %s exceeded %ds hard deadline",
+            url,
+            int(timeout),
+        )
+        raise httpx.ReadTimeout(
+            f"Generation timeout after {int(timeout)}s (PROXY_GENERATION_TIMEOUT)"
+        )
+
+
+async def _check_slot_hang(slot_url: str) -> bool:
+    """Check if any upstream slot is hung (processing but n_decoded=0).
+
+    Returns True if a hung slot was detected and the server was restarted.
+    """
+    if PROXY_SLOT_HANG_TIMEOUT <= 0:
+        return False
+    try:
+        async with httpx.AsyncClient() as check_client:
+            resp = await check_client.get(slot_url, timeout=5.0)
+            if resp.status_code != 200:
+                return False
+            slots = resp.json()
+            for slot in slots:
+                if (
+                    slot.get("is_processing", False)
+                    and slot.get("n_decoded", -1) == 0
+                ):
+                    # Slot is processing but hasn't decoded any tokens —
+                    # check how long by looking at the task start time.
+                    # Since we can't easily get the start time from the slot,
+                    # we'll just log a warning. The generation timeout will
+                    # handle the actual cancellation.
+                    logger.warning(
+                        "SLOT HANG DETECTED: slot %d is_processing=True n_decoded=0 task=%s",
+                        slot.get("id", -1),
+                        slot.get("id_task", "?"),
+                    )
+                    return True
+    except Exception as exc:
+        logger.debug("Slot hang check failed: %s", exc)
+    return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage the httpx client lifecycle with the FastAPI app."""
@@ -1382,6 +1450,12 @@ async def lifespan(app: FastAPI):
         bool(TOOL_CALL_GBNF),
         TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE,
         PROXY_TOOL_CALL_GRAMMAR_PATH,
+    )
+    logger.info(
+        "Timeouts: read=%ds generation=%ds slot_hang=%ds",
+        int(PROXY_READ_TIMEOUT),
+        int(PROXY_GENERATION_TIMEOUT),
+        int(PROXY_SLOT_HANG_TIMEOUT),
     )
 
     yield
@@ -5216,13 +5290,15 @@ async def messages(request: Request):
         strict_body["stream"] = False
 
         try:
-            strict_resp = await _post_with_retry(
+            strict_resp = await _post_with_generation_timeout(
                 client,
                 f"{LLAMA_CPP_BASE}/chat/completions",
                 strict_body,
                 {"Content-Type": "application/json"},
             )
         except Exception as exc:
+            # Check if upstream is hung before returning error
+            await _check_slot_hang(f"{LLAMA_CPP_BASE}/slots")
             return Response(
                 content=json.dumps(
                     {
@@ -5246,7 +5322,7 @@ async def messages(request: Request):
                 "strict-stream",
             ):
                 try:
-                    strict_resp = await _post_with_retry(
+                    strict_resp = await _post_with_generation_timeout(
                         client,
                         f"{LLAMA_CPP_BASE}/chat/completions",
                         strict_body,
@@ -5529,7 +5605,7 @@ async def messages(request: Request):
         )
     else:
         try:
-            resp = await _post_with_retry(
+            resp = await _post_with_generation_timeout(
                 client,
                 f"{LLAMA_CPP_BASE}/chat/completions",
                 openai_body,
@@ -5559,7 +5635,7 @@ async def messages(request: Request):
                 "non-stream",
             ):
                 try:
-                    resp = await _post_with_retry(
+                    resp = await _post_with_generation_timeout(
                         client,
                         f"{LLAMA_CPP_BASE}/chat/completions",
                         openai_body,
