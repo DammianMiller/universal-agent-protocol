@@ -3650,3 +3650,49 @@ class TestCompletionContractGuardrails(unittest.TestCase):
         self.assertEqual(reason, "completion_pending")
         self.assertEqual(monitor.tool_turn_phase, "review")
         self.assertEqual(monitor.completion_recovery_attempts, 1)
+
+
+class TestGarbledArgsRetry(unittest.TestCase):
+    """Tests for garbled tool arguments triggering retry via _validate_tool_call_arguments."""
+
+    def test_garbled_runaway_braces_triggers_retry(self):
+        """Garbled brace imbalance should return an invalid_tool_args issue."""
+        # Valid JSON but with extreme brace imbalance in string value
+        garbled_args = '{"todos": "}}}}}}}}}}}}}"}'
+        issue = proxy._validate_tool_call_arguments(
+            "TodoWrite", garbled_args, {}, {"TodoWrite"}
+        )
+        self.assertTrue(issue.has_issue())
+        self.assertEqual(issue.kind, "invalid_tool_args")
+        self.assertIn("garbled", issue.reason)
+
+    def test_garbled_repetitive_digits_triggers_retry(self):
+        """Repetitive digit patterns should return an invalid_tool_args issue."""
+        garbled_args = '{"value": "398859738398859738398859738"}'
+        issue = proxy._validate_tool_call_arguments(
+            "Bash", garbled_args, {}, {"Bash"}
+        )
+        self.assertTrue(issue.has_issue())
+        self.assertEqual(issue.kind, "invalid_tool_args")
+        self.assertIn("garbled", issue.reason)
+
+    def test_clean_args_pass_garbled_check(self):
+        """Well-formed tool arguments should not be flagged as garbled."""
+        clean_args = '{"command": "echo hello world"}'
+        issue = proxy._validate_tool_call_arguments(
+            "Bash", clean_args, {}, {"Bash"}
+        )
+        self.assertFalse(issue.has_issue())
+
+    def test_garbled_detection_before_schema_validation(self):
+        """Garbled args should be caught even without schema info."""
+        garbled_args = '{"content": "' + "0" * 40 + '"}'
+        issue = proxy._validate_tool_call_arguments(
+            "Write", garbled_args, {}, {"Write"}
+        )
+        self.assertTrue(issue.has_issue())
+        self.assertEqual(issue.kind, "invalid_tool_args")
+
+    def test_env_sync_malformed_retry_max(self):
+        """PROXY_MALFORMED_TOOL_RETRY_MAX should be 3."""
+        self.assertEqual(proxy.PROXY_MALFORMED_TOOL_RETRY_MAX, 3)
