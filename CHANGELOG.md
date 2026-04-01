@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.10 (2026-04-01)
+
+- fix: revert parallel=1 and remove context-aware relaxation
+
+
 ## v1.20.9 (2026-04-01)
 
 - fix: resolve context pressure, tool starvation, and pruning death spiral
