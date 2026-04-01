@@ -166,6 +166,9 @@ PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
 PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT = int(
     os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "1")
 )
+PROXY_COMPLETION_RECOVERY_MAX = int(
+    os.environ.get("PROXY_COMPLETION_RECOVERY_MAX", "3")
+)
 PROXY_CLIENT_RATE_WINDOW_SECS = int(
     os.environ.get("PROXY_CLIENT_RATE_WINDOW_SECS", "60")
 )
@@ -852,7 +855,9 @@ class SessionMonitor:
     def update_completion_state(self, anthropic_body: dict, has_tool_results: bool):
         self.completion_required = _should_enforce_completion_contract(anthropic_body)
         self.completion_progress_signals = _count_completion_progress_signals(anthropic_body)
-        blockers = _completion_blockers(anthropic_body, has_tool_results)
+        blockers = _completion_blockers(
+            anthropic_body, has_tool_results, phase=self.tool_turn_phase
+        )
         self.completion_blockers = blockers
         self.completion_pending = self.completion_required and bool(blockers)
         self.completion_verified = self.completion_required and not blockers
@@ -1860,7 +1865,9 @@ def _should_enforce_completion_contract(anthropic_body: dict) -> bool:
     return _conversation_has_tool_results(anthropic_body) or _count_completion_progress_signals(anthropic_body) > 0
 
 
-def _completion_blockers(anthropic_body: dict, has_tool_results: bool) -> list[str]:
+def _completion_blockers(
+    anthropic_body: dict, has_tool_results: bool, phase: str = ""
+) -> list[str]:
     blockers: list[str] = []
     progress = _count_completion_progress_signals(anthropic_body)
     if progress <= 0:
@@ -1871,7 +1878,10 @@ def _completion_blockers(anthropic_body: dict, has_tool_results: bool) -> list[s
         if last_user_has_result:
             blockers.append("awaiting_post_tool_followup")
         elif _last_assistant_was_text_only(anthropic_body):
-            blockers.append("text_only_after_tool_results")
+            # Option 2: Suppress during finalize — text-only is expected behavior
+            # for finalize turns, so blocking on it causes infinite ping-pong.
+            if phase != "finalize":
+                blockers.append("text_only_after_tool_results")
 
     return blockers
 
@@ -2046,14 +2056,27 @@ def _resolve_state_machine_tool_choice(
     last_user_has_tool_result: bool,
 ) -> tuple[str | None, str]:
     if monitor.tool_turn_phase == "finalize" and monitor.completion_pending:
+        # Option 1: Cap recovery attempts to prevent infinite finalize↔review ping-pong
+        if monitor.completion_recovery_attempts >= PROXY_COMPLETION_RECOVERY_MAX:
+            logger.warning(
+                "TOOL STATE MACHINE: completion recovery exhausted (attempts=%d max=%d), "
+                "proceeding with finalize despite blockers=%s",
+                monitor.completion_recovery_attempts,
+                PROXY_COMPLETION_RECOVERY_MAX,
+                ",".join(monitor.completion_blockers),
+            )
+            monitor.completion_pending = False
+            monitor.completion_blockers = []
+            return None, "completion_recovery_exhausted"
         monitor.note_completion_recovery()
         monitor.set_tool_turn_phase("review", reason="completion_pending")
         monitor.tool_state_auto_budget_remaining = max(1, PROXY_TOOL_STATE_AUTO_BUDGET)
         monitor.tool_state_forced_budget_remaining = max(1, PROXY_TOOL_STATE_FORCED_BUDGET // 2)
         logger.warning(
-            "TOOL STATE MACHINE: finalize blocked by completion contract (blockers=%s attempts=%d)",
+            "TOOL STATE MACHINE: finalize blocked by completion contract (blockers=%s attempts=%d/%d)",
             ",".join(monitor.completion_blockers),
             monitor.completion_recovery_attempts,
+            PROXY_COMPLETION_RECOVERY_MAX,
         )
         return "auto", "completion_pending"
 
@@ -4197,6 +4220,11 @@ def _build_malformed_retry_body(
     if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
         retry_body["enable_thinking"] = False
 
+    # Option 3: Proactively strip grammar from retry when tools are present and
+    # grammar+tools is known to be incompatible. Prevents the 400 error
+    # ("Cannot use custom grammar constraints with tools") on retry attempts.
+    if retry_body.get("tools") and not TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE:
+        retry_body.pop("grammar", None)
     _apply_tool_call_grammar(retry_body, tool_choice=tool_choice)
 
     if retry_hint:
