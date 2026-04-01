@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.23 (2026-04-01)
+
+- fix: break review↔finalize ping-pong infinite loop in tool state machine
+
+
 ## v1.20.22 (2026-04-01)
 
 - perf: reduce draft-max from 16 to 4 for improved tool call accuracy
