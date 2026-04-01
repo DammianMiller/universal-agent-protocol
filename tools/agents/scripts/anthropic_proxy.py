@@ -42,6 +42,12 @@ Configuration (Environment Variables)
     PROXY_READ_TIMEOUT   Read timeout in seconds for upstream LLM streaming
                          Default: 600 (10 minutes)
 
+    PROXY_TOOL_TURN_MAX_TOKENS   Max tokens for tool-call turns (0 to disable)
+                                Default: 8192
+
+    PROXY_TOOL_TURN_MAX_TOKENS_GARBLED   Max tokens after garbled/malformed output
+                                         Default: 4096
+
     PROXY_MAX_CONNECTIONS   Max concurrent connections to upstream
                             Default: 20
 
@@ -194,6 +200,10 @@ PROXY_STREAM_REASONING_MAX_CHARS = int(
     os.environ.get("PROXY_STREAM_REASONING_MAX_CHARS", "240")
 )
 PROXY_MAX_TOKENS_FLOOR = int(os.environ.get("PROXY_MAX_TOKENS_FLOOR", "16384"))
+PROXY_TOOL_TURN_MAX_TOKENS = int(os.environ.get("PROXY_TOOL_TURN_MAX_TOKENS", "8192"))
+PROXY_TOOL_TURN_MAX_TOKENS_GARBLED = int(
+    os.environ.get("PROXY_TOOL_TURN_MAX_TOKENS_GARBLED", "4096")
+)
 PROXY_TOOL_NARROWING = os.environ.get("PROXY_TOOL_NARROWING", "off").lower() not in {
     "0",
     "false",
@@ -631,6 +641,7 @@ class SessionMonitor:
     tool_state_review_cycles: int = 0
     last_tool_fingerprint: str = ""
     cycling_tool_names: list = field(default_factory=list)
+    last_response_garbled: bool = False  # previous turn had garbled/malformed output
     finalize_turn_active: bool = False
     completion_required: bool = False
     completion_pending: bool = False
@@ -1456,6 +1467,11 @@ async def lifespan(app: FastAPI):
         int(PROXY_READ_TIMEOUT),
         int(PROXY_GENERATION_TIMEOUT),
         int(PROXY_SLOT_HANG_TIMEOUT),
+    )
+    logger.info(
+        "Tool turn max_tokens: cap=%d garbled_cap=%d",
+        PROXY_TOOL_TURN_MAX_TOKENS,
+        PROXY_TOOL_TURN_MAX_TOKENS_GARBLED,
     )
 
     yield
@@ -2315,6 +2331,23 @@ def build_openai_request(
                     utilization * 100,
                 )
                 requested_max = PROXY_OPUS46_MAX_TOKENS_HIGH_CTX
+
+        # Option 1+3+4: Cap max_tokens for tool turns to prevent 32K waste.
+        # Tool call responses rarely need more than a few thousand tokens.
+        # After garbled/malformed output, use an even lower cap.
+        if has_tools and PROXY_TOOL_TURN_MAX_TOKENS > 0:
+            if monitor.last_response_garbled and PROXY_TOOL_TURN_MAX_TOKENS_GARBLED > 0:
+                tool_cap = PROXY_TOOL_TURN_MAX_TOKENS_GARBLED
+            else:
+                tool_cap = PROXY_TOOL_TURN_MAX_TOKENS
+            if requested_max > tool_cap:
+                logger.info(
+                    "TOOL TURN MAX_TOKENS cap: %d -> %d (garbled_prev=%s)",
+                    requested_max,
+                    tool_cap,
+                    monitor.last_response_garbled,
+                )
+                requested_max = tool_cap
 
         openai_body["max_tokens"] = requested_max
     if "temperature" in anthropic_body:
@@ -4260,6 +4293,7 @@ async def _apply_malformed_tool_guardrail(
             monitor.malformed_tool_streak = 0
             monitor.invalid_tool_call_streak = 0
             monitor.required_tool_miss_streak = 0
+            monitor.last_response_garbled = False
         if repair_count > 0:
             monitor.arg_preflight_repairs += repair_count
             logger.info(
@@ -4268,6 +4302,9 @@ async def _apply_malformed_tool_guardrail(
                 repair_count,
             )
         return working_resp
+
+    # Mark garbled state for progressive max_tokens reduction on next turn
+    monitor.last_response_garbled = True
 
     if issue.kind == "malformed_payload":
         monitor.malformed_tool_streak += 1
@@ -4354,6 +4391,7 @@ async def _apply_malformed_tool_guardrail(
             monitor.malformed_tool_streak = 0
             monitor.invalid_tool_call_streak = 0
             monitor.required_tool_miss_streak = 0
+            monitor.last_response_garbled = False
             logger.info(
                 "TOOL RESPONSE RETRY success: kind=%s attempt=%d/%d",
                 current_issue.kind,

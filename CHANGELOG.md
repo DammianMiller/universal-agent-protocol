@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.20.18 (2026-04-01)
+
+- fix: cap max_tokens for tool turns to prevent 32K generation waste
+- fix: garbled tool args retry + env sync (#147)
+
+
 ## v1.20.17 (2026-04-01)
 
 - fix: add garbled tool args detection to retry pipeline
