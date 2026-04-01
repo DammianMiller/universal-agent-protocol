@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.20.20 (2026-04-01)
+
+- fix: improve retry resilience for garbled tool args
+- fix: strip residual <tool_call> XML on finalize turns (#149)
+- fix: cap max_tokens for tool turns to prevent 32K waste (#148)
+- fix: garbled tool args retry + env sync (#147)
+
+
 ## v1.20.19 (2026-04-01)
 
 - fix: strip residual <tool_call> XML leaking through on finalize turns
