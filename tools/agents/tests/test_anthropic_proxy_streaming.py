@@ -3872,3 +3872,119 @@ class TestFinalizeTurnToolCallLeak(unittest.TestCase):
         for block in text_blocks:
             self.assertNotIn("<tool_call>", block["text"])
             self.assertNotIn("</tool_call>", block["text"])
+
+
+class TestRetryGarbledImprovements(unittest.TestCase):
+    """Tests for progressive garbled cap, arg logging, and tool narrowing on retries."""
+
+    def test_garbled_cap_applied_in_retry_body(self):
+        """When is_garbled=True, retry body uses PROXY_TOOL_TURN_MAX_TOKENS_GARBLED."""
+        openai_body = {
+            "model": "test-model",
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [],
+        }
+        anthropic_body = {"messages": [{"role": "user", "content": "test"}]}
+        retry_body = proxy._build_malformed_retry_body(
+            openai_body,
+            anthropic_body,
+            retry_hint="fix it",
+            tool_choice="required",
+            attempt=1,
+            total_attempts=3,
+            is_garbled=True,
+        )
+        self.assertEqual(retry_body["max_tokens"], proxy.PROXY_TOOL_TURN_MAX_TOKENS_GARBLED)
+
+    def test_non_garbled_uses_standard_retry_max(self):
+        """When is_garbled=False, retry body uses PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS."""
+        openai_body = {
+            "model": "test-model",
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [],
+        }
+        anthropic_body = {"messages": [{"role": "user", "content": "test"}]}
+        retry_body = proxy._build_malformed_retry_body(
+            openai_body,
+            anthropic_body,
+            retry_hint="fix it",
+            tool_choice="required",
+            attempt=1,
+            total_attempts=3,
+            is_garbled=False,
+        )
+        if proxy.PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS > 0:
+            self.assertLessEqual(retry_body["max_tokens"], proxy.PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS)
+
+    def test_exclude_tools_removes_from_retry(self):
+        """exclude_tools parameter removes specified tools from retry body."""
+        openai_body = {
+            "model": "test-model",
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {"type": "function", "function": {"name": "Grep", "description": "search", "parameters": {"type": "object"}}},
+                {"type": "function", "function": {"name": "Read", "description": "read", "parameters": {"type": "object"}}},
+                {"type": "function", "function": {"name": "Bash", "description": "run", "parameters": {"type": "object"}}},
+            ],
+        }
+        anthropic_body = {
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {"name": "Grep", "description": "search", "input_schema": {"type": "object"}},
+                {"name": "Read", "description": "read", "input_schema": {"type": "object"}},
+                {"name": "Bash", "description": "run", "input_schema": {"type": "object"}},
+            ],
+        }
+        retry_body = proxy._build_malformed_retry_body(
+            openai_body,
+            anthropic_body,
+            retry_hint="fix it",
+            tool_choice="required",
+            attempt=2,
+            total_attempts=3,
+            exclude_tools=["Grep"],
+        )
+        tool_names = [t["function"]["name"] for t in retry_body.get("tools", [])]
+        self.assertNotIn("Grep", tool_names)
+        self.assertIn("Read", tool_names)
+        self.assertIn("Bash", tool_names)
+
+    def test_exclude_tools_none_keeps_all(self):
+        """When exclude_tools is None, all tools are retained."""
+        openai_body = {
+            "model": "test-model",
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {"type": "function", "function": {"name": "Grep", "description": "search", "parameters": {"type": "object"}}},
+            ],
+        }
+        anthropic_body = {
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {"name": "Grep", "description": "search", "input_schema": {"type": "object"}},
+            ],
+        }
+        retry_body = proxy._build_malformed_retry_body(
+            openai_body,
+            anthropic_body,
+            retry_hint="fix it",
+            tool_choice="required",
+            attempt=2,
+            total_attempts=3,
+            exclude_tools=None,
+        )
+        tool_names = [t["function"]["name"] for t in retry_body.get("tools", [])]
+        self.assertIn("Grep", tool_names)
+
+    def test_garbled_args_excerpt_in_issue(self):
+        """_is_garbled_tool_arguments detects garbled content for logging."""
+        # Garbled pattern: runaway braces
+        garbled = '{"pattern": "test}}}}}}}}}}}}}}"}'
+        self.assertTrue(proxy._is_garbled_tool_arguments(garbled))
+        # Clean pattern
+        clean = '{"pattern": "hello", "path": "/src"}'
+        self.assertFalse(proxy._is_garbled_tool_arguments(clean))
