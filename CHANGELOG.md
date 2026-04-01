@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.24 (2026-04-01)
+
+- fix: reset to bootstrap after exhausted retries in review phase
+
+
 ## v1.20.23 (2026-04-01)
 
 - fix: break review↔finalize ping-pong infinite loop in tool state machine
