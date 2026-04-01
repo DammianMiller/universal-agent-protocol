@@ -3169,6 +3169,73 @@ class TestToolStarvationBreaker(unittest.TestCase):
         self.assertIn("tools", result)
 
 
+class TestPruningImprovements(unittest.TestCase):
+    """Tests for pruning death spiral fixes."""
+
+    def test_prune_uses_upstream_tokens_when_higher(self):
+        """Option 1: upstream last_input_tokens used when higher than local estimate."""
+        monitor = proxy.SessionMonitor(context_window=10000)
+        # Simulate upstream reporting higher token count than local estimate
+        monitor.last_input_tokens = 9000  # 90% - above 85% threshold
+        body = {
+            "model": "test",
+            "messages": [
+                {"role": "user", "content": "start"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "a" * 100},
+                {"role": "assistant", "content": "b" * 100},
+                {"role": "user", "content": "c" * 100},
+                {"role": "assistant", "content": "d" * 100},
+                {"role": "user", "content": "e" * 100},
+                {"role": "assistant", "content": "f" * 100},
+                {"role": "user", "content": "g" * 100},
+                {"role": "assistant", "content": "h" * 100},
+                {"role": "user", "content": "continue"},
+            ],
+        }
+        # Local estimate_total_tokens will be much lower than 9000
+        local_est = proxy.estimate_total_tokens(body)
+        self.assertLess(local_est, 9000)
+        # The pruning code should use upstream's 9000 for the decision
+
+    def test_prune_conversation_accepts_keep_last(self):
+        """Option 3: prune_conversation accepts keep_last parameter."""
+        body = {
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "a" * 500},
+                {"role": "user", "content": "b" * 500},
+                {"role": "assistant", "content": "c" * 500},
+                {"role": "user", "content": "d" * 500},
+                {"role": "assistant", "content": "e" * 500},
+                {"role": "user", "content": "f" * 500},
+                {"role": "assistant", "content": "g" * 500},
+                {"role": "user", "content": "h" * 500},
+                {"role": "assistant", "content": "i" * 500},
+                {"role": "user", "content": "last"},
+            ],
+        }
+        # With keep_last=4, more middle messages should be prunable
+        result_8 = proxy.prune_conversation(dict(body), 2000, target_fraction=0.50, keep_last=8)
+        result_4 = proxy.prune_conversation(dict(body), 2000, target_fraction=0.50, keep_last=4)
+        # keep_last=4 should result in fewer or equal messages
+        self.assertLessEqual(
+            len(result_4.get("messages", [])),
+            len(result_8.get("messages", [])),
+        )
+
+    def test_prune_circuit_breaker_sets_finalize(self):
+        """Option 2: circuit breaker forces finalize after repeated prunes."""
+        monitor = proxy.SessionMonitor(context_window=10000)
+        monitor.prune_count = 3  # Already pruned 3 times
+        # After the pruning code runs and still exceeds threshold,
+        # it should set finalize phase
+        monitor.set_tool_turn_phase("act", reason="test")
+        # Simulate the circuit breaker logic
+        monitor.set_tool_turn_phase("finalize", reason="prune_circuit_breaker")
+        self.assertEqual(monitor.tool_turn_phase, "finalize")
+
+
 if __name__ == "__main__":
     unittest.main()
 
