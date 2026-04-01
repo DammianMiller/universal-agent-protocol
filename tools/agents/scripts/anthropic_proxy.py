@@ -3044,6 +3044,21 @@ _SYSTEM_PROMPT_LEAK_MARKERS = (
     "valid tool call with strict json",
     "return exactly one valid tool call",
     "invalid tool call format",
+    # Option 1: Spec mode system-reminder phrases
+    "spec mode is active",
+    "spec mode active",
+    "executed askuser tool to gather requirements",
+    "gather requirements and clarify decisions",
+    "before finalizing your spec",
+    "you must not make any edits",
+    # Option 2: Broader Claude Code system-reminder phrases
+    "the user indicated that they do not want you to execute",
+    "run any non-readonly tools",
+    "making communications or interacting with external services",
+    "this is encouraged in spec mode",
+    "user has executed askuser tool",
+    "<system-reminder>",
+    "</system-reminder>",
 )
 
 
