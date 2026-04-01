@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.20.22 (2026-04-01)
+
+- perf: reduce draft-max from 16 to 4 for improved tool call accuracy
+- fix: add spec mode and system-reminder leak markers (#151)
+- fix: improve retry resilience for garbled tool args (#150)
+- fix: strip residual <tool_call> XML on finalize turns (#149)
+- fix: cap max_tokens for tool turns to prevent 32K waste (#148)
+- fix: garbled tool args retry + env sync (#147)
+
+
 ## v1.20.21 (2026-04-01)
 
 - fix: add spec mode and system-reminder leak markers
