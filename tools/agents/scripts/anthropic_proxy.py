@@ -2167,16 +2167,24 @@ def build_openai_request(
         # Enforce configurable minimum floor for thinking mode: model needs
         # tokens for reasoning (<think>...</think>) plus actual response/tool
         # calls. Set PROXY_MAX_TOKENS_FLOOR=0 to disable this floor.
-        floor_bypassed_for_tool_turn = (
-            has_tools
-            and PROXY_DISABLE_THINKING_ON_TOOL_TURNS
-            and PROXY_MAX_TOKENS_FLOOR > 0
+        #
+        # The floor is ONLY applied when thinking is actually enabled —
+        # skip it for non-tool requests (tools=0) and for tool turns
+        # with thinking disabled, to prevent inflating short preflight
+        # requests (e.g. max_tokens=100 for plan generation).
+        thinking_active_for_request = has_tools and not PROXY_DISABLE_THINKING_ON_TOOL_TURNS
+        skip_floor = (
+            not has_tools  # non-tool requests don't need thinking headroom
+            or PROXY_DISABLE_THINKING_ON_TOOL_TURNS  # thinking disabled on tool turns
+            or PROXY_MAX_TOKENS_FLOOR <= 0  # floor explicitly disabled
         )
-        if floor_bypassed_for_tool_turn:
+        if skip_floor:
             requested_max = requested_raw
-            if requested_raw < PROXY_MAX_TOKENS_FLOOR:
+            if requested_raw < PROXY_MAX_TOKENS_FLOOR and PROXY_MAX_TOKENS_FLOOR > 0:
                 logger.info(
-                    "MAX_TOKENS floor bypassed for tool turn with thinking disabled: requested=%d floor=%d",
+                    "MAX_TOKENS floor skipped: has_tools=%s thinking_active=%s requested=%d floor=%d",
+                    has_tools,
+                    thinking_active_for_request,
                     requested_raw,
                     PROXY_MAX_TOKENS_FLOOR,
                 )
@@ -4435,6 +4443,48 @@ def _maybe_extract_text_tool_calls(openai_resp: dict) -> dict:
     return openai_resp
 
 
+def _detect_and_truncate_degenerate_repetition(openai_resp: dict) -> dict:
+    """Detect degenerate repetitive text and truncate at first repetition.
+
+    When the model produces highly repetitive output (e.g. the same 20+ char
+    substring repeated 10+ times), truncate at the first repetition boundary
+    and set finish_reason to stop.
+    """
+    text = _openai_message_text(openai_resp)
+    if not text or len(text) < 200:
+        return openai_resp
+
+    # Look for repeated substrings of length 20-100
+    for substr_len in (60, 40, 20):
+        # Sample from the middle of the text to find the repeating pattern
+        mid = len(text) // 2
+        sample = text[mid : mid + substr_len]
+        if not sample.strip():
+            continue
+        count = text.count(sample)
+        if count >= 8:
+            # Found degenerate repetition — truncate at first occurrence + one repeat
+            first_pos = text.find(sample)
+            second_pos = text.find(sample, first_pos + len(sample))
+            if second_pos > first_pos:
+                truncated = text[:second_pos].rstrip()
+                logger.warning(
+                    "DEGENERATE REPETITION: detected %d repeats of %d-char substring, truncating %d -> %d chars",
+                    count,
+                    substr_len,
+                    len(text),
+                    len(truncated),
+                )
+                # Update the response
+                choices = openai_resp.get("choices", [])
+                if choices:
+                    msg = choices[0].get("message", {})
+                    msg["content"] = truncated
+                    choices[0]["finish_reason"] = "stop"
+                return openai_resp
+    return openai_resp
+
+
 def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
     """Convert an OpenAI Chat Completions response to Anthropic Messages format."""
     # First: try to recover tool calls trapped in text XML tags
@@ -5258,6 +5308,7 @@ async def messages(request: Request):
             session_id,
         )
 
+        openai_resp = _detect_and_truncate_degenerate_repetition(openai_resp)
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
         monitor.record_response(anthropic_resp.get("usage", {}).get("output_tokens", 0))
         # Update last_input_tokens from upstream's actual prompt_tokens
@@ -5596,6 +5647,7 @@ async def messages(request: Request):
             monitor.invalid_tool_call_streak = 0
             monitor.required_tool_miss_streak = 0
 
+        openai_resp = _detect_and_truncate_degenerate_repetition(openai_resp)
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
 
         # Track output tokens in session monitor

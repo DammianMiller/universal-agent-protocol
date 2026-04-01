@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.15 (2026-04-01)
+
+- fix: skip max_tokens floor for non-tool requests and detect degenerate repetition
+
+
 ## v1.20.14 (2026-04-01)
 
 - fix: harden malformed tool retry with higher budget and message sanitization
