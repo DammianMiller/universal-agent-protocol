@@ -2461,6 +2461,16 @@ def build_openai_request(
             monitor.finalize_turn_active = True
             monitor.consecutive_forced_count = 0
             monitor.no_progress_streak = 0
+            # Option 3: Inject explicit "no tool calls" instruction to reduce XML leak
+            finalize_instruction = {
+                "role": "user",
+                "content": (
+                    "Respond with plain text only. Do not emit any tool calls, "
+                    "XML tags, or JSON objects."
+                ),
+            }
+            msgs = openai_body.get("messages", [])
+            msgs.append(finalize_instruction)
             logger.warning(
                 "TOOL STATE MACHINE: tools temporarily disabled for finalize turn (reason=%s)",
                 state_reason,
@@ -2880,6 +2890,43 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[dict], str]:
     )
 
     return extracted, remaining
+
+
+# ---------------------------------------------------------------------------
+# Strip residual <tool_call> XML from text (Option 1 for finalize turn leak)
+# ---------------------------------------------------------------------------
+# On finalize turns the model sometimes emits <tool_call> XML with garbled
+# JSON that cannot be extracted into structured tool calls.  This function
+# strips those residual tags so they don't leak into the final Anthropic
+# response text shown to Claude Code.
+
+_RESIDUAL_TOOL_CALL_XML_RE = re.compile(
+    r"</?tool_call>",
+    re.DOTALL,
+)
+
+_TOOL_CALL_BLOCK_RE = re.compile(
+    r"<tool_call>.*?</tool_call>",
+    re.DOTALL,
+)
+
+
+def _strip_residual_tool_call_xml(text: str) -> str:
+    """Remove residual ``<tool_call>`` XML from *text*.
+
+    First strips complete ``<tool_call>...</tool_call>`` blocks, then
+    removes any orphaned opening/closing tags.  Returns cleaned text.
+    """
+    if "<tool_call>" not in text and "</tool_call>" not in text:
+        return text
+
+    # Strip complete blocks first
+    cleaned = _TOOL_CALL_BLOCK_RE.sub("", text)
+    # Strip orphaned tags
+    cleaned = _RESIDUAL_TOOL_CALL_XML_RE.sub("", cleaned)
+    # Collapse excessive whitespace left by removals
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
 
 
 # Pattern: runaway closing braces like }}}}}
@@ -4262,7 +4309,19 @@ async def _apply_malformed_tool_guardrail(
         return openai_resp
 
     if monitor.finalize_turn_active:
-        logger.info("GUARDRAIL: skipped malformed-tool retries on finalize turn")
+        # Option 2: Don't fully skip on finalize — strip residual <tool_call> XML
+        text = _openai_message_text(openai_resp)
+        if text and "<tool_call>" in text:
+            cleaned = _strip_residual_tool_call_xml(text)
+            if cleaned != text:
+                choices = openai_resp.get("choices", [])
+                if choices:
+                    choices[0].get("message", {})["content"] = cleaned
+                logger.warning(
+                    "GUARDRAIL: stripped residual <tool_call> XML on finalize turn"
+                )
+        else:
+            logger.info("GUARDRAIL: finalize turn clean, no tool call XML detected")
         return openai_resp
 
     working_resp = openai_resp
@@ -4629,6 +4688,12 @@ def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
         if sanitized_text != raw_text:
             logger.warning(
                 "SANITIZE: replaced known malformed tool-call apology text in assistant response"
+            )
+        # Option 1: Strip residual <tool_call> XML that wasn't extracted
+        sanitized_text = _strip_residual_tool_call_xml(sanitized_text)
+        if sanitized_text != raw_text and "<tool_call>" in raw_text:
+            logger.warning(
+                "SANITIZE: stripped residual <tool_call> XML from text content"
             )
         content.append({"type": "text", "text": sanitized_text})
 
