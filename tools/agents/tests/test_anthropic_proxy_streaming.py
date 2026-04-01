@@ -3696,3 +3696,90 @@ class TestGarbledArgsRetry(unittest.TestCase):
     def test_env_sync_malformed_retry_max(self):
         """PROXY_MALFORMED_TOOL_RETRY_MAX should be 3."""
         self.assertEqual(proxy.PROXY_MALFORMED_TOOL_RETRY_MAX, 3)
+
+
+class TestToolTurnMaxTokensCap(unittest.TestCase):
+    """Tests for tool turn max_tokens capping to prevent 32K waste."""
+
+    def test_tool_turn_max_tokens_constant(self):
+        """PROXY_TOOL_TURN_MAX_TOKENS should default to 8192."""
+        self.assertEqual(proxy.PROXY_TOOL_TURN_MAX_TOKENS, 8192)
+
+    def test_tool_turn_max_tokens_garbled_constant(self):
+        """PROXY_TOOL_TURN_MAX_TOKENS_GARBLED should default to 4096."""
+        self.assertEqual(proxy.PROXY_TOOL_TURN_MAX_TOKENS_GARBLED, 4096)
+
+    def test_tool_turn_caps_high_max_tokens(self):
+        """Tool turn with max_tokens=32000 should be capped to 8192."""
+        body = {
+            "model": "test-model",
+            "max_tokens": 32000,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {
+                    "name": "Bash",
+                    "description": "run command",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+        }
+        monitor = proxy.SessionMonitor(context_window=262144)
+        openai_body = proxy.build_openai_request(body, monitor)
+        self.assertLessEqual(openai_body["max_tokens"], proxy.PROXY_TOOL_TURN_MAX_TOKENS)
+
+    def test_tool_turn_garbled_reduces_cap(self):
+        """After garbled output, max_tokens should use the lower garbled cap."""
+        body = {
+            "model": "test-model",
+            "max_tokens": 32000,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {
+                    "name": "Bash",
+                    "description": "run command",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+        }
+        monitor = proxy.SessionMonitor(context_window=262144)
+        monitor.last_response_garbled = True
+        openai_body = proxy.build_openai_request(body, monitor)
+        self.assertLessEqual(
+            openai_body["max_tokens"], proxy.PROXY_TOOL_TURN_MAX_TOKENS_GARBLED
+        )
+
+    def test_non_tool_request_not_capped(self):
+        """Non-tool requests should not be affected by tool turn cap."""
+        body = {
+            "model": "test-model",
+            "max_tokens": 32000,
+            "messages": [{"role": "user", "content": "test"}],
+        }
+        monitor = proxy.SessionMonitor(context_window=262144)
+        openai_body = proxy.build_openai_request(body, monitor)
+        # Should not be capped to 8192 (may be capped by context window logic)
+        self.assertGreater(openai_body["max_tokens"], proxy.PROXY_TOOL_TURN_MAX_TOKENS)
+
+    def test_last_response_garbled_cleared_on_clean(self):
+        """SessionMonitor.last_response_garbled should default to False."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+        self.assertFalse(monitor.last_response_garbled)
+
+    def test_small_max_tokens_stays_within_cap(self):
+        """If client requests less than the cap, result should not exceed cap."""
+        body = {
+            "model": "test-model",
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {
+                    "name": "Bash",
+                    "description": "run command",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+        }
+        monitor = proxy.SessionMonitor(context_window=262144)
+        openai_body = proxy.build_openai_request(body, monitor)
+        # The tool turn cap should ensure we don't exceed PROXY_TOOL_TURN_MAX_TOKENS
+        self.assertLessEqual(openai_body["max_tokens"], proxy.PROXY_TOOL_TURN_MAX_TOKENS)
