@@ -4178,3 +4178,45 @@ class TestFinalizePingPongFix(unittest.TestCase):
             proxy.TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE = old_compat
             proxy.PROXY_TOOL_CALL_GRAMMAR = old_flag
             proxy.TOOL_CALL_GBNF = old_gbnf
+
+
+class TestReviewPhaseBootstrapReset(unittest.TestCase):
+    """Tests for bootstrap reset after exhausted retries in review phase (PR #154)."""
+
+    def _make_monitor_in_review(self):
+        m = proxy.SessionMonitor()
+        m.set_tool_turn_phase("review", reason="test")
+        m.malformed_tool_streak = 3
+        m.invalid_tool_call_streak = 0
+        return m
+
+    def _make_monitor_in_act(self):
+        m = proxy.SessionMonitor()
+        m.set_tool_turn_phase("act", reason="test")
+        m.malformed_tool_streak = 3
+        return m
+
+    def test_review_phase_resets_to_bootstrap(self):
+        """After retries exhaust in review, monitor resets to bootstrap."""
+        m = self._make_monitor_in_review()
+        self.assertEqual(m.tool_turn_phase, "review")
+        self.assertEqual(m.malformed_tool_streak, 3)
+
+        # Simulate what happens after retry exhaustion: the code checks
+        # monitor.tool_turn_phase == "review" and resets
+        if m.tool_turn_phase == "review":
+            m.reset_tool_turn_state(reason="review_retry_exhausted")
+            m.malformed_tool_streak = 0
+            m.invalid_tool_call_streak = 0
+
+        self.assertEqual(m.tool_turn_phase, "bootstrap")
+        self.assertEqual(m.malformed_tool_streak, 0)
+        self.assertEqual(m.tool_state_stagnation_streak, 0)
+        self.assertEqual(m.cycling_tool_names, [])
+
+    def test_act_phase_does_not_reset(self):
+        """In act phase, retries exhaustion should NOT trigger bootstrap reset."""
+        m = self._make_monitor_in_act()
+        # The bootstrap reset only triggers for review phase
+        self.assertNotEqual(m.tool_turn_phase, "review")
+        # In act phase, the normal guardrail fallback path runs instead

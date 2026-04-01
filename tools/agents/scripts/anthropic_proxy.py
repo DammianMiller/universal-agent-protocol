@@ -4581,6 +4581,34 @@ async def _apply_malformed_tool_guardrail(
         )
         current_issue = retry_issue
 
+    # Option 2 (PR #154): When retries exhaust during review phase, reset to
+    # bootstrap instead of returning guardrail fallback. This re-enables all
+    # tools (including previously excluded cycling ones) and gives the model
+    # a clean shot. The cycle detector will catch re-cycling if it recurs.
+    if monitor.tool_turn_phase == "review":
+        logger.warning(
+            "TOOL RESPONSE review-phase reset: session=%s retries exhausted in review "
+            "(kind=%s malformed=%d), resetting to bootstrap for fresh attempt",
+            session_id,
+            current_issue.kind or issue.kind,
+            monitor.malformed_tool_streak,
+        )
+        monitor.reset_tool_turn_state(reason="review_retry_exhausted")
+        monitor.malformed_tool_streak = 0
+        monitor.invalid_tool_call_streak = 0
+        # Return the best response we have — even if degraded — to keep
+        # the conversation moving rather than returning a guardrail stub.
+        degraded_text = _sanitize_tool_call_apology_text(
+            _openai_message_text(working_resp)
+        ).strip()
+        if degraded_text and not _looks_malformed_tool_payload(degraded_text):
+            return _build_safe_text_openai_response(
+                working_resp, degraded_text, finish_reason="tool_calls",
+            )
+        return _build_clean_guardrail_openai_response(
+            working_resp, finish_reason="tool_calls",
+        )
+
     logger.error(
         "TOOL RESPONSE issue persisted after retries (session=%s kind=%s malformed=%d invalid=%d required_miss=%d); returning clean guardrail response",
         session_id,
