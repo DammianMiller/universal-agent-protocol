@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.20.9 (2026-04-01)
+
+- fix: resolve context pressure, tool starvation, and pruning death spiral
+- fix: expand system prompt leak markers to cover client-side prompt phrases
+
+
 ## v1.20.8 (2026-04-01)
 
 - fix: detect and repair system prompt leaking into tool call arguments

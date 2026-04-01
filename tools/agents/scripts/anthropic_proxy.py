@@ -51,7 +51,7 @@ Configuration (Environment Variables)
 
     PROXY_CONTEXT_PRUNE_THRESHOLD   Fraction of context window at which
                                     conversation pruning activates (0.0-1.0)
-                                    Default: 0.75
+                                    Default: 0.85
 
 Usage
 -----
@@ -113,10 +113,10 @@ PROXY_UPSTREAM_RETRY_DELAY_SECS = float(os.environ.get("PROXY_UPSTREAM_RETRY_DEL
 PROXY_MAX_CONNECTIONS = int(os.environ.get("PROXY_MAX_CONNECTIONS", "20"))
 PROXY_CONTEXT_WINDOW = int(os.environ.get("PROXY_CONTEXT_WINDOW", "0"))
 PROXY_CONTEXT_PRUNE_THRESHOLD = float(
-    os.environ.get("PROXY_CONTEXT_PRUNE_THRESHOLD", "0.75")
+    os.environ.get("PROXY_CONTEXT_PRUNE_THRESHOLD", "0.85")
 )
 PROXY_CONTEXT_PRUNE_TARGET_FRACTION = float(
-    os.environ.get("PROXY_CONTEXT_PRUNE_TARGET_FRACTION", "0.65")
+    os.environ.get("PROXY_CONTEXT_PRUNE_TARGET_FRACTION", "0.50")
 )
 PROXY_LOOP_BREAKER = os.environ.get("PROXY_LOOP_BREAKER", "on").lower() not in {
     "0",
@@ -276,6 +276,12 @@ PROXY_FORCED_TOOL_DAMPENER_AUTO_TURNS = int(
 )
 PROXY_FORCED_TOOL_DAMPENER_REJECTIONS = int(
     os.environ.get("PROXY_FORCED_TOOL_DAMPENER_REJECTIONS", "2")
+)
+PROXY_TOOL_STARVATION_THRESHOLD = int(
+    os.environ.get("PROXY_TOOL_STARVATION_THRESHOLD", "5")
+)
+PROXY_CONTEXT_HIGH_RELAXATION_THRESHOLD = float(
+    os.environ.get("PROXY_CONTEXT_HIGH_RELAXATION_THRESHOLD", "0.70")
 )
 PROXY_SESSION_CONTAMINATION_BREAKER = os.environ.get(
     "PROXY_SESSION_CONTAMINATION_BREAKER", "on"
@@ -609,6 +615,7 @@ class SessionMonitor:
     loop_warnings_emitted: int = 0  # How many loop warnings sent to the model
     no_progress_streak: int = 0  # Forced tool turns without new tool_result
     unexpected_end_turn_count: int = 0  # end_turn without tool_use in active loop
+    tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
     malformed_tool_streak: int = 0  # consecutive malformed pseudo tool payloads
     invalid_tool_call_streak: int = 0  # consecutive invalid tool arg payloads
     required_tool_miss_streak: int = 0  # required tool turns with no tool call
@@ -2279,6 +2286,29 @@ def build_openai_request(
             last_user_has_tool_result,
         )
 
+        # TOOL STARVATION BREAKER: if model repeatedly fails to produce tool
+        # calls despite required, strip tools to let it generate text and break
+        # the forcing loop.
+        if (
+            monitor.consecutive_forced_count >= PROXY_TOOL_STARVATION_THRESHOLD
+            and _last_assistant_was_text_only(anthropic_body)
+        ):
+            openai_body.pop("tool_choice", None)
+            openai_body.pop("tools", None)
+            monitor.tool_starvation_streak += 1
+            monitor.consecutive_forced_count = 0
+            monitor.no_progress_streak = 0
+            monitor.reset_tool_turn_state(reason="tool_starvation_breaker")
+            logger.warning(
+                "TOOL STARVATION BREAKER: stripped tools after %d forced turns with no tool output (starvation_streak=%d)",
+                PROXY_TOOL_STARVATION_THRESHOLD,
+                monitor.tool_starvation_streak,
+            )
+            # Skip all further tool_choice logic — no tools this turn
+            if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
+                openai_body["enable_thinking"] = False
+            return openai_body
+
         # Check if forced-tool dampener or loop breaker should override tool_choice
         if monitor.consume_forced_auto_turn():
             openai_body["tool_choice"] = "auto"
@@ -2357,6 +2387,23 @@ def build_openai_request(
             monitor.no_progress_streak = 0
             if not has_tool_results:
                 monitor.reset_tool_turn_state(reason="no_tool_results")
+
+        # CONTEXT-AWARE RELAXATION: when context utilization is high and
+        # tool_choice was forced to required, relax to auto to let the model
+        # emit shorter text responses instead of consuming more tokens.
+        if openai_body.get("tool_choice") == "required":
+            ctx_utilization = (
+                monitor.last_input_tokens / monitor.context_window
+                if monitor.context_window > 0
+                else 0.0
+            )
+            if ctx_utilization >= PROXY_CONTEXT_HIGH_RELAXATION_THRESHOLD:
+                openai_body["tool_choice"] = "auto"
+                logger.warning(
+                    "CONTEXT-AWARE RELAXATION: tool_choice=auto (utilization=%.1f%% >= %.0f%% threshold)",
+                    ctx_utilization * 100,
+                    PROXY_CONTEXT_HIGH_RELAXATION_THRESHOLD * 100,
+                )
 
         if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
             openai_body["enable_thinking"] = False
