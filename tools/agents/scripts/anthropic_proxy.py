@@ -1104,7 +1104,10 @@ def estimate_total_tokens(anthropic_body: dict) -> int:
 
 
 def prune_conversation(
-    anthropic_body: dict, context_window: int, target_fraction: float = 0.65
+    anthropic_body: dict,
+    context_window: int,
+    target_fraction: float = 0.65,
+    keep_last: int = 8,
 ) -> dict:
     """Prune the conversation to fit within the context window.
 
@@ -1119,6 +1122,7 @@ def prune_conversation(
         anthropic_body: The full Anthropic request body
         context_window: Maximum context window in tokens
         target_fraction: Target utilization after pruning (0.0-1.0)
+        keep_last: Number of recent messages to always keep (default 8)
 
     Returns:
         Modified anthropic_body with pruned messages
@@ -1131,6 +1135,8 @@ def prune_conversation(
     target_tokens = int(context_window * target_fraction)
 
     # Estimate non-message tokens (system, tools, agentic supplement)
+    # Apply a 1.5x safety factor to account for chat template overhead
+    # and tokenization differences between local estimate and upstream
     overhead_tokens = 0
     system = anthropic_body.get("system", "")
     if isinstance(system, str):
@@ -1144,6 +1150,7 @@ def prune_conversation(
     tools = anthropic_body.get("tools", [])
     if tools:
         overhead_tokens += estimate_tokens(json.dumps(tools))
+    overhead_tokens = int(overhead_tokens * 1.5)  # Safety factor for template overhead
 
     # Budget for messages
     message_budget = target_tokens - overhead_tokens
@@ -1152,7 +1159,7 @@ def prune_conversation(
         return anthropic_body
 
     # Always keep the first user message and the last N messages
-    KEEP_LAST = 8  # Keep the last 8 messages (recent context)
+    KEEP_LAST = keep_last
     protected_head = messages[:1]  # First user message
     protected_tail = (
         messages[-KEEP_LAST:] if len(messages) > KEEP_LAST else messages[1:]
@@ -4962,28 +4969,86 @@ async def messages(request: Request):
     monitor.log_status()
 
     # --- Option C: Prune conversation if approaching context limit ---
+    # Option 1: Prefer upstream actual token count over local estimate
     ctx_window = monitor.context_window
     if ctx_window > 0:
-        utilization = estimated_tokens / ctx_window
+        # Use the upstream's actual prompt_tokens if available and higher
+        # than the local estimate (the upstream counts chat template overhead,
+        # tool schema tokenization, etc. that local heuristics miss).
+        effective_tokens = estimated_tokens
+        if monitor.last_input_tokens > estimated_tokens:
+            effective_tokens = monitor.last_input_tokens
+            logger.info(
+                "Using upstream token count %d (local estimate %d) for prune decision",
+                effective_tokens,
+                estimated_tokens,
+            )
+        utilization = effective_tokens / ctx_window
         if utilization >= PROXY_CONTEXT_PRUNE_THRESHOLD:
             logger.warning(
                 "Context utilization %.1f%% exceeds threshold %.1f%% -- pruning conversation",
                 utilization * 100,
                 PROXY_CONTEXT_PRUNE_THRESHOLD * 100,
             )
+            # Option 3: Aggressive pruning at critical utilization
+            target_frac = _resolve_prune_target_fraction()
+            keep_last = 8
+            if utilization >= 0.90:
+                keep_last = 4
+                target_frac = min(target_frac, 0.40)
+                logger.warning(
+                    "CRITICAL PRUNE: utilization %.1f%% >= 90%%, using keep_last=%d target=%.0f%%",
+                    utilization * 100,
+                    keep_last,
+                    target_frac * 100,
+                )
             body = prune_conversation(
-                body, ctx_window, target_fraction=_resolve_prune_target_fraction()
+                body, ctx_window, target_fraction=target_frac, keep_last=keep_last
             )
             monitor.prune_count += 1
-            # Re-estimate after pruning
+            # Option 4: Post-prune validation — verify actual reduction
             estimated_tokens = estimate_total_tokens(body)
             monitor.record_request(estimated_tokens)
+            post_util = estimated_tokens / ctx_window
             n_messages = len(body.get("messages", []))
             logger.info(
-                "After pruning: ~%d tokens, %d messages",
+                "After pruning: ~%d tokens (%d messages), utilization %.1f%%",
                 estimated_tokens,
                 n_messages,
+                post_util * 100,
             )
+            # If still above threshold after first prune, do aggressive second pass
+            if post_util >= PROXY_CONTEXT_PRUNE_THRESHOLD:
+                logger.warning(
+                    "POST-PRUNE VALIDATION: still at %.1f%% after prune, doing aggressive pass",
+                    post_util * 100,
+                )
+                body = prune_conversation(
+                    body, ctx_window, target_fraction=0.35, keep_last=4
+                )
+                monitor.prune_count += 1
+                estimated_tokens = estimate_total_tokens(body)
+                monitor.record_request(estimated_tokens)
+                post_util = estimated_tokens / ctx_window
+                n_messages = len(body.get("messages", []))
+                logger.info(
+                    "After aggressive prune: ~%d tokens (%d messages), utilization %.1f%%",
+                    estimated_tokens,
+                    n_messages,
+                    post_util * 100,
+                )
+            # Option 2: Circuit breaker — if 3+ consecutive prunes and still above,
+            # force finalize (drop tools, let model wrap up)
+            if monitor.prune_count >= 3 and post_util >= PROXY_CONTEXT_PRUNE_THRESHOLD:
+                logger.error(
+                    "PRUNE CIRCUIT BREAKER: %d consecutive prunes, still at %.1f%%. "
+                    "Forcing finalize to prevent death spiral.",
+                    monitor.prune_count,
+                    post_util * 100,
+                )
+                monitor.set_tool_turn_phase("finalize", reason="prune_circuit_breaker")
+                monitor.tool_state_auto_budget_remaining = 1
+                monitor.reset_completion_recovery()
 
     openai_body = build_openai_request(
         body,
@@ -5104,6 +5169,10 @@ async def messages(request: Request):
 
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
         monitor.record_response(anthropic_resp.get("usage", {}).get("output_tokens", 0))
+        # Update last_input_tokens from upstream's actual prompt_tokens
+        upstream_input = anthropic_resp.get("usage", {}).get("input_tokens", 0)
+        if upstream_input > 0:
+            monitor.last_input_tokens = upstream_input
         if PROXY_FORCE_NON_STREAM:
             logger.info(
                 "FORCED NON-STREAM: served stream response via guarded non-stream path"
@@ -5441,6 +5510,10 @@ async def messages(request: Request):
         # Track output tokens in session monitor
         output_tokens = anthropic_resp.get("usage", {}).get("output_tokens", 0)
         monitor.record_response(output_tokens)
+        # Update last_input_tokens from upstream's actual prompt_tokens
+        upstream_input = anthropic_resp.get("usage", {}).get("input_tokens", 0)
+        if upstream_input > 0:
+            monitor.last_input_tokens = upstream_input
 
         return anthropic_resp
 

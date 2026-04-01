@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.12 (2026-04-01)
+
+- fix: prevent pruning death spiral with upstream tokens, circuit breaker, aggressive mode
+
+
 ## v1.20.11 (2026-04-01)
 
 - fix: reduce cycle detection window, keep required in review phase, increase ctx-size
