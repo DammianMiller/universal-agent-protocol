@@ -3236,6 +3236,147 @@ class TestPruningImprovements(unittest.TestCase):
         self.assertEqual(monitor.tool_turn_phase, "finalize")
 
 
+class TestCycleBreakOptions(unittest.TestCase):
+    """Tests for cycle-break options: hint injection, tool narrowing, reduced budgets."""
+
+    def test_cycle_break_injects_hint_message(self):
+        """Option 1: cycle detection injects a user hint about the cycling tools."""
+        old_state = getattr(proxy, "PROXY_TOOL_STATE_MACHINE")
+        old_min_msgs = getattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES")
+        old_forced = getattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET")
+        old_auto = getattr(proxy, "PROXY_TOOL_STATE_AUTO_BUDGET")
+        old_stagnation = getattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD")
+        old_cycle_window = getattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW")
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", 20)
+            setattr(proxy, "PROXY_TOOL_STATE_AUTO_BUDGET", 2)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", 99)
+            setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", 4)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.tool_turn_phase = "act"
+            monitor.tool_state_forced_budget_remaining = 20
+            monitor.tool_call_history = ["Bash", "Bash", "Bash", "Bash"]
+            monitor.last_tool_fingerprint = "Bash"
+
+            body = {
+                "model": "test",
+                "messages": [
+                    {"role": "user", "content": "start"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}},
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                        ],
+                    },
+                ],
+                "tools": [
+                    {"name": "Bash", "description": "Run command", "input_schema": {"type": "object"}},
+                    {"name": "Read", "description": "Read file", "input_schema": {"type": "object"}},
+                ],
+            }
+
+            openai = proxy.build_openai_request(body, monitor)
+            self.assertEqual(monitor.tool_turn_phase, "review")
+            # Check that a cycle-break hint was injected
+            messages = openai.get("messages", [])
+            last_msg = messages[-1] if messages else {}
+            self.assertEqual(last_msg.get("role"), "user")
+            self.assertIn("Bash", last_msg.get("content", ""))
+            self.assertIn("DIFFERENT tool", last_msg.get("content", ""))
+        finally:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", old_min_msgs)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", old_forced)
+            setattr(proxy, "PROXY_TOOL_STATE_AUTO_BUDGET", old_auto)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", old_stagnation)
+            setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", old_cycle_window)
+
+    def test_cycle_break_narrows_tools(self):
+        """Option 2: cycling tools are excluded from the tools array during review."""
+        old_state = getattr(proxy, "PROXY_TOOL_STATE_MACHINE")
+        old_min_msgs = getattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES")
+        old_forced = getattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET")
+        old_auto = getattr(proxy, "PROXY_TOOL_STATE_AUTO_BUDGET")
+        old_stagnation = getattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD")
+        old_cycle_window = getattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW")
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", 20)
+            setattr(proxy, "PROXY_TOOL_STATE_AUTO_BUDGET", 2)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", 99)
+            setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", 4)
+
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.tool_turn_phase = "act"
+            monitor.tool_state_forced_budget_remaining = 20
+            monitor.tool_call_history = ["Bash", "Bash", "Bash", "Bash"]
+            monitor.last_tool_fingerprint = "Bash"
+
+            body = {
+                "model": "test",
+                "messages": [
+                    {"role": "user", "content": "start"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}},
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                        ],
+                    },
+                ],
+                "tools": [
+                    {"name": "Bash", "description": "Run command", "input_schema": {"type": "object"}},
+                    {"name": "Read", "description": "Read file", "input_schema": {"type": "object"}},
+                    {"name": "Write", "description": "Write file", "input_schema": {"type": "object"}},
+                ],
+            }
+
+            openai = proxy.build_openai_request(body, monitor)
+            self.assertEqual(monitor.tool_turn_phase, "review")
+            # Bash should be excluded, Read and Write should remain
+            tool_names = [t["function"]["name"] for t in openai.get("tools", [])]
+            self.assertNotIn("Bash", tool_names)
+            self.assertIn("Read", tool_names)
+            self.assertIn("Write", tool_names)
+        finally:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", old_min_msgs)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", old_forced)
+            setattr(proxy, "PROXY_TOOL_STATE_AUTO_BUDGET", old_auto)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", old_stagnation)
+            setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", old_cycle_window)
+
+    def test_forced_budget_default_is_12(self):
+        """Option 3: default forced budget reduced from 24 to 12."""
+        self.assertEqual(proxy.PROXY_TOOL_STATE_FORCED_BUDGET, 12)
+
+    def test_review_cycle_limit_default_is_1(self):
+        """Option 4: default review cycle limit reduced from 2 to 1."""
+        self.assertEqual(proxy.PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT, 1)
+
+    def test_cycling_tool_names_cleared_on_reset(self):
+        """cycling_tool_names is cleared when tool turn state resets."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+        monitor.cycling_tool_names = ["Bash", "Read"]
+        monitor.reset_tool_turn_state(reason="test")
+        self.assertEqual(monitor.cycling_tool_names, [])
+
+
 if __name__ == "__main__":
     unittest.main()
 

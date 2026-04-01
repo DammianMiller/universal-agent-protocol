@@ -143,7 +143,7 @@ PROXY_TOOL_STATE_MIN_MESSAGES = int(
     os.environ.get("PROXY_TOOL_STATE_MIN_MESSAGES", "6")
 )
 PROXY_TOOL_STATE_FORCED_BUDGET = int(
-    os.environ.get("PROXY_TOOL_STATE_FORCED_BUDGET", "24")
+    os.environ.get("PROXY_TOOL_STATE_FORCED_BUDGET", "12")
 )
 PROXY_TOOL_STATE_AUTO_BUDGET = int(os.environ.get("PROXY_TOOL_STATE_AUTO_BUDGET", "2"))
 PROXY_TOOL_STATE_STAGNATION_THRESHOLD = int(
@@ -156,7 +156,7 @@ PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
     os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "18")
 )
 PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT = int(
-    os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "2")
+    os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "1")
 )
 PROXY_CLIENT_RATE_WINDOW_SECS = int(
     os.environ.get("PROXY_CLIENT_RATE_WINDOW_SECS", "60")
@@ -628,6 +628,7 @@ class SessionMonitor:
     tool_state_transitions: int = 0
     tool_state_review_cycles: int = 0
     last_tool_fingerprint: str = ""
+    cycling_tool_names: list = field(default_factory=list)
     finalize_turn_active: bool = False
     completion_required: bool = False
     completion_pending: bool = False
@@ -832,6 +833,7 @@ class SessionMonitor:
         self.tool_state_auto_budget_remaining = 0
         self.tool_state_stagnation_streak = 0
         self.tool_state_review_cycles = 0
+        self.cycling_tool_names = []
         self.last_tool_fingerprint = ""
 
     def update_completion_state(self, anthropic_body: dict, has_tool_results: bool):
@@ -2053,12 +2055,17 @@ def _resolve_state_machine_tool_choice(
             monitor.tool_state_forced_budget_remaining = max(
                 1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
             )
+            # Capture which tools are cycling for narrowing/hint injection
+            window = max(2, PROXY_TOOL_STATE_CYCLE_WINDOW)
+            recent = [fp for fp in monitor.tool_call_history[-window:] if fp]
+            monitor.cycling_tool_names = list(dict.fromkeys(recent))
             logger.warning(
-                "TOOL STATE MACHINE: entering review (cycle=%s repeat=%d stagnation=%d cycles=%d)",
+                "TOOL STATE MACHINE: entering review (cycle=%s repeat=%d stagnation=%d cycles=%d cycling_tools=%s)",
                 cycle_looping,
                 cycle_repeat,
                 monitor.tool_state_stagnation_streak,
                 monitor.tool_state_review_cycles,
+                monitor.cycling_tool_names,
             )
             return "required", reason
 
@@ -2349,6 +2356,49 @@ def build_openai_request(
             monitor.no_progress_streak = (
                 0 if last_user_has_tool_result else monitor.no_progress_streak + 1
             )
+            # Option 1: Inject cycle-break instruction when entering review
+            if (
+                monitor.tool_turn_phase == "review"
+                and state_reason in {"cycle_detected", "stagnation"}
+                and monitor.cycling_tool_names
+            ):
+                cycling_names = ", ".join(monitor.cycling_tool_names)
+                cycle_hint = (
+                    f"You have been repeatedly calling the same tool(s): {cycling_names}. "
+                    "This is not making progress. Use a DIFFERENT tool to advance the task, "
+                    "or call a tool that produces your final answer."
+                )
+                messages = openai_body.get("messages", [])
+                messages.append({"role": "user", "content": cycle_hint})
+                openai_body["messages"] = messages
+                logger.warning(
+                    "CYCLE BREAK: injected hint about cycling tools: %s",
+                    cycling_names,
+                )
+            # Option 2: Narrow tools during review to exclude cycling tools
+            if (
+                monitor.tool_turn_phase == "review"
+                and monitor.cycling_tool_names
+                and "tools" in openai_body
+            ):
+                original_count = len(openai_body["tools"])
+                narrowed = [
+                    t
+                    for t in openai_body["tools"]
+                    if t.get("function", {}).get("name") not in monitor.cycling_tool_names
+                ]
+                if narrowed:
+                    openai_body["tools"] = narrowed
+                    logger.warning(
+                        "CYCLE BREAK: narrowed tools from %d to %d (excluded %s)",
+                        original_count,
+                        len(narrowed),
+                        monitor.cycling_tool_names,
+                    )
+                else:
+                    logger.warning(
+                        "CYCLE BREAK: cannot narrow tools — all tools are cycling, keeping original set",
+                    )
             logger.info(
                 "tool_choice forced to 'required' by TOOL STATE MACHINE (phase=%s reason=%s forced_budget=%d)",
                 monitor.tool_turn_phase,
