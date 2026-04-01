@@ -1861,7 +1861,8 @@ class TestToolTurnControls(unittest.TestCase):
 
             self.assertEqual(openai_1.get("tool_choice"), "required")
             self.assertEqual(openai_2.get("tool_choice"), "required")
-            self.assertEqual(openai_3.get("tool_choice"), "auto")
+            # Review phase now keeps required to prevent end-turn escape
+            self.assertEqual(openai_3.get("tool_choice"), "required")
         finally:
             setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
             setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", old_min_msgs)
@@ -1938,7 +1939,8 @@ class TestToolTurnControls(unittest.TestCase):
             }
 
             openai = proxy.build_openai_request(body, monitor)
-            self.assertEqual(openai.get("tool_choice"), "auto")
+            # Review phase now keeps required to prevent end-turn escape
+            self.assertEqual(openai.get("tool_choice"), "required")
             self.assertEqual(monitor.tool_turn_phase, "review")
         finally:
             setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
@@ -2067,7 +2069,8 @@ class TestToolTurnControls(unittest.TestCase):
             }
 
             openai = proxy.build_openai_request(body, monitor)
-            self.assertEqual(openai.get("tool_choice"), "auto")
+            # Review phase now keeps required to prevent end-turn escape
+            self.assertEqual(openai.get("tool_choice"), "required")
             self.assertEqual(monitor.tool_turn_phase, "review")
             self.assertEqual(monitor.tool_state_review_cycles, 1)
         finally:
