@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.13 (2026-04-01)
+
+- fix: reduce tool call cycling waste with 4 layered defenses
+
+
 ## v1.20.12 (2026-04-01)
 
 - fix: prevent pruning death spiral with upstream tokens, circuit breaker, aggressive mode
