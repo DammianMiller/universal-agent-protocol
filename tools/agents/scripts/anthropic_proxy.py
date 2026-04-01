@@ -280,9 +280,6 @@ PROXY_FORCED_TOOL_DAMPENER_REJECTIONS = int(
 PROXY_TOOL_STARVATION_THRESHOLD = int(
     os.environ.get("PROXY_TOOL_STARVATION_THRESHOLD", "5")
 )
-PROXY_CONTEXT_HIGH_RELAXATION_THRESHOLD = float(
-    os.environ.get("PROXY_CONTEXT_HIGH_RELAXATION_THRESHOLD", "0.70")
-)
 PROXY_SESSION_CONTAMINATION_BREAKER = os.environ.get(
     "PROXY_SESSION_CONTAMINATION_BREAKER", "on"
 ).lower() not in {
@@ -2388,22 +2385,6 @@ def build_openai_request(
             if not has_tool_results:
                 monitor.reset_tool_turn_state(reason="no_tool_results")
 
-        # CONTEXT-AWARE RELAXATION: when context utilization is high and
-        # tool_choice was forced to required, relax to auto to let the model
-        # emit shorter text responses instead of consuming more tokens.
-        if openai_body.get("tool_choice") == "required":
-            ctx_utilization = (
-                monitor.last_input_tokens / monitor.context_window
-                if monitor.context_window > 0
-                else 0.0
-            )
-            if ctx_utilization >= PROXY_CONTEXT_HIGH_RELAXATION_THRESHOLD:
-                openai_body["tool_choice"] = "auto"
-                logger.warning(
-                    "CONTEXT-AWARE RELAXATION: tool_choice=auto (utilization=%.1f%% >= %.0f%% threshold)",
-                    ctx_utilization * 100,
-                    PROXY_CONTEXT_HIGH_RELAXATION_THRESHOLD * 100,
-                )
 
         if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
             openai_body["enable_thinking"] = False
