@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.11 (2026-04-01)
+
+- fix: reduce cycle detection window, keep required in review phase, increase ctx-size
+
+
 ## v1.20.10 (2026-04-01)
 
 - fix: revert parallel=1 and remove context-aware relaxation
