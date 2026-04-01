@@ -50,7 +50,7 @@ args=(
   --flash-attn on
   --batch-size "$LLAMA_BATCH_SIZE"
   --ubatch-size "$LLAMA_UBATCH_SIZE"
-  --parallel 2
+  --parallel 1
   --no-context-shift
   --n-predict 81920
   --repeat-penalty 1.05
