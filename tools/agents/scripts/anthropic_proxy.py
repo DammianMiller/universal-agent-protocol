@@ -147,10 +147,10 @@ PROXY_TOOL_STATE_FORCED_BUDGET = int(
 )
 PROXY_TOOL_STATE_AUTO_BUDGET = int(os.environ.get("PROXY_TOOL_STATE_AUTO_BUDGET", "2"))
 PROXY_TOOL_STATE_STAGNATION_THRESHOLD = int(
-    os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "9")
+    os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "5")
 )
 PROXY_TOOL_STATE_CYCLE_WINDOW = int(
-    os.environ.get("PROXY_TOOL_STATE_CYCLE_WINDOW", "8")
+    os.environ.get("PROXY_TOOL_STATE_CYCLE_WINDOW", "4")
 )
 PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
     os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "18")
@@ -2053,7 +2053,7 @@ def _resolve_state_machine_tool_choice(
                 monitor.tool_state_stagnation_streak,
                 monitor.tool_state_review_cycles,
             )
-            return "auto", reason
+            return "required", reason
 
         if monitor.tool_state_forced_budget_remaining <= 0:
             monitor.set_tool_turn_phase("review", reason="forced_budget_exhausted")
@@ -2068,7 +2068,7 @@ def _resolve_state_machine_tool_choice(
                 "TOOL STATE MACHINE: forced budget exhausted, entering review (cycles=%d)",
                 monitor.tool_state_review_cycles,
             )
-            return "auto", "forced_budget_exhausted"
+            return "required", "forced_budget_exhausted"
 
         monitor.tool_state_forced_budget_remaining -= 1
         return "required", "act"
@@ -2088,7 +2088,7 @@ def _resolve_state_machine_tool_choice(
                 1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
             )
             return "required", "review_complete"
-        return "auto", "review"
+        return "required", "review"
 
     if monitor.tool_turn_phase == "finalize":
         if monitor.tool_state_auto_budget_remaining <= 0:
