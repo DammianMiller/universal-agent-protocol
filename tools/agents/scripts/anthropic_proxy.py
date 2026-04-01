@@ -4103,6 +4103,8 @@ def _build_malformed_retry_body(
     tool_choice: str = "required",
     attempt: int = 1,
     total_attempts: int = 1,
+    is_garbled: bool = False,
+    exclude_tools: list[str] | None = None,
 ) -> dict:
     retry_body = dict(openai_body)
     retry_body["stream"] = False
@@ -4137,7 +4139,16 @@ def _build_malformed_retry_body(
         sanitized = _sanitize_assistant_messages_for_retry(existing_messages)
         retry_body["messages"] = [*sanitized, malformed_retry_instruction]
 
-    if PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS > 0:
+    # Option 1: Progressive garbled-cap within retries — use smaller max_tokens
+    # when the issue involves garbled/degenerate args to limit degeneration room.
+    if is_garbled and PROXY_TOOL_TURN_MAX_TOKENS_GARBLED > 0:
+        retry_body["max_tokens"] = PROXY_TOOL_TURN_MAX_TOKENS_GARBLED
+        logger.info(
+            "RETRY GARBLED CAP: max_tokens=%d for garbled retry attempt=%d",
+            PROXY_TOOL_TURN_MAX_TOKENS_GARBLED,
+            attempt,
+        )
+    elif PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS > 0:
         current_max = int(
             retry_body.get("max_tokens", PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS)
         )
@@ -4150,6 +4161,23 @@ def _build_malformed_retry_body(
         retry_body["tools"] = _convert_anthropic_tools_to_openai(
             anthropic_body.get("tools", [])
         )
+
+    # Option 3: Exclude specific failing tools from retry to let the model
+    # pick an alternative when a tool consistently produces garbled args.
+    if exclude_tools and retry_body.get("tools"):
+        exclude_lower = {t.lower() for t in exclude_tools}
+        original_count = len(retry_body["tools"])
+        retry_body["tools"] = [
+            t for t in retry_body["tools"]
+            if t.get("function", {}).get("name", "").lower() not in exclude_lower
+        ]
+        if len(retry_body["tools"]) < original_count:
+            logger.info(
+                "RETRY TOOL NARROWING: excluded %s, tools %d -> %d",
+                exclude_tools,
+                original_count,
+                len(retry_body["tools"]),
+            )
 
     if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
         retry_body["enable_thinking"] = False
@@ -4373,8 +4401,16 @@ async def _apply_malformed_tool_guardrail(
 
     monitor.maybe_activate_forced_tool_dampener(issue.kind)
     excerpt = _openai_message_text(working_resp)[:220].replace("\n", " ")
+    # Option 2: Log garbled argument content for diagnostics
+    arg_excerpt = ""
+    if issue.kind == "invalid_tool_args":
+        for tc in (working_resp.get("choices", [{}])[0].get("message", {}).get("tool_calls", [])):
+            raw_args = tc.get("function", {}).get("arguments", "")
+            if raw_args and _is_garbled_tool_arguments(raw_args):
+                arg_excerpt = raw_args[:200].replace("\n", " ")
+                break
     logger.warning(
-        "TOOL RESPONSE ISSUE: session=%s kind=%s reason=%s malformed=%d invalid=%d required_miss=%d excerpt=%.220s",
+        "TOOL RESPONSE ISSUE: session=%s kind=%s reason=%s malformed=%d invalid=%d required_miss=%d excerpt=%.220s args=%.200s",
         session_id,
         issue.kind,
         issue.reason,
@@ -4382,16 +4418,27 @@ async def _apply_malformed_tool_guardrail(
         monitor.invalid_tool_call_streak,
         monitor.required_tool_miss_streak,
         excerpt,
+        arg_excerpt,
     )
 
     attempts = max(0, PROXY_MALFORMED_TOOL_RETRY_MAX)
     current_issue = issue
+    # Track failing tool names for Option 3 (tool narrowing on retry)
+    failing_tools: set[str] = set()
+    if issue.kind == "invalid_tool_args":
+        for tc in (working_resp.get("choices", [{}])[0].get("message", {}).get("tool_calls", [])):
+            fn_name = tc.get("function", {}).get("name", "")
+            raw_args = tc.get("function", {}).get("arguments", "")
+            if fn_name and raw_args and _is_garbled_tool_arguments(raw_args):
+                failing_tools.add(fn_name)
     for attempt in range(attempts):
         attempt_tool_choice = _retry_tool_choice_for_attempt(
             required_tool_choice,
             attempt,
             attempts,
         )
+        # Option 3: On attempt >= 2, exclude consistently failing tools
+        exclude = list(failing_tools) if attempt >= 1 and failing_tools else None
         retry_body = _build_malformed_retry_body(
             openai_body,
             anthropic_body,
@@ -4399,6 +4446,8 @@ async def _apply_malformed_tool_guardrail(
             tool_choice=attempt_tool_choice,
             attempt=attempt + 1,
             total_attempts=attempts,
+            is_garbled=current_issue.kind == "invalid_tool_args",
+            exclude_tools=exclude,
         )
         retry_resp = await client.post(
             f"{LLAMA_CPP_BASE}/chat/completions",
@@ -4471,6 +4520,12 @@ async def _apply_malformed_tool_guardrail(
         elif retry_issue.kind == "invalid_tool_args":
             monitor.invalid_tool_call_streak += 1
             monitor.arg_preflight_rejections += 1
+            # Track failing tools from retries for progressive narrowing
+            for tc in (retry_working.get("choices", [{}])[0].get("message", {}).get("tool_calls", [])):
+                fn_name = tc.get("function", {}).get("name", "")
+                raw_args = tc.get("function", {}).get("arguments", "")
+                if fn_name and raw_args and _is_garbled_tool_arguments(raw_args):
+                    failing_tools.add(fn_name)
 
         monitor.maybe_activate_forced_tool_dampener(retry_issue.kind)
         logger.warning(
