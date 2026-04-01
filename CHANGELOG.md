@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.16 (2026-04-01)
+
+- fix: add generation timeout and slot hang detection for llama-server hangs
+
+
 ## v1.20.15 (2026-04-01)
 
 - fix: skip max_tokens floor for non-tool requests and detect degenerate repetition
