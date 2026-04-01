@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.17 (2026-04-01)
+
+- fix: add garbled tool args detection to retry pipeline
+
+
 ## v1.20.16 (2026-04-01)
 
 - fix: add generation timeout and slot hang detection for llama-server hangs

@@ -3634,6 +3634,16 @@ def _validate_tool_call_arguments(
             ),
         )
 
+    if _is_garbled_tool_arguments(arg_text):
+        return ToolResponseIssue(
+            kind="invalid_tool_args",
+            reason=f"arguments for '{tool_name}' contain garbled/degenerate content",
+            retry_hint=(
+                f"Emit exactly one `{tool_name}` tool call with well-formed JSON arguments. "
+                "Do not repeat closing braces, brackets, or digits."
+            ),
+        )
+
     if _contains_required_placeholder(parsed):
         return ToolResponseIssue(
             kind="invalid_tool_args",
