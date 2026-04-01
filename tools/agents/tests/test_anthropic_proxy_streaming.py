@@ -3988,3 +3988,59 @@ class TestRetryGarbledImprovements(unittest.TestCase):
         # Clean pattern
         clean = '{"pattern": "hello", "path": "/src"}'
         self.assertFalse(proxy._is_garbled_tool_arguments(clean))
+
+
+class TestSpecModeLeakMarkers(unittest.TestCase):
+    """Tests for spec mode and system-reminder leak detection markers."""
+
+    def test_spec_mode_active_detected(self):
+        """Spec mode system prompt text is detected as a leak."""
+        value = {"patterns": ["**Spec mode is active. The user indicated that they do not want you to execute"]}
+        self.assertTrue(proxy._contains_system_prompt_leak(value))
+
+    def test_system_reminder_tags_detected(self):
+        """Raw <system-reminder> tags in args are detected as a leak."""
+        value = {"content": "<system-reminder>\nSpec mode active\n</system-reminder>"}
+        self.assertTrue(proxy._contains_system_prompt_leak(value))
+
+    def test_gather_requirements_detected(self):
+        """'gather requirements and clarify decisions' phrase is detected."""
+        value = {"text": "executed AskUser tool to gather requirements and clarify decisions before finalizing your spec"}
+        self.assertTrue(proxy._contains_system_prompt_leak(value))
+
+    def test_clean_args_not_flagged(self):
+        """Normal tool arguments are not flagged as leaks."""
+        value = {"pattern": "*.ts", "path": "/home/user/project/src"}
+        self.assertFalse(proxy._contains_system_prompt_leak(value))
+
+    def test_repair_truncates_string_arg_at_spec_mode_leak(self):
+        """_repair_system_prompt_leak truncates string args at spec mode leak point."""
+        openai_resp = {
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_test",
+                        "type": "function",
+                        "function": {
+                            "name": "Grep",
+                            "arguments": '{"pattern":"TODO Spec mode is active. The user indicated"}'
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls",
+            }],
+        }
+        repaired, count = proxy._repair_system_prompt_leak(openai_resp)
+        self.assertGreater(count, 0)
+        args_str = repaired["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        self.assertNotIn("spec mode is active", args_str.lower())
+        # The valid prefix should be preserved
+        parsed = json.loads(args_str)
+        self.assertTrue(parsed["pattern"].startswith("TODO"))
+
+    def test_detection_works_on_list_values(self):
+        """_contains_system_prompt_leak detects leaks inside list values."""
+        value = {"patterns": ["**Spec mode is active. The user indicated"]}
+        self.assertTrue(proxy._contains_system_prompt_leak(value))
