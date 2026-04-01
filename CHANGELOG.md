@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.14 (2026-04-01)
+
+- fix: harden malformed tool retry with higher budget and message sanitization
+
+
 ## v1.20.13 (2026-04-01)
 
 - fix: reduce tool call cycling waste with 4 layered defenses
