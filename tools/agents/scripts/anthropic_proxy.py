@@ -2788,6 +2788,15 @@ _SYSTEM_PROMPT_LEAK_MARKERS = (
     "never emit literal tag artifacts",
     "use tools for concrete work",
     "stopping at analysis",
+    # Client system prompt phrases that also leak into tool args
+    "only produce a final text response without tool calls",
+    "the entire task is fully complete",
+    "always use tools to read, edit, write",
+    "after reading files and identifying an issue",
+    "do not output raw protocol tags",
+    "valid tool call with strict json",
+    "return exactly one valid tool call",
+    "invalid tool call format",
 )
 
 
