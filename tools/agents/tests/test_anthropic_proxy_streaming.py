@@ -3377,6 +3377,66 @@ class TestCycleBreakOptions(unittest.TestCase):
         self.assertEqual(monitor.cycling_tool_names, [])
 
 
+class TestMalformedRetryHardening(unittest.TestCase):
+    """Tests for malformed retry improvements: budget, temp escalation, message sanitization."""
+
+    def test_retry_max_default_is_3(self):
+        """Option 1: default retry budget increased from 2 to 3."""
+        self.assertEqual(proxy.PROXY_MALFORMED_TOOL_RETRY_MAX, 3)
+
+    def test_sanitize_assistant_messages_strips_tool_like_text(self):
+        """Option 3: malformed tool-like text stripped from assistant messages on retry."""
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Run a command"},
+            {"role": "assistant", "content": 'Here is the result <tool_call>{"name": "Bash", "arguments": {"command": "ls"}}</tool_call>'},
+            {"role": "user", "content": "ok"},
+        ]
+        sanitized = proxy._sanitize_assistant_messages_for_retry(messages)
+        # System and user messages unchanged
+        self.assertEqual(sanitized[0]["content"], "You are helpful.")
+        self.assertEqual(sanitized[1]["content"], "Run a command")
+        self.assertEqual(sanitized[3]["content"], "ok")
+        # Assistant message should have tool_call stripped
+        self.assertNotIn("<tool_call>", sanitized[2]["content"])
+        self.assertNotIn("Bash", sanitized[2]["content"])
+
+    def test_sanitize_preserves_clean_assistant_messages(self):
+        """Clean assistant messages are not modified by sanitization."""
+        messages = [
+            {"role": "assistant", "content": "I will read the file for you."},
+        ]
+        sanitized = proxy._sanitize_assistant_messages_for_retry(messages)
+        self.assertEqual(sanitized[0]["content"], "I will read the file for you.")
+
+    def test_sanitize_replaces_empty_content_with_placeholder(self):
+        """If stripping leaves empty content, a placeholder is used."""
+        messages = [
+            {"role": "assistant", "content": '<tool_call>{"name": "Bash", "arguments": {}}</tool_call>'},
+        ]
+        sanitized = proxy._sanitize_assistant_messages_for_retry(messages)
+        self.assertEqual(sanitized[0]["content"], "I will use the appropriate tool.")
+
+    def test_retry_body_uses_sanitized_messages(self):
+        """Retry body messages are sanitized before adding retry instruction."""
+        openai_body = {
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "do it"},
+                {"role": "assistant", "content": '<tool_call>{"name":"X","arguments":{}}</tool_call>'},
+            ],
+            "tools": [{"type": "function", "function": {"name": "X", "parameters": {}}}],
+        }
+        anthropic_body = {"tools": [{"name": "X", "input_schema": {"type": "object"}}]}
+        retry = proxy._build_malformed_retry_body(
+            openai_body, anthropic_body, attempt=1, total_attempts=3,
+        )
+        # The assistant message should be sanitized
+        assistant_msgs = [m for m in retry["messages"] if m.get("role") == "assistant"]
+        for m in assistant_msgs:
+            self.assertNotIn("<tool_call>", m.get("content", ""))
+
+
 if __name__ == "__main__":
     unittest.main()
 

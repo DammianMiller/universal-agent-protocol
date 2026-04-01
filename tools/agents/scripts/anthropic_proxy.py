@@ -219,7 +219,7 @@ PROXY_MALFORMED_TOOL_GUARDRAIL = os.environ.get(
     "no",
 }
 PROXY_MALFORMED_TOOL_RETRY_MAX = int(
-    os.environ.get("PROXY_MALFORMED_TOOL_RETRY_MAX", "2")
+    os.environ.get("PROXY_MALFORMED_TOOL_RETRY_MAX", "3")
 )
 PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS = int(
     os.environ.get("PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS", "2048")
@@ -3890,6 +3890,40 @@ async def _apply_completion_contract_guardrail(
     return retried
 
 
+def _sanitize_assistant_messages_for_retry(messages: list[dict]) -> list[dict]:
+    """Strip malformed tool-like text from assistant messages to prevent copy-contamination.
+
+    Only sanitizes the last 4 assistant messages to avoid excessive processing.
+    """
+    import re
+
+    # Patterns that indicate malformed tool call text in assistant content
+    _TOOL_LIKE_PATTERNS = re.compile(
+        r"<tool_call>.*?</tool_call>"
+        r"|<function_call>.*?</function_call>"
+        r'|\{"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:'
+        r"|```json\s*\{[^}]*\"name\"\s*:",
+        re.DOTALL,
+    )
+
+    result = list(messages)
+    sanitized_count = 0
+    for i in range(len(result) - 1, -1, -1):
+        if sanitized_count >= 4:
+            break
+        msg = result[i]
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str) and _TOOL_LIKE_PATTERNS.search(content):
+            cleaned = _TOOL_LIKE_PATTERNS.sub("", content).strip()
+            if not cleaned:
+                cleaned = "I will use the appropriate tool."
+            result[i] = {**msg, "content": cleaned}
+            sanitized_count += 1
+    return result
+
+
 def _build_malformed_retry_body(
     openai_body: dict,
     anthropic_body: dict,
@@ -3901,7 +3935,11 @@ def _build_malformed_retry_body(
     retry_body = dict(openai_body)
     retry_body["stream"] = False
     retry_body["tool_choice"] = tool_choice
-    retry_body["temperature"] = PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE
+    # Escalate temperature down on successive retries for more deterministic output
+    if total_attempts > 1 and attempt > 1:
+        retry_body["temperature"] = 0.0
+    else:
+        retry_body["temperature"] = PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE
 
     if tool_choice == "required":
         retry_instruction = (
@@ -3922,7 +3960,10 @@ def _build_malformed_retry_body(
     }
     existing_messages = retry_body.get("messages")
     if isinstance(existing_messages, list) and existing_messages:
-        retry_body["messages"] = [*existing_messages, malformed_retry_instruction]
+        # Strip malformed tool-like text from assistant messages to prevent
+        # the model from copying contaminated patterns on retry
+        sanitized = _sanitize_assistant_messages_for_retry(existing_messages)
+        retry_body["messages"] = [*sanitized, malformed_retry_instruction]
 
     if PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS > 0:
         current_max = int(
