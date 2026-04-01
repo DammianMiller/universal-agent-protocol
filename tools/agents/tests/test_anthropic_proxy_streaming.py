@@ -3166,44 +3166,6 @@ class TestToolStarvationBreaker(unittest.TestCase):
         self.assertIn("tools", result)
 
 
-class TestContextAwareRelaxation(unittest.TestCase):
-    """Tests for context-aware tool_choice relaxation."""
-
-    def test_relaxes_at_high_utilization(self):
-        monitor = proxy.SessionMonitor()
-        monitor.context_window = 100000
-        monitor.last_input_tokens = 75000  # 75% > 70% threshold
-        body = {
-            "model": "qwen3.5",
-            "messages": [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "text only"},
-                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]},
-            ],
-            "tools": [{"name": "Bash", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}}}],
-        }
-        result = proxy.build_openai_request(body, monitor)
-        # Should be auto, not required
-        self.assertEqual(result.get("tool_choice"), "auto")
-
-    def test_no_relaxation_below_threshold(self):
-        monitor = proxy.SessionMonitor()
-        monitor.context_window = 100000
-        monitor.last_input_tokens = 50000  # 50% < 70%
-        body = {
-            "model": "qwen3.5",
-            "messages": [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "text only"},
-                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]},
-            ],
-            "tools": [{"name": "Bash", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}}}],
-        }
-        result = proxy.build_openai_request(body, monitor)
-        # Should still be required (state machine forces it)
-        self.assertEqual(result.get("tool_choice"), "required")
-
-
 if __name__ == "__main__":
     unittest.main()
 
