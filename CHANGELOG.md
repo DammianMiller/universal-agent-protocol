@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.20.29 (2026-04-02)
+
+- chore: bump version to 1.20.28
+- fix: session-level tool banning, reduced log noise, and cycle polish
+- fix: break malformed payload death loop (#157) (#157)
+- fix: persistent cycle exclusion and escalating hints (#156) (#156)
+- fix: read-only tool class exclusion and duplicate target cycle detection (#155)
+
+
 ## v1.20.28 (2026-04-02)
 
 - fix: session-level tool banning, reduced log noise, and cycle polish
