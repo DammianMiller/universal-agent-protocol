@@ -1348,6 +1348,43 @@ def prune_conversation(
 http_client: httpx.AsyncClient | None = None
 
 
+def _is_loading_model_503(resp: httpx.Response) -> bool:
+    """Check if response is a 503 'Loading model' from llama.cpp."""
+    if resp.status_code != 503:
+        return False
+    try:
+        return "loading model" in resp.text.lower()
+    except Exception:
+        return False
+
+
+async def _wait_for_upstream_health(
+    client: httpx.AsyncClient,
+    max_wait: float = 60.0,
+    poll_interval: float = 5.0,
+) -> bool:
+    """Poll upstream /health until ready or timeout. Returns True if healthy."""
+    health_url = LLAMA_CPP_BASE.replace("/v1", "/health")
+    elapsed = 0.0
+    while elapsed < max_wait:
+        try:
+            resp = await client.get(health_url, timeout=5.0)
+            if resp.status_code == 200:
+                data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                if data.get("status") == "ok" or resp.status_code == 200:
+                    if elapsed > 0:
+                        logger.info(
+                            "UPSTREAM HEALTH: recovered after %.0fs wait", elapsed
+                        )
+                    return True
+        except Exception:
+            pass
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+    logger.error("UPSTREAM HEALTH: not ready after %.0fs", max_wait)
+    return False
+
+
 async def _post_with_retry(
     client: httpx.AsyncClient,
     url: str,
@@ -1357,7 +1394,19 @@ async def _post_with_retry(
     last_exc: Exception | None = None
     for attempt in range(PROXY_UPSTREAM_RETRY_MAX):
         try:
-            return await client.post(url, json=payload, headers=headers)
+            resp = await client.post(url, json=payload, headers=headers)
+            # Cycle 19 Option 1: if 503 "Loading model", wait for health then retry
+            if _is_loading_model_503(resp):
+                logger.warning(
+                    "Upstream 503 Loading model (attempt %d/%d) – waiting for health",
+                    attempt + 1,
+                    PROXY_UPSTREAM_RETRY_MAX,
+                )
+                healthy = await _wait_for_upstream_health(client, max_wait=60.0)
+                if healthy and attempt < PROXY_UPSTREAM_RETRY_MAX - 1:
+                    continue  # retry the request now that upstream is healthy
+                return resp  # return the 503 if health wait timed out
+            return resp
         except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadTimeout) as exc:
             last_exc = exc
             if attempt < PROXY_UPSTREAM_RETRY_MAX - 1:
@@ -5991,6 +6040,27 @@ async def messages(request: Request):
 
         if strict_resp.status_code != 200:
             error_text = strict_resp.text[:1000]
+            # Cycle 19 Option 2: For 503 "Loading model", don't advance state
+            # machine — return retriable 503 with Retry-After header so the
+            # client can retry without wasting state machine budget.
+            if _is_loading_model_503(strict_resp):
+                logger.warning(
+                    "Upstream 503 Loading model (strict-stream) — returning retriable 503 without advancing state",
+                )
+                return Response(
+                    content=json.dumps(
+                        {
+                            "type": "error",
+                            "error": {
+                                "type": "overloaded_error",
+                                "message": "Upstream model is loading. Retry in 10 seconds.",
+                            },
+                        }
+                    ),
+                    status_code=503,
+                    headers={"Retry-After": "10"},
+                    media_type="application/json",
+                )
             logger.error(
                 "Upstream HTTP %d (strict-stream): %s",
                 strict_resp.status_code,
