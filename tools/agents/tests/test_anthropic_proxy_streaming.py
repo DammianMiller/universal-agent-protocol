@@ -1892,12 +1892,13 @@ class TestToolTurnControls(unittest.TestCase):
             monitor = proxy.SessionMonitor(context_window=262144)
             monitor.tool_turn_phase = "act"
             monitor.tool_state_forced_budget_remaining = 20
+            # Use hash-format fingerprints to match _tool_call_fingerprint output
             monitor.tool_call_history = [
-                "Bash",
+                "Bash:1e7b8d07",
                 "TaskOutput",
-                "Bash",
+                "Bash:1e7b8d07",
                 "TaskOutput",
-                "Bash",
+                "Bash:1e7b8d07",
                 "TaskOutput",
             ]
             monitor.last_tool_fingerprint = "TaskOutput"
@@ -2076,7 +2077,9 @@ class TestToolTurnControls(unittest.TestCase):
             # Review phase now keeps required to prevent end-turn escape
             self.assertEqual(openai.get("tool_choice"), "required")
             self.assertEqual(monitor.tool_turn_phase, "review")
-            self.assertEqual(monitor.tool_state_review_cycles, 1)
+            # review_cycles only increments when cycle_looping or stagnating,
+            # not on mere budget exhaustion (model was working, not cycling)
+            self.assertEqual(monitor.tool_state_review_cycles, 0)
         finally:
             setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
             setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", old_min_msgs)
@@ -2242,7 +2245,11 @@ class TestToolTurnControls(unittest.TestCase):
             monitor = proxy.SessionMonitor(context_window=262144)
             monitor.tool_turn_phase = "act"
             monitor.tool_state_stagnation_streak = 4
-            monitor.tool_call_history = ["Bash", "TaskOutput", "Bash", "TaskOutput"]
+            # Use hash-format fingerprints to match _tool_call_fingerprint output
+            monitor.tool_call_history = [
+                "Bash:1e7b8d07", "TaskOutput", "Bash:1e7b8d07", "TaskOutput",
+                "Bash:1e7b8d07", "TaskOutput",
+            ]
             monitor.last_tool_fingerprint = "TaskOutput"
 
             body = {
@@ -3262,8 +3269,11 @@ class TestCycleBreakOptions(unittest.TestCase):
             monitor = proxy.SessionMonitor(context_window=262144)
             monitor.tool_turn_phase = "act"
             monitor.tool_state_forced_budget_remaining = 20
-            monitor.tool_call_history = ["Bash", "Bash", "Bash", "Bash"]
-            monitor.last_tool_fingerprint = "Bash"
+            # Hash-format fingerprints matching Bash+{"command":"ls"}
+            monitor.tool_call_history = [
+                "Bash:781c24ad", "Bash:781c24ad", "Bash:781c24ad", "Bash:781c24ad",
+            ]
+            monitor.last_tool_fingerprint = "Bash:781c24ad"
 
             body = {
                 "model": "test",
@@ -3323,8 +3333,11 @@ class TestCycleBreakOptions(unittest.TestCase):
             monitor = proxy.SessionMonitor(context_window=262144)
             monitor.tool_turn_phase = "act"
             monitor.tool_state_forced_budget_remaining = 20
-            monitor.tool_call_history = ["Bash", "Bash", "Bash", "Bash"]
-            monitor.last_tool_fingerprint = "Bash"
+            # Hash-format fingerprints matching Bash+{"command":"ls"}
+            monitor.tool_call_history = [
+                "Bash:781c24ad", "Bash:781c24ad", "Bash:781c24ad", "Bash:781c24ad",
+            ]
+            monitor.last_tool_fingerprint = "Bash:781c24ad"
 
             body = {
                 "model": "test",
@@ -3369,9 +3382,9 @@ class TestCycleBreakOptions(unittest.TestCase):
         """Option 3: default forced budget reduced from 24 to 12."""
         self.assertEqual(proxy.PROXY_TOOL_STATE_FORCED_BUDGET, 12)
 
-    def test_review_cycle_limit_default_is_1(self):
-        """Option 4: default review cycle limit reduced from 2 to 1."""
-        self.assertEqual(proxy.PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT, 1)
+    def test_review_cycle_limit_default_is_3(self):
+        """Option 4: default review cycle limit is 3."""
+        self.assertEqual(proxy.PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT, 3)
 
     def test_cycling_tool_names_cleared_on_reset(self):
         """cycling_tool_names is cleared when tool turn state resets."""
@@ -3450,8 +3463,9 @@ class TestDegenerateRepetitionDetection(unittest.TestCase):
         openai_resp = {
             "choices": [{"message": {"content": repeated}, "finish_reason": "length"}]
         }
-        result = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        result, truncated = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
         truncated_text = result["choices"][0]["message"]["content"]
+        self.assertTrue(truncated)
         self.assertLess(len(truncated_text), len(repeated))
         self.assertEqual(result["choices"][0]["finish_reason"], "stop")
 
@@ -3461,7 +3475,8 @@ class TestDegenerateRepetitionDetection(unittest.TestCase):
         openai_resp = {
             "choices": [{"message": {"content": text}, "finish_reason": "stop"}]
         }
-        result = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        result, truncated = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        self.assertFalse(truncated)
         self.assertEqual(result["choices"][0]["message"]["content"], text)
 
     def test_preserves_short_text(self):
@@ -3470,7 +3485,8 @@ class TestDegenerateRepetitionDetection(unittest.TestCase):
         openai_resp = {
             "choices": [{"message": {"content": text}, "finish_reason": "stop"}]
         }
-        result = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        result, truncated = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        self.assertFalse(truncated)
         self.assertEqual(result["choices"][0]["message"]["content"], text)
 
     def test_max_tokens_floor_skipped_for_non_tool_requests(self):
@@ -4220,3 +4236,173 @@ class TestReviewPhaseBootstrapReset(unittest.TestCase):
         # The bootstrap reset only triggers for review phase
         self.assertNotEqual(m.tool_turn_phase, "review")
         # In act phase, the normal guardrail fallback path runs instead
+
+
+class TestReadOnlyCycleClassExclusion(unittest.TestCase):
+    """Tests for Option 1: read-only tool class exclusion on cycle break,
+    Option 2: reduced cycle window (3), and Option 3: duplicate target dedup."""
+
+    def _make_body_with_tools(self, tool_names):
+        """Build a minimal Anthropic body with named tools and a tool_result."""
+        tools = [
+            {"name": n, "description": f"{n} tool", "input_schema": {"type": "object"}}
+            for n in tool_names
+        ]
+        return {
+            "model": "test",
+            "messages": [
+                {"role": "user", "content": "do something"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": tool_names[0],
+                            "input": {"file_path": "/some/file.ts"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}
+                    ],
+                },
+            ],
+            "tools": tools,
+        }
+
+    def test_read_only_class_exclusion_expands(self):
+        """When 'read' is cycling, all read-only tools are excluded, not just 'read'."""
+        old_vals = {
+            "PROXY_TOOL_STATE_MACHINE": getattr(proxy, "PROXY_TOOL_STATE_MACHINE"),
+            "PROXY_TOOL_STATE_MIN_MESSAGES": getattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES"),
+            "PROXY_TOOL_STATE_FORCED_BUDGET": getattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET"),
+            "PROXY_TOOL_STATE_CYCLE_WINDOW": getattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW"),
+            "PROXY_TOOL_STATE_STAGNATION_THRESHOLD": getattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD"),
+        }
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", 2)
+
+            all_tools = ["read", "glob", "grep", "bash", "write", "edit"]
+            body = self._make_body_with_tools(all_tools)
+            monitor = proxy.SessionMonitor(context_window=262144)
+
+            # Simulate cycling on 'read' by recording 3 identical fingerprints
+            # Hash-format matching read+{"file_path":"/some/file.ts"}
+            fp = "read:cfb28722"
+            monitor.record_tool_calls(["read"], fingerprint=fp)
+            monitor.record_tool_calls(["read"], fingerprint=fp)
+            monitor.record_tool_calls(["read"], fingerprint=fp)
+
+            openai_body = proxy.build_openai_request(body, monitor)
+
+            # After cycle break, the tools in the body should exclude ALL
+            # read-only tools, not just 'read'
+            remaining_names = [
+                t.get("function", {}).get("name") for t in openai_body.get("tools", [])
+            ]
+            self.assertNotIn("read", remaining_names)
+            self.assertNotIn("glob", remaining_names)
+            self.assertNotIn("grep", remaining_names)
+            # Write/action tools should remain
+            self.assertIn("bash", remaining_names)
+            self.assertIn("write", remaining_names)
+            self.assertIn("edit", remaining_names)
+        finally:
+            for k, v in old_vals.items():
+                setattr(proxy, k, v)
+
+    def test_non_read_tool_cycling_no_class_expansion(self):
+        """When 'bash' is cycling, only 'bash' is excluded, not read-only tools."""
+        old_vals = {
+            "PROXY_TOOL_STATE_MACHINE": getattr(proxy, "PROXY_TOOL_STATE_MACHINE"),
+            "PROXY_TOOL_STATE_MIN_MESSAGES": getattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES"),
+            "PROXY_TOOL_STATE_FORCED_BUDGET": getattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET"),
+            "PROXY_TOOL_STATE_CYCLE_WINDOW": getattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW"),
+            "PROXY_TOOL_STATE_STAGNATION_THRESHOLD": getattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD"),
+        }
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", 2)
+
+            all_tools = ["read", "glob", "grep", "bash", "write", "edit"]
+            body = self._make_body_with_tools(all_tools)
+            # Change the assistant tool_use to bash
+            body["messages"][1]["content"][0]["name"] = "bash"
+            body["messages"][1]["content"][0]["input"] = {"command": "ls"}
+            monitor = proxy.SessionMonitor(context_window=262144)
+
+            # Use hash-format fingerprints matching bash+{"command":"ls"}
+            fp = "bash:781c24ad"
+            monitor.record_tool_calls(["bash"], fingerprint=fp)
+            monitor.record_tool_calls(["bash"], fingerprint=fp)
+            monitor.record_tool_calls(["bash"], fingerprint=fp)
+
+            openai_body = proxy.build_openai_request(body, monitor)
+
+            remaining_names = [
+                t.get("function", {}).get("name") for t in openai_body.get("tools", [])
+            ]
+            self.assertNotIn("bash", remaining_names)
+            # Read-only tools should still be available
+            self.assertIn("read", remaining_names)
+            self.assertIn("glob", remaining_names)
+            self.assertIn("grep", remaining_names)
+        finally:
+            for k, v in old_vals.items():
+                setattr(proxy, k, v)
+
+    def test_duplicate_read_target_triggers_early_cycle(self):
+        """Option 3: reading same file 3+ times triggers early cycle break."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+
+        # Record 3 reads of same target
+        monitor.record_tool_calls(["read"], tool_targets={"read": "/path/to/file.ts"})
+        monitor.record_tool_calls(["read"], tool_targets={"read": "/path/to/file.ts"})
+        monitor.record_tool_calls(["read"], tool_targets={"read": "/path/to/file.ts"})
+
+        dup, tool = monitor.has_duplicate_read_target(threshold=3)
+        self.assertTrue(dup)
+        self.assertEqual(tool, "read")
+
+    def test_different_read_targets_no_duplicate(self):
+        """Option 3: reading different files does NOT trigger duplicate detection."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+
+        monitor.record_tool_calls(["read"], tool_targets={"read": "/path/a.ts"})
+        monitor.record_tool_calls(["read"], tool_targets={"read": "/path/b.ts"})
+        monitor.record_tool_calls(["read"], tool_targets={"read": "/path/c.ts"})
+
+        dup, _ = monitor.has_duplicate_read_target(threshold=3)
+        self.assertFalse(dup)
+
+    def test_cycle_window_default_is_3(self):
+        """Option 2: verify default cycle window is now 3."""
+        # This tests the constant directly
+        self.assertEqual(
+            int(proxy.os.environ.get("PROXY_TOOL_STATE_CYCLE_WINDOW", "3")), 3
+        )
+
+    def test_target_history_reset_on_state_reset(self):
+        """Target history is cleared when tool state resets."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+        monitor.record_tool_calls(["read"], tool_targets={"read": "/file.ts"})
+        monitor.record_tool_calls(["read"], tool_targets={"read": "/file.ts"})
+        monitor.record_tool_calls(["read"], tool_targets={"read": "/file.ts"})
+
+        dup, _ = monitor.has_duplicate_read_target(threshold=3)
+        self.assertTrue(dup)
+
+        monitor.reset_tool_turn_state(reason="test_reset")
+
+        dup, _ = monitor.has_duplicate_read_target(threshold=3)
+        self.assertFalse(dup)

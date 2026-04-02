@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.25 (2026-04-02)
+
+- fix: add read-only tool class exclusion and duplicate target detection to break cycling loops
+
+
 ## v1.20.24 (2026-04-01)
 
 - fix: reset to bootstrap after exhausted retries in review phase
