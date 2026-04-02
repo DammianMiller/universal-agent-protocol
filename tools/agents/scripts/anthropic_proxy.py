@@ -158,7 +158,7 @@ PROXY_TOOL_STATE_STAGNATION_THRESHOLD = int(
     os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "5")
 )
 PROXY_TOOL_STATE_CYCLE_WINDOW = int(
-    os.environ.get("PROXY_TOOL_STATE_CYCLE_WINDOW", "4")
+    os.environ.get("PROXY_TOOL_STATE_CYCLE_WINDOW", "3")
 )
 PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
     os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "18")
@@ -189,6 +189,12 @@ PROXY_TOOL_NARROWING_EXPAND_ON_LOOP = os.environ.get(
     "off",
     "no",
 }
+# Read-only tools that should be excluded as a class when any one cycles
+_READ_ONLY_TOOL_CLASS = frozenset({
+    "read", "glob", "grep", "Read", "Glob", "Grep",
+    "search", "Search", "list_files", "ListFiles",
+})
+
 PROXY_GUARDRAIL_RETRY = os.environ.get("PROXY_GUARDRAIL_RETRY", "on").lower() not in {
     "0",
     "false",
@@ -621,6 +627,9 @@ class SessionMonitor:
     tool_call_history: list = field(
         default_factory=list
     )  # Recent tool call fingerprints
+    tool_target_history: dict = field(
+        default_factory=dict
+    )  # {tool_name: {target: count}} for read-only dedup
     consecutive_forced_count: int = (
         0  # How many times tool_choice was forced consecutively
     )
@@ -753,13 +762,41 @@ class SessionMonitor:
 
     # --- Token Loop Protection Methods ---
 
-    def record_tool_calls(self, tool_names: list[str]):
-        """Record tool call names for loop detection."""
+    def record_tool_calls(
+        self, tool_names: list[str], tool_targets: dict[str, str] | None = None
+    ):
+        """Record tool call names for loop detection.
+
+        tool_targets: optional {tool_name: target_key} for read-only dedup.
+        e.g. {"read": "/path/to/file", "glob": "**/*.ts"}
+        """
         fingerprint = "|".join(sorted(tool_names)) if tool_names else ""
         self.tool_call_history.append(fingerprint)
         # Keep last 30 entries
         if len(self.tool_call_history) > 30:
             self.tool_call_history = self.tool_call_history[-30:]
+
+        # Track read-only tool targets for dedup (Option 3)
+        if tool_targets:
+            for name, target in tool_targets.items():
+                if name.lower() in {n.lower() for n in _READ_ONLY_TOOL_CLASS} and target:
+                    by_tool = self.tool_target_history.setdefault(name, {})
+                    by_tool[target] = by_tool.get(target, 0) + 1
+
+    def has_duplicate_read_target(self, threshold: int = 2) -> tuple[bool, str]:
+        """Check if any read-only tool has re-read the same target >= threshold times.
+
+        Returns (is_duplicate, tool_name) for the first offending tool.
+        """
+        for tool_name, targets in self.tool_target_history.items():
+            for target, count in targets.items():
+                if count >= threshold:
+                    return True, tool_name
+        return False, ""
+
+    def reset_tool_targets(self):
+        """Clear target history (on phase reset or fresh user text)."""
+        self.tool_target_history = {}
 
     def detect_tool_loop(self, window: int = 6) -> tuple[bool, int]:
         """Detect if the model is stuck in a tool call loop.
@@ -851,6 +888,7 @@ class SessionMonitor:
         self.tool_state_review_cycles = 0
         self.cycling_tool_names = []
         self.last_tool_fingerprint = ""
+        self.reset_tool_targets()
 
     def update_completion_state(self, anthropic_body: dict, has_tool_results: bool):
         self.completion_required = _should_enforce_completion_contract(anthropic_body)
@@ -2158,6 +2196,16 @@ def _resolve_state_machine_tool_choice(
         return "finalize", "review_cycle_limit"
 
     if monitor.tool_turn_phase == "act":
+        # Option 3: Early cycle break when same read target is hit 3+ times
+        dup_target, dup_tool = monitor.has_duplicate_read_target(threshold=3)
+        if dup_target and not cycle_looping and not stagnating:
+            cycle_looping = True
+            cycle_repeat = 2
+            logger.warning(
+                "TOOL STATE MACHINE: duplicate read target detected for '%s', triggering early cycle break",
+                dup_tool,
+            )
+
         if cycle_looping or stagnating:
             reason = "cycle_detected" if cycle_looping else "stagnation"
             monitor.set_tool_turn_phase("review", reason=reason)
@@ -2524,24 +2572,31 @@ def build_openai_request(
                     cycling_names,
                 )
             # Option 2: Narrow tools during review to exclude cycling tools
+            # Option 1 enhancement: if any cycling tool is read-only, exclude
+            # the entire read-only class to prevent tool-hopping (read→glob→grep)
             if (
                 monitor.tool_turn_phase == "review"
                 and monitor.cycling_tool_names
                 and "tools" in openai_body
             ):
+                exclude_set = set(monitor.cycling_tool_names)
+                # Expand to full read-only class if any cycling tool is read-only
+                if any(n.lower() in {c.lower() for c in _READ_ONLY_TOOL_CLASS} for n in exclude_set):
+                    exclude_set |= _READ_ONLY_TOOL_CLASS
                 original_count = len(openai_body["tools"])
                 narrowed = [
                     t
                     for t in openai_body["tools"]
-                    if t.get("function", {}).get("name") not in monitor.cycling_tool_names
+                    if t.get("function", {}).get("name") not in exclude_set
                 ]
                 if narrowed:
                     openai_body["tools"] = narrowed
                     logger.warning(
-                        "CYCLE BREAK: narrowed tools from %d to %d (excluded %s)",
+                        "CYCLE BREAK: narrowed tools from %d to %d (excluded %s, read_only_class=%s)",
                         original_count,
                         len(narrowed),
                         monitor.cycling_tool_names,
+                        any(n.lower() in {c.lower() for c in _READ_ONLY_TOOL_CLASS} for n in monitor.cycling_tool_names),
                     )
                 else:
                     logger.warning(
@@ -2609,6 +2664,7 @@ def _record_last_assistant_tool_calls(
     them in the session monitor for loop detection."""
     messages = anthropic_body.get("messages", [])
     tool_names = []
+    tool_targets: dict[str, str] = {}
     for msg in reversed(messages):
         if msg.get("role") != "assistant":
             continue
@@ -2616,10 +2672,22 @@ def _record_last_assistant_tool_calls(
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
-                    tool_names.append(block.get("name", "unknown"))
+                    name = block.get("name", "unknown")
+                    tool_names.append(name)
+                    # Extract target key for read-only dedup (Option 3)
+                    inp = block.get("input", {})
+                    if isinstance(inp, dict):
+                        target = (
+                            inp.get("file_path")
+                            or inp.get("path")
+                            or inp.get("pattern")
+                            or inp.get("command", "")[:80]
+                        )
+                        if target:
+                            tool_targets[name] = str(target)
         break
     if tool_names:
-        monitor.record_tool_calls(tool_names)
+        monitor.record_tool_calls(tool_names, tool_targets=tool_targets)
         return "|".join(sorted(tool_names))
     return ""
 
