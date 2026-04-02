@@ -4575,3 +4575,90 @@ class TestPersistentCycleExclusion(unittest.TestCase):
         finally:
             for k, v in old_vals.items():
                 setattr(proxy, k, v)
+
+
+class TestMalformedPayloadLoopFix(unittest.TestCase):
+    """Tests for Cycle 15: malformed payload loop breaking."""
+
+    def test_contamination_loop_forces_finalize(self):
+        """Option 3: after 3+ contamination resets, force finalize."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+        monitor.contamination_resets = 3  # already hit 3 resets
+        monitor.malformed_tool_streak = 3  # triggers should_reset
+
+        body = {
+            "model": "test",
+            "messages": [
+                {"role": "user", "content": "do something"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "continue"},
+            ],
+            "tools": [
+                {"name": "bash", "description": "Run", "input_schema": {"type": "object"}},
+            ],
+        }
+        result = proxy._maybe_apply_session_contamination_breaker(
+            body, monitor, "test-session"
+        )
+        # Should have removed tools and forced finalize
+        self.assertNotIn("tools", result)
+        self.assertNotIn("tool_choice", result)
+        self.assertEqual(monitor.tool_turn_phase, "finalize")
+        # Check finalize instruction was injected
+        last_msg = result["messages"][-1]
+        self.assertIn("plain text only", last_msg["content"])
+
+    def test_contamination_below_threshold_resets_normally(self):
+        """Below 3 contamination resets, normal reset behavior."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+        monitor.contamination_resets = 1
+        monitor.malformed_tool_streak = 3
+
+        # Need enough messages (> keep_last + 1) for full reset path
+        msgs = [{"role": "user", "content": "start"}]
+        for i in range(20):
+            msgs.append({"role": "assistant", "content": f"resp {i}"})
+            msgs.append({"role": "user", "content": f"msg {i}"})
+        body = {
+            "model": "test",
+            "messages": msgs,
+            "tools": [
+                {"name": "bash", "description": "Run", "input_schema": {"type": "object"}},
+            ],
+        }
+        result = proxy._maybe_apply_session_contamination_breaker(
+            body, monitor, "test-session"
+        )
+        # Should have done normal reset (increment contamination_resets)
+        self.assertEqual(monitor.contamination_resets, 2)
+        self.assertEqual(monitor.tool_turn_phase, "bootstrap")
+
+    def test_post_contamination_temp_lowered(self):
+        """Option 2: temperature lowered to 0.1 after contamination reset."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+        monitor.contamination_resets = 1  # has had a reset
+
+        body = {
+            "model": "test",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {"name": "bash", "description": "Run", "input_schema": {"type": "object"}},
+            ],
+        }
+        openai = proxy.build_openai_request(body, monitor)
+        self.assertLessEqual(openai.get("temperature", 1.0), 0.1)
+
+    def test_normal_temp_without_contamination(self):
+        """Without contamination resets, normal tool temp (0.3) is used."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+        monitor.contamination_resets = 0
+
+        body = {
+            "model": "test",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {"name": "bash", "description": "Run", "input_schema": {"type": "object"}},
+            ],
+        }
+        openai = proxy.build_openai_request(body, monitor)
+        self.assertAlmostEqual(openai.get("temperature", 1.0), 0.3, places=1)
