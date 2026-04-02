@@ -155,7 +155,7 @@ PROXY_TOOL_STATE_FORCED_BUDGET = int(
 )
 PROXY_TOOL_STATE_AUTO_BUDGET = int(os.environ.get("PROXY_TOOL_STATE_AUTO_BUDGET", "2"))
 PROXY_TOOL_STATE_STAGNATION_THRESHOLD = int(
-    os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "5")
+    os.environ.get("PROXY_TOOL_STATE_STAGNATION_THRESHOLD", "8")
 )
 PROXY_TOOL_STATE_CYCLE_WINDOW = int(
     os.environ.get("PROXY_TOOL_STATE_CYCLE_WINDOW", "3")
@@ -164,7 +164,7 @@ PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
     os.environ.get("PROXY_TOOL_STATE_FINALIZE_THRESHOLD", "18")
 )
 PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT = int(
-    os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "1")
+    os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "3")
 )
 PROXY_COMPLETION_RECOVERY_MAX = int(
     os.environ.get("PROXY_COMPLETION_RECOVERY_MAX", "3")
@@ -202,6 +202,9 @@ PROXY_GUARDRAIL_RETRY = os.environ.get("PROXY_GUARDRAIL_RETRY", "on").lower() no
     "no",
 }
 PROXY_SESSION_TTL_SECS = int(os.environ.get("PROXY_SESSION_TTL_SECS", "7200"))
+PROXY_FINALIZE_CONTINUATION_MAX = int(
+    os.environ.get("PROXY_FINALIZE_CONTINUATION_MAX", "3")
+)
 PROXY_STREAM_REASONING_FALLBACK = (
     os.environ.get("PROXY_STREAM_REASONING_FALLBACK", "off").strip().lower()
 )
@@ -655,6 +658,8 @@ class SessionMonitor:
     cycling_tool_names: list = field(default_factory=list)
     last_response_garbled: bool = False  # previous turn had garbled/malformed output
     finalize_turn_active: bool = False
+    finalize_continuation_count: int = 0
+    finalize_synthetic_tool_id: str = ""
     completion_required: bool = False
     completion_pending: bool = False
     completion_verified: bool = False
@@ -763,15 +768,20 @@ class SessionMonitor:
     # --- Token Loop Protection Methods ---
 
     def record_tool_calls(
-        self, tool_names: list[str], tool_targets: dict[str, str] | None = None
+        self,
+        tool_names: list[str],
+        tool_targets: dict[str, str] | None = None,
+        fingerprint: str = "",
     ):
         """Record tool call names for loop detection.
 
         tool_targets: optional {tool_name: target_key} for read-only dedup.
         e.g. {"read": "/path/to/file", "glob": "**/*.ts"}
+        If a pre-computed fingerprint (with argument hashes) is provided,
+        use it directly.  Otherwise fall back to name-only fingerprint.
         """
-        fingerprint = "|".join(sorted(tool_names)) if tool_names else ""
-        self.tool_call_history.append(fingerprint)
+        fp = fingerprint or ("|".join(sorted(tool_names)) if tool_names else "")
+        self.tool_call_history.append(fp)
         # Keep last 30 entries
         if len(self.tool_call_history) > 30:
             self.tool_call_history = self.tool_call_history[-30:]
@@ -2133,6 +2143,8 @@ def _resolve_state_machine_tool_choice(
             monitor.invalid_tool_call_streak = 0
             monitor.required_tool_miss_streak = 0
         monitor.reset_tool_turn_state(reason="fresh_user_text")
+        monitor.finalize_continuation_count = 0
+        monitor.finalize_synthetic_tool_id = ""
         return None, "fresh_user_text"
 
     active_loop = (
@@ -2151,6 +2163,8 @@ def _resolve_state_machine_tool_choice(
                 monitor.invalid_tool_call_streak = 0
                 monitor.required_tool_miss_streak = 0
         monitor.reset_tool_turn_state(reason="inactive_loop")
+        monitor.finalize_continuation_count = 0
+        monitor.finalize_synthetic_tool_id = ""
         return None, "inactive_loop"
 
     if monitor.tool_turn_phase == "bootstrap":
@@ -2217,9 +2231,15 @@ def _resolve_state_machine_tool_choice(
                 1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
             )
             # Capture which tools are cycling for narrowing/hint injection
+            # Strip argument hashes (e.g. "glob:abc12345" -> "glob") so that
+            # tool narrowing can match against actual tool names.
             window = max(2, PROXY_TOOL_STATE_CYCLE_WINDOW)
             recent = [fp for fp in monitor.tool_call_history[-window:] if fp]
-            monitor.cycling_tool_names = list(dict.fromkeys(recent))
+            raw_names = []
+            for fp in recent:
+                for part in fp.split("|"):
+                    raw_names.append(part.split(":")[0])
+            monitor.cycling_tool_names = list(dict.fromkeys(raw_names))
             logger.warning(
                 "TOOL STATE MACHINE: entering review (cycle=%s repeat=%d stagnation=%d cycles=%d cycling_tools=%s)",
                 cycle_looping,
@@ -2232,7 +2252,11 @@ def _resolve_state_machine_tool_choice(
 
         if monitor.tool_state_forced_budget_remaining <= 0:
             monitor.set_tool_turn_phase("review", reason="forced_budget_exhausted")
-            monitor.tool_state_review_cycles += 1
+            # Only count toward review cycle limit if there was an actual
+            # cycle/stagnation detected.  Budget exhaustion alone means the
+            # model is working — it just used all its turns — not cycling.
+            if cycle_looping or stagnating:
+                monitor.tool_state_review_cycles += 1
             monitor.tool_state_auto_budget_remaining = max(
                 1, PROXY_TOOL_STATE_AUTO_BUDGET
             )
@@ -2240,8 +2264,10 @@ def _resolve_state_machine_tool_choice(
                 1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
             )
             logger.warning(
-                "TOOL STATE MACHINE: forced budget exhausted, entering review (cycles=%d)",
+                "TOOL STATE MACHINE: forced budget exhausted, entering review (cycles=%d cycling=%s stagnating=%s)",
                 monitor.tool_state_review_cycles,
+                cycle_looping,
+                stagnating,
             )
             return "required", "forced_budget_exhausted"
 
@@ -2254,6 +2280,14 @@ def _resolve_state_machine_tool_choice(
             monitor.tool_state_forced_budget_remaining = max(
                 1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
             )
+            # If stagnation cleared during review, the model tried a
+            # different approach — reward by reducing cycle pressure.
+            if monitor.tool_state_stagnation_streak == 0 and monitor.tool_state_review_cycles > 0:
+                monitor.tool_state_review_cycles = max(0, monitor.tool_state_review_cycles - 1)
+                logger.info(
+                    "TOOL STATE MACHINE: review_cycles decremented to %d (stagnation cleared)",
+                    monitor.tool_state_review_cycles,
+                )
             return "required", "review_complete"
 
         monitor.tool_state_auto_budget_remaining -= 1
@@ -2464,6 +2498,9 @@ def build_openai_request(
         n_msgs = len(anthropic_body.get("messages", []))
         has_tool_results = _conversation_has_tool_results(anthropic_body)
 
+        # Detect and strip synthetic finalize continuation before fingerprinting
+        _detect_and_strip_synthetic_continuation(anthropic_body, monitor)
+
         # Record tool calls from the last assistant message for loop detection
         latest_tool_fingerprint = _record_last_assistant_tool_calls(
             anthropic_body, monitor
@@ -2657,13 +2694,116 @@ def build_openai_request(
     return openai_body
 
 
+def _tool_call_fingerprint(block: dict) -> str:
+    """Create a fingerprint for a tool call that includes both name and a
+    short hash of the arguments.  This prevents false cycle detection when
+    the same tool is called with different arguments (e.g. reading different
+    files)."""
+    name = block.get("name", "unknown")
+    inp = block.get("input")
+    if inp:
+        arg_str = json.dumps(inp, sort_keys=True, separators=(",", ":"))
+        arg_hash = hashlib.md5(arg_str.encode()).hexdigest()[:8]
+        return f"{name}:{arg_hash}"
+    return name
+
+
+def _detect_and_strip_synthetic_continuation(
+    anthropic_body: dict, monitor: SessionMonitor
+) -> bool:
+    """Detect if the latest messages contain a synthetic finalize continuation
+    tool_use/tool_result pair.  If found, strip them from the conversation and
+    reset the state machine so the model gets a fresh act cycle.
+
+    Returns True if a synthetic continuation was detected and handled.
+    """
+    synthetic_id = monitor.finalize_synthetic_tool_id
+    if not synthetic_id:
+        return False
+
+    messages = anthropic_body.get("messages", [])
+    if not messages:
+        return False
+
+    # Walk backwards to find the synthetic tool_result in a user message
+    found = False
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            break
+        has_synthetic = any(
+            isinstance(b, dict)
+            and b.get("type") == "tool_result"
+            and b.get("tool_use_id") == synthetic_id
+            for b in content
+        )
+        if not has_synthetic:
+            break
+
+        # Strip synthetic tool_result from user message
+        new_content = [
+            b for b in content
+            if not (
+                isinstance(b, dict)
+                and b.get("type") == "tool_result"
+                and b.get("tool_use_id") == synthetic_id
+            )
+        ]
+        if not new_content:
+            msg["content"] = [{"type": "text", "text": "Continue working on the task."}]
+        else:
+            msg["content"] = new_content
+
+        # Strip synthetic tool_use from the preceding assistant message
+        for asst_msg in reversed(messages):
+            if asst_msg.get("role") != "assistant":
+                continue
+            asst_content = asst_msg.get("content")
+            if isinstance(asst_content, list):
+                asst_msg["content"] = [
+                    b for b in asst_content
+                    if not (
+                        isinstance(b, dict)
+                        and b.get("type") == "tool_use"
+                        and b.get("id") == synthetic_id
+                    )
+                ]
+            break
+
+        found = True
+        break
+
+    if not found:
+        return False
+
+    # Reset state machine for fresh act cycle
+    monitor.finalize_synthetic_tool_id = ""
+    monitor.reset_tool_turn_state(reason="finalize_continuation_resume")
+    monitor.reset_completion_recovery()
+    monitor.tool_call_history = []
+    logger.info(
+        "FINALIZE CONTINUATION: stripped synthetic tool id=%s, "
+        "reset state machine for fresh act cycle (continuations=%d/%d)",
+        synthetic_id,
+        monitor.finalize_continuation_count,
+        PROXY_FINALIZE_CONTINUATION_MAX,
+    )
+    return True
+
+
 def _record_last_assistant_tool_calls(
     anthropic_body: dict, monitor: SessionMonitor
 ) -> str:
     """Extract tool call names from the last assistant message and record
-    them in the session monitor for loop detection."""
+    them in the session monitor for loop detection.
+
+    Fingerprints now include an argument hash so that the same tool called
+    with different arguments (e.g. read(file_a) vs read(file_b)) produces
+    distinct fingerprints, preventing false cycle/stagnation detection."""
     messages = anthropic_body.get("messages", [])
-    tool_names = []
+    tool_fingerprints = []
     tool_targets: dict[str, str] = {}
     for msg in reversed(messages):
         if msg.get("role") != "assistant":
@@ -2672,9 +2812,9 @@ def _record_last_assistant_tool_calls(
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
-                    name = block.get("name", "unknown")
-                    tool_names.append(name)
+                    tool_fingerprints.append(_tool_call_fingerprint(block))
                     # Extract target key for read-only dedup (Option 3)
+                    name = block.get("name", "unknown")
                     inp = block.get("input", {})
                     if isinstance(inp, dict):
                         target = (
@@ -2686,9 +2826,14 @@ def _record_last_assistant_tool_calls(
                         if target:
                             tool_targets[name] = str(target)
         break
-    if tool_names:
-        monitor.record_tool_calls(tool_names, tool_targets=tool_targets)
-        return "|".join(sorted(tool_names))
+    if tool_fingerprints:
+        fingerprint = "|".join(sorted(tool_fingerprints))
+        monitor.record_tool_calls(
+            [fp.split(":")[0] for fp in tool_fingerprints],
+            tool_targets=tool_targets,
+            fingerprint=fingerprint,
+        )
+        return fingerprint
     return ""
 
 
@@ -4818,16 +4963,20 @@ def _maybe_extract_text_tool_calls(openai_resp: dict) -> dict:
     return openai_resp
 
 
-def _detect_and_truncate_degenerate_repetition(openai_resp: dict) -> dict:
+def _detect_and_truncate_degenerate_repetition(
+    openai_resp: dict,
+) -> tuple[dict, bool]:
     """Detect degenerate repetitive text and truncate at first repetition.
 
     When the model produces highly repetitive output (e.g. the same 20+ char
     substring repeated 10+ times), truncate at the first repetition boundary
     and set finish_reason to stop.
+
+    Returns (response, was_degenerate) so the caller can retry if needed.
     """
     text = _openai_message_text(openai_resp)
     if not text or len(text) < 200:
-        return openai_resp
+        return openai_resp, False
 
     # Look for repeated substrings of length 20-100
     for substr_len in (60, 40, 20):
@@ -4856,8 +5005,70 @@ def _detect_and_truncate_degenerate_repetition(openai_resp: dict) -> dict:
                     msg = choices[0].get("message", {})
                     msg["content"] = truncated
                     choices[0]["finish_reason"] = "stop"
-                return openai_resp
-    return openai_resp
+                return openai_resp, True
+    return openai_resp, False
+
+
+def _client_has_tool(anthropic_body: dict, tool_name: str) -> bool:
+    """Check if the client's tool list contains a tool with the given name (case-insensitive)."""
+    lower = tool_name.lower()
+    return any(
+        (t.get("name") or "").lower() == lower for t in anthropic_body.get("tools", [])
+    )
+
+
+def _client_tool_name(anthropic_body: dict, tool_name: str) -> str:
+    """Return the actual tool name as the client spells it (case-sensitive match)."""
+    lower = tool_name.lower()
+    for t in anthropic_body.get("tools", []):
+        if (t.get("name") or "").lower() == lower:
+            return t["name"]
+    return tool_name
+
+
+def _inject_synthetic_continuation(
+    anthropic_resp: dict, monitor: SessionMonitor, anthropic_body: dict
+) -> dict:
+    """Inject a synthetic tool_use into a finalize-turn response to keep the
+    client's agentic loop alive.
+
+    Appends a no-op Read("/dev/null") tool_use block and changes stop_reason
+    from "end_turn" to "tool_use" so the client continues sending requests.
+    """
+    # Pick a safe tool the client knows about (case-insensitive match,
+    # then use the client's actual casing for the tool name)
+    if _client_has_tool(anthropic_body, "read"):
+        tool_name = _client_tool_name(anthropic_body, "read")
+        tool_input = {"file_path": "/dev/null"}
+    elif _client_has_tool(anthropic_body, "bash"):
+        tool_name = _client_tool_name(anthropic_body, "bash")
+        tool_input = {"command": "true", "description": "continuation ping"}
+    else:
+        logger.warning("FINALIZE CONTINUATION: no suitable tool found, skipping injection")
+        return anthropic_resp
+
+    synthetic_id = f"toolu_{uuid.uuid4().hex[:12]}"
+    monitor.finalize_synthetic_tool_id = synthetic_id
+    monitor.finalize_continuation_count += 1
+
+    content = anthropic_resp.get("content", [])
+    content.append({
+        "type": "tool_use",
+        "id": synthetic_id,
+        "name": tool_name,
+        "input": tool_input,
+    })
+    anthropic_resp["content"] = content
+    anthropic_resp["stop_reason"] = "tool_use"
+
+    logger.info(
+        "FINALIZE CONTINUATION: injected synthetic %s tool_use id=%s (count=%d/%d)",
+        tool_name,
+        synthetic_id,
+        monitor.finalize_continuation_count,
+        PROXY_FINALIZE_CONTINUATION_MAX,
+    )
+    return anthropic_resp
 
 
 def openai_to_anthropic_response(openai_resp: dict, model: str) -> dict:
@@ -5691,8 +5902,51 @@ async def messages(request: Request):
             session_id,
         )
 
-        openai_resp = _detect_and_truncate_degenerate_repetition(openai_resp)
+        openai_resp, was_degenerate = _detect_and_truncate_degenerate_repetition(openai_resp)
+        if was_degenerate:
+            # Retry with constrained parameters to avoid degenerate output.
+            # With tools: force tool_choice=required for a useful tool call.
+            # Without tools (finalize): retry with capped max_tokens for clean text.
+            has_tools = bool(strict_body.get("tools"))
+            retry_body = dict(strict_body)
+            retry_body["max_tokens"] = 2048
+            retry_body["temperature"] = 0.1
+            retry_body["stream"] = False
+            if has_tools:
+                retry_body["tool_choice"] = "required"
+                logger.warning("DEGENERATE RETRY: retrying with tool_choice=required max_tokens=2048")
+            else:
+                logger.warning("DEGENERATE RETRY: retrying text-only with max_tokens=2048 temp=0.1")
+            try:
+                retry_resp = await _post_with_generation_timeout(
+                    client, f"{LLAMA_CPP_BASE}/chat/completions", retry_body,
+                    {"Content-Type": "application/json"},
+                )
+                if retry_resp.status_code == 200:
+                    retry_data = retry_resp.json()
+                    retry_text = _openai_message_text(retry_data)
+                    _, retry_degenerate = _detect_and_truncate_degenerate_repetition(retry_data)
+                    if retry_degenerate:
+                        logger.info("DEGENERATE RETRY: retry also degenerate, using truncated original")
+                    elif has_tools and (retry_data.get("choices", [{}])[0]
+                            .get("message", {}).get("tool_calls")):
+                        logger.info("DEGENERATE RETRY: success, got tool call")
+                        openai_resp = retry_data
+                    elif not has_tools and retry_text and len(retry_text) > 50:
+                        logger.info("DEGENERATE RETRY: success, got clean text (%d chars)", len(retry_text))
+                        openai_resp = retry_data
+                    else:
+                        logger.info("DEGENERATE RETRY: retry insufficient, using truncated original")
+            except Exception as exc:
+                logger.warning("DEGENERATE RETRY: failed: %s", exc)
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
+        # FINALIZE CONTINUATION: inject synthetic tool_use to keep client loop alive
+        if (
+            monitor.finalize_turn_active
+            and monitor.finalize_continuation_count < PROXY_FINALIZE_CONTINUATION_MAX
+            and anthropic_resp.get("stop_reason") == "end_turn"
+        ):
+            anthropic_resp = _inject_synthetic_continuation(anthropic_resp, monitor, body)
         monitor.record_response(anthropic_resp.get("usage", {}).get("output_tokens", 0))
         # Update last_input_tokens from upstream's actual prompt_tokens
         upstream_input = anthropic_resp.get("usage", {}).get("input_tokens", 0)
@@ -6030,8 +6284,38 @@ async def messages(request: Request):
             monitor.invalid_tool_call_streak = 0
             monitor.required_tool_miss_streak = 0
 
-        openai_resp = _detect_and_truncate_degenerate_repetition(openai_resp)
+        openai_resp, was_degenerate = _detect_and_truncate_degenerate_repetition(openai_resp)
+        # Degenerate retry for non-guarded stream path
+        if was_degenerate and openai_body.get("tools"):
+            logger.warning("DEGENERATE RETRY (stream): retrying with tool_choice=required max_tokens=2048")
+            retry_body = dict(openai_body)
+            retry_body["tool_choice"] = "required"
+            retry_body["max_tokens"] = 2048
+            retry_body["temperature"] = 0.1
+            retry_body["stream"] = False
+            try:
+                retry_resp = await _post_with_generation_timeout(
+                    client, f"{LLAMA_CPP_BASE}/chat/completions", retry_body,
+                    {"Content-Type": "application/json"},
+                )
+                if retry_resp.status_code == 200:
+                    retry_data = retry_resp.json()
+                    if (retry_data.get("choices", [{}])[0]
+                            .get("message", {}).get("tool_calls")):
+                        logger.info("DEGENERATE RETRY (stream): success, got tool call")
+                        openai_resp = retry_data
+                    else:
+                        logger.info("DEGENERATE RETRY (stream): no tool call, using truncated")
+            except Exception as exc:
+                logger.warning("DEGENERATE RETRY (stream): failed: %s", exc)
         anthropic_resp = openai_to_anthropic_response(openai_resp, model)
+        # FINALIZE CONTINUATION: inject synthetic tool_use (non-guarded stream path)
+        if (
+            monitor.finalize_turn_active
+            and monitor.finalize_continuation_count < PROXY_FINALIZE_CONTINUATION_MAX
+            and anthropic_resp.get("stop_reason") == "end_turn"
+        ):
+            anthropic_resp = _inject_synthetic_continuation(anthropic_resp, monitor, body)
 
         # Track output tokens in session monitor
         output_tokens = anthropic_resp.get("usage", {}).get("output_tokens", 0)

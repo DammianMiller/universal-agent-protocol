@@ -1892,12 +1892,13 @@ class TestToolTurnControls(unittest.TestCase):
             monitor = proxy.SessionMonitor(context_window=262144)
             monitor.tool_turn_phase = "act"
             monitor.tool_state_forced_budget_remaining = 20
+            # Use hash-format fingerprints to match _tool_call_fingerprint output
             monitor.tool_call_history = [
-                "Bash",
+                "Bash:1e7b8d07",
                 "TaskOutput",
-                "Bash",
+                "Bash:1e7b8d07",
                 "TaskOutput",
-                "Bash",
+                "Bash:1e7b8d07",
                 "TaskOutput",
             ]
             monitor.last_tool_fingerprint = "TaskOutput"
@@ -2076,7 +2077,9 @@ class TestToolTurnControls(unittest.TestCase):
             # Review phase now keeps required to prevent end-turn escape
             self.assertEqual(openai.get("tool_choice"), "required")
             self.assertEqual(monitor.tool_turn_phase, "review")
-            self.assertEqual(monitor.tool_state_review_cycles, 1)
+            # review_cycles only increments when cycle_looping or stagnating,
+            # not on mere budget exhaustion (model was working, not cycling)
+            self.assertEqual(monitor.tool_state_review_cycles, 0)
         finally:
             setattr(proxy, "PROXY_TOOL_STATE_MACHINE", old_state)
             setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", old_min_msgs)
@@ -2242,7 +2245,11 @@ class TestToolTurnControls(unittest.TestCase):
             monitor = proxy.SessionMonitor(context_window=262144)
             monitor.tool_turn_phase = "act"
             monitor.tool_state_stagnation_streak = 4
-            monitor.tool_call_history = ["Bash", "TaskOutput", "Bash", "TaskOutput"]
+            # Use hash-format fingerprints to match _tool_call_fingerprint output
+            monitor.tool_call_history = [
+                "Bash:1e7b8d07", "TaskOutput", "Bash:1e7b8d07", "TaskOutput",
+                "Bash:1e7b8d07", "TaskOutput",
+            ]
             monitor.last_tool_fingerprint = "TaskOutput"
 
             body = {
@@ -3262,8 +3269,11 @@ class TestCycleBreakOptions(unittest.TestCase):
             monitor = proxy.SessionMonitor(context_window=262144)
             monitor.tool_turn_phase = "act"
             monitor.tool_state_forced_budget_remaining = 20
-            monitor.tool_call_history = ["Bash", "Bash", "Bash", "Bash"]
-            monitor.last_tool_fingerprint = "Bash"
+            # Hash-format fingerprints matching Bash+{"command":"ls"}
+            monitor.tool_call_history = [
+                "Bash:781c24ad", "Bash:781c24ad", "Bash:781c24ad", "Bash:781c24ad",
+            ]
+            monitor.last_tool_fingerprint = "Bash:781c24ad"
 
             body = {
                 "model": "test",
@@ -3323,8 +3333,11 @@ class TestCycleBreakOptions(unittest.TestCase):
             monitor = proxy.SessionMonitor(context_window=262144)
             monitor.tool_turn_phase = "act"
             monitor.tool_state_forced_budget_remaining = 20
-            monitor.tool_call_history = ["Bash", "Bash", "Bash", "Bash"]
-            monitor.last_tool_fingerprint = "Bash"
+            # Hash-format fingerprints matching Bash+{"command":"ls"}
+            monitor.tool_call_history = [
+                "Bash:781c24ad", "Bash:781c24ad", "Bash:781c24ad", "Bash:781c24ad",
+            ]
+            monitor.last_tool_fingerprint = "Bash:781c24ad"
 
             body = {
                 "model": "test",
@@ -3369,9 +3382,9 @@ class TestCycleBreakOptions(unittest.TestCase):
         """Option 3: default forced budget reduced from 24 to 12."""
         self.assertEqual(proxy.PROXY_TOOL_STATE_FORCED_BUDGET, 12)
 
-    def test_review_cycle_limit_default_is_1(self):
-        """Option 4: default review cycle limit reduced from 2 to 1."""
-        self.assertEqual(proxy.PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT, 1)
+    def test_review_cycle_limit_default_is_3(self):
+        """Option 4: default review cycle limit is 3."""
+        self.assertEqual(proxy.PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT, 3)
 
     def test_cycling_tool_names_cleared_on_reset(self):
         """cycling_tool_names is cleared when tool turn state resets."""
@@ -3450,8 +3463,9 @@ class TestDegenerateRepetitionDetection(unittest.TestCase):
         openai_resp = {
             "choices": [{"message": {"content": repeated}, "finish_reason": "length"}]
         }
-        result = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        result, truncated = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
         truncated_text = result["choices"][0]["message"]["content"]
+        self.assertTrue(truncated)
         self.assertLess(len(truncated_text), len(repeated))
         self.assertEqual(result["choices"][0]["finish_reason"], "stop")
 
@@ -3461,7 +3475,8 @@ class TestDegenerateRepetitionDetection(unittest.TestCase):
         openai_resp = {
             "choices": [{"message": {"content": text}, "finish_reason": "stop"}]
         }
-        result = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        result, truncated = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        self.assertFalse(truncated)
         self.assertEqual(result["choices"][0]["message"]["content"], text)
 
     def test_preserves_short_text(self):
@@ -3470,7 +3485,8 @@ class TestDegenerateRepetitionDetection(unittest.TestCase):
         openai_resp = {
             "choices": [{"message": {"content": text}, "finish_reason": "stop"}]
         }
-        result = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        result, truncated = proxy._detect_and_truncate_degenerate_repetition(openai_resp)
+        self.assertFalse(truncated)
         self.assertEqual(result["choices"][0]["message"]["content"], text)
 
     def test_max_tokens_floor_skipped_for_non_tool_requests(self):
@@ -4278,9 +4294,11 @@ class TestReadOnlyCycleClassExclusion(unittest.TestCase):
             monitor = proxy.SessionMonitor(context_window=262144)
 
             # Simulate cycling on 'read' by recording 3 identical fingerprints
-            monitor.record_tool_calls(["read"])
-            monitor.record_tool_calls(["read"])
-            monitor.record_tool_calls(["read"])
+            # Hash-format matching read+{"file_path":"/some/file.ts"}
+            fp = "read:cfb28722"
+            monitor.record_tool_calls(["read"], fingerprint=fp)
+            monitor.record_tool_calls(["read"], fingerprint=fp)
+            monitor.record_tool_calls(["read"], fingerprint=fp)
 
             openai_body = proxy.build_openai_request(body, monitor)
 
@@ -4323,9 +4341,11 @@ class TestReadOnlyCycleClassExclusion(unittest.TestCase):
             body["messages"][1]["content"][0]["input"] = {"command": "ls"}
             monitor = proxy.SessionMonitor(context_window=262144)
 
-            monitor.record_tool_calls(["bash"])
-            monitor.record_tool_calls(["bash"])
-            monitor.record_tool_calls(["bash"])
+            # Use hash-format fingerprints matching bash+{"command":"ls"}
+            fp = "bash:781c24ad"
+            monitor.record_tool_calls(["bash"], fingerprint=fp)
+            monitor.record_tool_calls(["bash"], fingerprint=fp)
+            monitor.record_tool_calls(["bash"], fingerprint=fp)
 
             openai_body = proxy.build_openai_request(body, monitor)
 
