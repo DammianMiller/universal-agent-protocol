@@ -4662,3 +4662,65 @@ class TestMalformedPayloadLoopFix(unittest.TestCase):
         }
         openai = proxy.build_openai_request(body, monitor)
         self.assertAlmostEqual(openai.get("temperature", 1.0), 0.3, places=1)
+
+
+class TestToolCallJsonRepair(unittest.TestCase):
+    """Tests for Cycle 15 Option 1: JSON repair in tool call extraction."""
+
+    def test_repairs_trailing_braces(self):
+        """Runaway closing braces are trimmed and JSON parsed."""
+        garbled = '{"name":"bash","arguments":{"command":"ls"}}}}'
+        repaired = proxy._repair_tool_call_json(garbled)
+        self.assertIsNotNone(repaired)
+        parsed = json.loads(repaired)
+        self.assertEqual(parsed["name"], "bash")
+
+    def test_repairs_unbalanced_open_braces(self):
+        """Missing closing braces are added."""
+        garbled = '{"name":"read","arguments":{"file_path":"/foo"}'
+        repaired = proxy._repair_tool_call_json(garbled)
+        self.assertIsNotNone(repaired)
+        parsed = json.loads(repaired)
+        self.assertEqual(parsed["name"], "read")
+
+    def test_returns_none_for_total_garbage(self):
+        """Completely invalid JSON returns None."""
+        result = proxy._repair_tool_call_json("not json at all")
+        self.assertIsNone(result)
+
+    def test_extracts_repaired_tool_call_from_text(self):
+        """End-to-end: garbled <tool_call> XML is extracted after repair."""
+        text = '<tool_call>\n{"name":"bash","arguments":{"command":"pwd"}}}\n</tool_call>'
+        extracted, remaining = proxy._extract_tool_calls_from_text(text)
+        self.assertEqual(len(extracted), 1)
+        self.assertEqual(extracted[0]["function"]["name"], "bash")
+
+
+class TestRetryTemperatureVariance(unittest.TestCase):
+    """Tests for Cycle 15 Option 3: retry temperature variance."""
+
+    def test_retry_attempt_1_uses_configured_temp(self):
+        """First retry attempt uses PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE."""
+        body = proxy._build_malformed_retry_body(
+            {"messages": [{"role": "user", "content": "test"}], "tools": []},
+            {"messages": [{"role": "user", "content": "test"}], "tools": []},
+            retry_hint="fix it",
+            tool_choice="required",
+            attempt=1,
+            total_attempts=3,
+            is_garbled=False,
+        )
+        self.assertEqual(body["temperature"], proxy.PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE)
+
+    def test_retry_attempt_2_uses_higher_temp(self):
+        """Second retry attempt uses temp=0.5 to break degenerate patterns."""
+        body = proxy._build_malformed_retry_body(
+            {"messages": [{"role": "user", "content": "test"}], "tools": []},
+            {"messages": [{"role": "user", "content": "test"}], "tools": []},
+            retry_hint="fix it",
+            tool_choice="required",
+            attempt=2,
+            total_attempts=3,
+            is_garbled=False,
+        )
+        self.assertEqual(body["temperature"], 0.5)

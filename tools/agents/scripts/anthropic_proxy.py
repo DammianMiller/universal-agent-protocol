@@ -3092,6 +3092,47 @@ _TOOL_CALL_XML_RE = re.compile(
 )
 
 
+def _repair_tool_call_json(raw: str) -> str | None:
+    """Attempt to repair common garbled JSON in tool call payloads.
+
+    Returns repaired JSON string, or None if repair is not possible.
+    Handles: trailing braces, unbalanced brackets, truncated strings.
+    """
+    s = raw.strip()
+    if not s.startswith("{"):
+        return None
+    # Strip trailing garbage (runaway braces/brackets)
+    while s.endswith("}}") and s.count("{") < s.count("}"):
+        s = s[:-1]
+    while s.endswith("]]") and s.count("[") < s.count("]"):
+        s = s[:-1]
+    # Balance braces
+    open_b = s.count("{") - s.count("}")
+    if open_b > 0:
+        s += "}" * open_b
+    elif open_b < 0:
+        # Too many closing braces — trim from end
+        for _ in range(-open_b):
+            idx = s.rfind("}")
+            if idx > 0:
+                s = s[:idx] + s[idx + 1:]
+    # Try to parse
+    try:
+        json.loads(s)
+        return s
+    except json.JSONDecodeError:
+        pass
+    # Try truncating at last valid comma + closing
+    for end in range(len(s) - 1, max(0, len(s) - 200), -1):
+        candidate = s[:end].rstrip().rstrip(",") + "}" * max(0, s[:end].count("{") - s[:end].count("}"))
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def _extract_tool_calls_from_text(text: str) -> tuple[list[dict], str]:
     """Parse ``<tool_call>{...}</tool_call>`` blocks out of *text*.
 
@@ -3112,7 +3153,18 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[dict], str]:
         try:
             payload = json.loads(raw_json)
         except json.JSONDecodeError:
-            continue
+            # Cycle 15 Option 1: attempt JSON repair before giving up
+            repaired = _repair_tool_call_json(raw_json)
+            if repaired:
+                try:
+                    payload = json.loads(repaired)
+                    logger.info(
+                        "TOOL CALL EXTRACTION: repaired garbled JSON in <tool_call> block"
+                    )
+                except json.JSONDecodeError:
+                    continue
+            else:
+                continue
         if not isinstance(payload, dict):
             continue
 
@@ -4380,9 +4432,11 @@ def _build_malformed_retry_body(
     retry_body = dict(openai_body)
     retry_body["stream"] = False
     retry_body["tool_choice"] = tool_choice
-    # Escalate temperature down on successive retries for more deterministic output
+    # Cycle 15 Option 3: vary temperature across retries to break degenerate patterns.
+    # Attempt 1: use configured retry temp (default 0.0) for deterministic first try.
+    # Attempt 2+: increase to 0.5 to escape the degenerate local minimum.
     if total_attempts > 1 and attempt > 1:
-        retry_body["temperature"] = 0.0
+        retry_body["temperature"] = 0.5
     else:
         retry_body["temperature"] = PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE
 
