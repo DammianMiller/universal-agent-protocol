@@ -4406,3 +4406,172 @@ class TestReadOnlyCycleClassExclusion(unittest.TestCase):
 
         dup, _ = monitor.has_duplicate_read_target(threshold=3)
         self.assertFalse(dup)
+
+
+class TestPersistentCycleExclusion(unittest.TestCase):
+    """Tests for Cycle 14: persistent exclusion, escalating hints, and
+    exclusion across review→act transitions."""
+
+    def _make_body_with_tools(self, tool_names, active_tool="bash", active_input=None):
+        tools = [
+            {"name": n, "description": f"{n} tool", "input_schema": {"type": "object"}}
+            for n in tool_names
+        ]
+        inp = active_input or {"command": "ls"}
+        return {
+            "model": "test",
+            "messages": [
+                {"role": "user", "content": "do something"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": active_tool, "input": inp}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+                    ],
+                },
+            ],
+            "tools": tools,
+        }
+
+    def test_exclusion_persists_through_act_phase(self):
+        """Option 1: cycling_tool_names exclusion persists in act phase after review."""
+        old_vals = {}
+        for k in ["PROXY_TOOL_STATE_MACHINE", "PROXY_TOOL_STATE_MIN_MESSAGES",
+                   "PROXY_TOOL_STATE_FORCED_BUDGET", "PROXY_TOOL_STATE_CYCLE_WINDOW",
+                   "PROXY_TOOL_STATE_STAGNATION_THRESHOLD"]:
+            old_vals[k] = getattr(proxy, k)
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", 6)
+            setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", 2)
+
+            all_tools = ["bash", "read", "write", "edit"]
+            body = self._make_body_with_tools(all_tools)
+            monitor = proxy.SessionMonitor(context_window=262144)
+
+            # Simulate bash cycling that triggers review
+            monitor.cycling_tool_names = ["bash"]
+            monitor.tool_turn_phase = "act"
+            monitor.tool_state_forced_budget_remaining = 5
+
+            openai = proxy.build_openai_request(body, monitor)
+
+            # In act phase with cycling_tool_names set, bash should be excluded
+            remaining = [t["function"]["name"] for t in openai.get("tools", [])]
+            self.assertNotIn("bash", remaining)
+            self.assertIn("read", remaining)
+            self.assertIn("write", remaining)
+        finally:
+            for k, v in old_vals.items():
+                setattr(proxy, k, v)
+
+    def test_exclusion_cleared_on_stagnation_clear(self):
+        """Option 1: cycling exclusion is lifted when stagnation clears in review."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+        monitor.tool_turn_phase = "review"
+        monitor.tool_state_review_cycles = 1
+        monitor.tool_state_stagnation_streak = 0  # stagnation cleared
+        monitor.cycling_tool_names = ["bash"]
+        monitor.tool_state_auto_budget_remaining = 0
+        monitor.tool_state_forced_budget_remaining = 6
+
+        # This should transition review→act and clear cycling names
+        old_vals = {}
+        for k in ["PROXY_TOOL_STATE_MACHINE", "PROXY_TOOL_STATE_MIN_MESSAGES",
+                   "PROXY_TOOL_STATE_FORCED_BUDGET"]:
+            old_vals[k] = getattr(proxy, k)
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", 6)
+
+            body = self._make_body_with_tools(["bash", "read", "write"])
+            proxy.build_openai_request(body, monitor)
+
+            self.assertEqual(monitor.tool_turn_phase, "act")
+            self.assertEqual(monitor.cycling_tool_names, [])
+        finally:
+            for k, v in old_vals.items():
+                setattr(proxy, k, v)
+
+    def test_escalated_hint_on_cycle_2(self):
+        """Option 3: cycle 2+ gets escalated CRITICAL hint text."""
+        old_vals = {}
+        for k in ["PROXY_TOOL_STATE_MACHINE", "PROXY_TOOL_STATE_MIN_MESSAGES",
+                   "PROXY_TOOL_STATE_FORCED_BUDGET", "PROXY_TOOL_STATE_CYCLE_WINDOW",
+                   "PROXY_TOOL_STATE_STAGNATION_THRESHOLD"]:
+            old_vals[k] = getattr(proxy, k)
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", 20)
+            setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", 2)
+
+            all_tools = ["bash", "read", "write"]
+            body = self._make_body_with_tools(all_tools)
+            monitor = proxy.SessionMonitor(context_window=262144)
+            # Pre-set as if we've already been through 1 review cycle
+            monitor.tool_turn_phase = "act"
+            monitor.tool_state_review_cycles = 1
+            monitor.tool_state_forced_budget_remaining = 20
+            monitor.tool_state_stagnation_streak = 3
+            fp = "bash:781c24ad"
+            monitor.tool_call_history = [fp, fp, fp]
+            monitor.last_tool_fingerprint = fp
+
+            openai = proxy.build_openai_request(body, monitor)
+
+            # Should now be in review with cycles=2 and escalated hint
+            self.assertEqual(monitor.tool_turn_phase, "review")
+            self.assertEqual(monitor.tool_state_review_cycles, 2)
+            messages = openai.get("messages", [])
+            last_user = [m for m in messages if m.get("role") == "user"][-1]
+            self.assertIn("CRITICAL", last_user["content"])
+            self.assertIn("2 review rounds", last_user["content"])
+        finally:
+            for k, v in old_vals.items():
+                setattr(proxy, k, v)
+
+    def test_mild_hint_on_cycle_1(self):
+        """Option 3: cycle 1 gets mild hint, not escalated."""
+        old_vals = {}
+        for k in ["PROXY_TOOL_STATE_MACHINE", "PROXY_TOOL_STATE_MIN_MESSAGES",
+                   "PROXY_TOOL_STATE_FORCED_BUDGET", "PROXY_TOOL_STATE_CYCLE_WINDOW",
+                   "PROXY_TOOL_STATE_STAGNATION_THRESHOLD"]:
+            old_vals[k] = getattr(proxy, k)
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", 20)
+            setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", 2)
+
+            body = self._make_body_with_tools(["bash", "read", "write"])
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.tool_turn_phase = "act"
+            monitor.tool_state_review_cycles = 0
+            monitor.tool_state_forced_budget_remaining = 20
+            monitor.tool_state_stagnation_streak = 3
+            fp = "bash:781c24ad"
+            monitor.tool_call_history = [fp, fp, fp]
+            monitor.last_tool_fingerprint = fp
+
+            openai = proxy.build_openai_request(body, monitor)
+
+            self.assertEqual(monitor.tool_turn_phase, "review")
+            self.assertEqual(monitor.tool_state_review_cycles, 1)
+            messages = openai.get("messages", [])
+            last_user = [m for m in messages if m.get("role") == "user"][-1]
+            self.assertNotIn("CRITICAL", last_user["content"])
+            self.assertIn("DIFFERENT tool", last_user["content"])
+        finally:
+            for k, v in old_vals.items():
+                setattr(proxy, k, v)

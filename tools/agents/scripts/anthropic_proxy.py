@@ -2281,11 +2281,13 @@ def _resolve_state_machine_tool_choice(
                 1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
             )
             # If stagnation cleared during review, the model tried a
-            # different approach — reward by reducing cycle pressure.
+            # different approach — reward by reducing cycle pressure and
+            # lifting persistent tool exclusion.
             if monitor.tool_state_stagnation_streak == 0 and monitor.tool_state_review_cycles > 0:
                 monitor.tool_state_review_cycles = max(0, monitor.tool_state_review_cycles - 1)
+                monitor.cycling_tool_names = []
                 logger.info(
-                    "TOOL STATE MACHINE: review_cycles decremented to %d (stagnation cleared)",
+                    "TOOL STATE MACHINE: review_cycles decremented to %d, cycling exclusion lifted (stagnation cleared)",
                     monitor.tool_state_review_cycles,
                 )
             return "required", "review_complete"
@@ -2589,31 +2591,41 @@ def build_openai_request(
             monitor.no_progress_streak = (
                 0 if last_user_has_tool_result else monitor.no_progress_streak + 1
             )
-            # Option 1: Inject cycle-break instruction when entering review
+            # Inject cycle-break instruction when entering review
+            # Option 3 (Cycle 14): Escalate hint text based on review cycle count
             if (
                 monitor.tool_turn_phase == "review"
                 and state_reason in {"cycle_detected", "stagnation"}
                 and monitor.cycling_tool_names
             ):
                 cycling_names = ", ".join(monitor.cycling_tool_names)
-                cycle_hint = (
-                    f"You have been repeatedly calling the same tool(s): {cycling_names}. "
-                    "This is not making progress. Use a DIFFERENT tool to advance the task, "
-                    "or call a tool that produces your final answer."
-                )
+                cycles = monitor.tool_state_review_cycles
+                if cycles <= 1:
+                    cycle_hint = (
+                        f"You have been repeatedly calling the same tool(s): {cycling_names}. "
+                        "This is not making progress. Use a DIFFERENT tool to advance the task, "
+                        "or call a tool that produces your final answer."
+                    )
+                else:
+                    cycle_hint = (
+                        f"CRITICAL: You have cycled {cycling_names} for {cycles} review rounds without progress. "
+                        "State what you have accomplished so far and what the next DIFFERENT action should be. "
+                        "Do NOT call the same tool again. Choose a completely different approach or "
+                        "produce your final answer now."
+                    )
                 messages = openai_body.get("messages", [])
                 messages.append({"role": "user", "content": cycle_hint})
                 openai_body["messages"] = messages
                 logger.warning(
-                    "CYCLE BREAK: injected hint about cycling tools: %s",
+                    "CYCLE BREAK: injected hint about cycling tools: %s (escalation=%d)",
                     cycling_names,
+                    cycles,
                 )
-            # Option 2: Narrow tools during review to exclude cycling tools
-            # Option 1 enhancement: if any cycling tool is read-only, exclude
-            # the entire read-only class to prevent tool-hopping (read→glob→grep)
+            # Narrow tools to exclude cycling tools
+            # Option 1 (Cycle 13): if any cycling tool is read-only, exclude entire class
+            # Option 1 (Cycle 14): persist exclusion during act phase too, not just review
             if (
-                monitor.tool_turn_phase == "review"
-                and monitor.cycling_tool_names
+                monitor.cycling_tool_names
                 and "tools" in openai_body
             ):
                 exclude_set = set(monitor.cycling_tool_names)
