@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.20.27 (2026-04-02)
+
+- fix: break malformed payload death loop with complex tool exclusion, temp reduction, and contamination finalize
+- fix: persistent cycle exclusion and escalating hints (#156) (#156)
+- fix: read-only tool class exclusion and duplicate target cycle detection (#155)
+
+
 ## v1.20.26 (2026-04-02)
 
 - fix: persistent cycle exclusion, escalating hints, and act-phase narrowing

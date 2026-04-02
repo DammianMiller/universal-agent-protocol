@@ -2465,14 +2465,22 @@ def build_openai_request(
         openai_body["stop"] = anthropic_body["stop_sequences"]
 
     # Force controlled temperature for tool-call turns to reduce garbled output
+    # Cycle 15 Option 2: use lower temperature after contamination resets
     if has_tools:
         client_temp = openai_body.get("temperature")
-        if client_temp is None or client_temp > PROXY_TOOL_TURN_TEMPERATURE:
-            openai_body["temperature"] = PROXY_TOOL_TURN_TEMPERATURE
+        target_temp = PROXY_TOOL_TURN_TEMPERATURE
+        if monitor.contamination_resets > 0:
+            target_temp = min(target_temp, 0.1)
+        if client_temp is None or client_temp > target_temp:
+            openai_body["temperature"] = target_temp
+            extra = ""
+            if monitor.contamination_resets > 0:
+                extra = f" (post-contamination reset, resets={monitor.contamination_resets})"
             logger.info(
-                "TOOL TURN TEMP: forcing temperature=%.2f (was %s) for tool-enabled request",
-                PROXY_TOOL_TURN_TEMPERATURE,
+                "TOOL TURN TEMP: forcing temperature=%.2f (was %s) for tool-enabled request%s",
+                target_temp,
                 client_temp,
+                extra,
             )
 
     # Convert Anthropic tools to OpenAI function-calling tools
@@ -4691,7 +4699,7 @@ async def _apply_malformed_tool_guardrail(
 
     attempts = max(0, PROXY_MALFORMED_TOOL_RETRY_MAX)
     current_issue = issue
-    # Track failing tool names for Option 3 (tool narrowing on retry)
+    # Track failing tool names for tool narrowing on retry
     failing_tools: set[str] = set()
     if issue.kind == "invalid_tool_args":
         for tc in (working_resp.get("choices", [{}])[0].get("message", {}).get("tool_calls", [])):
@@ -4699,14 +4707,22 @@ async def _apply_malformed_tool_guardrail(
             raw_args = tc.get("function", {}).get("arguments", "")
             if fn_name and raw_args and _is_garbled_tool_arguments(raw_args):
                 failing_tools.add(fn_name)
+    # Cycle 15 Option 1: For malformed_payload retries, exclude complex
+    # multi-field tools (task, Agent) that are prone to garbled generation
+    # after the first retry fails.
+    _COMPLEX_TOOLS_TO_EXCLUDE_ON_MALFORMED = {"task", "Agent"}
+    malformed_exclude_active = False
     for attempt in range(attempts):
         attempt_tool_choice = _retry_tool_choice_for_attempt(
             required_tool_choice,
             attempt,
             attempts,
         )
-        # Option 3: On attempt >= 2, exclude consistently failing tools
-        exclude = list(failing_tools) if attempt >= 1 and failing_tools else None
+        # On attempt >= 1, exclude consistently failing tools OR complex tools for malformed
+        exclude_set = set(failing_tools) if failing_tools else set()
+        if malformed_exclude_active:
+            exclude_set |= _COMPLEX_TOOLS_TO_EXCLUDE_ON_MALFORMED
+        exclude = list(exclude_set) if (attempt >= 1 and exclude_set) else None
         retry_body = _build_malformed_retry_body(
             openai_body,
             anthropic_body,
@@ -4785,6 +4801,8 @@ async def _apply_malformed_tool_guardrail(
 
         if retry_issue.kind == "malformed_payload":
             monitor.malformed_tool_streak += 1
+            # Cycle 15 Option 1: activate complex tool exclusion for next retry
+            malformed_exclude_active = True
         elif retry_issue.kind == "invalid_tool_args":
             monitor.invalid_tool_call_streak += 1
             monitor.arg_preflight_rejections += 1
@@ -4897,6 +4915,35 @@ def _maybe_apply_session_contamination_breaker(
     )
     if not should_reset:
         return anthropic_body
+
+    # Cycle 15 Option 3: if contamination has already reset N+ times in this
+    # session, the model is fundamentally unable to produce valid tool calls.
+    # Force finalize so the Droid framework can intervene.
+    max_contamination_resets = 3
+    if monitor.contamination_resets >= max_contamination_resets:
+        logger.error(
+            "SESSION CONTAMINATION LOOP: session=%s contamination_resets=%d >= %d, forcing finalize",
+            session_id,
+            monitor.contamination_resets,
+            max_contamination_resets,
+        )
+        monitor.set_tool_turn_phase("finalize", reason="contamination_loop")
+        monitor.contamination_resets += 1
+        monitor.malformed_tool_streak = 0
+        monitor.invalid_tool_call_streak = 0
+        # Remove tools to force text-only response
+        updated = dict(anthropic_body)
+        updated.pop("tools", None)
+        updated.pop("tool_choice", None)
+        msgs = updated.get("messages", [])
+        msgs.append({
+            "role": "user",
+            "content": (
+                "Tool-call generation has failed repeatedly. Respond with plain text only. "
+                "Summarize what you have accomplished and what remains to be done."
+            ),
+        })
+        return updated
 
     messages = anthropic_body.get("messages", [])
     keep_last = max(2, PROXY_SESSION_CONTAMINATION_KEEP_LAST)
