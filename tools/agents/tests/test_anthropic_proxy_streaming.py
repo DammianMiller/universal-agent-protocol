@@ -4796,3 +4796,25 @@ class TestCycle18SessionBanAndLogNoise(unittest.TestCase):
         finally:
             for k, v in old_vals.items():
                 setattr(proxy, k, v)
+
+
+class TestUpstream503Resilience(unittest.TestCase):
+    """Tests for Cycle 19: upstream 503 Loading model resilience."""
+
+    def test_is_loading_model_503_detects_loading(self):
+        """Detects 503 Loading model response."""
+        resp = httpx.Response(
+            503,
+            text='{"error":{"message":"Loading model","type":"unavailable_error","code":503}}',
+        )
+        self.assertTrue(proxy._is_loading_model_503(resp))
+
+    def test_is_loading_model_503_ignores_other_503(self):
+        """Does not match 503 with different message."""
+        resp = httpx.Response(503, text='{"error":{"message":"Server busy"}}')
+        self.assertFalse(proxy._is_loading_model_503(resp))
+
+    def test_is_loading_model_503_ignores_200(self):
+        """Does not match 200 even with loading text."""
+        resp = httpx.Response(200, text='{"status":"loading model"}')
+        self.assertFalse(proxy._is_loading_model_503(resp))
