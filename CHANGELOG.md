@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.20.26 (2026-04-02)
+
+- fix: persistent cycle exclusion, escalating hints, and act-phase narrowing
+- fix: read-only tool class exclusion and duplicate target cycle detection (#155)
+
+
 ## v1.20.25 (2026-04-02)
 
 - fix: add read-only tool class exclusion and duplicate target detection to break cycling loops
