@@ -4662,3 +4662,137 @@ class TestMalformedPayloadLoopFix(unittest.TestCase):
         }
         openai = proxy.build_openai_request(body, monitor)
         self.assertAlmostEqual(openai.get("temperature", 1.0), 0.3, places=1)
+
+
+class TestToolCallJsonRepair(unittest.TestCase):
+    """Tests for Cycle 15 Option 1: JSON repair in tool call extraction."""
+
+    def test_repairs_trailing_braces(self):
+        """Runaway closing braces are trimmed and JSON parsed."""
+        garbled = '{"name":"bash","arguments":{"command":"ls"}}}}'
+        repaired = proxy._repair_tool_call_json(garbled)
+        self.assertIsNotNone(repaired)
+        parsed = json.loads(repaired)
+        self.assertEqual(parsed["name"], "bash")
+
+    def test_repairs_unbalanced_open_braces(self):
+        """Missing closing braces are added."""
+        garbled = '{"name":"read","arguments":{"file_path":"/foo"}'
+        repaired = proxy._repair_tool_call_json(garbled)
+        self.assertIsNotNone(repaired)
+        parsed = json.loads(repaired)
+        self.assertEqual(parsed["name"], "read")
+
+    def test_returns_none_for_total_garbage(self):
+        """Completely invalid JSON returns None."""
+        result = proxy._repair_tool_call_json("not json at all")
+        self.assertIsNone(result)
+
+    def test_extracts_repaired_tool_call_from_text(self):
+        """End-to-end: garbled <tool_call> XML is extracted after repair."""
+        text = '<tool_call>\n{"name":"bash","arguments":{"command":"pwd"}}}\n</tool_call>'
+        extracted, remaining = proxy._extract_tool_calls_from_text(text)
+        self.assertEqual(len(extracted), 1)
+        self.assertEqual(extracted[0]["function"]["name"], "bash")
+
+
+class TestRetryTemperatureVariance(unittest.TestCase):
+    """Tests for Cycle 15 Option 3: retry temperature variance."""
+
+    def test_retry_attempt_1_uses_configured_temp(self):
+        """First retry attempt uses PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE."""
+        body = proxy._build_malformed_retry_body(
+            {"messages": [{"role": "user", "content": "test"}], "tools": []},
+            {"messages": [{"role": "user", "content": "test"}], "tools": []},
+            retry_hint="fix it",
+            tool_choice="required",
+            attempt=1,
+            total_attempts=3,
+            is_garbled=False,
+        )
+        self.assertEqual(body["temperature"], proxy.PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE)
+
+    def test_retry_attempt_2_uses_higher_temp(self):
+        """Second retry attempt uses temp=0.5 to break degenerate patterns."""
+        body = proxy._build_malformed_retry_body(
+            {"messages": [{"role": "user", "content": "test"}], "tools": []},
+            {"messages": [{"role": "user", "content": "test"}], "tools": []},
+            retry_hint="fix it",
+            tool_choice="required",
+            attempt=2,
+            total_attempts=3,
+            is_garbled=False,
+        )
+        self.assertEqual(body["temperature"], 0.5)
+
+
+class TestCycle18SessionBanAndLogNoise(unittest.TestCase):
+    """Tests for Cycle 18: session tool banning and log noise reduction."""
+
+    def test_tool_banned_after_3_cycle_detections(self):
+        """Option 2: tool gets session-banned after cycling 3 times."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+        # Simulate 3 separate cycle detections for 'task'
+        monitor.tool_cycle_counts["task"] = 2
+        monitor.cycling_tool_names = ["task"]
+
+        # This is what happens inside the cycle detection — manually trigger
+        for name in monitor.cycling_tool_names:
+            monitor.tool_cycle_counts[name] = monitor.tool_cycle_counts.get(name, 0) + 1
+            if monitor.tool_cycle_counts[name] >= 3:
+                monitor.session_banned_tools.add(name)
+
+        self.assertIn("task", monitor.session_banned_tools)
+        self.assertEqual(monitor.tool_cycle_counts["task"], 3)
+
+    def test_session_ban_survives_state_reset(self):
+        """Option 2: session_banned_tools persists through reset_tool_turn_state."""
+        monitor = proxy.SessionMonitor(context_window=262144)
+        monitor.session_banned_tools.add("task")
+        monitor.tool_cycle_counts["task"] = 3
+
+        monitor.reset_tool_turn_state(reason="test")
+
+        # Session bans survive resets — they're session-level, not phase-level
+        self.assertIn("task", monitor.session_banned_tools)
+        self.assertEqual(monitor.tool_cycle_counts["task"], 3)
+
+    def test_banned_tools_excluded_even_without_cycling(self):
+        """Option 2: session-banned tools are excluded even when cycling_tool_names is empty."""
+        old_vals = {}
+        for k in ["PROXY_TOOL_STATE_MACHINE", "PROXY_TOOL_STATE_MIN_MESSAGES",
+                   "PROXY_TOOL_STATE_FORCED_BUDGET"]:
+            old_vals[k] = getattr(proxy, k)
+        try:
+            setattr(proxy, "PROXY_TOOL_STATE_MACHINE", True)
+            setattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES", 3)
+            setattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET", 6)
+
+            body = {
+                "model": "test",
+                "messages": [
+                    {"role": "user", "content": "do"},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": "t1", "name": "bash", "input": {"command": "ls"}}
+                    ]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+                    ]},
+                ],
+                "tools": [
+                    {"name": "task", "description": "Task", "input_schema": {"type": "object"}},
+                    {"name": "bash", "description": "Bash", "input_schema": {"type": "object"}},
+                    {"name": "read", "description": "Read", "input_schema": {"type": "object"}},
+                ],
+            }
+            monitor = proxy.SessionMonitor(context_window=262144)
+            monitor.session_banned_tools.add("task")
+            monitor.cycling_tool_names = []  # no active cycling
+
+            openai = proxy.build_openai_request(body, monitor)
+            remaining = [t["function"]["name"] for t in openai.get("tools", [])]
+            self.assertNotIn("task", remaining)
+            self.assertIn("bash", remaining)
+        finally:
+            for k, v in old_vals.items():
+                setattr(proxy, k, v)

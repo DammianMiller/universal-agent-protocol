@@ -656,6 +656,8 @@ class SessionMonitor:
     tool_state_review_cycles: int = 0
     last_tool_fingerprint: str = ""
     cycling_tool_names: list = field(default_factory=list)
+    session_banned_tools: set = field(default_factory=set)  # tools banned for entire session after repeated cycling
+    tool_cycle_counts: dict = field(default_factory=dict)  # {tool_name: cycle_count} across resets
     last_response_garbled: bool = False  # previous turn had garbled/malformed output
     finalize_turn_active: bool = False
     finalize_continuation_count: int = 0
@@ -2240,6 +2242,16 @@ def _resolve_state_machine_tool_choice(
                 for part in fp.split("|"):
                     raw_names.append(part.split(":")[0])
             monitor.cycling_tool_names = list(dict.fromkeys(raw_names))
+            # Cycle 18 Option 2: track per-tool cycle counts and ban after 3 cycles
+            for name in monitor.cycling_tool_names:
+                monitor.tool_cycle_counts[name] = monitor.tool_cycle_counts.get(name, 0) + 1
+                if monitor.tool_cycle_counts[name] >= 3 and name not in monitor.session_banned_tools:
+                    monitor.session_banned_tools.add(name)
+                    logger.warning(
+                        "TOOL BAN: '%s' banned for session after %d cycle detections",
+                        name,
+                        monitor.tool_cycle_counts[name],
+                    )
             logger.warning(
                 "TOOL STATE MACHINE: entering review (cycle=%s repeat=%d stagnation=%d cycles=%d cycling_tools=%s)",
                 cycle_looping,
@@ -2629,14 +2641,15 @@ def build_openai_request(
                     cycling_names,
                     cycles,
                 )
-            # Narrow tools to exclude cycling tools
+            # Narrow tools to exclude cycling tools + session-banned tools
             # Option 1 (Cycle 13): if any cycling tool is read-only, exclude entire class
             # Option 1 (Cycle 14): persist exclusion during act phase too, not just review
+            # Option 2 (Cycle 18): always exclude session-banned tools
             if (
-                monitor.cycling_tool_names
+                (monitor.cycling_tool_names or monitor.session_banned_tools)
                 and "tools" in openai_body
             ):
-                exclude_set = set(monitor.cycling_tool_names)
+                exclude_set = set(monitor.cycling_tool_names) | monitor.session_banned_tools
                 # Expand to full read-only class if any cycling tool is read-only
                 if any(n.lower() in {c.lower() for c in _READ_ONLY_TOOL_CLASS} for n in exclude_set):
                     exclude_set |= _READ_ONLY_TOOL_CLASS
@@ -2648,13 +2661,15 @@ def build_openai_request(
                 ]
                 if narrowed:
                     openai_body["tools"] = narrowed
-                    logger.warning(
-                        "CYCLE BREAK: narrowed tools from %d to %d (excluded %s, read_only_class=%s)",
-                        original_count,
-                        len(narrowed),
-                        monitor.cycling_tool_names,
-                        any(n.lower() in {c.lower() for c in _READ_ONLY_TOOL_CLASS} for n in monitor.cycling_tool_names),
-                    )
+                    # Only log on first activation or phase transitions to reduce noise
+                    if state_reason in {"cycle_detected", "stagnation"}:
+                        logger.warning(
+                            "CYCLE BREAK: narrowed tools from %d to %d (excluded %s, read_only_class=%s)",
+                            original_count,
+                            len(narrowed),
+                            monitor.cycling_tool_names,
+                            any(n.lower() in {c.lower() for c in _READ_ONLY_TOOL_CLASS} for n in monitor.cycling_tool_names),
+                        )
                 else:
                     logger.warning(
                         "CYCLE BREAK: cannot narrow tools — all tools are cycling, keeping original set",
@@ -3092,6 +3107,47 @@ _TOOL_CALL_XML_RE = re.compile(
 )
 
 
+def _repair_tool_call_json(raw: str) -> str | None:
+    """Attempt to repair common garbled JSON in tool call payloads.
+
+    Returns repaired JSON string, or None if repair is not possible.
+    Handles: trailing braces, unbalanced brackets, truncated strings.
+    """
+    s = raw.strip()
+    if not s.startswith("{"):
+        return None
+    # Strip trailing garbage (runaway braces/brackets)
+    while s.endswith("}}") and s.count("{") < s.count("}"):
+        s = s[:-1]
+    while s.endswith("]]") and s.count("[") < s.count("]"):
+        s = s[:-1]
+    # Balance braces
+    open_b = s.count("{") - s.count("}")
+    if open_b > 0:
+        s += "}" * open_b
+    elif open_b < 0:
+        # Too many closing braces — trim from end
+        for _ in range(-open_b):
+            idx = s.rfind("}")
+            if idx > 0:
+                s = s[:idx] + s[idx + 1:]
+    # Try to parse
+    try:
+        json.loads(s)
+        return s
+    except json.JSONDecodeError:
+        pass
+    # Try truncating at last valid comma + closing
+    for end in range(len(s) - 1, max(0, len(s) - 200), -1):
+        candidate = s[:end].rstrip().rstrip(",") + "}" * max(0, s[:end].count("{") - s[:end].count("}"))
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def _extract_tool_calls_from_text(text: str) -> tuple[list[dict], str]:
     """Parse ``<tool_call>{...}</tool_call>`` blocks out of *text*.
 
@@ -3112,7 +3168,18 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[dict], str]:
         try:
             payload = json.loads(raw_json)
         except json.JSONDecodeError:
-            continue
+            # Cycle 15 Option 1: attempt JSON repair before giving up
+            repaired = _repair_tool_call_json(raw_json)
+            if repaired:
+                try:
+                    payload = json.loads(repaired)
+                    logger.info(
+                        "TOOL CALL EXTRACTION: repaired garbled JSON in <tool_call> block"
+                    )
+                except json.JSONDecodeError:
+                    continue
+            else:
+                continue
         if not isinstance(payload, dict):
             continue
 
@@ -4380,9 +4447,11 @@ def _build_malformed_retry_body(
     retry_body = dict(openai_body)
     retry_body["stream"] = False
     retry_body["tool_choice"] = tool_choice
-    # Escalate temperature down on successive retries for more deterministic output
+    # Cycle 15 Option 3: vary temperature across retries to break degenerate patterns.
+    # Attempt 1: use configured retry temp (default 0.0) for deterministic first try.
+    # Attempt 2+: increase to 0.5 to escape the degenerate local minimum.
     if total_attempts > 1 and attempt > 1:
-        retry_body["temperature"] = 0.0
+        retry_body["temperature"] = 0.5
     else:
         retry_body["temperature"] = PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE
 
