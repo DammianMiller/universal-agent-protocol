@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.28 (2026-04-02)
+
+- fix: JSON repair for garbled tool calls and retry temperature variance
+
+
 ## v1.20.27 (2026-04-02)
 
 - fix: break malformed payload death loop with complex tool exclusion, temp reduction, and contamination finalize
