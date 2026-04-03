@@ -8,6 +8,8 @@
       rel="icon"
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x26A1;</text></svg>"
     />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
     <style>
       :root {
         --bg: #0d1117;
@@ -25,11 +27,7 @@
         --border: #30363d;
         --radius: 8px;
       }
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
       body {
         font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
         background: var(--bg);
@@ -37,11 +35,9 @@
         font-size: 13px;
         line-height: 1.5;
       }
-      .container {
-        max-width: 1400px;
-        margin: 0 auto;
-        padding: 16px;
-      }
+      .container { max-width: 1600px; margin: 0 auto; padding: 16px; }
+
+      /* ── Header ── */
       header {
         display: flex;
         justify-content: space-between;
@@ -49,21 +45,35 @@
         padding: 12px 0;
         border-bottom: 1px solid var(--border);
         margin-bottom: 16px;
+        flex-wrap: wrap;
+        gap: 8px;
       }
-      header h1 {
-        font-size: 18px;
-        color: var(--cyan);
-        font-weight: 600;
+      header h1 { font-size: 18px; color: var(--cyan); font-weight: 600; }
+      .header-center {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 11px;
+        color: var(--fg3);
       }
+      .sys-badge {
+        padding: 2px 8px;
+        border-radius: 4px;
+        background: var(--bg3);
+        border: 1px solid var(--border);
+        font-size: 11px;
+      }
+      .sys-badge .label { color: var(--fg3); }
+      .sys-badge .val { color: var(--fg); font-weight: 500; }
+      .sys-badge .val.cyan { color: var(--cyan); }
+      .sys-badge .val.green { color: var(--green); }
+      .sys-badge .val.yellow { color: var(--yellow); }
       .header-right {
         display: flex;
         align-items: center;
         gap: 12px;
       }
-      .header-ts {
-        color: var(--fg3);
-        font-size: 11px;
-      }
+      .header-ts { color: var(--fg3); font-size: 11px; }
       .status-dot {
         display: inline-block;
         width: 8px;
@@ -71,21 +81,36 @@
         border-radius: 50%;
         margin-right: 6px;
       }
-      .status-dot.connected {
-        background: var(--green);
-        box-shadow: 0 0 4px var(--green);
-      }
-      .status-dot.disconnected {
-        background: var(--red);
-      }
-      .status-dot.polling {
-        background: var(--yellow);
-      }
-      .grid {
+      .status-dot.connected { background: var(--green); box-shadow: 0 0 4px var(--green); }
+      .status-dot.disconnected { background: var(--red); }
+      .status-dot.polling { background: var(--yellow); }
+      .refresh-info { color: var(--fg3); font-size: 11px; }
+
+      /* ── Layout ── */
+      .hero-row {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        grid-template-columns: 1fr 1fr;
         gap: 16px;
+        margin-bottom: 16px;
       }
+      .metrics-row {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+      .split-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+      .full-row { margin-bottom: 16px; }
+      @media (max-width: 1000px) {
+        .hero-row, .metrics-row, .split-row { grid-template-columns: 1fr; }
+      }
+
+      /* ── Panels ── */
       .panel {
         background: var(--bg2);
         border: 1px solid var(--border);
@@ -108,44 +133,17 @@
         text-transform: uppercase;
         letter-spacing: 0.5px;
       }
-      .kv {
-        display: flex;
-        justify-content: space-between;
-        padding: 3px 0;
-      }
-      .kv .label {
-        color: var(--fg2);
-      }
-      .kv .value {
-        color: var(--fg);
-        font-weight: 500;
-      }
-      .kv .value.green {
-        color: var(--green);
-      }
-      .kv .value.yellow {
-        color: var(--yellow);
-      }
-      .kv .value.red {
-        color: var(--red);
-      }
-      .kv .value.cyan {
-        color: var(--cyan);
-      }
-      .kv .value.purple {
-        color: var(--purple);
-      }
-      .kv .value.orange {
-        color: var(--orange);
-      }
-      .table-wrap {
-        overflow-x: auto;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 12px;
-      }
+      .kv { display: flex; justify-content: space-between; padding: 3px 0; }
+      .kv .label { color: var(--fg2); }
+      .kv .value { color: var(--fg); font-weight: 500; }
+      .kv .value.green { color: var(--green); }
+      .kv .value.yellow { color: var(--yellow); }
+      .kv .value.red { color: var(--red); }
+      .kv .value.cyan { color: var(--cyan); }
+      .kv .value.purple { color: var(--purple); }
+      .kv .value.orange { color: var(--orange); }
+      .table-wrap { overflow-x: auto; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
       th {
         text-align: left;
         color: var(--fg2);
@@ -154,10 +152,7 @@
         border-bottom: 1px solid var(--border);
         white-space: nowrap;
       }
-      td {
-        padding: 4px 8px;
-        border-bottom: 1px solid var(--bg3);
-      }
+      td { padding: 4px 8px; border-bottom: 1px solid var(--bg3); }
       .badge {
         display: inline-block;
         padding: 1px 6px;
@@ -165,83 +160,60 @@
         font-size: 11px;
         font-weight: 600;
       }
-      .badge.required {
-        background: rgba(248, 81, 73, 0.15);
-        color: var(--red);
-      }
-      .badge.recommended {
-        background: rgba(210, 153, 34, 0.15);
-        color: var(--yellow);
-      }
-      .badge.optional {
-        background: rgba(72, 79, 88, 0.15);
-        color: var(--fg3);
-      }
-      .badge.on {
-        background: rgba(63, 185, 80, 0.15);
-        color: var(--green);
-      }
-      .badge.off {
-        background: rgba(248, 81, 73, 0.15);
-        color: var(--red);
-      }
-      .badge.active {
-        background: rgba(88, 166, 255, 0.15);
-        color: var(--cyan);
-      }
-      .badge.idle {
-        background: rgba(72, 79, 88, 0.15);
-        color: var(--fg3);
-      }
-      .badge.droid {
-        background: rgba(188, 140, 255, 0.15);
-        color: var(--purple);
-      }
-      .badge.subagent {
-        background: rgba(209, 134, 22, 0.15);
-        color: var(--orange);
-      }
-      .badge.main {
-        background: rgba(88, 166, 255, 0.15);
-        color: var(--cyan);
-      }
-      .bar-container {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin: 3px 0;
-      }
-      .bar-label {
-        width: 80px;
-        color: var(--fg2);
-        font-size: 12px;
-      }
-      .bar {
-        height: 14px;
-        border-radius: 3px;
-        min-width: 2px;
-        transition: width 0.3s;
-      }
-      .bar.cyan {
-        background: var(--cyan);
-      }
-      .bar.green {
-        background: var(--green);
-      }
-      .bar.yellow {
-        background: var(--yellow);
-      }
-      .bar.red {
-        background: var(--red);
-      }
-      .bar.purple {
-        background: var(--purple);
-      }
-      .bar-value {
-        color: var(--fg2);
+      .badge.required { background: rgba(248,81,73,0.15); color: var(--red); }
+      .badge.recommended { background: rgba(210,153,34,0.15); color: var(--yellow); }
+      .badge.optional { background: rgba(72,79,88,0.15); color: var(--fg3); }
+      .badge.on { background: rgba(63,185,80,0.15); color: var(--green); }
+      .badge.off { background: rgba(248,81,73,0.15); color: var(--red); }
+      .badge.active { background: rgba(88,166,255,0.15); color: var(--cyan); }
+      .badge.idle { background: rgba(72,79,88,0.15); color: var(--fg3); }
+      .badge.droid { background: rgba(188,140,255,0.15); color: var(--purple); }
+      .badge.subagent { background: rgba(209,134,22,0.15); color: var(--orange); }
+      .badge.main { background: rgba(88,166,255,0.15); color: var(--cyan); }
+      .badge.file-only { background: rgba(72,79,88,0.15); color: var(--fg3); }
+
+      /* ── Bars ── */
+      .bar-container { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+      .bar-label { width: 80px; color: var(--fg2); font-size: 12px; }
+      .bar { height: 14px; border-radius: 3px; min-width: 2px; transition: width 0.3s; }
+      .bar.cyan { background: var(--cyan); }
+      .bar.green { background: var(--green); }
+      .bar.yellow { background: var(--yellow); }
+      .bar.red { background: var(--red); }
+      .bar.purple { background: var(--purple); }
+      .bar-value { color: var(--fg2); font-size: 11px; min-width: 20px; }
+
+      /* ── Charts ── */
+      .chart-container { position: relative; width: 100%; }
+      .chart-container .uplot { width: 100% !important; }
+      .chart-hero { height: 280px; }
+      .chart-spark { height: 80px; margin: 8px 0; }
+
+      /* uPlot dark theme overrides */
+      .uplot .u-title { color: var(--fg2) !important; font-size: 11px !important; }
+      .uplot .u-legend { font-size: 11px !important; }
+      .uplot .u-legend th { color: var(--fg2) !important; }
+      .uplot .u-legend td { color: var(--fg) !important; }
+      .uplot .u-series > * { padding: 2px 6px !important; }
+      .u-tooltip {
+        position: absolute;
+        z-index: 100;
+        background: var(--bg2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 8px 12px;
         font-size: 11px;
-        min-width: 20px;
+        pointer-events: none;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        white-space: nowrap;
       }
+      .u-tooltip .tt-time { color: var(--fg3); margin-bottom: 4px; font-size: 10px; }
+      .u-tooltip .tt-row { display: flex; gap: 8px; align-items: center; padding: 1px 0; }
+      .u-tooltip .tt-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+      .u-tooltip .tt-label { color: var(--fg2); }
+      .u-tooltip .tt-val { color: var(--fg); font-weight: 600; margin-left: auto; }
+
+      /* ── Buttons ── */
       .btn {
         background: var(--bg3);
         border: 1px solid var(--border);
@@ -252,18 +224,8 @@
         font-size: 11px;
         font-family: inherit;
       }
-      .btn:hover {
-        background: var(--border);
-      }
-      .btn:focus-visible {
-        outline: 2px solid var(--cyan);
-        outline-offset: 1px;
-      }
-      .btn.active {
-        background: var(--cyan);
-        color: var(--bg);
-        border-color: var(--cyan);
-      }
+      .btn:hover { background: var(--border); }
+      .btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
       select {
         background: var(--bg3);
         border: 1px solid var(--border);
@@ -273,10 +235,9 @@
         font-size: 11px;
         font-family: inherit;
       }
-      select:focus-visible {
-        outline: 2px solid var(--cyan);
-        outline-offset: 1px;
-      }
+      select:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+
+      /* ── Audit / Events ── */
       .audit-row {
         display: flex;
         gap: 8px;
@@ -284,259 +245,60 @@
         font-size: 12px;
         border-bottom: 1px solid var(--bg3);
       }
-      .audit-time {
-        color: var(--fg3);
-        width: 140px;
-        flex-shrink: 0;
-      }
-      .audit-icon {
-        width: 40px;
-        flex-shrink: 0;
-        font-weight: 600;
-      }
-      .audit-icon.pass {
-        color: var(--green);
-      }
-      .audit-icon.block {
-        color: var(--red);
-      }
-      .audit-op {
-        color: var(--fg);
-        flex: 1;
-      }
-      .audit-policy {
-        color: var(--fg3);
-        width: 80px;
-        flex-shrink: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-size: 11px;
-      }
-      .audit-reason {
-        color: var(--fg3);
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .full-width {
-        grid-column: 1 / -1;
-      }
-      .empty {
-        color: var(--fg3);
-        font-style: italic;
-        padding: 8px 0;
-      }
-      .refresh-info {
-        color: var(--fg3);
-        font-size: 11px;
-      }
-      /* ── Kanban Board ── */
-      .kanban {
+      .audit-time { color: var(--fg3); width: 80px; flex-shrink: 0; font-size: 11px; }
+      .audit-icon { width: 40px; flex-shrink: 0; font-weight: 600; }
+      .audit-icon.pass { color: var(--green); }
+      .audit-icon.block { color: var(--red); }
+      .audit-op { color: var(--fg); flex: 1; }
+      .audit-policy { color: var(--fg3); width: 80px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+      .audit-reason { color: var(--fg3); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      .event-feed { max-height: 200px; overflow-y: auto; }
+      .event-row {
         display: flex;
-        gap: 12px;
-        overflow-x: auto;
-        padding-bottom: 8px;
-        min-height: 200px;
-      }
-      .kanban-col {
-        flex: 1;
-        min-width: 180px;
-        max-width: 280px;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      .kanban-col-header {
-        display: flex;
-        align-items: center;
         gap: 6px;
-        padding: 6px 8px;
-        border-radius: 6px;
-        font-size: 12px;
-        font-weight: 600;
-        background: var(--bg3);
-      }
-      .kanban-col-header .col-count {
-        margin-left: auto;
-        font-weight: 400;
-        color: var(--fg3);
+        padding: 2px 0;
         font-size: 11px;
+        border-bottom: 1px solid var(--bg3);
+        animation: event-in 0.2s ease-out;
       }
-      .kanban-col-header.open {
-        border-left: 3px solid var(--fg2);
-      }
-      .kanban-col-header.in_progress {
-        border-left: 3px solid var(--cyan);
-        color: var(--cyan);
-      }
-      .kanban-col-header.blocked {
-        border-left: 3px solid var(--red);
-        color: var(--red);
-      }
-      .kanban-col-header.done {
-        border-left: 3px solid var(--green);
-        color: var(--green);
-      }
-      .kanban-col-header.wont_do {
-        border-left: 3px solid var(--fg3);
-        color: var(--fg3);
-      }
-      .kanban-cards {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        flex: 1;
-        min-height: 40px;
-      }
-      .kanban-card {
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: 8px 10px;
-        cursor: default;
-        transition:
-          transform 0.2s ease,
-          opacity 0.3s ease,
-          box-shadow 0.2s ease;
-        animation: card-enter 0.35s ease-out;
-      }
-      .kanban-card:hover {
-        border-color: var(--cyan);
-        box-shadow: 0 0 8px rgba(88, 166, 255, 0.15);
-        transform: translateY(-1px);
-      }
-      .kanban-card.card-exit {
-        animation: card-exit 0.3s ease-in forwards;
-      }
-      .kanban-card .card-id {
-        font-size: 10px;
-        color: var(--cyan);
-        font-weight: 600;
-      }
-      .kanban-card .card-title {
-        font-size: 12px;
-        color: var(--fg);
-        margin: 3px 0;
-        line-height: 1.3;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-      }
-      .kanban-card .card-meta {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 10px;
-        color: var(--fg3);
-      }
-      .kanban-card .card-priority {
+      .event-row .event-cat {
         padding: 0 4px;
         border-radius: 3px;
         font-weight: 600;
         font-size: 10px;
+        text-transform: uppercase;
       }
-      .card-priority.p0 {
-        background: rgba(248, 81, 73, 0.2);
-        color: var(--red);
-      }
-      .card-priority.p1 {
-        background: rgba(210, 153, 34, 0.2);
-        color: var(--yellow);
-      }
-      .card-priority.p2 {
-        background: rgba(88, 166, 255, 0.15);
-        color: var(--cyan);
-      }
-      .card-priority.p3,
-      .card-priority.p4 {
-        background: rgba(72, 79, 88, 0.2);
-        color: var(--fg3);
-      }
-      .kanban-empty {
-        color: var(--fg3);
-        font-size: 11px;
-        font-style: italic;
-        text-align: center;
-        padding: 16px 4px;
-        border: 1px dashed var(--border);
-        border-radius: 6px;
-      }
-      @keyframes card-enter {
-        0% {
-          opacity: 0;
-          transform: translateY(-12px) scale(0.95);
-        }
-        100% {
-          opacity: 1;
-          transform: translateY(0) scale(1);
-        }
-      }
-      @keyframes card-exit {
-        0% {
-          opacity: 1;
-          transform: translateX(0) scale(1);
-        }
-        100% {
-          opacity: 0;
-          transform: translateX(30px) scale(0.9);
-        }
-      }
-      /* Toast notifications */
-      .toast-container {
-        position: fixed;
-        top: 16px;
-        right: 16px;
-        z-index: 1000;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      .toast {
-        background: var(--bg2);
-        border: 1px solid var(--border);
+      .event-row .event-time { color: var(--fg3); min-width: 60px; }
+      .event-row .event-msg { color: var(--fg2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      @keyframes event-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+      .cat-policy { background: rgba(248,81,73,0.15); color: var(--red); }
+      .cat-memory { background: rgba(188,140,255,0.15); color: var(--purple); }
+      .cat-deploy { background: rgba(88,166,255,0.15); color: var(--cyan); }
+      .cat-agent { background: rgba(209,134,22,0.15); color: var(--orange); }
+      .cat-task { background: rgba(63,185,80,0.15); color: var(--green); }
+      .cat-skill { background: rgba(210,153,34,0.15); color: var(--yellow); }
+      .cat-pattern { background: rgba(188,140,255,0.15); color: var(--purple); }
+      .cat-cost { background: rgba(63,185,80,0.15); color: var(--green); }
+      .cat-system { background: rgba(72,79,88,0.3); color: var(--fg2); }
+
+      /* ── Gauge ── */
+      .gauge-track { background: var(--bg3); border-radius: 3px; height: 8px; margin: 6px 0; overflow: hidden; }
+      .gauge-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+
+      /* ── Cost Savings ── */
+      .cost-savings {
+        background: rgba(63,185,80,0.08);
+        border: 1px solid rgba(63,185,80,0.2);
         border-radius: var(--radius);
-        padding: 8px 14px;
-        font-size: 12px;
-        color: var(--fg);
-        animation: toast-in 0.2s ease-out;
-        max-width: 320px;
+        padding: 8px 12px;
+        margin-top: 8px;
       }
-      .toast.success {
-        border-color: var(--green);
-        color: var(--green);
-      }
-      .toast.error {
-        border-color: var(--red);
-        color: var(--red);
-      }
-      @keyframes toast-in {
-        from {
-          opacity: 0;
-          transform: translateX(20px);
-        }
-        to {
-          opacity: 1;
-          transform: translateX(0);
-        }
-      }
-      /* Progress bar for session steps */
-      .progress-track {
-        background: var(--bg3);
-        border-radius: 3px;
-        height: 6px;
-        margin: 6px 0;
-        overflow: hidden;
-      }
-      .progress-fill {
-        height: 100%;
-        border-radius: 3px;
-        background: var(--cyan);
-        transition: width 0.3s;
-      }
-      /* Agent status list */
+      .cost-savings .big-number { font-size: 20px; font-weight: 700; color: var(--green); }
+      .cost-savings .sub { font-size: 11px; color: var(--fg2); }
+
+      /* ── Agent rows ── */
       .agent-row {
         display: flex;
         align-items: center;
@@ -545,48 +307,12 @@
         border-bottom: 1px solid var(--bg3);
         font-size: 12px;
       }
-      .agent-name {
-        color: var(--fg);
-        font-weight: 500;
-        min-width: 100px;
-      }
-      .agent-task {
-        color: var(--fg2);
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .agent-tokens {
-        color: var(--fg3);
-        font-size: 11px;
-        min-width: 60px;
-        text-align: right;
-      }
-      /* Cost savings highlight */
-      .cost-savings {
-        background: rgba(63, 185, 80, 0.08);
-        border: 1px solid rgba(63, 185, 80, 0.2);
-        border-radius: var(--radius);
-        padding: 8px 12px;
-        margin-top: 8px;
-      }
-      .cost-savings .big-number {
-        font-size: 20px;
-        font-weight: 700;
-        color: var(--green);
-      }
-      .cost-savings .sub {
-        font-size: 11px;
-        color: var(--fg2);
-      }
-      /* Skill/Pattern chips */
-      .chip-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-        margin: 4px 0;
-      }
+      .agent-name { color: var(--fg); font-weight: 500; min-width: 100px; }
+      .agent-task { color: var(--fg2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .agent-tokens { color: var(--fg3); font-size: 11px; min-width: 60px; text-align: right; }
+
+      /* ── Chips ── */
+      .chip-list { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
       .chip {
         display: inline-block;
         padding: 2px 8px;
@@ -595,24 +321,73 @@
         border: 1px solid var(--border);
         color: var(--fg2);
       }
-      .chip.active {
-        border-color: var(--cyan);
-        color: var(--cyan);
-        background: rgba(88, 166, 255, 0.08);
+      .chip.active { border-color: var(--cyan); color: var(--cyan); background: rgba(88,166,255,0.08); }
+      .chip.inactive { opacity: 0.5; }
+
+      /* ── Progress ── */
+      .progress-track { background: var(--bg3); border-radius: 3px; height: 6px; margin: 6px 0; overflow: hidden; }
+      .progress-fill { height: 100%; border-radius: 3px; background: var(--cyan); transition: width 0.3s; }
+
+      /* ── Kanban Board ── */
+      .kanban { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; min-height: 200px; }
+      .kanban-col { flex: 1; min-width: 180px; max-width: 280px; display: flex; flex-direction: column; gap: 8px; }
+      .kanban-col-header {
+        display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+        border-radius: 6px; font-size: 12px; font-weight: 600; background: var(--bg3);
       }
-      .chip.inactive {
-        opacity: 0.5;
+      .kanban-col-header .col-count { margin-left: auto; font-weight: 400; color: var(--fg3); font-size: 11px; }
+      .kanban-col-header.open { border-left: 3px solid var(--fg2); }
+      .kanban-col-header.in_progress { border-left: 3px solid var(--cyan); color: var(--cyan); }
+      .kanban-col-header.blocked { border-left: 3px solid var(--red); color: var(--red); }
+      .kanban-col-header.done { border-left: 3px solid var(--green); color: var(--green); }
+      .kanban-col-header.wont_do { border-left: 3px solid var(--fg3); color: var(--fg3); }
+      .kanban-cards { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 40px; }
+      .kanban-card {
+        background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+        padding: 8px 10px; cursor: default;
+        transition: transform 0.2s ease, opacity 0.3s ease, box-shadow 0.2s ease;
+        animation: card-enter 0.35s ease-out;
       }
-      /* Token usage bars */
-      #model-tokens .bar-container {
-        margin: 6px 0;
+      .kanban-card:hover { border-color: var(--cyan); box-shadow: 0 0 8px rgba(88,166,255,0.15); transform: translateY(-1px); }
+      .kanban-card.card-exit { animation: card-exit 0.3s ease-in forwards; }
+      .kanban-card .card-id { font-size: 10px; color: var(--cyan); font-weight: 600; }
+      .kanban-card .card-title { font-size: 12px; color: var(--fg); margin: 3px 0; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+      .kanban-card .card-meta { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--fg3); }
+      .kanban-card .card-priority { padding: 0 4px; border-radius: 3px; font-weight: 600; font-size: 10px; }
+      .card-priority.p0 { background: rgba(248,81,73,0.2); color: var(--red); }
+      .card-priority.p1 { background: rgba(210,153,34,0.2); color: var(--yellow); }
+      .card-priority.p2 { background: rgba(88,166,255,0.15); color: var(--cyan); }
+      .card-priority.p3, .card-priority.p4 { background: rgba(72,79,88,0.2); color: var(--fg3); }
+      .kanban-empty { color: var(--fg3); font-size: 11px; font-style: italic; text-align: center; padding: 16px 4px; border: 1px dashed var(--border); border-radius: 6px; }
+      @keyframes card-enter { 0% { opacity: 0; transform: translateY(-12px) scale(0.95); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
+      @keyframes card-exit { 0% { opacity: 1; transform: translateX(0) scale(1); } 100% { opacity: 0; transform: translateX(30px) scale(0.9); } }
+
+      /* ── Toasts ── */
+      .toast-container { position: fixed; top: 16px; right: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; }
+      .toast { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; font-size: 12px; color: var(--fg); animation: toast-in 0.2s ease-out; max-width: 320px; }
+      .toast.success { border-color: var(--green); color: var(--green); }
+      .toast.error { border-color: var(--red); color: var(--red); }
+      @keyframes toast-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+      /* ── Collapsible ── */
+      .collapsible-header {
+        cursor: pointer;
+        user-select: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
       }
-      #model-tokens .bar {
-        height: 12px;
-        border-radius: 3px;
-        min-width: 2px;
-        transition: width 0.3s ease;
+      .collapsible-header::before {
+        content: '\25B6';
+        font-size: 10px;
+        color: var(--fg3);
+        transition: transform 0.2s;
       }
+      .collapsible-header.open::before { transform: rotate(90deg); }
+      .collapsible-body { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
+      .collapsible-body.open { max-height: 600px; }
+
+      .empty { color: var(--fg3); font-style: italic; padding: 8px 0; }
     </style>
   </head>
   <body>
@@ -620,206 +395,137 @@
     <div class="container">
       <header>
         <h1>UAP Dashboard</h1>
+        <div class="header-center">
+          <span class="sys-badge"><span class="label">v</span><span class="val" id="sys-version">?</span></span>
+          <span class="sys-badge"><span class="label">branch </span><span class="val cyan" id="sys-branch">?</span></span>
+          <span class="sys-badge"><span class="label">dirty </span><span class="val" id="sys-dirty">?</span></span>
+        </div>
         <div class="header-right">
           <span class="header-ts" id="data-ts"></span>
           <div>
-            <span
-              class="status-dot disconnected"
-              id="ws-status"
-              role="status"
-              aria-label="Connection status: disconnected"
-            ></span>
+            <span class="status-dot disconnected" id="ws-status" role="status" aria-label="Connection status: disconnected"></span>
             <span class="refresh-info" id="refresh-info">Connecting...</span>
           </div>
         </div>
       </header>
 
-      <div class="grid" role="main" aria-live="polite">
-        <!-- Models -->
+      <!-- Hero Charts -->
+      <div class="hero-row">
         <div class="panel">
-          <h2>Models</h2>
+          <h2>Tasks &amp; Agents</h2>
+          <div class="chart-container chart-hero" id="chart-tasks"></div>
+        </div>
+        <div class="panel">
+          <h2>Compression &amp; Memory</h2>
+          <div class="chart-container chart-hero" id="chart-compression"></div>
+        </div>
+      </div>
+
+      <!-- Core Metrics -->
+      <div class="metrics-row">
+        <div class="panel">
+          <h2>Models &amp; Routing</h2>
           <div id="model-roles"></div>
-          <h3>Model Router</h3>
-          <div id="model-router">
-            <div class="kv">
-              <span class="label">Strategy</span><span class="value cyan" id="model-strategy">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">Available Models</span><span class="value" id="model-count">0</span>
-            </div>
-          </div>
-    <h3>Live Token Usage</h3>
-          <div id="model-tokens">
-            <div class="bar-container">
-              <span class="bar-label">Input</span>
-              <div class="bar cyan" id="token-bar-in"></div>
-              <span class="bar-value" id="token-in">0</span>
-            </div>
-            <div class="bar-container">
-              <span class="bar-label">Output</span>
-              <div class="bar green" id="token-bar-out"></div>
-              <span class="bar-value" id="token-out">0</span>
-            </div>
-            <div class="bar-container">
-              <span class="bar-label">Total</span>
-              <div class="bar purple" id="token-bar-total"></div>
-              <span class="bar-value" id="token-total">0</span>
-            </div>
-          </div>
+          <h3>Router</h3>
+          <div id="model-router"></div>
+          <h3>Cost Optimization</h3>
+          <div id="model-cost-opt"></div>
+          <h3>Routing Matrix</h3>
+          <div id="model-routing-matrix" class="table-wrap"></div>
           <h3>Recent Routing Decisions</h3>
-          <div id="model-routes" class="table-wrap">
-            <div class="empty">No routing decisions yet</div>
-          </div>
-          <h3>Session Usage</h3>
+          <div id="model-routes" class="table-wrap"><div class="empty">No routing decisions yet</div></div>
+          <h3>Session Usage by Model</h3>
           <div id="model-usage" class="table-wrap"></div>
-          <div
-            class="kv"
-            style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px"
-          >
-            <span class="label" style="font-weight: 600">Total Cost</span>
+          <div class="kv" style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px">
+            <span class="label" style="font-weight:600">Total Cost</span>
             <span class="value green" id="model-cost">$0.0000</span>
           </div>
         </div>
 
-         <!-- Deploy Buckets -->
-        <div class="panel">
-          <h2>Deploy Buckets</h2>
-          <div id="deploy-buckets">
-            <div class="bar-container">
-              <span class="bar-label">Queued</span>
-              <div class="bar yellow" id="deploy-queued" style="width: 0%"></div>
-              <span class="bar-value" id="deploy-queued-count">0</span>
-            </div>
-            <div class="bar-container">
-              <span class="bar-label">Batched</span>
-              <div class="bar purple" id="deploy-batched" style="width: 0%"></div>
-              <span class="bar-value" id="deploy-batched-count">0</span>
-            </div>
-            <div class="bar-container">
-              <span class="bar-label">Executing</span>
-              <div class="bar cyan" id="deploy-executing" style="width: 0%"></div>
-              <span class="bar-value" id="deploy-executing-count">0</span>
-            </div>
-            <div class="bar-container">
-              <span class="bar-label">Done</span>
-              <div class="bar green" id="deploy-done" style="width: 0%"></div>
-              <span class="bar-value" id="deploy-done-count">0</span>
-            </div>
-            <div class="bar-container">
-              <span class="bar-label">Failed</span>
-              <div class="bar red" id="deploy-failed" style="width: 0%"></div>
-              <span class="bar-value" id="deploy-failed-count">0</span>
-            </div>
-            <div class="kv" style="margin-top:8px; border-top:1px solid var(--border); padding-top:6px">
-              <span class="label">Batches</span><span class="value" id="deploy-batch-count">0</span>
-            </div>
-            <div class="kv">
-              <span class="label">Saved Ops</span><span class="value green" id="deploy-saved-ops">0</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Memory -->
         <div class="panel">
           <h2>Memory</h2>
           <div id="memory-panel">
-            <div class="kv">
-              <span class="label">L1 Working</span><span class="value" id="mem-l1">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">L2 Session</span><span class="value" id="mem-l2">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">L3 Semantic</span><span class="value" id="mem-l3">-</span>
-            </div>
-            <div class="kv">
-              <span class="label">L4 Knowledge</span><span class="value" id="mem-l4">-</span>
-            </div>
+            <div class="kv"><span class="label">L1 Working</span><span class="value" id="mem-l1">-</span></div>
+            <div class="kv"><span class="label">L2 Session</span><span class="value" id="mem-l2">-</span></div>
+            <div class="kv"><span class="label">L3 Semantic</span><span class="value" id="mem-l3">-</span></div>
+            <div class="kv"><span class="label">L4 Knowledge</span><span class="value" id="mem-l4">-</span></div>
           </div>
+          <h3>Memory Hit Rate</h3>
+          <div id="mem-hitrate-panel">
+            <div class="kv"><span class="label">Hits</span><span class="value green" id="mem-hits">0</span></div>
+            <div class="kv"><span class="label">Misses</span><span class="value red" id="mem-misses">0</span></div>
+            <div class="kv"><span class="label">Rate</span><span class="value" id="mem-hitrate">N/A</span></div>
+            <div class="gauge-track"><div class="gauge-fill" id="mem-hitrate-gauge" style="width:0%;background:var(--green)"></div></div>
+          </div>
+          <div class="chart-container chart-spark" id="chart-hitrate"></div>
           <h3>Context Compression</h3>
           <div id="compression-panel">
-            <div class="kv">
-              <span class="label">Raw</span><span class="value" id="comp-raw">0 KB</span>
-            </div>
-            <div class="kv">
-              <span class="label">Compressed</span><span class="value" id="comp-ctx">0 KB</span>
-            </div>
-            <div class="kv">
-              <span class="label">Savings</span
-              ><span class="value green" id="comp-savings">0%</span>
-            </div>
-            <div class="kv">
-              <span class="label">Tool Calls</span><span class="value" id="comp-calls">0</span>
-            </div>
+            <div class="kv"><span class="label">Raw</span><span class="value" id="comp-raw">0 KB</span></div>
+            <div class="kv"><span class="label">Compressed</span><span class="value" id="comp-ctx">0 KB</span></div>
+            <div class="kv"><span class="label">Savings</span><span class="value green" id="comp-savings">0%</span></div>
+            <div class="kv"><span class="label">Tool Calls</span><span class="value" id="comp-calls">0</span></div>
           </div>
           <h3>Recent Memory Queries</h3>
-          <div id="memory-recent-queries">
-            <div class="empty">No recent queries</div>
-          </div>
+          <div id="memory-recent-queries"><div class="empty">No recent queries</div></div>
         </div>
 
-        <!-- Session Telemetry (shown when session data is available) -->
-        <div class="panel full-width" id="session-panel" style="display: none">
+        <div class="panel">
+          <h2>Deploy Pipeline</h2>
+          <div id="deploy-buckets">
+            <div class="bar-container"><span class="bar-label">Queued</span><div class="bar yellow" id="deploy-queued" style="width:0%"></div><span class="bar-value" id="deploy-queued-count">0</span></div>
+            <div class="bar-container"><span class="bar-label">Batched</span><div class="bar purple" id="deploy-batched" style="width:0%"></div><span class="bar-value" id="deploy-batched-count">0</span></div>
+            <div class="bar-container"><span class="bar-label">Executing</span><div class="bar cyan" id="deploy-executing" style="width:0%"></div><span class="bar-value" id="deploy-executing-count">0</span></div>
+            <div class="bar-container"><span class="bar-label">Done</span><div class="bar green" id="deploy-done" style="width:0%"></div><span class="bar-value" id="deploy-done-count">0</span></div>
+            <div class="bar-container"><span class="bar-label">Failed</span><div class="bar red" id="deploy-failed" style="width:0%"></div><span class="bar-value" id="deploy-failed-count">0</span></div>
+            <div class="kv" style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px">
+              <span class="label">Batches</span><span class="value" id="deploy-batch-count">0</span>
+            </div>
+            <div class="kv"><span class="label">Saved Ops</span><span class="value green" id="deploy-saved-ops">0</span></div>
+          </div>
+          <h3>Deploy Trend</h3>
+          <div class="chart-container chart-spark" id="chart-deploy"></div>
+          <h3>Coordination</h3>
+          <div id="coord-panel">
+            <div class="kv"><span class="label">Active Agents</span><span class="value" id="coord-agents">0</span></div>
+            <div class="kv"><span class="label">Total Agents</span><span class="value" id="coord-total-agents">0</span></div>
+            <div class="kv"><span class="label">Completed</span><span class="value green" id="coord-completed-agents">0</span></div>
+            <div class="kv"><span class="label">Resource Claims</span><span class="value" id="coord-claims">0</span></div>
+            <div class="kv"><span class="label">Pending Deploys</span><span class="value" id="coord-deploys">0</span></div>
+            <div class="kv"><span class="label">Active Worktrees</span><span class="value cyan" id="coord-worktrees">0</span></div>
+            <div class="kv"><span class="label">Pattern Uses</span><span class="value" id="coord-pattern-hits">0</span></div>
+            <div class="kv"><span class="label">Pattern Successes</span><span class="value green" id="coord-pattern-successes">0</span></div>
+          </div>
+          <h3>Recent Agents</h3>
+          <div id="coord-agents-table" class="table-wrap"><div class="empty">No agents registered</div></div>
+        </div>
+      </div>
+
+      <!-- Session Telemetry -->
+      <div class="full-row" id="session-panel" style="display:none">
+        <div class="panel">
           <h2>Session Telemetry <span style="font-size:11px;color:var(--fg3);font-weight:400" id="sess-label">(current)</span></h2>
-          <div
-            style="
-              display: grid;
-              grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-              gap: 16px;
-            "
-          >
-            <!-- Session Overview -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
             <div>
               <h3>Overview</h3>
-              <div class="kv">
-                <span class="label">Session ID</span><span class="value cyan" id="sess-id">-</span>
-              </div>
-              <div class="kv">
-                <span class="label">Uptime</span><span class="value" id="sess-uptime">-</span>
-              </div>
-              <div class="kv">
-                <span class="label">Tokens Used</span><span class="value" id="sess-tokens">0</span>
-              </div>
-              <div class="kv">
-                <span class="label">Tokens Saved</span
-                ><span class="value green" id="sess-saved">0</span>
-              </div>
-              <div class="kv">
-                <span class="label">Tool Calls</span><span class="value" id="sess-tools">0</span>
-              </div>
-              <div class="kv">
-                <span class="label">Policy Checks</span
-                ><span class="value" id="sess-checks">0</span>
-              </div>
-              <div class="kv">
-                <span class="label">Policy Blocks</span
-                ><span class="value red" id="sess-blocks">0</span>
-              </div>
-              <div class="kv">
-                <span class="label">Errors</span><span class="value red" id="sess-errors">0</span>
-              </div>
-              <div id="sess-progress-wrap" style="display: none">
+              <div class="kv"><span class="label">Session ID</span><span class="value cyan" id="sess-id">-</span></div>
+              <div class="kv"><span class="label">Uptime</span><span class="value" id="sess-uptime">-</span></div>
+              <div class="kv"><span class="label">Tokens Used</span><span class="value" id="sess-tokens">0</span></div>
+              <div class="kv"><span class="label">Tokens Saved</span><span class="value green" id="sess-saved">0</span></div>
+              <div class="kv"><span class="label">Tool Calls</span><span class="value" id="sess-tools">0</span></div>
+              <div class="kv"><span class="label">Policy Checks</span><span class="value" id="sess-checks">0</span></div>
+              <div class="kv"><span class="label">Policy Blocks</span><span class="value red" id="sess-blocks">0</span></div>
+              <div class="kv"><span class="label">Errors</span><span class="value red" id="sess-errors">0</span></div>
+              <div id="sess-token-io-detail"></div>
+              <div id="sess-progress-wrap" style="display:none">
                 <h3>Step Progress</h3>
-                <div class="kv">
-                  <span class="label" id="sess-step-name">-</span>
-                  <span class="value" id="sess-step-count">0/0</span>
-                </div>
-                <div class="progress-track">
-                  <div class="progress-fill" id="sess-progress-bar" style="width: 0%"></div>
-                </div>
+                <div class="kv"><span class="label" id="sess-step-name">-</span><span class="value" id="sess-step-count">0/0</span></div>
+                <div class="progress-track"><div class="progress-fill" id="sess-progress-bar" style="width:0%"></div></div>
               </div>
             </div>
-            <!-- Cost Savings -->
             <div>
               <h3>Cost</h3>
-              <div class="kv">
-                <span class="label">Session Cost</span
-                ><span class="value" id="sess-cost">$0.0000</span>
-              </div>
-              <div class="kv">
-                <span class="label">Without UAP</span
-                ><span class="value fg2" id="sess-cost-without">$0.0000</span>
-              </div>
+              <div class="kv"><span class="label">Session Cost</span><span class="value" id="sess-cost">$0.0000</span></div>
+              <div class="kv"><span class="label">Without UAP</span><span class="value" id="sess-cost-without">$0.0000</span></div>
               <div class="cost-savings" id="sess-savings-box">
                 <div class="big-number" id="sess-savings-pct">0%</div>
                 <div class="sub">estimated savings with UAP</div>
@@ -828,182 +534,70 @@
               <div id="sess-agents"><div class="empty">No active agents</div></div>
               <h3>Per-Agent Breakdown</h3>
               <div id="sess-agent-breakdown" class="table-wrap"><div class="empty">No agent data</div></div>
-              <h3>Per-Model Breakdown</h3>
-              <div id="sess-model-breakdown" class="table-wrap"><div class="empty">No model data</div></div>
             </div>
-            <!-- Skills & Patterns -->
             <div>
               <h3>Skills</h3>
-              <div id="sess-skills" class="chip-list">
-                <span class="empty">No skills loaded</span>
-              </div>
+              <div id="sess-skills" class="chip-list"><span class="empty">No skills loaded</span></div>
               <h3>Patterns</h3>
-              <div id="sess-patterns" class="chip-list">
-                <span class="empty">No patterns matched</span>
-              </div>
+              <div id="sess-patterns" class="chip-list"><span class="empty">No patterns matched</span></div>
               <h3>Deploys</h3>
               <div id="sess-deploys"><div class="empty">No deploys</div></div>
             </div>
           </div>
         </div>
-
-        <!-- Session History (all sessions) -->
-        <div class="panel full-width" id="session-history-panel" style="display: none; margin-top: 16px">
-          <h2>Session History</h2>
-          <div id="session-history-table" class="table-wrap">
-            <div class="empty">No session history</div>
-          </div>
-        </div>
-
-        <!-- System & Coordination -->
-        <div class="panel" style="margin-top: 16px">
-          <h2>System</h2>
-          <div id="system-panel">
-          <div class="kv">
-            <span class="label">Version</span><span class="value" id="sys-version">-</span>
-          </div>
-          <div class="kv">
-            <span class="label">Branch</span><span class="value cyan" id="sys-branch">-</span>
-          </div>
-          <div class="kv">
-            <span class="label">Uncommitted</span><span class="value" id="sys-dirty">-</span>
-          </div>
-        </div>
-        <h3>Tasks</h3>
-        <div id="task-summary">
-          <div class="kv">
-            <span class="label">Total</span><span class="value" id="task-total">0</span>
-          </div>
-          <div class="kv">
-            <span class="label">Done</span><span class="value green" id="task-done">0</span>
-          </div>
-          <div class="kv">
-            <span class="label">Active</span><span class="value cyan" id="task-progress">0</span>
-          </div>
-        </div>
-        <h3>Coordination</h3>
-        <div id="coord-panel">
-          <div class="kv">
-            <span class="label">Active Agents</span><span class="value" id="coord-agents">0</span>
-          </div>
-          <div class="kv">
-            <span class="label">Total Agents</span
-            ><span class="value" id="coord-total-agents">0</span>
-          </div>
-          <div class="kv">
-            <span class="label">Completed</span
-            ><span class="value green" id="coord-completed-agents">0</span>
-          </div>
-          <div class="kv">
-            <span class="label">Resource Claims</span><span class="value" id="coord-claims">0</span>
-          </div>
-          <div class="kv">
-            <span class="label">Pending Deploys</span
-            ><span class="value" id="coord-deploys">0</span>
-          </div>
-          <div class="kv">
-            <span class="label">Active Worktrees</span
-            ><span class="value cyan" id="coord-worktrees">0</span>
-          </div>
-          <div class="kv">
-            <span class="label">Pattern Uses</span
-            ><span class="value" id="coord-pattern-hits">0</span>
-          </div>
-          <div class="kv">
-            <span class="label">Pattern Successes</span
-            ><span class="value green" id="coord-pattern-successes">0</span>
-          </div>
-        </div>
-        <h3>Recent Agents</h3>
-        <div id="coord-agents-table" class="table-wrap">
-          <div class="empty">No agents registered</div>
-        </div>
       </div>
 
-      <!-- All Policy Files (from filesystem) -->
-        <div class="panel full-width">
-          <h2>All Policies (Files)</h2>
-          <div id="policy-files-table" class="table-wrap">
-            <div class="empty">No policy files found</div>
-          </div>
-        </div>
-
-        <!-- Performance -->
+      <!-- Compliance -->
+      <div class="split-row">
         <div class="panel">
-          <h2>Performance</h2>
-          <div id="perf-panel">
-            <div class="empty">No performance data</div>
-          </div>
-        </div>
-
-        <!-- Active Policies (from DB) -->
-        <div class="panel full-width">
-          <h2>Active Policies (Enforcement)</h2>
+          <h2>Policies</h2>
           <div id="policy-table" class="table-wrap"></div>
           <h3>Enforcement Stages</h3>
           <div id="policy-stages"></div>
         </div>
-
-        <!-- Audit Trail -->
-        <div class="panel full-width">
-          <h2>Audit Trail</h2>
+        <div class="panel">
+          <h2>Compliance &amp; Audit</h2>
+          <h3>Block Rate Trend</h3>
+          <div class="chart-container chart-spark" id="chart-compliance"></div>
+          <h3>Failures by Mechanism</h3>
+          <div id="compliance-mechanisms"></div>
+          <h3>Recent Failures</h3>
+          <div id="compliance-failures" class="table-wrap"><div class="empty">No recent failures</div></div>
+          <h3>Audit Trail</h3>
           <div id="audit-trail"></div>
+          <h3>Live Events</h3>
+          <div class="event-feed" id="live-events"><div class="empty">Connecting to event stream...</div></div>
         </div>
+      </div>
 
-        <!-- Task Board (bottom) -->
-        <div class="panel full-width" id="kanban-panel" style="margin-top: 16px">
-        <h2>Task Board</h2>
-        <div class="kanban" id="kanban-board">
-          <div class="kanban-col" data-status="open">
-            <div class="kanban-col-header open">
-              <span>Open</span><span class="col-count" id="kb-open-count">0</span>
-            </div>
-            <div class="kanban-cards" id="kb-open"></div>
-          </div>
-          <div class="kanban-col" data-status="in_progress">
-            <div class="kanban-col-header in_progress">
-              <span>In Progress</span><span class="col-count" id="kb-progress-count">0</span>
-            </div>
-            <div class="kanban-cards" id="kb-progress"></div>
-          </div>
-          <div class="kanban-col" data-status="blocked">
-            <div class="kanban-col-header blocked">
-              <span>Blocked</span><span class="col-count" id="kb-blocked-count">0</span>
-            </div>
-            <div class="kanban-cards" id="kb-blocked"></div>
-          </div>
-          <div class="kanban-col" data-status="done">
-            <div class="kanban-col-header done">
-              <span>Done</span><span class="col-count" id="kb-done-count">0</span>
-            </div>
-            <div class="kanban-cards" id="kb-done"></div>
-          </div>
-          <div class="kanban-col" data-status="wont_do">
-            <div class="kanban-col-header wont_do">
-              <span>Won't Do</span><span class="col-count" id="kb-wontdo-count">0</span>
-            </div>
-            <div class="kanban-cards" id="kb-wontdo"></div>
+      <!-- Session History -->
+      <div class="full-row" id="session-history-panel" style="display:none">
+        <div class="panel">
+          <h2>Session History</h2>
+          <div id="session-history-table" class="table-wrap"><div class="empty">No session history</div></div>
+        </div>
+      </div>
+
+      <!-- Task Board -->
+      <div class="full-row" id="kanban-panel" style="display:none">
+        <div class="panel">
+          <h2>Task Board</h2>
+          <div class="kanban" id="kanban-board">
+            <div class="kanban-col" data-status="open"><div class="kanban-col-header open"><span>Open</span><span class="col-count" id="kb-open-count">0</span></div><div class="kanban-cards" id="kb-open"></div></div>
+            <div class="kanban-col" data-status="in_progress"><div class="kanban-col-header in_progress"><span>In Progress</span><span class="col-count" id="kb-progress-count">0</span></div><div class="kanban-cards" id="kb-progress"></div></div>
+            <div class="kanban-col" data-status="blocked"><div class="kanban-col-header blocked"><span>Blocked</span><span class="col-count" id="kb-blocked-count">0</span></div><div class="kanban-cards" id="kb-blocked"></div></div>
+            <div class="kanban-col" data-status="done"><div class="kanban-col-header done"><span>Done</span><span class="col-count" id="kb-done-count">0</span></div><div class="kanban-cards" id="kb-done"></div></div>
+            <div class="kanban-col" data-status="wont_do"><div class="kanban-col-header wont_do"><span>Won't Do</span><span class="col-count" id="kb-wontdo-count">0</span></div><div class="kanban-cards" id="kb-wontdo"></div></div>
           </div>
         </div>
       </div>
 
-      <!-- Skills & Patterns by Agent (bottom panel) -->
-        <div class="panel full-width" id="agent-skills-patterns-panel" style="margin-top: 16px; display: none;">
-        <h2>Skills & Patterns by Agent</h2>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-          <!-- Skills per Agent -->
-          <div>
-            <h3>Skills per Agent</h3>
-            <div id="agent-skills-panel">
-              <div class="empty">No skill data</div>
-            </div>
-          </div>
-          <!-- Patterns per Agent -->
-          <div>
-            <h3>Patterns per Agent</h3>
-            <div id="agent-patterns-panel">
-              <div class="empty">No pattern data</div>
-            </div>
+      <!-- Performance (collapsible) -->
+      <div class="full-row">
+        <div class="panel">
+          <h2 class="collapsible-header" id="perf-toggle" onclick="toggleCollapsible('perf')">Performance</h2>
+          <div class="collapsible-body" id="perf-body">
+            <div id="perf-panel"><div class="empty">No performance data</div></div>
           </div>
         </div>
       </div>
@@ -1016,25 +610,27 @@
       let reconnectTimer = null;
       let reconnectDelay = 1000;
       const MAX_RECONNECT_DELAY = 30000;
+      let chartTasks = null, chartCompression = null, chartDeploy = null, chartHitrate = null, chartCompliance = null;
+      const uplotReady = typeof uPlot !== 'undefined';
 
-      // ── Toast Notifications ──
       function showToast(message, type = 'info') {
-        const container = document.getElementById('toast-container');
-        const toast = document.createElement('div');
-        toast.className = 'toast ' + type;
-        toast.textContent = message;
-        container.appendChild(toast);
-        setTimeout(() => {
-          toast.remove();
-        }, 3000);
+        const c = document.getElementById('toast-container');
+        const t = document.createElement('div');
+        t.className = 'toast ' + type;
+        t.textContent = message;
+        c.appendChild(t);
+        setTimeout(() => t.remove(), 3000);
       }
 
-      // ── WebSocket Connection ──
+      function toggleCollapsible(id) {
+        document.getElementById(id + '-toggle').classList.toggle('open');
+        document.getElementById(id + '-body').classList.toggle('open');
+      }
+
+      // ── WebSocket ──
       function connect() {
         clearTimeout(reconnectTimer);
-        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-          return;
-        }
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
         ws = new WebSocket(WS_URL);
         ws.onopen = () => {
           reconnectDelay = 1000;
@@ -1045,18 +641,11 @@
           document.title = 'UAP Dashboard - Live';
         };
         ws.onmessage = (e) => {
-          try {
-            render(JSON.parse(e.data));
-          } catch (err) {
-            console.error('Dashboard render error:', err);
-          }
-          document.getElementById('refresh-info').textContent =
-            'Live - ' + new Date().toLocaleTimeString();
+          try { render(JSON.parse(e.data)); } catch (err) { console.error('Render error:', err); }
+          document.getElementById('refresh-info').textContent = 'Live - ' + new Date().toLocaleTimeString();
         };
         ws.onclose = () => {
-          const dot = document.getElementById('ws-status');
-          dot.className = 'status-dot disconnected';
-          dot.setAttribute('aria-label', 'Connection status: disconnected');
+          document.getElementById('ws-status').className = 'status-dot disconnected';
           document.getElementById('refresh-info').textContent = 'Disconnected - reconnecting...';
           document.title = 'UAP Dashboard - Disconnected';
           reconnectTimer = setTimeout(connect, reconnectDelay);
@@ -1065,848 +654,521 @@
         ws.onerror = () => ws.close();
       }
 
-      // ── Main Render ──
+      // ── SSE Event Stream ──
+      let eventSource = null;
+      const liveEvents = [];
+      function connectSSE() {
+        try {
+          eventSource = new EventSource(API_URL + '/api/events');
+          eventSource.onmessage = (e) => {
+            try {
+              const ev = JSON.parse(e.data);
+              liveEvents.unshift(ev);
+              if (liveEvents.length > 20) liveEvents.pop();
+              renderLiveEvents();
+            } catch {}
+          };
+          eventSource.onerror = () => { eventSource.close(); setTimeout(connectSSE, 5000); };
+        } catch {}
+      }
+      function renderLiveEvents() {
+        const c = document.getElementById('live-events');
+        if (!c || !liveEvents.length) return;
+        let html = '';
+        for (const ev of liveEvents) {
+          const cat = ev.category || ev.type || 'system';
+          const ts = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '';
+          const msg = ev.message || ev.detail || JSON.stringify(ev.data || '').slice(0, 80);
+          html += `<div class="event-row"><span class="event-time">${esc(ts)}</span><span class="event-cat cat-${esc(cat)}">${esc(cat)}</span><span class="event-msg">${esc(msg)}</span></div>`;
+        }
+        c.innerHTML = html;
+      }
+
+      // ══════════════════════════════
+      // ── CHARTS (uPlot) ──
+      // ══════════════════════════════
+
+      const CC = {
+        done:'#3fb950', inProg:'#58a6ff', blocked:'#f85149', open:'#484f58', agents:'#bc8cff',
+        raw:'#58a6ff', ctx:'#3fb950', hitRate:'#bc8cff', deploy:'#58a6ff', blockRate:'#f85149',
+      };
+
+      function tsUnix(arr) { return arr.map(p => new Date(p.timestamp).getTime() / 1000); }
+
+      function addTooltip(u, colors, labels, fmtVal) {
+        const tt = document.createElement('div');
+        tt.className = 'u-tooltip'; tt.style.display = 'none';
+        u.root.appendChild(tt);
+        u.hooks.setCursor = u.hooks.setCursor || [];
+        u.hooks.setCursor.push(() => {
+          const { idx, left, top } = u.cursor;
+          if (idx == null) { tt.style.display = 'none'; return; }
+          const date = new Date(u.data[0][idx] * 1000);
+          let rows = `<div class="tt-time">${date.toLocaleTimeString()}</div>`;
+          for (let i = 1; i < u.series.length; i++) {
+            if (!u.series[i].show) continue;
+            const val = u.data[i][idx];
+            if (val == null) continue;
+            const c = colors[i-1] || '#fff', l = labels[i-1] || '';
+            const v = fmtVal ? fmtVal(val, i) : val.toLocaleString();
+            rows += `<div class="tt-row"><span class="tt-dot" style="background:${c}"></span><span class="tt-label">${l}</span><span class="tt-val">${v}</span></div>`;
+          }
+          tt.innerHTML = rows; tt.style.display = '';
+          tt.style.left = (left + 16) + 'px'; tt.style.top = Math.max(0, top - 10) + 'px';
+        });
+      }
+
+      function mkChart(elId, ts, extractors, opts) {
+        if (!uplotReady || !ts || ts.length < 2) return null;
+        const el = document.getElementById(elId);
+        if (!el) return null;
+        el.innerHTML = '';
+        const timestamps = tsUnix(ts);
+        const data = [timestamps, ...extractors.map(fn => ts.map(fn))];
+        const u = new uPlot(opts(el.clientWidth), data, el);
+        return u;
+      }
+
+      function initChartTasks(ts) {
+        const colors = [CC.done, CC.inProg, CC.blocked, CC.open, CC.agents];
+        const labels = ['Done', 'In Progress', 'Blocked', 'Open', 'Active Agents'];
+        const extractors = [
+          p => p.tasks?.done || 0, p => p.tasks?.inProgress || 0,
+          p => p.tasks?.blocked || 0, p => p.tasks?.open || 0,
+          p => p.coordination?.activeAgents || 0,
+        ];
+        const u = mkChart('chart-tasks', ts, extractors, (w) => ({
+          width: w, height: 260,
+          cursor: { sync: { key: 'uap' }, focus: { prox: 30 } },
+          scales: { x: { time: true }, y: { min: 0 }, agents: { min: 0 } },
+          axes: [
+            { stroke: '#484f58', grid: { stroke: '#21262d' }, ticks: { stroke: '#21262d' }, font: '10px SF Mono,monospace' },
+            { stroke: '#484f58', grid: { stroke: '#21262d' }, ticks: { stroke: '#21262d' }, font: '10px SF Mono,monospace', size: 50 },
+            { stroke: CC.agents, grid: { show: false }, side: 1, font: '10px SF Mono,monospace', size: 50, scale: 'agents' },
+          ],
+          series: [
+            {},
+            { label: 'Done', stroke: CC.done, fill: CC.done+'30', width: 2 },
+            { label: 'In Prog', stroke: CC.inProg, fill: CC.inProg+'30', width: 2 },
+            { label: 'Blocked', stroke: CC.blocked, fill: CC.blocked+'20', width: 2 },
+            { label: 'Open', stroke: CC.open, fill: CC.open+'20', width: 1, dash: [4,2] },
+            { label: 'Agents', stroke: CC.agents, width: 2, dash: [6,3], scale: 'agents' },
+          ],
+        }));
+        if (u) addTooltip(u, colors, labels);
+        return u;
+      }
+
+      function initChartCompression(ts) {
+        const colors = [CC.raw, CC.ctx, CC.hitRate];
+        const labels = ['Raw KB', 'Compressed KB', 'Hit Rate %'];
+        const parseHR = p => { const h = p.memoryHitsMisses?.hitRate; return typeof h === 'string' ? parseFloat(h)||0 : h||0; };
+        const extractors = [
+          p => Math.round((p.compression?.rawBytes||0)/1024),
+          p => Math.round((p.compression?.contextBytes||0)/1024),
+          parseHR,
+        ];
+        const u = mkChart('chart-compression', ts, extractors, (w) => ({
+          width: w, height: 260,
+          cursor: { sync: { key: 'uap' }, focus: { prox: 30 } },
+          scales: { x: { time: true }, y: { min: 0 }, pct: { min: 0, max: 100 } },
+          axes: [
+            { stroke: '#484f58', grid: { stroke: '#21262d' }, ticks: { stroke: '#21262d' }, font: '10px SF Mono,monospace' },
+            { stroke: '#484f58', grid: { stroke: '#21262d' }, ticks: { stroke: '#21262d' }, font: '10px SF Mono,monospace', size: 50, values: (_,v) => v.map(x => x+' KB') },
+            { stroke: CC.hitRate, grid: { show: false }, side: 1, font: '10px SF Mono,monospace', size: 50, scale: 'pct', values: (_,v) => v.map(x => x+'%') },
+          ],
+          series: [
+            {},
+            { label: 'Raw', stroke: CC.raw, fill: CC.raw+'20', width: 2 },
+            { label: 'Compressed', stroke: CC.ctx, fill: CC.ctx+'20', width: 2 },
+            { label: 'Hit Rate', stroke: CC.hitRate, width: 2, dash: [6,3], scale: 'pct' },
+          ],
+        }));
+        if (u) addTooltip(u, colors, labels, (v,i) => i===3 ? v+'%' : v+' KB');
+        return u;
+      }
+
+      function initSparkline(elId, ts, fn, color, label) {
+        if (!uplotReady || !ts || ts.length < 2) return null;
+        const el = document.getElementById(elId);
+        if (!el) return null;
+        el.innerHTML = '';
+        const timestamps = tsUnix(ts);
+        const values = ts.map(fn);
+        const data = [timestamps, values];
+        const u = new uPlot({
+          width: el.clientWidth, height: 60,
+          cursor: { sync: { key: 'uap' }, focus: { prox: 30 }, points: { show: false } },
+          legend: { show: false },
+          scales: { x: { time: true }, y: { min: 0 } },
+          axes: [{ show: false }, { show: false }],
+          series: [{}, { stroke: color, fill: color+'25', width: 1.5 }],
+        }, data, el);
+        // Sparkline tooltip
+        const tt = document.createElement('div');
+        tt.className = 'u-tooltip'; tt.style.display = 'none';
+        u.root.appendChild(tt);
+        u.hooks.setCursor = u.hooks.setCursor || [];
+        u.hooks.setCursor.push(() => {
+          const { idx } = u.cursor;
+          if (idx == null) { tt.style.display = 'none'; return; }
+          tt.innerHTML = `<div class="tt-time">${new Date(data[0][idx]*1000).toLocaleTimeString()}</div><div class="tt-row"><span class="tt-label">${label}</span><span class="tt-val">${typeof values[idx]==='number'?values[idx].toLocaleString():values[idx]}</span></div>`;
+          tt.style.display = ''; tt.style.left = (u.cursor.left+12)+'px'; tt.style.top = '0px';
+        });
+        return u;
+      }
+
+      let chartsInit = false;
+      function updateAllCharts(ts) {
+        if (!uplotReady || !ts || ts.length < 2) return;
+        const parseHR = p => { const h=p.memoryHitsMisses?.hitRate; return typeof h==='string'?parseFloat(h)||0:h||0; };
+        const parseBR = p => { const b=p.compliance?.blockRate; return typeof b==='string'?parseFloat(b)||0:b||0; };
+        if (!chartsInit) {
+          chartTasks = initChartTasks(ts);
+          chartCompression = initChartCompression(ts);
+          chartDeploy = initSparkline('chart-deploy', ts, p=>(p.deployBuckets?.queued||0)+(p.deployBuckets?.executing||0)+(p.deployBuckets?.batched||0), CC.deploy, 'Active Deploys');
+          chartHitrate = initSparkline('chart-hitrate', ts, parseHR, CC.hitRate, 'Hit Rate %');
+          chartCompliance = initSparkline('chart-compliance', ts, parseBR, CC.blockRate, 'Block Rate %');
+          chartsInit = true;
+          return;
+        }
+        // Update data
+        const timestamps = tsUnix(ts);
+        if (chartTasks) chartTasks.setData([timestamps, ts.map(p=>p.tasks?.done||0), ts.map(p=>p.tasks?.inProgress||0), ts.map(p=>p.tasks?.blocked||0), ts.map(p=>p.tasks?.open||0), ts.map(p=>p.coordination?.activeAgents||0)]);
+        if (chartCompression) chartCompression.setData([timestamps, ts.map(p=>Math.round((p.compression?.rawBytes||0)/1024)), ts.map(p=>Math.round((p.compression?.contextBytes||0)/1024)), ts.map(parseHR)]);
+        if (chartDeploy) chartDeploy.setData([timestamps, ts.map(p=>(p.deployBuckets?.queued||0)+(p.deployBuckets?.executing||0)+(p.deployBuckets?.batched||0))]);
+        if (chartHitrate) chartHitrate.setData([timestamps, ts.map(parseHR)]);
+        if (chartCompliance) chartCompliance.setData([timestamps, ts.map(parseBR)]);
+      }
+
+      // ══════════════════════════════
+      // ── MAIN RENDER ──
+      // ══════════════════════════════
+
       function render(data) {
         if (!data) return;
         const _errors = [];
-        function safe(label, fn) {
-          try { fn(); } catch(e) { _errors.push(label + ': ' + (e.message || e)); console.error('Render [' + label + ']:', e); }
-        }
+        function safe(label, fn) { try { fn(); } catch(e) { _errors.push(label+': '+(e.message||e)); console.error('Render ['+label+']:', e); } }
 
-        // Defensive defaults for all top-level fields
         const sys = data.system || {};
         const tasks = data.tasks || {};
         const coord = data.coordination || {};
-        const models = data.models || {
-          roles: {},
-          sessionUsage: [],
-          totalCost: 0,
-          strategy: 'unknown',
-        };
+        const models = data.models || { roles:{}, sessionUsage:[], totalCost:0, strategy:'unknown' };
         const mem = data.memory || {};
-        const l1 = mem.l1 || { entries: 0, sizeKB: 0 };
-        const l2 = mem.l2 || { entries: 0 };
-        const l3 = mem.l3 || { status: 'Unknown', uptime: '' };
-        const l4 = mem.l4 || { entities: 0, relationships: 0 };
-        const comp = mem.compression || {
-          rawBytes: 0,
-          contextBytes: 0,
-          savingsPercent: '0%',
-          totalCalls: 0,
-        };
+        const l1 = mem.l1 || { entries:0, sizeKB:0 };
+        const l2 = mem.l2 || { entries:0 };
+        const l3 = mem.l3 || { status:'Unknown', uptime:'' };
+        const l4 = mem.l4 || { entities:0, relationships:0 };
+        const comp = mem.compression || { rawBytes:0, contextBytes:0, savingsPercent:'0%', totalCalls:0 };
+        const hm = mem.hitsMisses || { hits:0, misses:0, hitRate:'N/A' };
         const policies = data.policies || [];
         const policyFiles = data.policyFiles || [];
         const audit = data.auditTrail || [];
+        const timeSeries = data.timeSeries || [];
+        const compliance = data.compliance || {};
         const session = data.session || null;
 
-        // Timestamp
-        safe('timestamp', () => {
-        if (data.timestamp) {
-          setText('data-ts', new Date(data.timestamp).toLocaleTimeString());
-        }
-        });
+        safe('timestamp', () => { if (data.timestamp) setText('data-ts', new Date(data.timestamp).toLocaleTimeString()); });
 
-        // System
         safe('system', () => {
-        setText('sys-version', 'v' + (sys.version || '?'));
-        setText('sys-branch', sys.branch || '?');
-        const dirtyEl = document.getElementById('sys-dirty');
-        if (dirtyEl) {
-          const dirty = sys.dirty || 0;
-          dirtyEl.textContent = dirty > 0 ? dirty + ' files' : 'clean';
-          dirtyEl.className = 'value ' + (dirty > 0 ? 'yellow' : 'green');
-        }
+          setText('sys-version', sys.version || '?');
+          setText('sys-branch', sys.branch || '?');
+          const el = document.getElementById('sys-dirty');
+          if (el) { const d = sys.dirty||0; el.textContent = d > 0 ? d+' files' : 'clean'; el.className = 'val '+(d > 0 ? 'yellow' : 'green'); }
         });
 
-        // Tasks summary
-        safe('tasks', () => {
-        setText('task-total', tasks.total || 0);
-        setText('task-done', tasks.done || 0);
-        setText('task-progress', tasks.inProgress || 0);
-        });
+        safe('charts', () => updateAllCharts(timeSeries));
 
-        // Kanban board
-        safe('kanban', () => {
-        renderKanban(tasks);
-        });
-
-        // Coordination
         safe('coordination', () => {
-        setText('coord-agents', coord.activeAgents || 0);
-        setText('coord-total-agents', coord.totalAgents || 0);
-        setText('coord-completed-agents', coord.completedAgents || 0);
-        setText('coord-claims', coord.activeClaims || 0);
-        setText('coord-deploys', coord.pendingDeploys || 0);
-        setText('coord-worktrees', coord.activeWorktrees || 0);
-        setText('coord-pattern-hits', coord.patternHits || 0);
-        setText('coord-pattern-successes', coord.patternSuccesses || 0);
+          setText('coord-agents', coord.activeAgents||0);
+          setText('coord-total-agents', coord.totalAgents||0);
+          setText('coord-completed-agents', coord.completedAgents||0);
+          setText('coord-claims', coord.activeClaims||0);
+          setText('coord-deploys', coord.pendingDeploys||0);
+          setText('coord-worktrees', coord.activeWorktrees||0);
+          setText('coord-pattern-hits', coord.patternHits||0);
+          setText('coord-pattern-successes', coord.patternSuccesses||0);
         });
 
-        // Recent Agents table
         safe('agents-table', () => {
-        const coordAgentsList = coord.agents || [];
-        if (coordAgentsList.length > 0) {
-          let agentsHtml =
-            '<table><tr><th>ID</th><th>Name</th><th>Status</th><th>Started</th></tr>';
-          for (const a of coordAgentsList) {
-            const statusCls =
-              a.status === 'active' ? 'active' : a.status === 'completed' ? 'on' : 'idle';
-            const started = a.startedAt ? a.startedAt.slice(0, 19).replace('T', ' ') : '-';
-            agentsHtml += `<tr><td style="color:var(--fg3);font-size:11px">${esc((a.id || '').slice(0, 16))}</td><td>${esc(a.name || '-')}</td><td><span class="badge ${statusCls}">${esc(a.status || '-')}</span></td><td style="color:var(--fg3)">${esc(started)}</td></tr>`;
-          }
-          agentsHtml += '</table>';
-          document.getElementById('coord-agents-table').innerHTML = agentsHtml;
-        } else {
-          document.getElementById('coord-agents-table').innerHTML =
-            '<div class="empty">No agents registered</div>';
-        }
-        });
-
-        // Skills per Agent (moved to bottom panel)
-        safe('skills-per-agent', () => {
-        const skillsPerAgent = coord.skillsPerAgent || {};
-        const skillAgentEntries = Object.entries(skillsPerAgent);
-        const agentSkillsPanel = document.getElementById('agent-skills-panel');
-        const agentPatternsPanel = document.getElementById('agent-patterns-panel');
-        const agentSkillsPatternsPanel = document.getElementById('agent-skills-patterns-panel');
-
-        if (skillAgentEntries.length > 0 || agentPatternsPanel) {
-          agentSkillsPatternsPanel.style.display = '';
-          let skillsHtml = '';
-          for (const [agentId, skills] of skillAgentEntries) {
-            const label = agentId === 'all' ? 'All Agents' : esc(agentId.slice(0, 16));
-            skillsHtml += `<div style="margin-bottom:6px"><span style="color:var(--fg2);font-size:11px">${label}:</span><div class="chip-list">`;
-            for (const sk of skills) {
-              skillsHtml += `<span class="chip active">${esc(sk)}</span>`;
-            }
-            skillsHtml += '</div></div>';
-          }
-          agentSkillsPanel.innerHTML = skillsHtml || '<div class="empty">No skill data</div>';
-        } else {
-          agentSkillsPanel.innerHTML = '<div class="empty">No skill data</div>';
-          agentSkillsPatternsPanel.style.display = 'none';
-        }
-        });
-
-        // Patterns per Agent (moved to bottom panel)
-        safe('patterns-per-agent', () => {
-        const patternsPerAgent = coord.patternsPerAgent || {};
-        const patternAgentEntries = Object.entries(patternsPerAgent);
-        const agentPatternsPanel = document.getElementById('agent-patterns-panel');
-        if (patternAgentEntries.length > 0) {
-          let patsHtml = '';
-          for (const [agentId, patterns] of patternAgentEntries) {
-            const label = agentId === 'all' ? 'All Agents' : esc(agentId.slice(0, 16));
-            patsHtml += `<div style="margin-bottom:6px"><span style="color:var(--fg2);font-size:11px">${label}:</span>`;
-            if (patterns.length > 0) {
-              patsHtml +=
-                '<table style="margin-top:4px"><tr><th>Pattern</th><th>Category</th><th>Uses</th></tr>';
-              for (const p of patterns) {
-                patsHtml += `<tr><td style="color:var(--cyan)">${esc(p.id || '-')}</td><td>${esc(p.category || '-')}</td><td>${p.uses || 0}</td></tr>`;
-              }
-              patsHtml += '</table>';
-            } else {
-              patsHtml += '<span class="empty" style="margin-left:8px">None</span>';
-            }
-            patsHtml += '</div>';
-          }
-          agentPatternsPanel.innerHTML = patsHtml;
-        } else {
-          agentPatternsPanel.innerHTML = '<div class="empty">No pattern data</div>';
-        }
-        });
-
-        // Deploy Buckets
-        safe('deploy', () => {
-        const deploy = data.deployBuckets || {};
-        const deployTotal = deploy.totalActions || (deploy.done||0) + (deploy.failed||0) + (deploy.queued||0) + (deploy.batched||0) + (deploy.executing||0) || 1;
-        const maxDeploy = Math.max(deployTotal, 1);
-        const setDeployBar = (id, val) => {
-          const el = document.getElementById(id);
-          const countEl = document.getElementById(id + '-count');
-          if (el) el.style.width = Math.min(Math.round((val / maxDeploy) * 100), 100) + '%';
-          if (countEl) countEl.textContent = val;
-        };
-        setDeployBar('deploy-queued', deploy.queued || 0);
-        setDeployBar('deploy-batched', deploy.batched || 0);
-        setDeployBar('deploy-executing', deploy.executing || 0);
-        setDeployBar('deploy-done', deploy.done || 0);
-        setDeployBar('deploy-failed', deploy.failed || 0);
-        const batchEl = document.getElementById('deploy-batch-count');
-        const savedEl = document.getElementById('deploy-saved-ops');
-        if (batchEl) batchEl.textContent = deploy.batchCount || 0;
-        if (savedEl) savedEl.textContent = deploy.savedOps || 0;
-        });
-
-        // Models
-        safe('models', () => {
-        const roles = models.roles || {};
-        let rolesHtml = '';
-        for (const [role, model] of Object.entries(roles)) {
-          const color =
-            role === 'planner'
-              ? 'green'
-              : role === 'executor'
-                ? 'cyan'
-                : role === 'reviewer'
-                  ? 'purple'
-                  : '';
-          rolesHtml += `<div class="kv"><span class="label">${esc(capitalize(role))}</span><span class="value ${color}">${esc(modelName(String(model)))}</span></div>`;
-        }
-        document.getElementById('model-roles').innerHTML = rolesHtml;
-
-        // Model Router info
-        const routerHtml = `
-          <div class="kv"><span class="label">Strategy</span><span class="value cyan">${esc(models.strategy || 'unknown')}</span></div>
-          <div class="kv"><span class="label">Available Models</span><span class="value">${models.availableModels ? models.availableModels.length : 0}</span></div>
-          <div class="kv"><span class="label">Enabled</span><span class="value ${models.enabled ? 'green' : 'yellow'}">${models.enabled ? 'Yes' : 'No'}</span></div>
-        `;
-        document.getElementById('model-router').innerHTML = routerHtml;
-
-        // Routing rules
-        const routingRules = models.routingRules || [];
-        // Render routing rules if present
-        if (routingRules.length > 0) {
-          let rulesHtml = '<div style="margin:6px 0"><span style="color:var(--fg2);font-size:11px">Routing Rules:</span>';
-          for (const rule of routingRules) {
-            const keywords = (rule.keywords || []).join(', ');
-            rulesHtml += `<div style="font-size:11px;color:var(--fg3);padding:2px 0">${esc(rule.targetRole || '?')} <span style="color:var(--cyan)">P${rule.priority || 0}</span>${keywords ? ' [' + esc(keywords) + ']' : ''}${rule.complexity ? ' complexity=' + esc(rule.complexity) : ''}</div>`;
-          }
-          rulesHtml += '</div>';
-          const routerEl = document.getElementById('model-router');
-          if (routerEl) routerEl.innerHTML += rulesHtml;
-        }
-
-        // Recent Routing Decisions (from model analytics)
-        const routingDecisions = models.recentRoutingDecisions || [];
-        const routesEl = document.getElementById('model-routes');
-        if (routesEl) {
-          if (routingDecisions.length > 0) {
-            let rdHtml = '<table><tr><th>Time</th><th>Model</th><th>Task</th><th>Complexity</th><th>Tokens</th><th>Cost</th><th>Result</th></tr>';
-            for (const rd of routingDecisions.slice(0, 10)) {
-              const ts = rd.timestamp ? rd.timestamp.slice(11, 19) : '-';
-              const resultCls = rd.success ? 'green' : 'red';
-              const resultTxt = rd.success ? 'OK' : 'FAIL';
-              const totalTok = (rd.tokensIn || 0) + (rd.tokensOut || 0);
-              const costStr = typeof rd.cost === 'number' ? '$' + rd.cost.toFixed(4) : '$0';
-              rdHtml += `<tr><td style="color:var(--fg3);font-size:11px">${esc(ts)}</td><td style="color:var(--purple)">${esc(modelName(rd.modelUsed))}</td><td>${esc(rd.taskType || '?')}</td><td>${esc(rd.complexity || '?')}</td><td>${fmt(totalTok)}</td><td style="color:var(--green)">${costStr}</td><td><span class="value ${resultCls}">${resultTxt}</span></td></tr>`;
-            }
-            rdHtml += '</table>';
-            routesEl.innerHTML = rdHtml;
-          } else {
-            routesEl.innerHTML = '<div class="empty">No routing decisions yet</div>';
-          }
-        }
-
-        // Live token usage
-        if (session) {
-          const tokensIn = session.tokensIn || 0;
-          const tokensOut = session.tokensOut || 0;
-          const totalTokens = tokensIn + tokensOut;
-          setText('token-in', fmt(tokensIn));
-          setText('token-out', fmt(tokensOut));
-          setText('token-total', fmt(totalTokens));
-          const maxBarWidth = 200;
-          const maxVal = Math.max(tokensIn, tokensOut, 1);
-          const barIn = document.getElementById('token-bar-in');
-          const barOut = document.getElementById('token-bar-out');
-          const barTotal = document.getElementById('token-bar-total');
-          if (barIn) barIn.style.width = ((tokensIn / maxVal) * maxBarWidth) + 'px';
-          if (barOut) barOut.style.width = ((tokensOut / maxVal) * maxBarWidth) + 'px';
-          if (barTotal) barTotal.style.width = maxBarWidth + 'px';
-        } else {
-          const mUsage = models.sessionUsage || [];
-          let aggIn = 0, aggOut = 0;
-          for (const u of mUsage) { aggIn += u.totalTokensIn || 0; aggOut += u.totalTokensOut || 0; }
-          if (aggIn + aggOut > 0) {
-            setText('token-in', fmt(aggIn));
-            setText('token-out', fmt(aggOut));
-            setText('token-total', fmt(aggIn + aggOut));
-            const maxBarWidth = 200;
-            const maxVal = Math.max(aggIn, aggOut, 1);
-            const barIn = document.getElementById('token-bar-in');
-            const barOut = document.getElementById('token-bar-out');
-            const barTotal = document.getElementById('token-bar-total');
-            if (barIn) barIn.style.width = ((aggIn / maxVal) * maxBarWidth) + 'px';
-            if (barOut) barOut.style.width = ((aggOut / maxVal) * maxBarWidth) + 'px';
-            if (barTotal) barTotal.style.width = maxBarWidth + 'px';
-          }
-        }
-
-        // Session usage table
-        const usage = models.sessionUsage || [];
-        if (usage.length > 0) {
-          let usageHtml =
-            '<table><tr><th>Model</th><th>Tasks</th><th>Tokens In</th><th>Out</th><th>Cost</th><th>Success</th><th>Failures</th></tr>';
-          for (const u of usage) {
-            const cost = typeof u.totalCost === 'number' ? u.totalCost.toFixed(4) : '0.0000';
-            const rate = typeof u.successRate === 'number' ? (u.successRate * 100).toFixed(0) : '0';
-            const failures = u.taskCount ? u.taskCount - Math.round((u.successRate || 0) * u.taskCount) : 0;
-            const rateClass = rate >= 90 ? 'green' : rate >= 70 ? 'yellow' : 'red';
-            usageHtml += `<tr><td style="color:var(--cyan)">${esc(modelName(u.modelId))}</td><td>${u.taskCount || 0}</td><td>${fmt(u.totalTokensIn || 0)}</td><td>${fmt(u.totalTokensOut || 0)}</td><td>$${cost}</td><td><span class="value ${rateClass}">${rate}%</span></td><td class="value red">${failures}</td></tr>`;
-          }
-          usageHtml += '</table>';
-          document.getElementById('model-usage').innerHTML = usageHtml;
-        } else {
-          document.getElementById('model-usage').innerHTML =
-            '<div class="empty">No usage recorded</div>';
-        }
-        const totalCost =
-          typeof models.totalCost === 'number' ? models.totalCost.toFixed(4) : '0.0000';
-        setText('model-cost', '$' + totalCost);
-        });
-
-        // Memory
-        safe('memory', () => {
-        setText('mem-l1', l1.entries + ' entries (' + l1.sizeKB + ' KB)');
-        setText('mem-l2', l2.entries + ' entries');
-        const l3El = document.getElementById('mem-l3');
-        if (l3El) {
-          l3El.textContent =
-            l3.status === 'Running' ? 'Qdrant ' + (l3.uptime || '') : l3.status || 'Stopped';
-          l3El.className = 'value ' + (l3.status === 'Running' ? 'green' : 'yellow');
-        }
-        setText('mem-l4', l4.entities + ' entities, ' + l4.relationships + ' rels');
-        });
-
-        // Compression
-        safe('compression', () => {
-        setText('comp-raw', Math.round((comp.rawBytes || 0) / 1024) + ' KB');
-        setText('comp-ctx', Math.round((comp.contextBytes || 0) / 1024) + ' KB');
-        setText('comp-savings', comp.savingsPercent || '0%');
-        setText('comp-calls', comp.totalCalls || 0);
-        });
-
-        // Recent Memory Queries
-        safe('memory-queries', () => {
-        const recentQueries = mem.recentQueries || [];
-        if (recentQueries.length > 0) {
-          let rqHtml = '<table><tr><th>Type</th><th>Query</th><th>Time</th></tr>';
-          for (const q of recentQueries.slice(0, 10)) {
-            const ts = q.timestamp ? q.timestamp.slice(0, 19).replace('T', ' ') : '-';
-            rqHtml += `<tr><td><span class="badge active">${esc(q.type || 'memory')}</span></td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(q.query || '-')}</td><td style="color:var(--fg3);font-size:11px">${esc(ts)}</td></tr>`;
-          }
-          rqHtml += '</table>';
-          document.getElementById('memory-recent-queries').innerHTML = rqHtml;
-        } else {
-          document.getElementById('memory-recent-queries').innerHTML =
-            '<div class="empty">No recent queries</div>';
-        }
-        });
-
-        // Session Telemetry
-        safe('session', () => {
-        const sessionPanel = document.getElementById('session-panel');
-        if (session) {
-          sessionPanel.style.display = '';
-          setText('sess-id', (session.sessionId || '').slice(0, 12));
-          setText('sess-uptime', session.uptime || '-');
-          setText('sess-tokens', fmt(session.tokensUsed || 0));
-          setText('sess-saved', fmt(session.tokensSaved || 0));
-          setText('sess-tools', session.toolCalls || 0);
-          setText('sess-checks', session.policyChecks || 0);
-          setText('sess-blocks', session.policyBlocks || 0);
-          setText('sess-errors', session.errors || 0);
-
-          // Token IO summary
-          let tokenDetail = document.getElementById('sess-token-io-detail');
-          if (!tokenDetail) {
-            tokenDetail = document.createElement('div');
-            tokenDetail.id = 'sess-token-io-detail';
-            const overviewDiv = document.getElementById('sess-id')?.closest('div');
-            if (overviewDiv) overviewDiv.appendChild(tokenDetail);
-          }
-          if (session.tokensIn > 0 || session.tokensOut > 0) {
-            tokenDetail.innerHTML = `
-              <div class="kv"><span class="label">Tokens In</span><span class="value cyan">${fmt(session.tokensIn || 0)}</span></div>
-              <div class="kv"><span class="label">Tokens Out</span><span class="value green">${fmt(session.tokensOut || 0)}</span></div>`;
-          } else {
-            tokenDetail.innerHTML = '';
-          }
-
-          // Cost
-          const sCost =
-            typeof session.totalCostUsd === 'number' ? session.totalCostUsd.toFixed(4) : '0.0000';
-          const sWithout =
-            typeof session.estimatedCostWithoutUap === 'number'
-              ? session.estimatedCostWithoutUap.toFixed(4)
-              : '0.0000';
-          const sSavings =
-            typeof session.costSavingsPercent === 'number'
-              ? session.costSavingsPercent.toFixed(0) + '%'
-              : '0%';
-          setText('sess-cost', '$' + sCost);
-          setText('sess-cost-without', '$' + sWithout);
-          setText('sess-savings-pct', sSavings);
-
-          // Step progress
-          const progressWrap = document.getElementById('sess-progress-wrap');
-          if (session.stepsTotal > 0) {
-            progressWrap.style.display = '';
-            setText('sess-step-name', session.currentStep || 'Working...');
-            setText('sess-step-count', (session.stepsCompleted || 0) + '/' + session.stepsTotal);
-            const pct = Math.round(((session.stepsCompleted || 0) / session.stepsTotal) * 100);
-            document.getElementById('sess-progress-bar').style.width = pct + '%';
-          } else {
-            progressWrap.style.display = 'none';
-          }
-
-          // Agents
-          const agents = session.agents || [];
+          const agents = coord.agents || [];
           if (agents.length > 0) {
-            let aHtml = '';
+            let h = '<table><tr><th>ID</th><th>Name</th><th>Status</th><th>Started</th></tr>';
             for (const a of agents) {
-              const typeClass = a.type || 'main';
-              const modelLabel = a.model && a.model !== 'unknown' ? ` <span style="color:var(--purple);font-size:11px">${esc(modelName(a.model))}</span>` : '';
-              aHtml += `<div class="agent-row"><span class="badge ${typeClass}">${esc(a.type || 'agent')}</span><span class="agent-name">${esc(a.name || a.id || 'unknown')}${modelLabel}</span><span class="badge ${a.status === 'active' ? 'active' : 'idle'}">${esc(a.status || 'idle')}</span><span class="agent-task">${esc(a.task || '-')}</span><span class="agent-tokens">${fmt(a.tokensUsed || 0)} tok</span></div>`;
+              const cls = a.status==='active'?'active':a.status==='completed'?'on':'idle';
+              h += `<tr><td style="color:var(--fg3);font-size:11px">${esc((a.id||'').slice(0,16))}</td><td>${esc(a.name||'-')}</td><td><span class="badge ${cls}">${esc(a.status||'-')}</span></td><td style="color:var(--fg3)">${esc(a.startedAt?a.startedAt.slice(0,19).replace('T',' '):'-')}</td></tr>`;
             }
-            document.getElementById('sess-agents').innerHTML = aHtml;
+            document.getElementById('coord-agents-table').innerHTML = h + '</table>';
+          } else { document.getElementById('coord-agents-table').innerHTML = '<div class="empty">No agents registered</div>'; }
+        });
 
-            // Per-Agent Breakdown table
-            let abHtml = '<table><tr><th>Agent</th><th>Model</th><th>Status</th><th>Tokens In</th><th>Tokens Out</th><th>Total</th><th>Cost</th><th>Tasks</th></tr>';
-            for (const a of agents) {
-              const tIn = a.tokensIn || 0;
-              const tOut = a.tokensOut || 0;
-              const tTotal = tIn + tOut || a.tokensUsed || 0;
-              const cost = typeof a.cost === 'number' ? '$' + a.cost.toFixed(4) : '$0.0000';
-              const statusCls = a.status === 'active' || a.status === 'working' ? 'active' : a.status === 'done' ? 'on' : 'idle';
-              abHtml += `<tr><td style="font-weight:500">${esc(a.name || a.id || 'unknown')}</td><td style="color:var(--purple)">${esc(modelName(a.model || 'unknown'))}</td><td><span class="badge ${statusCls}">${esc(a.status || 'idle')}</span></td><td>${fmt(tIn)}</td><td>${fmt(tOut)}</td><td style="font-weight:500">${fmt(tTotal)}</td><td style="color:var(--green)">${cost}</td><td>${a.taskCount || 0}</td></tr>`;
-            }
-            const totalIn = agents.reduce((s, a) => s + (a.tokensIn || 0), 0);
-            const totalOut = agents.reduce((s, a) => s + (a.tokensOut || 0), 0);
-            const totalAll = totalIn + totalOut || agents.reduce((s, a) => s + (a.tokensUsed || 0), 0);
-            const totalCostAgents = agents.reduce((s, a) => s + (a.cost || 0), 0);
-            const totalTasksAgents = agents.reduce((s, a) => s + (a.taskCount || 0), 0);
-            abHtml += `<tr style="border-top:2px solid var(--border);font-weight:600"><td>TOTAL</td><td></td><td></td><td style="color:var(--cyan)">${fmt(totalIn)}</td><td style="color:var(--green)">${fmt(totalOut)}</td><td style="color:var(--purple)">${fmt(totalAll)}</td><td style="color:var(--green)">$${totalCostAgents.toFixed(4)}</td><td>${totalTasksAgents}</td></tr>`;
-            abHtml += '</table>';
-            document.getElementById('sess-agent-breakdown').innerHTML = abHtml;
-          } else {
-            document.getElementById('sess-agents').innerHTML = '<div class="empty">No active agents</div>';
-            document.getElementById('sess-agent-breakdown').innerHTML = '<div class="empty">No agent data</div>';
+        safe('deploy', () => {
+          const d = data.deployBuckets || {};
+          const total = d.totalActions || (d.done||0)+(d.failed||0)+(d.queued||0)+(d.batched||0)+(d.executing||0) || 1;
+          const max = Math.max(total, 1);
+          const setBar = (id, val) => { const el=document.getElementById(id),ce=document.getElementById(id+'-count'); if(el)el.style.width=Math.min(Math.round((val/max)*100),100)+'%'; if(ce)ce.textContent=val; };
+          setBar('deploy-queued',d.queued||0); setBar('deploy-batched',d.batched||0);
+          setBar('deploy-executing',d.executing||0); setBar('deploy-done',d.done||0); setBar('deploy-failed',d.failed||0);
+          setText('deploy-batch-count',d.batchCount||0); setText('deploy-saved-ops',d.savedOps||0);
+        });
+
+        safe('models', () => {
+          // Roles
+          let rh = '';
+          for (const [role, model] of Object.entries(models.roles||{})) {
+            const c = role==='planner'?'green':role==='executor'?'cyan':role==='reviewer'?'purple':'';
+            rh += `<div class="kv"><span class="label">${esc(capitalize(role))}</span><span class="value ${c}">${esc(modelName(String(model)))}</span></div>`;
           }
+          document.getElementById('model-roles').innerHTML = rh;
 
-          // Per-Model Breakdown
-          const modelBreakdown = session.modelBreakdown || [];
-          if (modelBreakdown.length > 0) {
-            let mbHtml = '<table><tr><th>Model</th><th>Tasks</th><th>Tokens In</th><th>Tokens Out</th><th>Total</th><th>Cost</th><th>Success</th><th>Agents</th></tr>';
-            for (const m of modelBreakdown) {
-              const cost = typeof m.totalCost === 'number' ? '$' + m.totalCost.toFixed(4) : '$0.0000';
-              const rate = typeof m.successRate === 'number' ? (m.successRate * 100).toFixed(0) + '%' : '0%';
-              const rateClass = (m.successRate || 0) >= 0.9 ? 'green' : (m.successRate || 0) >= 0.7 ? 'yellow' : 'red';
-              mbHtml += `<tr><td style="color:var(--purple);font-weight:500">${esc(modelName(m.modelId))}</td><td>${m.taskCount || 0}</td><td>${fmt(m.tokensIn || 0)}</td><td>${fmt(m.tokensOut || 0)}</td><td style="font-weight:500">${fmt((m.tokensIn||0)+(m.tokensOut||0))}</td><td style="color:var(--green)">${cost}</td><td><span class="value ${rateClass}">${rate}</span></td><td>${(m.agentIds||[]).length}</td></tr>`;
+          // Router
+          document.getElementById('model-router').innerHTML = `<div class="kv"><span class="label">Strategy</span><span class="value cyan">${esc(models.strategy||'unknown')}</span></div><div class="kv"><span class="label">Available</span><span class="value">${models.availableModels?models.availableModels.length:0}</span></div><div class="kv"><span class="label">Enabled</span><span class="value ${models.enabled?'green':'yellow'}">${models.enabled?'Yes':'No'}</span></div>`;
+
+          // Cost Optimization
+          const co = models.costOptimization || {};
+          document.getElementById('model-cost-opt').innerHTML = `<div class="kv"><span class="label">Enabled</span><span class="value ${co.enabled?'green':'yellow'}">${co.enabled?'Yes':'No'}</span></div><div class="kv"><span class="label">Target Reduction</span><span class="value">${co.targetReduction?(co.targetReduction*100).toFixed(0)+'%':'N/A'}</span></div><div class="kv"><span class="label">Max Degradation</span><span class="value">${co.maxPerformanceDegradation?(co.maxPerformanceDegradation*100).toFixed(0)+'%':'N/A'}</span></div>`;
+
+          // Routing Matrix
+          const mx = Object.entries(models.routingMatrix||{});
+          if (mx.length > 0) {
+            let h = '<table><tr><th>Task Type</th><th>Planner</th><th>Executor</th></tr>';
+            for (const [tt, m] of mx) h += `<tr><td>${esc(tt)}</td><td style="color:var(--green)">${esc(modelName(m.planner||'-'))}</td><td style="color:var(--cyan)">${esc(modelName(m.executor||'-'))}</td></tr>`;
+            document.getElementById('model-routing-matrix').innerHTML = h+'</table>';
+          } else { document.getElementById('model-routing-matrix').innerHTML = '<div class="empty">No routing matrix</div>'; }
+
+          // Routing Decisions
+          const rd = models.recentRoutingDecisions || [];
+          if (rd.length > 0) {
+            let h = '<table><tr><th>Time</th><th>Model</th><th>Task</th><th>Tokens</th><th>Cost</th><th>Result</th></tr>';
+            for (const r of rd.slice(0,10)) {
+              const t = r.timestamp?r.timestamp.slice(11,19):'-';
+              h += `<tr><td style="color:var(--fg3);font-size:11px">${esc(t)}</td><td style="color:var(--purple)">${esc(modelName(r.modelUsed))}</td><td>${esc(r.taskType||'?')}</td><td>${fmt((r.tokensIn||0)+(r.tokensOut||0))}</td><td style="color:var(--green)">${typeof r.cost==='number'?'$'+r.cost.toFixed(4):'$0'}</td><td><span class="value ${r.success?'green':'red'}">${r.success?'OK':'FAIL'}</span></td></tr>`;
             }
-            const mTotalIn = modelBreakdown.reduce((s, m) => s + (m.tokensIn || 0), 0);
-            const mTotalOut = modelBreakdown.reduce((s, m) => s + (m.tokensOut || 0), 0);
-            const mTotalCost = modelBreakdown.reduce((s, m) => s + (m.totalCost || 0), 0);
-            const mTotalTasks = modelBreakdown.reduce((s, m) => s + (m.taskCount || 0), 0);
-            mbHtml += `<tr style="border-top:2px solid var(--border);font-weight:600"><td>TOTAL</td><td>${mTotalTasks}</td><td style="color:var(--cyan)">${fmt(mTotalIn)}</td><td style="color:var(--green)">${fmt(mTotalOut)}</td><td style="color:var(--purple)">${fmt(mTotalIn+mTotalOut)}</td><td style="color:var(--green)">$${mTotalCost.toFixed(4)}</td><td></td><td></td></tr>`;
-            mbHtml += '</table>';
-            document.getElementById('sess-model-breakdown').innerHTML = mbHtml;
-          } else {
-            document.getElementById('sess-model-breakdown').innerHTML = '<div class="empty">No model data</div>';
-          }
+            document.getElementById('model-routes').innerHTML = h+'</table>';
+          } else { document.getElementById('model-routes').innerHTML = '<div class="empty">No routing decisions yet</div>'; }
 
-          // Skills
-          const skills = session.skills || [];
-          if (skills.length > 0) {
-            let sHtml = '';
-            for (const sk of skills) {
-              const cls = sk.active ? 'active' : 'inactive';
-              sHtml += `<span class="chip ${cls}" title="${esc(sk.reason || '')}">${esc(sk.name || 'unknown')}</span>`;
+          // Usage table
+          const usage = models.sessionUsage || [];
+          if (usage.length > 0) {
+            let h = '<table><tr><th>Model</th><th>Tasks</th><th>In</th><th>Out</th><th>Cost</th><th>Success</th></tr>';
+            for (const u of usage) {
+              const rate = typeof u.successRate==='number'?(u.successRate*100).toFixed(0):'0';
+              h += `<tr><td style="color:var(--cyan)">${esc(modelName(u.modelId))}</td><td>${u.taskCount||0}</td><td>${fmt(u.totalTokensIn||0)}</td><td>${fmt(u.totalTokensOut||0)}</td><td>$${(u.totalCost||0).toFixed(4)}</td><td><span class="value ${rate>=90?'green':rate>=70?'yellow':'red'}">${rate}%</span></td></tr>`;
             }
-            document.getElementById('sess-skills').innerHTML = sHtml;
-          } else {
-            document.getElementById('sess-skills').innerHTML = '<span class="empty">No skills loaded</span>';
-          }
+            document.getElementById('model-usage').innerHTML = h+'</table>';
+          } else { document.getElementById('model-usage').innerHTML = '<div class="empty">No usage recorded</div>'; }
+          setText('model-cost', '$'+(typeof models.totalCost==='number'?models.totalCost.toFixed(4):'0.0000'));
+        });
 
-          // Patterns
-          const patterns = session.patterns || [];
-          if (patterns.length > 0) {
-            let ptHtml = '';
-            for (const pt of patterns) {
-              const cls = pt.active ? 'active' : 'inactive';
-              ptHtml += `<span class="chip ${cls}" title="Weight: ${pt.weight || 0}, Category: ${esc(pt.category || '')}">${esc(pt.name || pt.id || 'unknown')}</span>`;
-            }
-            document.getElementById('sess-patterns').innerHTML = ptHtml;
-          } else {
-            document.getElementById('sess-patterns').innerHTML = '<span class="empty">No patterns matched</span>';
-          }
+        safe('memory', () => {
+          setText('mem-l1', l1.entries+' entries ('+l1.sizeKB+' KB)');
+          setText('mem-l2', l2.entries+' entries');
+          const l3El = document.getElementById('mem-l3');
+          if (l3El) { l3El.textContent = l3.status==='Running'?'Qdrant '+(l3.uptime||''):l3.status||'Stopped'; l3El.className = 'value '+(l3.status==='Running'?'green':'yellow'); }
+          setText('mem-l4', l4.entities+' entities, '+l4.relationships+' rels');
+          setText('mem-hits', hm.hits||0);
+          setText('mem-misses', hm.misses||0);
+          const hrStr = String(hm.hitRate||'N/A');
+          const hrVal = parseFloat(hrStr)||0;
+          setText('mem-hitrate', hrStr.includes('%')?hrStr:hrStr==='N/A'?hrStr:hrStr+'%');
+          const g = document.getElementById('mem-hitrate-gauge');
+          if (g) { g.style.width = Math.min(hrVal,100)+'%'; g.style.background = hrVal>80?'var(--green)':hrVal>50?'var(--yellow)':'var(--red)'; }
+          const hrEl = document.getElementById('mem-hitrate');
+          if (hrEl) hrEl.className = 'value '+(hrVal>80?'green':hrVal>50?'yellow':'red');
+        });
 
-          // Deploys
-          const deploys = session.deploys || [];
+        safe('compression', () => {
+          setText('comp-raw', Math.round((comp.rawBytes||0)/1024)+' KB');
+          setText('comp-ctx', Math.round((comp.contextBytes||0)/1024)+' KB');
+          setText('comp-savings', comp.savingsPercent||'0%');
+          setText('comp-calls', comp.totalCalls||0);
+        });
+
+        safe('memory-queries', () => {
+          const rq = mem.recentQueries || [];
+          if (rq.length > 0) {
+            let h = '<table><tr><th>Type</th><th>Query</th><th>Time</th></tr>';
+            for (const q of rq.slice(0,8)) h += `<tr><td><span class="badge active">${esc(q.type||'memory')}</span></td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(q.query||'-')}</td><td style="color:var(--fg3);font-size:11px">${esc(q.timestamp?q.timestamp.slice(11,19):'-')}</td></tr>`;
+            document.getElementById('memory-recent-queries').innerHTML = h+'</table>';
+          } else { document.getElementById('memory-recent-queries').innerHTML = '<div class="empty">No recent queries</div>'; }
+        });
+
+        safe('session', () => {
+          const sp = document.getElementById('session-panel');
+          if (!session) { sp.style.display = 'none'; return; }
+          sp.style.display = '';
+          setText('sess-id', (session.sessionId||'').slice(0,12));
+          setText('sess-uptime', session.uptime||'-');
+          setText('sess-tokens', fmt(session.tokensUsed||0));
+          setText('sess-saved', fmt(session.tokensSaved||0));
+          setText('sess-tools', session.toolCalls||0);
+          setText('sess-checks', session.policyChecks||0);
+          setText('sess-blocks', session.policyBlocks||0);
+          setText('sess-errors', session.errors||0);
+          const td = document.getElementById('sess-token-io-detail');
+          if (td) td.innerHTML = (session.tokensIn>0||session.tokensOut>0) ? `<div class="kv"><span class="label">Tokens In</span><span class="value cyan">${fmt(session.tokensIn||0)}</span></div><div class="kv"><span class="label">Tokens Out</span><span class="value green">${fmt(session.tokensOut||0)}</span></div>` : '';
+          setText('sess-cost', '$'+(typeof session.totalCostUsd==='number'?session.totalCostUsd.toFixed(4):'0.0000'));
+          setText('sess-cost-without', '$'+(typeof session.estimatedCostWithoutUap==='number'?session.estimatedCostWithoutUap.toFixed(4):'0.0000'));
+          setText('sess-savings-pct', typeof session.costSavingsPercent==='number'?session.costSavingsPercent.toFixed(0)+'%':'0%');
+          const pw = document.getElementById('sess-progress-wrap');
+          if (session.stepsTotal>0) { pw.style.display=''; setText('sess-step-name',session.currentStep||'Working...'); setText('sess-step-count',(session.stepsCompleted||0)+'/'+session.stepsTotal); document.getElementById('sess-progress-bar').style.width=Math.round(((session.stepsCompleted||0)/session.stepsTotal)*100)+'%'; }
+          else { pw.style.display='none'; }
+
+          const agents = session.agents||[];
+          if (agents.length > 0) {
+            let ah=''; for (const a of agents) { const ml=a.model&&a.model!=='unknown'?' <span style="color:var(--purple);font-size:11px">'+esc(modelName(a.model))+'</span>':''; ah+=`<div class="agent-row"><span class="badge ${a.type||'main'}">${esc(a.type||'agent')}</span><span class="agent-name">${esc(a.name||a.id||'?')}${ml}</span><span class="badge ${a.status==='active'?'active':'idle'}">${esc(a.status||'idle')}</span><span class="agent-task">${esc(a.task||'-')}</span><span class="agent-tokens">${fmt(a.tokensUsed||0)} tok</span></div>`; }
+            document.getElementById('sess-agents').innerHTML = ah;
+            let bh='<table><tr><th>Agent</th><th>Model</th><th>Status</th><th>In</th><th>Out</th><th>Total</th><th>Cost</th></tr>';
+            for (const a of agents) { const tI=a.tokensIn||0,tO=a.tokensOut||0,tT=tI+tO||a.tokensUsed||0; bh+=`<tr><td style="font-weight:500">${esc(a.name||a.id||'?')}</td><td style="color:var(--purple)">${esc(modelName(a.model||'?'))}</td><td><span class="badge ${a.status==='active'?'active':a.status==='done'?'on':'idle'}">${esc(a.status||'idle')}</span></td><td>${fmt(tI)}</td><td>${fmt(tO)}</td><td style="font-weight:500">${fmt(tT)}</td><td style="color:var(--green)">${typeof a.cost==='number'?'$'+a.cost.toFixed(4):'$0.0000'}</td></tr>`; }
+            const tI=agents.reduce((s,a)=>s+(a.tokensIn||0),0),tO=agents.reduce((s,a)=>s+(a.tokensOut||0),0),tA=tI+tO||agents.reduce((s,a)=>s+(a.tokensUsed||0),0),tC=agents.reduce((s,a)=>s+(a.cost||0),0);
+            bh+=`<tr style="border-top:2px solid var(--border);font-weight:600"><td>TOTAL</td><td></td><td></td><td style="color:var(--cyan)">${fmt(tI)}</td><td style="color:var(--green)">${fmt(tO)}</td><td style="color:var(--purple)">${fmt(tA)}</td><td style="color:var(--green)">$${tC.toFixed(4)}</td></tr></table>`;
+            document.getElementById('sess-agent-breakdown').innerHTML = bh;
+          } else { document.getElementById('sess-agents').innerHTML='<div class="empty">No active agents</div>'; document.getElementById('sess-agent-breakdown').innerHTML='<div class="empty">No agent data</div>'; }
+
+          document.getElementById('sess-skills').innerHTML = (session.skills||[]).length>0 ? session.skills.map(s=>`<span class="chip ${s.active?'active':'inactive'}" title="${esc(s.reason||'')}">${esc(s.name||'?')}</span>`).join('') : '<span class="empty">No skills loaded</span>';
+          document.getElementById('sess-patterns').innerHTML = (session.patterns||[]).length>0 ? session.patterns.map(p=>`<span class="chip ${p.active?'active':'inactive'}" title="Weight: ${p.weight||0}">${esc(p.name||p.id||'?')}</span>`).join('') : '<span class="empty">No patterns matched</span>';
           const batch = session.deployBatchSummary;
-          if (deploys.length > 0 || (batch && batch.totalActions > 0)) {
-            let dHtml = '';
-            if (batch && batch.totalActions > 0) {
-              dHtml += `<div class="kv"><span class="label">Total Actions</span><span class="value">${batch.totalActions}</span></div>`;
-              dHtml += `<div class="kv"><span class="label">Done</span><span class="value green">${batch.done || 0}</span></div>`;
-              dHtml += `<div class="kv"><span class="label">Failed</span><span class="value red">${batch.failed || 0}</span></div>`;
-              dHtml += `<div class="kv"><span class="label">Batches</span><span class="value">${batch.batchCount || 0}</span></div>`;
-              dHtml += `<div class="kv"><span class="label">Saved Ops</span><span class="value green">${batch.savedOps || 0}</span></div>`;
-            }
-            document.getElementById('sess-deploys').innerHTML = dHtml || '<div class="empty">No deploys</div>';
-          } else {
-            document.getElementById('sess-deploys').innerHTML = '<div class="empty">No deploys</div>';
-          }
-        } else {
-          sessionPanel.style.display = 'none';
-        }
+          document.getElementById('sess-deploys').innerHTML = batch&&batch.totalActions>0 ? `<div class="kv"><span class="label">Total</span><span class="value">${batch.totalActions}</span></div><div class="kv"><span class="label">Done</span><span class="value green">${batch.done||0}</span></div><div class="kv"><span class="label">Failed</span><span class="value red">${batch.failed||0}</span></div><div class="kv"><span class="label">Saved</span><span class="value green">${batch.savedOps||0}</span></div>` : '<div class="empty">No deploys</div>';
         });
 
-        // Session History (all sessions)
         safe('session-history', () => {
-          const sessions = data.sessions || [];
-          const histPanel = document.getElementById('session-history-panel');
-          if (sessions.length > 0) {
-            histPanel.style.display = '';
-            let html = '<table><tr><th>Session</th><th>Started</th><th>Duration</th><th>Status</th><th>Model</th><th>Tokens In</th><th>Tokens Out</th><th>Total</th><th>Cost</th><th>Agents</th><th>Tasks</th></tr>';
-            for (const s of sessions) {
-              const start = s.startedAt ? new Date(s.startedAt).toLocaleString() : '-';
-              const durMs = s.durationMs || 0;
-              const durMin = durMs > 0 ? Math.round(durMs / 60000) + 'm' : '-';
-              const statusCls = s.status === 'active' ? 'active' : s.status === 'completed' ? 'on' : 'idle';
-              const tIn = s.tokensIn || 0;
-              const tOut = s.tokensOut || 0;
-              const tTotal = tIn + tOut;
-              const cost = typeof s.totalCost === 'number' ? '$' + s.totalCost.toFixed(4) : '$0.00';
-              const isCurrent = s.status === 'active';
-              const highlight = isCurrent ? ' style="background:rgba(139,233,253,0.08)"' : '';
-              const label = isCurrent ? ' <span style="color:var(--cyan);font-size:10px">(live)</span>' : '';
-              html += `<tr${highlight}><td style="font-weight:500">${esc(s.sessionId || '-').slice(0,12)}${label}</td><td>${start}</td><td>${durMin}</td><td><span class="badge ${statusCls}">${esc(s.status || 'unknown')}</span></td><td style="color:var(--purple)">${esc(modelName(s.model || '-'))}</td><td>${fmt(tIn)}</td><td>${fmt(tOut)}</td><td style="font-weight:500">${fmt(tTotal)}</td><td style="color:var(--green)">${cost}</td><td>${s.agentCount || 0}</td><td>${s.taskCount || 0}</td></tr>`;
-            }
-            // Totals row
-            const totalIn = sessions.reduce((a, s) => a + (s.tokensIn || 0), 0);
-            const totalOut = sessions.reduce((a, s) => a + (s.tokensOut || 0), 0);
-            const totalCost = sessions.reduce((a, s) => a + (s.totalCost || 0), 0);
-            const totalTasks = sessions.reduce((a, s) => a + (s.taskCount || 0), 0);
-            html += `<tr style="border-top:2px solid var(--border);font-weight:600"><td>ALL (${sessions.length} sessions)</td><td></td><td></td><td></td><td></td><td style="color:var(--cyan)">${fmt(totalIn)}</td><td style="color:var(--green)">${fmt(totalOut)}</td><td style="color:var(--purple)">${fmt(totalIn+totalOut)}</td><td style="color:var(--green)">$${totalCost.toFixed(4)}</td><td></td><td>${totalTasks}</td></tr>`;
-            html += '</table>';
-            document.getElementById('session-history-table').innerHTML = html;
-          } else {
-            histPanel.style.display = 'none';
+          const sessions = data.sessions||[];
+          const hp = document.getElementById('session-history-panel');
+          if (!sessions.length) { hp.style.display='none'; return; }
+          hp.style.display='';
+          let h='<table><tr><th>Session</th><th>Started</th><th>Duration</th><th>Status</th><th>Model</th><th>In</th><th>Out</th><th>Total</th><th>Cost</th><th>Agents</th><th>Tasks</th></tr>';
+          for (const s of sessions) {
+            const isCur=s.status==='active', hl=isCur?' style="background:rgba(139,233,253,0.08)"':'', lb=isCur?' <span style="color:var(--cyan);font-size:10px">(live)</span>':'';
+            const tI=s.tokensIn||0,tO=s.tokensOut||0;
+            h+=`<tr${hl}><td style="font-weight:500">${esc(s.sessionId||'-').slice(0,12)}${lb}</td><td>${s.startedAt?new Date(s.startedAt).toLocaleString():'-'}</td><td>${s.durationMs>0?Math.round(s.durationMs/60000)+'m':'-'}</td><td><span class="badge ${isCur?'active':s.status==='completed'?'on':'idle'}">${esc(s.status||'?')}</span></td><td style="color:var(--purple)">${esc(modelName(s.model||'-'))}</td><td>${fmt(tI)}</td><td>${fmt(tO)}</td><td style="font-weight:500">${fmt(tI+tO)}</td><td style="color:var(--green)">${typeof s.totalCost==='number'?'$'+s.totalCost.toFixed(4):'$0.00'}</td><td>${s.agentCount||0}</td><td>${s.taskCount||0}</td></tr>`;
           }
+          const sI=sessions.reduce((a,s)=>a+(s.tokensIn||0),0),sO=sessions.reduce((a,s)=>a+(s.tokensOut||0),0),sC=sessions.reduce((a,s)=>a+(s.totalCost||0),0),sT=sessions.reduce((a,s)=>a+(s.taskCount||0),0);
+          h+=`<tr style="border-top:2px solid var(--border);font-weight:600"><td>ALL (${sessions.length})</td><td></td><td></td><td></td><td></td><td style="color:var(--cyan)">${fmt(sI)}</td><td style="color:var(--green)">${fmt(sO)}</td><td style="color:var(--purple)">${fmt(sI+sO)}</td><td style="color:var(--green)">$${sC.toFixed(4)}</td><td></td><td>${sT}</td></tr></table>`;
+          document.getElementById('session-history-table').innerHTML = h;
         });
 
-        // Policy Files (from filesystem)
-        safe('policy-files', () => {
-          if (policyFiles.length > 0) {
-            let pfHtml = '<table><tr><th>Name</th><th>Category</th><th>Filename</th></tr>';
-            for (const pf of policyFiles) {
-              const catColor =
-                pf.category === 'quality'
-                  ? 'color:var(--green)'
-                  : pf.category === 'workflow'
-                    ? 'color:var(--cyan)'
-                    : pf.category === 'infrastructure'
-                      ? 'color:var(--purple)'
-                      : pf.category === 'safety'
-                        ? 'color:var(--yellow)'
-                        : '';
-              pfHtml += `<tr><td style="font-weight:500">${esc(pf.name || '-')}</td><td style="${catColor}">${esc(pf.category || 'general')}</td><td style="color:var(--fg3);font-size:11px">${esc(pf.filename || '-')}</td></tr>`;
-            }
-            pfHtml += '</table>';
-            document.getElementById('policy-files-table').innerHTML = pfHtml;
-          } else {
-            document.getElementById('policy-files-table').innerHTML =
-              '<div class="empty">No policy files found</div>';
-          }
-        });
-
-        // Active Policies (from DB)
+        // Unified Policies
         safe('policies', () => {
-          if (policies.length > 0) {
-            let pHtml =
-              '<table><tr><th>Name</th><th>Level</th><th>Stage</th><th>Category</th><th>Priority</th><th>Status</th><th>Actions</th></tr>';
-            for (const p of policies) {
-              const levelClass = (p.level || '').toLowerCase();
-              const statusClass = p.isActive ? 'on' : 'off';
-              const tags = p.tags || [];
-              const tagHtml =
-                tags.length > 0
-                  ? '<br><span style="font-size:10px;color:var(--fg3)">' +
-                    tags.map((t) => esc(t)).join(', ') +
-                    '</span>'
-                  : '';
-              pHtml += `<tr>
-          <td>${esc(p.name || 'unnamed')}${tagHtml}</td>
-          <td><span class="badge ${levelClass}">${esc(p.level || '?')}</span></td>
-          <td>${esc(p.enforcementStage || '?')}</td>
-          <td>${esc(p.category || '?')}</td>
-          <td style="text-align:center">${p.priority || 0}</td>
-          <td><span class="badge ${statusClass}">${p.isActive ? 'ON' : 'OFF'}</span></td>
-          <td>
-            <button class="btn" onclick="togglePolicy('${esc(p.id)}')">${p.isActive ? 'Disable' : 'Enable'}</button>
-            <select onchange="setStage('${esc(p.id)}', this.value)">
-              ${['pre-exec', 'post-exec', 'review', 'always'].map((s) => `<option value="${s}" ${s === p.enforcementStage ? 'selected' : ''}>${s}</option>`).join('')}
-            </select>
-            <select onchange="setLevel('${esc(p.id)}', this.value)">
-              ${['REQUIRED', 'RECOMMENDED', 'OPTIONAL'].map((l) => `<option value="${l}" ${l === p.level ? 'selected' : ''}>${l}</option>`).join('')}
-            </select>
-          </td>
-        </tr>`;
+          const pm = new Map();
+          for (const p of policies) pm.set(p.name||p.id, {...p, source:'db'});
+          for (const pf of policyFiles) { if (!pm.has(pf.name)) pm.set(pf.name, {id:pf.filename, name:pf.name, category:pf.category, level:'-', enforcementStage:'-', isActive:null, tags:[], priority:0, source:'file'}); }
+          const all = [...pm.values()];
+          if (all.length > 0) {
+            let h='<table><tr><th>Name</th><th>Category</th><th>Level</th><th>Stage</th><th>Status</th><th>Actions</th></tr>';
+            for (const p of all) {
+              const isDb = p.source==='db';
+              const status = isDb ? `<span class="badge ${p.isActive?'on':'off'}">${p.isActive?'ON':'OFF'}</span>` : '<span class="badge file-only">FILE</span>';
+              const actions = isDb ? `<button class="btn" onclick="togglePolicy('${esc(p.id)}')">${p.isActive?'Disable':'Enable'}</button> <select onchange="setStage('${esc(p.id)}',this.value)">${['pre-exec','post-exec','review','always'].map(s=>`<option value="${s}" ${s===p.enforcementStage?'selected':''}>${s}</option>`).join('')}</select> <select onchange="setLevel('${esc(p.id)}',this.value)">${['REQUIRED','RECOMMENDED','OPTIONAL'].map(l=>`<option value="${l}" ${l===p.level?'selected':''}>${l}</option>`).join('')}</select>` : '<span style="color:var(--fg3);font-size:11px">file-only</span>';
+              h+=`<tr><td style="font-weight:500">${esc(p.name||'-')}</td><td>${esc(p.category||'-')}</td><td><span class="badge ${(p.level||'').toLowerCase()}">${esc(p.level||'-')}</span></td><td>${esc(p.enforcementStage||'-')}</td><td>${status}</td><td>${actions}</td></tr>`;
             }
-            pHtml += '</table>';
-            document.getElementById('policy-table').innerHTML = pHtml;
-
-            // Stage bars
-            const stages = { 'pre-exec': 0, 'post-exec': 0, review: 0, always: 0 };
-            for (const p of policies)
-              stages[p.enforcementStage] = (stages[p.enforcementStage] || 0) + 1;
-            const maxStage = Math.max(...Object.values(stages), 1);
-            let stageHtml = '';
-            for (const [stage, count] of Object.entries(stages)) {
-              const w = Math.round((count / maxStage) * 200);
-              stageHtml += `<div class="bar-container"><span class="bar-label">${esc(stage)}</span><div class="bar cyan" style="width:${w}px"></div><span class="bar-value">${count}</span></div>`;
-            }
-            document.getElementById('policy-stages').innerHTML = stageHtml;
-          } else {
-            document.getElementById('policy-table').innerHTML =
-              '<div class="empty">No policies configured</div>';
-            document.getElementById('policy-stages').innerHTML = '';
-          }
+            document.getElementById('policy-table').innerHTML = h+'</table>';
+            const stages = {'pre-exec':0,'post-exec':0,review:0,always:0};
+            for (const p of all) if (p.enforcementStage && stages[p.enforcementStage]!=null) stages[p.enforcementStage]++;
+            const maxS = Math.max(...Object.values(stages),1);
+            let sh=''; for (const [s,c] of Object.entries(stages)) sh+=`<div class="bar-container"><span class="bar-label">${esc(s)}</span><div class="bar cyan" style="width:${Math.round((c/maxS)*200)}px"></div><span class="bar-value">${c}</span></div>`;
+            document.getElementById('policy-stages').innerHTML = sh;
+          } else { document.getElementById('policy-table').innerHTML='<div class="empty">No policies</div>'; document.getElementById('policy-stages').innerHTML=''; }
         });
 
-        // Audit trail
+        safe('compliance', () => {
+          const fbm = compliance.failuresByMechanism || {};
+          const me = Object.entries(fbm);
+          if (me.length > 0) {
+            const max = Math.max(...me.map(([,v])=>v),1);
+            let h=''; for (const [m,c] of me.sort((a,b)=>b[1]-a[1])) h+=`<div class="bar-container"><span class="bar-label" style="width:120px">${esc(m)}</span><div class="bar red" style="width:${Math.round((c/max)*180)}px"></div><span class="bar-value">${c}</span></div>`;
+            document.getElementById('compliance-mechanisms').innerHTML = h;
+          } else { document.getElementById('compliance-mechanisms').innerHTML='<div class="empty">No failure mechanisms</div>'; }
+
+          const rf = compliance.recentFailures || [];
+          if (rf.length > 0) {
+            let h='<table><tr><th>Time</th><th>Policy</th><th>Op</th><th>Mechanism</th><th>Reason</th></tr>';
+            for (const f of rf.slice(0,10)) h+=`<tr><td style="color:var(--fg3);font-size:11px">${esc(f.executedAt?f.executedAt.slice(11,19):'-')}</td><td style="color:var(--red)">${esc(f.policyName||f.policyId||'-')}</td><td>${esc(f.operation||'-')}</td><td><span class="badge required">${esc(f.defeatedMechanism||'-')}</span></td><td style="color:var(--fg3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.reason||'-')}</td></tr>`;
+            document.getElementById('compliance-failures').innerHTML = h+'</table>';
+          } else { document.getElementById('compliance-failures').innerHTML='<div class="empty">No recent failures</div>'; }
+        });
+
         safe('audit', () => {
           if (audit.length > 0) {
-            let aHtml = '';
-            for (const e of audit.slice(0, 20)) {
-              const cls = e.allowed ? 'pass' : 'block';
-              const icon = e.allowed ? 'PASS' : 'BLOCK';
-              const ts =
-                typeof e.executedAt === 'string' && e.executedAt.length >= 19
-                  ? e.executedAt.slice(0, 19).replace('T', ' ')
-                  : e.executedAt || '-';
-              const policyShort = e.policyId ? e.policyId.slice(0, 8) : '';
-              aHtml += `<div class="audit-row"><span class="audit-time">${esc(ts)}</span><span class="audit-icon ${cls}">${icon}</span><span class="audit-policy" title="${esc(e.policyId || '')}">${esc(policyShort)}</span><span class="audit-op">${esc(e.operation || '')}</span><span class="audit-reason">${esc(e.reason || '')}</span></div>`;
+            let h=''; for (const e of audit.slice(0,15)) {
+              const cls=e.allowed?'pass':'block', ts=typeof e.executedAt==='string'&&e.executedAt.length>=19?e.executedAt.slice(11,19):e.executedAt||'-';
+              h+=`<div class="audit-row"><span class="audit-time">${esc(ts)}</span><span class="audit-icon ${cls}">${e.allowed?'PASS':'BLOCK'}</span><span class="audit-policy" title="${esc(e.policyId||'')}">${esc(e.policyId?e.policyId.slice(0,8):'')}</span><span class="audit-op">${esc(e.operation||'')}</span><span class="audit-reason">${esc(e.reason||'')}</span></div>`;
             }
-            document.getElementById('audit-trail').innerHTML = aHtml;
-          } else {
-            document.getElementById('audit-trail').innerHTML =
-              '<div class="empty">No audit entries</div>';
-          }
+            document.getElementById('audit-trail').innerHTML = h;
+          } else { document.getElementById('audit-trail').innerHTML='<div class="empty">No audit entries</div>'; }
         });
 
-        // Performance
+        safe('kanban', () => renderKanban(tasks));
+
         safe('performance', () => {
-        const perf = data.performance || {};
-        const hotPaths = perf.hotPaths || [];
-        const perfPanel = document.getElementById('perf-panel');
-        if (!perfPanel) return;
-        if (hotPaths.length > 0) {
-          let hpHtml = '<table><tr><th>Operation</th><th>Avg (ms)</th><th>P95 (ms)</th><th>Calls</th></tr>';
-          for (const hp of hotPaths) {
-            const avgClass = hp.avgMs > 500 ? 'red' : hp.avgMs > 100 ? 'yellow' : 'green';
-            const p95Class = hp.p95Ms > 1000 ? 'red' : hp.p95Ms > 300 ? 'yellow' : 'green';
-            hpHtml += `<tr><td style="color:var(--cyan)">${esc(hp.name)}</td><td class="value ${avgClass}">${hp.avgMs}</td><td class="value ${p95Class}">${hp.p95Ms}</td><td>${hp.count}</td></tr>`;
-          }
-          hpHtml += '</table>';
-          perfPanel.innerHTML = hpHtml;
-        } else {
-          perfPanel.innerHTML = '<div class="empty">No performance data</div>';
-        }
+          const hp = (data.performance||{}).hotPaths || [];
+          const pp = document.getElementById('perf-panel');
+          if (!pp) return;
+          if (hp.length > 0) {
+            let h='<table><tr><th>Operation</th><th>Avg (ms)</th><th>P95 (ms)</th><th>Calls</th></tr>';
+            for (const p of hp) h+=`<tr><td style="color:var(--cyan)">${esc(p.name)}</td><td class="value ${p.avgMs>500?'red':p.avgMs>100?'yellow':'green'}">${p.avgMs}</td><td class="value ${p.p95Ms>1000?'red':p.p95Ms>300?'yellow':'green'}">${p.p95Ms}</td><td>${p.count}</td></tr>`;
+            pp.innerHTML = h+'</table>';
+          } else { pp.innerHTML='<div class="empty">No performance data</div>'; }
         });
 
-        // Show any render errors as a banner
         if (_errors.length > 0) {
-          let errBanner = document.getElementById('render-errors');
-          if (!errBanner) {
-            errBanner = document.createElement('div');
-            errBanner.id = 'render-errors';
-            errBanner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:var(--red);color:#fff;padding:8px 16px;font-size:12px;z-index:9999;max-height:120px;overflow:auto;';
-            document.body.appendChild(errBanner);
-          }
-          errBanner.innerHTML = '<strong>Render errors:</strong> ' + _errors.map(e => esc(e)).join(' | ');
-          errBanner.style.display = '';
-        } else {
-          const errBanner = document.getElementById('render-errors');
-          if (errBanner) errBanner.style.display = 'none';
-        }
+          let eb = document.getElementById('render-errors');
+          if (!eb) { eb=document.createElement('div'); eb.id='render-errors'; eb.style.cssText='position:fixed;bottom:0;left:0;right:0;background:var(--red);color:#fff;padding:8px 16px;font-size:12px;z-index:9999;max-height:120px;overflow:auto;'; document.body.appendChild(eb); }
+          eb.innerHTML='<strong>Render errors:</strong> '+_errors.map(e=>esc(e)).join(' | '); eb.style.display='';
+        } else { const eb=document.getElementById('render-errors'); if(eb) eb.style.display='none'; }
       }
 
-      // ── API Actions with Feedback ──
-      async function togglePolicy(id) {
-        try {
-          const res = await fetch(`${API_URL}/api/policy/${id}/toggle`, { method: 'POST' });
-          if (!res.ok) throw new Error(await res.text());
-          const data = await res.json();
-          showToast(`Policy ${data.isActive ? 'enabled' : 'disabled'}`, 'success');
-        } catch (err) {
-          console.error('Toggle policy failed:', err);
-          showToast('Failed to toggle policy', 'error');
-        }
-      }
-      async function setStage(id, stage) {
-        try {
-          const res = await fetch(`${API_URL}/api/policy/${id}/stage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ stage }),
-          });
-          if (!res.ok) throw new Error(await res.text());
-          showToast(`Stage set to ${stage}`, 'success');
-        } catch (err) {
-          console.error('Set stage failed:', err);
-          showToast('Failed to set stage', 'error');
-        }
-      }
-      async function setLevel(id, level) {
-        try {
-          const res = await fetch(`${API_URL}/api/policy/${id}/level`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ level }),
-          });
-          if (!res.ok) throw new Error(await res.text());
-          showToast(`Level set to ${level}`, 'success');
-        } catch (err) {
-          console.error('Set level failed:', err);
-          showToast('Failed to set level', 'error');
-        }
-      }
+      // ── API Actions ──
+      async function togglePolicy(id) { try { const r=await fetch(`${API_URL}/api/policy/${id}/toggle`,{method:'POST'}); if(!r.ok)throw new Error(); const d=await r.json(); showToast(`Policy ${d.isActive?'enabled':'disabled'}`,'success'); } catch { showToast('Failed to toggle policy','error'); } }
+      async function setStage(id,stage) { try { const r=await fetch(`${API_URL}/api/policy/${id}/stage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage})}); if(!r.ok)throw new Error(); showToast(`Stage: ${stage}`,'success'); } catch { showToast('Failed to set stage','error'); } }
+      async function setLevel(id,level) { try { const r=await fetch(`${API_URL}/api/policy/${id}/level`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({level})}); if(!r.ok)throw new Error(); showToast(`Level: ${level}`,'success'); } catch { showToast('Failed to set level','error'); } }
 
-      // ── Kanban Board Renderer ──
-      const TYPE_ICONS = {
-        task: '\u25C6',
-        bug: '\uD83D\uDC1B',
-        feature: '\u2728',
-        epic: '\uD83C\uDFAF',
-        chore: '\uD83D\uDD27',
-        story: '\uD83D\uDCD6',
-      };
-      const PRIO_LABELS = ['P0', 'P1', 'P2', 'P3', 'P4'];
+      // ── Kanban ──
+      const TYPE_ICONS = {task:'\u25C6',bug:'\uD83D\uDC1B',feature:'\u2728',epic:'\uD83C\uDFAF',chore:'\uD83D\uDD27',story:'\uD83D\uDCD6'};
+      const PRIO_LABELS = ['P0','P1','P2','P3','P4'];
       let prevCardMap = new Map();
-
       function renderKanban(tasks) {
-        const items = tasks.items || [];
-        const columns = { open: [], in_progress: [], blocked: [], done: [], wont_do: [] };
-        const newCardMap = new Map();
-        for (const item of items) {
-          const col = columns[item.status];
-          if (col) col.push(item);
-          newCardMap.set(item.id, item.status);
-        }
-        setText('kb-open-count', columns.open.length);
-        setText('kb-progress-count', columns.in_progress.length);
-        setText('kb-blocked-count', columns.blocked.length);
-        setText('kb-done-count', columns.done.length);
-        setText('kb-wontdo-count', columns.wont_do.length);
-        renderColumn('kb-open', columns.open, newCardMap);
-        renderColumn('kb-progress', columns.in_progress, newCardMap);
-        renderColumn('kb-blocked', columns.blocked, newCardMap);
-        renderColumn('kb-done', columns.done, newCardMap);
-        renderColumn('kb-wontdo', columns.wont_do, newCardMap);
-        const panel = document.getElementById('kanban-panel');
-        if (panel) panel.style.display = items.length > 0 ? '' : 'none';
-        prevCardMap = newCardMap;
+        const items=tasks.items||[], cols={open:[],in_progress:[],blocked:[],done:[],wont_do:[]}, ncm=new Map();
+        for (const i of items) { if(cols[i.status]) cols[i.status].push(i); ncm.set(i.id,i.status); }
+        setText('kb-open-count',cols.open.length); setText('kb-progress-count',cols.in_progress.length);
+        setText('kb-blocked-count',cols.blocked.length); setText('kb-done-count',cols.done.length); setText('kb-wontdo-count',cols.wont_do.length);
+        renderCol('kb-open',cols.open,ncm); renderCol('kb-progress',cols.in_progress,ncm); renderCol('kb-blocked',cols.blocked,ncm); renderCol('kb-done',cols.done,ncm); renderCol('kb-wontdo',cols.wont_do,ncm);
+        const p=document.getElementById('kanban-panel'); if(p) p.style.display=items.length>0?'':'none';
+        prevCardMap=ncm;
       }
-
-      function renderColumn(containerId, items, newCardMap) {
-        const container = document.getElementById(containerId);
-        if (!container) return;
-        if (items.length === 0) {
-          container.innerHTML = '<div class="kanban-empty">No tasks</div>';
-          return;
-        }
-        const newIds = new Set(items.map((i) => i.id));
-        container.querySelectorAll('.kanban-card').forEach((el) => {
-          if (!newIds.has(el.dataset.id)) {
-            el.classList.add('card-exit');
-            el.addEventListener('animationend', () => el.remove(), { once: true });
-          }
-        });
+      function renderCol(cid,items,ncm) {
+        const c=document.getElementById(cid); if(!c) return;
+        if(!items.length) { c.innerHTML='<div class="kanban-empty">No tasks</div>'; return; }
+        const ids=new Set(items.map(i=>i.id));
+        c.querySelectorAll('.kanban-card').forEach(el=>{ if(!ids.has(el.dataset.id)){el.classList.add('card-exit');el.addEventListener('animationend',()=>el.remove(),{once:true});} });
         for (const item of items) {
-          let card = container.querySelector('.kanban-card[data-id="' + item.id + '"]');
-          const isNew = !card;
-          const movedHere = prevCardMap.has(item.id) && prevCardMap.get(item.id) !== item.status;
-          if (isNew) {
-            card = document.createElement('div');
-            card.className = 'kanban-card';
-            card.dataset.id = item.id;
-            if (movedHere) {
-              card.style.animation = 'none';
-              requestAnimationFrame(() => {
-                card.style.animation = '';
-              });
-            }
-            container.appendChild(card);
-          } else {
-            card.style.animation = 'none';
-          }
-          const typeIcon = TYPE_ICONS[item.type] || '\u25C6';
-          const prioLabel = PRIO_LABELS[item.priority] || 'P2';
-          const prioClass = 'p' + (item.priority != null ? item.priority : 2);
-          const assignee = item.assignee ? ' \u00B7 ' + esc(item.assignee) : '';
-          card.innerHTML =
-            '<div style="display:flex;justify-content:space-between;align-items:center"><span class="card-id">' +
-            esc(item.id) +
-            '</span><span class="card-type">' +
-            typeIcon +
-            '</span></div><div class="card-title">' +
-            esc(item.title || 'Untitled') +
-            '</div><div class="card-meta"><span class="card-priority ' +
-            prioClass +
-            '">' +
-            prioLabel +
-            '</span><span>' +
-            esc(item.type) +
-            assignee +
-            '</span></div>';
+          let card=c.querySelector('.kanban-card[data-id="'+item.id+'"]');
+          if(!card){card=document.createElement('div');card.className='kanban-card';card.dataset.id=item.id;if(prevCardMap.has(item.id)&&prevCardMap.get(item.id)!==item.status){card.style.animation='none';requestAnimationFrame(()=>{card.style.animation='';});}c.appendChild(card);}else{card.style.animation='none';}
+          const ti=TYPE_ICONS[item.type]||'\u25C6',pl=PRIO_LABELS[item.priority]||'P2',pc='p'+(item.priority!=null?item.priority:2),as=item.assignee?' \u00B7 '+esc(item.assignee):'';
+          card.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><span class="card-id">'+esc(item.id)+'</span><span>'+ti+'</span></div><div class="card-title">'+esc(item.title||'Untitled')+'</div><div class="card-meta"><span class="card-priority '+pc+'">'+pl+'</span><span>'+esc(item.type)+as+'</span></div>';
         }
       }
 
       // ── Helpers ──
-      function setText(id, val) {
-        const el = document.getElementById(id);
-        if (el) el.textContent = String(val);
-      }
-      function fmt(n) {
-        if (typeof n !== 'number' || isNaN(n)) return '0';
-        const rounded = Math.round(n);
-        return rounded.toLocaleString();
-      }
-      function capitalize(s) {
-        return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
-      }
-      // Model ID to human-readable display name
-      const MODEL_NAMES = {
-        'opus-4.6': 'Claude Opus 4.6',
-        'sonnet-4.6': 'Claude Sonnet 4.6',
-        'gpt-5.4': 'GPT 5.4',
-        'gpt-5.3-codex': 'GPT 5.3 Codex',
-        'qwen35': 'Qwen 3.5 35B A3B',
-        'qwen35-a3b': 'Qwen 3.5 35B A3B',
-      };
-      function modelName(id) {
-        return MODEL_NAMES[id] || id || 'unknown';
-      }
-      function esc(s) {
-        const d = document.createElement('div');
-        d.textContent = s || '';
-        return d.innerHTML;
-      }
+      function setText(id,val){const e=document.getElementById(id);if(e)e.textContent=String(val);}
+      function fmt(n){if(typeof n!=='number'||isNaN(n))return'0';return Math.round(n).toLocaleString();}
+      function capitalize(s){return s?s.charAt(0).toUpperCase()+s.slice(1):'';}
+      const MODEL_NAMES={'opus-4.6':'Claude Opus 4.6','sonnet-4.6':'Claude Sonnet 4.6','gpt-5.4':'GPT 5.4','gpt-5.3-codex':'GPT 5.3 Codex','qwen35':'Qwen 3.5 35B A3B','qwen35-a3b':'Qwen 3.5 35B A3B'};
+      function modelName(id){return MODEL_NAMES[id]||id||'unknown';}
+      function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 
-      // ── Start ──
+      // ── Init ──
       connect();
+      connectSSE();
 
-      // Fallback: poll if WS fails (with degraded status indicator)
-      setInterval(async () => {
-        if (ws && ws.readyState === WebSocket.OPEN) return;
-        try {
-          const res = await fetch(API_URL + '/api/dashboard');
-          if (!res.ok) return;
-          const data = await res.json();
-          if (data) render(data);
-          const dot = document.getElementById('ws-status');
-          dot.className = 'status-dot polling';
-          dot.setAttribute('aria-label', 'Connection status: polling (degraded)');
-          document.getElementById('refresh-info').textContent =
-            'Polling - ' + new Date().toLocaleTimeString();
-          document.title = 'UAP Dashboard - Polling';
-        } catch (err) {
-          console.error('Polling fallback failed:', err);
-        }
+      // Fallback poll
+      setInterval(async()=>{
+        if(ws&&ws.readyState===WebSocket.OPEN)return;
+        try{const r=await fetch(API_URL+'/api/dashboard');if(!r.ok)return;const d=await r.json();if(d)render(d);document.getElementById('ws-status').className='status-dot polling';document.getElementById('refresh-info').textContent='Polling - '+new Date().toLocaleTimeString();document.title='UAP Dashboard - Polling';}catch{}
       }, 2000);
+
+      // Resize: re-init charts
+      let resizeT;
+      window.addEventListener('resize',()=>{clearTimeout(resizeT);resizeT=setTimeout(()=>{chartsInit=false;chartTasks=chartCompression=chartDeploy=chartHitrate=chartCompliance=null;},300);});
     </script>
   </body>
 </html>
