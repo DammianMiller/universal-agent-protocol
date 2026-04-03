@@ -1117,7 +1117,7 @@ function getPolicyData(cwd: string): PolicyData[] {
   try {
     const db = new Database(dbPath, { readonly: true });
     const rows = db
-      .prepare('SELECT * FROM policies WHERE isActive = 1 ORDER BY priority DESC')
+      .prepare('SELECT * FROM policies ORDER BY priority DESC')
       .all() as Array<Record<string, unknown>>;
     db.close();
     return rows.map((r) => ({

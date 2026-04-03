@@ -286,7 +286,7 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
     try {
       const state = seedDashboardData(cwd);
       console.log(
-        `Dashboard seeder: ${state.tasksCreated} tasks, ${state.deploysQueued} deploys, ${state.batchesCreated} batches`
+        `Dashboard seeder: ${state.tasksCreated} tasks, ${state.deploysQueued} deploys, ${state.batchesCreated} batches, ${state.policyChecksRun} policies`
       );
     } catch {
       /* seeder failure is non-fatal */
