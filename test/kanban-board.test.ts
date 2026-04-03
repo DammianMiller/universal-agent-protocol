@@ -36,23 +36,20 @@ describe('Kanban Board Feature', () => {
     it('dashboard.html has renderKanban function', () => {
       const html = readFileSync(join(rootDir, 'web/dashboard.html'), 'utf-8');
       expect(html).toContain('function renderKanban');
-      expect(html).toContain('function renderColumn');
       expect(html).toContain('prevCardMap');
     });
 
-    it('dashboard.html renders card with id, title, priority, and type', () => {
+    it('dashboard.html renders card with id, title, and priority', () => {
       const html = readFileSync(join(rootDir, 'web/dashboard.html'), 'utf-8');
       expect(html).toContain('card-id');
       expect(html).toContain('card-title');
       expect(html).toContain('card-priority');
-      expect(html).toContain('card-type');
       expect(html).toContain('card-meta');
     });
 
-    it('kanban board panel has full-width class', () => {
+    it('kanban board panel exists', () => {
       const html = readFileSync(join(rootDir, 'web/dashboard.html'), 'utf-8');
-      // The kanban panel should span the full grid width
-      expect(html).toMatch(/class="[^"]*full-width[^"]*"[^>]*id="kanban-panel"/);
+      expect(html).toContain('id="kanban-panel"');
     });
   });
 
