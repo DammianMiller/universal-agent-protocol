@@ -11,7 +11,7 @@
  * policy executions, routing decisions, or analytics.
  */
 
-import { existsSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
@@ -192,7 +192,88 @@ export function seedDashboardData(cwd: string): SeederState {
     }
   }
 
-  // 6. Heartbeat every 30s (real agent heartbeat, no data injection)
+  // 6. Seed policy files from policies/ directory into policies.db (INSERT OR IGNORE)
+  let policiesSeeded = 0;
+  try {
+    const policiesDir = join(cwd, 'policies');
+    const policyDbPath = join(cwd, 'agents', 'data', 'memory', 'policies.db');
+    if (existsSync(policiesDir) && existsSync(policyDbPath)) {
+      const policyDb = new Database(policyDbPath);
+      const hasPolicies = policyDb
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='policies'")
+        .all();
+      if (hasPolicies.length > 0) {
+        const existingCount = (
+          policyDb.prepare('SELECT COUNT(*) as c FROM policies').get() as { c: number }
+        ).c;
+        if (existingCount === 0) {
+          const files = readdirSync(policiesDir).filter(
+            (f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md'
+          );
+          const insertPolicy = policyDb.prepare(
+            `INSERT OR IGNORE INTO policies (id, name, category, level, rawMarkdown, tags, createdAt, updatedAt, version, isActive, priority, enforcementStage)
+             VALUES (?, ?, ?, ?, ?, '[]', ?, ?, 1, 1, ?, ?)`
+          );
+          for (const file of files) {
+            const nameWithoutExt = file.replace(/\.md$/, '');
+            const name = nameWithoutExt
+              .split('-')
+              .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
+              .join(' ');
+
+            let rawMarkdown = '';
+            try {
+              rawMarkdown = readFileSync(join(policiesDir, file), 'utf-8');
+            } catch {
+              /* ignore unreadable files */
+            }
+
+            // Derive category from filename
+            let category = 'general';
+            if (nameWithoutExt.includes('iac') || nameWithoutExt.includes('pipeline')) category = 'infrastructure';
+            else if (nameWithoutExt.includes('worktree') || nameWithoutExt.includes('file')) category = 'workflow';
+            else if (nameWithoutExt.includes('gate') || nameWithoutExt.includes('completion') || nameWithoutExt.includes('mandatory')) category = 'quality';
+            else if (nameWithoutExt.includes('semver') || nameWithoutExt.includes('version')) category = 'versioning';
+            else if (nameWithoutExt.includes('backup')) category = 'safety';
+            else if (nameWithoutExt.includes('kubectl') || nameWithoutExt.includes('backport')) category = 'operations';
+
+            // Extract level from markdown content
+            let level = 'RECOMMENDED';
+            const levelMatch = rawMarkdown.match(/\*\*Level\*\*:\s*(REQUIRED|RECOMMENDED|OPTIONAL)/i);
+            if (levelMatch) level = levelMatch[1].toUpperCase();
+            else if (nameWithoutExt.includes('gate') || nameWithoutExt.includes('mandatory')) level = 'REQUIRED';
+
+            // Extract enforcement stage
+            let stage = 'pre-exec';
+            const stageMatch = rawMarkdown.match(/\*\*Enforcement Stage\*\*:\s*([\w-]+)/);
+            if (stageMatch && ['pre-exec', 'post-exec', 'review', 'always'].includes(stageMatch[1])) {
+              stage = stageMatch[1];
+            }
+
+            // Priority: quality/safety policies higher
+            const priority = category === 'quality' ? 80 : category === 'safety' ? 70 : 50;
+
+            insertPolicy.run(
+              `policy-${nameWithoutExt}`,
+              name,
+              category,
+              level,
+              rawMarkdown,
+              now, now,
+              priority,
+              stage
+            );
+            policiesSeeded++;
+          }
+        }
+      }
+      policyDb.close();
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // 7. Heartbeat every 30s (real agent heartbeat, no data injection)
   const heartbeatInterval = setInterval(() => {
     if (!existsSync(coordDbPath)) return;
     try {
@@ -215,7 +296,7 @@ export function seedDashboardData(cwd: string): SeederState {
     tasksCreated,
     deploysQueued,
     batchesCreated,
-    policyChecksRun: 0,
+    policyChecksRun: policiesSeeded,
   };
   return seederState;
 }
