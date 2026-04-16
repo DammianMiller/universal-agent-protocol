@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.20.33 (2026-04-16)
+
+- config: planarquant server defaults + fix kanban tests (#164)
+
+
 ## v1.20.32 (2026-04-03)
 
 - chore: bump version to 1.20.31
