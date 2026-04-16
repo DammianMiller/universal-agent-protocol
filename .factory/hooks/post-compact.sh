@@ -18,45 +18,40 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
 COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"
 
-CONTEXT_LEVEL="${UAP_CONTEXT_LEVEL:-}"
-if [ -z "$CONTEXT_LEVEL" ] && [ -f "${PROJECT_DIR}/.factory/config.json" ]; then
-  CONTEXT_LEVEL=$(python3 - <<PY 2>/dev/null || true
-import json
-path = "${PROJECT_DIR}/.factory/config.json"
-try:
-    data = json.load(open(path, "r", encoding="utf-8"))
-    for key in ("contextLevel", "context_level"):
-        if key in data and isinstance(data[key], str):
-            print(data[key])
-            raise SystemExit
-    hooks = data.get("hooks") or {}
-    for key in ("contextLevel", "context_level"):
-        if key in hooks and isinstance(hooks[key], str):
-            print(hooks[key])
-            raise SystemExit
-except Exception:
-    pass
-PY
-  )
-fi
-CONTEXT_LEVEL="${CONTEXT_LEVEL:-normal}"
-
 output=""
 
 # ─── Active Policy Summary ──────────────────────────────────────
 output+="<system-reminder>"$'\n'
 output+="## UAP COMPLIANCE RESTORED (Post-Compact)"$'\n'
 output+=""$'\n'
-output+="Context was compacted. Policies remain enforced (worktree guard, dangerous cmd guard, completion gate, pre-edit build, versioning, backups)."$'\n'
-if [ "$CONTEXT_LEVEL" != "quiet" ]; then
-  output+="See policies/ for full requirements."$'\n'
-  output+=""$'\n'
-  output+="Before work: ensure worktree, run uap task ready, query memory."$'\n'
-  output+=""$'\n'
-fi
+output+="Context was compacted. All policies remain in effect:"$'\n'
+output+=""$'\n'
+output+="### BLOCKING HOOKS (hard enforcement):"$'\n'
+output+="- **Worktree File Guard**: Edit/Write operations BLOCKED outside .worktrees/"$'\n'
+output+="- **Dangerous Command Guard**: terraform apply/destroy, git push --force, direct master commits BLOCKED"$'\n'
+output+="- **Completion Gate**: Stop/completion checked for test, build, version gates"$'\n'
+output+=""$'\n'
+output+="### ACTIVE POLICIES [all REQUIRED]:"$'\n'
+output+="1. worktree-enforcement — All file changes in .worktrees/NNN-<slug>/"$'\n'
+output+="2. worktree-file-guard — Edit/Write paths must be inside worktrees"$'\n'
+output+="3. pre-edit-build-gate — npm run build before/after .ts edits"$'\n'
+output+="4. completion-gate — 2+ tests, build, lint, version bump before DONE"$'\n'
+output+="5. semver-versioning — npm run version:patch/minor/major (no manual edits)"$'\n'
+output+="6. mandatory-file-backup — Backup files before modification"$'\n'
+output+="7. iac-state-parity — All infra changes reflected in IaC"$'\n'
+output+="8. iac-pipeline-enforcement — No local terraform apply/destroy"$'\n'
+output+="9. kubectl-verify-backport — kubectl changes backported to IaC"$'\n'
+output+="10. definition-of-done-iac — Pipeline apply + kubectl verify required"$'\n'
+output+="11. image-asset-verification — Script-based, not vision-based [RECOMMENDED]"$'\n'
+output+=""$'\n'
+output+="### MANDATORY BEFORE WORK:"$'\n'
+output+="- Verify you are in a worktree: pwd must contain .worktrees/"$'\n'
+output+="- Run: uap task ready"$'\n'
+output+="- Query memory: uap memory query \"<current task>\""$'\n'
+output+=""$'\n'
 
 # ─── Restore session context from memory ─────────────────────────
-if [ "$CONTEXT_LEVEL" = "verbose" ] && [ -f "$DB_PATH" ]; then
+if [ -f "$DB_PATH" ]; then
   recent=$(sqlite3 "$DB_PATH" "
     SELECT type || ': ' || substr(content, 1, 100) FROM memories
     WHERE timestamp >= datetime('now', '-2 hours')
@@ -84,7 +79,7 @@ if [ "$CONTEXT_LEVEL" = "verbose" ] && [ -f "$DB_PATH" ]; then
 fi
 
 # ─── Multi-agent coordination status ────────────────────────────
-if [ "$CONTEXT_LEVEL" = "verbose" ] && [ -f "$COORD_DB" ]; then
+if [ -f "$COORD_DB" ]; then
   active_work=$(sqlite3 "$COORD_DB" "
     SELECT agent_id || ' editing ' || resource
     FROM work_announcements

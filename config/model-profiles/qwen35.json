@@ -47,11 +47,12 @@
     },
     "speculative_decoding": {
       "enabled": true,
-      "draft_model": "Qwen3.5-0.8B-Q8_0",
-      "draft_max": 16,
-      "draft_min": 3,
-      "draft_p_min": 0.75,
-      "_comment": "Enable for 2-3x speedup in tokens/sec. Uses Qwen3.5-0.8B-Q8_0 as draft model to propose tokens. Set enabled=true and provide draft model GGUF path. Current setup: main model 17GB, draft model 0.8GB, KV cache ~2-3GB."
+      "type": "ngram-mod",
+      "ngram_size_n": 3,
+      "draft_max": 3,
+      "draft_min": 1,
+      "draft_p_min": 0.80,
+      "_comment": "ngram-mod self-speculation (no draft model). Draft-model spec crashes on Qwen3.5 due to hybrid memory (GDN) seq_add incompatibility. ngram-mod avoids this and gives stable ~33 tok/s."
     },
     "_comment": "KV q8/q4 split saves ~60% KV VRAM. Flash attn gives 1.5-2x speed on long context."
   },

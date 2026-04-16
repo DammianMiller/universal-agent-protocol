@@ -1143,9 +1143,14 @@ program
   });
 
 {
+  // The policy command is lazy-loaded but needs to accept arbitrary sub-flags
+  // like `-p <id> -c <file>` without strict validation — otherwise commander
+  // rejects them before the action can register the real subcommands.
   const policyCmd = program
     .command('policy')
-    .description('UAP policy management (list, install, enable, disable, status)')
+    .description('UAP policy management (list, install, enable, disable, status, add-tool, check, audit, toggle, stage, level)')
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
     .action(async () => {
       const cmds = program.commands as unknown as Command[];
       const idx = cmds.findIndex((c) => c.name() === 'policy');

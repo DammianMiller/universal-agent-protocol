@@ -1,12 +1,9 @@
 {
   "hooks": {
-    "claudeHooksImported": true,
     "importedClaudeHooks": [
       "bd prime",
       "bd prime",
       "if [[ \"$CLAUDE_TOOL_FILE_PATH\" == *.js || \"$CLAUDE_TOOL_FILE_PATH\" == *.ts || \"$CLAUDE_TOOL_FILE_PATH\" == *.jsx || \"$CLAUDE_TOOL_FILE_PATH\" == *.tsx ]]; then npx eslint \"$CLAUDE_TOOL_FILE_PATH\" --fix 2>/dev/null || true; elif [[ \"$CLAUDE_TOOL_FILE_PATH\" == *.py ]]; then pylint \"$CLAUDE_TOOL_FILE_PATH\" 2>/dev/null || true; elif [[ \"$CLAUDE_TOOL_FILE_PATH\" == *.rb ]]; then rubocop \"$CLAUDE_TOOL_FILE_PATH\" --auto-correct 2>/dev/null || true; fi"
-    ],
-    "SessionStart": [
     ],
     "PreCompact": [
       {
@@ -14,8 +11,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/cogtek/.factory/hooks/peon-ping/peon.sh",
-            "timeout": 10
+            "command": "\"$FACTORY_PROJECT_DIR\"/.factory/hooks/pre-compact.sh"
           }
         ]
       }
@@ -38,8 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/cogtek/.factory/hooks/peon-ping/peon.sh",
-            "timeout": 10
+            "command": "\"$FACTORY_PROJECT_DIR\"/.factory/hooks/stop.sh"
           }
         ]
       }
@@ -64,6 +59,70 @@
             "type": "command",
             "command": "/home/cogtek/.factory/hooks/peon-ping/peon.sh",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$FACTORY_PROJECT_DIR\"/.factory/hooks/session-start.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$FACTORY_PROJECT_DIR\"/.factory/hooks/pre-tool-use-edit-write.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$FACTORY_PROJECT_DIR\"/.factory/hooks/pre-tool-use-bash.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$FACTORY_PROJECT_DIR\"/.factory/hooks/post-tool-use-edit-write.sh"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$FACTORY_PROJECT_DIR\"/.factory/hooks/post-compact.sh"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$FACTORY_PROJECT_DIR\"/.factory/hooks/session-end.sh"
           }
         ]
       }

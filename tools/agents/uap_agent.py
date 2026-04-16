@@ -28,7 +28,7 @@ class UAPAgent(BaseInstalledAgent):
         # Check for validate_plan flag (default True - ALWAYS prompts after first pass!)
         use_validation = os.environ.get("UAP_VALIDATE_PLAN", "true").lower() == "true"
 
-        api_endpoint = os.environ.get("API_ENDPOINT", "http://localhost:8080/v1")
+        api_endpoint = os.environ.get("API_ENDPOINT", "http://localhost:4000/v1")
         model_name = os.environ.get("MODEL_NAME", "qwen3.5-a3b-iq4xs")
 
         # Enable parallel execution by default (UAP v3.0+ feature)

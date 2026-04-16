@@ -1,9 +1,4 @@
 {
-  "env": {
-    "ANTHROPIC_API_KEY": "sk-local",
-    "ANTHROPIC_BASE_URL": "http://localhost:4000/anthropic",
-     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
-  },
   "autoApprove": [
     "read",
     "write",
@@ -27,11 +22,15 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write",
+        "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",
             "command": "bash .claude/hooks/pre-tool-use-edit-write.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/uap-policy-gate.sh"
           }
         ]
       },
@@ -41,6 +40,19 @@
           {
             "type": "command",
             "command": "bash .claude/hooks/pre-tool-use-bash.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/uap-policy-gate.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Task|Agent|ToolSearch|ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/uap-policy-gate.sh"
           }
         ]
       }

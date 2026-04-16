@@ -1,0 +1,80 @@
+/*
+ * styles.css - Game styling and layout
+ * Fullscreen canvas, cursor hidden during gameplay, no-select, overflow hidden
+ */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: #0D1117;
+    cursor: none; /* Hide cursor during gameplay */
+}
+
+canvas {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 1;
+}
+
+/* Show cursor on UI screens */
+body.menu-active #gameCanvas,
+body.gameover-active #gameCanvas {
+    cursor: default;
+}
+
+/* Prevent text selection during gameplay */
+body {
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+/* Prevent default touch behaviors */
+body {
+    touch-action: none;
+}
+
+/* Ensure canvas fills window */
+canvas {
+    width: 100vw;
+    height: 100vh;
+}
+
+/* UI overlay styling (inline styles for dynamic elements) */
+.ui-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 10;
+}
+
+/* Cursor visibility for menu states */
+body.menu-active *,
+body.gameover-active * {
+    cursor: default !important;
+}
+
+/* Loading indicator */
+.loading-screen {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+    color: #FFFFFF;
+    font-family: 'Courier New', monospace;
+    font-size: 24px;
+    text-shadow: 0 0 10px #4ECDC4;
+}

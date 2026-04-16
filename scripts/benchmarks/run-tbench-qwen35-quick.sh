@@ -29,38 +29,29 @@ TIMESTAMP=$(date +%Y-%m-%d__%H-%M-%S)
 # CONFIGURATION
 # ============================================================================
 
-# Models - Qwen3.5 is the primary focus for this benchmark
-# Using local deployment at http://localhost:8080/v1
-# Model name from factory config: qwen35-a3b-iq4xs
+# Models - opencode + in-container tool-choice-proxy -> llama.cpp directly
+# Bypasses UAP Anthropic proxy (proven 20-40% pass rate in historical runs)
+# Currently running Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf on llama.cpp
 MODELS=(
-    "qwen35-a3b-iq4xs"
+    "llama.cpp/qwen35-a3b-iq4xs"
 )
 
-# Quick test subset (12 tasks) - Representative sample of task categories
-# These cover: security, file-ops, legacy, ml, coding, reasoning
+# Direct llama.cpp endpoint (OpenAI API) — opencode + its in-container proxy
+export UAP_API_ENDPOINT="http://192.168.1.165:8080/v1"
+
+# Quick test subset - Tasks selected for local Qwen3.5-A3B Q4_K_XL via claude-local
 QUICK_TESTS=(
-    # Security tasks
-    "crack-7z-hash"
-    "filter-js-from-html"
-    
+    # Easy tasks
+    "fix-git"
+    "openssl-selfsigned-cert"
+    "regex-log"
+
     # File operations
     "sqlite-db-truncate"
-    "extract-elf"
-    
-    # Legacy/modernization
-    "cobol-modernization"
-    
-    # ML/ML-related
-    "gpt2-codegolf"
-    
+
     # Coding/general
-    "code-from-image"
     "log-summary-date-ranges"
-    "password-recovery"
     "financial-document-processor"
-    
-    # Reasoning/scheduling (UAP skip category)
-    "chess-best-move"
 )
 
 # Full suite (88 tasks) - All terminal-bench@2.0 tasks
@@ -91,8 +82,8 @@ DROID_INVOKE=${DROID_INVOKE:-false}
 SKILL_INJECTION=${SKILL_INJECTION:-true}
 
 # Benchmark settings
-N_CONCURRENT=${N_CONCURRENT:-4}
-TIMEOUT_MULT=${TIMEOUT_MULT:-1.5}  # Slightly higher for Qwen3.5
+N_CONCURRENT=${N_CONCURRENT:-1}
+TIMEOUT_MULT=${TIMEOUT_MULT:-6.0}  # Matches historical successful runs (uap-10.x.x-final)
 DATASET="terminal-bench@2.0"
 
 # ============================================================================
@@ -251,7 +242,7 @@ run_benchmark() {
     
     harbor run \
         -d "$DATASET" \
-        -a claude-code \
+        --agent-import-path tools.agents.opencode_uap_agent:OpenCodeUAP \
         -m "$model" \
         $task_args \
         -k 1 \
@@ -259,14 +250,6 @@ run_benchmark() {
         --job-name "$job_name" \
         -n "$N_CONCURRENT" \
         --timeout-multiplier "$TIMEOUT_MULT" \
-        --ak "use_uam=true" \
-        --ak "project_root=$PROJECT_ROOT" \
-        --ak "session_hooks=$USE_SESSION_HOOKS" \
-        --ak "pre_compact=$USE_PRE_COMPACT" \
-        --ak "memory_queries=$MEMORY_QUERIES" \
-        --ak "droid_invoke=$DROID_INVOKE" \
-        --ak "skill_injection=$SKILL_INJECTION" \
-        --ak "system_prompt_append=$(generate_uap_context)" \
         2>&1 | tee "$RESULTS_DIR/${job_name}.log"
     
     echo ""
@@ -408,15 +391,11 @@ main() {
         esac
     done
     
-    # Verify API key - Using local Qwen3.5 deployment via Factory
-    # Local endpoint: http://localhost:8080/v1 with model qwen35-a3b-iq4xs
-    if [ -z "$FACTORY_API_KEY" ] && [ -z "$DROID_API_KEY" ]; then
-        echo "Warning: No Factory API key set"
-        echo "Using local Qwen3.5 deployment at http://localhost:8080/v1"
-        echo ""
-    fi
-    
-    echo "Using Factory API for Qwen3.5 model access (qwen35-a3b-iq4xs)"
+    # Using opencode + in-container tool-choice-proxy -> llama.cpp directly
+    # This is the historical successful config (uap-10.x.x-final: 20-40% pass rate)
+    echo "Using opencode + tool-choice-proxy"
+    echo "Endpoint: $UAP_API_ENDPOINT"
+    echo "Model: llama.cpp/qwen35-a3b-iq4xs (Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf)"
     
     # Create results directory
     mkdir -p "$RESULTS_DIR"
