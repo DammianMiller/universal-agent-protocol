@@ -36,18 +36,34 @@ export type {
 } from './models/index.js';
 
 // Memory system exports
+/**
+ * Get the embedding service for generating vector embeddings
+ * @returns EmbeddingService instance
+ */
 export { getEmbeddingService, generateEmbedding, generateEmbeddings } from './memory/embeddings.js';
+
+/**
+ * Classify tasks into categories and extract entities for memory queries
+ * @param task - Task description to classify
+ * @returns Task classification with suggested memory queries
+ */
 export {
   classifyTask,
   extractTaskEntities,
   getSuggestedMemoryQueries,
 } from './memory/task-classifier.js';
+export type { TaskClassification } from './memory/task-classifier.js';
+
+/**
+ * Retrieve dynamic memory context based on query complexity
+ * @param query - User query for context retrieval
+ * @returns Dynamic memory context with retrieved memories
+ */
 export {
   retrieveDynamicMemoryContext,
   measureQueryComplexity,
   getRetrievalDepth,
 } from './memory/dynamic-retrieval.js';
-export type { TaskClassification } from './memory/task-classifier.js';
 export type {
   DynamicMemoryContext,
   RetrievedMemory,

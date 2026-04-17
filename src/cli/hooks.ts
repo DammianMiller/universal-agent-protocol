@@ -191,12 +191,22 @@ async function installClaudeHooks(cwd: string): Promise<void> {
     ],
     PreToolUse: [
       {
-        matcher: 'Edit|Write',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-tool-use-edit-write.sh' }],
+        matcher: 'Edit|Write|MultiEdit',
+        hooks: [
+          { type: 'command', command: 'bash .claude/hooks/pre-tool-use-edit-write.sh' },
+          { type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' },
+        ],
       },
       {
         matcher: 'Bash',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-tool-use-bash.sh' }],
+        hooks: [
+          { type: 'command', command: 'bash .claude/hooks/pre-tool-use-bash.sh' },
+          { type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' },
+        ],
+      },
+      {
+        matcher: 'Task|Agent|ToolSearch|ExitPlanMode',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' }],
       },
     ],
     PostToolUse: [
@@ -353,8 +363,11 @@ async function installCursorHooks(cwd: string): Promise<void> {
     ...existingHooks,
     sessionStart: [{ command: '.cursor/hooks/session-start.sh' }],
     preToolUse: [
-      { matcher: 'Edit|Write', command: '.cursor/hooks/pre-tool-use-edit-write.sh' },
+      { matcher: 'Edit|Write|MultiEdit', command: '.cursor/hooks/pre-tool-use-edit-write.sh' },
+      { matcher: 'Edit|Write|MultiEdit', command: '.cursor/hooks/uap-policy-gate.sh' },
       { matcher: 'Bash', command: '.cursor/hooks/pre-tool-use-bash.sh' },
+      { matcher: 'Bash', command: '.cursor/hooks/uap-policy-gate.sh' },
+      { matcher: 'Task|Agent|ToolSearch|ExitPlanMode', command: '.cursor/hooks/uap-policy-gate.sh' },
     ],
     postToolUse: [
       { matcher: 'Edit|Write', command: '.cursor/hooks/post-tool-use-edit-write.sh' },
@@ -402,12 +415,22 @@ async function installVscodeHooks(cwd: string): Promise<void> {
     ],
     PreToolUse: [
       {
-        matcher: 'Edit|Write',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-tool-use-edit-write.sh' }],
+        matcher: 'Edit|Write|MultiEdit',
+        hooks: [
+          { type: 'command', command: 'bash .claude/hooks/pre-tool-use-edit-write.sh' },
+          { type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' },
+        ],
       },
       {
         matcher: 'Bash',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-tool-use-bash.sh' }],
+        hooks: [
+          { type: 'command', command: 'bash .claude/hooks/pre-tool-use-bash.sh' },
+          { type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' },
+        ],
+      },
+      {
+        matcher: 'Task|Agent|ToolSearch|ExitPlanMode',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' }],
       },
     ],
     PostToolUse: [

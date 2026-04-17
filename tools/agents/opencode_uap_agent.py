@@ -1163,6 +1163,9 @@ class OpenCodeUAP(BaseInstalledAgent):
             "package.json",
         ]
 
+        # Create /uap-local explicitly - docker-compose cp requires the parent
+        # directory to exist before copying files into it
+        await environment.exec("mkdir -p /uap-local")
         created_dirs = {"/uap-local"}
 
         async def ensure_parent_dir(target_path: str) -> None:

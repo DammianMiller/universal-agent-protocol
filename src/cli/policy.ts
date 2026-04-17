@@ -19,6 +19,28 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 const POLICY_DIR = join(process.cwd(), 'src', 'policies', 'schemas', 'policies');
+const ENFORCER_DIR = join(process.cwd(), 'src', 'policies', 'enforcers');
+
+/**
+ * If an enforcer Python file exists alongside the installed policy (same
+ * basename with hyphens->underscores), attach it via PolicyToolRegistry.
+ * Returns the tool name on success, null if no enforcer present.
+ */
+async function autoAttachEnforcer(policyName: string): Promise<string | null> {
+  const toolName = policyName.replace(/-/g, '_');
+  const enforcerPath = join(ENFORCER_DIR, `${toolName}.py`);
+  if (!existsSync(enforcerPath)) return null;
+
+  const memory = getPolicyMemoryManager();
+  const policies = await memory.getAllPolicies();
+  const installed = policies.find((p) => p.name === policyName);
+  if (!installed) return null;
+
+  const code = readFileSync(enforcerPath, 'utf-8');
+  const registry = getPolicyToolRegistry();
+  await registry.storeToolCode(installed.id, toolName, code);
+  return toolName;
+}
 
 /**
  * List command - show all policies
@@ -92,6 +114,12 @@ async function installCommand(name: string): Promise<void> {
     await policyManager.storeRawPolicy(content);
     console.log(chalk.green(`\n✅ Policy '${name}' installed successfully!`));
     console.log(chalk.dim('The policy is now active and will be enforced.'));
+
+    // Auto-attach Python enforcer if one lives alongside the markdown
+    const toolName = await autoAttachEnforcer(name);
+    if (toolName) {
+      console.log(chalk.dim(`    → attached enforcer '${toolName}' from src/policies/enforcers/${toolName}.py`));
+    }
 
     // Invalidate cache to pick up new policy
     policyGate.invalidateCache();

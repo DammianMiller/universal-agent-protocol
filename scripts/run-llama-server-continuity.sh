@@ -30,11 +30,16 @@ export LLAMA_DRAFT_MAX="${LLAMA_DRAFT_MAX:-8}"
 export LLAMA_DRAFT_MIN="${LLAMA_DRAFT_MIN:-3}"
 export LLAMA_DRAFT_P_MIN="${LLAMA_DRAFT_P_MIN:-0.75}"
 export LLAMA_HYBRID_ROLLBACK_MODE="${LLAMA_HYBRID_ROLLBACK_MODE:-strict}"
+export LLAMA_REPEAT_PENALTY="${LLAMA_REPEAT_PENALTY:-1.05}"
+export LLAMA_CACHE_REUSE="${LLAMA_CACHE_REUSE:-}"
 export LLAMA_LOG_FILE="${LLAMA_LOG_FILE:-llama-server.log}"
 export LLAMA_CHAT_TEMPLATE_FILE="${LLAMA_CHAT_TEMPLATE_FILE:-${ROOT_DIR}/tools/agents/config/chat_template.jinja}"
 export LLAMA_EXTRA_ARGS="${LLAMA_EXTRA_ARGS:-}"
 
-if [[ ! -f "$LLAMA_CHAT_TEMPLATE_FILE" ]]; then
+# Set LLAMA_CHAT_TEMPLATE_FILE=embedded to use the model's own template
+# (skip the --chat-template-file flag). Required for models with custom formats
+# that aren't ChatML (e.g. Gemma-4 with <|turn>/<|tool_call> DSL).
+if [[ "$LLAMA_CHAT_TEMPLATE_FILE" != "embedded" && ! -f "$LLAMA_CHAT_TEMPLATE_FILE" ]]; then
   echo "ERROR: LLAMA_CHAT_TEMPLATE_FILE not found: $LLAMA_CHAT_TEMPLATE_FILE" >&2
   exit 1
 fi
@@ -54,19 +59,41 @@ args=(
   --parallel "${LLAMA_PARALLEL:-1}"
   --no-context-shift
   --n-predict 81920
-  --repeat-penalty 1.05
-  --chat-template-file "$LLAMA_CHAT_TEMPLATE_FILE"
+  --repeat-penalty "$LLAMA_REPEAT_PENALTY"
   --log-file "$LLAMA_LOG_FILE"
   --temp 0.3
 )
 
+if [[ -n "$LLAMA_CACHE_REUSE" ]]; then
+  args+=(--cache-reuse "$LLAMA_CACHE_REUSE")
+fi
+
+if [[ "$LLAMA_CHAT_TEMPLATE_FILE" != "embedded" ]]; then
+  args+=(--chat-template-file "$LLAMA_CHAT_TEMPLATE_FILE")
+fi
+
 if [[ "$LLAMA_ENABLE_SPEC_DECODING" == "true" ]]; then
-  args+=(
-    --spec-type "$LLAMA_SPEC_TYPE"
-    --draft-max "$LLAMA_DRAFT_MAX"
-    --draft-min "$LLAMA_DRAFT_MIN"
-    --draft-p-min "$LLAMA_DRAFT_P_MIN"
-  )
+  if [[ -n "${LLAMA_DRAFT_MODEL:-}" && -f "${LLAMA_DRAFT_MODEL}" ]]; then
+    # Draft model speculation (separate small model for drafting)
+    args+=(
+      --model-draft "$LLAMA_DRAFT_MODEL"
+      --gpu-layers-draft "${LLAMA_DRAFT_GPU_LAYERS:-99}"
+      --draft-max "$LLAMA_DRAFT_MAX"
+      --draft-min "$LLAMA_DRAFT_MIN"
+      --draft-p-min "$LLAMA_DRAFT_P_MIN"
+    )
+    [[ -n "${LLAMA_DRAFT_CTX_SIZE:-}" ]] && args+=(--ctx-size-draft "$LLAMA_DRAFT_CTX_SIZE")
+    [[ -n "${LLAMA_DRAFT_CACHE_TYPE_K:-}" ]] && args+=(--cache-type-k-draft "$LLAMA_DRAFT_CACHE_TYPE_K")
+    [[ -n "${LLAMA_DRAFT_CACHE_TYPE_V:-}" ]] && args+=(--cache-type-v-draft "$LLAMA_DRAFT_CACHE_TYPE_V")
+  else
+    # Self-speculation via ngram-cache (no draft model)
+    args+=(
+      --spec-type "$LLAMA_SPEC_TYPE"
+      --draft-max "$LLAMA_DRAFT_MAX"
+      --draft-min "$LLAMA_DRAFT_MIN"
+      --draft-p-min "$LLAMA_DRAFT_P_MIN"
+    )
+  fi
 fi
 
 if [[ -n "$LLAMA_EXTRA_ARGS" ]]; then

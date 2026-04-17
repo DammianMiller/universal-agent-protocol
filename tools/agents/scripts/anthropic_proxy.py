@@ -166,6 +166,12 @@ PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
 PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT = int(
     os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "3")
 )
+# Force finalize after N consecutive forced_budget_exhausted events where
+# neither cycling nor stagnation was detected — catches "distinct but
+# unproductive" tool spam that defeats per-tool cycle detection.
+PROXY_UNPRODUCTIVE_EXHAUSTION_LIMIT = int(
+    os.environ.get("PROXY_UNPRODUCTIVE_EXHAUSTION_LIMIT", "2")
+)
 PROXY_COMPLETION_RECOVERY_MAX = int(
     os.environ.get("PROXY_COMPLETION_RECOVERY_MAX", "3")
 )
@@ -205,6 +211,13 @@ PROXY_SESSION_TTL_SECS = int(os.environ.get("PROXY_SESSION_TTL_SECS", "7200"))
 PROXY_FINALIZE_CONTINUATION_MAX = int(
     os.environ.get("PROXY_FINALIZE_CONTINUATION_MAX", "3")
 )
+# Session-level cap: after N total finalize continuations in a session (even
+# across "fresh user text" state resets), stop injecting synthetic tools and
+# let the response terminate naturally. Catches runaway loops that dodge the
+# per-cycle cap by triggering state resets.
+PROXY_FINALIZE_SESSION_HARD_CAP = int(
+    os.environ.get("PROXY_FINALIZE_SESSION_HARD_CAP", "3")
+)
 PROXY_STREAM_REASONING_FALLBACK = (
     os.environ.get("PROXY_STREAM_REASONING_FALLBACK", "off").strip().lower()
 )
@@ -228,6 +241,14 @@ PROXY_TOOL_NARROWING_MIN_TOOLS = int(
 )
 PROXY_DISABLE_THINKING_ON_TOOL_TURNS = os.environ.get(
     "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", "off"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+PROXY_DISABLE_SPEC_ON_TOOL_TURNS = os.environ.get(
+    "PROXY_DISABLE_SPEC_ON_TOOL_TURNS", "off"
 ).lower() not in {
     "0",
     "false",
@@ -654,6 +675,7 @@ class SessionMonitor:
     tool_state_stagnation_streak: int = 0
     tool_state_transitions: int = 0
     tool_state_review_cycles: int = 0
+    tool_state_unproductive_exhaustion_streak: int = 0
     last_tool_fingerprint: str = ""
     cycling_tool_names: list = field(default_factory=list)
     session_banned_tools: set = field(default_factory=set)  # tools banned for entire session after repeated cycling
@@ -661,6 +683,7 @@ class SessionMonitor:
     last_response_garbled: bool = False  # previous turn had garbled/malformed output
     finalize_turn_active: bool = False
     finalize_continuation_count: int = 0
+    finalize_hard_stop_count: int = 0  # monotonic, not reset by fresh user text
     finalize_synthetic_tool_id: str = ""
     completion_required: bool = False
     completion_pending: bool = False
@@ -898,6 +921,7 @@ class SessionMonitor:
         self.tool_state_auto_budget_remaining = 0
         self.tool_state_stagnation_streak = 0
         self.tool_state_review_cycles = 0
+        self.tool_state_unproductive_exhaustion_streak = 0
         self.cycling_tool_names = []
         self.last_tool_fingerprint = ""
         self.reset_tool_targets()
@@ -906,7 +930,10 @@ class SessionMonitor:
         self.completion_required = _should_enforce_completion_contract(anthropic_body)
         self.completion_progress_signals = _count_completion_progress_signals(anthropic_body)
         blockers = _completion_blockers(
-            anthropic_body, has_tool_results, phase=self.tool_turn_phase
+            anthropic_body,
+            has_tool_results,
+            phase=self.tool_turn_phase,
+            finalize_fired=(self.finalize_hard_stop_count > 0),
         )
         self.completion_blockers = blockers
         self.completion_pending = self.completion_required and bool(blockers)
@@ -1046,6 +1073,8 @@ class SessionMonitor:
 session_monitors: dict[str, SessionMonitor] = {}
 default_context_window = 0
 last_session_id = ""
+_last_ctx_recheck_ts: float = 0.0
+_CTX_RECHECK_INTERVAL: float = 60.0  # Re-detect context window every 60s
 
 
 def _cleanup_stale_monitors(now_ts: float) -> None:
@@ -1056,6 +1085,39 @@ def _cleanup_stale_monitors(now_ts: float) -> None:
     ]
     for sid in stale:
         session_monitors.pop(sid, None)
+
+
+async def _maybe_recheck_context_window() -> None:
+    """Periodically re-query the upstream server's context window.
+
+    Handles server restarts with different --ctx-size mid-session.
+    Non-blocking: skips if the check interval hasn't elapsed.
+    """
+    global default_context_window, _last_ctx_recheck_ts
+    now = time.time()
+    if now - _last_ctx_recheck_ts < _CTX_RECHECK_INTERVAL:
+        return
+    _last_ctx_recheck_ts = now
+    if http_client is None:
+        return
+    try:
+        slots_url = LLAMA_CPP_BASE.replace("/v1", "/slots")
+        resp = await http_client.get(slots_url, timeout=2.0)
+        if resp.status_code == 200:
+            slots = resp.json()
+            if slots and isinstance(slots, list):
+                n_ctx = slots[0].get("n_ctx", 0)
+                if n_ctx > 0 and n_ctx != default_context_window:
+                    old = default_context_window
+                    default_context_window = n_ctx
+                    for mon in session_monitors.values():
+                        mon.context_window = n_ctx
+                    logger.warning(
+                        "Context window changed: %d → %d (upstream server restarted?)",
+                        old, n_ctx,
+                    )
+    except Exception:
+        pass  # Non-critical, will retry next interval
 
 
 def get_session_monitor(session_id: str) -> SessionMonitor:
@@ -1852,6 +1914,9 @@ else:
 
 
 def _content_fingerprint(content) -> str:
+    """Return a STABLE fingerprint for content. Must not include volatile
+    identifiers (tool_use_ids change per-turn), otherwise session stickiness
+    breaks in agentic loops with stateful guardrails."""
     if isinstance(content, str):
         return content[:512]
     if isinstance(content, list):
@@ -1866,7 +1931,10 @@ def _content_fingerprint(content) -> str:
                 elif btype == "tool_use":
                     parts.append(f"tool:{block.get('name', '')}")
                 elif btype == "tool_result":
-                    parts.append(f"result:{block.get('tool_use_id', '')}")
+                    # Stable: use tool name + first 64 chars of content, not tool_use_id
+                    inner = block.get("content", "")
+                    inner_text = _extract_text(inner) if not isinstance(inner, str) else inner
+                    parts.append(f"result:{inner_text[:64]}")
         return "\n".join(parts)[:1024]
     return str(content)[:512]
 
@@ -1893,14 +1961,26 @@ def resolve_session_id(request: Request, anthropic_body: dict) -> str:
     first_user = ""
     for msg in anthropic_body.get("messages", []):
         if msg.get("role") == "user":
-            first_user = _content_fingerprint(msg.get("content", ""))
+            # Only hash TEXT content of first user message, not tool_result blocks
+            # (which may appear in /anthropic/v1/messages passthrough scenarios)
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                first_user = content[:512]
+            elif isinstance(content, list):
+                text_parts = [
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                first_user = "\n".join(text_parts)[:512]
             break
 
-    system_fingerprint = _content_fingerprint(anthropic_body.get("system", ""))
+    # Deliberately exclude `system` from fingerprint — clients often inject
+    # volatile context (timestamps, cwd, session markers) into system prompts
+    # which would break session stickiness for ongoing conversations.
     model = anthropic_body.get("model", "default")
     remote = request.client.host if request.client else "unknown"
     digest = hashlib.sha256(
-        f"{remote}|{model}|{system_fingerprint}|{first_user}".encode(
+        f"{remote}|{model}|{first_user}".encode(
             "utf-8", errors="ignore"
         )
     ).hexdigest()[:20]
@@ -1965,7 +2045,10 @@ def _should_enforce_completion_contract(anthropic_body: dict) -> bool:
 
 
 def _completion_blockers(
-    anthropic_body: dict, has_tool_results: bool, phase: str = ""
+    anthropic_body: dict,
+    has_tool_results: bool,
+    phase: str = "",
+    finalize_fired: bool = False,
 ) -> list[str]:
     blockers: list[str] = []
     progress = _count_completion_progress_signals(anthropic_body)
@@ -1977,9 +2060,12 @@ def _completion_blockers(
         if last_user_has_result:
             blockers.append("awaiting_post_tool_followup")
         elif _last_assistant_was_text_only(anthropic_body):
-            # Option 2: Suppress during finalize — text-only is expected behavior
-            # for finalize turns, so blocking on it causes infinite ping-pong.
-            if phase != "finalize":
+            # Suppress in two cases:
+            # 1. Currently in finalize phase — text-only is expected
+            # 2. A finalize fired earlier this session — means the state machine
+            #    already wrapped up the loop, don't re-trigger it (was causing
+            #    finalize -> review -> cycle -> finalize -> review... infinite loop)
+            if phase != "finalize" and not finalize_fired:
                 blockers.append("text_only_after_tool_results")
 
     return blockers
@@ -2018,6 +2104,212 @@ def _sanitize_tool_schema_for_llama(schema):
         return node
 
     return _walk(schema), removed
+
+
+def openai_to_anthropic_request(openai_body: dict) -> dict:
+    """Convert an OpenAI Chat Completions request to an Anthropic Messages request.
+
+    Inverse of anthropic_to_openai_messages. Used by /v1/chat/completions passthrough
+    to let OpenAI-shaped clients (Forge, etc.) benefit from the Anthropic-path
+    guardrails (loop detection, tool narrowing, cycle breaking, etc.).
+    """
+    anthropic_messages: list[dict] = []
+    system_text_parts: list[str] = []
+
+    for msg in openai_body.get("messages", []):
+        role = msg.get("role", "")
+        content = msg.get("content")
+
+        if role == "system":
+            if isinstance(content, str):
+                system_text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        system_text_parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        system_text_parts.append(block)
+            continue
+
+        if role == "tool":
+            # OpenAI tool response -> Anthropic user message with tool_result block
+            tool_call_id = msg.get("tool_call_id", "")
+            tool_text = content if isinstance(content, str) else _extract_text(content)
+            anthropic_messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_call_id,
+                            "content": tool_text,
+                        }
+                    ],
+                }
+            )
+            continue
+
+        if role == "assistant":
+            blocks: list[dict] = []
+            if isinstance(content, str) and content:
+                blocks.append({"type": "text", "text": content})
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        blocks.append({"type": "text", "text": block.get("text", "")})
+                    elif isinstance(block, str):
+                        blocks.append({"type": "text", "text": block})
+
+            for tc in msg.get("tool_calls", []) or []:
+                fn = tc.get("function", {})
+                try:
+                    args = json.loads(fn.get("arguments", "{}") or "{}")
+                except (ValueError, TypeError):
+                    args = {}
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:12]}"),
+                        "name": fn.get("name", ""),
+                        "input": args,
+                    }
+                )
+
+            anthropic_messages.append(
+                {"role": "assistant", "content": blocks if blocks else ""}
+            )
+            continue
+
+        # role == "user" (or unknown -> treat as user)
+        if isinstance(content, str):
+            anthropic_messages.append({"role": "user", "content": content})
+        elif isinstance(content, list):
+            blocks = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    blocks.append({"type": "text", "text": block.get("text", "")})
+                elif isinstance(block, str):
+                    blocks.append({"type": "text", "text": block})
+            anthropic_messages.append(
+                {"role": "user", "content": blocks if blocks else ""}
+            )
+        else:
+            anthropic_messages.append({"role": "user", "content": ""})
+
+    anthropic_body: dict = {
+        "model": openai_body.get("model", "default"),
+        "messages": anthropic_messages,
+        "max_tokens": int(openai_body.get("max_tokens", 4096) or 4096),
+    }
+    if system_text_parts:
+        anthropic_body["system"] = "\n\n".join(p for p in system_text_parts if p)
+
+    for key_o, key_a in (
+        ("temperature", "temperature"),
+        ("top_p", "top_p"),
+        ("top_k", "top_k"),
+        ("stop", "stop_sequences"),
+        ("stream", "stream"),
+    ):
+        if key_o in openai_body:
+            val = openai_body[key_o]
+            if key_a == "stop_sequences" and isinstance(val, str):
+                val = [val]
+            anthropic_body[key_a] = val
+
+    # Convert OpenAI tools -> Anthropic tools
+    openai_tools = openai_body.get("tools") or []
+    if openai_tools:
+        anthropic_tools = []
+        for tool in openai_tools:
+            fn = tool.get("function", {}) if isinstance(tool, dict) else {}
+            if not fn.get("name"):
+                continue
+            anthropic_tools.append(
+                {
+                    "name": fn.get("name", ""),
+                    "description": fn.get("description", ""),
+                    "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+                }
+            )
+        if anthropic_tools:
+            anthropic_body["tools"] = anthropic_tools
+
+    tool_choice = openai_body.get("tool_choice")
+    if tool_choice == "none":
+        anthropic_body.pop("tools", None)
+    elif tool_choice == "required":
+        anthropic_body["tool_choice"] = {"type": "any"}
+    elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+        anthropic_body["tool_choice"] = {
+            "type": "tool",
+            "name": tool_choice.get("function", {}).get("name", ""),
+        }
+
+    return anthropic_body
+
+
+def anthropic_to_openai_response(anthropic_resp: dict) -> dict:
+    """Convert an Anthropic Messages response to OpenAI Chat Completions format."""
+    content_blocks = anthropic_resp.get("content", []) or []
+    text_parts: list[str] = []
+    tool_calls: list[dict] = []
+
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text_parts.append(block.get("text", ""))
+        elif btype == "tool_use":
+            tool_calls.append(
+                {
+                    "id": block.get("id", f"call_{uuid.uuid4().hex[:12]}"),
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name", ""),
+                        "arguments": json.dumps(block.get("input", {}) or {}),
+                    },
+                }
+            )
+
+    stop_reason = anthropic_resp.get("stop_reason", "end_turn")
+    finish_map = {
+        "end_turn": "stop",
+        "stop_sequence": "stop",
+        "max_tokens": "length",
+        "tool_use": "tool_calls",
+    }
+    finish_reason = finish_map.get(stop_reason, "stop")
+
+    message: dict = {"role": "assistant"}
+    if text_parts:
+        message["content"] = "".join(text_parts)
+    else:
+        message["content"] = None
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+
+    usage = anthropic_resp.get("usage", {}) or {}
+
+    return {
+        "id": anthropic_resp.get("id", f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": anthropic_resp.get("model", "unknown"),
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason,
+            }
+        ],
+        "usage": {
+            "prompt_tokens": usage.get("input_tokens", 0),
+            "completion_tokens": usage.get("output_tokens", 0),
+            "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+        },
+    }
 
 
 def _convert_anthropic_tools_to_openai(anthropic_tools: list[dict]) -> list[dict]:
@@ -2313,11 +2605,27 @@ def _resolve_state_machine_tool_choice(
 
         if monitor.tool_state_forced_budget_remaining <= 0:
             monitor.set_tool_turn_phase("review", reason="forced_budget_exhausted")
-            # Only count toward review cycle limit if there was an actual
-            # cycle/stagnation detected.  Budget exhaustion alone means the
-            # model is working — it just used all its turns — not cycling.
             if cycle_looping or stagnating:
                 monitor.tool_state_review_cycles += 1
+                monitor.tool_state_unproductive_exhaustion_streak = 0
+            else:
+                # Track consecutive unproductive exhaustions. Even without a
+                # detected cycle, if the model burns through the forced budget
+                # repeatedly with distinct-but-useless tool calls, treat it as
+                # a loop and force finalize. Catches the 35B-A3B failure mode
+                # where different short tool calls defeat per-tool cycle
+                # detection.
+                monitor.tool_state_unproductive_exhaustion_streak += 1
+                if monitor.tool_state_unproductive_exhaustion_streak >= PROXY_UNPRODUCTIVE_EXHAUSTION_LIMIT:
+                    logger.warning(
+                        "TOOL STATE MACHINE: %d consecutive unproductive budget exhaustions — forcing finalize",
+                        monitor.tool_state_unproductive_exhaustion_streak,
+                    )
+                    monitor.set_tool_turn_phase("finalize", reason="unproductive_exhaustion")
+                    monitor.tool_state_unproductive_exhaustion_streak = 0
+                    monitor.tool_state_forced_budget_remaining = 0
+                    monitor.tool_state_auto_budget_remaining = 0
+                    return "finalize", "unproductive_exhaustion"
             monitor.tool_state_auto_budget_remaining = max(
                 1, PROXY_TOOL_STATE_AUTO_BUDGET
             )
@@ -2325,10 +2633,11 @@ def _resolve_state_machine_tool_choice(
                 1, PROXY_TOOL_STATE_FORCED_BUDGET // 2
             )
             logger.warning(
-                "TOOL STATE MACHINE: forced budget exhausted, entering review (cycles=%d cycling=%s stagnating=%s)",
+                "TOOL STATE MACHINE: forced budget exhausted, entering review (cycles=%d cycling=%s stagnating=%s unprod_exh=%d)",
                 monitor.tool_state_review_cycles,
                 cycle_looping,
                 stagnating,
+                monitor.tool_state_unproductive_exhaustion_streak,
             )
             return "required", "forced_budget_exhausted"
 
@@ -2612,6 +2921,8 @@ def build_openai_request(
             # Skip all further tool_choice logic — no tools this turn
             if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
                 openai_body["enable_thinking"] = False
+            if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
+                openai_body["speculative.n_max"] = 0
             return openai_body
 
         # Check if forced-tool dampener or loop breaker should override tool_choice
@@ -2638,6 +2949,7 @@ def build_openai_request(
             openai_body.pop("tool_choice", None)
             openai_body.pop("tools", None)
             monitor.finalize_turn_active = True
+            monitor.finalize_hard_stop_count += 1  # monotonic marker: a finalize fired this session
             monitor.consecutive_forced_count = 0
             monitor.no_progress_streak = 0
             # Option 3: Inject explicit "no tool calls" instruction to reduce XML leak
@@ -2732,11 +3044,21 @@ def build_openai_request(
         elif state_reason in {"fresh_user_text", "inactive_loop"} and n_msgs <= 1:
             monitor.consecutive_forced_count = 0
             monitor.no_progress_streak = 0
-            logger.info(
-                "tool_choice left unchanged after state reset (reason=%s n_msgs=%d)",
-                state_reason,
-                n_msgs,
-            )
+            # Force tool_choice=required on first turn to ensure local models
+            # produce a tool call instead of plain text (cold-start fix)
+            if has_tools and n_msgs == 1:
+                openai_body["tool_choice"] = "required"
+                logger.info(
+                    "tool_choice forced to 'required' on first turn (reason=%s n_msgs=%d cold_start_fix=true)",
+                    state_reason,
+                    n_msgs,
+                )
+            else:
+                logger.info(
+                    "tool_choice left unchanged after state reset (reason=%s n_msgs=%d)",
+                    state_reason,
+                    n_msgs,
+                )
         elif monitor.should_release_tool_choice():
             openai_body["tool_choice"] = "auto"
             monitor.consecutive_forced_count = 0
@@ -2771,6 +3093,12 @@ def build_openai_request(
             openai_body["enable_thinking"] = False
             logger.info(
                 "Thinking disabled for tool turn (PROXY_DISABLE_THINKING_ON_TOOL_TURNS=on)"
+            )
+
+        if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
+            openai_body["speculative.n_max"] = 0
+            logger.info(
+                "Spec decoding disabled for tool turn (PROXY_DISABLE_SPEC_ON_TOOL_TURNS=on)"
             )
 
         _apply_tool_call_grammar(openai_body, grammar_override=profile_grammar)
@@ -5212,6 +5540,18 @@ def _inject_synthetic_continuation(
     Appends a no-op Read("/dev/null") tool_use block and changes stop_reason
     from "end_turn" to "tool_use" so the client continues sending requests.
     """
+    # Session-level hard cap: if we've already done N continuations in this
+    # session (counter is monotonic, survives fresh-user-text resets), stop
+    # injecting and let the response terminate. This catches runaway loops
+    # that dodge the per-cycle cap via state resets.
+    if monitor.finalize_hard_stop_count >= PROXY_FINALIZE_SESSION_HARD_CAP:
+        logger.warning(
+            "FINALIZE CONTINUATION: session hard cap reached (%d/%d) — not injecting, allowing termination",
+            monitor.finalize_hard_stop_count,
+            PROXY_FINALIZE_SESSION_HARD_CAP,
+        )
+        return anthropic_resp
+
     # Pick a safe tool the client knows about (case-insensitive match,
     # then use the client's actual casing for the tool name)
     if _client_has_tool(anthropic_body, "read"):
@@ -5227,6 +5567,7 @@ def _inject_synthetic_continuation(
     synthetic_id = f"toolu_{uuid.uuid4().hex[:12]}"
     monitor.finalize_synthetic_tool_id = synthetic_id
     monitor.finalize_continuation_count += 1
+    monitor.finalize_hard_stop_count += 1
 
     content = anthropic_resp.get("content", [])
     content.append({
@@ -5239,11 +5580,13 @@ def _inject_synthetic_continuation(
     anthropic_resp["stop_reason"] = "tool_use"
 
     logger.info(
-        "FINALIZE CONTINUATION: injected synthetic %s tool_use id=%s (count=%d/%d)",
+        "FINALIZE CONTINUATION: injected synthetic %s tool_use id=%s (count=%d/%d, session=%d/%d)",
         tool_name,
         synthetic_id,
         monitor.finalize_continuation_count,
         PROXY_FINALIZE_CONTINUATION_MAX,
+        monitor.finalize_hard_stop_count,
+        PROXY_FINALIZE_SESSION_HARD_CAP,
     )
     return anthropic_resp
 
@@ -5804,6 +6147,10 @@ async def messages(request: Request):
     is_stream = body.get("stream", False)
     model = body.get("model", "default")
     client_id = resolve_client_id(request)
+
+    # Periodically re-detect context window from upstream (handles server restarts)
+    await _maybe_recheck_context_window()
+
     if _should_passthrough_model(model):
         logger.info("PASSTHROUGH: model=%s -> %s", model, ANTHROPIC_API_BASE)
         return await _passthrough_anthropic_request(request, body, is_stream)
@@ -5861,8 +6208,9 @@ async def messages(request: Request):
         last_text = str(last_content)[:200]
     rate_count = log_client_rate(client_id)
     logger.info(
-        "REQ: client=%s rate_%ss=%d stream=%s msgs=%d tools=%d max_tokens=%s last_role=%s last_content=%.200s",
+        "REQ: client=%s sess=%s rate_%ss=%d stream=%s msgs=%d tools=%d max_tokens=%s last_role=%s last_content=%.200s",
         client_id,
+        session_id,
         PROXY_CLIENT_RATE_WINDOW_SECS,
         rate_count,
         is_stream,
@@ -6530,6 +6878,292 @@ async def messages(request: Request):
 async def messages_anthropic(request: Request):
     """Alternative endpoint path used by some Claude Code configurations."""
     return await messages(request)
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request):
+    """OpenAI-compatible chat/completions endpoint for clients like Forge
+    that require the OpenAI API shape.
+
+    FULL GUARDRAIL PATH: Converts the OpenAI request to Anthropic format,
+    runs the full /v1/messages pipeline (loop detection, tool narrowing,
+    cycle breaking, malformed tool retry, context pruning, etc.), then
+    converts the Anthropic response back to OpenAI format.
+
+    Streaming is down-converted to a single final OpenAI SSE chunk sequence
+    built from the completed Anthropic response (not token-by-token from
+    upstream). This preserves guardrails at the cost of stream granularity.
+    """
+    body_bytes = await request.body()
+    try:
+        openai_body = json.loads(body_bytes) if body_bytes else {}
+    except (ValueError, TypeError):
+        return Response(
+            content=b'{"error":{"message":"invalid JSON","type":"invalid_request_error"}}',
+            status_code=400,
+            media_type="application/json",
+        )
+
+    requested_stream = bool(openai_body.get("stream", False))
+    model = openai_body.get("model", "default")
+    client_id = resolve_client_id(request)
+
+    logger.info(
+        "CHAT (guarded): client=%s model=%s stream=%s msgs=%d tools=%d",
+        client_id,
+        model,
+        requested_stream,
+        len(openai_body.get("messages", [])),
+        len(openai_body.get("tools", []) or []),
+    )
+
+    # Convert OpenAI request -> Anthropic request
+    anthropic_body = openai_to_anthropic_request(openai_body)
+    # Force non-streaming through the pipeline; we re-stream at the end if the
+    # client wanted streaming. This keeps guardrail logic simpler/consistent.
+    anthropic_body["stream"] = False
+
+    # Build a synthetic Request that the existing messages() handler can consume
+    fake_body_bytes = json.dumps(anthropic_body).encode("utf-8")
+
+    async def receive():
+        return {"type": "http.request", "body": fake_body_bytes, "more_body": False}
+
+    fake_scope = dict(request.scope)
+    # Preserve client/headers but override the body + path
+    fake_scope["path"] = "/v1/messages"
+    fake_scope["raw_path"] = b"/v1/messages"
+    # Strip content-length since the body changes
+    fake_scope["headers"] = [
+        (k, v)
+        for (k, v) in fake_scope.get("headers", [])
+        if k.lower() != b"content-length"
+    ]
+    fake_request = Request(fake_scope, receive)
+
+    # Run the full guarded Anthropic pipeline
+    inner_resp = await messages(fake_request)
+
+    # Extract the Anthropic-format JSON from whatever messages() returned
+    anthropic_resp_dict: dict | None = None
+    status_code = 200
+    if isinstance(inner_resp, StreamingResponse):
+        # Pipeline shouldn't stream because we set stream=False, but defensively
+        # consume the stream and parse the final message event.
+        chunks: list[bytes] = []
+        async for chunk in inner_resp.body_iterator:
+            if isinstance(chunk, bytes):
+                chunks.append(chunk)
+            elif isinstance(chunk, str):
+                chunks.append(chunk.encode("utf-8"))
+        raw = b"".join(chunks)
+        # Try to parse as JSON directly first, then fall back to SSE parsing
+        try:
+            anthropic_resp_dict = json.loads(raw)
+        except (ValueError, TypeError):
+            anthropic_resp_dict = _parse_anthropic_sse_to_message(raw)
+    elif isinstance(inner_resp, Response):
+        status_code = inner_resp.status_code
+        try:
+            anthropic_resp_dict = json.loads(inner_resp.body)
+        except (ValueError, TypeError):
+            anthropic_resp_dict = None
+    elif isinstance(inner_resp, dict):
+        anthropic_resp_dict = inner_resp
+
+    if anthropic_resp_dict is None or "content" not in anthropic_resp_dict:
+        # Upstream error: forward as-is in OpenAI error shape
+        err_msg = "upstream returned no message"
+        if isinstance(anthropic_resp_dict, dict) and "error" in anthropic_resp_dict:
+            err_msg = anthropic_resp_dict["error"].get("message", err_msg)
+        return Response(
+            content=json.dumps({"error": {"message": err_msg, "type": "upstream_error"}}).encode(),
+            status_code=status_code if status_code >= 400 else 502,
+            media_type="application/json",
+        )
+
+    # Ensure model field is set for response
+    anthropic_resp_dict.setdefault("model", model)
+    openai_resp = anthropic_to_openai_response(anthropic_resp_dict)
+
+    if not requested_stream:
+        return Response(
+            content=json.dumps(openai_resp).encode(),
+            status_code=200,
+            media_type="application/json",
+        )
+
+    # Client requested streaming: emit the response as OpenAI SSE chunks
+    async def emit_openai_stream():
+        resp_id = openai_resp["id"]
+        created = openai_resp["created"]
+        model_name = openai_resp["model"]
+        choice = openai_resp["choices"][0]
+        message = choice["message"]
+
+        # Opening chunk: role
+        opening = {
+            "id": resp_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model_name,
+            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+        }
+        yield f"data: {json.dumps(opening)}\n\n".encode()
+
+        # Content chunk
+        if message.get("content"):
+            content_chunk = {
+                "id": resp_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": message["content"]},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(content_chunk)}\n\n".encode()
+
+        # Tool call chunks
+        for idx, tc in enumerate(message.get("tool_calls", []) or []):
+            tc_chunk = {
+                "id": resp_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": idx,
+                                    "id": tc["id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc["function"]["name"],
+                                        "arguments": tc["function"]["arguments"],
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(tc_chunk)}\n\n".encode()
+
+        # Final chunk with finish_reason
+        final_chunk = {
+            "id": resp_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model_name,
+            "choices": [
+                {"index": 0, "delta": {}, "finish_reason": choice["finish_reason"]}
+            ],
+        }
+        yield f"data: {json.dumps(final_chunk)}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+
+    return StreamingResponse(
+        emit_openai_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _parse_anthropic_sse_to_message(raw: bytes) -> dict | None:
+    """Parse a concatenated Anthropic SSE stream into a final message dict.
+    Used as a fallback when messages() returns a StreamingResponse despite stream=False.
+    """
+    try:
+        text = raw.decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+    text_parts: list[str] = []
+    tool_uses: list[dict] = []
+    usage = {"input_tokens": 0, "output_tokens": 0}
+    stop_reason = "end_turn"
+    model = "unknown"
+    message_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+    current_block: dict | None = None
+    current_json_buffer = ""
+
+    for line in text.splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            evt = json.loads(payload)
+        except (ValueError, TypeError):
+            continue
+        etype = evt.get("type")
+        if etype == "message_start":
+            m = evt.get("message", {}) or {}
+            message_id = m.get("id", message_id)
+            model = m.get("model", model)
+            if "usage" in m:
+                usage.update(m["usage"])
+        elif etype == "content_block_start":
+            current_block = evt.get("content_block", {})
+            current_json_buffer = ""
+            if current_block.get("type") == "text":
+                text_parts.append(current_block.get("text", ""))
+        elif etype == "content_block_delta":
+            d = evt.get("delta", {}) or {}
+            if d.get("type") == "text_delta":
+                text_parts.append(d.get("text", ""))
+            elif d.get("type") == "input_json_delta":
+                current_json_buffer += d.get("partial_json", "")
+        elif etype == "content_block_stop":
+            if current_block and current_block.get("type") == "tool_use":
+                try:
+                    input_obj = json.loads(current_json_buffer) if current_json_buffer else {}
+                except (ValueError, TypeError):
+                    input_obj = {}
+                tool_uses.append(
+                    {
+                        "type": "tool_use",
+                        "id": current_block.get("id", f"toolu_{uuid.uuid4().hex[:12]}"),
+                        "name": current_block.get("name", ""),
+                        "input": input_obj,
+                    }
+                )
+            current_block = None
+            current_json_buffer = ""
+        elif etype == "message_delta":
+            d = evt.get("delta", {}) or {}
+            if "stop_reason" in d:
+                stop_reason = d["stop_reason"] or stop_reason
+            u = evt.get("usage", {}) or {}
+            if u:
+                usage.update(u)
+
+    content: list[dict] = []
+    joined_text = "".join(text_parts)
+    if joined_text:
+        content.append({"type": "text", "text": joined_text})
+    content.extend(tool_uses)
+
+    return {
+        "id": message_id,
+        "type": "message",
+        "role": "assistant",
+        "content": content if content else [{"type": "text", "text": ""}],
+        "model": model,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": usage,
+    }
 
 
 @app.get("/v1/models")

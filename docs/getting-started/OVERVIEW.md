@@ -1,10 +1,10 @@
 # UAP - Universal Agent Protocol
 
-**A persistent memory system for autonomous AI agents**
+> **Version:** 1.18.0  
+> **Last Updated:** 2026-03-28  
+> **License: A persistent memory system for autonomous AI agents
 
 UAP (Universal Agent Protocol) provides a standardized framework for AI agents to maintain persistent context, learn from past interactions, and apply proven patterns across tasks.
-
----
 
 ## What is UAP?
 
@@ -13,9 +13,6 @@ UAP is an open protocol that enables AI agents to:
 1. **Remember Context**: Store and retrieve relevant information across sessions
 2. **Apply Patterns**: Leverage battle-tested workflows and decision frameworks
 3. **Maintain State**: Track progress, failures, and successes over time
-4. **Collaborate**: Coordinate with other agents using shared memory
-
-Unlike temporary context windows, UAP provides **persistent memory** that survives session boundaries, enabling true long-term learning and improvement.
 
 ---
 
@@ -24,7 +21,7 @@ Unlike temporary context windows, UAP provides **persistent memory** that surviv
 ### 1. Memory System (4-Layer Architecture)
 
 | Layer | Type                        | Purpose                             | Speed |
-| ----- | --------------------------- | ----------------------------------- | ----- |
+| ----- | --------------------------- | ----------------------------------- | -----
 | L1    | SQLite (`memories`)         | Working context, recent decisions   | <1ms  |
 | L2    | SQLite (`session_memories`) | Current task session state          | <5ms  |
 | L3    | Qdrant (vector DB)          | Semantic search across all memories | ~50ms |
@@ -33,7 +30,6 @@ Unlike temporary context windows, UAP provides **persistent memory** that surviv
 ### 2. CLAUDE.md Protocol
 
 Every UAP-enabled project includes a `CLAUDE.md` file that defines:
-
 - **Directive Hierarchy**: Which rules take precedence
 - **Decision Loop**: Standard workflow for any task
 - **Patterns**: 58+ battle-tested patterns for common scenarios
@@ -59,14 +55,11 @@ uap worktree create fix-auth-issue
 ### 4. Worktree Workflow
 
 UAP enforces a **worktree-only** workflow to prevent accidental changes to main branches:
-
-```bash
 # Create worktree for any change (even single file)
 uap worktree create bugfix-description
 
 # Make changes, commit, create PR
-cd .worktrees/NNN-bugfix-description/
-git add -A && git commit -m "type: description"
+cd .worktrees/NNN-bash: git add -A && git commit -m "type: description"
 uap worktree pr 123
 
 # After merge, cleanup is mandatory
@@ -112,10 +105,6 @@ UAP includes 58+ patterns for common scenarios:
 | P26        | Same error twice        | Change approach completely          |
 | P32        | CLI tool                | Test `./script` not `python script` |
 | P37        | Output format specified | Diff output schema vs expectations  |
-
----
-
-## Installation
 
 ### Prerequisites
 
@@ -279,15 +268,8 @@ const task = await uap.task.create({
 });
 
 // Update task status
-await uap.task.update(task.id, { status: 'in_progress' });
-
-// Get task with memory context
-const enrichedTask = await uap.task.get(task.id, { includeMemory: true });
-```
-
----
-
-## Troubleshooting
+await uap.task.update(task.id, { status: 'in_progress' });	enrichedTask = await uap.task.get(task.id, { includeMemory: true });
+gleshooting
 
 ### Common Issues
 
@@ -298,10 +280,6 @@ const enrichedTask = await uap.task.get(task.id, { includeMemory: true });
 | `Worktree already exists`  | Use `uap worktree cleanup <id>` first             |
 | `Memory DB locked`         | Close other processes using the DB                |
 | `Compliance check failed`  | Review specific gate failure in output            |
-
-### Debug Mode
-
-```bash
 # Enable verbose logging
 export UAP_VERBOSE=true
 
@@ -341,4 +319,6 @@ MIT License - See [LICENSE](../LICENSE) file
 
 **Maintained By**: UAP Team  
 **Repository**: https://github.com/DammianMiller/universal-agent-protocol  
-**Issues**: https://github.com/DammianMiller/universal-agent-protocol/issues
+**Issues**: DammianMiller/universal-agent-protocol/issues
+
+</div>
