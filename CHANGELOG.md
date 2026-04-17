@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.20.34 (2026-04-17)
+
+- chore: bump version to 1.20.33
+- test: update stale PreToolUse matcher test to accept MultiEdit
+- refactor: parameterize llama-server repeat-penalty and add cache-reuse env var
+- chore: remove worktrees for clean bump
+- chore: update project files
+- config: planarquant server defaults + fix kanban tests (#164)
+
+
 ## v1.20.33 (2026-04-17)
 
 - test: update stale PreToolUse matcher test to accept MultiEdit
