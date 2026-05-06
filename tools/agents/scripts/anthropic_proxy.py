@@ -3411,7 +3411,10 @@ def _schema_type_matches(value, expected_type: str) -> bool:
 
 def _string_contains_tool_markup(value: str) -> bool:
     lowered = value.lower()
-    markers = ("<parameter", "</parameter", "<tool_call", "<function=", "</function")
+    markers = (
+        "<parameter", "</parameter", "<tool_call", "<function=", "</function",
+        "<|tool_call>", "<tool_call|>",  # Gemma 4 native DSL
+    )
     return any(marker in lowered for marker in markers)
 
 
@@ -3484,6 +3487,148 @@ _TOOL_CALL_XML_RE = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# Gemma 4 tool-call DSL extractors
+# ---------------------------------------------------------------------------
+# Gemma 4's chat template emits tool calls as:
+#   <|tool_call>call:NAME{key1:<|"|>value1<|"|>,key2:42}<tool_call|>
+# Note the asymmetric open/close tags and `<|"|>` substitution for `"`.
+# Llama-server's --jinja autoparser usually converts these to standard
+# OpenAI tool_calls, but the raw form can leak through on (a) malformed
+# emissions, (b) finalize turns, (c) non-tool-template requests where the
+# model still tries to call a tool. This parser catches those cases.
+#
+# Gemma 4 also falls back to ```json {"name": "...", "arguments": {...}} ```
+# markdown blocks when it doesn't trust the template — observed when
+# tool_choice was forced 'required' but the model lacked confidence in the
+# native format. Only treated as a tool call when the JSON has a "name".
+_GEMMA4_TOOL_CALL_DSL_RE = re.compile(
+    r"<\|tool_call>\s*call:\s*([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*?)\}\s*<tool_call\|>",
+    re.DOTALL,
+)
+# Markdown JSON code-block fallback. Group 1 = JSON content (may include
+# leading/trailing whitespace inside the block).
+_GEMMA4_MARKDOWN_JSON_RE = re.compile(
+    r"```(?:json)?\s*(\{.*?\})\s*```",
+    re.DOTALL,
+)
+
+
+def _parse_gemma4_dsl_args(raw: str) -> dict | None:
+    """Parse Gemma 4's tool-call DSL arg body into a Python dict.
+
+    Input shape (between the `{` and `}` of the DSL):
+        key1:<|"|>str value<|"|>,key2:42,key3:true,key4:[<|"|>a<|"|>,<|"|>b<|"|>]
+
+    Strategy: replace `<|"|>` with `"`, wrap unquoted keys in quotes, then
+    feed to json.loads. Returns None on parse failure (caller decides).
+    """
+    if not raw or not raw.strip():
+        return {}
+    s = raw.replace('<|"|>', '"')
+    # Wrap unquoted keys: `key:` -> `"key":` (only at start or after `,` / `{` / whitespace).
+    s = re.sub(r"(^|[\s,{\[])([A-Za-z_][A-Za-z0-9_]*)\s*:", r'\1"\2":', s)
+    s = "{" + s + "}"
+    try:
+        parsed = json.loads(s)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _extract_gemma4_tool_calls(text: str) -> tuple[list[dict], str]:
+    """Parse Gemma 4 tool-call emissions out of *text*.
+
+    Two formats handled, in order:
+      1. Native DSL: ``<|tool_call>call:N{...}<tool_call|>``
+      2. Markdown fallback: ``​`json\\n{"name": "N", "arguments": {...}}\\n`​``
+         (only when the JSON has a "name" field — bare-args blocks are NOT
+         treated as tool calls; they pass through as text.)
+
+    Returns ``(extracted_openai_tool_calls, remaining_text)``. If no Gemma 4
+    pattern is found, returns ``([], text)`` unchanged so the dispatcher can
+    try other formats or pass through.
+    """
+    if "<|tool_call>" not in text and "```" not in text:
+        return [], text
+
+    extracted: list[dict] = []
+    matched_spans: list[tuple[int, int]] = []
+
+    # Pattern 1: native DSL
+    for m in _GEMMA4_TOOL_CALL_DSL_RE.finditer(text):
+        name = m.group(1).strip()
+        body = m.group(2) or ""
+        if not name:
+            continue
+        args = _parse_gemma4_dsl_args(body)
+        if args is None:
+            # DSL body unparseable; skip and let model retry next turn.
+            continue
+        extracted.append(
+            {
+                "id": f"call_{uuid.uuid4().hex[:12]}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(args, separators=(",", ":")),
+                },
+            }
+        )
+        matched_spans.append(m.span())
+
+    # Pattern 2: markdown JSON fallback (only if no DSL hit AND text has ```)
+    if not extracted and "```" in text:
+        for m in _GEMMA4_MARKDOWN_JSON_RE.finditer(text):
+            raw_json = m.group(1)
+            try:
+                payload = json.loads(raw_json)
+            except json.JSONDecodeError:
+                # Try a JSON repair like the Qwen path does
+                repaired = _repair_tool_call_json(raw_json)
+                if not repaired:
+                    continue
+                try:
+                    payload = json.loads(repaired)
+                except json.JSONDecodeError:
+                    continue
+            if not isinstance(payload, dict):
+                continue
+            name = payload.get("name")
+            if not isinstance(name, str) or not name:
+                # Bare-args markdown block (no "name" key) — not a tool call.
+                # Pass through as text rather than guessing.
+                continue
+            arguments = payload.get("arguments", payload.get("args", {}))
+            if isinstance(arguments, dict):
+                arguments = json.dumps(arguments, separators=(",", ":"))
+            elif not isinstance(arguments, str):
+                arguments = "{}"
+            extracted.append(
+                {
+                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }
+            )
+            matched_spans.append(m.span())
+
+    if not extracted:
+        return [], text
+
+    # Strip matched spans from text (in reverse to keep indices valid)
+    remaining = text
+    for start, end in sorted(matched_spans, key=lambda s: -s[0]):
+        remaining = remaining[:start] + remaining[end:]
+    remaining = remaining.strip()
+
+    logger.info(
+        "TOOL CALL EXTRACTION: recovered %d Gemma 4 tool call(s) from text content",
+        len(extracted),
+    )
+    return extracted, remaining
+
+
 def _repair_tool_call_json(raw: str) -> str | None:
     """Attempt to repair common garbled JSON in tool call payloads.
 
@@ -3534,9 +3679,16 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[dict], str]:
         {"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}
 
     The *remaining_text* has the matched ``<tool_call>`` blocks removed.
-    If no valid blocks are found the original text is returned unchanged.
+    If no valid blocks are found, falls back to Gemma 4's
+    ``<|tool_call>call:N{...}<tool_call|>`` DSL and ```json``` markdown
+    blocks. Anything not matching any known format passes through unchanged
+    so plain prose isn't mutated.
     """
-    if "<tool_call>" not in text:
+    if (
+        "<tool_call>" not in text
+        and "<|tool_call>" not in text
+        and "```" not in text
+    ):
         return [], text
 
     extracted: list[dict] = []
@@ -3579,7 +3731,9 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[dict], str]:
         )
 
     if not extracted:
-        return [], text
+        # Try Gemma 4's DSL + markdown-JSON fallback. Anything still not
+        # matching falls through as plain text so prose isn't mutated.
+        return _extract_gemma4_tool_calls(text)
 
     # Strip matched tool_call blocks from the text
     remaining = _TOOL_CALL_XML_RE.sub("", text).strip()
