@@ -247,6 +247,22 @@ PROXY_DISABLE_THINKING_ON_TOOL_TURNS = os.environ.get(
     "off",
     "no",
 }
+# Disable thinking on EVERY turn (not just tool turns). NOTE: setting to
+# 'on' for Gemma 4 produces empty content with stop_reason=length — the
+# Gemma 4 chat template requires the thinking channel to be active to
+# emit any answer at all. Default 'off'; safe for Qwen-family models.
+PROXY_DISABLE_THINKING_ALWAYS = os.environ.get(
+    "PROXY_DISABLE_THINKING_ALWAYS", "off"
+).lower() not in {"0", "false", "off", "no"}
+# Force tool_choice='required' on the first turn of a fresh session.
+# Originally Qwen-tuned to break out of cold-start "tries to chat instead
+# of calling a tool" behaviour. Gemma 4 doesn't need this — it routes
+# 'auto' correctly and the force triggers malformed-JSON emissions when
+# it would rather speak. Default 'off'; set 'on' to restore the legacy
+# Qwen-style behaviour.
+PROXY_FORCE_TOOL_CHOICE_ON_COLD_START = os.environ.get(
+    "PROXY_FORCE_TOOL_CHOICE_ON_COLD_START", "off"
+).lower() not in {"0", "false", "off", "no"}
 PROXY_DISABLE_SPEC_ON_TOOL_TURNS = os.environ.get(
     "PROXY_DISABLE_SPEC_ON_TOOL_TURNS", "off"
 ).lower() not in {
@@ -2702,6 +2718,13 @@ def build_openai_request(
 
     has_tools = _has_tool_definitions(anthropic_body)
 
+    # Global thinking-off (G stub): apply to every request, not just tool
+    # turns. Currently default-off — enable_thinking=False breaks Gemma 4
+    # (empty content with stop_reason=length). Per-path tool-turn handling
+    # below (DISABLE_THINKING_ON_TOOL_TURNS) is additive — ALWAYS supersedes.
+    if PROXY_DISABLE_THINKING_ALWAYS:
+        openai_body["enable_thinking"] = False
+
     # Inject agentic protocol instructions only for tool-enabled turns.
     # Use minimal supplement for qwen models to reduce prompt leak surface.
     if has_tools:
@@ -2739,7 +2762,11 @@ def build_openai_request(
         # skip it for non-tool requests (tools=0) and for tool turns
         # with thinking disabled, to prevent inflating short preflight
         # requests (e.g. max_tokens=100 for plan generation).
-        thinking_active_for_request = has_tools and not PROXY_DISABLE_THINKING_ON_TOOL_TURNS
+        thinking_active_for_request = (
+            has_tools
+            and not PROXY_DISABLE_THINKING_ON_TOOL_TURNS
+            and not PROXY_DISABLE_THINKING_ALWAYS
+        )
         skip_floor = (
             not has_tools  # non-tool requests don't need thinking headroom
             or PROXY_DISABLE_THINKING_ON_TOOL_TURNS  # thinking disabled on tool turns
@@ -3045,8 +3072,11 @@ def build_openai_request(
             monitor.consecutive_forced_count = 0
             monitor.no_progress_streak = 0
             # Force tool_choice=required on first turn to ensure local models
-            # produce a tool call instead of plain text (cold-start fix)
-            if has_tools and n_msgs == 1:
+            # produce a tool call instead of plain text (cold-start fix).
+            # Gated by PROXY_FORCE_TOOL_CHOICE_ON_COLD_START — Gemma 4 routes
+            # 'auto' correctly without needing the force, and the force
+            # triggers malformed-JSON emissions on Gemma 4 cold turns.
+            if has_tools and n_msgs == 1 and PROXY_FORCE_TOOL_CHOICE_ON_COLD_START:
                 openai_body["tool_choice"] = "required"
                 logger.info(
                     "tool_choice forced to 'required' on first turn (reason=%s n_msgs=%d cold_start_fix=true)",
@@ -3089,10 +3119,12 @@ def build_openai_request(
                 monitor.reset_tool_turn_state(reason="no_tool_results")
 
 
-        if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
+        if PROXY_DISABLE_THINKING_ALWAYS or PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
             openai_body["enable_thinking"] = False
             logger.info(
-                "Thinking disabled for tool turn (PROXY_DISABLE_THINKING_ON_TOOL_TURNS=on)"
+                "Thinking disabled (always=%s tool_turns=%s)",
+                PROXY_DISABLE_THINKING_ALWAYS,
+                PROXY_DISABLE_THINKING_ON_TOOL_TURNS,
             )
 
         if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
@@ -3536,18 +3568,65 @@ def _parse_gemma4_dsl_args(raw: str) -> dict | None:
         return None
 
 
-def _extract_gemma4_tool_calls(text: str) -> tuple[list[dict], str]:
+def _schema_match_tool(payload: dict, available_tools: list[dict]) -> str | None:
+    """Match a bare-args dict against available tool schemas.
+
+    Score each tool by:
+      - +10 per required field present in payload
+      - +1 per optional property present
+      - -5 per payload key NOT in tool's properties
+      - -100 if any required field is missing
+    Return the name of the highest-scoring tool, or None if no clear match.
+    Caller must require score >= 10 (at least one required-field hit).
+    """
+    if not isinstance(payload, dict) or not available_tools:
+        return None
+    payload_keys = set(payload.keys())
+    best_name = None
+    best_score = 0
+    for tool in available_tools:
+        if not isinstance(tool, dict):
+            continue
+        # Anthropic tools format: {"name": ..., "input_schema": {...}}
+        # OpenAI format: {"type": "function", "function": {"name": ..., "parameters": {...}}}
+        name = tool.get("name")
+        schema = tool.get("input_schema")
+        if name is None and isinstance(tool.get("function"), dict):
+            name = tool["function"].get("name")
+            schema = tool["function"].get("parameters")
+        if not isinstance(name, str) or not isinstance(schema, dict):
+            continue
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        required = set(schema.get("required") or [])
+        prop_keys = set(properties.keys())
+        score = 0
+        missing_required = required - payload_keys
+        if missing_required:
+            score -= 100
+        score += 10 * len(required & payload_keys)
+        score += len((payload_keys & prop_keys) - required)
+        score -= 5 * len(payload_keys - prop_keys)
+        if score > best_score:
+            best_score = score
+            best_name = name
+    return best_name if best_score >= 10 else None
+
+
+def _extract_gemma4_tool_calls(
+    text: str, available_tools: list[dict] | None = None
+) -> tuple[list[dict], str]:
     """Parse Gemma 4 tool-call emissions out of *text*.
 
-    Two formats handled, in order:
+    Three formats handled, in order:
       1. Native DSL: ``<|tool_call>call:N{...}<tool_call|>``
-      2. Markdown fallback: ``​`json\\n{"name": "N", "arguments": {...}}\\n`​``
-         (only when the JSON has a "name" field — bare-args blocks are NOT
-         treated as tool calls; they pass through as text.)
+      2. Markdown with name: ``​`json\\n{"name": "N", "arguments": {...}}\\n`​``
+      3. Markdown bare-args + ``available_tools`` provided — schema-match
+         against tool definitions (fix D for Gemma 4 cold-turn malformation
+         where the model emits ``{"city": "Paris"}`` for a get_weather call
+         instead of ``{"name": "get_weather", "arguments": {"city": "Paris"}}``).
+         Without ``available_tools``, bare-args blocks pass through as text.
 
-    Returns ``(extracted_openai_tool_calls, remaining_text)``. If no Gemma 4
-    pattern is found, returns ``([], text)`` unchanged so the dispatcher can
-    try other formats or pass through.
+    Returns ``(extracted_openai_tool_calls, remaining_text)``.
     """
     if "<|tool_call>" not in text and "```" not in text:
         return [], text
@@ -3595,14 +3674,30 @@ def _extract_gemma4_tool_calls(text: str) -> tuple[list[dict], str]:
             if not isinstance(payload, dict):
                 continue
             name = payload.get("name")
-            if not isinstance(name, str) or not name:
-                # Bare-args markdown block (no "name" key) — not a tool call.
-                # Pass through as text rather than guessing.
+            arguments_obj = None
+            if isinstance(name, str) and name:
+                # Standard {name, arguments} form
+                arguments_obj = payload.get("arguments", payload.get("args", {}))
+            elif available_tools:
+                # Bare-args block — try schema-matching against available tools
+                matched = _schema_match_tool(payload, available_tools)
+                if matched is None:
+                    continue
+                name = matched
+                arguments_obj = payload  # whole payload IS the args
+                logger.info(
+                    "TOOL CALL EXTRACTION: schema-matched bare-args markdown JSON to tool '%s' (keys=%s)",
+                    name,
+                    sorted(payload.keys())[:6],
+                )
+            else:
+                # No name, no tools to match against — pass through as text
                 continue
-            arguments = payload.get("arguments", payload.get("args", {}))
-            if isinstance(arguments, dict):
-                arguments = json.dumps(arguments, separators=(",", ":"))
-            elif not isinstance(arguments, str):
+            if isinstance(arguments_obj, dict):
+                arguments = json.dumps(arguments_obj, separators=(",", ":"))
+            elif isinstance(arguments_obj, str):
+                arguments = arguments_obj
+            else:
                 arguments = "{}"
             extracted.append(
                 {
@@ -3670,7 +3765,9 @@ def _repair_tool_call_json(raw: str) -> str | None:
     return None
 
 
-def _extract_tool_calls_from_text(text: str) -> tuple[list[dict], str]:
+def _extract_tool_calls_from_text(
+    text: str, available_tools: list[dict] | None = None
+) -> tuple[list[dict], str]:
     """Parse ``<tool_call>{...}</tool_call>`` blocks out of *text*.
 
     Returns a tuple of (extracted_openai_tool_calls, remaining_text).
@@ -3733,7 +3830,7 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[dict], str]:
     if not extracted:
         # Try Gemma 4's DSL + markdown-JSON fallback. Anything still not
         # matching falls through as plain text so prose isn't mutated.
-        return _extract_gemma4_tool_calls(text)
+        return _extract_gemma4_tool_calls(text, available_tools=available_tools)
 
     # Strip matched tool_call blocks from the text
     remaining = _TOOL_CALL_XML_RE.sub("", text).strip()
@@ -5177,7 +5274,7 @@ async def _apply_unexpected_end_turn_guardrail(
     )
     if retry_resp.status_code == 200:
         retry_json = retry_resp.json()
-        _maybe_extract_text_tool_calls(retry_json)
+        _maybe_extract_text_tool_calls(retry_json, anthropic_tools=anthropic_body.get("tools"))
         retry_choice, retry_message = _extract_openai_choice(retry_json)
         if _openai_has_valid_tool_calls(retry_json, anthropic_body):
             logger.info("GUARDRAIL: retry produced tool_use; using retried response")
@@ -5348,7 +5445,7 @@ async def _apply_malformed_tool_guardrail(
             continue
 
         retry_json = retry_resp.json()
-        _maybe_extract_text_tool_calls(retry_json)
+        _maybe_extract_text_tool_calls(retry_json, anthropic_tools=anthropic_body.get("tools"))
         retry_working = retry_json
         retry_repairs = 0
         if PROXY_TOOL_ARGS_PREFLIGHT and _openai_has_tool_calls(retry_json):
@@ -5594,11 +5691,19 @@ def _maybe_apply_session_contamination_breaker(
 # ===========================================================================
 
 
-def _maybe_extract_text_tool_calls(openai_resp: dict) -> dict:
+def _maybe_extract_text_tool_calls(
+    openai_resp: dict, anthropic_tools: list[dict] | None = None
+) -> dict:
     """Mutate *openai_resp* in-place: if the message has no structured
-    ``tool_calls`` but contains ``<tool_call>`` XML in text, extract them
-    and promote to real ``tool_calls`` on the message.  Returns the
-    (possibly-mutated) response for chaining."""
+    ``tool_calls`` but contains tool-call markup in text, extract them
+    and promote to real ``tool_calls`` on the message.
+
+    *anthropic_tools* (optional): list of tool definitions from the original
+    Anthropic request. Enables schema-matching of bare-args markdown JSON
+    blocks emitted by Gemma 4 cold turns (fix D). Without it, bare-args
+    blocks pass through as text.
+
+    Returns the (possibly-mutated) response for chaining."""
     choice = (openai_resp.get("choices") or [{}])[0]
     message = choice.get("message", {})
 
@@ -5607,10 +5712,19 @@ def _maybe_extract_text_tool_calls(openai_resp: dict) -> dict:
         return openai_resp
 
     text = message.get("content", "")
-    if not isinstance(text, str) or "<tool_call>" not in text:
+    if not isinstance(text, str):
+        return openai_resp
+    # Quick early-exit if no markers present (matches dispatcher guard)
+    if (
+        "<tool_call>" not in text
+        and "<|tool_call>" not in text
+        and "```" not in text
+    ):
         return openai_resp
 
-    extracted, remaining = _extract_tool_calls_from_text(text)
+    extracted, remaining = _extract_tool_calls_from_text(
+        text, available_tools=anthropic_tools
+    )
     if not extracted:
         return openai_resp
 
@@ -6584,7 +6698,7 @@ async def messages(request: Request):
 
         openai_resp = strict_resp.json()
         # Recover tool calls from <tool_call> XML before guardrails run
-        _maybe_extract_text_tool_calls(openai_resp)
+        _maybe_extract_text_tool_calls(openai_resp, anthropic_tools=body.get("tools"))
         openai_resp = await _apply_unexpected_end_turn_guardrail(
             client,
             openai_resp,
@@ -6939,7 +7053,7 @@ async def messages(request: Request):
 
         openai_resp = resp.json()
         # Recover tool calls from <tool_call> XML before guardrails run
-        _maybe_extract_text_tool_calls(openai_resp)
+        _maybe_extract_text_tool_calls(openai_resp, anthropic_tools=body.get("tools"))
         openai_resp = await _apply_unexpected_end_turn_guardrail(
             client,
             openai_resp,
