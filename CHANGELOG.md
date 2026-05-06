@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.20.34 (2026-04-17)
+
+- test: update stale PreToolUse matcher test to accept MultiEdit
+- refactor: parameterize llama-server repeat-penalty and add cache-reuse env var
+
+
+## v1.20.33 (2026-04-16)
+
+- feat: wire uap policy gate into claude pre-tool hooks
+- config: planarquant server defaults + fix kanban tests (#164)
+
+
 ## v1.20.32 (2026-04-03)
 
 - chore: bump version to 1.20.31
@@ -246,7 +258,6 @@
 - feat: update supported Droid models to latest versions
 
 
-<<<<<<< HEAD
 ## v1.20.4 (2026-04-01)
 
 - chore: bump version to 1.20.3

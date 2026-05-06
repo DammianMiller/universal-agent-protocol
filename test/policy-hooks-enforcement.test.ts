@@ -430,12 +430,12 @@ describe('Policy Enforcement Hooks', () => {
 
     it('has PreToolUse hooks registered', () => {
       expect(settings.hooks.PreToolUse).toBeDefined();
-      expect(settings.hooks.PreToolUse).toHaveLength(2);
+      expect(settings.hooks.PreToolUse.length).toBeGreaterThanOrEqual(2);
     });
 
     it('PreToolUse Edit|Write matcher is registered', () => {
       const editWriteHook = settings.hooks.PreToolUse.find(
-        (h: { matcher: string }) => h.matcher === 'Edit|Write',
+        (h: { matcher: string }) => /\bEdit\b/.test(h.matcher) && /\bWrite\b/.test(h.matcher),
       );
       expect(editWriteHook).toBeDefined();
       expect(editWriteHook.hooks[0].command).toContain('pre-tool-use-edit-write.sh');
