@@ -2363,6 +2363,34 @@ def _latest_user_text(anthropic_body: dict) -> str:
     return ""
 
 
+def _latest_user_query_text(anthropic_body: dict) -> str:
+    """Return the most recent user message *text* — walking past
+    tool_result-only messages to find the last actual human query.
+
+    During agentic loops the trailing user message is a tool_result block
+    with no ``text`` parts, so ``_latest_user_text`` returns empty.
+    Tool-narrowing needs query tokens to score tools; without them it
+    keeps all tools (defeating the purpose). This walker pulls text
+    from prior user turns as a fallback so narrowing stays useful in
+    long loops.
+    """
+    for msg in reversed(anthropic_body.get("messages", [])):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            text_parts = [
+                b.get("text", "")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text" and b.get("text")
+            ]
+            if text_parts:
+                return "\n".join(text_parts)
+    return ""
+
+
 def _tokenize_for_tool_ranking(text: str) -> set[str]:
     return {m.group(0).lower() for m in re.finditer(r"[a-zA-Z0-9_]{2,}", text)}
 
@@ -2382,6 +2410,13 @@ def _narrow_tools_for_request(
 
     query_text = _latest_user_text(anthropic_body).lower()
     query_tokens = _tokenize_for_tool_ranking(query_text)
+    if not query_tokens:
+        # Walk back past tool_result turns to find the prior real human
+        # query. Lets narrowing stay effective during agentic loops where
+        # the latest user msg is just a tool_result block (no text).
+        fallback_query = _latest_user_query_text(anthropic_body).lower()
+        query_text = fallback_query or query_text
+        query_tokens = _tokenize_for_tool_ranking(query_text)
     if not query_tokens:
         n_msgs = len(anthropic_body.get("messages", []))
         if (
