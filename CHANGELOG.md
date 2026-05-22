@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.22.0 (2026-05-22)
+
+- feat(policies): add task-required enforcer + fix tasks.db due_date crash (#189)
+
+
 ## v1.20.51 (2026-05-19)
 
 - proxy: B1 restores the write tool that narrowing drops
