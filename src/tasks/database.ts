@@ -66,7 +66,10 @@ export class TaskDatabase {
       CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
       CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee);
       CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
-      CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
+      -- NOTE: idx_tasks_due_date is created in migrate(), NOT here. On an
+      -- existing pre-due_date DB this CREATE TABLE IF NOT EXISTS no-ops, so
+      -- the column would still be absent at this point and indexing it here
+      -- crashes ("no such column: due_date") before migrate() can add it.
 
       -- Dependencies (DAG edges)
       CREATE TABLE IF NOT EXISTS task_dependencies (
@@ -135,8 +138,12 @@ export class TaskDatabase {
     // v4.9.0: Add due_date column to tasks
     if (!columnNames.has('due_date')) {
       this.db.exec('ALTER TABLE tasks ADD COLUMN due_date TEXT');
-      this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)');
     }
+    // Index created unconditionally AFTER the column is guaranteed to exist
+    // (fresh DB: from CREATE TABLE; migrated DB: from the ALTER above).
+    // IF NOT EXISTS keeps it idempotent. Must not live in initSchema() —
+    // initSchema runs before migrate(), so on an old DB the column is absent.
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)');
 
     // v9.4.0: Add closed_at and closed_reason if missing (older DBs)
     if (!columnNames.has('closed_at')) {
