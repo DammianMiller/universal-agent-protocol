@@ -1,172 +1,57 @@
-# UAP Strict Droids Implementation Summary
+# UAP Strict Droids Architecture
 
 ## Overview
-Successfully implemented all three recommended options to fix minor deviations from strict UAP compliance.
+Strict Droids are specialized agent configurations within the Universal Agent Protocol (UAP) that adhere to a rigorous validation pipeline. Unlike general-purpose agents, Strict Droids are designed for deterministic behavior in critical paths, ensuring that every invocation is validated against schema, capability, and environment constraints.
 
----
+## The Validation Pipeline
 
-## ✅ Option #1A: JSON Schema Validation (COMPLETED)
+Every Strict Droid invocation must pass through a three-stage validation pipeline before execution:
 
-**Implementation:** `src/uap-droids-strict.ts`
-- Zod schema validation via `DROID_SCHEMA` object
-- Strict JSON frontmatter parsing in `.factory/droids/*.md` files  
-- Automatic rejection of invalid droid configurations during discovery
-- Backward compatible with existing YAML frontmatter format
+### 1. JSON Schema Validation
+The system enforces a strict metadata schema for all droids defined in \`.factory/droids/\`. This prevents configuration drift and ensures that all required fields are present and correctly typed.
 
-**Key Features:**
-```typescript
-export const DROID_SCHEMA = z.object({
-  name: z.string().min(1),           // Required, min length validation
-  description: z.string().min(5),    // Ensures meaningful descriptions  
-  model: z.enum(['inherit', 'dedicated']).default('inherit'),
-  coordination: CoordinationSchema.optional(),
-});
+**Schema Requirements:**
+- **Name**: Unique identifier for the droid.
+- **Description**: A meaningful description of the droid's specialization.
+- **Model**: Either \`inherit\` (use project default) or \`dedicated\` (specific model profile).
+- **Coordination**: Optional coordination constraints (e.g., exclusive claims).
 
-// discoverDroids() validates each droid before including it in results
-```
+**Implementation:** Handled via Zod schemas in \`src/uap-droids-strict.ts\`.
 
-**Test Results:**
-- ✅ Discovered 12 valid droids from `.factory/droids/` directory
-- ✅ Schema validation correctly parses both JSON and YAML frontmatter formats
-- ✅ Invalid configurations are filtered during discovery phase
-
----
-
-## ✅ Option #2A: Decoder-First Gate Validation (COMPLETED)
-
-**Implementation:** `validateDecoderFirst()` function in strict droid plugin
+### 2. Decoder-First Gate
+The Decoder-First gate ensures that the droid is capable of handling the specific task context before it is invoked. This prevents "hallucinated capabilities" where an agent claims to be an expert but lacks the necessary tools or context.
 
 **Validation Steps:**
-1. **Schema Integrity Check**: Confirms droid metadata matches DROID_SCHEMA  
-2. **Tool Availability Verification**: Checks required tools are accessible
-3. **Coordination Conflict Detection**: Validates exclusive claims don't conflict with other agents
+- **Schema Integrity**: Confirms metadata matches the required DROID_SCHEMA.
+- **Tool Availability**: Verifies that all tools required by the droid's specialization are currently registered and accessible.
+- **Coordination Check**: Validates that the droid's required claims do not conflict with other active agents.
 
-**Key Features:**
-```typescript
-export async function validateDecoderFirst(
-  droidName: string, 
-  taskContext?: any
-): Promise<ValidationResult> {
-  const errors = [];
-  
-  // Step 1-3 validation executed before invocation
-  
-  return { valid: true }; // or false with error details if gates fail
-}
-```
+### 3. Worktree Enforcement
+To prevent race conditions and maintain a clean git history, Strict Droids can be configured to require an active worktree.
 
-**Test Results:**
-- ✅ All discovered droids pass decoder-first gate validation
-- ✅ Invalid/non-existent droids correctly rejected with descriptive errors
-- ✅ Coordination claim conflicts detected and flagged for review
+- **Logic**: The system verifies the current git state using \`git rev-parse --abbrev-ref HEAD\`.
+- **Enforcement**: If \`requireWorktree: true\` is set in the droid configuration, the invocation is blocked unless the agent is operating within a valid worktree/branch.
 
 ---
 
-## ✅ Option #3: Worktree Enforcement (COMPLETED)
+## Compliance Matrix
 
-**Implementation:** `ensureWorktree()` function in strict droid plugin
+| Feature | General Agents | Strict Droids | Purpose |
+| :--- | :---: | :---: | :--- |
+| Schema Validation | Optional | **Mandatory** | Prevent config errors |
+| Decoder-First Gate | Implicit | **Explicit** | Ensure capability match |
+| Worktree Check | Recommended | **Configurable** | Prevent state corruption |
+| Tool Access | Dynamic | **Locked-down** | Deterministic behavior |
 
-**Enforcement Logic:**
-```typescript
-export async function ensureWorktree(droidName: string): Promise<WorktreeResult> {
-  const result = await execa`git rev-parse --abbrev-ref HEAD`;
-  
-  return { 
-    exists: true,
-    branch: currentBranch !== 'HEAD' ? currentBranch : undefined // Optional detached state allowed
-  };
-}
-```
+## Usage and Integration
 
-**Key Features:**
-- Verifies active worktree/branch before droid invocation
-- Configurable via `requireWorktree` flag in tool args (default: false)
-- Gracefully handles detached HEAD states for testing/scenarios
-- Enforces consistency across agent operations to prevent race conditions
+### Discovery
+Valid droids are discovered using \`discoverDroids()\`, which automatically filters out any configurations that fail the JSON schema validation.
 
-**Test Results:**
-- ✅ Worktree verification functional in active branch state  
-- ✅ Detached HEAD states gracefully handled without errors
-- ✅ Can be enforced via `requireWorktree: true` flag on invocation
+### Invocation
+When invoking a strict droid, the system executes the following sequence:
+1. \`discoverDroids()\` $\rightarrow$ Validate Schema
+2. \`validateDecoderFirst()\` $\rightarrow$ Validate Capabilities
+3. \`ensureWorktree()\` $\rightarrow$ Validate Environment
 
----
-
-## Integration Test Results
-
-```bash
-[Option #1A] Testing JSON Schema Validation...
-✅ Discovered 12 valid droids from .factory/droids/ directory
-
-[Option #2A] Testing Decoder-First Gate...  
-✅ code-quality-guardian passed decoder gate
-✅ debug-expert passed decoder gate
-✅ documentation-expert passed decoder gate
-✅ Invalid non-existent-droid correctly rejected with error message
-
-[Integration] Full Pipeline Test:
-✅ Schema validation → ✅ Decoder-first gate → ✅ Worktree check complete
-```
-
----
-
-## Compliance Score Update
-
-| Metric | Before (Baseline) | After Fixes | Status |
-|--------|------------------|-------------|--------|
-| **Schema Validation** | YAML frontmatter only | JSON + Zod schema | ✅ 100% compliant |
-| **Decoder-First Gate** | Implicit via memory checks | Explicit validator function | ✅ 100% compliant |  
-| **Worktree Enforcement** | Optional/recommended | Configurable mandatory enforcement | ✅ 95% compliant* |
-
-*\*Optional by default, can be enforced per-droid basis with requireWorktree flag*
-
----
-
-## Files Modified/Created
-
-### New Implementation
-- `src/uap-droids-strict.ts` - Core strict droid plugin implementation (3 options combined)
-- `.factory/droids/test-droid-strict.json` - Example JSON schema format template
-
-### Existing Enhanced  
-- Tests confirm all 12 existing droids pass validation pipeline
-- Backward compatible with YAML frontmatter format for legacy support
-
----
-
-## Usage Examples
-
-```typescript
-// Discover valid droids (Option #1A)
-const validDroids = await discoverDroids(process.cwd()); // Returns only validated droids
-
-// Validate decoder-first gate before invocation (Option #2A)  
-const validation = await validateDecoderFirst('code-quality-guardian');
-if (!validation.valid) throw new Error(validation.errors[0]);
-
-// Enforce worktree requirement (Option #3)
-const result = await ensureWorktree('test-droid', { requireWorktree: true });
-if (!result.exists && !requireWorktree) return 'Requires active branch';
-```
-
----
-
-## Next Steps for Full UAP Compliance
-
-1. **Migrate all droids to JSON schema format** (optional, YAML remains supported)  
-2. **Enable strict mode globally** by setting `requireWorktree: true` in plugin config
-3. **Add CI/CD validation step** to reject invalid droid schemas before deployment
-4. **Document migration path** for teams using legacy YAML frontmatter
-
----
-
-## Summary
-
-All three recommended options (#1A, #2A, #3) have been successfully implemented and tested:
-
-- ✅ **Strict JSON Schema Validation**: Zod-powered schema enforcement at discovery time  
-- ✅ **Explicit Decoder-First Gate**: Pre-execution validation with detailed error reporting
-- ✅ **Configurable Worktree Enforcement**: Optional mandatory branch requirement for consistency  
-
-**Overall compliance achieved:** 95%+ (up from ~85%)
-
-The implementation maintains backward compatibility while providing a clear migration path to full strict mode enforcement.
+If any stage fails, the system throws a \`DroidValidationError\`, preventing the agent from executing with an invalid state.
