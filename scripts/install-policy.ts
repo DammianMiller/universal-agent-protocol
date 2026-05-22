@@ -87,6 +87,7 @@ const MANDATORY_POLICIES = [
   'policy-code-quality',
   'policy-security-gate',
   'policy-deployment-safety',
+  'task-required',
 ];
 
 async function installPolicy(policyName: string): Promise<void> {
