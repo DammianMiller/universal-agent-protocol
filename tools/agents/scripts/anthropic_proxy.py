@@ -390,6 +390,20 @@ PROXY_SESSION_CONTAMINATION_FORCED_THRESHOLD = int(
 PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD = int(
     os.environ.get("PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD", "2")
 )
+# Attractor-aware contamination escape. When the same fault excerpt repeats
+# across consecutive contamination resets the model is in a stable output
+# attractor that the standard kept_last reset cannot escape (the preserved
+# tail re-primes the same fixed-point response). Detect via excerpt hash and
+# respond with a harder reset + corrective injection + temperature bump.
+PROXY_ATTRACTOR_DETECT = os.environ.get(
+    "PROXY_ATTRACTOR_DETECT", "on"
+).lower() not in {"0", "false", "off", "no"}
+PROXY_ATTRACTOR_TEMP_OVERRIDE = float(
+    os.environ.get("PROXY_ATTRACTOR_TEMP_OVERRIDE", "0.95")
+)
+PROXY_ATTRACTOR_FINALIZE_THRESHOLD = max(1, int(
+    os.environ.get("PROXY_ATTRACTOR_FINALIZE_THRESHOLD", "2")
+))
 PROXY_AGENTIC_SUPPLEMENT_MODE = (
     os.environ.get("PROXY_AGENTIC_SUPPLEMENT_MODE", "clean").strip().lower()
 )
@@ -750,6 +764,8 @@ class SessionMonitor:
     invalid_tool_call_streak: int = 0  # consecutive invalid tool arg payloads
     required_tool_miss_streak: int = 0  # required tool turns with no tool call
     contamination_resets: int = 0  # how many contamination resets were applied
+    last_fault_excerpt_hash: str = ""  # hash of last TOOL RESPONSE ISSUE excerpt (attractor detection)
+    attractor_correction_active: bool = False  # next turn uses high-temp escape sampling
     forced_auto_cooldown_turns: int = 0  # temporary auto override turns remaining
     forced_dampener_triggers: int = 0  # number of dampener activations
     arg_preflight_rejections: int = 0  # rejected tool calls from arg preflight
@@ -3586,23 +3602,37 @@ def build_openai_request(
         openai_body["stop"] = anthropic_body["stop_sequences"]
 
     # Force controlled temperature for tool-call turns to reduce garbled output
-    # Cycle 15 Option 2: use lower temperature after contamination resets
+    # Cycle 15 Option 2: use lower temperature after contamination resets.
+    # Attractor escape: when an attractor correction is active, OVERRIDE the
+    # low-temp default with a HIGH-temp sample so the deterministic output
+    # trajectory has a chance to break. Single-turn override (cleared on
+    # successful tool_use further down in the response handler).
     if has_tools:
         client_temp = openai_body.get("temperature")
         target_temp = PROXY_TOOL_TURN_TEMPERATURE
-        if monitor.contamination_resets > 0:
-            target_temp = min(target_temp, 0.1)
-        if client_temp is None or client_temp > target_temp:
+        attractor_active = getattr(monitor, "attractor_correction_active", False)
+        if attractor_active:
+            target_temp = max(target_temp, PROXY_ATTRACTOR_TEMP_OVERRIDE)
             openai_body["temperature"] = target_temp
-            extra = ""
-            if monitor.contamination_resets > 0:
-                extra = f" (post-contamination reset, resets={monitor.contamination_resets})"
             logger.info(
-                "TOOL TURN TEMP: forcing temperature=%.2f (was %s) for tool-enabled request%s",
+                "TOOL TURN TEMP: ATTRACTOR ESCAPE temperature=%.2f (was %s)",
                 target_temp,
                 client_temp,
-                extra,
             )
+        else:
+            if monitor.contamination_resets > 0:
+                target_temp = min(target_temp, 0.1)
+            if client_temp is None or client_temp > target_temp:
+                openai_body["temperature"] = target_temp
+                extra = ""
+                if monitor.contamination_resets > 0:
+                    extra = f" (post-contamination reset, resets={monitor.contamination_resets})"
+                logger.info(
+                    "TOOL TURN TEMP: forcing temperature=%.2f (was %s) for tool-enabled request%s",
+                    target_temp,
+                    client_temp,
+                    extra,
+                )
 
     # Convert Anthropic tools to OpenAI function-calling tools
     full_openai_tools: list[dict] = []
@@ -4142,6 +4172,17 @@ def _openai_message_text(openai_resp: dict) -> str:
     _, message = _extract_openai_choice(openai_resp)
     content = message.get("content", "")
     return content if isinstance(content, str) else str(content)
+
+
+def _hash_fault_excerpt(excerpt: str) -> str:
+    """Stable hash of a fault excerpt for attractor-repeat detection. Lowercased
+    + whitespace-collapsed so trivial rendering differences don't break the match."""
+    if not excerpt:
+        return ""
+    normalized = " ".join(excerpt.lower().split())[:200]
+    if not normalized:
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
 def _extract_openai_tool_calls(openai_resp: dict) -> list[dict]:
@@ -6348,6 +6389,13 @@ async def _apply_malformed_tool_guardrail(
             monitor.invalid_tool_call_streak = 0
             monitor.required_tool_miss_streak = 0
             monitor.last_response_garbled = False
+            if monitor.attractor_correction_active:
+                logger.info(
+                    "ATTRACTOR ESCAPE succeeded: session=%s — tool_use emitted, clearing attractor flag",
+                    session_id,
+                )
+                monitor.attractor_correction_active = False
+                monitor.last_fault_excerpt_hash = ""
         if repair_count > 0:
             monitor.arg_preflight_repairs += repair_count
             logger.info(
@@ -6385,6 +6433,11 @@ async def _apply_malformed_tool_guardrail(
             if raw_args and _is_garbled_tool_arguments(raw_args):
                 arg_excerpt = raw_args[:200].replace("\n", " ")
                 break
+    # Attractor detection — hash the normalized fault excerpt so the
+    # contamination breaker can recognize the same fixed-point response
+    # reappearing across consecutive resets. Whitespace-normalized so trivial
+    # rendering differences don't break the match.
+    monitor.last_fault_excerpt_hash = _hash_fault_excerpt(excerpt)
     logger.warning(
         "TOOL RESPONSE ISSUE: session=%s kind=%s reason=%s malformed=%d invalid=%d required_miss=%d excerpt=%.220s args=%.200s",
         session_id,
@@ -6627,7 +6680,16 @@ def _maybe_apply_session_contamination_breaker(
     # Cycle 15 Option 3: if contamination has already reset N+ times in this
     # session, the model is fundamentally unable to produce valid tool calls.
     # Force finalize so the Droid framework can intervene.
-    max_contamination_resets = 3
+    #
+    # Lower the threshold when an attractor correction has already been
+    # applied — if the corrective injection + temp bump didn't break the
+    # attractor on the next turn, more resets won't help. Cuts wasted retry
+    # budget from 3 resets (~60 min observed) to 2 (~25 min).
+    max_contamination_resets = (
+        PROXY_ATTRACTOR_FINALIZE_THRESHOLD
+        if monitor.attractor_correction_active
+        else 3
+    )
     if monitor.contamination_resets >= max_contamination_resets:
         logger.error(
             "SESSION CONTAMINATION LOOP: session=%s contamination_resets=%d >= %d, forcing finalize",
@@ -6654,26 +6716,73 @@ def _maybe_apply_session_contamination_breaker(
         return updated
 
     messages = anthropic_body.get("messages", [])
+
+    # Attractor detection: if the fault excerpt that triggered this reset
+    # hashes to the same value as the *previous* reset's fault excerpt, the
+    # model is in a stable output attractor — keep_last reset preserves the
+    # priming tail that pulls it back in. Apply a harder reset (system +
+    # initial user turn only) plus a corrective injection. Temperature gets
+    # bumped UP on the next turn (see _apply_request_sampling) instead of
+    # the standard post-contamination drop, to break the deterministic
+    # output trajectory.
+    attractor_detected = bool(
+        PROXY_ATTRACTOR_DETECT
+        and monitor.contamination_resets >= 1
+        and monitor.last_fault_excerpt_hash
+        and monitor.last_fault_excerpt_hash
+        == getattr(monitor, "_prev_reset_fault_hash", "")
+    )
+    monitor._prev_reset_fault_hash = monitor.last_fault_excerpt_hash
+
     keep_last = max(2, PROXY_SESSION_CONTAMINATION_KEEP_LAST)
-    if len(messages) <= keep_last + 1:
+    if not attractor_detected and len(messages) <= keep_last + 1:
         monitor.malformed_tool_streak = 0
         monitor.invalid_tool_call_streak = 0
         monitor.required_tool_miss_streak = 0
         monitor.reset_tool_turn_state(reason="contamination_guardrail_soft_reset")
         return anthropic_body
 
-    head = messages[:1]
-    tail = messages[-keep_last:]
-    reset_marker = {
-        "role": "user",
-        "content": (
-            "[SESSION RESET: tool-call quality degraded in earlier turns. "
-            "Continue from the recent context and emit valid tool calls with strict JSON arguments only.]"
-        ),
-    }
+    if attractor_detected:
+        # Hard reset: drop the entire trailing context. Keep only the system
+        # turn (if present) and the first user turn so the model has the
+        # original goal but none of the attractor-priming tail.
+        first_user_idx = next(
+            (i for i, m in enumerate(messages) if m.get("role") == "user"),
+            None,
+        )
+        if first_user_idx is None:
+            head = messages[:1]
+        else:
+            head = messages[: first_user_idx + 1]
+        reset_marker = {
+            "role": "user",
+            "content": (
+                "[ATTRACTOR INTERVENTION: previous responses entered a stable "
+                "prose-output loop and failed to emit tool_use blocks. The "
+                "trailing context has been removed to break the loop. Do NOT "
+                "narrate, summarize, or explain. Your next response MUST "
+                "begin with a tool_use block invoking one of the available "
+                "tools to make concrete progress on the original task.]"
+            ),
+        }
+        new_messages = head + [reset_marker]
+        monitor.attractor_correction_active = True
+        log_reason = "attractor"
+    else:
+        head = messages[:1]
+        tail = messages[-keep_last:]
+        reset_marker = {
+            "role": "user",
+            "content": (
+                "[SESSION RESET: tool-call quality degraded in earlier turns. "
+                "Continue from the recent context and emit valid tool calls with strict JSON arguments only.]"
+            ),
+        }
+        new_messages = head + [reset_marker] + tail
+        log_reason = "standard"
 
     updated_body = dict(anthropic_body)
-    updated_body["messages"] = head + [reset_marker] + tail
+    updated_body["messages"] = new_messages
 
     forced_before = monitor.consecutive_forced_count
     required_miss_before = monitor.required_tool_miss_streak
@@ -6684,15 +6793,26 @@ def _maybe_apply_session_contamination_breaker(
     monitor.no_progress_streak = 0
     monitor.consecutive_forced_count = 0
     monitor.forced_auto_cooldown_turns = 0
-    monitor.reset_tool_turn_state(reason="contamination_guardrail_reset")
-    logger.warning(
-        "SESSION CONTAMINATION BREAKER: session=%s reset applied, kept=%d messages (bad_streak=%d forced=%d required_miss=%d)",
-        session_id,
-        len(updated_body["messages"]),
-        bad_streak,
-        forced_before,
-        required_miss_before,
-    )
+    monitor.reset_tool_turn_state(reason=f"contamination_guardrail_reset_{log_reason}")
+    if attractor_detected:
+        logger.warning(
+            "CONTAMINATION ATTRACTOR DETECTED: session=%s hash=%s — hard reset "
+            "applied, kept=%d messages (initial intent only), temp override "
+            "and finalize threshold lowered to %d",
+            session_id,
+            monitor.last_fault_excerpt_hash,
+            len(updated_body["messages"]),
+            PROXY_ATTRACTOR_FINALIZE_THRESHOLD,
+        )
+    else:
+        logger.warning(
+            "SESSION CONTAMINATION BREAKER: session=%s reset applied, kept=%d messages (bad_streak=%d forced=%d required_miss=%d)",
+            session_id,
+            len(updated_body["messages"]),
+            bad_streak,
+            forced_before,
+            required_miss_before,
+        )
 
     return updated_body
 
