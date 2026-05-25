@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.22.1 (2026-05-25)
+
+- fix(hooks): worktree-guard scope check — allow paths outside repo root (#193)
+- proxy: attractor breaker phase 2 — stronger escape signal (#192)
+- proxy: attractor-aware contamination breaker (#191)
+
+
 ## v1.22.0 (2026-05-22)
 
 - feat(policies): add task-required enforcer + fix tasks.db due_date crash (#189)
