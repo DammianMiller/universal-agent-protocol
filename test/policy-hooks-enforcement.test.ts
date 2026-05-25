@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'fs';
+import {
+  existsSync,
+  readFileSync,
+  mkdtempSync,
+  mkdirSync,
+  realpathSync,
+  writeFileSync,
+  unlinkSync,
+} from 'fs';
+import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -90,20 +99,38 @@ describe('Policy Enforcement Hooks', () => {
       expect(content).toContain('file_path');
     });
 
+    // Behavioural tests use an isolated temp git repo as the cwd, so
+    // `git rev-parse --show-toplevel` returns a known root regardless of
+    // whether the test suite itself is running from a worktree, CI fresh
+    // checkout, or a primary clone. Without this, in-repo paths fall
+    // afoul of two confounders: (a) running from a worktree means cwd's
+    // toplevel IS the worktree, so any path "inside" the test repo also
+    // contains `.worktrees/` and is allowed by the substring check; (b)
+    // CI checkouts at /home/runner/work don't match hardcoded paths
+    // like /home/user/project.
+    const setupTempRepo = (): string => {
+      const tmpRoot = mkdtempSync(join(tmpdir(), 'uap-hook-test-'));
+      execSync('git init -q', { cwd: tmpRoot });
+      execSync('git config user.email test@test', { cwd: tmpRoot });
+      execSync('git config user.name test', { cwd: tmpRoot });
+      execSync('git commit -q --allow-empty -m init', { cwd: tmpRoot });
+      return realpathSync(tmpRoot); // resolve macOS /private/var symlink
+    };
+
     it('blocks edit targeting project root', () => {
-      // Simulate the hook with a project-root file path
       const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-edit-write.sh');
+      const tmpRepo = setupTempRepo();
       const input = JSON.stringify({
         tool_name: 'Edit',
-        tool_input: { file_path: '/home/user/project/src/index.ts' },
+        tool_input: { file_path: join(tmpRepo, 'src/index.ts') },
       });
 
       try {
         execSync(`echo '${input}' | bash "${hookPath}"`, {
           encoding: 'utf-8',
-          env: { ...process.env, CLAUDE_PROJECT_DIR: rootDir },
+          cwd: tmpRepo,
+          env: { ...process.env, CLAUDE_PROJECT_DIR: tmpRepo },
         });
-        // Should not reach here — hook should exit 2
         expect.unreachable('Hook should have blocked this edit');
       } catch (err: unknown) {
         const error = err as { status: number; stderr: string };
@@ -114,33 +141,76 @@ describe('Policy Enforcement Hooks', () => {
 
     it('allows edit inside a worktree path', () => {
       const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-edit-write.sh');
+      const tmpRepo = setupTempRepo();
       const input = JSON.stringify({
         tool_name: 'Write',
         tool_input: {
-          file_path: '/home/user/project/.worktrees/001-fix/src/index.ts',
+          file_path: join(tmpRepo, '.worktrees/001-fix/src/index.ts'),
         },
       });
 
       const result = execSync(`echo '${input}' | bash "${hookPath}"`, {
         encoding: 'utf-8',
-        env: { ...process.env, CLAUDE_PROJECT_DIR: rootDir },
+        cwd: tmpRepo,
+        env: { ...process.env, CLAUDE_PROJECT_DIR: tmpRepo },
       });
-      // Exit 0 = allowed (no error thrown)
       expect(result).toBeDefined();
     });
 
     it('allows edit to exempt path (agents/data)', () => {
       const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-edit-write.sh');
+      const tmpRepo = setupTempRepo();
       const input = JSON.stringify({
         tool_name: 'Write',
         tool_input: {
-          file_path: '/home/user/project/agents/data/memory/short_term.db',
+          file_path: join(tmpRepo, 'agents/data/memory/short_term.db'),
         },
       });
 
       const result = execSync(`echo '${input}' | bash "${hookPath}"`, {
         encoding: 'utf-8',
-        env: { ...process.env, CLAUDE_PROJECT_DIR: rootDir },
+        cwd: tmpRepo,
+        env: { ...process.env, CLAUDE_PROJECT_DIR: tmpRepo },
+      });
+      expect(result).toBeDefined();
+    });
+
+    // Regression guard: outside-repo paths must be allowed. Before
+    // 2026-05-25 this hook blocked ALL writes outside .worktrees/,
+    // including memory files at ~/.claude/projects/.../memory/, which
+    // broke the project memory system entirely.
+    it('allows path outside the repo (e.g. ~/.claude memory area)', () => {
+      const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-edit-write.sh');
+      const tmpRepo = setupTempRepo();
+      const input = JSON.stringify({
+        tool_name: 'Write',
+        tool_input: {
+          file_path: '/home/user/.claude/projects/-some-proj/memory/foo.md',
+        },
+      });
+
+      const result = execSync(`echo '${input}' | bash "${hookPath}"`, {
+        encoding: 'utf-8',
+        cwd: tmpRepo,
+        env: { ...process.env, CLAUDE_PROJECT_DIR: tmpRepo },
+      });
+      // Exit 0 = allowed (regression guard — hook does NOT enforce
+      // worktree policy on files outside the repo's git toplevel)
+      expect(result).toBeDefined();
+    });
+
+    it('allows path outside the repo (e.g. /tmp scratch)', () => {
+      const hookPath = join(rootDir, '.claude/hooks/pre-tool-use-edit-write.sh');
+      const tmpRepo = setupTempRepo();
+      const input = JSON.stringify({
+        tool_name: 'Write',
+        tool_input: { file_path: '/tmp/uap-hook-test-scratch.txt' },
+      });
+
+      const result = execSync(`echo '${input}' | bash "${hookPath}"`, {
+        encoding: 'utf-8',
+        cwd: tmpRepo,
+        env: { ...process.env, CLAUDE_PROJECT_DIR: tmpRepo },
       });
       expect(result).toBeDefined();
     });
@@ -244,7 +314,6 @@ describe('Policy Enforcement Hooks', () => {
       };
       // Write input to temp file to avoid shell quoting issues
       const tmpFile = join(rootDir, '.uap-backups', 'test-input.json');
-      const { writeFileSync, unlinkSync, mkdirSync } = require('fs');
       mkdirSync(join(rootDir, '.uap-backups'), { recursive: true });
       writeFileSync(tmpFile, JSON.stringify(input));
 
