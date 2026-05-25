@@ -172,5 +172,42 @@ class TestAttractorFinalizeThreshold(unittest.TestCase):
         self.assertIn("tools", updated)
 
 
+class TestAttractorPhase2Defaults(unittest.TestCase):
+    """Phase 2 (PR #192) raises the default temp override and strengthens the
+    intervention wording. Verify the defaults the operator gets out of the box."""
+
+    def test_temp_override_default_is_1_20(self):
+        # Phase 1 default was 0.95; Phase 2 raises to 1.20 after one
+        # production attractor (fp:d19b7a44...) failed to escape at 0.95.
+        self.assertGreaterEqual(proxy.PROXY_ATTRACTOR_TEMP_OVERRIDE, 1.20 - 0.001)
+
+    def test_intervention_message_has_structured_directives(self):
+        """The Phase 2 wording uses MUST / DO NOT bullets and explicitly
+        names the failure mode. Trigger the attractor path and inspect the
+        injected marker."""
+        monitor = _make_monitor()
+        monitor.last_fault_excerpt_hash = "deadbeefcafebabe"
+        monitor._prev_reset_fault_hash = "deadbeefcafebabe"
+        monitor.contamination_resets = 1
+        monitor.required_tool_miss_streak = (
+            proxy.PROXY_SESSION_CONTAMINATION_REQUIRED_MISS_THRESHOLD
+        )
+
+        body = _make_body(n_msgs=20)
+        updated = proxy._maybe_apply_session_contamination_breaker(
+            body, monitor, "test-session"
+        )
+
+        content = updated["messages"][-1]["content"]
+        # Phase 2 wording signals
+        self.assertIn("CRITICAL", content)
+        self.assertIn("MUST", content)
+        self.assertIn("DO NOT", content)
+        # Specifically forbids the attractor's preferred behaviors
+        self.assertIn("prose", content.lower())
+        # Still has the marker substring callers may grep on
+        self.assertIn("ATTRACTOR INTERVENTION", content)
+
+
 if __name__ == "__main__":
     unittest.main()

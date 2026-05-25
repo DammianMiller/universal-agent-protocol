@@ -399,7 +399,7 @@ PROXY_ATTRACTOR_DETECT = os.environ.get(
     "PROXY_ATTRACTOR_DETECT", "on"
 ).lower() not in {"0", "false", "off", "no"}
 PROXY_ATTRACTOR_TEMP_OVERRIDE = float(
-    os.environ.get("PROXY_ATTRACTOR_TEMP_OVERRIDE", "0.95")
+    os.environ.get("PROXY_ATTRACTOR_TEMP_OVERRIDE", "1.20")
 )
 PROXY_ATTRACTOR_FINALIZE_THRESHOLD = max(1, int(
     os.environ.get("PROXY_ATTRACTOR_FINALIZE_THRESHOLD", "2")
@@ -6754,15 +6754,31 @@ def _maybe_apply_session_contamination_breaker(
             head = messages[:1]
         else:
             head = messages[: first_user_idx + 1]
+        # Phase 2 (PR #192): stronger, more structured intervention wording.
+        # The Phase 1 single-paragraph message + temp 0.95 escaped one
+        # production attractor (2026-05-25 02:39:59 fp:1f7e2c95...) but failed
+        # to escape another (2026-05-24 19:11 fp:d19b7a44...). Increase the
+        # signal-to-noise on the corrective by: (1) splitting MUST/MUST NOT
+        # into bullet points the model attends to better, (2) using ALL CAPS
+        # on the critical negative ("DO NOT narrate"), (3) explicitly naming
+        # the attractor failure mode so the model can recognize and avoid it.
         reset_marker = {
             "role": "user",
             "content": (
-                "[ATTRACTOR INTERVENTION: previous responses entered a stable "
-                "prose-output loop and failed to emit tool_use blocks. The "
-                "trailing context has been removed to break the loop. Do NOT "
-                "narrate, summarize, or explain. Your next response MUST "
-                "begin with a tool_use block invoking one of the available "
-                "tools to make concrete progress on the original task.]"
+                "[ATTRACTOR INTERVENTION — CRITICAL]\n\n"
+                "Your previous responses REPEATEDLY emitted prose summaries "
+                "instead of tool calls. This is the exact failure mode this "
+                "intervention is designed to break. The trailing conversation "
+                "has been REMOVED.\n\n"
+                "YOUR NEXT RESPONSE MUST:\n"
+                "  1. Begin with a tool_use block (no preamble, no thinking)\n"
+                "  2. Invoke one of the available tools\n"
+                "  3. Take a CONCRETE action toward the original task\n\n"
+                "DO NOT:\n"
+                "  • Summarize what you have done or plan to do\n"
+                "  • Narrate, explain, or describe\n"
+                "  • Emit any prose before the tool_use block\n\n"
+                "Just call the tool."
             ),
         }
         new_messages = head + [reset_marker]
