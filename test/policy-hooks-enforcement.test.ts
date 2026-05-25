@@ -108,12 +108,25 @@ describe('Policy Enforcement Hooks', () => {
     // contains `.worktrees/` and is allowed by the substring check; (b)
     // CI checkouts at /home/runner/work don't match hardcoded paths
     // like /home/user/project.
+    //
+    // Implementation defenses (learned the hard way during this PR):
+    // - Use `git -C <dir>` not `cwd:` option. Under vitest's worker
+    //   threads the cwd option was empirically observed to be ignored
+    //   in some runs, causing `git commit` to leak into the surrounding
+    //   working-tree git repo (which then required reflog recovery).
+    // - Scrub GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE from the child
+    //   env. If the test runner inherits any of these from a parent
+    //   shell, every `git` call below would target the wrong repo.
     const setupTempRepo = (): string => {
       const tmpRoot = mkdtempSync(join(tmpdir(), 'uap-hook-test-'));
-      execSync('git init -q', { cwd: tmpRoot });
-      execSync('git config user.email test@test', { cwd: tmpRoot });
-      execSync('git config user.name test', { cwd: tmpRoot });
-      execSync('git commit -q --allow-empty -m init', { cwd: tmpRoot });
+      const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+      delete cleanEnv.GIT_DIR;
+      delete cleanEnv.GIT_WORK_TREE;
+      delete cleanEnv.GIT_INDEX_FILE;
+      execSync(`git -C "${tmpRoot}" init -q`, { env: cleanEnv });
+      execSync(`git -C "${tmpRoot}" config user.email test@test`, { env: cleanEnv });
+      execSync(`git -C "${tmpRoot}" config user.name test`, { env: cleanEnv });
+      execSync(`git -C "${tmpRoot}" commit -q --allow-empty -m init`, { env: cleanEnv });
       return realpathSync(tmpRoot); // resolve macOS /private/var symlink
     };
 
