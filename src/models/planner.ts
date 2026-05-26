@@ -21,6 +21,62 @@ const log = createLogger('planner');
 const uuidv4 = (): string => randomUUID();
 
 /**
+ * Map a Subtask to the canonical expert droids that should engage with it.
+ * Read by the executor when fanning out parallel reviews. Pure function so
+ * it can be tested independently.
+ */
+export function suggestedDroidsForSubtask(sub: Subtask, taskDescription: string): string[] {
+  const desc = taskDescription.toLowerCase();
+  const droids = new Set<string>();
+
+  switch (sub.type) {
+    case 'planning':
+      droids.add('product-strategist');
+      if (sub.title.toLowerCase().includes('design')) droids.add('architect-reviewer');
+      break;
+    case 'coding':
+      if (sub.title.toLowerCase().includes('test')) {
+        droids.add('test-strategist');
+        droids.add('test-coverage-reviewer');
+      } else {
+        droids.add('typescript-node-expert');
+        droids.add('code-quality-reviewer');
+      }
+      break;
+    case 'refactoring':
+      droids.add('refactoring-specialist');
+      droids.add('code-quality-reviewer');
+      break;
+    case 'bug-fix':
+      droids.add('debug-expert');
+      droids.add('test-coverage-reviewer');
+      break;
+    case 'review':
+      droids.add('code-quality-reviewer');
+      droids.add('security-code-reviewer');
+      droids.add('performance-reviewer');
+      break;
+    case 'documentation':
+      droids.add('documentation-expert');
+      droids.add('documentation-accuracy-reviewer');
+      break;
+  }
+
+  // Task-level signals
+  if (desc.includes('security') || desc.includes('auth') || desc.includes('crypto')) {
+    droids.add('security-code-reviewer');
+  }
+  if (desc.includes('performance') || desc.includes('latency') || desc.includes('throughput')) {
+    droids.add('performance-reviewer');
+  }
+  if (desc.includes('api') || desc.includes('schema') || desc.includes('contract')) {
+    droids.add('api-designer');
+  }
+
+  return [...droids];
+}
+
+/**
  * Planner configuration options
  */
 export interface PlannerOptions {
@@ -84,6 +140,14 @@ export class TaskPlanner {
     const subtasks = classification.requiresPlanning
       ? this.decomposeTask(taskDescription, classification.complexity)
       : [this.createSingleSubtask(taskDescription, classification)];
+
+    // Tag each subtask with the canonical expert droids for its phase.
+    // This is metadata only — the executor reads it to decide which
+    // droids to spawn for review fan-out. Non-breaking when consumers
+    // ignore the field.
+    for (const sub of subtasks) {
+      sub.suggestedDroids = suggestedDroidsForSubtask(sub, taskDescription);
+    }
 
     // Build dependency graph
     const dependencies = this.analyzeDependencies(subtasks);

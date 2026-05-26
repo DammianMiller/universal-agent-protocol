@@ -23,7 +23,19 @@ export type AgentCapability =
   | 'devops'
   | 'infrastructure'
   | 'code-review'
-  | 'refactoring';
+  | 'refactoring'
+  | 'architecture'
+  | 'product'
+  | 'api-design'
+  | 'test-strategy'
+  | 'qa'
+  | 'release'
+  | 'compliance'
+  | 'incident'
+  | 'observability'
+  | 'dependency'
+  | 'accessibility'
+  | 'cost';
 
 /**
  * Droid/skill mapping for capability routing.
@@ -143,6 +155,138 @@ export const DEFAULT_CAPABILITY_MAPPINGS: CapabilityMapping[] = [
     filePatterns: ['*.go', 'go.mod', 'go.sum'],
     taskTypes: ['task', 'feature', 'bug'],
     priority: 10,
+  },
+  {
+    capability: 'architecture',
+    droids: ['architect-reviewer'],
+    skills: [],
+    filePatterns: [
+      'src/types/**',
+      '**/schemas/**',
+      'src/index.ts',
+      'docs/architecture/**',
+      'docs/architecture/adr/**',
+    ],
+    taskTypes: ['task', 'feature', 'epic'],
+    priority: 9,
+  },
+  {
+    capability: 'product',
+    droids: ['product-strategist'],
+    skills: [],
+    filePatterns: ['docs/product/**', '**/PRD.md', '**/RFC.md'],
+    taskTypes: ['feature', 'epic', 'story'],
+    priority: 7,
+  },
+  {
+    capability: 'api-design',
+    droids: ['api-designer'],
+    skills: [],
+    filePatterns: [
+      '**/openapi*',
+      '**/swagger*',
+      '**/api/**/routes*',
+      '**/handlers/**',
+      'src/types/api.ts',
+    ],
+    taskTypes: ['task', 'feature'],
+    priority: 9,
+  },
+  {
+    capability: 'test-strategy',
+    droids: ['test-strategist'],
+    skills: [],
+    filePatterns: ['vitest.config*', 'jest.config*', 'test/plans/**'],
+    taskTypes: ['task', 'feature'],
+    priority: 7,
+  },
+  {
+    capability: 'qa',
+    droids: ['qa-expert'],
+    skills: [],
+    filePatterns: ['**/__flaky__/**', 'test/**/flaky*'],
+    taskTypes: ['bug', 'task'],
+    priority: 7,
+  },
+  {
+    capability: 'release',
+    droids: ['release-manager'],
+    skills: [],
+    filePatterns: ['CHANGELOG.md', 'package.json', 'package-lock.json', '.npmrc', 'release.config*'],
+    taskTypes: ['chore', 'task'],
+    priority: 8,
+  },
+  {
+    capability: 'compliance',
+    droids: ['compliance-officer'],
+    skills: [],
+    filePatterns: ['policies/**', '.policy-tools/**', 'docs/compliance/**'],
+    taskTypes: ['task', 'chore'],
+    priority: 9,
+  },
+  {
+    capability: 'incident',
+    droids: ['incident-responder'],
+    skills: [],
+    filePatterns: ['docs/incidents/**', 'docs/runbooks/**', 'docs/postmortems/**'],
+    taskTypes: ['bug', 'task'],
+    priority: 10,
+  },
+  {
+    capability: 'observability',
+    droids: ['observability-engineer'],
+    skills: [],
+    filePatterns: [
+      '**/telemetry/**',
+      '**/metrics/**',
+      '**/logging/**',
+      '**/handlers/**',
+      '**/routes/**',
+    ],
+    taskTypes: ['task', 'feature'],
+    priority: 7,
+  },
+  {
+    capability: 'refactoring',
+    droids: ['refactoring-specialist'],
+    skills: [],
+    filePatterns: ['*'],
+    taskTypes: ['chore', 'task'],
+    priority: 6,
+  },
+  {
+    capability: 'dependency',
+    droids: ['dependency-auditor'],
+    skills: [],
+    filePatterns: [
+      'package.json',
+      'package-lock.json',
+      'Cargo.toml',
+      'Cargo.lock',
+      'go.mod',
+      'go.sum',
+      'pyproject.toml',
+      'requirements*.txt',
+      'uv.lock',
+    ],
+    taskTypes: ['chore', 'task'],
+    priority: 8,
+  },
+  {
+    capability: 'accessibility',
+    droids: ['accessibility-tester'],
+    skills: [],
+    filePatterns: ['**/components/**', '**/ui/**', '**/*.tsx', '**/*.jsx', '**/*.vue'],
+    taskTypes: ['task', 'feature', 'bug'],
+    priority: 7,
+  },
+  {
+    capability: 'cost',
+    droids: ['cost-engineer'],
+    skills: [],
+    filePatterns: ['**/terraform/**', '**/helm/**', '**/k8s/**', '**/cloudformation/**'],
+    taskTypes: ['task', 'chore'],
+    priority: 6,
   },
 ];
 

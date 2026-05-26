@@ -66,11 +66,12 @@ uap setup -p all
 | Deploy Batching    | 1 module       | Squash, merge, parallelize deploy actions across agents                          |
 | Policy Enforcement | 8 modules      | Store, evaluate, and enforce operational policies with audit trail               |
 | Browser            | 1 module       | Stealth web automation via CloakBrowser (Playwright drop-in)                     |
-| MCP Router         | 10 modules     | 2-tool meta-router replacing N tool definitions (98% token savings)              |
+| MCP Router         | 11 modules     | 2-tool meta-router + expert-consultation registry (98% token savings)            |
 | Models             | 10 modules     | Multi-model routing, planning, execution, validation, 13 model profiles          |
 | Patterns           | 23 patterns    | Battle-tested workflows from Terminal-Bench 2.0                                  |
-| Droids             | 8 experts      | Specialized agents for security, performance, docs, testing                      |
-| Skills             | 33 skills      | Reusable domain expertise (chess, polyglot, compression, etc.)                   |
+| Droids             | 25 experts     | Full SDLC expert stack: strategy, design, build, review, release, ops ([reference](docs/reference/EXPERT_DROIDS.md)) |
+| Expert Orchestrator | 1 module      | Adaptive droid-chain selection across plan→design→implement→review→release       |
+| Skills             | 34 skills      | Reusable domain expertise (now includes `parallel-expert-review`)                |
 | Tasks              | 7 modules      | Full task lifecycle with dependencies, claims, JSONL sync                        |
 | Worktrees          | 1 module       | Isolated git branches per agent, auto-numbered                                   |
 | Hooks              | 2 hooks        | Session start (memory injection) and pre-compact (preservation)                  |
@@ -352,24 +353,35 @@ Battle-tested patterns from Terminal-Bench 2.0, stored in `.factory/patterns/`.
 
 ## Droids & Skills
 
-### Expert Droids (8)
+### Expert Droids (25) — full SDLC coverage
 
-| Droid                    | Specialization                   |
-| ------------------------ | -------------------------------- |
-| Code Quality Guardian    | Code review, quality enforcement |
-| Debug Expert             | Debugging specialist             |
-| Documentation Expert     | Documentation                    |
-| ML Training Expert       | ML/training                      |
-| Performance Optimizer    | Performance                      |
-| Security Auditor         | Security review                  |
-| Sysadmin Expert          | System administration            |
-| Terminal-Bench Optimizer | Benchmark optimization           |
+See [docs/reference/EXPERT_DROIDS.md](docs/reference/EXPERT_DROIDS.md) for the complete roster, roles, and routing semantics.
 
-### Skills (33)
+| Phase | Droids |
+|---|---|
+| **Strategy** | product-strategist, architect-reviewer, api-designer |
+| **Build** | typescript-node-expert, javascript-pro, python-pro, rust-pro, go-pro, cli-design-expert, debug-expert, refactoring-specialist |
+| **Quality** | code-quality-guardian, code-quality-reviewer, security-auditor, security-code-reviewer |
+| **Performance & Cost** | performance-optimizer, performance-reviewer, cost-engineer |
+| **Testing & QA** | test-strategist, test-plan-writer, test-coverage-reviewer, qa-expert |
+| **Documentation** | documentation-expert, documentation-accuracy-reviewer |
+| **Operations** | release-manager, compliance-officer, incident-responder, observability-engineer, dependency-auditor |
+| **Specialty** | ml-training-expert, sysadmin-expert, terminal-bench-optimizer, accessibility-tester |
+
+```bash
+uap droids list                     # see what's installed
+uap droids validate                 # CI-grade integrity check
+uap expert-route "<task>"           # recommended droid chain for a task
+uap expert-route "<task>" --json    # machine-readable
+```
+
+The capability router (`src/coordination/capability-router.ts`) maps tasks to droids by file pattern, task type, and keywords. The `ExpertOrchestrator` (`src/coordination/expert-orchestrator.ts`) composes the full plan→design→implement→review→release chain and persists per-droid success rates.
+
+### Skills (34)
 
 **Project Skills** (5): codebase-navigator, memory-management, near-miss-iteration, terminal-bench, worktree-workflow
 
-**Claude Skills** (5): hooks-session-start, hooks-pre-compact, scripts-tool-router, scripts-preload-memory, session-context-preservation-droid
+**Claude Skills** (6): hooks-session-start, hooks-pre-compact, scripts-tool-router, scripts-preload-memory, session-context-preservation-droid, **parallel-expert-review**
 
 **Factory Skills** (23): adversarial, balls-mode, batch-review, chess-engine, cli-design-expert, codebase-navigator, compression, git-forensics, near-miss, polyglot, service-config, terminal-bench-strategies, typescript-node-expert, unreal-engine-developer, tuistory, agent-browser, figma-mcp-promotion, infra-worker, uap-coordination, uap-patterns, uap-tasks, uap-worktree
 

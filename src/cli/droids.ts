@@ -2,13 +2,37 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, basename } from 'path';
+import yaml from 'js-yaml';
+import { DEFAULT_CAPABILITY_MAPPINGS } from '../coordination/capability-router.js';
 
-type DroidsAction = 'list' | 'add' | 'import';
+type DroidsAction = 'list' | 'add' | 'import' | 'validate';
 
 interface DroidsOptions {
   name?: string;
   template?: string;
   path?: string;
+  quiet?: boolean;
+}
+
+export interface DroidValidationIssue {
+  severity: 'error' | 'warning';
+  type:
+    | 'missing-droid'
+    | 'invalid-frontmatter'
+    | 'duplicate-name'
+    | 'missing-skill'
+    | 'missing-name'
+    | 'missing-description';
+  droidName?: string;
+  path?: string;
+  message: string;
+}
+
+export interface DroidValidationResult {
+  ok: boolean;
+  issues: DroidValidationIssue[];
+  droidsFound: string[];
+  droidsExpected: string[];
 }
 
 const BUILTIN_TEMPLATES: Record<string, { description: string; content: string }> = {
@@ -130,6 +154,160 @@ export async function droidsCommand(
       }
       await importDroids(cwd, options.path);
       break;
+    case 'validate': {
+      const result = await validateDroids(cwd);
+      if (!options.quiet) printValidationReport(result);
+      if (!result.ok) process.exit(1);
+      break;
+    }
+  }
+}
+
+/**
+ * Validate that every droid referenced by the capability router exists on
+ * disk and has a well-formed frontmatter. Returns a structured result so
+ * the validator is usable both from the CLI and from tests.
+ */
+export async function validateDroids(cwd: string): Promise<DroidValidationResult> {
+  const issues: DroidValidationIssue[] = [];
+  const droidDir = join(cwd, '.factory', 'droids');
+  const droidsFound: string[] = [];
+
+  // 1. Discover all .md droids and parse their frontmatter
+  // Skip test fixtures created by parallel-droid tests (.gitignored, not tracked)
+  if (existsSync(droidDir)) {
+    const entries = readdirSync(droidDir).filter(
+      (f) => f.endsWith('.md') && !f.startsWith('test-droid-')
+    );
+    const seenNames = new Map<string, string>();
+
+    for (const file of entries) {
+      const path = join(droidDir, file);
+      const content = readFileSync(path, 'utf-8');
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+
+      if (!fmMatch) {
+        issues.push({
+          severity: 'error',
+          type: 'invalid-frontmatter',
+          path,
+          message: `No YAML frontmatter found in ${basename(file)}`,
+        });
+        continue;
+      }
+
+      let meta: Record<string, unknown>;
+      try {
+        const parsed = yaml.load(fmMatch[1]);
+        if (!parsed || typeof parsed !== 'object') {
+          throw new Error('frontmatter is not an object');
+        }
+        meta = parsed as Record<string, unknown>;
+      } catch (err) {
+        issues.push({
+          severity: 'error',
+          type: 'invalid-frontmatter',
+          path,
+          message: `Cannot parse frontmatter in ${basename(file)}: ${(err as Error).message}`,
+        });
+        continue;
+      }
+
+      const name = typeof meta.name === 'string' ? meta.name.trim() : '';
+      const desc = typeof meta.description === 'string' ? meta.description.trim() : '';
+
+      if (!name) {
+        issues.push({
+          severity: 'error',
+          type: 'missing-name',
+          path,
+          message: `Missing required 'name' field in ${basename(file)}`,
+        });
+        continue;
+      }
+      if (!desc || desc.length < 5) {
+        issues.push({
+          severity: 'error',
+          type: 'missing-description',
+          path,
+          droidName: name,
+          message: `Droid '${name}' description must be at least 5 chars`,
+        });
+      }
+
+      if (seenNames.has(name)) {
+        issues.push({
+          severity: 'error',
+          type: 'duplicate-name',
+          path,
+          droidName: name,
+          message: `Duplicate droid name '${name}' (also in ${basename(seenNames.get(name)!)})`,
+        });
+      } else {
+        seenNames.set(name, path);
+      }
+
+      droidsFound.push(name);
+    }
+  }
+
+  // 2. Cross-reference capability router expectations
+  const expected = new Set<string>();
+  for (const mapping of DEFAULT_CAPABILITY_MAPPINGS) {
+    for (const d of mapping.droids) expected.add(d);
+  }
+  const droidsExpected = [...expected].sort();
+
+  const foundSet = new Set(droidsFound);
+  for (const name of droidsExpected) {
+    if (!foundSet.has(name)) {
+      issues.push({
+        severity: 'error',
+        type: 'missing-droid',
+        droidName: name,
+        message: `Capability router references droid '${name}' but no file exists at .factory/droids/${name}.md`,
+      });
+    }
+  }
+
+  return {
+    ok: issues.filter((i) => i.severity === 'error').length === 0,
+    issues,
+    droidsFound: droidsFound.sort(),
+    droidsExpected,
+  };
+}
+
+function printValidationReport(result: DroidValidationResult): void {
+  console.log(chalk.bold('\n🔍 Droid Validation\n'));
+  console.log(`  Droids on disk:    ${chalk.cyan(result.droidsFound.length)}`);
+  console.log(`  Droids expected:   ${chalk.cyan(result.droidsExpected.length)}`);
+  console.log(`  Issues found:      ${result.ok ? chalk.green(0) : chalk.red(result.issues.length)}\n`);
+
+  if (result.issues.length === 0) {
+    console.log(chalk.green('✅ All droids valid.\n'));
+    return;
+  }
+
+  const errors = result.issues.filter((i) => i.severity === 'error');
+  const warnings = result.issues.filter((i) => i.severity === 'warning');
+
+  if (errors.length > 0) {
+    console.log(chalk.red.bold(`❌ ${errors.length} error(s):`));
+    for (const issue of errors) {
+      const label = issue.droidName ? `[${issue.droidName}] ` : '';
+      console.log(chalk.red(`  • ${label}${issue.message}`));
+    }
+    console.log('');
+  }
+
+  if (warnings.length > 0) {
+    console.log(chalk.yellow.bold(`⚠️  ${warnings.length} warning(s):`));
+    for (const issue of warnings) {
+      const label = issue.droidName ? `[${issue.droidName}] ` : '';
+      console.log(chalk.yellow(`  • ${label}${issue.message}`));
+    }
+    console.log('');
   }
 }
 

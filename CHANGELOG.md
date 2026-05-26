@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.23.0 (2026-05-26)
+
+- feat(droids): add 17-droid expert stack + adaptive orchestrator
+
+
 ## v1.22.1 (2026-05-25)
 
 - fix(hooks): worktree-guard scope check — allow paths outside repo root (#193)
