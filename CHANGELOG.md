@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.23.0 (2026-05-26)
+
+- feat(droids): add 17-droid expert stack + adaptive orchestrator
+- proxy: attractor breaker phase 2 — stronger escape signal (#192)
+- proxy: attractor-aware contamination breaker (#191)
+
+
 ## v1.22.0 (2026-05-22)
 
 - feat(policies): add task-required enforcer + fix tasks.db due_date crash (#189)
