@@ -32,6 +32,7 @@ const lazy = {
   rtk: () => import('../cli/rtk.js'),
   toolCalls: () => import('../cli/tool-calls.js').then((m) => m.toolCallsCommand),
   policy: () => import('../cli/policy.js').then((m) => m.registerPolicyCommands),
+  expertRoute: () => import('../cli/expert-route.js').then((m) => m.expertRouteCommand),
 };
 
 // Type alias for hooks target (used in action handlers)
@@ -344,7 +345,27 @@ program
       .action(async (path) => {
         (await lazy.droids())('import', { path });
       })
+  )
+  .addCommand(
+    new Command('validate')
+      .description('Validate droid files against capability-router expectations')
+      .option('-q, --quiet', 'Suppress report output (exit code only)')
+      .action(async (options) => {
+        (await lazy.droids())('validate', options);
+      })
   );
+
+program
+  .command('expert-route')
+  .description('Recommend an expert droid chain for a task description')
+  .argument('<description...>', 'Task description (quoted or space-separated)')
+  .option('-f, --files <files...>', 'Affected file paths to refine routing')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (descriptionParts: string[], options) => {
+    const description = descriptionParts.join(' ');
+    const cmd = await lazy.expertRoute();
+    await cmd(description, options);
+  });
 
 // Agent Coordination Commands
 program

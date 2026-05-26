@@ -41,6 +41,9 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
+      - name: Validate droid integrity
+        run: node dist/bin/cli.js droids validate
+
       - name: Run tests
         run: npm test
 

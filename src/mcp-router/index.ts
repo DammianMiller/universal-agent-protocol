@@ -37,3 +37,10 @@ export { compressToolOutput } from './output-compressor.js';
 export type { CompressedOutput, CompressionStats } from './output-compressor.js';
 export { SessionStats, globalSessionStats } from './session-stats.js';
 export type { StatsSummary, ToolBreakdown, ToolCallRecord } from './session-stats.js';
+export {
+  loadExpertTools,
+  isExpertToolPath,
+  expertNameFromPath,
+  EXPERT_SERVER_NAME,
+} from './experts/registry.js';
+export type { ExpertConsultArgs } from './experts/registry.js';

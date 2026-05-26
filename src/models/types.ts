@@ -277,6 +277,8 @@ export interface Subtask {
   inputs: string[];
   outputs: string[];
   constraints: string[];
+  /** Suggested expert droids for this subtask, in execution order. Optional. */
+  suggestedDroids?: string[];
 }
 
 /**
