@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.24.0 (2026-05-30)
+
+- docs: document expert-stack extensions (HALO, ideation, forward-design, review gate)
+- feat(policies): real expert-review hard gate + architecture-review doc
+- feat(ideate): open-collider divergent-ideation wrapper
+- feat(halo): trace exporter + harness-optimizer droid + uap harness CLI
+- feat(experts): forward-design droids + activate experts-MCP surface
+- feat(droids): add 17-droid expert stack + adaptive orchestrator (#195)
+- chore: bump version to 1.22.1 (#194)
+- fix(hooks): worktree-guard scope check — allow paths outside repo root (#193)
+- proxy: attractor breaker phase 2 — stronger escape signal (#192)
+- proxy: attractor-aware contamination breaker (#191)
+
+
 ## v1.23.0 (2026-05-26)
 
 - feat(droids): add 17-droid expert stack + adaptive orchestrator
