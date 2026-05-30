@@ -46,17 +46,31 @@ export class CoordinationService {
 
   // ==================== Agent Lifecycle ====================
 
-  register(name: string, capabilities?: string[], worktreeBranch?: string): string {
-    const id = randomUUID();
+  /**
+   * Register an agent. Pass `id` to register under a stable, caller-chosen
+   * identifier so other agents can address it directly (announce/send/heartbeat
+   * all require a known id); omit it for an auto-generated UUID. Re-registering
+   * an existing id is idempotent — it reactivates the agent and refreshes its
+   * metadata rather than failing on the primary-key conflict.
+   */
+  register(name: string, capabilities?: string[], worktreeBranch?: string, id?: string): string {
+    const agentId = id || randomUUID();
     const now = new Date().toISOString();
 
     const stmt = this.db.prepare(`
       INSERT INTO agent_registry (id, name, session_id, status, worktree_branch, started_at, last_heartbeat, capabilities)
       VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        session_id = excluded.session_id,
+        status = 'active',
+        worktree_branch = excluded.worktree_branch,
+        last_heartbeat = excluded.last_heartbeat,
+        capabilities = excluded.capabilities
     `);
 
     stmt.run(
-      id,
+      agentId,
       name,
       this.sessionId,
       worktreeBranch || null,
@@ -64,7 +78,7 @@ export class CoordinationService {
       now,
       capabilities ? JSON.stringify(capabilities) : null
     );
-    return id;
+    return agentId;
   }
 
   heartbeat(agentId: string): void {

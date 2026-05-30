@@ -468,6 +468,7 @@ program
     new Command('register')
       .description('Register a new agent (each agent works in isolated worktree)')
       .option('-n, --name <name>', 'Agent name (required)')
+      .option('-i, --id <id>', 'Stable agent ID (optional; generated if omitted). Use a known ID so other agents can address this one directly.')
       .option('-c, --capabilities <caps>', 'Comma-separated capabilities')
       .option('-w, --worktree <branch>', 'Git worktree branch this agent is using')
       .action(async (options) => {
