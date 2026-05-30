@@ -1,7 +1,9 @@
 import chalk from 'chalk';
 import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, chmodSync } from 'fs';
 import { join, dirname } from 'path';
+import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import yaml from 'js-yaml';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -14,15 +16,17 @@ export type HooksTarget =
   | 'opencode'
   | 'codex'
   | 'forgecode'
-  | 'omp';
-type HooksAction = 'install' | 'status';
+  | 'omp'
+  | 'hermes';
+type HooksAction = 'install' | 'status' | 'doctor';
 
 interface HooksOptions {
   projectDir?: string;
   target?: HooksTarget;
 }
 
-const ALL_TARGETS: HooksTarget[] = [
+// Single source of truth for supported platforms.
+export const ALL_TARGETS: HooksTarget[] = [
   'claude',
   'factory',
   'cursor',
@@ -31,6 +35,7 @@ const ALL_TARGETS: HooksTarget[] = [
   'codex',
   'forgecode',
   'omp',
+  'hermes',
 ];
 
 function normalizeTarget(target?: string): HooksTarget | undefined {
@@ -39,10 +44,20 @@ function normalizeTarget(target?: string): HooksTarget | undefined {
   return target as HooksTarget;
 }
 
+// Project-local platforms. Hermes is excluded from the default install loop
+// because its config is GLOBAL (~/.hermes) — installing it requires the
+// explicit `-t hermes` so a project-level `uap hooks install` never silently
+// writes the user's global Hermes config. status/doctor still report all.
+const PROJECT_TARGETS: HooksTarget[] = ALL_TARGETS.filter((t) => t !== 'hermes');
+
 export async function hooksCommand(action: HooksAction, options: HooksOptions = {}): Promise<void> {
   const cwd = options.projectDir || process.cwd();
   const normalized = normalizeTarget(options.target);
-  const targets = normalized ? [normalized] : ALL_TARGETS;
+  const targets = normalized
+    ? [normalized]
+    : action === 'install'
+      ? PROJECT_TARGETS
+      : ALL_TARGETS;
 
   switch (action) {
     case 'install':
@@ -54,6 +69,9 @@ export async function hooksCommand(action: HooksAction, options: HooksOptions = 
       for (const target of targets) {
         await showHooksStatusForTarget(cwd, target);
       }
+      break;
+    case 'doctor':
+      hooksDoctor(cwd, targets);
       break;
   }
 }
@@ -88,6 +106,10 @@ function copyHookScripts(targetHooksDir: string): void {
     'post-compact.sh',
     'stop.sh',
     'session-end.sh',
+    // The DB-driven policy gate (policies.db + .policy-tools/*.py). Without it,
+    // every platform that registers `uap-policy-gate.sh` in its settings points
+    // at a script that was never placed → the gate silently no-ops.
+    'uap-policy-gate.sh',
   ];
   for (const file of hookFiles) {
     const src = join(templateHooksDir, file);
@@ -282,15 +304,23 @@ async function installFactoryHooks(cwd: string): Promise<void> {
     ],
     PreToolUse: [
       {
-        matcher: 'Edit|Write',
+        matcher: 'Edit|Write|MultiEdit',
         hooks: [
           { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-tool-use-edit-write.sh' },
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-policy-gate.sh' },
         ],
       },
       {
         matcher: 'Bash',
         hooks: [
           { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-tool-use-bash.sh' },
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-policy-gate.sh' },
+        ],
+      },
+      {
+        matcher: 'Task|Agent|ToolSearch|ExitPlanMode',
+        hooks: [
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-policy-gate.sh' },
         ],
       },
     ],
@@ -486,6 +516,10 @@ async function installOpencodeHooks(cwd: string): Promise<void> {
     console.log(chalk.dim(`  Created ${pluginDir}`));
   }
 
+  // The plugin's tool.execute.before gate shells out to uap-policy-gate.sh,
+  // so the hook scripts (incl. the gate) must be present under .opencode/hooks.
+  copyHookScripts(join(cwd, '.opencode', 'hooks'));
+
   const dbPath = './agents/data/memory/short_term.db';
   const coordDbPath = './agents/data/coordination/coordination.db';
 
@@ -529,6 +563,21 @@ async function installOpencodeHooks(cwd: string): Promise<void> {
     '            console.log("[UAP] Session started (no recent memories)")',
     '          }',
     '        } catch { /* fail safely */ }',
+    '      }',
+    '    },',
+    '',
+    '    // Pre-tool-use policy gate. OpenCode aborts the tool call when this',
+    '    // hook throws, so a blocked verdict (exit 2) becomes a hard block.',
+    '    "tool.execute.before": async (input, output) => {',
+    '      try {',
+    '        const payload = JSON.stringify({ tool_name: input.tool, tool_input: (output && output.args) || {} })',
+    '        const res = await $`echo ${payload} | bash .opencode/hooks/uap-policy-gate.sh`.quiet().nothrow()',
+    '        if (res.exitCode === 2) {',
+    '          const reason = (res.stderr.toString() || res.stdout.toString()).trim()',
+    '          throw new Error("[UAP policy blocked] " + reason)',
+    '        }',
+    '      } catch (e) {',
+    '        if (e instanceof Error && e.message.indexOf("[UAP policy blocked]") === 0) throw e',
     '      }',
     '    },',
     '',
@@ -605,12 +654,20 @@ async function installCodexHooks(cwd: string): Promise<void> {
     '',
     'The following enforcement hooks are installed and run automatically:',
     '',
+    '- **uap-policy-gate.sh** - DB-driven policy gate (policies.db + .policy-tools/*.py)',
     '- **pre-tool-use-edit-write.sh** - Blocks edits outside worktree directories',
     '- **pre-tool-use-bash.sh** - Blocks dangerous commands (force push, terraform apply, etc)',
     '- **post-tool-use-edit-write.sh** - Runs build gate + backup reminder after edits',
     '- **post-compact.sh** - Re-injects policy awareness after context compaction',
     '- **stop.sh** - Completion gate checklist + session cleanup',
     '- **session-end.sh** - Agent deregistration + backup retention',
+    '',
+    '> **Gating note (Codex):** Codex CLI has no native pre-tool-use *hook event*,',
+    '> so it cannot auto-run these scripts before every tool the way Claude Code does.',
+    '> Policy gating is enforced two ways: (1) **hard** for tools routed through the',
+    '> UAP MCP server (`[mcp_servers.uap]` below) — `execute_tool` runs the PolicyGate;',
+    '> (2) **advisory** for Codex-native edit/bash — run `bash .codex/hooks/uap-policy-gate.sh`',
+    '> per the lifecycle above. `uap hooks doctor` reports Codex as MCP-gated.',
     '',
     '## Memory System',
     '',
@@ -1005,6 +1062,8 @@ async function installOmpHooks(cwd: string): Promise<void> {
     'pre-compact.sh',
     'pre-tool-use-edit-write.sh',
     'pre-tool-use-bash.sh',
+    'uap-policy-gate.sh',
+    'loop-protection.sh',
   ];
   for (const file of preHookFiles) {
     const src = join(getTemplateHooksDir(), file);
@@ -1050,6 +1109,8 @@ async function installOmpHooks(cwd: string): Promise<void> {
       policyEnforcement: true,
       hooks: {
         preSession: '.uap/omp/hooks/pre/session-start.sh',
+        // Backs the policyEnforcement flag above — the DB-driven policy gate.
+        preToolUsePolicyGate: '.uap/omp/hooks/pre/uap-policy-gate.sh',
         preToolUseEditWrite: '.uap/omp/hooks/pre/pre-tool-use-edit-write.sh',
         preToolUseBash: '.uap/omp/hooks/pre/pre-tool-use-bash.sh',
         preCompact: '.uap/omp/hooks/pre/pre-compact.sh',
@@ -1082,6 +1143,130 @@ async function installOmpHooks(cwd: string): Promise<void> {
 
 // --- Dispatcher ---
 
+// --- Hermes Agent (NousResearch) ---
+
+/** Resolve the Hermes config home ($HERMES_HOME or ~/.hermes). */
+function hermesHome(): string {
+  return process.env.HERMES_HOME || join(homedir(), '.hermes');
+}
+
+/** Add an entry to a Hermes hook-event array, de-duped by command. */
+function mergeHermesHook(
+  existing: unknown,
+  entry: Record<string, unknown>
+): Record<string, unknown>[] {
+  const arr = Array.isArray(existing) ? (existing as Record<string, unknown>[]) : [];
+  if (arr.some((e) => e && e.command === entry.command)) return arr;
+  return [...arr, entry];
+}
+
+/**
+ * Hermes Agent uses a GLOBAL config at ~/.hermes/config.yaml (not project-local).
+ * Hermes hooks are fail-open and Claude-Code-compatible: `pre_tool_call` blocks
+ * via a stdout `{"decision":"block"}` JSON, which our uap-policy-gate-hermes.sh
+ * wrapper emits. Memory injection rides `pre_llm_call` (cache-safe). Droids are
+ * surfaced via a skills bridge + the UAP MCP `experts.<name>` tools.
+ */
+async function installHermesHooks(_cwd: string): Promise<void> {
+  console.log(chalk.bold('\n  Installing UAP Hooks for Hermes Agent (NousResearch)\n'));
+  if (!ensureTemplateHooksExist()) return;
+
+  const home = hermesHome();
+  const agentHooksDir = join(home, 'agent-hooks');
+  copyHookScripts(agentHooksDir);
+
+  // Hermes-specific gate (translates exit-2 → stdout block JSON; fail-open-safe).
+  const hermesGateSrc = join(getTemplateHooksDir(), 'uap-policy-gate-hermes.sh');
+  const hermesGateDest = join(agentHooksDir, 'uap-policy-gate-hermes.sh');
+  if (existsSync(hermesGateSrc)) {
+    copyFileSync(hermesGateSrc, hermesGateDest);
+    chmodSync(hermesGateDest, 0o755);
+    console.log(chalk.green('  + agent-hooks/uap-policy-gate-hermes.sh'));
+  } else {
+    console.log(chalk.yellow('  - uap-policy-gate-hermes.sh (template not found)'));
+  }
+
+  // Merge into ~/.hermes/config.yaml (preserve existing keys).
+  const configPath = join(home, 'config.yaml');
+  let config: Record<string, unknown> = {};
+  if (existsSync(configPath)) {
+    try {
+      config = (yaml.load(readFileSync(configPath, 'utf-8')) as Record<string, unknown>) || {};
+    } catch {
+      console.log(chalk.yellow('  ~ config.yaml unparseable — merging into a fresh document'));
+    }
+  }
+
+  const hooks = (config.hooks as Record<string, unknown>) || {};
+  hooks.pre_tool_call = mergeHermesHook(hooks.pre_tool_call, {
+    matcher: 'write_file|patch|edit|terminal|bash|run|apply',
+    command: hermesGateDest,
+    timeout: 15,
+  });
+  hooks.on_session_start = mergeHermesHook(hooks.on_session_start, {
+    command: join(agentHooksDir, 'session-start.sh'),
+  });
+  config.hooks = hooks;
+
+  const mcp = (config.mcp_servers as Record<string, unknown>) || {};
+  if (!mcp.uap) {
+    mcp.uap = { command: 'uap', args: ['mcp-router', 'start'], enabled: true };
+  }
+  config.mcp_servers = mcp;
+
+  // Droid bridge: a skills external dir + an index skill pointing at UAP experts.
+  const skills = (config.skills as Record<string, unknown>) || {};
+  const skillsDir = join(home, 'uap-skills');
+  const extDirs = Array.isArray(skills.external_dirs) ? (skills.external_dirs as string[]) : [];
+  if (!extDirs.includes(skillsDir)) extDirs.push(skillsDir);
+  skills.external_dirs = extDirs;
+  config.skills = skills;
+
+  writeFileSync(configPath, yaml.dump(config, { lineWidth: 100 }));
+  console.log(chalk.green('  + config.yaml (pre_tool_call gate, on_session_start, mcp_servers.uap, skills)'));
+
+  // Write the droid→skill bridge so Hermes can discover UAP experts.
+  const expertSkillDir = join(skillsDir, 'uap-experts');
+  mkdirSync(expertSkillDir, { recursive: true });
+  const bridge = [
+    '---',
+    'name: uap-experts',
+    'description: Consult UAP expert droids (architecture, security, testing, review, planning) for specialized guidance.',
+    'metadata:',
+    '  hermes:',
+    '    tags: [uap, experts, review, architecture]',
+    'version: 1',
+    '---',
+    '# UAP Expert Droids',
+    '',
+    'UAP ships a roster of expert droids. Hermes has no per-file persona registry,',
+    'so consult them through UAP instead of defining them as personalities:',
+    '',
+    '- `uap expert-route "<task>"` — get the recommended expert chain for a task.',
+    '- Via the UAP MCP server (`mcp_servers.uap`): `discover_tools "<need>"` then',
+    '  `execute_tool experts.<droid> { context }` to consult a specific expert',
+    '  (e.g. `experts.architect-reviewer`, `experts.security-auditor`).',
+    '',
+    '## When to Use',
+    'Before non-trivial design, review, or release work — route to the matching expert.',
+    '',
+    '## Verification',
+    'Run `uap droids list` to see the available experts.',
+    '',
+  ].join('\n');
+  writeFileSync(join(expertSkillDir, 'SKILL.md'), bridge);
+  console.log(chalk.green('  + uap-skills/uap-experts/SKILL.md (droid bridge)'));
+
+  console.log(chalk.bold.green('\n  Hermes Agent hooks installed successfully!'));
+  console.log(
+    chalk.dim('  Config: ') + chalk.cyan(configPath) + '\n' +
+      chalk.dim('  Note: Hermes prompts once to approve each hook command (stored in\n') +
+      chalk.dim('  ~/.hermes/shell-hooks-allowlist.json). Approve the UAP gate, or set\n') +
+      chalk.dim('  hooks_auto_accept: true in config.yaml. Hermes hooks are fail-open —\n') +
+      chalk.dim('  the UAP gate always emits a decision JSON so real blocks are enforced.\n')
+  );
+}
+
 async function installHooksForTarget(cwd: string, target: HooksTarget): Promise<void> {
   switch (target) {
     case 'claude':
@@ -1100,6 +1285,8 @@ async function installHooksForTarget(cwd: string, target: HooksTarget): Promise<
       return installForgeCodeHooks(cwd);
     case 'omp':
       return installOmpHooks(cwd);
+    case 'hermes':
+      return installHermesHooks(cwd);
   }
 }
 
@@ -1303,5 +1490,175 @@ async function showHooksStatusForTarget(cwd: string, target: HooksTarget): Promi
       return showForgecodeStatus(cwd);
     case 'omp':
       return showOmpStatus(cwd);
+    case 'hermes':
+      return showHermesStatus(cwd);
   }
+}
+
+// --- Doctor (gating-coverage validator) ---
+
+export type GateTier = 'gateable' | 'mcp' | 'advisory';
+export interface DoctorRow {
+  platform: HooksTarget;
+  tier: GateTier;
+  scriptPresent: boolean;
+  wired: boolean;
+  note: string;
+}
+
+function fileIncludes(path: string, needle: string): boolean {
+  try {
+    return existsSync(path) && readFileSync(path, 'utf-8').includes(needle);
+  } catch {
+    return false;
+  }
+}
+
+/** Audit one platform's policy-gate coverage. */
+export function auditPlatform(cwd: string, target: HooksTarget): DoctorRow {
+  const P = (p: string) => join(cwd, p);
+  const gate = 'uap-policy-gate.sh';
+  switch (target) {
+    case 'claude':
+    case 'vscode': {
+      const cfg = P('.claude/settings.local.json');
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(P('.claude/hooks/' + gate)),
+        wired: fileIncludes(cfg, gate),
+        note: 'PreToolUse in .claude/settings.local.json',
+      };
+    }
+    case 'cursor':
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(P('.cursor/hooks/' + gate)),
+        wired: fileIncludes(P('.cursor/hooks.json'), gate),
+        note: 'preToolUse in .cursor/hooks.json',
+      };
+    case 'factory':
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(P('.factory/hooks/' + gate)),
+        wired: fileIncludes(P('.factory/settings.local.json'), gate),
+        note: 'PreToolUse in .factory/settings.local.json',
+      };
+    case 'opencode':
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(P('.opencode/hooks/' + gate)),
+        wired: fileIncludes(P('.opencode/plugin/uap-session-hooks.ts'), 'tool.execute.before'),
+        note: 'tool.execute.before in .opencode plugin (throws to block)',
+      };
+    case 'omp':
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(P('.uap/omp/hooks/pre/' + gate)),
+        wired: fileIncludes(P('.uap/omp/settings.json'), 'preToolUsePolicyGate'),
+        note: 'preToolUsePolicyGate in .uap/omp/settings.json',
+      };
+    case 'hermes': {
+      const home = hermesHome();
+      // Hermes config is global and opt-in. If Hermes isn't set up on this
+      // machine at all, report it as optional rather than a hard gap.
+      if (!existsSync(home)) {
+        return {
+          platform: target, tier: 'advisory',
+          scriptPresent: false, wired: false,
+          note: 'not configured (opt-in: uap hooks install -t hermes)',
+        };
+      }
+      let wired = false;
+      const cfg = join(home, 'config.yaml');
+      if (existsSync(cfg)) {
+        try {
+          const c = (yaml.load(readFileSync(cfg, 'utf-8')) as Record<string, unknown>) || {};
+          const hooks = (c.hooks as Record<string, unknown>) || {};
+          const pre = Array.isArray(hooks.pre_tool_call) ? (hooks.pre_tool_call as Record<string, unknown>[]) : [];
+          wired = pre.some((e) => typeof e?.command === 'string' && String(e.command).includes('uap-policy-gate'));
+        } catch { /* unparseable */ }
+      }
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(join(home, 'agent-hooks', 'uap-policy-gate-hermes.sh')),
+        wired,
+        note: 'pre_tool_call in ~/.hermes/config.yaml (global)',
+      };
+    }
+    case 'codex':
+      return {
+        platform: target, tier: 'mcp',
+        scriptPresent: existsSync(P('.codex/hooks/' + gate)),
+        wired: fileIncludes(P('.codex/config.toml'), '[mcp_servers.uap]'),
+        note: 'MCP-gated only — no native pre-tool hook event for codex edit/bash',
+      };
+    case 'forgecode':
+      return {
+        platform: target, tier: 'advisory',
+        scriptPresent: existsSync(P('.forge/forgecode.plugin.sh')),
+        wired: false,
+        note: 'advisory — ForgeCode plugin injects policy context, no pre-tool block path',
+      };
+  }
+}
+
+/** `uap hooks doctor` — print a gating-coverage matrix; exit non-zero on gaps. */
+function hooksDoctor(cwd: string, targets: HooksTarget[]): void {
+  console.log(chalk.bold('\n  UAP Policy-Gate Coverage (hooks doctor)\n'));
+  const rows = targets.map((t) => auditPlatform(cwd, t));
+  for (const r of rows) {
+    let mark: string;
+    if (r.tier === 'gateable') {
+      mark = r.scriptPresent && r.wired ? chalk.green('✅ gated') : chalk.red('❌ GAP');
+    } else if (r.tier === 'mcp') {
+      mark = r.scriptPresent && r.wired ? chalk.yellow('⚠️  MCP-gated') : chalk.red('❌ GAP');
+    } else {
+      mark = chalk.yellow('⚠️  advisory');
+    }
+    console.log(`  ${mark}  ${chalk.bold(r.platform.padEnd(10))} ${chalk.dim(r.note)}`);
+    if (r.tier === 'gateable' && !(r.scriptPresent && r.wired)) {
+      const reason = !r.scriptPresent ? 'gate script not installed' : 'gate not wired in config';
+      console.log(`             ${chalk.red('→ ' + reason)} (run: uap hooks install -t ${r.platform})`);
+    }
+  }
+  const failures = rows.filter((r) => r.tier === 'gateable' && !(r.scriptPresent && r.wired));
+  console.log('');
+  if (failures.length > 0) {
+    console.log(chalk.red.bold(`  ${failures.length} platform(s) missing required gating.\n`));
+    process.exitCode = 1;
+  } else {
+    console.log(chalk.green.bold('  All gateable platforms have the policy gate installed and wired.'));
+    console.log(chalk.dim('  (codex = MCP-gated; forgecode = advisory — harness limits)\n'));
+  }
+}
+
+async function showHermesStatus(_cwd: string): Promise<void> {
+  console.log(chalk.bold('\n  Hermes Agent Hooks Status\n'));
+  const home = hermesHome();
+  const configPath = join(home, 'config.yaml');
+  const gate = join(home, 'agent-hooks', 'uap-policy-gate-hermes.sh');
+
+  const gateStatus = existsSync(gate) ? chalk.green('installed') : chalk.red('missing');
+  console.log(`  ${gateStatus}  agent-hooks/uap-policy-gate-hermes.sh`);
+
+  let wired = false;
+  if (existsSync(configPath)) {
+    try {
+      const cfg = (yaml.load(readFileSync(configPath, 'utf-8')) as Record<string, unknown>) || {};
+      const hooks = (cfg.hooks as Record<string, unknown>) || {};
+      const pre = Array.isArray(hooks.pre_tool_call)
+        ? (hooks.pre_tool_call as Record<string, unknown>[])
+        : [];
+      wired = pre.some((e) => typeof e?.command === 'string' && String(e.command).includes('uap-policy-gate'));
+    } catch {
+      /* unparseable */
+    }
+  }
+  const cfgStatus = !existsSync(configPath)
+    ? chalk.red('missing')
+    : wired
+      ? chalk.green('gate wired (pre_tool_call)')
+      : chalk.yellow('present, gate NOT wired');
+  console.log(`  ${cfgStatus}  ${configPath}`);
+  console.log('');
 }

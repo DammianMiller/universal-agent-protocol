@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.25.0 (2026-05-31)
+
+- test+docs: gating-parity tests + PLATFORM_GATING.md + README
+- feat(hooks): add `uap hooks doctor` validator + install hooks in `uap setup`
+- feat(hooks): add Hermes Agent (NousResearch) as a gated platform
+- feat(hooks): wire policy gate into factory, omp, opencode, codex
+- fix(hooks): copy uap-policy-gate.sh on install + reconcile platform list
+- fix: address ultrareview findings on PR #196
+- fix(test): sanitize GIT_* env in expert-review-required enforcer test
+
+
 ## v1.24.0 (2026-05-30)
 
 - docs: document expert-stack extensions (HALO, ideation, forward-design, review gate)

@@ -37,8 +37,18 @@ const lazy = {
   ideate: () => import('../cli/ideate.js').then((m) => m.ideateCommand),
 };
 
-// Type alias for hooks target (used in action handlers)
-type HooksTarget = 'claude' | 'factory' | 'cursor' | 'vscode' | 'opencode' | 'omp';
+// Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
+// in src/cli/hooks.ts — keep in sync.
+type HooksTarget =
+  | 'claude'
+  | 'factory'
+  | 'cursor'
+  | 'vscode'
+  | 'opencode'
+  | 'codex'
+  | 'forgecode'
+  | 'omp'
+  | 'hermes';
 
 // Read version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -1091,18 +1101,18 @@ program
 program
   .command('hooks')
   .description(
-    'Manage session hooks for Claude Code, Factory.AI, Cursor, VSCode, OpenCode, Oh-My-Pi'
+    'Manage session hooks for Claude Code, Factory.AI, Cursor, VSCode, OpenCode, Codex, ForgeCode, Oh-My-Pi, Hermes'
   )
   .addCommand(
     new Command('install')
       .description('Install UAP session hooks')
       .option(
         '-t, --target <target>',
-        'Target platform: claude, factory, cursor, vscode, opencode, omp (default: all)'
+        'Target platform: claude, factory, cursor, vscode, opencode, codex, forgecode, omp, hermes (default: all)'
       )
       .option(
         '-p, --platform <platform>',
-        'Alias for --target (claude, factory, cursor, vscode, opencode, omp)'
+        'Alias for --target (claude, factory, cursor, vscode, opencode, codex, forgecode, omp, hermes)'
       )
       .action((options) =>
         lazy
@@ -1119,17 +1129,32 @@ program
       .description('Show hooks installation status')
       .option(
         '-t, --target <target>',
-        'Target platform: claude, factory, cursor, vscode, opencode, omp (default: all)'
+        'Target platform: claude, factory, cursor, vscode, opencode, codex, forgecode, omp, hermes (default: all)'
       )
       .option(
         '-p, --platform <platform>',
-        'Alias for --target (claude, factory, cursor, vscode, opencode, omp)'
+        'Alias for --target (claude, factory, cursor, vscode, opencode, codex, forgecode, omp, hermes)'
       )
       .action((options) =>
         lazy
           .hooks()
           .then((m) =>
             m.hooksCommand('status', {
+              target: (options.target ?? options.platform) as HooksTarget | undefined,
+            })
+          )
+      )
+  )
+  .addCommand(
+    new Command('doctor')
+      .description('Audit policy-gate coverage across platforms (exit non-zero on gaps)')
+      .option('-t, --target <target>', 'Audit a single platform (default: all)')
+      .option('-p, --platform <platform>', 'Alias for --target')
+      .action((options) =>
+        lazy
+          .hooks()
+          .then((m) =>
+            m.hooksCommand('doctor', {
               target: (options.target ?? options.platform) as HooksTarget | undefined,
             })
           )
