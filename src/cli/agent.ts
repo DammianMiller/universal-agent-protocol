@@ -87,7 +87,7 @@ async function registerAgent(service: CoordinationService, options: AgentOptions
   const spinner = ora(`Registering agent: ${name}...`).start();
 
   try {
-    const id = service.register(name, capabilities, worktree);
+    const id = service.register(name, capabilities, worktree, options.id);
     spinner.succeed(`Agent registered: ${name}`);
     console.log(chalk.bold.green(`AGENT_ID=${id}`));
     if (worktree) {
