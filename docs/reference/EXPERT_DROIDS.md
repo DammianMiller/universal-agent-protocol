@@ -17,7 +17,10 @@ uap expert-route "<task description>"   # ask for the recommended chain
 
 ---
 
-## Roster (25 droids)
+## Base Roster (25 droids)
+
+> The 5 forward-design / HALO / ideation droids that bring the total to 30 are
+> listed under [Forward-Design, HALO & Ideation Extensions](#forward-design-halo--ideation-extensions) below.
 
 ### Strategy (3)
 

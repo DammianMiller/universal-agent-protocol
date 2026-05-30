@@ -26,26 +26,38 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import emit, parse_cli, repo_root, run  # noqa: E402
 
+# Ship verbs are anchored to their tool prefix so that the bare tokens "merge"
+# or "signoff" inside read-only commands (git diff --merge-base, rg merge,
+# cat docs/merge-strategy.md) do not trip the gate.
 SHIP_PATTERNS = (
-    re.compile(r"\bgit\s+(commit|push)\b"),
-    re.compile(r"\bgh\s+pr\s+create\b"),
-    re.compile(r"\b(merge|pr[-_ ]?ready|signoff|ready[-_ ]for[-_ ]review)\b", re.I),
+    re.compile(r"\bgit\s+(commit|push|merge)\b"),
+    re.compile(r"\bgh\s+pr\s+(create|merge|ready)\b"),
+    re.compile(r"\b(pr[-_ ]?ready|sign[-_ ]?off|ready[-_ ]for[-_ ]review)\b", re.I),
 )
 
 
-def branch_slug(root: Path) -> str | None:
+def current_branch(root: Path) -> str | None:
     # symbolic-ref resolves the branch name even on an unborn branch (no commits
     # yet); rev-parse --abbrev-ref returns "HEAD" in that state.
     rc, out, _ = run(["git", "symbolic-ref", "--short", "HEAD"], cwd=root)
     if rc == 0 and out.strip():
-        return out.strip().replace("/", "-")
+        return out.strip()
     rc, out, _ = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=root)
-    if rc != 0:
-        return None
-    name = out.strip()
-    if not name or name == "HEAD":  # detached
-        return None
-    return name.replace("/", "-")
+    if rc == 0 and out.strip() and out.strip() != "HEAD":
+        return out.strip()
+    return None
+
+
+def slug_for(branch: str) -> str:
+    """Injective filename slug for a branch ref.
+
+    A naive `/`->`-` substitution collapses distinct refs (`feature/foo` and
+    `feature-foo`, which can coexist) onto the same artifact, silently bypassing
+    the gate. Percent-encode `%` first, then `/`, so the mapping is reversible
+    and collision-free: `feature/foo` -> `feature%2Ffoo`, `feature-foo` stays
+    `feature-foo`.
+    """
+    return branch.replace("%", "%25").replace("/", "%2F")
 
 
 def head_sha(root: Path) -> str | None:
@@ -68,9 +80,10 @@ def main() -> None:
         emit(True, "not a ship action")
 
     root = repo_root()
-    slug = branch_slug(root)
-    if slug is None:
+    branch = current_branch(root)
+    if branch is None:
         emit(True, "branch not resolvable (detached/non-git) — fail-open")
+    slug = slug_for(branch)
 
     review = root / ".uap" / "reviews" / f"{slug}.json"
     if not review.exists():
@@ -82,13 +95,24 @@ def main() -> None:
             "shipping. Override for one-off meta-work: UAP_NO_REVIEW=1.",
         )
 
-    # Artifact exists — check it is not stale relative to current HEAD.
     head = head_sha(root)
     try:
         data = json.loads(review.read_text())
     except Exception:  # noqa: BLE001
         data = {}
 
+    # Defense-in-depth against artifact reuse across branches: if the artifact
+    # records the branch it covers, it must match the current branch.
+    artifact_branch = data.get("branch") if isinstance(data, dict) else None
+    if artifact_branch and artifact_branch != branch:
+        emit(
+            False,
+            f"expert-review-required: review at .uap/reviews/{slug}.json covers branch "
+            f"'{artifact_branch}', not '{branch}'. Re-run the parallel expert review on "
+            "this branch. Override: UAP_NO_REVIEW=1.",
+        )
+
+    # Stale check relative to current HEAD.
     reviewed_head = data.get("head") if isinstance(data, dict) else None
     if reviewed_head and head and reviewed_head != head:
         emit(

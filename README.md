@@ -79,7 +79,7 @@ uap setup -p all
 | MCP Router         | 11 modules     | 2-tool meta-router + expert-consultation registry (98% token savings)            |
 | Models             | 10 modules     | Multi-model routing, planning, execution, validation, 13 model profiles          |
 | Patterns           | 23 patterns    | Battle-tested workflows from Terminal-Bench 2.0                                  |
-| Droids             | 25 experts     | Full SDLC expert stack: strategy, design, build, review, release, ops ([reference](docs/reference/EXPERT_DROIDS.md)) |
+| Droids             | 30 experts     | Full SDLC expert stack: strategy, design, build, review, release, ops ([reference](docs/reference/EXPERT_DROIDS.md)) |
 | Expert Orchestrator | 1 module      | Adaptive droid-chain selection across plan→design→implement→review→release       |
 | Skills             | 34 skills      | Reusable domain expertise (now includes `parallel-expert-review`)                |
 | Tasks              | 7 modules      | Full task lifecycle with dependencies, claims, JSONL sync                        |
@@ -469,7 +469,7 @@ uap hooks install omp         # Oh-My-Pi
 
 ## CLI Reference
 
-### 27 Top-Level Commands
+### 28 Top-Level Commands
 
 | Command                   | Description                                  |
 | ------------------------- | -------------------------------------------- |
@@ -502,7 +502,7 @@ uap hooks install omp         # Oh-My-Pi
 | `uap sync`                | Sync configuration between platforms         |
 | `uap uap-omp <action>`    | Oh-My-Pi integration (7 subcommands)         |
 
-**Total: 115 commands and subcommands.**
+**Total: 117 commands and subcommands.**
 
 ### Additional Binaries
 

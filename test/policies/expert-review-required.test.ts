@@ -70,14 +70,41 @@ describe('expert-review-required enforcer', () => {
     expect(runEnforcer(repo, 'git commit -m "wip"')).toBe(2);
   });
 
-  it('allows the ship action once a review artifact exists for the branch', () => {
+  /** Branch `feature/x` → injective slug `feature%2Fx`. */
+  function writeReview(data: Record<string, unknown>): void {
     mkdirSync(join(repo, '.uap', 'reviews'), { recursive: true });
-    // slug = branch with '/' -> '-'
+    writeFileSync(join(repo, '.uap', 'reviews', 'feature%2Fx.json'), JSON.stringify(data));
+  }
+
+  it('allows the ship action once a review artifact exists for the branch', () => {
+    writeReview({ verdict: 'approve', reviewers: ['code-quality-reviewer'] });
+    expect(runEnforcer(repo, 'git commit -m "done"')).toBe(0);
+  });
+
+  it('blocks git merge without a review artifact', () => {
+    expect(runEnforcer(repo, 'git merge origin/master')).toBe(2);
+  });
+
+  it('does not collide distinct refs onto one slug (feature/x vs feature-x)', () => {
+    // A review written for the sibling ref `feature-x` must NOT satisfy `feature/x`.
+    mkdirSync(join(repo, '.uap', 'reviews'), { recursive: true });
     writeFileSync(
       join(repo, '.uap', 'reviews', 'feature-x.json'),
-      JSON.stringify({ verdict: 'approve', reviewers: ['code-quality-reviewer'] })
+      JSON.stringify({ verdict: 'approve' })
     );
-    expect(runEnforcer(repo, 'git commit -m "done"')).toBe(0);
+    expect(runEnforcer(repo, 'git commit -m x')).toBe(2);
+  });
+
+  it('rejects an artifact that records a different branch', () => {
+    writeReview({ verdict: 'approve', branch: 'feature/other' });
+    expect(runEnforcer(repo, 'git commit -m x')).toBe(2);
+  });
+
+  it('does not block read-only commands containing the word "merge"', () => {
+    // bug_001 regression guard: bare "merge"/"signoff" tokens must not trip the gate.
+    expect(runEnforcer(repo, 'git diff --merge-base origin/master HEAD')).toBe(0);
+    expect(runEnforcer(repo, 'rg merge src/')).toBe(0);
+    expect(runEnforcer(repo, 'cat docs/merge-strategy.md')).toBe(0);
   });
 
   it('honors the UAP_NO_REVIEW override', () => {

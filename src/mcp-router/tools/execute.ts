@@ -100,6 +100,9 @@ export async function handleExecuteTool(
   // Parse path
   const dotIndex = path.indexOf('.');
   if (dotIndex === -1) {
+    // A missing server prefix is a canonical tool-call hallucination signature —
+    // record it so `halo … -p "which tool calls are hallucinated?"` can see it.
+    recordToolSpan(path, startTime, Date.now(), false, { 'error.kind': 'invalid_path' });
     return {
       success: false,
       error: `Invalid tool path "${path}". Expected format: "server.tool_name"`,
@@ -151,6 +154,9 @@ export async function handleExecuteTool(
     const suggestionText =
       suggestions.length > 0 ? ` Did you mean: ${suggestions.map((s) => s.path).join(', ')}?` : '';
 
+    // Unknown tool name (typo / unloaded server) is the other hallucination
+    // fingerprint — record it for HALO too.
+    recordToolSpan(path, startTime, Date.now(), false, { 'error.kind': 'not_found' });
     return {
       success: false,
       error: `Tool "${path}" not found.${suggestionText}`,

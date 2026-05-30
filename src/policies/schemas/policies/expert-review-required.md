@@ -16,14 +16,20 @@ to `HEAD`), the enforcer blocks the ship actions:
 - merge / pr-ready / signoff / ready-for-review operations
 
 Review artifact: `.uap/reviews/<branch-slug>.json`, written by the
-`parallel-expert-review` skill on consolidation. Recognised shape:
+`parallel-expert-review` skill on consolidation. The slug is an **injective
+percent-encoding** of the branch name (`%`→`%25`, `/`→`%2F`) so distinct refs
+like `feature/foo` and `feature-foo` never collide on one artifact. Recognised
+shape:
 
 ```json
-{ "head": "<sha>", "verdict": "approve", "reviewers": ["code-quality-reviewer", "security-code-reviewer", "..."] }
+{ "branch": "<name>", "head": "<sha>", "verdict": "approve", "reviewers": ["code-quality-reviewer", "security-code-reviewer", "..."] }
 ```
 
-If the artifact's `head` differs from the current `HEAD`, the review is treated
-as stale and the op is blocked until a fresh review is recorded.
+If the artifact records a `branch` that differs from the current branch, or a
+`head` that differs from the current `HEAD`, the review is rejected (mismatch /
+stale) and the op is blocked until a fresh review is recorded. Including
+`branch` and `head` is strongly recommended so the artifact unambiguously
+identifies what it covers.
 
 ## Why
 

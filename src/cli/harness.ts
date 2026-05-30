@@ -1,7 +1,26 @@
 import chalk from 'chalk';
 import { existsSync, readFileSync } from 'fs';
 import { spawnSync } from 'child_process';
+import { constants as osConstants } from 'os';
 import { isHaloTracingEnabled, haloTracePath } from '../observability/halo-exporter.js';
+
+/**
+ * Resolve a process exit code from a spawnSync result. A signal-terminated
+ * child has `status: null` + `signal: '<name>'`; `status ?? 0` would coalesce
+ * that to a *successful* exit, hiding SIGTERM/SIGKILL (CI timeouts, OOM) from
+ * callers that gate on the exit code. Map signals to 128+n (POSIX convention).
+ */
+export function spawnExitCode(
+  status: number | null,
+  signal: NodeJS.Signals | null
+): number {
+  if (status !== null) return status;
+  if (signal) {
+    const num = (osConstants.signals as Record<string, number>)[signal];
+    return typeof num === 'number' ? 128 + num : 1;
+  }
+  return 1;
+}
 
 export interface HarnessOptions {
   traces?: string;
@@ -55,7 +74,7 @@ export async function harnessAnalyze(options: HarnessOptions = {}): Promise<void
   const args = [traces, '-p', prompt];
   if (options.json) args.push('--json');
   const res = spawnSync('halo', args, { stdio: 'inherit' });
-  process.exit(res.status ?? 0);
+  process.exit(spawnExitCode(res.status, res.signal));
 }
 
 /** `uap harness status` — report HALO trace collection state. */
