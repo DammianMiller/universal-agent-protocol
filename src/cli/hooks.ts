@@ -14,15 +14,18 @@ export type HooksTarget =
   | 'opencode'
   | 'codex'
   | 'forgecode'
-  | 'omp';
-type HooksAction = 'install' | 'status';
+  | 'omp'
+  | 'hermes';
+type HooksAction = 'install' | 'status' | 'doctor';
 
 interface HooksOptions {
   projectDir?: string;
   target?: HooksTarget;
 }
 
-const ALL_TARGETS: HooksTarget[] = [
+// Single source of truth for supported platforms. `hermes` is appended in the
+// Hermes workstream once its installer exists.
+export const ALL_TARGETS: HooksTarget[] = [
   'claude',
   'factory',
   'cursor',
@@ -88,6 +91,10 @@ function copyHookScripts(targetHooksDir: string): void {
     'post-compact.sh',
     'stop.sh',
     'session-end.sh',
+    // The DB-driven policy gate (policies.db + .policy-tools/*.py). Without it,
+    // every platform that registers `uap-policy-gate.sh` in its settings points
+    // at a script that was never placed → the gate silently no-ops.
+    'uap-policy-gate.sh',
   ];
   for (const file of hookFiles) {
     const src = join(templateHooksDir, file);
