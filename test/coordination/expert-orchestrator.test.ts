@@ -105,4 +105,31 @@ describe('ExpertOrchestrator', () => {
     expect(droids).not.toContain('strategic-architect');
     expect(droids).not.toContain('tactical-architect');
   });
+
+  it('omits the ideate phase by default', () => {
+    const plan = planFromDescription('Design a novel pricing engine', undefined, [
+      'src/types/pricing.ts',
+    ]);
+    expect(plan.steps.some((s) => s.phase === 'ideate')).toBe(false);
+  });
+
+  it('prepends an opt-in ideate phase with the ideation-expert', () => {
+    const orch = new ExpertOrchestrator({ includeIdeation: true });
+    const plan = orch.plan(
+      {
+        id: 't1',
+        title: 'novel pricing engine',
+        description: 'Design a novel pricing engine from scratch',
+        type: 'task',
+        status: 'open',
+        priority: 2,
+        labels: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      ['src/types/pricing.ts']
+    );
+    expect(plan.steps[0].phase).toBe('ideate');
+    expect(plan.steps[0].droid).toBe('ideation-expert');
+  });
 });

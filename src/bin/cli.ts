@@ -34,6 +34,7 @@ const lazy = {
   policy: () => import('../cli/policy.js').then((m) => m.registerPolicyCommands),
   expertRoute: () => import('../cli/expert-route.js').then((m) => m.expertRouteCommand),
   harness: () => import('../cli/harness.js').then((m) => m.harnessCommand),
+  ideate: () => import('../cli/ideate.js').then((m) => m.ideateCommand),
 };
 
 // Type alias for hooks target (used in action handlers)
@@ -389,6 +390,38 @@ harness
   .action(async (options) => {
     const cmd = await lazy.harness();
     await cmd('status', options);
+  });
+
+// Open-collider divergent-ideation commands
+const ideate = program
+  .command('ideate')
+  .description('Divergent ideation (open-collider): generate non-trivial ideas for hard problems');
+ideate
+  .command('setup')
+  .description('Scaffold an ideation project under projects/<name>/')
+  .argument('<name>', 'Project name')
+  .option('--force', 'Overwrite an existing project')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (name: string, options) => {
+    const cmd = await lazy.ideate();
+    await cmd('setup', name, options);
+  });
+ideate
+  .command('run')
+  .description('Drive the brainstorm flow for a project (Skill mode is free)')
+  .argument('<name>', 'Project name')
+  .action(async (name: string, options) => {
+    const cmd = await lazy.ideate();
+    await cmd('run', name, options);
+  });
+ideate
+  .command('ideas')
+  .description('Print the curated ideas produced for a project')
+  .argument('<name>', 'Project name')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (name: string, options) => {
+    const cmd = await lazy.ideate();
+    await cmd('ideas', name, options);
   });
 
 // Agent Coordination Commands
