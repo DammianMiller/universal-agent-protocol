@@ -20,8 +20,23 @@ const ENFORCER = join(
   'expert_review_required.py'
 );
 
+/**
+ * A copy of the environment with all GIT_* variables stripped. Git hooks (e.g.
+ * pre-push, which runs this suite) export GIT_DIR / GIT_WORK_TREE /
+ * GIT_INDEX_FILE; if those leak into the nested `git init` below it operates on
+ * the wrong repo and fails (status 128). Run the throwaway-repo git ops and the
+ * enforcer in a clean git environment.
+ */
+function cleanGitEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('GIT_')) delete env[key];
+  }
+  return env;
+}
+
 function git(repo: string, args: string[]): void {
-  execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', args, { cwd: repo, stdio: 'ignore', env: cleanGitEnv() });
 }
 
 /** Run the enforcer; returns its exit code (0 = allow, 2 = block). */
@@ -33,7 +48,7 @@ function runEnforcer(
   const res = spawnSync(
     'python3',
     [ENFORCER, '--operation', 'Bash', '--args', JSON.stringify({ command })],
-    { cwd: repo, env: { ...process.env, UAP_REPO_ROOT: repo, ...env } }
+    { cwd: repo, env: cleanGitEnv({ UAP_REPO_ROOT: repo, ...env }) }
   );
   return res.status ?? -1;
 }
