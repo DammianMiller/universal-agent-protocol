@@ -11,6 +11,7 @@ import type { McpClientPool } from '../executor/client.js';
 import { compressToolOutput } from '../output-compressor.js';
 import { globalSessionStats } from '../session-stats.js';
 import { isExpertToolPath, expertNameFromPath, consultExpert } from '../experts/registry.js';
+import { recordToolSpan } from '../../observability/halo-exporter.js';
 import { getPolicyGate, PolicyViolationError } from '../../policies/policy-gate.js';
 import { CoordinationService } from '../../coordination/service.js';
 import { isPathInsideWorktree, isExemptFromWorktree } from '../../cli/worktree.js';
@@ -124,6 +125,7 @@ export async function handleExecuteTool(
       | undefined;
     const consult = consultExpert(process.cwd(), droidName, context, stage);
     if (!consult.found) {
+      recordToolSpan(path, startTime, Date.now(), false, { 'expert.droid': droidName });
       return {
         success: false,
         error: `Expert droid "${droidName}" not found in .factory/droids/. Use discover_tools to list available experts.`,
@@ -132,6 +134,7 @@ export async function handleExecuteTool(
       };
     }
     globalSessionStats.record(path, consult.consultation.length, consult.consultation.length);
+    recordToolSpan(path, startTime, Date.now(), true, { 'expert.droid': droidName });
     return {
       success: true,
       result: consult.consultation,
@@ -237,6 +240,7 @@ export async function handleExecuteTool(
     // compressionStats are already recorded to session-stats (line 149-153).
     // Omit from the return value to save ~50 tokens per call — server.ts
     // no longer needs stripDiagnostics.
+    recordToolSpan(path, startTime, Date.now(), true, { 'tool.server': serverName });
     return {
       success: true,
       result: compressed.output,
@@ -246,6 +250,10 @@ export async function handleExecuteTool(
   } catch (error) {
     // Surface policy violations distinctly from tool errors
     if (error instanceof PolicyViolationError) {
+      recordToolSpan(path, startTime, Date.now(), false, {
+        'tool.server': serverName,
+        'error.kind': 'policy',
+      });
       return {
         success: false,
         error: `[POLICY BLOCKED] ${error.message}`,
@@ -253,6 +261,7 @@ export async function handleExecuteTool(
         executionTimeMs: Date.now() - startTime,
       };
     }
+    recordToolSpan(path, startTime, Date.now(), false, { 'tool.server': serverName });
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error),

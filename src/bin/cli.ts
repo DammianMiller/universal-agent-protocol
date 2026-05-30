@@ -33,6 +33,7 @@ const lazy = {
   toolCalls: () => import('../cli/tool-calls.js').then((m) => m.toolCallsCommand),
   policy: () => import('../cli/policy.js').then((m) => m.registerPolicyCommands),
   expertRoute: () => import('../cli/expert-route.js').then((m) => m.expertRouteCommand),
+  harness: () => import('../cli/harness.js').then((m) => m.harnessCommand),
 };
 
 // Type alias for hooks target (used in action handlers)
@@ -365,6 +366,29 @@ program
     const description = descriptionParts.join(' ');
     const cmd = await lazy.expertRoute();
     await cmd(description, options);
+  });
+
+// HALO harness-optimization commands
+const harness = program
+  .command('harness')
+  .description('HALO harness optimization: analyze execution traces for systemic failures');
+harness
+  .command('analyze')
+  .description('Run the HALO engine over collected traces (wraps the `halo` CLI)')
+  .option('-t, --traces <file>', 'Trace JSONL file (default: $UAP_HALO_TRACE_PATH or .uap/halo/traces.jsonl)')
+  .option('-p, --prompt <prompt>', 'Question to ask HALO about the traces')
+  .option('--json', 'Request JSON output from HALO')
+  .action(async (options) => {
+    const cmd = await lazy.harness();
+    await cmd('analyze', options);
+  });
+harness
+  .command('status')
+  .description('Show HALO trace collection state (enabled, path, span count)')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.harness();
+    await cmd('status', options);
   });
 
 // Agent Coordination Commands
