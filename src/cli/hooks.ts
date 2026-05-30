@@ -44,10 +44,20 @@ function normalizeTarget(target?: string): HooksTarget | undefined {
   return target as HooksTarget;
 }
 
+// Project-local platforms. Hermes is excluded from the default install loop
+// because its config is GLOBAL (~/.hermes) — installing it requires the
+// explicit `-t hermes` so a project-level `uap hooks install` never silently
+// writes the user's global Hermes config. status/doctor still report all.
+const PROJECT_TARGETS: HooksTarget[] = ALL_TARGETS.filter((t) => t !== 'hermes');
+
 export async function hooksCommand(action: HooksAction, options: HooksOptions = {}): Promise<void> {
   const cwd = options.projectDir || process.cwd();
   const normalized = normalizeTarget(options.target);
-  const targets = normalized ? [normalized] : ALL_TARGETS;
+  const targets = normalized
+    ? [normalized]
+    : action === 'install'
+      ? PROJECT_TARGETS
+      : ALL_TARGETS;
 
   switch (action) {
     case 'install':
@@ -59,6 +69,9 @@ export async function hooksCommand(action: HooksAction, options: HooksOptions = 
       for (const target of targets) {
         await showHooksStatusForTarget(cwd, target);
       }
+      break;
+    case 'doctor':
+      hooksDoctor(cwd, targets);
       break;
   }
 }
@@ -1479,6 +1492,143 @@ async function showHooksStatusForTarget(cwd: string, target: HooksTarget): Promi
       return showOmpStatus(cwd);
     case 'hermes':
       return showHermesStatus(cwd);
+  }
+}
+
+// --- Doctor (gating-coverage validator) ---
+
+type GateTier = 'gateable' | 'mcp' | 'advisory';
+interface DoctorRow {
+  platform: HooksTarget;
+  tier: GateTier;
+  scriptPresent: boolean;
+  wired: boolean;
+  note: string;
+}
+
+function fileIncludes(path: string, needle: string): boolean {
+  try {
+    return existsSync(path) && readFileSync(path, 'utf-8').includes(needle);
+  } catch {
+    return false;
+  }
+}
+
+/** Audit one platform's policy-gate coverage. */
+function auditPlatform(cwd: string, target: HooksTarget): DoctorRow {
+  const P = (p: string) => join(cwd, p);
+  const gate = 'uap-policy-gate.sh';
+  switch (target) {
+    case 'claude':
+    case 'vscode': {
+      const cfg = P('.claude/settings.local.json');
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(P('.claude/hooks/' + gate)),
+        wired: fileIncludes(cfg, gate),
+        note: 'PreToolUse in .claude/settings.local.json',
+      };
+    }
+    case 'cursor':
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(P('.cursor/hooks/' + gate)),
+        wired: fileIncludes(P('.cursor/hooks.json'), gate),
+        note: 'preToolUse in .cursor/hooks.json',
+      };
+    case 'factory':
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(P('.factory/hooks/' + gate)),
+        wired: fileIncludes(P('.factory/settings.local.json'), gate),
+        note: 'PreToolUse in .factory/settings.local.json',
+      };
+    case 'opencode':
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(P('.opencode/hooks/' + gate)),
+        wired: fileIncludes(P('.opencode/plugin/uap-session-hooks.ts'), 'tool.execute.before'),
+        note: 'tool.execute.before in .opencode plugin (throws to block)',
+      };
+    case 'omp':
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(P('.uap/omp/hooks/pre/' + gate)),
+        wired: fileIncludes(P('.uap/omp/settings.json'), 'preToolUsePolicyGate'),
+        note: 'preToolUsePolicyGate in .uap/omp/settings.json',
+      };
+    case 'hermes': {
+      const home = hermesHome();
+      // Hermes config is global and opt-in. If Hermes isn't set up on this
+      // machine at all, report it as optional rather than a hard gap.
+      if (!existsSync(home)) {
+        return {
+          platform: target, tier: 'advisory',
+          scriptPresent: false, wired: false,
+          note: 'not configured (opt-in: uap hooks install -t hermes)',
+        };
+      }
+      let wired = false;
+      const cfg = join(home, 'config.yaml');
+      if (existsSync(cfg)) {
+        try {
+          const c = (yaml.load(readFileSync(cfg, 'utf-8')) as Record<string, unknown>) || {};
+          const hooks = (c.hooks as Record<string, unknown>) || {};
+          const pre = Array.isArray(hooks.pre_tool_call) ? (hooks.pre_tool_call as Record<string, unknown>[]) : [];
+          wired = pre.some((e) => typeof e?.command === 'string' && String(e.command).includes('uap-policy-gate'));
+        } catch { /* unparseable */ }
+      }
+      return {
+        platform: target, tier: 'gateable',
+        scriptPresent: existsSync(join(home, 'agent-hooks', 'uap-policy-gate-hermes.sh')),
+        wired,
+        note: 'pre_tool_call in ~/.hermes/config.yaml (global)',
+      };
+    }
+    case 'codex':
+      return {
+        platform: target, tier: 'mcp',
+        scriptPresent: existsSync(P('.codex/hooks/' + gate)),
+        wired: fileIncludes(P('.codex/config.toml'), '[mcp_servers.uap]'),
+        note: 'MCP-gated only — no native pre-tool hook event for codex edit/bash',
+      };
+    case 'forgecode':
+      return {
+        platform: target, tier: 'advisory',
+        scriptPresent: existsSync(P('.forge/forgecode.plugin.sh')),
+        wired: false,
+        note: 'advisory — ForgeCode plugin injects policy context, no pre-tool block path',
+      };
+  }
+}
+
+/** `uap hooks doctor` — print a gating-coverage matrix; exit non-zero on gaps. */
+function hooksDoctor(cwd: string, targets: HooksTarget[]): void {
+  console.log(chalk.bold('\n  UAP Policy-Gate Coverage (hooks doctor)\n'));
+  const rows = targets.map((t) => auditPlatform(cwd, t));
+  for (const r of rows) {
+    let mark: string;
+    if (r.tier === 'gateable') {
+      mark = r.scriptPresent && r.wired ? chalk.green('✅ gated') : chalk.red('❌ GAP');
+    } else if (r.tier === 'mcp') {
+      mark = r.scriptPresent && r.wired ? chalk.yellow('⚠️  MCP-gated') : chalk.red('❌ GAP');
+    } else {
+      mark = chalk.yellow('⚠️  advisory');
+    }
+    console.log(`  ${mark}  ${chalk.bold(r.platform.padEnd(10))} ${chalk.dim(r.note)}`);
+    if (r.tier === 'gateable' && !(r.scriptPresent && r.wired)) {
+      const reason = !r.scriptPresent ? 'gate script not installed' : 'gate not wired in config';
+      console.log(`             ${chalk.red('→ ' + reason)} (run: uap hooks install -t ${r.platform})`);
+    }
+  }
+  const failures = rows.filter((r) => r.tier === 'gateable' && !(r.scriptPresent && r.wired));
+  console.log('');
+  if (failures.length > 0) {
+    console.log(chalk.red.bold(`  ${failures.length} platform(s) missing required gating.\n`));
+    process.exitCode = 1;
+  } else {
+    console.log(chalk.green.bold('  All gateable platforms have the policy gate installed and wired.'));
+    console.log(chalk.dim('  (codex = MCP-gated; forgecode = advisory — harness limits)\n'));
   }
 }
 
