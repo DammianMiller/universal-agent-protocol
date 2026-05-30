@@ -1,7 +1,9 @@
 import chalk from 'chalk';
 import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, chmodSync } from 'fs';
 import { join, dirname } from 'path';
+import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import yaml from 'js-yaml';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -23,8 +25,7 @@ interface HooksOptions {
   target?: HooksTarget;
 }
 
-// Single source of truth for supported platforms. `hermes` is appended in the
-// Hermes workstream once its installer exists.
+// Single source of truth for supported platforms.
 export const ALL_TARGETS: HooksTarget[] = [
   'claude',
   'factory',
@@ -34,6 +35,7 @@ export const ALL_TARGETS: HooksTarget[] = [
   'codex',
   'forgecode',
   'omp',
+  'hermes',
 ];
 
 function normalizeTarget(target?: string): HooksTarget | undefined {
@@ -1128,6 +1130,130 @@ async function installOmpHooks(cwd: string): Promise<void> {
 
 // --- Dispatcher ---
 
+// --- Hermes Agent (NousResearch) ---
+
+/** Resolve the Hermes config home ($HERMES_HOME or ~/.hermes). */
+function hermesHome(): string {
+  return process.env.HERMES_HOME || join(homedir(), '.hermes');
+}
+
+/** Add an entry to a Hermes hook-event array, de-duped by command. */
+function mergeHermesHook(
+  existing: unknown,
+  entry: Record<string, unknown>
+): Record<string, unknown>[] {
+  const arr = Array.isArray(existing) ? (existing as Record<string, unknown>[]) : [];
+  if (arr.some((e) => e && e.command === entry.command)) return arr;
+  return [...arr, entry];
+}
+
+/**
+ * Hermes Agent uses a GLOBAL config at ~/.hermes/config.yaml (not project-local).
+ * Hermes hooks are fail-open and Claude-Code-compatible: `pre_tool_call` blocks
+ * via a stdout `{"decision":"block"}` JSON, which our uap-policy-gate-hermes.sh
+ * wrapper emits. Memory injection rides `pre_llm_call` (cache-safe). Droids are
+ * surfaced via a skills bridge + the UAP MCP `experts.<name>` tools.
+ */
+async function installHermesHooks(_cwd: string): Promise<void> {
+  console.log(chalk.bold('\n  Installing UAP Hooks for Hermes Agent (NousResearch)\n'));
+  if (!ensureTemplateHooksExist()) return;
+
+  const home = hermesHome();
+  const agentHooksDir = join(home, 'agent-hooks');
+  copyHookScripts(agentHooksDir);
+
+  // Hermes-specific gate (translates exit-2 → stdout block JSON; fail-open-safe).
+  const hermesGateSrc = join(getTemplateHooksDir(), 'uap-policy-gate-hermes.sh');
+  const hermesGateDest = join(agentHooksDir, 'uap-policy-gate-hermes.sh');
+  if (existsSync(hermesGateSrc)) {
+    copyFileSync(hermesGateSrc, hermesGateDest);
+    chmodSync(hermesGateDest, 0o755);
+    console.log(chalk.green('  + agent-hooks/uap-policy-gate-hermes.sh'));
+  } else {
+    console.log(chalk.yellow('  - uap-policy-gate-hermes.sh (template not found)'));
+  }
+
+  // Merge into ~/.hermes/config.yaml (preserve existing keys).
+  const configPath = join(home, 'config.yaml');
+  let config: Record<string, unknown> = {};
+  if (existsSync(configPath)) {
+    try {
+      config = (yaml.load(readFileSync(configPath, 'utf-8')) as Record<string, unknown>) || {};
+    } catch {
+      console.log(chalk.yellow('  ~ config.yaml unparseable — merging into a fresh document'));
+    }
+  }
+
+  const hooks = (config.hooks as Record<string, unknown>) || {};
+  hooks.pre_tool_call = mergeHermesHook(hooks.pre_tool_call, {
+    matcher: 'write_file|patch|edit|terminal|bash|run|apply',
+    command: hermesGateDest,
+    timeout: 15,
+  });
+  hooks.on_session_start = mergeHermesHook(hooks.on_session_start, {
+    command: join(agentHooksDir, 'session-start.sh'),
+  });
+  config.hooks = hooks;
+
+  const mcp = (config.mcp_servers as Record<string, unknown>) || {};
+  if (!mcp.uap) {
+    mcp.uap = { command: 'uap', args: ['mcp-router', 'start'], enabled: true };
+  }
+  config.mcp_servers = mcp;
+
+  // Droid bridge: a skills external dir + an index skill pointing at UAP experts.
+  const skills = (config.skills as Record<string, unknown>) || {};
+  const skillsDir = join(home, 'uap-skills');
+  const extDirs = Array.isArray(skills.external_dirs) ? (skills.external_dirs as string[]) : [];
+  if (!extDirs.includes(skillsDir)) extDirs.push(skillsDir);
+  skills.external_dirs = extDirs;
+  config.skills = skills;
+
+  writeFileSync(configPath, yaml.dump(config, { lineWidth: 100 }));
+  console.log(chalk.green('  + config.yaml (pre_tool_call gate, on_session_start, mcp_servers.uap, skills)'));
+
+  // Write the droid→skill bridge so Hermes can discover UAP experts.
+  const expertSkillDir = join(skillsDir, 'uap-experts');
+  mkdirSync(expertSkillDir, { recursive: true });
+  const bridge = [
+    '---',
+    'name: uap-experts',
+    'description: Consult UAP expert droids (architecture, security, testing, review, planning) for specialized guidance.',
+    'metadata:',
+    '  hermes:',
+    '    tags: [uap, experts, review, architecture]',
+    'version: 1',
+    '---',
+    '# UAP Expert Droids',
+    '',
+    'UAP ships a roster of expert droids. Hermes has no per-file persona registry,',
+    'so consult them through UAP instead of defining them as personalities:',
+    '',
+    '- `uap expert-route "<task>"` — get the recommended expert chain for a task.',
+    '- Via the UAP MCP server (`mcp_servers.uap`): `discover_tools "<need>"` then',
+    '  `execute_tool experts.<droid> { context }` to consult a specific expert',
+    '  (e.g. `experts.architect-reviewer`, `experts.security-auditor`).',
+    '',
+    '## When to Use',
+    'Before non-trivial design, review, or release work — route to the matching expert.',
+    '',
+    '## Verification',
+    'Run `uap droids list` to see the available experts.',
+    '',
+  ].join('\n');
+  writeFileSync(join(expertSkillDir, 'SKILL.md'), bridge);
+  console.log(chalk.green('  + uap-skills/uap-experts/SKILL.md (droid bridge)'));
+
+  console.log(chalk.bold.green('\n  Hermes Agent hooks installed successfully!'));
+  console.log(
+    chalk.dim('  Config: ') + chalk.cyan(configPath) + '\n' +
+      chalk.dim('  Note: Hermes prompts once to approve each hook command (stored in\n') +
+      chalk.dim('  ~/.hermes/shell-hooks-allowlist.json). Approve the UAP gate, or set\n') +
+      chalk.dim('  hooks_auto_accept: true in config.yaml. Hermes hooks are fail-open —\n') +
+      chalk.dim('  the UAP gate always emits a decision JSON so real blocks are enforced.\n')
+  );
+}
+
 async function installHooksForTarget(cwd: string, target: HooksTarget): Promise<void> {
   switch (target) {
     case 'claude':
@@ -1146,6 +1272,8 @@ async function installHooksForTarget(cwd: string, target: HooksTarget): Promise<
       return installForgeCodeHooks(cwd);
     case 'omp':
       return installOmpHooks(cwd);
+    case 'hermes':
+      return installHermesHooks(cwd);
   }
 }
 
@@ -1349,5 +1477,38 @@ async function showHooksStatusForTarget(cwd: string, target: HooksTarget): Promi
       return showForgecodeStatus(cwd);
     case 'omp':
       return showOmpStatus(cwd);
+    case 'hermes':
+      return showHermesStatus(cwd);
   }
+}
+
+async function showHermesStatus(_cwd: string): Promise<void> {
+  console.log(chalk.bold('\n  Hermes Agent Hooks Status\n'));
+  const home = hermesHome();
+  const configPath = join(home, 'config.yaml');
+  const gate = join(home, 'agent-hooks', 'uap-policy-gate-hermes.sh');
+
+  const gateStatus = existsSync(gate) ? chalk.green('installed') : chalk.red('missing');
+  console.log(`  ${gateStatus}  agent-hooks/uap-policy-gate-hermes.sh`);
+
+  let wired = false;
+  if (existsSync(configPath)) {
+    try {
+      const cfg = (yaml.load(readFileSync(configPath, 'utf-8')) as Record<string, unknown>) || {};
+      const hooks = (cfg.hooks as Record<string, unknown>) || {};
+      const pre = Array.isArray(hooks.pre_tool_call)
+        ? (hooks.pre_tool_call as Record<string, unknown>[])
+        : [];
+      wired = pre.some((e) => typeof e?.command === 'string' && String(e.command).includes('uap-policy-gate'));
+    } catch {
+      /* unparseable */
+    }
+  }
+  const cfgStatus = !existsSync(configPath)
+    ? chalk.red('missing')
+    : wired
+      ? chalk.green('gate wired (pre_tool_call)')
+      : chalk.yellow('present, gate NOT wired');
+  console.log(`  ${cfgStatus}  ${configPath}`);
+  console.log('');
 }
