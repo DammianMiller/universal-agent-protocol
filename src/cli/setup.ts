@@ -173,7 +173,20 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
     mcpSpinner.warn('MCP Router setup failed: ' + err);
   }
 
-  // Step 7: Print summary
+  // Step 7: Install policy-gate + lifecycle hooks for all project platforms.
+  // Previously setup never installed hooks, so the policy gate was never active
+  // until a separate manual `uap hooks install`. (Hermes is global → opt-in via
+  // `uap hooks install -t hermes`.)
+  const hooksSpinner = ora('Installing policy-gate + lifecycle hooks...').start();
+  try {
+    const { hooksCommand } = await import('./hooks.js');
+    await hooksCommand('install', { projectDir: cwd });
+    hooksSpinner.succeed('Hooks installed (run `uap hooks doctor` to verify coverage)');
+  } catch (err) {
+    hooksSpinner.warn('Hook install failed: ' + err);
+  }
+
+  // Step 8: Print summary
   console.log('');
   printSummary(cwd, qdrantReady, pythonPath);
 }

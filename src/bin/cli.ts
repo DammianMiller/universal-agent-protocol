@@ -1144,6 +1144,21 @@ program
             })
           )
       )
+  )
+  .addCommand(
+    new Command('doctor')
+      .description('Audit policy-gate coverage across platforms (exit non-zero on gaps)')
+      .option('-t, --target <target>', 'Audit a single platform (default: all)')
+      .option('-p, --platform <platform>', 'Alias for --target')
+      .action((options) =>
+        lazy
+          .hooks()
+          .then((m) =>
+            m.hooksCommand('doctor', {
+              target: (options.target ?? options.platform) as HooksTarget | undefined,
+            })
+          )
+      )
   );
 
 // Qwen3.5 Tool Call Fixes - performance optimizations for tool calling
