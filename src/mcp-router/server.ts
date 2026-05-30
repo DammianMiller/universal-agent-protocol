@@ -9,6 +9,7 @@ import { join, dirname } from 'path';
 import { loadConfigFromPaths, loadConfigFromFile } from './config/parser.js';
 import { ToolSearchIndex } from './search/fuzzy.js';
 import { McpClientPool } from './executor/client.js';
+import { loadExpertTools } from './experts/registry.js';
 import {
   DISCOVER_TOOLS_DEFINITION,
   handleDiscoverTools,
@@ -86,6 +87,21 @@ export class McpRouter {
         }
       } else if (this.options.verbose) {
         console.error(`[router] server failed to load - ${result.reason}`);
+      }
+    }
+
+    // Surface UAP expert droids as virtual `experts.<name>` tools so that
+    // discover_tools can find the right specialist and execute_tool can
+    // dispatch an in-process consultation (handled in execute.ts).
+    try {
+      const expertTools = loadExpertTools(process.cwd());
+      allTools.push(...expertTools);
+      if (this.options.verbose) {
+        console.error(`[router] experts: ${expertTools.length} virtual tools`);
+      }
+    } catch (err) {
+      if (this.options.verbose) {
+        console.error(`[router] expert tools failed to load - ${(err as Error).message}`);
       }
     }
 

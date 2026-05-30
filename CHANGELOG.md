@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.24.0 (2026-05-30)
+
+- docs: document expert-stack extensions (HALO, ideation, forward-design, review gate)
+- feat(policies): real expert-review hard gate + architecture-review doc
+- feat(ideate): open-collider divergent-ideation wrapper
+- feat(halo): trace exporter + harness-optimizer droid + uap harness CLI
+- feat(experts): forward-design droids + activate experts-MCP surface
+
+
 ## v1.23.0 (2026-05-26)
 
 - feat(droids): add 17-droid expert stack + adaptive orchestrator

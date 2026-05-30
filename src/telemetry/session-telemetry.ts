@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, cpSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { recordAgentSpan } from '../observability/halo-exporter.js';
 
 // ─── ANSI Colors ───
 const RESET = '\x1b[0m';
@@ -387,6 +388,9 @@ export function agentComplete(id: string, result?: string): void {
   if (!agent) return;
   agent.status = 'done';
   agent.endTime = Date.now();
+  recordAgentSpan(agent.id, agent.name, agent.startTime, agent.endTime, true, agent.parentId, {
+    'agent.type': agent.type,
+  });
   const dur = elapsedSince(agent.startTime);
   const typeLabel = agent.type === 'droid' ? `${MAGENTA}[DROID]${RESET}` : `${BLUE}[AGENT]${RESET}`;
   const resStr = result ? `: ${truncate(result, 50)}` : '';
@@ -401,6 +405,9 @@ export function agentError(id: string, error: string): void {
   if (!agent) return;
   agent.status = 'error';
   agent.endTime = Date.now();
+  recordAgentSpan(agent.id, agent.name, agent.startTime, agent.endTime, false, agent.parentId, {
+    'agent.type': agent.type,
+  });
   s.errors++;
   const typeLabel = agent.type === 'droid' ? `${MAGENTA}[DROID]${RESET}` : `${BLUE}[AGENT]${RESET}`;
   console.log(`${typeLabel} ${agent.name} ${RED}error${RESET}: ${error}`);
