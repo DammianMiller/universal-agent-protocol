@@ -1497,8 +1497,8 @@ async function showHooksStatusForTarget(cwd: string, target: HooksTarget): Promi
 
 // --- Doctor (gating-coverage validator) ---
 
-type GateTier = 'gateable' | 'mcp' | 'advisory';
-interface DoctorRow {
+export type GateTier = 'gateable' | 'mcp' | 'advisory';
+export interface DoctorRow {
   platform: HooksTarget;
   tier: GateTier;
   scriptPresent: boolean;
@@ -1515,7 +1515,7 @@ function fileIncludes(path: string, needle: string): boolean {
 }
 
 /** Audit one platform's policy-gate coverage. */
-function auditPlatform(cwd: string, target: HooksTarget): DoctorRow {
+export function auditPlatform(cwd: string, target: HooksTarget): DoctorRow {
   const P = (p: string) => join(cwd, p);
   const gate = 'uap-policy-gate.sh';
   switch (target) {
