@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.25.1 (2026-05-31)
+
+- fix(coordination): allow uap agent register --id for stable agent IDs
+
+
 ## v1.25.0 (2026-05-31)
 
 - test+docs: gating-parity tests + PLATFORM_GATING.md + README
