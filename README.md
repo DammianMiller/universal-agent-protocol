@@ -80,7 +80,7 @@ uap setup -p all
 | LLM Optimization   | 5 tools        | Qwen3.5 tool call fixes, llama.cpp optimizer, LoRA training                      |
 | Local LLM Proxy    | 1 service      | Anthropic Messages API default; OpenAI Chat Completions retained as option       |
 | RTK                | 1 module       | 60-90% token savings on command outputs                                          |
-| Platforms          | 9 integrations | Claude, Factory, OpenCode, ForgeCode, VSCode, Beads, Codex, Pipeline, OMP        |
+| Platforms          | 10 integrations | Claude, Factory, OpenCode, ForgeCode, VSCode, Cursor, Codex, OMP, Hermes (+ MCP) |
 
 ---
 
@@ -435,6 +435,7 @@ uap worktree ensure --strict     # Verify inside worktree (CI gate)
 ### Supported Platforms
 
 ```bash
+uap hooks install             # all project platforms at once
 uap hooks install claude      # Claude Code
 uap hooks install factory     # Factory.AI
 uap hooks install cursor      # Cursor
@@ -443,7 +444,15 @@ uap hooks install opencode    # OpenCode
 uap hooks install forgecode   # ForgeCode
 uap hooks install codex       # Codex CLI
 uap hooks install omp         # Oh-My-Pi
+uap hooks install -t hermes   # Hermes Agent (NousResearch; global ~/.hermes)
+uap hooks doctor              # audit policy-gate coverage across platforms
 ```
+
+The DB-driven **policy gate** is installed and wired on every platform with a
+pre-tool-use mechanism (claude, vscode, cursor, factory, opencode, omp, hermes).
+**Codex** is MCP-gated (no native pre-tool hook); **ForgeCode** is advisory.
+`uap hooks doctor` reports true coverage — see
+[docs/architecture/PLATFORM_GATING.md](docs/architecture/PLATFORM_GATING.md).
 
 ---
 
@@ -471,7 +480,7 @@ uap hooks install omp         # Oh-My-Pi
 | `uap model <action>`      | Multi-model management (8 subcommands)       |
 | `uap policy <action>`     | Policy management (15 subcommands)           |
 | `uap mcp-router <action>` | MCP Router management (4 subcommands)        |
-| `uap hooks <action>`      | Hook installation (2 subcommands)            |
+| `uap hooks <action>`      | Hook install / status / doctor (3 subcommands) |
 | `uap tool-calls <action>` | Qwen3.5 tool call fixes (4 subcommands)      |
 | `uap rtk <action>`        | RTK token compression (3 subcommands)        |
 | `uap schema-diff`         | Detect breaking schema changes               |
