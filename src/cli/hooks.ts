@@ -289,15 +289,23 @@ async function installFactoryHooks(cwd: string): Promise<void> {
     ],
     PreToolUse: [
       {
-        matcher: 'Edit|Write',
+        matcher: 'Edit|Write|MultiEdit',
         hooks: [
           { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-tool-use-edit-write.sh' },
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-policy-gate.sh' },
         ],
       },
       {
         matcher: 'Bash',
         hooks: [
           { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/pre-tool-use-bash.sh' },
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-policy-gate.sh' },
+        ],
+      },
+      {
+        matcher: 'Task|Agent|ToolSearch|ExitPlanMode',
+        hooks: [
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-policy-gate.sh' },
         ],
       },
     ],
@@ -493,6 +501,10 @@ async function installOpencodeHooks(cwd: string): Promise<void> {
     console.log(chalk.dim(`  Created ${pluginDir}`));
   }
 
+  // The plugin's tool.execute.before gate shells out to uap-policy-gate.sh,
+  // so the hook scripts (incl. the gate) must be present under .opencode/hooks.
+  copyHookScripts(join(cwd, '.opencode', 'hooks'));
+
   const dbPath = './agents/data/memory/short_term.db';
   const coordDbPath = './agents/data/coordination/coordination.db';
 
@@ -536,6 +548,21 @@ async function installOpencodeHooks(cwd: string): Promise<void> {
     '            console.log("[UAP] Session started (no recent memories)")',
     '          }',
     '        } catch { /* fail safely */ }',
+    '      }',
+    '    },',
+    '',
+    '    // Pre-tool-use policy gate. OpenCode aborts the tool call when this',
+    '    // hook throws, so a blocked verdict (exit 2) becomes a hard block.',
+    '    "tool.execute.before": async (input, output) => {',
+    '      try {',
+    '        const payload = JSON.stringify({ tool_name: input.tool, tool_input: (output && output.args) || {} })',
+    '        const res = await $`echo ${payload} | bash .opencode/hooks/uap-policy-gate.sh`.quiet().nothrow()',
+    '        if (res.exitCode === 2) {',
+    '          const reason = (res.stderr.toString() || res.stdout.toString()).trim()',
+    '          throw new Error("[UAP policy blocked] " + reason)',
+    '        }',
+    '      } catch (e) {',
+    '        if (e instanceof Error && e.message.indexOf("[UAP policy blocked]") === 0) throw e',
     '      }',
     '    },',
     '',
@@ -612,12 +639,20 @@ async function installCodexHooks(cwd: string): Promise<void> {
     '',
     'The following enforcement hooks are installed and run automatically:',
     '',
+    '- **uap-policy-gate.sh** - DB-driven policy gate (policies.db + .policy-tools/*.py)',
     '- **pre-tool-use-edit-write.sh** - Blocks edits outside worktree directories',
     '- **pre-tool-use-bash.sh** - Blocks dangerous commands (force push, terraform apply, etc)',
     '- **post-tool-use-edit-write.sh** - Runs build gate + backup reminder after edits',
     '- **post-compact.sh** - Re-injects policy awareness after context compaction',
     '- **stop.sh** - Completion gate checklist + session cleanup',
     '- **session-end.sh** - Agent deregistration + backup retention',
+    '',
+    '> **Gating note (Codex):** Codex CLI has no native pre-tool-use *hook event*,',
+    '> so it cannot auto-run these scripts before every tool the way Claude Code does.',
+    '> Policy gating is enforced two ways: (1) **hard** for tools routed through the',
+    '> UAP MCP server (`[mcp_servers.uap]` below) — `execute_tool` runs the PolicyGate;',
+    '> (2) **advisory** for Codex-native edit/bash — run `bash .codex/hooks/uap-policy-gate.sh`',
+    '> per the lifecycle above. `uap hooks doctor` reports Codex as MCP-gated.',
     '',
     '## Memory System',
     '',
@@ -1012,6 +1047,8 @@ async function installOmpHooks(cwd: string): Promise<void> {
     'pre-compact.sh',
     'pre-tool-use-edit-write.sh',
     'pre-tool-use-bash.sh',
+    'uap-policy-gate.sh',
+    'loop-protection.sh',
   ];
   for (const file of preHookFiles) {
     const src = join(getTemplateHooksDir(), file);
@@ -1057,6 +1094,8 @@ async function installOmpHooks(cwd: string): Promise<void> {
       policyEnforcement: true,
       hooks: {
         preSession: '.uap/omp/hooks/pre/session-start.sh',
+        // Backs the policyEnforcement flag above — the DB-driven policy gate.
+        preToolUsePolicyGate: '.uap/omp/hooks/pre/uap-policy-gate.sh',
         preToolUseEditWrite: '.uap/omp/hooks/pre/pre-tool-use-edit-write.sh',
         preToolUseBash: '.uap/omp/hooks/pre/pre-tool-use-bash.sh',
         preCompact: '.uap/omp/hooks/pre/pre-compact.sh',
