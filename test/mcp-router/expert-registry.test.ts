@@ -14,6 +14,7 @@ import {
   loadExpertTools,
   isExpertToolPath,
   expertNameFromPath,
+  consultExpert,
   EXPERT_SERVER_NAME,
 } from '../../src/mcp-router/experts/registry.js';
 import { ToolSearchIndex } from '../../src/mcp-router/search/fuzzy.js';
@@ -109,5 +110,22 @@ description: This fixture should be excluded
     } finally {
       rmSync(otherDir, { recursive: true, force: true });
     }
+  });
+
+  it('consultExpert wraps the droid instructions and caller context as a prompt', () => {
+    makeDroid(droidDir, 'security-auditor', 'OWASP review and secret detection');
+    const res = consultExpert(workDir, 'security-auditor', 'review this auth diff', 'review');
+    expect(res.found).toBe(true);
+    expect(res.droid).toBe('security-auditor');
+    expect(res.consultation).toContain('security-auditor');
+    expect(res.consultation).toContain('review this auth diff');
+    expect(res.consultation).toContain('stage="review"');
+  });
+
+  it('consultExpert reports not-found for an unknown droid', () => {
+    makeDroid(droidDir, 'security-auditor', 'OWASP review and secret detection');
+    const res = consultExpert(workDir, 'does-not-exist', 'ctx');
+    expect(res.found).toBe(false);
+    expect(res.consultation).toBe('');
   });
 });

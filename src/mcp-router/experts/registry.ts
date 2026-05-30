@@ -121,3 +121,65 @@ export function expertNameFromPath(path: string): string | null {
   if (!isExpertToolPath(path)) return null;
   return path.slice(EXPERT_SERVER_NAME.length + 1) || null;
 }
+
+export interface ExpertConsultResult {
+  droid: string;
+  found: boolean;
+  /** Assembled consultation prompt (droid instructions + caller context). */
+  consultation: string;
+}
+
+/** Strip the leading YAML frontmatter block from a droid markdown file. */
+function stripFrontmatter(content: string): string {
+  return content.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
+}
+
+/**
+ * Dispatch an in-process expert consultation. Locates the droid by its
+ * frontmatter `name` (falling back to filename), and returns its instructions
+ * wrapped as a prompt for the host agent — mirroring `uap_droid_invoke` so the
+ * MCP `execute_tool` path and the Factory plugin path produce the same shape.
+ *
+ * Pure/synchronous and side-effect free: the harness is responsible for
+ * actually running the returned prompt as a sub-agent.
+ */
+export function consultExpert(
+  cwd: string,
+  droidName: string,
+  context: string,
+  stage?: ExpertConsultArgs['stage']
+): ExpertConsultResult {
+  const droidDir = join(cwd, '.factory', 'droids');
+  if (!existsSync(droidDir)) {
+    return { droid: droidName, found: false, consultation: '' };
+  }
+
+  const files = readdirSync(droidDir).filter(
+    (f) => f.endsWith('.md') && !f.startsWith('test-droid-')
+  );
+
+  for (const file of files) {
+    const path = join(droidDir, file);
+    const content = readFileSync(path, 'utf-8');
+    const meta = parseFrontmatter(content);
+    const name = meta?.name ?? file.replace(/\.md$/, '');
+    if (name !== droidName) continue;
+    if (!meta?.description) continue;
+
+    const body = stripFrontmatter(content);
+    const consultation = `<uap-expert name="${name}" stage="${stage ?? 'pre-exec'}">
+## Expert: ${name}
+${meta.description}
+
+### Instructions
+${body.slice(0, 8000)}
+
+### Consultation Context
+${context.slice(0, 2000)}
+</uap-expert>`;
+
+    return { droid: name, found: true, consultation };
+  }
+
+  return { droid: droidName, found: false, consultation: '' };
+}

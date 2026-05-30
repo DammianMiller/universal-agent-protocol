@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { EXECUTE_TOOL_DEFINITION, estimateExecuteToolTokens } from '../../src/mcp-router/tools/execute.js';
+import {
+  EXECUTE_TOOL_DEFINITION,
+  estimateExecuteToolTokens,
+  handleExecuteTool,
+} from '../../src/mcp-router/tools/execute.js';
+import { ToolSearchIndex } from '../../src/mcp-router/search/fuzzy.js';
+import type { McpClientPool } from '../../src/mcp-router/executor/client.js';
 
 describe('MCP Router Execute Tool', () => {
   describe('EXECUTE_TOOL_DEFINITION', () => {
@@ -37,6 +43,36 @@ describe('MCP Router Execute Tool', () => {
       const t1 = estimateExecuteToolTokens();
       const t2 = estimateExecuteToolTokens();
       expect(t1).toBe(t2);
+    });
+  });
+
+  describe('expert consultation dispatch', () => {
+    // The experts.<droid> branch runs before any search-index / client-pool
+    // use, so a fresh index and a stub pool are sufficient. consultExpert reads
+    // the real .factory/droids/ in the worktree cwd.
+    const emptyIndex = () => new ToolSearchIndex({ threshold: 0.2 });
+    const stubPool = {} as McpClientPool;
+
+    it('dispatches experts.<droid> to an in-process consultation', async () => {
+      const res = await handleExecuteTool(
+        { path: 'experts.security-auditor', args: { context: 'review my auth diff' } },
+        emptyIndex(),
+        stubPool
+      );
+      expect(res.success).toBe(true);
+      expect(res.toolPath).toBe('experts.security-auditor');
+      expect(String(res.result)).toContain('security-auditor');
+      expect(String(res.result)).toContain('review my auth diff');
+    });
+
+    it('returns a not-found error for an unknown expert', async () => {
+      const res = await handleExecuteTool(
+        { path: 'experts.no-such-droid', args: { context: 'x' } },
+        emptyIndex(),
+        stubPool
+      );
+      expect(res.success).toBe(false);
+      expect(res.error).toContain('not found');
     });
   });
 });

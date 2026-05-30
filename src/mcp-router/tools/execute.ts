@@ -10,6 +10,7 @@ import type { ToolSearchIndex } from '../search/fuzzy.js';
 import type { McpClientPool } from '../executor/client.js';
 import { compressToolOutput } from '../output-compressor.js';
 import { globalSessionStats } from '../session-stats.js';
+import { isExpertToolPath, expertNameFromPath, consultExpert } from '../experts/registry.js';
 import { getPolicyGate, PolicyViolationError } from '../../policies/policy-gate.js';
 import { CoordinationService } from '../../coordination/service.js';
 import { isPathInsideWorktree, isExemptFromWorktree } from '../../cli/worktree.js';
@@ -108,6 +109,36 @@ export async function handleExecuteTool(
 
   const serverName = path.slice(0, dotIndex);
   const toolName = path.slice(dotIndex + 1);
+
+  // Expert consultation: `experts.<droid>` dispatches in-process to a UAP droid
+  // rather than an external MCP server. Returns the droid's instructions wrapped
+  // as a prompt for the host agent to run as a sub-agent.
+  if (isExpertToolPath(path)) {
+    const droidName = expertNameFromPath(path) ?? toolName;
+    const context = String((toolArgs as Record<string, unknown>)?.context ?? '');
+    const stage = (toolArgs as Record<string, unknown>)?.stage as
+      | 'pre-exec'
+      | 'post-exec'
+      | 'review'
+      | 'always'
+      | undefined;
+    const consult = consultExpert(process.cwd(), droidName, context, stage);
+    if (!consult.found) {
+      return {
+        success: false,
+        error: `Expert droid "${droidName}" not found in .factory/droids/. Use discover_tools to list available experts.`,
+        toolPath: path,
+        executionTimeMs: Date.now() - startTime,
+      };
+    }
+    globalSessionStats.record(path, consult.consultation.length, consult.consultation.length);
+    return {
+      success: true,
+      result: consult.consultation,
+      toolPath: path,
+      executionTimeMs: Date.now() - startTime,
+    };
+  }
 
   // Find tool definition
   const tool = searchIndex.getToolByPath(path);

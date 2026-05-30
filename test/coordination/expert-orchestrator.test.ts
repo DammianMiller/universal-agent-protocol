@@ -80,4 +80,29 @@ describe('ExpertOrchestrator', () => {
     const droids = plan.steps.map((s) => s.droid);
     expect(droids).not.toContain('api-designer');
   });
+
+  it('layers forward-design experts when the task touches an architecture surface', () => {
+    const plan = planFromDescription('Design the billing subsystem types', undefined, [
+      'src/types/billing.ts',
+    ]);
+    const byPhase = (phase: string) =>
+      plan.steps.filter((s) => s.phase === phase).map((s) => s.droid);
+
+    // strategic-architect sets direction in the plan phase
+    expect(byPhase('plan')).toContain('strategic-architect');
+    // tactical-architect + implementation-planner produce the concrete design
+    expect(byPhase('design')).toContain('tactical-architect');
+    expect(byPhase('design')).toContain('implementation-planner');
+    // the existing architecture reviewer is still present
+    expect(byPhase('design')).toContain('architect-reviewer');
+  });
+
+  it('omits forward-design architects when no architecture/api surface is matched', () => {
+    const plan = planFromDescription('Tidy whitespace in tests', undefined, [
+      'test/cli/init.test.ts',
+    ]);
+    const droids = plan.steps.map((s) => s.droid);
+    expect(droids).not.toContain('strategic-architect');
+    expect(droids).not.toContain('tactical-architect');
+  });
 });
