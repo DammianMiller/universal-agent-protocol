@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.26.4 (2026-05-31)
+
+- fix(policies): git-diff enforcers run against the working tree
+
+
 ## v1.26.3 (2026-05-31)
 
 - fix(hooks): policy gate resolves DB + enforcers against the main checkout
