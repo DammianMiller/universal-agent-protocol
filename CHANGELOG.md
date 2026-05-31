@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.26.1 (2026-05-31)
+
+- ci: move GitHub Actions to Node 24 runtime
+
+
 ## v1.26.0 (2026-05-31)
 
 - feat(patterns): index .factory/patterns so P12/P35 are retrievable
