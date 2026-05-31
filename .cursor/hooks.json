@@ -8,12 +8,24 @@
     ],
     "preToolUse": [
       {
-        "matcher": "Edit|Write",
+        "matcher": "Edit|Write|MultiEdit",
         "command": ".cursor/hooks/pre-tool-use-edit-write.sh"
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "command": ".cursor/hooks/uap-policy-gate.sh"
       },
       {
         "matcher": "Bash",
         "command": ".cursor/hooks/pre-tool-use-bash.sh"
+      },
+      {
+        "matcher": "Bash",
+        "command": ".cursor/hooks/uap-policy-gate.sh"
+      },
+      {
+        "matcher": "Task|Agent|ToolSearch|ExitPlanMode",
+        "command": ".cursor/hooks/uap-policy-gate.sh"
       }
     ],
     "postToolUse": [
