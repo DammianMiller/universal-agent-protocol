@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.24.0 (2026-05-31)
+
+- feat(patterns): index .factory/patterns so P12/P35 are retrievable
+- test+docs: gating-parity tests + PLATFORM_GATING.md + README
+- feat(hooks): add `uap hooks doctor` validator + install hooks in `uap setup`
+- feat(hooks): add Hermes Agent (NousResearch) as a gated platform
+- feat(hooks): wire policy gate into factory, omp, opencode, codex
+- fix(hooks): copy uap-policy-gate.sh on install + reconcile platform list
+- feat(droids): add 17-droid expert stack + adaptive orchestrator (#195)
+- chore: bump version to 1.22.1 (#194)
+- fix(hooks): worktree-guard scope check — allow paths outside repo root (#193)
+- proxy: attractor breaker phase 2 — stronger escape signal (#192)
+- proxy: attractor-aware contamination breaker (#191)
+
+
 ## v1.23.0 (2026-05-26)
 
 - feat(droids): add 17-droid expert stack + adaptive orchestrator
