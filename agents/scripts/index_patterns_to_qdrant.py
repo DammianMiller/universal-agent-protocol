@@ -38,7 +38,6 @@ MAX_BODY_CHARS = 2000
 
 def resolve_includes(text: str, base_dir: Path) -> str:
     """Resolve @include directives (e.g. @hooks-session-start.md)."""
-
     def replace_include(match):
         filename = match.group(1).strip()
         # Search common locations
@@ -70,17 +69,13 @@ def extract_numbered_patterns(text: str) -> list[dict]:
         body = match.group(4).strip()
         if len(body) > MAX_BODY_CHARS:
             body = body[:MAX_BODY_CHARS] + "\n... (truncated)"
-        patterns.append(
-            {
-                "title": title,
-                "abbreviation": abbreviation,
-                "category": "pattern",
-                "source": "CLAUDE.md",
-                "keywords": list(set(title.lower().split())),
-                "body": body,
-                "content_hash": hashlib.md5(body.encode()).hexdigest(),
-            }
-        )
+        patterns.append({
+            "title": title, "abbreviation": abbreviation,
+            "category": "pattern", "source": "CLAUDE.md",
+            "keywords": list(set(title.lower().split())),
+            "body": body,
+            "content_hash": hashlib.md5(body.encode()).hexdigest(),
+        })
     return patterns
 
 
@@ -117,17 +112,15 @@ def extract_sections(text: str, source_name: str) -> list[dict]:
         # Build keywords from title
         keywords = [w.lower() for w in re.findall(r"[a-zA-Z]{3,}", title)]
 
-        sections.append(
-            {
-                "title": title,
-                "abbreviation": "",
-                "category": category,
-                "source": source_name,
-                "keywords": keywords,
-                "body": body,
-                "content_hash": hashlib.md5(body.encode()).hexdigest(),
-            }
-        )
+        sections.append({
+            "title": title,
+            "abbreviation": "",
+            "category": category,
+            "source": source_name,
+            "keywords": keywords,
+            "body": body,
+            "content_hash": hashlib.md5(body.encode()).hexdigest(),
+        })
 
     return sections
 
@@ -182,12 +175,10 @@ def scan_skills(project_root: Path, skills_dir: Optional[str]) -> list[dict]:
     candidates = []
     if skills_dir:
         candidates.append(project_root / skills_dir)
-    candidates.extend(
-        [
-            project_root / ".claude" / "skills",
-            project_root / ".factory" / "skills",
-        ]
-    )
+    candidates.extend([
+        project_root / ".claude" / "skills",
+        project_root / ".factory" / "skills",
+    ])
 
     for skills_path in candidates:
         if not skills_path.is_dir():
@@ -207,28 +198,19 @@ def scan_skills(project_root: Path, skills_dir: Optional[str]) -> list[dict]:
                 body = text.strip()
                 if len(body) > MAX_BODY_CHARS:
                     body = body[:MAX_BODY_CHARS] + "\n... (truncated)"
-                sections = [
-                    {
-                        "title": skill_name,
-                        "abbreviation": "",
-                        "category": "skill",
-                        "source": f"skill:{skill_name}",
-                        "keywords": [
-                            w.lower()
-                            for w in re.findall(
-                                r"[a-zA-Z]{3,}", skill_name + " " + skill_desc
-                            )
-                        ],
-                        "body": body,
-                        "content_hash": hashlib.md5(body.encode()).hexdigest(),
-                    }
-                ]
+                sections = [{
+                    "title": skill_name,
+                    "abbreviation": "",
+                    "category": "skill",
+                    "source": f"skill:{skill_name}",
+                    "keywords": [w.lower() for w in re.findall(r"[a-zA-Z]{3,}", skill_name + " " + skill_desc)],
+                    "body": body,
+                    "content_hash": hashlib.md5(body.encode()).hexdigest(),
+                }]
 
             # Add skill description as keywords to all sections
             if skill_desc:
-                desc_keywords = [
-                    w.lower() for w in re.findall(r"[a-zA-Z]{3,}", skill_desc)
-                ]
+                desc_keywords = [w.lower() for w in re.findall(r"[a-zA-Z]{3,}", skill_desc)]
                 for s in sections:
                     s["keywords"] = list(set(s["keywords"] + desc_keywords))
 
@@ -236,6 +218,55 @@ def scan_skills(project_root: Path, skills_dir: Optional[str]) -> list[dict]:
         if docs:
             break  # Use first found skills directory
 
+    return docs
+
+
+def scan_factory_patterns(project_root: Path) -> list[dict]:
+    """Index .factory/patterns/*.md as discrete patterns using index.json metadata.
+
+    Preserves the canonical 'PNN: Title' identity (e.g. 'P12: Output Existence
+    Verification') and the rich keyword set from index.json so the always-enforced
+    patterns (P12, P35, ...) are retrievable instead of being fragmented into
+    generic '## Rule'/'## Implementation' sub-sections.
+    """
+    import json
+
+    docs = []
+    patterns_dir = project_root / ".factory" / "patterns"
+    index_path = patterns_dir / "index.json"
+    if not index_path.is_file():
+        return docs
+    try:
+        meta = json.loads(index_path.read_text())
+    except Exception:
+        return docs
+
+    for entry in meta.get("patterns", []):
+        fname = entry.get("file")
+        if not fname:
+            continue
+        md_path = patterns_dir / fname
+        if not md_path.is_file():
+            continue
+        body = md_path.read_text().strip()
+        if len(body) < 20:
+            continue
+        if len(body) > MAX_BODY_CHARS:
+            body = body[:MAX_BODY_CHARS] + "\n... (truncated)"
+        pid = entry.get("id", "")
+        title = entry.get("title", fname)
+        full_title = f"P{pid}: {title}" if pid != "" else title
+        keywords = [str(k).lower() for k in entry.get("keywords", [])]
+        keywords += [w.lower() for w in re.findall(r"[a-zA-Z]{3,}", title)]
+        docs.append({
+            "title": full_title,
+            "abbreviation": entry.get("abbreviation", ""),
+            "category": entry.get("category", "pattern"),
+            "source": "factory-pattern",
+            "keywords": list(set(keywords)),
+            "body": body,
+            "content_hash": hashlib.md5(body.encode()).hexdigest(),
+        })
     return docs
 
 
@@ -275,32 +306,27 @@ def index_to_qdrant(docs: list[dict]) -> None:
     # Assign sequential IDs and build embeddings
     points = []
     for idx, doc in enumerate(docs, start=1):
-        embed_text = (
-            f"{doc['title']}. {' '.join(doc['keywords'][:10])}. {doc['body'][:500]}"
-        )
+        embed_text = f"{doc['title']}. {' '.join(doc['keywords'][:10])}. {doc['body'][:500]}"
         vector = model.encode(embed_text).tolist()
-        points.append(
-            PointStruct(
-                id=idx,
-                vector=vector,
-                payload={
-                    "title": doc["title"],
-                    "abbreviation": doc.get("abbreviation", ""),
-                    "category": doc["category"],
-                    "source": doc.get("source", ""),
-                    "detection": doc.get("detection", ""),
-                    "keywords": doc["keywords"],
-                    "body": doc["body"],
-                    "content_hash": doc["content_hash"],
-                    "indexed_at": datetime.now(tz=timezone.utc).isoformat(),
-                },
-            )
-        )
+        points.append(PointStruct(
+            id=idx, vector=vector,
+            payload={
+                "title": doc["title"],
+                "abbreviation": doc.get("abbreviation", ""),
+                "category": doc["category"],
+                "source": doc.get("source", ""),
+                "detection": doc.get("detection", ""),
+                "keywords": doc["keywords"],
+                "body": doc["body"],
+                "content_hash": doc["content_hash"],
+                "indexed_at": datetime.now(tz=timezone.utc).isoformat(),
+            },
+        ))
 
     # Batch upsert (Qdrant handles large batches fine)
     BATCH_SIZE = 100
     for i in range(0, len(points), BATCH_SIZE):
-        batch = points[i : i + BATCH_SIZE]
+        batch = points[i:i + BATCH_SIZE]
         client.upsert(collection_name=COLLECTION_NAME, points=batch)
     print(f"  Indexed {len(points)} documents")
 
@@ -356,6 +382,12 @@ def main():
     if skills:
         print(f"  Scanned skills: {len(skills)} documents")
         all_docs.extend(skills)
+
+    # 5. Scan .factory/patterns (P12, P35, ... — file-based pattern router)
+    factory_patterns = scan_factory_patterns(PROJECT_ROOT)
+    if factory_patterns:
+        print(f"  Scanned .factory/patterns: {len(factory_patterns)} patterns")
+        all_docs.extend(factory_patterns)
 
     # Deduplicate
     all_docs = deduplicate(all_docs)
