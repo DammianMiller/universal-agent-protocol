@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.26.3 (2026-05-31)
+
+- fix(hooks): policy gate resolves DB + enforcers against the main checkout
+
+
 ## v1.26.2 (2026-05-31)
 
 - fix(hooks): worktree guard fails closed when repo root is unresolvable
