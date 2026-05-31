@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.26.0 (2026-05-31)
+
+- feat(patterns): index .factory/patterns so P12/P35 are retrievable
+
+
 ## v1.25.1 (2026-05-31)
 
 - fix(coordination): allow uap agent register --id for stable agent IDs
