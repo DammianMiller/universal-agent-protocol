@@ -34,7 +34,7 @@
       "provider": "qdrant",
       "endpoint": "localhost:6333",
       "collection": "agent_memory",
-      "embeddingModel": "all-MiniLM-L6-v2"
+      "embeddingModel": "nomic-embed-text-v2-moe"
     },
     "patternRag": {
       "enabled": true,
