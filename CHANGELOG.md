@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.26.2 (2026-05-31)
+
+- fix(hooks): worktree guard fails closed when repo root is unresolvable
+
+
 ## v1.26.1 (2026-05-31)
 
 - ci: move GitHub Actions to Node 24 runtime
