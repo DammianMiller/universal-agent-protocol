@@ -26,6 +26,10 @@ MAIN_ROOT="${CHECKOUT_ROOT%%/.worktrees/*}"
 # instead of, when run from inside a worktree, resolving repo_root to the worktree
 # itself and mis-flagging a legitimate worktree edit as a root edit (false block).
 export UAP_REPO_ROOT="$MAIN_ROOT"
+# git-diff enforcers (test-gate, schema-diff, iac-parity) must run git against the
+# actual WORKING TREE, not the (possibly bare) MAIN_ROOT. Expose the current checkout
+# so _common.worktree_root() targets the worktree when an op runs from inside one.
+export UAP_WORKTREE_ROOT="$CHECKOUT_ROOT"
 cd "$MAIN_ROOT"
 
 TOOL="$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tool_name") or d.get("tool") or "")' 2>/dev/null || true)"

@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import emit, parse_cli, repo_root, run  # noqa: E402
+from _common import emit, parse_cli, repo_root, run, worktree_root  # noqa: E402
 
 WATCHED_RE = re.compile(
     r"(migrations/.*\.sql|infra/postgres-spock/|infra/helm_charts/[^/]*pgdog|"
@@ -60,12 +60,12 @@ def main() -> None:
     if not is_commit:
         emit(True, "not a commit/push gate point")
 
-    root = repo_root()
-    watched = touched_watched_paths(root)
+    # git diff runs against the working tree; short_term.db lives in MAIN_ROOT
+    watched = touched_watched_paths(worktree_root())
     if not watched:
         emit(True, "no watched schema/pool paths in diff")
 
-    if schema_diff_ok(root):
+    if schema_diff_ok(repo_root()):
         emit(True, f"recent schema-diff pass covers: {', '.join(watched[:5])}")
 
     emit(

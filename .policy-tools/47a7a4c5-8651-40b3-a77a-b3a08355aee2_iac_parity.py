@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import arg_str, emit, parse_cli, repo_root, run  # noqa: E402
+from _common import arg_str, emit, parse_cli, run, worktree_root  # noqa: E402
 
 MUTATING_RE = re.compile(
     r"\b(kubectl|helm|doctl|aws|gcloud)\b.*?\b(apply|patch|create|edit|delete|install|upgrade|rollout|scale|set)\b",
@@ -28,7 +28,7 @@ def main() -> None:
     if not MUTATING_RE.search(blob):
         emit(True, "not a mutating IaC-scope command")
 
-    root = repo_root()
+    root = worktree_root()  # git status must run against the working tree, not MAIN_ROOT
     rc, out, _ = run(["git", "status", "--porcelain"], cwd=root)
     if rc != 0:
         emit(True, "git status unavailable; deferring to post-commit check")

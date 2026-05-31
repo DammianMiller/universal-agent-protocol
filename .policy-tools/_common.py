@@ -39,6 +39,30 @@ def repo_root() -> Path:
     return cwd
 
 
+def worktree_root() -> Path:
+    """Root of the current WORKING TREE for git operations.
+
+    Distinct from repo_root() (the main checkout, where runtime data like
+    policies.db lives). git-diff based enforcers must run against the working
+    tree — which is the worktree when an operation runs from inside one. The
+    policy gate exports UAP_WORKTREE_ROOT; fall back to `git rev-parse` from cwd,
+    then to repo_root().
+    """
+    env = os.environ.get("UAP_WORKTREE_ROOT")
+    if env:
+        return Path(env)
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return Path(r.stdout.strip())
+    except Exception:  # noqa: BLE001
+        pass
+    return repo_root()
+
+
 def run(cmd: list[str], cwd: Path | None = None, timeout: int = 5) -> tuple[int, str, str]:
     try:
         r = subprocess.run(
