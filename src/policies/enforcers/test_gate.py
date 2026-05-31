@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import emit, parse_cli, repo_root, run  # noqa: E402
+from _common import emit, parse_cli, run, worktree_root  # noqa: E402
 
 PR_OPS_RE = re.compile(
     r"\b(pr[-_ ]?ready|pr-create|gh pr create|signoff|ready[-_ ]for[-_ ]review|merge)\b",
@@ -24,7 +24,7 @@ def main() -> None:
     if not (PR_OPS_RE.search(op) or PR_OPS_RE.search(cmd)):
         emit(True, "not a PR-ready gate point")
 
-    root = repo_root()
+    root = worktree_root()  # git diff must run against the working tree, not MAIN_ROOT
     rc, out, _ = run(
         ["git", "diff", "--name-only", "origin/main...HEAD"], cwd=root, timeout=10
     )
