@@ -8,6 +8,7 @@ import { execSync } from 'child_process';
 // QdrantClient lazy-loaded via shared utility (saves ~100ms startup)
 import { getQdrantClientClass } from '../utils/lazy-imports.js';
 import { loadUapConfig } from '../utils/config-loader.js';
+import { generateEmbedding, generateEmbeddings } from '../memory/embeddings.js';
 import { prepopulateMemory } from '../memory/prepopulate.js';
 import { SQLiteShortTermMemory } from '../memory/short-term/sqlite.js';
 import { ensureSessionSchema } from '../memory/short-term/schema.js';
@@ -476,8 +477,11 @@ async function queryQdrant(
       return;
     }
 
-    // Use deterministic embedding for search (same as storage)
-    const searchVector = createDeterministicEmbedding(`${search}`);
+    // Real semantic embedding (nomic-embed-text-v2 via llama.cpp). The
+    // 'search_query:' prefix is nomic's asymmetric-retrieval counterpart to
+    // documents stored with 'search_document:'. (Previously this used a
+    // deterministic hash placeholder, so scores were ~random and recall failed.)
+    const searchVector = await generateEmbedding(`search_query: ${search}`);
 
     let allResults: Array<{ content: string; type: string; score: number; tags?: string[] }> = [];
     for (const col of availableCollections) {
@@ -884,22 +888,6 @@ async function storeKnowledgeGraph(
 
 // upsertEntity and insertRelationship removed — now delegated to KnowledgeGraph class
 
-function createDeterministicEmbedding(input: string, size = 384): number[] {
-  const hash = createHash('sha256').update(input).digest();
-  let seed = hash.readUInt32LE(0);
-  const vector = new Array<number>(size);
-
-  for (let i = 0; i < size; i += 1) {
-    seed ^= seed << 13;
-    seed ^= seed >> 17;
-    seed ^= seed << 5;
-    const normalized = (seed >>> 0) / 0xffffffff;
-    vector[i] = normalized * 2 - 1;
-  }
-
-  return vector;
-}
-
 function toDeterministicUuid(value: string): string {
   const hash = createHash('sha256').update(value).digest('hex');
   const timeLow = hash.slice(0, 8);
@@ -938,6 +926,10 @@ async function storeLongTermToQdrant(
   }
 
   try {
+    // Probe the active embedder once to learn the real vector dimension (768 for
+    // nomic-embed-text-v2-moe) so the collection matches what we and the query path embed.
+    const vectorDim = (await generateEmbedding('search_document: probe')).length;
+
     const collections = await client.getCollections();
     let collectionName = collection;
     const exists = collections.collections.some((c: { name: string }) => c.name === collectionName);
@@ -945,7 +937,7 @@ async function storeLongTermToQdrant(
       const info = await client.getCollection(collectionName);
       const size = (info.config as { params?: { vectors?: { size?: number } } }).params?.vectors
         ?.size;
-      if (size && size !== 384) {
+      if (size && size !== vectorDim) {
         collectionName = `${collectionName}_prepopulated`;
       }
     }
@@ -954,15 +946,20 @@ async function storeLongTermToQdrant(
       (c: { name: string }) => c.name === collectionName
     );
     if (!finalExists) {
-      await client.createCollection(collectionName, { vectors: { size: 384, distance: 'Cosine' } });
+      await client.createCollection(collectionName, {
+        vectors: { size: vectorDim, distance: 'Cosine' },
+      });
     }
 
     const batchSize = 64;
     for (let i = 0; i < longTerm.length; i += batchSize) {
       const batch = longTerm.slice(i, i + batchSize);
-      const points = batch.map((entry) => ({
+      const vectors = await generateEmbeddings(
+        batch.map((e) => `search_document: ${e.content} ${e.tags?.join(' ') || ''}`)
+      );
+      const points = batch.map((entry, j) => ({
         id: toDeterministicUuid(entry.id),
-        vector: createDeterministicEmbedding(`${entry.content} ${entry.tags?.join(' ') || ''}`),
+        vector: vectors[j],
         payload: {
           timestamp: entry.timestamp,
           type: entry.type,
