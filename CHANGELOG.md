@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.26.5 (2026-05-31)
+
+- fix(memory): real semantic embeddings for long-term store + recall
+
+
 ## v1.26.4 (2026-05-31)
 
 - fix(policies): git-diff enforcers run against the working tree
