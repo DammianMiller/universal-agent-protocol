@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.23.1 (2026-06-01)
+
+- fix(chat-template): tolerate mid-conversation system messages
+- feat(droids): add 17-droid expert stack + adaptive orchestrator (#195)
+- chore: bump version to 1.22.1 (#194)
+- fix(hooks): worktree-guard scope check — allow paths outside repo root (#193)
+- proxy: attractor breaker phase 2 — stronger escape signal (#192)
+- proxy: attractor-aware contamination breaker (#191)
+
+
 ## v1.23.0 (2026-05-26)
 
 - feat(droids): add 17-droid expert stack + adaptive orchestrator
