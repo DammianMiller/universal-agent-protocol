@@ -106,8 +106,11 @@
         {%- set content = content.replace('<|think_on|>', '').strip() %}
     {%- endif %}
     {%- if message.role == "system" or message.role == "developer" %}
+        {#- The first system/developer message is already emitted above the loop. -#}
+        {#- Tolerate later system messages (e.g. memory/context injection mid-turn) -#}
+        {#- by rendering them inline as a system block instead of raising. -#}
         {%- if not loop.first %}
-            {{- raise_exception('System message must be at the beginning.') }}
+            {{- '<|im_start|>system\n' + content + '<|im_end|>' + '\n' }}
         {%- endif %}
     {%- elif message.role == "user" %}
         {{- '<|im_start|>' + message.role + '\n' + content + '<|im_end|>' + '\n' }}

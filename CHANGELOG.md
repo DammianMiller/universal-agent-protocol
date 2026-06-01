@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.26.6 (2026-06-01)
+
+- fix(chat-template): tolerate mid-conversation system messages
+
+
 ## v1.26.5 (2026-05-31)
 
 - fix(memory): real semantic embeddings for long-term store + recall
