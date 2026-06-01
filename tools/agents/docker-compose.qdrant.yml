@@ -2,13 +2,19 @@ version: '3.8'
 
 services:
   qdrant:
-    image: qdrant/qdrant:latest
+    # Pinned (was :latest, which drifts: a stale cached 1.16.3 broke client
+    # compatibility against @qdrant/js-client-rest 1.18.0, whose minor must be
+    # within 1 of the server). v1.18.1 matches the client minor.
+    image: qdrant/qdrant:v1.18.1
     container_name: uap-qdrant
     ports:
       - '6333:6333' # REST API
       - '6334:6334' # gRPC
     volumes:
       - ./qdrant_storage:/qdrant/storage:z
+      # Persist snapshots on the host (default /qdrant/snapshots is ephemeral,
+      # so backups are lost on container recreate).
+      - ./qdrant_snapshots:/qdrant/snapshots:z
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
       - QDRANT__REST__PORT=6333
