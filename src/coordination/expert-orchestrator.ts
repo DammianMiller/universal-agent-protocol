@@ -14,6 +14,7 @@ import type { Task } from '../tasks/types.js';
 import { CapabilityRouter, type RoutingResult } from './capability-router.js';
 
 export type ChainPhase =
+  | 'ideate' // divergent idea generation (open-collider), opt-in
   | 'plan' // requirements clarification, ADRs, test strategy
   | 'design' // contract / API design, architecture review
   | 'implement' // language / domain experts
@@ -45,6 +46,12 @@ interface OrchestratorOptions {
   router?: CapabilityRouter;
   /** Adaptive-success lookup. Returns null when there is no history. */
   successRateFor?: (droid: string) => number | null;
+  /**
+   * Prepend the opt-in `ideate` phase (open-collider divergent ideation).
+   * Off by default — ideation only pays off for genuinely novel problems.
+   * Ignored when `phases` is supplied explicitly.
+   */
+  includeIdeation?: boolean;
 }
 
 const DEFAULT_PHASES: ChainPhase[] = ['plan', 'design', 'implement', 'review', 'release'];
@@ -54,8 +61,17 @@ const DEFAULT_PHASES: ChainPhase[] = ['plan', 'design', 'implement', 'review', '
  * to whatever the CapabilityRouter recommends based on task content.
  */
 const PHASE_ROSTER: Record<ChainPhase, { droids: string[]; parallel: boolean }> = {
-  plan: { droids: ['product-strategist', 'test-strategist'], parallel: true },
-  design: { droids: ['architect-reviewer', 'api-designer'], parallel: true },
+  // Divergent ideation (open-collider) — opt-in via includeIdeation. Its curated
+  // ideas feed the plan-phase product/strategy droids.
+  ideate: { droids: ['ideation-expert'], parallel: false },
+  // strategic-architect sets the north-star direction alongside product/test strategy.
+  plan: { droids: ['product-strategist', 'test-strategist', 'strategic-architect'], parallel: true },
+  // tactical-architect designs the concrete components; implementation-planner turns
+  // the design into an executable work breakdown before code starts.
+  design: {
+    droids: ['architect-reviewer', 'api-designer', 'tactical-architect', 'implementation-planner'],
+    parallel: true,
+  },
   // implement phase gets its droids exclusively from the capability router,
   // because language/domain choice depends on the actual files touched.
   implement: { droids: [], parallel: false },
@@ -85,6 +101,9 @@ function isRelevantForCapability(droid: string, matched: string[]): boolean {
   const map: Record<string, string[]> = {
     'product-strategist': ['product'],
     'test-strategist': ['testing', 'test-strategy'],
+    'strategic-architect': ['architecture'],
+    'tactical-architect': ['architecture', 'api-design'],
+    'implementation-planner': ['architecture', 'api-design', 'testing', 'product'],
     'architect-reviewer': ['architecture'],
     'api-designer': ['api-design'],
     'security-code-reviewer': ['security'],
@@ -109,7 +128,8 @@ export class ExpertOrchestrator {
 
   constructor(options: OrchestratorOptions = {}) {
     this.router = options.router ?? new CapabilityRouter();
-    this.phases = options.phases ?? DEFAULT_PHASES;
+    this.phases =
+      options.phases ?? (options.includeIdeation ? ['ideate', ...DEFAULT_PHASES] : DEFAULT_PHASES);
     this.successRateFor = options.successRateFor ?? (() => null);
   }
 

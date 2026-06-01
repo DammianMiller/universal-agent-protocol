@@ -39,6 +39,31 @@ describe('CoordinationService', () => {
       expect(typeof id).toBe('string');
     });
 
+    it('registers under a caller-supplied stable ID', () => {
+      const id = service.register('agent-a', ['coding'], undefined, 'agentA');
+      expect(id).toBe('agentA');
+      expect(service.getAgent('agentA')?.name).toBe('agent-a');
+    });
+
+    it('re-registering a known ID is idempotent (reactivate, no PK conflict)', () => {
+      service.register('agent-a', ['coding'], undefined, 'agentA');
+      expect(() =>
+        service.register('agent-a-renamed', ['coding', 'review'], undefined, 'agentA')
+      ).not.toThrow();
+      const agent = service.getAgent('agentA');
+      expect(agent?.name).toBe('agent-a-renamed');
+      expect(agent?.status).toBe('active');
+    });
+
+    it('enables direct messaging between two stable-ID agents', () => {
+      service.register('agent-a', ['coding'], undefined, 'agentA');
+      service.register('agent-b', ['review'], undefined, 'agentB');
+      service.send('agentA', 'agentB', { action: 'message', data: 'review src/foo.ts' });
+      const msgs = service.receive('agentB');
+      expect(msgs.length).toBe(1);
+      expect(JSON.stringify(msgs[0])).toContain('review src/foo.ts');
+    });
+
     it('should retrieve a registered agent', () => {
       const id = service.register('test-agent', ['coding']);
       const agent = service.getAgent(id);

@@ -130,16 +130,11 @@ export class LlamaCppEmbeddingProvider implements EmbeddingProvider {
     return results[0];
   }
 
-  async embedBatch(texts: string[]): Promise<number[][]> {
-    // Add task prefix for nomic-embed-text-v2 compatibility
-    const prefixedTexts = texts.map((t) =>
-      t.startsWith('search_query: ') || t.startsWith('search_document: ') ? t : this.taskPrefix + t
-    );
-
+  private async postEmbeddings(inputs: string[]): Promise<number[][]> {
     const response = await fetch(`${this.endpoint}/v1/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: prefixedTexts }),
+      body: JSON.stringify({ input: inputs }),
       signal: AbortSignal.timeout(30000),
     });
 
@@ -150,20 +145,49 @@ export class LlamaCppEmbeddingProvider implements EmbeddingProvider {
     const data = (await response.json()) as {
       data: Array<{ embedding: number[]; index: number }>;
     };
-
-    // Sort by index to maintain order
     if (!data?.data || !Array.isArray(data.data)) {
       throw new Error('OpenAI embedding API returned unexpected response shape');
     }
-    const sorted = data.data.sort((a, b) => a.index - b.index);
-    const embeddings = sorted.map((d) => d.embedding);
-
-    // Update dimensions from actual response
+    const embeddings = data.data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
     if (embeddings[0]) {
       this.dimensions = embeddings[0].length;
     }
-
     return embeddings;
+  }
+
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    // nomic-embed-text-v2 task prefix; truncate so one doc stays under the
+    // server's per-request token budget (long docs return 4xx/5xx).
+    const MAX_CHARS = 2000;
+    const SUB_BATCH = 8; // the embed server caps total tokens per request
+    const prefixed = texts.map((t) => {
+      const p =
+        t.startsWith('search_query: ') || t.startsWith('search_document: ')
+          ? t
+          : this.taskPrefix + t;
+      return p.length > MAX_CHARS ? p.slice(0, MAX_CHARS) : p;
+    });
+
+    const out: number[][] = [];
+    for (let i = 0; i < prefixed.length; i += SUB_BATCH) {
+      const chunk = prefixed.slice(i, i + SUB_BATCH);
+      try {
+        out.push(...(await this.postEmbeddings(chunk)));
+      } catch (err) {
+        // A single embed (e.g. a query) fails loudly so callers can fall back.
+        if (prefixed.length === 1) throw err;
+        // Multi-doc store: retry per item; a doc the server still refuses gets a
+        // zero vector so the run never aborts mid-batch.
+        for (const one of chunk) {
+          try {
+            out.push((await this.postEmbeddings([one]))[0]);
+          } catch {
+            out.push(new Array<number>(this.dimensions).fill(0));
+          }
+        }
+      }
+    }
+    return out;
   }
 }
 

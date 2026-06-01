@@ -39,16 +39,14 @@ def query_patterns(query: str, top_k: int = 2, min_score: float = 0.35) -> list[
     )
     patterns = []
     for hit in results.points:
-        patterns.append(
-            {
-                "id": hit.id,
-                "score": round(hit.score, 4),
-                "title": hit.payload.get("title", ""),
-                "abbreviation": hit.payload.get("abbreviation", ""),
-                "category": hit.payload.get("category", ""),
-                "body": hit.payload.get("body", ""),
-            }
-        )
+        patterns.append({
+            "id": hit.id,
+            "score": round(hit.score, 4),
+            "title": hit.payload.get("title", ""),
+            "abbreviation": hit.payload.get("abbreviation", ""),
+            "category": hit.payload.get("category", ""),
+            "body": hit.payload.get("body", ""),
+        })
     return patterns
 
 
@@ -88,9 +86,7 @@ def main():
             return
         for p in patterns:
             abbr = f" ({p['abbreviation']})" if p["abbreviation"] else ""
-            print(
-                f"[{p['score']:.3f}] P{p['id']}: {p['title']}{abbr} [{p['category']}]"
-            )
+            print(f"[{p['score']:.3f}] P{p['id']}: {p['title']}{abbr} [{p['category']}]")
             print(f"  {p['body'][:200]}...")
             print()
 

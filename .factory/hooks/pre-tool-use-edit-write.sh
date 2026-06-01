@@ -32,10 +32,17 @@ fi
 # (common for Write to a new file).
 ABS_PATH="$(realpath -m "$FILE_PATH" 2>/dev/null || printf '%s' "$FILE_PATH")"
 
-# Resolve repo root from current working directory. If cwd is not inside a
-# git repo at all, allow — there's no worktree policy to enforce.
+# Resolve repo root from current working directory. In a BARE repo (this
+# project's layout) `git rev-parse --show-toplevel` returns empty even from the
+# project root — so fall back to the root derived from the hook's own location
+# (<root>/.factory/hooks/) and FAIL CLOSED. A missing repo root must not silently
+# disable the worktree guard, which previously let root-dir edits through.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "$REPO_ROOT" ]; then
+  REPO_ROOT="$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd || true)"
+fi
+if [ -z "$REPO_ROOT" ]; then
+  # Genuinely cannot locate a project root — nothing to enforce against.
   exit 0
 fi
 

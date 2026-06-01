@@ -1,13 +1,63 @@
 # Changelog
 
-## v1.23.1 (2026-06-01)
+## v1.26.6 (2026-06-01)
 
 - fix(chat-template): tolerate mid-conversation system messages
-- feat(droids): add 17-droid expert stack + adaptive orchestrator (#195)
-- chore: bump version to 1.22.1 (#194)
-- fix(hooks): worktree-guard scope check — allow paths outside repo root (#193)
-- proxy: attractor breaker phase 2 — stronger escape signal (#192)
-- proxy: attractor-aware contamination breaker (#191)
+
+
+## v1.26.5 (2026-05-31)
+
+- fix(memory): real semantic embeddings for long-term store + recall
+
+
+## v1.26.4 (2026-05-31)
+
+- fix(policies): git-diff enforcers run against the working tree
+
+
+## v1.26.3 (2026-05-31)
+
+- fix(hooks): policy gate resolves DB + enforcers against the main checkout
+
+
+## v1.26.2 (2026-05-31)
+
+- fix(hooks): worktree guard fails closed when repo root is unresolvable
+
+
+## v1.26.1 (2026-05-31)
+
+- ci: move GitHub Actions to Node 24 runtime
+
+
+## v1.26.0 (2026-05-31)
+
+- feat(patterns): index .factory/patterns so P12/P35 are retrievable
+
+
+## v1.25.1 (2026-05-31)
+
+- fix(coordination): allow uap agent register --id for stable agent IDs
+
+
+## v1.25.0 (2026-05-31)
+
+- test+docs: gating-parity tests + PLATFORM_GATING.md + README
+- feat(hooks): add `uap hooks doctor` validator + install hooks in `uap setup`
+- feat(hooks): add Hermes Agent (NousResearch) as a gated platform
+- feat(hooks): wire policy gate into factory, omp, opencode, codex
+- fix(hooks): copy uap-policy-gate.sh on install + reconcile platform list
+- fix: address ultrareview findings on PR #196
+- fix(test): sanitize GIT_* env in expert-review-required enforcer test
+
+
+## v1.24.0 (2026-05-30)
+
+- docs: document expert-stack extensions (HALO, ideation, forward-design, review gate)
+- feat(policies): real expert-review hard gate + architecture-review doc
+- feat(ideate): open-collider divergent-ideation wrapper
+- feat(halo): trace exporter + harness-optimizer droid + uap harness CLI
+- feat(experts): forward-design droids + activate experts-MCP surface
 
 
 ## v1.23.0 (2026-05-26)

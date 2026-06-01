@@ -33,10 +33,22 @@ const lazy = {
   toolCalls: () => import('../cli/tool-calls.js').then((m) => m.toolCallsCommand),
   policy: () => import('../cli/policy.js').then((m) => m.registerPolicyCommands),
   expertRoute: () => import('../cli/expert-route.js').then((m) => m.expertRouteCommand),
+  harness: () => import('../cli/harness.js').then((m) => m.harnessCommand),
+  ideate: () => import('../cli/ideate.js').then((m) => m.ideateCommand),
 };
 
-// Type alias for hooks target (used in action handlers)
-type HooksTarget = 'claude' | 'factory' | 'cursor' | 'vscode' | 'opencode' | 'omp';
+// Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
+// in src/cli/hooks.ts — keep in sync.
+type HooksTarget =
+  | 'claude'
+  | 'factory'
+  | 'cursor'
+  | 'vscode'
+  | 'opencode'
+  | 'codex'
+  | 'forgecode'
+  | 'omp'
+  | 'hermes';
 
 // Read version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -367,6 +379,61 @@ program
     await cmd(description, options);
   });
 
+// HALO harness-optimization commands
+const harness = program
+  .command('harness')
+  .description('HALO harness optimization: analyze execution traces for systemic failures');
+harness
+  .command('analyze')
+  .description('Run the HALO engine over collected traces (wraps the `halo` CLI)')
+  .option('-t, --traces <file>', 'Trace JSONL file (default: $UAP_HALO_TRACE_PATH or .uap/halo/traces.jsonl)')
+  .option('-p, --prompt <prompt>', 'Question to ask HALO about the traces')
+  .option('--json', 'Request JSON output from HALO')
+  .action(async (options) => {
+    const cmd = await lazy.harness();
+    await cmd('analyze', options);
+  });
+harness
+  .command('status')
+  .description('Show HALO trace collection state (enabled, path, span count)')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.harness();
+    await cmd('status', options);
+  });
+
+// Open-collider divergent-ideation commands
+const ideate = program
+  .command('ideate')
+  .description('Divergent ideation (open-collider): generate non-trivial ideas for hard problems');
+ideate
+  .command('setup')
+  .description('Scaffold an ideation project under projects/<name>/')
+  .argument('<name>', 'Project name')
+  .option('--force', 'Overwrite an existing project')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (name: string, options) => {
+    const cmd = await lazy.ideate();
+    await cmd('setup', name, options);
+  });
+ideate
+  .command('run')
+  .description('Drive the brainstorm flow for a project (Skill mode is free)')
+  .argument('<name>', 'Project name')
+  .action(async (name: string, options) => {
+    const cmd = await lazy.ideate();
+    await cmd('run', name, options);
+  });
+ideate
+  .command('ideas')
+  .description('Print the curated ideas produced for a project')
+  .argument('<name>', 'Project name')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (name: string, options) => {
+    const cmd = await lazy.ideate();
+    await cmd('ideas', name, options);
+  });
+
 // Agent Coordination Commands
 program
   .command('coord')
@@ -401,6 +468,7 @@ program
     new Command('register')
       .description('Register a new agent (each agent works in isolated worktree)')
       .option('-n, --name <name>', 'Agent name (required)')
+      .option('-i, --id <id>', 'Stable agent ID (optional; generated if omitted). Use a known ID so other agents can address this one directly.')
       .option('-c, --capabilities <caps>', 'Comma-separated capabilities')
       .option('-w, --worktree <branch>', 'Git worktree branch this agent is using')
       .action(async (options) => {
@@ -1034,18 +1102,18 @@ program
 program
   .command('hooks')
   .description(
-    'Manage session hooks for Claude Code, Factory.AI, Cursor, VSCode, OpenCode, Oh-My-Pi'
+    'Manage session hooks for Claude Code, Factory.AI, Cursor, VSCode, OpenCode, Codex, ForgeCode, Oh-My-Pi, Hermes'
   )
   .addCommand(
     new Command('install')
       .description('Install UAP session hooks')
       .option(
         '-t, --target <target>',
-        'Target platform: claude, factory, cursor, vscode, opencode, omp (default: all)'
+        'Target platform: claude, factory, cursor, vscode, opencode, codex, forgecode, omp, hermes (default: all)'
       )
       .option(
         '-p, --platform <platform>',
-        'Alias for --target (claude, factory, cursor, vscode, opencode, omp)'
+        'Alias for --target (claude, factory, cursor, vscode, opencode, codex, forgecode, omp, hermes)'
       )
       .action((options) =>
         lazy
@@ -1062,17 +1130,32 @@ program
       .description('Show hooks installation status')
       .option(
         '-t, --target <target>',
-        'Target platform: claude, factory, cursor, vscode, opencode, omp (default: all)'
+        'Target platform: claude, factory, cursor, vscode, opencode, codex, forgecode, omp, hermes (default: all)'
       )
       .option(
         '-p, --platform <platform>',
-        'Alias for --target (claude, factory, cursor, vscode, opencode, omp)'
+        'Alias for --target (claude, factory, cursor, vscode, opencode, codex, forgecode, omp, hermes)'
       )
       .action((options) =>
         lazy
           .hooks()
           .then((m) =>
             m.hooksCommand('status', {
+              target: (options.target ?? options.platform) as HooksTarget | undefined,
+            })
+          )
+      )
+  )
+  .addCommand(
+    new Command('doctor')
+      .description('Audit policy-gate coverage across platforms (exit non-zero on gaps)')
+      .option('-t, --target <target>', 'Audit a single platform (default: all)')
+      .option('-p, --platform <platform>', 'Alias for --target')
+      .action((options) =>
+        lazy
+          .hooks()
+          .then((m) =>
+            m.hooksCommand('doctor', {
               target: (options.target ?? options.platform) as HooksTarget | undefined,
             })
           )

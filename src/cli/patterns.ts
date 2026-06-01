@@ -701,6 +701,55 @@ def scan_skills(project_root: Path, skills_dir: Optional[str]) -> list[dict]:
     return docs
 
 
+def scan_factory_patterns(project_root: Path) -> list[dict]:
+    """Index .factory/patterns/*.md as discrete patterns using index.json metadata.
+
+    Preserves the canonical 'PNN: Title' identity (e.g. 'P12: Output Existence
+    Verification') and the rich keyword set from index.json so the always-enforced
+    patterns (P12, P35, ...) are retrievable instead of being fragmented into
+    generic '## Rule'/'## Implementation' sub-sections.
+    """
+    import json
+
+    docs = []
+    patterns_dir = project_root / ".factory" / "patterns"
+    index_path = patterns_dir / "index.json"
+    if not index_path.is_file():
+        return docs
+    try:
+        meta = json.loads(index_path.read_text())
+    except Exception:
+        return docs
+
+    for entry in meta.get("patterns", []):
+        fname = entry.get("file")
+        if not fname:
+            continue
+        md_path = patterns_dir / fname
+        if not md_path.is_file():
+            continue
+        body = md_path.read_text().strip()
+        if len(body) < 20:
+            continue
+        if len(body) > MAX_BODY_CHARS:
+            body = body[:MAX_BODY_CHARS] + "\\n... (truncated)"
+        pid = entry.get("id", "")
+        title = entry.get("title", fname)
+        full_title = f"P{pid}: {title}" if pid != "" else title
+        keywords = [str(k).lower() for k in entry.get("keywords", [])]
+        keywords += [w.lower() for w in re.findall(r"[a-zA-Z]{3,}", title)]
+        docs.append({
+            "title": full_title,
+            "abbreviation": entry.get("abbreviation", ""),
+            "category": entry.get("category", "pattern"),
+            "source": "factory-pattern",
+            "keywords": list(set(keywords)),
+            "body": body,
+            "content_hash": hashlib.md5(body.encode()).hexdigest(),
+        })
+    return docs
+
+
 def deduplicate(docs: list[dict]) -> list[dict]:
     """Remove duplicate documents by content hash."""
     seen = set()
@@ -813,6 +862,12 @@ def main():
     if skills:
         print(f"  Scanned skills: {len(skills)} documents")
         all_docs.extend(skills)
+
+    # 5. Scan .factory/patterns (P12, P35, ... — file-based pattern router)
+    factory_patterns = scan_factory_patterns(PROJECT_ROOT)
+    if factory_patterns:
+        print(f"  Scanned .factory/patterns: {len(factory_patterns)} patterns")
+        all_docs.extend(factory_patterns)
 
     # Deduplicate
     all_docs = deduplicate(all_docs)

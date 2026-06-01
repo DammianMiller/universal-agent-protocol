@@ -12,6 +12,7 @@ export interface ExpertRouteOptions {
 }
 
 const PHASE_LABEL: Record<ChainPhase, string> = {
+  ideate: '💡 Ideate',
   plan: '📋 Plan',
   design: '🏗  Design',
   implement: '⚙️  Implement',

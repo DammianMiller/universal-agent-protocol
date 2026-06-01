@@ -1,9 +1,11 @@
 # Expert Droids Reference
 
-UAP ships with a 25-droid expert stack covering the full SDLC — strategy,
-design, build, review, release, and operations. Droids are markdown files
-under `.factory/droids/` discoverable by the capability router, the MCP
-router's `expert-consultation` category, and the `ExpertOrchestrator`.
+UAP ships with a 30-droid expert stack covering the full SDLC — ideation,
+strategy, design, build, review, release, and operations. Droids are markdown
+files under `.factory/droids/` discoverable by the capability router, the MCP
+router's `expert-consultation` category (virtual `experts.<name>` tools), and
+the `ExpertOrchestrator`. The forward-design / HALO / ideation extensions are
+documented in [docs/architecture/EXPERT_STACK.md](../architecture/EXPERT_STACK.md).
 
 ## Quick Look
 
@@ -15,7 +17,10 @@ uap expert-route "<task description>"   # ask for the recommended chain
 
 ---
 
-## Roster (25 droids)
+## Base Roster (25 droids)
+
+> The 5 forward-design / HALO / ideation droids that bring the total to 30 are
+> listed under [Forward-Design, HALO & Ideation Extensions](#forward-design-halo--ideation-extensions) below.
 
 ### Strategy (3)
 
@@ -175,17 +180,34 @@ for a canonical example.
 
 ---
 
+## Forward-Design, HALO & Ideation Extensions
+
+Added on top of the base roster (see
+[docs/architecture/EXPERT_STACK.md](../architecture/EXPERT_STACK.md)):
+
+| Droid | Phase | Role |
+|---|---|---|
+| `strategic-architect` | plan | North-star architecture, technology selection, multi-quarter evolution (forward-design counterpart to `architect-reviewer`) |
+| `tactical-architect` | design | Concrete component boundaries, interfaces, data shapes, pattern selection |
+| `implementation-planner` | design | Executable work breakdown: steps, file plan, test plan, rollback |
+| `ideation-expert` | ideate | open-collider divergent ideation (bisociation) feeding plan/design |
+| `harness-optimizer` | review | HALO loop — diagnoses systemic harness failures from execution traces |
+
 ## Policy Hooks
 
 | Policy | Level | Droid authority |
 |---|---|---|
-| `architecture-review-required` | REQUIRED | `architect-reviewer` |
+| `architecture-review` / `architecture-review-required` | REQUIRED | `architect-reviewer` |
+| `expert-review-required` | REQUIRED | parallel-expert-review reviewers |
 | `acceptance-criteria-defined` | RECOMMENDED | `product-strategist` |
 | `observability-required` | RECOMMENDED | `observability-engineer` |
 
 Architecture-review policy is enforced by
 `src/policies/enforcers/<uuid>_architecture_review.py` — blocks PR-ready
-operations on qualifying diffs unless an ADR or active waiver is present.
+operations on qualifying diffs unless an ADR or active waiver is present (backed
+by `architecture-review.md`). The `expert-review-required` policy
+(`expert_review_required.py`) blocks ship actions until a parallel review
+artifact `.uap/reviews/<branch>.json` covers HEAD.
 
 ---
 

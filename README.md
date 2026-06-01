@@ -15,7 +15,17 @@
 
 ## Recent Updates
 
-**New Feature:** `uap worktree prune` - Automatically clean up stale worktrees!
+**New:** Expert-stack extensions — forward-design droids (strategic/tactical
+architect, implementation-planner), activated `experts.<name>` MCP tools, HALO
+trace-based harness optimization, open-collider divergent ideation, and a real
+expert-review hard gate. See [docs/architecture/EXPERT_STACK.md](docs/architecture/EXPERT_STACK.md).
+
+```bash
+uap harness analyze -p "systemic failure modes?"   # HALO trace analysis
+uap ideate setup <name>                            # divergent ideation project
+```
+
+**`uap worktree prune`** - Automatically clean up stale worktrees:
 
 ```bash
 uap worktree prune --dry-run    # Preview
@@ -69,7 +79,7 @@ uap setup -p all
 | MCP Router         | 11 modules     | 2-tool meta-router + expert-consultation registry (98% token savings)            |
 | Models             | 10 modules     | Multi-model routing, planning, execution, validation, 13 model profiles          |
 | Patterns           | 23 patterns    | Battle-tested workflows from Terminal-Bench 2.0                                  |
-| Droids             | 25 experts     | Full SDLC expert stack: strategy, design, build, review, release, ops ([reference](docs/reference/EXPERT_DROIDS.md)) |
+| Droids             | 30 experts     | Full SDLC expert stack: strategy, design, build, review, release, ops ([reference](docs/reference/EXPERT_DROIDS.md)) |
 | Expert Orchestrator | 1 module      | Adaptive droid-chain selection across plan→design→implement→review→release       |
 | Skills             | 34 skills      | Reusable domain expertise (now includes `parallel-expert-review`)                |
 | Tasks              | 7 modules      | Full task lifecycle with dependencies, claims, JSONL sync                        |
@@ -80,7 +90,7 @@ uap setup -p all
 | LLM Optimization   | 5 tools        | Qwen3.5 tool call fixes, llama.cpp optimizer, LoRA training                      |
 | Local LLM Proxy    | 1 service      | Anthropic Messages API default; OpenAI Chat Completions retained as option       |
 | RTK                | 1 module       | 60-90% token savings on command outputs                                          |
-| Platforms          | 9 integrations | Claude, Factory, OpenCode, ForgeCode, VSCode, Beads, Codex, Pipeline, OMP        |
+| Platforms          | 10 integrations | Claude, Factory, OpenCode, ForgeCode, VSCode, Cursor, Codex, OMP, Hermes (+ MCP) |
 
 ---
 
@@ -353,19 +363,20 @@ Battle-tested patterns from Terminal-Bench 2.0, stored in `.factory/patterns/`.
 
 ## Droids & Skills
 
-### Expert Droids (25) — full SDLC coverage
+### Expert Droids (30) — full SDLC coverage
 
-See [docs/reference/EXPERT_DROIDS.md](docs/reference/EXPERT_DROIDS.md) for the complete roster, roles, and routing semantics.
+See [docs/reference/EXPERT_DROIDS.md](docs/reference/EXPERT_DROIDS.md) for the complete roster, and [docs/architecture/EXPERT_STACK.md](docs/architecture/EXPERT_STACK.md) for the forward-design / HALO / ideation extensions.
 
 | Phase | Droids |
 |---|---|
-| **Strategy** | product-strategist, architect-reviewer, api-designer |
+| **Ideation** | ideation-expert *(open-collider divergent ideation)* |
+| **Strategy & Design** | product-strategist, strategic-architect, tactical-architect, implementation-planner, architect-reviewer, api-designer |
 | **Build** | typescript-node-expert, javascript-pro, python-pro, rust-pro, go-pro, cli-design-expert, debug-expert, refactoring-specialist |
 | **Quality** | code-quality-guardian, code-quality-reviewer, security-auditor, security-code-reviewer |
 | **Performance & Cost** | performance-optimizer, performance-reviewer, cost-engineer |
 | **Testing & QA** | test-strategist, test-plan-writer, test-coverage-reviewer, qa-expert |
 | **Documentation** | documentation-expert, documentation-accuracy-reviewer |
-| **Operations** | release-manager, compliance-officer, incident-responder, observability-engineer, dependency-auditor |
+| **Operations** | release-manager, compliance-officer, incident-responder, observability-engineer, dependency-auditor, harness-optimizer *(HALO loop)* |
 | **Specialty** | ml-training-expert, sysadmin-expert, terminal-bench-optimizer, accessibility-tester |
 
 ```bash
@@ -375,7 +386,16 @@ uap expert-route "<task>"           # recommended droid chain for a task
 uap expert-route "<task>" --json    # machine-readable
 ```
 
-The capability router (`src/coordination/capability-router.ts`) maps tasks to droids by file pattern, task type, and keywords. The `ExpertOrchestrator` (`src/coordination/expert-orchestrator.ts`) composes the full plan→design→implement→review→release chain and persists per-droid success rates.
+The capability router (`src/coordination/capability-router.ts`) maps tasks to droids by file pattern, task type, and keywords. The `ExpertOrchestrator` (`src/coordination/expert-orchestrator.ts`) composes the full plan→design→implement→review→release chain and persists per-droid success rates. Droids are also reachable as virtual `experts.<name>` tools through the MCP router (`discover_tools` / `execute_tool`).
+
+**HALO harness optimization** and **open-collider ideation** ship as droids + CLIs:
+
+```bash
+uap harness status                  # HALO trace collection state
+uap harness analyze -p "failures?"  # analyze traces (needs: pip install halo-engine)
+uap ideate setup <name>             # scaffold a divergent-ideation project
+uap ideate ideas <name>             # read curated, non-trivial ideas
+```
 
 ### Skills (34)
 
@@ -435,6 +455,7 @@ uap worktree ensure --strict     # Verify inside worktree (CI gate)
 ### Supported Platforms
 
 ```bash
+uap hooks install             # all project platforms at once
 uap hooks install claude      # Claude Code
 uap hooks install factory     # Factory.AI
 uap hooks install cursor      # Cursor
@@ -443,13 +464,21 @@ uap hooks install opencode    # OpenCode
 uap hooks install forgecode   # ForgeCode
 uap hooks install codex       # Codex CLI
 uap hooks install omp         # Oh-My-Pi
+uap hooks install -t hermes   # Hermes Agent (NousResearch; global ~/.hermes)
+uap hooks doctor              # audit policy-gate coverage across platforms
 ```
+
+The DB-driven **policy gate** is installed and wired on every platform with a
+pre-tool-use mechanism (claude, vscode, cursor, factory, opencode, omp, hermes).
+**Codex** is MCP-gated (no native pre-tool hook); **ForgeCode** is advisory.
+`uap hooks doctor` reports true coverage — see
+[docs/architecture/PLATFORM_GATING.md](docs/architecture/PLATFORM_GATING.md).
 
 ---
 
 ## CLI Reference
 
-### 25 Top-Level Commands
+### 28 Top-Level Commands
 
 | Command                   | Description                                  |
 | ------------------------- | -------------------------------------------- |
@@ -468,10 +497,13 @@ uap hooks install omp         # Oh-My-Pi
 | `uap deploy <action>`     | Deploy batching (8 subcommands)              |
 | `uap task <action>`       | Task management (15 subcommands)             |
 | `uap droids <action>`     | Droid management (3 subcommands)             |
+| `uap expert-route <task>` | Recommend an expert droid chain for a task   |
+| `uap harness <action>`    | HALO trace analysis (analyze, status)        |
+| `uap ideate <action>`     | Open-collider ideation (setup, run, ideas)   |
 | `uap model <action>`      | Multi-model management (8 subcommands)       |
 | `uap policy <action>`     | Policy management (15 subcommands)           |
 | `uap mcp-router <action>` | MCP Router management (4 subcommands)        |
-| `uap hooks <action>`      | Hook installation (2 subcommands)            |
+| `uap hooks <action>`      | Hook install / status / doctor (3 subcommands) |
 | `uap tool-calls <action>` | Qwen3.5 tool call fixes (4 subcommands)      |
 | `uap rtk <action>`        | RTK token compression (3 subcommands)        |
 | `uap schema-diff`         | Detect breaking schema changes               |
@@ -479,7 +511,7 @@ uap hooks install omp         # Oh-My-Pi
 | `uap sync`                | Sync configuration between platforms         |
 | `uap uap-omp <action>`    | Oh-My-Pi integration (7 subcommands)         |
 
-**Total: 109 commands and subcommands.**
+**Total: 117 commands and subcommands.**
 
 ### Additional Binaries
 
