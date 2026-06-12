@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.34.0 (2026-06-12)
+
+- feat(delivery): protect spec transitive imports + runtime gate-integrity guard
+
+
 ## v1.33.0 (2026-06-12)
 
 - feat(delivery): protect pre-existing test files and gate configs from model writes
