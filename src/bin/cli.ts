@@ -403,6 +403,7 @@ program
   .option('--coordinate', 'Register the run with the coordination layer (`uap agent`): announce, heartbeat, overlap detection')
   .option('--deploy', 'On success, queue a commit of applied files into the deploy batcher (`uap deploy flush`)')
   .option('--optimize', 'Enable every convergence aid: exploration, critic, practices, escalation, ideation, HALO, coordination')
+  .option('--no-auto', 'Disable dynamic optimization (by default the task is classified and matching aids enable automatically)')
   .option('--dry-run', 'Show detected gates and plan without calling the model')
   .option('--json', 'Emit JSON result')
   .action(async (instructionParts: string[], options) => {

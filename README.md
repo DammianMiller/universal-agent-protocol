@@ -91,7 +91,7 @@ uap setup -p all
 | Browser            | 1 module       | Stealth web automation via CloakBrowser (Playwright drop-in)                     |
 | MCP Router         | 11 modules     | 2-tool meta-router + expert-consultation registry (98% token savings)            |
 | Models             | 10 modules     | Multi-model routing, planning, execution, validation, 13 model profiles          |
-| Delivery Harness   | 11 modules     | `uap deliver`: convergence loop, best-of-N explorer, critic, practice recall, escalation, ideation seeds, HALO tracing, coordination + deploy queueing |
+| Delivery Harness   | 12 modules     | `uap deliver`: convergence loop, best-of-N explorer, critic, practice recall, escalation, ideation seeds, HALO tracing, coordination + deploy queueing |
 | Patterns           | 23 patterns    | Battle-tested workflows from Terminal-Bench 2.0                                  |
 | Droids             | 30 experts     | Full SDLC expert stack: strategy, design, build, review, release, ops ([reference](docs/reference/EXPERT_DROIDS.md)) |
 | Expert Orchestrator | 1 module      | Adaptive droid-chain selection across plan→design→implement→review→release       |
@@ -373,8 +373,9 @@ the model's say-so.
 8. **Coordination** (`--coordinate`) — registers the run with the multi-agent coordination layer (`uap agent`): announces work on the project, warns about overlapping agents, heartbeats every turn, completes/deregisters on exit.
 9. **Deploy batching** (`--deploy`) — on success, queues a commit of the applied files into the deploy batcher; execute with `uap deploy flush`.
 10. **`--optimize`** — one switch for every convergence aid: 4 candidates/turn + critic + practices + escalation + ideation + HALO + coordination (deploy stays explicit).
+11. **Dynamic optimization (default)** — every instruction is classified for complexity (simple / moderate / complex); non-trivial requests automatically get the aids that improve outcomes (moderate → exploration ×3 + critic + practices + HALO + coordination; complex → the full `--optimize` stack). Any explicit aid flag, `--no-auto`, or `UAP_DELIVER_AUTO=0` disables auto mode. Deploy queueing is never auto-enabled.
 
-### Components (11 modules)
+### Components (12 modules)
 
 | Component         | File                                  | Purpose                                                            |
 | ----------------- | ------------------------------------- | ----------------------------------------------------------------- |
@@ -389,6 +390,7 @@ the model's say-so.
 | Ideation Seeder   | `src/delivery/ideation.ts`            | Divergent strategy seeds (generated or from curated ideas)         |
 | HALO Tracer       | `src/delivery/halo-trace.ts`          | Run/turn spans for `uap harness analyze`                           |
 | Run Coordinator   | `src/delivery/run-coordinator.ts`     | `uap agent` registration/heartbeat + `uap deploy` commit queueing  |
+| Auto-Optimizer    | `src/delivery/auto-optimizer.ts`      | Complexity-classified dynamic activation of convergence aids       |
 
 The model is reached through an OpenAI-compatible client
 (`src/models/openai-compat-client.ts`) — the local inference gateway,
@@ -436,6 +438,7 @@ uap deliver "..." --ideate --candidates 4 --deploy
 | `--coordinate`             | Register with `uap agent`: announce, heartbeat, overlap detection      |
 | `--deploy`                 | On success, queue a commit into the deploy batcher (`uap deploy`)      |
 | `--optimize`               | Enable every convergence aid (deploy excluded)                         |
+| `--no-auto`                | Disable dynamic optimization (auto-classified aids are the default)     |
 | `--endpoint <url>`         | Override the model endpoint (OpenAI-compatible `/v1`)                  |
 | `--dry-run` / `--json`     | Show the plan only / emit machine-readable result                     |
 

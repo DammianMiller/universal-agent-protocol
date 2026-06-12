@@ -15,6 +15,8 @@ import { createModelCritic } from '../delivery/critic.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import type { StrategySeed } from '../delivery/explorer.js';
 import { generateStrategySeeds, seedsFromIdeas } from '../delivery/ideation.js';
+import { planAutoOptimization } from '../delivery/auto-optimizer.js';
+import type { AutoPlan } from '../delivery/auto-optimizer.js';
 import { createHaloDeliveryTracer } from '../delivery/halo-trace.js';
 import { haloTracePath, isHaloTracingEnabled } from '../observability/halo-exporter.js';
 import { createRunCoordinator } from '../delivery/run-coordinator.js';
@@ -59,6 +61,9 @@ export interface DeliverOptions {
   deploy?: boolean;
   /** Enable every convergence aid (exploration, critic, practices, escalation, ideation, HALO, coordination) */
   optimize?: boolean;
+  /** commander sets this false when --no-auto is passed (default true):
+   * dynamic optimization — classify task complexity, enable matching aids */
+  auto?: boolean;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -89,6 +94,43 @@ function resolveModel(presetId: string, endpointOverride?: string): ModelConfig 
   return endpointOverride ? { ...preset, endpoint: endpointOverride } : preset;
 }
 
+/**
+ * True when the user steered any aid explicitly — auto mode must then stand
+ * down so flags remain the single source of truth for the run. Exported for
+ * tests; commander leaves unset booleans undefined, so a present value
+ * (true OR false) counts as explicit.
+ */
+export function hasExplicitAidFlags(options: DeliverOptions): boolean {
+  return (
+    options.candidates !== undefined ||
+    options.critic !== undefined ||
+    options.practices !== undefined ||
+    options.escalate !== undefined ||
+    options.escalateModel !== undefined ||
+    options.ideate !== undefined ||
+    options.ideateProject !== undefined ||
+    options.halo !== undefined ||
+    options.coordinate !== undefined ||
+    options.optimize !== undefined
+  );
+}
+
+/**
+ * Apply an auto plan onto the run options (exactly like --optimize does),
+ * filling only fields the user left unset. Exported for tests.
+ */
+export function applyAutoPlan(options: DeliverOptions, plan: AutoPlan): void {
+  if (plan.candidates !== undefined && options.candidates === undefined) {
+    options.candidates = String(plan.candidates);
+  }
+  if (plan.critic && options.critic === undefined) options.critic = true;
+  if (plan.practices && options.practices === undefined) options.practices = true;
+  if (plan.escalate && options.escalate === undefined) options.escalate = true;
+  if (plan.ideate && options.ideate === undefined) options.ideate = true;
+  if (plan.halo && options.halo === undefined) options.halo = true;
+  if (plan.coordinate && options.coordinate === undefined) options.coordinate = true;
+}
+
 export async function deliverCommand(instruction: string, options: DeliverOptions): Promise<void> {
   try {
     await runDeliver(instruction, options);
@@ -99,6 +141,20 @@ export async function deliverCommand(instruction: string, options: DeliverOption
 }
 
 async function runDeliver(instruction: string, options: DeliverOptions): Promise<void> {
+  // Dynamic optimization (default on): classify the instruction and enable
+  // the convergence aids that match its complexity, so non-trivial requests
+  // always get outcome-improving aids without flags. Stands down when the
+  // user steered any aid explicitly, passed --no-auto, or set
+  // UAP_DELIVER_AUTO=0. Deploy queueing is never auto-enabled.
+  let autoPlan: AutoPlan | undefined;
+  if (options.auto !== false && process.env.UAP_DELIVER_AUTO !== '0' && !hasExplicitAidFlags(options)) {
+    autoPlan = planAutoOptimization(instruction);
+    applyAutoPlan(options, autoPlan);
+    if (!options.dryRun) {
+      console.log(chalk.cyan(`⚙ auto-optimize: ${autoPlan.summary}`));
+    }
+  }
+
   // `--optimize` turns on every convergence aid at once. Deploy queueing is
   // deliberately excluded — committing applied files is a side effect the
   // user must opt into explicitly.
@@ -173,6 +229,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       practices: Boolean(options.practices),
       escalate: Boolean(options.escalate),
       escalateModel: options.escalate ? (options.escalateModel ?? process.env.UAP_ESCALATE_MODEL ?? null) : null,
+      auto: autoPlan ? autoPlan.summary : null,
       ideate: Boolean(options.ideate || options.ideateProject),
       ideateProject: options.ideateProject ?? null,
       halo: Boolean(options.halo),
@@ -184,6 +241,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(JSON.stringify(summary, null, 2));
     } else {
       console.log(chalk.bold('Delivery plan (dry run):'));
+      console.log(
+        `  Auto-optimize: ${summary.auto ?? 'off (explicit flags, --no-auto, or UAP_DELIVER_AUTO=0)'}`
+      );
       console.log(`  Project: ${projectRoot}`);
       console.log(`  Model preset: ${model.id}`);
       console.log(`  Max turns: ${summary.maxTurns}`);
@@ -230,6 +290,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const strong = resolveModel(escalateModelId, undefined);
     escalateModelName = strong.name;
     escalateExecutor = async (prompt) => (await client.complete(strong, prompt, { temperature })).content;
+  } else if (options.escalate) {
+    console.log(
+      chalk.dim('  escalation: no stronger model configured ($UAP_ESCALATE_MODEL) — cheap tiers only')
+    );
   }
 
   const escalation = options.escalate
@@ -335,8 +399,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       estimatedMinutes: (maxTurns ?? 5) * 3,
     });
     if (coordinator.agentId === null) {
-      // The user explicitly asked for coordination/deploy — degrading to a
-      // no-op must be loud, or they will believe the side effect happened.
+      // Coordination was requested (explicitly or via auto mode) — degrading
+      // to a no-op must be loud, or the user will believe the run was
+      // registered / the deploy was queued when it wasn't.
       console.log(
         chalk.yellow(
           '⚠ coordination layer unavailable — run not registered' +

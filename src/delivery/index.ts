@@ -96,6 +96,13 @@ export {
 } from './applier.js';
 
 export {
+  planAutoOptimization,
+  DELIVERY_COMPLEXITY_THRESHOLDS,
+  type AutoPlan,
+  type DeliveryComplexity,
+} from './auto-optimizer.js';
+
+export {
   generateStrategySeeds,
   parseSeedArray,
   seedsFromIdeas,

@@ -113,9 +113,15 @@ const dbPoolCleanupInterval = setInterval(() => {
 dbPoolCleanupInterval.unref();
 
 /**
- * Query complexity levels for adaptive retrieval
+ * Query complexity levels for adaptive retrieval. The scorer lives in the
+ * dependency-free utils module so non-memory consumers (delivery harness)
+ * can classify without loading this module's DB machinery; re-exported here
+ * for backward compatibility.
  */
-export type QueryComplexity = 'simple' | 'moderate' | 'complex';
+import { measureQueryComplexity } from '../utils/query-complexity.js';
+import type { QueryComplexity } from '../utils/query-complexity.js';
+export { measureQueryComplexity };
+export type { QueryComplexity };
 
 /**
  * Retrieval depth configuration
@@ -131,63 +137,6 @@ const DEFAULT_RETRIEVAL_DEPTHS: RetrievalDepthConfig = {
   moderate: { shortTerm: 6, sessionMem: 5, longTerm: 8, patterns: 5 },
   complex: { shortTerm: 10, sessionMem: 8, longTerm: 15, patterns: 8 },
 };
-
-/**
- * Measure query complexity to determine retrieval depth
- * Based on SimpleMem's adaptive query-aware retrieval
- */
-export function measureQueryComplexity(query: string): QueryComplexity {
-  let score = 0;
-
-  // Length-based scoring (lower thresholds)
-  const wordCount = query.split(/\s+/).length;
-  if (wordCount > 30) score += 1.5;
-  else if (wordCount > 12) score += 0.75;
-  else if (wordCount > 6) score += 0.25;
-
-  // Technical terms increase complexity
-  const techPatterns = [
-    /debug|fix|error|exception|bug/i,
-    /implement|refactor|optimize|build/i,
-    /configure|setup|install|deploy/i,
-    /security|vulnerability|cve|auth/i,
-    /performance|memory|cpu|latency/i,
-    /database|query|migration|schema/i,
-    /test|coverage|mock|spec/i,
-  ];
-
-  for (const pattern of techPatterns) {
-    if (pattern.test(query)) score += 0.4;
-  }
-
-  // Multiple entities/files increase complexity
-  const fileMatches = query.match(/[\w./\\-]+\.(ts|js|py|json|yaml|sh|sql)/gi);
-  if (fileMatches) {
-    score += fileMatches.length * 0.3;
-  }
-
-  // Multi-step tasks are complex
-  if (/and then|after that|followed by|step \d|first.*then|also|additionally/i.test(query)) {
-    score += 1;
-  }
-
-  // Questions about "why" or "how" are moderate
-  if (/^(why|how|what caused|explain)/i.test(query)) {
-    score += 0.5;
-  }
-
-  // Multiple actions in one query
-  const actionWords = query.match(
-    /\b(fix|implement|configure|debug|create|update|delete|add|remove)\b/gi
-  );
-  if (actionWords && actionWords.length > 1) {
-    score += actionWords.length * 0.3;
-  }
-
-  if (score >= 2) return 'complex';
-  if (score >= 1) return 'moderate';
-  return 'simple';
-}
 
 /**
  * Get retrieval limits based on query complexity
