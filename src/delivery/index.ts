@@ -118,8 +118,11 @@ export {
   snapshotProtection,
   expandSpecImports,
   resolveRelativeImport,
+  resolveAliasImport,
+  loadTsconfigAliases,
   isOraclePath,
   type ProtectionSnapshot,
+  type TsconfigAliases,
 } from './spec-imports.js';
 
 export {
