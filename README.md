@@ -15,6 +15,18 @@
 
 ## Recent Updates
 
+**New:** Delivery Harness (`uap deliver`) — a convergence loop that drives an
+underlying model through execute → apply → verify → feedback against the
+project's real completion gates until delivery is achieved. Best-of-N
+exploration, a structured critic, semantically-recalled best-practice cards,
+and a stagnation-driven escalation ladder turn weaker/local models into
+reliable closers. See [Delivery Harness](#delivery-harness).
+
+```bash
+uap deliver "add a parseDuration(str) helper returning seconds" \
+  --candidates 3 --critic --practices --escalate
+```
+
 **New:** Expert-stack extensions — forward-design droids (strategic/tactical
 architect, implementation-planner), activated `experts.<name>` MCP tools, HALO
 trace-based harness optimization, open-collider divergent ideation, and a real
@@ -55,6 +67,7 @@ uap setup -p all
 - [Browser Automation](#browser-automation)
 - [MCP Router](#mcp-router)
 - [Multi-Model Architecture](#multi-model-architecture)
+- [Delivery Harness](#delivery-harness)
 - [Pattern System](#pattern-system)
 - [Droids and Skills](#droids--skills)
 - [Task Management](#task-management)
@@ -78,6 +91,7 @@ uap setup -p all
 | Browser            | 1 module       | Stealth web automation via CloakBrowser (Playwright drop-in)                     |
 | MCP Router         | 11 modules     | 2-tool meta-router + expert-consultation registry (98% token savings)            |
 | Models             | 10 modules     | Multi-model routing, planning, execution, validation, 13 model profiles          |
+| Delivery Harness   | 8 modules      | `uap deliver`: convergence loop, best-of-N explorer, critic, practice recall, escalation |
 | Patterns           | 23 patterns    | Battle-tested workflows from Terminal-Bench 2.0                                  |
 | Droids             | 30 experts     | Full SDLC expert stack: strategy, design, build, review, release, ops ([reference](docs/reference/EXPERT_DROIDS.md)) |
 | Expert Orchestrator | 1 module      | Adaptive droid-chain selection across plan→design→implement→review→release       |
@@ -329,6 +343,88 @@ Each profile supports: `dynamic_temperature` (decay per retry), `tool_call_batch
 
 ---
 
+## Delivery Harness
+
+`uap deliver` forces an underlying model — including weaker or local models —
+to reach a **verified** outcome. Instead of trusting a single generation, it
+loops: the model emits whole files, the harness writes them, runs the
+project's real completion gates, and feeds the failures back until every gate
+passes or the turn budget is exhausted. "Done" is defined by the gates, not by
+the model's say-so.
+
+### Pipeline
+
+```
+            ┌─────────────────────────── loop until gates pass ───────────────────────────┐
+            │                                                                              │
+  instruction → build prompt → execute → apply files → verify (gates) → feedback ─────────┘
+   (+ practices)   (+ critique)   model     to tree     build/typecheck/test/lint
+                                    │                          │
+                       best-of-N candidates           pass → done ✓   fail → critic + escalate
+```
+
+1. **Convergence loop** — execute → apply → verify → feedback against real gates. A baseline check short-circuits when the tree is already green (no model call, no false success).
+2. **Best-of-N explorer** (`--candidates N`) — generates N candidates per turn under distinct strategy seeds, evaluates each on the same tree via apply→verify→rollback, and commits the winner; a model judge breaks ties.
+3. **Structured critic** (`--critic`) — turns a failed turn's gate output into a numbered, file-scoped repair plan via a gate-specific analyst persona.
+4. **Best-practice recall** (`--practices`) — injects provenance-safe practice cards learned from past successful deliveries, retrieved by semantic similarity (nomic-768 embeddings, keyword fallback).
+5. **Escalation ladder** (`--escalate`) — on stagnation, climbs cheap→expensive: widen exploration → enable the critic → switch to a stronger model.
+
+### Components (8 modules)
+
+| Component         | File                                  | Purpose                                                            |
+| ----------------- | ------------------------------------- | ----------------------------------------------------------------- |
+| Convergence Loop  | `src/delivery/convergence-loop.ts`    | Turn loop with pluggable seams + mutable run-state for escalation  |
+| Verifier Ladder   | `src/delivery/verifier-ladder.ts`     | Build/typecheck/test/lint gates with fail-fast and diagnostics     |
+| Applier           | `src/delivery/applier.ts`             | Writes ` ```file:path ` blocks; path-safe, rollback-capable        |
+| Explorer          | `src/delivery/explorer.ts`            | Best-of-N candidates with strategy seeds + rollback evaluation     |
+| Judge             | `src/delivery/judge.ts`               | Model tie-break among equally-scored candidates                    |
+| Critic            | `src/delivery/critic.ts`              | Gate-persona repair plans from failed turns                        |
+| Practice Store    | `src/delivery/practice.ts`            | Provenance-safe best-practice cards with semantic recall           |
+| Escalation        | `src/delivery/escalation.ts`          | Stagnation-driven ladder returning loop directives                 |
+
+The model is reached through an OpenAI-compatible client
+(`src/models/openai-compat-client.ts`) — the local inference gateway,
+llama.cpp, vLLM, Ollama, or any `/v1/chat/completions` endpoint.
+
+### Usage
+
+```bash
+# Single-shot loop against the current project's gates
+uap deliver "implement src/slugify.js exporting slugify(str)"
+
+# Full quality stack: 3 candidates/turn, critic, learned practices, escalation
+uap deliver "add retry-with-backoff to the HTTP client" \
+  --candidates 3 --critic --practices --escalate --escalate-model opus-4.6
+
+# Preview detected gates and plan without calling the model
+uap deliver "..." --dry-run
+
+# Scope to a subset of gates, cap turns, target another project
+uap deliver "..." --gates build,test --max-turns 8 --project-root ../service
+```
+
+### Key flags
+
+| Flag                       | Effect                                                                 |
+| -------------------------- | ---------------------------------------------------------------------- |
+| `-m, --model <preset>`     | Model preset (default `$UAP_DELIVER_MODEL` or `qwen35-a3b`)             |
+| `--max-turns <n>`          | Maximum execute→verify iterations (default 5)                          |
+| `--gates <ids>`            | Gate subset: `build,typecheck,test,lint`                               |
+| `--candidates <n>`         | Best-of-N exploration (2–8) per turn                                   |
+| `--critic`                 | Structured repair plans on failed turns                               |
+| `--practices`              | Inject and record best-practice cards                                  |
+| `--no-semantic`            | Use keyword (not embedding) practice recall                            |
+| `--escalate`               | Escalation ladder on stagnation                                        |
+| `--escalate-model <preset>`| Stronger model for the final escalation tier                          |
+| `--endpoint <url>`         | Override the model endpoint (OpenAI-compatible `/v1`)                  |
+| `--dry-run` / `--json`     | Show the plan only / emit machine-readable result                     |
+
+Model output is never executed — only written as files and checked by the
+gates. The applier refuses writes to executed config (`package.json`,
+lockfiles), `.git`/hooks/CI paths, and symlinks that escape the project root.
+
+---
+
 ## Pattern System (23 Patterns)
 
 Battle-tested patterns from Terminal-Bench 2.0, stored in `.factory/patterns/`.
@@ -478,7 +574,7 @@ pre-tool-use mechanism (claude, vscode, cursor, factory, opencode, omp, hermes).
 
 ## CLI Reference
 
-### 28 Top-Level Commands
+### 29 Top-Level Commands
 
 | Command                   | Description                                  |
 | ------------------------- | -------------------------------------------- |
@@ -498,6 +594,7 @@ pre-tool-use mechanism (claude, vscode, cursor, factory, opencode, omp, hermes).
 | `uap task <action>`       | Task management (15 subcommands)             |
 | `uap droids <action>`     | Droid management (3 subcommands)             |
 | `uap expert-route <task>` | Recommend an expert droid chain for a task   |
+| `uap deliver <task>`      | Convergence loop: iterate a model against real gates until delivery |
 | `uap harness <action>`    | HALO trace analysis (analyze, status)        |
 | `uap ideate <action>`     | Open-collider ideation (setup, run, ideas)   |
 | `uap model <action>`      | Multi-model management (8 subcommands)       |
@@ -511,7 +608,7 @@ pre-tool-use mechanism (claude, vscode, cursor, factory, opencode, omp, hermes).
 | `uap sync`                | Sync configuration between platforms         |
 | `uap uap-omp <action>`    | Oh-My-Pi integration (7 subcommands)         |
 
-**Total: 117 commands and subcommands.**
+**Total: 118 commands and subcommands.**
 
 ### Additional Binaries
 
