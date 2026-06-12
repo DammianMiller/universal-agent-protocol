@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.30.0 (2026-06-12)
+
+- feat(delivery): semantic recall for practice cards via embedding store
+
+
 ## v1.29.0 (2026-06-12)
 
 - feat(delivery): best-practice injection + escalation controller (Phases 4-5)
