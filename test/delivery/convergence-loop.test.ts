@@ -1,0 +1,229 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, readFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { ConvergenceLoop } from '../../src/delivery/convergence-loop.js';
+import type { GateRung, LadderResult } from '../../src/delivery/verifier-ladder.js';
+
+function stubRungs(): GateRung[] {
+  return [{ id: 'test', name: 'test', command: 'node', args: ['-e', ''], required: true, timeoutMs: 1000 }];
+}
+
+function ladderResult(score: number, passed: boolean, feedback = 'gate feedback'): LadderResult {
+  return {
+    passed,
+    score,
+    feedback,
+    results: [
+      {
+        id: 'test',
+        name: 'test',
+        passed,
+        skipped: false,
+        exitCode: passed ? 0 : 1,
+        durationMs: 1,
+        outputTail: passed ? '' : 'assertion failed',
+      },
+    ],
+  };
+}
+
+/** Output containing a valid file block so the default flow reaches verification. */
+const FILE_BLOCK_OUTPUT = '```file:src/fix.ts\nexport const fixed = true;\n```';
+
+describe('ConvergenceLoop', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-loop-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('converges when the ladder passes, applying files each turn', async () => {
+    let executorCalls = 0;
+    let ladderRuns = 0;
+    const scores = [0.25, 0.5, 1.0];
+
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 5, rungs: stubRungs(), baselineCheck: false },
+      async () => {
+        executorCalls++;
+        return FILE_BLOCK_OUTPUT;
+      },
+      {
+        ladderRunner: () => {
+          const score = scores[ladderRuns++];
+          return ladderResult(score, score === 1.0);
+        },
+      }
+    );
+
+    const result = await loop.deliver('make the tests pass');
+    expect(result.success).toBe(true);
+    expect(result.turns).toBe(3);
+    expect(executorCalls).toBe(3);
+    expect(result.history.map((h) => h.score)).toEqual([0.25, 0.5, 1.0]);
+    expect(result.bestScore).toBe(1.0);
+    expect(result.bestTurn).toBe(3);
+    expect(result.history[0].filesApplied).toEqual(['src/fix.ts']);
+    expect(readFileSync(join(dir, 'src/fix.ts'), 'utf-8')).toContain('fixed');
+  });
+
+  it('short-circuits with alreadyDelivered when the baseline is green', async () => {
+    let executorCalls = 0;
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, rungs: stubRungs() },
+      async () => {
+        executorCalls++;
+        return FILE_BLOCK_OUTPUT;
+      },
+      { ladderRunner: () => ladderResult(1.0, true) }
+    );
+
+    const result = await loop.deliver('anything');
+    expect(result.alreadyDelivered).toBe(true);
+    expect(result.success).toBe(true);
+    expect(result.turns).toBe(0);
+    expect(executorCalls).toBe(0);
+  });
+
+  it('stops at maxTurns when gates never pass and reports best iteration', async () => {
+    const scores = [0.2, 0.6, 0.4];
+    let run = 0;
+    const iterations: number[] = [];
+
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 3,
+        rungs: stubRungs(),
+        baselineCheck: false,
+        onIteration: (rec) => {
+          iterations.push(rec.turn);
+        },
+      },
+      async () => FILE_BLOCK_OUTPUT,
+      { ladderRunner: () => ladderResult(scores[run++], false, `feedback run ${run}`) }
+    );
+
+    const result = await loop.deliver('impossible task');
+    expect(result.success).toBe(false);
+    expect(result.turns).toBe(3);
+    expect(result.bestScore).toBe(0.6);
+    expect(result.bestTurn).toBe(2);
+    expect(iterations).toEqual([1, 2, 3]);
+    expect(result.finalFeedback).toContain('feedback run 3');
+  });
+
+  it('feeds gate feedback and prior output into subsequent prompts', async () => {
+    const prompts: string[] = [];
+    let run = 0;
+
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 2, rungs: stubRungs(), baselineCheck: false },
+      async (prompt) => {
+        prompts.push(prompt);
+        return FILE_BLOCK_OUTPUT;
+      },
+      { ladderRunner: () => ladderResult(0.5, run++ > 0, 'TypeError: x is not a function') }
+    );
+
+    const result = await loop.deliver('fix the bug');
+    expect(result.success).toBe(true);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain('TASK: fix the bug');
+    expect(prompts[0]).toContain('file:relative/path');
+    expect(prompts[1]).toContain('TypeError: x is not a function');
+    expect(prompts[1]).toContain('src/fix.ts');
+    expect(prompts[1]).toContain('Your previous output');
+  });
+
+  it('skips verification when no file blocks are applied, telling the model the format', async () => {
+    let ladderRuns = 0;
+    const prompts: string[] = [];
+
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 2, rungs: stubRungs(), baselineCheck: false },
+      async (prompt) => {
+        prompts.push(prompt);
+        return prompts.length === 1 ? 'just prose, no files' : FILE_BLOCK_OUTPUT;
+      },
+      {
+        ladderRunner: () => {
+          ladderRuns++;
+          return ladderResult(1.0, true);
+        },
+      }
+    );
+
+    const result = await loop.deliver('do the thing');
+    expect(result.success).toBe(true);
+    // Turn 1 applied nothing → no ladder run; only turn 2 verified
+    expect(ladderRuns).toBe(1);
+    expect(result.history[0].applyError).toContain('No file blocks');
+    expect(result.history[0].score).toBe(0);
+    expect(prompts[1]).toContain('could not be applied');
+  });
+
+  it('records executor errors with real turn numbers and recovers', async () => {
+    let calls = 0;
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 3, rungs: stubRungs(), baselineCheck: false },
+      async () => {
+        calls++;
+        if (calls === 1) throw new Error('inference timeout');
+        return FILE_BLOCK_OUTPUT;
+      },
+      { ladderRunner: () => ladderResult(1.0, true) }
+    );
+
+    const result = await loop.deliver('do the thing');
+    expect(result.success).toBe(true);
+    expect(result.turns).toBe(2);
+    expect(result.history).toHaveLength(2);
+    expect(result.history[0].turn).toBe(1);
+    expect(result.history[0].executorError).toBe('inference timeout');
+    expect(result.history[1].turn).toBe(2);
+    expect(result.bestTurn).toBe(2);
+  });
+
+  it('honors a stop directive from onIteration', async () => {
+    let calls = 0;
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 5,
+        rungs: stubRungs(),
+        baselineCheck: false,
+        onIteration: () => 'stop',
+      },
+      async () => {
+        calls++;
+        return FILE_BLOCK_OUTPUT;
+      },
+      { ladderRunner: () => ladderResult(0.5, false) }
+    );
+
+    const result = await loop.deliver('task');
+    expect(calls).toBe(1);
+    expect(result.turns).toBe(1);
+    expect(result.success).toBe(false);
+  });
+
+  it('throws on empty rungs and invalid maxTurns instead of vacuous success', async () => {
+    const loop = new ConvergenceLoop(
+      { projectRoot: join(dir, 'no-such-project'), rungs: [] },
+      async () => FILE_BLOCK_OUTPUT
+    );
+    await expect(loop.deliver('task')).rejects.toThrow(/No verifiable gates/);
+
+    const badTurns = new ConvergenceLoop(
+      { projectRoot: dir, rungs: stubRungs(), maxTurns: 0 },
+      async () => FILE_BLOCK_OUTPUT
+    );
+    await expect(badTurns.deliver('task')).rejects.toThrow(/maxTurns/);
+  });
+});

@@ -35,6 +35,7 @@ const lazy = {
   expertRoute: () => import('../cli/expert-route.js').then((m) => m.expertRouteCommand),
   harness: () => import('../cli/harness.js').then((m) => m.harnessCommand),
   ideate: () => import('../cli/ideate.js').then((m) => m.ideateCommand),
+  deliver: () => import('../cli/deliver.js').then((m) => m.deliverCommand),
 };
 
 // Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
@@ -377,6 +378,24 @@ program
     const description = descriptionParts.join(' ');
     const cmd = await lazy.expertRoute();
     await cmd(description, options);
+  });
+
+// Fable-parity delivery loop
+program
+  .command('deliver')
+  .description('Convergence loop: iterate a model against real completion gates until delivery')
+  .argument('<instruction...>', 'Task instruction for the model')
+  .option('--max-turns <n>', 'Maximum execute→verify iterations', '5')
+  .option('-m, --model <preset>', 'Model preset id (default: $UAP_DELIVER_MODEL or qwen35-a3b)')
+  .option('--project-root <path>', 'Project whose gates define delivery (default: cwd)')
+  .option('--endpoint <url>', 'Override the model endpoint (OpenAI-compatible /v1)')
+  .option('--temperature <t>', 'Sampling temperature (default: execution-profile value)')
+  .option('--gates <ids>', 'Comma-separated gate subset (build,typecheck,test,lint)')
+  .option('--dry-run', 'Show detected gates and plan without calling the model')
+  .option('--json', 'Emit JSON result')
+  .action(async (instructionParts: string[], options) => {
+    const cmd = await lazy.deliver();
+    await cmd(instructionParts.join(' '), options);
   });
 
 // HALO harness-optimization commands

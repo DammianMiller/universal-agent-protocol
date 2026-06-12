@@ -1,0 +1,157 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
+  detectRungs,
+  runLadder,
+  runRung,
+  formatFeedback,
+  type GateRung,
+  type RungResult,
+} from '../../src/delivery/verifier-ladder.js';
+
+function rung(id: string, command: string, args: string[], required = true): GateRung {
+  return { id, name: id, command, args, required, timeoutMs: 30_000 };
+}
+
+describe('verifier-ladder', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-ladder-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  describe('detectRungs', () => {
+    it('detects build/test/lint from package.json scripts', () => {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ scripts: { build: 'tsc', test: 'vitest run', lint: 'eslint .' } })
+      );
+
+      const rungs = detectRungs(dir);
+      expect(rungs.map((r) => r.id)).toEqual(['build', 'test', 'lint']);
+      expect(rungs.find((r) => r.id === 'lint')?.required).toBe(false);
+      expect(rungs.find((r) => r.id === 'build')?.required).toBe(true);
+    });
+
+    it('only adds typecheck when a local tsc binary exists (no npx registry fetch)', () => {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }));
+      writeFileSync(join(dir, 'tsconfig.json'), '{}');
+      // No node_modules/.bin/tsc → no typecheck rung
+      expect(detectRungs(dir).map((r) => r.id)).toEqual(['test']);
+    });
+
+    it('returns no rungs when package.json is missing or unparseable', () => {
+      expect(detectRungs(dir)).toEqual([]);
+      writeFileSync(join(dir, 'package.json'), 'not json');
+      expect(detectRungs(dir)).toEqual([]);
+    });
+  });
+
+  describe('runRung', () => {
+    it('reports a spawn-error reason with diagnostic when the binary is missing', () => {
+      const result = runRung(rung('ghost', 'definitely-not-a-real-binary-xyz', []), dir);
+      expect(result.passed).toBe(false);
+      expect(result.failureReason).toBe('spawn-error');
+      expect(result.outputTail).toContain('Gate could not run');
+    });
+
+    it('reports a timeout reason with the configured duration', () => {
+      const slow: GateRung = {
+        id: 'slow',
+        name: 'slow',
+        command: 'node',
+        args: ['-e', 'setTimeout(() => {}, 60000)'],
+        required: true,
+        timeoutMs: 500,
+      };
+      const result = runRung(slow, dir);
+      expect(result.passed).toBe(false);
+      expect(result.failureReason).toBe('timeout');
+      expect(result.outputTail).toContain('timed out after 500ms');
+    });
+
+    it('strips secret-bearing env vars from gate commands', () => {
+      process.env.UAP_TEST_FAKE_API_KEY = 'sk-secret';
+      try {
+        const probe = rung('env', 'node', [
+          '-e',
+          'process.exit(process.env.UAP_TEST_FAKE_API_KEY ? 1 : 0)',
+        ]);
+        const result = runRung(probe, dir);
+        expect(result.passed).toBe(true);
+      } finally {
+        delete process.env.UAP_TEST_FAKE_API_KEY;
+      }
+    });
+  });
+
+  describe('runLadder', () => {
+    it('passes with score 1 when every rung exits 0', () => {
+      const result = runLadder(
+        [rung('a', 'node', ['-e', '']), rung('b', 'node', ['-e', ''])],
+        dir
+      );
+      expect(result.passed).toBe(true);
+      expect(result.score).toBe(1);
+      expect(result.results.every((r) => r.passed)).toBe(true);
+    });
+
+    it('fail-fast skips later rungs after a required failure and scores partially', () => {
+      const result = runLadder(
+        [
+          rung('ok', 'node', ['-e', '']),
+          rung('bad', 'node', ['-e', 'process.exit(1)']),
+          rung('after', 'node', ['-e', '']),
+        ],
+        dir
+      );
+      expect(result.passed).toBe(false);
+      expect(result.score).toBeCloseTo(1 / 3);
+      expect(result.results[1].passed).toBe(false);
+      expect(result.results[2].skipped).toBe(true);
+      expect(result.feedback).toContain('SKIPPED');
+    });
+
+    it('optional rung failure neither stops the ladder nor blocks passing', () => {
+      const result = runLadder(
+        [rung('lint', 'node', ['-e', 'process.exit(1)'], false), rung('test', 'node', ['-e', ''])],
+        dir
+      );
+      // All required rungs pass → delivered, even though optional lint failed
+      expect(result.passed).toBe(true);
+      expect(result.results[1].skipped).toBe(false);
+      expect(result.score).toBeCloseTo(1 / 2);
+      expect(result.feedback).toContain('(optional)');
+    });
+
+    it('includes truncated failing output in feedback', () => {
+      const result = runLadder(
+        [rung('fail', 'node', ['-e', 'console.error("boom: missing semicolon"); process.exit(1)'])],
+        dir,
+        { outputTailChars: 200 }
+      );
+      expect(result.passed).toBe(false);
+      expect(result.feedback).toContain('boom: missing semicolon');
+      expect(result.feedback).toContain('Fix this gate first');
+    });
+  });
+
+  describe('formatFeedback', () => {
+    it('details the first failing required rung, not optional failures', () => {
+      const rungs = [rung('lint', 'x', [], false), rung('test', 'x', [])];
+      const results: RungResult[] = [
+        { id: 'lint', name: 'lint', passed: false, skipped: false, exitCode: 1, durationMs: 1, outputTail: 'lint noise' },
+        { id: 'test', name: 'test', passed: false, skipped: false, exitCode: 1, durationMs: 1, outputTail: 'real failure' },
+      ];
+      const feedback = formatFeedback(results, rungs);
+      expect(feedback).toContain('real failure');
+      expect(feedback).not.toContain('lint noise');
+    });
+  });
+});
