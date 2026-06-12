@@ -13,12 +13,35 @@ export {
   type ConvergenceConfig,
   type DeliveryResult,
   type ExplorerSettings,
+  type IterationDirective,
   type IterationRecord,
   type LoopExecutor,
   type LadderRunner,
+  type OnIteration,
+  type PracticeProvider,
   type PromptBuilder,
   type PromptContext,
 } from './convergence-loop.js';
+
+export {
+  createEscalationController,
+  defaultEscalationLadder,
+  type DefaultLadderOptions,
+  type EscalationConfig,
+  type EscalationController,
+  type EscalationTier,
+} from './escalation.js';
+
+export {
+  InMemoryPracticeStore,
+  FilePracticeStore,
+  extractKeywords,
+  distillPractice,
+  defaultPracticePath,
+  type PracticeCard,
+  type PracticeInput,
+  type PracticeStore,
+} from './practice.js';
 
 export {
   exploreAndCommit,

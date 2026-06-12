@@ -47,6 +47,8 @@ export interface PromptContext {
   previousFiles?: string[];
   /** Structured repair steps from the critic (Phase 3) */
   critique?: string[];
+  /** Best-practice guidance retrieved for this task (Phase 4) */
+  practices?: string[];
 }
 
 export type PromptBuilder = (context: PromptContext) => string;
@@ -105,6 +107,31 @@ export interface ExplorerSettings {
   judge?: Judge;
 }
 
+/**
+ * Directive returned from onIteration to steer the loop (Phase 5).
+ * All fields are optional; an empty object (or void) means "continue".
+ * 'stop' (string) remains supported for backward compatibility.
+ */
+export interface IterationDirective {
+  /** Abort the loop after this turn */
+  stop?: boolean;
+  /** Raise the turn budget to this absolute value (ignored if ≤ current) */
+  raiseMaxTurns?: number;
+  /** Enable/resize best-of-N exploration starting next turn */
+  setCandidates?: number;
+  /** Turn the structured critic on starting next turn */
+  enableCritic?: boolean;
+  /** Swap the model/executor (model escalation) */
+  switchExecutor?: LoopExecutor;
+  /** Human-readable reason, surfaced in logs and the iteration record */
+  note?: string;
+}
+
+export type OnIteration = (record: IterationRecord) => void | 'stop' | IterationDirective;
+
+/** Retrieve best-practice guidance for a task (Phase 4). */
+export type PracticeProvider = (instruction: string) => string[] | Promise<string[]>;
+
 export interface ConvergenceConfig {
   /** Maximum execute→apply→verify iterations (default 5) */
   maxTurns?: number;
@@ -127,11 +154,17 @@ export interface ConvergenceConfig {
   explorer?: ExplorerSettings;
   /** Structured critique of failed turns (Phase 3) */
   critic?: Critic;
+  /** Best-practice guidance injected into prompts (Phase 4) */
+  practiceProvider?: PracticeProvider;
+  /** Factory the escalation controller uses to build a critic when it
+   * enables one mid-run (Phase 5). Receives the current executor so the
+   * critic uses the same (possibly escalated) model as generation. */
+  criticFactory?: (executor: LoopExecutor) => Critic;
   /**
-   * Called after every iteration. Return 'stop' to abort the loop early
-   * (Phase 5 escalation controllers hook in here).
+   * Called after every iteration. Return 'stop' or an IterationDirective to
+   * steer the loop (Phase 5 escalation controllers hook in here).
    */
-  onIteration?: (record: IterationRecord) => void | 'stop';
+  onIteration?: OnIteration;
 }
 
 const DEFAULT_MAX_TURNS = 5;
@@ -154,13 +187,28 @@ function truncateHead(text: string, maxChars: number): string {
   return `${text.slice(0, maxChars)}\n…(truncated)…`;
 }
 
+/** Coerce the onIteration return (void | 'stop' | directive) to a directive. */
+function normalizeDirective(value: void | 'stop' | IterationDirective): IterationDirective {
+  if (value === 'stop') return { stop: true };
+  if (!value) return {};
+  return value;
+}
+
+/** Render retrieved best-practice cards as a prompt section. */
+function practiceSection(practices?: string[]): string[] {
+  if (!practices || practices.length === 0) return [];
+  const lines = ['', 'PROVEN PRACTICES for tasks like this — follow them:'];
+  practices.forEach((p, i) => lines.push(`${i + 1}. ${p}`));
+  return lines;
+}
+
 /** Default prompt strategy: lean contract + structured retry context. */
 export const defaultPromptBuilder: PromptBuilder = (ctx) => {
   if (ctx.turn === 1) {
-    return [OUTPUT_CONTRACT, '', `TASK: ${ctx.instruction}`].join('\n');
+    return [OUTPUT_CONTRACT, ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`].join('\n');
   }
 
-  const sections = [OUTPUT_CONTRACT, '', `TASK: ${ctx.instruction}`, ''];
+  const sections = [OUTPUT_CONTRACT, ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ''];
   sections.push(`PREVIOUS ATTEMPT (turn ${ctx.turn - 1}):`);
 
   if (ctx.previousFiles && ctx.previousFiles.length > 0) {
@@ -228,11 +276,15 @@ export class ConvergenceLoop {
   }
 
   /** Single-candidate turn: execute → apply → verify. */
-  private async runSingleTurn(prompt: string, rungs: GateRung[]): Promise<TurnOutcome> {
+  private async runSingleTurn(
+    prompt: string,
+    rungs: GateRung[],
+    executor: LoopExecutor
+  ): Promise<TurnOutcome> {
     let output = '';
     let executorError: string | undefined;
     try {
-      output = await this.executor(prompt);
+      output = await executor(prompt);
     } catch (err) {
       executorError = err instanceof Error ? err.message : String(err);
     }
@@ -266,9 +318,10 @@ export class ConvergenceLoop {
     instruction: string,
     prompt: string,
     rungs: GateRung[],
-    settings: ExplorerSettings
+    settings: ExplorerSettings,
+    executor: LoopExecutor
   ): Promise<TurnOutcome> {
-    const exploration = await exploreAndCommit(instruction, prompt, this.executor, {
+    const exploration = await exploreAndCommit(instruction, prompt, executor, {
       candidates: settings.candidates,
       seeds: settings.seeds,
       judge: settings.judge,
@@ -340,7 +393,6 @@ export class ConvergenceLoop {
    */
   async deliver(instruction: string): Promise<DeliveryResult> {
     const start = Date.now();
-    const maxTurns = this.config.maxTurns ?? DEFAULT_MAX_TURNS;
     const rungs =
       this.config.rungs && this.config.rungs.length > 0
         ? this.config.rungs
@@ -351,9 +403,16 @@ export class ConvergenceLoop {
         `No verifiable gates for ${this.config.projectRoot} — pass explicit rungs or add package.json scripts.`
       );
     }
+
+    // Mutable run-state — a Phase 5 escalation directive can raise the budget,
+    // switch the model, enable exploration, or turn on the critic mid-run.
+    let maxTurns = this.config.maxTurns ?? DEFAULT_MAX_TURNS;
     if (!Number.isInteger(maxTurns) || maxTurns < 1) {
       throw new Error(`maxTurns must be a positive integer, got ${String(this.config.maxTurns)}`);
     }
+    let executor = this.executor;
+    let explorerSettings = this.config.explorer;
+    let critic = this.config.critic;
 
     const history: IterationRecord[] = [];
     const previousOutputChars = this.config.previousOutputChars ?? DEFAULT_PREVIOUS_OUTPUT_CHARS;
@@ -376,18 +435,30 @@ export class ConvergenceLoop {
       }
     }
 
+    // Phase 4: retrieve best-practice cards once — they are task-level and
+    // stable across turns. Fail-soft so retrieval never blocks delivery.
+    let practices: string[] | undefined;
+    if (this.config.practiceProvider) {
+      try {
+        const fetched = await this.config.practiceProvider(instruction);
+        practices = fetched.length > 0 ? fetched : undefined;
+      } catch {
+        practices = undefined;
+      }
+    }
+
     let success = false;
     let finalOutput = '';
     let finalFeedback = '';
-    let prevContext: Omit<PromptContext, 'instruction' | 'turn'> = {};
+    let prevContext: Omit<PromptContext, 'instruction' | 'turn'> = { practices };
 
     for (let turn = 1; turn <= maxTurns; turn++) {
       const turnStart = Date.now();
       const prompt = this.promptBuilder({ instruction, turn, ...prevContext });
 
-      const outcome = this.config.explorer
-        ? await this.runExplorerTurn(instruction, prompt, rungs, this.config.explorer)
-        : await this.runSingleTurn(prompt, rungs);
+      const outcome = explorerSettings
+        ? await this.runExplorerTurn(instruction, prompt, rungs, explorerSettings, executor)
+        : await this.runSingleTurn(prompt, rungs, executor);
 
       finalOutput = outcome.output || finalOutput;
       if (outcome.ladder) {
@@ -408,23 +479,40 @@ export class ConvergenceLoop {
         durationMs: Date.now() - turnStart,
       };
       history.push(record);
-      const directive = this.config.onIteration?.(record);
 
       if (outcome.ladder?.passed) {
         success = true;
+        this.config.onIteration?.(record);
         break;
       }
-      if (directive === 'stop') {
+
+      const directive = normalizeDirective(this.config.onIteration?.(record));
+      if (directive.stop) {
         break;
+      }
+
+      // Apply escalation directives to the run-state for subsequent turns
+      if (directive.switchExecutor) {
+        executor = directive.switchExecutor;
+      }
+      if (typeof directive.setCandidates === 'number') {
+        explorerSettings = { ...(explorerSettings ?? {}), candidates: directive.setCandidates };
+      }
+      if (directive.enableCritic && !critic && this.config.criticFactory) {
+        // Bind to the current (possibly just-switched) executor, not the base.
+        critic = this.config.criticFactory(executor);
+      }
+      if (typeof directive.raiseMaxTurns === 'number' && directive.raiseMaxTurns > maxTurns) {
+        maxTurns = directive.raiseMaxTurns;
       }
 
       // Phase 3: structured critique of the failed turn (fail-soft). Skipped
       // on the last turn — prevContext is never consumed, so it would waste
       // a model call.
       let critique: string[] | undefined;
-      if (this.config.critic && !outcome.executorError && turn < maxTurns) {
+      if (critic && !outcome.executorError && turn < maxTurns) {
         try {
-          const result = await this.config.critic({
+          const result = await critic({
             instruction,
             record,
             feedback: outcome.ladder?.feedback ?? outcome.applyError ?? '',
@@ -446,6 +534,7 @@ export class ConvergenceLoop {
         applyError: outcome.applyError,
         previousFiles: outcome.filesApplied.length > 0 ? outcome.filesApplied : undefined,
         critique,
+        practices,
       };
     }
 

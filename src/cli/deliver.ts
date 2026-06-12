@@ -9,9 +9,12 @@
 import chalk from 'chalk';
 import { resolve } from 'path';
 import { ConvergenceLoop } from '../delivery/convergence-loop.js';
+import type { LoopExecutor, IterationRecord } from '../delivery/convergence-loop.js';
 import { createModelJudge } from '../delivery/judge.js';
 import { createModelCritic } from '../delivery/critic.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
+import { createEscalationController, defaultEscalationLadder } from '../delivery/escalation.js';
+import { FilePracticeStore, defaultPracticePath, extractKeywords } from '../delivery/practice.js';
 import { detectRungs } from '../delivery/verifier-ladder.js';
 import { OpenAICompatClient } from '../models/openai-compat-client.js';
 import { ModelPresets } from '../models/types.js';
@@ -27,6 +30,9 @@ export interface DeliverOptions {
   gates?: string;
   candidates?: string;
   critic?: boolean;
+  practices?: boolean;
+  escalate?: boolean;
+  escalateModel?: string;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -119,6 +125,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       maxTurns: maxTurns ?? 5,
       candidatesPerTurn: candidates ?? 1,
       critic: Boolean(options.critic),
+      practices: Boolean(options.practices),
+      escalate: Boolean(options.escalate),
+      escalateModel: options.escalate ? (options.escalateModel ?? process.env.UAP_ESCALATE_MODEL ?? null) : null,
       gates: rungs.map((r) => ({ id: r.id, name: r.name, required: r.required })),
     };
     if (options.json) {
@@ -130,6 +139,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(`  Max turns: ${summary.maxTurns}`);
       console.log(`  Candidates/turn: ${summary.candidatesPerTurn}${candidates ? '' : ' (single-shot)'}`);
       console.log(`  Critic: ${summary.critic ? 'on' : 'off'}`);
+      console.log(`  Practices: ${summary.practices ? 'on' : 'off'}`);
+      console.log(`  Escalation: ${summary.escalate ? `on${summary.escalateModel ? ` (→ ${summary.escalateModel})` : ''}` : 'off'}`);
       console.log('  Gates:');
       for (const r of rungs) {
         console.log(`    - ${r.name}${r.required ? '' : chalk.dim(' (optional)')}`);
@@ -147,14 +158,61 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   }
 
   const client = new OpenAICompatClient();
-  const executor = async (prompt: string): Promise<string> => {
+  const executor: LoopExecutor = async (prompt) => {
     const result = await client.complete(model, prompt, { temperature });
     return result.content;
+  };
+
+  // Phase 5: escalation ladder. Cheap strategies first (widen exploration →
+  // enable critic) then, if a stronger model is configured, switch to it.
+  const escalateModelId = options.escalateModel ?? process.env.UAP_ESCALATE_MODEL;
+  let escalateExecutor: LoopExecutor | undefined;
+  let escalateModelName: string | undefined;
+  if (options.escalate && escalateModelId) {
+    const strong = resolveModel(escalateModelId, undefined);
+    escalateModelName = strong.name;
+    escalateExecutor = async (prompt) => (await client.complete(strong, prompt, { temperature })).content;
+  }
+
+  const escalation = options.escalate
+    ? createEscalationController({
+        tiers: defaultEscalationLadder({
+          candidates,
+          maxTurns: maxTurns ?? 5,
+          escalateExecutor,
+          escalateModelName,
+        }),
+        onEscalate: (tier, turn) => console.log(chalk.magenta(`  ↑ turn ${turn}: ${tier.label}`)),
+      })
+    : undefined;
+
+  // Phase 4: learned best-practice cards for similar tasks.
+  const practiceStore = options.practices ? new FilePracticeStore(defaultPracticePath(projectRoot)) : undefined;
+
+  const printProgress = (record: IterationRecord): void => {
+    const pct = Math.round(record.score * 100);
+    const status = record.executorError
+      ? chalk.red('model error')
+      : record.applyError && record.filesApplied.length === 0
+        ? chalk.yellow('no files applied')
+        : record.passed
+          ? chalk.green('PASS')
+          : chalk.yellow(`${pct}% of gates`);
+    const strategy = record.strategy ? chalk.dim(` [${record.strategy}]`) : '';
+    console.log(`  Turn ${record.turn}: ${status}${strategy} (${Math.round(record.durationMs / 1000)}s)`);
+    if (record.candidates) {
+      const summary = record.candidates
+        .map((c) => `${c.id}:${c.error ? 'err' : `${Math.round(c.score * 100)}%`}`)
+        .join(' ');
+      console.log(chalk.dim(`    candidates: ${summary}`));
+    }
   };
 
   const modeNotes = [
     candidates ? `${candidates} candidates/turn` : null,
     options.critic ? 'critic on' : null,
+    options.practices ? 'practices on' : null,
+    options.escalate ? 'escalation on' : null,
   ]
     .filter(Boolean)
     .join(', ');
@@ -171,29 +229,31 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       rungs,
       explorer: candidates ? { candidates, judge: createModelJudge(executor) } : undefined,
       critic: options.critic ? createModelCritic(executor) : undefined,
+      criticFactory: (ex) => createModelCritic(ex),
+      practiceProvider: practiceStore
+        ? (task) => practiceStore.retrieve(task).map((c) => c.guidance)
+        : undefined,
       onIteration: (record) => {
-        const pct = Math.round(record.score * 100);
-        const status = record.executorError
-          ? chalk.red('model error')
-          : record.applyError && record.filesApplied.length === 0
-            ? chalk.yellow('no files applied')
-            : record.passed
-              ? chalk.green('PASS')
-              : chalk.yellow(`${pct}% of gates`);
-        const strategy = record.strategy ? chalk.dim(` [${record.strategy}]`) : '';
-        console.log(`  Turn ${record.turn}: ${status}${strategy} (${Math.round(record.durationMs / 1000)}s)`);
-        if (record.candidates) {
-          const summary = record.candidates
-            .map((c) => `${c.id}:${c.error ? 'err' : `${Math.round(c.score * 100)}%`}`)
-            .join(' ');
-          console.log(chalk.dim(`    candidates: ${summary}`));
-        }
+        printProgress(record);
+        return escalation ? escalation.onIteration(record) : undefined;
       },
     },
     executor
   );
 
   const result = await loop.deliver(instruction);
+
+  // Phase 4: reinforce practices on a successful, non-trivial delivery.
+  // Guidance is regenerated inside the store from strategy+turns (provenance-
+  // safe), so only harness-owned facts are persisted — never model output.
+  if (practiceStore && result.success && !result.alreadyDelivered) {
+    const winningStrategy = result.history.find((h) => h.passed)?.strategy ?? 'direct';
+    practiceStore.record({
+      strategy: winningStrategy,
+      keywords: extractKeywords(instruction),
+      turns: result.turns,
+    });
+  }
 
   if (result.alreadyDelivered) {
     console.log(chalk.yellow('All gates already pass — nothing to converge on. No model calls made.'));
