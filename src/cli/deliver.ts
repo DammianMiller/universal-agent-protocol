@@ -30,6 +30,7 @@ import {
   retrievePracticesSemantic,
 } from '../delivery/practice.js';
 import { detectRungs } from '../delivery/verifier-ladder.js';
+import { findProtectedTestFiles } from '../delivery/applier.js';
 import { OpenAICompatClient } from '../models/openai-compat-client.js';
 import { ModelPresets } from '../models/types.js';
 import type { ModelConfig } from '../models/types.js';
@@ -64,6 +65,9 @@ export interface DeliverOptions {
   /** commander sets this false when --no-auto is passed (default true):
    * dynamic optimization — classify task complexity, enable matching aids */
   auto?: boolean;
+  /** commander sets this false when --no-protect-tests is passed (default
+   * true): refuse model writes to pre-existing test/spec files */
+  protectTests?: boolean;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -235,6 +239,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       halo: Boolean(options.halo),
       coordinate: Boolean(options.coordinate),
       deploy: Boolean(options.deploy),
+      protectTests: options.protectTests !== false,
+      protectedTestFiles: options.protectTests !== false ? findProtectedTestFiles(projectRoot).size : 0,
       gates: rungs.map((r) => ({ id: r.id, name: r.name, required: r.required })),
     };
     if (options.json) {
@@ -259,6 +265,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(`  HALO tracing: ${summary.halo ? 'on' : 'off'}`);
       console.log(`  Coordination: ${summary.coordinate ? 'on' : 'off'}`);
       console.log(`  Deploy queue on success: ${summary.deploy ? 'on' : 'off'}`);
+      console.log(
+        `  Test protection: ${summary.protectTests ? `on (${summary.protectedTestFiles} pre-existing test file(s))` : 'off'}`
+      );
       console.log('  Gates:');
       for (const r of rungs) {
         console.log(`    - ${r.name}${r.required ? '' : chalk.dim(' (optional)')}`);
@@ -443,6 +452,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       critic: options.critic ? createModelCritic(executor) : undefined,
       criticFactory: (ex) => createModelCritic(ex),
       practiceProvider,
+      protectTests: options.protectTests,
       onIteration: composeIterationHooks(
         (record) => printProgress(record),
         (record) => haloTracer.onIteration(record),
