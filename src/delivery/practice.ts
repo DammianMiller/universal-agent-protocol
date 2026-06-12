@@ -36,10 +36,23 @@ export interface PracticeInput {
 }
 
 export interface PracticeStore {
-  /** Retrieve the most relevant cards for a task instruction */
+  /** Retrieve the most relevant cards for a task instruction (keyword overlap) */
   retrieve(instruction: string, limit?: number): PracticeCard[];
+  /** All stored cards (used by semantic retrieval to rank the full set) */
+  all(): PracticeCard[];
   /** Reinforce or create a card from a successful delivery */
   record(input: PracticeInput): void;
+}
+
+/**
+ * Minimal embedding interface — satisfied by the project's EmbeddingService
+ * (nomic-768 via llama.cpp, with its own provider fallback chain down to
+ * TF-IDF). Injected rather than imported so the practice module stays
+ * dependency-light and unit-testable without the memory subsystem.
+ */
+export interface SemanticRetriever {
+  embed(text: string): Promise<number[]>;
+  cosineSimilarity(a: number[], b: number[]): number;
 }
 
 /** Strategy ids are harness-owned seed labels; this guards the template
@@ -74,6 +87,85 @@ function relevance(card: PracticeCard, queryKeywords: string[]): number {
 }
 
 const MIN_RELEVANCE = 0.25;
+
+/** Default cosine-similarity floor for a semantic match to count. */
+const MIN_SIMILARITY = 0.45;
+
+/**
+ * Text used to represent a card for embedding. Built only from the card's
+ * keywords (which derive from the user instruction), never from model output
+ * — the semantic path preserves the same provenance guarantee as keyword
+ * retrieval.
+ */
+function cardEmbeddingText(card: PracticeCard): string {
+  return card.keywords.join(' ');
+}
+
+export interface SemanticRetrieveOptions {
+  limit?: number;
+  minSimilarity?: number;
+}
+
+/**
+ * Retrieve practices by semantic similarity to the instruction, ranked by
+ * cosine distance then reinforcement (success count, fewest turns). This
+ * catches near-misses that keyword overlap drops — "parse a duration" vs
+ * "parse durations into seconds".
+ *
+ * Fail-soft and degenerate-safe: if the embedding provider is unavailable,
+ * throws, or yields no match above the similarity floor, it falls back to the
+ * synchronous keyword retrieval so practices are never silently disabled.
+ */
+export async function retrievePracticesSemantic(
+  store: PracticeStore,
+  instruction: string,
+  retriever: SemanticRetriever,
+  options: SemanticRetrieveOptions = {}
+): Promise<PracticeCard[]> {
+  const limit = options.limit ?? 3;
+  const minSim = options.minSimilarity ?? MIN_SIMILARITY;
+  const cards = store.all();
+  if (cards.length === 0) return [];
+
+  try {
+    const queryVec = await retriever.embed(instruction.toLowerCase());
+    if (!Array.isArray(queryVec) || queryVec.length === 0) {
+      return store.retrieve(instruction, limit);
+    }
+
+    // Isolate per-card failures: a single card whose embedding errors or
+    // whose vector dimension mismatches the query (cosineSimilarity throws)
+    // must not collapse the whole batch into keyword fallback. A failed card
+    // simply scores -1 and drops out below the floor.
+    const scored = await Promise.all(
+      cards.map(async (card) => {
+        try {
+          const vec = await retriever.embed(cardEmbeddingText(card));
+          const sim = retriever.cosineSimilarity(queryVec, vec);
+          return { card, sim: Number.isFinite(sim) ? sim : -1 };
+        } catch {
+          return { card, sim: -1 };
+        }
+      })
+    );
+
+    const hits = scored
+      .filter((s) => s.sim >= minSim)
+      .sort((a, b) => {
+        if (b.sim !== a.sim) return b.sim - a.sim;
+        if (b.card.successCount !== a.card.successCount) return b.card.successCount - a.card.successCount;
+        return a.card.bestTurns - b.card.bestTurns;
+      })
+      .slice(0, limit)
+      .map((s) => s.card);
+
+    // Degenerate provider (e.g. unfitted TF-IDF) or genuinely no relevant
+    // card — fall back to keyword overlap rather than inject nothing.
+    return hits.length > 0 ? hits : store.retrieve(instruction, limit);
+  } catch {
+    return store.retrieve(instruction, limit);
+  }
+}
 
 /** In-memory store — the base implementation; the file store persists it. */
 export class InMemoryPracticeStore implements PracticeStore {
@@ -128,7 +220,9 @@ export class InMemoryPracticeStore implements PracticeStore {
   }
 
   all(): PracticeCard[] {
-    return this.cards;
+    // Copy so callers can't mutate the store's internal array (matches the
+    // fresh-array convention of retrieve()).
+    return [...this.cards];
   }
 }
 

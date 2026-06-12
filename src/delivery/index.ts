@@ -38,9 +38,12 @@ export {
   extractKeywords,
   distillPractice,
   defaultPracticePath,
+  retrievePracticesSemantic,
   type PracticeCard,
   type PracticeInput,
   type PracticeStore,
+  type SemanticRetriever,
+  type SemanticRetrieveOptions,
 } from './practice.js';
 
 export {

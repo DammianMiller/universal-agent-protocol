@@ -394,6 +394,7 @@ program
   .option('--candidates <n>', 'Best-of-N exploration: candidates per turn (2-8)')
   .option('--critic', 'Structured critique of failed turns (extra model call per failure)')
   .option('--practices', 'Inject learned best-practice cards and record new ones on success')
+  .option('--no-semantic', 'Use keyword (not embedding) retrieval for practice cards')
   .option('--escalate', 'Escalation ladder on stagnation (widen exploration -> critic -> stronger model)')
   .option('--escalate-model <preset>', 'Stronger model preset for escalation (default: $UAP_ESCALATE_MODEL)')
   .option('--dry-run', 'Show detected gates and plan without calling the model')

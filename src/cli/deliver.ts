@@ -14,7 +14,12 @@ import { createModelJudge } from '../delivery/judge.js';
 import { createModelCritic } from '../delivery/critic.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import { createEscalationController, defaultEscalationLadder } from '../delivery/escalation.js';
-import { FilePracticeStore, defaultPracticePath, extractKeywords } from '../delivery/practice.js';
+import {
+  FilePracticeStore,
+  defaultPracticePath,
+  extractKeywords,
+  retrievePracticesSemantic,
+} from '../delivery/practice.js';
 import { detectRungs } from '../delivery/verifier-ladder.js';
 import { OpenAICompatClient } from '../models/openai-compat-client.js';
 import { ModelPresets } from '../models/types.js';
@@ -31,6 +36,8 @@ export interface DeliverOptions {
   candidates?: string;
   critic?: boolean;
   practices?: boolean;
+  /** commander sets this false when --no-semantic is passed (default true) */
+  semantic?: boolean;
   escalate?: boolean;
   escalateModel?: string;
   dryRun?: boolean;
@@ -139,7 +146,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(`  Max turns: ${summary.maxTurns}`);
       console.log(`  Candidates/turn: ${summary.candidatesPerTurn}${candidates ? '' : ' (single-shot)'}`);
       console.log(`  Critic: ${summary.critic ? 'on' : 'off'}`);
-      console.log(`  Practices: ${summary.practices ? 'on' : 'off'}`);
+      console.log(
+        `  Practices: ${summary.practices ? `on (${options.semantic === false ? 'keyword' : 'semantic'} recall)` : 'off'}`
+      );
       console.log(`  Escalation: ${summary.escalate ? `on${summary.escalateModel ? ` (→ ${summary.escalateModel})` : ''}` : 'off'}`);
       console.log('  Gates:');
       for (const r of rungs) {
@@ -186,8 +195,26 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       })
     : undefined;
 
-  // Phase 4: learned best-practice cards for similar tasks.
+  // Phase 4: learned best-practice cards for similar tasks. Retrieval is
+  // semantic (embeddings) by default — better recall than keyword overlap —
+  // and falls back to keyword matching automatically when no embedding
+  // provider is reachable. `--no-semantic` forces the keyword path.
   const practiceStore = options.practices ? new FilePracticeStore(defaultPracticePath(projectRoot)) : undefined;
+  const useSemantic = options.semantic !== false;
+  const practiceProvider = practiceStore
+    ? async (task: string): Promise<string[]> => {
+        if (useSemantic) {
+          const { getEmbeddingService } = await import('../memory/embeddings.js');
+          const svc = getEmbeddingService();
+          const cards = await retrievePracticesSemantic(practiceStore, task, {
+            embed: (t) => svc.embed(t),
+            cosineSimilarity: (a, b) => svc.cosineSimilarity(a, b),
+          });
+          return cards.map((c) => c.guidance);
+        }
+        return practiceStore.retrieve(task).map((c) => c.guidance);
+      }
+    : undefined;
 
   const printProgress = (record: IterationRecord): void => {
     const pct = Math.round(record.score * 100);
@@ -230,9 +257,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       explorer: candidates ? { candidates, judge: createModelJudge(executor) } : undefined,
       critic: options.critic ? createModelCritic(executor) : undefined,
       criticFactory: (ex) => createModelCritic(ex),
-      practiceProvider: practiceStore
-        ? (task) => practiceStore.retrieve(task).map((c) => c.guidance)
-        : undefined,
+      practiceProvider,
       onIteration: (record) => {
         printProgress(record);
         return escalation ? escalation.onIteration(record) : undefined;
