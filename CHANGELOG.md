@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.29.0 (2026-06-12)
+
+- feat(delivery): best-practice injection + escalation controller (Phases 4-5)
+
+
 ## v1.28.0 (2026-06-12)
 
 - feat(delivery): best-of-N explorer + judge + structured critic (Phases 2-3)
