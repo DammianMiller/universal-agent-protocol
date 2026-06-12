@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.27.0 (2026-06-12)
+
+- feat(delivery): Fable-parity convergence loop — uap deliver (Phase 1)
+- chore(agents): pin Qdrant to v1.18.1 + persist snapshots (#207)
+- chore: bump version to 1.23.1
+- fix(chat-template): tolerate mid-conversation system messages
+
+
 ## v1.26.6 (2026-06-01)
 
 - fix(chat-template): tolerate mid-conversation system messages
