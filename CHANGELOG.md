@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.31.0 (2026-06-12)
+
+- feat(delivery): integrate HALO, ideation, coordination, and deploy batching into uap deliver
+
+
 ## v1.30.1 (2026-06-12)
 
 - docs(readme): document the delivery harness (uap deliver)
