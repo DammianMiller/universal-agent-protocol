@@ -18,7 +18,9 @@
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
 import { detectRungs, runLadder } from './verifier-ladder.js';
 import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
-import { applyFileBlocks, findProtectedTestFiles } from './applier.js';
+import { applyFileBlocks } from './applier.js';
+import { snapshotProtection } from './spec-imports.js';
+import { captureIntegrity, verifyAndRestore, integrityViolationFeedback } from './integrity.js';
 import type { StrategySeed } from './explorer.js';
 import { exploreAndCommit } from './explorer.js';
 import type { Judge } from './judge.js';
@@ -49,7 +51,7 @@ export interface PromptContext {
   critique?: string[];
   /** Best-practice guidance retrieved for this task (Phase 4) */
   practices?: string[];
-  /** Pre-existing test files the applier will refuse to modify */
+  /** Pre-existing test/oracle files the applier will refuse to modify */
   protectedFiles?: string[];
 }
 
@@ -248,7 +250,7 @@ function protectedSection(protectedFiles?: string[]): string[] {
   const more = protectedFiles.length - shown.length;
   return [
     '',
-    'PROTECTED TEST FILES — these existing tests define the task and cannot be modified; implement the source so they pass:',
+    'PROTECTED FILES (tests + the fixtures/helpers they use) — read-only for this run; implement the source so the existing tests pass:',
     ...shown.map((f) => `- ${f}`),
     ...(more > 0 ? [`…and ${more} more`] : []),
   ];
@@ -340,6 +342,7 @@ export class ConvergenceLoop {
     prompt: string,
     rungs: GateRung[],
     executor: LoopExecutor,
+    ladderRunner: LadderRunner,
     applyOptions?: ApplyOptions
   ): Promise<TurnOutcome> {
     let output = '';
@@ -368,7 +371,7 @@ export class ConvergenceLoop {
     const filesApplied = applyResult?.filesWritten ?? [];
     let ladder: LadderResult | null = null;
     if (!executorError && filesApplied.length > 0) {
-      ladder = await this.ladderRunner(rungs, this.config.projectRoot, this.config.ladderOptions);
+      ladder = await ladderRunner(rungs, this.config.projectRoot, this.config.ladderOptions);
     }
 
     return { output, filesApplied, ladder, executorError, applyError };
@@ -381,6 +384,7 @@ export class ConvergenceLoop {
     rungs: GateRung[],
     settings: ExplorerSettings,
     executor: LoopExecutor,
+    ladderRunner: LadderRunner,
     applyOptions?: ApplyOptions
   ): Promise<TurnOutcome> {
     const exploration = await exploreAndCommit(instruction, prompt, executor, {
@@ -390,7 +394,7 @@ export class ConvergenceLoop {
       projectRoot: this.config.projectRoot,
       rungs,
       ladderOptions: this.config.ladderOptions,
-      ladderRunner: this.ladderRunner,
+      ladderRunner,
       applyOptions,
     });
 
@@ -506,18 +510,49 @@ export class ConvergenceLoop {
     // unreadable tree just yields an empty set.
     const protectTests = this.config.protectTests ?? true;
     let protectedFiles: Set<string> | undefined;
+    let protectedList: string[] | undefined;
     if (protectTests) {
       try {
-        const snapshot = findProtectedTestFiles(this.config.projectRoot);
-        protectedFiles = snapshot.size > 0 ? snapshot : undefined;
+        // Tests plus the oracle material (helpers/fixtures/data) their
+        // import graphs reference — see spec-imports.ts for the scope.
+        const snapshot = snapshotProtection(this.config.projectRoot);
+        protectedFiles = snapshot.protectedFiles.size > 0 ? snapshot.protectedFiles : undefined;
+        protectedList = snapshot.display.length > 0 ? snapshot.display : undefined;
       } catch {
         protectedFiles = undefined;
+        protectedList = undefined;
       }
     }
     const applyOptions: ApplyOptions | undefined = protectTests
       ? { protectedFiles, protectGateConfigs: true }
       : undefined;
-    const protectedList = protectedFiles ? [...protectedFiles].sort() : undefined;
+
+    // Runtime tamper guard: the applier filter cannot stop a model-authored
+    // test file from writeFileSync-ing over a protected oracle while the
+    // gates execute. Snapshot bytes now; after every gate run verify and
+    // restore, discarding tampered results. Wrapping the runner here also
+    // covers explorer candidate evaluations, which receive this runner.
+    let ladderRunner: LadderRunner = this.ladderRunner;
+    if (protectTests && protectedList && protectedList.length > 0) {
+      try {
+        const integrity = captureIntegrity(this.config.projectRoot, protectedList);
+        const inner = this.ladderRunner;
+        ladderRunner = async (gateRungs, root, opts) => {
+          const ladderResult = await inner(gateRungs, root, opts);
+          const check = verifyAndRestore(this.config.projectRoot, integrity);
+          if (check.tampered.length > 0) {
+            return {
+              ...ladderResult,
+              passed: false,
+              feedback: `${integrityViolationFeedback(check)}\n\n${ladderResult.feedback}`,
+            };
+          }
+          return ladderResult;
+        };
+      } catch {
+        // Guard is fail-soft; applier-level protection still applies.
+      }
+    }
 
     // Phase 4: retrieve best-practice cards once — they are task-level and
     // stable across turns. Fail-soft so retrieval never blocks delivery.
@@ -541,8 +576,8 @@ export class ConvergenceLoop {
       const prompt = this.promptBuilder({ instruction, turn, ...prevContext });
 
       const outcome = explorerSettings
-        ? await this.runExplorerTurn(instruction, prompt, rungs, explorerSettings, executor, applyOptions)
-        : await this.runSingleTurn(prompt, rungs, executor, applyOptions);
+        ? await this.runExplorerTurn(instruction, prompt, rungs, explorerSettings, executor, ladderRunner, applyOptions)
+        : await this.runSingleTurn(prompt, rungs, executor, ladderRunner, applyOptions);
 
       finalOutput = outcome.output || finalOutput;
       if (outcome.ladder) {

@@ -92,7 +92,7 @@ describe('applyFileBlocks with protectedFiles', () => {
     expect(result.filesWritten).toEqual(['src/impl.mjs']);
     expect(result.rejected).toHaveLength(1);
     expect(result.rejected[0].path).toBe('test/spec.test.mjs');
-    expect(result.rejected[0].reason).toContain('pre-existing test file is protected');
+    expect(result.rejected[0].reason).toContain('pre-existing test/oracle file is protected');
     expect(readFileSync(join(dir, 'test', 'spec.test.mjs'), 'utf-8')).toBe('ORIGINAL');
   });
 
@@ -307,9 +307,9 @@ describe('ConvergenceLoop test protection (end-to-end with stub ladder)', () => 
     expect(result.success).toBe(false);
     expect(readFileSync(join(dir, 'test', 'spec.test.mjs'), 'utf-8')).toBe('ORIGINAL');
     // every turn rejected the only block → applyError carries the protection reason
-    expect(result.history[0].applyError).toContain('pre-existing test file is protected');
+    expect(result.history[0].applyError).toContain('pre-existing test/oracle file is protected');
     // turn 1 prompt already warns about the protected file
-    expect(prompts[0]).toContain('PROTECTED TEST FILES');
+    expect(prompts[0]).toContain('PROTECTED FILES');
     expect(prompts[0]).toContain('test/spec.test.mjs');
   });
 
@@ -329,13 +329,13 @@ describe('defaultPromptBuilder protected section', () => {
   it('lists protected files and caps the list at 10', () => {
     const files = Array.from({ length: 12 }, (_, i) => `test/f${i}.test.ts`);
     const prompt = defaultPromptBuilder({ instruction: 'x', turn: 1, protectedFiles: files });
-    expect(prompt).toContain('PROTECTED TEST FILES');
+    expect(prompt).toContain('PROTECTED FILES');
     expect(prompt).toContain('- test/f0.test.ts');
     expect(prompt).toContain('…and 2 more');
   });
 
   it('omits the section when there are no protected files', () => {
     const prompt = defaultPromptBuilder({ instruction: 'x', turn: 1 });
-    expect(prompt).not.toContain('PROTECTED TEST FILES');
+    expect(prompt).not.toContain('PROTECTED FILES');
   });
 });

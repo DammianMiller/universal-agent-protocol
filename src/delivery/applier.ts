@@ -178,6 +178,15 @@ export function isTestFilePath(relPath: string): boolean {
 export function findProtectedTestFiles(projectRoot: string): Set<string> {
   // Keys are lower-cased so the membership check cannot be bypassed by case
   // tricks on case-insensitive filesystems (APFS, NTFS).
+  return new Set(listTestFiles(projectRoot).map((f) => f.toLowerCase()));
+}
+
+/**
+ * The same bounded walk as findProtectedTestFiles but returning the
+ * original-case relative paths — needed by callers that must read the files
+ * (e.g. spec transitive-import analysis).
+ */
+export function listTestFiles(projectRoot: string): string[] {
   const found = new Set<string>();
   const root = resolve(projectRoot);
   let visited = 0;
@@ -213,13 +222,13 @@ export function findProtectedTestFiles(projectRoot: string): Set<string> {
         if (WALK_SKIP_SEGMENTS.has(entry.toLowerCase())) continue;
         walk(abs, rel, depth + 1);
       } else if (stat.isFile() && isTestFilePath(rel)) {
-        found.add(rel.toLowerCase());
+        found.add(rel);
       }
     }
   };
 
   walk(root, '', 0);
-  return found;
+  return [...found];
 }
 
 /** Extract file blocks from model output without writing anything. */
@@ -258,7 +267,7 @@ function realParentEscapes(target: string, realRoot: string): boolean {
 }
 
 const PROTECTED_TEST_REASON =
-  'pre-existing test file is protected — implement the source so the existing tests pass instead of modifying them';
+  'pre-existing test/oracle file is protected — implement the source so the existing tests pass instead of modifying them';
 const GATE_CONFIG_REASON =
   'test-runner/compiler config files are protected — they control the gates and cannot be changed by the model';
 
