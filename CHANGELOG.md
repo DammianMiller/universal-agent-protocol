@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.30.1 (2026-06-12)
+
+- docs(readme): document the delivery harness (uap deliver)
+
+
 ## v1.30.0 (2026-06-12)
 
 - feat(delivery): semantic recall for practice cards via embedding store
