@@ -391,6 +391,8 @@ program
   .option('--endpoint <url>', 'Override the model endpoint (OpenAI-compatible /v1)')
   .option('--temperature <t>', 'Sampling temperature (default: execution-profile value)')
   .option('--gates <ids>', 'Comma-separated gate subset (build,typecheck,test,lint)')
+  .option('--candidates <n>', 'Best-of-N exploration: candidates per turn (2-8)')
+  .option('--critic', 'Structured critique of failed turns (extra model call per failure)')
   .option('--dry-run', 'Show detected gates and plan without calling the model')
   .option('--json', 'Emit JSON result')
   .action(async (instructionParts: string[], options) => {

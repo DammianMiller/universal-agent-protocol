@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.28.0 (2026-06-12)
+
+- feat(delivery): best-of-N explorer + judge + structured critic (Phases 2-3)
+
+
 ## v1.27.0 (2026-06-12)
 
 - feat(delivery): Fable-parity convergence loop — uap deliver (Phase 1)
