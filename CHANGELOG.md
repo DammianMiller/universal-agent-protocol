@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.32.0 (2026-06-12)
+
+- feat(delivery): dynamic auto-optimization — classify every task, enable matching aids by default
+
+
 ## v1.31.0 (2026-06-12)
 
 - feat(delivery): integrate HALO, ideation, coordination, and deploy batching into uap deliver
