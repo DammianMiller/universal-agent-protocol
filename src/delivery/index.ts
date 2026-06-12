@@ -107,6 +107,22 @@ export {
 } from './auto-optimizer.js';
 
 export {
+  captureIntegrity,
+  verifyAndRestore,
+  integrityViolationFeedback,
+  type IntegritySnapshot,
+  type IntegrityCheck,
+} from './integrity.js';
+
+export {
+  snapshotProtection,
+  expandSpecImports,
+  resolveRelativeImport,
+  isOraclePath,
+  type ProtectionSnapshot,
+} from './spec-imports.js';
+
+export {
   generateStrategySeeds,
   parseSeedArray,
   seedsFromIdeas,

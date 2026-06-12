@@ -91,7 +91,7 @@ uap setup -p all
 | Browser            | 1 module       | Stealth web automation via CloakBrowser (Playwright drop-in)                     |
 | MCP Router         | 11 modules     | 2-tool meta-router + expert-consultation registry (98% token savings)            |
 | Models             | 10 modules     | Multi-model routing, planning, execution, validation, 13 model profiles          |
-| Delivery Harness   | 12 modules     | `uap deliver`: convergence loop, best-of-N explorer, critic, practice recall, escalation, ideation seeds, HALO tracing, coordination + deploy queueing |
+| Delivery Harness   | 14 modules     | `uap deliver`: convergence loop, best-of-N explorer, critic, practice recall, escalation, ideation seeds, HALO tracing, coordination + deploy queueing |
 | Patterns           | 23 patterns    | Battle-tested workflows from Terminal-Bench 2.0                                  |
 | Droids             | 30 experts     | Full SDLC expert stack: strategy, design, build, review, release, ops ([reference](docs/reference/EXPERT_DROIDS.md)) |
 | Expert Orchestrator | 1 module      | Adaptive droid-chain selection across plan→design→implement→review→release       |
@@ -373,10 +373,10 @@ the model's say-so.
 8. **Coordination** (`--coordinate`) — registers the run with the multi-agent coordination layer (`uap agent`): announces work on the project, warns about overlapping agents, heartbeats every turn, completes/deregisters on exit.
 9. **Deploy batching** (`--deploy`) — on success, queues a commit of the applied files into the deploy batcher; execute with `uap deploy flush`.
 10. **`--optimize`** — one switch for every convergence aid: 4 candidates/turn + critic + practices + escalation + ideation + HALO + coordination (deploy stays explicit).
-11. **Test protection (default)** — pre-existing test/spec files are snapshotted at loop start (case-folded, symlink-alias-aware) and the applier refuses model writes to them, with steering feedback and a prompt warning; test-runner/compiler configs (`vitest.config.*`, `tsconfig*.json`, `jest.config.*`, `pytest.ini`, …) are blocked too, closing gate-rigging by indirection. New test files remain allowed. Opt out with `--no-protect-tests`.
+11. **Test protection (default)** — pre-existing test/spec files are snapshotted at loop start (case-folded, symlink-alias-aware) and the applier refuses model writes to them, with steering feedback and a prompt warning; test-runner/compiler configs (`vitest.config.*`, `tsconfig*.json`, `jest.config.*`, `pytest.ini`, …) are blocked too, closing gate-rigging by indirection. Protection extends to the spec's **transitive oracle material** — helpers/fixtures/mocks the tests import (by convention or data extension), quoted fixture paths, reserved missing goldens, and recursive helper chains (the unit under test stays writable). A **runtime integrity guard** hashes every protected file and re-verifies after each gate run: tampering from test code executing during the gates is restored and the gate result discarded. New test files remain allowed. Opt out with `--no-protect-tests`.
 12. **Dynamic optimization (default)** — every instruction is classified for complexity (simple / moderate / complex); non-trivial requests automatically get the aids that improve outcomes (moderate → exploration ×3 + critic + practices + HALO + coordination; complex → the full `--optimize` stack). Any explicit aid flag, `--no-auto`, or `UAP_DELIVER_AUTO=0` disables auto mode. Deploy queueing is never auto-enabled.
 
-### Components (12 modules)
+### Components (14 modules)
 
 | Component         | File                                  | Purpose                                                            |
 | ----------------- | ------------------------------------- | ----------------------------------------------------------------- |
@@ -392,6 +392,8 @@ the model's say-so.
 | HALO Tracer       | `src/delivery/halo-trace.ts`          | Run/turn spans for `uap harness analyze`                           |
 | Run Coordinator   | `src/delivery/run-coordinator.ts`     | `uap agent` registration/heartbeat + `uap deploy` commit queueing  |
 | Auto-Optimizer    | `src/delivery/auto-optimizer.ts`      | Complexity-classified dynamic activation of convergence aids       |
+| Spec Imports      | `src/delivery/spec-imports.ts`        | Transitive oracle-material discovery for spec protection           |
+| Integrity Guard   | `src/delivery/integrity.ts`           | Hash-verify + restore protected files after every gate run         |
 
 The model is reached through an OpenAI-compatible client
 (`src/models/openai-compat-client.ts`) — the local inference gateway,
