@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.35.0 (2026-06-12)
+
+- feat(delivery): resolve tsconfig path aliases in the spec import walk
+
+
 ## v1.34.0 (2026-06-12)
 
 - feat(delivery): protect spec transitive imports + runtime gate-integrity guard
