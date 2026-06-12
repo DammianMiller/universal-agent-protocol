@@ -17,6 +17,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmdirSync,
@@ -39,7 +40,30 @@ export interface ApplyResult {
   error?: string;
 }
 
-export type Applier = (output: string, projectRoot: string) => ApplyResult | Promise<ApplyResult>;
+export interface ApplyOptions {
+  /**
+   * Pre-existing test/spec files (relative, '/'-separated, lower-cased
+   * paths) the model must not modify. Gate integrity: a model that rewrites
+   * the task's spec to make gates pass has converged on the wrong target.
+   * New test files are still allowed — only paths in this set are blocked.
+   * Custom Applier implementations MUST honor this set themselves; the
+   * loop's prompt tells the model these files are read-only.
+   */
+  protectedFiles?: ReadonlySet<string>;
+  /**
+   * Reject writes to test-runner/compiler config files (vitest/jest/mocha
+   * configs, tsconfig, pytest.ini…). Without this, protecting the spec is
+   * moot — the model can repoint test discovery or relax the compiler
+   * instead of modifying the tests the gates run.
+   */
+  protectGateConfigs?: boolean;
+}
+
+export type Applier = (
+  output: string,
+  projectRoot: string,
+  options?: ApplyOptions
+) => ApplyResult | Promise<ApplyResult>;
 
 export interface RevertibleApply {
   result: ApplyResult;
@@ -79,6 +103,125 @@ const PROTECTED_BASENAMES = new Set([
   '.yarnrc.yml',
 ]);
 
+/**
+ * Config files that control what the gates run or how strictly they check.
+ * Writing these is gate-rigging by indirection: repointing vitest/jest
+ * include globs or relaxing tsconfig defeats spec protection without
+ * touching a single test file.
+ */
+const GATE_CONFIG_RES = [
+  /^tsconfig[^/]*\.json$/,
+  /^vitest\.(config|workspace)\.[^/]+$/,
+  /^jest\.config\.[^/]+$/,
+  /^\.mocharc(\.[^/]+)?$/,
+  /^karma\.conf\.[^/]+$/,
+  /^playwright\.config\.[^/]+$/,
+  /^cypress\.config\.[^/]+$/,
+  /^ava\.config\.[^/]+$/,
+  /^babel\.config\.[^/]+$/,
+  /^\.babelrc(\.[^/]+)?$/,
+  /^pytest\.ini$/,
+  /^setup\.cfg$/,
+  /^pyproject\.toml$/,
+];
+
+/** True when a basename is a test-runner/compiler config (gate input). */
+export function isGateConfigBasename(base: string): boolean {
+  const lower = base.toLowerCase();
+  return GATE_CONFIG_RES.some((re) => re.test(lower));
+}
+
+/** Directory names test discovery treats as test containers. */
+const TEST_DIR_SEGMENTS = new Set(['test', 'tests', '__tests__', 'spec', 'specs']);
+
+/** Directories the protected-test walk never descends into. */
+const WALK_SKIP_SEGMENTS = new Set([
+  ...PROTECTED_SEGMENTS,
+  'dist',
+  'build',
+  'out',
+  'coverage',
+  'vendor',
+  '.worktrees',
+  '.uap',
+  'agents',
+]);
+
+// Discovery horizon must be at least as deep as the test runners' (vitest /
+// node --test recurse without limit); the visited-entries budget bounds cost.
+const WALK_MAX_DEPTH = 16;
+const WALK_MAX_FILES = 5_000;
+const WALK_MAX_ENTRIES = 50_000;
+
+/**
+ * True when a relative '/'-separated path looks like a test/spec file:
+ * lives under a test directory, or has a test-style basename
+ * (*.test.*, *.spec.*, *_test.*, test_*.py).
+ */
+export function isTestFilePath(relPath: string): boolean {
+  const segments = relPath.split('/');
+  const base = segments[segments.length - 1].toLowerCase();
+  if (segments.slice(0, -1).some((s) => TEST_DIR_SEGMENTS.has(s.toLowerCase()))) {
+    return true;
+  }
+  return (
+    /\.(test|spec)[-.][^/]+$/.test(base) || /_test\.[^.]+$/.test(base) || /^test_.+\.py$/.test(base)
+  );
+}
+
+/**
+ * Snapshot the project's pre-existing test/spec files as relative
+ * '/'-separated paths. Called once at loop start so files the model creates
+ * later are not retroactively protected. Bounded walk; failures return what
+ * was found so far — protection degrades, delivery never blocks.
+ */
+export function findProtectedTestFiles(projectRoot: string): Set<string> {
+  // Keys are lower-cased so the membership check cannot be bypassed by case
+  // tricks on case-insensitive filesystems (APFS, NTFS).
+  const found = new Set<string>();
+  const root = resolve(projectRoot);
+  let visited = 0;
+
+  const walk = (dir: string, relPrefix: string, depth: number): void => {
+    if (depth > WALK_MAX_DEPTH || found.size >= WALK_MAX_FILES) return;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (found.size >= WALK_MAX_FILES || ++visited > WALK_MAX_ENTRIES) return;
+      if (entry.startsWith('.')) {
+        // Hidden dirs/files: default runner globs don't match them, and the
+        // dotfile configs a model could abuse are blocked by the gate-config
+        // check instead.
+        continue;
+      }
+      const abs = join(dir, entry);
+      const rel = relPrefix ? `${relPrefix}/${entry}` : entry;
+      let stat;
+      try {
+        stat = lstatSync(abs);
+      } catch {
+        continue;
+      }
+      if (stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) {
+        // 'agents' is a UAP-coordination dir; generic projects keeping tests
+        // there lose protection — accepted to avoid walking huge agent state.
+        if (WALK_SKIP_SEGMENTS.has(entry.toLowerCase())) continue;
+        walk(abs, rel, depth + 1);
+      } else if (stat.isFile() && isTestFilePath(rel)) {
+        found.add(rel.toLowerCase());
+      }
+    }
+  };
+
+  walk(root, '', 0);
+  return found;
+}
+
 /** Extract file blocks from model output without writing anything. */
 export function parseFileBlocks(output: string): FileBlock[] {
   const blocks: FileBlock[] = [];
@@ -114,7 +257,41 @@ function realParentEscapes(target: string, realRoot: string): boolean {
   return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 }
 
-function validatePath(blockPath: string, projectRoot: string, realRoot: string): string | null {
+const PROTECTED_TEST_REASON =
+  'pre-existing test file is protected — implement the source so the existing tests pass instead of modifying them';
+const GATE_CONFIG_REASON =
+  'test-runner/compiler config files are protected — they control the gates and cannot be changed by the model';
+
+/**
+ * Is `rel` (sep-separated, relative to root) a protected test file? Checks
+ * the lexical path case-folded, and — when the target already exists — its
+ * realpath, so an intra-repo directory symlink (tests_alias -> test) cannot
+ * alias a protected file under an unprotected name.
+ */
+function isProtectedTestTarget(
+  rel: string,
+  target: string,
+  realRoot: string,
+  protectedFiles: ReadonlySet<string>
+): boolean {
+  if (protectedFiles.has(rel.split(sep).join('/').toLowerCase())) return true;
+  if (existsSync(target)) {
+    try {
+      const realRel = relative(realRoot, realpathSync(target));
+      if (protectedFiles.has(realRel.split(sep).join('/').toLowerCase())) return true;
+    } catch {
+      // unreadable target — fall through to other validators
+    }
+  }
+  return false;
+}
+
+function validatePath(
+  blockPath: string,
+  projectRoot: string,
+  realRoot: string,
+  options?: ApplyOptions
+): string | null {
   if (isAbsolute(blockPath)) return 'absolute paths are not allowed';
 
   // A leading '-' would be parsed as an option by git/CLI tools that later
@@ -138,6 +315,18 @@ function validatePath(blockPath: string, projectRoot: string, realRoot: string):
   const base = segments[segments.length - 1].toLowerCase();
   if (PROTECTED_BASENAMES.has(base)) {
     return `writes to ${base} are not allowed (would alter executed scripts)`;
+  }
+
+  // Gate integrity: block runner/compiler config writes (gate rigging by
+  // indirection) and modification of pre-existing test/spec files.
+  if (options?.protectGateConfigs && isGateConfigBasename(base)) {
+    return GATE_CONFIG_REASON;
+  }
+  if (
+    options?.protectedFiles &&
+    isProtectedTestTarget(rel, target, realRoot, options.protectedFiles)
+  ) {
+    return PROTECTED_TEST_REASON;
   }
 
   // Reject writing through an existing symlink, and any symlinked ancestor.
@@ -168,7 +357,11 @@ function realRootOf(projectRoot: string): string {
  * Paths are validated against traversal and .git writes; oversized files
  * are rejected rather than truncated.
  */
-export function applyFileBlocks(output: string, projectRoot: string): ApplyResult {
+export function applyFileBlocks(
+  output: string,
+  projectRoot: string,
+  options?: ApplyOptions
+): ApplyResult {
   const blocks = parseFileBlocks(output);
   if (blocks.length === 0) {
     return {
@@ -184,7 +377,7 @@ export function applyFileBlocks(output: string, projectRoot: string): ApplyResul
   const rejected: ApplyResult['rejected'] = [];
 
   for (const block of blocks) {
-    const invalid = validatePath(block.path, projectRoot, realRoot);
+    const invalid = validatePath(block.path, projectRoot, realRoot, options);
     if (invalid) {
       rejected.push({ path: block.path, reason: invalid });
       continue;
@@ -223,7 +416,11 @@ function newDirsFor(paths: string[], projectRoot: string): string[] {
  * the application can be undone. Used by the explorer to evaluate competing
  * candidates against the same baseline tree without git machinery.
  */
-export function applyFileBlocksWithRollback(output: string, projectRoot: string): RevertibleApply {
+export function applyFileBlocksWithRollback(
+  output: string,
+  projectRoot: string,
+  options?: ApplyOptions
+): RevertibleApply {
   const blocks = parseFileBlocks(output);
   const realRoot = realRootOf(projectRoot);
 
@@ -232,7 +429,7 @@ export function applyFileBlocksWithRollback(output: string, projectRoot: string)
   const snapshots = new Map<string, string | null>();
   const validPaths: string[] = [];
   for (const block of blocks) {
-    if (validatePath(block.path, projectRoot, realRoot)) continue;
+    if (validatePath(block.path, projectRoot, realRoot, options)) continue;
     const target = join(projectRoot, block.path);
     if (!snapshots.has(block.path)) {
       snapshots.set(block.path, existsSync(target) ? readFileSync(target, 'utf-8') : null);
@@ -278,7 +475,7 @@ export function applyFileBlocksWithRollback(output: string, projectRoot: string)
     } else {
       const rejected: ApplyResult['rejected'] = [];
       for (const block of blocks) {
-        const invalid = validatePath(block.path, projectRoot, realRoot);
+        const invalid = validatePath(block.path, projectRoot, realRoot, options);
         if (invalid) {
           rejected.push({ path: block.path, reason: invalid });
           continue;

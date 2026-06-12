@@ -373,7 +373,8 @@ the model's say-so.
 8. **Coordination** (`--coordinate`) — registers the run with the multi-agent coordination layer (`uap agent`): announces work on the project, warns about overlapping agents, heartbeats every turn, completes/deregisters on exit.
 9. **Deploy batching** (`--deploy`) — on success, queues a commit of the applied files into the deploy batcher; execute with `uap deploy flush`.
 10. **`--optimize`** — one switch for every convergence aid: 4 candidates/turn + critic + practices + escalation + ideation + HALO + coordination (deploy stays explicit).
-11. **Dynamic optimization (default)** — every instruction is classified for complexity (simple / moderate / complex); non-trivial requests automatically get the aids that improve outcomes (moderate → exploration ×3 + critic + practices + HALO + coordination; complex → the full `--optimize` stack). Any explicit aid flag, `--no-auto`, or `UAP_DELIVER_AUTO=0` disables auto mode. Deploy queueing is never auto-enabled.
+11. **Test protection (default)** — pre-existing test/spec files are snapshotted at loop start (case-folded, symlink-alias-aware) and the applier refuses model writes to them, with steering feedback and a prompt warning; test-runner/compiler configs (`vitest.config.*`, `tsconfig*.json`, `jest.config.*`, `pytest.ini`, …) are blocked too, closing gate-rigging by indirection. New test files remain allowed. Opt out with `--no-protect-tests`.
+12. **Dynamic optimization (default)** — every instruction is classified for complexity (simple / moderate / complex); non-trivial requests automatically get the aids that improve outcomes (moderate → exploration ×3 + critic + practices + HALO + coordination; complex → the full `--optimize` stack). Any explicit aid flag, `--no-auto`, or `UAP_DELIVER_AUTO=0` disables auto mode. Deploy queueing is never auto-enabled.
 
 ### Components (12 modules)
 
@@ -439,12 +440,15 @@ uap deliver "..." --ideate --candidates 4 --deploy
 | `--deploy`                 | On success, queue a commit into the deploy batcher (`uap deploy`)      |
 | `--optimize`               | Enable every convergence aid (deploy excluded)                         |
 | `--no-auto`                | Disable dynamic optimization (auto-classified aids are the default)     |
+| `--no-protect-tests`       | Allow modifying pre-existing test files (protected by default)          |
 | `--endpoint <url>`         | Override the model endpoint (OpenAI-compatible `/v1`)                  |
 | `--dry-run` / `--json`     | Show the plan only / emit machine-readable result                     |
 
 Model output is never executed — only written as files and checked by the
 gates. The applier refuses writes to executed config (`package.json`,
-lockfiles), `.git`/hooks/CI paths, and symlinks that escape the project root.
+lockfiles), `.git`/hooks/CI paths, symlinks that escape the project root,
+and pre-existing test/spec files (gate integrity — the spec defines "done",
+so the model must satisfy it, not rewrite it).
 
 ---
 

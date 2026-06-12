@@ -27,7 +27,7 @@ import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js
 import { runLadder } from './verifier-ladder.js';
 import type { LadderRunner, LoopExecutor } from './convergence-loop.js';
 import { applyFileBlocks, applyFileBlocksWithRollback } from './applier.js';
-import type { Applier, ApplyResult, RevertibleApply } from './applier.js';
+import type { Applier, ApplyOptions, ApplyResult, RevertibleApply } from './applier.js';
 import type { Judge } from './judge.js';
 
 /** Hard ceiling on candidates per turn — guards direct library callers
@@ -91,7 +91,9 @@ export interface ExplorerConfig {
   /** Override the commit applier (defaults to applyFileBlocks) */
   applier?: Applier;
   /** Override the per-candidate revertible applier (defaults to applyFileBlocksWithRollback) */
-  revertibleApplier?: (output: string, projectRoot: string) => RevertibleApply;
+  revertibleApplier?: (output: string, projectRoot: string, options?: ApplyOptions) => RevertibleApply;
+  /** Apply-stage options (e.g. protected pre-existing test files) */
+  applyOptions?: ApplyOptions;
   onCandidate?: (candidate: CandidateResult) => void;
 }
 
@@ -149,7 +151,7 @@ export async function exploreAndCommit(
       continue;
     }
 
-    const { result: applyResult, restore } = applyRevertible(output, config.projectRoot);
+    const { result: applyResult, restore } = applyRevertible(output, config.projectRoot, config.applyOptions);
     let ladder: LadderResult | null = null;
     try {
       if (!applyResult.error && applyResult.filesWritten.length > 0) {
@@ -225,7 +227,7 @@ export async function exploreAndCommit(
   // 4. Commit the winner by re-applying. Re-verify the committed tree so the
   //    reported ladder reflects on-disk state (losers' gate side effects may
   //    have perturbed it between the winner's evaluation and now).
-  const committed = await apply(winner.output, config.projectRoot);
+  const committed = await apply(winner.output, config.projectRoot, config.applyOptions);
   let finalLadder = winner.ladder;
   if (committed.filesWritten.length > 0) {
     finalLadder = await ladderRunner(config.rungs, config.projectRoot, config.ladderOptions);

@@ -17,8 +17,8 @@
 
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
 import { detectRungs, runLadder } from './verifier-ladder.js';
-import type { Applier, ApplyResult } from './applier.js';
-import { applyFileBlocks } from './applier.js';
+import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
+import { applyFileBlocks, findProtectedTestFiles } from './applier.js';
 import type { StrategySeed } from './explorer.js';
 import { exploreAndCommit } from './explorer.js';
 import type { Judge } from './judge.js';
@@ -49,6 +49,8 @@ export interface PromptContext {
   critique?: string[];
   /** Best-practice guidance retrieved for this task (Phase 4) */
   practices?: string[];
+  /** Pre-existing test files the applier will refuse to modify */
+  protectedFiles?: string[];
 }
 
 export type PromptBuilder = (context: PromptContext) => string;
@@ -205,6 +207,11 @@ export interface ConvergenceConfig {
    * steer the loop (Phase 5 escalation controllers hook in here).
    */
   onIteration?: OnIteration;
+  /**
+   * Refuse model writes to pre-existing test/spec files (default true).
+   * Gate integrity: rewriting the spec to satisfy the gates is not delivery.
+   */
+  protectTests?: boolean;
 }
 
 const DEFAULT_MAX_TURNS = 5;
@@ -234,6 +241,19 @@ function normalizeDirective(value: void | 'stop' | IterationDirective): Iteratio
   return value;
 }
 
+/** Render the protected pre-existing test files as a prompt section. */
+function protectedSection(protectedFiles?: string[]): string[] {
+  if (!protectedFiles || protectedFiles.length === 0) return [];
+  const shown = protectedFiles.slice(0, 10);
+  const more = protectedFiles.length - shown.length;
+  return [
+    '',
+    'PROTECTED TEST FILES — these existing tests define the task and cannot be modified; implement the source so they pass:',
+    ...shown.map((f) => `- ${f}`),
+    ...(more > 0 ? [`…and ${more} more`] : []),
+  ];
+}
+
 /** Render retrieved best-practice cards as a prompt section. */
 function practiceSection(practices?: string[]): string[] {
   if (!practices || practices.length === 0) return [];
@@ -245,10 +265,10 @@ function practiceSection(practices?: string[]): string[] {
 /** Default prompt strategy: lean contract + structured retry context. */
 export const defaultPromptBuilder: PromptBuilder = (ctx) => {
   if (ctx.turn === 1) {
-    return [OUTPUT_CONTRACT, ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`].join('\n');
+    return [OUTPUT_CONTRACT, ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`].join('\n');
   }
 
-  const sections = [OUTPUT_CONTRACT, ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ''];
+  const sections = [OUTPUT_CONTRACT, ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ''];
   sections.push(`PREVIOUS ATTEMPT (turn ${ctx.turn - 1}):`);
 
   if (ctx.previousFiles && ctx.previousFiles.length > 0) {
@@ -319,7 +339,8 @@ export class ConvergenceLoop {
   private async runSingleTurn(
     prompt: string,
     rungs: GateRung[],
-    executor: LoopExecutor
+    executor: LoopExecutor,
+    applyOptions?: ApplyOptions
   ): Promise<TurnOutcome> {
     let output = '';
     let executorError: string | undefined;
@@ -332,7 +353,7 @@ export class ConvergenceLoop {
     let applyResult: ApplyResult | null = null;
     let applyError: string | undefined;
     if (!executorError) {
-      applyResult = await this.applier(output, this.config.projectRoot);
+      applyResult = await this.applier(output, this.config.projectRoot, applyOptions);
       if (applyResult.error) {
         applyError = applyResult.error;
       } else if (applyResult.rejected.length > 0) {
@@ -359,7 +380,8 @@ export class ConvergenceLoop {
     prompt: string,
     rungs: GateRung[],
     settings: ExplorerSettings,
-    executor: LoopExecutor
+    executor: LoopExecutor,
+    applyOptions?: ApplyOptions
   ): Promise<TurnOutcome> {
     const exploration = await exploreAndCommit(instruction, prompt, executor, {
       candidates: settings.candidates,
@@ -369,6 +391,7 @@ export class ConvergenceLoop {
       rungs,
       ladderOptions: this.config.ladderOptions,
       ladderRunner: this.ladderRunner,
+      applyOptions,
     });
 
     const summaries: CandidateSummary[] = exploration.candidates.map((c) => ({
@@ -444,6 +467,7 @@ export class ConvergenceLoop {
       );
     }
 
+
     // Mutable run-state — a Phase 5 escalation directive can raise the budget,
     // switch the model, enable exploration, or turn on the critic mid-run.
     let maxTurns = this.config.maxTurns ?? DEFAULT_MAX_TURNS;
@@ -475,6 +499,26 @@ export class ConvergenceLoop {
       }
     }
 
+    // Gate-integrity snapshot, taken AFTER the baseline ladder run so files
+    // the gates themselves create on first run (e.g. __snapshots__/*.snap)
+    // are included. Test files existing now are protected for the whole run;
+    // tests the model creates later remain editable. Fail-soft — an
+    // unreadable tree just yields an empty set.
+    const protectTests = this.config.protectTests ?? true;
+    let protectedFiles: Set<string> | undefined;
+    if (protectTests) {
+      try {
+        const snapshot = findProtectedTestFiles(this.config.projectRoot);
+        protectedFiles = snapshot.size > 0 ? snapshot : undefined;
+      } catch {
+        protectedFiles = undefined;
+      }
+    }
+    const applyOptions: ApplyOptions | undefined = protectTests
+      ? { protectedFiles, protectGateConfigs: true }
+      : undefined;
+    const protectedList = protectedFiles ? [...protectedFiles].sort() : undefined;
+
     // Phase 4: retrieve best-practice cards once — they are task-level and
     // stable across turns. Fail-soft so retrieval never blocks delivery.
     let practices: string[] | undefined;
@@ -490,15 +534,15 @@ export class ConvergenceLoop {
     let success = false;
     let finalOutput = '';
     let finalFeedback = '';
-    let prevContext: Omit<PromptContext, 'instruction' | 'turn'> = { practices };
+    let prevContext: Omit<PromptContext, 'instruction' | 'turn'> = { practices, protectedFiles: protectedList };
 
     for (let turn = 1; turn <= maxTurns; turn++) {
       const turnStart = Date.now();
       const prompt = this.promptBuilder({ instruction, turn, ...prevContext });
 
       const outcome = explorerSettings
-        ? await this.runExplorerTurn(instruction, prompt, rungs, explorerSettings, executor)
-        : await this.runSingleTurn(prompt, rungs, executor);
+        ? await this.runExplorerTurn(instruction, prompt, rungs, explorerSettings, executor, applyOptions)
+        : await this.runSingleTurn(prompt, rungs, executor, applyOptions);
 
       finalOutput = outcome.output || finalOutput;
       if (outcome.ladder) {
@@ -575,6 +619,7 @@ export class ConvergenceLoop {
         previousFiles: outcome.filesApplied.length > 0 ? outcome.filesApplied : undefined,
         critique,
         practices,
+        protectedFiles: protectedList,
       };
     }
 

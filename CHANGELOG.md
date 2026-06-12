@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.33.0 (2026-06-12)
+
+- feat(delivery): protect pre-existing test files and gate configs from model writes
+
+
 ## v1.32.0 (2026-06-12)
 
 - feat(delivery): dynamic auto-optimization — classify every task, enable matching aids by default
