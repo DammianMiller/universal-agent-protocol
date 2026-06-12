@@ -84,6 +84,14 @@ describe('applier', () => {
       ]);
     });
 
+    it('rejects paths starting with "-" (git/CLI option injection)', () => {
+      const output = ['```file:--force=anything', 'evil', '```'].join('\n');
+      const result = applyFileBlocks(output, dir);
+      expect(result.filesWritten).toEqual([]);
+      expect(result.rejected).toHaveLength(1);
+      expect(result.rejected[0].reason).toBe('paths starting with "-" are not allowed');
+    });
+
     it('returns an instructive error when no blocks are found', () => {
       const result = applyFileBlocks('no files here', dir);
       expect(result.filesWritten).toEqual([]);

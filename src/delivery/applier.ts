@@ -117,6 +117,10 @@ function realParentEscapes(target: string, realRoot: string): boolean {
 function validatePath(blockPath: string, projectRoot: string, realRoot: string): string | null {
   if (isAbsolute(blockPath)) return 'absolute paths are not allowed';
 
+  // A leading '-' would be parsed as an option by git/CLI tools that later
+  // receive these paths as arguments (e.g. the deploy batcher's `git add`).
+  if (blockPath.startsWith('-')) return 'paths starting with "-" are not allowed';
+
   const target = resolve(projectRoot, blockPath);
   const rel = relative(resolve(projectRoot), target);
   if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {

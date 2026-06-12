@@ -129,6 +129,46 @@ export interface IterationDirective {
 
 export type OnIteration = (record: IterationRecord) => void | 'stop' | IterationDirective;
 
+/**
+ * Compose several onIteration hooks (progress printer, HALO tracer,
+ * coordination heartbeat, escalation controller…) into one. Hooks run in
+ * order; their directives merge: `stop`/`enableCritic` OR together,
+ * `raiseMaxTurns` takes the max, scalar fields last-writer-wins, notes join.
+ */
+export function composeIterationHooks(
+  ...hooks: Array<OnIteration | undefined>
+): OnIteration {
+  const active = hooks.filter((h): h is OnIteration => typeof h === 'function');
+  return (record) => {
+    const merged: IterationDirective = {};
+    const notes: string[] = [];
+    for (const hook of active) {
+      // Isolate hook failures: the loop calls onIteration uncaught, so one
+      // throwing observer (progress printer, tracer) must not abort the run
+      // or starve later hooks (heartbeat, escalation) of the record.
+      let directive: IterationDirective;
+      try {
+        directive = normalizeDirective(hook(record));
+      } catch {
+        continue;
+      }
+      if (directive.stop) merged.stop = true;
+      if (directive.enableCritic) merged.enableCritic = true;
+      if (directive.switchExecutor) merged.switchExecutor = directive.switchExecutor;
+      if (typeof directive.setCandidates === 'number') merged.setCandidates = directive.setCandidates;
+      if (
+        typeof directive.raiseMaxTurns === 'number' &&
+        directive.raiseMaxTurns > (merged.raiseMaxTurns ?? 0)
+      ) {
+        merged.raiseMaxTurns = directive.raiseMaxTurns;
+      }
+      if (directive.note) notes.push(directive.note);
+    }
+    if (notes.length > 0) merged.note = notes.join('; ');
+    return merged;
+  };
+}
+
 /** Retrieve best-practice guidance for a task (Phase 4). */
 export type PracticeProvider = (instruction: string) => string[] | Promise<string[]>;
 

@@ -397,6 +397,12 @@ program
   .option('--no-semantic', 'Use keyword (not embedding) retrieval for practice cards')
   .option('--escalate', 'Escalation ladder on stagnation (widen exploration -> critic -> stronger model)')
   .option('--escalate-model <preset>', 'Stronger model preset for escalation (default: $UAP_ESCALATE_MODEL)')
+  .option('--ideate', 'Divergent ideation: generate task-specific strategy seeds for exploration')
+  .option('--ideate-project <name>', 'Seed exploration from a curated open-collider project (projects/<name>)')
+  .option('--halo', 'Emit HALO spans for this run (analyze with `uap harness analyze`)')
+  .option('--coordinate', 'Register the run with the coordination layer (`uap agent`): announce, heartbeat, overlap detection')
+  .option('--deploy', 'On success, queue a commit of applied files into the deploy batcher (`uap deploy flush`)')
+  .option('--optimize', 'Enable every convergence aid: exploration, critic, practices, escalation, ideation, HALO, coordination')
   .option('--dry-run', 'Show detected gates and plan without calling the model')
   .option('--json', 'Emit JSON result')
   .action(async (instructionParts: string[], options) => {

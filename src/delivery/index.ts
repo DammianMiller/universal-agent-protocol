@@ -8,6 +8,7 @@
 
 export {
   ConvergenceLoop,
+  composeIterationHooks,
   defaultPromptBuilder,
   type CandidateSummary,
   type ConvergenceConfig,
@@ -93,5 +94,25 @@ export {
   type FileBlock,
   type RevertibleApply,
 } from './applier.js';
+
+export {
+  generateStrategySeeds,
+  parseSeedArray,
+  seedsFromIdeas,
+  type IdeationOptions,
+} from './ideation.js';
+
+export {
+  createHaloDeliveryTracer,
+  type HaloDeliveryTracer,
+  type HaloDeliveryTracerOptions,
+} from './halo-trace.js';
+
+export {
+  createRunCoordinator,
+  collectAppliedFiles,
+  type RunCoordinator,
+  type RunCoordinatorOptions,
+} from './run-coordinator.js';
 
 export { OpenAICompatClient, type OpenAICompatClientOptions } from '../models/openai-compat-client.js';

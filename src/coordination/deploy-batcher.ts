@@ -666,14 +666,20 @@ export class DeployBatcher {
   private async executeCommit(_target: string, payload: Record<string, unknown>): Promise<void> {
     const message = (payload.message as string) || 'Automated commit';
     const files = Array.isArray(payload.files) ? (payload.files as string[]) : [];
+    // Queued actions may execute from a different cwd than the queuer's
+    // (e.g. `uap deliver --deploy --project-root ../service` then a flush
+    // from elsewhere) — honor an explicit working directory when present.
+    const cwd = typeof payload.cwd === 'string' ? payload.cwd : undefined;
 
     if (files.length > 0) {
-      await this.execFileWithTimeout('git', ['add', ...files]);
+      // `--` stops option parsing: a queued path starting with '-' (e.g. a
+      // model-authored file name) must never be interpreted as a git flag.
+      await this.execFileWithTimeout('git', ['add', '--', ...files], { cwd });
     } else {
-      await this.execFileWithTimeout('git', ['add', '-A']);
+      await this.execFileWithTimeout('git', ['add', '-A'], { cwd });
     }
 
-    await this.execFileWithTimeout('git', ['commit', '-m', message]);
+    await this.execFileWithTimeout('git', ['commit', '-m', message], { cwd });
   }
 
   private async executePush(target: string, payload: Record<string, unknown>): Promise<void> {
