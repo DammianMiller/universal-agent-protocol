@@ -102,28 +102,21 @@ function isFile(abs: string): boolean {
 }
 
 /**
- * Resolve a relative import specifier the way bundlers/loaders do:
- * exact file, TS-style .js→.ts swap, appended extensions, directory index.
- * Returns EVERY existing root-relative candidate ('/'-separated) — this is
+ * Expand a resolved base path the way bundlers/loaders do — exact file,
+ * TS-style .js→.ts swap, appended extensions, directory index — returning
+ * EVERY existing root-relative candidate ('/'-separated). This is
  * protection, not module resolution, so when both x.js and x.ts exist we
  * protect both rather than guess which one the runner loads.
  */
-export function resolveRelativeImport(
-  fromFileAbs: string,
-  specifier: string,
-  projectRootAbs: string
-): string[] {
-  if (!specifier.startsWith('./') && !specifier.startsWith('../')) return [];
-  const base = resolve(dirname(fromFileAbs), specifier);
-
-  const candidates: string[] = [base];
+function resolveFromBase(baseAbs: string, projectRootAbs: string): string[] {
+  const candidates: string[] = [baseAbs];
   // TS sources import emitted-name './x.js' while the file on disk is x.ts
-  const jsSwap = base.match(/^(.*)\.([mc]?)js$/);
+  const jsSwap = baseAbs.match(/^(.*)\.([mc]?)js$/);
   if (jsSwap) {
     candidates.push(`${jsSwap[1]}.${jsSwap[2]}ts`, `${jsSwap[1]}.tsx`);
   }
-  for (const ext of CODE_EXTS) candidates.push(base + ext);
-  for (const ext of CODE_EXTS) candidates.push(resolve(base, `index${ext}`));
+  for (const ext of CODE_EXTS) candidates.push(baseAbs + ext);
+  for (const ext of CODE_EXTS) candidates.push(resolve(baseAbs, `index${ext}`));
 
   const found: string[] = [];
   for (const candidate of candidates) {
@@ -133,6 +126,217 @@ export function resolveRelativeImport(
     found.push(rel.split(sep).join('/'));
   }
   return found;
+}
+
+/** Resolve a './' or '../' import specifier. See resolveFromBase. */
+export function resolveRelativeImport(
+  fromFileAbs: string,
+  specifier: string,
+  projectRootAbs: string
+): string[] {
+  if (!specifier.startsWith('./') && !specifier.startsWith('../')) return [];
+  return resolveFromBase(resolve(dirname(fromFileAbs), specifier), projectRootAbs);
+}
+
+// ---------------------------------------------------------------------------
+// tsconfig path aliases — '@fixtures/x' style specifiers are how TS projects
+// commonly reference oracle material; without resolving them the alias is a
+// protection bypass. Parsed fail-soft from tsconfig.json (JSONC tolerated,
+// bounded `extends` chain), with each consumer pattern tried against every
+// alias target.
+// ---------------------------------------------------------------------------
+
+export interface TsconfigAliases {
+  /** Absolute baseUrl dir — null when the project never declared one */
+  baseUrlAbs: string | null;
+  /** paths patterns; baseAbs is where this entry's targets resolve from
+   * (the effective baseUrl, else the declaring config's directory per
+   * TS 4.1+ semantics) */
+  paths: Array<{ pattern: string; targets: string[]; baseAbs: string }>;
+}
+
+const MAX_TSCONFIG_EXTENDS = 4;
+const MAX_TSCONFIG_BYTES = 1_000_000;
+
+/**
+ * JSONC → JSON with a string-aware scanner: comments and trailing commas are
+ * stripped only OUTSIDE string literals, so wildcard targets like
+ * `packages/{star}/src` survive — a naive regex would treat the star-slash
+ * inside the string as a comment terminator and splice the config.
+ */
+export function jsoncToJson(text: string): string {
+  let out = '';
+  let i = 0;
+  let inString = false;
+  while (i < text.length) {
+    const c = text[i];
+    if (inString) {
+      out += c;
+      if (c === '\\') {
+        out += text[i + 1] ?? '';
+        i += 2;
+        continue;
+      }
+      if (c === '"') inString = false;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      out += c;
+      i++;
+      continue;
+    }
+    if (c === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '/' && text[i + 1] === '*') {
+      i += 2;
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    if (c === ',') {
+      // Trailing comma: skip when the next non-whitespace closes a scope
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j++;
+      if (text[j] === '}' || text[j] === ']') {
+        i++;
+        continue;
+      }
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+function parseJsonc(text: string): Record<string, unknown> {
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return JSON.parse(jsoncToJson(text)) as Record<string, unknown>;
+  }
+}
+
+/**
+ * Load baseUrl/paths from <projectRoot>/tsconfig.json, following relative
+ * `extends` chains (child wins). Returns null when there is no usable
+ * tsconfig — alias resolution is then skipped entirely.
+ */
+export function loadTsconfigAliases(projectRoot: string): TsconfigAliases | null {
+  const rootAbs = resolve(projectRoot);
+  const merged: Array<{ dir: string; compilerOptions: Record<string, unknown> }> = [];
+  const seen = new Set<string>();
+  // Child first; `extends` parents appended after (string or TS 5 array form,
+  // relative entries only). The reverse walk below applies base → child so
+  // child settings win.
+  const pending: string[] = [resolve(rootAbs, 'tsconfig.json')];
+
+  while (pending.length > 0 && merged.length < MAX_TSCONFIG_EXTENDS) {
+    const configPath = pending.shift() as string;
+    if (seen.has(configPath)) continue;
+    seen.add(configPath);
+    let parsed: Record<string, unknown>;
+    try {
+      const st = statSync(configPath);
+      if (!st.isFile() || st.size > MAX_TSCONFIG_BYTES) continue;
+      parsed = parseJsonc(readFileSync(configPath, 'utf-8'));
+    } catch {
+      continue;
+    }
+    const co = (parsed.compilerOptions ?? {}) as Record<string, unknown>;
+    merged.push({ dir: dirname(configPath), compilerOptions: co });
+    const ext = parsed.extends;
+    const extEntries = typeof ext === 'string' ? [ext] : Array.isArray(ext) ? ext : [];
+    for (const entry of extEntries) {
+      // npm-package extends ("@tsconfig/node20") are skipped — bare names.
+      if (typeof entry !== 'string' || (!entry.startsWith('./') && !entry.startsWith('../'))) {
+        continue;
+      }
+      pending.push(resolve(dirname(configPath), entry.endsWith('.json') ? entry : `${entry}.json`));
+    }
+  }
+  if (merged.length === 0) return null;
+
+  // Effective baseUrl is the child-most declaration (merged[0] is the child).
+  let baseUrlAbs: string | null = null;
+  for (const { dir, compilerOptions } of merged) {
+    if (typeof compilerOptions.baseUrl === 'string') {
+      baseUrlAbs = resolve(dir, compilerOptions.baseUrl);
+      break;
+    }
+  }
+
+  // Per-key merge, child wins; each entry resolves its targets from the
+  // effective baseUrl when declared, else from the declaring config's dir
+  // (TS 4.1+ semantics). Keeping parent keys a child's paths object would
+  // have replaced wholesale is deliberate over-protection.
+  const paths = new Map<string, { targets: string[]; baseAbs: string }>();
+  for (const { dir, compilerOptions } of [...merged].reverse()) {
+    if (!compilerOptions.paths || typeof compilerOptions.paths !== 'object') continue;
+    for (const [key, value] of Object.entries(compilerOptions.paths as Record<string, unknown>)) {
+      if (!Array.isArray(value)) continue;
+      const targets = value.filter((v): v is string => typeof v === 'string');
+      if (targets.length === 0) continue;
+      paths.set(key, { targets, baseAbs: baseUrlAbs ?? dir });
+    }
+  }
+
+  const patternList = [...paths.entries()].map(([pattern, { targets, baseAbs }]) => ({
+    pattern,
+    targets,
+    baseAbs,
+  }));
+  if (!baseUrlAbs && patternList.length === 0) return null;
+  return { baseUrlAbs, paths: patternList };
+}
+
+/** Match `specifier` against one tsconfig paths pattern; null when no match. */
+function matchAliasPattern(specifier: string, pattern: string): string | null {
+  const starIdx = pattern.indexOf('*');
+  if (starIdx === -1) return specifier === pattern ? '' : null;
+  const prefix = pattern.slice(0, starIdx);
+  const suffix = pattern.slice(starIdx + 1);
+  if (!specifier.startsWith(prefix) || !specifier.endsWith(suffix)) return null;
+  if (specifier.length < prefix.length + suffix.length) return null;
+  return specifier.slice(prefix.length, specifier.length - suffix.length);
+}
+
+/**
+ * Resolve a non-relative specifier through tsconfig paths/baseUrl. Returns
+ * every existing root-relative candidate (protection over-approximates).
+ */
+export function resolveAliasImport(
+  specifier: string,
+  aliases: TsconfigAliases,
+  projectRootAbs: string
+): string[] {
+  if (specifier.startsWith('./') || specifier.startsWith('../')) return [];
+  if (specifier.startsWith('node:') || isAbsolute(specifier)) return [];
+
+  const found = new Set<string>();
+  for (const { pattern, targets, baseAbs } of aliases.paths) {
+    const wildcard = matchAliasPattern(specifier, pattern);
+    if (wildcard === null) continue;
+    for (const target of targets) {
+      const substituted = target.includes('*') ? target.replace('*', wildcard) : target;
+      for (const rel of resolveFromBase(resolve(baseAbs, substituted), projectRootAbs)) {
+        found.add(rel);
+      }
+    }
+  }
+
+  // ONLY an explicitly declared baseUrl makes bare specifiers resolvable
+  // from it (TS semantics) — without the gate every `import 'react'` in
+  // every spec would cost ~18 stat calls against the project root.
+  if (found.size === 0 && aliases.baseUrlAbs !== null) {
+    for (const rel of resolveFromBase(resolve(aliases.baseUrlAbs, specifier), projectRootAbs)) {
+      found.add(rel);
+    }
+  }
+  return [...found];
 }
 
 function extractImportSpecifiers(source: string): string[] {
@@ -184,6 +388,12 @@ export function expandSpecImports(projectRoot: string, specFiles: string[]): str
   const protectedExtra = new Set<string>();
   const visited = new Set<string>();
   let bytesRead = 0;
+  let aliases: TsconfigAliases | null = null;
+  try {
+    aliases = loadTsconfigAliases(projectRoot);
+  } catch {
+    aliases = null;
+  }
   // Queue entries: [relPath, depth] — we recurse through specs and oracle
   // files, never through plain implementation code.
   const queue: Array<[string, number]> = specFiles.map((f) => [f, 0]);
@@ -212,6 +422,11 @@ export function expandSpecImports(projectRoot: string, specFiles: string[]): str
     for (const spec of extractImportSpecifiers(source)) {
       for (const resolved of resolveRelativeImport(abs, spec, rootAbs)) {
         referenced.add(resolved);
+      }
+      if (aliases) {
+        for (const resolved of resolveAliasImport(spec, aliases, rootAbs)) {
+          referenced.add(resolved);
+        }
       }
     }
     for (const dataRel of extractDataLiterals(source, abs, rootAbs)) {
