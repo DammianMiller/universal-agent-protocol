@@ -1,24 +1,28 @@
 /**
  * Convergence Loop
  *
- * Phase 1 of the Fable-parity delivery harness: drives an underlying model
- * through execute → apply → verify → feedback iterations until the project's
- * completion gates (verifier ladder) pass or the turn budget is exhausted.
+ * Drives an underlying model through execute → apply → verify → feedback
+ * iterations until the project's completion gates (verifier ladder) pass or
+ * the turn budget is exhausted.
  *
- * The loop owns four pluggable seams so later phases extend without breaking
- * changes:
+ * The loop owns pluggable seams so phases extend without breaking changes:
  *  - executor: how a prompt becomes model output
  *  - applier: how model output is materialized into the project tree
- *  - promptBuilder: how instruction/feedback/prior output compose a prompt
- *    (Phase 3 structured critique and Phase 4 memory injection plug in here)
- *  - ladderRunner: how gates are verified (tests inject stubs; Phase 2 runs
- *    candidates in isolated worktrees)
+ *  - promptBuilder: how instruction/feedback/critique compose a prompt
+ *  - ladderRunner: how gates are verified
+ *  - explorer (Phase 2): best-of-N candidate exploration with judge tie-break
+ *  - critic (Phase 3): structured repair plans replacing raw gate dumps
+ *  - onIteration: per-turn control hook (Phase 5 escalation controllers)
  */
 
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
 import { detectRungs, runLadder } from './verifier-ladder.js';
 import type { Applier, ApplyResult } from './applier.js';
 import { applyFileBlocks } from './applier.js';
+import type { StrategySeed } from './explorer.js';
+import { exploreAndCommit } from './explorer.js';
+import type { Judge } from './judge.js';
+import type { Critic } from './critic.js';
 
 export type LoopExecutor = (prompt: string) => Promise<string>;
 
@@ -33,7 +37,7 @@ export interface PromptContext {
   instruction: string;
   /** 1-based turn about to execute */
   turn: number;
-  /** Model output from the previous turn (full, untruncated) */
+  /** Model output from the previous turn (truncated) */
   previousOutput?: string;
   /** Gate feedback from the previous turn's ladder run */
   feedback?: string;
@@ -41,9 +45,19 @@ export interface PromptContext {
   applyError?: string;
   /** Files written by the previous turn */
   previousFiles?: string[];
+  /** Structured repair steps from the critic (Phase 3) */
+  critique?: string[];
 }
 
 export type PromptBuilder = (context: PromptContext) => string;
+
+export interface CandidateSummary {
+  id: string;
+  strategy: string;
+  passed: boolean;
+  score: number;
+  error?: string;
+}
 
 export interface IterationRecord {
   /** Real 1-based loop turn (executor-error turns are recorded too) */
@@ -58,6 +72,12 @@ export interface IterationRecord {
   executorError?: string;
   /** Apply failure, if output could not be materialized */
   applyError?: string;
+  /** Strategy seed of the committed candidate (explorer mode) */
+  strategy?: string;
+  /** All candidates evaluated this turn (explorer mode) */
+  candidates?: CandidateSummary[];
+  /** Judge rationale when a tie-break decided the winner (explorer mode) */
+  judgeRationale?: string;
   durationMs: number;
 }
 
@@ -78,6 +98,13 @@ export interface DeliveryResult {
   totalDurationMs: number;
 }
 
+export interface ExplorerSettings {
+  /** Candidates per turn (default 3) */
+  candidates?: number;
+  seeds?: StrategySeed[];
+  judge?: Judge;
+}
+
 export interface ConvergenceConfig {
   /** Maximum execute→apply→verify iterations (default 5) */
   maxTurns?: number;
@@ -96,6 +123,10 @@ export interface ConvergenceConfig {
   baselineCheck?: boolean;
   /** Max characters of prior model output included in retry prompts (default 3000) */
   previousOutputChars?: number;
+  /** Best-of-N exploration per turn (Phase 2); omit for single-candidate turns */
+  explorer?: ExplorerSettings;
+  /** Structured critique of failed turns (Phase 3) */
+  critic?: Critic;
   /**
    * Called after every iteration. Return 'stop' to abort the loop early
    * (Phase 5 escalation controllers hook in here).
@@ -138,7 +169,17 @@ export const defaultPromptBuilder: PromptBuilder = (ctx) => {
   if (ctx.applyError) {
     sections.push(`Your output could not be applied: ${ctx.applyError}`);
   }
+
+  // A structured repair plan outranks the raw gate dump: one concrete action
+  // per line is what small models can actually execute.
+  if (ctx.critique && ctx.critique.length > 0) {
+    sections.push('');
+    sections.push('REPAIR PLAN — apply these fixes exactly:');
+    ctx.critique.forEach((step, i) => sections.push(`${i + 1}. ${step}`));
+  }
+
   if (ctx.feedback) {
+    sections.push('');
     sections.push(ctx.feedback);
   }
   if (ctx.previousOutput) {
@@ -151,6 +192,17 @@ export const defaultPromptBuilder: PromptBuilder = (ctx) => {
   sections.push('Fix the issues and emit corrected file blocks.');
   return sections.join('\n');
 };
+
+interface TurnOutcome {
+  output: string;
+  filesApplied: string[];
+  ladder: LadderResult | null;
+  executorError?: string;
+  applyError?: string;
+  strategy?: string;
+  candidates?: CandidateSummary[];
+  judgeRationale?: string;
+}
 
 export class ConvergenceLoop {
   private readonly config: ConvergenceConfig;
@@ -173,6 +225,112 @@ export class ConvergenceLoop {
     this.ladderRunner = seams.ladderRunner ?? runLadder;
     this.applier = seams.applier ?? applyFileBlocks;
     this.promptBuilder = seams.promptBuilder ?? defaultPromptBuilder;
+  }
+
+  /** Single-candidate turn: execute → apply → verify. */
+  private async runSingleTurn(prompt: string, rungs: GateRung[]): Promise<TurnOutcome> {
+    let output = '';
+    let executorError: string | undefined;
+    try {
+      output = await this.executor(prompt);
+    } catch (err) {
+      executorError = err instanceof Error ? err.message : String(err);
+    }
+
+    let applyResult: ApplyResult | null = null;
+    let applyError: string | undefined;
+    if (!executorError) {
+      applyResult = await this.applier(output, this.config.projectRoot);
+      if (applyResult.error) {
+        applyError = applyResult.error;
+      } else if (applyResult.rejected.length > 0) {
+        applyError = `Rejected blocks: ${applyResult.rejected
+          .map((r) => `${r.path} (${r.reason})`)
+          .join('; ')}`;
+      }
+    }
+
+    // Verify — only when something was applied; otherwise the tree is
+    // unchanged and re-running gates would waste minutes for no signal.
+    const filesApplied = applyResult?.filesWritten ?? [];
+    let ladder: LadderResult | null = null;
+    if (!executorError && filesApplied.length > 0) {
+      ladder = await this.ladderRunner(rungs, this.config.projectRoot, this.config.ladderOptions);
+    }
+
+    return { output, filesApplied, ladder, executorError, applyError };
+  }
+
+  /** Explorer turn: best-of-N candidates, commit the winner (Phase 2). */
+  private async runExplorerTurn(
+    instruction: string,
+    prompt: string,
+    rungs: GateRung[],
+    settings: ExplorerSettings
+  ): Promise<TurnOutcome> {
+    const exploration = await exploreAndCommit(instruction, prompt, this.executor, {
+      candidates: settings.candidates,
+      seeds: settings.seeds,
+      judge: settings.judge,
+      projectRoot: this.config.projectRoot,
+      rungs,
+      ladderOptions: this.config.ladderOptions,
+      ladderRunner: this.ladderRunner,
+    });
+
+    const summaries: CandidateSummary[] = exploration.candidates.map((c) => ({
+      id: c.id,
+      strategy: c.strategy,
+      passed: c.passed,
+      score: c.score,
+      error: c.error,
+    }));
+
+    const winner = exploration.winner;
+    if (!winner) {
+      // Distinguish executor failure (no usable model output) from apply
+      // failure (output produced but no file blocks) so the retry prompt
+      // carries the right guidance — matching single-turn feedback quality.
+      const execErrors = exploration.candidates.map((c) => c.error).filter(Boolean);
+      if (execErrors.length === exploration.candidates.length && execErrors.length > 0) {
+        return {
+          output: '',
+          filesApplied: [],
+          ladder: null,
+          executorError: execErrors.join('; '),
+          candidates: summaries,
+        };
+      }
+      const applyErr =
+        exploration.candidates.map((c) => c.applyResult?.error).find(Boolean) ??
+        'No candidate produced applicable file blocks.';
+      return {
+        output: '',
+        filesApplied: [],
+        ladder: null,
+        applyError: applyErr,
+        candidates: summaries,
+      };
+    }
+
+    let applyError: string | undefined;
+    if (winner.applyResult?.error) {
+      applyError = winner.applyResult.error;
+    } else if (winner.applyResult && winner.applyResult.rejected.length > 0) {
+      applyError = `Rejected blocks: ${winner.applyResult.rejected
+        .map((r) => `${r.path} (${r.reason})`)
+        .join('; ')}`;
+    }
+
+    return {
+      output: winner.output,
+      filesApplied: winner.applyResult?.filesWritten ?? [],
+      ladder: exploration.ladder,
+      applyError,
+      strategy: winner.strategy,
+      candidates: summaries,
+      judgeRationale: exploration.judgeRationale,
+    };
   }
 
   /**
@@ -227,53 +385,32 @@ export class ConvergenceLoop {
       const turnStart = Date.now();
       const prompt = this.promptBuilder({ instruction, turn, ...prevContext });
 
-      // Execute
-      let output = '';
-      let executorError: string | undefined;
-      try {
-        output = await this.executor(prompt);
-      } catch (err) {
-        executorError = err instanceof Error ? err.message : String(err);
-      }
-      finalOutput = output || finalOutput;
+      const outcome = this.config.explorer
+        ? await this.runExplorerTurn(instruction, prompt, rungs, this.config.explorer)
+        : await this.runSingleTurn(prompt, rungs);
 
-      // Apply
-      let applyResult: ApplyResult | null = null;
-      let applyError: string | undefined;
-      if (!executorError) {
-        applyResult = await this.applier(output, this.config.projectRoot);
-        if (applyResult.error) {
-          applyError = applyResult.error;
-        } else if (applyResult.rejected.length > 0) {
-          applyError = `Rejected blocks: ${applyResult.rejected
-            .map((r) => `${r.path} (${r.reason})`)
-            .join('; ')}`;
-        }
-      }
-
-      // Verify — only when something was applied; otherwise the tree is
-      // unchanged and re-running gates would waste minutes for no signal.
-      const filesApplied = applyResult?.filesWritten ?? [];
-      let ladder: LadderResult | null = null;
-      if (!executorError && filesApplied.length > 0) {
-        ladder = await this.ladderRunner(rungs, this.config.projectRoot, this.config.ladderOptions);
-        finalFeedback = ladder.feedback;
+      finalOutput = outcome.output || finalOutput;
+      if (outcome.ladder) {
+        finalFeedback = outcome.ladder.feedback;
       }
 
       const record: IterationRecord = {
         turn,
-        passed: ladder?.passed ?? false,
-        score: ladder?.score ?? 0,
-        gateResults: ladder?.results ?? [],
-        filesApplied,
-        executorError,
-        applyError,
+        passed: outcome.ladder?.passed ?? false,
+        score: outcome.ladder?.score ?? 0,
+        gateResults: outcome.ladder?.results ?? [],
+        filesApplied: outcome.filesApplied,
+        executorError: outcome.executorError,
+        applyError: outcome.applyError,
+        strategy: outcome.strategy,
+        candidates: outcome.candidates,
+        judgeRationale: outcome.judgeRationale,
         durationMs: Date.now() - turnStart,
       };
       history.push(record);
       const directive = this.config.onIteration?.(record);
 
-      if (ladder?.passed) {
+      if (outcome.ladder?.passed) {
         success = true;
         break;
       }
@@ -281,13 +418,34 @@ export class ConvergenceLoop {
         break;
       }
 
+      // Phase 3: structured critique of the failed turn (fail-soft). Skipped
+      // on the last turn — prevContext is never consumed, so it would waste
+      // a model call.
+      let critique: string[] | undefined;
+      if (this.config.critic && !outcome.executorError && turn < maxTurns) {
+        try {
+          const result = await this.config.critic({
+            instruction,
+            record,
+            feedback: outcome.ladder?.feedback ?? outcome.applyError ?? '',
+            attemptOutput: truncateHead(outcome.output, previousOutputChars),
+          });
+          critique = result.fixList.length > 0 ? result.fixList : undefined;
+        } catch {
+          critique = undefined;
+        }
+      }
+
       prevContext = {
-        previousOutput: executorError
+        previousOutput: outcome.executorError
           ? undefined
-          : truncateHead(output, previousOutputChars),
-        feedback: executorError ? `Model call failed: ${executorError}` : ladder?.feedback,
-        applyError,
-        previousFiles: filesApplied.length > 0 ? filesApplied : undefined,
+          : truncateHead(outcome.output, previousOutputChars),
+        feedback: outcome.executorError
+          ? `Model call failed: ${outcome.executorError}`
+          : outcome.ladder?.feedback,
+        applyError: outcome.applyError,
+        previousFiles: outcome.filesApplied.length > 0 ? outcome.filesApplied : undefined,
+        critique,
       };
     }
 

@@ -9,6 +9,9 @@
 import chalk from 'chalk';
 import { resolve } from 'path';
 import { ConvergenceLoop } from '../delivery/convergence-loop.js';
+import { createModelJudge } from '../delivery/judge.js';
+import { createModelCritic } from '../delivery/critic.js';
+import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import { detectRungs } from '../delivery/verifier-ladder.js';
 import { OpenAICompatClient } from '../models/openai-compat-client.js';
 import { ModelPresets } from '../models/types.js';
@@ -22,11 +25,14 @@ export interface DeliverOptions {
   endpoint?: string;
   temperature?: string;
   gates?: string;
+  candidates?: string;
+  critic?: boolean;
   dryRun?: boolean;
   json?: boolean;
 }
 
 const MAX_TURNS_LIMIT = 20;
+const MAX_CANDIDATES_LIMIT = MAX_CANDIDATES;
 
 /** Strip ANSI/C0 control sequences before echoing subprocess output. */
 function stripControl(text: string): string {
@@ -80,6 +86,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
   }
 
+  let candidates: number | undefined;
+  if (options.candidates !== undefined) {
+    candidates = Number(options.candidates);
+    if (!Number.isInteger(candidates) || candidates < 2 || candidates > MAX_CANDIDATES_LIMIT) {
+      fail(`--candidates must be an integer between 2 and ${MAX_CANDIDATES_LIMIT}, got '${options.candidates}'`);
+    }
+  }
+
   // Validate the preset before any branch, including --dry-run
   const model = resolveModel(presetId, options.endpoint);
 
@@ -103,6 +117,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       projectRoot,
       model: model.id,
       maxTurns: maxTurns ?? 5,
+      candidatesPerTurn: candidates ?? 1,
+      critic: Boolean(options.critic),
       gates: rungs.map((r) => ({ id: r.id, name: r.name, required: r.required })),
     };
     if (options.json) {
@@ -112,6 +128,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(`  Project: ${projectRoot}`);
       console.log(`  Model preset: ${model.id}`);
       console.log(`  Max turns: ${summary.maxTurns}`);
+      console.log(`  Candidates/turn: ${summary.candidatesPerTurn}${candidates ? '' : ' (single-shot)'}`);
+      console.log(`  Critic: ${summary.critic ? 'on' : 'off'}`);
       console.log('  Gates:');
       for (const r of rungs) {
         console.log(`    - ${r.name}${r.required ? '' : chalk.dim(' (optional)')}`);
@@ -134,13 +152,25 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     return result.content;
   };
 
-  console.log(chalk.bold(`Delivering via ${model.name} (profile: ${profile.name}), max ${maxTurns ?? 5} turns`));
+  const modeNotes = [
+    candidates ? `${candidates} candidates/turn` : null,
+    options.critic ? 'critic on' : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+  console.log(
+    chalk.bold(
+      `Delivering via ${model.name} (profile: ${profile.name}), max ${maxTurns ?? 5} turns${modeNotes ? ` (${modeNotes})` : ''}`
+    )
+  );
 
   const loop = new ConvergenceLoop(
     {
       projectRoot,
       maxTurns,
       rungs,
+      explorer: candidates ? { candidates, judge: createModelJudge(executor) } : undefined,
+      critic: options.critic ? createModelCritic(executor) : undefined,
       onIteration: (record) => {
         const pct = Math.round(record.score * 100);
         const status = record.executorError
@@ -150,7 +180,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
             : record.passed
               ? chalk.green('PASS')
               : chalk.yellow(`${pct}% of gates`);
-        console.log(`  Turn ${record.turn}: ${status} (${Math.round(record.durationMs / 1000)}s)`);
+        const strategy = record.strategy ? chalk.dim(` [${record.strategy}]`) : '';
+        console.log(`  Turn ${record.turn}: ${status}${strategy} (${Math.round(record.durationMs / 1000)}s)`);
+        if (record.candidates) {
+          const summary = record.candidates
+            .map((c) => `${c.id}:${c.error ? 'err' : `${Math.round(c.score * 100)}%`}`)
+            .join(' ');
+          console.log(chalk.dim(`    candidates: ${summary}`));
+        }
       },
     },
     executor
