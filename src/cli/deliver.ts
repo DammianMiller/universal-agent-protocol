@@ -72,11 +72,17 @@ export interface DeliverOptions {
   /** Path polled each turn for operator guidance — steer a running mission
    * without stopping it by writing to this file. */
   guidanceFile?: string;
+  /** Loop until every gate passes (or the ceiling/stagnation guard stops it). */
+  untilDelivered?: boolean;
+  /** Hard turn ceiling for --until-delivered (default 30). */
+  ceiling?: string;
   dryRun?: boolean;
   json?: boolean;
 }
 
 const MAX_TURNS_LIMIT = 20;
+const CEILING_LIMIT = 50;
+const DEFAULT_CLI_CEILING = 30;
 const MAX_CANDIDATES_LIMIT = MAX_CANDIDATES;
 
 /** Strip ANSI/C0 control sequences before echoing subprocess output. */
@@ -193,6 +199,18 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
   }
 
+  // --until-delivered: loop until gates pass, bounded by a hard ceiling.
+  let maxTurnsCeiling: number | undefined;
+  if (options.ceiling !== undefined) {
+    maxTurnsCeiling = Number(options.ceiling);
+    if (!Number.isInteger(maxTurnsCeiling) || maxTurnsCeiling < 1 || maxTurnsCeiling > CEILING_LIMIT) {
+      fail(`--ceiling must be an integer between 1 and ${CEILING_LIMIT}, got '${options.ceiling}'`);
+    }
+  }
+  if (options.untilDelivered && maxTurnsCeiling === undefined) {
+    maxTurnsCeiling = DEFAULT_CLI_CEILING;
+  }
+
   let temperature: number | undefined;
   if (options.temperature !== undefined) {
     temperature = Number(options.temperature);
@@ -246,6 +264,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       protectTests: options.protectTests !== false,
       protectedTestFiles: options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles.size : 0,
       guidanceFile: options.guidanceFile ? resolve(options.guidanceFile) : null,
+      untilDelivered: Boolean(options.untilDelivered),
+      ceiling: options.untilDelivered ? (maxTurnsCeiling ?? DEFAULT_CLI_CEILING) : null,
       gates: rungs.map((r) => ({ id: r.id, name: r.name, required: r.required })),
     };
     if (options.json) {
@@ -274,6 +294,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         `  Test protection: ${summary.protectTests ? `on (${summary.protectedTestFiles} pre-existing test/oracle file(s))` : 'off'}`
       );
       console.log(`  Guidance file: ${summary.guidanceFile ?? 'none (mission runs unattended)'}`);
+      console.log(
+        `  Until delivered: ${summary.untilDelivered ? `on (loop to all-gates-pass, ceiling ${summary.ceiling} turns)` : 'off'}`
+      );
       console.log('  Gates:');
       for (const r of rungs) {
         console.log(`    - ${r.name}${r.required ? '' : chalk.dim(' (optional)')}`);
@@ -481,6 +504,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       practiceProvider,
       protectTests: options.protectTests,
       guidanceProvider,
+      untilDelivered: options.untilDelivered,
+      maxTurnsCeiling,
       onIteration: composeIterationHooks(
         (record) => printProgress(record),
         (record) => haloTracer.onIteration(record),
@@ -490,6 +515,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     },
     executor
   );
+
+  // Mark this run (and the gate subprocesses it spawns) as deliver-driven so
+  // the delivery-enforcement policy exempts the sanctioned path. Scoped to the
+  // loop and RESTORED afterward so a programmatic/long-lived caller doesn't
+  // leave the whole process permanently exempt.
+  const priorDeliverActive = process.env.UAP_DELIVER_ACTIVE;
+  process.env.UAP_DELIVER_ACTIVE = '1';
 
   let result: DeliveryResult;
   try {
@@ -514,6 +546,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       await coordinator.finish(aborted);
     }
     throw err;
+  } finally {
+    if (priorDeliverActive === undefined) delete process.env.UAP_DELIVER_ACTIVE;
+    else process.env.UAP_DELIVER_ACTIVE = priorDeliverActive;
   }
 
   haloTracer.finish(result);
