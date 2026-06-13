@@ -1,6 +1,6 @@
 /**
  * MCP Router Server
- * Exposes 2 meta-tools: discover_tools and execute_tool
+ * Exposes 3 meta-tools: discover_tools, execute_tool, and deliver
  * Achieves 98%+ token reduction by hiding individual tool definitions
  */
 
@@ -20,6 +20,12 @@ import {
   handleExecuteTool,
   estimateExecuteToolTokens,
 } from './tools/execute.js';
+import {
+  DELIVER_TOOL_DEFINITION,
+  handleDeliver,
+  estimateDeliverToolTokens,
+} from './tools/deliver.js';
+import type { DeliverArgs } from './tools/deliver.js';
 import type { McpConfig, ToolDefinition, RouterStats } from './types.js';
 
 export interface RouterOptions {
@@ -116,10 +122,12 @@ export class McpRouter {
   }
 
   /**
-   * Get the 2 meta-tool definitions (for MCP tools/list)
+   * Get the 3 meta-tool definitions (for MCP tools/list)
    */
-  getToolDefinitions(): Array<typeof DISCOVER_TOOLS_DEFINITION | typeof EXECUTE_TOOL_DEFINITION> {
-    return [DISCOVER_TOOLS_DEFINITION, EXECUTE_TOOL_DEFINITION];
+  getToolDefinitions(): Array<
+    typeof DISCOVER_TOOLS_DEFINITION | typeof EXECUTE_TOOL_DEFINITION | typeof DELIVER_TOOL_DEFINITION
+  > {
+    return [DISCOVER_TOOLS_DEFINITION, EXECUTE_TOOL_DEFINITION, DELIVER_TOOL_DEFINITION];
   }
 
   /**
@@ -145,6 +153,9 @@ export class McpRouter {
           this.clientPool
         );
 
+      case 'deliver':
+        return handleDeliver(args as DeliverArgs);
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -159,8 +170,9 @@ export class McpRouter {
     // Estimate traditional token usage: ~500 tokens per tool
     const traditionalTokens = tools * 500;
 
-    // Router uses only 2 tools
-    const routerTokens = estimateDiscoverToolsTokens() + estimateExecuteToolTokens();
+    // Router uses only 3 meta-tools
+    const routerTokens =
+      estimateDiscoverToolsTokens() + estimateExecuteToolTokens() + estimateDeliverToolTokens();
 
     const savings =
       traditionalTokens > 0
@@ -570,5 +582,5 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
   });
 
   console.error('[router] MCP Router server started (stdio)');
-  console.error('[router] Exposing 2 tools: discover_tools, execute_tool');
+  console.error('[router] Exposing 3 tools: discover_tools, execute_tool, deliver');
 }

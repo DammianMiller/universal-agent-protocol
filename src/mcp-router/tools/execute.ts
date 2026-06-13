@@ -1,7 +1,7 @@
 /**
  * execute_tool - Meta-tool for executing MCP tools
  *
- * This is one of the 2 tools exposed by the router (the other being discover_tools).
+ * One of the router's 3 meta-tools (alongside discover_tools and deliver).
  * Routes tool calls to the appropriate MCP server.
  */
 
