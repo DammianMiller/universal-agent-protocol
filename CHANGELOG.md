@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.36.1 (2026-06-13)
+
+- fix(policies): GIT_DIR poisoning broke git-diff enforcers and pre-push gates under hooks
+
+
 ## v1.36.0 (2026-06-13)
 
 - feat(policies): merge-deploy-monitor-verify policy (recovered 078 work)
