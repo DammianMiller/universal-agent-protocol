@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.36.0 (2026-06-13)
+
+- feat(policies): merge-deploy-monitor-verify policy (recovered 078 work)
+- feat(proxy): thinking-grammar toggle for the anthropic proxy tool-call path
+
+
 ## v1.35.0 (2026-06-12)
 
 - feat(delivery): resolve tsconfig path aliases in the spec import walk

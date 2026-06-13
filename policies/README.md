@@ -12,8 +12,9 @@ These policies can be enabled/disabled during `uap setup` or via `uap-policy` CL
 | definition-of-done-iac   | ON      | REQUIRED    | IaC pipeline apply + kubectl verify = done                   |
 | mandatory-file-backup    | ON      | REQUIRED    | Backup files before modification                             |
 | pre-edit-build-gate      | ON      | REQUIRED    | Verify build before/after every TS file edit                 |
-| completion-gate          | ON      | REQUIRED    | All gates (test, build, lint, deploy, review) before DONE    |
-| semver-versioning        | ON      | REQUIRED    | Automated semver bumps via npm scripts, no manual edits      |
+| completion-gate             | ON      | REQUIRED    | All gates (test, build, lint, deploy, review) before DONE    |
+| merge-deploy-monitor-verify | ON      | REQUIRED    | Merge + deploy + monitor + behavioral verify before DONE     |
+| semver-versioning           | ON      | REQUIRED    | Automated semver bumps via npm scripts, no manual edits      |
 | worktree-enforcement     | ON      | REQUIRED    | All file changes must use a worktree, no direct main commits |
 | image-asset-verification | OFF     | RECOMMENDED | Enforce deterministic image operations                       |
 

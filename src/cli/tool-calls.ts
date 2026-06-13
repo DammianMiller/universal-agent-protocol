@@ -91,7 +91,7 @@ function detectLlmServer(): string {
     }
   }
 
-  return 'http://192.168.1.165:4000';
+  return 'http://127.0.0.1:4000';
 }
 
 /**
@@ -367,7 +367,7 @@ print('OK')
 
   console.log(chalk.bold('Environment Variables:'));
   console.log('  UAP_MODEL_PROFILE   Model profile name (default: auto-detect)');
-  console.log('  UAP_LLM_SERVER      LLM server base URL (default: http://192.168.1.165:4000)');
+  console.log('  UAP_LLM_SERVER      LLM server base URL (default: http://127.0.0.1:4000)');
   console.log('  TARGET_URL          Inference server URL (default: http://127.0.0.1:8080)');
   console.log('  PROXY_PORT          Proxy listen port (default: 11435)');
   console.log('  FORCE_TOOL_CHOICE   tool_choice value (default: required)\n');
@@ -674,7 +674,7 @@ Model Profiles:
 
 Environment Variables:
   UAP_MODEL_PROFILE     Model profile (default: auto-detect)
-  UAP_LLM_SERVER        LLM server base URL (default: http://192.168.1.165:4000)
+  UAP_LLM_SERVER        LLM server base URL (default: http://127.0.0.1:4000)
   TARGET_URL            Inference server URL (default: http://127.0.0.1:8080)
   PROXY_PORT            Proxy listen port (default: 11435)
   FORCE_TOOL_CHOICE     tool_choice value (default: required)
@@ -684,7 +684,7 @@ Examples:
   ${chalk.gray('uap-tool-calls setup')}
   ${chalk.gray('uap-tool-calls test')}
   ${chalk.gray('uap-tool-calls status')}
-  ${chalk.gray('UAP_LLM_SERVER=http://192.168.1.165:4000 uap-tool-calls test')}
+  ${chalk.gray('UAP_LLM_SERVER=http://127.0.0.1:4000 uap-tool-calls test')}
   ${chalk.gray('UAP_MODEL_PROFILE=qwen35 uap-tool-calls test')}
   ${chalk.gray('TARGET_URL=http://localhost:11434 uap-tool-calls proxy')}
 `);

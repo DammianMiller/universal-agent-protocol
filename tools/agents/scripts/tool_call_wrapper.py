@@ -64,7 +64,7 @@ logger = logging.getLogger("uap_tool_call")
 
 # ── Model Profiles ──────────────────────────────────────────────────────────
 
-DEFAULT_LLM_SERVER = "http://192.168.1.165:4000"
+DEFAULT_LLM_SERVER = "http://127.0.0.1:4000"
 
 
 def _normalize_base_url(url: str) -> str:

@@ -1,0 +1,84 @@
+apiVersion: uap.miller.tech/v1
+kind: Policy
+metadata:
+  name: merge-deploy-monitor-verify
+  category: completion
+  level: REQUIRED
+  default: ON
+  version: 1.0
+spec:
+  purpose: >
+    A change is NOT DONE until it has been merged, rolled out via the designated
+    pipeline, observed healthy in the target environment for a defined monitoring
+    window, and verified with captured evidence to behave correctly end-to-end.
+    DONE requires evidence from the deployed system, not just CI.
+
+  enforcement:
+    stage: review
+    triggers:
+      - task_status_change_to: [DONE, COMPLETE, CLOSED, RESOLVED]
+      - pr_declared_shipped
+      - incident_or_change_request_closed
+
+  gates:
+    - id: merge
+      requires:
+        - pr_from_feature_or_worktree_branch
+        - approving_review_or_documented_self_review
+        - all_required_ci_checks_green_on_merge_commit
+        - merge_commit_sha_recorded
+
+    - id: deploy
+      requires:
+        - pipeline_executed_end_to_end_without_error
+        - target_environments_reached
+        - pipeline_run_url_recorded
+      forbids:
+        - manual_or_local_rollout
+        - hand_edited_cloud_resources
+        - pipeline_bypass
+
+    - id: monitor
+      requires:
+        - observation_window_elapsed
+        - health_signals_clean:
+            - error_rate
+            - latency_p50_p95_p99
+            - saturation
+            - logs
+            - alerts
+        - dashboards_and_log_links_recorded
+      windows:
+        low_risk: 15m
+        service_or_infra: 1h
+        high_blast_radius: 24h
+
+    - id: verify
+      requires:
+        - end_to_end_exercise_against_deployed_environment
+        - happy_path_exercised
+        - negative_case_exercised
+        - evidence_captured:
+            - response_body_or_command_output
+            - screenshot_or_log_excerpt
+      forbids:
+        - ci_only_as_proof
+        - tests_passed_as_proof_of_deployed_behavior
+
+  evidence:
+    required_on_close:
+      - merge_commit_sha
+      - pr_url
+      - deployment_pipeline_run_url
+      - target_environments
+      - monitoring_window_start
+      - monitoring_window_end
+      - dashboard_links
+      - verification_evidence
+      - negative_case_evidence
+
+  composes_with:
+    - policy-completion-gate
+    - policy-mandatory-testing-deployment
+    - policy-definition-of-done-iac
+    - policy-iac-pipeline-enforcement
