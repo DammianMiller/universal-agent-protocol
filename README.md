@@ -374,6 +374,7 @@ the model's say-so.
 9. **Deploy batching** (`--deploy`) — on success, queues a commit of the applied files into the deploy batcher; execute with `uap deploy flush`.
 10. **`--optimize`** — one switch for every convergence aid: 4 candidates/turn + critic + practices + escalation + ideation + HALO + coordination (deploy stays explicit).
 11. **Test protection (default)** — pre-existing test/spec files are snapshotted at loop start (case-folded, symlink-alias-aware) and the applier refuses model writes to them, with steering feedback and a prompt warning; test-runner/compiler configs (`vitest.config.*`, `tsconfig*.json`, `jest.config.*`, `pytest.ini`, …) are blocked too, closing gate-rigging by indirection. Protection extends to the spec's **transitive oracle material** — helpers/fixtures/mocks the tests import (by convention or data extension, including through tsconfig path aliases like `@fixtures/*` and `baseUrl` bare imports), quoted fixture paths, reserved missing goldens, and recursive helper chains (the unit under test stays writable). A **runtime integrity guard** hashes every protected file and re-verifies after each gate run: tampering from test code executing during the gates is restored and the gate result discarded. New test files remain allowed. Opt out with `--no-protect-tests`.
+12. **Mission autonomy (default)** — the loop tells the driven model to complete the *entire* task without stopping to ask questions or pausing between phases (state assumptions and proceed; emit a one-line progress note; don't invent unrequested scope). The real gates remain the arbiter. Opt out per-run with `ConvergenceConfig.autonomous: false`. An **operator-guidance channel** lets you steer a running, unattended mission without stopping it: `--guidance-file <path>` is polled each turn and its text is injected as high-priority guidance — write to the file to redirect, clear it to drop the steer. This complements the execution-level `onIteration` directive channel (stop/escalate/switch-model).
 12. **Dynamic optimization (default)** — every instruction is classified for complexity (simple / moderate / complex); non-trivial requests automatically get the aids that improve outcomes (moderate → exploration ×3 + critic + practices + HALO + coordination; complex → the full `--optimize` stack). Any explicit aid flag, `--no-auto`, or `UAP_DELIVER_AUTO=0` disables auto mode. Deploy queueing is never auto-enabled.
 
 ### Components (14 modules)
@@ -443,6 +444,7 @@ uap deliver "..." --ideate --candidates 4 --deploy
 | `--optimize`               | Enable every convergence aid (deploy excluded)                         |
 | `--no-auto`                | Disable dynamic optimization (auto-classified aids are the default)     |
 | `--no-protect-tests`       | Allow modifying pre-existing test files (protected by default)          |
+| `--guidance-file <path>`   | Poll this file each turn; steer a running mission without stopping it    |
 | `--endpoint <url>`         | Override the model endpoint (OpenAI-compatible `/v1`)                  |
 | `--dry-run` / `--json`     | Show the plan only / emit machine-readable result                     |
 

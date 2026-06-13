@@ -7,6 +7,7 @@
  */
 
 import chalk from 'chalk';
+import { existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { ConvergenceLoop, composeIterationHooks } from '../delivery/convergence-loop.js';
 import type { LoopExecutor, IterationRecord, DeliveryResult } from '../delivery/convergence-loop.js';
@@ -68,6 +69,9 @@ export interface DeliverOptions {
   /** commander sets this false when --no-protect-tests is passed (default
    * true): refuse model writes to pre-existing test/spec files */
   protectTests?: boolean;
+  /** Path polled each turn for operator guidance — steer a running mission
+   * without stopping it by writing to this file. */
+  guidanceFile?: string;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -241,6 +245,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       deploy: Boolean(options.deploy),
       protectTests: options.protectTests !== false,
       protectedTestFiles: options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles.size : 0,
+      guidanceFile: options.guidanceFile ? resolve(options.guidanceFile) : null,
       gates: rungs.map((r) => ({ id: r.id, name: r.name, required: r.required })),
     };
     if (options.json) {
@@ -268,6 +273,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(
         `  Test protection: ${summary.protectTests ? `on (${summary.protectedTestFiles} pre-existing test/oracle file(s))` : 'off'}`
       );
+      console.log(`  Guidance file: ${summary.guidanceFile ?? 'none (mission runs unattended)'}`);
       console.log('  Gates:');
       for (const r of rungs) {
         console.log(`    - ${r.name}${r.required ? '' : chalk.dim(' (optional)')}`);
@@ -443,6 +449,27 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     )
   );
 
+  // Operator guidance channel: poll a file each turn so a running, unattended
+  // mission can be steered without being stopped — the operator just writes
+  // (or clears) the file. Capped and fail-soft.
+  const guidanceFile = options.guidanceFile ? resolve(options.guidanceFile) : undefined;
+  let lastGuidance: string | undefined;
+  const guidanceProvider = guidanceFile
+    ? (): string | undefined => {
+        try {
+          if (!existsSync(guidanceFile)) return undefined;
+          const text = readFileSync(guidanceFile, 'utf-8').trim().slice(0, 2000);
+          if (text && text !== lastGuidance) {
+            lastGuidance = text;
+            console.log(chalk.magenta(`  ⟲ guidance picked up from ${options.guidanceFile}`));
+          }
+          return text || undefined;
+        } catch {
+          return undefined;
+        }
+      }
+    : undefined;
+
   const loop = new ConvergenceLoop(
     {
       projectRoot,
@@ -453,6 +480,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       criticFactory: (ex) => createModelCritic(ex),
       practiceProvider,
       protectTests: options.protectTests,
+      guidanceProvider,
       onIteration: composeIterationHooks(
         (record) => printProgress(record),
         (record) => haloTracer.onIteration(record),

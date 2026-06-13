@@ -53,6 +53,15 @@ export interface PromptContext {
   practices?: string[];
   /** Pre-existing test/oracle files the applier will refuse to modify */
   protectedFiles?: string[];
+  /**
+   * Operator guidance injected mid-run — steers the mission without stopping
+   * it. Per-turn transient (re-polled each turn): unlike `practices`/
+   * `protectedFiles`, it is NOT carried forward, so clearing the source on a
+   * later turn removes it. Custom prompt builders should treat it as such.
+   */
+  guidance?: string;
+  /** Include the autonomy policy in the prompt (default true; false opts out). */
+  autonomous?: boolean;
 }
 
 export type PromptBuilder = (context: PromptContext) => string;
@@ -214,6 +223,20 @@ export interface ConvergenceConfig {
    * Gate integrity: rewriting the spec to satisfy the gates is not delivery.
    */
   protectTests?: boolean;
+  /**
+   * Polled once before each turn for operator guidance to steer the mission
+   * WITHOUT stopping it: any returned text is injected into that turn's
+   * prompt as high-priority guidance. Return undefined/'' for no change.
+   * Fail-soft — a throwing provider is ignored. This is the natural-language
+   * steering channel; onIteration remains the execution-level control channel.
+   */
+  guidanceProvider?: () => string | undefined | Promise<string | undefined>;
+  /**
+   * Inject the mission-autonomy policy into prompts (default true): the model
+   * is told to complete the whole task without stopping to ask. Set false for
+   * ambiguity-sensitive tasks where "proceed on assumptions" is undesirable.
+   */
+  autonomous?: boolean;
 }
 
 const DEFAULT_MAX_TURNS = 5;
@@ -228,7 +251,23 @@ const OUTPUT_CONTRACT = [
   '```',
   'Use a longer fence (````file:path) when the file itself contains ``` sequences.',
   'Files are written to disk verbatim, then real gates (build, type-check, tests) run.',
-  'Emit only file blocks plus brief reasoning.',
+  'Emit file blocks plus a one-line progress note: what you changed and what remains.',
+].join('\n');
+
+/**
+ * Behavioral autonomy policy — included by defaultPromptBuilder unless the run
+ * opts out (PromptContext.autonomous === false). Kept separate from the
+ * output-format contract so consumers can disable the "proceed on sensible
+ * assumptions" stance for ambiguity-sensitive tasks without replacing the
+ * whole prompt builder. Default-on: this loop is unattended by construction.
+ */
+const AUTONOMY_CONTRACT = [
+  'MISSION AUTONOMY — this loop runs unattended to completion:',
+  '- Complete the ENTIRE task — every file and step needed to make the gates pass.',
+  '- Never stop to ask questions or request confirmation. If a detail is unspecified, pick a sensible default, state the assumption in one line, and proceed.',
+  '- Do not hand back partial work for approval or pause between steps/phases. Keep going until the whole task is done.',
+  '- Do not invent requirements the task and gates do not imply — satisfy the spec, do not expand it.',
+  '- Each turn, do as much complete, correct work as you can — not a single tiny step.',
 ].join('\n');
 
 function truncateHead(text: string, maxChars: number): string {
@@ -256,6 +295,22 @@ function protectedSection(protectedFiles?: string[]): string[] {
   ];
 }
 
+/** Include the autonomy policy unless explicitly opted out (default on). */
+function autonomySection(autonomous?: boolean): string[] {
+  if (autonomous === false) return [];
+  return ['', AUTONOMY_CONTRACT];
+}
+
+/**
+ * Render mid-run operator guidance as a high-priority prompt section. This is
+ * how the mission is steered without stopping — the loop keeps running and the
+ * model incorporates the guidance on its next turn.
+ */
+function guidanceSection(guidance?: string): string[] {
+  if (!guidance || !guidance.trim()) return [];
+  return ['', 'OPERATOR GUIDANCE (incorporate this now and keep going — do NOT stop):', guidance.trim()];
+}
+
 /** Render retrieved best-practice cards as a prompt section. */
 function practiceSection(practices?: string[]): string[] {
   if (!practices || practices.length === 0) return [];
@@ -267,10 +322,10 @@ function practiceSection(practices?: string[]): string[] {
 /** Default prompt strategy: lean contract + structured retry context. */
 export const defaultPromptBuilder: PromptBuilder = (ctx) => {
   if (ctx.turn === 1) {
-    return [OUTPUT_CONTRACT, ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`].join('\n');
+    return [OUTPUT_CONTRACT, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`].join('\n');
   }
 
-  const sections = [OUTPUT_CONTRACT, ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ''];
+  const sections = [OUTPUT_CONTRACT, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ''];
   sections.push(`PREVIOUS ATTEMPT (turn ${ctx.turn - 1}):`);
 
   if (ctx.previousFiles && ctx.previousFiles.length > 0) {
@@ -573,7 +628,26 @@ export class ConvergenceLoop {
 
     for (let turn = 1; turn <= maxTurns; turn++) {
       const turnStart = Date.now();
-      const prompt = this.promptBuilder({ instruction, turn, ...prevContext });
+
+      // Poll for operator guidance to steer this turn without stopping the
+      // mission. Fail-soft — guidance is a best-effort steering channel.
+      let guidance: string | undefined;
+      if (this.config.guidanceProvider) {
+        try {
+          const g = await this.config.guidanceProvider();
+          guidance = g && g.trim() ? g.trim() : undefined;
+        } catch {
+          guidance = undefined;
+        }
+      }
+
+      const prompt = this.promptBuilder({
+        instruction,
+        turn,
+        ...prevContext,
+        guidance,
+        autonomous: this.config.autonomous,
+      });
 
       const outcome = explorerSettings
         ? await this.runExplorerTurn(instruction, prompt, rungs, explorerSettings, executor, ladderRunner, applyOptions)
