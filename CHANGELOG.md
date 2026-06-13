@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.37.0 (2026-06-13)
+
+- feat(delivery): mission-autonomy stance + operator-guidance channel for uap deliver
+
+
 ## v1.36.1 (2026-06-13)
 
 - fix(policies): GIT_DIR poisoning broke git-diff enforcers and pre-push gates under hooks

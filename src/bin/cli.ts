@@ -405,6 +405,7 @@ program
   .option('--optimize', 'Enable every convergence aid: exploration, critic, practices, escalation, ideation, HALO, coordination')
   .option('--no-auto', 'Disable dynamic optimization (by default the task is classified and matching aids enable automatically)')
   .option('--no-protect-tests', 'Allow the model to modify pre-existing test files (protected by default)')
+  .option('--guidance-file <path>', 'Poll this file each turn for operator guidance; steer a running mission (write to the file) without stopping it')
   .option('--dry-run', 'Show detected gates and plan without calling the model')
   .option('--json', 'Emit JSON result')
   .action(async (instructionParts: string[], options) => {
