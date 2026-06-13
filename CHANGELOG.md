@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.38.0 (2026-06-14)
+
+- feat(mcp-router): add `deliver` meta-tool to auto-route tasks into uap deliver
+
+
 ## v1.37.0 (2026-06-13)
 
 - feat(delivery): mission-autonomy stance + operator-guidance channel for uap deliver
