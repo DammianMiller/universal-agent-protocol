@@ -443,6 +443,23 @@ PROXY_TOOL_CALL_GRAMMAR_PATH = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "config", "tool-call.gbnf"),
     )
 )
+# Structured thinking grammar — forces a compact <think> header on non-tool
+# reasoning turns so downstream verifiers can parse the model's framing.
+# Default off (opt-in) because it changes output shape.
+PROXY_THINKING_GRAMMAR = os.environ.get(
+    "PROXY_THINKING_GRAMMAR", "off"
+).lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+PROXY_THINKING_GRAMMAR_PATH = os.path.abspath(
+    os.environ.get(
+        "PROXY_THINKING_GRAMMAR_PATH",
+        os.path.join(os.path.dirname(__file__), "..", "config", "thinking.gbnf"),
+    )
+)
 PROXY_MODEL_PROFILE_HEADER = os.environ.get(
     "PROXY_MODEL_PROFILE_HEADER", "x-uap-model-profile"
 )
@@ -533,6 +550,41 @@ def _load_tool_call_grammar(path: str) -> str:
 
 TOOL_CALL_GBNF = _load_tool_call_grammar(PROXY_TOOL_CALL_GRAMMAR_PATH)
 TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE = True
+
+
+def _load_thinking_grammar(path: str) -> str:
+    if not PROXY_THINKING_GRAMMAR:
+        return ""
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError as exc:
+        logger.warning(
+            "Thinking grammar disabled: failed to read %s (%s)",
+            path,
+            exc,
+        )
+        return ""
+
+
+THINKING_GBNF = _load_thinking_grammar(PROXY_THINKING_GRAMMAR_PATH)
+
+
+def _apply_thinking_grammar(request_body: dict) -> None:
+    """Apply the structured-thinking GBNF grammar to non-tool turns.
+
+    Only fires when PROXY_THINKING_GRAMMAR is on, the grammar loaded
+    successfully, the request has no tools, and no upstream grammar was
+    already set (tool-call grammar takes precedence on tool turns).
+    """
+    if not PROXY_THINKING_GRAMMAR or not THINKING_GBNF:
+        return
+    if request_body.get("tools"):
+        return
+    if request_body.get("grammar"):
+        return
+    request_body["grammar"] = THINKING_GBNF
 
 def _resolve_passthrough_models() -> list[str]:
     raw = ANTHROPIC_PASSTHROUGH_MODELS.strip()
@@ -2078,6 +2130,12 @@ async def lifespan(app: FastAPI):
         bool(TOOL_CALL_GBNF),
         TOOL_CALL_GRAMMAR_TOOLS_COMPATIBLE,
         PROXY_TOOL_CALL_GRAMMAR_PATH,
+    )
+    logger.info(
+        "Thinking grammar: enabled=%s loaded=%s path=%s",
+        PROXY_THINKING_GRAMMAR,
+        bool(THINKING_GBNF),
+        PROXY_THINKING_GRAMMAR_PATH,
     )
     logger.info(
         "Timeouts: read=%ds generation=%ds slot_hang=%ds",
@@ -3909,6 +3967,8 @@ def build_openai_request(
     # toward its deliverable regardless of tool-turn phase. Passed the full
     # pre-narrowing toolset so it can restore a dropped write tool.
     _maybe_inject_recon_convergence(openai_body, monitor, full_openai_tools)
+
+    _apply_thinking_grammar(openai_body)
 
     return openai_body
 

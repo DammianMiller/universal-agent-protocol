@@ -32,6 +32,11 @@ export PROXY_TOOL_CALL_GRAMMAR="${PROXY_TOOL_CALL_GRAMMAR:-on}"
 export PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY="${PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY:-on}"
 export PROXY_TOOL_CALL_GRAMMAR_PATH="${PROXY_TOOL_CALL_GRAMMAR_PATH:-${ROOT_DIR}/tools/agents/config/tool-call.gbnf}"
 
+# Structured thinking grammar (opt-in). When on, non-tool reasoning turns
+# are constrained to emit a compact <think> Q/M/K/R/V header before output.
+export PROXY_THINKING_GRAMMAR="${PROXY_THINKING_GRAMMAR:-off}"
+export PROXY_THINKING_GRAMMAR_PATH="${PROXY_THINKING_GRAMMAR_PATH:-${ROOT_DIR}/tools/agents/config/thinking.gbnf}"
+
 # ---------------------------------------------------------------------------
 # Auto-detect context window from upstream llama-server /slots endpoint.
 # Waits up to 60s for the server to be ready. Falls back to env var or 131072.

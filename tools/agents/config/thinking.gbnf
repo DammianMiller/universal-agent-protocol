@@ -1,0 +1,25 @@
+# GBNF Grammar for Structured Thinking Preamble
+#
+# Forces the model to emit a compact, machine-checkable <think> header
+# with five fixed slots (Q, M, K, R, V) before its free-form output.
+# Intended for non-tool reasoning turns where we want a verifier-friendly
+# trace of the model's framing of the problem.
+#
+# Slots:
+#   Q = task verb (solve|prove|route|debug|patch|code|calc|compare|explain)
+#   M = method   (case|enum|check|derive|edit|test|trace|rank)
+#   K = up to 5 known/inputs tokens
+#   R = up to 5 rules/constraints tokens
+#   V = verdict  (ok|fail|done|blocked|candidate|verify)
+#
+# Toggle: PROXY_THINKING_GRAMMAR=on
+# Loaded by tools/agents/scripts/anthropic_proxy.py for non-tool turns.
+
+root ::= think out
+think ::= "<think>\n" "Q=" q "\n" "M=" m "\n" "K=" toks "\n" "R=" toks "\n" "V=" v "\n" "</think>\n\n"
+q ::= "solve" | "prove" | "route" | "debug" | "patch" | "code" | "calc" | "compare" | "explain"
+m ::= "case" | "enum" | "check" | "derive" | "edit" | "test" | "trace" | "rank"
+v ::= "ok" | "fail" | "done" | "blocked" | "candidate" | "verify"
+toks ::= tok | tok "," tok | tok "," tok "," tok | tok "," tok "," tok "," tok | tok "," tok "," tok "," tok "," tok
+tok ::= [A-Za-z][A-Za-z0-9_.!<>=/-]{0,18}
+out ::= [\x09\x0A\x0D\x20-\x7E]+

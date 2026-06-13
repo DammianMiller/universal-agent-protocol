@@ -9,7 +9,7 @@ describe('Tool call server configuration', () => {
       'utf-8'
     );
     expect(content).toContain('UAP_LLM_SERVER');
-    expect(content).toContain('http://192.168.1.165:4000');
+    expect(content).toContain('http://127.0.0.1:4000');
   });
 
   it('should advertise Shannon canonical model IDs in proxy', () => {
