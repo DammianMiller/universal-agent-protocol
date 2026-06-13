@@ -89,7 +89,7 @@ uap setup -p all
 | Deploy Batching    | 1 module       | Squash, merge, parallelize deploy actions across agents                          |
 | Policy Enforcement | 8 modules      | Store, evaluate, and enforce operational policies with audit trail               |
 | Browser            | 1 module       | Stealth web automation via CloakBrowser (Playwright drop-in)                     |
-| MCP Router         | 11 modules     | 2-tool meta-router + expert-consultation registry (98% token savings)            |
+| MCP Router         | 12 modules     | 3-tool meta-router (discover/execute/deliver) + expert-consultation registry (98% token savings) |
 | Models             | 10 modules     | Multi-model routing, planning, execution, validation, 13 model profiles          |
 | Delivery Harness   | 14 modules     | `uap deliver`: convergence loop, best-of-N explorer, critic, practice recall, escalation, ideation seeds, HALO tracing, coordination + deploy queueing |
 | Patterns           | 23 patterns    | Battle-tested workflows from Terminal-Bench 2.0                                  |
@@ -295,18 +295,19 @@ await browser.close();
 
 ## MCP Router
 
-Replaces N tool definitions with 2 meta-tools for 98% token reduction.
+Replaces N tool definitions with 3 meta-tools for 98% token reduction: `discover_tools`, `execute_tool`, and `deliver` (auto-routes a coding task into the `uap deliver` convergence loop, which classifies complexity and drives a model to verified completion against real gates).
 
-### Components (10 modules)
+### Components (11 modules)
 
 | Component         | File                                  | Purpose                                     |
 | ----------------- | ------------------------------------- | ------------------------------------------- |
-| MCP Server        | `src/mcp-router/server.ts`            | Exposes `discover_tools` and `execute_tool` |
+| MCP Server        | `src/mcp-router/server.ts`            | Exposes `discover_tools`, `execute_tool`, `deliver` |
 | Config Parser     | `src/mcp-router/config/parser.ts`     | Loads MCP configs from standard paths       |
 | Fuzzy Search      | `src/mcp-router/search/fuzzy.ts`      | Tool discovery with fuzzy matching          |
 | Client Pool       | `src/mcp-router/executor/client.ts`   | Manages connections to MCP servers          |
 | Tool Execute      | `src/mcp-router/tools/execute.ts`     | Tool execution with policy gate             |
 | Tool Discover     | `src/mcp-router/tools/discover.ts`    | Tool discovery definitions                  |
+| Tool Deliver      | `src/mcp-router/tools/deliver.ts`     | Routes a task into `uap deliver` (sandbox-confined subprocess) |
 | Output Compressor | `src/mcp-router/output-compressor.ts` | Compresses tool output                      |
 | Session Stats     | `src/mcp-router/session-stats.ts`     | Per-tool token consumption tracking         |
 
@@ -322,7 +323,7 @@ Tier 2: ModelRouter    -- Assigns optimal model per subtask
 Tier 3: TaskExecutor   -- Executes with validation, dynamic temperature, rate limiting
 ```
 
-### Components (10 modules)
+### Components (11 modules)
 
 | Component          | File                               | Purpose                                      |
 | ------------------ | ---------------------------------- | -------------------------------------------- |

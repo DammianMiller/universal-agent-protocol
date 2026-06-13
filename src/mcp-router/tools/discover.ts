@@ -1,7 +1,7 @@
 /**
  * discover_tools - Meta-tool for finding MCP tools
  * 
- * This is one of the 2 tools exposed by the router (the other being execute_tool).
+ * One of the router's 3 meta-tools (alongside execute_tool and deliver).
  * Instead of loading 150+ tool definitions, the LLM uses this to find relevant tools.
  */
 
