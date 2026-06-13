@@ -19,11 +19,22 @@ import { join } from 'path';
 
 const ENF_DIR = join(process.cwd(), 'src', 'policies', 'enforcers');
 
+// Hermetic env: when this suite runs inside a git hook (pre-push gates), git
+// exports GIT_DIR/GIT_WORK_TREE/… which would redirect every spawned git call
+// at the hook's repo instead of the temp repo. Strip them for all spawns.
+function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
+  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX']) {
+    delete env[k];
+  }
+  return env;
+}
+
 function makeWorktreeRepo(): string {
   const d = mkdtempSync(join(tmpdir(), 'uap-wt-'));
-  spawnSync('git', ['init', '-q', d]);
-  spawnSync('git', ['-C', d, 'config', 'user.email', 't@t']);
-  spawnSync('git', ['-C', d, 'config', 'user.name', 't']);
+  spawnSync('git', ['init', '-q', d], { env: cleanEnv() });
+  spawnSync('git', ['-C', d, 'config', 'user.email', 't@t'], { env: cleanEnv() });
+  spawnSync('git', ['-C', d, 'config', 'user.name', 't'], { env: cleanEnv() });
   return d;
 }
 
@@ -37,7 +48,7 @@ function makeEnforcerDir(): string {
 function stageAll(wtRoot: string): void {
   // git status --porcelain collapses untracked directories to "?? dir/"; staging
   // surfaces full paths, matching how tracked IaC files appear in real diffs.
-  spawnSync('git', ['-C', wtRoot, 'add', '-A']);
+  spawnSync('git', ['-C', wtRoot, 'add', '-A'], { env: cleanEnv() });
 }
 
 function runIacParity(enfDir: string, wtRoot: string, command: string): number {
@@ -46,7 +57,7 @@ function runIacParity(enfDir: string, wtRoot: string, command: string): number {
     [join(enfDir, 'iac_parity.py'), '--operation', 'Bash', '--args', JSON.stringify({ command })],
     {
       // gate sets these; MAIN_ROOT (UAP_REPO_ROOT) intentionally differs from the working tree
-      env: { ...process.env, UAP_WORKTREE_ROOT: wtRoot, UAP_REPO_ROOT: '/nonexistent-main-root' },
+      env: cleanEnv({ UAP_WORKTREE_ROOT: wtRoot, UAP_REPO_ROOT: '/nonexistent-main-root' }),
       cwd: '/', // prove resolution comes from the env var, not cwd
       encoding: 'utf8',
     }
@@ -76,5 +87,27 @@ describe('git-diff enforcers target the working tree', () => {
   it('ALLOWS non-mutating commands regardless of tree state', () => {
     writeFileSync(join(wt, 'app.ts'), 'export const x = 1;\n');
     expect(runIacParity(enf, wt, 'kubectl get pods')).toBe(0);
+  });
+
+  it('still BLOCKS when invoked with hook-style GIT_DIR poisoning (regression)', () => {
+    // Simulate running inside a git hook of a DIFFERENT repo: the enforcer
+    // must strip git repo-context vars, or its git calls silently target the
+    // hook's repo and the check no-ops (expected 2, got 0 — the pre-push bug).
+    writeFileSync(join(wt, 'app.ts'), 'export const x = 1;\n');
+    stageAll(wt);
+    const status = spawnSync(
+      'python3',
+      [join(enf, 'iac_parity.py'), '--operation', 'Bash', '--args', JSON.stringify({ command: 'kubectl apply -f deploy.yaml' })],
+      {
+        env: cleanEnv({
+          UAP_WORKTREE_ROOT: wt,
+          UAP_REPO_ROOT: '/nonexistent-main-root',
+          GIT_DIR: join(process.cwd(), '.git'),
+        }),
+        cwd: '/',
+        encoding: 'utf8',
+      }
+    ).status ?? -1;
+    expect(status).toBe(2);
   });
 });
