@@ -277,25 +277,49 @@ EOF
     chmod +x "${HOOKS_DIR}/commit-msg"
     echo "  ✓ Created commit-msg hook"
 
-    # Pre-push hook - runs tests before pushing
+    # Pre-push hook - enforces build/test/type-check gates before pushing
     cat > "${HOOKS_DIR}/pre-push" << 'EOF'
-#!/bin/bash
-#
-# UAP Pre-push Hook
-#
-# Runs tests before pushing to remote
-#
+#!/usr/bin/env bash
+# UAP Pre-Push Hook — Enforces build, test, type-check gates before push
+set -euo pipefail
 
-echo "Running tests before push..."
-if npm test 2>&1 | tail -5; then
-    if [ ${PIPESTATUS[0]} -eq 0 ]; then
-        echo "✓ All tests passed"
-        exit 0
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
+fail() { echo -e "${RED}[PRE-PUSH] BLOCKED: $1${NC}"; exit 1; }
+ok()   { echo -e "${GREEN}[PRE-PUSH] $1${NC}"; }
+
+# git exports repo-context vars into hook environments; anything this hook
+# spawns (npm test → enforcers/tests that run their own git) would then
+# operate on THIS repo instead of its own cwd. Sanitize before the gates.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
+
+ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$ROOT_DIR"
+
+while read local_ref local_sha remote_ref remote_sha; do
+  REMOTE_BRANCH=$(echo "$remote_ref" | sed 's@refs/heads/@@')
+  if [[ "$REMOTE_BRANCH" == "main" || "$REMOTE_BRANCH" == "master" ]]; then
+    if [[ "$remote_sha" != "0000000000000000000000000000000000000000" ]]; then
+      IS_ANCESTOR=$(git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null && echo "yes" || echo "no")
+      if [[ "$IS_ANCESTOR" == "no" ]]; then
+        fail "Force push to '$REMOTE_BRANCH' is prohibited."
+      fi
     fi
-fi
+  fi
+done
 
-echo "Error: Tests failed. Fix tests before pushing."
-exit 1
+echo -e "${YELLOW}[PRE-PUSH] Running type check...${NC}"
+npx tsc --noEmit 2>&1 || fail "TypeScript type-check failed."
+ok "Type check passed"
+
+echo -e "${YELLOW}[PRE-PUSH] Running build...${NC}"
+npm run build 2>&1 || fail "Build failed."
+ok "Build passed"
+
+echo -e "${YELLOW}[PRE-PUSH] Running tests...${NC}"
+npm test -- --run 2>&1 || fail "Tests failed."
+ok "Tests passed"
+
+ok "All pre-push gates passed"
 EOF
     chmod +x "${HOOKS_DIR}/pre-push"
     echo "  ✓ Created pre-push hook"
