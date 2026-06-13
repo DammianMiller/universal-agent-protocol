@@ -84,6 +84,7 @@ async function attachEnforcer(policyName: string): Promise<boolean> {
 // List of mandatory policies that should always be enforced
 const MANDATORY_POLICIES = [
   'mandatory-testing-deployment',
+  'merge-deploy-monitor-verify',
   'policy-code-quality',
   'policy-security-gate',
   'policy-deployment-safety',
