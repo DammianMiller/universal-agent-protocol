@@ -392,6 +392,7 @@ program
   .option('--auto-spawn-threshold <n>', 'Min confidence to auto-spawn an expert (default 0.80)')
   .option('--auto-spawn-types <types>', 'Comma-separated task-type whitelist for auto-spawn')
   .option('--max-inject-chars <n>', 'Inject character budget (default 1200)')
+  .option('--surfaced <keys>', 'Comma-separated keys already injected this session (dedup)')
   .action(async (options) => {
     const cmd = await lazy.react();
     await cmd(options);

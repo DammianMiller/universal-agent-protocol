@@ -106,6 +106,8 @@ function copyHookScripts(targetHooksDir: string): void {
     'post-compact.sh',
     'stop.sh',
     'session-end.sh',
+    // Reactor adapter: per-prompt dynamic capability injection via `uap react`.
+    'uap-reactor-prompt.sh',
     // The DB-driven policy gate (policies.db + .policy-tools/*.py). Without it,
     // every platform that registers `uap-policy-gate.sh` in its settings points
     // at a script that was never placed → the gate silently no-ops.
@@ -209,6 +211,12 @@ async function installClaudeHooks(cwd: string): Promise<void> {
       {
         matcher: '',
         hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
+      },
+    ],
+    UserPromptSubmit: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/uap-reactor-prompt.sh' }],
       },
     ],
     PreToolUse: [
@@ -441,6 +449,12 @@ async function installVscodeHooks(cwd: string): Promise<void> {
       {
         matcher: '',
         hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
+      },
+    ],
+    UserPromptSubmit: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/uap-reactor-prompt.sh' }],
       },
     ],
     PreToolUse: [

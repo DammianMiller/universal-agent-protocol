@@ -20,6 +20,7 @@ export interface ReactCommandOptions {
   autoSpawnThreshold?: string;
   autoSpawnTypes?: string;
   maxInjectChars?: string;
+  surfaced?: string;
 }
 
 async function readStdin(): Promise<string> {
@@ -35,14 +36,22 @@ async function readStdin(): Promise<string> {
  * from flags. Emits the JSON ReactorResult on stdout.
  */
 export async function reactCommand(options: ReactCommandOptions = {}): Promise<void> {
-  const stdin = await readStdin();
-  const payload =
-    stdin ||
-    JSON.stringify({
+  // Flag-driven invocation (e.g. OpenCode plugin) must not block on stdin.
+  let payload: string;
+  if (options.prompt !== undefined || options.event !== undefined) {
+    payload = JSON.stringify({
       event: options.event ?? 'user-prompt',
       promptText: options.prompt ?? '',
       changedFiles: options.files ?? [],
+      surfaced: options.surfaced
+        ? options.surfaced.split(',').map((k) => k.trim()).filter(Boolean)
+        : [],
     });
+  } else {
+    const stdin = await readStdin();
+    payload =
+      stdin || JSON.stringify({ event: 'user-prompt', promptText: '', changedFiles: [] });
+  }
 
   const opts: ReactorOptions = {};
   if (options.injectThreshold) opts.injectThreshold = Number(options.injectThreshold);
