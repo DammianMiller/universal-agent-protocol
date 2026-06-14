@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.42.4 (2026-06-14)
+
+- fix(policy): rtk-wrap routes npm/pnpm/yarn builtins via `rtk proxy`
+
+
 ## v1.42.3 (2026-06-14)
 
 - docs: index the Reactor design under Architecture
