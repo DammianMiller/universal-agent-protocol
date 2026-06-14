@@ -33,7 +33,7 @@ TIMESTAMP=$(date +%Y-%m-%d__%H-%M-%S)
 # Bypasses UAP Anthropic proxy (proven 20-40% pass rate in historical runs)
 # Currently running Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf on llama.cpp
 MODELS=(
-    "llama.cpp/qwen35-a3b-iq4xs"
+    "llama.cpp/qwen3.6-a3b-iq4xs"
 )
 
 # Direct llama.cpp endpoint (OpenAI API) — opencode + its in-container proxy
