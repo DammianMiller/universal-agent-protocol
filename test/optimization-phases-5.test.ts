@@ -346,4 +346,19 @@ describe('Phase 4: New Capabilities', () => {
       expect(existsSync('tools/agents/docker-compose.qdrant.yml')).toBe(true);
     });
   });
+
+  describe('D10b: memory services no longer regenerate agents/docker-compose.yml', () => {
+    const memSource = readFileSync(join('src', 'cli', 'memory.ts'), 'utf-8');
+
+    it('default compose is written to the canonical tools/agents path, not agents/docker-compose.yml', () => {
+      // The create-default fallback must target the canonical location so the
+      // duplicate guarded by D10 is never recreated by `uap memory start`.
+      expect(memSource).toContain("join(agentsDir, 'docker-compose.qdrant.yml')");
+      expect(memSource).not.toContain("join(agentsDir, 'docker-compose.yml')");
+    });
+
+    it('compose search list includes the canonical qdrant compose path', () => {
+      expect(memSource).toContain("join(cwd, 'tools/agents/docker-compose.qdrant.yml')");
+    });
+  });
 });

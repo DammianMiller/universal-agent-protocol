@@ -196,11 +196,13 @@ async function buildContext(
     LONG_TERM_ENDPOINT: longTermEndpoint,
     LONG_TERM_COLLECTION: longTermCollection,
     SCREENSHOTS_PATH: 'agents/data/screenshots',
-    DOCKER_COMPOSE_PATH: existsSync(join(cwd, 'agents/docker-compose.yml'))
-      ? 'agents/docker-compose.yml'
-      : existsSync(join(cwd, 'docker-compose.yml'))
-        ? 'docker-compose.yml'
-        : null,
+    DOCKER_COMPOSE_PATH: existsSync(join(cwd, 'tools/agents/docker-compose.qdrant.yml'))
+      ? 'tools/agents/docker-compose.qdrant.yml'
+      : existsSync(join(cwd, 'agents/docker-compose.yml'))
+        ? 'agents/docker-compose.yml'
+        : existsSync(join(cwd, 'docker-compose.yml'))
+          ? 'docker-compose.yml'
+          : null,
 
     // Worktree config
     WORKTREE_DIR: config.worktrees?.directory || '.worktrees',
