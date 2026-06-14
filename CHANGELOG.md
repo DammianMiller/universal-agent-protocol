@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.41.1 (2026-06-14)
+
+- fix(memory): stop regenerating duplicate agents/docker-compose.yml
+
+
 ## v1.41.0 (2026-06-14)
 
 - feat(delivery): `uap init`/`uap setup` enable delivery-enforcement (block by default) + wire the MCP `deliver` tool into Claude/OpenCode by default
