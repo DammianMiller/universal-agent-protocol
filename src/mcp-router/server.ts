@@ -26,6 +26,8 @@ import {
   estimateDeliverToolTokens,
 } from './tools/deliver.js';
 import type { DeliverArgs } from './tools/deliver.js';
+import { REACT_TOOL_DEFINITION, handleReact } from './tools/react.js';
+import type { ReactArgs } from './tools/react.js';
 import type { McpConfig, ToolDefinition, RouterStats } from './types.js';
 
 export interface RouterOptions {
@@ -125,9 +127,12 @@ export class McpRouter {
    * Get the 3 meta-tool definitions (for MCP tools/list)
    */
   getToolDefinitions(): Array<
-    typeof DISCOVER_TOOLS_DEFINITION | typeof EXECUTE_TOOL_DEFINITION | typeof DELIVER_TOOL_DEFINITION
+    | typeof DISCOVER_TOOLS_DEFINITION
+    | typeof EXECUTE_TOOL_DEFINITION
+    | typeof DELIVER_TOOL_DEFINITION
+    | typeof REACT_TOOL_DEFINITION
   > {
-    return [DISCOVER_TOOLS_DEFINITION, EXECUTE_TOOL_DEFINITION, DELIVER_TOOL_DEFINITION];
+    return [DISCOVER_TOOLS_DEFINITION, EXECUTE_TOOL_DEFINITION, DELIVER_TOOL_DEFINITION, REACT_TOOL_DEFINITION];
   }
 
   /**
@@ -155,6 +160,9 @@ export class McpRouter {
 
       case 'deliver':
         return handleDeliver(args as DeliverArgs);
+
+      case 'react':
+        return Promise.resolve(handleReact(args as ReactArgs));
 
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -582,5 +590,5 @@ export async function runStdioServer(options: RouterOptions = {}): Promise<void>
   });
 
   console.error('[router] MCP Router server started (stdio)');
-  console.error('[router] Exposing 3 tools: discover_tools, execute_tool, deliver');
+  console.error('[router] Exposing 4 tools: discover_tools, execute_tool, deliver, react');
 }

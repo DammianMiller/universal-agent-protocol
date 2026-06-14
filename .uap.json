@@ -70,5 +70,20 @@
       "pipelineOnly": false,
       "benchmark": false
     }
+  },
+  "multiModel": {
+    "enabled": true,
+    "models": [
+      "opus-4.8",
+      "qwen35-a3b",
+      "opus-4.6"
+    ],
+    "roles": {
+      "planner": "opus-4.8",
+      "executor": "qwen35-a3b",
+      "reviewer": "opus-4.8",
+      "fallback": "opus-4.8"
+    },
+    "routingStrategy": "balanced"
   }
 }

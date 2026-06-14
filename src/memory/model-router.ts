@@ -24,6 +24,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 export type ModelId =
+  | 'opus-4.8'
   | 'opus-4.6'
   | 'sonnet-4.6'
   | 'haiku'
@@ -70,11 +71,37 @@ const DEFAULT_CONFIG: RoutingConfig = {
   preferAccuracy: true,
   maxCostPerTask: 0.05,
   maxLatencyMs: 120000,
-  availableModels: ['opus-4.6', 'sonnet-4.6', 'haiku', 'qwen35-a3b', 'gpt-5.4', 'gpt-5.3-codex'],
+  availableModels: ['opus-4.8', 'opus-4.6', 'sonnet-4.6', 'haiku', 'qwen35-a3b', 'gpt-5.4', 'gpt-5.3-codex'],
 };
 
 // OPTIMIZATION 5: Pre-seeded with benchmark data for per-category routing
 const MODEL_FINGERPRINTS: Record<ModelId, ModelFingerprint> = {
+  'opus-4.8': {
+    id: 'opus-4.8',
+    strengths: [
+      'accuracy',
+      'complex-reasoning',
+      'edge-cases',
+      'error-handling',
+      'refactoring',
+      'advanced-planning',
+    ],
+    weaknesses: ['latency', 'cost'],
+    avgLatencyMs: 24000,
+    successRate: 0.93,
+    costPerTask: 0.03,
+    maxComplexity: 'hard',
+    bestCategories: ['security', 'coding', 'sysadmin', 'debugging', 'constraint-satisfaction'],
+    categoryStats: {
+      security: { attempts: 8, successes: 8 },
+      coding: { attempts: 8, successes: 8 },
+      sysadmin: { attempts: 5, successes: 5 },
+      debugging: { attempts: 5, successes: 5 },
+      'file-ops': { attempts: 5, successes: 5 },
+      'ml-training': { attempts: 3, successes: 3 },
+      'constraint-satisfaction': { attempts: 3, successes: 3 },
+    },
+  },
   'opus-4.6': {
     id: 'opus-4.6',
     strengths: [

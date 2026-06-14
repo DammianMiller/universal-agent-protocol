@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.42.0 (2026-06-14)
+
+- feat(reactor): phase 6 — enforce gap-fill (schema-change reminder) + status
+- feat(reactor): phases 4-5 — harness parity + Codex MCP fallback
+- feat(reactor): phase 3 — reference harness wiring (Claude + OpenCode)
+- feat(reactor): phase 2 — `uap react` CLI (JSON in -> JSON out)
+- feat(models): add opus-4.8 (xhigh effort) preset; executor=qwen, others=opus-4.8
+- feat(reactor): phase 1 — UAP auto-apply resolver core
+
+
 ## v1.41.0 (2026-06-14)
 
 - feat(delivery): `uap init`/`uap setup` enable delivery-enforcement (block by default) + wire the MCP `deliver` tool into Claude/OpenCode by default

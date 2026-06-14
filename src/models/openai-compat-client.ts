@@ -77,6 +77,11 @@ export class OpenAICompatClient implements ModelClient {
           messages: [{ role: 'user', content: prompt }],
           ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
           ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
+          // Reasoning effort for models that support it. UAP's 'xhigh' maps to
+          // the OpenAI-compatible maximum 'high' on the wire.
+          ...(model.reasoningEffort
+            ? { reasoning_effort: model.reasoningEffort === 'xhigh' ? 'high' : model.reasoningEffort }
+            : {}),
         }),
         signal: controller.signal,
       });

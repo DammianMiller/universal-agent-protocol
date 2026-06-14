@@ -106,6 +106,10 @@ function copyHookScripts(targetHooksDir: string): void {
     'post-compact.sh',
     'stop.sh',
     'session-end.sh',
+    // Reactor adapter: per-prompt dynamic capability injection via `uap react`.
+    'uap-reactor-prompt.sh',
+    // Schema-change reminder (PostToolUse): enforce gap-fill.
+    'uap-schema-post.sh',
     // The DB-driven policy gate (policies.db + .policy-tools/*.py). Without it,
     // every platform that registers `uap-policy-gate.sh` in its settings points
     // at a script that was never placed → the gate silently no-ops.
@@ -211,6 +215,12 @@ async function installClaudeHooks(cwd: string): Promise<void> {
         hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
       },
     ],
+    UserPromptSubmit: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/uap-reactor-prompt.sh' }],
+      },
+    ],
     PreToolUse: [
       {
         matcher: 'Edit|Write|MultiEdit',
@@ -234,7 +244,10 @@ async function installClaudeHooks(cwd: string): Promise<void> {
     PostToolUse: [
       {
         matcher: 'Edit|Write',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' }],
+        hooks: [
+          { type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' },
+          { type: 'command', command: 'bash .claude/hooks/uap-schema-post.sh' },
+        ],
       },
     ],
     PreCompact: [
@@ -302,6 +315,14 @@ async function installFactoryHooks(cwd: string): Promise<void> {
         ],
       },
     ],
+    UserPromptSubmit: [
+      {
+        matcher: '',
+        hooks: [
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-reactor-prompt.sh' },
+        ],
+      },
+    ],
     PreToolUse: [
       {
         matcher: 'Edit|Write|MultiEdit',
@@ -329,6 +350,7 @@ async function installFactoryHooks(cwd: string): Promise<void> {
         matcher: 'Edit|Write',
         hooks: [
           { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/post-tool-use-edit-write.sh' },
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-schema-post.sh' },
         ],
       },
     ],
@@ -392,6 +414,7 @@ async function installCursorHooks(cwd: string): Promise<void> {
   config.hooks = {
     ...existingHooks,
     sessionStart: [{ command: '.cursor/hooks/session-start.sh' }],
+    userPromptSubmit: [{ command: '.cursor/hooks/uap-reactor-prompt.sh' }],
     preToolUse: [
       { matcher: 'Edit|Write|MultiEdit', command: '.cursor/hooks/pre-tool-use-edit-write.sh' },
       { matcher: 'Edit|Write|MultiEdit', command: '.cursor/hooks/uap-policy-gate.sh' },
@@ -401,6 +424,7 @@ async function installCursorHooks(cwd: string): Promise<void> {
     ],
     postToolUse: [
       { matcher: 'Edit|Write', command: '.cursor/hooks/post-tool-use-edit-write.sh' },
+      { matcher: 'Edit|Write', command: '.cursor/hooks/uap-schema-post.sh' },
     ],
     preCompact: [{ command: '.cursor/hooks/pre-compact.sh' }],
     postCompact: [{ command: '.cursor/hooks/post-compact.sh' }],
@@ -443,6 +467,12 @@ async function installVscodeHooks(cwd: string): Promise<void> {
         hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
       },
     ],
+    UserPromptSubmit: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'bash .claude/hooks/uap-reactor-prompt.sh' }],
+      },
+    ],
     PreToolUse: [
       {
         matcher: 'Edit|Write|MultiEdit',
@@ -466,7 +496,10 @@ async function installVscodeHooks(cwd: string): Promise<void> {
     PostToolUse: [
       {
         matcher: 'Edit|Write',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' }],
+        hooks: [
+          { type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' },
+          { type: 'command', command: 'bash .claude/hooks/uap-schema-post.sh' },
+        ],
       },
     ],
     PreCompact: [
@@ -635,6 +668,21 @@ async function installCodexHooks(cwd: string): Promise<void> {
     '',
     'This project uses UAP for persistent memory, multi-agent coordination,',
     'pattern libraries, and policy enforcement across sessions.',
+    '',
+    '## Dynamic Capability Routing (Reactor) — DO THIS FIRST',
+    '',
+    'Codex has no per-prompt hook, so UAP cannot auto-inject routing for you the',
+    'way it does for Claude/Cursor/OpenCode. At the START of every substantive',
+    'coding task, call the `react` MCP tool (UAP MCP server) with the task text:',
+    '',
+    '```',
+    'react { "promptText": "<the task>", "changedFiles": ["<files in play>"] }',
+    '```',
+    '',
+    'It returns recommended expert droids, skills, and enforcement patterns',
+    '(confidence-gated, with auto-spawn suggestions). Apply them before editing —',
+    'this is how Codex gets the dynamic auto-apply that hooked harnesses receive',
+    'automatically.',
     '',
     '## Session Lifecycle',
     '',
