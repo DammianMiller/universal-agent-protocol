@@ -108,6 +108,8 @@ function copyHookScripts(targetHooksDir: string): void {
     'session-end.sh',
     // Reactor adapter: per-prompt dynamic capability injection via `uap react`.
     'uap-reactor-prompt.sh',
+    // Schema-change reminder (PostToolUse): enforce gap-fill.
+    'uap-schema-post.sh',
     // The DB-driven policy gate (policies.db + .policy-tools/*.py). Without it,
     // every platform that registers `uap-policy-gate.sh` in its settings points
     // at a script that was never placed → the gate silently no-ops.
@@ -242,7 +244,10 @@ async function installClaudeHooks(cwd: string): Promise<void> {
     PostToolUse: [
       {
         matcher: 'Edit|Write',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' }],
+        hooks: [
+          { type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' },
+          { type: 'command', command: 'bash .claude/hooks/uap-schema-post.sh' },
+        ],
       },
     ],
     PreCompact: [
@@ -345,6 +350,7 @@ async function installFactoryHooks(cwd: string): Promise<void> {
         matcher: 'Edit|Write',
         hooks: [
           { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/post-tool-use-edit-write.sh' },
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-schema-post.sh' },
         ],
       },
     ],
@@ -418,6 +424,7 @@ async function installCursorHooks(cwd: string): Promise<void> {
     ],
     postToolUse: [
       { matcher: 'Edit|Write', command: '.cursor/hooks/post-tool-use-edit-write.sh' },
+      { matcher: 'Edit|Write', command: '.cursor/hooks/uap-schema-post.sh' },
     ],
     preCompact: [{ command: '.cursor/hooks/pre-compact.sh' }],
     postCompact: [{ command: '.cursor/hooks/post-compact.sh' }],
@@ -489,7 +496,10 @@ async function installVscodeHooks(cwd: string): Promise<void> {
     PostToolUse: [
       {
         matcher: 'Edit|Write',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' }],
+        hooks: [
+          { type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' },
+          { type: 'command', command: 'bash .claude/hooks/uap-schema-post.sh' },
+        ],
       },
     ],
     PreCompact: [

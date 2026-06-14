@@ -133,8 +133,8 @@ export function resolve(
 | Cursor | `userPromptSubmit` (mirrors Claude) | |
 | OpenCode | `experimental.chat.system.transform` | generalise existing uap-pattern-rag.ts/uap-skills.ts |
 | Factory | `UserPromptSubmit` (pattern-rag-prompt.sh) | also **fix empty SessionStart** |
-| Forge | pre-prompt shell fn or session-level | installer auto-sources |
-| Codex | none → MCP `uap_react` tool + AGENTS.md | degraded mode (no hooks) |
+| Forge | **none available** | shell-plugin model has no per-prompt event — per-prompt routing not possible; limitation documented |
+| Codex | MCP `react` tool + AGENTS.md | degraded mode (no hooks): agent calls `react` each task |
 
 `uap hooks install <target>` writes the correct per-harness wiring so a fresh
 `uap setup` yields full parity.
@@ -146,14 +146,25 @@ export function resolve(
 - Inject token budget (hard cap, truncate lowest-confidence first).
 - Enforce stays hard; assist can never block.
 
-## 7. Rollout phases
+## 7. Rollout status — all phases landed
 
-1. **Resolver core** (`src/coordination/reactor.ts`) + contract tests.
-2. **CLI** `uap react` + JSON I/O + tests.
-3. **Reference harness** wiring: Claude `UserPromptSubmit` + OpenCode transform.
-4. **Parity**: Cursor, Factory (fix SessionStart), Forge; `uap hooks install`.
-5. **Codex degraded mode**: MCP `uap_react` tool + AGENTS.md.
-6. **Enforce gap-fill**: schema-diff post-tool, completion-gate-on-stop, deploy-on-deliver.
+1. ✅ **Resolver core** (`src/coordination/reactor.ts`) + 8 contract tests.
+2. ✅ **CLI** `uap react` (JSON in/out, `--prompt`/`--surfaced`) + 4 tests.
+3. ✅ **Reference harnesses**: Claude `UserPromptSubmit` adapter
+   (`templates/hooks/uap-reactor-prompt.sh`) + OpenCode
+   `.opencode/plugin/uap-reactor.ts` (`chat.system.transform`) + adapter test.
+4. ✅ **Parity**: Factory + Cursor + VSCode `UserPromptSubmit` wired in
+   `src/cli/hooks.ts`; adapter copied to every harness. Forge: no per-prompt
+   event (documented limitation, §5).
+5. ✅ **Codex degraded mode**: first-class `react` MCP tool
+   (`src/mcp-router/tools/react.ts`) + AGENTS.md "DO THIS FIRST" guidance + 4 tests.
+6. ✅ **Enforce gap-fill**: PostToolUse schema-change reminder
+   (`templates/hooks/uap-schema-post.sh`, wired across installers, 3 tests).
+   completion-gate-on-stop was already wired everywhere (`stop.sh`);
+   deploy-on-deliver is available via `uap deliver --deploy` (left opt-in —
+   defaulting it is a behavior change out of scope).
 
-All source units are implemented via the `uap deliver` convergence loop against
-the contract tests (the protected oracle).
+Per-prompt dynamic auto-apply: Claude / Cursor / VSCode / OpenCode (and Factory
+once its empty `SessionStart` is re-installed). Codex via the MCP `react` tool.
+Forge is session/enforce-only by its own model. Source units were scaffolded via
+`uap deliver` and hand-corrected (the local model cheats gates — see PR notes).
