@@ -310,6 +310,14 @@ async function installFactoryHooks(cwd: string): Promise<void> {
         ],
       },
     ],
+    UserPromptSubmit: [
+      {
+        matcher: '',
+        hooks: [
+          { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-reactor-prompt.sh' },
+        ],
+      },
+    ],
     PreToolUse: [
       {
         matcher: 'Edit|Write|MultiEdit',
@@ -400,6 +408,7 @@ async function installCursorHooks(cwd: string): Promise<void> {
   config.hooks = {
     ...existingHooks,
     sessionStart: [{ command: '.cursor/hooks/session-start.sh' }],
+    userPromptSubmit: [{ command: '.cursor/hooks/uap-reactor-prompt.sh' }],
     preToolUse: [
       { matcher: 'Edit|Write|MultiEdit', command: '.cursor/hooks/pre-tool-use-edit-write.sh' },
       { matcher: 'Edit|Write|MultiEdit', command: '.cursor/hooks/uap-policy-gate.sh' },
@@ -649,6 +658,21 @@ async function installCodexHooks(cwd: string): Promise<void> {
     '',
     'This project uses UAP for persistent memory, multi-agent coordination,',
     'pattern libraries, and policy enforcement across sessions.',
+    '',
+    '## Dynamic Capability Routing (Reactor) — DO THIS FIRST',
+    '',
+    'Codex has no per-prompt hook, so UAP cannot auto-inject routing for you the',
+    'way it does for Claude/Cursor/OpenCode. At the START of every substantive',
+    'coding task, call the `react` MCP tool (UAP MCP server) with the task text:',
+    '',
+    '```',
+    'react { "promptText": "<the task>", "changedFiles": ["<files in play>"] }',
+    '```',
+    '',
+    'It returns recommended expert droids, skills, and enforcement patterns',
+    '(confidence-gated, with auto-spawn suggestions). Apply them before editing —',
+    'this is how Codex gets the dynamic auto-apply that hooked harnesses receive',
+    'automatically.',
     '',
     '## Session Lifecycle',
     '',
