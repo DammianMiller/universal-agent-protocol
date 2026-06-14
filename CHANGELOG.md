@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.42.5 (2026-06-14)
+
+- fix(policy): iac-parity gates only mutating Bash commands, not content
+
+
 ## v1.42.4 (2026-06-14)
 
 - fix(policy): rtk-wrap routes npm/pnpm/yarn builtins via `rtk proxy`
