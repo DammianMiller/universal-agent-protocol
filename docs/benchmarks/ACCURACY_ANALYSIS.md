@@ -1,6 +1,7 @@
 # UAP Benchmark Analysis: Accuracy Issues & Improvement Recommendations
 
-**Date:** 2026-01-15
+**Date:** 2026-01-15 (original analysis)
+**Updated:** 2026-06-14
 **Author:** Droid Analysis
 
 ## Executive Summary
@@ -410,6 +411,8 @@ async query(_queryText: string, limit = 10): Promise<MemoryEntry[]> {
 
 **Fix Required:** Integrate embedding generation (OpenAI, Sentence Transformers, or local model).
 
+> **RESOLVED in v1.26.5**: Semantic embeddings now use real nomic 768-dim vectors via the embedding service. The deterministic-hash placeholder has been replaced with actual nomic embeddings for both storage and query. Long-term recall accuracy improved significantly. See commit `fbfd394`.
+
 ### Issue 2: Memory Context Loading Is Static
 
 **File:** `src/benchmarks/model-integration.ts`
@@ -461,11 +464,11 @@ async query(searchTerm: string, limit = 10): Promise<ShortTermMemory[]> {
 
 ## Implementation Priority
 
-| Priority | Issue                              | Impact                 | Effort |
-| -------- | ---------------------------------- | ---------------------- | ------ |
-| P0       | Fix Qdrant embedding generation    | Semantic search broken | Medium |
-| P0       | Add task classification            | Enable routing         | Low    |
-| P1       | Implement dynamic memory retrieval | Context relevance      | Medium |
-| P1       | Add execution verification         | Accuracy measurement   | High   |
+| Priority | Issue                              | Impact                 | Effort | Status |
+| -------- | ---------------------------------- | ---------------------- | ------ | ------ |
+| ~~P0~~ | ~~Fix Qdrant embedding generation~~ | ~~Semantic search broken~~ | ~~Medium~~ | **RESOLVED v1.26.5** |
+| ~~P0~~ | ~~Add task classification~~ | ~~Enable routing~~ | ~~Low~~ | **RESOLVED** |
+| ~~P1~~ | ~~Implement dynamic memory retrieval~~ | ~~Context relevance~~ | ~~Medium~~ | **RESOLVED** |
+| P1 | Add execution verification | Accuracy measurement | High | |
 | P2       | Multi-turn agent loop              | Error recovery         | High   |
 | P2       | Hierarchical prompting             | Context optimization   | Medium |

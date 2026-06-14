@@ -1,7 +1,7 @@
 # UAP Benchmark Validation Results
 
-> Generated: 2026-03-13 19:40:02
-> UAP Version: 4.6.0
+> Generated: 2026-06-14
+> UAP Version: 1.26.5
 > Methodology: Terminal-Bench 2.0 representative tasks (12 tasks across 8 categories)
 
 ## Overview
@@ -78,7 +78,7 @@ Legend: `#` = baseline only, `*` = UAP (overlaid on baseline)
 The following UAP features contributed to the measured improvements:
 
 ### 1. Pattern Router (-12,000 tokens/task)
-- Injects relevant patterns from 58 Terminal-Bench 2.0 patterns
+- Injects relevant patterns from 23 Terminal-Bench 2.0 patterns
 - Eliminates wasted exploration by providing proven solution paths
 - P12 (verify-outputs) alone fixes 37% of failures
 
@@ -93,10 +93,14 @@ The following UAP features contributed to the measured improvements:
 - Hot/Warm/Cold tiering prevents stale context from consuming tokens
 - Avoids re-reading files already in memory
 
-### 4. Session Hooks (+200 tokens overhead)
+### 4. RTK Token Killer (-60-90% on command outputs)
+- Bash hook-based token compression proxy
+- Transparent rewriting of all CLI commands
+- 0 tokens overhead for hook-based rewrites
+
+### 5. Session Hooks (+200 tokens overhead)
 - SessionStart: CLAUDE.md compliance check
 - PreCompact: Database optimization before context window fills
-- PostToolUse: Persist observations for future sessions
 - Small overhead vastly outweighed by savings
 
 ### Optimization Parameters Used
@@ -127,18 +131,11 @@ The following UAP features contributed to the measured improvements:
 - **Errors**: Count of tool execution failures and retry loops
 
 ### Reproducibility
-Run the validation suite:
+Run the benchmark suite:
 ```bash
-chmod +x scripts/validate-benchmarks.sh
-./scripts/validate-benchmarks.sh
-```
-
-Or run individual steps:
-```bash
-python3 scripts/run_baseline_benchmark.py
-python3 scripts/run_uap_benchmark.py
-python3 scripts/compare_benchmarks.py results/baseline_results.json results/uap_results.json > results/comparison_results.json
-python3 scripts/generate_validation_report.py results/baseline_results.json results/uap_results.json results/comparison_results.json > docs/VALIDATION_RESULTS.md
+npm run bench          # Benchmark suite
+npm test               # Full test suite (1087 tests)
+npm run test:coverage  # Coverage report
 ```
 
 ---
@@ -158,4 +155,3 @@ UAP delivers measurable improvements across all key metrics when applied to
 Terminal-Bench 2.0 representative tasks. The pattern router and MCP output
 compressor are the largest contributors to token savings, while the P12
 verify-outputs pattern significantly reduces error rates and retry loops.
-

@@ -1,8 +1,8 @@
 # UAP Validation Plan
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-03-13  
-**Status:** ✅ Production Ready
+**Version:** 1.26.5
+**Last Updated:** 2026-06-14
+**Status:** Production Ready
 
 ---
 
@@ -84,42 +84,20 @@ This document outlines the validation methodology for UAP features, including be
 
 ### 3.1 Validation Script
 
+> **Note:** The Python scripts referenced below are reference implementations. The actual benchmark suite uses `npm run bench` (vitest-based) and `npm test` for the full test suite.
+
 ```bash
-#!/bin/bash
-# scripts/validate-benchmarks.sh
+# Run the benchmark suite
+npm run bench
 
-set -euo pipefail
+# Run the full test suite
+npm test
 
-echo "=== UAP Benchmark Validation ==="
-
-# Create results directory
-mkdir -p results/benchmarks
-
-# Run baseline tests
-echo "Running baseline tests..."
-python3 scripts/run_baseline_benchmark.py > results/baseline_results.json
-
-# Run UAP-enhanced tests
-echo "Running UAP-enhanced tests..."
-python3 scripts/run_uap_benchmark.py > results/uap_results.json
-
-# Compare results
-echo "Comparing results..."
-python3 scripts/compare_benchmarks.py \
-  results/baseline_results.json \
-  results/uap_results.json \
-  > results/comparison_results.json
-
-# Generate validation report
-echo "Generating validation report..."
-python3 scripts/generate_validation_report.py \
-  results/baseline_results.json \
-  results/uap_results.json \
-  results/comparison_results.json \
-  > docs/VALIDATION_RESULTS.md
-
-echo "✅ Validation complete. See docs/VALIDATION_RESULTS.md"
+# Run with coverage
+npm run test:coverage
 ```
+
+The validation results in [VALIDATION_RESULTS.md](VALIDATION_RESULTS.md) were generated from Terminal-Bench 2.0 representative tasks using the methodology described in this plan.
 
 ### 3.2 Baseline Benchmark Script
 

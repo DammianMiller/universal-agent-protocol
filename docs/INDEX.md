@@ -1,7 +1,7 @@
 # UAP Documentation
 
-> **Version:** 1.18.0  
-> **Last Updated:** 2026-03-28  
+> **Version:** 1.26.5
+> **Last Updated:** 2026-06-14
 > **License:** MIT
 
 ---
@@ -28,7 +28,7 @@
 ### Core Capabilities
 
 1. **Persistent Memory**: Store and retrieve information across sessions with 4-layer architecture
-2. **Pattern Application**: Leverage 58+ battle-tested workflows and decision frameworks
+2. **Pattern Application**: Leverage 23 battle-tested workflows from Terminal-Bench 2.0
 3. **Multi-Agent Coordination**: Coordinate work between agents to prevent conflicts
 4. **CI/CD Optimization**: Reduce pipeline costs by 50-80% through intelligent batching
 5. **MCP Integration**: Achieve 98% token reduction via meta-tool routing
@@ -37,7 +37,7 @@
 
 ```bash
 # Install UAP CLI
-npm install -g universal-agent-protocol
+npm install -g @miller-tech/uap
 
 # Initialize in your project
 uap init
@@ -208,12 +208,12 @@ jobs:
 
 ### Performance Summary
 
-| Metric | Baseline | UAP v1.18 | Improvement |
-|--------|----------|-----------|-------------|
-| **Success Rate** | 75% | **100%** | +25pp |
-| **Tokens/Task** | 52K | **23.4K** | -55% |
-| **Time/Task** | 45s | **32s** | -29% |
-| **Error Rate** | 12% | **0%** | -100% |
+| Metric | Baseline | UAP-Enhanced | Improvement |
+|--------|----------|-------------|-------------|
+| **Success Rate** | 25% | **58%** | +33pp |
+| **Tokens/Task** | 46.5K | **23.4K** | -50% |
+| **Time/Task** | 51.5s | **22.2s** | -57% |
+| **Error Rate** | 1.17/task | **0.42/task** | -68% |
 
 ### Full Benchmark Suite
 

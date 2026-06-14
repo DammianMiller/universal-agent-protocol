@@ -1,7 +1,7 @@
 # Overnight Benchmark Runner Guide
 
-> **Version:** 1.18.0  
-> **Last Updated:** 2026-03-28  
+> **Version:** 1.26.5
+> **Last Updated:** 2026-06-14
 > **Purpose:** Automated overnight benchmark execution
 
 ---

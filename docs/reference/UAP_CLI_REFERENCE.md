@@ -2,6 +2,9 @@
 
 **Complete command reference for Universal Agent Protocol**
 
+> **Version:** 1.26.5
+> **Last Updated:** 2026-06-14
+
 ---
 
 ## Quick Start

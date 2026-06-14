@@ -1,8 +1,8 @@
 # UAP API Reference
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-03-13  
-**Status:** ✅ Production Ready
+**Version:** 1.26.5
+**Last Updated:** 2026-06-14
+**Status:** Production Ready
 
 ---
 
@@ -161,7 +161,7 @@ uap memory status
 Memory System Status:
 - Short-term: 42/50 entries
 - Long-term: 1,234 entries (Qdrant)
-- Pattern RAG: 58 patterns indexed
+- Pattern RAG: 23 patterns indexed
 - Health: OK
 ```
 
