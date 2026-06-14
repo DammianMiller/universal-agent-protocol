@@ -30,6 +30,11 @@ export UAP_REPO_ROOT="$MAIN_ROOT"
 # actual WORKING TREE, not the (possibly bare) MAIN_ROOT. Expose the current checkout
 # so _common.worktree_root() targets the worktree when an op runs from inside one.
 export UAP_WORKTREE_ROOT="$CHECKOUT_ROOT"
+# Delivery enforcement defaults to BLOCK for UAP-managed projects: substantive
+# source edits must route through `uap deliver` (verified completion against the
+# gates). The `:-` preserves any explicit operator/CI override (advisory|block).
+# Escape hatches still apply: UAP_DELIVER_ACTIVE=1 (inside deliver) / UAP_DELIVER_BYPASS=1.
+export UAP_ENFORCE_DELIVERY="${UAP_ENFORCE_DELIVERY:-block}"
 cd "$MAIN_ROOT"
 
 TOOL="$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tool_name") or d.get("tool") or "")' 2>/dev/null || true)"

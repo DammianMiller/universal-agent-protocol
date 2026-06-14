@@ -107,6 +107,8 @@
     "docs",
     "config",
     "templates",
+    "src/policies/schemas/policies",
+    "src/policies/enforcers",
     "tools/agents",
     "scripts/setup",
     "scripts/version-bump.sh",
