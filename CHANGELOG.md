@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.40.0 (2026-06-14)
+
+- feat(delivery): make loop-until-delivered the default for all UAP coding agents
+
+
 ## v1.39.0 (2026-06-14)
 
 - feat(delivery): deliver-enforcement policy + persist-until-delivered loop autonomy
