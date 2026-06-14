@@ -406,8 +406,8 @@ program
   .option('--no-auto', 'Disable dynamic optimization (by default the task is classified and matching aids enable automatically)')
   .option('--no-protect-tests', 'Allow the model to modify pre-existing test files (protected by default)')
   .option('--guidance-file <path>', 'Poll this file each turn for operator guidance; steer a running mission (write to the file) without stopping it')
-  .option('--until-delivered', 'Loop until every gate passes — extends past --max-turns up to a ceiling, stopping on stagnation (full autonomy)')
-  .option('--ceiling <n>', 'Hard turn ceiling for --until-delivered (1-50, default 30)')
+  .option('--no-until-delivered', 'Disable loop-until-delivered (ON by default: extends past --max-turns to a ceiling, stopping on stagnation)')
+  .option('--ceiling <n>', 'Hard turn ceiling for until-delivered (1-50, default 30)')
   .option('--dry-run', 'Show detected gates and plan without calling the model')
   .option('--json', 'Emit JSON result')
   .action(async (instructionParts: string[], options) => {

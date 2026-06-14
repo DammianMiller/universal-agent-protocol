@@ -72,9 +72,10 @@ export interface DeliverOptions {
   /** Path polled each turn for operator guidance — steer a running mission
    * without stopping it by writing to this file. */
   guidanceFile?: string;
-  /** Loop until every gate passes (or the ceiling/stagnation guard stops it). */
+  /** Loop until every gate passes (default ON; commander sets this false when
+   * --no-until-delivered is passed; UAP_DELIVER_UNTIL_DELIVERED=0 also disables). */
   untilDelivered?: boolean;
-  /** Hard turn ceiling for --until-delivered (default 30). */
+  /** Hard turn ceiling for until-delivered (default 30). */
   ceiling?: string;
   dryRun?: boolean;
   json?: boolean;
@@ -199,7 +200,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
   }
 
-  // --until-delivered: loop until gates pass, bounded by a hard ceiling.
+  // Loop-until-delivered is ON BY DEFAULT for every coding agent using UAP, so
+  // deliveries run to verified completion. Opt out per-run with
+  // `--no-until-delivered` (commander sets options.untilDelivered === false) or
+  // globally with UAP_DELIVER_UNTIL_DELIVERED=0. Bounded by the ceiling + the
+  // loop's stagnation guard, so default-on can never become an unbounded loop.
+  const untilDelivered =
+    options.untilDelivered !== false && process.env.UAP_DELIVER_UNTIL_DELIVERED !== '0';
+
   let maxTurnsCeiling: number | undefined;
   if (options.ceiling !== undefined) {
     maxTurnsCeiling = Number(options.ceiling);
@@ -207,7 +215,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       fail(`--ceiling must be an integer between 1 and ${CEILING_LIMIT}, got '${options.ceiling}'`);
     }
   }
-  if (options.untilDelivered && maxTurnsCeiling === undefined) {
+  if (untilDelivered && maxTurnsCeiling === undefined) {
     maxTurnsCeiling = DEFAULT_CLI_CEILING;
   }
 
@@ -264,8 +272,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       protectTests: options.protectTests !== false,
       protectedTestFiles: options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles.size : 0,
       guidanceFile: options.guidanceFile ? resolve(options.guidanceFile) : null,
-      untilDelivered: Boolean(options.untilDelivered),
-      ceiling: options.untilDelivered ? (maxTurnsCeiling ?? DEFAULT_CLI_CEILING) : null,
+      untilDelivered,
+      ceiling: untilDelivered ? (maxTurnsCeiling ?? DEFAULT_CLI_CEILING) : null,
       gates: rungs.map((r) => ({ id: r.id, name: r.name, required: r.required })),
     };
     if (options.json) {
@@ -504,7 +512,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       practiceProvider,
       protectTests: options.protectTests,
       guidanceProvider,
-      untilDelivered: options.untilDelivered,
+      untilDelivered,
       maxTurnsCeiling,
       onIteration: composeIterationHooks(
         (record) => printProgress(record),
