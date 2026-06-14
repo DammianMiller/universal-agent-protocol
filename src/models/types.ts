@@ -32,6 +32,9 @@ export const ModelConfigSchemaModels = z.object({
   costPer1MOutput: z.number().optional(),
   capabilities: z.array(z.string()).default([]),
   modelContextBudget: z.number().optional(), // Effective context sweet spot (may be less than maxContextTokens)
+  // Reasoning/thinking effort for models that support it. 'xhigh' is UAP's
+  // maximum; it maps to provider 'high' on OpenAI-compatible wires.
+  reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
 });
 
 export type ModelConfig = z.infer<typeof ModelConfigSchemaModels>;
@@ -40,6 +43,25 @@ export type ModelConfig = z.infer<typeof ModelConfigSchemaModels>;
  * Pre-defined model presets for common configurations
  */
 export const ModelPresets: Record<string, ModelConfig> = {
+  'opus-4.8': {
+    id: 'opus-4.8',
+    name: 'Claude Opus 4.8',
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-8',
+    apiKeyEnvVar: 'ANTHROPIC_API_KEY',
+    maxContextTokens: 200000,
+    costPer1MInput: 7.5,
+    costPer1MOutput: 37.5,
+    capabilities: [
+      'planning',
+      'complex-reasoning',
+      'code-generation',
+      'review',
+      'advanced-planning',
+    ],
+    modelContextBudget: 180000,
+    reasoningEffort: 'xhigh',
+  },
   'opus-4.6': {
     id: 'opus-4.6',
     name: 'Claude Opus 4.6',
