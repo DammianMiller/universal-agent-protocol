@@ -240,6 +240,7 @@ export async function startServices(cwd: string): Promise<void> {
 
   // Check for docker-compose file
   const composePaths = [
+    join(cwd, 'tools/agents/docker-compose.qdrant.yml'),
     join(cwd, 'agents/docker-compose.yml'),
     join(cwd, 'docker/docker-compose.yml'),
   ];
@@ -270,11 +271,11 @@ services:
       - QDRANT__SERVICE__GRPC_PORT=6334
     restart: unless-stopped
 `;
-    const agentsDir = join(cwd, 'agents');
+    const agentsDir = join(cwd, 'tools/agents');
     if (!existsSync(agentsDir)) {
       mkdirSync(agentsDir, { recursive: true });
     }
-    composePath = join(agentsDir, 'docker-compose.yml');
+    composePath = join(agentsDir, 'docker-compose.qdrant.yml');
     writeFileSync(composePath, defaultCompose);
   }
 
@@ -319,6 +320,7 @@ async function stopServices(cwd: string): Promise<void> {
   const spinner = ora('Stopping memory services...').start();
 
   const composePaths = [
+    join(cwd, 'tools/agents/docker-compose.qdrant.yml'),
     join(cwd, 'agents/docker-compose.yml'),
     join(cwd, 'docker/docker-compose.yml'),
   ];
