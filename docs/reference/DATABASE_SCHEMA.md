@@ -1,344 +1,110 @@
-# UAP Database Schema Reference
+# Database Schema Reference
 
-This document provides accurate database schema definitions for all UAP SQLite databases.
+> Universal Agent Protocol (UAP) v1.40.0
 
-## Short-Term Memory Database
+UAP persists state in a set of SQLite databases (via `better-sqlite3`, WAL mode)
+plus a Qdrant vector store for semantic search. All schemas below are grounded
+in source. Paths are resolved relative to the project working directory unless
+noted otherwise.
 
-**Location:** `agents/data/memory/short_term.db`
+## SQLite databases
 
-### Table: memories
+| DB file | Owning module | Purpose |
+|---------|---------------|---------|
+| `.uap/tasks/tasks.db` (+ `tasks.jsonl` mirror) | `src/tasks/database.ts` | Task tracking, dependency DAG, history. |
+| `.uap/worktree_registry.db` (legacy `.uam/...`) | `src/cli/worktree.ts` | Worktree registry. |
+| `agents/data/coordination/coordination.db` | `src/coordination/database.ts`, `adaptive-patterns.ts` | Multi-agent coordination + adaptive pattern outcomes. |
+| `agents/data/memory/policies.db` | `src/policies/database-manager.ts` | Executable policy engine. |
+| `agents/data/memory/short_term.db` | `src/memory/short-term/schema.ts` (+ daily-log, correction-propagator) | Short-term (L1/L2) memory, sessions, knowledge graph. |
+| `agents/data/memory/model_analytics.db` | `src/models/analytics.ts` | Model task-outcome analytics. |
+| `agents/data/memory/model_fingerprints.db` | `src/memory/model-router.ts` (package-relative path) | Model routing fingerprints. |
+| `agents/data/memory/historical_context.db` | `src/memory/adaptive-context.ts` | Historical task outcomes + semantic cache. |
+| `agents/data/memory/predictive.db` | `src/memory/predictive-memory.ts` | Predictive query learning. |
+| `agents/data/memory/telemetry.db` | `src/dashboard/data-service.ts` | Dashboard telemetry time-series + session history. |
+| `agents/data/memory/session.db` | `src/dashboard/data-service.ts` | Dashboard display view (sessions/agents/skills/...). |
+| `agents/data/memory/session_snapshots.db` | read-only in `src/cli/dashboard.ts` | Session snapshots. |
+| Hierarchical memory DB (caller-supplied path) | `src/memory/hierarchical-memory.ts` | Tiered hot/warm/cold memory. |
 
-```sql
-CREATE TABLE memories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('action', 'observation', 'thought', 'goal', 'lesson', 'decision')),
-    content TEXT NOT NULL,
-    project_id TEXT NOT NULL DEFAULT 'default',
-    importance INTEGER NOT NULL DEFAULT 5
-);
+## Tasks DB (`src/tasks/database.ts`)
 
-CREATE INDEX idx_memories_project_id ON memories(project_id);
-CREATE INDEX idx_memories_timestamp ON memories(timestamp);
-CREATE INDEX idx_memories_type ON memories(type);
-CREATE INDEX idx_memories_project_type ON memories(project_id, type);
-CREATE INDEX idx_memories_importance ON memories(importance DESC);
-```
+| Table | Key columns |
+|-------|-------------|
+| `tasks` | `id` PK, `title`, `description`, `type` (task/bug/feature/epic/chore/story), `status` (open/in_progress/blocked/done/wont_do), `priority` (0-4), `assignee`, `worktree_branch`, `labels`, `parent_id` FK, timestamps, `closed_reason` |
+| `task_dependencies` | `from_task` FK, `to_task` FK, `dep_type` (blocks/related/discovered_from), `UNIQUE(from_task,to_task)` |
+| `task_history` | `task_id` FK, `field`, `old_value`, `new_value`, `changed_by`, `changed_at` |
+| `task_activity` | `task_id` FK, `agent_id`, `activity` (claimed/released/commented/updated/created/closed), `timestamp` |
+| `task_summaries` | `original_ids`, `summary`, `labels`, `closed_period`, `created_at` |
 
-### Table: memories_fts (FTS5)
+## Worktree Registry DB (`src/cli/worktree.ts`)
 
-```sql
-CREATE VIRTUAL TABLE memories_fts USING fts5(
-    content,
-    type,
-    content='memories',
-    content_rowid='id',
-    tokenize='porter unicode61'
-);
-```
+| Table | Key columns |
+|-------|-------------|
+| `worktrees` | `id` PK, `slug` UNIQUE, `branch_name`, `worktree_path`, `created_at`, `status` (default `active`) |
 
-### Table: session_memories
+## Coordination DB (`src/coordination/database.ts`, `adaptive-patterns.ts`)
 
-```sql
-CREATE TABLE session_memories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    type TEXT NOT NULL,
-    content TEXT NOT NULL,
-    importance INTEGER DEFAULT 5
-);
+| Table | Key columns |
+|-------|-------------|
+| `agent_registry` | `id` PK, `name`, `session_id`, `status` (active/idle/completed/failed), `current_task`, `worktree_branch`, `last_heartbeat`, `capabilities` |
+| `agent_messages` | `channel`, `from_agent`, `to_agent`, `type` (request/response/notification/claim/release), `payload`, `priority`, `expires_at` |
+| `work_announcements` | `agent_id` FK, `worktree_branch`, `intent_type` (editing/reviewing/refactoring/testing/documenting), `resource`, `files_affected`, `announced_at`, `completed_at` |
+| `work_claims` | `resource`, `agent_id` FK, `claim_type` (exclusive/shared), `claimed_at`, `expires_at` |
+| `deploy_queue` | `agent_id`, `action_type` (commit/push/merge/deploy/workflow), `target`, `status` (pending/batched/executing/completed/failed), `batch_id`, `priority`, `dependencies` |
+| `deploy_batches` | `id` PK, `status` (pending/executing/completed/failed), `result`, timestamps |
+| `pattern_outcomes` | `pattern_id`, `task_category`, `uses`, `successes`, PK(`pattern_id`,`task_category`) |
+| `agent_pattern_outcomes` | `agent_id`, `pattern_id`, `task_category`, `uses`, `successes`, composite PK |
 
-CREATE UNIQUE INDEX idx_session_unique ON session_memories(session_id, content);
-CREATE INDEX idx_session_id ON session_memories(session_id);
-CREATE INDEX idx_session_timestamp ON session_memories(timestamp);
-CREATE INDEX idx_session_importance ON session_memories(importance DESC);
-CREATE INDEX idx_session_id_importance ON session_memories(session_id, importance DESC);
-```
+## Policies DB (`src/policies/database-manager.ts`)
 
-### Table: entities (Knowledge Graph L4)
+| Table | Key columns |
+|-------|-------------|
+| `policies` | `id` PK, `name`, `category`, `level`, `rawMarkdown`, `convertedFormat`, `executableTools`, `tags`, `version`, `isActive`, `priority`, `enforcementStage` |
+| `executable_tools` | `id` PK, `policyId` FK, `toolName`, `code`, `language` (default `python`) |
+| `policy_executions` | `policyId` FK, `toolName`, `operation`, `args`, `result`, `allowed`, `reason`, `executedAt` |
 
-```sql
-CREATE TABLE entities (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    first_seen TEXT NOT NULL,
-    last_seen TEXT NOT NULL,
-    mention_count INTEGER NOT NULL DEFAULT 1,
-    UNIQUE(type, name)
-);
+## Short-Term Memory DB (`src/memory/short-term/schema.ts`)
 
-CREATE INDEX idx_entities_type ON entities(type);
-```
+| Table | Key columns |
+|-------|-------------|
+| `memories` | `id` PK, `timestamp`, `type` (action/observation/thought/goal/lesson/decision), `content`, `project_id` (default `default`), `importance` (default 5) |
+| `memories_fts` | FTS5 virtual table mirroring `memories` (synced by triggers) |
+| `session_memories` | `session_id`, `timestamp`, `type`, `content`, `importance` |
+| `session_memories_fts` | FTS5 virtual table mirroring `session_memories` |
+| `entities` | `type`, `name`, `description`, `mention_count`, `UNIQUE(type,name)` |
+| `relationships` | `source_id` FK, `target_id` FK, `relation`, `strength`, `UNIQUE(source_id,target_id,relation)` |
+| `daily_log` | `date`, `content`, `type`, `promoted`, `promoted_to`, `gate_score` (created by `daily-log.ts`) |
+| `superseded_entries` | `tier`, `original_entry_id`, `original_content`, `corrected_content`, `reason` (created by `correction-propagator.ts`) |
 
-### Table: relationships (Knowledge Graph L4)
+## Other memory / analytics DBs
 
-```sql
-CREATE TABLE relationships (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_id INTEGER NOT NULL,
-    target_id INTEGER NOT NULL,
-    relation TEXT NOT NULL,
-    strength REAL NOT NULL DEFAULT 1.0,
-    timestamp TEXT NOT NULL,
-    UNIQUE(source_id, target_id, relation),
-    FOREIGN KEY (source_id) REFERENCES entities(id),
-    FOREIGN KEY (target_id) REFERENCES entities(id)
-);
+| DB / table | Key columns |
+|------------|-------------|
+| `hierarchical_memory` (`hierarchical-memory.ts`) | `id` PK, `tier` (hot/warm/cold), `content`, `compressed`, `type`, `importance`, `access_count`, `embedding` BLOB |
+| `task_outcomes` (`analytics.ts`) | `modelId`, `taskType`, `complexity`, `success`, `durationMs`, `tokensIn`, `tokensOut`, `cost`, `taskId` |
+| `fingerprint_updates` (`model-router.ts`) | `model_id` PK, `avg_latency_ms`, `success_rate`, `updated_at` |
+| `category_stats` (`model-router.ts`) | `model_id`, `category`, `attempts`, `successes`, PK(`model_id`,`category`) |
+| `historical_data` (`adaptive-context.ts`) | `task_type` PK, `total_attempts`, `uam_successes`, `no_uam_successes`, avg times |
+| `semantic_cache` (`adaptive-context.ts`) | `cache_key` PK, `instruction_hash`, `decision_json`, `success_rate`, `use_count` |
+| `predictive_queries` / `predictive_history` (`predictive-memory.ts`) | `keyword` PK / `description`, `queries` |
+| `time_series` / `session_history` (`data-service.ts`) | telemetry JSON / per-session tokens, cost, tool_calls, policy_checks, policy_blocks |
 
-CREATE INDEX idx_relationships_source ON relationships(source_id);
-CREATE INDEX idx_relationships_target ON relationships(target_id);
-```
+## Qdrant collections
 
-## Coordination Database
+Qdrant runs as a local Docker container (`qdrant/qdrant:latest`, container
+`uap-qdrant`, port 6333) or against a cloud endpoint (`QDRANT_URL` /
+`QDRANT_API_KEY`). Client is `@qdrant/js-client-rest`, lazy-loaded.
 
-**Location:** `agents/data/coordination/coordination.db`
+| Collection | Purpose | Embedding model | Vector dim / distance |
+|------------|---------|-----------------|-----------------------|
+| `agent_memory` | Long-term semantic memory (L3) | `all-MiniLM-L6-v2` (config) / nomic-embed-text (runtime) | 384 (compliance/MiniLM path) or 768 (cloud/nomic); Cosine |
+| `agent_patterns` | Pattern RAG retrieval | `all-MiniLM-L6-v2` | 384; Cosine |
 
-### Table: agent_registry
-
-```sql
-CREATE TABLE agent_registry (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('active', 'idle', 'completed', 'failed')),
-    current_task TEXT,
-    worktree_branch TEXT,
-    started_at TEXT NOT NULL,
-    last_heartbeat TEXT NOT NULL,
-    capabilities TEXT
-);
-
-CREATE INDEX idx_agent_registry_session ON agent_registry(session_id);
-CREATE INDEX idx_agent_registry_status ON agent_registry(status);
-```
-
-### Table: agent_messages
-
-```sql
-CREATE TABLE agent_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    channel TEXT NOT NULL,
-    from_agent TEXT,
-    to_agent TEXT,
-    type TEXT NOT NULL CHECK(type IN ('request', 'response', 'notification', 'claim', 'release')),
-    payload TEXT NOT NULL,
-    priority INTEGER DEFAULT 5,
-    created_at TEXT NOT NULL,
-    read_at TEXT,
-    expires_at TEXT
-);
-
-CREATE INDEX idx_messages_channel ON agent_messages(channel);
-CREATE INDEX idx_messages_to_agent ON agent_messages(to_agent);
-CREATE INDEX idx_messages_created ON agent_messages(created_at);
-```
-
-### Table: work_announcements
-
-```sql
-CREATE TABLE work_announcements (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent_id TEXT NOT NULL,
-    agent_name TEXT,
-    worktree_branch TEXT,
-    intent_type TEXT NOT NULL CHECK(intent_type IN ('editing', 'reviewing', 'refactoring', 'testing', 'documenting')),
-    resource TEXT NOT NULL,
-    description TEXT,
-    files_affected TEXT,
-    estimated_completion TEXT,
-    announced_at TEXT NOT NULL,
-    completed_at TEXT,
-    FOREIGN KEY (agent_id) REFERENCES agent_registry(id)
-);
-
-CREATE INDEX idx_announcements_agent ON work_announcements(agent_id);
-CREATE INDEX idx_announcements_resource ON work_announcements(resource);
-CREATE INDEX idx_announcements_active ON work_announcements(completed_at) WHERE completed_at IS NULL;
-```
-
-### Table: work_claims (Legacy)
-
-```sql
-CREATE TABLE work_claims (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    resource TEXT NOT NULL,
-    agent_id TEXT NOT NULL,
-    claim_type TEXT NOT NULL CHECK(claim_type IN ('exclusive', 'shared')),
-    claimed_at TEXT NOT NULL,
-    expires_at TEXT,
-    FOREIGN KEY (agent_id) REFERENCES agent_registry(id)
-);
-
-CREATE INDEX idx_claims_agent ON work_claims(agent_id);
-CREATE INDEX idx_claims_resource ON work_claims(resource);
-```
-
-### Table: deploy_queue
-
-```sql
-CREATE TABLE deploy_queue (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent_id TEXT NOT NULL,
-    action_type TEXT NOT NULL CHECK(action_type IN ('commit', 'push', 'merge', 'deploy', 'workflow')),
-    target TEXT NOT NULL,
-    payload TEXT,
-    status TEXT NOT NULL CHECK(status IN ('pending', 'batched', 'executing', 'completed', 'failed')),
-    batch_id TEXT,
-    queued_at TEXT NOT NULL,
-    execute_after TEXT,
-    priority INTEGER DEFAULT 5,
-    dependencies TEXT
-);
-
-CREATE INDEX idx_deploy_status ON deploy_queue(status);
-CREATE INDEX idx_deploy_batch ON deploy_queue(batch_id);
-CREATE INDEX idx_deploy_target ON deploy_queue(target);
-```
-
-### Table: deploy_batches
-
-```sql
-CREATE TABLE deploy_batches (
-    id TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL,
-    executed_at TEXT,
-    status TEXT NOT NULL CHECK(status IN ('pending', 'executing', 'completed', 'failed')),
-    result TEXT
-);
-```
-
-## Task Database
-
-**Location:** `./.uap/tasks/tasks.db`
-
-### Table: tasks
-
-```sql
-CREATE TABLE tasks (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    description TEXT,
-    type TEXT NOT NULL CHECK(type IN ('task', 'bug', 'feature', 'epic', 'chore', 'story')) DEFAULT 'task',
-    status TEXT NOT NULL CHECK(status IN ('open', 'in_progress', 'blocked', 'done', 'wont_do')) DEFAULT 'open',
-    priority INTEGER NOT NULL CHECK(priority BETWEEN 0 AND 4) DEFAULT 2,
-    assignee TEXT,
-    worktree_branch TEXT,
-    labels TEXT,
-    notes TEXT,
-    parent_id TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    due_date TEXT,
-    closed_at TEXT,
-    closed_reason TEXT,
-    FOREIGN KEY (parent_id) REFERENCES tasks(id)
-);
-
-CREATE INDEX idx_tasks_status ON tasks(status);
-CREATE INDEX idx_tasks_type ON tasks(type);
-CREATE INDEX idx_tasks_priority ON tasks(priority);
-CREATE INDEX idx_tasks_assignee ON tasks(assignee);
-CREATE INDEX idx_tasks_parent ON tasks(parent_id);
-CREATE INDEX idx_tasks_due_date ON tasks(due_date);
-```
-
-### Table: task_dependencies
-
-```sql
-CREATE TABLE task_dependencies (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_task TEXT NOT NULL,
-    to_task TEXT NOT NULL,
-    dep_type TEXT NOT NULL CHECK(dep_type IN ('blocks', 'related', 'discovered_from')),
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (from_task) REFERENCES tasks(id),
-    FOREIGN KEY (to_task) REFERENCES tasks(id),
-    UNIQUE(from_task, to_task)
-);
-
-CREATE INDEX idx_deps_from ON task_dependencies(from_task);
-CREATE INDEX idx_deps_to ON task_dependencies(to_task);
-CREATE INDEX idx_deps_type ON task_dependencies(dep_type);
-```
-
-### Table: task_history
-
-```sql
-CREATE TABLE task_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT NOT NULL,
-    field TEXT NOT NULL,
-    old_value TEXT,
-    new_value TEXT,
-    changed_by TEXT,
-    changed_at TEXT NOT NULL,
-    FOREIGN KEY (task_id) REFERENCES tasks(id)
-);
-
-CREATE INDEX idx_history_task ON task_history(task_id);
-CREATE INDEX idx_history_time ON task_history(changed_at);
-```
-
-### Table: task_activity
-
-```sql
-CREATE TABLE task_activity (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT NOT NULL,
-    agent_id TEXT NOT NULL,
-    activity TEXT NOT NULL CHECK(activity IN ('claimed', 'released', 'commented', 'updated', 'created', 'closed')),
-    details TEXT,
-    timestamp TEXT NOT NULL,
-    FOREIGN KEY (task_id) REFERENCES tasks(id)
-);
-
-CREATE INDEX idx_activity_task ON task_activity(task_id);
-CREATE INDEX idx_activity_agent ON task_activity(agent_id);
-```
-
-### Table: task_summaries
-
-```sql
-CREATE TABLE task_summaries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    original_ids TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    labels TEXT,
-    closed_period TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE INDEX idx_summaries_period ON task_summaries(closed_period);
-```
-
-## Database Configuration
-
-All databases use:
-
-- **Journal mode:** WAL (Write-Ahead Logging)
-- **Synchronous:** NORMAL
-- **Busy timeout:** 10,000ms
-- **Cache size:** -64000 pages (64MB)
-
-## Migration Notes
-
-### Memory Database Migrations
-
-- Added `importance` column to `memories` table
-- Widen CHECK constraint on `memories.type` to include 'lesson' and 'decision'
-- Added `description` column to `entities` table
-- Added `strength` column to `relationships` table
-
-### Task Database Migrations
-
-- Added `due_date` column (v4.9.0)
-- Added `closed_at` and `closed_reason` columns (v9.4.0)
-
-## See Also
-
-- [API Reference](./API_REFERENCE.md)
-- [Memory System Architecture](../../docs/architecture/SYSTEM_ANALYSIS.md)
-- [Multi-Agent Coordination](../../docs/reference/FEATURES.md#multi-agent-coordination)
+> **Dimension nuance (load-bearing).** The pattern indexer
+> (`agents/scripts/index_patterns_to_qdrant.py`) and the compliance auto-fix
+> (`src/cli/compliance.ts`) create collections at 384 dims. The TypeScript
+> Qdrant Cloud backend (`src/memory/backends/qdrant-cloud.ts`) defaults
+> `vectorSize` to 768 and, on dimension mismatch, creates a suffixed collection
+> `${collection}_v${vectorSize}`. Collection names are configurable
+> (`memory.longTerm.collection`, `memory.patternRag.collection`) and may be
+> suffixed with a project id by `sanitizeCollectionName`. Distance is always
+> Cosine.

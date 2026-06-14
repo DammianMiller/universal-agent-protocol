@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.40.1 (2026-06-14)
+
+- docs: complete documentation overhaul — rewrite the developer-facing doc set from v1.40.0 ground truth, correct all counts, remove stale/superseded/corrupted docs and non-project files
+
 ## v1.40.0 (2026-06-14)
 
 - feat(delivery): make loop-until-delivered the default for all UAP coding agents

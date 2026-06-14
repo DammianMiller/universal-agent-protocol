@@ -1,208 +1,105 @@
-# UAP Configuration Reference
+# Configuration Reference
 
-Complete configuration schema and environment variables for Universal Agent Protocol.
+> Universal Agent Protocol (UAP) v1.40.0
 
-## .uap.json Project Configuration
+All configuration surfaces below are verified against source. Only options that
+exist in code are documented here.
 
-### Root Schema
+## Config files
 
-```json
+| File | Owner / where read | Purpose |
+|------|--------------------|---------|
+| `.uap.json` | `src/utils/config-loader.ts` (searched up to 3 parent dirs for worktrees) | Central UAP config, validated by `AgentContextConfigSchema` (`src/types/config.ts`). |
+| `.factory/patterns/index.json` | `src/coordination/pattern-router.ts` | Pattern catalogue / router source of truth. |
+| `mcp.json` (platform path; `~/.factory/mcp.json` on Linux) | `src/cli/setup-mcp-router.ts`, `src/mcp-router/config/parser.ts` | MCP router server registration; supports `~`, `%APPDATA%`, `%USERPROFILE%`, `${VAR:-default}`, `$env:VAR` expansion. |
+| `.codex/config.toml` | `src/cli/hooks.ts` | Codex CLI config + UAP MCP server section. |
+| `.claude/settings.local.json` / `.factory/settings.local.json` | `src/cli/hooks.ts` | Hook registration (Claude / Factory / VSCode). |
+| `.cursor/hooks.json` | `src/cli/hooks.ts` | Cursor hook definitions. |
+| `~/.hermes/config.yaml` | `src/cli/hooks.ts` | Hermes (global) hooks + `mcp_servers.uap` + skills bridge. |
+| `.uap/omp/settings.json` | `src/cli/hooks.ts` | Oh-My-Pi integration settings. |
+| `llama-server.conf` | `src/bin/llama-server-optimize.ts` | Generated llama-server config. |
+
+### `.uap.json` schema (`src/types/config.ts`)
+
+Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
+`timeOptimization`, plus droids/commands/template sections.
+
+```jsonc
 {
-  "version": "1.0.0",
-  "project": {
-    "name": "string (required)",
-    "defaultBranch": "string (optional, default: main)"
-  },
+  "project": { "name": "...", "description": "...", "defaultBranch": "main" },
   "memory": {
     "shortTerm": {
-      "enabled": "boolean (default: true)",
-      "path": "string (default: ./agents/data/memory/short_term.db)",
-      "maxEntries": "integer (default: 50)"
+      "path": "./agents/data/memory/short_term.db",
+      "maxEntries": 50
     },
     "longTerm": {
-      "enabled": "boolean (default: true)",
-      "provider": "string (qdrant | github | local)",
-      "endpoint": "string (for Qdrant cloud)",
-      "apiKey": "string (for Qdrant cloud)"
-    }
-  },
-  "multiModel": {
-    "enabled": "boolean (default: true)",
-    "models": "string[] (required)",
-    "roles": {
-      "planner": "string (model ID)",
-      "executor": "string (model ID)",
-      "fallback": "string (model ID)"
+      "provider": "qdrant",            // qdrant|chroma|pinecone|github|qdrant-cloud|serverless|none
+      "collection": "agent_memory",
+      "embeddingModel": "all-MiniLM-L6-v2",
+      "endpoint": "localhost:6333"
     },
-    "routingStrategy": "string (cost-optimized | performance-first | balanced)"
-  },
-  "worktrees": {
-    "enabled": "boolean (default: true)",
-    "directory": "string (default: .worktrees)"
-  },
-  "policies": {
-    "enabled": "boolean (default: true)",
-    "auditTrail": "boolean (default: true)"
-  },
-  "hooks": {
-    "sessionStart": "boolean (default: true)",
-    "preCompact": "boolean (default: true)"
-  }
-}
-```
-
-### Validation Rules
-
-| Field                       | Type     | Required | Default                            | Description                |
-| --------------------------- | -------- | -------- | ---------------------------------- | -------------------------- |
-| version                     | string   | Yes      | -                                  | Schema version (1.0.0)     |
-| project.name                | string   | Yes      | -                                  | Project identifier         |
-| project.defaultBranch       | string   | No       | main                               | Git default branch         |
-| memory.shortTerm.enabled    | boolean  | No       | true                               | Enable short-term memory   |
-| memory.shortTerm.path       | string   | No       | ./agents/data/memory/short_term.db | SQLite path                |
-| memory.shortTerm.maxEntries | integer  | No       | 50                                 | Max working memory entries |
-| memory.longTerm.provider    | string   | No       | qdrant                             | Backend provider           |
-| multiModel.models           | string[] | Yes      | -                                  | Available model IDs        |
-| multiModel.routingStrategy  | string   | No       | balanced                           | Routing strategy           |
-
-## Environment Variables
-
-### Memory Configuration
-
-| Variable                      | Type   | Default                            | Description               |
-| ----------------------------- | ------ | ---------------------------------- | ------------------------- |
-| UAP_MEMORY_SHORT_TERM_PATH    | string | ./agents/data/memory/short_term.db | Short-term memory DB path |
-| UAP_MEMORY_LONG_TERM_PROVIDER | string | qdrant                             | Long-term memory backend  |
-| UAP_QDRANT_ENDPOINT           | string | -                                  | Qdrant cloud endpoint     |
-| UAP_QDRANT_API_KEY            | string | -                                  | Qdrant API key            |
-
-### Multi-Model Configuration
-
-| Variable             | Type   | Default  | Description            |
-| -------------------- | ------ | -------- | ---------------------- |
-| UAP_MODEL_PLANNER    | string | opus-4.6 | Default planner model  |
-| UAP_MODEL_EXECUTOR   | string | glm-4.7  | Default executor model |
-| UAP_MODEL_FALLBACK   | string | opus-4.5 | Fallback on failure    |
-| UAP_ROUTING_STRATEGY | string | balanced | Routing strategy       |
-
-### Worktree Configuration
-
-| Variable             | Type    | Default    | Description             |
-| -------------------- | ------- | ---------- | ----------------------- |
-| UAP_WORKTREE_DIR     | string  | .worktrees | Worktree directory path |
-| UAP_WORKTREE_ENABLED | boolean | true       | Enable worktree system  |
-
-### Policy Configuration
-
-| Variable             | Type    | Default | Description               |
-| -------------------- | ------- | ------- | ------------------------- |
-| UAP_POLICIES_ENABLED | boolean | true    | Enable policy enforcement |
-| UAP_AUDIT_TRAIL      | boolean | true    | Enable audit logging      |
-
-### Debug & Logging
-
-| Variable              | Type    | Default | Description                          |
-| --------------------- | ------- | ------- | ------------------------------------ |
-| UAP_VERBOSE           | boolean | false   | Enable verbose logging               |
-| UAP_LOG_LEVEL         | string  | info    | Log level (debug, info, warn, error) |
-| UAP_TELEMETRY_ENABLED | boolean | true    | Enable telemetry collection          |
-
-## Platform-Specific Configurations
-
-### Claude Code Integration
-
-```json
-{
-  "hooks": {
-    "claude": {
-      "sessionStart": "templates/hooks/session-start.sh",
-      "preCompact": "templates/hooks/pre-compact.sh"
+    "patternRag": {
+      "collection": "agent_patterns",
+      "embeddingModel": "all-MiniLM-L6-v2",
+      "vectorSize": 384,
+      "scoreThreshold": 0.35,
+      "topK": 2
     }
-  }
-}
-```
-
-### Factory.AI Integration
-
-```json
-{
-  "hooks": {
-    "factory": {
-      "sessionStart": "templates/hooks/session-start.sh",
-      "preCompact": "templates/hooks/pre-compact.sh"
-    }
-  }
-}
-```
-
-### OpenCode Integration
-
-```json
-{
-  "hooks": {
-    "opencode": {
-      "sessionStart": "templates/hooks/session-start.sh",
-      "preCompact": "templates/hooks/pre-compact.sh"
-    }
-  }
-}
-```
-
-## Example Configurations
-
-### Minimal Configuration
-
-```json
-{
-  "version": "1.0.0",
-  "project": { "name": "my-project" },
-  "memory": { "shortTerm": { "enabled": true } },
-  "multiModel": {
-    "enabled": true,
-    "models": ["opus-4.6", "qwen35"],
-    "roles": { "planner": "opus-4.6", "executor": "qwen35" }
-  }
-}
-```
-
-### Production Configuration
-
-```json
-{
-  "version": "1.0.0",
-  "project": { "name": "production-app", "defaultBranch": "main" },
-  "memory": {
-    "shortTerm": { "enabled": true, "maxEntries": 50 },
-    "longTerm": { "enabled": true, "provider": "qdrant", "endpoint": "https://qdrant.example.com" }
   },
-  "multiModel": {
-    "enabled": true,
-    "models": ["opus-4.6", "sonnet-4.6", "qwen35"],
-    "roles": { "planner": "opus-4.6", "executor": "qwen35", "fallback": "sonnet-4.6" },
-    "routingStrategy": "cost-optimized"
-  },
-  "worktrees": { "enabled": true, "directory": ".worktrees" },
-  "policies": { "enabled": true, "auditTrail": true }
+  "worktree": { "directory": ".worktrees", "branchPrefix": "feature/" }
 }
 ```
 
-## Configuration Validation
+> **Embedding-model nuance.** The config default `embeddingModel` is
+> `all-MiniLM-L6-v2` (384-dim), but the runtime embedding provider prefers
+> nomic-embed-text via llama.cpp/Ollama (768-dim). Long-term collection vector
+> size is therefore 384 (MiniLM/compliance path) or 768 (cloud/nomic runtime)
+> depending on backend; pattern RAG is consistently 384.
 
-Run validation:
+## Environment variables
 
-```bash
-uap compliance check
-```
+| Variable | Controls | Default |
+|----------|----------|---------|
+| `ANTHROPIC_API_KEY` | Gates ideate / API-backed flows | — |
+| `OPENAI_API_KEY` | OpenAI embedding provider key | — |
+| `QDRANT_URL` | Qdrant cloud/serverless endpoint | — |
+| `QDRANT_API_KEY` | Qdrant cloud API key | — |
+| `GITHUB_TOKEN` | GitHub memory backend PAT | — |
+| `UAP_EMBEDDING_ENDPOINT` | Embedding server URL | `http://192.168.1.165:8081` |
+| `UAP_INFERENCE_ENDPOINT` | Default LLM inference endpoint | `http://localhost:4000/v1` |
+| `UAP_LLM_SERVER` | LLM server selection for tool-call routing | — |
+| `UAP_MODEL_PROFILE` | Active model profile name | `generic` |
+| `UAP_LOG_LEVEL` | Logger level | `warn` |
+| `UAP_DELIVER_MODEL` | Deliver model preset | `qwen35-a3b` |
+| `UAP_ESCALATE_MODEL` | Escalation model preset | — |
+| `UAP_DELIVER_AUTO` | `0` disables auto-deliver | enabled |
+| `UAP_DELIVER_UNTIL_DELIVERED` | `0` disables loop-until-delivered | enabled |
+| `UAP_DELIVER_SANDBOX` | Deliver sandbox root path | — |
+| `UAP_HALO_TRACE` | `1` enables HALO tracing | off |
+| `UAP_HALO_TRACE_PATH` | HALO trace output file | `.uap/halo/traces.jsonl` |
+| `UAP_HALO_PROJECT_ID` | HALO project id | `uap` |
+| `UAP_AGENT_ID` | Agent id for MCP execute | `mcp-<pid>` |
+| `UAP_MAX_PARALLEL` | Override max parallel workers | auto |
+| `UAP_PARALLEL` | `false` disables parallelism | enabled |
+| `UAP_BENCHMARK_MODE` | `true` enables benchmark template mode | off |
+| `UAP_BENCHMARK_PARALLEL` | Parallel model count in benchmarks | — |
+| `HERMES_HOME` | Hermes home dir | `~/.hermes` |
+| `FACTORY_PROJECT_DIR` | Project dir in Factory hook commands | — |
+| `FORGE_UAP_PROJECT` | Project dir in ForgeCode hook scripts | `.` |
+| `FACTORY_API_KEY` / `DROID_API_KEY` | Factory/droid benchmark API key | — |
+| `NODE_ENV` / `UAM_ENV` / `CI` | Serverless env detection | — |
+| `HOME` | `~/.uap/omp`, droids dir resolution | — |
+| `TMPDIR` | rtk temp dir | `/tmp` |
+| `FORCE_INSTALL` | Force rtk reinstall | off |
+| `APPDATA` / `USERPROFILE` | Windows MCP config path expansion | — |
 
-This verifies:
+Per-model API key env var names are configurable via the model config field
+`apiKeyEnvVar` (`src/types/config.ts`), resolved indirectly in
+`src/models/openai-compat-client.ts`.
 
-- Memory database paths exist or can be created
-- Model IDs are valid
-- Worktree directory is accessible
-- Policy enforcement is properly configured
+## Database & vector store locations
 
-## See Also
-
-- [Getting Started](../../docs/getting-started/SETUP.md)
-- [Multi-Model Architecture](../../docs/reference/FEATURES.md#multi-model-architecture)
-- [Memory System](../../docs/reference/FEATURES.md#memory-system)
+See `docs/reference/DATABASE_SCHEMA.md` for full schemas. In brief, SQLite DBs
+live under `agents/data/memory/`, `agents/data/coordination/`, and `.uap/`;
+Qdrant runs as a local Docker container (`qdrant/qdrant:latest`, `uap-qdrant`,
+port 6333) or against a cloud endpoint.
