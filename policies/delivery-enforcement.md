@@ -36,12 +36,14 @@ misaligned agent. Treat it accordingly; do not rely on it as an access control.
 
 ## Running deliver to completion
 
-To drive a task to 100% verified completion autonomously, add `--until-delivered`:
-the loop keeps iterating (escalating on stagnation) until every required gate
-passes, a hard turn ceiling is reached, or progress stalls.
+Loop-until-delivered is **ON by default** for every UAP coding agent: the loop
+keeps iterating (escalating on stagnation) until every required gate passes, a
+hard turn ceiling is reached, or progress stalls. Opt out per-run with
+`--no-until-delivered` or globally with `UAP_DELIVER_UNTIL_DELIVERED=0`.
 
 ```bash
-uap deliver "implement X with tests" --until-delivered
+uap deliver "implement X with tests"   # until-delivered is the default
+uap deliver "quick fix" --no-until-delivered   # single-budget run
 UAP_ENFORCE_DELIVERY=block   # opt in to strict enforcement
 UAP_DELIVER_BYPASS=1         # sanctioned manual override
 ```
