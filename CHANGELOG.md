@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.42.3 (2026-06-14)
+
+- docs: index the Reactor design under Architecture
+
+
 ## v1.42.2 (2026-06-14)
 
 - fix(reactor): gate experts/skills by confidence, independent of patterns
