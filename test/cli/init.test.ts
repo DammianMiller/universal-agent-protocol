@@ -6,6 +6,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { initCommand, type InitOptions } from '../../src/cli/init.js';
 import type { AgentContextConfig } from '../../src/types/index.js';
 
@@ -82,14 +85,20 @@ vi.mock('../../src/cli/memory.js', () => ({
 }));
 
 describe('initCommand', () => {
+  // Hermetic: run init against a throwaway dir so policy/MCP/hook writes never
+  // touch the repo working tree.
+  let testDir: string;
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockConsoleLog.mockClear();
     mockConsoleError.mockClear();
+    testDir = mkdtempSync(join(tmpdir(), 'uap-init-'));
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   it('should accept platform options', async () => {
@@ -97,6 +106,7 @@ describe('initCommand', () => {
       platform: ['claude', 'vscode'],
       memory: true,
       worktrees: true,
+      projectDir: testDir,
     };
 
     await initCommand(options);
@@ -110,6 +120,7 @@ describe('initCommand', () => {
       platform: ['all'],
       memory: false,
       worktrees: true,
+      projectDir: testDir,
     };
 
     await initCommand(options);
@@ -123,6 +134,7 @@ describe('initCommand', () => {
       platform: ['all'],
       memory: true,
       worktrees: false,
+      projectDir: testDir,
     };
 
     await initCommand(options);
@@ -137,6 +149,7 @@ describe('initCommand', () => {
       memory: true,
       worktrees: true,
       force: true,
+      projectDir: testDir,
     };
 
     await initCommand(options);
@@ -165,6 +178,7 @@ describe('initCommand', () => {
       memory: true,
       worktrees: true,
       pipelineOnly: true,
+      projectDir: testDir,
     };
 
     await initCommand(options);

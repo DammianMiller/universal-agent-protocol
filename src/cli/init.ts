@@ -382,6 +382,34 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
   }
 
+  // Enable delivery-enforcement by default + wire the deliver MCP tool, so coding
+  // agents are routed through `uap deliver` (block mode via the policy-gate hook).
+  const deliverSpinner = ora('Enabling delivery-enforcement + wiring deliver tool...').start();
+  try {
+    const { ensureDeliveryEnforcement, wireDeliverMcp } = await import('./deliver-defaults.js');
+    const result = await ensureDeliveryEnforcement();
+    wireDeliverMcp(cwd);
+    if (result.enabled) {
+      deliverSpinner.succeed('delivery-enforcement active (block by default) + deliver tool wired');
+    } else {
+      deliverSpinner.warn(`delivery-enforcement not enabled: ${result.reason ?? 'unknown'}`);
+    }
+  } catch (err) {
+    deliverSpinner.warn('delivery-enforcement setup skipped: ' + err);
+  }
+
+  // Install the policy-gate + lifecycle hooks so the delivery-enforcement policy
+  // is actually active (the gate hook is what runs the enforcer on each tool
+  // call). Without this, the policy is enabled but never invoked.
+  const initHooksSpinner = ora('Installing policy-gate + lifecycle hooks...').start();
+  try {
+    const { hooksCommand } = await import('./hooks.js');
+    await hooksCommand('install', { projectDir: cwd });
+    initHooksSpinner.succeed('Hooks installed (run `uap hooks doctor` to verify coverage)');
+  } catch (err) {
+    initHooksSpinner.warn('Hook install skipped: ' + err);
+  }
+
   // Final summary - no next steps needed, it just works
   if (options.systemdServices === true) {
     const systemdSpinner = ora('Installing optional user systemd services...').start();

@@ -173,6 +173,23 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
     mcpSpinner.warn('MCP Router setup failed: ' + err);
   }
 
+  // Step 6b: Enable delivery-enforcement by default + wire the deliver MCP tool.
+  // The policy-gate hook defaults UAP_ENFORCE_DELIVERY=block, so once the policy
+  // is installed + enabled here, coding agents are routed through `uap deliver`.
+  const deliverSpinner = ora('Enabling delivery-enforcement + wiring deliver tool...').start();
+  try {
+    const { ensureDeliveryEnforcement, wireDeliverMcp } = await import('./deliver-defaults.js');
+    const result = await ensureDeliveryEnforcement();
+    wireDeliverMcp(cwd);
+    if (result.enabled) {
+      deliverSpinner.succeed('delivery-enforcement active (block by default) + deliver tool wired');
+    } else {
+      deliverSpinner.warn(`delivery-enforcement not enabled: ${result.reason ?? 'unknown'}`);
+    }
+  } catch (err) {
+    deliverSpinner.warn('delivery-enforcement setup failed: ' + err);
+  }
+
   // Step 7: Install policy-gate + lifecycle hooks for all project platforms.
   // Previously setup never installed hooks, so the policy gate was never active
   // until a separate manual `uap hooks install`. (Hermes is global → opt-in via
@@ -205,6 +222,7 @@ function printSummary(cwd: string, qdrantReady: boolean, pythonPath: string | nu
     },
     { label: 'Qdrant available', ok: qdrantReady },
     { label: 'Python venv ready', ok: !!pythonPath },
+    { label: 'Deliver tool wired (.mcp.json)', ok: existsSync(join(cwd, '.mcp.json')) },
     {
       label: 'Pattern scripts generated',
       ok: existsSync(join(cwd, 'agents/scripts/index_patterns_to_qdrant.py')),

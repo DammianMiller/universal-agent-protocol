@@ -1,7 +1,10 @@
 import { PolicyMemoryManager, getPolicyMemoryManager } from './policy-memory.js';
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { writeFileSync, mkdirSync, existsSync, copyFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export class PolicyToolRegistry {
   private _memory: PolicyMemoryManager | null = null;
@@ -39,11 +42,32 @@ export class PolicyToolRegistry {
     return null;
   }
 
+  /**
+   * Materialize the shared `_common.py` module next to the enforcers. Every
+   * enforcer does `from _common import ...`, so without this the enforcer
+   * crashes with ModuleNotFoundError at runtime and the policy gate silently
+   * falls back to "allow". Copied from the bundled package (or the repo in dev).
+   */
+  private ensureCommonModule(): void {
+    const target = join(this.toolDir, '_common.py');
+    const candidates = [
+      join(__dirname, '..', '..', 'src', 'policies', 'enforcers', '_common.py'), // dist -> pkg root
+      join(process.cwd(), 'src', 'policies', 'enforcers', '_common.py'), // running in repo
+    ];
+    for (const src of candidates) {
+      if (existsSync(src)) {
+        copyFileSync(src, target);
+        return;
+      }
+    }
+  }
+
   async storeToolCode(policyId: string, toolName: string, pythonCode: string): Promise<string> {
     await this.memory.storeExecutablePolicy(policyId, pythonCode, toolName);
 
     const filePath = join(this.toolDir, `${policyId}_${toolName}.py`);
     writeFileSync(filePath, pythonCode);
+    this.ensureCommonModule();
 
     return filePath;
   }

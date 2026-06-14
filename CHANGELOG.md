@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.41.0 (2026-06-14)
+
+- feat(delivery): `uap init`/`uap setup` enable delivery-enforcement (block by default) + wire the MCP `deliver` tool into Claude/OpenCode by default
+- fix(policies): materialize `_common.py` alongside enforcers so the gate no longer fails open with ModuleNotFoundError in fresh projects
+- chore(pkg): bundle policy schemas + enforcers so policy install works in installed projects
+
 ## v1.40.1 (2026-06-14)
 
 - docs: complete documentation overhaul — rewrite the developer-facing doc set from v1.40.0 ground truth, correct all counts, remove stale/superseded/corrupted docs and non-project files
