@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.42.1 (2026-06-14)
+
+- chore(hooks): install reactor adapter scripts in .claude/hooks
+
+
 ## v1.42.0 (2026-06-14)
 
 - feat(reactor): phase 6 — enforce gap-fill (schema-change reminder) + status
