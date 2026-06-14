@@ -40,6 +40,21 @@ export const UAPSessionHooks: Plugin = async ({ client, $ }) => {
       }
     },
 
+    // Pre-tool-use policy gate. OpenCode aborts the tool call when this
+    // hook throws, so a blocked verdict (exit 2) becomes a hard block.
+    "tool.execute.before": async (input, output) => {
+      try {
+        const payload = JSON.stringify({ tool_name: input.tool, tool_input: (output && output.args) || {} })
+        const res = await $`echo ${payload} | bash .opencode/hooks/uap-policy-gate.sh`.quiet().nothrow()
+        if (res.exitCode === 2) {
+          const reason = (res.stderr.toString() || res.stdout.toString()).trim()
+          throw new Error("[UAP policy blocked] " + reason)
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.indexOf("[UAP policy blocked]") === 0) throw e
+      }
+    },
+
     "experimental.session.compacting": async (_input, output) => {
       try {
         const timestamp = new Date().toISOString()

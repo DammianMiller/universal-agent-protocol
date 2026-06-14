@@ -83,7 +83,15 @@ fi
 
 if [[ "$LLAMA_ENABLE_SPEC_DECODING" == "true" ]]; then
   if [[ -n "${LLAMA_DRAFT_MODEL:-}" && -f "${LLAMA_DRAFT_MODEL}" ]]; then
-    # Draft model speculation (separate small model for drafting)
+    # Draft model speculation (separate small model for drafting).
+    # The spec-type must still be passed: a separate MTP head
+    # (e.g. gemma4 *-MTP-*.gguf) is only used as an MTP draft when
+    # --spec-type draft-mtp is set; without it the head would be
+    # mis-run as a plain draft-simple model. Pass through whatever
+    # type the profile selected (draft-mtp / draft-eagle3 / draft-simple).
+    if [[ -n "$LLAMA_SPEC_TYPE" && "$LLAMA_SPEC_TYPE" != "none" ]]; then
+      args+=(--spec-type "$LLAMA_SPEC_TYPE")
+    fi
     args+=(
       --model-draft "$LLAMA_DRAFT_MODEL"
       --gpu-layers-draft "${LLAMA_DRAFT_GPU_LAYERS:-99}"

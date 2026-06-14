@@ -57,5 +57,16 @@
       "model": "qwen-proxy/qwen35-a3b-iq4xs",
       "temperature": 0.1
     }
+  },
+  "mcp": {
+    "uap-router": {
+      "type": "local",
+      "command": [
+        "uap",
+        "mcp-router",
+        "start"
+      ],
+      "enabled": true
+    }
   }
 }

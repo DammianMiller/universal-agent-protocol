@@ -1,9 +1,4 @@
 {
-  "env": {
-    "ANTHROPIC_API_KEY": "sk-local",
-    "ANTHROPIC_BASE_URL": "http://localhost:4000/anthropic",
-     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
-  },
   "autoApprove": [
     "read",
     "write",
