@@ -8,7 +8,7 @@ UAP development guidelines.
 
 ```bash
 # Testing
-npm test              # Run all tests (693 tests)
+npm test              # Run all tests (117 suites)
 npm run test:coverage # Coverage report
 
 # Linting & Type Checking
@@ -442,16 +442,16 @@ malformed-payload retry, context pruning), then re-shapes the final response
 back to OpenAI. No separate proxy mode is needed — both shapes share one
 process.
 
-For deployment details, env vars, and systemd unit definitions, see
-[`docs/deployment/QWEN35_LLAMA_CPP.md`](docs/deployment/QWEN35_LLAMA_CPP.md).
+For running against local models (llama.cpp / Qwen), env vars, and endpoints, see
+[`docs/guides/LOCAL_MODELS.md`](docs/guides/LOCAL_MODELS.md).
 
 ---
 
 ## Resources
 
 - **[Documentation](docs/INDEX.md)**: Full documentation
-- **[CLI Reference](docs/reference/UAP_CLI_REFERENCE.md)**: Command reference
-- **[Architecture](docs/architecture/SYSTEM_ANALYSIS.md)**: System architecture
+- **[CLI Reference](docs/reference/CLI.md)**: Command reference
+- **[Architecture](docs/architecture/OVERVIEW.md)**: System architecture
 - **[GitHub Issues](https://github.com/DammianMiller/universal-agent-protocol/issues)**: Report bugs
 
 ---
