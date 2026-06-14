@@ -6,10 +6,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import arg_str, emit, parse_cli, run, worktree_root  # noqa: E402
+from _common import emit, parse_cli, run, worktree_root  # noqa: E402
 
 MUTATING_RE = re.compile(
-    r"\b(kubectl|helm|doctl|aws|gcloud)\b.*?\b(apply|patch|create|edit|delete|install|upgrade|rollout|scale|set)\b",
+    r"\b(kubectl|helm|doctl|aws|gcloud)\b[^\n;&|]{0,48}?\b(apply|patch|create|edit|delete|install|upgrade|rollout|scale|set)\b",
     re.I,
 )
 IAC_PATHS = (
@@ -23,9 +23,15 @@ IAC_PATHS = (
 
 def main() -> None:
     op, args = parse_cli()
-    blob = f"{op} {arg_str(args)}"
+    # iac-parity governs live-state MUTATING shell COMMANDS (kubectl apply,
+    # helm install, ...). File edits -- including editing IaC manifests, or any
+    # content that merely names infra tools -- are never live-state mutations,
+    # so only Bash commands are in scope.
+    if op.lower() != "bash":
+        emit(True, "not a bash command")
+    cmd = args.get("command") or args.get("cmd") or ""
 
-    if not MUTATING_RE.search(blob):
+    if not MUTATING_RE.search(cmd):
         emit(True, "not a mutating IaC-scope command")
 
     root = worktree_root()  # git status must run against the working tree, not MAIN_ROOT
