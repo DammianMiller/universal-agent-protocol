@@ -237,9 +237,25 @@ export interface ConvergenceConfig {
    * ambiguity-sensitive tasks where "proceed on assumptions" is undesirable.
    */
   autonomous?: boolean;
+  /**
+   * Persist until delivered (full autonomy): keep iterating past `maxTurns`
+   * until every required gate passes, the `maxTurnsCeiling` is reached, or
+   * progress stalls (no score improvement for several consecutive turns).
+   * Bounded by the ceiling and the stagnation guard so it cannot loop forever.
+   */
+  untilDelivered?: boolean;
+  /**
+   * Hard upper bound on turns when untilDelivered is set. Library default 50;
+   * the `uap deliver --until-delivered` CLI defaults it to 30 (override with
+   * `--ceiling`). Also caps escalation's raiseMaxTurns under untilDelivered.
+   */
+  maxTurnsCeiling?: number;
 }
 
 const DEFAULT_MAX_TURNS = 5;
+const DEFAULT_MAX_TURNS_CEILING = 50;
+/** Consecutive non-improving turns after which untilDelivered stops extending. */
+const STAGNATION_LIMIT = 4;
 const DEFAULT_PREVIOUS_OUTPUT_CHARS = 3_000;
 
 const OUTPUT_CONTRACT = [
@@ -533,6 +549,13 @@ export class ConvergenceLoop {
     if (!Number.isInteger(maxTurns) || maxTurns < 1) {
       throw new Error(`maxTurns must be a positive integer, got ${String(this.config.maxTurns)}`);
     }
+    // Persist-until-delivered run-state. The ceiling is a hard stop; the
+    // stagnation counter aborts a run that can no longer improve, so "loop
+    // until 100% delivered" can never become an unbounded loop.
+    const untilDelivered = this.config.untilDelivered ?? false;
+    const maxTurnsCeiling = Math.max(maxTurns, this.config.maxTurnsCeiling ?? DEFAULT_MAX_TURNS_CEILING);
+    let bestSoFar = -1;
+    let stagnantTurns = 0;
     let executor = this.executor;
     let explorerSettings = this.config.explorer;
     let critic = this.config.critic;
@@ -696,7 +719,30 @@ export class ConvergenceLoop {
         critic = this.config.criticFactory(executor);
       }
       if (typeof directive.raiseMaxTurns === 'number' && directive.raiseMaxTurns > maxTurns) {
-        maxTurns = directive.raiseMaxTurns;
+        // Under untilDelivered the ceiling is a HARD cap: an escalation
+        // controller's raiseMaxTurns cannot push the budget past it, so the
+        // "never an unbounded loop" guarantee holds even with --escalate.
+        maxTurns = untilDelivered
+          ? Math.min(directive.raiseMaxTurns, maxTurnsCeiling)
+          : directive.raiseMaxTurns;
+      }
+
+      // Persist-until-delivered: extend the budget one turn at a time while we
+      // are at the edge of it, below the ceiling, and still making progress.
+      // Stop extending (let the loop end) once progress stalls — an
+      // unattended run must converge or give up, never spin forever.
+      if (untilDelivered) {
+        if (record.score > bestSoFar) {
+          bestSoFar = record.score;
+          stagnantTurns = 0;
+        } else {
+          stagnantTurns++;
+        }
+        // Extend only at the budget edge, below the ceiling, while improving.
+        // When stagnant, we simply stop extending and the loop ends.
+        if (turn === maxTurns && maxTurns < maxTurnsCeiling && stagnantTurns < STAGNATION_LIMIT) {
+          maxTurns += 1;
+        }
       }
 
       // Phase 3: structured critique of the failed turn (fail-soft). Skipped

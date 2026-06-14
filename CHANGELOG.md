@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.39.0 (2026-06-14)
+
+- feat(delivery): deliver-enforcement policy + persist-until-delivered loop autonomy
+
+
 ## v1.38.0 (2026-06-14)
 
 - feat(mcp-router): add `deliver` meta-tool to auto-route tasks into uap deliver
