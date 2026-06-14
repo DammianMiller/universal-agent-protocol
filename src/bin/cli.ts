@@ -33,6 +33,7 @@ const lazy = {
   toolCalls: () => import('../cli/tool-calls.js').then((m) => m.toolCallsCommand),
   policy: () => import('../cli/policy.js').then((m) => m.registerPolicyCommands),
   expertRoute: () => import('../cli/expert-route.js').then((m) => m.expertRouteCommand),
+  react: () => import('../cli/react.js').then((m) => m.reactCommand),
   harness: () => import('../cli/harness.js').then((m) => m.harnessCommand),
   ideate: () => import('../cli/ideate.js').then((m) => m.ideateCommand),
   deliver: () => import('../cli/deliver.js').then((m) => m.deliverCommand),
@@ -378,6 +379,22 @@ program
     const description = descriptionParts.join(' ');
     const cmd = await lazy.expertRoute();
     await cmd(description, options);
+  });
+
+// Reactor: dynamic UAP capability resolution for harness adapters
+program
+  .command('react')
+  .description('Resolve dynamic UAP capabilities (experts/skills/patterns) for an event; emits JSON')
+  .option('--event <event>', 'Lifecycle event: user-prompt|session-start|pre-tool|post-tool|stop|session-end')
+  .option('--prompt <text>', 'Prompt text (when not piping a JSON payload on stdin)')
+  .option('-f, --files <files...>', 'Changed files (routing signal)')
+  .option('--inject-threshold <n>', 'Min confidence to inject (default 0.30)')
+  .option('--auto-spawn-threshold <n>', 'Min confidence to auto-spawn an expert (default 0.80)')
+  .option('--auto-spawn-types <types>', 'Comma-separated task-type whitelist for auto-spawn')
+  .option('--max-inject-chars <n>', 'Inject character budget (default 1200)')
+  .action(async (options) => {
+    const cmd = await lazy.react();
+    await cmd(options);
   });
 
 // Fable-parity delivery loop
