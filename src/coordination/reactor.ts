@@ -108,17 +108,22 @@ export function resolve(
 
   const items: InjectItem[] = [];
 
-  for (const d of recommendedDroids) {
-    const key = `droid:${d}`;
-    if (!surfacedSet.has(key)) {
-      items.push({ key, name: d, confidence, type: 'droid' });
+  // Experts/skills are gated by the confidence threshold independently: a
+  // matched pattern keeps the result from being silent, but low-confidence
+  // experts must NOT ride along on a pattern match.
+  if (confidence >= injectThreshold) {
+    for (const d of recommendedDroids) {
+      const key = `droid:${d}`;
+      if (!surfacedSet.has(key)) {
+        items.push({ key, name: d, confidence, type: 'droid' });
+      }
     }
-  }
 
-  for (const sk of recommendedSkills) {
-    const key = `skill:${sk}`;
-    if (!surfacedSet.has(key)) {
-      items.push({ key, name: sk, confidence, type: 'skill' });
+    for (const sk of recommendedSkills) {
+      const key = `skill:${sk}`;
+      if (!surfacedSet.has(key)) {
+        items.push({ key, name: sk, confidence, type: 'skill' });
+      }
     }
   }
 

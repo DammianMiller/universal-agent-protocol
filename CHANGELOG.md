@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.42.2 (2026-06-14)
+
+- fix(reactor): gate experts/skills by confidence, independent of patterns
+
+
 ## v1.42.1 (2026-06-14)
 
 - chore(hooks): install reactor adapter scripts in .claude/hooks

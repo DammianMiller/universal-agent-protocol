@@ -85,6 +85,25 @@ describe('reactor.resolve — assist mode', () => {
     expect(r.block).toBe(false);
   });
 
+  it('injects matched patterns but excludes low-confidence experts', () => {
+    const deps: ReactorDeps = {
+      capabilityRouter: stubCapabilityRouter({
+        confidence: 0.2, // below the 0.3 inject threshold
+        recommendedDroids: ['security-auditor'],
+        recommendedSkills: ['sec-context-review'],
+      }),
+      patternRouter: stubPatternRouter([{ abbreviation: 'P12', title: 'Output Existence' }]),
+    };
+    const r = resolve(baseCtx, { injectThreshold: 0.3 }, deps);
+    // pattern injects (kept it from being silent)...
+    expect(r.inject).toContain('P12');
+    // ...but the low-confidence experts/skills do NOT ride along
+    expect(r.inject).not.toContain('security-auditor');
+    expect(r.inject).not.toContain('sec-context-review');
+    expect(r.actions.some((a) => a.target === 'security-auditor')).toBe(false);
+    expect(r.actions.some((a) => a.target === 'sec-context-review')).toBe(false);
+  });
+
   it('auto-spawns an expert above the spawn threshold for a whitelisted type', () => {
     const deps: ReactorDeps = {
       capabilityRouter: stubCapabilityRouter({
