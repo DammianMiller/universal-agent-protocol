@@ -13,6 +13,20 @@ RTK_META = re.compile(r"^\s*rtk\s+(gain|discover|proxy|--version|-V|--help)\b")
 ALREADY_WRAPPED = re.compile(r"^\s*rtk\s+\S+")
 
 
+# `rtk npm`/`rtk pnpm`/`rtk yarn` map to `<pm> run` (filtered script output). The
+# subcommands below are NOT script runners, so `rtk npm view` would mangle to
+# `npm run view`. Route them through `rtk proxy` instead (still tracked).
+PM_BUILTINS = {
+    "install", "i", "ci", "add", "view", "info", "show", "publish", "pack",
+    "audit", "outdated", "ls", "list", "link", "unlink", "dedupe", "prune",
+    "exec", "dlx", "init", "create", "ping", "whoami", "login", "logout",
+    "version", "deprecate", "dist-tag", "owner", "access", "search", "update",
+    "uninstall", "remove", "rm", "rebuild", "root", "bin", "config", "cache",
+    "doctor", "fund", "why", "store", "set", "get",
+}
+PMS = ("npm", "pnpm", "yarn")
+
+
 def main() -> None:
     op, args = parse_cli()
     cmd = (args.get("command") or args.get("cmd") or "").strip()
@@ -30,10 +44,19 @@ def main() -> None:
     for tok in tokens[:3]:
         bin_name = tok.split("/")[-1]
         if bin_name in WRAPPED:
+            wrapper = "rtk"
+            if bin_name in PMS:
+                sub = ""
+                for nxt in tokens[tokens.index(tok) + 1:]:
+                    if not nxt.startswith("-"):
+                        sub = nxt.split("/")[-1]
+                        break
+                if sub in PM_BUILTINS:
+                    wrapper = "rtk proxy"
             emit(
                 False,
                 f"rtk-wrap: '{bin_name}' must be invoked via rtk. "
-                f"Use: rtk {cmd}",
+                f"Use: {wrapper} {cmd}",
                 bin=bin_name,
             )
 
