@@ -75,7 +75,16 @@ async function discoverDroids(projectDir: string): Promise<DroidMeta[]> {
   return droids;
 }
 
-export const UAPDroids: Plugin = async ({ $, directory }) => {
+/**
+ * Mint an opencode message-part id. opencode requires part ids to carry the
+ * part prefix; we use `prt-` for opencode compatibility.
+ */
+function mintPartId(): string {
+  const rand = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`;
+  return `prt-${rand}`;
+}
+
+export const UAPDroids: Plugin = async ({ $, directory, client }) => {
   const projectDir = directory || '.';
 
   return {
@@ -105,7 +114,7 @@ export const UAPDroids: Plugin = async ({ $, directory }) => {
             .describe('Name of the droid to invoke (use uap_droid_list to see available droids)'),
           task: tool.schema.string().describe('The task description for the droid to execute'),
         },
-        async execute({ droid, task }) {
+        async execute({ droid, task }, ctx) {
           const droids = await discoverDroids(projectDir);
           const found = droids.find((d) => d.name === droid);
           if (!found) {
@@ -157,8 +166,7 @@ export const UAPDroids: Plugin = async ({ $, directory }) => {
             /* patterns are best-effort */
           }
 
-          // Return the droid instructions + task + routing/pattern context
-          return `<uap-droid name="${found.name}">
+          const droidContext = `<uap-droid name="${found.name}">
 ## Droid: ${found.name}
 ${found.description || 'No description available'}
 ${routingContext}${patternContext}
@@ -170,6 +178,19 @@ ${task}
 </uap-droid>
 
 Follow the droid instructions above to complete the task. Apply all mandatory pre-checks and protocols specified.`;
+
+          // Mint the droid context as an opencode message part with a `prt-`
+          // prefixed id (required for opencode compatibility). Best-effort: if
+          // the SDK part-mint fails, fall back to returning it as the tool result.
+          try {
+            await client.session.prompt({
+              path: { id: ctx.sessionID },
+              body: { parts: [{ id: mintPartId(), type: 'text', text: droidContext }] },
+            });
+            return `Droid '${found.name}' loaded as a session part \u2014 follow its instructions to complete the task.`;
+          } catch {
+            return droidContext;
+          }
         },
       }),
 
