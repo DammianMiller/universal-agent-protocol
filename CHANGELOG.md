@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.43.2 (2026-06-15)
+
+- fix(pkg): remove malformed </path> filename that broke npm install
+- fix(pkg): ship shebang scripts executable + prepublish guard
+
+
 ## v1.43.1 (2026-06-15)
 
 - fix(opencode): mint droid parts with prt- prefixed ids

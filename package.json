@@ -1,6 +1,6 @@
 {
   "name": "@miller-tech/uap",
-  "version": "1.43.1",
+  "version": "1.43.2",
   "description": "Autonomous AI agent memory system with CLAUDE.md protocol enforcement",
   "type": "module",
   "main": "dist/index.js",
@@ -25,7 +25,7 @@
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "format": "prettier --write src/**/*.ts",
-    "prepublishOnly": "npm run build && npm test",
+    "prepublishOnly": "npm run build && npm test && bash scripts/maintenance/ensure-exec-bits.sh",
     "install:web": "bash scripts/setup/install-web.sh",
     "install:desktop": "bash scripts/setup/install-desktop.sh",
     "install:cloakbrowser": "tsx scripts/setup/install-cloakbrowser.ts",
