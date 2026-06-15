@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.43.3 (2026-06-15)
+
+- docs: add automatic-features guide + Qwen3.6 llama.cpp VRAM-tier setup
+
+
 ## v1.43.2 (2026-06-15)
 
 - fix(pkg): remove malformed </path> filename that broke npm install

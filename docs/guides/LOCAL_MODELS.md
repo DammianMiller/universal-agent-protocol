@@ -7,6 +7,11 @@ UAP can drive its coding/convergence loop against **local models** served by
 This keeps inference on your own hardware (zero per-token cost) and works with
 quantized open-weight models such as Qwen 3.x.
 
+> **Just want the recommended local setup?** See
+> [Qwen3.6 35B-A3B on llama.cpp, by VRAM tier](QWEN36_LLAMACPP.md) for
+> copy-paste launch commands for 8 / 12 / 16 / 24 / 32 GB GPUs, and how
+> `uap deliver` uplifts a small local model to *verified* results.
+
 There are two endpoint shapes involved, and it matters which client speaks
 which protocol:
 

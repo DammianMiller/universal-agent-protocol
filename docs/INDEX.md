@@ -18,6 +18,7 @@ New here? Start with the [project README](../README.md), then [Getting Started](
 
 | Doc | What it covers |
 |---|---|
+| [**What UAP Does Automatically**](guides/AUTOMATIC.md) | Every feature in benefit / when-it-kicks-in terms — install once, it all self-applies ⭐ |
 | [**`uap deliver`**](guides/DELIVER.md) | The delivery harness — convergence loop to verified completion ⭐ |
 | [Memory](guides/MEMORY.md) | The 4-tier memory system, write-gates, semantic recall |
 | [MCP Router](guides/MCP_ROUTER.md) | Token-optimizing tool proxy + FTS5 output compression |
@@ -28,6 +29,7 @@ New here? Start with the [project README](../README.md), then [Getting Started](
 | [Deploy Batching](guides/DEPLOY_BATCHING.md) | Conflict-free batched git/deploy actions |
 | [Coordination](guides/COORDINATION.md) | Multi-agent overlap detection |
 | [Local Models](guides/LOCAL_MODELS.md) | Running agents against local llama.cpp / Qwen models |
+| [Qwen3.6 on llama.cpp by VRAM](guides/QWEN36_LLAMACPP.md) | Tiered 8/12/16/24/32 GB setup; how `uap deliver` uplifts small local models |
 
 ## Architecture
 
