@@ -6,8 +6,9 @@ non-trivial coding work goes through the `uap deliver` convergence loop (which
 drives a model to verified completion against the real gates) rather than
 ad-hoc hand edits.
 
-SAFETY — default mode is ADVISORY (always allows, logs a nudge), so installing
-this policy never breaks editing. Strict enforcement is opt-in:
+DEFAULT mode is BLOCK: substantive source edits must route through `uap deliver`
+(set UAP_ENFORCE_DELIVERY=advisory to relax to a logged nudge). Escape hatches
+(UAP_DELIVER_ACTIVE / UAP_DELIVER_BYPASS) are always honored:
 
   UAP_ENFORCE_DELIVERY=block   # direct source edits outside a deliver context
                                # are blocked (exit 2)
@@ -84,13 +85,13 @@ def main() -> None:
         "manual edit."
     )
 
-    mode = os.environ.get("UAP_ENFORCE_DELIVERY", "advisory").lower()
+    mode = os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower()
     if mode == "block":
         emit(False, msg)
 
-    # Advisory (default): never blocks. Surface the nudge, then allow.
+    # Advisory (opt-out): never blocks. Surface the nudge, then allow.
     print(f"[delivery-enforcement advisory] {msg}", file=sys.stderr)
-    emit(True, "advisory: nudge logged (set UAP_ENFORCE_DELIVERY=block to enforce)")
+    emit(True, "advisory: nudge logged (block is the default; UAP_ENFORCE_DELIVERY=advisory relaxes)")
 
 
 if __name__ == "__main__":
