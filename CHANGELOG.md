@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.45.0 (2026-06-15)
+
+- feat(deliver): agentic (tool-using) executor with dynamic selection + alwaysVerify fix
+
+
 ## v1.44.0 (2026-06-15)
 
 - feat(deliver): self-authored acceptance gate + activate real UAP/deliver in opencode benchmark

@@ -203,6 +203,13 @@ export interface ConvergenceConfig {
   baselineCheck?: boolean;
   /** Max characters of prior model output included in retry prompts (default 3000) */
   previousOutputChars?: number;
+  /**
+   * Run gates every turn even when the applier wrote no files. Required for
+   * executors that mutate the project directly (e.g. the agentic tool-loop
+   * executor with a no-op applier) — otherwise the "skip gates when nothing
+   * applied" optimization permanently scores such turns 0%.
+   */
+  alwaysVerify?: boolean;
   /** Best-of-N exploration per turn (Phase 2); omit for single-candidate turns */
   explorer?: ExplorerSettings;
   /** Structured critique of failed turns (Phase 3) */
@@ -441,7 +448,7 @@ export class ConvergenceLoop {
     // unchanged and re-running gates would waste minutes for no signal.
     const filesApplied = applyResult?.filesWritten ?? [];
     let ladder: LadderResult | null = null;
-    if (!executorError && filesApplied.length > 0) {
+    if (!executorError && (filesApplied.length > 0 || this.config.alwaysVerify)) {
       ladder = await ladderRunner(rungs, this.config.projectRoot, this.config.ladderOptions);
     }
 

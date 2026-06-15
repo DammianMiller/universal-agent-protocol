@@ -18,6 +18,8 @@ import type { StrategySeed } from '../delivery/explorer.js';
 import { generateStrategySeeds, seedsFromIdeas } from '../delivery/ideation.js';
 import { planAutoOptimization } from '../delivery/auto-optimizer.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
+import { createAgenticExecutor, noopApplier, selectExecutorMode } from '../delivery/agentic-executor.js';
+import type { ExecutorMode } from '../delivery/agentic-executor.js';
 import type { AutoPlan } from '../delivery/auto-optimizer.js';
 import { createHaloDeliveryTracer } from '../delivery/halo-trace.js';
 import { haloTracePath, isHaloTracingEnabled } from '../observability/halo-exporter.js';
@@ -49,6 +51,8 @@ export interface DeliverOptions {
   selfGate?: boolean;
   /** `--force-self-gate`: author an acceptance gate even when project gates exist. */
   forceSelfGate?: boolean;
+  /** `--executor <blind|agentic|auto>`: per-turn executor strategy (default auto). */
+  executor?: string;
   candidates?: string;
   critic?: boolean;
   practices?: boolean;
@@ -341,17 +345,51 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   }
 
   const client = new OpenAICompatClient();
-  const executor: LoopExecutor = async (prompt) => {
+  const blindExecutor: LoopExecutor = async (prompt) => {
     const result = await client.complete(model, prompt, { temperature });
     return result.content;
   };
+
+  // Dynamic executor selection. The blind executor is one completion per turn
+  // (cheap, but cannot inspect or run anything); the agentic executor runs a
+  // tool-using loop (read/list/bash/write) and mutates the repo directly. 'auto'
+  // picks agentic when there is repo context or gates to inspect — which is
+  // where blind structurally fails. Gates may be authored below (self-gate), so
+  // count that intent toward "has gates" for the decision.
+  const executorMode = selectExecutorMode(
+    (options.executor as ExecutorMode) ?? 'auto',
+    projectRoot,
+    rungs.length > 0 || needsSelfGate
+  );
+  const agenticEndpoint =
+    model.endpoint ?? options.endpoint ?? process.env.UAP_INFERENCE_ENDPOINT ?? 'http://localhost:8080/v1';
+  const agentic = executorMode === 'agentic';
+  if (agentic) {
+    console.log(chalk.cyan(`⚙ executor: agentic (tool-using loop)`));
+  }
+  const executor: LoopExecutor = agentic
+    ? createAgenticExecutor(model, {
+        projectRoot,
+        endpoint: agenticEndpoint,
+        temperature,
+        // Block oracle tampering: protected test files are read-only to the agent.
+        protectedFiles:
+          options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles : new Set<string>(),
+        onEvent: (e) =>
+          console.log(
+            chalk.dim(`    [agent r${e.round} ${e.kind}${e.tool ? `:${e.tool}` : ''}] ${e.detail ?? ''}`)
+          ),
+      })
+    : blindExecutor;
 
   // Self-authored acceptance gate: give deliver a real convergence target when
   // the project exposes none. The gate must FAIL on the current unsolved repo
   // (enforced in authorAcceptanceGate) so turn 1 cannot trivially pass.
   if (needsSelfGate) {
     console.log(chalk.cyan('⚖ self-gate: authoring a task-specific acceptance check…'));
-    const sg = await authorAcceptanceGate({ instruction, projectRoot, executor });
+    // Author the gate with the blind executor — it is a single-shot script
+    // write, not a task to solve agentically.
+    const sg = await authorAcceptanceGate({ instruction, projectRoot, executor: blindExecutor });
     for (const note of sg.notes) console.log(chalk.dim(`    ${note}`));
     if (!sg.rung) {
       fail('Could not author an acceptance gate (model produced no runnable script).');
@@ -549,9 +587,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       projectRoot,
       maxTurns,
       rungs,
-      explorer: candidates ? { candidates, seeds, judge: createModelJudge(executor) } : undefined,
-      critic: options.critic ? createModelCritic(executor) : undefined,
-      criticFactory: (ex) => createModelCritic(ex),
+      // The agentic executor mutates the repo directly (no-op applier), so
+      // gates must run every turn regardless of applier file count.
+      alwaysVerify: agentic ? true : undefined,
+      // Judge/critic evaluate text, so they always use the blind executor even
+      // when the loop's executor is agentic.
+      explorer: candidates ? { candidates, seeds, judge: createModelJudge(blindExecutor) } : undefined,
+      critic: options.critic ? createModelCritic(blindExecutor) : undefined,
+      // Critic evaluates text; keep it on a blind completion even if the loop
+      // escalates the (agentic) executor.
+      criticFactory: (ex) => createModelCritic(agentic ? blindExecutor : ex),
       practiceProvider,
       protectTests: options.protectTests,
       guidanceProvider,
@@ -564,7 +609,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         escalation ? (record) => escalation.onIteration(record) : undefined
       ),
     },
-    executor
+    executor,
+    // The agentic executor mutates the repo directly, so nothing remains for
+    // the file-block applier to materialize.
+    agentic ? { applier: noopApplier } : undefined
   );
 
   // Mark this run (and the gate subprocesses it spawns) as deliver-driven so

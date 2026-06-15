@@ -42,6 +42,44 @@ describe('ConvergenceLoop', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('alwaysVerify runs gates even when the applier wrote no files (direct-mutation executor)', async () => {
+    // Simulates the agentic executor + no-op applier: the executor returns no
+    // file blocks, so filesWritten is empty, but the gate must still run.
+    let ladderRuns = 0;
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 2, rungs: stubRungs(), baselineCheck: false, alwaysVerify: true },
+      async () => 'agent mutated the repo directly; nothing to apply',
+      {
+        applier: async () => ({ filesWritten: [], rejected: [] }),
+        ladderRunner: () => {
+          ladderRuns++;
+          return ladderResult(1.0, true);
+        },
+      }
+    );
+    const result = await loop.deliver('compute something via tools');
+    expect(ladderRuns).toBeGreaterThan(0); // gate ran despite 0 files applied
+    expect(result.success).toBe(true);
+  });
+
+  it('without alwaysVerify, an empty applier result skips the gate (no false pass)', async () => {
+    let ladderRuns = 0;
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), baselineCheck: false },
+      async () => 'no file blocks here',
+      {
+        applier: async () => ({ filesWritten: [], rejected: [] }),
+        ladderRunner: () => {
+          ladderRuns++;
+          return ladderResult(1.0, true);
+        },
+      }
+    );
+    const result = await loop.deliver('x');
+    expect(ladderRuns).toBe(0); // gate skipped because nothing was applied
+    expect(result.success).toBe(false);
+  });
+
   it('converges when the ladder passes, applying files each turn', async () => {
     let executorCalls = 0;
     let ladderRuns = 0;
