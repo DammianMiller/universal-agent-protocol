@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.45.1 (2026-06-16)
+
+- revert(bench): remove transparent deliver-on-edit trigger (net-harmful)
+
+
 ## v1.45.0 (2026-06-15)
 
 - feat(deliver): agentic (tool-using) executor with dynamic selection + alwaysVerify fix
