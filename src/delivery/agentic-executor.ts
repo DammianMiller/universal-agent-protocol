@@ -1,0 +1,364 @@
+/**
+ * Agentic executor (spike)
+ *
+ * The default deliver executor is "blind": one text completion per turn, no
+ * tool use. It cannot read the repo, run a build, or inspect a failing test —
+ * so on tasks that require looking before acting it produces guesses and the
+ * gate stays at 0%.
+ *
+ * This executor instead runs a bounded tool-use loop against the model
+ * (read_file / list_dir / run_bash / write_file), letting it inspect the
+ * project and apply changes directly before returning. Paired with the no-op
+ * applier below (the repo is already mutated), it slots into the existing
+ * convergence loop: execute → gate → feedback, but with an agentic execute.
+ *
+ * Scope note: this is a capability spike. It allows write_file/run_bash, so it
+ * bypasses the applier's test-protection — acceptable for measuring value, not
+ * for production without re-adding a protected-path guard.
+ */
+
+import { spawnSync } from 'child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
+import { join, dirname, resolve, relative, isAbsolute } from 'path';
+import type { ModelConfig } from '../models/types.js';
+import type { LoopExecutor } from './convergence-loop.js';
+import type { ApplyResult } from './applier.js';
+
+export interface AgenticExecutorOptions {
+  projectRoot: string;
+  endpoint: string;
+  /** Max tool-call rounds before forcing a final answer. Default 12. */
+  maxToolRounds?: number;
+  temperature?: number;
+  /** Per-tool bash timeout in ms. Default 30s. */
+  bashTimeoutMs?: number;
+  /**
+   * Protected test/oracle paths (lowercased, forward-slash, relative to
+   * projectRoot — the shape from snapshotProtection()). write_file refuses
+   * them and run_bash restores any that a command mutated, so the agent cannot
+   * pass gates by rewriting the oracle.
+   */
+  protectedFiles?: ReadonlySet<string>;
+  /** Optional sink for a structured trace of what the agent did. */
+  onEvent?: (event: AgenticEvent) => void;
+}
+
+export interface AgenticEvent {
+  round: number;
+  kind: 'tool' | 'final' | 'error';
+  tool?: string;
+  detail?: string;
+}
+
+interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+interface ToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+const TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: 'Read a UTF-8 text file relative to the project root.',
+      parameters: {
+        type: 'object',
+        properties: { path: { type: 'string' } },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_dir',
+      description: 'List files/dirs at a path relative to the project root.',
+      parameters: {
+        type: 'object',
+        properties: { path: { type: 'string' } },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_bash',
+      description: 'Run a bash command from the project root and return stdout+stderr+exit code.',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description: 'Create or overwrite a text file (relative to project root) with the given content.',
+      parameters: {
+        type: 'object',
+        properties: { path: { type: 'string' }, content: { type: 'string' } },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'finish',
+      description: 'Call when the task is complete. Provide a one-line summary of what was done.',
+      parameters: {
+        type: 'object',
+        properties: { summary: { type: 'string' } },
+        required: ['summary'],
+      },
+    },
+  },
+] as const;
+
+/** Resolve a model-supplied path inside the project root, refusing escapes. */
+function safePath(projectRoot: string, p: string): string {
+  const abs = isAbsolute(p) ? p : resolve(projectRoot, p);
+  const rel = relative(projectRoot, abs);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`path escapes project root: ${p}`);
+  }
+  return abs;
+}
+
+/** Normalize an absolute path to the protected-set key shape (lowercased, /). */
+export function protectedKey(projectRoot: string, abs: string): string {
+  return relative(projectRoot, abs).split(/[\\/]/).join('/').toLowerCase();
+}
+
+/** Snapshot current contents of protected files that exist. */
+function snapshotProtected(
+  projectRoot: string,
+  protectedFiles: ReadonlySet<string>
+): Map<string, string> {
+  const snap = new Map<string, string>();
+  for (const rel of protectedFiles) {
+    const abs = resolve(projectRoot, rel);
+    if (existsSync(abs)) {
+      try {
+        snap.set(abs, readFileSync(abs, 'utf-8'));
+      } catch {
+        /* unreadable — skip */
+      }
+    }
+  }
+  return snap;
+}
+
+/** Restore any protected files a command mutated; return the list restored. */
+function restoreProtected(snap: Map<string, string>): string[] {
+  const restored: string[] = [];
+  for (const [abs, content] of snap) {
+    try {
+      if (!existsSync(abs) || readFileSync(abs, 'utf-8') !== content) {
+        writeFileSync(abs, content, 'utf-8');
+        restored.push(abs);
+      }
+    } catch {
+      /* best effort */
+    }
+  }
+  return restored;
+}
+
+function runTool(
+  projectRoot: string,
+  name: string,
+  args: Record<string, unknown>,
+  bashTimeoutMs: number,
+  protectedFiles: ReadonlySet<string>
+): string {
+  try {
+    if (name === 'read_file') {
+      const abs = safePath(projectRoot, String(args.path));
+      if (!existsSync(abs)) return `ERROR: file not found: ${args.path}`;
+      return readFileSync(abs, 'utf-8').slice(0, 8000);
+    }
+    if (name === 'list_dir') {
+      const abs = safePath(projectRoot, String(args.path ?? '.'));
+      if (!existsSync(abs)) return `ERROR: not found: ${args.path}`;
+      return readdirSync(abs)
+        .map((e) => (statSync(join(abs, e)).isDirectory() ? `${e}/` : e))
+        .join('\n')
+        .slice(0, 4000);
+    }
+    if (name === 'write_file') {
+      const abs = safePath(projectRoot, String(args.path));
+      if (protectedFiles.has(protectedKey(projectRoot, abs))) {
+        return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
+      }
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, String(args.content ?? ''), 'utf-8');
+      return `OK: wrote ${String(args.path)} (${String(args.content ?? '').length} bytes)`;
+    }
+    if (name === 'run_bash') {
+      // Snapshot protected files so a command cannot silently rewrite the
+      // oracle to make a wrong answer pass.
+      const snap = protectedFiles.size > 0 ? snapshotProtected(projectRoot, protectedFiles) : new Map();
+      const r = spawnSync('bash', ['-c', String(args.command)], {
+        cwd: projectRoot,
+        timeout: bashTimeoutMs,
+        encoding: 'utf-8',
+        env: { ...process.env, CI: 'true' },
+      });
+      const restored = snap.size > 0 ? restoreProtected(snap) : [];
+      const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(0, 4000);
+      const note =
+        restored.length > 0
+          ? `\n[blocked: restored ${restored.length} protected file(s) your command modified]`
+          : '';
+      return `exit=${r.status ?? 'null'}\n${out}${note}`;
+    }
+    return `ERROR: unknown tool ${name}`;
+  } catch (err) {
+    return `ERROR: ${String(err).slice(0, 200)}`;
+  }
+}
+
+/** Does the project hold any file worth inspecting (beyond scaffolding)? */
+function projectHasInspectableContent(projectRoot: string): boolean {
+  const ignore = new Set(['package.json', 'node_modules', '.git', '.uap', '.uap-deliver']);
+  try {
+    return readdirSync(projectRoot).some((e) => !ignore.has(e));
+  } catch {
+    return false;
+  }
+}
+
+export type ExecutorMode = 'blind' | 'agentic' | 'auto';
+
+/**
+ * Resolve the dynamic executor choice. Explicit blind/agentic win; 'auto'
+ * picks agentic when there is something to inspect (gates to run or repo
+ * content to read) and blind for pure contextless generation (cheaper).
+ */
+export function selectExecutorMode(
+  mode: ExecutorMode,
+  projectRoot: string,
+  hasGates: boolean
+): 'blind' | 'agentic' {
+  if (mode === 'blind' || mode === 'agentic') return mode;
+  return hasGates || projectHasInspectableContent(projectRoot) ? 'agentic' : 'blind';
+}
+
+async function chat(
+  endpoint: string,
+  model: ModelConfig,
+  messages: ChatMessage[],
+  temperature?: number
+): Promise<ChatMessage> {
+  const url = `${endpoint.replace(/\/$/, '')}/chat/completions`;
+  const apiKey = model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+    body: JSON.stringify({
+      model: model.apiModel,
+      messages,
+      tools: TOOLS,
+      tool_choice: 'auto',
+      ...(temperature !== undefined ? { temperature } : {}),
+    }),
+  });
+  if (!res.ok) throw new Error(`agentic chat failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
+  const data = (await res.json()) as { choices?: Array<{ message: ChatMessage }> };
+  const msg = data.choices?.[0]?.message;
+  if (!msg) throw new Error('agentic chat: no message in response');
+  return msg;
+}
+
+/**
+ * Build a LoopExecutor that runs an agentic tool loop and mutates the project
+ * directly. Returns a short summary string (the no-op applier expects nothing
+ * to apply).
+ */
+export function createAgenticExecutor(
+  model: ModelConfig,
+  opts: AgenticExecutorOptions
+): LoopExecutor {
+  const maxRounds = opts.maxToolRounds ?? 12;
+  const bashTimeoutMs = opts.bashTimeoutMs ?? 30_000;
+  const protectedFiles = opts.protectedFiles ?? new Set<string>();
+
+  return async (prompt: string): Promise<string> => {
+    const messages: ChatMessage[] = [
+      {
+        role: 'system',
+        content:
+          'You are an autonomous coding agent working inside a project directory. ' +
+          'Use the tools to inspect the repository, make changes, and verify them by ' +
+          'running commands. Read before you write. When the task is complete and you ' +
+          'have verified it, call finish.',
+      },
+      { role: 'user', content: prompt },
+    ];
+
+    const summaries: string[] = [];
+    for (let round = 1; round <= maxRounds; round++) {
+      let msg: ChatMessage;
+      try {
+        msg = await chat(opts.endpoint, model, messages, opts.temperature);
+      } catch (err) {
+        opts.onEvent?.({ round, kind: 'error', detail: String(err).slice(0, 200) });
+        return `agentic executor error: ${String(err).slice(0, 200)}`;
+      }
+
+      const calls = msg.tool_calls ?? [];
+      if (calls.length === 0) {
+        opts.onEvent?.({ round, kind: 'final', detail: (msg.content ?? '').slice(0, 200) });
+        return msg.content || summaries.join('; ') || 'agent produced no tool calls';
+      }
+
+      messages.push({ role: 'assistant', content: msg.content ?? null, tool_calls: calls });
+
+      for (const call of calls) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function.arguments || '{}');
+        } catch {
+          /* leave args empty */
+        }
+        if (call.function.name === 'finish') {
+          opts.onEvent?.({ round, kind: 'final', tool: 'finish', detail: String(args.summary ?? '') });
+          return String(args.summary ?? (summaries.join('; ') || 'done'));
+        }
+        const result = runTool(opts.projectRoot, call.function.name, args, bashTimeoutMs, protectedFiles);
+        opts.onEvent?.({
+          round,
+          kind: 'tool',
+          tool: call.function.name,
+          detail: `${JSON.stringify(args).slice(0, 80)} -> ${result.slice(0, 80)}`,
+        });
+        summaries.push(`${call.function.name}(${JSON.stringify(args).slice(0, 60)})`);
+        messages.push({ role: 'tool', tool_call_id: call.id, content: result });
+      }
+    }
+    return `agent hit ${maxRounds}-round budget; partial: ${summaries.slice(-3).join('; ')}`;
+  };
+}
+
+/**
+ * No-op applier for the agentic executor: the executor already wrote files via
+ * tools, so there is nothing for the convergence loop to materialize. Reports
+ * zero filesApplied (the gate measures the real outcome).
+ */
+export async function noopApplier(): Promise<ApplyResult> {
+  // No error: the executor already mutated the repo, so "nothing to apply" is
+  // success, not the applyFileBlocks "no file blocks found" failure.
+  return { filesWritten: [], rejected: [] };
+}
