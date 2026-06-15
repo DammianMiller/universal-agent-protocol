@@ -409,6 +409,8 @@ program
   .option('--endpoint <url>', 'Override the model endpoint (OpenAI-compatible /v1)')
   .option('--temperature <t>', 'Sampling temperature (default: execution-profile value)')
   .option('--gates <ids>', 'Comma-separated gate subset (build,typecheck,test,lint)')
+  .option('--no-self-gate', 'Disable the self-authored acceptance gate fallback (on by default when no project gates are detected)')
+  .option('--force-self-gate', 'Author a task-specific acceptance gate even when project gates exist')
   .option('--candidates <n>', 'Best-of-N exploration: candidates per turn (2-8)')
   .option('--critic', 'Structured critique of failed turns (extra model call per failure)')
   .option('--practices', 'Inject learned best-practice cards and record new ones on success')

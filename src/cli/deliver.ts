@@ -17,6 +17,7 @@ import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import type { StrategySeed } from '../delivery/explorer.js';
 import { generateStrategySeeds, seedsFromIdeas } from '../delivery/ideation.js';
 import { planAutoOptimization } from '../delivery/auto-optimizer.js';
+import { authorAcceptanceGate } from '../delivery/self-gate.js';
 import type { AutoPlan } from '../delivery/auto-optimizer.js';
 import { createHaloDeliveryTracer } from '../delivery/halo-trace.js';
 import { haloTracePath, isHaloTracingEnabled } from '../observability/halo-exporter.js';
@@ -44,6 +45,10 @@ export interface DeliverOptions {
   endpoint?: string;
   temperature?: string;
   gates?: string;
+  /** `--no-self-gate` sets this false; default (undefined) keeps the fallback on. */
+  selfGate?: boolean;
+  /** `--force-self-gate`: author an acceptance gate even when project gates exist. */
+  forceSelfGate?: boolean;
   candidates?: string;
   critic?: boolean;
   practices?: boolean;
@@ -249,8 +254,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     rungs = rungs.filter((r) => wanted.has(r.id));
   }
 
-  if (rungs.length === 0) {
-    fail(`No verifiable gates detected in ${projectRoot} (need package.json scripts).`);
+  // When a project exposes no gates (or --force-self-gate), fall back to a
+  // self-authored acceptance gate so deliver still has a real convergence
+  // target instead of vacuously "succeeding" in one turn. The gate is authored
+  // after the model client exists (below); here we only decide intent.
+  const selfGateAllowed = options.selfGate !== false && process.env.UAP_DELIVER_SELF_GATE !== '0';
+  const needsSelfGate = selfGateAllowed && (rungs.length === 0 || options.forceSelfGate === true);
+  if (rungs.length === 0 && !needsSelfGate) {
+    fail(
+      `No verifiable gates detected in ${projectRoot} (need package.json scripts, or drop --no-self-gate to author one).`
+    );
   }
 
   if (options.dryRun) {
@@ -275,6 +288,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       untilDelivered,
       ceiling: untilDelivered ? (maxTurnsCeiling ?? DEFAULT_CLI_CEILING) : null,
       gates: rungs.map((r) => ({ id: r.id, name: r.name, required: r.required })),
+      selfGate: needsSelfGate,
     };
     if (options.json) {
       console.log(JSON.stringify(summary, null, 2));
@@ -305,6 +319,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(
         `  Until delivered: ${summary.untilDelivered ? `on (loop to all-gates-pass, ceiling ${summary.ceiling} turns)` : 'off'}`
       );
+      if (needsSelfGate) {
+        console.log(
+          chalk.cyan('  Self-gate: will author .uap-deliver/verify.sh at run time (must fail on the unsolved repo)')
+        );
+      }
       console.log('  Gates:');
       for (const r of rungs) {
         console.log(`    - ${r.name}${r.required ? '' : chalk.dim(' (optional)')}`);
@@ -326,6 +345,30 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const result = await client.complete(model, prompt, { temperature });
     return result.content;
   };
+
+  // Self-authored acceptance gate: give deliver a real convergence target when
+  // the project exposes none. The gate must FAIL on the current unsolved repo
+  // (enforced in authorAcceptanceGate) so turn 1 cannot trivially pass.
+  if (needsSelfGate) {
+    console.log(chalk.cyan('⚖ self-gate: authoring a task-specific acceptance check…'));
+    const sg = await authorAcceptanceGate({ instruction, projectRoot, executor });
+    for (const note of sg.notes) console.log(chalk.dim(`    ${note}`));
+    if (!sg.rung) {
+      fail('Could not author an acceptance gate (model produced no runnable script).');
+    }
+    rungs.push(sg.rung);
+    if (sg.vacuous) {
+      console.log(
+        chalk.yellow(
+          '  ⚠ acceptance gate may be weak (could not force an initially-failing check); running multi-turn anyway.'
+        )
+      );
+    } else {
+      console.log(
+        chalk.green('  ✓ acceptance gate authored — fails on the unsolved repo, a real convergence target.')
+      );
+    }
+  }
 
   // Phase 5: escalation ladder. Cheap strategies first (widen exploration →
   // enable critic) then, if a stronger model is configured, switch to it.

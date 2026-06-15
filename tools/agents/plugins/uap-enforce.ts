@@ -41,6 +41,11 @@ export const UapEnforce: Plugin = async ({ $ }) => {
   let totalToolCalls = 0;
   const SOFT_BUDGET = 30;
 
+  // Transparent delivery: the first substantive source edit triggers the
+  // `uap deliver` convergence loop ONCE per session. Guarded so it never
+  // re-enters or fires per-edit.
+  let deliverRan = false;
+
   const TELEMETRY_PATH = '/tmp/uap-telemetry.jsonl';
 
   const simpleHash = (s: string): string => {
@@ -59,6 +64,47 @@ export const UapEnforce: Plugin = async ({ $ }) => {
   return {
     'tool.execute.before': async (input, output) => {
       totalToolCalls++;
+
+      // --- Transparent delivery (Layer 5): converge via `uap deliver` ---
+      // When delivery enforcement is active (the UAP default), the FIRST
+      // substantive write/edit hands the task to the `uap deliver` convergence
+      // loop, which iterates the model against the project's real gates
+      // (build/typecheck/test) before the agent's own edit lands. This is how
+      // deliver "uplifts" a small local model: plausible -> verified. It runs
+      // exactly once per session; the original edit then proceeds normally.
+      // Escape hatches: UAP_ENFORCE_DELIVERY=advisory or UAP_DELIVER_BYPASS=1.
+      if (
+        !deliverRan &&
+        (input.tool === 'write' || input.tool === 'edit') &&
+        process.env.UAP_ENFORCE_DELIVERY !== 'advisory' &&
+        !process.env.UAP_DELIVER_BYPASS
+      ) {
+        deliverRan = true; // set first — prevents re-entry / per-edit loops
+        try {
+          const endpoint = process.env.UAP_DELIVER_ENDPOINT || '';
+          const model = process.env.UAP_DELIVER_MODEL || 'qwen35-a3b';
+          const endpointArg = endpoint ? `--endpoint ${endpoint}` : '';
+          const deliverScript =
+            'source $HOME/.nvm/nvm.sh 2>/dev/null || true; ' +
+            'TASK="$(cat /app/.uap-deliver/task.txt 2>/dev/null)"; ' +
+            'if [ -n "$TASK" ] && command -v uap >/dev/null 2>&1; then ' +
+            `echo "[Deliver] converging via uap deliver (model ${model})..."; ` +
+            `UAP_DELIVER_ACTIVE=1 uap deliver "$TASK" ${endpointArg} --model ${model} ` +
+            '--project-root /app --max-turns 5 --no-until-delivered ' +
+            '> /logs/agent/uap-deliver.log 2>&1 || true; ' +
+            'echo "[Deliver] convergence loop finished"; ' +
+            'else echo "[Deliver] skipped (no task file or uap CLI absent)"; fi';
+          await $`bash -lc ${deliverScript}`.nothrow();
+          await $`echo ${JSON.stringify(
+            JSON.stringify({ event: 'transparent_deliver', tool: input.tool, ts: new Date().toISOString() })
+          )} >> ${TELEMETRY_PATH}`
+            .quiet()
+            .nothrow();
+        } catch {
+          /* fail open — let the original edit proceed */
+        }
+        // fall through: the agent's own edit still executes
+      }
 
       // --- Worktree enforcement (Layer 4) ---
       // Warn when file writes happen outside a worktree

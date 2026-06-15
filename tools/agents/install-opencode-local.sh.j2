@@ -118,12 +118,17 @@ else
     # -------------------------------------------------------------------
     # NPM REGISTRY MODE: Fallback when no local mount is present
     # -------------------------------------------------------------------
+    # NOTE: the published package is @miller-tech/uap (the old
+    # `universal-agent-protocol` name 404s). Prefer the local /uap-local mount
+    # (handled above + re-installed by the agent after upload); this registry
+    # path is only a last-resort fallback.
     CURRENT_UAP=$(uap --version 2>/dev/null || echo "none")
-    if [ "$CURRENT_UAP" = "$UAP_VERSION" ]; then
-        echo "  UAP v${UAP_VERSION} already installed - skipping"
+    if [ "$CURRENT_UAP" != "none" ]; then
+        echo "  UAP already installed (v${CURRENT_UAP}) - skipping registry fetch"
     else
-        npm i -g universal-agent-protocol@${UAP_VERSION} 2>/dev/null || true
-        echo "  UAP v${UAP_VERSION} installed from npm registry"
+        npm i -g @miller-tech/uap@latest 2>/dev/null \
+            && echo "  UAP installed from npm registry (@miller-tech/uap@latest)" \
+            || echo "  WARNING: UAP npm registry install failed (will rely on /uap-local)"
     fi
 fi
 
