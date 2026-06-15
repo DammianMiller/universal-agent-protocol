@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.42.6 (2026-06-15)
+
+- fix(bench): opencode agent model-agnostic config + native tool calls
+
+
 ## v1.42.5 (2026-06-14)
 
 - fix(policy): iac-parity gates only mutating Bash commands, not content

@@ -37,26 +37,35 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 
-def _make_opencode_config(api_endpoint: str) -> dict:
+def _make_opencode_config(
+    api_endpoint: str, model_ref: str = "llama.cpp/qwen35-a3b-iq4xs"
+) -> dict:
+    # model_ref is the harbor `-m` value, e.g. "llama.cpp/qwen3.6-a3b-iq4xs".
+    # Derive the provider + model id so opencode registers EXACTLY the model
+    # harbor selects (avoids ProviderModelNotFoundError when the local model
+    # changes, e.g. Qwen3.5 -> Qwen3.6).
+    provider_id, sep, model_id = model_ref.partition("/")
+    if not sep:
+        provider_id, model_id = "llama.cpp", model_ref
     return {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
-            "llama.cpp": {
+            provider_id: {
                 "npm": "@ai-sdk/openai-compatible",
-                "name": "llama-server (local Qwen3.5)",
+                "name": "llama-server (local)",
                 "options": {
                     "baseURL": api_endpoint,
-                    "apiKey": "sk-qwen35b",
+                    "apiKey": "sk-local",
                 },
                 "models": {
-                    "qwen35-a3b-iq4xs": {
-                        "name": "Qwen3.5 35B A3B (IQ4_XS)",
+                    model_id: {
+                        "name": model_id,
                         "limit": {"context": 262144, "output": 81920},
                     }
                 },
             }
         },
-        "model": "llama.cpp/qwen35-a3b-iq4xs",
+        "model": f"{provider_id}/{model_id}",
     }
 
 
@@ -998,7 +1007,10 @@ class OpenCodeBaseline(BaseInstalledAgent):
         if version:
             variables["version"] = version
         variables["opencode_config"] = json.dumps(
-            _make_opencode_config(self._api_endpoint), indent=2
+            _make_opencode_config(
+                self._api_endpoint, self.model_name or "llama.cpp/qwen35-a3b-iq4xs"
+            ),
+            indent=2,
         )
         variables["api_endpoint"] = self._api_endpoint
         return variables
@@ -1081,11 +1093,20 @@ class OpenCodeUAP(BaseInstalledAgent):
         version = self.version()
         if version:
             variables["version"] = version
-        # Layer 1: opencode.json points to proxy at localhost:11435
-        # The proxy forwards to the real LLM endpoint and injects tool_choice="required"
-        proxy_endpoint = "http://127.0.0.1:11435/v1"
+        # Modern local models (Qwen3.6+) emit native OpenAI tool calls; the
+        # deprecated GBNF-forcing tool-choice proxy (Layer 1) breaks them. Point
+        # opencode at the model endpoint directly by default; set
+        # UAP_BENCH_PROXY=1 to restore the qwen3.5-era proxy path (port 11435).
+        endpoint = (
+            "http://127.0.0.1:11435/v1"
+            if os.environ.get("UAP_BENCH_PROXY") == "1"
+            else self._api_endpoint
+        )
         variables["opencode_config"] = json.dumps(
-            _make_opencode_config(proxy_endpoint), indent=2
+            _make_opencode_config(
+                endpoint, self.model_name or "llama.cpp/qwen35-a3b-iq4xs"
+            ),
+            indent=2,
         )
         variables["api_endpoint"] = self._api_endpoint
         # NOTE: CLAUDE.md is now built dynamically per-task in create_run_agent_commands
