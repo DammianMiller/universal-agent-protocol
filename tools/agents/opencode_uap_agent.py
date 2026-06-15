@@ -1179,6 +1179,10 @@ class OpenCodeUAP(BaseInstalledAgent):
             "tools/agents",
             "tools/uap_harbor",
             "harbor-configs",
+            # Needed so `uap install opencode` can wire the policy gate +
+            # delivery-enforcement enforcer inside the container.
+            "src/policies/enforcers",
+            "src/policies/schemas/policies",
         ]
         local_upload_files = [
             "package.json",
@@ -1226,6 +1230,13 @@ class OpenCodeUAP(BaseInstalledAgent):
                         )
 
         logger.info("[Local UAP] Local project uploaded to /uap-local/")
+
+        # NOTE: we deliberately do NOT `npm i -g file:/uap-local` here. The
+        # install script's npm path already globally installs @miller-tech/uap
+        # (with its runtime deps) and runs `uap install opencode`. Re-linking
+        # the global bin to /uap-local — which has no node_modules — would break
+        # the CLI at runtime (ERR_MODULE_NOT_FOUND: commander). The uploaded
+        # /uap-local copy is kept only for Python-side imports / inspection.
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         _parse_token_counts(self.logs_dir, context)
@@ -1398,7 +1409,14 @@ class OpenCodeUAP(BaseInstalledAgent):
     def create_run_agent_commands(self, instruction: str) -> list[ExecInput]:
         model = self.model_name or "llama.cpp/qwen35-a3b-iq4xs"
 
-        env = {"OPENCODE_FAKE_VCS": "git"}
+        env = {
+            "OPENCODE_FAKE_VCS": "git",
+            # Transparent delivery: the uap-enforce plugin reads these to run
+            # the `uap deliver` convergence loop on the first source edit.
+            "UAP_DELIVER_ENDPOINT": self._api_endpoint,
+            "UAP_DELIVER_MODEL": os.environ.get("UAP_DELIVER_MODEL", "qwen35-a3b"),
+            "UAP_ENFORCE_DELIVERY": os.environ.get("UAP_ENFORCE_DELIVERY", "block"),
+        }
 
         # --- Step 0: Build classified CLAUDE.md and enhanced instruction ---
         classified_claude_md = build_classified_claude_md(instruction)
@@ -1523,6 +1541,17 @@ class OpenCodeUAP(BaseInstalledAgent):
 
         # --- Step 5: Environment bootstrapping ---
         commands.append(ExecInput(command=ENV_BOOTSTRAP_CMD))
+
+        # --- Step 5b: Stage raw task instruction for transparent delivery ---
+        # The uap-enforce plugin reads /app/.uap-deliver/task.txt to seed the
+        # `uap deliver` convergence loop on the first source edit.
+        task_b64 = base64.b64encode(instruction.encode()).decode()
+        deliver_task_cmd = (
+            "mkdir -p /app/.uap-deliver && "
+            f"echo '{task_b64}' | base64 -d > /app/.uap-deliver/task.txt && "
+            "echo '[Deliver] task instruction staged for transparent delivery'"
+        )
+        commands.append(ExecInput(command=deliver_task_cmd))
 
         # --- Step 6: Run opencode with enhanced instruction ---
         # opencode.json baseURL points to proxy at http://127.0.0.1:11435/v1
