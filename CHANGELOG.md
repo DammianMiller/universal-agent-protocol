@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.43.0 (2026-06-15)
+
+- feat(policy): delivery-enforcement blocks by default
+
+
 ## v1.42.6 (2026-06-15)
 
 - fix(bench): opencode agent model-agnostic config + native tool calls
