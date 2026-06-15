@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.43.1 (2026-06-15)
+
+- fix(opencode): mint droid parts with prt- prefixed ids
+
+
 ## v1.43.0 (2026-06-15)
 
 - feat(policy): delivery-enforcement blocks by default
