@@ -25,8 +25,15 @@ function run(
 }
 
 describe('delivery-enforcement enforcer', () => {
-  it('advisory by default: allows a source edit with a nudge (exit 0)', () => {
+  it('block by default: blocks a direct source edit (exit 2)', () => {
     const r = run('src/feature.ts');
+    expect(r.exit).toBe(2);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/uap deliver/);
+  });
+
+  it('advisory mode (opt-out): allows a source edit with a nudge (exit 0)', () => {
+    const r = run('src/feature.ts', { UAP_ENFORCE_DELIVERY: 'advisory' });
     expect(r.exit).toBe(0);
     expect(r.allowed).toBe(true);
     expect(r.reason).toMatch(/advisory/);

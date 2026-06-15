@@ -11,12 +11,11 @@ type-check, tests) until delivery is verified — rather than ad-hoc hand edits.
    complexity and enables the matching convergence aids automatically, then
    drives the change to verified completion against the gates.
 
-2. **Default is advisory.** With the policy installed but `UAP_ENFORCE_DELIVERY`
-   unset (or `advisory`), direct source edits are allowed and simply logged with
-   a nudge. Nothing breaks.
+2. **Default is block.** With the policy installed, direct source edits are a
+   hard block and must route through `uap deliver` (or an escape hatch below).
 
-3. **Strict mode is opt-in.** Set `UAP_ENFORCE_DELIVERY=block` to make direct
-   source edits outside a deliver context a hard block.
+3. **Advisory mode is opt-out.** Set `UAP_ENFORCE_DELIVERY=advisory` to relax
+   to a logged nudge that allows direct source edits instead of blocking.
 
 4. **Escape hatches.** A deliver-driven run sets `UAP_DELIVER_ACTIVE=1` (auto-
    exempt). For a sanctioned manual edit under strict mode, set

@@ -32,13 +32,13 @@ the expectation explicit and, when a team opts in, enforces it.
 
 Python enforcer `delivery_enforcement.py`.
 
-**Default mode is ADVISORY** — it always allows the edit and logs a one-line
-nudge toward `uap deliver`. Installing the policy therefore never breaks normal
-editing.
+**Default mode is BLOCK** — a direct source edit outside a deliver context is
+blocked (exit 2) until the work is routed through `uap deliver` (or
+`UAP_DELIVER_ACTIVE`/`UAP_DELIVER_BYPASS` is set).
 
-**Strict mode is opt-in** via `UAP_ENFORCE_DELIVERY=block`: a direct source
-edit outside a deliver context is then blocked (exit 2) until the work is routed
-through `uap deliver` or `UAP_DELIVER_BYPASS=1` is set.
+**Advisory mode is opt-out** via `UAP_ENFORCE_DELIVERY=advisory` — it then
+always allows the edit and logs a one-line nudge toward `uap deliver` instead
+of blocking.
 
 Exempt by construction: non-source files; `docs/`, `scripts/`, `policies/`,
 `src/policies/`, test files (deliver protects those itself); and tooling
