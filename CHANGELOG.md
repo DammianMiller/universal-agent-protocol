@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.46.0 (2026-06-16)
+
+- feat(deliver): real-gate detection + --keep-best (never-regress) + hybrid agent
+
+
 ## v1.45.1 (2026-06-16)
 
 - revert(bench): remove transparent deliver-on-edit trigger (net-harmful)
