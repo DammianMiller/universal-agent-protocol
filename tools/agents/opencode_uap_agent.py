@@ -1037,8 +1037,12 @@ class OpenCodeBaseline(BaseInstalledAgent):
 
         run = ExecInput(
             command=(
-                f"source $HOME/.nvm/nvm.sh && "
-                f"opencode --model {model} run --format=json {escaped} "
+                # `cd /app` + `--dir /app` so opencode indexes the task directory
+                # (matches OpenCodeUAP). Without it opencode runs from the wrong
+                # cwd and fails file-exploration tasks — which made the baseline a
+                # handicapped, unfair control in A/B comparisons.
+                f"source $HOME/.nvm/nvm.sh && cd /app && "
+                f"opencode --model {model} --dir /app run --format=json {escaped} "
                 f"2>&1 | tee /logs/agent/opencode.txt"
             ),
             env=env,
