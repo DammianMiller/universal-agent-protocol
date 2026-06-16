@@ -33,7 +33,8 @@ import {
   extractKeywords,
   retrievePracticesSemantic,
 } from '../delivery/practice.js';
-import { detectRungs } from '../delivery/verifier-ladder.js';
+import { detectRungs, runLadder } from '../delivery/verifier-ladder.js';
+import { snapshotTree, restoreTree, disposeSnapshot } from '../delivery/snapshot.js';
 import { snapshotProtection } from '../delivery/spec-imports.js';
 import { OpenAICompatClient } from '../models/openai-compat-client.js';
 import { ModelPresets } from '../models/types.js';
@@ -53,6 +54,8 @@ export interface DeliverOptions {
   forceSelfGate?: boolean;
   /** `--executor <blind|agentic|auto>`: per-turn executor strategy (default auto). */
   executor?: string;
+  /** `--keep-best`: revert the project if deliver ends with a worse gate score than baseline. */
+  keepBest?: boolean;
   candidates?: string;
   critic?: boolean;
   practices?: boolean;
@@ -615,6 +618,19 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     agentic ? { applier: noopApplier } : undefined
   );
 
+  // --keep-best (never regress): capture the starting required-gate score and a
+  // project snapshot so we can roll back if deliver ends up WORSE than it
+  // started. Only meaningful with real gates — a self-authored proxy gate is
+  // not a trustworthy regression signal.
+  const keepBest = Boolean(options.keepBest) && rungs.length > 0 && !needsSelfGate;
+  let regressSnapshot: string | null = null;
+  let baselineGateScore = 0;
+  if (keepBest) {
+    baselineGateScore = runLadder(rungs, projectRoot).score;
+    regressSnapshot = snapshotTree(projectRoot);
+    console.log(chalk.dim(`  no-regress: baseline gate score ${baselineGateScore.toFixed(2)} (snapshot taken)`));
+  }
+
   // Mark this run (and the gate subprocesses it spawns) as deliver-driven so
   // the delivery-enforcement policy exempts the sanctioned path. Scoped to the
   // loop and RESTORED afterward so a programmatic/long-lived caller doesn't
@@ -648,6 +664,25 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   } finally {
     if (priorDeliverActive === undefined) delete process.env.UAP_DELIVER_ACTIVE;
     else process.env.UAP_DELIVER_ACTIVE = priorDeliverActive;
+  }
+
+  // --keep-best: if deliver left the project worse than it started (by real
+  // gate score), roll back to the snapshot so the run is never a regression.
+  if (keepBest && regressSnapshot) {
+    const endScore = runLadder(rungs, projectRoot).score;
+    if (endScore < baselineGateScore) {
+      restoreTree(projectRoot, regressSnapshot);
+      console.log(
+        chalk.yellow(
+          `  ↩ no-regress: reverted (end gate score ${endScore.toFixed(2)} < baseline ${baselineGateScore.toFixed(2)})`
+        )
+      );
+    } else {
+      console.log(
+        chalk.dim(`  no-regress: kept (end gate score ${endScore.toFixed(2)} ≥ baseline ${baselineGateScore.toFixed(2)})`)
+      );
+    }
+    disposeSnapshot(regressSnapshot);
   }
 
   haloTracer.finish(result);

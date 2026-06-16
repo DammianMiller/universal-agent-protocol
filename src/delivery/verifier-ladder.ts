@@ -12,7 +12,7 @@
  */
 
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 export interface GateRung {
@@ -92,20 +92,18 @@ function sanitizedEnv(): NodeJS.ProcessEnv {
  * feedback arrives fast.
  */
 export function detectRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): GateRung[] {
-  const pkgPath = join(projectRoot, 'package.json');
-  if (!existsSync(pkgPath)) {
-    return [];
-  }
-
-  let scripts: Record<string, string> = {};
-  try {
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { scripts?: Record<string, string> };
-    scripts = pkg.scripts ?? {};
-  } catch {
-    return [];
-  }
-
   const rungs: GateRung[] = [];
+
+  const pkgPath = join(projectRoot, 'package.json');
+  let scripts: Record<string, string> = {};
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { scripts?: Record<string, string> };
+      scripts = pkg.scripts ?? {};
+    } catch {
+      scripts = {};
+    }
+  }
 
   if (scripts['build']) {
     rungs.push({
@@ -155,6 +153,81 @@ export function detectRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIM
       required: false,
       timeoutMs,
     });
+  }
+
+  // Non-npm projects (the common case for polyglot CLI tasks) expose their
+  // checks differently. Detect the real ones so deliver gates on the task's
+  // own verifier instead of a hallucinated self-gate.
+  if (rungs.length === 0) {
+    rungs.push(...detectNonNpmRungs(projectRoot, timeoutMs));
+  }
+
+  return rungs;
+}
+
+/**
+ * Detect real gates in non-npm projects: a Makefile test/check/build target,
+ * a pytest suite, or a conventional shell test script. Ordered cheap→expensive.
+ */
+export function detectNonNpmRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): GateRung[] {
+  const rungs: GateRung[] = [];
+  const has = (p: string): boolean => existsSync(join(projectRoot, p));
+
+  // Makefile — prefer a test/check target, else the default build target.
+  const makefile = ['Makefile', 'makefile', 'GNUmakefile'].find((m) => has(m));
+  if (makefile) {
+    let target: string | null = null;
+    try {
+      const body = readFileSync(join(projectRoot, makefile), 'utf-8');
+      if (/^test\s*:/m.test(body)) target = 'test';
+      else if (/^check\s*:/m.test(body)) target = 'check';
+      else if (/^(all|build)\s*:/m.test(body)) target = null; // default goal
+    } catch {
+      /* unreadable Makefile — fall back to default goal */
+    }
+    rungs.push({
+      id: 'make',
+      name: `Make (${target ? `make ${target}` : 'make'})`,
+      command: 'make',
+      args: target ? [target] : [],
+      required: true,
+      timeoutMs,
+    });
+  }
+
+  // pytest — only when there are actual test files (an empty suite exits 5).
+  let hasPyTests = has('tests') || has('test');
+  if (!hasPyTests) {
+    try {
+      hasPyTests = readdirSync(projectRoot).some((f) => /^test_.*\.py$|.*_test\.py$/.test(f));
+    } catch {
+      /* unreadable dir */
+    }
+  }
+  if (hasPyTests && rungs.length === 0) {
+    rungs.push({
+      id: 'pytest',
+      name: 'Tests (pytest)',
+      command: 'python3',
+      args: ['-m', 'pytest', '-q'],
+      required: true,
+      timeoutMs,
+    });
+  }
+
+  // Conventional shell test/check scripts (NOT deliver's own .uap-deliver gate).
+  if (rungs.length === 0) {
+    const script = ['run_tests.sh', 'run-tests.sh', 'test.sh', 'tests.sh', 'check.sh'].find((s) => has(s));
+    if (script) {
+      rungs.push({
+        id: 'script',
+        name: `Script (bash ${script})`,
+        command: 'bash',
+        args: [script],
+        required: true,
+        timeoutMs,
+      });
+    }
   }
 
   return rungs;
