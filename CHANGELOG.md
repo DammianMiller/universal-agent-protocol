@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.46.1 (2026-06-16)
+
+- fix(bench): OpenCodeBaseline must invoke opencode with cd /app + --dir /app
+
+
 ## v1.46.0 (2026-06-16)
 
 - feat(deliver): real-gate detection + --keep-best (never-regress) + hybrid agent
