@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.46.2 (2026-06-17)
+
+- docs(bench): terminal-bench investigation findings + improvement plan
+- chore: bump version to 1.46.1
+- fix(bench): OpenCodeBaseline must invoke opencode with cd /app + --dir /app
+
+
 ## v1.46.1 (2026-06-16)
 
 - fix(bench): OpenCodeBaseline must invoke opencode with cd /app + --dir /app
