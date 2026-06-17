@@ -240,7 +240,14 @@ run_benchmark() {
     echo "Starting benchmark..."
     echo ""
     
-    harbor run \
+    # USE_WATCHDOG=1 wraps harbor in the stall-watchdog so a hung task
+    # (e.g. sqlite-db-truncate locking opencode ~50min) is killed and recorded
+    # failed instead of stalling the whole run. Default on; set 0 to disable.
+    local HARBOR_CMD=(harbor)
+    if [ "${USE_WATCHDOG:-1}" = "1" ]; then
+        HARBOR_CMD=(bash "$SCRIPT_DIR/harbor-watchdog.sh")
+    fi
+    "${HARBOR_CMD[@]}" run \
         -d "$DATASET" \
         --agent-import-path tools.agents.opencode_uap_agent:OpenCodeUAP \
         -m "$model" \
