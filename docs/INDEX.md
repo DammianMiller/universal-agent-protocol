@@ -62,6 +62,7 @@ New here? Start with the [project README](../README.md), then [Getting Started](
 
 | Doc | What it covers |
 |---|---|
+| [**TBench Investigation**](benchmarks/TBENCH_INVESTIGATION.md) | Rigorous findings: no measurable UAP-context lift (every gain was a confound), methodology lessons, and the improvement plan ⭐ |
 | [Validation Results](benchmarks/VALIDATION_RESULTS.md) | Terminal-Bench 2.0 results (−49.7% tokens, +33pp success) |
 | [Token Optimization](benchmarks/TOKEN_OPTIMIZATION.md) | Where the token savings come from |
 | [Accuracy Analysis](benchmarks/ACCURACY_ANALYSIS.md) | Success-rate and error analysis |
