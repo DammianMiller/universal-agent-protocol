@@ -181,7 +181,7 @@ async function showPatternStatus(cwd: string): Promise<void> {
   const url = getQdrantEndpoint(config);
   try {
     const QdrantClientCls = await getQdrantClientClass();
-    const client = new QdrantClientCls({ url });
+    const client = new QdrantClientCls({ url, checkCompatibility: false });
     const collections = await client.getCollections();
     const found = collections.collections.find((c: { name: string }) => c.name === rag.collection);
 
@@ -359,7 +359,7 @@ async function queryPatterns(cwd: string, options: PatternOptions): Promise<void
   try {
     const url = getQdrantEndpoint(config);
     const QdrantClientCls2 = await getQdrantClientClass();
-    const client = new QdrantClientCls2({ url });
+    const client = new QdrantClientCls2({ url, checkCompatibility: false });
     const collections = await client.getCollections();
     const found = collections.collections.some((c: { name: string }) => c.name === rag.collection);
 

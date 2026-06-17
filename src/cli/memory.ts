@@ -462,7 +462,9 @@ async function queryQdrant(
 
   try {
     const QdrantClientClass = await getQdrantClientClass();
-    const client = new QdrantClientClass({ url, apiKey });
+    // checkCompatibility:false — tolerate client/server minor-version skew
+    // (e.g. client 1.18 vs server 1.16); the hard check silently breaks recall.
+    const client = new QdrantClientClass({ url, apiKey, checkCompatibility: false });
     await client.getCollections();
 
     // Try collection variants (main and prepopulated)

@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import httpx
@@ -5661,3 +5662,42 @@ class TestPrunerRework(unittest.TestCase):
         self.assertIn("CONTEXT PRUNED", summary)
         self.assertNotIn("tool result", summary)
         self.assertNotIn("most recent", summary)
+
+
+class TestPassthroughTimeout(unittest.IsolatedAsyncioTestCase):
+    """Anthropic-passthrough upstream calls must be bounded so a slow/stuck
+    generation cannot hang the request (and the single upstream slot) for the
+    full default read timeout (~the ~77-min benchmark hangs)."""
+
+    def test_passthrough_timeout_default(self):
+        self.assertEqual(proxy.PROXY_PASSTHROUGH_TIMEOUT, 600.0)
+
+    async def test_nonstream_passthrough_applies_bounded_timeout(self):
+        captured = {}
+
+        async def fake_post(url, json=None, headers=None, timeout=None):
+            captured["timeout"] = timeout
+            r = _FakeResponse({"id": "msg_x"}, status_code=200)
+            r.content = b'{"id":"msg_x"}'
+            r.headers = {"content-type": "application/json"}
+            return r
+
+        class _Client:
+            post = staticmethod(fake_post)
+
+        orig_client = proxy.http_client
+        orig_key = proxy.ANTHROPIC_API_KEY
+        proxy.http_client = _Client()
+        proxy.ANTHROPIC_API_KEY = "sk-test"
+        try:
+            req = unittest.mock.MagicMock()
+            req.headers = {}
+            await proxy._passthrough_anthropic_request(
+                req, {"model": "claude-sonnet-4-6", "messages": []}, is_stream=False
+            )
+        finally:
+            proxy.http_client = orig_client
+            proxy.ANTHROPIC_API_KEY = orig_key
+
+        self.assertIsNotNone(captured.get("timeout"))
+        self.assertEqual(captured["timeout"].read, proxy.PROXY_PASSTHROUGH_TIMEOUT)
