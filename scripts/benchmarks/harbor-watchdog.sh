@@ -45,24 +45,25 @@ echo "[watchdog] stall threshold ${STALL_MIN}min, poll ${POLL_SEC}s, watching $J
 harbor "${args[@]}" &
 HPID=$!
 
-last=-1
-stall=$(date +%s)
 killed=0
 while kill -0 "$HPID" 2>/dev/null; do
-  count=$(ls "$JOB"/*__*/verifier/reward.txt 2>/dev/null | wc -l)
+  # Stall signal = FILE ACTIVITY, not graded-trial count. A working agent writes
+  # command dirs and logs continuously; a hung one writes nothing. (Counting
+  # graded trials false-positives: a single long task is "0 graded" until it
+  # finishes, which would wrongly look stalled.) If the newest file anywhere in
+  # the job tree is older than STALL_MIN, nothing has been written for that long
+  # → the active task is hung → kill its container so harbor proceeds.
+  newest=$(find "$JOB" -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1)
+  newest=${newest%.*}
   now=$(date +%s)
-  if [[ "$count" != "$last" ]]; then
-    last=$count
-    stall=$now
-  elif (( (now - stall) / 60 >= STALL_MIN )); then
-    # No new trial graded for STALL_MIN minutes → kill the active task container.
+  if [[ -n "$newest" ]] && (( now - newest >= STALL_MIN * 60 )); then
     c=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '__[A-Za-z0-9]+-main' | head -1)
     if [[ -n "$c" ]]; then
       if docker rm -f "$c" >/dev/null 2>&1; then
-        echo "[watchdog $(date +%H:%M)] killed stalled container $c (no progress for ${STALL_MIN}min at ${count} graded)"
+        echo "[watchdog $(date +%H:%M)] killed stalled container $c (no file activity for ${STALL_MIN}min)"
         killed=$((killed + 1))
       fi
-      stall=$(date +%s)
+      sleep 5  # let harbor record the failure / spawn the next container
     fi
   fi
   sleep "$POLL_SEC"
