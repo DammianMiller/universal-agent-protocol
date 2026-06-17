@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.46.3 (2026-06-17)
+
+- feat(bench): stall-watchdog wrapper for harbor runs (auto-recover from hangs)
+
+
 ## v1.46.2 (2026-06-17)
 
 - docs(bench): terminal-bench investigation findings + improvement plan
