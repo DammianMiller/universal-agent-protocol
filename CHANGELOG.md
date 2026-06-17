@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.46.4 (2026-06-17)
+
+- fix(proxy): bound Anthropic-passthrough upstream calls (PROXY_PASSTHROUGH_TIMEOUT)
+- fix(bench): watchdog stall signal = file activity, not graded-trial count
+
+
 ## v1.46.3 (2026-06-17)
 
 - feat(bench): stall-watchdog wrapper for harbor runs (auto-recover from hangs)
