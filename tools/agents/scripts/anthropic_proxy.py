@@ -116,6 +116,14 @@ PROXY_HOST = os.environ.get("PROXY_HOST", "0.0.0.0")
 PROXY_LOG_LEVEL = os.environ.get("PROXY_LOG_LEVEL", "INFO").upper()
 PROXY_READ_TIMEOUT = float(os.environ.get("PROXY_READ_TIMEOUT", "180"))
 PROXY_GENERATION_TIMEOUT = float(os.environ.get("PROXY_GENERATION_TIMEOUT", "300"))
+# Bound Anthropic-passthrough upstream calls. Without this they inherit the
+# long streaming read timeout (default 1800s) and — because /v1/chat/completions
+# forces a single non-streaming upstream call (for guardrail simplicity) — a
+# slow or stuck Anthropic generation holds the request (and the single llama
+# slot) for up to that long, which produced ~77-min benchmark hangs. 600s is
+# generous for a long legitimate generation but converts a true hang into a
+# fast, recoverable error.
+PROXY_PASSTHROUGH_TIMEOUT = float(os.environ.get("PROXY_PASSTHROUGH_TIMEOUT", "600"))
 PROXY_SLOT_HANG_TIMEOUT = float(os.environ.get("PROXY_SLOT_HANG_TIMEOUT", "120"))
 PROXY_UPSTREAM_RETRY_MAX = int(os.environ.get("PROXY_UPSTREAM_RETRY_MAX", "3"))
 PROXY_UPSTREAM_RETRY_DELAY_SECS = float(os.environ.get("PROXY_UPSTREAM_RETRY_DELAY_SECS", "5"))
@@ -7679,10 +7687,15 @@ async def _passthrough_anthropic_request(
         )
 
     url = f"{ANTHROPIC_API_BASE.rstrip('/')}/v1/messages"
+    # Bounded timeout so a slow/stuck Anthropic generation can't hang the
+    # request (and the single upstream slot) for the full default read timeout.
+    pt_timeout = httpx.Timeout(
+        connect=10.0, read=PROXY_PASSTHROUGH_TIMEOUT, write=30.0, pool=10.0
+    )
 
     if is_stream:
         resp = await client.send(
-            client.build_request("POST", url, json=body, headers=headers)
+            client.build_request("POST", url, json=body, headers=headers, timeout=pt_timeout)
         )
         if resp.status_code != 200:
             return Response(
@@ -7696,7 +7709,7 @@ async def _passthrough_anthropic_request(
             media_type=resp.headers.get("content-type", "text/event-stream"),
         )
 
-    resp = await client.post(url, json=body, headers=headers)
+    resp = await client.post(url, json=body, headers=headers, timeout=pt_timeout)
     return Response(
         content=resp.content,
         status_code=resp.status_code,
