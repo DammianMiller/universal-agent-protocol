@@ -44,7 +44,8 @@ export class QdrantCloudBackend implements MemoryBackend {
       throw new Error('Qdrant URL required (QDRANT_URL env var or config)');
     }
 
-    this.client = new QdrantClient({ url, apiKey });
+    // checkCompatibility:false — tolerate client/server minor-version skew.
+    this.client = new QdrantClient({ url, apiKey, checkCompatibility: false });
     this.projectId = config.projectId || process.cwd();
     this.collection = sanitizeCollectionName(config.collection, this.projectId);
     this.vectorSize = config.vectorSize || 768; // Default to Ollama's nomic-embed-text size
