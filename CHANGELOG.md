@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.46.7 (2026-06-18)
+
+- Version bump
+
+
 ## v1.46.6 (2026-06-18)
 
 - Version bump
