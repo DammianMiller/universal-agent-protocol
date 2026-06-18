@@ -101,6 +101,7 @@ program
   )
   .option('--no-patterns', 'Skip pattern RAG setup')
   .option('--no-memory', 'Skip memory system setup')
+  .option('--no-self-update', 'Skip the automatic UAP CLI version check / self-update (also UAP_NO_SELF_UPDATE=1)')
   .option(
     '--systemd-services',
     'Optionally scaffold user systemd services for llama.cpp and anthropic proxy'
