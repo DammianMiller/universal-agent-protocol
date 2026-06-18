@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.48.1 (2026-06-18)
+
+- docs(deliver): document tiered gates, CI/deploy feedback, and setup self-update
+
+
 ## v1.48.0 (2026-06-18)
 
 - feat(setup): auto-update the UAP CLI to the latest published version on setup
