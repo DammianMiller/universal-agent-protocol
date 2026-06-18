@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.46.5 (2026-06-18)
+
+- fix(memory): tolerate Qdrant client/server version skew (checkCompatibility:false)
+
+
 ## v1.46.4 (2026-06-17)
 
 - fix(proxy): bound Anthropic-passthrough upstream calls (PROXY_PASSTHROUGH_TIMEOUT)
