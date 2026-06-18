@@ -1,7 +1,7 @@
 # UAP CLI Reference
 
 > Complete command reference for the Universal Agent Protocol command-line interface (`uap`).
-> Version v1.40.0.
+> Version v1.48.0.
 
 The `uap` binary is the single entry point for every UAP capability: project
 initialization, the tiered memory system, git worktree workflow, multi-agent
@@ -97,13 +97,23 @@ uap setup [options]
 | `-p, --platform <platforms...>` | Targets: `claude`, `factory`, `vscode`, `opencode`, `omp`, `cline`, `codex`, `aider`, `continue`, `windsurf`, `zed`, `copilot`, `jetbrains`, `swe-agent`, `all` (default `all`) |
 | `--no-patterns` | Skip pattern RAG setup |
 | `--no-memory` | Skip memory system setup |
+| `--no-self-update` | Skip the automatic UAP CLI version check / self-update (also `UAP_NO_SELF_UPDATE=1`) |
 | `--systemd-services` | Scaffold user systemd services for llama.cpp + anthropic proxy |
 | `-d, --project-dir <path>` | Target project directory (defaults to cwd) |
 | `-i, --interactive` | Run the interactive setup wizard with feature toggles |
 
+Before configuring the project, `setup` ensures the **globally-installed UAP CLI
+is at the latest published npm version** and self-updates if it is behind. It is
+safe and non-fatal: it only updates a real global install (a source checkout or a
+local/monorepo dependency is left untouched), is downgrade-proof, and is
+**skipped in CI** for reproducibility (`UAP_SELF_UPDATE=1` forces it). The update
+takes effect on the next `uap` invocation. Disable with `--no-self-update` or
+`UAP_NO_SELF_UPDATE=1`.
+
 ```bash
 uap setup -i
 uap setup -p claude -d ~/projects/myapp
+uap setup --no-self-update          # configure without touching the global CLI
 ```
 
 ---
@@ -293,6 +303,13 @@ uap deliver <instruction...> [options]
 | `--endpoint <url>` | Override the model endpoint (OpenAI-compatible `/v1`) |
 | `--temperature <t>` | Sampling temperature (default: execution-profile value) |
 | `--gates <ids>` | Comma-separated gate subset: `build,typecheck,test,lint` |
+| `--tiers <list>` | Local tiers to run: `fast,integration,deploy-dev` (overrides auto-detection) |
+| `--integration` / `--no-integration` | Run the integration tier (on by default when `test:integration`/`test:e2e`/pytest marker is detected) |
+| `--deploy-dev` / `--no-deploy-dev` | Run a local dev deploy + smoke tier (compose up -> smoke -> teardown) |
+| `--watch-ci` | After local-green, commit + push the worktree branch and watch CI; re-converge on CI/deploy failure (never pushes master/main) |
+| `--until-deployed` | Imply `--watch-ci` and require CI + staging/prod deploy jobs green before exiting 0 |
+| `--ci-passes <n>` | Max CI re-converge passes on failure (1-10, default 2) |
+| `--ci-timeout <minutes>` | CI watch budget in minutes (1-120, default 20) |
 | `--candidates <n>` | Best-of-N exploration: candidates per turn (2-8) |
 | `--critic` | Structured critique of failed turns (extra model call per failure) |
 | `--practices` | Inject learned best-practice cards; record new ones on success |
@@ -316,8 +333,13 @@ uap deliver <instruction...> [options]
 ```bash
 uap deliver "add a /healthz endpoint with a test" --gates build,test
 uap deliver "refactor the auth module" --optimize --ceiling 20
+uap deliver "add the orders endpoint" --deploy-dev          # incl. local dev deploy+smoke
+uap deliver "add the orders endpoint" --until-deployed      # push, watch CI, verify staging/prod
 uap deliver "fix the failing CI" --dry-run
 ```
+
+See the [deliver guide](../guides/DELIVER.md#tiered-validation-gates-cheap-first)
+for the tiered gate model and the CI/deploy feedback loop.
 
 ---
 

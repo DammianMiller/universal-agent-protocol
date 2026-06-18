@@ -51,7 +51,46 @@ uap deliver "big refactor across modules" --optimize   # enable every aid
 uap deliver "trivial typo fix"           --no-auto     # disable dynamic optimization
 ```
 
-`--optimize` enables exploration, critic, practices, escalation, ideation, HALO spans, and coordination together.
+`--optimize` enables exploration, critic, practices, escalation, ideation, HALO spans, and coordination together. It also turns on the local **integration** and **deploy-dev** gate tiers (below); the commit/push boundary (`--watch-ci`) stays opt-in.
+
+---
+
+## Tiered validation gates (cheap-first)
+
+Real delivery is more than unit tests — it also has to integrate and deploy. `deliver` groups gates into **tiers** and runs them **cheapest-first**, only promoting to the next, more expensive tier once the prior one is green:
+
+```
+fast → integration → deploy-dev → │ commit │ → ci → deploy-staging → deploy-prod
+└──────── run locally ───────────┘          └──── verified by CI (the watcher) ────┘
+```
+
+- **`fast`** — build, typecheck, unit tests, lint (the original ladder). Always on.
+- **`integration`** — `test:integration` / `test:e2e` scripts, or a pytest `integration` marker. **Auto-detected and on by default** (like lint); disable with `--no-integration`.
+- **`deploy-dev`** — a local dev deploy + smoke check: brings a `docker compose` stack up (or runs a `deploy:dev` / `smoke` script), health-checks it, then **always tears it down**. Opt-in with `--deploy-dev`. If docker is unavailable the tier is *skipped*, never failed.
+
+Because promotion is cheap-first, a turn that fails the build never pays for integration or deploy — the expensive tiers run only once the cheap ones pass.
+
+### CI / deploy feedback loop
+
+The `ci`, `deploy-staging`, and `deploy-prod` tiers are **never run locally** — they are verified by CI after commit. With `--watch-ci`, once the local tiers are green `deliver`:
+
+1. commits the applied files and **pushes the current worktree branch** (never `master`/`main`, never force-push);
+2. resolves the CI run for that exact commit (matched by SHA) and watches it;
+3. on CI / deploy failure, feeds the **sanitized failure logs back into a fresh convergence pass** and re-converges (bounded by `--ci-passes`).
+
+`--until-deployed` implies `--watch-ci` and additionally requires the `deploy-staging` and `deploy-prod` jobs to be green before exiting 0 — so "delivered" means *deployed and verified*, not just "tests pass locally".
+
+The bundled workflow [`.github/workflows/deploy-verify.yml`](../../.github/workflows/deploy-verify.yml) provides the `deploy-dev` / `deploy-staging` / `deploy-prod` jobs the watcher reads. Add `deploy:dev` / `deploy:staging` / `deploy:prod` and `smoke` npm scripts to your project and the no-op verification steps become real.
+
+```bash
+# iterate locally through fast → integration → local dev deploy+smoke
+uap deliver "add the orders endpoint" --deploy-dev
+
+# …then push, watch CI, and re-converge until staging + prod deploy verify green
+uap deliver "add the orders endpoint" --until-deployed
+```
+
+> Gate inputs are protected like tests: the model cannot "pass" by editing `docker-compose.yml`, `Dockerfile`, `*.tf`, CI workflows, or runner configs (`--no-protect-tests` lifts this).
 
 ---
 
@@ -67,6 +106,13 @@ uap deliver "trivial typo fix"           --no-auto     # disable dynamic optimiz
 | `--escalate-model <preset>` | Stronger model for escalation (default `$UAP_ESCALATE_MODEL`) |
 | `--temperature <t>` | Sampling temperature (default: execution-profile value) |
 | `--gates <ids>` | Gate subset: `build,typecheck,test,lint` |
+| `--tiers <list>` | Explicit local tiers to run, e.g. `fast,integration,deploy-dev` (overrides auto-detection) |
+| `--integration` / `--no-integration` | Run the integration tier (on by default when a suite is detected) |
+| `--deploy-dev` / `--no-deploy-dev` | Run a local dev deploy + smoke tier (compose up → smoke → teardown) |
+| `--watch-ci` | After local-green, commit + push the worktree branch and watch CI; re-converge on failure |
+| `--until-deployed` | Imply `--watch-ci` and require CI + staging/prod deploy jobs green before exiting 0 |
+| `--ci-passes <n>` | Max CI re-converge passes on failure (1–10, default `2`) |
+| `--ci-timeout <minutes>` | CI watch budget in minutes (1–120, default `20`) |
 | `--candidates <n>` | Best-of-N exploration: candidates per turn (2–8) |
 | `--critic` | Structured critique of failed turns |
 | `--practices` / `--no-semantic` | Inject/record best-practice cards (keyword retrieval with `--no-semantic`) |

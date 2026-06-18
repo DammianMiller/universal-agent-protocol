@@ -2,7 +2,7 @@
 
 The Universal Agent Protocol (UAP) is an autonomous AI agent memory system with
 CLAUDE.md protocol enforcement. It ships as a single npm package
-(`@miller-tech/uap`, v1.40.0) that installs the `uap` CLI.
+(`@miller-tech/uap`, v1.48.0) that installs the `uap` CLI.
 
 ## Prerequisites
 
@@ -32,7 +32,7 @@ npm install -g @miller-tech/uap
 uap --version
 ```
 
-This prints the installed package version (e.g. `1.40.0`).
+This prints the installed package version (e.g. `1.48.0`).
 
 ## One-command setup
 
@@ -45,6 +45,14 @@ uap setup
 `uap setup` chains the individual commands so the whole system "just works". It
 runs the following steps in order:
 
+0. **Self-update the CLI** — before anything else, `setup` checks npm and
+   **auto-updates the globally-installed `uap` to the latest published version**
+   if it is behind, so every setup runs against current behaviour. It is
+   non-fatal and self-limiting: only a real global install is updated (a source
+   checkout or a local/monorepo dependency is left alone), it is downgrade-proof,
+   and it is **skipped in CI** for reproducibility (`UAP_SELF_UPDATE=1` forces
+   it). The update applies on the next `uap` invocation. Disable with
+   `--no-self-update` or `UAP_NO_SELF_UPDATE=1`.
 1. **Initialize the project** (`uap init` under the hood) — creates `.uap.json`,
    the `agents/data/memory` directory structure, the short-term memory database,
    a `CLAUDE.md` (or `AGENT.md`), the worktree workflow scaffold, and the Python
@@ -68,11 +76,12 @@ runs the following steps in order:
 ### Useful `uap setup` flags
 
 ```bash
-uap setup --no-memory      # init only, skip Qdrant/memory services
-uap setup --no-patterns    # skip pattern RAG setup and indexing
-uap setup -i               # interactive wizard with feature toggles
-uap setup --verbose        # detailed output
-uap setup -d <path>        # set up a project directory other than the cwd
+uap setup --no-memory       # init only, skip Qdrant/memory services
+uap setup --no-patterns     # skip pattern RAG setup and indexing
+uap setup --no-self-update  # do not auto-update the global CLI
+uap setup -i                # interactive wizard with feature toggles
+uap setup --verbose         # detailed output
+uap setup -d <path>         # set up a project directory other than the cwd
 ```
 
 ### Init only

@@ -68,6 +68,13 @@ Install UAP (`npm i -g universal-agent-protocol`) and every feature below activa
 
 **Why it matters:** This is the single biggest uplift for small local models. A Qwen3.6-35B-A3B running locally with ~18GB VRAM will produce broken code on first try — but after 2-3 convergence iterations through real compiler feedback, it produces working code that matches what opus-4.8 would produce. The model learns from its mistakes in real-time.
 
+### `uap deliver` — Tiered Gates & CI/Deploy Feedback
+**What it does:** Gates are grouped into cheap-first tiers — `fast` (build/typecheck/test/lint) → `integration` (test:integration/e2e, pytest markers) → `deploy-dev` (local compose-up + smoke + teardown) — and only promote to the next, more expensive tier once the prior one is green. With `--watch-ci`/`--until-deployed`, once local tiers pass the loop commits + pushes the worktree branch, watches the CI run, and re-converges on CI/staging/prod deploy failure using the sanitized failure logs.
+
+**When it kicks in:** The integration tier auto-enables when a suite is detected; `--optimize` also turns on `deploy-dev`. The CI watch boundary is opt-in (`--watch-ci`/`--until-deployed`) since it pushes.
+
+**Why it matters:** "Delivered" comes to mean *integrates and deploys*, not just "unit tests pass locally" — and the loop gets real dev/staging/prod feedback to converge on, while never paying for expensive tiers until the cheap ones are green.
+
 ### Model Presets
 **What it does:** Pre-configured model profiles in `src/models/types.ts` that set optimal parameters (temperature, max tokens, reasoning effort) per model.
 
@@ -128,6 +135,13 @@ Install UAP (`npm i -g universal-agent-protocol`) and every feature below activa
 **When it kicks in:** When prompts are complex enough to warrant decomposition (substantial coding prompts, architectural changes, multi-file refactors).
 
 **Why it matters:** You describe the goal, not the steps. HALO figures out the plan and executes it.
+
+### CLI Self-Update on Setup
+**What it does:** `uap setup` checks npm and auto-updates the globally-installed `uap` CLI to the latest published version before configuring a project.
+
+**When it kicks in:** At the start of every `uap setup`. Only a real global install is updated (source checkouts and local/monorepo deps are left alone), it is downgrade-proof, and it is skipped in CI for reproducibility (`UAP_SELF_UPDATE=1` forces). Opt out with `--no-self-update` / `UAP_NO_SELF_UPDATE=1`.
+
+**Why it matters:** Install once; every subsequent setup self-applies the latest behaviour without a manual `npm install -g`. The update takes effect on the next `uap` invocation.
 
 ---
 
