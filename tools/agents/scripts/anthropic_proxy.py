@@ -279,6 +279,22 @@ PROXY_RECON_CONVERGENCE_THRESHOLD = int(
 PROXY_RECON_SESSION_HARD_CAP = int(
     os.environ.get("PROXY_RECON_SESSION_HARD_CAP", "3")
 )
+# Fix F: context death-spiral breaker. When the *raw* (pre-prune) incoming
+# context stays catastrophically over the window for several consecutive turns,
+# releasing tool_choice to 'auto' (Fix B / LOOP BREAKER) is NOT enough — the
+# model keeps voluntarily emitting tool calls and the client keeps resending an
+# ever-growing transcript (observed: ctx 936%, model emits tool_calls 18/min
+# despite tool_choice=auto). After this many consecutive turns at/above the
+# ratio, strip tools entirely so the only possible response is a terminal text
+# summary (end_turn), which ends the client's agentic loop. Ratio is set high
+# enough that only a true runaway trips it — a merely-full session tops out near
+# 100-130%, never 300%. 0 disables.
+PROXY_RAW_CTX_FINALIZE_RATIO = float(
+    os.environ.get("PROXY_RAW_CTX_FINALIZE_RATIO", "3.0")
+)
+PROXY_RAW_CTX_FINALIZE_STREAK = int(
+    os.environ.get("PROXY_RAW_CTX_FINALIZE_STREAK", "2")
+)
 PROXY_STREAM_REASONING_FALLBACK = (
     os.environ.get("PROXY_STREAM_REASONING_FALLBACK", "off").strip().lower()
 )
@@ -847,6 +863,7 @@ class SessionMonitor:
     no_progress_streak: int = 0  # Forced tool turns without new tool_result
     consecutive_no_write_turns: int = 0  # turns exploring with no write tool (B1)
     recon_hard_fires: int = 0  # Fix E: monotonic count of recon hard-tier firings
+    catastrophic_ctx_streak: int = 0  # Fix F: consecutive turns raw ctx >= finalize ratio
     unexpected_end_turn_count: int = 0  # end_turn without tool_use in active loop
     tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
     malformed_tool_streak: int = 0  # consecutive malformed pseudo tool payloads
@@ -3856,6 +3873,46 @@ def build_openai_request(
             has_tool_results,
             last_user_has_tool_result,
         )
+
+        # CONTEXT DEATH-SPIRAL BREAKER (Fix F): raw incoming context has been
+        # catastrophically over the window for several consecutive turns. The
+        # LOOP BREAKER already released tool_choice to 'auto', but the model
+        # keeps voluntarily emitting tool calls and the client keeps resending a
+        # growing transcript, so the loop never ends. Strip tools entirely so
+        # the only possible output is a terminal text summary (end_turn), which
+        # ends the client's agentic loop. Gated high (raw ctx >= 300% for >= N
+        # turns) so only a true runaway trips it, never a merely-full session.
+        if (
+            PROXY_RAW_CTX_FINALIZE_STREAK > 0
+            and monitor.catastrophic_ctx_streak >= PROXY_RAW_CTX_FINALIZE_STREAK
+        ):
+            openai_body.pop("tool_choice", None)
+            openai_body.pop("tools", None)
+            openai_body.pop("grammar", None)
+            msgs = openai_body.get("messages", [])
+            msgs.append({
+                "role": "user",
+                "content": (
+                    "The conversation has exceeded the context window "
+                    f"({monitor.get_raw_utilization() * 100:.0f}%) and cannot "
+                    "continue. No tools are available. Reply with a brief "
+                    "plain-text summary of what was accomplished and what "
+                    "remains, then stop."
+                ),
+            })
+            openai_body["messages"] = msgs
+            monitor.reset_tool_turn_state(reason="context_death_spiral_breaker")
+            logger.error(
+                "CONTEXT DEATH-SPIRAL BREAKER: raw ctx %.0f%% for %d consecutive "
+                "turns -- stripped tools to force terminal summary (end_turn).",
+                monitor.get_raw_utilization() * 100,
+                monitor.catastrophic_ctx_streak,
+            )
+            if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
+                openai_body["enable_thinking"] = False
+            if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
+                openai_body["speculative.n_max"] = 0
+            return openai_body
 
         # TOOL STARVATION BREAKER: if model repeatedly fails to produce tool
         # calls despite required, strip tools to let it generate text and break
@@ -7944,6 +8001,16 @@ async def messages(request: Request):
         # last_input_tokens to the post-prune total, so the loop breaker can
         # see the true blow-up at build_openai_request time.
         monitor.pre_prune_input_tokens = effective_tokens
+        # Fix F: track consecutive turns whose raw incoming context is
+        # catastrophically over the window (a death spiral the per-request
+        # pruner can mask but not cure). build_openai_request acts on this.
+        if (
+            PROXY_RAW_CTX_FINALIZE_RATIO > 0
+            and utilization >= PROXY_RAW_CTX_FINALIZE_RATIO
+        ):
+            monitor.catastrophic_ctx_streak += 1
+        else:
+            monitor.catastrophic_ctx_streak = 0
         if utilization >= PROXY_CONTEXT_PRUNE_THRESHOLD:
             logger.warning(
                 "Context utilization %.1f%% exceeds threshold %.1f%% -- pruning conversation",
