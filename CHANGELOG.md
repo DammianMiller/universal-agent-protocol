@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.46.6 (2026-06-18)
+
+- Version bump
+
+
 ## v1.46.5 (2026-06-18)
 
 - fix(memory): tolerate Qdrant client/server version skew (checkCompatibility:false)
