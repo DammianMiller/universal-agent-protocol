@@ -7,10 +7,16 @@
  */
 
 import chalk from 'chalk';
+import { spawnSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { ConvergenceLoop, composeIterationHooks } from '../delivery/convergence-loop.js';
-import type { LoopExecutor, IterationRecord, DeliveryResult } from '../delivery/convergence-loop.js';
+import type {
+  LoopExecutor,
+  IterationRecord,
+  DeliveryResult,
+  ConvergenceConfig,
+} from '../delivery/convergence-loop.js';
 import { createModelJudge } from '../delivery/judge.js';
 import { createModelCritic } from '../delivery/critic.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
@@ -33,7 +39,11 @@ import {
   extractKeywords,
   retrievePracticesSemantic,
 } from '../delivery/practice.js';
-import { detectRungs, runLadder } from '../delivery/verifier-ladder.js';
+import { detectRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER } from '../delivery/verifier-ladder.js';
+import type { GateTier, LadderRunFn } from '../delivery/verifier-ladder.js';
+import { runDeployDevLadder } from '../delivery/deploy-dev-gate.js';
+import { commitPushAndWatch } from '../delivery/ci-watcher.js';
+import type { DeployEnvironment } from '../delivery/ci-watcher.js';
 import { snapshotTree, restoreTree, disposeSnapshot } from '../delivery/snapshot.js';
 import { snapshotProtection } from '../delivery/spec-imports.js';
 import { OpenAICompatClient } from '../models/openai-compat-client.js';
@@ -75,6 +85,20 @@ export interface DeliverOptions {
   deploy?: boolean;
   /** Enable every convergence aid (exploration, critic, practices, escalation, ideation, HALO, coordination) */
   optimize?: boolean;
+  /** commander sets false on --no-integration: run the integration tier locally (default: on when detected). */
+  integration?: boolean;
+  /** commander sets false on --no-deploy-dev: run a local dev deploy+smoke tier (default off; opt-in). */
+  deployDev?: boolean;
+  /** After local-green, commit/push the worktree branch and watch CI; re-converge on failure. */
+  watchCi?: boolean;
+  /** Imply --watch-ci and require CI + staging/prod deploy jobs green before exiting 0. */
+  untilDeployed?: boolean;
+  /** Explicit comma list of tiers to run (e.g. fast,integration,deploy-dev), overriding auto-detection. */
+  tiers?: string;
+  /** Max CI re-converge passes (default 2). */
+  ciPasses?: string;
+  /** CI watch budget in minutes (default 20). */
+  ciTimeout?: string;
   /** commander sets this false when --no-auto is passed (default true):
    * dynamic optimization — classify task complexity, enable matching aids */
   auto?: boolean;
@@ -102,6 +126,43 @@ const MAX_CANDIDATES_LIMIT = MAX_CANDIDATES;
 function stripControl(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+}
+
+/** Resolve the current git branch (read-only); null when not in a repo. */
+function currentBranch(projectRoot: string): string | null {
+  try {
+    const r = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+    });
+    return r.status === 0 ? r.stdout.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Explicit list of changed paths from `git status --porcelain` (read-only). Used
+ * to scope the watch-ci commit when the loop reports no applied files (the
+ * agentic executor mutates the repo directly and returns an empty file set), so
+ * the watcher stages a known list instead of a blanket `git add -A`.
+ */
+function changedFiles(projectRoot: string): string[] {
+  try {
+    const r = spawnSync('git', ['status', '--porcelain', '-z'], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+    });
+    if (r.status !== 0 || !r.stdout) return [];
+    return r.stdout
+      .split('\0')
+      .filter(Boolean)
+      // porcelain lines are "XY <path>"; drop the 3-char status prefix.
+      .map((line) => line.slice(3))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 function fail(message: string): never {
@@ -156,6 +217,12 @@ export function applyAutoPlan(options: DeliverOptions, plan: AutoPlan): void {
   if (plan.ideate && options.ideate === undefined) options.ideate = true;
   if (plan.halo && options.halo === undefined) options.halo = true;
   if (plan.coordinate && options.coordinate === undefined) options.coordinate = true;
+  // Local tiers are safe to auto-enable. The watch-ci push boundary stays
+  // OPT-IN even when the plan recommends it (plan.watchCi) — committing and
+  // pushing is a side effect the user must request explicitly, mirroring the
+  // deploy-queue rule below.
+  if (plan.integration && options.integration === undefined) options.integration = true;
+  if (plan.deployDev && options.deployDev === undefined) options.deployDev = true;
 }
 
 export async function deliverCommand(instruction: string, options: DeliverOptions): Promise<void> {
@@ -193,6 +260,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     options.ideate = true;
     options.halo = true;
     options.coordinate = true;
+    // Local tiers on; the watch-ci push boundary stays opt-in (like deploy).
+    if (options.integration === undefined) options.integration = true;
+    if (options.deployDev === undefined) options.deployDev = true;
   }
 
   // `--halo` is a per-run switch over the global trace toggle the exporter
@@ -261,6 +331,63 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     rungs = rungs.filter((r) => wanted.has(r.id));
   }
 
+  // Resolve the highest LOCAL tier to run (cheap-first promotion). The
+  // ci/staging/prod tiers are never run locally — they are verified after
+  // commit via the CI watcher — so the local ceiling is deploy-dev.
+  const LOCAL_TIER_CEILING = TIER_ORDER.indexOf('deploy-dev');
+  let maxTier: GateTier = 'fast';
+  let allowedTiers: Set<GateTier> | null = null;
+  if (options.tiers) {
+    const parsed = options.tiers.split(',').map((t) => t.trim()).filter(Boolean) as GateTier[];
+    const unknown = parsed.filter(
+      (t) => !TIER_ORDER.includes(t) || TIER_ORDER.indexOf(t) > LOCAL_TIER_CEILING
+    );
+    if (unknown.length > 0) {
+      fail(`Unknown/non-local tier(s): ${unknown.join(', ')}. Local tiers: fast, integration, deploy-dev`);
+    }
+    allowedTiers = new Set(parsed);
+    maxTier = parsed.reduce<GateTier>(
+      (hi, t) => (TIER_ORDER.indexOf(t) > TIER_ORDER.indexOf(hi) ? t : hi),
+      'fast'
+    );
+  } else if (options.deployDev) {
+    maxTier = 'deploy-dev';
+  } else if (options.integration !== false && rungs.some((r) => tierOf(r) === 'integration')) {
+    // Integration is on-by-default when a suite is detected (like lint).
+    maxTier = 'integration';
+  }
+
+  // Drop rungs outside the resolved local scope so feedback never lists tiers
+  // that were intentionally not run.
+  rungs = rungs.filter((r) => {
+    const t = tierOf(r);
+    if (TIER_ORDER.indexOf(t) > TIER_ORDER.indexOf(maxTier)) return false;
+    if (allowedTiers) return allowedTiers.has(t);
+    if (t === 'integration' && options.integration === false) return false;
+    return true;
+  });
+
+  // CI watch boundary: opt-in via --watch-ci, or implied by --until-deployed.
+  const watchCi = Boolean(options.watchCi || options.untilDeployed);
+  const watchEnvironments: DeployEnvironment[] | undefined = options.untilDeployed
+    ? ['staging', 'prod']
+    : undefined;
+  let ciPasses = 2;
+  if (options.ciPasses !== undefined) {
+    ciPasses = Number(options.ciPasses);
+    if (!Number.isInteger(ciPasses) || ciPasses < 1 || ciPasses > 10) {
+      fail(`--ci-passes must be an integer between 1 and 10, got '${options.ciPasses}'`);
+    }
+  }
+  let ciTimeoutMs = 20 * 60_000;
+  if (options.ciTimeout !== undefined) {
+    const mins = Number(options.ciTimeout);
+    if (!Number.isInteger(mins) || mins < 1 || mins > 120) {
+      fail(`--ci-timeout must be an integer (minutes) between 1 and 120, got '${options.ciTimeout}'`);
+    }
+    ciTimeoutMs = mins * 60_000;
+  }
+
   // When a project exposes no gates (or --force-self-gate), fall back to a
   // self-authored acceptance gate so deliver still has a real convergence
   // target instead of vacuously "succeeding" in one turn. The gate is authored
@@ -294,7 +421,15 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       guidanceFile: options.guidanceFile ? resolve(options.guidanceFile) : null,
       untilDelivered,
       ceiling: untilDelivered ? (maxTurnsCeiling ?? DEFAULT_CLI_CEILING) : null,
-      gates: rungs.map((r) => ({ id: r.id, name: r.name, required: r.required })),
+      maxTier,
+      tiers: [...new Set(rungs.map((r) => tierOf(r)))],
+      watchCi,
+      untilDeployed: Boolean(options.untilDeployed),
+      watchEnvironments: watchEnvironments ?? null,
+      ciPasses: watchCi ? ciPasses : null,
+      ciTimeoutMinutes: watchCi ? ciTimeoutMs / 60_000 : null,
+      branch: watchCi ? currentBranch(projectRoot) : null,
+      gates: rungs.map((r) => ({ id: r.id, name: r.name, required: r.required, tier: tierOf(r) })),
       selfGate: needsSelfGate,
     };
     if (options.json) {
@@ -326,6 +461,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(
         `  Until delivered: ${summary.untilDelivered ? `on (loop to all-gates-pass, ceiling ${summary.ceiling} turns)` : 'off'}`
       );
+      console.log(`  Local tiers: ${summary.tiers.join(', ')} (max: ${summary.maxTier})`);
+      console.log(
+        `  Watch CI: ${
+          summary.watchCi
+            ? `on (branch ${summary.branch ?? '(unknown)'}, ${summary.ciPasses} pass(es), ${summary.ciTimeoutMinutes}m budget${summary.watchEnvironments ? `, require ${summary.watchEnvironments.join('/')} deploy` : ''})`
+            : 'off'
+        }`
+      );
       if (needsSelfGate) {
         console.log(
           chalk.cyan('  Self-gate: will author .uap-deliver/verify.sh at run time (must fail on the unsolved repo)')
@@ -333,7 +476,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       }
       console.log('  Gates:');
       for (const r of rungs) {
-        console.log(`    - ${r.name}${r.required ? '' : chalk.dim(' (optional)')}`);
+        console.log(
+          `    - [${tierOf(r)}] ${r.name}${r.required ? '' : chalk.dim(' (optional)')}`
+        );
       }
     }
     return;
@@ -378,6 +523,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // Block oracle tampering: protected test files are read-only to the agent.
         protectedFiles:
           options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles : new Set<string>(),
+        // Block gate-config / IaC rigging in the agentic path too (it bypasses
+        // the file-block applier where this protection otherwise lives).
+        protectGateConfigs: options.protectTests !== false,
         onEvent: (e) =>
           console.log(
             chalk.dim(`    [agent r${e.round} ${e.kind}${e.tool ? `:${e.tool}` : ''}] ${e.detail ?? ''}`)
@@ -585,48 +733,65 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       }
     : undefined;
 
-  const loop = new ConvergenceLoop(
-    {
-      projectRoot,
-      maxTurns,
-      rungs,
-      // The agentic executor mutates the repo directly (no-op applier), so
-      // gates must run every turn regardless of applier file count.
-      alwaysVerify: agentic ? true : undefined,
-      // Judge/critic evaluate text, so they always use the blind executor even
-      // when the loop's executor is agentic.
-      explorer: candidates ? { candidates, seeds, judge: createModelJudge(blindExecutor) } : undefined,
-      critic: options.critic ? createModelCritic(blindExecutor) : undefined,
-      // Critic evaluates text; keep it on a blind completion even if the loop
-      // escalates the (agentic) executor.
-      criticFactory: (ex) => createModelCritic(agentic ? blindExecutor : ex),
-      practiceProvider,
-      protectTests: options.protectTests,
-      guidanceProvider,
-      untilDelivered,
-      maxTurnsCeiling,
-      onIteration: composeIterationHooks(
-        (record) => printProgress(record),
-        (record) => haloTracer.onIteration(record),
-        coordinator ? (record) => coordinator.onIteration(record) : undefined,
-        escalation ? (record) => escalation.onIteration(record) : undefined
-      ),
-    },
-    executor,
+  // Cheap-first tiered ladder: run the fast tier first and only promote to
+  // integration / deploy-dev once the prior tier is green. Injected as the
+  // ladderRunner seam so the loop's integrity guard composes around the whole
+  // tiered run. deploy-dev rungs use the bring-up→smoke→teardown lifecycle.
+  const tieredRunner: LadderRunFn = (r, root, opts) =>
+    runTieredLadder(r, root, {
+      ...opts,
+      maxTier,
+      runner: runLadder,
+      deployDevRunner: runDeployDevLadder,
+    });
+  const seams = {
+    ladderRunner: tieredRunner,
     // The agentic executor mutates the repo directly, so nothing remains for
     // the file-block applier to materialize.
-    agentic ? { applier: noopApplier } : undefined
-  );
+    ...(agentic ? { applier: noopApplier } : {}),
+  };
+
+  const loopConfig: ConvergenceConfig = {
+    projectRoot,
+    maxTurns,
+    rungs,
+    // The agentic executor mutates the repo directly (no-op applier), so
+    // gates must run every turn regardless of applier file count.
+    alwaysVerify: agentic ? true : undefined,
+    // Judge/critic evaluate text, so they always use the blind executor even
+    // when the loop's executor is agentic.
+    explorer: candidates ? { candidates, seeds, judge: createModelJudge(blindExecutor) } : undefined,
+    critic: options.critic ? createModelCritic(blindExecutor) : undefined,
+    // Critic evaluates text; keep it on a blind completion even if the loop
+    // escalates the (agentic) executor.
+    criticFactory: (ex) => createModelCritic(agentic ? blindExecutor : ex),
+    practiceProvider,
+    protectTests: options.protectTests,
+    guidanceProvider,
+    untilDelivered,
+    maxTurnsCeiling,
+    onIteration: composeIterationHooks(
+      (record) => printProgress(record),
+      (record) => haloTracer.onIteration(record),
+      coordinator ? (record) => coordinator.onIteration(record) : undefined,
+      escalation ? (record) => escalation.onIteration(record) : undefined
+    ),
+  };
+  const loop = new ConvergenceLoop(loopConfig, executor, seams);
 
   // --keep-best (never regress): capture the starting required-gate score and a
   // project snapshot so we can roll back if deliver ends up WORSE than it
   // started. Only meaningful with real gates — a self-authored proxy gate is
   // not a trustworthy regression signal.
-  const keepBest = Boolean(options.keepBest) && rungs.length > 0 && !needsSelfGate;
+  // Regression scoring uses only the fast tier — a cheap, synchronous, always-
+  // run signal. Integration/deploy-dev gates may not run at baseline (promotion
+  // is cheap-first), so they are not a trustworthy regression comparison.
+  const fastRungs = rungs.filter((r) => tierOf(r) === 'fast');
+  const keepBest = Boolean(options.keepBest) && fastRungs.length > 0 && !needsSelfGate;
   let regressSnapshot: string | null = null;
   let baselineGateScore = 0;
   if (keepBest) {
-    baselineGateScore = runLadder(rungs, projectRoot).score;
+    baselineGateScore = runLadder(fastRungs, projectRoot).score;
     regressSnapshot = snapshotTree(projectRoot);
     console.log(chalk.dim(`  no-regress: baseline gate score ${baselineGateScore.toFixed(2)} (snapshot taken)`));
   }
@@ -641,6 +806,69 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   let result: DeliveryResult;
   try {
     result = await loop.deliver(instruction);
+
+    // CI watch boundary + re-converge: once local tiers are green, commit/push
+    // the worktree branch and watch the CI run. On CI/deploy failure, feed the
+    // sanitized failure back into a fresh convergence pass (baselineCheck off so
+    // turn 1 always runs the model — local gates already pass). Bounded by
+    // --ci-passes. Skipped when nothing changed (alreadyDelivered).
+    if (watchCi && result.success && !result.alreadyDelivered) {
+      const branch = currentBranch(projectRoot) ?? undefined;
+      let pass = 0;
+      for (;;) {
+        // Prefer the loop's applied-file set; the agentic executor reports none
+        // (it mutates the repo directly), so fall back to an explicit
+        // git-status list rather than letting the watcher do `git add -A`.
+        let files = [...new Set(result.history.flatMap((h) => h.filesApplied ?? []))];
+        if (files.length === 0) files = changedFiles(projectRoot);
+        console.log(
+          chalk.cyan(`☁ watch-ci: committing & pushing ${branch ?? 'current branch'}, watching CI…`)
+        );
+        const watch = await commitPushAndWatch({
+          projectRoot,
+          branch,
+          commitMessage: `feat(delivery): ${instruction.slice(0, 72)}`,
+          files,
+          timeoutMs: ciTimeoutMs,
+          watchEnvironments,
+          onProgress: (m) => console.log(chalk.dim(`    ${m}`)),
+        });
+        if (watch.runUrl) console.log(chalk.dim(`    run: ${watch.runUrl}`));
+
+        if (watch.status === 'green') {
+          console.log(
+            chalk.green(
+              `  ✓ CI green${watchEnvironments ? ` (${watchEnvironments.join('/')} deploy verified)` : ''}`
+            )
+          );
+          break;
+        }
+        if (watch.status === 'skipped' || watch.status === 'no-run') {
+          console.log(chalk.yellow(`  ⚠ watch-ci ${watch.status}: ${watch.feedback ?? ''}`));
+          break;
+        }
+
+        // failed | timeout
+        pass++;
+        console.log(chalk.yellow(`  ✗ CI ${watch.status} (re-converge pass ${pass}/${ciPasses})`));
+        if (pass >= ciPasses) {
+          console.log(chalk.red(`  watch-ci: exhausted ${ciPasses} pass(es); CI still not green.`));
+          result = { ...result, success: false, finalFeedback: watch.feedback ?? result.finalFeedback };
+          break;
+        }
+        console.log(chalk.cyan('  ⟲ re-converging against CI feedback…'));
+        const reconvergeLoop = new ConvergenceLoop(
+          { ...loopConfig, baselineCheck: false },
+          executor,
+          seams
+        );
+        result = await reconvergeLoop.deliver(`${instruction}\n\n${watch.feedback ?? ''}`);
+        if (!result.success) {
+          console.log(chalk.red('  re-converge did not reach local-green; stopping watch-ci.'));
+          break;
+        }
+      }
+    }
   } catch (err) {
     // Deregister the run's agent so a config-stage throw (e.g. invalid
     // maxTurns) doesn't leave a phantom active agent in the registry, and
@@ -669,7 +897,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // --keep-best: if deliver left the project worse than it started (by real
   // gate score), roll back to the snapshot so the run is never a regression.
   if (keepBest && regressSnapshot) {
-    const endScore = runLadder(rungs, projectRoot).score;
+    const endScore = runLadder(fastRungs, projectRoot).score;
     if (endScore < baselineGateScore) {
       restoreTree(projectRoot, regressSnapshot);
       console.log(

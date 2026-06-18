@@ -115,6 +115,8 @@ describe('applyAutoPlan', () => {
       ideate: true,
       halo: true,
       coordinate: true,
+      integration: true,
+      deployDev: true,
     });
   });
 

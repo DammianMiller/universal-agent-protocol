@@ -1,0 +1,115 @@
+import { describe, it, expect } from 'vitest';
+import {
+  runTieredLadder,
+  type GateRung,
+  type GateTier,
+  type LadderResult,
+} from '../../src/delivery/verifier-ladder.js';
+
+function rung(id: string, tier?: GateTier, required = true): GateRung {
+  return { id, name: id, command: 'true', args: [], required, timeoutMs: 1000, tier };
+}
+
+/** Fake per-tier runner: rungs whose id is in `pass` pass; records each call. */
+function fakeRunner(pass: Set<string>, calls: string[][]) {
+  return (rungs: GateRung[]): LadderResult => {
+    calls.push(rungs.map((r) => r.id));
+    const results = rungs.map((r) => ({
+      id: r.id,
+      name: r.name,
+      passed: pass.has(r.id),
+      skipped: false,
+      exitCode: pass.has(r.id) ? 0 : 1,
+      durationMs: 1,
+      outputTail: pass.has(r.id) ? '' : 'fail',
+    }));
+    const passed = rungs.filter((r) => r.required).every((r) => pass.has(r.id));
+    return { passed, score: results.filter((r) => r.passed).length / results.length, results, feedback: '' };
+  };
+}
+
+describe('runTieredLadder', () => {
+  it('promotes cheapest tier first and skips later tiers when a cheaper tier fails', async () => {
+    const calls: string[][] = [];
+    const rungs = [rung('build', 'fast'), rung('itest', 'integration'), rung('smoke', 'deploy-dev')];
+    const result = await runTieredLadder(rungs, '/tmp', {
+      runner: fakeRunner(new Set([/* build fails */]), calls),
+    });
+
+    // Only the fast tier ran; integration/deploy-dev were never executed.
+    expect(calls).toEqual([['build']]);
+    expect(result.passed).toBe(false);
+    expect(result.results.find((r) => r.id === 'itest')?.skipped).toBe(true);
+    expect(result.results.find((r) => r.id === 'smoke')?.skipped).toBe(true);
+  });
+
+  it('runs every in-scope tier when each prior tier passes', async () => {
+    const calls: string[][] = [];
+    const rungs = [rung('build', 'fast'), rung('itest', 'integration'), rung('smoke', 'deploy-dev')];
+    const result = await runTieredLadder(rungs, '/tmp', {
+      runner: fakeRunner(new Set(['build', 'itest', 'smoke']), calls),
+    });
+
+    expect(calls).toEqual([['build'], ['itest'], ['smoke']]);
+    expect(result.passed).toBe(true);
+  });
+
+  it('respects maxTier: integration and above are not run locally', async () => {
+    const calls: string[][] = [];
+    const rungs = [rung('build', 'fast'), rung('itest', 'integration')];
+    const result = await runTieredLadder(rungs, '/tmp', {
+      maxTier: 'fast',
+      runner: fakeRunner(new Set(['build', 'itest']), calls),
+    });
+
+    expect(calls).toEqual([['build']]);
+    // Out-of-scope rung is skipped and does NOT block delivery.
+    expect(result.results.find((r) => r.id === 'itest')?.skipped).toBe(true);
+    expect(result.passed).toBe(true);
+  });
+
+  it('never runs ci/staging/prod tiers locally even at the default ceiling', async () => {
+    const calls: string[][] = [];
+    const rungs = [rung('build', 'fast'), rung('ci', 'ci'), rung('prod', 'deploy-prod')];
+    const result = await runTieredLadder(rungs, '/tmp', {
+      runner: fakeRunner(new Set(['build']), calls),
+    });
+
+    expect(calls).toEqual([['build']]); // ci/prod never executed
+    expect(result.passed).toBe(true); // remote tiers don't gate the local result
+    expect(result.results.find((r) => r.id === 'ci')?.skipped).toBe(true);
+  });
+
+  it('treats rungs without a tier as fast (back-compat)', async () => {
+    const calls: string[][] = [];
+    const rungs = [rung('legacy', undefined), rung('itest', 'integration')];
+    await runTieredLadder(rungs, '/tmp', { runner: fakeRunner(new Set(['legacy', 'itest']), calls) });
+
+    // The untiered rung ran in the first (fast) tier.
+    expect(calls[0]).toEqual(['legacy']);
+  });
+
+  it('computes score over in-scope rungs only (out-of-scope skips do not dilute it)', async () => {
+    const calls: string[][] = [];
+    // One fast rung that passes, plus ci/prod rungs that are never run locally.
+    const rungs = [rung('build', 'fast'), rung('ci', 'ci'), rung('prod', 'deploy-prod')];
+    const result = await runTieredLadder(rungs, '/tmp', {
+      runner: fakeRunner(new Set(['build']), calls),
+    });
+    // Score must be 1 (the only in-scope rung passed), not 1/3.
+    expect(result.score).toBe(1);
+  });
+
+  it('uses deployDevRunner for the deploy-dev tier and the default runner otherwise', async () => {
+    const mainCalls: string[][] = [];
+    const deployCalls: string[][] = [];
+    const rungs = [rung('build', 'fast'), rung('smoke', 'deploy-dev')];
+    await runTieredLadder(rungs, '/tmp', {
+      runner: fakeRunner(new Set(['build', 'smoke']), mainCalls),
+      deployDevRunner: fakeRunner(new Set(['smoke']), deployCalls),
+    });
+
+    expect(mainCalls).toEqual([['build']]);
+    expect(deployCalls).toEqual([['smoke']]);
+  });
+});

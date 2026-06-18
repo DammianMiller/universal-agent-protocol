@@ -107,7 +107,9 @@ const PROTECTED_BASENAMES = new Set([
  * Config files that control what the gates run or how strictly they check.
  * Writing these is gate-rigging by indirection: repointing vitest/jest
  * include globs or relaxing tsconfig defeats spec protection without
- * touching a single test file.
+ * touching a single test file. The deploy/IaC entries extend the same logic
+ * to the deploy-dev and CI tiers: editing what "deploy" means (compose,
+ * Dockerfile, terraform, serverless) rigs the deploy gate the same way.
  */
 const GATE_CONFIG_RES = [
   /^tsconfig[^/]*\.json$/,
@@ -123,12 +125,48 @@ const GATE_CONFIG_RES = [
   /^pytest\.ini$/,
   /^setup\.cfg$/,
   /^pyproject\.toml$/,
+  // Deploy / IaC gate inputs (deploy-dev + CI tiers).
+  /^docker-compose(\.[^/]+)?\.ya?ml$/,
+  /^compose(\.[^/]+)?\.ya?ml$/,
+  /^dockerfile$/,
+  /^dockerfile\.[^/]+$/,
+  /^.+\.tf$/,
+  /^.+\.tfvars$/,
+  /^pulumi\.ya?ml$/,
+  /^serverless\.ya?ml$/,
 ];
 
 /** True when a basename is a test-runner/compiler config (gate input). */
 export function isGateConfigBasename(base: string): boolean {
   const lower = base.toLowerCase();
   return GATE_CONFIG_RES.some((re) => re.test(lower));
+}
+
+/**
+ * Reason a relative path must not be written by an autonomous executor, or null
+ * when the write is allowed. Single source of truth for the segment / basename /
+ * gate-config blocklist so the agentic executor (which bypasses the file-block
+ * applier) enforces the SAME protections. `protectGateConfigs` mirrors the
+ * applier option — when on, compose/IaC/runner-config writes are gate-rigging.
+ */
+export function protectedWritePathReason(
+  relPath: string,
+  protectGateConfigs = true
+): string | null {
+  const segments = relPath.split(/[\\/]/);
+  for (const seg of segments) {
+    if (PROTECTED_SEGMENTS.has(seg.toLowerCase())) {
+      return `writes into ${seg} are not allowed`;
+    }
+  }
+  const base = segments[segments.length - 1].toLowerCase();
+  if (PROTECTED_BASENAMES.has(base)) {
+    return `writes to ${base} are not allowed (would alter executed scripts)`;
+  }
+  if (protectGateConfigs && isGateConfigBasename(base)) {
+    return `writes to ${base} are not allowed (gate-config / IaC — rigging the gate by indirection)`;
+  }
+  return null;
 }
 
 /** Directory names test discovery treats as test containers. */
