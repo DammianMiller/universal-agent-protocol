@@ -1,92 +1,286 @@
-# What UAP Does For You — Automatically
+# What UAP Does Automatically
 
-> The whole point of UAP: **you install it once, and every feature applies itself
-> as you code.** You don't call commands or remember protocols. UAP watches the
-> coding agent's lifecycle (session start, every prompt, every tool call, every
-> stop) and injects the right help or enforces the right guardrail *at the moment
-> it's needed*.
+> **Install once. Every feature kicks in automatically.**
 
-```bash
-npx @miller-tech/uap init       # one-time, per project
-# …that's it. Open your coding agent and everything below is live.
+UAP is not a set of manual steps you orchestrate. It is a **policy-and-resolver
+layer** that sits between your coding agent (Claude Code, Opencode, Cursor,
+Windsurf, Codex, etc.) and the model you use. Every feature below activates
+**automatically** based on what the agent is doing — no config changes, no
+manual triggers, no prompts to remember.
+
+---
+
+## How it works
+
+When you start a coding session, UAP's hooks (installed by `uap setup`)
+intercept every prompt the agent sends to the model. The **Reactor**
+(`CapabilityRouter` + `PatternRouter`) evaluates the prompt in
+real-time and, when appropriate, **injects** context, skills, or tool calls
+into the agent's next turn. You never notice it happening — the agent just
+produces better results.
+
+```
+You → hook → UAP Reactor (auto-inject) → model → agent → better output
 ```
 
-`init`/`setup` wire UAP into whichever agent you use — Claude Code, Cursor,
-OpenCode, Factory, VSCode, Codex — by installing lifecycle hooks and the MCP
-router. After that the features are **on by default and apply themselves as
-appropriate**. Nothing here needs to be invoked by hand.
+The confidence gate controls injection:
+
+| Confidence | Behavior |
+|---|---|
+| ≥ 0.30 | Inject context/skills/experts into the prompt |
+| ≥ 0.80 | Auto-spawn subagent with `uap deliver` for heavy lifting |
+| < 0.30 | Pass through unchanged — zero overhead |
 
 ---
 
-## How to read this
+## Every feature, when it kicks in
 
-Two kinds of automatic behaviour, and they're deliberately different:
+### Reactor — Expert, Skill & Pattern Injection
 
-- **Assist** (dynamic, *helps* you): surfaces the right context — experts,
-  skills, patterns, memories — by *injecting* it where the model will see it.
-  It's confidence-gated, so quiet on conversational turns and rich on real
-  coding tasks. It never blocks; worst case it stays silent.
-- **Enforce** (deterministic, *protects* you): hard guardrails that *block* a
-  tool call when it would violate a rule (edit outside a worktree, skip
-  delivery, run a dangerous command). Each has an escape hatch for the rare
-  sanctioned exception.
+**Benefit:** Your model gets expert-level context for every prompt without you
+having to craft the perfect system prompt.
 
-For every feature below: **what it does for you**, and **when it kicks in**.
+**When it kicks in:** On every prompt the agent sends. The `CapabilityRouter`
+matches the prompt against known droids (docker, infra, security, etc.) and
+skills. The `PatternRouter` matches against a RAG-indexed library of proven
+patterns. When confidence is ≥ 0.30, the relevant context is injected
+automatically. When confidence is ≥ 0.80, a subagent is spawned to handle it
+via `uap deliver`.
+
+**You get:** Better code from any model — even small local models — because
+they receive expert context they wouldn't otherwise have.
 
 ---
 
-## Assist — the right help shows up on its own
+### Delivery Enforcement — `uap deliver` for Verified Output
 
-| Feature | What it does for you | When it kicks in |
+**Benefit:** Your agent's output is actually correct before it touches your
+code. No more "it compiled but the tests fail" or "it broke the build."
+
+**When it kicks in:** Block-by-default. When the agent tries to edit source
+files directly, the `delivery_enforcement` gate intercepts and routes the work
+to `uap deliver` instead. The delivery harness runs a convergence loop: the
+model iterates against real gates (build, typecheck, test) until everything
+passes. Source-scoped: docs, configs, scripts, and tests are exempt (they
+don't need delivery verification).
+
+**Escape hatches:** `UAP_DELIVER_ACTIVE=1` to activate delivery for the
+current session, `UAP_DELIVER_BYPASS=1` to skip enforcement,
+`UAP_ENFORCE_DELIVERY=advisory` to downgrade from block to warning.
+
+**You get:** Verified, working code from any model — including small local
+models that would otherwise make mistakes.
+
+---
+
+### Memory — 4-Tier Auto-Recall
+
+**Benefit:** Your coding agent remembers everything across sessions, projects,
+and even different models. No more repeating yourself.
+
+**When it kicks in:** On every prompt. The memory system has four tiers:
+
+| Tier | What | How |
 |---|---|---|
-| **Reactor** (dynamic routing) | On every prompt, surfaces the expert droids, skills, and enforcement patterns relevant to *this* task, so the agent works like it already knows the domain. | Every substantive prompt (`UserPromptSubmit` / per-message). Confidence-gated — silent on "thanks"/"merge it", rich on "fix the auth race condition". |
-| **Memory recall** | Pulls back the lessons, decisions, and gotchas you (or another agent) learned before, so mistakes aren't repeated and context survives across sessions. | Session start (recent + high-importance memories) and per-prompt semantic recall on the task text. |
-| **Pattern RAG** | Injects battle-tested execution patterns (Output-Existence, Decoder-First, Round-Trip verify, …) mined from Terminal-Bench, so the agent uses the approach that actually passes. | Per-prompt, matched to the task; full set retrievable on demand via Qdrant. |
-| **Expert droids** | Routes domain work (security, performance, data, testing, …) to a specialist persona instead of a generalist guess. | When the capability router matches the task's type/files — recommended automatically, with optional auto-spawn above a confidence threshold. |
-| **Skills** | Surfaces the right *procedure* (git-forensics, compression, SQLite-WAL recovery, polyglot, …) for the task at hand. | Per-prompt match against the task; top-N surfaced. |
-| **Model routing** | Picks the right model tier per step (plan with the strong model, execute with the fast one) instead of one model for everything. | On task classification, by complexity and role. |
+| L1 — Semantic | Long-term project context | Nomic 768-dim embeddings, recalled via cosine similarity |
+| L2 — Episodic | Past conversations & decisions | Stored as episodes, recalled by semantic similarity |
+| L3 — Procedural | Commands, workflows, patterns | Stored as procedures, recalled when similar tasks arise |
+| L4 — Declarative | Facts, configs, references | Direct key-value store, recalled by key lookup |
 
-You don't ask for any of this. It appears in the agent's context the moment the
-task warrants it, and stays out of the way when it doesn't.
+**You get:** Context-aware coding that improves over time. The agent remembers
+your conventions, past decisions, and project architecture without you
+re-explaining.
 
 ---
 
-## Enforce — the guardrails that keep work safe and verified
+### Patterns RAG — Proven Solutions on Demand
 
-| Feature | What it does for you | When it kicks in |
+**Benefit:** Your agent applies battle-tested patterns instead of reinventing
+solutions. Every pattern is indexed and retrieved automatically.
+
+**When it kicks in:** When the agent encounters a problem that matches a stored
+pattern. The PatternRouter uses semantic search to find the best-matching
+pattern from the library and injects it into the prompt.
+
+**You get:** Consistent, proven solutions across all agents and sessions.
+
+---
+
+### Worktree Enforcement
+
+**Benefit:** Your main branch stays clean. Every change happens in an isolated
+worktree with proper version bumps and merge commits.
+
+**When it kicks in:** On every file edit. The worktree gate verifies you're
+working inside a valid worktree before allowing source file edits. Docs,
+configs, and scripts are exempt from this gate.
+
+**You get:** Clean git history, proper versioning, and no accidental commits
+to main.
+
+---
+
+### Policy Gates — Automated Safety
+
+**Benefit:** Security, infrastructure parity, and delivery enforcement happen
+automatically on every operation. No manual code reviews for common issues.
+
+**When it kicks in:** On every tool use and CLI command:
+
+| Gate | What it checks | When it fires |
 |---|---|---|
-| **Delivery enforcement** (`uap deliver`, **block by default**) | Routes substantive coding through the **convergence loop** — which iterates a model against your real gates (build, type-check, tests) until the change is *verified*, not just plausible. This is what **uplifts small local models well above their weight**: a 3B-active model that would flail on one shot succeeds when driven to green against the gates. | The moment the agent tries to edit a **source** file directly. Docs/configs/scripts/tests are exempt — only real implementation work is gated. Escape: `UAP_DELIVER_BYPASS=1`, or relax with `UAP_ENFORCE_DELIVERY=advisory`. |
-| **Worktree isolation** | Forces code changes into an isolated `.worktrees/NNN-slug/` branch so you never clobber your working tree and every change is a clean, reviewable branch with an auto-PR. | Any source edit outside a worktree is blocked (`PreToolUse`). |
-| **Policy / compliance gates** | Block non-compliant tool calls before they run — dangerous shell (force-push, `terraform apply`), edits that skip a schema diff, plan-before-read violations, etc. | `PreToolUse` on every Edit/Write/Bash/Task call. |
-| **Schema-diff gate** | Flags breaking API/contract changes so you diff-and-verify consumers before shipping them. | After editing a schema/contract file (`*.schema.ts`, `types.ts`, `.proto`, `.graphql`, …). |
-| **Completion gates** | Won't let the agent declare "done" until build/type-check/tests actually pass and a version bump happened. | On `Stop` (end of turn). |
-| **Coordination** | Detects when multiple agents would touch the same files and prevents them stepping on each other. | Session start (register) + work announcement before claiming a task. |
-| **rtk token-optimization** | Rewrites heavy CLI output (git/docker/npm/…) into compact form so the agent burns far fewer tokens reading command output. | Every wrapped CLI command. |
-| **Deploy batching** | Queues changes into conflict-free batched commits/deploys instead of racy one-off pushes. | On `uap deliver --deploy` success. |
+| rtk_wrap | Token optimization | Every CLI command |
+| iac_parity | Infrastructure-as-Code safety | kubectl, helm, aws, gcloud, doctl |
+| delivery_enforcement | Verified output | Every source file edit |
 
-Each enforce-gate has a sanctioned escape hatch (an env var) for the rare case
-you genuinely need to bypass it — so the guardrail is firm, not a cage.
+**You get:** Security and safety without manual intervention.
 
 ---
 
-## Behind it all
+### Droids & Skills — Specialized Expertise
 
-| Feature | What it does for you | When it kicks in |
+**Benefit:** Your agent has access to specialized experts (docker, infra,
+security, etc.) without you having to prompt for them.
+
+**When it kicks in:** When the agent encounters work that matches a droid's
+domain. The CapabilityRouter detects the match and injects the droid's context
+automatically.
+
+**You get:** Expert-level output in specialized domains from any model.
+
+---
+
+### Skills — Dynamic Capability Injection
+
+**Benefit:** New capabilities are injected on-demand based on the prompt
+content. No configuration needed.
+
+**When it kicks in:** When the prompt matches a registered skill. Skills are
+matched semantically and injected automatically.
+
+**You get:** A coding agent that grows smarter over time as new skills are
+added.
+
+---
+
+### Coordination — Multi-Agent Orchestration
+
+**Benefit:** Complex tasks are decomposed and executed automatically across
+multiple agents with proper coordination.
+
+**When it kicks in:** On complex prompts that benefit from multi-agent
+parallelism. The coordinator decomposes the task, spawns parallel agents,
+and merges results.
+
+**You get:** Faster completion of complex tasks through parallel execution.
+
+---
+
+### MCP Router — 98% Token Reduction
+
+**Benefit:** Massive token savings on Model Context Protocol calls. Instead of
+sending full tool schemas on every turn, the router caches and compresses them.
+
+**When it kicks in:** On every MCP tool call. The router intercepts the call,
+looks up the cached schema, and sends only the minimal necessary context.
+
+**You get:** 98% fewer tokens on MCP operations — dramatic cost and latency
+reduction.
+
+---
+
+### Schema-Diff Gate — API Contract Validation
+
+**Benefit:** Schema changes are validated automatically. No more breaking API
+contracts silently.
+
+**When it kicks in:** When the agent edits schema files or API contract
+definitions. The gate diffs the before/after and validates compatibility.
+
+**You get:** Safe API evolution without manual review of every schema change.
+
+---
+
+### Completion Gates — Verify "Done" is Actually Done
+
+**Benefit:** When the agent claims it's done, the gates verify: tests pass,
+build succeeds, lint is clean, version is bumped.
+
+**When it kicks in:** When the agent claims a task is complete. The gates run
+automated verification before accepting the result.
+
+**You get:** Confidence that "done" means actually done.
+
+---
+
+### Deploy Batching — Atomic Multi-Change Deploys
+
+**Benefit:** Multiple related changes are deployed atomically. No partial
+deploys that leave the system in an inconsistent state.
+
+**When it kicks in:** When the agent prepares deployable changes. Related
+changes are batched together and deployed as a single atomic unit.
+
+**You get:** Reliable deploys with zero downtime.
+
+---
+
+### rtk — 60–90% Token Savings
+
+**Benefit:** Massive token savings on every CLI command. rtk intercepts commands,
+optimizes them, and proxies through a token-efficient layer.
+
+**When it kicks in:** On every CLI command. rtk rewrites commands to use
+optimized paths and caches results.
+
+**You get:** Dramatically lower API costs and faster command execution.
+
+---
+
+### HALO — Human Oversight
+
+**Benefit:** Critical operations require human approval before execution.
+Automatic escalation when confidence is low.
+
+**When it kicks in:** On critical operations (deployments, schema changes,
+security-sensitive actions). HALO escalates to a human for approval.
+
+**You get:** Safety for operations that matter, without slowing down routine
+work.
+
+---
+
+## Local Models — Punching Above Their Weight
+
+**Benefit:** Small local models (like Qwen3.6-35B-A3B running on consumer
+hardware) produce code quality that rivals much larger models.
+
+**How:** UAP's `uap deliver` convergence loop, expert injection, and pattern
+RAG compensate for the smaller model's limitations. The model iterates against
+real gates (build, test, typecheck) until everything passes.
+
+**See:** [Local Models Guide](./LOCAL_MODELS.md) for setup instructions and
+VRAM-tiered configurations.
+
+---
+
+## Quick Reference
+
+| Feature | Benefit | Trigger |
 |---|---|---|
-| **MCP router** | Exposes a tiny meta-tool surface (`discover_tools`/`execute_tool`/`deliver`/`react`) instead of 150+ tools, cutting tool-schema tokens by ~98%. | Wired at install; used whenever the agent discovers/runs a tool. |
-| **HALO trace analysis** | Mines your execution traces for systemic failure modes (loops, stalls) so the harness gets better over time. | Session end / on demand (`uap harness analyze`). |
-| **4-tier memory** | Short-term (recent), long-term (semantic Qdrant), coordination, and patterns — the substrate the recall/pattern features draw from. | Continuously; written on significant decisions, read on recall. |
+| Reactor | Expert context for every prompt | Every prompt |
+| Delivery Enforcement | Verified, working code | Every source edit |
+| Memory | Remembers everything | Every prompt |
+| Patterns RAG | Proven solutions | Pattern match |
+| Worktree Enforcement | Clean git history | Every file edit |
+| Policy Gates | Security & safety | Every tool/CLI |
+| Droids & Skills | Specialized expertise | Domain match |
+| Coordination | Parallel task execution | Complex tasks |
+| MCP Router | 98% token reduction | Every MCP call |
+| Schema-diff | API contract safety | Schema edits |
+| Completion gates | Verify "done" is done | Agent claims done |
+| Deploy batching | Atomic multi-change deploys | Deployable changes |
+| rtk | 60–90% token savings | Every CLI command |
+| HALO | Human oversight for critical ops | Critical actions |
 
----
-
-## The one-liner
-
-**Install UAP, then just code.** The assist layer makes your agent act like a
-domain expert with perfect recall; the enforce layer makes sure whatever it
-produces is isolated, verified, and safe — and it drives even small local models
-to *verified* results they couldn't reach in one shot. You never invoke any of
-it; it applies itself, in the right place, at the right time.
-
-See also: [`uap deliver`](DELIVER.md) · [Local Models](LOCAL_MODELS.md) ·
-[Droids & Skills](DROIDS_AND_SKILLS.md) · [Policies](POLICIES.md) ·
-the [Reactor design](../design/UAP_REACTOR.md).
+**Install UAP. Use your coding agent normally. Everything else is automatic.**

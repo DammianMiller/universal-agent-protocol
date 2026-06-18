@@ -18,8 +18,8 @@ New here? Start with the [project README](../README.md), then [Getting Started](
 
 | Doc | What it covers |
 |---|---|
-| [**What UAP Does Automatically**](guides/AUTOMATIC.md) | Every feature in benefit / when-it-kicks-in terms — install once, it all self-applies ⭐ |
-| [**`uap deliver`**](guides/DELIVER.md) | The delivery harness — convergence loop to verified completion ⭐ |
+| [**What UAP Does Automatically**](guides/AUTOMATIC_FEATURES.md) | Every feature in benefit / when-it-kicks-in terms — install once, it all self-applies ⭐ |
+| [**`uap deliver`**](guides/DELIVER.md) | The delivery harness — verified changes via convergence loop ⭐ |ess — convergence loop to verified completion ⭐ |
 | [Memory](guides/MEMORY.md) | The 4-tier memory system, write-gates, semantic recall |
 | [MCP Router](guides/MCP_ROUTER.md) | Token-optimizing tool proxy + FTS5 output compression |
 | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) | Branch-per-feature isolation, auto-PR, enforcement |
