@@ -37,6 +37,17 @@ export interface AutoPlan {
   ideate: boolean;
   halo: boolean;
   coordinate: boolean;
+  /** Run the integration tier locally (after the fast tier passes) */
+  integration: boolean;
+  /** Run a local dev deploy+smoke tier locally */
+  deployDev: boolean;
+  /**
+   * Watch CI after local-green and re-converge on failure. NOTE: even when
+   * auto mode recommends it, the commit/push boundary stays OPT-IN — the
+   * caller must pass --watch-ci/--until-deployed for an actual push (mirrors
+   * the rule that deploy is never silently auto-triggered).
+   */
+  watchCi: boolean;
   /** Human-readable summary of what auto mode enabled */
   summary: string;
 }
@@ -67,6 +78,9 @@ export function planAutoOptimization(
       ideate: false,
       halo: false,
       coordinate: false,
+      integration: false,
+      deployDev: false,
+      watchCi: false,
       summary: 'simple task → single-shot loop',
     };
   }
@@ -81,7 +95,11 @@ export function planAutoOptimization(
       ideate: false,
       halo: true,
       coordinate: true,
-      summary: 'moderate task → exploration ×3, critic, practices, HALO, coordination',
+      integration: true,
+      deployDev: false,
+      watchCi: false,
+      summary:
+        'moderate task → exploration ×3, critic, practices, integration tier, HALO, coordination',
     };
   }
 
@@ -94,7 +112,10 @@ export function planAutoOptimization(
     ideate: true,
     halo: true,
     coordinate: true,
+    integration: true,
+    deployDev: true,
+    watchCi: true,
     summary:
-      'complex task → exploration ×4, critic, practices, escalation, ideation, HALO, coordination',
+      'complex task → exploration ×4, critic, practices, escalation, ideation, integration + deploy-dev tiers, watch-ci (push stays opt-in), HALO, coordination',
   };
 }

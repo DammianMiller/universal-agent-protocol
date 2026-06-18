@@ -23,6 +23,7 @@ import { join, dirname, resolve, relative, isAbsolute } from 'path';
 import type { ModelConfig } from '../models/types.js';
 import type { LoopExecutor } from './convergence-loop.js';
 import type { ApplyResult } from './applier.js';
+import { protectedWritePathReason } from './applier.js';
 
 export interface AgenticExecutorOptions {
   projectRoot: string;
@@ -39,6 +40,14 @@ export interface AgenticExecutorOptions {
    * pass gates by rewriting the oracle.
    */
   protectedFiles?: ReadonlySet<string>;
+  /**
+   * Block writes to gate-config / IaC files (tsconfig, vitest/jest config,
+   * docker-compose, Dockerfile, *.tf, serverless, …) and protected segments
+   * (.github, .git, node_modules). Mirrors the applier's protectGateConfigs so
+   * the agentic path cannot rig the (now tiered) gates the file-block applier
+   * already protects. Default true.
+   */
+  protectGateConfigs?: boolean;
   /** Optional sink for a structured trace of what the agent did. */
   onEvent?: (event: AgenticEvent) => void;
 }
@@ -181,7 +190,8 @@ function runTool(
   name: string,
   args: Record<string, unknown>,
   bashTimeoutMs: number,
-  protectedFiles: ReadonlySet<string>
+  protectedFiles: ReadonlySet<string>,
+  protectGateConfigs: boolean
 ): string {
   try {
     if (name === 'read_file') {
@@ -201,6 +211,14 @@ function runTool(
       const abs = safePath(projectRoot, String(args.path));
       if (protectedFiles.has(protectedKey(projectRoot, abs))) {
         return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
+      }
+      // Gate-config / IaC protection: the agentic path bypasses the file-block
+      // applier, so enforce the same blocklist here or the model can rig the
+      // (tiered) gates by writing tsconfig/compose/Dockerfile/*.tf/etc.
+      const rel = relative(projectRoot, abs).split(/[\\/]/).join('/');
+      const blocked = protectedWritePathReason(rel, protectGateConfigs);
+      if (blocked) {
+        return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
       }
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, String(args.content ?? ''), 'utf-8');
@@ -294,6 +312,7 @@ export function createAgenticExecutor(
   const maxRounds = opts.maxToolRounds ?? 12;
   const bashTimeoutMs = opts.bashTimeoutMs ?? 30_000;
   const protectedFiles = opts.protectedFiles ?? new Set<string>();
+  const protectGateConfigs = opts.protectGateConfigs ?? true;
 
   return async (prompt: string): Promise<string> => {
     const messages: ChatMessage[] = [
@@ -337,7 +356,14 @@ export function createAgenticExecutor(
           opts.onEvent?.({ round, kind: 'final', tool: 'finish', detail: String(args.summary ?? '') });
           return String(args.summary ?? (summaries.join('; ') || 'done'));
         }
-        const result = runTool(opts.projectRoot, call.function.name, args, bashTimeoutMs, protectedFiles);
+        const result = runTool(
+          opts.projectRoot,
+          call.function.name,
+          args,
+          bashTimeoutMs,
+          protectedFiles,
+          protectGateConfigs
+        );
         opts.onEvent?.({
           round,
           kind: 'tool',

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.47.0 (2026-06-18)
+
+- feat(delivery): tiered validation gates + CI/deploy feedback for convergence loop
+- fix(proxy): proxy death-spiral + recon doom-loop guards (#248)
+- fix(policy): strip GIT_* env in enforcer subprocesses — prevent hook context poisoning (Fix G)
+- fix(proxy): context death-spiral breaker — force end_turn on raw-ctx runaway (Fix F)
+- docs: add automatic features guide + Qwen3.6 llama.cpp VRAM tiers
+- fix(proxy): break recon doom-loop — release tool_choice on real context blow-up
+
+
 ## v1.46.7 (2026-06-18)
 
 - Version bump
