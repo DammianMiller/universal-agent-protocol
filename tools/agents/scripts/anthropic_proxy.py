@@ -150,6 +150,15 @@ PROXY_LOOP_REPEAT_THRESHOLD = int(os.environ.get("PROXY_LOOP_REPEAT_THRESHOLD", 
 PROXY_CYCLE_TRIGGER_REPEAT = int(os.environ.get("PROXY_CYCLE_TRIGGER_REPEAT", "3"))
 PROXY_FORCED_THRESHOLD = int(os.environ.get("PROXY_FORCED_THRESHOLD", "15"))
 PROXY_NO_PROGRESS_THRESHOLD = int(os.environ.get("PROXY_NO_PROGRESS_THRESHOLD", "3"))
+# Fix D: streak-independent escape hatch. `no_progress_streak` resets to 0 on
+# every turn whose last user message carries a tool_result (line ~3835) — i.e.
+# every turn of a normal agentic loop — so the no_progress-gated LOOP BREAKER
+# patterns can never accumulate. After this many *consecutive* forced-'required'
+# turns (which DOES accumulate across an agentic loop via consecutive_forced_count),
+# release tool_choice to 'auto' regardless of no_progress_streak so the model can
+# emit a terminating response. Set well above any healthy run length (healthy
+# loops hit auto/finalize/review phases that reset the count). 0 disables.
+PROXY_FORCED_HARD_RELEASE = int(os.environ.get("PROXY_FORCED_HARD_RELEASE", "30"))
 PROXY_CONTEXT_RELEASE_THRESHOLD = float(
     os.environ.get("PROXY_CONTEXT_RELEASE_THRESHOLD", "0.90")
 )
@@ -257,6 +266,34 @@ PROXY_FINALIZE_SESSION_HARD_CAP = int(
 # 0 disables.
 PROXY_RECON_CONVERGENCE_THRESHOLD = int(
     os.environ.get("PROXY_RECON_CONVERGENCE_THRESHOLD", "40")
+)
+# Fix E: the recon hard tier (streak >= 2x threshold) fires a directive + flips
+# tool_choice to 'auto', but `consecutive_no_write_turns` resets to 0 whenever
+# the model emits any write tool — so a loop that periodically writes sawtooths
+# the streak (observed: 90 -> 0 -> climb again), re-triggering the hard tier
+# forever and never actually terminating. This counts how many times the hard
+# tier has fired across the whole session (monotonic, never reset). Once it
+# reaches this cap, the guard escalates: it strips tools for the turn so the
+# model is forced to emit a terminal prose summary, breaking the sawtooth. 0
+# disables the escalation (hard tier still flips to 'auto' each time).
+PROXY_RECON_SESSION_HARD_CAP = int(
+    os.environ.get("PROXY_RECON_SESSION_HARD_CAP", "3")
+)
+# Fix F: context death-spiral breaker. When the *raw* (pre-prune) incoming
+# context stays catastrophically over the window for several consecutive turns,
+# releasing tool_choice to 'auto' (Fix B / LOOP BREAKER) is NOT enough — the
+# model keeps voluntarily emitting tool calls and the client keeps resending an
+# ever-growing transcript (observed: ctx 936%, model emits tool_calls 18/min
+# despite tool_choice=auto). After this many consecutive turns at/above the
+# ratio, strip tools entirely so the only possible response is a terminal text
+# summary (end_turn), which ends the client's agentic loop. Ratio is set high
+# enough that only a true runaway trips it — a merely-full session tops out near
+# 100-130%, never 300%. 0 disables.
+PROXY_RAW_CTX_FINALIZE_RATIO = float(
+    os.environ.get("PROXY_RAW_CTX_FINALIZE_RATIO", "3.0")
+)
+PROXY_RAW_CTX_FINALIZE_STREAK = int(
+    os.environ.get("PROXY_RAW_CTX_FINALIZE_STREAK", "2")
 )
 PROXY_STREAM_REASONING_FALLBACK = (
     os.environ.get("PROXY_STREAM_REASONING_FALLBACK", "off").strip().lower()
@@ -800,6 +837,13 @@ class SessionMonitor:
     last_input_tokens: int = 0  # Estimated input tokens of last request
     last_output_tokens: int = 0  # Actual output tokens of last response
     peak_input_tokens: int = 0  # High-water mark
+    # Fix B: the incoming (pre-prune) token count for the current request. The
+    # proxy prunes the conversation and then calls record_request() again with
+    # the post-prune total, so last_input_tokens / get_utilization() reflect the
+    # *pruned* size (~30%) by the time the tool_choice guards run — masking the
+    # fact that the client just sent e.g. 800% of the window. This preserves the
+    # raw size so LOOP BREAKER pattern 3 can release on real context blow-up.
+    pre_prune_input_tokens: int = 0
     prune_count: int = 0  # How many times pruning was triggered
     overflow_count: int = 0  # How many context overflow errors caught
     prune_drop_count: int = 0  # monotonic: # of oldest middle msgs pruned (B3)
@@ -818,6 +862,8 @@ class SessionMonitor:
     loop_warnings_emitted: int = 0  # How many loop warnings sent to the model
     no_progress_streak: int = 0  # Forced tool turns without new tool_result
     consecutive_no_write_turns: int = 0  # turns exploring with no write tool (B1)
+    recon_hard_fires: int = 0  # Fix E: monotonic count of recon hard-tier firings
+    catastrophic_ctx_streak: int = 0  # Fix F: consecutive turns raw ctx >= finalize ratio
     unexpected_end_turn_count: int = 0  # end_turn without tool_use in active loop
     tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
     malformed_tool_streak: int = 0  # consecutive malformed pseudo tool payloads
@@ -877,6 +923,18 @@ class SessionMonitor:
         if self.context_window <= 0:
             return 0.0
         return self.last_input_tokens / self.context_window
+
+    def get_raw_utilization(self) -> float:
+        """Pre-prune context utilization for the current request (Fix B).
+
+        Reflects what the client actually sent this turn, before the proxy
+        pruned it. Used by the loop breaker so a runaway client that resends
+        800% of the window each turn is detected even though post-prune
+        utilization reads ~30%. Returns 0.0 until the first request is recorded.
+        """
+        if self.context_window <= 0:
+            return 0.0
+        return self.pre_prune_input_tokens / self.context_window
 
     def get_warning_level(self) -> str | None:
         """Return warning level based on context utilization.
@@ -1238,12 +1296,37 @@ class SessionMonitor:
             self.loop_warnings_emitted += 1
             return True
 
-        # Pattern 3: Context almost full -- let model wrap up naturally
-        if self.get_utilization() >= PROXY_CONTEXT_RELEASE_THRESHOLD:
+        # Pattern 2b (Fix D): streak-independent forced-count ceiling. In an
+        # agentic loop no_progress_streak resets every turn (tool_result always
+        # present), so Pattern 2 never fires. consecutive_forced_count, however,
+        # accumulates across the loop. Release once it crosses the hard ceiling
+        # regardless of no_progress_streak so the model can terminate.
+        if (
+            PROXY_FORCED_HARD_RELEASE > 0
+            and self.consecutive_forced_count >= PROXY_FORCED_HARD_RELEASE
+        ):
             logger.warning(
-                "LOOP BREAKER: Context utilization %.1f%% -- releasing "
-                "tool_choice to let model wrap up.",
+                "LOOP BREAKER: %d consecutive forced tool_choice requests (hard ceiling %d) -- "
+                "releasing to 'auto' regardless of progress streak.",
+                self.consecutive_forced_count,
+                PROXY_FORCED_HARD_RELEASE,
+            )
+            self.loop_warnings_emitted += 1
+            return True
+
+        # Pattern 3: Context almost full -- let model wrap up naturally.
+        # Fix B: check BOTH post-prune utilization and the raw pre-prune size.
+        # The proxy prunes before this runs, so get_utilization() reads ~30%
+        # even when the client just sent 800% of the window; get_raw_utilization()
+        # exposes the real blow-up so a runaway client is actually released.
+        eff_util = max(self.get_utilization(), self.get_raw_utilization())
+        if eff_util >= PROXY_CONTEXT_RELEASE_THRESHOLD:
+            logger.warning(
+                "LOOP BREAKER: Context utilization %.1f%% (post-prune %.1f%%, raw %.1f%%) -- "
+                "releasing tool_choice to let model wrap up.",
+                eff_util * 100,
                 self.get_utilization() * 100,
+                self.get_raw_utilization() * 100,
             )
             return True
 
@@ -3397,8 +3480,32 @@ def _maybe_inject_recon_convergence(
     streak = monitor.consecutive_no_write_turns
     if streak < PROXY_RECON_CONVERGENCE_THRESHOLD:
         return
-    util = monitor.get_utilization()
-    if streak >= 2 * PROXY_RECON_CONVERGENCE_THRESHOLD:
+    # Report the *raw* (pre-prune) utilization — post-prune util understates the
+    # blow-up (~30%) and makes the directive's "context is at X%" misleading.
+    util = max(monitor.get_utilization(), monitor.get_raw_utilization())
+    hard = streak >= 2 * PROXY_RECON_CONVERGENCE_THRESHOLD
+    escalate = False
+    if hard:
+        monitor.recon_hard_fires += 1  # Fix E: monotonic, never reset
+        escalate = (
+            PROXY_RECON_SESSION_HARD_CAP > 0
+            and monitor.recon_hard_fires >= PROXY_RECON_SESSION_HARD_CAP
+        )
+
+    if escalate:
+        # Fix E: the hard tier has fired repeatedly this session — the model
+        # keeps writing just enough to reset consecutive_no_write_turns, then
+        # re-diverges, sawtoothing the streak and re-triggering the hard tier
+        # forever. Stop negotiating: strip tools so the model MUST emit a
+        # terminal plain-text summary, breaking the sawtooth for good.
+        directive = (
+            f"STOP. You have hit the exploration limit {monitor.recon_hard_fires} "
+            f"times in this session and context is at {util * 100:.0f}%. No tools "
+            "are available this turn. Reply NOW with a plain-text summary of what "
+            "you found and what remains — this ends the task."
+        )
+        tier = "hard-escalated"
+    elif hard:
         directive = (
             f"STOP exploring. You have run {streak} consecutive turns of "
             f"exploration without producing a deliverable and context is at "
@@ -3421,27 +3528,43 @@ def _maybe_inject_recon_convergence(
     msgs.append({"role": "user", "content": directive})
     openai_body["messages"] = msgs
 
-    # Re-inject any write/deliverable tool that narrowing dropped, so the
-    # "write your deliverable" directive is actually satisfiable. Without
-    # this the model is told to write but has no write tool to call, picks
-    # another read tool, and the streak climbs unbounded.
     restored: list[str] = []
-    if full_tools:
-        present = {
-            (t.get("function", {}).get("name", "") or "").lower()
-            for t in openai_body.get("tools", [])
-        }
-        for tool in full_tools:
-            name = (tool.get("function", {}).get("name", "") or "")
-            if name.lower() in _WRITE_TOOL_CLASS and name.lower() not in present:
-                openai_body.setdefault("tools", []).append(tool)
-                present.add(name.lower())
-                restored.append(name)
+    if escalate:
+        # Strip tools entirely so the only possible response is terminal prose.
+        openai_body.pop("tools", None)
+        openai_body.pop("tool_choice", None)
+        openai_body.pop("grammar", None)
+    else:
+        if hard:
+            # Fix C: at the hard tier, drop the structural requirement to call a
+            # tool. Earlier logic forced tool_choice='required' for the active
+            # agentic loop, which directly contradicts "produce your deliverable
+            # NOW / do not run anything else" — the model is forbidden from
+            # terminating and must emit yet another tool call, so the streak
+            # climbs unbounded. Releasing to 'auto' lets it actually write/stop.
+            openai_body["tool_choice"] = "auto"
+            openai_body.pop("grammar", None)
+        # Re-inject any write/deliverable tool that narrowing dropped, so the
+        # "write your deliverable" directive is actually satisfiable. Without
+        # this the model is told to write but has no write tool to call, picks
+        # another read tool, and the streak climbs unbounded.
+        if full_tools:
+            present = {
+                (t.get("function", {}).get("name", "") or "").lower()
+                for t in openai_body.get("tools", [])
+            }
+            for tool in full_tools:
+                name = (tool.get("function", {}).get("name", "") or "")
+                if name.lower() in _WRITE_TOOL_CLASS and name.lower() not in present:
+                    openai_body.setdefault("tools", []).append(tool)
+                    present.add(name.lower())
+                    restored.append(name)
 
     logger.warning(
-        "RECON CONVERGENCE: injected %s directive (no_write_streak=%d, ctx=%.0f%%, "
-        "restored_write_tools=%s)",
-        tier, streak, util * 100, restored or "none",
+        "RECON CONVERGENCE: injected %s directive (no_write_streak=%d, hard_fires=%d, "
+        "ctx=%.0f%%, tool_choice=%s, restored_write_tools=%s)",
+        tier, streak, monitor.recon_hard_fires, util * 100,
+        openai_body.get("tool_choice", "stripped"), restored or "none",
     )
 
 
@@ -3750,6 +3873,46 @@ def build_openai_request(
             has_tool_results,
             last_user_has_tool_result,
         )
+
+        # CONTEXT DEATH-SPIRAL BREAKER (Fix F): raw incoming context has been
+        # catastrophically over the window for several consecutive turns. The
+        # LOOP BREAKER already released tool_choice to 'auto', but the model
+        # keeps voluntarily emitting tool calls and the client keeps resending a
+        # growing transcript, so the loop never ends. Strip tools entirely so
+        # the only possible output is a terminal text summary (end_turn), which
+        # ends the client's agentic loop. Gated high (raw ctx >= 300% for >= N
+        # turns) so only a true runaway trips it, never a merely-full session.
+        if (
+            PROXY_RAW_CTX_FINALIZE_STREAK > 0
+            and monitor.catastrophic_ctx_streak >= PROXY_RAW_CTX_FINALIZE_STREAK
+        ):
+            openai_body.pop("tool_choice", None)
+            openai_body.pop("tools", None)
+            openai_body.pop("grammar", None)
+            msgs = openai_body.get("messages", [])
+            msgs.append({
+                "role": "user",
+                "content": (
+                    "The conversation has exceeded the context window "
+                    f"({monitor.get_raw_utilization() * 100:.0f}%) and cannot "
+                    "continue. No tools are available. Reply with a brief "
+                    "plain-text summary of what was accomplished and what "
+                    "remains, then stop."
+                ),
+            })
+            openai_body["messages"] = msgs
+            monitor.reset_tool_turn_state(reason="context_death_spiral_breaker")
+            logger.error(
+                "CONTEXT DEATH-SPIRAL BREAKER: raw ctx %.0f%% for %d consecutive "
+                "turns -- stripped tools to force terminal summary (end_turn).",
+                monitor.get_raw_utilization() * 100,
+                monitor.catastrophic_ctx_streak,
+            )
+            if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
+                openai_body["enable_thinking"] = False
+            if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
+                openai_body["speculative.n_max"] = 0
+            return openai_body
 
         # TOOL STARVATION BREAKER: if model repeatedly fails to produce tool
         # calls despite required, strip tools to let it generate text and break
@@ -7834,6 +7997,20 @@ async def messages(request: Request):
                 estimated_tokens,
             )
         utilization = effective_tokens / ctx_window
+        # Fix B: preserve the raw incoming size before any pruning rewrites
+        # last_input_tokens to the post-prune total, so the loop breaker can
+        # see the true blow-up at build_openai_request time.
+        monitor.pre_prune_input_tokens = effective_tokens
+        # Fix F: track consecutive turns whose raw incoming context is
+        # catastrophically over the window (a death spiral the per-request
+        # pruner can mask but not cure). build_openai_request acts on this.
+        if (
+            PROXY_RAW_CTX_FINALIZE_RATIO > 0
+            and utilization >= PROXY_RAW_CTX_FINALIZE_RATIO
+        ):
+            monitor.catastrophic_ctx_streak += 1
+        else:
+            monitor.catastrophic_ctx_streak = 0
         if utilization >= PROXY_CONTEXT_PRUNE_THRESHOLD:
             logger.warning(
                 "Context utilization %.1f%% exceeds threshold %.1f%% -- pruning conversation",
