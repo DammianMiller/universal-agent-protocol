@@ -8,6 +8,7 @@ import { setupMcpRouter } from './setup-mcp-router.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { AgentContextConfigSchema } from '../types/index.js';
+import { selfUpdateCli } from '../utils/self-update.js';
 
 interface SetupOptions {
   platform?: string[];
@@ -17,6 +18,7 @@ interface SetupOptions {
   projectDir?: string; // -d, --project-dir to override cwd
   interactive?: boolean; // -i, --interactive for wizard mode
   systemdServices?: boolean; // --systemd-services scaffolds llama/proxy user services
+  selfUpdate?: boolean; // --no-self-update to skip the CLI version check
 }
 
 /**
@@ -37,6 +39,23 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
   const withMemory = options.memory !== false;
 
   console.log(chalk.bold('\n🚀 Universal Agent Memory Setup\n'));
+
+  // Step 0: keep the globally-installed UAP CLI at the latest published version,
+  // so every project setup runs against current behaviour. Non-fatal: a source
+  // checkout, an offline registry, --no-self-update, or UAP_NO_SELF_UPDATE=1 all
+  // degrade to a skip without failing setup. Takes effect on the next invocation
+  // (the running process is not hot-swapped).
+  if (options.selfUpdate !== false) {
+    const suSpinner = ora('Checking for a newer UAP CLI…').start();
+    const su = selfUpdateCli();
+    if (su.updated) {
+      suSpinner.succeed(`Updated UAP CLI ${su.current} → ${su.latest} (re-run uap to use it)`);
+    } else if (su.skipped && su.reason) {
+      suSpinner.info(`UAP CLI v${su.current} — ${su.reason}`);
+    } else {
+      suSpinner.succeed(`UAP CLI up to date (v${su.current})`);
+    }
+  }
 
   // Step 1: Run init (creates config, dirs, CLAUDE.md, memory DB, pattern scripts)
   await initCommand({

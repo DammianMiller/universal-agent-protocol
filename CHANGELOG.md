@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.48.0 (2026-06-18)
+
+- feat(setup): auto-update the UAP CLI to the latest published version on setup
+
+
 ## v1.47.0 (2026-06-18)
 
 - feat(delivery): tiered validation gates + CI/deploy feedback for convergence loop
