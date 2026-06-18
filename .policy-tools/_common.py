@@ -54,7 +54,7 @@ def worktree_root() -> Path:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=3, env=_clean_env(),
         )
         if r.returncode == 0 and r.stdout.strip():
             return Path(r.stdout.strip())
@@ -63,10 +63,29 @@ def worktree_root() -> Path:
     return repo_root()
 
 
+# git exports repo-context vars (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, ...)
+# into hook environments. An enforcer spawned during a hook would then run its
+# own git calls against the HOOK'S repo instead of cwd — silently no-op'ing
+# every git-diff based check. Strip them so cwd decides the repo.
+_GIT_CONTEXT_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+)
+
+
+def _clean_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in _GIT_CONTEXT_VARS}
+
+
 def run(cmd: list[str], cwd: Path | None = None, timeout: int = 5) -> tuple[int, str, str]:
     try:
         r = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout
+            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+            env=_clean_env(),
         )
         return r.returncode, r.stdout, r.stderr
     except Exception as e:  # noqa: BLE001
