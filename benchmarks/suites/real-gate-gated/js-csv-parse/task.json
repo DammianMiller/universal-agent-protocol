@@ -1,0 +1,14 @@
+{
+  "name": "CSV parser with quoting rules",
+  "instruction": "Implement parseCSV(text) in csv.js returning an array of rows (each an array of string fields). It must handle quoted fields, commas inside quotes, escaped quotes (\"\" inside a quoted field becomes a single \"), both LF and CRLF line endings, and a trailing newline (which must NOT produce an extra empty row). An in-repo test (test.js) is provided \u2014 run it with `node test.js` before finishing. Keep the CommonJS export shape.",
+  "difficulty": "hard",
+  "tags": [
+    "javascript",
+    "parsing",
+    "gated"
+  ],
+  "verifyCmd": "node -e \"const p=require('./csv.js');const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b);const c=(g,e,m)=>{if(!eq(g,e)){console.error('FAIL',m,JSON.stringify(g));process.exit(1)}};c(p('a,b,c'),[['a','b','c']],'basic');c(p('a,\\\"b,c\\\",d'),[['a','b,c','d']],'quoted comma');c(p('\\\"a\\\"\\\"b\\\",y'),[['a\\\"b','y']],'escaped quote');c(p('x,y\\nz,w'),[['x','y'],['z','w']],'lf rows');c(p('x,y\\r\\nz,w'),[['x','y'],['z','w']],'crlf');c(p('a,b\\n'),[['a','b']],'trailing newline');console.log('ok')\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 420,
+  "gateCmd": "node test.js"
+}

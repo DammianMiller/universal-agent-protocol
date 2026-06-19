@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.51.0 (2026-06-19)
+
+- feat(bench): paired UAP-on/off benchmark harness
+
+
 ## v1.50.1 (2026-06-19)
 
 - docs(setup): document the guided wizard, backup, and custom-content extraction

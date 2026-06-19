@@ -1,0 +1,13 @@
+{
+  "name": "Structural deep equality",
+  "instruction": "Implement deepEqual(a, b) in equal.js returning a boolean for structural equality of nested objects and arrays. Contract: NaN equals NaN; object key order does not matter; {a: undefined} is NOT equal to {} (key presence matters); arrays are compared element-wise including length; null is not equal to undefined; primitives use strict equality (with the NaN exception). A naive JSON.stringify comparison will fail several of these. An in-repo test (test.js) is provided \u2014 run `node test.js` before finishing. Keep the CommonJS export shape.",
+  "difficulty": "hard",
+  "tags": [
+    "javascript",
+    "gated"
+  ],
+  "verifyCmd": "node -e \"const eq=require('./equal.js');let ok=true;const c=(g,m)=>{if(g!==true){console.error('FAIL',m);ok=false}};const f=(g,m)=>{if(g!==false){console.error('FAIL(expected false)',m);ok=false}};c(eq({x:1,y:2},{y:2,x:1}),'key order');c(eq([1,[2,3]],[1,[2,3]]),'nested');c(eq(NaN,NaN),'NaN');f(eq({a:1},{a:1,b:2}),'extra key');f(eq({a:undefined},{}),'undefined key');f(eq(null,undefined),'null vs undef');f(eq([1,2],[1,2,3]),'arr length');c(eq({a:{b:[1,2]}},{a:{b:[1,2]}}),'deep nested');if(!ok)process.exit(1);console.log('ok')\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 420,
+  "gateCmd": "node test.js"
+}

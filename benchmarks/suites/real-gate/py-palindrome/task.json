@@ -1,0 +1,9 @@
+{
+  "name": "Implement is_palindrome",
+  "instruction": "palindrome.py defines is_palindrome(s) as a stub that always returns False. Implement it so it returns True when the string is a palindrome (reads the same forwards and backwards) and False otherwise. The empty string is a palindrome. Comparison is case-sensitive and considers all characters.",
+  "difficulty": "easy",
+  "tags": ["feature", "python"],
+  "verifyCmd": "python3 -c \"from palindrome import is_palindrome as p; import sys; sys.exit(0 if p('racecar') and p('') and not p('abc') and p('a') and not p('Racecar') else 1)\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 300
+}

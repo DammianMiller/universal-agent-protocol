@@ -1,0 +1,14 @@
+{
+  "name": "Roman numerals with strict validation",
+  "instruction": "Implement int_to_roman(n) and roman_to_int(s) in roman.py for 1..3999 using standard subtractive notation. roman_to_int MUST raise ValueError for invalid numerals (repeated too many times like 'IIII' or 'VV', or bad subtractives like 'IL', 'IC', 'XM'). The two functions must round-trip. An in-repo test suite (test_roman.py) is provided \u2014 run it before claiming done.",
+  "difficulty": "hard",
+  "tags": [
+    "python",
+    "validation",
+    "gated"
+  ],
+  "verifyCmd": "python3 -c \"import roman as R\nfor n,s in {1:'I',4:'IV',9:'IX',58:'LVIII',944:'CMXLIV',1994:'MCMXCIV',3999:'MMMCMXCIX'}.items():\n    assert R.int_to_roman(n)==s,(n,R.int_to_roman(n))\n    assert R.roman_to_int(s)==n,(s,R.roman_to_int(s))\nfor bad in ['IIII','VV','IL','IC','XM','VX','']:\n    try:\n        R.roman_to_int(bad); raise SystemExit('no raise for '+repr(bad))\n    except ValueError: pass\nprint('ok')\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 420,
+  "gateCmd": "python3 test_roman.py"
+}
