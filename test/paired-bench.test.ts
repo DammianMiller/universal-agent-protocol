@@ -28,7 +28,13 @@ import {
   loadTask,
 } from '../src/benchmarks/paired/suite.js';
 import { applyScaffolding, scaffoldEnv } from '../src/benchmarks/paired/scaffold.js';
-import { MockAdapter, hash01, parseOpencodeUsage } from '../src/benchmarks/paired/adapter.js';
+import {
+  MockAdapter,
+  hash01,
+  parseOpencodeUsage,
+  SubprocessAdapter,
+} from '../src/benchmarks/paired/adapter.js';
+import { TaskSpecSchema } from '../src/benchmarks/paired/types.js';
 import { runPaired } from '../src/benchmarks/paired/runner.js';
 import { analyze } from '../src/benchmarks/paired/report.js';
 import { buildAblationConditions, analyzeAblation } from '../src/benchmarks/paired/ablation.js';
@@ -156,6 +162,48 @@ describe('adapter: opencode JSONL usage parser', () => {
     expect(u.tokens).toBeNull();
     expect(u.turns).toBeNull();
     expect(u.toolCalls).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('adapter: SubprocessAdapter group-timeout (orphan-proof)', () => {
+  function ctx(agentTimeoutSec: number) {
+    const task = TaskSpecSchema.parse({
+      id: 'to',
+      name: 'to',
+      instruction: 'noop',
+      verifyCmd: 'true',
+      agentTimeoutSec,
+    });
+    return { task, condition: makeBaselineCondition(), workdir: scratchRoot(), seed: 0, model: 'none' };
+  }
+
+  it('kills a hung child tree and reports timeout within the window', async () => {
+    // bash backgrounds one sleep and foregrounds another — mimics an agent that
+    // forks a detached child holding the stdout pipe. Must NOT hang past ~timeout.
+    const adapter = new SubprocessAdapter({
+      id: 'hang',
+      bin: 'bash',
+      args: ['-c', 'sleep 600 & sleep 600'],
+      parseUsage: () => ({}),
+    });
+    const start = Date.now();
+    const r = await adapter.run(ctx(2));
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(8000);
+    expect(r.error).toMatch(/timed out/);
+  }, 15000);
+
+  it('returns cleanly for a fast command', async () => {
+    const adapter = new SubprocessAdapter({
+      id: 'fast',
+      bin: 'bash',
+      args: ['-c', 'echo hello'],
+      parseUsage: (out) => ({ tokens: out.includes('hello') ? 1 : null }),
+    });
+    const r = await adapter.run(ctx(10));
+    expect(r.error).toBeNull();
+    expect(r.tokens).toBe(1);
   });
 });
 

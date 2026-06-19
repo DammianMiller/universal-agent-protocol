@@ -11,7 +11,7 @@
  * crashed run degrades to an incorrect result rather than aborting the suite.
  */
 
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 
@@ -40,6 +40,11 @@ export interface SubprocessAdapterConfig {
   instructionOnStdin?: boolean;
 }
 
+/** Cap on captured output per stream (bytes) to bound memory on runaway agents. */
+const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+/** Grace period after the soft timeout before the hard backstop kill. */
+const HARD_KILL_GRACE_MS = 10_000;
+
 export class SubprocessAdapter implements AgentAdapter {
   readonly id: string;
   constructor(private readonly cfg: SubprocessAdapterConfig) {
@@ -63,23 +68,22 @@ export class SubprocessAdapter implements AgentAdapter {
       UAP_BENCH_MODEL: ctx.model,
     };
 
-    const res = spawnSync(this.cfg.bin, args, {
-      cwd: ctx.workdir,
-      encoding: 'utf-8',
-      timeout: ctx.task.agentTimeoutSec * 1000,
-      maxBuffer: 64 * 1024 * 1024,
-      input: this.cfg.instructionOnStdin ? ctx.task.instruction : undefined,
-      env,
-    });
-
-    const stdout = res.stdout ?? '';
-    const stderr = res.stderr ?? '';
-    const timedOut = res.signal === 'SIGTERM' && res.status === null;
+    const sec = ctx.task.agentTimeoutSec;
+    const { stdout, stderr, timedOut, status, spawnError } = await spawnGroup(
+      this.cfg.bin,
+      args,
+      {
+        cwd: ctx.workdir,
+        env,
+        timeoutMs: sec * 1000,
+        input: this.cfg.instructionOnStdin ? ctx.task.instruction : undefined,
+      }
+    );
 
     let error: string | null = null;
-    if (timedOut) error = `agent timed out after ${ctx.task.agentTimeoutSec}s`;
-    else if (res.error) error = res.error.message;
-    else if (res.status !== 0) error = `agent exited ${res.status}`;
+    if (timedOut) error = `agent timed out after ${sec}s`;
+    else if (spawnError) error = spawnError;
+    else if (status !== 0) error = `agent exited ${status}`;
 
     const parsed = timedOut ? {} : this.cfg.parseUsage(stdout, stderr);
 
@@ -93,6 +97,109 @@ export class SubprocessAdapter implements AgentAdapter {
       rawLog: `# injected: ${injected.join(', ') || '(none)'}\n${stdout}\n---STDERR---\n${stderr}`,
     };
   }
+}
+
+interface SpawnGroupOptions {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  input?: string;
+}
+
+interface SpawnGroupResult {
+  stdout: string;
+  stderr: string;
+  status: number | null;
+  timedOut: boolean;
+  spawnError: string | null;
+}
+
+/**
+ * Spawn a command in its OWN process group (detached) and enforce a timeout by
+ * SIGKILLing the whole group. Subprocess agents (opencode/claude) fork detached
+ * child trees — LSP servers, model-stream readers — that inherit our stdout pipe
+ * and keep it open. Node's spawnSync `timeout` only SIGTERMs the immediate
+ * child, so it hangs forever on those orphans (observed: 50-min wedged runs).
+ * Killing the negative pid reaps the entire tree; a hard backstop covers a
+ * child that escaped into its own session.
+ */
+function spawnGroup(
+  bin: string,
+  args: string[],
+  opts: SpawnGroupOptions
+): Promise<SpawnGroupResult> {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(bin, args, {
+        cwd: opts.cwd,
+        env: opts.env,
+        detached: process.platform !== 'win32', // new process group on POSIX
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (e) {
+      resolve({
+        stdout: '',
+        stderr: '',
+        status: null,
+        timedOut: false,
+        spawnError: e instanceof Error ? e.message : String(e),
+      });
+      return;
+    }
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let spawnError: string | null = null;
+    let settled = false;
+
+    const append = (buf: string, chunk: Buffer): string =>
+      buf.length >= MAX_OUTPUT_BYTES ? buf : buf + chunk.toString('utf-8');
+    child.stdout?.on('data', (c: Buffer) => (stdout = append(stdout, c)));
+    child.stderr?.on('data', (c: Buffer) => (stderr = append(stderr, c)));
+
+    const killGroup = (signal: NodeJS.Signals) => {
+      try {
+        if (child.pid != null && process.platform !== 'win32') process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }
+    };
+
+    const softTimer = setTimeout(() => {
+      timedOut = true;
+      killGroup('SIGTERM');
+    }, opts.timeoutMs);
+    // Hard backstop: if SIGTERM didn't reap the tree, SIGKILL the group and,
+    // if 'close' still never fires, force-settle so the runner can't wedge.
+    const hardTimer = setTimeout(() => {
+      killGroup('SIGKILL');
+      finish(null);
+    }, opts.timeoutMs + HARD_KILL_GRACE_MS);
+
+    const finish = (status: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(softTimer);
+      clearTimeout(hardTimer);
+      resolve({ stdout, stderr, status, timedOut, spawnError });
+    };
+
+    child.on('error', (e: Error) => {
+      spawnError = e.message;
+      finish(null);
+    });
+    child.on('close', (code: number | null) => finish(code));
+
+    if (opts.input != null) child.stdin?.write(opts.input);
+    child.stdin?.end();
+  });
 }
 
 // ---------------------------------------------------------------------------
