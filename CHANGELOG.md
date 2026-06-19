@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.52.1 (2026-06-19)
+
+- docs(benchmarks): document controlled paired findings + wire into index/readme/architecture
+- feat(bench): raw single-shot adapter with gate-enforced loop
+- test(bench): add real-gate-gated suite (edge-case + in-repo tests)
+- fix(bench): orphan-proof subprocess timeout via detached process-group kill
+- test(bench): add real-gate-hard suite (6 harder fixtures)
+- fix(bench): parse opencode --format json JSONL event stream
+- chore: bump version to 1.51.0
+- feat(bench): paired UAP-on/off benchmark harness
+
+
 ## v1.52.0 (2026-06-19)
 
 - feat(coordination): always-on file announcements + live-conflict guard

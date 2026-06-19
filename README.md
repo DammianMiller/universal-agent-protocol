@@ -121,7 +121,19 @@ UAP installs hooks into your agent harness, then mediates every tool call throug
 
 ## Benchmarks
 
-Terminal-Bench 2.0, 12 representative tasks, UAP-on vs. baseline:
+The honest, controlled result (paired A/B — same model, tasks, and seeds,
+toggling only UAP, with confidence intervals): **UAP's accuracy lift depends on
+whether the base agent already self-verifies.**
+
+| Baseline | UAP accuracy lift | |
+|---|---|---|
+| Agentic harness (self-tests) | **~0pp** (CI spans 0) | overhead only — value is efficiency/coordination |
+| Non-agentic single-shot model | **+20pp** (78%→98%, 95% CI [+8,+32], p=0.008) | gate loop repairs edge-case bugs |
+
+Run it yourself: `uap bench paired --adapter raw --suite benchmarks/suites/real-gate-gated`.
+Full analysis: **[docs/benchmarks/PAIRED_FINDINGS.md](docs/benchmarks/PAIRED_FINDINGS.md)**.
+
+<details><summary>Earlier uncontrolled Terminal-Bench numbers (confounded — see TBench Investigation)</summary>
 
 | Metric | Baseline | With UAP | Δ |
 |---|---|---|---|
@@ -129,6 +141,8 @@ Terminal-Bench 2.0, 12 representative tasks, UAP-on vs. baseline:
 | Task success rate | 25% | 58% | **+33pp** |
 | Errors per task | 1.17 | 0.42 | **−68%** |
 | Wall-clock (total) | 618s | 266s | **−57%** |
+
+</details>
 
 Methodology, raw runs, and cost analysis: **[docs/benchmarks/](docs/benchmarks/)**.
 

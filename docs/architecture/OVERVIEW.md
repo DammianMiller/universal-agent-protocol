@@ -190,8 +190,15 @@ mechanism behind UAP's "agents stop declaring victory on broken code." See the
 
 Lets multiple agents work the same repo without colliding. A singleton SQLite
 DB (`database.ts`) backs an agent registry, work announcements, work claims,
-inter-agent messages, and a deploy queue. `service.ts` detects **overlap** when
-agents announce work on the same files and suggests merge order;
+inter-agent messages, and a deploy queue. The DB is **shared across all
+worktrees** (resolved via `git --git-common-dir` to the main worktree), so agents
+in different `.worktrees/` see each other. Coordination is **always-on, not
+advisory**: `session-start.sh` auto-registers every agent (+ heartbeat), and the
+pre-edit hook (`coordinate-file.sh`) announces each file edit and **blocks** when
+another *live* agent (heartbeat < 120s) is editing the same repo-relative path,
+warning + self-healing stale announcements otherwise; `session-end.sh` reaps only
+stale state so one agent ending never wipes live peers. `service.ts` detects
+**overlap** when agents announce work on the same files and suggests merge order;
 `deploy-batcher.ts` queues git/CI actions with per-type batch windows
 (commit 30s, push 5s, merge 10s, deploy 60s), folds/squashes similar pending
 actions, and executes batches sequentially or in parallel.
@@ -235,6 +242,20 @@ real-time updates.
 
 Emits HALO / OpenInference spans for delivery runs and tool calls, consumed by
 `uap harness analyze` to optimize agent execution from real traces.
+
+### Benchmark harness (`src/benchmarks/paired/`)
+
+A controlled paired-A/B harness (`uap bench paired`) for measuring UAP's impact
+without confounds. It holds the base model + agent constant and toggles **only**
+the UAP scaffold over the same real-gate task suite and seeds, reporting a vector
+of paired deltas (correctness + tokens/turns/latency) with bootstrap confidence
+intervals, a McNemar gate-value 2×2, and per-component leave-one-out ablation.
+Pluggable `AgentAdapter`s drive the agent under test: `opencode`/`claude`
+subprocess adapters, a deterministic `mock`, and a non-agentic `raw`
+single-shot-vs-gate-loop adapter that isolates gate value. Ground truth is a
+deterministic per-task `verifyCmd` (no LLM judge). The headline result lives in
+[benchmarks/PAIRED_FINDINGS.md](../benchmarks/PAIRED_FINDINGS.md): UAP gate value
+is **+20pp** over a non-agentic baseline and **~0pp** over an agentic one.
 
 ---
 
