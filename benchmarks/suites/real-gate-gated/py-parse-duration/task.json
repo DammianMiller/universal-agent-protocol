@@ -1,0 +1,9 @@
+{
+  "name": "Duration string parser",
+  "instruction": "Implement parse_duration(s) in duration.py that parses a duration string into total SECONDS. Units: d=86400, h=3600, m=60, s=1. Combined units sum (e.g. '1h30m15s' = 5415, '1h30m' = 5400). It MUST raise ValueError for invalid input such as '', 'abc', a bare number '10', or an unknown unit '1x'. An in-repo test (test_duration.py) is provided — run it before claiming done.",
+  "difficulty": "hard",
+  "tags": ["python", "parsing", "validation", "gated"],
+  "verifyCmd": "python3 -c \"from duration import parse_duration as p\nassert p('45s')==45\nassert p('2d')==172800\nassert p('1h30m')==5400\nassert p('1h30m15s')==5415\nfor bad in ['','abc','10','1x','h']:\n    try:\n        p(bad); raise SystemExit('no raise for '+repr(bad))\n    except ValueError: pass\nprint('ok')\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 420
+}
