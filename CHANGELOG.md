@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.52.0 (2026-06-19)
+
+- feat(coordination): always-on file announcements + live-conflict guard
+
+
 ## v1.51.0 (2026-06-19)
 
 - feat(bench): paired UAP-on/off benchmark harness

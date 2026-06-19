@@ -7,7 +7,20 @@ set -euo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
-COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"
+
+# Coordination DB is SHARED across all worktrees (see session-start.sh).
+_GCD="$(git -C "$PROJECT_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+case "$_GCD" in
+  /*) : ;;
+  "") _GCD="" ;;
+  *) _GCD="$PROJECT_DIR/$_GCD" ;;
+esac
+if [ -n "$_GCD" ]; then
+  COORD_ROOT="$(cd "$(dirname "$_GCD")" 2>/dev/null && pwd || echo "$PROJECT_DIR")"
+else
+  COORD_ROOT="$PROJECT_DIR"
+fi
+COORD_DB="${COORD_ROOT}/agents/data/coordination/coordination.db"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Store session end marker
@@ -18,14 +31,24 @@ if [ -f "$DB_PATH" ]; then
   " 2>/dev/null || true
 fi
 
-# Clean up all active agents and work claims
+# Reap STALE coordination state only. The coordination DB is shared across all
+# worktrees, so this hook must NOT mark every agent completed or complete every
+# announcement — that would wipe other LIVE agents' state. Instead, complete the
+# state of agents whose heartbeat has gone stale (>5 min), which covers this
+# ending session (its heartbeat stops) without touching active peers.
+STALE_SECS="${UAP_COORD_REAP_SECONDS:-300}"
 if [ -f "$COORD_DB" ]; then
   sqlite3 "$COORD_DB" "
-    UPDATE work_announcements SET completed_at = '$TIMESTAMP'
-    WHERE completed_at IS NULL;
-    DELETE FROM work_claims;
     UPDATE agent_registry SET status = 'completed'
-    WHERE status IN ('active', 'idle');
+    WHERE status IN ('active', 'idle')
+      AND (strftime('%s','now') - strftime('%s', last_heartbeat)) >= $STALE_SECS;
+    UPDATE work_announcements SET completed_at = '$TIMESTAMP'
+    WHERE completed_at IS NULL
+      AND agent_id IN (
+        SELECT id FROM agent_registry
+        WHERE status = 'completed'
+           OR (strftime('%s','now') - strftime('%s', last_heartbeat)) >= $STALE_SECS
+      );
   " 2>/dev/null || true
 fi
 

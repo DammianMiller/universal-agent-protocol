@@ -69,8 +69,43 @@ for pattern in "${EXEMPT_PATTERNS[@]}"; do
   fi
 done
 
-# Allow if path is inside a worktree (substring match, handles nested worktrees)
+# Allow if path is inside a worktree (substring match, handles nested worktrees).
+# Before allowing a real source edit, announce it to the SHARED coordination DB
+# and check for a live overlap so independently-launched agents coordinate and
+# never silently clobber the same file. Always fails open.
 if echo "$ABS_PATH" | grep -q '\.worktrees/'; then
+  if [ -f "$HOOK_DIR/coordinate-file.sh" ]; then
+    # Shared coordination DB = the MAIN worktree's, so agents running in
+    # different .worktrees/ all see each other. git-common-dir resolves the
+    # shared .git even from a linked worktree.
+    GCD="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+    case "$GCD" in
+      /*) : ;;
+      "") GCD="" ;;
+      *) GCD="$PWD/$GCD" ;;
+    esac
+    if [ -n "$GCD" ]; then
+      MAIN_ROOT="$(cd "$(dirname "$GCD")" 2>/dev/null && pwd || echo "$REPO_ROOT")"
+    else
+      MAIN_ROOT="$REPO_ROOT"
+    fi
+    COORD_DB="$MAIN_ROOT/agents/data/coordination/coordination.db"
+    # Repo-relative path so the same logical file across worktrees collides.
+    REL_PATH="${ABS_PATH#"$REPO_ROOT"/}"
+    WT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)"
+    if [ -n "$SESSION_ID" ]; then
+      AGENT_ID="claude-${SESSION_ID}"
+    else
+      AGENT_ID="${UAP_AGENT_ID:-claude-${WT_BRANCH:-unknown}}"
+    fi
+    if bash "$HOOK_DIR/coordinate-file.sh" \
+      "$COORD_DB" "$AGENT_ID" "${UAP_AGENT_NAME:-agent}" "$WT_BRANCH" "$REL_PATH" "$ABS_PATH"; then
+      exit 0
+    fi
+    # Non-zero from coordinate-file.sh = live-conflict block (reason on stderr).
+    exit 2
+  fi
   exit 0
 fi
 

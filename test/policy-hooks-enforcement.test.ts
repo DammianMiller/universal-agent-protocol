@@ -489,10 +489,16 @@ describe('Policy Enforcement Hooks', () => {
       expect(content).toContain('memories');
     });
 
-    it('cleans up coordination DB', () => {
+    it('reaps only STALE coordination state (shared-DB safe)', () => {
+      // The coordination DB is shared across worktrees, so session-end must NOT
+      // wipe every agent/announcement (that would clobber live peers). It reaps
+      // only agents whose heartbeat has gone stale.
       expect(content).toContain('agent_registry');
       expect(content).toContain('work_announcements');
-      expect(content).toContain('work_claims');
+      expect(content).toContain('STALE_SECS');
+      expect(content).toContain('last_heartbeat');
+      // Must NOT contain the old unconditional global wipe.
+      expect(content).not.toContain('DELETE FROM work_claims');
     });
 
     it('cleans up old backups (7-day retention)', () => {
