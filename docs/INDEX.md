@@ -62,7 +62,9 @@ New here? Start with the [project README](../README.md), then [Getting Started](
 
 | Doc | What it covers |
 |---|---|
-| [**TBench Investigation**](benchmarks/TBENCH_INVESTIGATION.md) | Rigorous findings: no measurable UAP-context lift (every gain was a confound), methodology lessons, and the improvement plan ⭐ |
+| [**Paired Findings**](benchmarks/PAIRED_FINDINGS.md) | Controlled A/B results: UAP gate value is +20pp vs a non-agentic baseline [CI +8,+32], ~0pp vs an agentic one — with confidence intervals ⭐ |
+| [Paired Harness](benchmarks/PAIRED_HARNESS.md) | The `uap bench paired` controlled-A/B harness: design, adapters (mock/opencode/claude/raw), authoring tasks |
+| [TBench Investigation](benchmarks/TBENCH_INVESTIGATION.md) | Earlier finding: no measurable UAP-context lift (every uncontrolled gain was a confound), methodology lessons |
 | [Validation Results](benchmarks/VALIDATION_RESULTS.md) | Terminal-Bench 2.0 results (−49.7% tokens, +33pp success) |
 | [Token Optimization](benchmarks/TOKEN_OPTIMIZATION.md) | Where the token savings come from |
 | [Accuracy Analysis](benchmarks/ACCURACY_ANALYSIS.md) | Success-rate and error analysis |
