@@ -119,21 +119,59 @@ export const parseClaudeUsage: UsageParser = (stdout) => {
   }
 };
 
-/** Best-effort parser for opencode JSON output (token usage + steps). */
+/**
+ * Parser for opencode `--format json` output, which is a JSONL event stream
+ * (step_start / tool_use / step_finish / text). We aggregate it:
+ *  - turns      = number of step_finish events
+ *  - toolCalls  = number of tool_use events
+ *  - tokens     = total tokens metered = Σ over step_finish of
+ *                 (input + output + cache.read)  — matches provider billing and
+ *                 captures the context overhead an injected UAP surface adds.
+ *  - costUsd    = Σ cost (often 0 for a local model → reported as null).
+ */
 export const parseOpencodeUsage: UsageParser = (stdout) => {
-  try {
-    const obj = JSON.parse(stdout.trim());
-    const tokens = obj.tokens?.total ?? obj.usage?.total_tokens ?? null;
-    return {
-      tokens: typeof tokens === 'number' && tokens > 0 ? tokens : null,
-      costUsd: typeof obj.cost === 'number' ? obj.cost : null,
-      turns: typeof obj.steps === 'number' ? obj.steps : null,
-      toolCalls: typeof obj.toolCalls === 'number' ? obj.toolCalls : null,
-    };
-  } catch {
-    return {};
+  let turns = 0;
+  let toolCalls = 0;
+  let tokens = 0;
+  let cost = 0;
+  let sawTokens = false;
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let ev: Record<string, unknown>;
+    try {
+      ev = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const type = ev.type;
+    if (type === 'tool_use') toolCalls++;
+    if (type === 'step_finish') {
+      turns++;
+      const part = (ev.part ?? {}) as Record<string, unknown>;
+      const tk = (part.tokens ?? {}) as Record<string, unknown>;
+      const cache = (tk.cache ?? {}) as Record<string, unknown>;
+      const input = num(tk.input);
+      const output = num(tk.output);
+      const cacheRead = num(cache.read);
+      if (tk.input != null || tk.output != null) {
+        tokens += input + output + cacheRead;
+        sawTokens = true;
+      }
+      cost += num(part.cost);
+    }
   }
+  return {
+    tokens: sawTokens ? tokens : null,
+    costUsd: cost > 0 ? cost : null,
+    turns: turns > 0 ? turns : null,
+    toolCalls: toolCalls > 0 ? toolCalls : null,
+  };
 };
+
+function num(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
 
 /** Claude Code headless adapter (`claude -p ... --output-format json`). */
 export function claudeAdapter(model: string): SubprocessAdapter {
@@ -150,7 +188,9 @@ export function opencodeAdapter(model: string): SubprocessAdapter {
   return new SubprocessAdapter({
     id: 'opencode',
     bin: 'opencode',
-    args: ['run', '--model', model, '{instruction}'],
+    // --format json => JSONL event stream parsed by parseOpencodeUsage.
+    // --dir pins the working directory to the scratch repo.
+    args: ['run', '--model', model, '--format', 'json', '--dir', '{workdir}', '{instruction}'],
     parseUsage: parseOpencodeUsage,
   });
 }

@@ -28,7 +28,7 @@ import {
   loadTask,
 } from '../src/benchmarks/paired/suite.js';
 import { applyScaffolding, scaffoldEnv } from '../src/benchmarks/paired/scaffold.js';
-import { MockAdapter, hash01 } from '../src/benchmarks/paired/adapter.js';
+import { MockAdapter, hash01, parseOpencodeUsage } from '../src/benchmarks/paired/adapter.js';
 import { runPaired } from '../src/benchmarks/paired/runner.js';
 import { analyze } from '../src/benchmarks/paired/report.js';
 import { buildAblationConditions, analyzeAblation } from '../src/benchmarks/paired/ablation.js';
@@ -124,6 +124,38 @@ describe('stats: passAtK and descriptive', () => {
   it('mean/std basic', () => {
     expect(mean([1, 2, 3])).toBe(2);
     expect(std([2, 2, 2])).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('adapter: opencode JSONL usage parser', () => {
+  it('aggregates step_finish + tool_use events from the JSONL stream', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'step_start', part: { type: 'step-start' } }),
+      JSON.stringify({ type: 'tool_use', part: { type: 'tool' } }),
+      JSON.stringify({
+        type: 'step_finish',
+        part: { type: 'step-finish', cost: 0, tokens: { input: 100, output: 20, cache: { read: 50 } } },
+      }),
+      JSON.stringify({ type: 'tool_use', part: { type: 'tool' } }),
+      JSON.stringify({
+        type: 'step_finish',
+        part: { type: 'step-finish', cost: 0, tokens: { input: 10, output: 5, cache: { read: 60 } } },
+      }),
+    ].join('\n');
+    const u = parseOpencodeUsage(jsonl, '');
+    expect(u.turns).toBe(2);
+    expect(u.toolCalls).toBe(2);
+    // (100+20+50) + (10+5+60) = 245
+    expect(u.tokens).toBe(245);
+    expect(u.costUsd).toBeNull(); // local model => cost 0 => null
+  });
+
+  it('returns nulls on empty / non-JSON output', () => {
+    const u = parseOpencodeUsage('not json\n\n', '');
+    expect(u.tokens).toBeNull();
+    expect(u.turns).toBeNull();
+    expect(u.toolCalls).toBeNull();
   });
 });
 
