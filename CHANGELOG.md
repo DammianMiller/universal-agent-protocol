@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.50.0 (2026-06-19)
+
+- feat(setup): port full wizard config into guided flow; retire legacy inquirer wizard
+
+
 ## v1.49.0 (2026-06-19)
 
 - feat(setup): unified guided setup — arrow-key wizard, instruction backup, policy/skill extraction
