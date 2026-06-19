@@ -1,0 +1,9 @@
+{
+  "name": "Implement a multi-file stats package",
+  "instruction": "Complete the stats package across two files. In stats/central.py implement mean(xs) (arithmetic mean) and median(xs) (middle value; for even length, the average of the two middle values after sorting). In stats/spread.py implement variance(xs) as the POPULATION variance (divide by N) reusing mean() from central, and stdev(xs) as its square root. Do not change the public API in stats/__init__.py.",
+  "difficulty": "hard",
+  "tags": ["feature", "python", "multi-file"],
+  "verifyCmd": "python3 -c \"import stats; assert stats.mean([1,2,3,4])==2.5; assert stats.median([1,2,3,4])==2.5; assert stats.median([3,1,2])==2; assert abs(stats.variance([1,2,3,4,5])-2.0)<1e-9; assert abs(stats.stdev([1,2,3,4,5])-(2.0**0.5))<1e-9; print('ok')\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 420
+}

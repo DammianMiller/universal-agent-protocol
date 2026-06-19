@@ -1,0 +1,9 @@
+{
+  "name": "Implement Roman numeral conversion (both directions)",
+  "instruction": "Implement int_to_roman(n) and roman_to_int(s) in roman.py for values 1..3999. Use standard subtractive notation (e.g. 4=IV, 9=IX, 40=XL, 90=XC, 400=CD, 900=CM). The two functions must round-trip. Keep the function names and signatures.",
+  "difficulty": "medium",
+  "tags": ["feature", "python"],
+  "verifyCmd": "python3 -c \"import roman as R\ncases={1:'I',4:'IV',9:'IX',14:'XIV',40:'XL',58:'LVIII',90:'XC',400:'CD',944:'CMXLIV',1994:'MCMXCIV',3888:'MMMDCCCLXXXVIII'}\nfor n,s in cases.items():\n    assert R.int_to_roman(n)==s,(n,R.int_to_roman(n),s)\n    assert R.roman_to_int(s)==n,(s,R.roman_to_int(s),n)\nprint('ok')\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 360
+}
