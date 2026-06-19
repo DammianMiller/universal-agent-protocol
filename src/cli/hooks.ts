@@ -101,6 +101,9 @@ function copyHookScripts(targetHooksDir: string): void {
     'session-start.sh',
     'pre-compact.sh',
     'pre-tool-use-edit-write.sh',
+    // Helper sourced by the edit hook: announce file edits + detect live
+    // overlaps in the shared coordination DB. Must co-locate with the edit hook.
+    'coordinate-file.sh',
     'pre-tool-use-bash.sh',
     'post-tool-use-edit-write.sh',
     'post-compact.sh',
@@ -1109,6 +1112,7 @@ async function installOmpHooks(cwd: string): Promise<void> {
     'session-start.sh',
     'pre-compact.sh',
     'pre-tool-use-edit-write.sh',
+    'coordinate-file.sh',
     'pre-tool-use-bash.sh',
     'uap-policy-gate.sh',
     'loop-protection.sh',

@@ -6,7 +6,23 @@ set -euo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
-COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"
+
+# Coordination DB is SHARED across all worktrees: resolve it to the MAIN
+# worktree (git-common-dir points at the shared .git even from a linked
+# worktree) so agents in different .worktrees/ register into one registry and
+# can see each other's file announcements. Falls back to PROJECT_DIR.
+_GCD="$(git -C "$PROJECT_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+case "$_GCD" in
+  /*) : ;;
+  "") _GCD="" ;;
+  *) _GCD="$PROJECT_DIR/$_GCD" ;;
+esac
+if [ -n "$_GCD" ]; then
+  COORD_ROOT="$(cd "$(dirname "$_GCD")" 2>/dev/null && pwd || echo "$PROJECT_DIR")"
+else
+  COORD_ROOT="$PROJECT_DIR"
+fi
+COORD_DB="${COORD_ROOT}/agents/data/coordination/coordination.db"
 
 if [ ! -f "$DB_PATH" ]; then
   exit 0
