@@ -2,7 +2,7 @@
 
 The Universal Agent Protocol (UAP) is an autonomous AI agent memory system with
 CLAUDE.md protocol enforcement. It ships as a single npm package
-(`@miller-tech/uap`, v1.48.0) that installs the `uap` CLI.
+(`@miller-tech/uap`, v1.50.0) that installs the `uap` CLI.
 
 ## Prerequisites
 
@@ -32,7 +32,7 @@ npm install -g @miller-tech/uap
 uap --version
 ```
 
-This prints the installed package version (e.g. `1.48.0`).
+This prints the installed package version (e.g. `1.50.0`).
 
 ## One-command setup
 
@@ -42,8 +42,20 @@ From the root of the project you want to wire up, run:
 uap setup
 ```
 
-`uap setup` chains the individual commands so the whole system "just works". It
-runs the following steps in order:
+`uap setup` is a **guided, arrow-key wizard by default** (powered by
+@clack/prompts). It walks you through the configuration — harnesses, memory
+tiers, coordination, patterns, policies, model provider/profile, hooks — with
+**smart defaults inferred from your environment** (Docker → offer Qdrant; a
+detected local model endpoint → preselect the local provider/profile). Press
+Enter to accept the recommended path. On a non-TTY/CI run, or with
+`--non-interactive`/`-y`, it runs the same flow non-interactively with defaults
+so pipelines never hang on a prompt.
+
+Before it changes anything, setup **backs up your existing agent instruction
+files** (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, …, plus `.uap.json`) to
+`.uap-backups/<date>/`, and offers to **extract your unique custom instructions
+into reusable UAP policies and skills** (see below). It then chains the
+individual commands so the whole system "just works", running these steps:
 
 0. **Self-update the CLI** — before anything else, `setup` checks npm and
    **auto-updates the globally-installed `uap` to the latest published version**
@@ -76,13 +88,37 @@ runs the following steps in order:
 ### Useful `uap setup` flags
 
 ```bash
-uap setup --no-memory       # init only, skip Qdrant/memory services
-uap setup --no-patterns     # skip pattern RAG setup and indexing
-uap setup --no-self-update  # do not auto-update the global CLI
-uap setup -i                # interactive wizard with feature toggles
-uap setup --verbose         # detailed output
-uap setup -d <path>         # set up a project directory other than the cwd
+uap setup                    # guided arrow-key wizard (default)
+uap setup --non-interactive  # scripted run with defaults (also -y); auto on CI/non-TTY
+uap setup --no-backup        # do not back up instruction files first
+uap setup --no-extract       # skip custom-content extraction
+uap setup --extract-auto     # (scripted mode) auto-extract instead of report-only
+uap setup --no-memory        # init only, skip Qdrant/memory services
+uap setup --no-patterns      # skip pattern RAG setup and indexing
+uap setup --no-self-update   # do not auto-update the global CLI
+uap setup -d <path>          # set up a project directory other than the cwd
 ```
+
+### Backup & custom-content extraction
+
+Every `uap setup` first copies your agent instruction files — `CLAUDE.md`,
+`AGENTS.md`, `AGENT.md`, `GEMINI.md`, `.cursorrules`, `.clinerules`,
+`.windsurfrules`, and `.uap.json` — to `.uap-backups/<date>/` (idempotent, gitignored)
+so a run is always reversible. Disable with `--no-backup`.
+
+It then detects **non-standard sections** in those files (anything beyond the UAP
+scaffolding) and offers to promote each into a reusable UAP artifact:
+
+- imperative rules/gates (e.g. "MUST never commit secrets") → a **policy** under
+  `policies/<slug>.md` (registered with the policy engine);
+- workflows/how-tos (e.g. "How to deploy") → a **skill** under
+  `skills/<name>/SKILL.md`.
+
+In the wizard you confirm/redirect each section; in scripted mode it is
+report-only unless you pass `--extract-auto`. Extraction is deterministic (no
+model calls), idempotent (it won't re-extract a section it already promoted), and
+never overwrites existing files. See **[Policies](../guides/POLICIES.md)** and
+`uap skill list`.
 
 ### Init only
 

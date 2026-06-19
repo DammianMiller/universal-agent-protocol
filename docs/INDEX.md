@@ -1,6 +1,6 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.48.0) — a layer that gives AI coding agents memory, judgment, and the discipline to finish the job.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.50.0) — a layer that gives AI coding agents memory, judgment, and the discipline to finish the job.
 
 New here? Start with the [project README](../README.md), then [Getting Started](getting-started/).
 
