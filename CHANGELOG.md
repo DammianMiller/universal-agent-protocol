@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.51.0 (2026-06-19)
+
+- feat(coordination): always-on file announcements + live-conflict guard
+
+
 ## v1.50.1 (2026-06-19)
 
 - docs(setup): document the guided wizard, backup, and custom-content extraction
