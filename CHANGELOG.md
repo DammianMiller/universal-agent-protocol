@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.50.1 (2026-06-19)
+
+- docs(setup): document the guided wizard, backup, and custom-content extraction
+
+
 ## v1.50.0 (2026-06-19)
 
 - feat(setup): port full wizard config into guided flow; retire legacy inquirer wizard

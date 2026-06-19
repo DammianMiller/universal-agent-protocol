@@ -143,6 +143,27 @@ Install UAP (`npm i -g universal-agent-protocol`) and every feature below activa
 
 **Why it matters:** Install once; every subsequent setup self-applies the latest behaviour without a manual `npm install -g`. The update takes effect on the next `uap` invocation.
 
+### Guided Setup Wizard
+**What it does:** `uap setup` is an arrow-key wizard (by default) that walks you through harnesses, memory tiers, coordination, patterns, policies, model provider/profile, and hooks, then persists the choices to `.uap.json`.
+
+**When it kicks in:** Any interactive `uap setup`. On CI / non-TTY (or with `--non-interactive`/`-y`) it runs the same flow non-interactively with smart defaults, so pipelines never hang. Defaults are inferred from the environment (Docker → offer Qdrant; a detected local model endpoint → preselect local provider/profile).
+
+**Why it matters:** One guided command lands an optimal configuration instead of remembering a dozen flags — and the same code path runs headless in CI.
+
+### Instruction-File Backup on Setup
+**What it does:** Before any merge/rewrite, setup copies your agent instruction files (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, …, `.uap.json`) to `.uap-backups/<date>/`.
+
+**When it kicks in:** First thing in every `uap setup` (and `uap init`). Idempotent and gitignored. Opt out with `--no-backup`.
+
+**Why it matters:** A setup run is always reversible — your hand-written instructions are never silently overwritten.
+
+### Custom-Content Extraction → Policies & Skills
+**What it does:** Setup detects non-standard sections in your instruction files and promotes them into reusable UAP artifacts — imperative rules/gates become **policies** (`policies/<slug>.md`), workflows become **skills** (`skills/<name>/SKILL.md`).
+
+**When it kicks in:** Interactively in the wizard (confirm/redirect each); report-only in scripted mode unless `--extract-auto`. Deterministic (no model calls), idempotent, never overwrites. Opt out with `--no-extract`.
+
+**Why it matters:** Your project's bespoke rules and how-tos become first-class, enforceable/loadable UAP artifacts instead of free-text buried in CLAUDE.md.
+
 ---
 
 ## Local Model Setup

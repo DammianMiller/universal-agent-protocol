@@ -1,7 +1,7 @@
 # UAP CLI Reference
 
 > Complete command reference for the Universal Agent Protocol command-line interface (`uap`).
-> Version v1.48.0.
+> Version v1.50.0.
 
 The `uap` binary is the single entry point for every UAP capability: project
 initialization, the tiered memory system, git worktree workflow, multi-agent
@@ -85,8 +85,10 @@ uap init --web --no-worktrees
 
 ## `setup`
 
-Full one-command setup: `init` + start Qdrant + install Python deps + index
-patterns.
+Guided one-command setup: a **default arrow-key wizard** (init + start Qdrant +
+Python deps + pattern index) that backs up agent instruction files and extracts
+custom content into policies/skills. Runs the scripted path on CI / non-TTY or
+with `--non-interactive`.
 
 ```bash
 uap setup [options]
@@ -95,25 +97,35 @@ uap setup [options]
 | Flag | Purpose |
 |------|---------|
 | `-p, --platform <platforms...>` | Targets: `claude`, `factory`, `vscode`, `opencode`, `omp`, `cline`, `codex`, `aider`, `continue`, `windsurf`, `zed`, `copilot`, `jetbrains`, `swe-agent`, `all` (default `all`) |
+| `--non-interactive` | Run the scripted (non-guided) setup; also automatic on CI / non-TTY |
+| `-y, --yes` | Alias for `--non-interactive` (accept defaults, no prompts) |
+| `--no-backup` | Do not back up agent instruction files before modifying them |
+| `--no-extract` | Do not detect/extract custom instruction content into policies/skills |
+| `--extract-auto` | In scripted mode, auto-extract custom content (default: report only) |
 | `--no-patterns` | Skip pattern RAG setup |
 | `--no-memory` | Skip memory system setup |
 | `--no-self-update` | Skip the automatic UAP CLI version check / self-update (also `UAP_NO_SELF_UPDATE=1`) |
 | `--systemd-services` | Scaffold user systemd services for llama.cpp + anthropic proxy |
 | `-d, --project-dir <path>` | Target project directory (defaults to cwd) |
-| `-i, --interactive` | Run the interactive setup wizard with feature toggles |
+| `-i, --interactive` | Run the guided wizard (now the default; kept for back-compat) |
 
-Before configuring the project, `setup` ensures the **globally-installed UAP CLI
-is at the latest published npm version** and self-updates if it is behind. It is
-safe and non-fatal: it only updates a real global install (a source checkout or a
-local/monorepo dependency is left untouched), is downgrade-proof, and is
-**skipped in CI** for reproducibility (`UAP_SELF_UPDATE=1` forces it). The update
-takes effect on the next `uap` invocation. Disable with `--no-self-update` or
-`UAP_NO_SELF_UPDATE=1`.
+The guided wizard (default) prompts for harnesses, memory tiers, coordination,
+patterns, policies, model provider/profile, hooks, and browser — with smart
+defaults from the environment — and persists the choices to `.uap.json`. Before
+any change it backs up agent instruction files to `.uap-backups/<date>/` and
+offers to extract custom sections into UAP policies/skills (see
+[Installation → Backup & custom-content extraction](../getting-started/INSTALLATION.md#backup--custom-content-extraction)).
+
+Setup also ensures the **globally-installed UAP CLI is at the latest published
+npm version** (self-update): non-fatal, global-install-only, downgrade-proof, and
+**skipped in CI** (`UAP_SELF_UPDATE=1` forces it). Disable with
+`--no-self-update` / `UAP_NO_SELF_UPDATE=1`.
 
 ```bash
-uap setup -i
+uap setup                            # guided arrow-key wizard
+uap setup --non-interactive          # scripted (CI-safe); also -y
 uap setup -p claude -d ~/projects/myapp
-uap setup --no-self-update          # configure without touching the global CLI
+uap setup --no-self-update           # configure without touching the global CLI
 ```
 
 ---
