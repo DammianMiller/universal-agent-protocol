@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.49.0 (2026-06-19)
+
+- feat(setup): unified guided setup — arrow-key wizard, instruction backup, policy/skill extraction
+
+
 ## v1.48.1 (2026-06-18)
 
 - docs(deliver): document tiered gates, CI/deploy feedback, and setup self-update
