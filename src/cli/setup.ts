@@ -26,7 +26,6 @@ export interface SetupOptions {
   extract?: boolean; // --no-extract skips custom-content extraction
   extractAuto?: boolean; // --extract-auto extracts without prompting
   backup?: boolean; // --no-backup disables instruction-file backup
-  legacyWizard?: boolean; // --legacy-wizard uses the old inquirer wizard
 }
 
 /**
@@ -50,13 +49,9 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
   // Run the self-update check once, up front, for every mode.
   maybeSelfUpdate(options);
 
-  // Guided wizard is the DEFAULT (interactive TTY). --legacy-wizard keeps the
-  // old inquirer flow; non-interactive/CI run the scripted path below.
+  // Guided wizard is the DEFAULT (interactive TTY); non-interactive/CI run the
+  // scripted path below.
   if (resolveInteractive(options)) {
-    if (options.legacyWizard) {
-      const { runSetupWizard } = await import('./setup-wizard.js');
-      return runSetupWizard();
-    }
     const { runGuidedSetup } = await import('./guided-setup.js');
     return runGuidedSetup(options);
   }

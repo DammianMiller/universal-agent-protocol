@@ -28,10 +28,10 @@ describe('CLI Hooks Module', () => {
 });
 
 describe('CLI Setup Wizard Module', () => {
-  it('should export runSetupWizard function', async () => {
-    const module = await import('../src/cli/setup-wizard.js');
-    expect(module.runSetupWizard).toBeDefined();
-    expect(typeof module.runSetupWizard).toBe('function');
+  it('should export runGuidedSetup function (the guided wizard)', async () => {
+    const module = await import('../src/cli/guided-setup.js');
+    expect(module.runGuidedSetup).toBeDefined();
+    expect(typeof module.runGuidedSetup).toBe('function');
   });
 });
 

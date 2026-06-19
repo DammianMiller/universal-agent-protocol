@@ -107,7 +107,6 @@ program
   .option('--no-backup', 'Do not back up agent instruction files before modifying them')
   .option('--no-extract', 'Do not detect/extract custom instruction content into policies/skills')
   .option('--extract-auto', 'In non-interactive mode, auto-extract custom content (default: report only)')
-  .option('--legacy-wizard', 'Use the previous inquirer-based wizard instead of the guided flow')
   .option(
     '--systemd-services',
     'Optionally scaffold user systemd services for llama.cpp and anthropic proxy'

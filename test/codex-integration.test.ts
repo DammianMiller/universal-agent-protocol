@@ -202,22 +202,17 @@ describe('Codex Integration - Hooks', () => {
 });
 
 describe('Codex Integration - Setup Wizard Mapping', () => {
-  it('Codex CLI maps to codex hook target', async () => {
-    // We verify the mapping by checking the source file content
-    const wizardPath = join(process.cwd(), 'src/cli/setup-wizard.ts');
+  it('the guided wizard offers Codex mapped to the codex platform token', async () => {
+    // Mapping now lives in the guided wizard's HARNESSES list.
+    const wizardPath = join(process.cwd(), 'src/cli/guided-setup.ts');
     const content = readFileSync(wizardPath, 'utf-8');
-
-    // Verify HARNESS_TO_HOOK_TARGET maps Codex CLI to codex
-    expect(content).toContain("'Codex CLI': 'codex'");
+    expect(content).toMatch(/label:\s*'Codex'[^}]*value:\s*'codex'/);
   });
 
-  it('Codex CLI maps to codex platform', async () => {
-    const wizardPath = join(process.cwd(), 'src/cli/setup-wizard.ts');
-    const content = readFileSync(wizardPath, 'utf-8');
-
-    // Verify HARNESS_TO_PLATFORM maps Codex CLI to codex
-    const platformSection = content.slice(content.indexOf('HARNESS_TO_PLATFORM'));
-    expect(platformSection).toContain("'Codex CLI': 'codex'");
+  it('init maps the codex platform token to the codex Platform', async () => {
+    const initPath = join(process.cwd(), 'src/cli/init.ts');
+    const content = readFileSync(initPath, 'utf-8');
+    expect(content).toContain("codex: 'codex'");
   });
 });
 
