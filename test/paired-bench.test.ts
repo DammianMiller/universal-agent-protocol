@@ -32,6 +32,7 @@ import {
   MockAdapter,
   hash01,
   parseOpencodeUsage,
+  parseFileBlocks,
   SubprocessAdapter,
 } from '../src/benchmarks/paired/adapter.js';
 import { TaskSpecSchema } from '../src/benchmarks/paired/types.js';
@@ -204,6 +205,23 @@ describe('adapter: SubprocessAdapter group-timeout (orphan-proof)', () => {
     const r = await adapter.run(ctx(10));
     expect(r.error).toBeNull();
     expect(r.tokens).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('adapter: raw FILE-block parser', () => {
+  it('extracts multiple files with their content', () => {
+    const text =
+      'preamble\n<<<FILE src/a.js>>>\nconst a = 1;\nmodule.exports = a;\n<<<END>>>\n' +
+      'noise\n<<<FILE b.py>>>\ndef f():\n    return 2\n<<<END>>>\n';
+    const blocks = parseFileBlocks(text);
+    expect(blocks.map((b) => b.path)).toEqual(['src/a.js', 'b.py']);
+    expect(blocks[0].content).toBe('const a = 1;\nmodule.exports = a;');
+    expect(blocks[1].content).toBe('def f():\n    return 2');
+  });
+
+  it('returns [] when there are no markers', () => {
+    expect(parseFileBlocks('just some prose, no files')).toEqual([]);
   });
 });
 

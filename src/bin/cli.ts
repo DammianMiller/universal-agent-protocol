@@ -460,7 +460,7 @@ bench
   .command('paired')
   .description('Run the paired A/B over a real-gate suite; reports accuracy + efficiency deltas with CIs')
   .option('--suite <dir>', 'Task suite directory (default: benchmarks/suites/real-gate)')
-  .option('--adapter <name>', 'Agent adapter: mock | opencode | claude', 'mock')
+  .option('--adapter <name>', 'Agent adapter: mock | opencode | claude | raw', 'mock')
   .option('-m, --model <id>', 'Model id passed to the adapter (default: $UAP_BENCH_MODEL or qwen35-a3b)')
   .option('--epochs <n>', 'Paired seeds per (task, condition) — research recommends >=5', '5')
   .option('--concurrency <n>', 'Max concurrent runs', '4')

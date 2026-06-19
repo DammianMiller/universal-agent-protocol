@@ -11,9 +11,9 @@
  * crashed run degrades to an incorrect result rather than aborting the suite.
  */
 
-import { spawn } from 'child_process';
-import { writeFileSync } from 'fs';
-import { join } from 'path';
+import { spawn, spawnSync } from 'child_process';
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { dirname, join, relative, resolve } from 'path';
 
 import { applyScaffolding, scaffoldEnv } from './scaffold.js';
 import { sanitizedEnv } from './suite.js';
@@ -372,4 +372,204 @@ export function hash01(s: string): number {
     h = Math.imul(h, 16777619);
   }
   return (h >>> 0) / 4294967296;
+}
+
+// ---------------------------------------------------------------------------
+// Raw single-shot completion adapter (NON-AGENTIC baseline) with an optional
+// gate-enforced execute->verify->fix loop. This isolates UAP *gate value*: the
+// baseline arm writes code in ONE completion (no self-verification), while the
+// gate arm loops against the visible in-repo test (task.gateCmd), feeding
+// failures back until it passes or a cap is hit — exactly the convergence a
+// bare model won't do on its own. Toggled by the 'gates' component, so the
+// paired delta attributes any lift to the gate loop.
+// ---------------------------------------------------------------------------
+
+export interface RawAdapterConfig {
+  /** OpenAI-compatible chat endpoint. Default ik-llama :8080. */
+  endpoint?: string;
+  /** Max execute->verify->fix iterations when gating. Default 4. */
+  maxGateIters?: number;
+  temperature?: number;
+}
+
+const FILE_MARKER_SYSTEM =
+  'You are a precise coding assistant. You will be given a task and the current ' +
+  'project files. Output the COMPLETE updated content of every file you change, ' +
+  'each wrapped EXACTLY like this and nothing else around it:\n' +
+  '<<<FILE relative/path.ext>>>\n<full file content>\n<<<END>>>\n' +
+  'Do not add commentary outside the markers. Do not use markdown code fences.';
+
+/** Parse <<<FILE path>>> ... <<<END>>> blocks from a model response. Pure. */
+export function parseFileBlocks(text: string): { path: string; content: string }[] {
+  const out: { path: string; content: string }[] = [];
+  const re = /<<<FILE\s+(.+?)>>>\r?\n([\s\S]*?)\r?\n?<<<END>>>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const path = m[1].trim();
+    if (path) out.push({ path, content: m[2] });
+  }
+  return out;
+}
+
+/** Read repo files to show the model (skips noise + binaries). */
+function readRepoFiles(workdir: string): { path: string; content: string }[] {
+  const SKIP = new Set(['node_modules', '.git', 'dist', '.uap', 'agents']);
+  const EXT_OK = /\.(js|ts|py|json|md|txt|cfg|toml|yaml|yml)$|^[^.]+$/;
+  const files: { path: string; content: string }[] = [];
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir)) {
+      if (SKIP.has(name)) continue;
+      const abs = join(dir, name);
+      const st = statSync(abs);
+      if (st.isDirectory()) walk(abs);
+      else if (st.size <= 64 * 1024 && EXT_OK.test(name) && name !== 'package.json') {
+        try {
+          files.push({ path: relative(workdir, abs), content: readFileSync(abs, 'utf-8') });
+        } catch {
+          /* skip unreadable */
+        }
+      }
+    }
+  };
+  walk(workdir);
+  return files;
+}
+
+/** Write parsed file blocks into workdir, refusing path-escape. */
+function applyFileBlocks(workdir: string, blocks: { path: string; content: string }[]): number {
+  let written = 0;
+  for (const b of blocks) {
+    const dest = resolve(workdir, b.path);
+    if (dest !== workdir && !dest.startsWith(workdir + '/')) continue; // no escape
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, b.content, 'utf-8');
+    written++;
+  }
+  return written;
+}
+
+interface ChatResult {
+  content: string;
+  tokens: number;
+  error: string | null;
+}
+
+async function chatCompletion(
+  endpoint: string,
+  model: string,
+  messages: { role: string; content: string }[],
+  temperature: number,
+  timeoutMs: number
+): Promise<ChatResult> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages, temperature, max_tokens: 4096 }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return { content: '', tokens: 0, error: `http ${res.status}` };
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+      usage?: { total_tokens?: number };
+    };
+    return {
+      content: data.choices?.[0]?.message?.content ?? '',
+      tokens: data.usage?.total_tokens ?? 0,
+      error: null,
+    };
+  } catch (e) {
+    return { content: '', tokens: 0, error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export class RawCompletionAdapter implements AgentAdapter {
+  readonly id = 'raw';
+  private readonly endpoint: string;
+  private readonly maxGateIters: number;
+  private readonly temperature: number;
+  constructor(cfg: RawAdapterConfig = {}) {
+    this.endpoint =
+      cfg.endpoint ?? process.env.UAP_RAW_ENDPOINT ?? 'http://127.0.0.1:8080/v1/chat/completions';
+    this.maxGateIters = cfg.maxGateIters ?? Number(process.env.UAP_RAW_GATE_ITERS ?? 4);
+    this.temperature = cfg.temperature ?? Number(process.env.UAP_RAW_TEMPERATURE ?? 0.2);
+  }
+
+  async run(ctx: AgentRunContext): Promise<AgentRunResult> {
+    const useGate = ctx.condition.components.has('gates') && Boolean(ctx.task.gateCmd);
+    const files = readRepoFiles(ctx.workdir);
+    const fileDump = files
+      .map((f) => `<<<FILE ${f.path}>>>\n${f.content}\n<<<END>>>`)
+      .join('\n\n');
+
+    const messages: { role: string; content: string }[] = [
+      { role: 'system', content: FILE_MARKER_SYSTEM },
+      {
+        role: 'user',
+        content:
+          `Task: ${ctx.task.instruction}\n\nCurrent files:\n\n${fileDump}\n\n` +
+          'Output the full updated content of each file you change, using the FILE markers.',
+      },
+    ];
+
+    let totalTokens = 0;
+    let turns = 0;
+    let gateRuns = 0;
+    let error: string | null = null;
+    const logParts: string[] = [];
+    const maxIters = useGate ? this.maxGateIters : 1;
+
+    for (let iter = 0; iter < maxIters; iter++) {
+      const chat = await chatCompletion(
+        this.endpoint,
+        ctx.model,
+        messages,
+        this.temperature,
+        ctx.task.agentTimeoutSec * 1000
+      );
+      turns++;
+      totalTokens += chat.tokens;
+      if (chat.error) {
+        error = chat.error;
+        break;
+      }
+      const blocks = parseFileBlocks(chat.content);
+      applyFileBlocks(ctx.workdir, blocks);
+      logParts.push(`--- turn ${turns}: ${blocks.length} file(s) ---`);
+
+      if (!useGate) break;
+
+      const gate = spawnSync('bash', ['-lc', ctx.task.gateCmd as string], {
+        cwd: ctx.workdir,
+        encoding: 'utf-8',
+        timeout: ctx.task.verifyTimeoutSec * 1000,
+        env: sanitizedEnv(),
+      });
+      gateRuns++;
+      if (gate.status === 0) break;
+      if (iter === maxIters - 1) break; // out of budget
+      const gateOut = `${gate.stdout ?? ''}\n${gate.stderr ?? ''}`.slice(-2000);
+      messages.push({ role: 'assistant', content: chat.content });
+      messages.push({
+        role: 'user',
+        content:
+          `The gate command \`${ctx.task.gateCmd}\` failed:\n${gateOut}\n\n` +
+          'Fix the code and re-output the full updated files using the FILE markers.',
+      });
+    }
+
+    return {
+      tokens: totalTokens > 0 ? totalTokens : null,
+      costUsd: null,
+      turns,
+      toolCalls: useGate ? gateRuns : 0,
+      wellFormed: null,
+      error,
+      rawLog: logParts.join('\n'),
+    };
+  }
 }

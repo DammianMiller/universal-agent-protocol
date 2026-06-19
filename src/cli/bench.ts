@@ -20,6 +20,7 @@ import {
   makeFullCondition,
   MockAdapter,
   opencodeAdapter,
+  RawCompletionAdapter,
   renderAblationMarkdown,
   renderMarkdown,
   runPaired,
@@ -52,8 +53,12 @@ function pickAdapter(name: string, model: string): AgentAdapter {
       return opencodeAdapter(model);
     case 'claude':
       return claudeAdapter(model);
+    case 'raw':
+      // Non-agentic single-shot completion; gate loop when the 'gates' component
+      // is active. Isolates UAP gate value vs a baseline that cannot self-verify.
+      return new RawCompletionAdapter();
     default:
-      throw new Error(`Unknown adapter '${name}' (expected: mock | opencode | claude)`);
+      throw new Error(`Unknown adapter '${name}' (expected: mock | opencode | claude | raw)`);
   }
 }
 

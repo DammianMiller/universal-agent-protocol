@@ -38,9 +38,18 @@ export const TaskSpecSchema = z.object({
   repoDir: z.string().default('repo'),
   /**
    * Shell command (run inside the scratch repo) that returns exit 0 iff the
-   * task is resolved. This is the deterministic ground-truth scorer.
+   * task is resolved. This is the deterministic ground-truth scorer (HIDDEN —
+   * the agent never sees it).
    */
   verifyCmd: z.string(),
+  /**
+   * Optional VISIBLE in-repo gate command (e.g. `node test.js`) that a
+   * gate-enforcing agent runs to self-verify and iterate. Distinct from
+   * verifyCmd: this is what the UAP gate loop optimizes against; verifyCmd
+   * (a superset) remains the authoritative ground truth. Used by the raw
+   * single-shot-vs-gate-loop adapter to isolate gate value.
+   */
+  gateCmd: z.string().optional(),
   /** Optional setup command run once after the repo is copied, before the agent. */
   setupCmd: z.string().optional(),
   /** Seconds before the verify command is killed and treated as failure. */
