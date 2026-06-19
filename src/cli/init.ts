@@ -16,6 +16,7 @@ import { ServerlessQdrantManager } from '../memory/serverless-qdrant.js';
 import { generateScripts, ensurePythonVenv, findPython } from './patterns.js';
 import { isQdrantReachable } from './memory.js';
 import { installSystemdUserServices } from './systemd-services.js';
+import { backupInstructionFiles } from './setup-backup.js';
 import type { AgentContextConfig, Platform } from '../types/index.js';
 
 export interface InitOptions {
@@ -28,6 +29,7 @@ export interface InitOptions {
   systemdServices?: boolean; // --systemd-services scaffolds user services for llama/proxy
   force?: boolean;
   projectDir?: string; // -d, --project-dir to override cwd
+  backup?: boolean; // --no-backup disables the pre-modify instruction-file backup
 }
 
 const PLATFORM_MAP: Record<string, Platform> = {
@@ -43,6 +45,18 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const configPath = join(cwd, '.uap.json');
 
   console.log(chalk.bold('\n🚀 Universal Agent Memory Initialization\n'));
+
+  // Back up agent instruction files (CLAUDE.md/AGENTS.md/.uap.json/…) before
+  // any merge or rewrite, so a setup run is always reversible. First
+  // side-effecting action; fail-soft. Disable with --no-backup.
+  if (options.backup !== false) {
+    const b = backupInstructionFiles(cwd);
+    if (b.backedUp.length > 0) {
+      console.log(
+        chalk.dim(`  Backed up ${b.backedUp.length} instruction file(s) → .uap-backups/${b.date}/`)
+      );
+    }
+  }
 
   // Check for existing config - if exists and not --force, just update
   const configExists = existsSync(configPath);

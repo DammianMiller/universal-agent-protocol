@@ -8,7 +8,7 @@
  * - Never loses information
  */
 
-interface Section {
+export interface Section {
   title: string;
   content: string;
   emoji?: string;
@@ -31,7 +31,7 @@ interface ExtractedContent {
 /**
  * Parse markdown content into sections
  */
-function parseSections(content: string): Section[] {
+export function parseSections(content: string): Section[] {
   const lines = content.split('\n');
   const sections: Section[] = [];
   let currentSection: Section | null = null;
@@ -121,13 +121,13 @@ const EXTRACTABLE_SECTIONS = new Set([
   'INFRASTRUCTURE',
 ]);
 
-function normalizeTitle(title: string): string {
+export function normalizeTitle(title: string): string {
   return title.toUpperCase()
     .replace(/[🔴⚡🤖📋🧠🌳🚀📁🏗️🔧🗄️🔐✅🔄📊⚙️🧪🏭⛔]/g, '')
     .trim();
 }
 
-function isStandardSection(title: string): boolean {
+export function isStandardSection(title: string): boolean {
   const normalized = normalizeTitle(title);
   for (const std of STANDARD_SECTIONS) {
     if (normalized.includes(std) || std.includes(normalized)) {

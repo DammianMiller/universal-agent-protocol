@@ -9,16 +9,35 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { AgentContextConfigSchema } from '../types/index.js';
 import { selfUpdateCli } from '../utils/self-update.js';
+import { detectCustomSections, extractAuto, reportOnly } from './setup-extract.js';
+import { backupInstructionFiles } from './setup-backup.js';
 
-interface SetupOptions {
+export interface SetupOptions {
   platform?: string[];
   patterns?: boolean; // --no-patterns to skip
   memory?: boolean; // --no-memory to skip
   verbose?: boolean; // --verbose for detailed output
   projectDir?: string; // -d, --project-dir to override cwd
-  interactive?: boolean; // -i, --interactive for wizard mode
+  interactive?: boolean; // -i, --interactive (legacy alias → guided wizard)
   systemdServices?: boolean; // --systemd-services scaffolds llama/proxy user services
   selfUpdate?: boolean; // --no-self-update to skip the CLI version check
+  nonInteractive?: boolean; // --non-interactive forces the scripted path
+  yes?: boolean; // -y/--yes forces the scripted path
+  extract?: boolean; // --no-extract skips custom-content extraction
+  extractAuto?: boolean; // --extract-auto extracts without prompting
+  backup?: boolean; // --no-backup disables instruction-file backup
+  legacyWizard?: boolean; // --legacy-wizard uses the old inquirer wizard
+}
+
+/**
+ * Decide whether to run the guided (interactive) wizard. Default is interactive,
+ * but a non-TTY / CI / explicit --non-interactive|-y run uses the scripted path
+ * so pipelines never hang on a prompt.
+ */
+export function resolveInteractive(options: SetupOptions): boolean {
+  if (options.nonInteractive || options.yes) return false;
+  if (!process.stdout.isTTY || process.env.CI) return false;
+  return true;
 }
 
 /**
@@ -26,38 +45,50 @@ interface SetupOptions {
  * Chains existing commands so everything "just works".
  */
 export async function setupCommand(options: SetupOptions): Promise<void> {
-  // Interactive wizard mode
-  if (options.interactive) {
-    const { runSetupWizard } = await import('./setup-wizard.js');
-    return runSetupWizard();
+  const cwd = options.projectDir || process.cwd();
+
+  // Run the self-update check once, up front, for every mode.
+  maybeSelfUpdate(options);
+
+  // Guided wizard is the DEFAULT (interactive TTY). --legacy-wizard keeps the
+  // old inquirer flow; non-interactive/CI run the scripted path below.
+  if (resolveInteractive(options)) {
+    if (options.legacyWizard) {
+      const { runSetupWizard } = await import('./setup-wizard.js');
+      return runSetupWizard();
+    }
+    const { runGuidedSetup } = await import('./guided-setup.js');
+    return runGuidedSetup(options);
   }
 
-  // Default to current working directory unless explicitly overridden
-  const defaultProjectDir = process.cwd();
-  const cwd = options.projectDir || defaultProjectDir;
   const withPatterns = options.patterns !== false;
   const withMemory = options.memory !== false;
 
   console.log(chalk.bold('\n🚀 Universal Agent Memory Setup\n'));
 
-  // Step 0: keep the globally-installed UAP CLI at the latest published version,
-  // so every project setup runs against current behaviour. Non-fatal: a source
-  // checkout, an offline registry, --no-self-update, or UAP_NO_SELF_UPDATE=1 all
-  // degrade to a skip without failing setup. Takes effect on the next invocation
-  // (the running process is not hot-swapped).
-  if (options.selfUpdate !== false) {
-    const suSpinner = ora('Checking for a newer UAP CLI…').start();
-    const su = selfUpdateCli();
-    if (su.updated) {
-      suSpinner.succeed(`Updated UAP CLI ${su.current} → ${su.latest} (re-run uap to use it)`);
-    } else if (su.skipped && su.reason) {
-      suSpinner.info(`UAP CLI v${su.current} — ${su.reason}`);
+  // Step 0: back up + extract on the ORIGINAL instruction files, BEFORE init
+  // merges/regenerates CLAUDE.md — otherwise extraction would parse the merged
+  // file and risk misreading regenerated standard scaffolding as custom content.
+  if (options.backup !== false) {
+    const b = backupInstructionFiles(cwd);
+    if (b.backedUp.length > 0) {
+      console.log(chalk.dim(`  Backed up ${b.backedUp.length} instruction file(s) → .uap-backups/${b.date}/`));
+    }
+  }
+  if (options.extract !== false) {
+    if (options.extractAuto) {
+      const r = await extractAuto(cwd);
+      console.log(
+        chalk.cyan(
+          `  Extracted ${r.extractedPolicies.length} policy(ies) + ${r.extractedSkills.length} skill(s) from custom instructions`
+        )
+      );
     } else {
-      suSpinner.succeed(`UAP CLI up to date (v${su.current})`);
+      reportOnly(detectCustomSections(cwd));
     }
   }
 
-  // Step 1: Run init (creates config, dirs, CLAUDE.md, memory DB, pattern scripts)
+  // Step 1: Run init (already backed up above → backup:false avoids a redundant pass)
   await initCommand({
     platform: options.platform || ['all'],
     memory: withMemory,
@@ -65,7 +96,34 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
     worktrees: true,
     systemdServices: options.systemdServices,
     projectDir: cwd,
+    backup: false,
   });
+
+  await runSetupSteps(cwd, options);
+}
+
+/** Self-update preflight (shared by all modes). Non-fatal. */
+function maybeSelfUpdate(options: SetupOptions): void {
+  if (options.selfUpdate === false) return;
+  const suSpinner = ora('Checking for a newer UAP CLI…').start();
+  const su = selfUpdateCli();
+  if (su.updated) {
+    suSpinner.succeed(`Updated UAP CLI ${su.current} → ${su.latest} (re-run uap to use it)`);
+  } else if (su.skipped && su.reason) {
+    suSpinner.info(`UAP CLI v${su.current} — ${su.reason}`);
+  } else {
+    suSpinner.succeed(`UAP CLI up to date (v${su.current})`);
+  }
+}
+
+/**
+ * Run the post-init setup steps (Qdrant, consolidation, venv, pattern index,
+ * MCP router, delivery-enforcement, hooks, summary). Shared by the scripted
+ * path and the guided wizard so neither duplicates the work.
+ */
+export async function runSetupSteps(cwd: string, options: SetupOptions): Promise<void> {
+  const withPatterns = options.patterns !== false;
+  const withMemory = options.memory !== false;
 
   if (!withMemory) {
     console.log(chalk.green('\n✅ Setup complete (memory disabled).\n'));

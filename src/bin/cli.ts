@@ -93,7 +93,7 @@ program
 
 program
   .command('setup')
-  .description('Full one-command setup: init + start Qdrant + install Python deps + index patterns')
+  .description('Guided one-command setup (arrow-key wizard by default): init + services + patterns, with instruction-file backup and custom-content extraction into policies/skills')
   .option(
     '-p, --platform <platforms...>',
     'Target platforms (claude, factory, vscode, opencode, omp, cline, codex, aider, continue, windsurf, zed, copilot, jetbrains, swe-agent, all)',
@@ -102,6 +102,12 @@ program
   .option('--no-patterns', 'Skip pattern RAG setup')
   .option('--no-memory', 'Skip memory system setup')
   .option('--no-self-update', 'Skip the automatic UAP CLI version check / self-update (also UAP_NO_SELF_UPDATE=1)')
+  .option('--non-interactive', 'Run the scripted (non-guided) setup; also used automatically on CI / non-TTY')
+  .option('-y, --yes', 'Alias for --non-interactive (accept defaults, no prompts)')
+  .option('--no-backup', 'Do not back up agent instruction files before modifying them')
+  .option('--no-extract', 'Do not detect/extract custom instruction content into policies/skills')
+  .option('--extract-auto', 'In non-interactive mode, auto-extract custom content (default: report only)')
+  .option('--legacy-wizard', 'Use the previous inquirer-based wizard instead of the guided flow')
   .option(
     '--systemd-services',
     'Optionally scaffold user systemd services for llama.cpp and anthropic proxy'
@@ -110,7 +116,7 @@ program
     '-d, --project-dir <path>',
     'Target project directory (defaults to current working directory)'
   )
-  .option('-i, --interactive', 'Run interactive setup wizard with feature toggles')
+  .option('-i, --interactive', 'Run the guided wizard (now the default; kept for back-compat)')
   .action(async (options) => {
     (await lazy.setup())(options);
   });
