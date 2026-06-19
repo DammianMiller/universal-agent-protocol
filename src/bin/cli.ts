@@ -37,6 +37,7 @@ const lazy = {
   harness: () => import('../cli/harness.js').then((m) => m.harnessCommand),
   ideate: () => import('../cli/ideate.js').then((m) => m.ideateCommand),
   deliver: () => import('../cli/deliver.js').then((m) => m.deliverCommand),
+  benchPaired: () => import('../cli/bench.js').then((m) => m.benchPairedCommand),
 };
 
 // Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
@@ -449,6 +450,28 @@ program
   .action(async (instructionParts: string[], options) => {
     const cmd = await lazy.deliver();
     await cmd(instructionParts.join(' '), options);
+  });
+
+// Paired UAP benchmark — controlled UAP-on vs UAP-off A/B
+const bench = program
+  .command('bench')
+  .description('Benchmark UAP impact with a controlled paired (UAP-on vs UAP-off) experiment');
+bench
+  .command('paired')
+  .description('Run the paired A/B over a real-gate suite; reports accuracy + efficiency deltas with CIs')
+  .option('--suite <dir>', 'Task suite directory (default: benchmarks/suites/real-gate)')
+  .option('--adapter <name>', 'Agent adapter: mock | opencode | claude', 'mock')
+  .option('-m, --model <id>', 'Model id passed to the adapter (default: $UAP_BENCH_MODEL or qwen35-a3b)')
+  .option('--epochs <n>', 'Paired seeds per (task, condition) — research recommends >=5', '5')
+  .option('--concurrency <n>', 'Max concurrent runs', '4')
+  .option('--ablation', 'Run the leave-one-out component ablation matrix instead of baseline-vs-full')
+  .option('--seed <n>', 'RNG seed for bootstrap/permutation (reproducible reports)', '1')
+  .option('--iterations <n>', 'Bootstrap/permutation iterations', '10000')
+  .option('--out <dir>', 'Artifact output directory (default: benchmark-results/paired-<ts>)')
+  .option('--json', 'Emit JSON to stdout instead of the Markdown report')
+  .action(async (options) => {
+    const cmd = await lazy.benchPaired();
+    await cmd(options);
   });
 
 // HALO harness-optimization commands

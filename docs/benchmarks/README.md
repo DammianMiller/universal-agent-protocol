@@ -21,5 +21,6 @@ UAP-on vs. baseline, 12 representative tasks across 8 categories:
 | [Token Optimization](TOKEN_OPTIMIZATION.md) | Where the token savings come from |
 | [Accuracy Analysis](ACCURACY_ANALYSIS.md) | Success-rate and error analysis |
 | [Comprehensive Benchmarks](COMPREHENSIVE_BENCHMARKS.md) | Extended measurements |
+| [Paired Harness](PAIRED_HARNESS.md) | Controlled UAP-on vs UAP-off A/B: `uap bench paired` |
 
 See the [documentation index](../INDEX.md) for the rest of the docs.

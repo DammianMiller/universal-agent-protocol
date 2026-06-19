@@ -1,0 +1,9 @@
+{
+  "name": "Smoke hard",
+  "instruction": "Smoke task (hard). Resolution is signalled by the mock adapter writing MOCK_SOLVED.",
+  "difficulty": "hard",
+  "tags": ["smoke"],
+  "verifyCmd": "test -f MOCK_SOLVED",
+  "verifyTimeoutSec": 10,
+  "agentTimeoutSec": 30
+}

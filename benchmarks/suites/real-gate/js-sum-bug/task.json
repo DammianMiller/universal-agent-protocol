@@ -1,0 +1,9 @@
+{
+  "name": "Fix sum() off-by-operator bug",
+  "instruction": "The function exported from sum.js is supposed to return the sum of its two arguments, but it currently returns the difference. Fix sum.js so that sum(a, b) returns a + b. Do not change the file's export shape.",
+  "difficulty": "easy",
+  "tags": ["bugfix", "javascript"],
+  "verifyCmd": "node -e \"const s=require('./sum.js'); process.exit(s(2,3)===5 && s(10,5)===15 && s(-1,1)===0 ? 0 : 1)\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 300
+}
