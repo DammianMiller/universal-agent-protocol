@@ -43,3 +43,18 @@ export function getInquirer(): typeof import('inquirer').default {
   }
   return _inquirer;
 }
+
+// ── @clack/prompts ────────────────────────────────────────────────────
+let _clack: typeof import('@clack/prompts') | null = null;
+
+/**
+ * Lazy-load @clack/prompts (the arrow-key TUI behind the setup wizard).
+ * Keeps the dependency off the hot path of non-interactive commands like
+ * `uap init`. Await before building a clack-backed PromptUI.
+ */
+export async function ensureClack(): Promise<typeof import('@clack/prompts')> {
+  if (!_clack) {
+    _clack = await import('@clack/prompts');
+  }
+  return _clack;
+}
