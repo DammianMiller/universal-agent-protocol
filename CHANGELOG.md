@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.55.0 (2026-06-20)
+
+- feat(delivery): execution gate — verify generated code actually runs
+- fix(hooks): resolve hook scripts via $CLAUDE_PROJECT_DIR with fail-open guard (#258)
+
+
 ## v1.54.0 (2026-06-20)
 
 - feat(delivery): agentic executor recovers files from text when model skips tool calls
