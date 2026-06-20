@@ -93,6 +93,9 @@ export interface IterationRecord {
   candidates?: CandidateSummary[];
   /** Judge rationale when a tie-break decided the winner (explorer mode) */
   judgeRationale?: string;
+  /** Fraction of spec criteria met when the acceptance gate ran (0..1); undefined
+   *  when no acceptance gate is configured or objective gates didn't pass. */
+  acceptanceMet?: number;
   durationMs: number;
 }
 
@@ -392,12 +395,27 @@ interface TurnOutcome {
   judgeRationale?: string;
 }
 
+/**
+ * Optional behavioral-completeness gate, run AFTER objective gates pass: judges
+ * whether the spec's requirements are actually implemented and returns
+ * `{ passed, feedback }` (feedback = the unmet criteria). Injected by the CLI so
+ * the loop stays decoupled from the acceptance-judge module. The implementation
+ * is expected to fail open internally (a judgment must not wedge delivery).
+ */
+export type AcceptanceGate = (projectRoot: string) => Promise<{
+  passed: boolean;
+  feedback: string;
+  /** Fraction of spec criteria met (0..1); lets the loop see acceptance progress. */
+  score?: number;
+}>;
+
 export class ConvergenceLoop {
   private readonly config: ConvergenceConfig;
   private readonly executor: LoopExecutor;
   private readonly ladderRunner: LadderRunner;
   private readonly applier: Applier;
   private readonly promptBuilder: PromptBuilder;
+  private readonly acceptanceGate?: AcceptanceGate;
 
   constructor(
     config: ConvergenceConfig,
@@ -406,6 +424,7 @@ export class ConvergenceLoop {
       ladderRunner?: LadderRunner;
       applier?: Applier;
       promptBuilder?: PromptBuilder;
+      acceptanceGate?: AcceptanceGate;
     } = {}
   ) {
     this.config = config;
@@ -413,6 +432,31 @@ export class ConvergenceLoop {
     this.ladderRunner = seams.ladderRunner ?? runLadder;
     this.applier = seams.applier ?? applyFileBlocks;
     this.promptBuilder = seams.promptBuilder ?? defaultPromptBuilder;
+    this.acceptanceGate = seams.acceptanceGate;
+  }
+
+  /**
+   * Behavioral-completeness check, run ONCE on a committed verdict (the baseline
+   * or a turn's final/winner ladder) — never per explorer candidate. When the
+   * objective gates passed but the spec's requirements aren't all met, flip the
+   * verdict to not-passed and append the gaps as feedback so the loop iterates to
+   * complete the spec. Fails open (returns the objective verdict) on any error.
+   * Returns the (possibly-flipped) ladder and the criteria-met fraction so the
+   * caller can treat acceptance progress as forward motion for stagnation.
+   */
+  private async judgeAcceptance(ladder: LadderResult): Promise<{ ladder: LadderResult; acceptanceMet?: number }> {
+    if (!this.acceptanceGate || !ladder.passed) return { ladder };
+    let acc: { passed: boolean; feedback: string; score?: number };
+    try {
+      acc = await this.acceptanceGate(this.config.projectRoot);
+    } catch {
+      return { ladder }; // fail open — the judge must never block delivery
+    }
+    if (acc.passed || !acc.feedback) return { ladder, acceptanceMet: acc.score };
+    return {
+      ladder: { ...ladder, passed: false, feedback: `${ladder.feedback}\n\n${acc.feedback}`.trim() },
+      acceptanceMet: acc.score,
+    };
   }
 
   /** Single-candidate turn: execute → apply → verify. */
@@ -562,6 +606,7 @@ export class ConvergenceLoop {
     const untilDelivered = this.config.untilDelivered ?? false;
     const maxTurnsCeiling = Math.max(maxTurns, this.config.maxTurnsCeiling ?? DEFAULT_MAX_TURNS_CEILING);
     let bestSoFar = -1;
+    let bestAcceptance = -1;
     let stagnantTurns = 0;
     let executor = this.executor;
     let explorerSettings = this.config.explorer;
@@ -571,8 +616,11 @@ export class ConvergenceLoop {
     const previousOutputChars = this.config.previousOutputChars ?? DEFAULT_PREVIOUS_OUTPUT_CHARS;
 
     // Baseline: a green tree means there is nothing for the loop to deliver.
+    // Acceptance gaps count as "not delivered", so an objective-green project
+    // with an incomplete spec still runs turns instead of short-circuiting.
     if (this.config.baselineCheck ?? true) {
-      const baseline = await this.ladderRunner(rungs, this.config.projectRoot, this.config.ladderOptions);
+      const rawBaseline = await this.ladderRunner(rungs, this.config.projectRoot, this.config.ladderOptions);
+      const baseline = (await this.judgeAcceptance(rawBaseline)).ladder;
       if (baseline.passed) {
         return {
           success: true,
@@ -683,6 +731,16 @@ export class ConvergenceLoop {
         ? await this.runExplorerTurn(instruction, prompt, rungs, explorerSettings, executor, ladderRunner, applyOptions)
         : await this.runSingleTurn(prompt, rungs, executor, ladderRunner, applyOptions);
 
+      // Acceptance: judge ONCE on this turn's committed verdict (single-turn
+      // result or explorer winner) — not per candidate — flipping it to
+      // not-passed with gap feedback when the spec isn't fully implemented.
+      let acceptanceMet: number | undefined;
+      if (outcome.ladder) {
+        const judged = await this.judgeAcceptance(outcome.ladder);
+        outcome.ladder = judged.ladder;
+        acceptanceMet = judged.acceptanceMet;
+      }
+
       finalOutput = outcome.output || finalOutput;
       if (outcome.ladder) {
         finalFeedback = outcome.ladder.feedback;
@@ -699,6 +757,7 @@ export class ConvergenceLoop {
         strategy: outcome.strategy,
         candidates: outcome.candidates,
         judgeRationale: outcome.judgeRationale,
+        acceptanceMet,
         durationMs: Date.now() - turnStart,
       };
       history.push(record);
@@ -739,8 +798,16 @@ export class ConvergenceLoop {
       // Stop extending (let the loop end) once progress stalls — an
       // unattended run must converge or give up, never spin forever.
       if (untilDelivered) {
-        if (record.score > bestSoFar) {
-          bestSoFar = record.score;
+        // Progress = a better objective score OR more acceptance criteria met.
+        // Without the acceptance term, an objective-green run pins score at 1.0,
+        // so acceptance-driven completion would always read as "stagnant" and the
+        // loop would give up after STAGNATION_LIMIT turns regardless of real
+        // spec progress.
+        const objectiveProgress = record.score > bestSoFar;
+        const acceptanceProgress = acceptanceMet !== undefined && acceptanceMet > bestAcceptance;
+        if (objectiveProgress || acceptanceProgress) {
+          if (objectiveProgress) bestSoFar = record.score;
+          if (acceptanceProgress) bestAcceptance = acceptanceMet as number;
           stagnantTurns = 0;
         } else {
           stagnantTurns++;
