@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.53.0 (2026-06-20)
+
+- feat(delivery): lenient file-block decoder for non-compliant model output
+
+
 ## v1.52.1 (2026-06-19)
 
 - docs(benchmarks): document controlled paired findings + wire into index/readme/architecture
