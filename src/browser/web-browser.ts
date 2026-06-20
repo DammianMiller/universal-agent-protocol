@@ -10,10 +10,17 @@ interface WebBrowserOptions {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type BrowserLike = any;
 
+/** A runtime error observed in the page (uncaught throw, console.error, failed request). */
+export interface PageError {
+  kind: 'pageerror' | 'console' | 'requestfailed';
+  message: string;
+}
+
 export class WebBrowser {
   private browser: BrowserLike | null = null;
   private context: BrowserLike | null = null;
   private page: BrowserLike | null = null;
+  private errors: PageError[] = [];
 
   async launch(options: WebBrowserOptions = {}): Promise<WebBrowser> {
     const { persistent = false, userDataDir, ...launchOptions } = options;
@@ -34,7 +41,55 @@ export class WebBrowser {
       this.page = await (this.context as any).newPage();
     }
 
+    this.attachErrorCapture();
     return this;
+  }
+
+  /**
+   * Record uncaught exceptions, console.error output, and failed requests so an
+   * execution gate can fail a page that loads but throws at runtime (e.g. a
+   * temporal-dead-zone ReferenceError that static checks never see). Best-effort:
+   * if the underlying page has no event emitter, capture silently degrades.
+   */
+  private attachErrorCapture(): void {
+    const page = this.page;
+    if (!page || typeof page.on !== 'function') return;
+    try {
+      page.on('pageerror', (err: unknown) => {
+        const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+        this.errors.push({ kind: 'pageerror', message: msg });
+      });
+      page.on('console', (msg: { type?: () => string; text?: () => string }) => {
+        try {
+          if (typeof msg.type === 'function' && msg.type() === 'error') {
+            this.errors.push({ kind: 'console', message: msg.text ? msg.text() : '' });
+          }
+        } catch {
+          /* malformed console event — ignore */
+        }
+      });
+      page.on('requestfailed', (req: { url?: () => string; failure?: () => { errorText?: string } | null }) => {
+        try {
+          const url = typeof req.url === 'function' ? req.url() : '';
+          const failure = typeof req.failure === 'function' ? req.failure() : null;
+          this.errors.push({ kind: 'requestfailed', message: `${url} ${failure?.errorText ?? ''}`.trim() });
+        } catch {
+          /* malformed event — ignore */
+        }
+      });
+    } catch {
+      /* page emitter unavailable — error capture degrades, gate still runs */
+    }
+  }
+
+  /** Runtime errors observed since launch (uncaught throws, console.error, failed requests). */
+  getErrors(): PageError[] {
+    return [...this.errors];
+  }
+
+  /** Drop captured errors (e.g. to scope capture to a single interaction). */
+  clearErrors(): void {
+    this.errors = [];
   }
 
   private async launchPersistentContext(

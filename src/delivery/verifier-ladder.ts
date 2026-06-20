@@ -14,6 +14,7 @@
 import { spawnSync } from 'child_process';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { synthesizeExecutionRung } from './execution-gate.js';
 
 /**
  * Cheap-first promotion tiers. The convergence loop runs the cheapest tier
@@ -24,6 +25,7 @@ import { join } from 'path';
  */
 export type GateTier =
   | 'fast'
+  | 'runtime'
   | 'integration'
   | 'deploy-dev'
   | 'ci'
@@ -33,6 +35,7 @@ export type GateTier =
 /** Cheap → expensive promotion order. */
 export const TIER_ORDER: GateTier[] = [
   'fast',
+  'runtime',
   'integration',
   'deploy-dev',
   'ci',
@@ -213,6 +216,16 @@ export function detectRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIM
   rungs.push(...detectIntegrationRungs(projectRoot, scripts, timeoutMs));
   const deployDev = detectDeployDevRung(projectRoot, scripts, timeoutMs);
   if (deployDev) rungs.push(deployDev);
+
+  // Execution gate: prove the artifact actually RUNS, not just that it builds or
+  // parses. Appended whenever a runnable artifact (web/node/cli/lib) is detected
+  // so crash-class bugs — TDZ ReferenceErrors, undefined cross-file globals,
+  // init throws — can never ship green. When nothing is runnable this is null and
+  // the caller's fail-closed floor (convergence-loop "no verifiable gates") holds.
+  if (!rungs.some((r) => r.id === 'execution')) {
+    const exec = synthesizeExecutionRung(projectRoot, timeoutMs);
+    if (exec) rungs.push(exec);
+  }
 
   return rungs;
 }
