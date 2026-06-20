@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.58.0 (2026-06-20)
+
+- feat(delivery): wire acceptance feedback into the deliver convergence loop
+
+
 ## v1.57.0 (2026-06-20)
 
 - feat(delivery): acceptance judge — verify behavioral completeness against the spec
