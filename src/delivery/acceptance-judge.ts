@@ -1,0 +1,229 @@
+/**
+ * Acceptance judge — behavioral completeness, beyond "does it crash".
+ *
+ * The execution gate proves the artifact RUNS; it cannot tell whether the spec
+ * was actually implemented. A generated game can load cleanly yet never call
+ * particles.draw(), render octopi with smooth arcs instead of pixel grids, or
+ * skip the boss every 5 levels. This gate extracts the spec's explicit
+ * requirements and judges each against the produced code (+ an optional runtime
+ * note), via a text LLM — so it works with the local model (no vision needed).
+ *
+ * It is a JUDGMENT, not a deterministic check: callers treat it as advisory or
+ * gate on it explicitly. The executor is injected (a prompt→text function), so
+ * the logic is fully unit-testable with a mock.
+ */
+
+import { lstatSync, readdirSync, readFileSync } from 'fs';
+import { join, relative } from 'path';
+import type { LoopExecutor } from './convergence-loop.js';
+
+export interface AcceptanceCriterion {
+  requirement: string;
+  met: boolean;
+  reason: string;
+}
+
+export interface AcceptanceResult {
+  passed: boolean;
+  /** Fraction of criteria met (1 when none were extracted). */
+  score: number;
+  criteria: AcceptanceCriterion[];
+  /** Set when the model output could not be parsed (fail-open → passed:true). */
+  parseError?: string;
+}
+
+export interface AcceptanceOptions {
+  spec: string;
+  projectRoot: string;
+  /** Model call: prompt → text. */
+  executor: LoopExecutor;
+  /** Pre-gathered evidence (overrides the file walk; for tests). */
+  evidence?: string;
+  /** One-line runtime observation (e.g. the execution gate's outputTail). */
+  runtimeNote?: string;
+  /** Max source files to include as evidence (default 40). */
+  maxFiles?: number;
+  /** Max total evidence chars (default 60000). */
+  maxChars?: number;
+}
+
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'coverage', '.uap', '.uap-deliver', 'agents', '.worktrees']);
+const SRC_EXT = /\.(js|mjs|cjs|ts|tsx|jsx|html|css|json|py|go|rs|java|rb|md|txt)$/i;
+/** Never ship likely-secret files into the LLM prompt (esp. for remote endpoints). */
+const SECRET_FILE_RE = /(^\.env)|secret|credential|\.pem$|\.key$|id_rsa/i;
+const DEFAULT_MAX_FILES = 40;
+// Generous by default — modern local models have very large context windows
+// (e.g. qwen3.6 ≈ 184K tokens), and truncating implementation files causes the
+// judge to report implemented features as "not visible" (false MISS).
+const DEFAULT_MAX_CHARS = 60_000;
+const PER_FILE_CHARS = 20_000;
+
+/** Bounded walk gathering source-file evidence (path-labelled, truncated). */
+export function gatherEvidence(projectRoot: string, maxFiles = DEFAULT_MAX_FILES, maxChars = DEFAULT_MAX_CHARS): string {
+  const root = projectRoot;
+  const files: string[] = [];
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 8 || files.length >= maxFiles) return;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (files.length >= maxFiles) return;
+      if (SKIP_DIRS.has(e) || (e.startsWith('.') && e !== '.')) continue;
+      const abs = join(dir, e);
+      let st;
+      try {
+        st = lstatSync(abs); // lstat: do NOT follow symlinks (avoid cycles + escaping projectRoot)
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) walk(abs, depth + 1);
+      else if (st.isFile() && SRC_EXT.test(e) && e !== 'package-lock.json' && !SECRET_FILE_RE.test(e) && st.size <= 200_000) files.push(abs);
+    }
+  };
+  walk(root, 0);
+
+  let out = '';
+  let used = 0;
+  for (const abs of files) {
+    if (used >= maxChars) break;
+    let content: string;
+    try {
+      content = readFileSync(abs, 'utf-8');
+    } catch {
+      continue;
+    }
+    const rel = relative(root, abs);
+    const budget = Math.min(content.length, maxChars - used, PER_FILE_CHARS);
+    out += `\n=== ${rel} ===\n${content.slice(0, budget)}\n`;
+    used += budget;
+  }
+  return out.trim();
+}
+
+function buildPrompt(spec: string, evidence: string, runtimeNote?: string): string {
+  return [
+    'You are a strict acceptance reviewer. Decide whether the IMPLEMENTATION satisfies',
+    'the EXPLICIT, checkable requirements in the SPEC. Judge ONLY from the code shown',
+    '(and the runtime note if given) — do not assume anything not visible.',
+    '',
+    'Extract each concrete, verifiable requirement from the spec (ignore vague aesthetic',
+    'wishes). For each, decide if the code clearly implements it. Be conservative: if the',
+    'code does not show it, mark it not met.',
+    '',
+    '=== SPEC ===',
+    spec.slice(0, 6_000),
+    '',
+    runtimeNote ? `=== RUNTIME OBSERVATION ===\n${runtimeNote}\n` : '',
+    '=== IMPLEMENTATION (code) ===',
+    evidence.slice(0, 64_000),
+    '',
+    'Respond with ONLY a JSON object, no prose, no code fences:',
+    '{"criteria":[{"requirement":"<short>","met":true|false,"reason":"<short>"}],"pass":true|false}',
+    'Set "pass" to true only if every important requirement is met.',
+  ].join('\n');
+}
+
+/**
+ * Extract the first PARSEABLE balanced top-level JSON object from model text.
+ * If a balanced object fails to parse (e.g. a stray `{…}` fragment in the
+ * preamble), it resumes scanning from the next `{` rather than giving up.
+ */
+export function extractJsonObject(text: string): Record<string, unknown> | null {
+  let from = text.indexOf('{');
+  while (from !== -1) {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let end = -1;
+    for (let i = from; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    if (end === -1) return null; // no balanced close — give up
+    try {
+      return JSON.parse(text.slice(from, end + 1)) as Record<string, unknown>;
+    } catch {
+      from = text.indexOf('{', from + 1); // malformed — try the next candidate
+    }
+  }
+  return null;
+}
+
+/**
+ * Run the acceptance gate. Fails OPEN (passed:true, parseError set) when the
+ * model output is unparseable or the executor throws — a judgment gate must
+ * never wedge delivery on its own nondeterminism.
+ */
+export async function runAcceptanceGate(opts: AcceptanceOptions): Promise<AcceptanceResult> {
+  const evidence = opts.evidence ?? gatherEvidence(opts.projectRoot, opts.maxFiles, opts.maxChars);
+  if (!evidence.trim()) {
+    return { passed: true, score: 1, criteria: [], parseError: 'no source evidence found' };
+  }
+
+  let raw: string;
+  try {
+    raw = await opts.executor(buildPrompt(opts.spec, evidence, opts.runtimeNote));
+  } catch (e) {
+    return { passed: true, score: 1, criteria: [], parseError: `executor error: ${String(e).slice(0, 120)}` };
+  }
+
+  const parsed = extractJsonObject(raw);
+  const rawCriteria = Array.isArray(parsed?.criteria) ? (parsed!.criteria as unknown[]) : null;
+  if (!parsed || !rawCriteria) {
+    return { passed: true, score: 1, criteria: [], parseError: 'unparseable judge verdict' };
+  }
+
+  const criteria: AcceptanceCriterion[] = rawCriteria
+    .map((c) => {
+      const o = (c ?? {}) as Record<string, unknown>;
+      return {
+        requirement: String(o.requirement ?? o.text ?? '').slice(0, 300),
+        met: o.met === true,
+        reason: String(o.reason ?? '').slice(0, 300),
+      };
+    })
+    .filter((c) => c.requirement);
+
+  if (criteria.length === 0) {
+    return { passed: true, score: 1, criteria: [], parseError: 'no criteria extracted' };
+  }
+
+  const metCount = criteria.filter((c) => c.met).length;
+  const score = metCount / criteria.length;
+  // Ignore the model's self-reported "pass" (unreliable) and require every
+  // extracted criterion to be met — conservative, matching the gate's purpose.
+  const passed = metCount === criteria.length;
+
+  return { passed, score, criteria };
+}
+
+/** Render a short human report of an acceptance result. */
+export function formatAcceptanceReport(result: AcceptanceResult): string {
+  if (result.parseError && result.criteria.length === 0) {
+    return `ACCEPTANCE: skipped (${result.parseError})`;
+  }
+  const head = result.passed
+    ? `ACCEPTANCE ✓ (${result.criteria.length}/${result.criteria.length} requirements met)`
+    : `ACCEPTANCE ✗ (${result.criteria.filter((c) => c.met).length}/${result.criteria.length} requirements met)`;
+  const lines = result.criteria.map((c) => `  [${c.met ? 'MET ' : 'MISS'}] ${c.requirement}${c.met ? '' : ` — ${c.reason}`}`);
+  return [head, ...lines].join('\n');
+}

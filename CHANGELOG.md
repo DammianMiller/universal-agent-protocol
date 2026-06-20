@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.57.0 (2026-06-20)
+
+- feat(delivery): acceptance judge — verify behavioral completeness against the spec
+
+
 ## v1.56.0 (2026-06-20)
 
 - feat(delivery): `uap verify` + Stop-hook runtime enforcement (covers agentic/opencode)
