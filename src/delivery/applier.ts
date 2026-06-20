@@ -11,6 +11,15 @@
  * Whole-file emission is deliberate: small models are far more reliable
  * emitting complete files than unified diffs. Fences of 3+ backticks are
  * supported so file contents containing ``` can be wrapped in ````.
+ *
+ * Small/local models (e.g. qwen) frequently ignore the `file:` contract and
+ * emit language-tagged or bare fences with the path stated as a header, an
+ * info-string label, or a leading comment. When the strict parse finds nothing
+ * the decoder falls back to a lenient recovery pass (parseFileBlocksLenient)
+ * that handles those conventions. The fallback only runs on an otherwise-empty
+ * parse, so compliant output is never reinterpreted, and every recovered path
+ * still passes validatePath — the lenient layer widens decode coverage, not the
+ * security boundary.
  */
 
 import {
@@ -269,8 +278,8 @@ export function listTestFiles(projectRoot: string): string[] {
   return [...found];
 }
 
-/** Extract file blocks from model output without writing anything. */
-export function parseFileBlocks(output: string): FileBlock[] {
+/** Extract strict `file:`-fenced blocks (the contract format). */
+function parseStrictFileBlocks(output: string): FileBlock[] {
   const blocks: FileBlock[] = [];
   for (const match of output.matchAll(FILE_BLOCK_RE)) {
     const path = match[2].trim();
@@ -278,6 +287,166 @@ export function parseFileBlocks(output: string): FileBlock[] {
     blocks.push({ path, content: match[3] });
   }
   return blocks;
+}
+
+/** Any fenced code block: fence, info string, body, and char offset. `\r?`
+ *  on the close line keeps recovery working on CRLF (Windows-origin) output. */
+const ANY_FENCE_RE = /^([ \t]*)(`{3,})([^\n]*)\n([\s\S]*?)^\1\2[ \t]*\r?$/gm;
+
+/**
+ * Fence languages that denote shell commands or tool output, not a source
+ * file. For these we require an EXPLICIT path (a `file:` label on the fence or
+ * a path comment in the body) before recovering — a bare ```bash block sitting
+ * under a sentence that happens to mention a filename must NOT be written to
+ * that file. The strict `file:` contract is unaffected; this only constrains
+ * the lenient preamble heuristic.
+ */
+const NON_FILE_LANGS = new Set([
+  'bash',
+  'sh',
+  'shell',
+  'zsh',
+  'console',
+  'terminal',
+  'text',
+  'txt',
+  'output',
+  'plaintext',
+  'log',
+  'diff',
+]);
+
+/**
+ * A label that, on a fence info string or a line just above a fence, names the
+ * file the block belongs to: `file:`, `file=`, `filepath:`, `path:`, `filename:`.
+ */
+const PATH_LABEL_RE =
+  /(?:^|[^A-Za-z0-9])(?:file|filepath|filename|path)\s*[:=]\s*[`'"]?([^\s`'"*<>]+)/i;
+
+/** Strip surrounding markdown/comment decoration from a candidate path token. */
+function cleanPathToken(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^[#>\-*\s]+/, '') // markdown heading / list / bold-dash prefixes
+    .replace(/^(?:\/\/|#|<!--|\/\*)\s*/, '') // leading comment openers
+    .replace(/\s*(?:-->|\*\/)\s*$/, '') // trailing comment closers
+    .replace(/[`'"*]+/g, '') // stray backticks / quotes / bold markers
+    .replace(/[:：]\s*$/, '') // a trailing label colon ("path:")
+    .replace(/^\.\//, '') // normalize leading ./
+    .trim();
+}
+
+/**
+ * True when `p` plausibly names a relative source file rather than prose. Used
+ * only by the lenient fallback to keep narration / language tags / pathless
+ * fences from being written to disk. validatePath remains the security gate;
+ * this is a false-positive filter, not a trust boundary.
+ */
+export function looksLikeFilePath(p: string): boolean {
+  const t = p.trim();
+  if (!t || t.length > 200) return false;
+  if (/\s/.test(t)) return false; // real paths emitted here have no spaces
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return false; // URLs (http://, file://)
+  if (!/^[A-Za-z0-9._/@+-]+$/.test(t)) return false; // conservative path charset
+  // Must look like a file: contain a directory separator OR a real extension.
+  const base = t.slice(t.lastIndexOf('/') + 1);
+  const hasExt = /\.[A-Za-z0-9]{1,8}$/.test(base) && !/^\.+$/.test(base);
+  return t.includes('/') || hasExt;
+}
+
+/** Extract the first plausible file path from a fence info string, or null. */
+function pathFromInfoString(info: string): string | null {
+  const labelled = info.match(PATH_LABEL_RE);
+  if (labelled) {
+    const p = cleanPathToken(labelled[1]);
+    if (looksLikeFilePath(p)) return p;
+  }
+  // Bare info string that is itself a path (e.g. ```src/game.js). Language tags
+  // like `js`/`typescript` fail looksLikeFilePath (no slash/extension).
+  for (const tok of info.trim().split(/\s+/)) {
+    const p = cleanPathToken(tok);
+    if (looksLikeFilePath(p)) return p;
+  }
+  return null;
+}
+
+/** First plausible path among the up-to-2 non-empty lines preceding a fence. */
+function pathFromPreamble(before: string): string | null {
+  const lines = before.split('\n');
+  let seen = 0;
+  for (let i = lines.length - 1; i >= 0 && seen < 2; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    seen++;
+    const labelled = line.match(PATH_LABEL_RE);
+    if (labelled) {
+      const p = cleanPathToken(labelled[1]);
+      if (looksLikeFilePath(p)) return p;
+    }
+    const cleaned = cleanPathToken(line);
+    if (looksLikeFilePath(cleaned)) return cleaned;
+  }
+  return null;
+}
+
+/** A path-only comment as the body's first line: returns [path, restOfBody]. */
+function pathFromBodyComment(body: string): [string, string] | null {
+  const nl = body.indexOf('\n');
+  const first = (nl === -1 ? body : body.slice(0, nl)).trim();
+  if (!/^(?:\/\/|#|<!--|\/\*)/.test(first)) return null;
+  const labelled = first.match(PATH_LABEL_RE);
+  const candidate = cleanPathToken(labelled ? labelled[1] : first);
+  if (!looksLikeFilePath(candidate)) return null;
+  return [candidate, nl === -1 ? '' : body.slice(nl + 1)];
+}
+
+/**
+ * Lenient recovery for models that ignore the strict `file:` contract (common
+ * with small/local models like qwen, which emit language-tagged or bare fences
+ * with the path stated as a header, label, or leading comment). Runs ONLY when
+ * the strict parse finds nothing. Every recovered path is still subject to
+ * validatePath; looksLikeFilePath keeps prose and pathless fences out.
+ */
+export function parseFileBlocksLenient(output: string): FileBlock[] {
+  const blocks: FileBlock[] = [];
+  for (const m of output.matchAll(ANY_FENCE_RE)) {
+    const info = m[3] ?? '';
+    let body = m[4] ?? '';
+    const lang = info.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+    const isShellOrOutput = NON_FILE_LANGS.has(lang);
+
+    // 1) explicit label/path on the fence info string
+    let path = pathFromInfoString(info);
+
+    // 2) a header/label line immediately above the fence — skipped for
+    //    shell/output fences, where a nearby filename mention is not a target.
+    if (!path && !isShellOrOutput) {
+      path = pathFromPreamble(output.slice(0, m.index ?? 0));
+    }
+
+    // 3) a path-only comment as the first line inside the block
+    if (!path) {
+      const fromBody = pathFromBodyComment(body);
+      if (fromBody) {
+        path = fromBody[0];
+        body = fromBody[1];
+      }
+    }
+
+    if (path) blocks.push({ path, content: body });
+  }
+  return blocks;
+}
+
+/**
+ * Extract file blocks from model output without writing anything. Prefers the
+ * strict `file:` contract; falls back to lenient recovery only when the strict
+ * parse is empty, so compliant output is never reinterpreted.
+ */
+export function parseFileBlocks(output: string): FileBlock[] {
+  const strict = parseStrictFileBlocks(output);
+  if (strict.length > 0) return strict;
+  return parseFileBlocksLenient(output);
 }
 
 /**
