@@ -24,6 +24,8 @@ import type { StrategySeed } from '../delivery/explorer.js';
 import { generateStrategySeeds, seedsFromIdeas } from '../delivery/ideation.js';
 import { planAutoOptimization } from '../delivery/auto-optimizer.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
+import { runAcceptanceGate, formatAcceptanceReport } from '../delivery/acceptance-judge.js';
+import type { AcceptanceGate } from '../delivery/convergence-loop.js';
 import { createAgenticExecutor, noopApplier, selectExecutorMode } from '../delivery/agentic-executor.js';
 import type { ExecutorMode } from '../delivery/agentic-executor.js';
 import type { AutoPlan } from '../delivery/auto-optimizer.js';
@@ -62,6 +64,9 @@ export interface DeliverOptions {
   selfGate?: boolean;
   /** `--force-self-gate`: author an acceptance gate even when project gates exist. */
   forceSelfGate?: boolean;
+  /** `--acceptance`: after objective gates pass, judge spec behavioral completeness
+   *  via the LLM and feed unmet criteria back so the loop completes the spec. */
+  acceptance?: boolean;
   /** `--executor <blind|agentic|auto>`: per-turn executor strategy (default auto). */
   executor?: string;
   /** `--keep-best`: revert the project if deliver ends with a worse gate score than baseline. */
@@ -744,11 +749,27 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       runner: runLadder,
       deployDevRunner: runDeployDevLadder,
     });
+  // Behavioral-completeness feedback: once objective gates pass, the acceptance
+  // judge checks the spec's requirements against the produced code and feeds
+  // unmet criteria back so the loop iterates to COMPLETE the spec, not just to
+  // stop crashing. Uses the blind (text) executor; fails open internally.
+  const acceptanceGate: AcceptanceGate | undefined = options.acceptance
+    ? async (root) => {
+        const r = await runAcceptanceGate({ spec: instruction, projectRoot: root, executor: blindExecutor });
+        return {
+          passed: r.passed,
+          score: r.score,
+          feedback: r.passed ? '' : `ACCEPTANCE GAPS — implement these to complete the spec:\n${formatAcceptanceReport(r)}`,
+        };
+      }
+    : undefined;
+
   const seams = {
     ladderRunner: tieredRunner,
     // The agentic executor mutates the repo directly, so nothing remains for
     // the file-block applier to materialize.
     ...(agentic ? { applier: noopApplier } : {}),
+    ...(acceptanceGate ? { acceptanceGate } : {}),
   };
 
   const loopConfig: ConvergenceConfig = {
