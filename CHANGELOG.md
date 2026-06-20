@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.54.0 (2026-06-20)
+
+- feat(delivery): agentic executor recovers files from text when model skips tool calls
+
+
 ## v1.53.0 (2026-06-20)
 
 - feat(delivery): lenient file-block decoder for non-compliant model output
