@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.60.0 (2026-06-20)
+
+- feat(deliver): prefer the acceptance judge over the brittle self-gate
+
+
 ## v1.59.0 (2026-06-20)
 
 - fix(delivery): re-detect gates mid-loop + run the execution gate in deliver
