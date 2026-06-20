@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.59.0 (2026-06-20)
+
+- fix(delivery): re-detect gates mid-loop + run the execution gate in deliver
+
+
 ## v1.58.0 (2026-06-20)
 
 - feat(delivery): wire acceptance feedback into the deliver convergence loop

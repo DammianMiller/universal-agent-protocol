@@ -16,7 +16,7 @@
  */
 
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
-import { detectRungs, runLadder } from './verifier-ladder.js';
+import { detectRungs, runLadder, tierOf } from './verifier-ladder.js';
 import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
 import { applyFileBlocks } from './applier.js';
 import { snapshotProtection } from './spec-imports.js';
@@ -213,6 +213,29 @@ export interface ConvergenceConfig {
    * applied" optimization permanently scores such turns 0%.
    */
   alwaysVerify?: boolean;
+  /**
+   * Re-detect gates each turn and merge any that newly become available. Gate
+   * detection runs once at t0, so a FROM-SCRATCH build (empty dir) never picks
+   * up the runtime execution gate or build/test gates — the artifact doesn't
+   * exist yet. With this on, once the model writes files (e.g. an index.html),
+   * the execution gate (and build/test/lint) join the required set and gate the
+   * remaining turns. Existing rungs (incl. an authored self-gate) are preserved;
+   * merge is union-by-id. Default off to keep other consumers unchanged.
+   *
+   * NOTE: re-detection runs at the top of each turn (before that turn's
+   * execute/apply), so a freshly-written artifact is gated starting the NEXT
+   * turn (one-turn lag). Multi-turn builds — the common case — are covered; a
+   * task that fully passes in a single turn, before its artifact existed at
+   * detection time, can still finish without the execution gate.
+   */
+  redetectRungs?: boolean;
+  /**
+   * Predicate limiting which re-detected rungs may be merged (honor the CLI's
+   * tier ceiling / --gates subset / --no-integration). When omitted, only the
+   * cheap always-safe tiers (fast + runtime) are merged, so re-detection never
+   * silently escalates to integration/deploy-dev work.
+   */
+  redetectFilter?: (rung: GateRung) => boolean;
   /** Best-of-N exploration per turn (Phase 2); omit for single-candidate turns */
   explorer?: ExplorerSettings;
   /** Structured critique of failed turns (Phase 3) */
@@ -459,6 +482,27 @@ export class ConvergenceLoop {
     };
   }
 
+  /**
+   * Re-run gate detection and return `rungs` plus any newly-detectable gates
+   * (union by id; existing rungs are kept and take precedence). Fail-soft: a
+   * detection error returns the current set unchanged.
+   */
+  private mergeDetectedRungs(rungs: GateRung[]): GateRung[] {
+    let detected: GateRung[];
+    try {
+      detected = detectRungs(this.config.projectRoot);
+    } catch {
+      return rungs;
+    }
+    const have = new Set(rungs.map((r) => r.id));
+    // Default policy: only merge cheap always-safe tiers (fast + runtime) so
+    // re-detection never silently escalates to integration/deploy-dev. A caller
+    // can pass redetectFilter to enforce its own tier ceiling / --gates subset.
+    const allow = this.config.redetectFilter ?? ((r: GateRung) => tierOf(r) === 'fast' || tierOf(r) === 'runtime');
+    const added = detected.filter((r) => !have.has(r.id) && allow(r));
+    return added.length > 0 ? [...rungs, ...added] : rungs;
+  }
+
   /** Single-candidate turn: execute → apply → verify. */
   private async runSingleTurn(
     prompt: string,
@@ -582,9 +626,9 @@ export class ConvergenceLoop {
    */
   async deliver(instruction: string): Promise<DeliveryResult> {
     const start = Date.now();
-    const rungs =
+    let rungs =
       this.config.rungs && this.config.rungs.length > 0
-        ? this.config.rungs
+        ? [...this.config.rungs]
         : detectRungs(this.config.projectRoot);
 
     if (rungs.length === 0) {
@@ -706,6 +750,15 @@ export class ConvergenceLoop {
 
     for (let turn = 1; turn <= maxTurns; turn++) {
       const turnStart = Date.now();
+
+      // Re-detect gates: a from-scratch build has no artifact at t0, so the
+      // execution gate (and build/test/lint) only become detectable once the
+      // model has written files. Merge any newly-available gates (union by id;
+      // existing rungs incl. a self-gate are preserved) so the remaining turns
+      // are gated on the real artifact, not just the t0 fallback.
+      if (this.config.redetectRungs) {
+        rungs = this.mergeDetectedRungs(rungs);
+      }
 
       // Poll for operator guidance to steer this turn without stopping the
       // mission. Fail-soft — guidance is a best-effort steering channel.

@@ -327,20 +327,25 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
 
   // Detect gates, optionally filtered to a subset
   let rungs = detectRungs(projectRoot);
+  let gatesWanted: Set<string> | null = null;
   if (options.gates) {
-    const wanted = new Set(options.gates.split(',').map((g) => g.trim()));
-    const unknown = [...wanted].filter((id) => !rungs.some((r) => r.id === id));
+    gatesWanted = new Set(options.gates.split(',').map((g) => g.trim()));
+    const unknown = [...gatesWanted].filter((id) => !rungs.some((r) => r.id === id));
     if (unknown.length > 0) {
       fail(`Unknown gate id(s): ${unknown.join(', ')}. Detected: ${rungs.map((r) => r.id).join(', ')}`);
     }
-    rungs = rungs.filter((r) => wanted.has(r.id));
+    rungs = rungs.filter((r) => gatesWanted!.has(r.id));
   }
 
   // Resolve the highest LOCAL tier to run (cheap-first promotion). The
   // ci/staging/prod tiers are never run locally — they are verified after
   // commit via the CI watcher — so the local ceiling is deploy-dev.
   const LOCAL_TIER_CEILING = TIER_ORDER.indexOf('deploy-dev');
-  let maxTier: GateTier = 'fast';
+  // Default ceiling is 'runtime' (fast + the runtime execution gate), NOT 'fast':
+  // the execution gate that proves the artifact actually runs is tier 'runtime',
+  // so a 'fast' ceiling would silently drop it. integration/deploy-dev stay
+  // opt-in (via detected suite / --deploy-dev / --tiers).
+  let maxTier: GateTier = 'runtime';
   let allowedTiers: Set<GateTier> | null = null;
   if (options.tiers) {
     const parsed = options.tiers.split(',').map((t) => t.trim()).filter(Boolean) as GateTier[];
@@ -779,6 +784,20 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // The agentic executor mutates the repo directly (no-op applier), so
     // gates must run every turn regardless of applier file count.
     alwaysVerify: agentic ? true : undefined,
+    // From-scratch builds have no artifact at t0, so the runtime execution gate
+    // (and build/test/lint) aren't detectable yet. Re-detect each turn so they
+    // engage once the model writes files, rather than relying only on the t0
+    // self-gate fallback. The filter mirrors the t0 scoping so re-detection
+    // honors --gates / --no-integration / the tier ceiling (never escalates).
+    redetectRungs: true,
+    redetectFilter: (r) => {
+      if (gatesWanted && !gatesWanted.has(r.id)) return false;
+      const t = tierOf(r);
+      if (TIER_ORDER.indexOf(t) > TIER_ORDER.indexOf(maxTier)) return false;
+      if (allowedTiers) return allowedTiers.has(t);
+      if (t === 'integration' && options.integration === false) return false;
+      return true;
+    },
     // Judge/critic evaluate text, so they always use the blind executor even
     // when the loop's executor is agentic.
     explorer: candidates ? { candidates, seeds, judge: createModelJudge(blindExecutor) } : undefined,
