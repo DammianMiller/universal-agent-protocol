@@ -23,7 +23,7 @@ import { join, dirname, resolve, relative, isAbsolute } from 'path';
 import type { ModelConfig } from '../models/types.js';
 import type { LoopExecutor } from './convergence-loop.js';
 import type { ApplyResult } from './applier.js';
-import { protectedWritePathReason } from './applier.js';
+import { protectedWritePathReason, parseFileBlocks } from './applier.js';
 
 export interface AgenticExecutorOptions {
   projectRoot: string;
@@ -339,6 +339,46 @@ export function createAgenticExecutor(
 
       const calls = msg.tool_calls ?? [];
       if (calls.length === 0) {
+        // Robustness: weaker/loaded local models sometimes abandon tool-calling
+        // and emit file CONTENTS as fenced blocks in the text instead of calling
+        // write_file. Without this, those files are silently lost and the
+        // agentic path "emits nothing". Recover them through the same write
+        // pipeline (protected-path guards enforced) and keep the loop going so
+        // the model can still verify and finish.
+        const recovered = parseFileBlocks(msg.content ?? '');
+        if (recovered.length > 0) {
+          const written: string[] = [];
+          for (const block of recovered) {
+            const result = runTool(
+              opts.projectRoot,
+              'write_file',
+              { path: block.path, content: block.content },
+              bashTimeoutMs,
+              protectedFiles,
+              protectGateConfigs
+            );
+            opts.onEvent?.({
+              round,
+              kind: 'tool',
+              tool: 'write_file',
+              detail: `recovered-from-text ${block.path} -> ${result.slice(0, 60)}`,
+            });
+            if (result.startsWith('OK:')) written.push(block.path);
+            summaries.push(`write_file(${block.path}) [recovered-from-text]`);
+          }
+          // Feed back what we materialized and nudge it to verify or finish,
+          // rather than ending the turn empty-handed.
+          messages.push({ role: 'assistant', content: msg.content ?? null });
+          messages.push({
+            role: 'user',
+            content:
+              `Detected and wrote ${written.length} file(s) from your message: ` +
+              `${written.join(', ') || '(none — all rejected)'}. ` +
+              'Use the write_file tool directly for any further changes, verify with run_bash, ' +
+              'then call finish.',
+          });
+          continue;
+        }
         opts.onEvent?.({ round, kind: 'final', detail: (msg.content ?? '').slice(0, 200) });
         return msg.content || summaries.join('; ') || 'agent produced no tool calls';
       }
