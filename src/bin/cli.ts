@@ -462,6 +462,9 @@ program
   .option('--full', 'Also run the expensive integration / deploy-dev tiers')
   .option('--gates <ids>', 'Comma-separated rung-id subset (e.g. build,test,execution)')
   .option('--timeout <ms>', 'Per-rung timeout override in milliseconds')
+  .option('--acceptance <specfile>', 'Judge behavioral completeness against a spec file (LLM acceptance gate; --strict to gate on it)')
+  .option('-m, --model <preset>', 'Model preset for the acceptance gate (default: $UAP_DELIVER_MODEL or qwen35-a3b)')
+  .option('--endpoint <url>', 'Override the model endpoint for the acceptance gate')
   .option('--json', 'Emit JSON result')
   .action(async (options) => {
     const cmd = await lazy.verify();
@@ -473,6 +476,9 @@ program
       gates: options.gates,
       json: Boolean(options.json),
       timeoutMs: options.timeout ? Number(options.timeout) : undefined,
+      acceptanceFile: options.acceptance,
+      model: options.model,
+      endpoint: options.endpoint,
     });
   });
 

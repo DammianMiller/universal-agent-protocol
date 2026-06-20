@@ -64,6 +64,32 @@ describe('runVerify', () => {
     expect(r.rungs.length).toBe(1);
   });
 
+  it('acceptance is ADVISORY by default and BLOCKS only under --strict', async () => {
+    writeWebGame(dir, "document.getElementById('c').getContext('2d').fillRect(0,0,1,1);");
+    const failingJudge = async () =>
+      '{"criteria":[{"requirement":"has a boss","met":false,"reason":"no boss"}],"pass":false}';
+
+    const advisory = await runVerify({
+      dir,
+      runtimeOnly: true,
+      acceptanceSpec: 'game with a boss',
+      acceptanceExecutor: failingJudge,
+    });
+    expect(advisory.acceptance?.passed).toBe(false);
+    expect(advisory.exitCode).toBe(0); // advisory — runtime passed, acceptance doesn't block
+    expect(advisory.report).toMatch(/ACCEPTANCE ✗/);
+
+    const strict = await runVerify({
+      dir,
+      runtimeOnly: true,
+      strict: true,
+      acceptanceSpec: 'game with a boss',
+      acceptanceExecutor: failingJudge,
+    });
+    expect(strict.exitCode).toBe(1); // --strict → acceptance failure blocks
+    expect(strict.passed).toBe(false);
+  });
+
   it('--gates filters the rung set by id', async () => {
     writeFileSync(
       join(dir, 'package.json'),

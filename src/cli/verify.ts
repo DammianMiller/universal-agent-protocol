@@ -10,6 +10,8 @@
  */
 
 import { detectRungs, runTieredLadder, tierOf, type GateRung, type GateTier, type LadderResult } from '../delivery/verifier-ladder.js';
+import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
+import type { LoopExecutor } from '../delivery/convergence-loop.js';
 
 export interface VerifyOptions {
   /** Project directory to verify (default: cwd). */
@@ -26,6 +28,10 @@ export interface VerifyOptions {
   json?: boolean;
   /** Per-rung timeout override (ms). */
   timeoutMs?: number;
+  /** Spec text to judge behavioral completeness against (the acceptance gate). */
+  acceptanceSpec?: string;
+  /** Model executor for the acceptance gate (injected; verifyCommand builds it). */
+  acceptanceExecutor?: LoopExecutor;
 }
 
 export interface VerifyResult {
@@ -36,6 +42,7 @@ export interface VerifyResult {
   report: string;
   ladder?: LadderResult;
   rungs: GateRung[];
+  acceptance?: AcceptanceResult;
 }
 
 /** Core verify logic — pure-ish (no process.exit), so it is unit-testable. */
@@ -51,10 +58,22 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     rungs = rungs.filter((r) => tierOf(r) === 'runtime');
   }
 
+  // The acceptance gate (behavioral completeness) can run with or without
+  // runtime gates; compute it once and fold it into the result below.
+  const acceptance =
+    opts.acceptanceSpec && opts.acceptanceExecutor
+      ? await runAcceptanceGate({ spec: opts.acceptanceSpec, projectRoot: dir, executor: opts.acceptanceExecutor })
+      : undefined;
+  // Acceptance is a JUDGMENT: it only affects the exit code under --strict, so
+  // its nondeterminism never hard-blocks a session by default.
+  const acceptanceBlocks = Boolean(acceptance && !acceptance.passed && opts.strict);
+  const acceptanceReport = acceptance ? `\n${formatAcceptanceReport(acceptance)}` : '';
+
   if (rungs.length === 0) {
     // Fail-closed in strict mode: refuse to report "verified" when nothing could
     // actually be checked. Otherwise it's an honest no-op, not a failure.
-    const passed = !opts.strict;
+    const gatePassed = !opts.strict;
+    const passed = gatePassed && !acceptanceBlocks;
     const msg = opts.runtimeOnly
       ? 'no runnable artifact detected — nothing to execute'
       : 'no verifiable gates detected (no build/test/runnable artifact)';
@@ -62,8 +81,9 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
       passed,
       exitCode: passed ? 0 : 1,
       empty: true,
-      report: `${opts.strict && !passed ? 'UNVERIFIED' : 'SKIP'}: ${msg}`,
+      report: `${opts.strict && !gatePassed ? 'UNVERIFIED' : 'SKIP'}: ${msg}${acceptanceReport}`,
       rungs,
+      acceptance,
     };
   }
 
@@ -73,7 +93,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
   });
 
-  const report = formatReport(ladder);
+  const report = formatReport(ladder) + acceptanceReport;
   // Exit-code contract for the Stop hook: 0 = verified, 1 = a REAL gate failure
   // (the code is broken), 3 = INFRA failure (gate timed out / could not spawn /
   // killed by signal). The hook hard-blocks only on 1; 3 fails OPEN so a flaky
@@ -85,13 +105,15 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     );
     exitCode = realFailures.length > 0 ? 1 : 3;
   }
+  if (acceptanceBlocks && exitCode === 0) exitCode = 1;
   return {
-    passed: ladder.passed,
+    passed: ladder.passed && !acceptanceBlocks,
     exitCode,
     empty: false,
     report,
     ladder,
     rungs,
+    acceptance,
   };
 }
 
@@ -116,9 +138,50 @@ function formatReport(ladder: LadderResult): string {
   return `${header}\n${lines.join('\n')}`;
 }
 
+/** Build a text executor (prompt → completion) for the acceptance judge. */
+async function buildAcceptanceExecutor(modelPreset?: string, endpoint?: string): Promise<LoopExecutor> {
+  const { OpenAICompatClient } = await import('../models/openai-compat-client.js');
+  const { ModelPresets } = await import('../models/types.js');
+  const presetId = modelPreset ?? process.env.UAP_DELIVER_MODEL ?? 'qwen35-a3b';
+  const model = ModelPresets[presetId];
+  if (!model) {
+    throw new Error(`Unknown model preset '${presetId}'. Available: ${Object.keys(ModelPresets).join(', ')}`);
+  }
+  const resolved = endpoint ? { ...model, endpoint } : model;
+  // Privacy signal: the acceptance gate ships project source to the model. Warn
+  // when that endpoint is NOT local so a remote target is a conscious choice.
+  const ep = resolved.endpoint ?? process.env.UAP_INFERENCE_ENDPOINT ?? '';
+  if (ep && !/^https?:\/\/(localhost|127\.|0\.0\.0\.0|\[?::1\]?|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(ep)) {
+    process.stderr.write(`uap verify: acceptance gate will send project source to a NON-LOCAL endpoint (${ep}).\n`);
+  }
+  const client = new OpenAICompatClient();
+  return async (prompt: string) => {
+    const r = await client.complete(resolved, prompt, { temperature: 0.1 });
+    return r.content;
+  };
+}
+
 /** CLI entry: print the report and exit with the gate-derived code. */
-export async function verifyCommand(options: VerifyOptions): Promise<void> {
-  const result = await runVerify(options);
+export async function verifyCommand(
+  options: VerifyOptions & { acceptanceFile?: string; model?: string; endpoint?: string }
+): Promise<void> {
+  // Resolve the acceptance spec (a file path) + model executor lazily so the
+  // common `uap verify` path never touches the model layer.
+  let opts: VerifyOptions = options;
+  if (options.acceptanceFile) {
+    const { readFileSync } = await import('fs');
+    let spec: string;
+    try {
+      spec = readFileSync(options.acceptanceFile, 'utf-8');
+    } catch {
+      process.stderr.write(`uap verify: cannot read acceptance spec '${options.acceptanceFile}'\n`);
+      process.exit(2);
+      return;
+    }
+    const executor = await buildAcceptanceExecutor(options.model, options.endpoint);
+    opts = { ...options, acceptanceSpec: spec, acceptanceExecutor: executor };
+  }
+  const result = await runVerify(opts);
   if (options.json) {
     process.stdout.write(
       JSON.stringify(
@@ -127,6 +190,7 @@ export async function verifyCommand(options: VerifyOptions): Promise<void> {
           empty: result.empty,
           score: result.ladder?.score ?? null,
           results: result.ladder?.results ?? [],
+          acceptance: result.acceptance ?? null,
         },
         null,
         2
