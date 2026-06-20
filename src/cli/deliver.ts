@@ -24,8 +24,61 @@ import type { StrategySeed } from '../delivery/explorer.js';
 import { generateStrategySeeds, seedsFromIdeas } from '../delivery/ideation.js';
 import { planAutoOptimization } from '../delivery/auto-optimizer.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
-import { runAcceptanceGate, formatAcceptanceReport } from '../delivery/acceptance-judge.js';
+import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
+import { runExecutionGate } from '../delivery/execution-gate.js';
 import type { AcceptanceGate } from '../delivery/convergence-loop.js';
+
+/**
+ * Map an acceptance verdict to a loop gate result, honoring primary vs secondary
+ * mode. PURE — unit-tested in isolation from the model call.
+ *
+ * - Genuine fully-met verdict → pass.
+ * - PRIMARY (acceptance is the sole convergence target, no objective project
+ *   gates): an inconclusive / no-evidence verdict is NOT "done" — fail so the
+ *   loop keeps building (bounded by the ceiling). Prevents a vacuous turn-1
+ *   "success" on an empty repo where the judge has nothing to evaluate.
+ * - SECONDARY (real objective gates exist): fail OPEN on judge flakiness — a
+ *   green objective delivery is never blocked by the judge's nondeterminism.
+ */
+/**
+ * Decide how deliver establishes its convergence target when (or whether) the
+ * project exposes objective gates. PURE — unit-tested. See call site for the
+ * rationale on preferring the acceptance judge over the scripted self-gate.
+ */
+export function decideGateStrategy(opts: {
+  hasAcceptance: boolean;
+  noRealGates: boolean;
+  forceSelfGate: boolean;
+  selfGateAllowed: boolean;
+}): { acceptancePrimary: boolean; needsSelfGate: boolean; noGatesError: boolean } {
+  const acceptancePrimary = opts.hasAcceptance && opts.noRealGates && !opts.forceSelfGate;
+  const needsSelfGate =
+    opts.selfGateAllowed && !acceptancePrimary && (opts.noRealGates || opts.forceSelfGate);
+  const noGatesError = opts.noRealGates && !needsSelfGate && !acceptancePrimary;
+  return { acceptancePrimary, needsSelfGate, noGatesError };
+}
+
+export function resolveAcceptanceVerdict(
+  r: AcceptanceResult,
+  acceptancePrimary: boolean
+): { passed: boolean; feedback: string; score?: number } {
+  if (r.passed && !r.parseError) return { passed: true, score: r.score, feedback: '' };
+  const gaps = `ACCEPTANCE GAPS — implement these to complete the spec:\n${formatAcceptanceReport(r)}`;
+  if (acceptancePrimary) {
+    if (r.parseError) {
+      // No-evidence / unparseable: not done, and NOT progress. Omit the score —
+      // runAcceptanceGate reports score:1 on its fail-open paths, which would
+      // otherwise saturate the loop's acceptance-progress (bestAcceptance) and
+      // mask real per-criterion gains on later turns.
+      return {
+        passed: false,
+        feedback: `Acceptance inconclusive (${r.parseError}). Keep implementing the spec — ensure the source files exist and are complete.`,
+      };
+    }
+    return { passed: false, score: r.score, feedback: gaps };
+  }
+  return { passed: r.passed, score: r.score, feedback: r.passed ? '' : gaps };
+}
 import { createAgenticExecutor, noopApplier, selectExecutorMode } from '../delivery/agentic-executor.js';
 import type { ExecutorMode } from '../delivery/agentic-executor.js';
 import type { AutoPlan } from '../delivery/auto-optimizer.js';
@@ -42,7 +95,7 @@ import {
   retrievePracticesSemantic,
 } from '../delivery/practice.js';
 import { detectRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER } from '../delivery/verifier-ladder.js';
-import type { GateTier, LadderRunFn } from '../delivery/verifier-ladder.js';
+import type { GateTier, LadderRunFn, GateRung } from '../delivery/verifier-ladder.js';
 import { runDeployDevLadder } from '../delivery/deploy-dev-gate.js';
 import { commitPushAndWatch } from '../delivery/ci-watcher.js';
 import type { DeployEnvironment } from '../delivery/ci-watcher.js';
@@ -403,10 +456,41 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // target instead of vacuously "succeeding" in one turn. The gate is authored
   // after the model client exists (below); here we only decide intent.
   const selfGateAllowed = options.selfGate !== false && process.env.UAP_DELIVER_SELF_GATE !== '0';
-  const needsSelfGate = selfGateAllowed && (rungs.length === 0 || options.forceSelfGate === true);
-  if (rungs.length === 0 && !needsSelfGate) {
+  const noRealGates = rungs.length === 0;
+  // With --acceptance and no objective gates, the LLM acceptance judge is the
+  // convergence target instead of a model-authored self-gate. The self-gate
+  // greps for hard-coded patterns and fails when the implementation's naming
+  // differs from its own assertions (e.g. `small:{size:36}` vs a grep for
+  // `SMALL_OCTOPUS_SIZE.*36`) — false negatives that block delivery of correct
+  // code. The judge evaluates the spec semantically. --force-self-gate overrides.
+  const { acceptancePrimary, needsSelfGate, noGatesError } = decideGateStrategy({
+    hasAcceptance: Boolean(options.acceptance),
+    noRealGates,
+    forceSelfGate: options.forceSelfGate === true,
+    selfGateAllowed,
+  });
+  if (noGatesError) {
     fail(
       `No verifiable gates detected in ${projectRoot} (need package.json scripts, or drop --no-self-gate to author one).`
+    );
+  }
+  // Bootstrap rung: an objective floor so the loop runs and reaches the
+  // acceptance judge each turn. It trivially passes; the REAL objective check is
+  // the execution gate, which joins via redetectRungs once the model writes
+  // files. Acceptance fails closed in primary mode (below), so turn 1 on an
+  // empty repo can't vacuously "deliver" — there is no implementation to accept.
+  if (acceptancePrimary) {
+    rungs.push({
+      id: 'bootstrap',
+      name: 'Loop bootstrap (acceptance judge is the convergence target)',
+      command: 'node',
+      args: ['-e', ''],
+      required: true,
+      timeoutMs: 5_000,
+      tier: 'fast',
+    } satisfies GateRung);
+    console.log(
+      chalk.cyan('⚖ acceptance: LLM judge is the convergence target (no objective project gates; self-gate skipped)')
     );
   }
 
@@ -760,12 +844,23 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // stop crashing. Uses the blind (text) executor; fails open internally.
   const acceptanceGate: AcceptanceGate | undefined = options.acceptance
     ? async (root) => {
+        // Primary mode: the only objective rung is the trivial bootstrap, and the
+        // real execution gate joins via redetect only on the NEXT turn (one-turn
+        // lag). So gate the artifact's runtime HERE too — it must actually RUN
+        // before completeness is judged — closing the gap where a 1-turn build
+        // could be declared delivered on the judge alone. Idempotent with the
+        // redetected execution rung on later turns.
+        if (acceptancePrimary) {
+          const exec = await runExecutionGate(root);
+          if (!exec.passed) {
+            return {
+              passed: false,
+              feedback: `EXECUTION FAILED — the code must run before it can be accepted:\n${exec.outputTail}`,
+            };
+          }
+        }
         const r = await runAcceptanceGate({ spec: instruction, projectRoot: root, executor: blindExecutor });
-        return {
-          passed: r.passed,
-          score: r.score,
-          feedback: r.passed ? '' : `ACCEPTANCE GAPS — implement these to complete the spec:\n${formatAcceptanceReport(r)}`,
-        };
+        return resolveAcceptanceVerdict(r, acceptancePrimary);
       }
     : undefined;
 
