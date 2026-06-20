@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.56.0 (2026-06-20)
+
+- feat(delivery): `uap verify` + Stop-hook runtime enforcement (covers agentic/opencode)
+
+
 ## v1.55.0 (2026-06-20)
 
 - feat(delivery): execution gate — verify generated code actually runs
