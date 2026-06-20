@@ -30,7 +30,10 @@ CHANGED_FILES=$(git -C "$PROJECT_DIR" diff --name-only HEAD 2>/dev/null || true)
 STAGED_FILES=$(git -C "$PROJECT_DIR" diff --cached --name-only 2>/dev/null || true)
 UNTRACKED_FILES=$(git -C "$PROJECT_DIR" ls-files --others --exclude-standard 2>/dev/null || true)
 
-ALL_CHANGES="${CHANGED_FILES}${STAGED_FILES}${UNTRACKED_FILES}"
+# Newline-join the three lists: plain concatenation mashes the last file of one
+# list into the first of the next (e.g. "a.jsb.ts"), which breaks the per-line
+# extension greps below.
+ALL_CHANGES=$(printf '%s\n%s\n%s\n' "$CHANGED_FILES" "$STAGED_FILES" "$UNTRACKED_FILES")
 
 if [ -n "$ALL_CHANGES" ]; then
   UNCOMMITTED_CHANGES="true"
@@ -146,6 +149,43 @@ if [ -n "$output" ]; then
   echo "$output"
 fi
 
-# Allow stop (exit 0) — we use warnings, not hard blocks, because
-# the model needs agency to decide when it's truly done vs still working.
+# ─── Runtime execution gate (HARD block) ─────────────────────────
+# The checklist above is advisory. This is the one hard gate: when code changed,
+# prove the artifact actually RUNS before the session may finish. Catches the
+# crash-class bugs (TDZ ReferenceError, undefined globals, import throws) that
+# static checks miss — exactly the failure that shipped in agentic sessions that
+# bypass `uap deliver`. Cheap by design (--runtime-only runs just the execution
+# gate, not the full test suite). Fails OPEN on any infra problem so it can only
+# ever block on a genuine runtime failure, never on its own malfunction.
+# Opt out with UAP_VERIFY_ON_STOP=0.
+if [ "$CODE_CHANGED" = "true" ] && [ "${UAP_VERIFY_ON_STOP:-1}" != "0" ] && command -v uap >/dev/null 2>&1; then
+  set +e
+  # Version-skew guard: an older global `uap` without the `verify` subcommand
+  # would exit non-zero (looking like a gate failure). Only proceed if `verify`
+  # actually exists, so a stale CLI fails OPEN instead of false-blocking.
+  uap verify --help >/dev/null 2>&1
+  VERIFY_SUPPORTED=$?
+  VERIFY_RC=0
+  if [ "$VERIFY_SUPPORTED" = "0" ]; then
+    # set +e: a failing command substitution under `set -e` would abort the hook
+    # (allowing stop) before we can inspect the code and decide to block.
+    VERIFY_OUT="$(cd "$PROJECT_DIR" && timeout -k 5 120 uap verify --strict --runtime-only --dir "$PROJECT_DIR" 2>&1)"
+    VERIFY_RC=$?
+  fi
+  set -e
+  # RC 1 = a REAL gate failure (code is broken) → block. Everything else fails
+  # OPEN: RC 3 = infra (gate timed out / couldn't spawn), 124 = outer timeout,
+  # 127 = missing, any other = internal — none should ever wedge a session.
+  if [ "$VERIFY_RC" = "1" ]; then
+    echo ""
+    echo "## RUNTIME EXECUTION GATE FAILED — the code does not run"
+    echo "$VERIFY_OUT"
+    echo ""
+    echo "Fix the runtime error above before finishing. (Set UAP_VERIFY_ON_STOP=0 to bypass.)"
+    exit 2
+  fi
+fi
+
+# Allow stop (exit 0) — completion-gate checklist uses warnings, not hard blocks;
+# the runtime execution gate above is the sole hard block.
 exit 0

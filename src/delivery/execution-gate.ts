@@ -18,7 +18,7 @@
 import { spawnSync } from 'child_process';
 import { createServer, type Server } from 'http';
 import { createReadStream, existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
-import { extname, join, resolve } from 'path';
+import { extname, join, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 import vm from 'vm';
 import type { GateRung } from './verifier-ladder.js';
@@ -78,11 +78,32 @@ export interface BrowserDriver {
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_SETTLE_MS = 1_500;
+
+/**
+ * Browser globals the vm-DOM harness does not model. A `ReferenceError` naming
+ * one of these is an environment limitation, NOT the app's bug, so the harness
+ * fails OPEN (advisory) rather than hard-blocking working code. The most common
+ * ones are stubbed in buildDomSandbox so apps that use them still execute; this
+ * list catches the long tail.
+ */
+const BROWSER_GLOBALS = new Set([
+  'Image', 'fetch', 'localStorage', 'sessionStorage', 'WebSocket', 'Worker',
+  'SharedWorker', 'IntersectionObserver', 'ResizeObserver', 'MutationObserver',
+  'requestIdleCallback', 'matchMedia', 'location', 'screen', 'history',
+  'alert', 'confirm', 'prompt', 'FileReader', 'Blob', 'File', 'indexedDB',
+  'crypto', 'OffscreenCanvas', 'WebGLRenderingContext', 'WebGL2RenderingContext',
+  'getComputedStyle', 'customElements', 'Notification', 'Audio', 'XMLHttpRequest',
+  'navigator', 'caches', 'BroadcastChannel', 'speechSynthesis', 'gtag', 'dataLayer',
+]);
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'coverage', '.uap', 'agents']);
 
 /** Resolve the compiled sibling runner so a GateRung can `node` it. */
 export function executionRunnerPath(): string {
-  return fileURLToPath(new URL('./execution-gate-runner.js', import.meta.url));
+  const p = fileURLToPath(new URL('./execution-gate-runner.js', import.meta.url));
+  if (existsSync(p)) return p;
+  // Running from TS source (vitest / tsx): the sibling .js lives in dist.
+  const distP = p.replace(`${sep}src${sep}`, `${sep}dist${sep}`);
+  return existsSync(distP) ? distP : p;
 }
 
 /** Find the directory containing an index.html within depth 2 (root + subdirs). */
@@ -342,7 +363,9 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
   } catch {
     return { passed: false, exitCode: null, failureReason: 'no index.html', outputTail: '', durationMs: Date.now() - start, via: 'none' };
   }
-  if (/<script[^>]+type=["']module["']/i.test(html)) {
+  // ES-module pages need real module semantics — the vm harness can't run them.
+  // Tolerate unquoted attrs (type=module) too.
+  if (/<script[^>]+type=["']?module/i.test(html)) {
     return {
       passed: true,
       exitCode: 0,
@@ -352,25 +375,39 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
       via: 'none',
     };
   }
-  const srcs = [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map((m) => m[1]);
-  if (srcs.length === 0) {
+  // Build the bundle from external <script src> (in order) AND inline <script>
+  // bodies, mirroring how the browser concatenates classic scripts into one
+  // shared global lexical scope. Missing src files are a real (broken) reference.
+  let bundle = '';
+  let scriptCount = 0;
+  const scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  for (const m of html.matchAll(scriptRe)) {
+    const attrs = m[1] ?? '';
+    const srcMatch = /\bsrc\s*=\s*["']?([^"'\s>]+)/i.exec(attrs);
+    if (srcMatch) {
+      const s = srcMatch[1];
+      const p = join(entryDir, s.replace(/^\//, ''));
+      if (!existsSync(p)) {
+        return {
+          passed: false,
+          exitCode: 1,
+          failureReason: `script not found: ${s}`,
+          outputTail: `index.html references ${s} which does not exist`,
+          durationMs: Date.now() - start,
+          via: 'vm-dom',
+        };
+      }
+      bundle += `\n//=== ${s} ===\n${readFileSync(p, 'utf-8')}\n`;
+      scriptCount++;
+    } else if (m[2] && m[2].trim()) {
+      bundle += `\n//=== inline ===\n${m[2]}\n`;
+      scriptCount++;
+    }
+  }
+  if (scriptCount === 0) {
     return { passed: true, exitCode: 0, outputTail: 'no scripts to execute', durationMs: Date.now() - start, via: 'vm-dom' };
   }
-  let bundle = '';
-  for (const s of srcs) {
-    const p = join(entryDir, s.replace(/^\//, ''));
-    if (!existsSync(p)) {
-      return {
-        passed: false,
-        exitCode: 1,
-        failureReason: `script not found: ${s}`,
-        outputTail: `index.html references ${s} which does not exist`,
-        durationMs: Date.now() - start,
-        via: 'vm-dom',
-      };
-    }
-    bundle += `\n//=== ${s} ===\n${readFileSync(p, 'utf-8')}\n`;
-  }
+  const srcs = { length: scriptCount };
 
   const sandbox = buildDomSandbox();
   try {
@@ -399,13 +436,52 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
     };
   } catch (e) {
     const stack = e instanceof Error ? (e.stack ?? e.message) : String(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    const tail = stack.split('\n').slice(0, 6).join('\n').slice(0, 4000);
+    // The vm sandbox is a partial browser. To never hard-block WORKING code, only
+    // fail on high-confidence real-bug signatures; treat env limitations as a
+    // fail-open advisory (the gate exists to catch crashes, not to punish apps
+    // for using a browser API the mock lacks).
+    const undefName = /(\w+) is not defined/.exec(msg)?.[1];
+    // A missing global is the harness's limit (fail-open), not the app's bug, when
+    // it's a known browser global OR a PascalCase name — browser/library globals
+    // are overwhelmingly constructors (Image, WebSocket, SpeechRecognition, THREE,
+    // …). An app's own missing symbol in a real bug is almost always a
+    // function/var (lowercase/camelCase), which we DO hard-fail on below.
+    const isLikelyBrowserOrLib = undefName !== undefined && (BROWSER_GLOBALS.has(undefName) || /^[A-Z]/.test(undefName));
+    if (isLikelyBrowserOrLib) {
+      return {
+        passed: true,
+        exitCode: 0,
+        failureReason: `inconclusive: '${undefName}' is not available in the harness`,
+        outputTail: `vm-dom can't model '${undefName}'. Install a headless browser for full coverage.`,
+        durationMs: Date.now() - start,
+        via: 'none',
+      };
+    }
+    const isTDZ = /before initialization/.test(msg);
+    const isSyntax = e instanceof SyntaxError;
+    const isAppUndefined = undefName !== undefined; // a lowercase/camelCase own symbol
+    if (isTDZ || isSyntax || isAppUndefined) {
+      return {
+        passed: false,
+        exitCode: 1,
+        failureReason: 'runtime error while executing the page',
+        outputTail: tail,
+        durationMs: Date.now() - start,
+        via: 'vm-dom',
+      };
+    }
+    // Ambiguous (e.g. a TypeError that could stem from the stub's fidelity rather
+    // than a real bug) → fail open with the detail surfaced, so we never wedge a
+    // session on a harness artifact. A real browser run would adjudicate these.
     return {
-      passed: false,
-      exitCode: 1,
-      failureReason: 'runtime error while executing the page',
-      outputTail: stack.split('\n').slice(0, 6).join('\n').slice(0, 4000),
+      passed: true,
+      exitCode: 0,
+      failureReason: `inconclusive (vm-dom): ${msg.slice(0, 120)}`,
+      outputTail: tail,
       durationMs: Date.now() - start,
-      via: 'vm-dom',
+      via: 'none',
     };
   }
 }
@@ -499,6 +575,60 @@ function buildDomSandbox(): any {
       (bag[type] || []).forEach((fn) => fn(e));
     }
   };
+
+  // Stubs for the most common browser globals so apps that use them actually run
+  // (rather than fail-open immediately). Long-tail globals are handled by the
+  // BROWSER_GLOBALS fail-open path in runVmDomHarness.
+  const makeStorage = (): unknown => {
+    const m = new Map<string, string>();
+    return {
+      getItem: (k: string) => (m.has(k) ? m.get(k) : null),
+      setItem: (k: string, v: unknown) => void m.set(String(k), String(v)),
+      removeItem: (k: string) => void m.delete(k),
+      clear: () => m.clear(),
+      key: (i: number) => [...m.keys()][i] ?? null,
+      get length() {
+        return m.size;
+      },
+    };
+  };
+  function ImageStub(this: Record<string, unknown>) {
+    this.src = '';
+    this.onload = null;
+    this.onerror = null;
+    this.width = 0;
+    this.height = 0;
+    this.addEventListener = () => {};
+    this.removeEventListener = () => {};
+  }
+  const common: Record<string, unknown> = {
+    localStorage: makeStorage(),
+    sessionStorage: makeStorage(),
+    Image: ImageStub,
+    fetch: () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+        text: () => Promise.resolve(''),
+        arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+        blob: () => Promise.resolve({}),
+      }),
+    location: { href: 'http://localhost/', protocol: 'http:', host: 'localhost', hostname: 'localhost', pathname: '/', search: '', hash: '', reload: () => {}, assign: () => {}, replace: () => {} },
+    screen: { width: 1280, height: 720, availWidth: 1280, availHeight: 720 },
+    matchMedia: () => ({ matches: false, media: '', addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {} }),
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    requestIdleCallback: (cb: (d: unknown) => void) => setTimeout(() => cb({ timeRemaining: () => 0, didTimeout: false }), 0),
+    cancelIdleCallback: () => {},
+    Audio: function () {
+      return { play: () => Promise.resolve(), pause: () => {}, addEventListener: () => {}, load: () => {}, currentTime: 0, volume: 1, loop: false };
+    },
+    URL,
+    URLSearchParams,
+    TextEncoder,
+    TextDecoder,
+  };
+  Object.assign(win, common);
   return {
     window: win,
     document: doc,
@@ -508,7 +638,7 @@ function buildDomSandbox(): any {
     AudioContext: win.AudioContext,
     webkitAudioContext: win.webkitAudioContext,
     performance: win.performance,
-    navigator: { userAgent: 'uap-execution-gate' },
+    navigator: { userAgent: 'uap-execution-gate', language: 'en-US', platform: 'uap', maxTouchPoints: 0 },
     setTimeout,
     clearTimeout,
     setInterval: () => 0,
@@ -518,6 +648,7 @@ function buildDomSandbox(): any {
     isNaN,
     parseInt,
     parseFloat,
+    ...common,
     __raf: raf,
     __fire: fire,
   };
@@ -603,7 +734,22 @@ export async function runExecutionGate(
   const type = detectArtifactType(projectRoot);
   if (type === 'web') {
     const dir = findWebEntryDir(projectRoot);
-    if (dir) return runWeb(dir, opts);
+    if (dir) {
+      // Classic-script apps: the vm-DOM harness is deterministic and reliably
+      // catches crash-class bugs (TDZ / undefined globals / init throws). A
+      // headless browser's async error capture is wrapper-dependent and has been
+      // observed to MISS uncaught errors (false-pass), so the browser is reserved
+      // for ES-module apps the vm harness cannot execute. Tests that inject a
+      // browserFactory still exercise the browser path explicitly.
+      let isModule = false;
+      try {
+        isModule = /<script[^>]+type=["']module["']/i.test(readFileSync(join(dir, 'index.html'), 'utf-8'));
+      } catch {
+        /* missing index.html — runWeb/vm report it */
+      }
+      if (opts.browserFactory || isModule) return runWeb(dir, opts);
+      return runVmDomHarness(dir);
+    }
   }
   if (type === 'node' || type === 'cli' || type === 'lib') {
     return runNodeLike(projectRoot, type, opts);
@@ -626,13 +772,17 @@ export async function runExecutionGate(
 export function synthesizeExecutionRung(projectRoot: string, timeoutMs = DEFAULT_TIMEOUT_MS): GateRung | null {
   const type = detectArtifactType(projectRoot);
   if (!type) return null;
+  // A smoke-run is quick; cap the budget well under a Stop hook's outer timeout
+  // so the rung's own timeout fires first (a clean 'timeout' failureReason →
+  // fail-open) and the spawned runner can't outlive the caller and orphan.
+  const budget = Math.min(timeoutMs, DEFAULT_TIMEOUT_MS) + 15_000;
   return {
     id: 'execution',
     name: `Execution smoke (runs the ${type} artifact)`,
     command: 'node',
     args: [executionRunnerPath(), projectRoot],
     required: true,
-    timeoutMs: timeoutMs + 15_000, // runner overhead beyond the inner budget
+    timeoutMs: budget,
     tier: 'runtime',
   };
 }

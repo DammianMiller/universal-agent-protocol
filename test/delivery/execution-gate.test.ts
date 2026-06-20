@@ -157,6 +157,62 @@ describe('runExecutionGate — web (injected browser)', () => {
   });
 });
 
+describe('runExecutionGate — classic web uses vm-dom by default (reliable crash detection)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'exec-classic-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('passes a clean classic-script page WITHOUT a browser (via vm-dom)', async () => {
+    writeWebGame(dir, "document.getElementById('c').getContext('2d').fillRect(0,0,1,1);");
+    const r = await runExecutionGate(dir); // no browserFactory → vm-dom path
+    expect(r.via).toBe('vm-dom');
+    expect(r.passed).toBe(true);
+  });
+
+  it('FAILS a classic-script page with a TDZ ReferenceError (the octopus bug)', async () => {
+    writeWebGame(dir, '(function(){ function r(){ return s.x; } r(); let s = { x: 1 }; })();');
+    const r = await runExecutionGate(dir);
+    expect(r.via).toBe('vm-dom');
+    expect(r.passed).toBe(false);
+    expect(r.outputTail).toMatch(/before initialization|is not defined/);
+  });
+
+  it('RUNS an app that uses localStorage / new Image() / fetch (broadened stubs)', async () => {
+    writeWebGame(
+      dir,
+      "const h=localStorage.getItem('h')||0; localStorage.setItem('h','1'); const i=new Image(); i.src='x.png'; fetch('/x').then(()=>{}); document.getElementById('c').getContext('2d').fillRect(0,0,1,1);"
+    );
+    const r = await runExecutionGate(dir);
+    expect(r.passed).toBe(true);
+  });
+
+  it('fail-OPEN on an unmodelled browser global (PascalCase) — never wedges working code', async () => {
+    writeWebGame(dir, 'const x = SpeechRecognition;');
+    const r = await runExecutionGate(dir);
+    expect(r.passed).toBe(true);
+    expect(r.failureReason).toMatch(/SpeechRecognition/);
+  });
+
+  it('FAILS on the app\'s own missing symbol (lowercase) — a real bug', async () => {
+    writeWebGame(dir, 'frobnicate();');
+    const r = await runExecutionGate(dir);
+    expect(r.passed).toBe(false);
+    expect(r.outputTail).toMatch(/frobnicate is not defined/);
+  });
+
+  it('executes inline <script> bodies (not just src files)', async () => {
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<canvas id="c"></canvas><script>(function(){ function r(){return s.x;} r(); let s={x:1}; })();</script>'
+    );
+    const r = await runExecutionGate(dir);
+    expect(r.passed).toBe(false);
+    expect(r.outputTail).toMatch(/before initialization/);
+  });
+});
+
 describe('runVmDomHarness — classic-script execution', () => {
   let dir: string;
   beforeEach(() => {

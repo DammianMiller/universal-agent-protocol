@@ -37,6 +37,7 @@ const lazy = {
   harness: () => import('../cli/harness.js').then((m) => m.harnessCommand),
   ideate: () => import('../cli/ideate.js').then((m) => m.ideateCommand),
   deliver: () => import('../cli/deliver.js').then((m) => m.deliverCommand),
+  verify: () => import('../cli/verify.js').then((m) => m.verifyCommand),
   benchPaired: () => import('../cli/bench.js').then((m) => m.benchPairedCommand),
 };
 
@@ -450,6 +451,29 @@ program
   .action(async (instructionParts: string[], options) => {
     const cmd = await lazy.deliver();
     await cmd(instructionParts.join(' '), options);
+  });
+
+program
+  .command('verify')
+  .description('Run the project\'s completion gates (incl. the runtime execution gate) against the current files and report pass/fail')
+  .option('-d, --dir <path>', 'Project directory to verify (default: cwd)')
+  .option('--strict', 'Treat "no verifiable gates" as a failure (fail-closed); used by the Stop hook')
+  .option('--runtime-only', 'Run ONLY the runtime execution gate (cheap; proves the artifact runs)')
+  .option('--full', 'Also run the expensive integration / deploy-dev tiers')
+  .option('--gates <ids>', 'Comma-separated rung-id subset (e.g. build,test,execution)')
+  .option('--timeout <ms>', 'Per-rung timeout override in milliseconds')
+  .option('--json', 'Emit JSON result')
+  .action(async (options) => {
+    const cmd = await lazy.verify();
+    await cmd({
+      dir: options.dir,
+      strict: Boolean(options.strict),
+      runtimeOnly: Boolean(options.runtimeOnly),
+      full: Boolean(options.full),
+      gates: options.gates,
+      json: Boolean(options.json),
+      timeoutMs: options.timeout ? Number(options.timeout) : undefined,
+    });
   });
 
 // Paired UAP benchmark — controlled UAP-on vs UAP-off A/B
