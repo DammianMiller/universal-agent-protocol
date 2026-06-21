@@ -1853,9 +1853,17 @@ class TestToolTurnControls(unittest.TestCase):
             openai = proxy.build_openai_request(
                 body, proxy.SessionMonitor(context_window=262144)
             )
-            self.assertEqual(len(openai.get("tools", [])), 2)
             names = [t.get("function", {}).get("name") for t in openai.get("tools", [])]
-            self.assertIn("RunTests", names)
+            # Narrowing must still REDUCE the toolset by dropping irrelevant tools
+            # (Deploy), while keeping the query-relevant tool (RunTests) AND core
+            # action tools (Read/Edit) — a coding agent that loses Edit cannot
+            # "fix the failing test". Core-tool protection makes `keep` a soft
+            # floor, so the exact count is keep + any core tools not already in
+            # the top-scored set; assert the invariant, not a brittle fixed count.
+            self.assertLess(len(names), 4)            # reduced from 4
+            self.assertIn("RunTests", names)          # query-relevant kept
+            self.assertIn("Edit", names)              # core action tool kept
+            self.assertNotIn("Deploy", names)         # irrelevant dropped
         finally:
             setattr(proxy, "PROXY_TOOL_NARROWING", old_narrow)
             setattr(proxy, "PROXY_TOOL_NARROWING_KEEP", old_keep)
