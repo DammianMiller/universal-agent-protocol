@@ -204,10 +204,15 @@ export class TaskService {
       params.push(input.status);
       changes.push({ field: 'status', oldValue: existing.status, newValue: input.status });
 
-      // Set closed_at if closing
+      // Set closed_at if closing; CLEAR it if reopening. Previously closed_at was
+      // only ever set (never cleared), so a done→open/in_progress transition left
+      // a stale close timestamp, corrupting duration/overdue calculations.
       if (input.status === 'done' || input.status === 'wont_do') {
         updates.push('closed_at = ?');
         params.push(now);
+      } else {
+        updates.push('closed_at = ?');
+        params.push(null);
       }
     }
 
@@ -391,6 +396,28 @@ export class TaskService {
           /* event handler errors are logged by the bus */
         });
     }
+  }
+
+  /**
+   * Atomically claim a task for an agent. Returns true if the claim succeeded,
+   * false if the task is already assigned to a DIFFERENT agent (or does not
+   * exist). Replaces the check-then-act in coordination.claim(), which had a
+   * TOCTOU race: two agent processes could each read assignee=null and both
+   * assign themselves. The single conditional UPDATE makes the claim atomic
+   * (SQLite serializes the write), and the WHERE guard is idempotent for
+   * re-claims by the same agent.
+   */
+  tryClaim(taskId: string, agentId: string, worktreeBranch: string): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE tasks
+            SET assignee = ?, status = 'in_progress', worktree_branch = ?, updated_at = ?
+          WHERE id = ?
+            AND (assignee IS NULL OR assignee = '' OR assignee = ?)`
+      )
+      .run(agentId, worktreeBranch, now, taskId, agentId);
+    return result.changes > 0;
   }
 
   delete(id: string): boolean {
@@ -1046,11 +1073,24 @@ export class TaskService {
         createdAt: new Date().toISOString(),
       });
 
-      // Delete compacted tasks
+      // Delete compacted tasks AND their related rows (dependencies, history,
+      // activity) atomically — mirrors delete(). The previous code dropped only
+      // the `tasks` rows, orphaning FK rows in task_dependencies/task_history/
+      // task_activity, so getWithRelations()/wouldCreateCycle() later read ghost
+      // dependencies (e.g. a live task appearing permanently blocked by a task
+      // that no longer exists).
       const ids = tasks.map((t) => t.id);
-      this.db
-        .prepare(`DELETE FROM tasks WHERE id IN (${ids.map(() => '?').join(',')})`)
-        .run(...ids);
+      const ph = ids.map(() => '?').join(',');
+      this.db.transaction(() => {
+        this.db
+          .prepare(
+            `DELETE FROM task_dependencies WHERE from_task IN (${ph}) OR to_task IN (${ph})`
+          )
+          .run(...ids, ...ids);
+        this.db.prepare(`DELETE FROM task_history WHERE task_id IN (${ph})`).run(...ids);
+        this.db.prepare(`DELETE FROM task_activity WHERE task_id IN (${ph})`).run(...ids);
+        this.db.prepare(`DELETE FROM tasks WHERE id IN (${ph})`).run(...ids);
+      })();
     }
 
     return summaries[0] || null;

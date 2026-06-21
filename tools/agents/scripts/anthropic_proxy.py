@@ -3090,6 +3090,15 @@ def _tokenize_for_tool_ranking(text: str) -> set[str]:
     return {m.group(0).lower() for m in re.finditer(r"[a-zA-Z0-9_]{2,}", text)}
 
 
+# Core action tools a coding agent must always retain through narrowing — losing
+# any of these strands the agent (it can read/think but not act). Names are the
+# Claude Code canonical tool names, matched case-insensitively.
+_CORE_TOOL_NAMES = frozenset({
+    "read", "write", "edit", "multiedit", "notebookedit",
+    "bash", "glob", "grep", "ls", "applypatch", "apply_patch",
+})
+
+
 def _narrow_tools_for_request(
     anthropic_body: dict, openai_tools: list[dict]
 ) -> list[dict]:
@@ -3150,6 +3159,16 @@ def _narrow_tools_for_request(
 
     scored.sort(reverse=True)
     selected = {id(tool) for _, _, tool in scored[:keep]}
+    # Always retain core action tools, regardless of lexical score. A real task
+    # description ("build an octopus invaders game") rarely contains tool names
+    # like "write"/"edit", so overlap ties at 0 and the -idx tiebreaker would
+    # otherwise keep an arbitrary first-N subset — observed dropping
+    # Write/Edit/Bash entirely and stalling the agent on meta-tools. `keep` thus
+    # acts as a soft floor: core tools are added on top of the top-scored set.
+    for tool in openai_tools:
+        nm = tool.get("function", {}).get("name", "").lower()
+        if nm in _CORE_TOOL_NAMES:
+            selected.add(id(tool))
     narrowed = [tool for tool in openai_tools if id(tool) in selected]
 
     top_names = [t.get("function", {}).get("name", "") for t in narrowed[:4]]
@@ -4882,36 +4901,31 @@ def _repair_tool_call_json(raw: str) -> str | None:
     s = raw.strip()
     if not s.startswith("{"):
         return None
-    # Strip trailing garbage (runaway braces/brackets)
+    # Strip runaway trailing closers (safe: only removes excess closers at the
+    # very end, where count is already unbalanced).
     while s.endswith("}}") and s.count("{") < s.count("}"):
         s = s[:-1]
     while s.endswith("]]") and s.count("[") < s.count("]"):
         s = s[:-1]
-    # Balance braces
+    # Balance braces by APPENDING closers only — never delete or trim interior
+    # content. A lossy tail-trim silently drops a truncated trailing field (e.g.
+    # a cut-off Write "content"), producing empty/partial files like the 0-byte
+    # "audio.j" seen in octopus_invaders. If the payload was genuinely truncated
+    # mid-value, appending closers won't yield valid JSON → return None so the
+    # caller routes it to the existing truncated_tool_args retry path instead of
+    # executing a content-less tool call.
     open_b = s.count("{") - s.count("}")
     if open_b > 0:
         s += "}" * open_b
     elif open_b < 0:
-        # Too many closing braces — trim from end
-        for _ in range(-open_b):
-            idx = s.rfind("}")
-            if idx > 0:
-                s = s[:idx] + s[idx + 1:]
-    # Try to parse
+        # Too many closers and not a simple runaway-tail case: can't fix by
+        # appending without deleting interior content. Bail out non-destructively.
+        return None
     try:
         json.loads(s)
         return s
     except json.JSONDecodeError:
-        pass
-    # Try truncating at last valid comma + closing
-    for end in range(len(s) - 1, max(0, len(s) - 200), -1):
-        candidate = s[:end].rstrip().rstrip(",") + "}" * max(0, s[:end].count("{") - s[:end].count("}"))
-        try:
-            json.loads(candidate)
-            return candidate
-        except json.JSONDecodeError:
-            continue
-    return None
+        return None
 
 
 def _extract_tool_calls_from_text(

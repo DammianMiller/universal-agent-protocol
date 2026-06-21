@@ -116,7 +116,19 @@ export class McpClient {
           }
         }
       } catch (e) {
-        // Ignore non-JSON lines
+        // Non-JSON lines are normal (some servers log to stdout) and are safely
+        // ignored. But a line that LOOKS like a JSON-RPC frame yet fails to parse
+        // is a real problem — a truncated/corrupted response means the matching
+        // pending request will silently hang until its timeout, surfacing as a
+        // spurious failure and retry. Surface it so it is diagnosable.
+        const looksLikeFrame = line.trimStart().startsWith('{');
+        if (looksLikeFrame) {
+          console.error(
+            `[${this.serverName}] dropped unparseable JSON-RPC line ` +
+              `(${line.length} chars) — a pending request may hang until timeout:`,
+            line.slice(0, 200)
+          );
+        }
       }
     }
   }
@@ -142,7 +154,12 @@ export class McpClient {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(id);
-        reject(new Error(`Request timeout for ${method}`));
+        // Tag timeouts distinctly so callers can distinguish "downstream too
+        // slow / dropped response" from a genuine tool error and avoid blind
+        // retry loops on a server that is simply not responding.
+        const err = new Error(`Request timeout for ${method}`) as Error & { code?: string };
+        err.code = 'MCP_REQUEST_TIMEOUT';
+        reject(err);
       }, 30000);
 
       this.pendingRequests.set(id, {

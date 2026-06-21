@@ -122,7 +122,7 @@ export class TaskCoordinator {
       return null;
     }
 
-    // Check if already assigned to another agent
+    // Fast-path read rejection (cheap) — still atomically re-checked below.
     if (task.assignee && task.assignee !== this.agentId) {
       throw new Error(`Task already assigned to agent: ${task.assignee}`);
     }
@@ -134,12 +134,16 @@ export class TaskCoordinator {
 
     const branch = worktreeBranch || this.worktreeBranch || `feature/task-${taskId}`;
 
-    // Update task
-    this.taskService.update(taskId, {
-      status: 'in_progress',
-      assignee: this.agentId,
-      worktreeBranch: branch,
-    });
+    // Atomically claim — guards against two agent processes racing on the same
+    // task (both reading assignee=null, both assigning themselves). tryClaim is a
+    // single conditional UPDATE; false means another agent won the race.
+    const claimed = this.taskService.tryClaim(taskId, this.agentId, branch);
+    if (!claimed) {
+      const current = this.taskService.getWithRelations(taskId);
+      throw new Error(
+        `Task already assigned to agent: ${current?.assignee ?? 'unknown'}`
+      );
+    }
 
     // Determine files/resources affected by this task
     const resource = this.taskToResource(task);
