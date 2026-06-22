@@ -3566,6 +3566,18 @@ def _maybe_inject_recon_convergence(
         openai_body.pop("tools", None)
         openai_body.pop("tool_choice", None)
         openai_body.pop("grammar", None)
+        # POISON FIX (2026-06-22): reset the no-write streak after forcing the
+        # terminal summary. Without this, escalate is a permanent death-spiral:
+        # recon_hard_fires is monotonic so `escalate` stays true for the whole
+        # session, and stripping tools means the model CAN'T write, so
+        # consecutive_no_write_turns never falls back below threshold — every
+        # subsequent request (including unrelated ones sharing the session
+        # fingerprint) gets tools stripped forever, until a proxy restart.
+        # Resetting the streak makes escalate a ONE-SHOT per window: it forces
+        # a terminal summary once, then the next turn falls below threshold so
+        # tools are restored; if the model genuinely keeps exploring without
+        # writing it rebuilds the streak and re-fires — bounded, not permanent.
+        monitor.consecutive_no_write_turns = 0
     else:
         if hard:
             # Fix C: at the hard tier, drop the structural requirement to call a
