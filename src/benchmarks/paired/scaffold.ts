@@ -24,7 +24,12 @@ const COMPONENT_INSTRUCTIONS: Record<UapComponent, string> = {
   gates:
     '## Completion Gates\nBefore claiming the task is done, you MUST run the build, ' +
     'the test suite, and the linter, and confirm all pass. Do not stop while any ' +
-    'gate is failing. Re-verify at least once after your final edit.',
+    'gate is failing. Re-verify at least once after your final edit.\n' +
+    '**Termination (critical):** The moment every gate passes, you are DONE — ' +
+    'immediately emit a one-line final summary and STOP. Do NOT re-read files, ' +
+    're-edit, re-run already-passing checks, or keep exploring once the gates are ' +
+    'green. Continuing after success wastes the run and risks regressing a correct ' +
+    'solution. Passing gates == end the turn now.',
   worktree:
     '## Isolation\nMake all edits within this repository only. Do not touch files ' +
     'outside the working directory. Keep changes scoped and atomic.',
