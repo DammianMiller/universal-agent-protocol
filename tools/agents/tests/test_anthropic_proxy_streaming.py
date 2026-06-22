@@ -1809,6 +1809,64 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         self.assertEqual(len(fake_client.requests), 1)
 
 
+class TestTurnCountFinalizeBreaker(unittest.TestCase):
+    """The mode-B runaway backstop: after PROXY_HARD_FINALIZE_TURNS assistant
+    tool turns, the proxy strips tools so the only possible output is a terminal
+    text summary (end_turn). Inert below the ceiling."""
+
+    @staticmethod
+    def _body(n_tool_turns):
+        msgs = [{"role": "user", "content": "do the task"}]
+        for i in range(n_tool_turns):
+            msgs.append({
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": f"t{i}", "name": "Bash",
+                             "input": {"command": "ls"}}],
+            })
+            msgs.append({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": "ok"}],
+            })
+        return {
+            "model": "x", "messages": msgs,
+            "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
+        }
+
+    def test_strips_tools_above_ceiling(self):
+        old = getattr(proxy, "PROXY_HARD_FINALIZE_TURNS")
+        try:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", 40)
+            out = proxy.build_openai_request(
+                self._body(45), proxy.SessionMonitor(context_window=262144)
+            )
+            self.assertFalse(out.get("tools"))  # tools stripped
+            self.assertIn("STOP now", out["messages"][-1]["content"])
+        finally:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", old)
+
+    def test_inert_below_ceiling(self):
+        old = getattr(proxy, "PROXY_HARD_FINALIZE_TURNS")
+        try:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", 40)
+            out = proxy.build_openai_request(
+                self._body(5), proxy.SessionMonitor(context_window=262144)
+            )
+            self.assertTrue(out.get("tools"))  # tools retained
+        finally:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", old)
+
+    def test_disabled_when_zero(self):
+        old = getattr(proxy, "PROXY_HARD_FINALIZE_TURNS")
+        try:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", 0)
+            out = proxy.build_openai_request(
+                self._body(60), proxy.SessionMonitor(context_window=262144)
+            )
+            self.assertTrue(out.get("tools"))  # disabled → never strips
+        finally:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", old)
+
+
 class TestToolTurnControls(unittest.TestCase):
     def test_tool_narrowing_reduces_tool_count(self):
         old_narrow = getattr(proxy, "PROXY_TOOL_NARROWING")
