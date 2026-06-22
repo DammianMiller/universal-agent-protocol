@@ -1,0 +1,9 @@
+{
+  "name": "Fully flatten a nested array",
+  "instruction": "Implement flatten(arr) in flatten.js: return a new array with all nested arrays flattened to a single level, preserving order, to arbitrary depth. E.g. [1,[2,[3,[4]],5]] -> [1,2,3,4,5]; [] -> []. Do not mutate the input. Keep the CommonJS export shape.",
+  "difficulty": "medium",
+  "tags": ["feature", "javascript"],
+  "verifyCmd": "node -e \"const f=require('./flatten.js'); const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b); if(!eq(f([1,[2,[3,[4]],5]]),[1,2,3,4,5]))process.exit(1); if(!eq(f([]),[]))process.exit(1); if(!eq(f([[[1]]]),[1]))process.exit(1); console.log('ok')\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 300
+}
