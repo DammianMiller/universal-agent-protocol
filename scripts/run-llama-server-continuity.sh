@@ -67,7 +67,7 @@ args=(
   --ubatch-size "$LLAMA_UBATCH_SIZE"
   --parallel "${LLAMA_PARALLEL:-1}"
   --no-context-shift
-  --n-predict 81920
+  --n-predict "${LLAMA_N_PREDICT:-81920}"
   --repeat-penalty "$LLAMA_REPEAT_PENALTY"
   --log-file "$LLAMA_LOG_FILE"
   --temp 0.3
