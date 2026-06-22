@@ -5546,6 +5546,31 @@ class TestReconConvergence(unittest.TestCase):
         proxy._maybe_inject_recon_convergence(body, m)
         self.assertEqual(len(body["messages"]), 1)
 
+    def test_escalate_is_one_shot_not_a_permanent_poison(self):
+        """POISON FIX: the escalate tier strips tools to force a terminal
+        summary, but it must reset the no-write streak so it does NOT re-fire
+        every subsequent request. Without the reset, recon_hard_fires is
+        monotonic (escalate stays true) and stripped tools mean the model can
+        never write (streak never falls), so EVERY request gets tools stripped
+        forever — poisoning the session (and any colliding-fingerprint session)
+        until a proxy restart."""
+        proxy.PROXY_RECON_CONVERGENCE_THRESHOLD = 40
+        m = proxy.SessionMonitor(context_window=131072)
+        tools = [self._tool("Write"), self._tool("Read")]
+        # drive into escalate: streak huge, hard-tier already fired to the cap
+        m.consecutive_no_write_turns = 200
+        m.recon_hard_fires = proxy.PROXY_RECON_SESSION_HARD_CAP
+        b1 = {"messages": [{"role": "user", "content": "go"}],
+              "tools": list(tools), "tool_choice": "required"}
+        proxy._maybe_inject_recon_convergence(b1, m, tools)
+        self.assertNotIn("tools", b1)                    # escalate stripped tools
+        self.assertEqual(m.consecutive_no_write_turns, 0)  # streak reset (the fix)
+        # next request: streak is now below threshold → MUST NOT strip again
+        b2 = {"messages": [{"role": "user", "content": "go"}],
+              "tools": list(tools), "tool_choice": "required"}
+        proxy._maybe_inject_recon_convergence(b2, m, tools)
+        self.assertTrue(b2.get("tools"))                 # tools restored, not poisoned
+
     @staticmethod
     def _tool(name: str) -> dict:
         return {"type": "function", "function": {"name": name, "description": f"{name} tool"}}
