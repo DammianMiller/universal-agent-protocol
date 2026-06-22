@@ -254,6 +254,19 @@ PROXY_FINALIZE_CONTINUATION_MAX = int(
 PROXY_FINALIZE_SESSION_HARD_CAP = int(
     os.environ.get("PROXY_FINALIZE_SESSION_HARD_CAP", "3")
 )
+# Hard turn-count finalize backstop (2026-06-22). Catches "mode B" runaways: the
+# model keeps emitting DISTINCT, well-formed tool calls and never emits end_turn,
+# so the synthetic-continuation, context-death-spiral, and tool-starvation paths
+# never engage and 'release to auto' just lets it keep choosing tools — it loops
+# until the client's agent timeout. After this many assistant tool-using turns in
+# the (post-prune) transcript, strip tools so the only possible output is a
+# terminal text summary (end_turn). Gated HIGH so only a genuine runaway trips it;
+# pruning-heavy large legitimate sessions keep a low post-prune turn count and are
+# unaffected. Set 0 to disable. Empirically motivated by the paired benchmark
+# where every hard-suite run looped to timeout (see project_uap_paired_bench).
+PROXY_HARD_FINALIZE_TURNS = int(
+    os.environ.get("PROXY_HARD_FINALIZE_TURNS", "40")
+)
 # Recon-convergence guardrail: after this many consecutive turns that use
 # tools but produce NO write/deliverable tool call (see _WRITE_TOOL_CLASS),
 # the proxy injects a directive telling the model to stop exploring and
@@ -3958,6 +3971,44 @@ def build_openai_request(
                 openai_body["speculative.n_max"] = 0
             return openai_body
 
+        # TURN-COUNT FINALIZE BREAKER (mode-B runaway backstop): the model keeps
+        # emitting distinct, well-formed tool calls and never emits end_turn, so
+        # none of the other terminal paths engage and 'release to auto' just lets
+        # it keep choosing tools — it loops to the client's agent timeout. After a
+        # high tool-turn ceiling, strip tools so the only possible output is a
+        # terminal text summary (end_turn), ending the loop. Gated HIGH so only a
+        # genuine runaway trips it; see PROXY_HARD_FINALIZE_TURNS.
+        if PROXY_HARD_FINALIZE_TURNS > 0:
+            _agent_tool_turns = _count_agent_tool_turns(anthropic_body)
+            if _agent_tool_turns >= PROXY_HARD_FINALIZE_TURNS:
+                openai_body.pop("tool_choice", None)
+                openai_body.pop("tools", None)
+                openai_body.pop("grammar", None)
+                msgs = openai_body.get("messages", [])
+                msgs.append({
+                    "role": "user",
+                    "content": (
+                        f"You have made {_agent_tool_turns} tool calls without "
+                        "converging on a final answer. STOP now. No tools are "
+                        "available this turn. Reply with a brief plain-text summary "
+                        "of what you accomplished and what remains. Do NOT emit any "
+                        "tool call or tool-call-like syntax."
+                    ),
+                })
+                openai_body["messages"] = msgs
+                monitor.reset_tool_turn_state(reason="turn_count_finalize_breaker")
+                logger.warning(
+                    "TURN-COUNT FINALIZE BREAKER: %d agent tool turns >= ceiling %d "
+                    "-- stripped tools to force terminal summary (end_turn).",
+                    _agent_tool_turns,
+                    PROXY_HARD_FINALIZE_TURNS,
+                )
+                if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
+                    openai_body["enable_thinking"] = False
+                if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
+                    openai_body["speculative.n_max"] = 0
+                return openai_body
+
         # Check if forced-tool dampener or loop breaker should override tool_choice
         if monitor.consume_forced_auto_turn():
             openai_body["tool_choice"] = "auto"
@@ -4378,6 +4429,26 @@ def _build_reasoning_fallback_text(
         fallback_mode,
     )
     return None
+
+
+def _count_agent_tool_turns(anthropic_body: dict) -> int:
+    """Count assistant turns that emitted at least one tool_use block — i.e. how
+    many tool-using steps the agent has already taken in the (post-prune)
+    transcript. Used by the TURN-COUNT FINALIZE BREAKER to detect mode-B
+    runaways that never converge. Counting from the possibly-pruned history is
+    intentional: a pruning-heavy legitimate long session keeps a low post-prune
+    count and is left alone, while a small-context non-terminating loop (no
+    pruning) accumulates turns until the ceiling trips."""
+    n = 0
+    for msg in anthropic_body.get("messages", []):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_use" for b in content
+        ):
+            n += 1
+    return n
 
 
 def _last_assistant_was_text_only(anthropic_body: dict) -> bool:
