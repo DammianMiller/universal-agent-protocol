@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.61.0 (2026-06-23)
+
+- feat(self-harness): self-improving harness (arXiv:2606.09498) — autonomous mine -> propose -> validate -> decide loop (bounded reversible Mod DSL, weakness/signature mining, paired-bench validation), tool-call path-normalizer middleware (cracks the small-model path-garbling ceiling), cross-model transfer store, online prod-trace mining with gated promotion, ablation prune, and a daily mine timer (`uap self-harness {analyze,transfer,mine-prod,pending,prune}`)
+- fix(proxy): recon-convergence permanent tool-strip poison (guardrail death-spiral that could wedge tool access across sessions until restart) — now self-recovers
+- fix(proxy): non-lossy tool-call JSON repair + tool-narrowing core-tool protection (was dropping Write/Edit/Bash) + uap-deliver pipeline robustness
+- fix(llama-server): honor LLAMA_N_PREDICT env knob + proxy turn-count finalize backstop (catastrophic timeout loops -> fast clean termination)
+- feat(bench): headless paired-bench claude adapter + real-gate-medium/-heldout suites
+
 ## v1.60.0 (2026-06-20)
 
 - feat(deliver): prefer the acceptance judge over the brittle self-gate
