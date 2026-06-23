@@ -80,15 +80,14 @@ const HEURISTICS: Partial<Record<FailureKind, (p: HarnessProfile) => Mod | null>
       'After writing, run the verify/test command and confirm exit 0 before declaring done. ' +
       'If it fails, fix in place at the same path and re-run.',
   }),
-  // Path garbling -> append the path-fidelity learning to the patterns block.
-  // (The mechanical middleware fix is P2; this is the P1 instruction-level attempt.)
+  // Path garbling -> enable the mechanical path-normalizer middleware (P2). This
+  // snaps a garbled tool-call path to a path the model already used correctly,
+  // fixing the failure the instruction-level attempts couldn't (the small quant
+  // can't reliably follow "use the exact path").
   'toolcall.path.garbled': () => ({
-    kind: 'scaffold',
-    component: 'patterns',
-    op: 'append',
-    text:
-      'Tool-call path fidelity: use the EXACT filename and path from the task, character for ' +
-      'character — never change case, drop the extension, or create a new subdirectory.',
+    kind: 'middleware',
+    id: 'toolcall-path-normalizer',
+    params: { enabled: true },
   }),
 };
 
