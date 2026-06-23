@@ -576,6 +576,16 @@ selfHarness
     const cmd = await lazy.selfHarness();
     await cmd('pending', options);
   });
+selfHarness
+  .command('prune')
+  .description('Ablation-prune: drop stale / no-longer-paying-off transfer + pending entries')
+  .option('--transfer <path>', 'Transfer store path')
+  .option('--pending <path>', 'Pending queue path')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.selfHarness();
+    await cmd('prune', options);
+  });
 
 // Open-collider divergent-ideation commands
 const ideate = program

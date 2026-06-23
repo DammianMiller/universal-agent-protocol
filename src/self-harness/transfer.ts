@@ -66,11 +66,29 @@ export interface TransferQueryOptions {
   acceptedOnly?: boolean;
 }
 
+export interface PruneOptions {
+  /** Drop ACCEPTED entries whose measured delta is <= this (no longer worth
+   * transferring — the ablation idea: stop carrying a Mod that stopped paying
+   * off). Default 0 (keep only strictly-positive accepted). */
+  minDelta?: number;
+  /** Drop ANY entry older than this many days. Default 90. */
+  maxAgeDays?: number;
+  /** Override "now" (ms epoch) for deterministic tests. */
+  now?: number;
+}
+
+export interface PruneResult {
+  removed: TransferEntry[];
+  kept: number;
+}
+
 export interface TransferStore {
   record(entry: TransferEntry): void;
   /** Cross-model lookup by failure kind, ranked by measured delta (desc). */
   query(kind: FailureKind, opts?: TransferQueryOptions): TransferEntry[];
   all(): TransferEntry[];
+  /** Ablation-prune: drop stale / no-longer-paying-off entries. */
+  prune(opts?: PruneOptions): PruneResult;
 }
 
 /** In-memory store (tests, ephemeral runs). */
@@ -97,6 +115,24 @@ export class MemoryTransferStore implements TransferStore {
   all(): TransferEntry[] {
     return [...this.entries];
   }
+
+  prune(opts: PruneOptions = {}): PruneResult {
+    const minDelta = opts.minDelta ?? 0;
+    const maxAgeMs = (opts.maxAgeDays ?? 90) * 86_400_000;
+    const now = opts.now ?? Date.now();
+    const removed: TransferEntry[] = [];
+    this.entries = this.entries.filter((e) => {
+      const age = now - (Date.parse(e.validatedAt) || 0);
+      const stale = age > maxAgeMs;
+      const noLongerPays = e.accepted && e.delta <= minDelta;
+      if (stale || noLongerPays) {
+        removed.push(e);
+        return false;
+      }
+      return true;
+    });
+    return { removed, kept: this.entries.length };
+  }
 }
 
 /** JSON-file-backed store (persisted across runs; default under .uap/self-harness). */
@@ -114,6 +150,16 @@ export class JsonTransferStore extends MemoryTransferStore {
 
   override record(entry: TransferEntry): void {
     super.record(entry);
+    this.persist();
+  }
+
+  override prune(opts: PruneOptions = {}): PruneResult {
+    const res = super.prune(opts);
+    if (res.removed.length) this.persist();
+    return res;
+  }
+
+  private persist(): void {
     mkdirSync(dirname(this.path), { recursive: true });
     writeFileSync(this.path, JSON.stringify(this.entries, null, 2), 'utf-8');
   }
