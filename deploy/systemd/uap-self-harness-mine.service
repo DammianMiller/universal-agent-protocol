@@ -1,0 +1,11 @@
+[Unit]
+Description=UAP Self-Harness — mine production traces, enqueue gated proposals, prune stale entries
+Documentation=https://github.com/DammianMiller/universal-agent-protocol docs/design/SELF_HARNESS.md
+
+[Service]
+Type=oneshot
+# Mine the last day of proxy-journal + HALO traces and ENQUEUE proposals.
+# This NEVER applies anything — promotion stays gated (uap self-harness pending).
+ExecStart=/bin/node /home/cogtek/dev/miller-tech/universal-agent-protocol/dist/bin/cli.js self-harness mine-prod --unit uap-anthropic-proxy.service --since "25 hours ago"
+# Ablation-prune stale / no-longer-paying transfer + pending entries.
+ExecStartPost=/bin/node /home/cogtek/dev/miller-tech/universal-agent-protocol/dist/bin/cli.js self-harness prune

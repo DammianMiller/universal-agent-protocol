@@ -218,6 +218,29 @@ export async function selfHarnessPending(options: SelfHarnessOptions = {}): Prom
   }
 }
 
+/** Ablation-prune stale / no-longer-paying-off transfer + pending entries. */
+export async function selfHarnessPrune(options: SelfHarnessOptions = {}): Promise<void> {
+  const { JsonTransferStore } = await import('../self-harness/transfer.js');
+  const { PendingQueue } = await import('../self-harness/pending.js');
+  const txPath = options.transfer || DEFAULT_TRANSFER;
+  const pqPath = options.pending || DEFAULT_PENDING;
+  let txRemoved = 0;
+  let txKept = 0;
+  if (existsSync(txPath)) {
+    const r = new JsonTransferStore(txPath).prune();
+    txRemoved = r.removed.length;
+    txKept = r.kept;
+  }
+  const pqRemoved = existsSync(pqPath) ? new PendingQueue(pqPath).prune().length : 0;
+  if (options.json) {
+    console.log(JSON.stringify({ transfer: { removed: txRemoved, kept: txKept }, pending: { removed: pqRemoved } }, null, 2));
+    return;
+  }
+  console.log(chalk.bold('\nSelf-Harness — ablation prune'));
+  console.log(`  transfer store: removed ${txRemoved} stale/no-longer-paying entr(y/ies), ${txKept} kept`);
+  console.log(`  pending queue:  removed ${pqRemoved} stale entr(y/ies)`);
+}
+
 export async function selfHarnessCommand(
   action: string,
   options: SelfHarnessOptions,
@@ -226,6 +249,7 @@ export async function selfHarnessCommand(
   if (action === 'transfer') return selfHarnessTransfer(options);
   if (action === 'mine-prod') return selfHarnessMineProd(options);
   if (action === 'pending') return selfHarnessPending(options);
+  if (action === 'prune') return selfHarnessPrune(options);
   console.error(`Unknown self-harness action: ${action}`);
   process.exitCode = 1;
 }

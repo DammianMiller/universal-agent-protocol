@@ -175,10 +175,9 @@ Controls:
   proposals enqueue for validation, env knobs may auto-promote after validation, scaffold/middleware are
   human-gated. CLI: `uap self-harness {transfer,mine-prod,pending}`. *Exit met:* a Qwen3.6 normalizer
   acceptance auto-seeds a Qwen3.7 proposal; real proxy-journal mining enqueued the path-normalizer behind
-  a human gate. **Scheduling** (operational): run `uap self-harness mine-prod --unit
-  uap-anthropic-proxy.service --since '24 hours ago'` on a systemd user timer (or cron) — it only mines +
-  enqueues; promotion stays gated. **Remaining:** periodic ablation-pruning of stale transfer/pending
-  entries (reuse `benchmarks/paired/ablation.ts`).
+  a human gate. **Scheduling [BUILT]:** `deploy/systemd/uap-self-harness-mine.{service,timer}` — a daily user timer
+  runs `mine-prod` (mine + enqueue, gated) then `prune`. **Ablation-prune [BUILT]:** `TransferStore.prune`
+  + `PendingQueue.prune` drop stale / no-longer-paying entries; `uap self-harness prune`. P3 fully closed.
 
 ## 12. Success metrics
 

@@ -87,4 +87,28 @@ export class PendingQueue {
       this.persist();
     }
   }
+
+  /**
+   * Drop terminal (promoted/rejected) entries older than `maxAgeDays`, and stale
+   * still-pending entries older than `maxPendingDays` (never validated → likely
+   * obsolete). Returns the removed items.
+   */
+  prune(opts: { maxAgeDays?: number; maxPendingDays?: number; now?: number } = {}): PendingProposal[] {
+    const maxAge = (opts.maxAgeDays ?? 30) * 86_400_000;
+    const maxPending = (opts.maxPendingDays ?? 14) * 86_400_000;
+    const now = opts.now ?? Date.now();
+    const removed: PendingProposal[] = [];
+    this.items = this.items.filter((it) => {
+      const age = now - (Date.parse(it.createdAt) || 0);
+      const terminalStale = (it.status === 'promoted' || it.status === 'rejected') && age > maxAge;
+      const pendingStale = it.status === 'pending' && age > maxPending;
+      if (terminalStale || pendingStale) {
+        removed.push(it);
+        return false;
+      }
+      return true;
+    });
+    if (removed.length) this.persist();
+    return removed;
+  }
 }
