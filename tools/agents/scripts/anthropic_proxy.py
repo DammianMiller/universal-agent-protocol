@@ -267,6 +267,49 @@ PROXY_FINALIZE_SESSION_HARD_CAP = int(
 PROXY_HARD_FINALIZE_TURNS = int(
     os.environ.get("PROXY_HARD_FINALIZE_TURNS", "40")
 )
+# Self-Harness middleware (2026-06-23): conversation-aware tool-call path
+# normalizer. When ON, garbled file paths in outgoing tool_use blocks
+# (case/extension/stray-dir/whitespace mangling — the toolcall.path.garbled
+# failure) are snapped to the nearest path the model already used correctly
+# earlier in the conversation. Default OFF (a Self-Harness `middleware` Mod
+# enables it after the loop validates it). See toolcall_path_normalizer.py and
+# docs/design/SELF_HARNESS.md §4.
+PROXY_TOOLCALL_PATH_NORMALIZE = os.environ.get(
+    "PROXY_TOOLCALL_PATH_NORMALIZE", "off"
+).lower() in ("on", "1", "true", "yes")
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # launch-robust sibling import
+    from toolcall_path_normalizer import extract_known_paths as _shz_known_paths
+    from toolcall_path_normalizer import normalize_tool_uses as _shz_normalize_tool_uses
+    _TOOLCALL_NORMALIZER_OK = True
+except Exception:  # pragma: no cover - optional middleware
+    _TOOLCALL_NORMALIZER_OK = False
+
+
+def _maybe_normalize_toolcall_paths(anthropic_resp: dict, request_body: dict) -> None:
+    """Gated: snap garbled tool-call paths in the response to paths the model
+    used correctly earlier in the conversation. No-op unless enabled + available."""
+    if not (PROXY_TOOLCALL_PATH_NORMALIZE and _TOOLCALL_NORMALIZER_OK):
+        return
+    try:
+        content = anthropic_resp.get("content")
+        if not isinstance(content, list):
+            return
+        tool_uses = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
+        if not tool_uses:
+            return
+        known = _shz_known_paths(request_body.get("messages", []))
+        if not known:
+            return
+        corrections = _shz_normalize_tool_uses(tool_uses, known)
+        for tu_id, key, frm, to, reason in corrections:
+            logger.info(
+                "TOOLCALL PATH NORMALIZER: %s.%s '%s' -> '%s' (%s)",
+                tu_id, key, frm, to, reason,
+            )
+    except Exception as exc:  # never break a response over normalization
+        logger.warning("TOOLCALL PATH NORMALIZER: skipped (%s)", type(exc).__name__)
 # Recon-convergence guardrail: after this many consecutive turns that use
 # tools but produce NO write/deliverable tool call (see _WRITE_TOOL_CLASS),
 # the proxy injects a directive telling the model to stop exploring and
@@ -8375,6 +8418,7 @@ async def messages(request: Request):
             expose_thinking=isinstance(body.get("thinking"), dict)
                 and (body["thinking"].get("type") or "").lower() == "enabled",
         )
+        _maybe_normalize_toolcall_paths(anthropic_resp, body)
         # FINALIZE CONTINUATION: inject synthetic tool_use to keep client loop alive
         if (
             monitor.finalize_turn_active
@@ -8788,6 +8832,7 @@ async def messages(request: Request):
             expose_thinking=isinstance(body.get("thinking"), dict)
                 and (body["thinking"].get("type") or "").lower() == "enabled",
         )
+        _maybe_normalize_toolcall_paths(anthropic_resp, body)
         # FINALIZE CONTINUATION: inject synthetic tool_use (non-guarded stream path)
         if (
             monitor.finalize_turn_active
