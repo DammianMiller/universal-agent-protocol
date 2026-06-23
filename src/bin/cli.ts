@@ -538,10 +538,20 @@ selfHarness
   .description('Mine weaknesses from a paired-bench records.jsonl and propose candidate Mods (read-only)')
   .option('--records <path>', 'Paired-bench output dir or records.jsonl to mine')
   .option('--env <path>', 'Env file for the current harness profile (default ~/.config/uap/llama-server.env)')
+  .option('--transfer <path>', 'Cross-model transfer store to seed proposals from (default ~/.uap/self-harness/transfer.json)')
   .option('--json', 'Emit JSON instead of a human-readable report')
   .action(async (options) => {
     const cmd = await lazy.selfHarness();
     await cmd('analyze', options);
+  });
+selfHarness
+  .command('transfer')
+  .description('List the cross-model transfer store (accepted/rejected Mods keyed by failure signature)')
+  .option('--transfer <path>', 'Transfer store path (default ~/.uap/self-harness/transfer.json)')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.selfHarness();
+    await cmd('transfer', options);
   });
 
 // Open-collider divergent-ideation commands

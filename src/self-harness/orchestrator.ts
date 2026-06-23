@@ -20,6 +20,7 @@ import { mineFromRecords } from './mine.js';
 import { Proposer, heuristicProposer } from './propose.js';
 import { decideAccept, Decision, DecisionOptions } from './decide.js';
 import { HarnessProfile } from './profile.js';
+import { TransferStore, modKey, makeEntry } from './transfer.js';
 
 export interface ValidationOutcome {
   validation: Comparison;
@@ -41,6 +42,11 @@ export interface OrchestratorOptions {
   decision?: DecisionOptions;
   minFrequency?: number;
   log?: (msg: string) => void;
+  /** Optional cross-model transfer store; outcomes are recorded into it (P3). */
+  transferStore?: TransferStore;
+  /** ISO timestamp + provenance string stamped on recorded transfer entries. */
+  validatedAt?: string;
+  provenance?: string;
 }
 
 export interface CandidateOutcome {
@@ -101,9 +107,47 @@ export async function runIteration(opts: OrchestratorOptions): Promise<Iteration
       accepted.push(mod);
       profile = applyAcceptedToProfile(profile, mod);
     }
+    // Record the outcome (accept OR reject) into the transfer store, attributed
+    // to the weakness whose heuristic produced this Mod, so the fix transfers to
+    // future models and known-bad Mods aren't re-proposed.
+    if (opts.transferStore) {
+      const w = attributeWeakness(mod, weaknesses, proposer, profile);
+      if (w) {
+        opts.transferStore.record(
+          makeEntry({
+            signature: w.signature,
+            kind: w.kind,
+            model: opts.model,
+            mod,
+            delta: Number.isFinite(decision.validationDelta) ? decision.validationDelta : 0,
+            accepted: ok,
+            validatedAt: opts.validatedAt ?? '',
+            provenance: opts.provenance ?? 'self-harness iteration',
+          }),
+        );
+      }
+    }
   }
 
   return { weaknesses, proposed, outcomes, accepted, profile };
+}
+
+/**
+ * Attribute a Mod back to the weakness that produced it, by re-running the
+ * proposer on each single weakness and matching by structural key. Works for the
+ * heuristic and transfer proposers (deterministic kind -> Mod mapping).
+ */
+function attributeWeakness(
+  mod: Mod,
+  weaknesses: WeaknessReport[],
+  proposer: Proposer,
+  profile: HarnessProfile,
+): WeaknessReport | null {
+  const target = modKey(mod);
+  for (const w of weaknesses) {
+    if (proposer.propose([w], profile).some((m) => modKey(m) === target)) return w;
+  }
+  return null;
 }
 
 /** Fold an accepted Mod into the in-memory profile (env/scaffold/middleware). */
