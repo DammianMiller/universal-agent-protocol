@@ -19,12 +19,22 @@ import {
   emptyProfile,
   type HarnessProfile,
 } from '../self-harness/profile.js';
+import {
+  JsonTransferStore,
+  makeTransferProposer,
+  describeEntry,
+} from '../self-harness/transfer.js';
+import type { Proposer } from '../self-harness/propose.js';
 
 export interface SelfHarnessOptions {
   records?: string;
   env?: string;
   json?: boolean;
+  /** Path to a JSON transfer store to seed proposals from (cross-model, P3). */
+  transfer?: string;
 }
+
+const DEFAULT_TRANSFER = join(homedir(), '.uap', 'self-harness', 'transfer.json');
 
 function loadRecords(path: string): { records: RunRecord[]; model: string } {
   let file = path;
@@ -54,7 +64,16 @@ export async function selfHarnessAnalyze(options: SelfHarnessOptions = {}): Prom
 
   const envPath = options.env || DEFAULT_ENV;
   const profile: HarnessProfile = existsSync(envPath) ? profileFromEnvFile(envPath) : emptyProfile();
-  const proposed = heuristicProposer.propose(weaknesses, profile);
+
+  // Seed proposals from the cross-model transfer store when available (P3).
+  const transferPath = options.transfer || DEFAULT_TRANSFER;
+  let proposer: Proposer = heuristicProposer;
+  let transferActive = false;
+  if (existsSync(transferPath)) {
+    proposer = makeTransferProposer(new JsonTransferStore(transferPath), heuristicProposer);
+    transferActive = true;
+  }
+  const proposed = proposer.propose(weaknesses, profile);
 
   if (options.json) {
     console.log(JSON.stringify({ model, runs: records.length, weaknesses, proposed }, null, 2));
@@ -75,7 +94,10 @@ export async function selfHarnessAnalyze(options: SelfHarnessOptions = {}): Prom
     console.log(`    ${chalk.dim(w.hypothesis)}`);
   }
 
-  console.log(chalk.bold('\nProposed Mods (heuristic, minimal):'));
+  console.log(
+    chalk.bold(`\nProposed Mods (${proposer.id}, minimal):`) +
+      (transferActive ? chalk.dim(`  [transfer store: ${transferPath}]`) : ''),
+  );
   if (proposed.length === 0) {
     console.log(chalk.dim('  (none — no current profile value to scale, or no mapped heuristic)'));
   } else {
@@ -88,11 +110,29 @@ export async function selfHarnessAnalyze(options: SelfHarnessOptions = {}): Prom
   );
 }
 
+export async function selfHarnessTransfer(options: SelfHarnessOptions = {}): Promise<void> {
+  const path = options.transfer || DEFAULT_TRANSFER;
+  if (!existsSync(path)) {
+    console.log(`No transfer store at ${path} yet (it fills as self-harness accepts Mods).`);
+    return;
+  }
+  const store = new JsonTransferStore(path);
+  const all = store.all();
+  if (options.json) {
+    console.log(JSON.stringify(all, null, 2));
+    return;
+  }
+  console.log(chalk.bold(`\nSelf-Harness transfer store — ${all.length} entr(y/ies)`));
+  console.log(chalk.dim(`  ${path}`));
+  for (const e of all) console.log(`  ${e.accepted ? chalk.green('✓') : chalk.red('✗')} ${describeEntry(e)}`);
+}
+
 export async function selfHarnessCommand(
   action: string,
   options: SelfHarnessOptions,
 ): Promise<void> {
   if (action === 'analyze') return selfHarnessAnalyze(options);
+  if (action === 'transfer') return selfHarnessTransfer(options);
   console.error(`Unknown self-harness action: ${action}`);
   process.exitCode = 1;
 }

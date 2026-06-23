@@ -17,4 +17,5 @@ export * from './propose.js';
 export * from './decide.js';
 export * from './profile.js';
 export * from './orchestrator.js';
+export * from './transfer.js';
 export * from './middleware/path-normalizer.js';
