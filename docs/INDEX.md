@@ -38,6 +38,7 @@ New here? Start with the [project README](../README.md), then [Getting Started](
 | [Overview](architecture/OVERVIEW.md) | System architecture, subsystems, tool-call flow |
 | [Protocol](architecture/PROTOCOL.md) | The harness↔UAP contract, hook lifecycle, decision loop |
 | [Reactor (auto-apply)](design/UAP_REACTOR.md) | Dynamic experts/skills/patterns injected per prompt across harnesses; the assist vs enforce model, per-harness wiring |
+| [Self-Harness (proposal)](design/SELF_HARNESS.md) | Self-improving harness: autonomous mine→propose→validate loop over a bounded Mod DSL (scaffold/proxy-knob/middleware), cross-model transfer, online mining; grounds arXiv:2606.09498 in UAP's HALO + paired-bench |
 
 ## Reference
 
