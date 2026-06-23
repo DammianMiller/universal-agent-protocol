@@ -169,9 +169,16 @@ Controls:
 - **P2 — Middleware Mods (Option B).** Add the `middleware` Mod class + the `toolcall-path-normalizer`.
   *Exit:* the loop proposes+validates the normalizer and measurably cuts path-garbling on the medium
   suite (the ceiling manual fixes couldn't crack).
-- **P3 — Transfer + online (Option C).** Pattern-RAG-keyed transfer store; prod-trace mining + scheduled
-  runs + human-gate PR flow; periodic ablation pruning. *Exit:* a Mod mined on Qwen3.6 auto-seeds and
-  validates on a second model; a prod-trace-mined Mod lands via the gated flow.
+- **P3 — Transfer + online (Option C). [BUILT]** Cross-model transfer store keyed by (model family,
+  failure kind, signature) + transfer-seeded proposer (`src/self-harness/transfer.ts`); online mining from
+  HALO spans AND proxy-log signals (`trace-mine.ts`); gated promotion queue (`pending.ts`) — prod-mined
+  proposals enqueue for validation, env knobs may auto-promote after validation, scaffold/middleware are
+  human-gated. CLI: `uap self-harness {transfer,mine-prod,pending}`. *Exit met:* a Qwen3.6 normalizer
+  acceptance auto-seeds a Qwen3.7 proposal; real proxy-journal mining enqueued the path-normalizer behind
+  a human gate. **Scheduling** (operational): run `uap self-harness mine-prod --unit
+  uap-anthropic-proxy.service --since '24 hours ago'` on a systemd user timer (or cron) — it only mines +
+  enqueues; promotion stays gated. **Remaining:** periodic ablation-pruning of stale transfer/pending
+  entries (reuse `benchmarks/paired/ablation.ts`).
 
 ## 12. Success metrics
 
