@@ -12,3 +12,8 @@
 
 export * from './mods.js';
 export * from './weakness.js';
+export * from './mine.js';
+export * from './propose.js';
+export * from './decide.js';
+export * from './profile.js';
+export * from './orchestrator.js';
