@@ -35,6 +35,7 @@ const lazy = {
   expertRoute: () => import('../cli/expert-route.js').then((m) => m.expertRouteCommand),
   react: () => import('../cli/react.js').then((m) => m.reactCommand),
   harness: () => import('../cli/harness.js').then((m) => m.harnessCommand),
+  selfHarness: () => import('../cli/self-harness.js').then((m) => m.selfHarnessCommand),
   ideate: () => import('../cli/ideate.js').then((m) => m.ideateCommand),
   deliver: () => import('../cli/deliver.js').then((m) => m.deliverCommand),
   verify: () => import('../cli/verify.js').then((m) => m.verifyCommand),
@@ -526,6 +527,64 @@ harness
   .action(async (options) => {
     const cmd = await lazy.harness();
     await cmd('status', options);
+  });
+
+// Self-Harness — self-improving harness (arXiv:2606.09498)
+const selfHarness = program
+  .command('self-harness')
+  .description('Self-improving harness: mine model-specific failures and propose harness modifications');
+selfHarness
+  .command('analyze')
+  .description('Mine weaknesses from a paired-bench records.jsonl and propose candidate Mods (read-only)')
+  .option('--records <path>', 'Paired-bench output dir or records.jsonl to mine')
+  .option('--env <path>', 'Env file for the current harness profile (default ~/.config/uap/llama-server.env)')
+  .option('--transfer <path>', 'Cross-model transfer store to seed proposals from (default ~/.uap/self-harness/transfer.json)')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.selfHarness();
+    await cmd('analyze', options);
+  });
+selfHarness
+  .command('transfer')
+  .description('List the cross-model transfer store (accepted/rejected Mods keyed by failure signature)')
+  .option('--transfer <path>', 'Transfer store path (default ~/.uap/self-harness/transfer.json)')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.selfHarness();
+    await cmd('transfer', options);
+  });
+selfHarness
+  .command('mine-prod')
+  .description('Mine weaknesses from production traces (HALO + proxy log) and ENQUEUE proposals for gated validation (never applies)')
+  .option('--traces <path>', 'HALO traces.jsonl (default ~/.uap/halo/traces.jsonl)')
+  .option('--unit <name>', 'Proxy journal unit to mine, e.g. uap-anthropic-proxy.service')
+  .option('--since <when>', 'journalctl --since window for proxy-log mining (default "24 hours ago")')
+  .option('--model <id>', 'Model family stamp (default qwen36-35b-a3b-iq4xs)')
+  .option('--transfer <path>', 'Transfer store to seed proposals from')
+  .option('--pending <path>', 'Pending queue path (default ~/.uap/self-harness/pending.json)')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.selfHarness();
+    await cmd('mine-prod', options);
+  });
+selfHarness
+  .command('pending')
+  .description('List queued proposals awaiting validation + gate (from mine-prod)')
+  .option('--pending <path>', 'Pending queue path (default ~/.uap/self-harness/pending.json)')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.selfHarness();
+    await cmd('pending', options);
+  });
+selfHarness
+  .command('prune')
+  .description('Ablation-prune: drop stale / no-longer-paying-off transfer + pending entries')
+  .option('--transfer <path>', 'Transfer store path')
+  .option('--pending <path>', 'Pending queue path')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.selfHarness();
+    await cmd('prune', options);
   });
 
 // Open-collider divergent-ideation commands

@@ -1809,6 +1809,64 @@ class TestMalformedToolGuardrail(unittest.TestCase):
         self.assertEqual(len(fake_client.requests), 1)
 
 
+class TestTurnCountFinalizeBreaker(unittest.TestCase):
+    """The mode-B runaway backstop: after PROXY_HARD_FINALIZE_TURNS assistant
+    tool turns, the proxy strips tools so the only possible output is a terminal
+    text summary (end_turn). Inert below the ceiling."""
+
+    @staticmethod
+    def _body(n_tool_turns):
+        msgs = [{"role": "user", "content": "do the task"}]
+        for i in range(n_tool_turns):
+            msgs.append({
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": f"t{i}", "name": "Bash",
+                             "input": {"command": "ls"}}],
+            })
+            msgs.append({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": "ok"}],
+            })
+        return {
+            "model": "x", "messages": msgs,
+            "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
+        }
+
+    def test_strips_tools_above_ceiling(self):
+        old = getattr(proxy, "PROXY_HARD_FINALIZE_TURNS")
+        try:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", 40)
+            out = proxy.build_openai_request(
+                self._body(45), proxy.SessionMonitor(context_window=262144)
+            )
+            self.assertFalse(out.get("tools"))  # tools stripped
+            self.assertIn("STOP now", out["messages"][-1]["content"])
+        finally:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", old)
+
+    def test_inert_below_ceiling(self):
+        old = getattr(proxy, "PROXY_HARD_FINALIZE_TURNS")
+        try:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", 40)
+            out = proxy.build_openai_request(
+                self._body(5), proxy.SessionMonitor(context_window=262144)
+            )
+            self.assertTrue(out.get("tools"))  # tools retained
+        finally:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", old)
+
+    def test_disabled_when_zero(self):
+        old = getattr(proxy, "PROXY_HARD_FINALIZE_TURNS")
+        try:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", 0)
+            out = proxy.build_openai_request(
+                self._body(60), proxy.SessionMonitor(context_window=262144)
+            )
+            self.assertTrue(out.get("tools"))  # disabled → never strips
+        finally:
+            setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", old)
+
+
 class TestToolTurnControls(unittest.TestCase):
     def test_tool_narrowing_reduces_tool_count(self):
         old_narrow = getattr(proxy, "PROXY_TOOL_NARROWING")
@@ -1853,9 +1911,17 @@ class TestToolTurnControls(unittest.TestCase):
             openai = proxy.build_openai_request(
                 body, proxy.SessionMonitor(context_window=262144)
             )
-            self.assertEqual(len(openai.get("tools", [])), 2)
             names = [t.get("function", {}).get("name") for t in openai.get("tools", [])]
-            self.assertIn("RunTests", names)
+            # Narrowing must still REDUCE the toolset by dropping irrelevant tools
+            # (Deploy), while keeping the query-relevant tool (RunTests) AND core
+            # action tools (Read/Edit) — a coding agent that loses Edit cannot
+            # "fix the failing test". Core-tool protection makes `keep` a soft
+            # floor, so the exact count is keep + any core tools not already in
+            # the top-scored set; assert the invariant, not a brittle fixed count.
+            self.assertLess(len(names), 4)            # reduced from 4
+            self.assertIn("RunTests", names)          # query-relevant kept
+            self.assertIn("Edit", names)              # core action tool kept
+            self.assertNotIn("Deploy", names)         # irrelevant dropped
         finally:
             setattr(proxy, "PROXY_TOOL_NARROWING", old_narrow)
             setattr(proxy, "PROXY_TOOL_NARROWING_KEEP", old_keep)
@@ -5479,6 +5545,31 @@ class TestReconConvergence(unittest.TestCase):
         body = {"messages": [{"role": "user", "content": "go"}]}
         proxy._maybe_inject_recon_convergence(body, m)
         self.assertEqual(len(body["messages"]), 1)
+
+    def test_escalate_is_one_shot_not_a_permanent_poison(self):
+        """POISON FIX: the escalate tier strips tools to force a terminal
+        summary, but it must reset the no-write streak so it does NOT re-fire
+        every subsequent request. Without the reset, recon_hard_fires is
+        monotonic (escalate stays true) and stripped tools mean the model can
+        never write (streak never falls), so EVERY request gets tools stripped
+        forever — poisoning the session (and any colliding-fingerprint session)
+        until a proxy restart."""
+        proxy.PROXY_RECON_CONVERGENCE_THRESHOLD = 40
+        m = proxy.SessionMonitor(context_window=131072)
+        tools = [self._tool("Write"), self._tool("Read")]
+        # drive into escalate: streak huge, hard-tier already fired to the cap
+        m.consecutive_no_write_turns = 200
+        m.recon_hard_fires = proxy.PROXY_RECON_SESSION_HARD_CAP
+        b1 = {"messages": [{"role": "user", "content": "go"}],
+              "tools": list(tools), "tool_choice": "required"}
+        proxy._maybe_inject_recon_convergence(b1, m, tools)
+        self.assertNotIn("tools", b1)                    # escalate stripped tools
+        self.assertEqual(m.consecutive_no_write_turns, 0)  # streak reset (the fix)
+        # next request: streak is now below threshold → MUST NOT strip again
+        b2 = {"messages": [{"role": "user", "content": "go"}],
+              "tools": list(tools), "tool_choice": "required"}
+        proxy._maybe_inject_recon_convergence(b2, m, tools)
+        self.assertTrue(b2.get("tools"))                 # tools restored, not poisoned
 
     @staticmethod
     def _tool(name: str) -> dict:

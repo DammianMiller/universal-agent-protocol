@@ -1,0 +1,9 @@
+{
+  "name": "Run-length encode a string",
+  "instruction": "Implement rleEncode(s) in rle.js. Return the run-length encoding: each maximal run of one character becomes that character followed by the run length (e.g. 'aaabbc' -> 'a3b2c1', 'x' -> 'x1'). The empty string returns ''. Keep the CommonJS export shape.",
+  "difficulty": "medium",
+  "tags": ["feature", "javascript"],
+  "verifyCmd": "node -e \"const f=require('./rle.js'); if(f('aaabbc')!=='a3b2c1')process.exit(1); if(f('')!=='')process.exit(1); if(f('x')!=='x1')process.exit(1); if(f('aabbaa')!=='a2b2a2')process.exit(1); console.log('ok')\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 300
+}

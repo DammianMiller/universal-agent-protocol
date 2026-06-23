@@ -285,7 +285,20 @@ export function claudeAdapter(model: string): SubprocessAdapter {
   return new SubprocessAdapter({
     id: 'claude',
     bin: 'claude',
-    args: ['-p', '{instruction}', '--output-format', 'json', '--model', model],
+    // --dangerously-skip-permissions is REQUIRED for headless operation: `-p`
+    // (print) mode cannot surface interactive permission prompts, so without
+    // this the agent silently fails to use Edit/Write/Bash and scores 0 on both
+    // arms (uninformative). Safe here because each run executes in a disposable,
+    // isolated scratch workdir (materializeWorkdir), never the real repo.
+    args: [
+      '-p',
+      '{instruction}',
+      '--output-format',
+      'json',
+      '--dangerously-skip-permissions',
+      '--model',
+      model,
+    ],
     parseUsage: parseClaudeUsage,
   });
 }

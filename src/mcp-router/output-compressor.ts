@@ -28,6 +28,22 @@ export interface CompressedOutput {
   stats: CompressionStats;
 }
 
+type McpContentBlock = { type?: string; text?: string; [k: string]: unknown };
+type McpEnvelope = { content: McpContentBlock[]; [k: string]: unknown };
+
+/** True when `v` is an MCP tool-result envelope: `{ content: [ {type,text}, ... ] }`. */
+function isMcpEnvelope(v: unknown): v is McpEnvelope {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    Array.isArray((v as { content?: unknown }).content) &&
+    (v as { content: unknown[] }).content.length > 0 &&
+    (v as { content: unknown[] }).content.every(
+      (b) => typeof b === 'object' && b !== null
+    )
+  );
+}
+
 /**
  * Compress a tool output for context efficiency.
  */
@@ -85,6 +101,49 @@ export function compressToolOutput(
         method: 'passthrough',
       },
     };
+  }
+
+  // MCP content envelope ({ content: [{ type:'text', text }] }): compress ONLY
+  // the inner text and return a REBUILT envelope object. The old behavior below
+  // serialized the whole envelope and head/tail-truncated (or FTS-indexed) that
+  // JSON string — producing invalid, mid-token JSON AND replacing the structured
+  // envelope with a bare string, which violates the "never flatten the envelope"
+  // regression guard in tools/execute.ts and made small MoE models write back
+  // mangled output. Compress the text in-place instead, preserving the shape.
+  if (isMcpEnvelope(result)) {
+    const blocks = result.content;
+    const textIdxs = blocks
+      .map((b, i) => (typeof b.text === 'string' ? i : -1))
+      .filter((i) => i >= 0);
+    if (textIdxs.length > 0) {
+      const joined = textIdxs.map((i) => blocks[i].text as string).join('\n');
+      const joinedBytes = Buffer.byteLength(joined, 'utf-8');
+      const useIndex =
+        !!intent && joinedBytes >= INDEX_THRESHOLD && joinedBytes <= MAX_INDEX_BYTES;
+      const compressedText = useIndex
+        ? indexAndSearch(joined, intent as string)
+        : smartTruncate(joined, maxBytes);
+      // Fold all text blocks into the first; preserve any non-text blocks as-is.
+      const first = textIdxs[0];
+      const newContent = blocks
+        .map((b, i) => {
+          if (i === first) return { ...b, text: compressedText };
+          if (textIdxs.includes(i)) return null; // already folded into `first`
+          return b;
+        })
+        .filter((b): b is (typeof blocks)[number] => b !== null);
+      const rebuilt = { ...result, content: newContent };
+      const compressedBytes = Buffer.byteLength(JSON.stringify(rebuilt), 'utf-8');
+      return {
+        output: rebuilt,
+        stats: {
+          originalBytes,
+          compressedBytes,
+          savings: `${Math.round((1 - compressedBytes / originalBytes) * 100)}%`,
+          method: useIndex ? 'indexed' : 'truncated',
+        },
+      };
+    }
   }
 
   // Large output with intent: index and search.

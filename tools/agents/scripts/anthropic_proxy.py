@@ -254,6 +254,62 @@ PROXY_FINALIZE_CONTINUATION_MAX = int(
 PROXY_FINALIZE_SESSION_HARD_CAP = int(
     os.environ.get("PROXY_FINALIZE_SESSION_HARD_CAP", "3")
 )
+# Hard turn-count finalize backstop (2026-06-22). Catches "mode B" runaways: the
+# model keeps emitting DISTINCT, well-formed tool calls and never emits end_turn,
+# so the synthetic-continuation, context-death-spiral, and tool-starvation paths
+# never engage and 'release to auto' just lets it keep choosing tools — it loops
+# until the client's agent timeout. After this many assistant tool-using turns in
+# the (post-prune) transcript, strip tools so the only possible output is a
+# terminal text summary (end_turn). Gated HIGH so only a genuine runaway trips it;
+# pruning-heavy large legitimate sessions keep a low post-prune turn count and are
+# unaffected. Set 0 to disable. Empirically motivated by the paired benchmark
+# where every hard-suite run looped to timeout (see project_uap_paired_bench).
+PROXY_HARD_FINALIZE_TURNS = int(
+    os.environ.get("PROXY_HARD_FINALIZE_TURNS", "40")
+)
+# Self-Harness middleware (2026-06-23): conversation-aware tool-call path
+# normalizer. When ON, garbled file paths in outgoing tool_use blocks
+# (case/extension/stray-dir/whitespace mangling — the toolcall.path.garbled
+# failure) are snapped to the nearest path the model already used correctly
+# earlier in the conversation. Default OFF (a Self-Harness `middleware` Mod
+# enables it after the loop validates it). See toolcall_path_normalizer.py and
+# docs/design/SELF_HARNESS.md §4.
+PROXY_TOOLCALL_PATH_NORMALIZE = os.environ.get(
+    "PROXY_TOOLCALL_PATH_NORMALIZE", "off"
+).lower() in ("on", "1", "true", "yes")
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # launch-robust sibling import
+    from toolcall_path_normalizer import extract_known_paths as _shz_known_paths
+    from toolcall_path_normalizer import normalize_tool_uses as _shz_normalize_tool_uses
+    _TOOLCALL_NORMALIZER_OK = True
+except Exception:  # pragma: no cover - optional middleware
+    _TOOLCALL_NORMALIZER_OK = False
+
+
+def _maybe_normalize_toolcall_paths(anthropic_resp: dict, request_body: dict) -> None:
+    """Gated: snap garbled tool-call paths in the response to paths the model
+    used correctly earlier in the conversation. No-op unless enabled + available."""
+    if not (PROXY_TOOLCALL_PATH_NORMALIZE and _TOOLCALL_NORMALIZER_OK):
+        return
+    try:
+        content = anthropic_resp.get("content")
+        if not isinstance(content, list):
+            return
+        tool_uses = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
+        if not tool_uses:
+            return
+        known = _shz_known_paths(request_body.get("messages", []))
+        if not known:
+            return
+        corrections = _shz_normalize_tool_uses(tool_uses, known)
+        for tu_id, key, frm, to, reason in corrections:
+            logger.info(
+                "TOOLCALL PATH NORMALIZER: %s.%s '%s' -> '%s' (%s)",
+                tu_id, key, frm, to, reason,
+            )
+    except Exception as exc:  # never break a response over normalization
+        logger.warning("TOOLCALL PATH NORMALIZER: skipped (%s)", type(exc).__name__)
 # Recon-convergence guardrail: after this many consecutive turns that use
 # tools but produce NO write/deliverable tool call (see _WRITE_TOOL_CLASS),
 # the proxy injects a directive telling the model to stop exploring and
@@ -3090,6 +3146,15 @@ def _tokenize_for_tool_ranking(text: str) -> set[str]:
     return {m.group(0).lower() for m in re.finditer(r"[a-zA-Z0-9_]{2,}", text)}
 
 
+# Core action tools a coding agent must always retain through narrowing — losing
+# any of these strands the agent (it can read/think but not act). Names are the
+# Claude Code canonical tool names, matched case-insensitively.
+_CORE_TOOL_NAMES = frozenset({
+    "read", "write", "edit", "multiedit", "notebookedit",
+    "bash", "glob", "grep", "ls", "applypatch", "apply_patch",
+})
+
+
 def _narrow_tools_for_request(
     anthropic_body: dict, openai_tools: list[dict]
 ) -> list[dict]:
@@ -3150,6 +3215,16 @@ def _narrow_tools_for_request(
 
     scored.sort(reverse=True)
     selected = {id(tool) for _, _, tool in scored[:keep]}
+    # Always retain core action tools, regardless of lexical score. A real task
+    # description ("build an octopus invaders game") rarely contains tool names
+    # like "write"/"edit", so overlap ties at 0 and the -idx tiebreaker would
+    # otherwise keep an arbitrary first-N subset — observed dropping
+    # Write/Edit/Bash entirely and stalling the agent on meta-tools. `keep` thus
+    # acts as a soft floor: core tools are added on top of the top-scored set.
+    for tool in openai_tools:
+        nm = tool.get("function", {}).get("name", "").lower()
+        if nm in _CORE_TOOL_NAMES:
+            selected.add(id(tool))
     narrowed = [tool for tool in openai_tools if id(tool) in selected]
 
     top_names = [t.get("function", {}).get("name", "") for t in narrowed[:4]]
@@ -3534,6 +3609,18 @@ def _maybe_inject_recon_convergence(
         openai_body.pop("tools", None)
         openai_body.pop("tool_choice", None)
         openai_body.pop("grammar", None)
+        # POISON FIX (2026-06-22): reset the no-write streak after forcing the
+        # terminal summary. Without this, escalate is a permanent death-spiral:
+        # recon_hard_fires is monotonic so `escalate` stays true for the whole
+        # session, and stripping tools means the model CAN'T write, so
+        # consecutive_no_write_turns never falls back below threshold — every
+        # subsequent request (including unrelated ones sharing the session
+        # fingerprint) gets tools stripped forever, until a proxy restart.
+        # Resetting the streak makes escalate a ONE-SHOT per window: it forces
+        # a terminal summary once, then the next turn falls below threshold so
+        # tools are restored; if the model genuinely keeps exploring without
+        # writing it rebuilds the streak and re-fires — bounded, not permanent.
+        monitor.consecutive_no_write_turns = 0
     else:
         if hard:
             # Fix C: at the hard tier, drop the structural requirement to call a
@@ -3938,6 +4025,44 @@ def build_openai_request(
             if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
                 openai_body["speculative.n_max"] = 0
             return openai_body
+
+        # TURN-COUNT FINALIZE BREAKER (mode-B runaway backstop): the model keeps
+        # emitting distinct, well-formed tool calls and never emits end_turn, so
+        # none of the other terminal paths engage and 'release to auto' just lets
+        # it keep choosing tools — it loops to the client's agent timeout. After a
+        # high tool-turn ceiling, strip tools so the only possible output is a
+        # terminal text summary (end_turn), ending the loop. Gated HIGH so only a
+        # genuine runaway trips it; see PROXY_HARD_FINALIZE_TURNS.
+        if PROXY_HARD_FINALIZE_TURNS > 0:
+            _agent_tool_turns = _count_agent_tool_turns(anthropic_body)
+            if _agent_tool_turns >= PROXY_HARD_FINALIZE_TURNS:
+                openai_body.pop("tool_choice", None)
+                openai_body.pop("tools", None)
+                openai_body.pop("grammar", None)
+                msgs = openai_body.get("messages", [])
+                msgs.append({
+                    "role": "user",
+                    "content": (
+                        f"You have made {_agent_tool_turns} tool calls without "
+                        "converging on a final answer. STOP now. No tools are "
+                        "available this turn. Reply with a brief plain-text summary "
+                        "of what you accomplished and what remains. Do NOT emit any "
+                        "tool call or tool-call-like syntax."
+                    ),
+                })
+                openai_body["messages"] = msgs
+                monitor.reset_tool_turn_state(reason="turn_count_finalize_breaker")
+                logger.warning(
+                    "TURN-COUNT FINALIZE BREAKER: %d agent tool turns >= ceiling %d "
+                    "-- stripped tools to force terminal summary (end_turn).",
+                    _agent_tool_turns,
+                    PROXY_HARD_FINALIZE_TURNS,
+                )
+                if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
+                    openai_body["enable_thinking"] = False
+                if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
+                    openai_body["speculative.n_max"] = 0
+                return openai_body
 
         # Check if forced-tool dampener or loop breaker should override tool_choice
         if monitor.consume_forced_auto_turn():
@@ -4359,6 +4484,26 @@ def _build_reasoning_fallback_text(
         fallback_mode,
     )
     return None
+
+
+def _count_agent_tool_turns(anthropic_body: dict) -> int:
+    """Count assistant turns that emitted at least one tool_use block — i.e. how
+    many tool-using steps the agent has already taken in the (post-prune)
+    transcript. Used by the TURN-COUNT FINALIZE BREAKER to detect mode-B
+    runaways that never converge. Counting from the possibly-pruned history is
+    intentional: a pruning-heavy legitimate long session keeps a low post-prune
+    count and is left alone, while a small-context non-terminating loop (no
+    pruning) accumulates turns until the ceiling trips."""
+    n = 0
+    for msg in anthropic_body.get("messages", []):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_use" for b in content
+        ):
+            n += 1
+    return n
 
 
 def _last_assistant_was_text_only(anthropic_body: dict) -> bool:
@@ -4882,36 +5027,31 @@ def _repair_tool_call_json(raw: str) -> str | None:
     s = raw.strip()
     if not s.startswith("{"):
         return None
-    # Strip trailing garbage (runaway braces/brackets)
+    # Strip runaway trailing closers (safe: only removes excess closers at the
+    # very end, where count is already unbalanced).
     while s.endswith("}}") and s.count("{") < s.count("}"):
         s = s[:-1]
     while s.endswith("]]") and s.count("[") < s.count("]"):
         s = s[:-1]
-    # Balance braces
+    # Balance braces by APPENDING closers only — never delete or trim interior
+    # content. A lossy tail-trim silently drops a truncated trailing field (e.g.
+    # a cut-off Write "content"), producing empty/partial files like the 0-byte
+    # "audio.j" seen in octopus_invaders. If the payload was genuinely truncated
+    # mid-value, appending closers won't yield valid JSON → return None so the
+    # caller routes it to the existing truncated_tool_args retry path instead of
+    # executing a content-less tool call.
     open_b = s.count("{") - s.count("}")
     if open_b > 0:
         s += "}" * open_b
     elif open_b < 0:
-        # Too many closing braces — trim from end
-        for _ in range(-open_b):
-            idx = s.rfind("}")
-            if idx > 0:
-                s = s[:idx] + s[idx + 1:]
-    # Try to parse
+        # Too many closers and not a simple runaway-tail case: can't fix by
+        # appending without deleting interior content. Bail out non-destructively.
+        return None
     try:
         json.loads(s)
         return s
     except json.JSONDecodeError:
-        pass
-    # Try truncating at last valid comma + closing
-    for end in range(len(s) - 1, max(0, len(s) - 200), -1):
-        candidate = s[:end].rstrip().rstrip(",") + "}" * max(0, s[:end].count("{") - s[:end].count("}"))
-        try:
-            json.loads(candidate)
-            return candidate
-        except json.JSONDecodeError:
-            continue
-    return None
+        return None
 
 
 def _extract_tool_calls_from_text(
@@ -8278,6 +8418,7 @@ async def messages(request: Request):
             expose_thinking=isinstance(body.get("thinking"), dict)
                 and (body["thinking"].get("type") or "").lower() == "enabled",
         )
+        _maybe_normalize_toolcall_paths(anthropic_resp, body)
         # FINALIZE CONTINUATION: inject synthetic tool_use to keep client loop alive
         if (
             monitor.finalize_turn_active
@@ -8691,6 +8832,7 @@ async def messages(request: Request):
             expose_thinking=isinstance(body.get("thinking"), dict)
                 and (body["thinking"].get("type") or "").lower() == "enabled",
         )
+        _maybe_normalize_toolcall_paths(anthropic_resp, body)
         # FINALIZE CONTINUATION: inject synthetic tool_use (non-guarded stream path)
         if (
             monitor.finalize_turn_active
