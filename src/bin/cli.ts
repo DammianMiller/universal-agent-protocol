@@ -553,6 +553,29 @@ selfHarness
     const cmd = await lazy.selfHarness();
     await cmd('transfer', options);
   });
+selfHarness
+  .command('mine-prod')
+  .description('Mine weaknesses from production traces (HALO + proxy log) and ENQUEUE proposals for gated validation (never applies)')
+  .option('--traces <path>', 'HALO traces.jsonl (default ~/.uap/halo/traces.jsonl)')
+  .option('--unit <name>', 'Proxy journal unit to mine, e.g. uap-anthropic-proxy.service')
+  .option('--since <when>', 'journalctl --since window for proxy-log mining (default "24 hours ago")')
+  .option('--model <id>', 'Model family stamp (default qwen36-35b-a3b-iq4xs)')
+  .option('--transfer <path>', 'Transfer store to seed proposals from')
+  .option('--pending <path>', 'Pending queue path (default ~/.uap/self-harness/pending.json)')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.selfHarness();
+    await cmd('mine-prod', options);
+  });
+selfHarness
+  .command('pending')
+  .description('List queued proposals awaiting validation + gate (from mine-prod)')
+  .option('--pending <path>', 'Pending queue path (default ~/.uap/self-harness/pending.json)')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.selfHarness();
+    await cmd('pending', options);
+  });
 
 // Open-collider divergent-ideation commands
 const ideate = program
