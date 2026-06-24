@@ -945,6 +945,13 @@ class SessionMonitor:
     tool_cycle_counts: dict = field(default_factory=dict)  # {tool_name: cycle_count} across resets
     last_response_garbled: bool = False  # previous turn had garbled/malformed output
     finalize_turn_active: bool = False
+    # Set True for the single turn on which a hard finalize breaker (TURN-COUNT
+    # or CONTAMINATION LOOP) strips tools to force a terminal text-only end_turn.
+    # Suppresses response-side prose->tool_call resurrection so a contaminated
+    # model emitting `<function=...>`/`<tool_call>` prose does not get it promoted
+    # back into a structured tool_use, which would continue the very loop the
+    # breaker is ending. Reset to False at the start of every request.
+    suppress_text_tool_extraction: bool = False
     finalize_continuation_count: int = 0
     finalize_hard_stop_count: int = 0  # monotonic, not reset by fresh user text
     finalize_synthetic_tool_id: str = ""
@@ -4052,6 +4059,10 @@ def build_openai_request(
                 })
                 openai_body["messages"] = msgs
                 monitor.reset_tool_turn_state(reason="turn_count_finalize_breaker")
+                # Tools were stripped to force a terminal text summary; do not let
+                # the response-side extractor resurrect prose tool-calls (which
+                # would defeat the breaker and continue the loop).
+                monitor.suppress_text_tool_extraction = True
                 logger.warning(
                     "TURN-COUNT FINALIZE BREAKER: %d agent tool turns >= ceiling %d "
                     "-- stripped tools to force terminal summary (end_turn).",
@@ -7084,6 +7095,11 @@ def _maybe_apply_session_contamination_breaker(
                 "Summarize what you have accomplished and what remains to be done."
             ),
         })
+        # Suppress prose->tool_call resurrection on this turn: the model is
+        # contaminated and will emit `<function=...>`/`<tool_call>` prose even
+        # with tools removed; promoting it back to a structured tool_use would
+        # continue the exact loop this finalize is meant to break.
+        monitor.suppress_text_tool_extraction = True
         return updated
 
     messages = anthropic_body.get("messages", [])
@@ -7210,7 +7226,9 @@ def _maybe_apply_session_contamination_breaker(
 
 
 def _maybe_extract_text_tool_calls(
-    openai_resp: dict, anthropic_tools: list[dict] | None = None
+    openai_resp: dict,
+    anthropic_tools: list[dict] | None = None,
+    suppress: bool = False,
 ) -> dict:
     """Mutate *openai_resp* in-place: if the message has no structured
     ``tool_calls`` but contains tool-call markup in text, extract them
@@ -7222,6 +7240,11 @@ def _maybe_extract_text_tool_calls(
     blocks pass through as text.
 
     Returns the (possibly-mutated) response for chaining."""
+    # A hard finalize breaker stripped tools this turn to force a terminal
+    # text-only end_turn; do not resurrect prose tool-calls (that would defeat
+    # the breaker and continue the loop). Carried per-turn on the SessionMonitor.
+    if suppress:
+        return openai_resp
     choice = (openai_resp.get("choices") or [{}])[0]
     message = choice.get("message", {})
 
@@ -7427,7 +7450,10 @@ def _extract_thinking_block(text: str) -> tuple[str | None, str]:
 
 
 def openai_to_anthropic_response(
-    openai_resp: dict, model: str, expose_thinking: bool = True
+    openai_resp: dict,
+    model: str,
+    expose_thinking: bool = True,
+    suppress_text_tool_extraction: bool = False,
 ) -> dict:
     """Convert an OpenAI Chat Completions response to Anthropic Messages format.
 
@@ -7441,7 +7467,7 @@ def openai_to_anthropic_response(
     they're surfaced as Anthropic blocks or silently consumed.
     """
     # First: try to recover tool calls trapped in text XML tags
-    _maybe_extract_text_tool_calls(openai_resp)
+    _maybe_extract_text_tool_calls(openai_resp, suppress=suppress_text_tool_extraction)
     # Second: strip garbled/degenerate tool call arguments
     _sanitize_garbled_tool_calls(openai_resp)
 
@@ -7837,7 +7863,11 @@ async def stream_anthropic_response(
     # -------------------------------------------------------------------
     # Post-stream: recover <tool_call> XML from accumulated text
     # -------------------------------------------------------------------
-    if not tool_calls_by_index and "<tool_call>" in accumulated_text:
+    if (
+        not tool_calls_by_index
+        and "<tool_call>" in accumulated_text
+        and not monitor.suppress_text_tool_extraction
+    ):
         xml_extracted, remaining_text = _extract_tool_calls_from_text(accumulated_text)
         if xml_extracted:
             # We already streamed the text as-is.  We cannot un-stream it,
@@ -8045,6 +8075,10 @@ async def messages(request: Request):
         return await _passthrough_anthropic_request(request, body, is_stream)
     session_id = resolve_session_id(request, body)
     monitor = get_session_monitor(session_id)
+    # Per-turn flag: only the turn whose breaker strips tools suppresses the
+    # response-side prose->tool_call resurrection. Clear it at request entry so a
+    # prior finalize turn never bleeds into the next turn's normal extraction.
+    monitor.suppress_text_tool_extraction = False
     last_session_id = session_id
     # Make the session id visible to _ensure_slot_for_session inside
     # _post_with_retry. The /v1/chat/completions handler also reaches this
@@ -8358,7 +8392,11 @@ async def messages(request: Request):
 
         openai_resp = strict_resp.json()
         # Recover tool calls from <tool_call> XML before guardrails run
-        _maybe_extract_text_tool_calls(openai_resp, anthropic_tools=body.get("tools"))
+        _maybe_extract_text_tool_calls(
+            openai_resp,
+            anthropic_tools=body.get("tools"),
+            suppress=monitor.suppress_text_tool_extraction,
+        )
         openai_resp = await _apply_unexpected_end_turn_guardrail(
             client,
             openai_resp,
@@ -8417,6 +8455,7 @@ async def messages(request: Request):
             openai_resp, model,
             expose_thinking=isinstance(body.get("thinking"), dict)
                 and (body["thinking"].get("type") or "").lower() == "enabled",
+            suppress_text_tool_extraction=monitor.suppress_text_tool_extraction,
         )
         _maybe_normalize_toolcall_paths(anthropic_resp, body)
         # FINALIZE CONTINUATION: inject synthetic tool_use to keep client loop alive
@@ -8758,7 +8797,11 @@ async def messages(request: Request):
 
         openai_resp = resp.json()
         # Recover tool calls from <tool_call> XML before guardrails run
-        _maybe_extract_text_tool_calls(openai_resp, anthropic_tools=body.get("tools"))
+        _maybe_extract_text_tool_calls(
+            openai_resp,
+            anthropic_tools=body.get("tools"),
+            suppress=monitor.suppress_text_tool_extraction,
+        )
         openai_resp = await _apply_unexpected_end_turn_guardrail(
             client,
             openai_resp,
@@ -8831,6 +8874,7 @@ async def messages(request: Request):
             openai_resp, model,
             expose_thinking=isinstance(body.get("thinking"), dict)
                 and (body["thinking"].get("type") or "").lower() == "enabled",
+            suppress_text_tool_extraction=monitor.suppress_text_tool_extraction,
         )
         _maybe_normalize_toolcall_paths(anthropic_resp, body)
         # FINALIZE CONTINUATION: inject synthetic tool_use (non-guarded stream path)
