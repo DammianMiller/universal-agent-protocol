@@ -40,6 +40,25 @@ function basename(p: string): string {
   return parts.length ? parts[parts.length - 1] : p;
 }
 
+function parentDir(p: string): string {
+  const parts = p.split('/').filter(Boolean);
+  return parts.slice(0, -1).join('/');
+}
+
+/**
+ * Whether snapping `proposed` to `candidate` is safe w.r.t. directories. We only
+ * fix the FILENAME (or strip a wrong absolute prefix), never RELOCATE across
+ * structurally-different directory trees. A bare workdir-relative candidate (no
+ * parent dir) is always safe; otherwise the parent dirs must match. This blocks
+ * the observed harm where a garbled write to `octopus_invaders/js/config.js`
+ * was snapped to a different known dir `octopus-invader/space-shooter/js/...`.
+ */
+function dirCompatible(proposed: string, candidate: string): boolean {
+  const cp = parentDir(candidate);
+  if (cp === '') return true; // bare known path — safe to snap to
+  return squash(parentDir(proposed)) === squash(cp);
+}
+
 function editDistance(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
@@ -88,25 +107,27 @@ export function normalizeToolPath(
   const snap = (target: string, reason: string): NormalizeResult =>
     target === proposed ? unchanged : { path: target, changed: true, reason };
   const unique = (cands: string[]) => (cands.length === 1 ? cands[0] : null);
+  // Only consider candidates we can safely snap to without relocating dirs.
+  const safe = (cands: string[]) => cands.filter((f) => dirCompatible(trimmed, f));
 
   // 1) Exact basename match (handles stray leading directory components).
-  let hit = unique(workdirFiles.filter((f) => basename(f) === base));
+  let hit = unique(safe(workdirFiles.filter((f) => basename(f) === base)));
   if (hit) return snap(hit, 'stray path components removed');
 
   // 2) Case-insensitive basename (handles capitalization garble).
-  hit = unique(workdirFiles.filter((f) => basename(f).toLowerCase() === base.toLowerCase()));
+  hit = unique(safe(workdirFiles.filter((f) => basename(f).toLowerCase() === base.toLowerCase())));
   if (hit) return snap(hit, 'case-normalized to the real filename');
 
   // 3) Punctuation/extension-squashed basename (handles dropped/altered dot or
   //    extension, e.g. "titlecasejs" -> "titlecase.js").
   const sb = squash(base);
-  hit = unique(workdirFiles.filter((f) => squash(basename(f)) === sb));
+  hit = unique(safe(workdirFiles.filter((f) => squash(basename(f)) === sb)));
   if (hit) return snap(hit, 'extension/punctuation-normalized to the real filename');
 
   // 4) Edit-distance fallback for genuine typos. Fire only when the best match
   //    is meaningfully better than the runner-up (avoids ambiguous snaps).
   const maxD = opts.maxEditDistance ?? Math.max(2, Math.floor(base.length * 0.3));
-  const ranked = workdirFiles
+  const ranked = safe(workdirFiles)
     .map((f) => ({ f, d: editDistance(base.toLowerCase(), basename(f).toLowerCase()) }))
     .sort((x, y) => x.d - y.d);
   if (

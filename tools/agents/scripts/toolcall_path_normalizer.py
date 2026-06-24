@@ -29,6 +29,22 @@ def _basename(p: str) -> str:
     return parts[-1] if parts else p
 
 
+def _parent_dir(p: str) -> str:
+    parts = [x for x in p.split("/") if x]
+    return "/".join(parts[:-1])
+
+
+def _dir_compatible(proposed: str, candidate: str) -> bool:
+    """Only fix the FILENAME / strip a wrong abs prefix — never RELOCATE across
+    structurally-different directory trees. Bare (no-parent) candidates are safe;
+    otherwise the parent dirs must match. Blocks the observed harm of snapping
+    octopus_invaders/js/config.js to a different known dir."""
+    cp = _parent_dir(candidate)
+    if cp == "":
+        return True
+    return _squash(_parent_dir(proposed)) == _squash(cp)
+
+
 def _edit_distance(a: str, b: str) -> int:
     m, n = len(a), len(b)
     if m == 0:
@@ -68,23 +84,26 @@ def normalize_tool_path(proposed: str, known_paths, max_edit_distance=None):
     def unique(cands):
         return cands[0] if len(cands) == 1 else None
 
+    def safe(cands):
+        return [k for k in cands if _dir_compatible(trimmed, k)]
+
     # 1) exact basename (stray dirs)
-    hit = unique([k for k in known if _basename(k) == base])
+    hit = unique(safe([k for k in known if _basename(k) == base]))
     if hit:
         return snap(hit, "stray path components removed")
     # 2) case-insensitive basename
-    hit = unique([k for k in known if _basename(k).lower() == base.lower()])
+    hit = unique(safe([k for k in known if _basename(k).lower() == base.lower()]))
     if hit:
         return snap(hit, "case-normalized to the real filename")
     # 3) punctuation/extension-squashed basename
     sb = _squash(base)
-    hit = unique([k for k in known if _squash(_basename(k)) == sb])
+    hit = unique(safe([k for k in known if _squash(_basename(k)) == sb]))
     if hit:
         return snap(hit, "extension/punctuation-normalized to the real filename")
     # 4) edit-distance fallback (only when clearly closest)
     max_d = max_edit_distance if max_edit_distance is not None else max(2, len(base) // 3)
     ranked = sorted(
-        ((k, _edit_distance(base.lower(), _basename(k).lower())) for k in known),
+        ((k, _edit_distance(base.lower(), _basename(k).lower())) for k in safe(known)),
         key=lambda kv: kv[1],
     )
     if ranked and ranked[0][1] <= max_d and (len(ranked) < 2 or ranked[1][1] > ranked[0][1]):
