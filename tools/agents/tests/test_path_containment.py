@@ -96,6 +96,28 @@ class TestContainToWorkdir(unittest.TestCase):
         _, changed, _ = N.contain_to_workdir(p, self.wd)
         self.assertFalse(changed)
 
+    def test_garbled_subdir_corrected_against_disk(self):
+        # space-shooter exists on disk; a write to garbled space-shootr is fixed.
+        os.makedirs(os.path.join(self.wd, "space-shooter", "js"))
+        p = self.wd + "/space-shootr/js/game.js"  # in-workdir but garbled subdir
+        new, changed, _ = N.contain_to_workdir(p, self.wd)
+        self.assertTrue(changed)
+        self.assertEqual(new, self.wd + "/space-shooter/js/game.js")
+
+    def test_garbled_prefix_and_subdir_both_corrected(self):
+        os.makedirs(os.path.join(self.wd, "space-shooter", "css"))
+        p = "/home/cogtec/dev/octus_invaders/space-shootr/css/styles.css"
+        new, changed, _ = N.contain_to_workdir(p, self.wd)
+        self.assertTrue(changed)
+        self.assertEqual(new, self.wd + "/space-shooter/css/styles.css")
+
+    def test_new_subdir_left_when_no_disk_match(self):
+        # First write that legitimately creates a new dir -> not fuzzy-mangled.
+        p = self.wd + "/space-shooter/js/game.js"
+        new, changed, _ = N.contain_to_workdir(p, self.wd)
+        self.assertFalse(changed)  # nothing to correct; left as-is
+        self.assertEqual(new, p)
+
 
 class TestContainToolUses(unittest.TestCase):
     def setUp(self):

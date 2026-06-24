@@ -179,33 +179,76 @@ def derive_workdir(known_paths, hint_text: str = "") -> str:
     return max(pool, key=lambda d: (len(d.split("/")), len(d)))
 
 
-def contain_to_workdir(path: str, workdir: str):
-    """Snap an absolute, non-existent GARBLE of a workdir path onto `workdir` by
-    matching the (fuzzy) workdir-name component and keeping the suffix. Returns
-    (new_path, changed, reason).
+def _fs_correct_suffix(workdir: str, suffix: str) -> str:
+    """Walk `suffix` under `workdir`, fuzzy-correcting each intermediate DIRECTORY
+    component to an existing on-disk sibling when the exact name is absent but a
+    single close match exists (space-shootr -> space-shooter once that dir
+    exists). The final component (the file being created) is left as-is."""
+    if not suffix:
+        return suffix
+    parts = [x for x in suffix.split("/") if x]
+    cur = workdir
+    out: list[str] = []
+    for i, comp in enumerate(parts):
+        nxt = os.path.join(cur, comp)
+        if i == len(parts) - 1 or os.path.exists(nxt):
+            out.append(comp)
+            cur = nxt
+            continue
+        try:
+            cands = [
+                e for e in os.listdir(cur)
+                if os.path.isdir(os.path.join(cur, e)) and _fuzzy_eq(e, comp)
+            ]
+        except OSError:
+            cands = []
+        chosen = cands[0] if len(cands) == 1 else comp
+        out.append(chosen)
+        cur = os.path.join(cur, chosen)
+    return "/".join(out)
 
-    Handles the small-quant failure where it mangles the absolute PREFIX of an
-    intended in-workdir path (/home/cogtek -> /home/cogtec, octopus_invaders ->
-    octus_invaders). Only ever relocates INTO the workdir, and only a path that
-    does not exist (so a real out-of-workdir path is left alone — the OS sandbox
-    blocks that). Safe precisely because the sandbox contains any mis-snap.
+
+def contain_to_workdir(path: str, workdir: str):
+    """Snap a garbled in-workdir path back onto `workdir`. Returns
+    (new_path, changed, reason). Two garble classes, both handled:
+
+      * mangled absolute PREFIX / workdir name (/home/cogtek -> /home/cogtec,
+        octopus_invaders -> octus_invaders) — anchored by a fuzzy match of the
+        workdir-name component;
+      * mangled SUBDIR name in the suffix (space-shooter -> space-shootr) —
+        fuzzy-corrected against the real directories on disk.
+
+    Only ever relocates INTO the workdir, and never touches a path that exists
+    elsewhere (the OS sandbox blocks a genuine out-of-workdir write). Safe
+    precisely because the sandbox contains any mis-snap to the workdir.
     """
     if not path or not workdir or not path.startswith("/"):
         return path, False, None
     wd = workdir.rstrip("/")
+
     if path == wd or path.startswith(wd + "/"):
-        return path, False, None  # already inside the workdir
-    if os.path.exists(path):
+        # Already inside: only fix garbled subdir names against disk.
+        suffix = path[len(wd):].lstrip("/")
+        reason = "corrected garbled subdir(s) under the workdir"
+    elif os.path.exists(path):
         return path, False, None  # a real path elsewhere — don't touch it
-    wd_name = wd.rsplit("/", 1)[-1]
-    parts = [x for x in path.split("/") if x]
-    for i in range(len(parts) - 1, -1, -1):  # last fuzzy match = closest to the suffix
-        if _fuzzy_eq(parts[i], wd_name):
-            suffix = "/".join(parts[i + 1:])
-            new = wd + ("/" + suffix if suffix else "")
-            if new != path:
-                return new, True, f"contained garbled out-of-workdir path to '{wd_name}'"
+    else:
+        # Garbled prefix/workdir-name: anchor on a fuzzy workdir-name match.
+        wd_name = wd.rsplit("/", 1)[-1]
+        parts = [x for x in path.split("/") if x]
+        anchor = next(
+            (i for i in range(len(parts) - 1, -1, -1) if _fuzzy_eq(parts[i], wd_name)),
+            None,
+        )
+        if anchor is None:
             return path, False, None
+        suffix = "/".join(parts[anchor + 1:])
+        reason = f"contained garbled out-of-workdir path to '{wd_name}'"
+
+    corrected = _fs_correct_suffix(wd, suffix)
+    new = wd + ("/" + corrected if corrected else "")
+    if new != path:
+        return new, True, reason
     return path, False, None
 
 
