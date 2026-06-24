@@ -89,6 +89,7 @@ const MANDATORY_POLICIES = [
   'policy-security-gate',
   'policy-deployment-safety',
   'task-required',
+  'workdir-scope',
 ];
 
 async function installPolicy(policyName: string): Promise<void> {
