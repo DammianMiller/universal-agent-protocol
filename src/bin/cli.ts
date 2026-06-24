@@ -40,6 +40,7 @@ const lazy = {
   deliver: () => import('../cli/deliver.js').then((m) => m.deliverCommand),
   verify: () => import('../cli/verify.js').then((m) => m.verifyCommand),
   benchPaired: () => import('../cli/bench.js').then((m) => m.benchPairedCommand),
+  sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
 };
 
 // Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
@@ -130,6 +131,19 @@ program
   .option('--save', 'Save analysis to .uap.analysis.json')
   .action(async (options) => {
     (await lazy.analyze())(options);
+  });
+
+program
+  .command('sandbox')
+  .description(
+    'Run a command with a kernel-enforced workdir boundary (bubblewrap): only the ' +
+      'current dir + scratch are writable, so writes outside fail at the kernel — the ' +
+      'boundary --dangerously-skip-permissions cannot bypass. Usage: uap sandbox -- <command> [args...]',
+  )
+  .argument('[command...]', 'Command to run sandboxed (prefix with -- to pass its flags through)')
+  .allowUnknownOption(true)
+  .action(async (command: string[]) => {
+    await (await lazy.sandbox())(command || []);
   });
 
 program
