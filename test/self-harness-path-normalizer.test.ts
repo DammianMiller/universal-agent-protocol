@@ -17,7 +17,6 @@ describe('path-normalizer — the actual garble cases observed this cycle', () =
     ['titlecase.js\n', 'titlecase.js', 'trailing newline'],
     ['  titlecase.js  ', 'titlecase.js', 'surrounding whitespace'],
     ['/tmp/wd/titlecase.js', 'titlecase.js', 'absolute path → basename match'],
-    ['titlecsae.js', 'titlecase.js', 'transposition typo (edit distance)'],
   ];
   for (const [proposed, expected, label] of cases) {
     it(`snaps "${JSON.stringify(proposed)}" → "${expected}" (${label})`, () => {
@@ -45,6 +44,21 @@ describe('path-normalizer — does NOT invent targets (safety)', () => {
   });
   it('returns unchanged with an empty workdir', () => {
     expect(normalizeToolPath('x.js', []).changed).toBe(false);
+  });
+  it('no longer edit-distance-guesses a transposition typo (the `oct`->`octop` class)', () => {
+    // Previously snapped 'titlecsae.js' -> 'titlecase.js' via Levenshtein. That
+    // guessing produced wrong relocations, so it is removed: an unresolved
+    // garble is left to fail loud and self-correct.
+    const r = normalizeToolPath('titlecsae.js', FILES);
+    expect(r.changed).toBe(false);
+    expect(r.path).toBe('titlecsae.js');
+  });
+  it('does NOT cross directories that differ only by punctuation/case', () => {
+    // squash() used to treat 's-space-shooter' and 's space-shooter' as one dir.
+    const r = normalizeToolPath('/x/s-space-shooter/css/styles.css', [
+      '/x/s space-shooter/css/styles.css',
+    ]);
+    expect(r.changed).toBe(false);
   });
 
   it('does NOT relocate across structurally-different directories (the live octopus bug)', () => {

@@ -22,14 +22,6 @@ export interface NormalizeResult {
   reason: string | null;
 }
 
-export interface NormalizeOptions {
-  /**
-   * Max Levenshtein distance (on the basename) for the typo fallback to fire.
-   * Defaults to max(2, 30% of basename length).
-   */
-  maxEditDistance?: number;
-}
-
 /** Collapse to comparable form: lowercase, strip every non-alphanumeric char. */
 function squash(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -55,27 +47,11 @@ function parentDir(p: string): string {
  */
 function dirCompatible(proposed: string, candidate: string): boolean {
   const cp = parentDir(candidate);
-  if (cp === '') return true; // bare known path — safe to snap to
-  return squash(parentDir(proposed)) === squash(cp);
-}
-
-function editDistance(a: string, b: string): number {
-  const m = a.length;
-  const n = b.length;
-  if (m === 0) return n;
-  if (n === 0) return m;
-  const prev = new Array(n + 1);
-  const cur = new Array(n + 1);
-  for (let j = 0; j <= n; j++) prev[j] = j;
-  for (let i = 1; i <= m; i++) {
-    cur[0] = i;
-    for (let j = 1; j <= n; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
-    }
-    for (let j = 0; j <= n; j++) prev[j] = cur[j];
-  }
-  return prev[n];
+  if (cp === '') return true; // bare workdir-relative file — safe to snap to
+  // EXACT parent match only. A previous version compared squash(parent), which
+  // collapsed punctuation/case and let writes relocate between genuinely
+  // different directories (e.g. `s-space-shooter` vs `s space-shooter`).
+  return parentDir(proposed) === cp;
 }
 
 /**
@@ -87,7 +63,6 @@ function editDistance(a: string, b: string): number {
 export function normalizeToolPath(
   proposed: string,
   workdirFiles: string[],
-  opts: NormalizeOptions = {},
 ): NormalizeResult {
   const unchanged: NormalizeResult = { path: proposed, changed: false, reason: null };
   if (!proposed || workdirFiles.length === 0) return unchanged;
@@ -124,20 +99,9 @@ export function normalizeToolPath(
   hit = unique(safe(workdirFiles.filter((f) => squash(basename(f)) === sb)));
   if (hit) return snap(hit, 'extension/punctuation-normalized to the real filename');
 
-  // 4) Edit-distance fallback for genuine typos. Fire only when the best match
-  //    is meaningfully better than the runner-up (avoids ambiguous snaps).
-  const maxD = opts.maxEditDistance ?? Math.max(2, Math.floor(base.length * 0.3));
-  const ranked = safe(workdirFiles)
-    .map((f) => ({ f, d: editDistance(base.toLowerCase(), basename(f).toLowerCase()) }))
-    .sort((x, y) => x.d - y.d);
-  if (
-    ranked.length > 0 &&
-    ranked[0].d <= maxD &&
-    (ranked.length < 2 || ranked[1].d > ranked[0].d)
-  ) {
-    return snap(ranked[0].f, `nearest filename by edit distance (${ranked[0].d})`);
-  }
-
+  // No edit-distance fallback: guessing the "nearest" filename produced wrong
+  // snaps (e.g. `oct` -> `octop`). A garble we cannot resolve by exact basename /
+  // case / punctuation match is left unchanged so it fails loud and self-corrects.
   return unchanged;
 }
 
@@ -152,14 +116,13 @@ export const PATH_ARG_KEYS = ['file_path', 'path', 'filePath', 'notebook_path'] 
 export function normalizeToolInput(
   input: Record<string, unknown>,
   workdirFiles: string[],
-  opts: NormalizeOptions = {},
 ): { input: Record<string, unknown>; corrections: { key: string; from: string; to: string; reason: string }[] } {
   const corrections: { key: string; from: string; to: string; reason: string }[] = [];
   const out = { ...input };
   for (const key of PATH_ARG_KEYS) {
     const v = out[key];
     if (typeof v !== 'string') continue;
-    const r = normalizeToolPath(v, workdirFiles, opts);
+    const r = normalizeToolPath(v, workdirFiles);
     if (r.changed) {
       out[key] = r.path;
       corrections.push({ key, from: v, to: r.path, reason: r.reason ?? '' });

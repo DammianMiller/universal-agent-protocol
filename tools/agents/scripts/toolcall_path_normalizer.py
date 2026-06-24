@@ -15,6 +15,7 @@ TS reference at src/self-harness/middleware/path-normalizer.ts.
 See docs/design/SELF_HARNESS.md §4 (P2).
 """
 
+import os
 import re
 
 _PATH_ARG_KEYS = ("file_path", "path", "filePath", "notebook_path")
@@ -24,92 +25,77 @@ def _squash(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
-def _basename(p: str) -> str:
-    parts = [x for x in p.split("/") if x]
-    return parts[-1] if parts else p
+def normalize_tool_path(proposed: str, known_paths=None, max_edit_distance=None):
+    """Conservatively correct a garbled file path by snapping ONLY the filename to
+    a real sibling that already exists in the SAME, on-disk directory. Returns
+    ``(path, changed, reason)``.
 
+    Hardened (2026-06-24) after the heuristic version silently RELOCATED writes
+    across projects/worktrees (e.g. ``octopus_invaders/js/config.js`` ->
+    ``octopus-invader/space-shooter/js/config.js``), turning a loud,
+    self-correcting "no such file" failure into a silent wrong-write that
+    clobbered unrelated files. The rules below make a wrong-directory snap
+    structurally impossible:
 
-def _parent_dir(p: str) -> str:
-    parts = [x for x in p.split("/") if x]
-    return "/".join(parts[:-1])
+      * absolute paths only — the proxy cannot verify a relative path's cwd;
+      * never touch a path that already exists (it is correct);
+      * the directory must already exist on disk and is used VERBATIM — we never
+        alter, squash, case-fold or cross a directory segment, so a garbled
+        directory simply fails loud (as it did before the normalizer existed);
+      * snap only when EXACTLY ONE real file in that directory matches the
+        basename case-insensitively or punctuation/extension-squashed;
+      * no edit-distance guessing.
 
-
-def _dir_compatible(proposed: str, candidate: str) -> bool:
-    """Only fix the FILENAME / strip a wrong abs prefix — never RELOCATE across
-    structurally-different directory trees. Bare (no-parent) candidates are safe;
-    otherwise the parent dirs must match. Blocks the observed harm of snapping
-    octopus_invaders/js/config.js to a different known dir."""
-    cp = _parent_dir(candidate)
-    if cp == "":
-        return True
-    return _squash(_parent_dir(proposed)) == _squash(cp)
-
-
-def _edit_distance(a: str, b: str) -> int:
-    m, n = len(a), len(b)
-    if m == 0:
-        return n
-    if n == 0:
-        return m
-    prev = list(range(n + 1))
-    for i in range(1, m + 1):
-        cur = [i] + [0] * n
-        for j in range(1, n + 1):
-            cost = 0 if a[i - 1] == b[j - 1] else 1
-            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
-        prev = cur
-    return prev[n]
-
-
-def normalize_tool_path(proposed: str, known_paths, max_edit_distance=None):
-    """Snap `proposed` to the nearest path in `known_paths` (paths the model used
-    correctly earlier). Returns (path, changed, reason). Never invents a target:
-    an unmatched path (a legitimate new file) is returned unchanged.
+    ``known_paths`` is accepted for signature/back-compat but the on-disk
+    directory is the source of truth. Anything that cannot be verified on disk is
+    returned unchanged (fail safe to a clean failure).
     """
-    known = list(dict.fromkeys(known_paths))  # de-dupe, preserve order
-    if not proposed or not known:
+    if not proposed:
         return proposed, False, None
 
     trimmed = proposed.strip()
-    if trimmed in known:
+
+    # Absolute paths only: the proxy has no reliable cwd for relative paths.
+    if not os.path.isabs(trimmed):
+        return proposed, False, None
+
+    # Already real? Nothing to fix (covers files, directories, trailing slashes).
+    if os.path.exists(trimmed):
         if trimmed != proposed:
             return trimmed, True, "trimmed surrounding whitespace"
         return proposed, False, None
 
-    base = _basename(trimmed)
+    parent = os.path.dirname(trimmed)
+    base = os.path.basename(trimmed)
+    # A wrong/garbled DIRECTORY must never be guessed — only fix the filename
+    # within a directory that provably exists.
+    if not base or not os.path.isdir(parent):
+        return proposed, False, None
 
-    def snap(target, reason):
-        return (target, True, reason) if target != proposed else (proposed, False, None)
+    try:
+        entries = [
+            e for e in os.listdir(parent)
+            if os.path.isfile(os.path.join(parent, e))
+        ]
+    except OSError:
+        return proposed, False, None
 
-    def unique(cands):
-        return cands[0] if len(cands) == 1 else None
+    # Same-directory basename repair only.
+    matches = [e for e in entries if e.lower() == base.lower()]
+    reason = "case-normalized to the real filename in the same directory"
+    if not matches:
+        sb = _squash(base)
+        matches = [e for e in entries if _squash(e) == sb]
+        reason = "extension/punctuation-normalized to the real filename in the same directory"
 
-    def safe(cands):
-        return [k for k in cands if _dir_compatible(trimmed, k)]
+    # 0 matches = nothing to snap to; >1 = ambiguous -> leave alone (fail safe).
+    if len(matches) != 1:
+        return proposed, False, None
 
-    # 1) exact basename (stray dirs)
-    hit = unique(safe([k for k in known if _basename(k) == base]))
-    if hit:
-        return snap(hit, "stray path components removed")
-    # 2) case-insensitive basename
-    hit = unique(safe([k for k in known if _basename(k).lower() == base.lower()]))
-    if hit:
-        return snap(hit, "case-normalized to the real filename")
-    # 3) punctuation/extension-squashed basename
-    sb = _squash(base)
-    hit = unique(safe([k for k in known if _squash(_basename(k)) == sb]))
-    if hit:
-        return snap(hit, "extension/punctuation-normalized to the real filename")
-    # 4) edit-distance fallback (only when clearly closest)
-    max_d = max_edit_distance if max_edit_distance is not None else max(2, len(base) // 3)
-    ranked = sorted(
-        ((k, _edit_distance(base.lower(), _basename(k).lower())) for k in safe(known)),
-        key=lambda kv: kv[1],
-    )
-    if ranked and ranked[0][1] <= max_d and (len(ranked) < 2 or ranked[1][1] > ranked[0][1]):
-        return snap(ranked[0][0], f"nearest filename by edit distance ({ranked[0][1]})")
-
-    return proposed, False, None
+    target = os.path.join(parent, matches[0])
+    if target == proposed:
+        return proposed, False, None
+    return target, True, reason
 
 
 def extract_known_paths(anthropic_messages) -> list:
