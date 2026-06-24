@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.61.1 (2026-06-24)
+
+- fix(self-harness): the tool-call path-normalizer must not RELOCATE a write across structurally-different directories — it now only fixes the filename / strips a wrong absolute prefix, never snapping to a candidate in a different directory tree (live bug: a garbled octopus_invaders write was being sent to a different project dir). Applied to both the TS reference and the proxy-side Python port.
+
 ## v1.61.0 (2026-06-23)
 
 - feat(self-harness): self-improving harness (arXiv:2606.09498) — autonomous mine -> propose -> validate -> decide loop (bounded reversible Mod DSL, weakness/signature mining, paired-bench validation), tool-call path-normalizer middleware (cracks the small-model path-garbling ceiling), cross-model transfer store, online prod-trace mining with gated promotion, ablation prune, and a daily mine timer (`uap self-harness {analyze,transfer,mine-prod,pending,prune}`)
