@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.61.2 (2026-06-24)
+
+- fix(proxy): suppress prose->tool_call resurrection on hard finalize turns. When the TURN-COUNT FINALIZE BREAKER or SESSION CONTAMINATION LOOP strips tools to force a terminal text-only end_turn, the response-side extractor (`_maybe_extract_text_tool_calls`, also invoked inside `openai_to_anthropic_response`, plus the post-stream `<tool_call>` recovery) no longer promotes a contaminated model's `<function=...>`/`<tool_call>` prose back into a structured tool_use — which had let the client keep executing tool calls and continue the very loop the breaker was ending (observed live as a ~4 min / 104-message grind). Carried by a per-turn `SessionMonitor.suppress_text_tool_extraction` flag (reset at request entry, set by both breakers, honored at every resurrection site); the Hermes prose parser stays load-bearing on normal turns. Adds `test/test_finalize_suppression.py` (7 tests).
+
 ## v1.61.1 (2026-06-24)
 
 - fix(self-harness): the tool-call path-normalizer must not RELOCATE a write across structurally-different directories — it now only fixes the filename / strips a wrong absolute prefix, never snapping to a candidate in a different directory tree (live bug: a garbled octopus_invaders write was being sent to a different project dir). Applied to both the TS reference and the proxy-side Python port.
