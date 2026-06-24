@@ -80,6 +80,14 @@ def _inside(target: Path, roots: list[Path]) -> bool:
     return False
 
 
+def _is_dev_node(p: Path) -> bool:
+    """True for device pseudo-files under /dev (/dev/null, /dev/stderr,
+    /dev/stdout, /dev/fd/N, /dev/tty, /dev/zero, ...). Redirecting or writing
+    to these never escapes the project workspace — it's universal shell idiom
+    (`2>/dev/null`, `>/dev/stdout`) — so they are always in scope."""
+    return p == Path("/dev") or str(p).startswith("/dev/")
+
+
 def _check_path(target: str, roots: list[Path]) -> str:
     """Return the offending absolute path if out of scope, else ''."""
     if not target:
@@ -87,6 +95,9 @@ def _check_path(target: str, roots: list[Path]) -> str:
     p = _expand(target)
     if not p.is_absolute():
         # Relative paths resolve under the enforcer cwd (the project root).
+        return ""
+    if _is_dev_node(p):
+        # /dev device nodes are not a filesystem escape (e.g. `2>/dev/null`).
         return ""
     return "" if _inside(p, roots) else str(p)
 
