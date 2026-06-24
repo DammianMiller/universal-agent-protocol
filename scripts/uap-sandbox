@@ -1,77 +1,22 @@
 #!/usr/bin/env bash
-# uap-sandbox — run a command with ONLY the current working directory (plus a
-# small scratch/state allow-list) writable. Everything else on the filesystem is
-# either read-only or simply absent from the mount namespace, so a write outside
-# the workdir fails at the KERNEL — for Write/Edit tools, Bash, and any
-# subprocess alike. This is the enforcement layer that --dangerously-skip-
-# permissions cannot bypass (the client can't escape a kernel mount namespace).
+# uap-sandbox — thin shim. The implementation now lives in the uap CLI; this just
+# delegates to `uap sandbox` so there is a single source of truth. The env knobs
+# (UAP_SANDBOX_WORKDIR, UAP_SANDBOX_ALLOW, UAP_SANDBOX_OFF=1) are read directly by
+# `uap sandbox`.
 #
-# Uses bubblewrap (rootless, unprivileged user namespaces). Network is shared
-# with the host so the agent still reaches the local proxy (127.0.0.1:4000).
-#
-# Usage:   uap-sandbox <command> [args...]
-# Env:
-#   UAP_SANDBOX_WORKDIR   workdir to make writable (default: $PWD)
-#   UAP_SANDBOX_ALLOW     extra writable paths, colon-separated
-#   UAP_SANDBOX_OFF=1     bypass the sandbox entirely (run command as-is)
+# Usage: uap-sandbox <command> [args...]
 set -euo pipefail
 
+# UAP_SANDBOX_OFF=1 bypasses the sandbox entirely — run the command as-is, no
+# dependency on the uap CLI.
 if [[ "${UAP_SANDBOX_OFF:-}" == "1" ]]; then
   exec "$@"
 fi
 
-if ! command -v bwrap >/dev/null 2>&1; then
-  echo "uap-sandbox: bwrap (bubblewrap) not found — refusing to run unsandboxed. Set UAP_SANDBOX_OFF=1 to override." >&2
+if ! command -v uap >/dev/null 2>&1; then
+  echo "uap-sandbox: the 'uap' CLI is not on PATH — refusing to run unsandboxed." \
+       "Install @miller-tech/uap (npm i -g @miller-tech/uap), or set UAP_SANDBOX_OFF=1 to bypass." >&2
   exit 127
 fi
 
-WORKDIR="$(realpath "${UAP_SANDBOX_WORKDIR:-$PWD}")"
-HOME_DIR="${HOME:-/home/$(id -un)}"
-
-# Guard: never run with the workdir at $HOME or a top-level dir — that would
-# expose the whole tree and defeat the boundary.
-case "$WORKDIR" in
-  "$HOME_DIR" | "$HOME_DIR/" | / | /home | /home/* )
-    if [[ "$WORKDIR" == "$HOME_DIR" || "$WORKDIR" == "/" || "$WORKDIR" == "/home" ]]; then
-      echo "uap-sandbox: refusing to sandbox with workdir='$WORKDIR' (too broad)." >&2
-      exit 2
-    fi ;;
-esac
-
-# Read-only ROOT with writable "holes". The whole host is mounted read-only, so a
-# write/mkdir ANYWHERE outside an explicit writable hole FAILS with EROFS/EACCES
-# (real feedback to the agent — not a silent ephemeral write), while the host
-# filesystem can never be modified outside the holes. Special mounts and the
-# writable holes are bound AFTER, overriding the read-only root for their subtree.
-args=(
-  --ro-bind / /
-  --dev /dev
-  --proc /proc
-  --tmpfs /run
-  --die-with-parent
-  --unshare-pid
-  --new-session
-)
-
-# Writable holes: the workdir + scratch + client/uap runtime state.
-args+=(--bind "$WORKDIR" "$WORKDIR")
-args+=(--bind /tmp /tmp)
-args+=(--tmpfs /var/tmp)
-[[ -d "$HOME_DIR/.claude" ]] && args+=(--bind "$HOME_DIR/.claude" "$HOME_DIR/.claude")
-[[ -d "$HOME_DIR/.cache" ]]  && args+=(--bind "$HOME_DIR/.cache"  "$HOME_DIR/.cache")
-[[ -d "$HOME_DIR/.npm" ]]    && args+=(--bind "$HOME_DIR/.npm"    "$HOME_DIR/.npm")
-# (Everything else — system, ~/.config, sibling projects — is readable but
-#  read-only via the --ro-bind / / root above.)
-
-# Operator-supplied extra writable prefixes.
-if [[ -n "${UAP_SANDBOX_ALLOW:-}" ]]; then
-  IFS=':' read -ra _extra <<< "$UAP_SANDBOX_ALLOW"
-  for p in "${_extra[@]}"; do [[ -n "$p" && -e "$p" ]] && args+=(--bind "$p" "$p"); done
-fi
-
-exec bwrap \
-  "${args[@]}" \
-  --setenv HOME "$HOME_DIR" \
-  --setenv UAP_SANDBOX_ACTIVE 1 \
-  --chdir "$WORKDIR" \
-  "$@"
+exec uap sandbox -- "$@"
