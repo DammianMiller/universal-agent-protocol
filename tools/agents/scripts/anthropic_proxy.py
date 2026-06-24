@@ -277,20 +277,62 @@ PROXY_HARD_FINALIZE_TURNS = int(
 PROXY_TOOLCALL_PATH_NORMALIZE = os.environ.get(
     "PROXY_TOOLCALL_PATH_NORMALIZE", "off"
 ).lower() in ("on", "1", "true", "yes")
+# Path CONTAINMENT (separate from same-dir normalization): snap a garbled
+# out-of-workdir path (the small quant mangling the absolute PREFIX, e.g.
+# /home/cogtek -> /home/cogtec, octopus_invaders -> octus_invaders) back ONTO the
+# session workdir. Safe because the OS sandbox contains any mis-snap to the
+# workdir — without the sandbox this would risk cross-project relocation, so it
+# defaults ON only alongside sandboxed sessions. Set off to disable.
+PROXY_TOOLCALL_PATH_CONTAIN = os.environ.get(
+    "PROXY_TOOLCALL_PATH_CONTAIN", "on"
+).lower() in ("on", "1", "true", "yes")
 try:
     import sys as _sys
     _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # launch-robust sibling import
     from toolcall_path_normalizer import extract_known_paths as _shz_known_paths
     from toolcall_path_normalizer import normalize_tool_uses as _shz_normalize_tool_uses
+    from toolcall_path_normalizer import derive_workdir as _shz_derive_workdir
+    from toolcall_path_normalizer import contain_tool_uses as _shz_contain_tool_uses
     _TOOLCALL_NORMALIZER_OK = True
 except Exception:  # pragma: no cover - optional middleware
     _TOOLCALL_NORMALIZER_OK = False
 
 
+def _toolcall_workdir_hint(messages: list, limit: int = 8000) -> str:
+    """Recent text/tool_result content (capped) so derive_workdir can recover the
+    real workdir echoed in command outputs even when the model's own tool-call
+    paths are all garbled."""
+    out: list[str] = []
+    total = 0
+    for msg in reversed(messages or []):
+        content = msg.get("content")
+        chunks: list[str] = []
+        if isinstance(content, str):
+            chunks.append(content)
+        elif isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict) or b.get("type") not in ("text", "tool_result"):
+                    continue
+                c = b.get("content", b.get("text", ""))
+                if isinstance(c, list):
+                    c = " ".join(x.get("text", "") for x in c if isinstance(x, dict))
+                if isinstance(c, str):
+                    chunks.append(c)
+        for c in chunks:
+            out.append(c)
+            total += len(c)
+        if total >= limit:
+            break
+    return " ".join(out)[:limit]
+
+
 def _maybe_normalize_toolcall_paths(anthropic_resp: dict, request_body: dict) -> None:
-    """Gated: snap garbled tool-call paths in the response to paths the model
-    used correctly earlier in the conversation. No-op unless enabled + available."""
-    if not (PROXY_TOOLCALL_PATH_NORMALIZE and _TOOLCALL_NORMALIZER_OK):
+    """Gated: (1) CONTAIN garbled out-of-workdir paths back onto the session
+    workdir (safe under the OS sandbox), then (2) snap remaining garbles to the
+    same real directory. No-op unless enabled + available."""
+    if not _TOOLCALL_NORMALIZER_OK or not (
+        PROXY_TOOLCALL_PATH_NORMALIZE or PROXY_TOOLCALL_PATH_CONTAIN
+    ):
         return
     try:
         content = anthropic_resp.get("content")
@@ -299,15 +341,26 @@ def _maybe_normalize_toolcall_paths(anthropic_resp: dict, request_body: dict) ->
         tool_uses = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
         if not tool_uses:
             return
-        known = _shz_known_paths(request_body.get("messages", []))
-        if not known:
-            return
-        corrections = _shz_normalize_tool_uses(tool_uses, known)
-        for tu_id, key, frm, to, reason in corrections:
-            logger.info(
-                "TOOLCALL PATH NORMALIZER: %s.%s '%s' -> '%s' (%s)",
-                tu_id, key, frm, to, reason,
-            )
+        messages = request_body.get("messages", [])
+        known = _shz_known_paths(messages)
+
+        # 1) Containment first, so step 2 sees corrected paths.
+        if PROXY_TOOLCALL_PATH_CONTAIN:
+            workdir = _shz_derive_workdir(known, _toolcall_workdir_hint(messages))
+            if workdir:
+                for tu_id, key, frm, to, reason in _shz_contain_tool_uses(tool_uses, workdir):
+                    logger.info(
+                        "TOOLCALL PATH CONTAINMENT: %s.%s '%.80s' -> '%.80s' (%s)",
+                        tu_id, key, frm, to, reason,
+                    )
+
+        # 2) Same-directory filename normalization (filesystem-verified).
+        if PROXY_TOOLCALL_PATH_NORMALIZE and known:
+            for tu_id, key, frm, to, reason in _shz_normalize_tool_uses(tool_uses, known):
+                logger.info(
+                    "TOOLCALL PATH NORMALIZER: %s.%s '%s' -> '%s' (%s)",
+                    tu_id, key, frm, to, reason,
+                )
     except Exception as exc:  # never break a response over normalization
         logger.warning("TOOLCALL PATH NORMALIZER: skipped (%s)", type(exc).__name__)
 # Recon-convergence guardrail: after this many consecutive turns that use
