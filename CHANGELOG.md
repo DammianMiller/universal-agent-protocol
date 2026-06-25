@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.65.0 (2026-06-25)
+
+- feat(design): implement DESIGN.md — auto-interrogate existing UI + guide new
+- chore(release): 1.64.4 — periodic turn-count breaker
+- fix(proxy): TURN-COUNT FINALIZE BREAKER fires periodically, not every turn
+- chore(release): 1.64.3 — assistant-prefill 400 fix
+- fix(proxy): assistant-prefill 400 with the MTP/130-config template
+
+
 ## v1.64.4 (2026-06-25)
 
 - fix(proxy): TURN-COUNT FINALIZE BREAKER now fires **periodically**, not on every turn. `_count_agent_tool_turns` is derived from the only-growing conversation, so once a session crossed `PROXY_HARD_FINALIZE_TURNS` the breaker stripped tools on *every* subsequent request — permanently denying tools and stalling a legitimately long agentic task (observed live: msgs 206→208→…→214 with the breaker firing each turn, then the client gives up mid-task). `reset_tool_turn_state` resets the state machine but not the conversation-derived count, so it never helped. Now gated on `count >= last_hard_finalize_turn_count + ceiling` (new `SessionMonitor` field, recorded on each fire) so it fires at the ceiling, 2×, 3×… as a periodic progress checkpoint with tools restored in between — long tasks complete, while a true runaway is still bounded (and the contamination/prune/cycle breakers catch fast loops). Message softened from "STOP now" to a checkpoint nudge. Adds 4 tests.

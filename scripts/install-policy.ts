@@ -90,6 +90,9 @@ const MANDATORY_POLICIES = [
   'policy-deployment-safety',
   'task-required',
   'workdir-scope',
+  // Inactive (fails open) until a project has a DESIGN.md token allow-list;
+  // installed eagerly so `uap design interrogate` activates it with no re-setup.
+  'design-token-gate',
 ];
 
 async function installPolicy(policyName: string): Promise<void> {

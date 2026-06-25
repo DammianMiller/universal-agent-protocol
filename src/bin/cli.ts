@@ -41,6 +41,7 @@ const lazy = {
   verify: () => import('../cli/verify.js').then((m) => m.verifyCommand),
   benchPaired: () => import('../cli/bench.js').then((m) => m.benchPairedCommand),
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
+  design: () => import('../cli/design.js').then((m) => m.designCommand),
 };
 
 // Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
@@ -419,6 +420,21 @@ program
   .action(async (options) => {
     const cmd = await lazy.react();
     await cmd(options);
+  });
+
+// DESIGN.md integration — auto-interrogate existing UI + guide new UI on-token
+program
+  .command('design')
+  .description('DESIGN.md integration: interrogate existing UI, lint, sync the token gate, guide new UI')
+  .argument('[subcommand]', 'interrogate | sync | lint | diff | context | check')
+  .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
+  .option('-o, --out <path>', 'Output path for interrogate (default: DESIGN.md)')
+  .option('--force', 'Overwrite an existing DESIGN.md')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('-f, --file <path>', 'Target file (lint/check) or "old,new" (diff)')
+  .action(async (subcommand, options) => {
+    const cmd = await lazy.design();
+    await cmd(subcommand, options);
   });
 
 // Fable-parity delivery loop
