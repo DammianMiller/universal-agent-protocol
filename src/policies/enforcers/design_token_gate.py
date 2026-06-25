@@ -46,6 +46,30 @@ def _norm_color(c: str) -> str:
     return re.sub(r"\s+", "", s)
 
 
+def _base_rgb(c: str) -> str | None:
+    """Opaque base `r,g,b` of a hex or rgb()/rgba() color, ignoring alpha — so a
+    translucent overlay of a token color (e.g. rgba(88,166,255,.1) from
+    primary #58a6ff) counts as on-token. Returns None for forms we don't decode."""
+    s = c.strip().lower()
+    hexm = re.match(r"^#([0-9a-f]{3,8})$", s)
+    if hexm:
+        h = hexm.group(1)
+        if len(h) in (3, 4):
+            h = "".join(ch * 2 for ch in h)
+        if len(h) in (6, 8):
+            return f"{int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)}"
+        return None
+    rgbm = re.match(r"^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)", s)
+    if rgbm:
+        try:
+            r, g, b = (round(float(rgbm.group(i))) for i in (1, 2, 3))
+        except ValueError:
+            return None
+        if all(0 <= n <= 255 for n in (r, g, b)):
+            return f"{r},{g},{b}"
+    return None
+
+
 def _allow_list() -> dict | None:
     for root in (worktree_root(), repo_root()):
         p = root / ".uap" / "design-tokens.json"
@@ -78,9 +102,16 @@ def _proposed_content(op: str, args: dict) -> str:
 
 def _scan(content: str, allow: dict) -> tuple[list[str], list[str]]:
     allow_colors = {_norm_color(c) for c in allow.get("colors", [])}
+    allow_rgb = {b for b in (_base_rgb(c) for c in allow.get("colors", [])) if b}
     allow_spacing = set(allow.get("spacing", [])) | set(allow.get("radii", [])) | set(allow.get("fontSizes", []))
     off_colors: list[str] = []
     off_spacing: list[str] = []
+
+    def _on_token(c: str) -> bool:
+        if _norm_color(re.sub(r"\s+", "", c)) in allow_colors:
+            return True
+        base = _base_rgb(c)
+        return base is not None and base in allow_rgb
 
     for raw in content.split("\n"):
         t = raw.strip()
@@ -88,10 +119,10 @@ def _scan(content: str, allow: dict) -> tuple[list[str], list[str]]:
             continue
         line = REF_RE.sub("", VAR_RE.sub("", raw))
         for m in HEX_RE.finditer(line):
-            if _norm_color(m.group(0)) not in allow_colors:
+            if not _on_token(m.group(0)):
                 off_colors.append(m.group(0))
         for m in FUNC_COLOR_RE.finditer(line):
-            if re.sub(r"\s+", "", m.group(0).lower()) not in allow_colors:
+            if not _on_token(m.group(0)):
                 off_colors.append(m.group(0))
         for m in PX_RE.finditer(line):
             px = m.group(0)

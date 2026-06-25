@@ -29,6 +29,39 @@ const HEX_RE = /#[0-9a-fA-F]{3,8}\b/g;
 const FUNC_COLOR_RE = /\b(?:rgba?|hsla?|hwb|oklch|oklab|lch|lab)\([^)]*\)/gi;
 const PX_RE = /\b\d{1,4}px\b/g;
 
+/**
+ * Reduce a hex or rgb()/rgba() color to its opaque base `r,g,b` triple, ignoring
+ * any alpha channel. Returns null for forms we don't decode (named colors, hsl,
+ * oklch, …) so they stay under the strict exact-string check.
+ *
+ * This lets translucent overlays of a token color — e.g. `rgba(88,166,255,.1)`
+ * derived from `primary #58a6ff` — count as on-token, which is how real UIs build
+ * hover/selection tints from the palette.
+ */
+export function colorBaseRgb(c: string): string | null {
+  const s = c.trim().toLowerCase();
+  const hex = s.match(/^#([0-9a-f]{3,8})$/);
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3 || h.length === 4) h = h.split('').map((x) => x + x).join('');
+    if (h.length === 6 || h.length === 8) {
+      const r = parseInt(h.slice(0, 2), 16);
+      const g = parseInt(h.slice(2, 4), 16);
+      const b = parseInt(h.slice(4, 6), 16);
+      return `${r},${g},${b}`;
+    }
+    return null;
+  }
+  const rgb = s.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/);
+  if (rgb) {
+    const r = Math.round(parseFloat(rgb[1]));
+    const g = Math.round(parseFloat(rgb[2]));
+    const b = Math.round(parseFloat(rgb[3]));
+    if ([r, g, b].every((n) => Number.isFinite(n) && n >= 0 && n <= 255)) return `${r},${g},${b}`;
+  }
+  return null;
+}
+
 /** Lines that are pure comments or token/var references should be ignored. */
 function isIgnorableLine(line: string): boolean {
   const t = line.trim();
@@ -48,6 +81,13 @@ export function scanOffToken(
   if (!isUiFile(filePath)) return [];
 
   const allowColors = new Set(allow.colors.map(normalizeColor));
+  // Base-RGB set so a translucent overlay of a token color is on-token.
+  const allowRgb = new Set(allow.colors.map(colorBaseRgb).filter((x): x is string => x !== null));
+  const onToken = (c: string): boolean => {
+    if (allowColors.has(normalizeColor(c.replace(/\s+/g, '')))) return true;
+    const base = colorBaseRgb(c);
+    return base !== null && allowRgb.has(base);
+  };
   const allowSpacing = new Set([...allow.spacing, ...allow.radii, ...allow.fontSizes]);
   const findings: OffTokenFinding[] = [];
   const lines = content.split('\n');
@@ -60,12 +100,10 @@ export function scanOffToken(
     const line = raw.replace(/var\(--[^)]*\)/g, '').replace(/\{[\w.-]+\}/g, '');
 
     for (const m of line.matchAll(HEX_RE)) {
-      const c = normalizeColor(m[0]);
-      if (!allowColors.has(c)) findings.push({ line: i + 1, value: m[0], kind: 'color' });
+      if (!onToken(m[0])) findings.push({ line: i + 1, value: m[0], kind: 'color' });
     }
     for (const m of line.matchAll(FUNC_COLOR_RE)) {
-      const c = m[0].replace(/\s+/g, '').toLowerCase();
-      if (!allowColors.has(c)) findings.push({ line: i + 1, value: m[0], kind: 'color' });
+      if (!onToken(m[0])) findings.push({ line: i + 1, value: m[0], kind: 'color' });
     }
     for (const m of line.matchAll(PX_RE)) {
       const px = m[0];

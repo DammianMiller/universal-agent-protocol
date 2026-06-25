@@ -71,6 +71,12 @@ describe('design-token gate enforcer', () => {
     expect(r.allowed).toBe(true);
   });
 
+  it('ALLOWS a translucent rgba() overlay of a token color (#1a1c1e = rgb(26,28,30))', () => {
+    expect(run('Write', { file_path: 'a.css', content: '.x{background:rgba(26,28,30,0.15);}' }).exit).toBe(0);
+    // A different base RGB is still blocked.
+    expect(run('Write', { file_path: 'a.css', content: '.x{background:rgba(1,2,3,0.5);}' }).exit).toBe(2);
+  });
+
   it('ALLOWS an Edit insert (new_string) that is on-token', () => {
     const r = run('Edit', { file_path: 'a.tsx', new_string: 'style={{color:"#b8422e"}}' });
     expect(r.exit).toBe(0);
