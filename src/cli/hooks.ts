@@ -211,70 +211,73 @@ async function installClaudeHooks(cwd: string): Promise<void> {
     }
   }
 
+  // Hook commands use an absolute path via ${CLAUDE_PROJECT_DIR:-.} so they
+  // resolve no matter the tool's cwd (a relative `.claude/hooks/...` breaks the
+  // moment a command runs from a subdir or worktree → "No such file or directory").
   const hooksConfig = {
     SessionStart: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-start.sh"' }],
       },
     ],
     UserPromptSubmit: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/uap-reactor-prompt.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-reactor-prompt.sh"' }],
       },
     ],
     PreToolUse: [
       {
         matcher: 'Edit|Write|MultiEdit',
         hooks: [
-          { type: 'command', command: 'bash .claude/hooks/pre-tool-use-edit-write.sh' },
-          { type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pre-tool-use-edit-write.sh"' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-policy-gate.sh"' },
         ],
       },
       {
         matcher: 'Bash',
         hooks: [
-          { type: 'command', command: 'bash .claude/hooks/pre-tool-use-bash.sh' },
-          { type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pre-tool-use-bash.sh"' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-policy-gate.sh"' },
         ],
       },
       {
         matcher: 'Task|Agent|ToolSearch|ExitPlanMode',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-policy-gate.sh"' }],
       },
     ],
     PostToolUse: [
       {
         matcher: 'Edit|Write',
         hooks: [
-          { type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' },
-          { type: 'command', command: 'bash .claude/hooks/uap-schema-post.sh' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-tool-use-edit-write.sh"' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-schema-post.sh"' },
         ],
       },
     ],
     PreCompact: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-compact.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pre-compact.sh"' }],
       },
     ],
     PostCompact: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/post-compact.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-compact.sh"' }],
       },
     ],
     Stop: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/stop.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/stop.sh"' }],
       },
     ],
     SessionEnd: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/session-end.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh"' }],
       },
     ],
   };
@@ -463,70 +466,73 @@ async function installVscodeHooks(cwd: string): Promise<void> {
     }
   }
 
+  // Hook commands use an absolute path via ${CLAUDE_PROJECT_DIR:-.} so they
+  // resolve no matter the tool's cwd (a relative `.claude/hooks/...` breaks the
+  // moment a command runs from a subdir or worktree → "No such file or directory").
   const hooksConfig = {
     SessionStart: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/session-start.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-start.sh"' }],
       },
     ],
     UserPromptSubmit: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/uap-reactor-prompt.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-reactor-prompt.sh"' }],
       },
     ],
     PreToolUse: [
       {
         matcher: 'Edit|Write|MultiEdit',
         hooks: [
-          { type: 'command', command: 'bash .claude/hooks/pre-tool-use-edit-write.sh' },
-          { type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pre-tool-use-edit-write.sh"' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-policy-gate.sh"' },
         ],
       },
       {
         matcher: 'Bash',
         hooks: [
-          { type: 'command', command: 'bash .claude/hooks/pre-tool-use-bash.sh' },
-          { type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pre-tool-use-bash.sh"' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-policy-gate.sh"' },
         ],
       },
       {
         matcher: 'Task|Agent|ToolSearch|ExitPlanMode',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/uap-policy-gate.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-policy-gate.sh"' }],
       },
     ],
     PostToolUse: [
       {
         matcher: 'Edit|Write',
         hooks: [
-          { type: 'command', command: 'bash .claude/hooks/post-tool-use-edit-write.sh' },
-          { type: 'command', command: 'bash .claude/hooks/uap-schema-post.sh' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-tool-use-edit-write.sh"' },
+          { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-schema-post.sh"' },
         ],
       },
     ],
     PreCompact: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/pre-compact.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pre-compact.sh"' }],
       },
     ],
     PostCompact: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/post-compact.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-compact.sh"' }],
       },
     ],
     Stop: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/stop.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/stop.sh"' }],
       },
     ],
     SessionEnd: [
       {
         matcher: '',
-        hooks: [{ type: 'command', command: 'bash .claude/hooks/session-end.sh' }],
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-end.sh"' }],
       },
     ],
   };

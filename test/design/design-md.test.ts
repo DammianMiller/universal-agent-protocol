@@ -90,6 +90,15 @@ describe('off-token scanner (gate.ts)', () => {
     expect(scanOffToken('.x{color:{colors.primary};}', 'x.css', allow)).toHaveLength(0);
   });
 
+  it('treats a translucent rgba() overlay of a token color as on-token', () => {
+    // #1A1C1E === rgb(26,28,30); an alpha overlay of it is on-token.
+    expect(scanOffToken('.x{background:rgba(26,28,30,0.15);}', 'x.css', allow)).toHaveLength(0);
+    expect(scanOffToken('.x{background:rgba(26, 28, 30, .5);}', 'x.css', allow)).toHaveLength(0);
+    // A different base RGB is still flagged.
+    const off = scanOffToken('.x{background:rgba(1,2,3,0.5);}', 'x.css', allow);
+    expect(off.some((f) => f.kind === 'color')).toBe(true);
+  });
+
   it('does not flag non-UI files', () => {
     expect(scanOffToken('const c = "#ff00ff"', 'x.py', allow)).toHaveLength(0);
   });
