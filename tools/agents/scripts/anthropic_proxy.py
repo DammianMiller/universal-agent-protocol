@@ -1005,6 +1005,14 @@ class SessionMonitor:
     # back into a structured tool_use, which would continue the very loop the
     # breaker is ending. Reset to False at the start of every request.
     suppress_text_tool_extraction: bool = False
+    # Tool-turn count at which the TURN-COUNT FINALIZE BREAKER last fired. The
+    # count is derived from the (only-growing) conversation, so without this the
+    # breaker would re-fire on EVERY turn once the ceiling is first crossed —
+    # permanently stripping tools and stalling a legitimately long agentic task.
+    # Gating on (last + ceiling) makes it a PERIODIC nudge (80, 160, 240, ...)
+    # with tools restored in between, so long tasks complete while a true runaway
+    # still gets bounded (and the contamination/prune/cycle breakers catch faster).
+    last_hard_finalize_turn_count: int = 0
     finalize_continuation_count: int = 0
     finalize_hard_stop_count: int = 0  # monotonic, not reset by fresh user text
     finalize_synthetic_tool_id: str = ""
@@ -4095,7 +4103,14 @@ def build_openai_request(
         # genuine runaway trips it; see PROXY_HARD_FINALIZE_TURNS.
         if PROXY_HARD_FINALIZE_TURNS > 0:
             _agent_tool_turns = _count_agent_tool_turns(anthropic_body)
-            if _agent_tool_turns >= PROXY_HARD_FINALIZE_TURNS:
+            # PERIODIC, not permanent: fire once each time the count crosses
+            # another `ceiling` worth of tool turns past the last firing. Without
+            # the `last + ceiling` gate this fires on EVERY turn past the first
+            # crossing (the count only grows), permanently denying tools and
+            # stalling a long-but-legitimate task. Between fires tools are restored
+            # so the agent keeps making progress.
+            if _agent_tool_turns >= monitor.last_hard_finalize_turn_count + PROXY_HARD_FINALIZE_TURNS:
+                monitor.last_hard_finalize_turn_count = _agent_tool_turns
                 openai_body.pop("tool_choice", None)
                 openai_body.pop("tools", None)
                 openai_body.pop("grammar", None)
@@ -4103,11 +4118,12 @@ def build_openai_request(
                 msgs.append({
                     "role": "user",
                     "content": (
-                        f"You have made {_agent_tool_turns} tool calls without "
-                        "converging on a final answer. STOP now. No tools are "
-                        "available this turn. Reply with a brief plain-text summary "
-                        "of what you accomplished and what remains. Do NOT emit any "
-                        "tool call or tool-call-like syntax."
+                        f"You have made {_agent_tool_turns} tool calls. Pause for a "
+                        "progress checkpoint: in a brief plain-text summary, state "
+                        "what is done and the single most important next step. No "
+                        "tools are available this turn — do NOT emit any tool call "
+                        "or tool-call-like syntax. If the task is complete, say so; "
+                        "otherwise you will continue on the next turn."
                     ),
                 })
                 openai_body["messages"] = msgs
