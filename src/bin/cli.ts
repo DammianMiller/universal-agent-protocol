@@ -427,12 +427,15 @@ program
   .command('design')
   .description('DESIGN.md integration: interrogate existing UI, lint, sync the token gate, guide new UI')
   .argument('[subcommand]', 'interrogate | sync | lint | diff | context | check')
+  .argument('[target]', 'Positional target file (lint/check) — same as --file')
   .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
   .option('-o, --out <path>', 'Output path for interrogate (default: DESIGN.md)')
   .option('--force', 'Overwrite an existing DESIGN.md')
   .option('--json', 'Emit machine-readable JSON')
   .option('-f, --file <path>', 'Target file (lint/check) or "old,new" (diff)')
-  .action(async (subcommand, options) => {
+  .action(async (subcommand, target, options) => {
+    // Allow `uap design lint DESIGN.md` (positional) as well as `--file`.
+    if (target && !options.file) options.file = target;
     const cmd = await lazy.design();
     await cmd(subcommand, options);
   });

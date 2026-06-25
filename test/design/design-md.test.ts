@@ -117,4 +117,24 @@ describe('interrogate (reverse-engineer DESIGN.md from code)', () => {
     expect(colorVals).toContain('#1a1c1e');
     expect(parsed.tokens.name).toBe('Acme Web');
   });
+
+  it('skips vendored/benchmark dirs so their colors do not pollute the palette', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-skip-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, 'package.json'), '{"name":"app"}');
+    // Real product UI.
+    mkdirSync(join(dir, 'src'));
+    writeFileSync(join(dir, 'src', 'app.css'), ':root{--primary:#1A1C1E;}.b{color:#1A1C1E;}');
+    // Noise: a benchmark session dump full of unrelated colors.
+    mkdirSync(join(dir, 'benchmark-results'));
+    writeFileSync(
+      join(dir, 'benchmark-results', 'session.html'),
+      '<style>.sklearn{--sklearn-color:#ff00ff;background:#abcdef;color:#123456;}</style>'
+    );
+    const colorVals = Object.values(interrogate(dir).tokens.colors ?? {}).map(normalizeColor);
+    expect(colorVals).toContain('#1a1c1e');
+    expect(colorVals).not.toContain('#ff00ff');
+    expect(colorVals).not.toContain('#abcdef');
+    expect(colorVals).not.toContain('#123456');
+  });
 });
