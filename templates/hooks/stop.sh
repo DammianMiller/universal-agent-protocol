@@ -167,9 +167,20 @@ if [ "$CODE_CHANGED" = "true" ] && [ "${UAP_VERIFY_ON_STOP:-1}" != "0" ] && comm
   VERIFY_SUPPORTED=$?
   VERIFY_RC=0
   if [ "$VERIFY_SUPPORTED" = "0" ]; then
+    # Portable timeout wrapper: GNU coreutils ships `timeout` (Linux), macOS
+    # ships it as `gtimeout`, and minimal shells may lack both. Resolve once and
+    # fall back to running verify directly — it enforces its own internal rung
+    # timeouts. Without this, a missing `timeout` printed "command not found".
+    if command -v timeout >/dev/null 2>&1; then
+      TIMEOUT_WRAP="timeout -k 5 120"
+    elif command -v gtimeout >/dev/null 2>&1; then
+      TIMEOUT_WRAP="gtimeout -k 5 120"
+    else
+      TIMEOUT_WRAP=""
+    fi
     # set +e: a failing command substitution under `set -e` would abort the hook
     # (allowing stop) before we can inspect the code and decide to block.
-    VERIFY_OUT="$(cd "$PROJECT_DIR" && timeout -k 5 120 uap verify --strict --runtime-only --dir "$PROJECT_DIR" 2>&1)"
+    VERIFY_OUT="$(cd "$PROJECT_DIR" && $TIMEOUT_WRAP uap verify --strict --runtime-only --dir "$PROJECT_DIR" 2>&1)"
     VERIFY_RC=$?
   fi
   set -e
