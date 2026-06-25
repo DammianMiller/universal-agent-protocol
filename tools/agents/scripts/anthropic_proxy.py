@@ -4330,6 +4330,19 @@ def build_openai_request(
 
     _apply_thinking_grammar(openai_body)
 
+    # qwen3.5-enhanced.jinja (the MTP/130 config template) rejects an assistant
+    # PREFILL (trailing assistant message) unless thinking is disabled VIA
+    # chat_template_kwargs — the top-level `enable_thinking` flag is not read by
+    # this template, so a prefill otherwise 400s ("Assistant response prefill is
+    # incompatible with enable_thinking"). There is nothing to think about on a
+    # continuation, so disable thinking the way the template actually reads.
+    _final_msgs = openai_body.get("messages") or []
+    if _final_msgs and isinstance(_final_msgs[-1], dict) and _final_msgs[-1].get("role") == "assistant":
+        ctk = openai_body.setdefault("chat_template_kwargs", {})
+        if isinstance(ctk, dict):
+            ctk["enable_thinking"] = False
+        openai_body.pop("enable_thinking", None)
+
     return openai_body
 
 
