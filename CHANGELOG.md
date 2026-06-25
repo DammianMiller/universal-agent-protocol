@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.64.2 (2026-06-25)
+
+- fix(hooks): runtime-gate timeout is portable (no bare `timeout`)
+
+
 ## v1.64.1 (2026-06-24)
 
 - fix(policy): **workdir-scope no longer blocks `/dev/*` redirects** — the enforcer flagged any absolute redirect/write target outside the project root, including the null device, so routine commands like `uap worktree ensure --strict 2>(null device)` were blocked. `_check_path` now allows `/dev` device nodes (null/stdout/stderr/fd/tty/...), which never escape the workspace, while still blocking real out-of-scope absolute writes (e.g. `/etc/...`). Adds `test/policies/workdir-scope.test.ts` (5 tests).
