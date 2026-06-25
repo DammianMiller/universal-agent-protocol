@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.64.3 (2026-06-25)
+
+- fix(proxy): assistant-prefill HTTP 400 with the MTP/130-config template. The `qwen3.5-enhanced.jinja` template (used by the draft-mtp throughput config) rejects an assistant **prefill** (trailing assistant message) unless thinking is disabled via `chat_template_kwargs` — the top-level `enable_thinking` flag the proxy sets is **not read** by that template, so every prefill/continuation request 400'd with *"Assistant response prefill is incompatible with enable_thinking"* (~38/hr observed after the MTP switch). When the final outgoing message is an assistant prefill, the proxy now sets `chat_template_kwargs.enable_thinking=false` (nothing to think about on a continuation) and drops the ignored top-level flag. Verified live: prefill requests return 200, 0 × 400 since deploy.
+
 ## v1.64.2 (2026-06-25)
 
 - fix(hooks): runtime-gate timeout is portable (no bare `timeout`)
