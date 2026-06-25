@@ -16,6 +16,11 @@ const UI_EXT = new Set(['.css', '.scss', '.sass', '.less', '.tsx', '.jsx', '.vue
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '.next', '.nuxt', 'coverage',
   '.worktrees', 'vendor', '.cache', 'out', '.uap-backups',
+  // Vendored / generated / agent-session content pollutes the palette with
+  // colors that aren't part of the product's own UI (e.g. sklearn HTML-repr CSS
+  // embedded in benchmark session dumps). Exclude the usual offenders.
+  'benchmark-results', 'test-results', 'fixtures', '__fixtures__', 'sessions',
+  '__pycache__', '.venv', 'venv', '.pytest_cache', '.uap', 'tmp', '.tmp',
 ]);
 const MAX_FILES = 4000;
 

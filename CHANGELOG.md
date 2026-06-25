@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.65.1 (2026-06-25)
+
+- feat(design): author UAP Console DESIGN.md + harden interrogator
+
+
 ## v1.65.0 (2026-06-25)
 
 - feat(design): implement DESIGN.md — auto-interrogate existing UI + guide new
