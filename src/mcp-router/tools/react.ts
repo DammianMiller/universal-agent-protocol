@@ -64,6 +64,8 @@ export function handleReact(args: ReactArgs): ReactToolResult {
       promptText: args.promptText,
       changedFiles: args.changedFiles,
       surfaced: args.surfaced,
+      // Locate the project DESIGN.md for design-system injection.
+      cwd: process.cwd(),
     };
     const opts: ReactorOptions = {
       injectThreshold: args.injectThreshold,

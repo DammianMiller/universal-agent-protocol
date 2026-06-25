@@ -8,6 +8,9 @@ import { resolve, type ReactorContext, type ReactorOptions } from '../coordinati
  */
 export function runReact(payloadJson: string, opts?: ReactorOptions): string {
   const ctx = JSON.parse(payloadJson) as ReactorContext;
+  // Default to the process cwd so the reactor can locate the project DESIGN.md
+  // for design-system injection (hook adapters rarely set cwd explicitly).
+  if (!ctx.cwd) ctx.cwd = process.cwd();
   const result = resolve(ctx, opts);
   return JSON.stringify(result);
 }

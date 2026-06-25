@@ -1,5 +1,6 @@
 import { CapabilityRouter, getCapabilityRouter } from './capability-router.js';
 import { PatternRouter, getPatternRouter } from './pattern-router.js';
+import { maybeDesignInjection } from '../design/reactor-inject.js';
 
 export type ReactorEvent = 'session-start' | 'user-prompt' | 'pre-tool' | 'post-tool' | 'stop' | 'session-end';
 
@@ -97,7 +98,24 @@ export function resolve(
 
   const matchedPatterns = patternRouter.matchPatterns(ctx.promptText);
 
+  // DESIGN.md "guide new": when this is UI/UX work and the project has a
+  // DESIGN.md, surface the design-system summary so new UI stays on-token. This
+  // can fire independently of routing confidence (it's keyed off file/prompt
+  // signals), and is deduped per session via the `design:system` surfaced key.
+  const designKey = 'design:system';
+  const designInject =
+    ctx.cwd && !(ctx.surfaced ?? []).includes(designKey)
+      ? maybeDesignInjection(ctx.cwd, ctx.promptText, ctx.changedFiles)
+      : null;
+
   if (confidence < injectThreshold && (!matchedPatterns || matchedPatterns.length === 0)) {
+    // No experts/patterns — but still inject design guidance if this is UI work.
+    if (designInject) {
+      result.inject = `## Design system (DESIGN.md)\n${designInject}`;
+      result.reason = 'DESIGN.md design-system guidance for UI work';
+      result.surfacedKeys = [designKey];
+      result.confidence = confidence;
+    }
     return result;
   }
 
@@ -191,9 +209,15 @@ export function resolve(
     }
   }
 
-  result.inject = inject;
+  // Prepend the DESIGN.md guidance (if UI work) ahead of expert/pattern items.
+  if (designInject) {
+    result.inject = `## Design system (DESIGN.md)\n${designInject}${inject ? '\n\n' + inject : ''}`;
+    surfacedKeys.push(designKey);
+  } else {
+    result.inject = inject;
+  }
   result.block = false;
-  result.reason = `Routing confidence ${confidence.toFixed(2)}${matchedPatterns && matchedPatterns.length > 0 ? ', patterns matched' : ''}`;
+  result.reason = `Routing confidence ${confidence.toFixed(2)}${matchedPatterns && matchedPatterns.length > 0 ? ', patterns matched' : ''}${designInject ? ', design-system surfaced' : ''}`;
   result.actions = actions;
   result.surfacedKeys = surfacedKeys;
   result.confidence = confidence;

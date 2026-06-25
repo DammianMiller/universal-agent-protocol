@@ -275,6 +275,41 @@ export async function runSetupSteps(cwd: string, options: SetupOptions): Promise
     hooksSpinner.warn('Hook install failed: ' + err);
   }
 
+  // Step 7b: DESIGN.md — auto-interrogate an existing UI into a design system,
+  // then sync the token gate's allow-list so new UI is guided/gated on-token.
+  const designSpinner = ora('Configuring DESIGN.md design system…').start();
+  try {
+    const { findDesignFile, loadDesign, buildAllowList, writeAllowList } = await import('../design/tokens.js');
+    if (findDesignFile(cwd)) {
+      const loaded = loadDesign(cwd);
+      if (loaded) {
+        writeAllowList(cwd, buildAllowList(loaded.parsed, loaded.path, cwd));
+        designSpinner.succeed('DESIGN.md found — token gate synced (.uap/design-tokens.json)');
+      } else {
+        designSpinner.info('DESIGN.md present');
+      }
+    } else {
+      const { interrogate, renderDesignMd } = await import('../design/interrogate.js');
+      const result = interrogate(cwd);
+      if (result.stats.source !== 'none') {
+        const { writeFileSync } = await import('fs');
+        const { join: pjoin } = await import('path');
+        const outPath = pjoin(cwd, 'DESIGN.md');
+        const md = renderDesignMd(result);
+        writeFileSync(outPath, md);
+        const { parseDesignMd } = await import('../design/tokens.js');
+        writeAllowList(cwd, buildAllowList(parseDesignMd(md), outPath, cwd));
+        designSpinner.succeed(
+          `Auto-interrogated DESIGN.md from existing UI (${result.stats.colorsFound} colors) — refine + \`uap design lint\``
+        );
+      } else {
+        designSpinner.info('No UI design signals — skipping DESIGN.md (run `uap design interrogate` later)');
+      }
+    }
+  } catch (err) {
+    designSpinner.warn('DESIGN.md setup skipped: ' + err);
+  }
+
   // Step 8: Print summary
   console.log('');
   printSummary(cwd, qdrantReady, pythonPath);
