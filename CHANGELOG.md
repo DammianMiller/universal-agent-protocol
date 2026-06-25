@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.65.2 (2026-06-25)
+
+- fix(design,hooks): rgba overlays on-token + absolute Claude hook paths
+
+
 ## v1.65.1 (2026-06-25)
 
 - feat(design): author UAP Console DESIGN.md + harden interrogator
