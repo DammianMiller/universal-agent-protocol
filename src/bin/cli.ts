@@ -511,7 +511,22 @@ program
       .action(async (id, options) => {
         (await lazy.challenge())('close', { ...options, id });
       })
+  )
+  .addCommand(
+    new Command('run')
+      .description('Launch N participant agents against a challenge (bounded concurrency)')
+      .argument('<id>', 'Challenge id')
+      .requiredOption('--agents <n>', 'Number of participant agents')
+      .requiredOption('--cmd <template>', 'Participant command per agent; placeholders {agent} {challenge} {goal} {index}')
+      .option('--concurrency <k>', 'Max agents running at once', '4')
+      .option('--timeout <s>', 'Per-agent timeout in seconds', '120')
+      .option('--prefix <name>', 'Agent id prefix (default "agent")')
+      .option('--json', 'Emit JSON report')
+      .action(async (id, options) => {
+        (await lazy.challenge())('run', { ...options, id });
+      })
   );
+
 
 
 // Fable-parity delivery loop

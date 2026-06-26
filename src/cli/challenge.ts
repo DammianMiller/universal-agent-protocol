@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import { CoordinationService } from '../coordination/service.js';
+import { runChallengeAgents } from '../coordination/challenge-runner.js';
 
 /**
  * `uap challenge` — open multi-agent challenge mode.
@@ -10,7 +11,7 @@ import { CoordinationService } from '../coordination/service.js';
  * "frontier deltas within noise are ties" rule applied.
  */
 export type ChallengeAction =
-  | 'create' | 'submit' | 'verify' | 'leaderboard' | 'status' | 'list' | 'close';
+  | 'create' | 'submit' | 'verify' | 'leaderboard' | 'status' | 'list' | 'close' | 'run';
 
 export interface ChallengeOptions {
   goal?: string;
@@ -25,6 +26,11 @@ export interface ChallengeOptions {
   agent?: string;
   status?: string;
   json?: boolean;
+  agents?: string;
+  concurrency?: string;
+  cmd?: string;
+  timeout?: string;
+  prefix?: string;
 }
 
 function agentId(o: ChallengeOptions): string {
@@ -109,6 +115,47 @@ export async function challengeCommand(action: ChallengeAction, options: Challen
       const ok = Number.isFinite(cid) && service.closeChallenge(cid);
       console.log(ok ? chalk.green(`  ✓ challenge #${cid} closed`) : chalk.yellow(`  challenge #${options.id} not open/found`));
       if (!ok) process.exitCode = 1;
+      return;
+    }
+    case 'run': {
+      const cid = parseInt(options.id || '', 10);
+      const agents = parseInt(options.agents || '', 10);
+      if (!Number.isFinite(cid) || !Number.isFinite(agents) || agents < 1) {
+        console.log(chalk.yellow('  Usage: uap challenge run <challenge-id> --agents <N> --cmd "<participant command>"'));
+        process.exitCode = 1; return;
+      }
+      if (!options.cmd) {
+        console.log(chalk.yellow('  --cmd is required: the participant program per agent.'));
+        console.log(chalk.dim('  Placeholders: {agent} {challenge} {goal} {index}; env: UAP_AGENT_ID, UAP_CHALLENGE_ID, UAP_CHALLENGE_GOAL.'));
+        console.log(chalk.dim('  The command should do the work and call: uap challenge submit {challenge} --score <x> --verified --agent {agent}'));
+        process.exitCode = 1; return;
+      }
+      console.log(chalk.bold(`\n  Running challenge #${cid} with ${agents} agents (concurrency ${options.concurrency || 4})…\n`));
+      let report;
+      try {
+        report = await runChallengeAgents(service, {
+          challengeId: cid,
+          agents,
+          concurrency: options.concurrency ? parseInt(options.concurrency, 10) : 4,
+          timeoutMs: options.timeout ? parseInt(options.timeout, 10) * 1000 : undefined,
+          cmd: options.cmd,
+          agentPrefix: options.prefix,
+          onEvent: (e) => {
+            if (e.type === 'finish') {
+              const mark = e.ok ? chalk.green('✓') : chalk.red('✗');
+              console.log(`  ${mark} ${e.agentId} — ${e.submitted > 0 ? chalk.green(e.submitted + ' submission(s)') : chalk.dim('no submission')}`);
+            }
+          },
+        });
+      } catch (err) {
+        console.log(chalk.red('  run failed: ' + (err instanceof Error ? err.message : String(err))));
+        process.exitCode = 1; return;
+      }
+      if (options.json) { console.log(JSON.stringify(report, null, 2)); return; }
+      const submitted = report.results.filter((r) => r.submitted > 0).length;
+      const failed = report.results.filter((r) => !r.ok).length;
+      console.log(chalk.dim(`\n  ${report.agents} agents · ${submitted} submitted · ${failed} failed`));
+      await challengeCommand('leaderboard', { id: String(cid) });
       return;
     }
   }
