@@ -199,6 +199,18 @@ export class CoordinationDatabase {
         FOREIGN KEY (challenge_id) REFERENCES challenges(id)
       );
       CREATE INDEX IF NOT EXISTS idx_submissions_challenge ON submissions(challenge_id);
+
+      -- Model-slot leases: a cross-process semaphore over the inference backend's
+      -- concurrent slots. Every model-calling path acquires a lease before a
+      -- request and releases after; when active leases reach the budget, further
+      -- acquirers wait. Leases carry a TTL so a crashed holder is auto-reaped.
+      CREATE TABLE IF NOT EXISTS model_leases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        holder TEXT,
+        acquired_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_model_leases_expires ON model_leases(expires_at);
     `);
   }
 

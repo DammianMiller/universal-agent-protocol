@@ -1047,6 +1047,52 @@ export class CoordinationService {
     }));
   }
 
+  // ==================== Model-slot leases (cross-process semaphore) ====================
+
+  /** Reap leases whose TTL has expired (crashed/abandoned holders). */
+  reapModelLeases(): number {
+    const info = this.db
+      .prepare(`DELETE FROM model_leases WHERE expires_at < ?`)
+      .run(new Date().toISOString());
+    return info.changes;
+  }
+
+  /** Active (non-expired) model-slot leases. */
+  activeModelLeases(): number {
+    const now = new Date().toISOString();
+    const row = this.db
+      .prepare(`SELECT COUNT(*) as c FROM model_leases WHERE expires_at >= ?`)
+      .get(now) as { c: number };
+    return row?.c ?? 0;
+  }
+
+  /**
+   * Atomically acquire a model slot if fewer than `budget` are in use. Returns a
+   * lease id, or null if the budget is full (caller should wait + retry). The
+   * reap+count+insert runs in one write transaction so concurrent acquirers
+   * across processes can't both slip past the budget (WAL + busy_timeout).
+   */
+  acquireModelSlot(holder: string, budget: number, ttlMs = 120_000): number | null {
+    const txn = this.db.transaction((): number | null => {
+      const now = Date.now();
+      const nowIso = new Date(now).toISOString();
+      // DELETE first so the transaction takes the write lock before counting.
+      this.db.prepare(`DELETE FROM model_leases WHERE expires_at < ?`).run(nowIso);
+      const c = (this.db.prepare(`SELECT COUNT(*) as c FROM model_leases`).get() as { c: number }).c;
+      if (c >= Math.max(1, budget)) return null;
+      const info = this.db
+        .prepare(`INSERT INTO model_leases (holder, acquired_at, expires_at) VALUES (?, ?, ?)`)
+        .run(holder, nowIso, new Date(now + ttlMs).toISOString());
+      return Number(info.lastInsertRowid);
+    });
+    return txn();
+  }
+
+  /** Release a held lease. */
+  releaseModelSlot(leaseId: number): void {
+    this.db.prepare(`DELETE FROM model_leases WHERE id = ?`).run(leaseId);
+  }
+
   private sendMessage(
     fromAgent: string | undefined,
     toAgent: string | undefined,

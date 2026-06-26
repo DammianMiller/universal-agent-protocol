@@ -489,13 +489,16 @@ async function collaborationCmd(options: CoordOptions): Promise<void> {
 async function slotsCmd(options: CoordOptions): Promise<void> {
   const { getModelSlotBudget, inferenceBase, headroom } = await import('../utils/model-slots.js');
   const cwd = process.cwd();
+  const service = new CoordinationService();
+  const active = service.activeModelLeases();
   const { budget, slots, source } = await getModelSlotBudget(cwd, { probe: true, force: true });
   if (options.json) {
-    console.log(JSON.stringify({ budget, slots, source, endpoint: inferenceBase(cwd), headroom: headroom(cwd) }, null, 2));
+    console.log(JSON.stringify({ budget, slots, source, active, endpoint: inferenceBase(cwd), headroom: headroom(cwd) }, null, 2));
     return;
   }
   console.log(chalk.bold('\n  Model-slot concurrency budget\n'));
   console.log(`  ${chalk.cyan('budget')}    ${budget}  ${chalk.dim('(max concurrent model calls)')}`);
+  console.log(`  ${chalk.dim('in use')}    ${active}  ${chalk.dim('active leases right now')}`);
   console.log(`  ${chalk.dim('slots')}     ${slots}  ${chalk.dim('source: ' + source)}`);
   console.log(`  ${chalk.dim('headroom')}  ${headroom(cwd)}`);
   console.log(`  ${chalk.dim('endpoint')}  ${inferenceBase(cwd)}`);
