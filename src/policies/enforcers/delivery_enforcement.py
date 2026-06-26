@@ -37,9 +37,16 @@ SOURCE_EXTS = (
     ".c", ".cc", ".cpp", ".h", ".hpp",
 )
 
+# NOTE: `.worktrees/` is deliberately NOT exempt here. A real `uap deliver` run
+# writes into a worktree but sets UAP_DELIVER_ACTIVE=1, which is honored below —
+# so legitimate deliver edits still pass. An unconditional `.worktrees/` exemption
+# let the model BYPASS deliver entirely by creating a worktree dir and writing
+# source straight into it (observed: 24 source files written to
+# .worktrees/001-space-shooter/ with no deliver run). Gating it behind the active
+# flag closes that hole.
 EXEMPT_PREFIXES = (
     ".claude/", ".cursor/", ".opencode/", ".codex/", ".forge/", ".omp/",
-    ".uap/", ".policy-tools/", ".worktrees/",
+    ".uap/", ".policy-tools/",
     "src/policies/", "scripts/", "docs/", "policies/", "test/", "tests/",
 )
 
