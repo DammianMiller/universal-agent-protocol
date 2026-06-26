@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.74.0 (2026-06-27)
+
+- feat(concurrency): cross-process model-slot lease (semaphore)
+
+
 ## v1.73.0 (2026-06-27)
 
 - feat(concurrency): model-slot budget to avoid exhausting inference slots
