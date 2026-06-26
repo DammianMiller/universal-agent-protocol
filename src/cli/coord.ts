@@ -8,7 +8,7 @@ import { statusBadge, divider, keyValue, horizontalBarChart, bulletList } from '
 type CoordAction =
   | 'status' | 'flush' | 'cleanup' | 'check' | 'resolve'
   | 'post' | 'board' | 'dead-end' | 'finding' | 'flag'
-  | 'stage' | 'claim' | 'complete';
+  | 'stage' | 'claim' | 'complete' | 'collaboration';
 
 interface CoordOptions {
   verbose?: boolean;
@@ -80,6 +80,9 @@ export async function coordCommand(action: CoordAction, options: CoordOptions = 
       break;
     case 'complete':
       await completeCmd(options);
+      break;
+    case 'collaboration':
+      await collaborationCmd(options);
       break;
   }
 }
@@ -451,4 +454,30 @@ async function completeCmd(options: CoordOptions): Promise<void> {
   const ok = service.completeStaged(resolveAgentId(options), id, options.result);
   console.log(ok ? chalk.green(`  ✓ completed staged #${id} (credited the originator on the board)`) : chalk.yellow(`  staged #${id} not completable`));
   if (!ok) process.exitCode = 1;
+}
+
+
+async function collaborationCmd(options: CoordOptions): Promise<void> {
+  const { modifyUapConfig } = await import('../utils/config-loader.js');
+  const { collaborationMode } = await import('../coordination/collaboration-inject.js');
+  const cwd = process.cwd();
+  const mode = (options.sub || options.text || 'status').toLowerCase();
+  if (mode === 'status') {
+    const cur = collaborationMode(cwd);
+    console.log(`  collaboration auto-activation: ${chalk.cyan(cur)}`);
+    console.log(chalk.dim('    auto = activate on multi-agent/collaboration context · always = always · off = manual only'));
+    console.log(chalk.dim('    set with: uap coord collaboration <auto|always|off>'));
+    return;
+  }
+  if (mode !== 'auto' && mode !== 'always' && mode !== 'off') {
+    console.log(chalk.yellow('  Usage: uap coord collaboration <auto|always|off|status>'));
+    process.exitCode = 1; return;
+  }
+  modifyUapConfig(cwd, (cfg) => {
+    const c = (cfg.collaboration as Record<string, unknown>) || {};
+    c.mode = mode;
+    cfg.collaboration = c;
+    return cfg;
+  });
+  console.log(chalk.green(`  ✓ collaboration auto-activation set to ${mode}`));
 }

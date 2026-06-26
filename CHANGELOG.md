@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.72.0 (2026-06-26)
+
+- feat(coord): auto-activate collaboration + confirm heavy actions
+
+
 ## v1.71.0 (2026-06-26)
 
 - feat(challenge): `uap challenge run --agents N` orchestrator
