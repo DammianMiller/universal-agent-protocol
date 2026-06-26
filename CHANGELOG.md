@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.65.3 (2026-06-26)
+
+- fix(policy): risk-scope expert-review gate + add env-free file waiver
+
+
 ## v1.65.2 (2026-06-25)
 
 - fix(design,hooks): rgba overlays on-token + absolute Claude hook paths

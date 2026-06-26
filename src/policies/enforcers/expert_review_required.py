@@ -35,6 +35,59 @@ SHIP_PATTERNS = (
     re.compile(r"\b(pr[-_ ]?ready|sign[-_ ]?off|ready[-_ ]for[-_ ]review)\b", re.I),
 )
 
+# Risk-scope: a parallel expert review is required only for *substantive* diffs.
+# A diff that touches ONLY low-risk surfaces (frontend/styles, docs, config,
+# tests, assets) ships freely — trivial/frontend PRs aren't gated. High-risk
+# paths (infra/IaC, CI/CD, schemas/contracts, DB migrations, the policy engine)
+# always require review, even with a low-risk extension.
+LOW_RISK_EXT = {
+    ".css", ".scss", ".sass", ".less", ".html", ".astro", ".vue", ".svelte",
+    ".tsx", ".jsx", ".md", ".mdx", ".txt", ".csv", ".svg", ".png", ".jpg",
+    ".jpeg", ".gif", ".webp", ".avif", ".ico", ".woff", ".woff2", ".ttf", ".eot",
+    ".json", ".yaml", ".yml", ".toml", ".lock", ".lockb",
+}
+LOW_RISK_DIR_RE = re.compile(
+    r"(^|/)(docs|public|assets|static|stories|__tests__|tests?|e2e|fixtures)/", re.I
+)
+HIGH_RISK_PATH_RE = re.compile(
+    r"(^|/)(infra|terraform|helm|helm_charts|k8s|kubernetes)/"
+    r"|\.tf$|\.tfvars$|\.tf\.json$"
+    r"|(^|/)\.github/workflows/"
+    r"|(^|/)migrations?/|\.sql$"
+    r"|(^|/)schemas/|^src/types/|\.proto$"
+    r"|(^|/)[Dd]ockerfile|docker-compose"
+    r"|^src/policies/",
+)
+
+
+def _changed_files(root: Path) -> list[str] | None:
+    """Files changed vs the upstream base, or None if no base is resolvable
+    (detached / no upstream — the caller then falls back to requiring review)."""
+    for base in ("origin/master", "origin/main", "master", "main"):
+        rc, out, _ = run(["git", "diff", "--name-only", f"{base}...HEAD"], cwd=root, timeout=10)
+        if rc == 0:
+            return [ln.strip() for ln in out.splitlines() if ln.strip()]
+    return None
+
+
+def _is_low_risk(f: str) -> bool:
+    if HIGH_RISK_PATH_RE.search(f):
+        return False
+    if LOW_RISK_DIR_RE.search(f):
+        return True
+    return Path(f).suffix.lower() in LOW_RISK_EXT
+
+
+def _active_waiver(root: Path) -> bool:
+    """A committable, env-free bypass: an active waiver file. Works in harnesses
+    that strip env vars (where UAP_NO_REVIEW=1 cannot be set)."""
+    wdir = root / "policies" / "waivers"
+    if wdir.exists():
+        for w in wdir.glob("*expert-review*.md"):
+            if w.is_file():
+                return True
+    return (root / ".uap" / "reviews" / "WAIVER").exists()
+
 
 def current_branch(root: Path) -> str | None:
     # symbolic-ref resolves the branch name even on an unborn branch (no commits
@@ -84,6 +137,23 @@ def main() -> None:
     if branch is None:
         emit(True, "branch not resolvable (detached/non-git) — fail-open")
     slug = slug_for(branch)
+
+    # Env-free bypass: an active waiver file (works where UAP_NO_REVIEW=1 can't).
+    if _active_waiver(root):
+        emit(True, "expert-review waived (policies/waivers/*expert-review*.md or .uap/reviews/WAIVER)")
+
+    # Risk-scope: if the diff vs upstream touches ONLY low-risk surfaces
+    # (frontend/styles, docs, config, tests, assets) — no infra/IaC, CI, schemas,
+    # migrations, or policy code — the change ships without a parallel review.
+    # When the base diff is not resolvable (None) we do NOT skip: we can't prove
+    # the change is low-risk, so the review requirement below still applies.
+    changed = _changed_files(root)
+    if changed and all(_is_low_risk(f) for f in changed):
+        emit(
+            True,
+            f"low-risk diff ({len(changed)} file(s): frontend/docs/config/tests only) "
+            "— parallel expert review not required",
+        )
 
     review = root / ".uap" / "reviews" / f"{slug}.json"
     if not review.exists():

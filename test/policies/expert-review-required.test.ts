@@ -115,3 +115,65 @@ describe('expert-review-required enforcer', () => {
     expect(runEnforcer(repo, 'ls -la')).toBe(0);
   });
 });
+
+describe('expert-review-required: risk-scope + file waiver', () => {
+  let repo: string;
+
+  /** A repo with a `master` base commit and a `feature/x` branch we add to. */
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'uap-review-scope-'));
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 't@t.dev']);
+    git(repo, ['config', 'user.name', 't']);
+    git(repo, ['checkout', '-q', '-b', 'master']);
+    writeFileSync(join(repo, 'README.md'), '# base\n');
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '-m', 'base']);
+    git(repo, ['checkout', '-q', '-b', 'feature/x']);
+  });
+  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+  function add(path: string, content = 'x'): void {
+    const full = join(repo, path);
+    mkdirSync(join(full, '..'), { recursive: true });
+    writeFileSync(full, content);
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '-m', `add ${path}`]);
+  }
+
+  it('ALLOWS gh pr merge for a frontend-only diff (no review artifact)', () => {
+    add('src/components/Button.tsx', 'export const B = () => null;');
+    add('src/styles/app.css', '.b{color:var(--x);}');
+    add('docs/guide.md', '# guide');
+    expect(runEnforcer(repo, 'gh pr merge 12 --merge --admin')).toBe(0);
+  });
+
+  it('STILL BLOCKS when the diff touches IaC (.tf)', () => {
+    add('src/components/Button.tsx', 'export const B = () => null;');
+    add('infra/terraform/main.tf', 'resource "null_resource" "x" {}');
+    expect(runEnforcer(repo, 'gh pr merge 12 --merge')).toBe(2);
+  });
+
+  it('STILL BLOCKS for a CI workflow change (low-risk ext, high-risk path)', () => {
+    add('.github/workflows/deploy.yml', 'on: push');
+    expect(runEnforcer(repo, 'gh pr merge 12 --merge')).toBe(2);
+  });
+
+  it('STILL BLOCKS for substantive backend src changes', () => {
+    add('src/server/handler.ts', 'export function h(){return 1;}');
+    expect(runEnforcer(repo, 'git push')).toBe(2);
+  });
+
+  it('file waiver (policies/waivers/*expert-review*.md) bypasses without env vars', () => {
+    add('src/server/handler.ts', 'export function h(){return 2;}');
+    expect(runEnforcer(repo, 'gh pr merge 12 --merge')).toBe(2);
+    add('policies/waivers/2026-frontend-expert-review.md', '# waiver');
+    expect(runEnforcer(repo, 'gh pr merge 12 --merge')).toBe(0);
+  });
+
+  it('.uap/reviews/WAIVER marker also bypasses', () => {
+    add('src/server/handler.ts', 'export function h(){return 3;}');
+    add('.uap/reviews/WAIVER', 'frontend sprint');
+    expect(runEnforcer(repo, 'git push')).toBe(0);
+  });
+});
