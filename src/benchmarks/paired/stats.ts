@@ -148,6 +148,48 @@ export function pairedDelta(deltas: number[], opts: PairedOptions = {}): PairedD
 }
 
 // ---------------------------------------------------------------------------
+// Practical-significance verdict (the "tie within noise" norm).
+//
+// Statistical significance (CI excludes 0) is necessary but not sufficient: with
+// enough runs a trivially small delta becomes "significant" yet is operationally
+// a tie. The open-challenge norm — "frontier deltas within ~noise are ties" —
+// is a Region Of Practical Equivalence (ROPE): a result is a TIE unless it is
+// BOTH statistically significant AND larger than a practical margin. This stops
+// benchmarks from reporting noise as a win.
+// ---------------------------------------------------------------------------
+export type Verdict = 'win' | 'tie' | 'loss';
+
+export interface VerdictOptions {
+  /** Practical-equivalence margin (ROPE half-width) on the delta scale. A delta
+   *  whose magnitude is within ±margin is a tie regardless of significance. */
+  margin?: number;
+  /** Whether a positive delta is good (default true). Set false for metrics like
+   *  tokens/cost/latency where lower is better. */
+  higherIsBetter?: boolean;
+}
+
+/**
+ * Classify a paired delta as win / tie / loss under the ROPE norm. A delta is a
+ * TIE when it is not statistically significant, OR its magnitude is within the
+ * practical margin, OR its CI overlaps the ROPE band [-margin, +margin].
+ */
+export function verdict(result: PairedDeltaResult, opts: VerdictOptions = {}): Verdict {
+  const margin = Math.max(0, opts.margin ?? 0);
+  const higherIsBetter = opts.higherIsBetter ?? true;
+  if (!Number.isFinite(result.meanDelta) || result.n === 0) return 'tie';
+
+  // Not statistically distinguishable from 0 → tie.
+  if (!result.significant) return 'tie';
+  // Within the practical-equivalence band → tie even if statistically detectable.
+  if (Math.abs(result.meanDelta) <= margin) return 'tie';
+  // CI does not clear the ROPE band on either side → tie (effect could be trivial).
+  if (margin > 0 && result.ci.lower < margin && result.ci.upper > -margin) return 'tie';
+
+  const better = higherIsBetter ? result.meanDelta > 0 : result.meanDelta < 0;
+  return better ? 'win' : 'loss';
+}
+
+// ---------------------------------------------------------------------------
 // McNemar contingency for paired binary (correct/incorrect) outcomes.
 // This 2x2 IS the gate-value framing: of tasks the baseline got wrong, how many
 // did UAP fix (onlyTreatment), vs of tasks the baseline got right, how many did

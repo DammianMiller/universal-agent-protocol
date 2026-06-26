@@ -40,6 +40,7 @@ export interface BenchPairedOptions {
   out?: string;
   seed?: string;
   iterations?: string;
+  ropeMargin?: string;
   json?: boolean;
 }
 
@@ -115,7 +116,8 @@ export async function benchPairedCommand(options: BenchPairedOptions = {}): Prom
   const output = await runPaired(cfg, suiteDir, startedAt);
   if (!options.json) process.stderr.write('\n');
 
-  const report = analyze(output, { seed, iterations });
+  const ropeMargin = options.ropeMargin ? parseFloat(options.ropeMargin) : 0;
+  const report = analyze(output, { seed, iterations, ropeMargin });
   const ablation = options.ablation ? analyzeAblation(output, { seed, iterations }) : null;
 
   // Persist artifacts (raw records for audit, JSON + Markdown reports).

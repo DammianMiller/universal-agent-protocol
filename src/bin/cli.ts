@@ -532,6 +532,7 @@ bench
   .option('--ablation', 'Run the leave-one-out component ablation matrix instead of baseline-vs-full')
   .option('--seed <n>', 'RNG seed for bootstrap/permutation (reproducible reports)', '1')
   .option('--iterations <n>', 'Bootstrap/permutation iterations', '10000')
+  .option('--rope-margin <x>', 'Practical-equivalence margin: a correctness delta within ±x (success-rate units) is a TIE, not a win', '0')
   .option('--out <dir>', 'Artifact output directory (default: benchmark-results/paired-<ts>)')
   .option('--json', 'Emit JSON to stdout instead of the Markdown report')
   .action(async (options) => {
