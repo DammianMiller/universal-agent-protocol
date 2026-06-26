@@ -20,6 +20,8 @@ import type {
   DeployActionType,
   DeployStatus,
   MessagePayload,
+  BoardKind,
+  BoardPost,
 } from '../types/coordination.js';
 
 export interface CoordinationServiceConfig {
@@ -674,6 +676,81 @@ export class CoordinationService {
 
   send(fromAgent: string, toAgent: string, payload: MessagePayload, priority = 5): void {
     this.sendMessage(fromAgent, toAgent, 'direct', 'request', payload, priority);
+  }
+
+  // ==================== Collaboration board ====================
+  // A public, re-readable feed (channel='board') every agent posts to and reads.
+  // Unlike receive(), board posts are NOT marked read — they stay visible to all
+  // agents, which is what makes shared findings, dead-ends and flags compound.
+
+  postBoard(fromAgent: string, text: string, kind: BoardKind = 'note'): number {
+    const stmt = this.db.prepare(`
+      INSERT INTO agent_messages (channel, from_agent, to_agent, type, payload, priority, created_at)
+      VALUES ('board', ?, NULL, 'notification', ?, ?, ?)
+    `);
+    const priority = kind === 'flag' ? 9 : kind === 'dead-end' || kind === 'norm' ? 7 : 5;
+    const info = stmt.run(
+      fromAgent,
+      JSON.stringify({ action: 'board', kind, text }),
+      priority,
+      new Date().toISOString()
+    );
+    return Number(info.lastInsertRowid);
+  }
+
+  readBoard(opts: { limit?: number; sinceMinutes?: number; kind?: BoardKind } = {}): BoardPost[] {
+    const params: unknown[] = [];
+    let sql = `
+      SELECT id, from_agent as fromAgent, payload, created_at as createdAt
+      FROM agent_messages WHERE channel = 'board'
+    `;
+    if (opts.sinceMinutes) {
+      sql += ' AND created_at >= ?';
+      params.push(new Date(Date.now() - opts.sinceMinutes * 60_000).toISOString());
+    }
+    sql += ' ORDER BY created_at DESC, id DESC';
+    if (opts.limit) {
+      sql += ' LIMIT ?';
+      params.push(opts.limit);
+    }
+    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    const posts = rows.map((r) => {
+      let kind: BoardKind = 'note';
+      let text = '';
+      try {
+        const p = JSON.parse(r.payload as string);
+        kind = (p.kind as BoardKind) ?? 'note';
+        text = String(p.text ?? '');
+      } catch {
+        /* leave defaults */
+      }
+      return {
+        id: r.id as number,
+        fromAgent: (r.fromAgent as string) ?? undefined,
+        kind,
+        text,
+        createdAt: r.createdAt as string,
+      } as BoardPost;
+    });
+    return opts.kind ? posts.filter((p) => p.kind === opts.kind) : posts;
+  }
+
+  /** Compact board digest for per-turn context injection (reactor/session-start). */
+  formatBoardForContext(limit = 8): string {
+    const posts = this.readBoard({ limit, sinceMinutes: 60 * 24 });
+    if (posts.length === 0) return '';
+    const icon: Record<BoardKind, string> = {
+      note: '•',
+      finding: '✅',
+      'dead-end': '⛔',
+      flag: '🚩',
+      handoff: '🤝',
+      norm: '📏',
+    };
+    const lines = posts
+      .reverse()
+      .map((p) => `  ${icon[p.kind]} [${p.kind}] ${p.fromAgent ? p.fromAgent.slice(0, 12) + ': ' : ''}${p.text}`);
+    return lines.join('\n');
   }
 
   private sendMessage(

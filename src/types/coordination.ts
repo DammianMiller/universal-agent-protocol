@@ -7,7 +7,27 @@ export type AgentStatus = 'active' | 'idle' | 'completed' | 'failed';
 export type MessageType = 'request' | 'response' | 'notification' | 'claim' | 'release';
 
 // Communication channels
-export type MessageChannel = 'broadcast' | 'deploy' | 'review' | 'direct' | 'coordination';
+export type MessageChannel = 'broadcast' | 'deploy' | 'review' | 'direct' | 'coordination' | 'board';
+
+// Collaboration board: a public, re-readable feed all agents post to and read.
+// Modeled on the open multi-agent challenge boards where the *communication
+// substrate* (public posts, shared negative knowledge, peer flags) drives
+// collective performance. Private side-channels are discouraged by norm.
+export type BoardKind =
+  | 'note' // general update / status
+  | 'finding' // a confirmed result or insight worth sharing
+  | 'dead-end' // a tried-and-failed approach so peers don't repeat it
+  | 'flag' // an integrity/verification concern raised for peer/human ruling
+  | 'handoff' // an artifact staged for any capable agent to pick up
+  | 'norm'; // an agreed working convention
+
+export interface BoardPost {
+  id: number;
+  fromAgent?: string;
+  kind: BoardKind;
+  text: string;
+  createdAt: string;
+}
 
 // Work intent types (informational, not locking)
 export type WorkIntentType = 'editing' | 'reviewing' | 'refactoring' | 'testing' | 'documenting';

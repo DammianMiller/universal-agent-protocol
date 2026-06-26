@@ -677,6 +677,36 @@ program
       .action(async (options) => {
         (await lazy.coord())('cleanup', options);
       })
+  )
+  .addCommand(
+    new Command('post')
+      .description('Post a message to the shared collaboration board')
+      .argument('<text>', 'Message text')
+      .option('-k, --kind <kind>', 'note | finding | dead-end | flag | handoff | norm', 'note')
+      .option('--agent <id>', 'Posting agent id (default: $UAP_AGENT_ID)')
+      .action(async (text, options) => {
+        (await lazy.coord())('post', { ...options, text });
+      })
+  )
+  .addCommand(
+    new Command('dead-end')
+      .description('Record a tried-and-failed approach so peers don\'t repeat it')
+      .argument('<text>', 'What was tried and why it failed')
+      .option('--agent <id>', 'Posting agent id (default: $UAP_AGENT_ID)')
+      .action(async (text, options) => {
+        (await lazy.coord())('dead-end', { ...options, text });
+      })
+  )
+  .addCommand(
+    new Command('board')
+      .description('Read the shared collaboration board (peer findings, dead-ends, flags)')
+      .option('-n, --limit <n>', 'Max posts (default 15)')
+      .option('--since <minutes>', 'Only posts newer than N minutes')
+      .option('-k, --kind <kind>', 'Filter by kind')
+      .option('--json', 'Emit JSON')
+      .action(async (options) => {
+        (await lazy.coord())('board', options);
+      })
   );
 
 program

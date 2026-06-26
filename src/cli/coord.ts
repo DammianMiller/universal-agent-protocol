@@ -2,10 +2,10 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { CoordinationService } from '../coordination/service.js';
 import { DeployBatcher } from '../coordination/deploy-batcher.js';
-import type { WorkOverlap } from '../types/coordination.js';
+import type { WorkOverlap, BoardKind } from '../types/coordination.js';
 import { statusBadge, divider, keyValue, horizontalBarChart, bulletList } from './visualize.js';
 
-type CoordAction = 'status' | 'flush' | 'cleanup' | 'check' | 'resolve';
+type CoordAction = 'status' | 'flush' | 'cleanup' | 'check' | 'resolve' | 'post' | 'board' | 'dead-end';
 
 interface CoordOptions {
   verbose?: boolean;
@@ -14,6 +14,16 @@ interface CoordOptions {
   json?: boolean;
   overlapId?: string;
   action?: string;
+  text?: string;
+  kind?: string;
+  limit?: string;
+  since?: string;
+  agent?: string;
+}
+
+/** Resolve the posting agent identity: --agent, then env, then a stable fallback. */
+function resolveAgentId(options: CoordOptions): string {
+  return options.agent || process.env.UAP_AGENT_ID || process.env.UAP_AGENT || 'cli';
 }
 
 export async function coordCommand(action: CoordAction, options: CoordOptions = {}): Promise<void> {
@@ -33,7 +43,64 @@ export async function coordCommand(action: CoordAction, options: CoordOptions = 
     case 'resolve':
       await resolveOverlap(options);
       break;
+    case 'post':
+      await postBoard(options, (options.kind as BoardKind) || 'note');
+      break;
+    case 'dead-end':
+      await postBoard(options, 'dead-end');
+      break;
+    case 'board':
+      await readBoard(options);
+      break;
   }
+}
+
+const VALID_KINDS: BoardKind[] = ['note', 'finding', 'dead-end', 'flag', 'handoff', 'norm'];
+
+async function postBoard(options: CoordOptions, kind: BoardKind): Promise<void> {
+  const text = (options.text || '').trim();
+  if (!text) {
+    console.log(chalk.yellow('  Nothing to post. Usage: uap coord post "<message>" [--kind finding|dead-end|flag|handoff|norm]'));
+    process.exitCode = 1;
+    return;
+  }
+  if (!VALID_KINDS.includes(kind)) {
+    console.log(chalk.yellow(`  Unknown --kind '${kind}'. Valid: ${VALID_KINDS.join(', ')}`));
+    process.exitCode = 1;
+    return;
+  }
+  const service = new CoordinationService();
+  const id = service.postBoard(resolveAgentId(options), text, kind);
+  console.log(chalk.green(`  ✓ posted to collaboration board (#${id}, ${kind})`));
+}
+
+async function readBoard(options: CoordOptions): Promise<void> {
+  const service = new CoordinationService();
+  const limit = options.limit ? parseInt(options.limit, 10) : 15;
+  const sinceMinutes = options.since ? parseInt(options.since, 10) : undefined;
+  const posts = service.readBoard({
+    limit,
+    sinceMinutes,
+    kind: options.kind ? (options.kind as BoardKind) : undefined,
+  });
+  if (options.json) {
+    console.log(JSON.stringify(posts, null, 2));
+    return;
+  }
+  if (posts.length === 0) {
+    console.log(chalk.dim('  Collaboration board is empty. Post with: uap coord post "<message>"'));
+    return;
+  }
+  const icon: Record<BoardKind, string> = {
+    note: '•', finding: '✅', 'dead-end': '⛔', flag: '🚩', handoff: '🤝', norm: '📏',
+  };
+  console.log(chalk.bold('\n  Collaboration board (most recent first)\n'));
+  for (const p of posts) {
+    const who = p.fromAgent ? chalk.dim(p.fromAgent.slice(0, 16)) : chalk.dim('—');
+    console.log(`  ${icon[p.kind]} ${chalk.cyan('[' + p.kind + ']')} ${who}  ${chalk.dim(p.createdAt.slice(5, 16))}`);
+    console.log(`      ${p.text}`);
+  }
+  console.log('');
 }
 
 async function showStatus(options: CoordOptions): Promise<void> {
