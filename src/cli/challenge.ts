@@ -145,18 +145,21 @@ export async function challengeCommand(action: ChallengeAction, options: Challen
         console.log(chalk.dim('  The command should do the work and call: uap challenge submit {challenge} --score <x> --verified --agent {agent}'));
         process.exitCode = 1; return;
       }
+      const { getMaxModelConcurrency, warmModelSlotBudget } = await import('../utils/model-slots.js');
+      await warmModelSlotBudget(process.cwd());
+      const conc = options.concurrency ? parseInt(options.concurrency, 10) : getMaxModelConcurrency(process.cwd());
       const proceed = await confirmLaunch(
-        chalk.yellow(`  About to launch ${agents} agents (concurrency ${options.concurrency || 4}) running per agent:\n    ${options.cmd}\n  This spawns processes that may build/run code. Proceed?`),
+        chalk.yellow(`  About to launch ${agents} agents (concurrency ${conc}) running per agent:\n    ${options.cmd}\n  This spawns processes that may build/run code. Proceed?`),
         !!options.yes
       );
       if (!proceed) { console.log(chalk.dim('  aborted.')); return; }
-      console.log(chalk.bold(`\n  Running challenge #${cid} with ${agents} agents (concurrency ${options.concurrency || 4})…\n`));
+      console.log(chalk.bold(`\n  Running challenge #${cid} with ${agents} agents (concurrency ${conc})…\n`));
       let report;
       try {
         report = await runChallengeAgents(service, {
           challengeId: cid,
           agents,
-          concurrency: options.concurrency ? parseInt(options.concurrency, 10) : 4,
+          concurrency: conc,
           timeoutMs: options.timeout ? parseInt(options.timeout, 10) * 1000 : undefined,
           cmd: options.cmd,
           agentPrefix: options.prefix,

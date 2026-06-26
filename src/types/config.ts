@@ -383,6 +383,15 @@ export const CollaborationSchema = z.object({
   mode: z.enum(['auto', 'always', 'off']).default('auto'),
 });
 
+// Model-slot concurrency: cap concurrent model calls to the inference backend's
+// real slot capacity so multi-agent fan-out doesn't exhaust it.
+export const ModelConcurrencySchema = z.object({
+  slots: z.number().int().positive().optional(), // explicit slot count (skips probe)
+  headroom: z.number().int().nonnegative().optional(), // reserve N slots
+  endpoint: z.string().optional(), // inference base URL for /slots probing
+  adaptive: z.boolean().optional(), // enable AIMD backpressure
+});
+
 export const AgentContextConfigSchema = z.object({
   $schema: z.string().optional(),
   version: z.string().default('1.0.0'),
@@ -410,6 +419,8 @@ export const AgentContextConfigSchema = z.object({
   agentExecution: AgentExecutionSchema.optional(),
   // Agent collaboration auto-activation (board/coordination/challenge guidance)
   collaboration: CollaborationSchema.optional(),
+  // Model-slot concurrency budget (don't exhaust inference slots)
+  modelConcurrency: ModelConcurrencySchema.optional(),
   // Pattern reinforcement learning configuration
   patternRL: z
     .object({

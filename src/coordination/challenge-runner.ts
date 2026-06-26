@@ -11,6 +11,7 @@
 import { spawn } from 'child_process';
 import type { CoordinationService } from './service.js';
 import type { LeaderboardEntry } from '../types/coordination.js';
+import { getMaxModelConcurrency, warmModelSlotBudget } from '../utils/model-slots.js';
 
 export interface ParticipantContext {
   agentId: string;
@@ -128,9 +129,12 @@ export async function runChallengeAgents(
   }
 
   const n = Math.max(1, Math.floor(opts.agents));
-  const concurrency = Math.max(1, opts.concurrency ?? 4);
-  const timeoutMs = opts.timeoutMs ?? 120_000;
   const cwd = opts.cwd ?? process.cwd();
+  // Default concurrency to the model-slot budget so participants don't exhaust
+  // the inference backend; warm it (probe) once up front.
+  await warmModelSlotBudget(cwd);
+  const concurrency = Math.max(1, opts.concurrency ?? getMaxModelConcurrency(cwd));
+  const timeoutMs = opts.timeoutMs ?? 120_000;
   const prefix = opts.agentPrefix ?? 'agent';
 
   service.postBoard('challenge', `challenge #${ch.id} run: launching ${n} agents`, 'note');

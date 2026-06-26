@@ -518,7 +518,7 @@ program
       .argument('<id>', 'Challenge id')
       .requiredOption('--agents <n>', 'Number of participant agents')
       .requiredOption('--cmd <template>', 'Participant command per agent; placeholders {agent} {challenge} {goal} {index}')
-      .option('--concurrency <k>', 'Max agents running at once', '4')
+      .option('--concurrency <k>', 'Max agents running at once (default: model-slot budget)')
       .option('--timeout <s>', 'Per-agent timeout in seconds', '120')
       .option('--prefix <name>', 'Agent id prefix (default "agent")')
       .option('-y, --yes', 'Skip the launch confirmation prompt')
@@ -868,6 +868,14 @@ program
       .argument('[mode]', 'auto | always | off | status', 'status')
       .action(async (mode, options) => {
         (await lazy.coord())('collaboration', { ...options, sub: mode });
+      })
+  )
+  .addCommand(
+    new Command('slots')
+      .description('Show the model-slot concurrency budget (probes the inference endpoint)')
+      .option('--json', 'Emit JSON')
+      .action(async (options) => {
+        (await lazy.coord())('slots', options);
       })
   );
 
