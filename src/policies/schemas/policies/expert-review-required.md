@@ -7,13 +7,30 @@
 
 ## Rule
 
-A parallel expert review MUST precede shipping a non-trivial change. When no
+A parallel expert review MUST precede shipping a **substantive** change. When no
 review artifact exists for the current branch (or the artifact is stale relative
 to `HEAD`), the enforcer blocks the ship actions:
 
 - `git commit`, `git push`
 - `gh pr create`
 - merge / pr-ready / signoff / ready-for-review operations
+
+### Risk scope (low-risk diffs ship freely)
+
+The review is required only when the diff vs upstream touches a **substantive**
+surface. A change that touches ONLY low-risk surfaces — frontend/styles
+(`.css/.scss/.tsx/.jsx/.vue/.svelte/.html`), docs (`.md`), config
+(`.json/.yaml/.toml`), tests, and assets — ships without a parallel review, so
+frontend-only / docs-only PRs are never blocked.
+
+High-risk paths ALWAYS require review even with a low-risk extension:
+infra/IaC (`infra/`, `terraform/`, `helm/`, `k8s/`, `*.tf`), CI/CD
+(`.github/workflows/`), schemas/contracts (`schemas/`, `src/types/`, `*.proto`),
+DB migrations (`migrations/`, `*.sql`), container build (`Dockerfile`,
+`docker-compose`), and the policy engine (`src/policies/`).
+
+When the upstream base diff is not resolvable (detached HEAD / no upstream), the
+enforcer does NOT assume low-risk — the review requirement still applies.
 
 Review artifact: `.uap/reviews/<branch-slug>.json`, written by the
 `parallel-expert-review` skill on consolidation. The slug is an **injective
@@ -51,7 +68,14 @@ with `/` → `-`). Missing artifact → block; present but `head` mismatch → b
 (stale); present and current → allow.
 
 Fail-open: if the branch/HEAD cannot be resolved (detached HEAD, non-git tree),
-the operation is allowed. Override for one-off meta-work: `UAP_NO_REVIEW=1`.
+the operation is allowed.
+
+Bypasses (two, so a constrained harness always has one available):
+
+- `UAP_NO_REVIEW=1` — environment override (one-off meta-work).
+- **File waiver** — a committable file, which works in harnesses that strip env
+  vars: any `policies/waivers/*expert-review*.md`, or a `.uap/reviews/WAIVER`
+  marker. Use this when the env override can't be set.
 
 ```rules
 - title: "A parallel expert review must precede ship"
