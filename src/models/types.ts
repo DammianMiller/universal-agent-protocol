@@ -108,7 +108,12 @@ export const ModelPresets: Record<string, ModelConfig> = {
     name: 'Qwen 3.5 35B A3B (llama.cpp)',
     provider: 'custom',
     apiModel: 'qwen35-a3b-iq4xs',
-    endpoint: 'http://192.168.1.165:8080/v1',
+    // Route through the anthropic-proxy (:4000), NOT llama :8080 directly. The
+    // proxy strips Qwen's <think> blocks and applies the tool/finalize guardrails.
+    // Hitting :8080 raw under `--reasoning auto` let reasoning leak into
+    // `uap deliver`-authored gate scripts (verify.sh became an unclosed <think>
+    // block -> bash syntax error -> unsatisfiable gate -> infinite verify loop).
+    endpoint: 'http://192.168.1.165:4000/v1',
     maxContextTokens: 262144,
     costPer1MInput: 0,
     costPer1MOutput: 0,

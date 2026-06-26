@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.72.1 (2026-06-26)
+
+- fix(deliver): route the `qwen35-a3b` preset through the anthropic-proxy (:4000) instead of llama (:8080) directly. Hitting llama raw under `--reasoning auto` let Qwen `<think>` blocks leak into `uap deliver`-authored gate scripts, producing an unrunnable `verify.sh` (unclosed `<think>` → bash syntax error) and an infinite verify loop. The proxy strips `<think>` and applies tool/finalize guardrails on the OpenAI path too.
+
 ## v1.72.0 (2026-06-26)
 
 - feat(coord): auto-activate collaboration + confirm heavy actions
