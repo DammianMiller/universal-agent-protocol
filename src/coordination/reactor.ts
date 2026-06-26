@@ -1,6 +1,7 @@
 import { CapabilityRouter, getCapabilityRouter } from './capability-router.js';
 import { PatternRouter, getPatternRouter } from './pattern-router.js';
 import { maybeDesignInjection } from '../design/reactor-inject.js';
+import { maybeBoardInjection } from './board-inject.js';
 
 export type ReactorEvent = 'session-start' | 'user-prompt' | 'pre-tool' | 'post-tool' | 'stop' | 'session-end';
 
@@ -108,12 +109,37 @@ export function resolve(
       ? maybeDesignInjection(ctx.cwd, ctx.promptText, ctx.changedFiles)
       : null;
 
-  if (confidence < injectThreshold && (!matchedPatterns || matchedPatterns.length === 0)) {
-    // No experts/patterns — but still inject design guidance if this is UI work.
+  // Collaboration board: surface recent peer posts (findings/dead-ends/flags/
+  // handoffs) so shared knowledge compounds. Fires regardless of routing
+  // confidence; deduped per session via the `board:recent` surfaced key.
+  const boardKey = 'board:recent';
+  const boardInject =
+    ctx.cwd && !(ctx.surfaced ?? []).includes(boardKey)
+      ? maybeBoardInjection(ctx.cwd)
+      : null;
+
+  // Standalone context blocks (design + board) ride even on low-confidence turns.
+  const buildContextBlocks = (): { inject: string; keys: string[] } => {
+    const blocks: string[] = [];
+    const keys: string[] = [];
+    if (boardInject) {
+      blocks.push(`## Collaboration board\n${boardInject}`);
+      keys.push(boardKey);
+    }
     if (designInject) {
-      result.inject = `## Design system (DESIGN.md)\n${designInject}`;
-      result.reason = 'DESIGN.md design-system guidance for UI work';
-      result.surfacedKeys = [designKey];
+      blocks.push(`## Design system (DESIGN.md)\n${designInject}`);
+      keys.push(designKey);
+    }
+    return { inject: blocks.join('\n\n'), keys };
+  };
+
+  if (confidence < injectThreshold && (!matchedPatterns || matchedPatterns.length === 0)) {
+    // No experts/patterns — but still surface standalone context (board/design).
+    const ctxBlocks = buildContextBlocks();
+    if (ctxBlocks.inject) {
+      result.inject = ctxBlocks.inject;
+      result.reason = 'standalone collaboration/design context';
+      result.surfacedKeys = ctxBlocks.keys;
       result.confidence = confidence;
     }
     return result;
@@ -209,15 +235,21 @@ export function resolve(
     }
   }
 
-  // Prepend the DESIGN.md guidance (if UI work) ahead of expert/pattern items.
-  if (designInject) {
-    result.inject = `## Design system (DESIGN.md)\n${designInject}${inject ? '\n\n' + inject : ''}`;
-    surfacedKeys.push(designKey);
+  // Prepend standalone context (collaboration board, then DESIGN.md) ahead of
+  // the expert/pattern items.
+  const ctxBlocks = buildContextBlocks();
+  if (ctxBlocks.inject) {
+    result.inject = `${ctxBlocks.inject}${inject ? '\n\n' + inject : ''}`;
+    surfacedKeys.push(...ctxBlocks.keys);
   } else {
     result.inject = inject;
   }
   result.block = false;
-  result.reason = `Routing confidence ${confidence.toFixed(2)}${matchedPatterns && matchedPatterns.length > 0 ? ', patterns matched' : ''}${designInject ? ', design-system surfaced' : ''}`;
+  result.reason =
+    `Routing confidence ${confidence.toFixed(2)}` +
+    `${matchedPatterns && matchedPatterns.length > 0 ? ', patterns matched' : ''}` +
+    `${boardInject ? ', board surfaced' : ''}` +
+    `${designInject ? ', design-system surfaced' : ''}`;
   result.actions = actions;
   result.surfacedKeys = surfacedKeys;
   result.confidence = confidence;
