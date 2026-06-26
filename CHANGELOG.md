@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.68.0 (2026-06-26)
+
+- feat(coord): findings ledger + peer flagging (integrity & reversals)
+
+
 ## v1.67.0 (2026-06-26)
 
 - feat(bench): practical-significance verdict — ties within noise are not wins
