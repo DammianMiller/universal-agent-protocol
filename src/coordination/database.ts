@@ -131,6 +131,26 @@ export class CoordinationDatabase {
         status TEXT NOT NULL CHECK(status IN ('pending', 'executing', 'completed', 'failed')),
         result TEXT
       );
+
+      -- Findings ledger: tracked claims with mutable status + lineage, giving the
+      -- append-only board a "what's actually true right now" layer. A claim is
+      -- proposed, then confirmed/reversed/disputed by peers; a reversal can
+      -- supersede an earlier finding (lineage), and a dispute is the integrity
+      -- flag escalated for a peer/human ruling.
+      CREATE TABLE IF NOT EXISTS findings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id TEXT,
+        claim TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('proposed', 'confirmed', 'reversed', 'disputed')),
+        evidence TEXT,
+        supersedes INTEGER,
+        resolution TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (supersedes) REFERENCES findings(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
+      CREATE INDEX IF NOT EXISTS idx_findings_supersedes ON findings(supersedes);
     `);
   }
 

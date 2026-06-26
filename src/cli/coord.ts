@@ -2,10 +2,12 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { CoordinationService } from '../coordination/service.js';
 import { DeployBatcher } from '../coordination/deploy-batcher.js';
-import type { WorkOverlap, BoardKind } from '../types/coordination.js';
+import type { WorkOverlap, BoardKind, FindingStatus } from '../types/coordination.js';
 import { statusBadge, divider, keyValue, horizontalBarChart, bulletList } from './visualize.js';
 
-type CoordAction = 'status' | 'flush' | 'cleanup' | 'check' | 'resolve' | 'post' | 'board' | 'dead-end';
+type CoordAction =
+  | 'status' | 'flush' | 'cleanup' | 'check' | 'resolve'
+  | 'post' | 'board' | 'dead-end' | 'finding' | 'flag';
 
 interface CoordOptions {
   verbose?: boolean;
@@ -19,6 +21,13 @@ interface CoordOptions {
   limit?: string;
   since?: string;
   agent?: string;
+  sub?: string;
+  id?: string;
+  status?: string;
+  evidence?: string;
+  supersedes?: string;
+  resolution?: string;
+  reason?: string;
 }
 
 /** Resolve the posting agent identity: --agent, then env, then a stable fallback. */
@@ -51,6 +60,12 @@ export async function coordCommand(action: CoordAction, options: CoordOptions = 
       break;
     case 'board':
       await readBoard(options);
+      break;
+    case 'finding':
+      await findingCmd(options);
+      break;
+    case 'flag':
+      await flagCmd(options);
       break;
   }
 }
@@ -318,4 +333,60 @@ async function resolveOverlap(options: CoordOptions): Promise<void> {
   console.log(chalk.green(`Resolution '${action}' broadcast for ${overlapId}`));
 }
 
+async function findingCmd(options: CoordOptions): Promise<void> {
+  const service = new CoordinationService();
+  const sub = options.sub || 'list';
+  if (sub === 'propose') {
+    const claim = (options.text || '').trim();
+    if (!claim) { console.log(chalk.yellow('  Usage: uap coord finding propose "<claim>"')); process.exitCode = 1; return; }
+    const id = service.proposeFinding(
+      resolveAgentId(options), claim, options.evidence,
+      options.supersedes ? parseInt(options.supersedes, 10) : undefined
+    );
+    console.log(chalk.green(`  ✓ finding #${id} proposed (and posted to the board)`));
+    return;
+  }
+  if (sub === 'confirm' || sub === 'reverse') {
+    const id = parseInt(options.id || options.text || '', 10);
+    if (!Number.isFinite(id)) { console.log(chalk.yellow(`  Usage: uap coord finding ${sub} <id>`)); process.exitCode = 1; return; }
+    const ok = service.updateFinding(id, sub === 'confirm' ? 'confirmed' : 'reversed', {
+      byAgent: resolveAgentId(options),
+      resolution: options.resolution,
+      supersedes: options.supersedes ? parseInt(options.supersedes, 10) : undefined,
+    });
+    console.log(ok ? chalk.green(`  ✓ finding #${id} ${sub === 'confirm' ? 'confirmed' : 'reversed'}`) : chalk.yellow(`  finding #${id} not found`));
+    if (!ok) process.exitCode = 1;
+    return;
+  }
+  const findings = service.listFindings({
+    status: options.status as FindingStatus | undefined,
+    limit: options.limit ? parseInt(options.limit, 10) : 25,
+  });
+  if (options.json) { console.log(JSON.stringify(findings, null, 2)); return; }
+  if (findings.length === 0) { console.log(chalk.dim('  No findings yet. Propose one: uap coord finding propose "<claim>"')); return; }
+  const badge: Record<FindingStatus, string> = {
+    proposed: chalk.cyan('proposed'), confirmed: chalk.green('confirmed'),
+    reversed: chalk.gray('reversed'), disputed: chalk.red('disputed'),
+  };
+  console.log(chalk.bold('\n  Findings ledger\n'));
+  for (const f of findings) {
+    const lin = f.supersedes ? chalk.dim(` (supersedes #${f.supersedes})`) : '';
+    console.log(`  #${f.id} ${badge[f.status]}${lin}  ${chalk.dim((f.agentId || '—').slice(0, 14))}`);
+    console.log(`      ${f.claim}`);
+    if (f.resolution) console.log(chalk.dim(`      ruling: ${f.resolution}`));
+  }
+  console.log('');
+}
 
+async function flagCmd(options: CoordOptions): Promise<void> {
+  const id = parseInt(options.id || options.text || '', 10);
+  const reason = (options.reason || '').trim();
+  if (!Number.isFinite(id) || !reason) {
+    console.log(chalk.yellow('  Usage: uap coord flag <finding-id> --reason "<why this is suspect>"'));
+    process.exitCode = 1; return;
+  }
+  const service = new CoordinationService();
+  const ok = service.flagFinding(resolveAgentId(options), id, reason);
+  console.log(ok ? chalk.red(`  🚩 flagged finding #${id} for ruling (posted to board)`) : chalk.yellow(`  finding #${id} not found`));
+  if (!ok) process.exitCode = 1;
+}
