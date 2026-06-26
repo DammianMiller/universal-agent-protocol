@@ -2,6 +2,7 @@ import { CapabilityRouter, getCapabilityRouter } from './capability-router.js';
 import { PatternRouter, getPatternRouter } from './pattern-router.js';
 import { maybeDesignInjection } from '../design/reactor-inject.js';
 import { maybeBoardInjection } from './board-inject.js';
+import { maybeCollaborationInjection } from './collaboration-inject.js';
 
 export type ReactorEvent = 'session-start' | 'user-prompt' | 'pre-tool' | 'post-tool' | 'stop' | 'session-end';
 
@@ -118,10 +119,24 @@ export function resolve(
       ? maybeBoardInjection(ctx.cwd)
       : null;
 
+  // Collaboration auto-activation: surface how/when to use the collaboration
+  // tooling (board/findings/staged/challenge) when a multi-agent or
+  // collaboration-shaped context is detected. Config-gated (collaboration.mode);
+  // deduped per session via `collab:active`.
+  const collabKey = 'collab:active';
+  const collabInject =
+    ctx.cwd && !(ctx.surfaced ?? []).includes(collabKey)
+      ? maybeCollaborationInjection(ctx.cwd, ctx.promptText)
+      : null;
+
   // Standalone context blocks (design + board) ride even on low-confidence turns.
   const buildContextBlocks = (): { inject: string; keys: string[] } => {
     const blocks: string[] = [];
     const keys: string[] = [];
+    if (collabInject) {
+      blocks.push(`## Agent collaboration\n${collabInject}`);
+      keys.push(collabKey);
+    }
     if (boardInject) {
       blocks.push(`## Collaboration board\n${boardInject}`);
       keys.push(boardKey);
@@ -248,6 +263,7 @@ export function resolve(
   result.reason =
     `Routing confidence ${confidence.toFixed(2)}` +
     `${matchedPatterns && matchedPatterns.length > 0 ? ', patterns matched' : ''}` +
+    `${collabInject ? ', collaboration activated' : ''}` +
     `${boardInject ? ', board surfaced' : ''}` +
     `${designInject ? ', design-system surfaced' : ''}`;
   result.actions = actions;

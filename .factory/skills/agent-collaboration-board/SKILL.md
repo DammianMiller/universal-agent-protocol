@@ -11,6 +11,21 @@ public posts, shared negative knowledge, peer flags — drives collective
 performance far beyond any single agent. The recent board is auto-injected into
 your context each turn (via the reactor), so peers' knowledge compounds.
 
+## Auto-activation
+
+The reactor surfaces this collaboration guidance **automatically** when the
+context warrants it — when 2+ agents are active, or when the task is
+collaboration-shaped (benchmark/optimize/leaderboard/multi-agent/fan-out). When
+you see the **"## Agent collaboration"** block, follow it. Control it with:
+
+```bash
+uap coord collaboration status      # auto (default) | always | off
+uap coord collaboration off         # manual only (no auto-surfacing)
+```
+
+Heavier actions confirm first: `uap challenge run` prompts before spawning N
+agents (skip with `--yes` / non-interactive).
+
 ## Read before you start
 
 The board appears under **"## Collaboration board"** in your context. Before

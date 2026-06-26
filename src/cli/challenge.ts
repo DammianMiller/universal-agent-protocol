@@ -31,11 +31,26 @@ export interface ChallengeOptions {
   cmd?: string;
   timeout?: string;
   prefix?: string;
+  yes?: boolean;
 }
 
 function agentId(o: ChallengeOptions): string {
   return o.agent || process.env.UAP_AGENT_ID || process.env.UAP_AGENT || 'cli';
 }
+
+/** Interactive y/N confirmation (auto-yes on non-TTY or with --yes). */
+async function confirmLaunch(prompt: string, skip: boolean): Promise<boolean> {
+  if (skip || !process.stdin.isTTY || !process.stdout.isTTY) return true;
+  const readline = await import('node:readline/promises');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const ans = (await rl.question(prompt + ' [y/N] ')).trim().toLowerCase();
+    return ans === 'y' || ans === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
 
 export async function challengeCommand(action: ChallengeAction, options: ChallengeOptions = {}): Promise<void> {
   const service = new CoordinationService();
@@ -130,6 +145,11 @@ export async function challengeCommand(action: ChallengeAction, options: Challen
         console.log(chalk.dim('  The command should do the work and call: uap challenge submit {challenge} --score <x> --verified --agent {agent}'));
         process.exitCode = 1; return;
       }
+      const proceed = await confirmLaunch(
+        chalk.yellow(`  About to launch ${agents} agents (concurrency ${options.concurrency || 4}) running per agent:\n    ${options.cmd}\n  This spawns processes that may build/run code. Proceed?`),
+        !!options.yes
+      );
+      if (!proceed) { console.log(chalk.dim('  aborted.')); return; }
       console.log(chalk.bold(`\n  Running challenge #${cid} with ${agents} agents (concurrency ${options.concurrency || 4})…\n`));
       let report;
       try {

@@ -521,6 +521,7 @@ program
       .option('--concurrency <k>', 'Max agents running at once', '4')
       .option('--timeout <s>', 'Per-agent timeout in seconds', '120')
       .option('--prefix <name>', 'Agent id prefix (default "agent")')
+      .option('-y, --yes', 'Skip the launch confirmation prompt')
       .option('--json', 'Emit JSON report')
       .action(async (id, options) => {
         (await lazy.challenge())('run', { ...options, id });
@@ -859,6 +860,14 @@ program
       .option('--agent <id>', 'Acting agent id')
       .action(async (id, options) => {
         (await lazy.coord())('complete', { ...options, id });
+      })
+  )
+  .addCommand(
+    new Command('collaboration')
+      .description('Get/set collaboration auto-activation (auto|always|off|status)')
+      .argument('[mode]', 'auto | always | off | status', 'status')
+      .action(async (mode, options) => {
+        (await lazy.coord())('collaboration', { ...options, sub: mode });
       })
   );
 

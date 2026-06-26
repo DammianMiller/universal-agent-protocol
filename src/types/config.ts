@@ -374,6 +374,15 @@ export const AgentExecutionSchema = z.object({
   toolChoiceForce: z.enum(['required', 'auto', 'none']).default('required'),
 });
 
+// Agent collaboration auto-activation.
+//   auto   = activate the collaboration board/coordination guidance when a
+//            multi-agent or collaboration-shaped context is detected (default)
+//   always = always surface it
+//   off    = never auto-surface (manual `uap coord`/`uap challenge` only)
+export const CollaborationSchema = z.object({
+  mode: z.enum(['auto', 'always', 'off']).default('auto'),
+});
+
 export const AgentContextConfigSchema = z.object({
   $schema: z.string().optional(),
   version: z.string().default('1.0.0'),
@@ -399,6 +408,8 @@ export const AgentContextConfigSchema = z.object({
   multiModel: MultiModelSchema.optional(),
   // Agent execution feature flags (benchmark-proven defaults)
   agentExecution: AgentExecutionSchema.optional(),
+  // Agent collaboration auto-activation (board/coordination/challenge guidance)
+  collaboration: CollaborationSchema.optional(),
   // Pattern reinforcement learning configuration
   patternRL: z
     .object({
