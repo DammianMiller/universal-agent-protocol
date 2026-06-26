@@ -172,6 +172,33 @@ export class CoordinationDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_staged_status ON staged_work(status);
       CREATE INDEX IF NOT EXISTS idx_staged_needs ON staged_work(needs);
+
+      -- Challenges: an open, shared goal that N agents work on a common board,
+      -- with verified submissions and a significance-gated leaderboard (frontier
+      -- deltas within the margin are ties, not wins). The capstone that composes
+      -- the board, findings, staged-work, and the significance norm.
+      CREATE TABLE IF NOT EXISTS challenges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        goal TEXT NOT NULL,
+        metric TEXT,
+        higher_is_better INTEGER NOT NULL DEFAULT 1,
+        rope_margin REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL CHECK(status IN ('open', 'closed')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS submissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        challenge_id INTEGER NOT NULL,
+        agent_id TEXT,
+        score REAL NOT NULL,
+        artifact TEXT,
+        note TEXT,
+        verified INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (challenge_id) REFERENCES challenges(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_submissions_challenge ON submissions(challenge_id);
     `);
   }
 

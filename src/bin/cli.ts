@@ -42,6 +42,7 @@ const lazy = {
   benchPaired: () => import('../cli/bench.js').then((m) => m.benchPairedCommand),
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
+  challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
 };
 
 // Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
@@ -439,6 +440,79 @@ program
     const cmd = await lazy.design();
     await cmd(subcommand, options);
   });
+
+// Open multi-agent challenge mode (composes board + findings + staged + significance)
+program
+  .command('challenge')
+  .description('Open multi-agent challenge: shared goal, verified submissions, significance-gated leaderboard')
+  .addCommand(
+    new Command('create')
+      .description('Open a challenge with a shared goal')
+      .argument('<goal>', 'The shared goal')
+      .option('--metric <name>', 'Metric name (e.g. tps, success-rate)')
+      .option('--rope-margin <x>', 'Tie margin: scores within ±x of the leader are ties', '0')
+      .option('--lower-is-better', 'Lower metric is better (default higher)')
+      .action(async (goal, options) => {
+        (await lazy.challenge())('create', { ...options, goal });
+      })
+  )
+  .addCommand(
+    new Command('submit')
+      .description('Submit a result to a challenge')
+      .argument('<id>', 'Challenge id')
+      .requiredOption('--score <x>', 'Metric score')
+      .option('--artifact <ref>', 'Artifact path/ref')
+      .option('--note <text>', 'Note')
+      .option('--verified', 'Mark verified (only verified entries rank)')
+      .option('--agent <id>', 'Submitting agent id')
+      .action(async (id, options) => {
+        (await lazy.challenge())('submit', { ...options, id });
+      })
+  )
+  .addCommand(
+    new Command('verify')
+      .description('Mark a submission verified')
+      .argument('<submissionId>', 'Submission id')
+      .action(async (submissionId, options) => {
+        (await lazy.challenge())('verify', { ...options, id: submissionId });
+      })
+  )
+  .addCommand(
+    new Command('leaderboard')
+      .description('Show the significance-gated leaderboard')
+      .argument('<id>', 'Challenge id')
+      .option('--json', 'Emit JSON')
+      .action(async (id, options) => {
+        (await lazy.challenge())('leaderboard', { ...options, id });
+      })
+  )
+  .addCommand(
+    new Command('status')
+      .description('Challenge overview: leaderboard + board/findings/staged counts')
+      .argument('<id>', 'Challenge id')
+      .option('--json', 'Emit JSON')
+      .action(async (id, options) => {
+        (await lazy.challenge())('status', { ...options, id });
+      })
+  )
+  .addCommand(
+    new Command('list')
+      .description('List challenges')
+      .option('--status <status>', 'open | closed')
+      .option('--json', 'Emit JSON')
+      .action(async (options) => {
+        (await lazy.challenge())('list', options);
+      })
+  )
+  .addCommand(
+    new Command('close')
+      .description('Close a challenge')
+      .argument('<id>', 'Challenge id')
+      .action(async (id, options) => {
+        (await lazy.challenge())('close', { ...options, id });
+      })
+  );
+
 
 // Fable-parity delivery loop
 program

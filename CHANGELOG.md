@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.70.0 (2026-06-26)
+
+- feat(challenge): open multi-agent challenge mode (capstone)
+
+
 ## v1.69.0 (2026-06-26)
 
 - feat(coord): relay handoff + quota staging with credit
