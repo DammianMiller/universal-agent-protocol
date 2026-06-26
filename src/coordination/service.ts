@@ -1093,6 +1093,63 @@ export class CoordinationService {
     this.db.prepare(`DELETE FROM model_leases WHERE id = ?`).run(leaseId);
   }
 
+  // ==================== Adaptive backpressure (AIMD) ====================
+  // Multiplicative-decrease on exhaustion, additive-increase on success toward
+  // the ceiling. Shared across processes so the fleet backs off together.
+
+  private bpRecoverCooldownMs = parseInt(process.env.UAP_BP_RECOVER_MS || '4000', 10) || 4000;
+  private bpDecreaseFactor = 0.5;
+  private bpIncreaseStep = 1;
+
+  private _bpRow(ceiling: number): { lim: number; ceiling: number; lastDecreaseAt: string | null } {
+    const row = this.db
+      .prepare(`SELECT limit_val as lim, ceiling, last_decrease_at as lastDecreaseAt FROM model_backpressure WHERE id = 1`)
+      .get() as { lim: number; ceiling: number; lastDecreaseAt: string | null } | undefined;
+    if (!row) {
+      const now = new Date().toISOString();
+      this.db
+        .prepare(`INSERT OR IGNORE INTO model_backpressure (id, limit_val, ceiling, last_decrease_at, updated_at) VALUES (1, ?, ?, NULL, ?)`)
+        .run(ceiling, ceiling, now);
+      return { lim: ceiling, ceiling, lastDecreaseAt: null };
+    }
+    // Track ceiling changes (e.g. re-probed slot count).
+    if (row.ceiling !== ceiling) {
+      this.db.prepare(`UPDATE model_backpressure SET ceiling = ?, limit_val = MIN(limit_val, ?), updated_at = ? WHERE id = 1`)
+        .run(ceiling, ceiling, new Date().toISOString());
+      row.ceiling = ceiling;
+      row.lim = Math.min(row.lim, ceiling);
+    }
+    return row;
+  }
+
+  /** Current adaptive limit, clamped to [1, ceiling]. */
+  getAdaptiveLimit(ceiling: number): number {
+    const r = this._bpRow(Math.max(1, ceiling));
+    return Math.max(1, Math.min(Math.floor(r.lim), Math.floor(r.ceiling)));
+  }
+
+  /** Signal model-backend exhaustion → multiplicatively decrease the limit. */
+  recordModelExhaustion(ceiling: number): number {
+    const r = this._bpRow(Math.max(1, ceiling));
+    const next = Math.max(1, Math.floor(r.lim * this.bpDecreaseFactor));
+    const now = new Date().toISOString();
+    this.db.prepare(`UPDATE model_backpressure SET limit_val = ?, last_decrease_at = ?, updated_at = ? WHERE id = 1`)
+      .run(next, now, now);
+    return next;
+  }
+
+  /** Signal a healthy model call → additively recover (cooldown-gated). */
+  recordModelSuccess(ceiling: number): number {
+    const r = this._bpRow(Math.max(1, ceiling));
+    if (r.lim >= r.ceiling) return Math.floor(r.lim);
+    const sinceDecrease = r.lastDecreaseAt ? Date.now() - Date.parse(r.lastDecreaseAt) : Infinity;
+    if (sinceDecrease < this.bpRecoverCooldownMs) return Math.floor(r.lim);
+    const next = Math.min(r.ceiling, r.lim + this.bpIncreaseStep);
+    this.db.prepare(`UPDATE model_backpressure SET limit_val = ?, updated_at = ? WHERE id = 1`)
+      .run(next, new Date().toISOString());
+    return Math.floor(next);
+  }
+
   private sendMessage(
     fromAgent: string | undefined,
     toAgent: string | undefined,

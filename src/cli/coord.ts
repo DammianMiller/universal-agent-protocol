@@ -492,13 +492,16 @@ async function slotsCmd(options: CoordOptions): Promise<void> {
   const service = new CoordinationService();
   const active = service.activeModelLeases();
   const { budget, slots, source } = await getModelSlotBudget(cwd, { probe: true, force: true });
+  const adaptiveLimit = service.getAdaptiveLimit(budget);
   if (options.json) {
-    console.log(JSON.stringify({ budget, slots, source, active, endpoint: inferenceBase(cwd), headroom: headroom(cwd) }, null, 2));
+    console.log(JSON.stringify({ budget, adaptiveLimit, slots, source, active, endpoint: inferenceBase(cwd), headroom: headroom(cwd) }, null, 2));
     return;
   }
   console.log(chalk.bold('\n  Model-slot concurrency budget\n'));
   console.log(`  ${chalk.cyan('budget')}    ${budget}  ${chalk.dim('(max concurrent model calls)')}`);
   console.log(`  ${chalk.dim('in use')}    ${active}  ${chalk.dim('active leases right now')}`);
+  const bp = adaptiveLimit < budget ? chalk.yellow(`${adaptiveLimit} (backed off)`) : chalk.dim(String(adaptiveLimit));
+  console.log(`  ${chalk.dim('adaptive')}  ${bp}  ${chalk.dim('AIMD limit')}`);
   console.log(`  ${chalk.dim('slots')}     ${slots}  ${chalk.dim('source: ' + source)}`);
   console.log(`  ${chalk.dim('headroom')}  ${headroom(cwd)}`);
   console.log(`  ${chalk.dim('endpoint')}  ${inferenceBase(cwd)}`);
