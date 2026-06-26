@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.67.0 (2026-06-26)
+
+- feat(bench): practical-significance verdict — ties within noise are not wins
+
+
 ## v1.66.0 (2026-06-26)
 
 - feat(coord): shared collaboration board + per-turn peer-knowledge injection

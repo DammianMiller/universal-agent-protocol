@@ -20,6 +20,7 @@ import {
   passAtK,
   mean,
   std,
+  verdict,
 } from '../src/benchmarks/paired/stats.js';
 import {
   loadSuite,
@@ -100,6 +101,33 @@ describe('stats: pairedDelta', () => {
     const r = pairedDelta([], {});
     expect(r.n).toBe(0);
     expect(r.significant).toBe(false);
+  });
+});
+
+describe('stats: verdict (ROPE / tie-within-noise norm)', () => {
+  it('calls a clear, large positive delta a WIN', () => {
+    const r = pairedDelta(Array.from({ length: 40 }, () => 5), { seed: 7, iterations: 2000 });
+    expect(verdict(r, { margin: 1, higherIsBetter: true })).toBe('win');
+  });
+
+  it('calls a non-significant delta a TIE regardless of sign', () => {
+    const r = pairedDelta([1, -1, 1, -1, 1, -1, 1, -1], { seed: 3, iterations: 2000 });
+    expect(verdict(r)).toBe('tie');
+  });
+
+  it('calls a statistically-significant-but-tiny delta a TIE under the margin', () => {
+    // Constant +2: highly significant, but within a margin of 4 ("deltas <4 are ties").
+    const r = pairedDelta(Array.from({ length: 50 }, () => 2), { seed: 1, iterations: 2000 });
+    expect(r.significant).toBe(true);
+    expect(verdict(r, { margin: 4, higherIsBetter: true })).toBe('tie');
+    // With a small margin it's a real win.
+    expect(verdict(r, { margin: 0.5, higherIsBetter: true })).toBe('win');
+  });
+
+  it('respects higherIsBetter=false (lower tokens/cost is a win)', () => {
+    const r = pairedDelta(Array.from({ length: 40 }, () => -10), { seed: 9, iterations: 2000 });
+    expect(verdict(r, { higherIsBetter: false })).toBe('win'); // fewer tokens
+    expect(verdict(r, { higherIsBetter: true })).toBe('loss');
   });
 });
 

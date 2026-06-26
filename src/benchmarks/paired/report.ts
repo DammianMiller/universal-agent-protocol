@@ -16,6 +16,8 @@ import {
   pairedDelta,
   PairedDeltaResult,
   PairedOptions,
+  verdict,
+  Verdict,
 } from './stats.js';
 import { RunnerOutput } from './runner.js';
 import { CONTINUOUS_METRICS, ContinuousMetric, MetricVector, RunRecord } from './types.js';
@@ -40,9 +42,13 @@ export interface Comparison {
     treatmentRate: number;
     delta: PairedDeltaResult;
     mcnemar: McNemarResult;
+    /** win/tie/loss under the ROPE norm (ties within noise are not wins). */
+    verdict: Verdict;
   };
   /** Paired deltas for each continuous metric where both arms reported a value. */
   metrics: Partial<Record<ContinuousMetric, PairedDeltaResult>>;
+  /** Per-metric win/tie/loss (lower-is-better for tokens/cost/turns/latency). */
+  metricVerdicts: Partial<Record<ContinuousMetric, Verdict>>;
 }
 
 export interface AnalysisReport {
@@ -121,6 +127,13 @@ function toCellMap(recs: RunRecord[]): Map<string, RunRecord> {
 
 export interface AnalyzeOptions extends PairedOptions {
   baselineLabel?: string;
+  /** ROPE half-width for correctness (success-rate units, 0..1). A success-rate
+   *  delta within ±ropeMargin is a tie even if statistically significant.
+   *  Default 0 (pure statistical). e.g. 0.02 = "within 2pp is a tie". */
+  ropeMargin?: number;
+  /** Per-metric ROPE half-widths (same units as the metric). The open-challenge
+   *  "deltas <4 TPS are ties" norm is a per-metric margin. */
+  metricMargins?: Partial<Record<ContinuousMetric, number>>;
 }
 
 export function analyze(output: RunnerOutput, opts: AnalyzeOptions = {}): AnalysisReport {
@@ -165,6 +178,20 @@ export function analyze(output: RunnerOutput, opts: AnalyzeOptions = {}): Analys
       if (deltas.length > 0) metrics[metric] = pairedDelta(deltas, opts);
     }
 
+    // Win/tie/loss under the ROPE norm: correctness is higher-is-better; the
+    // continuous metrics (tokens/cost/turns/latency) are lower-is-better.
+    const correctnessVerdict = verdict(delta, { margin: opts.ropeMargin ?? 0, higherIsBetter: true });
+    const metricVerdicts: Partial<Record<ContinuousMetric, Verdict>> = {};
+    for (const metric of CONTINUOUS_METRICS) {
+      const pd = metrics[metric];
+      if (pd) {
+        metricVerdicts[metric] = verdict(pd, {
+          margin: opts.metricMargins?.[metric] ?? 0,
+          higherIsBetter: false,
+        });
+      }
+    }
+
     comparisons.push({
       label,
       baseline: baselineLabel,
@@ -173,8 +200,10 @@ export function analyze(output: RunnerOutput, opts: AnalyzeOptions = {}): Analys
         treatmentRate: mean(treat.map((t) => num(t.metrics.correct))),
         delta,
         mcnemar: mc,
+        verdict: correctnessVerdict,
       },
       metrics,
+      metricVerdicts,
     });
   }
 
@@ -220,6 +249,11 @@ function sig(p: PairedDeltaResult): string {
   return p.significant ? '✅' : '–';
 }
 
+/** Win/tie/loss badge under the ROPE norm — ties within noise are NOT wins. */
+function vbadge(v: Verdict): string {
+  return v === 'win' ? '🟢 WIN' : v === 'loss' ? '🔴 LOSS' : '⚪ TIE';
+}
+
 export function renderMarkdown(r: AnalysisReport): string {
   const L: string[] = [];
   L.push(`# UAP Paired Benchmark Report`);
@@ -251,7 +285,8 @@ export function renderMarkdown(r: AnalysisReport): string {
     L.push('');
     const cd = cmp.correctness;
     L.push(
-      `**Correctness:** ${pct(cd.baselineRate)} → ${pct(cd.treatmentRate)}  ` +
+      `**Verdict:** ${vbadge(cd.verdict)}  ` +
+        `**Correctness:** ${pct(cd.baselineRate)} → ${pct(cd.treatmentRate)}  ` +
         `(Δ ${(cd.delta.meanDelta * 100).toFixed(1)}pp, 95% CI ${ciStr(cd.delta.ci)}, ` +
         `p=${cd.delta.pValue.toFixed(3)}) ${sig(cd.delta)}`
     );
@@ -263,15 +298,16 @@ export function renderMarkdown(r: AnalysisReport): string {
         `both✓ ${m.bothCorrect}, both✗ ${m.bothWrong}`
     );
     L.push('');
-    L.push(`| Metric | Δ mean | 95% CI | p | sig |`);
+    L.push(`| Metric | Δ mean | 95% CI | p | verdict |`);
     L.push(`|---|--:|--:|--:|:-:|`);
     for (const metric of CONTINUOUS_METRICS) {
       const pd = cmp.metrics[metric];
       if (!pd) continue;
       const d = metric === 'costUsd' ? 4 : 1;
+      const mv = cmp.metricVerdicts[metric] ?? 'tie';
       L.push(
         `| ${metric} | ${pd.meanDelta.toFixed(d)} | ${ciStr(pd.ci, d)} | ` +
-          `${pd.pValue.toFixed(3)} | ${sig(pd)} |`
+          `${pd.pValue.toFixed(3)} | ${vbadge(mv)} |`
       );
     }
     L.push('');
