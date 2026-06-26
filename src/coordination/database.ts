@@ -211,6 +211,19 @@ export class CoordinationDatabase {
         expires_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_model_leases_expires ON model_leases(expires_at);
+
+      -- Adaptive backpressure (AIMD): a single row tracking the current model
+      -- concurrency limit. On an exhaustion signal (429 / timeout / slot-busy)
+      -- the limit is multiplicatively decreased; on sustained success it
+      -- additively recovers toward the ceiling (the static slot budget). Shared
+      -- across processes so the whole fleet backs off together.
+      CREATE TABLE IF NOT EXISTS model_backpressure (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        limit_val REAL NOT NULL,
+        ceiling REAL NOT NULL,
+        last_decrease_at TEXT,
+        updated_at TEXT NOT NULL
+      );
     `);
   }
 

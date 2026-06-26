@@ -8,6 +8,7 @@
  */
 import { CoordinationService } from '../coordination/service.js';
 import { getModelSlotBudget } from './model-slots.js';
+import { loadUapConfigRaw } from './config-loader.js';
 
 export interface SlotLeaseOptions {
   cwd?: string;
@@ -25,9 +26,38 @@ export interface SlotLeaseOptions {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-async function resolveBudget(opts: SlotLeaseOptions): Promise<number> {
+function adaptiveEnabled(cwd?: string): boolean {
+  try {
+    const raw = loadUapConfigRaw(cwd ?? process.cwd()) as { modelConcurrency?: { adaptive?: boolean } } | null;
+    return raw?.modelConcurrency?.adaptive !== false; // on by default (no-op until exhaustion)
+  } catch {
+    return true;
+  }
+}
+
+async function staticBudget(opts: SlotLeaseOptions): Promise<number> {
   if (opts.budget && opts.budget > 0) return opts.budget;
   return (await getModelSlotBudget(opts.cwd)).budget;
+}
+
+/** Effective budget = min(static, adaptive). When backpressure is active the
+ *  adaptive limit is below the static ceiling, throttling the whole fleet. */
+async function effectiveBudget(service: CoordinationService, opts: SlotLeaseOptions): Promise<number> {
+  const ceiling = await staticBudget(opts);
+  if (!adaptiveEnabled(opts.cwd)) return ceiling;
+  return service.getAdaptiveLimit(ceiling);
+}
+
+/** Record a model-backend exhaustion signal (429 / timeout / slot-busy). */
+export async function recordModelExhaustion(opts: SlotLeaseOptions = {}): Promise<number> {
+  const service = opts.service ?? new CoordinationService();
+  return service.recordModelExhaustion(await staticBudget(opts));
+}
+
+/** Record a healthy model call so the limit can recover. */
+export async function recordModelSuccess(opts: SlotLeaseOptions = {}): Promise<number> {
+  const service = opts.service ?? new CoordinationService();
+  return service.recordModelSuccess(await staticBudget(opts));
 }
 
 /**
@@ -39,13 +69,13 @@ export async function acquireModelSlot(
   opts: SlotLeaseOptions = {}
 ): Promise<{ leaseId: number | null; service: CoordinationService }> {
   const service = opts.service ?? new CoordinationService();
-  const budget = await resolveBudget(opts);
   const ttlMs = opts.ttlMs ?? 120_000;
   const timeoutMs = opts.timeoutMs ?? 300_000;
   const pollMs = opts.pollMs ?? 200;
   const deadline = Date.now() + timeoutMs;
 
   for (;;) {
+    const budget = await effectiveBudget(service, opts);
     const leaseId = service.acquireModelSlot(holder, budget, ttlMs);
     if (leaseId !== null) return { leaseId, service };
     if (Date.now() >= deadline) return { leaseId: null, service }; // fail-open
@@ -60,8 +90,14 @@ export async function withModelSlot<T>(
   opts: SlotLeaseOptions = {}
 ): Promise<T> {
   const { leaseId, service } = await acquireModelSlot(holder, opts);
+  // Couldn't get a slot before the deadline → the backend is saturated.
+  if (leaseId === null && adaptiveEnabled(opts.cwd)) {
+    service.recordModelExhaustion(await staticBudget({ ...opts, service }));
+  }
   try {
-    return await fn();
+    const result = await fn();
+    if (adaptiveEnabled(opts.cwd)) service.recordModelSuccess(await staticBudget({ ...opts, service }));
+    return result;
   } finally {
     if (leaseId !== null) service.releaseModelSlot(leaseId);
   }
