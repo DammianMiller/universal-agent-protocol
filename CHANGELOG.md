@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.75.0 (2026-06-27)
+
+- feat(concurrency): adaptive backpressure (AIMD) on model slots
+
+
 ## v1.74.0 (2026-06-27)
 
 - feat(concurrency): cross-process model-slot lease (semaphore)
