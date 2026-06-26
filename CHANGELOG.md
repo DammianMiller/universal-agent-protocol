@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.69.0 (2026-06-26)
+
+- feat(coord): relay handoff + quota staging with credit
+- docs(changelog): 1.64.5 — delivery-enforcement worktree bypass fix
+- fix(policies): delivery-enforcement — `.worktrees/` no longer bypasses deliver
+
+
 ## v1.68.0 (2026-06-26)
 
 - feat(coord): findings ledger + peer flagging (integrity & reversals)

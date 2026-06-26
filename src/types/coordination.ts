@@ -29,6 +29,25 @@ export interface BoardPost {
   createdAt: string;
 }
 
+// Staged work: an artifact + acceptance spec offered for any capable agent.
+export type StagedStatus = 'staged' | 'claimed' | 'completed' | 'abandoned';
+
+export interface StagedWork {
+  id: number;
+  originator: string;
+  title: string;
+  artifact?: string;
+  /** How a picker verifies the work is done (the acceptance spec). */
+  acceptance?: string;
+  /** Capability/resource the picker needs, e.g. "gpu", "quota", "deploy". */
+  needs?: string;
+  status: StagedStatus;
+  claimant?: string;
+  result?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Findings ledger: a tracked claim with mutable status + lineage.
 export type FindingStatus = 'proposed' | 'confirmed' | 'reversed' | 'disputed';
 
