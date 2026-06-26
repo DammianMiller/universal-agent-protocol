@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.73.0 (2026-06-27)
+
+- feat(concurrency): model-slot budget to avoid exhausting inference slots
+- fix(deliver): route qwen35-a3b preset through the proxy (:4000) to strip <think> from authored gates (#291)
+- feat(policy): add iac-plan-destruction-check enforcer (PR-file-aware merge gate) (#287)
+
+
 ## v1.72.1 (2026-06-26)
 
 - fix(deliver): route the `qwen35-a3b` preset through the anthropic-proxy (:4000) instead of llama (:8080) directly. Hitting llama raw under `--reasoning auto` let Qwen `<think>` blocks leak into `uap deliver`-authored gate scripts, producing an unrunnable `verify.sh` (unclosed `<think>` → bash syntax error) and an infinite verify loop. The proxy strips `<think>` and applies tool/finalize guardrails on the OpenAI path too.

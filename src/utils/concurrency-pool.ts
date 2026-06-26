@@ -8,6 +8,7 @@
  */
 
 import { getMaxParallel } from './system-resources.js';
+import { getMaxModelConcurrency } from './model-slots.js';
 
 /**
  * Map over items with bounded concurrency.
@@ -39,13 +40,16 @@ export async function concurrentMap<T, R>(
   options?: {
     /** Maximum concurrent operations. Overrides auto-detection. */
     maxConcurrent?: number;
-    /** 'cpu' reserves cores for OS/inference, 'io' allows higher concurrency */
-    mode?: 'cpu' | 'io';
+    /** 'cpu' reserves cores for OS/inference, 'io' allows higher concurrency,
+     *  'model' caps to the inference backend's model-slot budget */
+    mode?: 'cpu' | 'io' | 'model';
   }
 ): Promise<R[]> {
   if (items.length === 0) return [];
 
-  const max = options?.maxConcurrent ?? getMaxParallel(options?.mode ?? 'io');
+  const max =
+    options?.maxConcurrent ??
+    (options?.mode === 'model' ? getMaxModelConcurrency() : getMaxParallel(options?.mode ?? 'io'));
   const results: R[] = new Array(items.length);
   let nextIndex = 0;
 
@@ -75,12 +79,14 @@ export async function concurrentMapSettled<T, R>(
   fn: (item: T, index: number) => Promise<R>,
   options?: {
     maxConcurrent?: number;
-    mode?: 'cpu' | 'io';
+    mode?: 'cpu' | 'io' | 'model';
   }
 ): Promise<PromiseSettledResult<R>[]> {
   if (items.length === 0) return [];
 
-  const max = options?.maxConcurrent ?? getMaxParallel(options?.mode ?? 'io');
+  const max =
+    options?.maxConcurrent ??
+    (options?.mode === 'model' ? getMaxModelConcurrency() : getMaxParallel(options?.mode ?? 'io'));
   const results: PromiseSettledResult<R>[] = new Array(items.length);
   let nextIndex = 0;
 

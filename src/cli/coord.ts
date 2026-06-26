@@ -8,7 +8,7 @@ import { statusBadge, divider, keyValue, horizontalBarChart, bulletList } from '
 type CoordAction =
   | 'status' | 'flush' | 'cleanup' | 'check' | 'resolve'
   | 'post' | 'board' | 'dead-end' | 'finding' | 'flag'
-  | 'stage' | 'claim' | 'complete' | 'collaboration';
+  | 'stage' | 'claim' | 'complete' | 'collaboration' | 'slots';
 
 interface CoordOptions {
   verbose?: boolean;
@@ -83,6 +83,9 @@ export async function coordCommand(action: CoordAction, options: CoordOptions = 
       break;
     case 'collaboration':
       await collaborationCmd(options);
+      break;
+    case 'slots':
+      await slotsCmd(options);
       break;
   }
 }
@@ -480,4 +483,21 @@ async function collaborationCmd(options: CoordOptions): Promise<void> {
     return cfg;
   });
   console.log(chalk.green(`  ✓ collaboration auto-activation set to ${mode}`));
+}
+
+
+async function slotsCmd(options: CoordOptions): Promise<void> {
+  const { getModelSlotBudget, inferenceBase, headroom } = await import('../utils/model-slots.js');
+  const cwd = process.cwd();
+  const { budget, slots, source } = await getModelSlotBudget(cwd, { probe: true, force: true });
+  if (options.json) {
+    console.log(JSON.stringify({ budget, slots, source, endpoint: inferenceBase(cwd), headroom: headroom(cwd) }, null, 2));
+    return;
+  }
+  console.log(chalk.bold('\n  Model-slot concurrency budget\n'));
+  console.log(`  ${chalk.cyan('budget')}    ${budget}  ${chalk.dim('(max concurrent model calls)')}`);
+  console.log(`  ${chalk.dim('slots')}     ${slots}  ${chalk.dim('source: ' + source)}`);
+  console.log(`  ${chalk.dim('headroom')}  ${headroom(cwd)}`);
+  console.log(`  ${chalk.dim('endpoint')}  ${inferenceBase(cwd)}`);
+  console.log(chalk.dim('\n  Override: UAP_MODEL_SLOTS / .uap.json modelConcurrency.slots; reserve: UAP_MODEL_SLOT_HEADROOM\n'));
 }
