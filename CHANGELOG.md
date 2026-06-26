@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.68.0 (2026-06-26)
+
+- feat(coord): findings ledger + peer flagging (integrity & reversals)
+
 ## v1.67.1 (2026-06-26)
 
 - fix(policies): **delivery-enforcement — `.worktrees/` no longer bypasses `uap deliver`**. `.worktrees/` was an unconditional exempt prefix, so the model could sidestep the deliver pipeline entirely by creating a worktree directory and writing source straight into it — observed live: 24 source files written to `.worktrees/001-space-shooter/` with no deliver run, so the verification gates were never invoked. The `UAP_DELIVER_ACTIVE=1` escape hatch was checked *after* the blanket exemption, so it never mattered. Dropped `.worktrees/` from `EXEMPT_PREFIXES`: a real `uap deliver` run writes into a worktree but sets `UAP_DELIVER_ACTIVE=1` (honored below), so legitimate deliver edits still pass while a manual worktree source write is now gated like any other direct source edit. Adds `test_delivery_enforcement_worktree.py` (6 tests).

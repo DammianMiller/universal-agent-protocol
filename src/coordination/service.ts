@@ -22,6 +22,8 @@ import type {
   MessagePayload,
   BoardKind,
   BoardPost,
+  Finding,
+  FindingStatus,
 } from '../types/coordination.js';
 
 export interface CoordinationServiceConfig {
@@ -751,6 +753,94 @@ export class CoordinationService {
       .reverse()
       .map((p) => `  ${icon[p.kind]} [${p.kind}] ${p.fromAgent ? p.fromAgent.slice(0, 12) + ': ' : ''}${p.text}`);
     return lines.join('\n');
+  }
+
+  // ==================== Findings ledger ====================
+  // Tracked claims with mutable status + lineage. Layered on the board: proposing
+  // a finding also posts it; disputing one raises an integrity flag. This is the
+  // "discoveries & reversals" + "flag, don't exploit" behavior made durable.
+
+  proposeFinding(agentId: string, claim: string, evidence?: string, supersedes?: number): number {
+    const now = new Date().toISOString();
+    const info = this.db
+      .prepare(
+        `INSERT INTO findings (agent_id, claim, status, evidence, supersedes, created_at, updated_at)
+         VALUES (?, ?, 'proposed', ?, ?, ?, ?)`
+      )
+      .run(agentId, claim, evidence ?? null, supersedes ?? null, now, now);
+    const id = Number(info.lastInsertRowid);
+    // Surface on the board so peers can verify/challenge it.
+    this.postBoard(agentId, `finding #${id}: ${claim}`, 'finding');
+    return id;
+  }
+
+  /** Set a finding's status. 'disputed' raises an integrity flag on the board. */
+  updateFinding(
+    id: number,
+    status: FindingStatus,
+    opts: { byAgent?: string; resolution?: string; supersedes?: number } = {}
+  ): boolean {
+    const existing = this.getFinding(id);
+    if (!existing) return false;
+    this.db
+      .prepare(
+        `UPDATE findings SET status = ?, resolution = COALESCE(?, resolution),
+           supersedes = COALESCE(?, supersedes), updated_at = ? WHERE id = ?`
+      )
+      .run(status, opts.resolution ?? null, opts.supersedes ?? null, new Date().toISOString(), id);
+    if (status === 'disputed') {
+      this.postBoard(
+        opts.byAgent ?? 'unknown',
+        `flag on finding #${id} (${existing.claim}): ${opts.resolution ?? 'disputed for ruling'}`,
+        'flag'
+      );
+    }
+    return true;
+  }
+
+  /** Raise an integrity flag on a claim for peer/human ruling (escalation). */
+  flagFinding(agentId: string, id: number, reason: string): boolean {
+    return this.updateFinding(id, 'disputed', { byAgent: agentId, resolution: reason });
+  }
+
+  getFinding(id: number): Finding | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, agent_id as agentId, claim, status, evidence, supersedes,
+                resolution, created_at as createdAt, updated_at as updatedAt
+         FROM findings WHERE id = ?`
+      )
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? (row as unknown as Finding) : null;
+  }
+
+  listFindings(opts: { status?: FindingStatus; limit?: number } = {}): Finding[] {
+    const params: unknown[] = [];
+    let sql = `SELECT id, agent_id as agentId, claim, status, evidence, supersedes,
+                      resolution, created_at as createdAt, updated_at as updatedAt FROM findings`;
+    if (opts.status) {
+      sql += ' WHERE status = ?';
+      params.push(opts.status);
+    }
+    sql += ' ORDER BY updated_at DESC, id DESC';
+    if (opts.limit) {
+      sql += ' LIMIT ?';
+      params.push(opts.limit);
+    }
+    return this.db.prepare(sql).all(...params) as unknown as Finding[];
+  }
+
+  /** Walk the supersedes chain newest→oldest (lineage of a claim's reversals). */
+  findingLineage(id: number): Finding[] {
+    const chain: Finding[] = [];
+    const seen = new Set<number>();
+    let cur = this.getFinding(id);
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      chain.push(cur);
+      cur = cur.supersedes ? this.getFinding(cur.supersedes) : null;
+    }
+    return chain;
   }
 
   private sendMessage(

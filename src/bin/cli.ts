@@ -708,7 +708,37 @@ program
       .action(async (options) => {
         (await lazy.coord())('board', options);
       })
+  )
+  .addCommand(
+    new Command('finding')
+      .description('Findings ledger: propose | confirm | reverse | list tracked claims')
+      .argument('<action>', 'propose | confirm | reverse | list')
+      .argument('[value]', 'claim text (propose) or finding id (confirm/reverse)')
+      .option('--evidence <text>', 'Supporting evidence (propose)')
+      .option('--supersedes <id>', 'This finding supersedes/reverses finding #id (lineage)')
+      .option('--resolution <text>', 'Ruling text (confirm/reverse)')
+      .option('--status <status>', 'Filter list by proposed|confirmed|reversed|disputed')
+      .option('-n, --limit <n>', 'Max rows (list)')
+      .option('--agent <id>', 'Acting agent id')
+      .option('--json', 'Emit JSON (list)')
+      .action(async (action, value, options) => {
+        const opts: Record<string, unknown> = { ...options, sub: action };
+        if (action === 'propose') opts.text = value;
+        else opts.id = value;
+        (await lazy.coord())('finding', opts);
+      })
+  )
+  .addCommand(
+    new Command('flag')
+      .description('Raise an integrity flag on a finding for peer/human ruling (disputes it)')
+      .argument('<id>', 'Finding id to flag')
+      .requiredOption('--reason <text>', 'Why the claim is suspect')
+      .option('--agent <id>', 'Acting agent id')
+      .action(async (id, options) => {
+        (await lazy.coord())('flag', { ...options, id });
+      })
   );
+
 
 program
   .command('agent')

@@ -29,6 +29,23 @@ export interface BoardPost {
   createdAt: string;
 }
 
+// Findings ledger: a tracked claim with mutable status + lineage.
+export type FindingStatus = 'proposed' | 'confirmed' | 'reversed' | 'disputed';
+
+export interface Finding {
+  id: number;
+  agentId?: string;
+  claim: string;
+  status: FindingStatus;
+  evidence?: string;
+  /** id of an earlier finding this one supersedes/reverses (lineage). */
+  supersedes?: number;
+  /** ruling text when confirmed/reversed/resolved. */
+  resolution?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Work intent types (informational, not locking)
 export type WorkIntentType = 'editing' | 'reviewing' | 'refactoring' | 'testing' | 'documenting';
 
