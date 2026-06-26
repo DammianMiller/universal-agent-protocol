@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.71.0 (2026-06-26)
+
+- feat(challenge): `uap challenge run --agents N` orchestrator
+
+
 ## v1.70.0 (2026-06-26)
 
 - feat(challenge): open multi-agent challenge mode (capstone)

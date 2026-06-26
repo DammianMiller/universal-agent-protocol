@@ -84,6 +84,14 @@ uap challenge status 1                 # leaderboard + board/findings/staged cou
 uap challenge close 1
 ```
 
+**Auto-launch N participants** against a goal (bounded concurrency). The `--cmd`
+template is your agent program; it does the work and submits a verified score:
+
+```bash
+uap challenge run 1 --agents 8 --concurrency 4 \
+  --cmd 'uap deliver "{goal}" && uap challenge submit {challenge} --score <metric> --verified --agent {agent}'
+```
+
 Only **verified** submissions rank (an unverified "999" can't win), and entries
 within `--rope-margin` of the leader tie — so noise never beats a real result.
 
