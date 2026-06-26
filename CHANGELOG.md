@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.66.0 (2026-06-26)
+
+- feat(coord): shared collaboration board + per-turn peer-knowledge injection
+
+
 ## v1.65.3 (2026-06-26)
 
 - fix(policy): risk-scope expert-review gate + add env-free file waiver
