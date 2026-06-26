@@ -26,6 +26,9 @@ import type {
   FindingStatus,
   StagedWork,
   StagedStatus,
+  Challenge,
+  Submission,
+  LeaderboardEntry,
 } from '../types/coordination.js';
 
 export interface CoordinationServiceConfig {
@@ -935,6 +938,113 @@ export class CoordinationService {
     return this.listStaged({ status: 'staged', limit: 200 })
       .filter((w) => !w.needs || caps.has(w.needs.toLowerCase()))
       .slice(0, limit);
+  }
+
+  // ==================== Challenge mode ====================
+  // An open shared goal that N agents work on a common board, with verified
+  // submissions and a significance-gated leaderboard (frontier deltas within the
+  // ROPE margin are ties). Composes board + findings + staged + significance.
+
+  createChallenge(
+    goal: string,
+    opts: { metric?: string; higherIsBetter?: boolean; ropeMargin?: number } = {}
+  ): number {
+    const now = new Date().toISOString();
+    const info = this.db
+      .prepare(
+        `INSERT INTO challenges (goal, metric, higher_is_better, rope_margin, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'open', ?, ?)`
+      )
+      .run(goal, opts.metric ?? null, opts.higherIsBetter === false ? 0 : 1, opts.ropeMargin ?? 0, now, now);
+    const id = Number(info.lastInsertRowid);
+    // Seed the board with the goal and the working norms so participants align.
+    this.postBoard('challenge', `challenge #${id} OPEN: ${goal}${opts.metric ? ` [metric: ${opts.metric}]` : ''}`, 'note');
+    this.postBoard(
+      'challenge',
+      `norms for #${id}: communicate in public (no side-channels); flag don't exploit; record dead-ends; frontier deltas within ${opts.ropeMargin ?? 0} are TIES, not wins`,
+      'norm'
+    );
+    return id;
+  }
+
+  submitToChallenge(
+    challengeId: number,
+    agentId: string,
+    score: number,
+    opts: { artifact?: string; note?: string; verified?: boolean } = {}
+  ): number {
+    const info = this.db
+      .prepare(
+        `INSERT INTO submissions (challenge_id, agent_id, score, artifact, note, verified, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(challengeId, agentId, score, opts.artifact ?? null, opts.note ?? null, opts.verified ? 1 : 0, new Date().toISOString());
+    const id = Number(info.lastInsertRowid);
+    this.postBoard(agentId, `submission #${id} to challenge #${challengeId}: score ${score}${opts.verified ? ' (verified)' : ' (unverified)'}`, 'finding');
+    return id;
+  }
+
+  verifySubmission(id: number): boolean {
+    const info = this.db.prepare(`UPDATE submissions SET verified=1 WHERE id=?`).run(id);
+    return info.changes > 0;
+  }
+
+  closeChallenge(id: number): boolean {
+    const info = this.db
+      .prepare(`UPDATE challenges SET status='closed', updated_at=? WHERE id=? AND status='open'`)
+      .run(new Date().toISOString(), id);
+    if (info.changes > 0) this.postBoard('challenge', `challenge #${id} CLOSED`, 'note');
+    return info.changes > 0;
+  }
+
+  getChallenge(id: number): Challenge | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, goal, metric, higher_is_better as higherIsBetter, rope_margin as ropeMargin,
+                status, created_at as createdAt, updated_at as updatedAt FROM challenges WHERE id=?`
+      )
+      .get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return { ...row, higherIsBetter: !!row.higherIsBetter } as unknown as Challenge;
+  }
+
+  listChallenges(opts: { status?: 'open' | 'closed' } = {}): Challenge[] {
+    const params: unknown[] = [];
+    let sql = `SELECT id, goal, metric, higher_is_better as higherIsBetter, rope_margin as ropeMargin,
+                      status, created_at as createdAt, updated_at as updatedAt FROM challenges`;
+    if (opts.status) { sql += ' WHERE status=?'; params.push(opts.status); }
+    sql += ' ORDER BY id DESC';
+    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+    return rows.map((r) => ({ ...r, higherIsBetter: !!r.higherIsBetter })) as unknown as Challenge[];
+  }
+
+  getSubmissions(challengeId: number, verifiedOnly = false): Submission[] {
+    const sql =
+      `SELECT id, challenge_id as challengeId, agent_id as agentId, score, artifact, note,
+              verified, created_at as createdAt FROM submissions WHERE challenge_id=?` +
+      (verifiedOnly ? ' AND verified=1' : '');
+    const rows = this.db.prepare(sql).all(challengeId) as Record<string, unknown>[];
+    return rows.map((r) => ({ ...r, verified: !!r.verified })) as unknown as Submission[];
+  }
+
+  /**
+   * Ranked leaderboard with the significance norm applied: the best score leads,
+   * and any submission within the challenge's ROPE margin of the leader is a TIE
+   * for #1 (a frontier delta within noise is not a win). Verified submissions only.
+   */
+  leaderboard(challengeId: number): LeaderboardEntry[] {
+    const ch = this.getChallenge(challengeId);
+    if (!ch) return [];
+    const subs = this.getSubmissions(challengeId, true);
+    if (subs.length === 0) return [];
+    const better = (a: number, b: number) => (ch.higherIsBetter ? a - b : b - a);
+    subs.sort((x, y) => better(y.score, x.score) || x.id - y.id);
+    const leaderScore = subs[0].score;
+    return subs.map((submission, i) => ({
+      rank: i + 1,
+      submission,
+      tiedForLead: Math.abs(leaderScore - submission.score) <= ch.ropeMargin,
+    }));
   }
 
   private sendMessage(

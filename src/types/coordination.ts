@@ -29,6 +29,36 @@ export interface BoardPost {
   createdAt: string;
 }
 
+// Challenge: an open shared goal with verified, significance-gated submissions.
+export interface Challenge {
+  id: number;
+  goal: string;
+  metric?: string;
+  higherIsBetter: boolean;
+  ropeMargin: number;
+  status: 'open' | 'closed';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Submission {
+  id: number;
+  challengeId: number;
+  agentId?: string;
+  score: number;
+  artifact?: string;
+  note?: string;
+  verified: boolean;
+  createdAt: string;
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  submission: Submission;
+  /** Within the ROPE margin of the leader — a statistical tie for #1, not a win. */
+  tiedForLead: boolean;
+}
+
 // Staged work: an artifact + acceptance spec offered for any capable agent.
 export type StagedStatus = 'staged' | 'claimed' | 'completed' | 'abandoned';
 
