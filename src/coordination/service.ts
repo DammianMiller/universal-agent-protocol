@@ -24,6 +24,8 @@ import type {
   BoardPost,
   Finding,
   FindingStatus,
+  StagedWork,
+  StagedStatus,
 } from '../types/coordination.js';
 
 export interface CoordinationServiceConfig {
@@ -841,6 +843,98 @@ export class CoordinationService {
       cur = cur.supersedes ? this.getFinding(cur.supersedes) : null;
     }
     return chain;
+  }
+
+  // ==================== Staged work (relay / quota-pooling) ====================
+  // An agent stages an artifact + acceptance spec for ANY capable agent to pick
+  // up, with credit to the originator — so build/run/diagnose/ship can split
+  // across agents and the GPU-poor can hand off to the GPU-rich.
+
+  stageWork(
+    originator: string,
+    work: { title: string; artifact?: string; acceptance?: string; needs?: string }
+  ): number {
+    const now = new Date().toISOString();
+    const info = this.db
+      .prepare(
+        `INSERT INTO staged_work (originator, title, artifact, acceptance, needs, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'staged', ?, ?)`
+      )
+      .run(originator, work.title, work.artifact ?? null, work.acceptance ?? null, work.needs ?? null, now, now);
+    const id = Number(info.lastInsertRowid);
+    this.postBoard(
+      originator,
+      `staged #${id}: ${work.title}${work.needs ? ` (needs ${work.needs})` : ''} — pick up for whoever can run it`,
+      'handoff'
+    );
+    return id;
+  }
+
+  /** Atomically claim a staged item; returns false if already taken. */
+  claimStaged(agentId: string, id: number): boolean {
+    const info = this.db
+      .prepare(
+        `UPDATE staged_work SET status='claimed', claimant=?, updated_at=?
+         WHERE id=? AND status='staged'`
+      )
+      .run(agentId, new Date().toISOString(), id);
+    return info.changes > 0;
+  }
+
+  /** Mark staged work complete and credit the originator on the board. */
+  completeStaged(agentId: string, id: number, result?: string): boolean {
+    const item = this.getStaged(id);
+    if (!item) return false;
+    const info = this.db
+      .prepare(
+        `UPDATE staged_work SET status='completed', result=?, claimant=COALESCE(claimant, ?), updated_at=?
+         WHERE id=? AND status IN ('staged','claimed')`
+      )
+      .run(result ?? null, agentId, new Date().toISOString(), id);
+    if (info.changes === 0) return false;
+    const credit = item.originator && item.originator !== agentId ? ` (orig. ${item.originator})` : '';
+    this.postBoard(agentId, `completed staged #${id}: ${item.title}${credit}`, 'finding');
+    return true;
+  }
+
+  /** Release a claim or abandon staged work (back to the pool / closed). */
+  releaseStaged(id: number, abandon = false): boolean {
+    const info = this.db
+      .prepare(`UPDATE staged_work SET status=?, claimant=NULL, updated_at=? WHERE id=? AND status IN ('staged','claimed')`)
+      .run(abandon ? 'abandoned' : 'staged', new Date().toISOString(), id);
+    return info.changes > 0;
+  }
+
+  getStaged(id: number): StagedWork | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, originator, title, artifact, acceptance, needs, status, claimant, result,
+                created_at as createdAt, updated_at as updatedAt FROM staged_work WHERE id=?`
+      )
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? (row as unknown as StagedWork) : null;
+  }
+
+  listStaged(opts: { status?: StagedStatus; needs?: string; limit?: number } = {}): StagedWork[] {
+    const params: unknown[] = [];
+    const where: string[] = [];
+    if (opts.status) { where.push('status = ?'); params.push(opts.status); }
+    if (opts.needs) { where.push('needs = ?'); params.push(opts.needs); }
+    let sql = `SELECT id, originator, title, artifact, acceptance, needs, status, claimant, result,
+                      created_at as createdAt, updated_at as updatedAt FROM staged_work`;
+    if (where.length) sql += ' WHERE ' + where.join(' AND ');
+    sql += ' ORDER BY updated_at DESC, id DESC';
+    if (opts.limit) { sql += ' LIMIT ?'; params.push(opts.limit); }
+    return this.db.prepare(sql).all(...params) as unknown as StagedWork[];
+  }
+
+  /** Staged items this agent could pick up: still 'staged' and either no needs
+   *  or a need the agent's capabilities satisfy. */
+  claimableFor(capabilities: string[], limit = 20): StagedWork[] {
+    const caps = new Set(capabilities.map((c) => c.toLowerCase()));
+    return this.listStaged({ status: 'staged', limit: 200 })
+      .filter((w) => !w.needs || caps.has(w.needs.toLowerCase()))
+      .slice(0, limit);
   }
 
   private sendMessage(

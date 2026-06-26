@@ -737,7 +737,42 @@ program
       .action(async (id, options) => {
         (await lazy.coord())('flag', { ...options, id });
       })
+  )
+  .addCommand(
+    new Command('stage')
+      .description('Stage an artifact + acceptance spec for any capable agent (relay/quota pool); "list" to view')
+      .argument('<title>', 'Work title, or "list" to view the staged pool')
+      .option('--artifact <ref>', 'Path/ref to the staged artifact')
+      .option('--acceptance <spec>', 'How a picker verifies it is done')
+      .option('--needs <cap>', 'Capability/resource the picker needs (e.g. gpu, quota, deploy)')
+      .option('--status <status>', 'Filter list: staged|claimed|completed|abandoned')
+      .option('-n, --limit <n>', 'Max rows (list)')
+      .option('--agent <id>', 'Acting agent id')
+      .option('--json', 'Emit JSON (list)')
+      .action(async (title, options) => {
+        (await lazy.coord())('stage', { ...options, text: title });
+      })
+  )
+  .addCommand(
+    new Command('claim')
+      .description('Claim a staged item to run it (atomic; fails if already taken)')
+      .argument('<id>', 'Staged work id')
+      .option('--agent <id>', 'Acting agent id')
+      .action(async (id, options) => {
+        (await lazy.coord())('claim', { ...options, id });
+      })
+  )
+  .addCommand(
+    new Command('complete')
+      .description('Mark staged work complete and credit the originator on the board')
+      .argument('<id>', 'Staged work id')
+      .option('--result <text>', 'Outcome / result summary')
+      .option('--agent <id>', 'Acting agent id')
+      .action(async (id, options) => {
+        (await lazy.coord())('complete', { ...options, id });
+      })
   );
+
 
 
 program

@@ -2,12 +2,13 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { CoordinationService } from '../coordination/service.js';
 import { DeployBatcher } from '../coordination/deploy-batcher.js';
-import type { WorkOverlap, BoardKind, FindingStatus } from '../types/coordination.js';
+import type { WorkOverlap, BoardKind, FindingStatus, StagedStatus } from '../types/coordination.js';
 import { statusBadge, divider, keyValue, horizontalBarChart, bulletList } from './visualize.js';
 
 type CoordAction =
   | 'status' | 'flush' | 'cleanup' | 'check' | 'resolve'
-  | 'post' | 'board' | 'dead-end' | 'finding' | 'flag';
+  | 'post' | 'board' | 'dead-end' | 'finding' | 'flag'
+  | 'stage' | 'claim' | 'complete';
 
 interface CoordOptions {
   verbose?: boolean;
@@ -28,6 +29,10 @@ interface CoordOptions {
   supersedes?: string;
   resolution?: string;
   reason?: string;
+  artifact?: string;
+  acceptance?: string;
+  needs?: string;
+  result?: string;
 }
 
 /** Resolve the posting agent identity: --agent, then env, then a stable fallback. */
@@ -66,6 +71,15 @@ export async function coordCommand(action: CoordAction, options: CoordOptions = 
       break;
     case 'flag':
       await flagCmd(options);
+      break;
+    case 'stage':
+      await stageCmd(options);
+      break;
+    case 'claim':
+      await claimCmd(options);
+      break;
+    case 'complete':
+      await completeCmd(options);
       break;
   }
 }
@@ -388,5 +402,53 @@ async function flagCmd(options: CoordOptions): Promise<void> {
   const service = new CoordinationService();
   const ok = service.flagFinding(resolveAgentId(options), id, reason);
   console.log(ok ? chalk.red(`  🚩 flagged finding #${id} for ruling (posted to board)`) : chalk.yellow(`  finding #${id} not found`));
+  if (!ok) process.exitCode = 1;
+}
+
+async function stageCmd(options: CoordOptions): Promise<void> {
+  const service = new CoordinationService();
+  const v = (options.text || '').trim();
+  if (v === 'list' || options.sub === 'list') {
+    const items = service.listStaged({
+      status: options.status as StagedStatus | undefined,
+      needs: options.needs,
+      limit: options.limit ? parseInt(options.limit, 10) : 25,
+    });
+    if (options.json) { console.log(JSON.stringify(items, null, 2)); return; }
+    if (items.length === 0) { console.log(chalk.dim('  Nothing staged. Stage with: uap coord stage "<title>" --needs gpu')); return; }
+    console.log(chalk.bold('\n  Staged work (relay pool)\n'));
+    for (const w of items) {
+      const st = w.status === 'staged' ? chalk.cyan('staged') : w.status === 'claimed' ? chalk.yellow('claimed') : w.status === 'completed' ? chalk.green('completed') : chalk.gray('abandoned');
+      const needs = w.needs ? chalk.magenta(` needs:${w.needs}`) : '';
+      const who = w.claimant ? chalk.dim(` ← ${w.claimant.slice(0, 12)}`) : '';
+      console.log(`  #${w.id} ${st}${needs}${who}  ${chalk.dim(w.originator.slice(0, 12))}`);
+      console.log(`      ${w.title}`);
+      if (w.acceptance) console.log(chalk.dim(`      accept: ${w.acceptance}`));
+    }
+    console.log('');
+    return;
+  }
+  if (!v) { console.log(chalk.yellow('  Usage: uap coord stage "<title>" [--artifact path] [--acceptance "<spec>"] [--needs gpu]')); process.exitCode = 1; return; }
+  const id = service.stageWork(resolveAgentId(options), {
+    title: v, artifact: options.artifact, acceptance: options.acceptance, needs: options.needs,
+  });
+  console.log(chalk.green(`  ✓ staged #${id} for pickup (posted to the board as a handoff)`));
+}
+
+async function claimCmd(options: CoordOptions): Promise<void> {
+  const id = parseInt(options.id || options.text || '', 10);
+  if (!Number.isFinite(id)) { console.log(chalk.yellow('  Usage: uap coord claim <staged-id>')); process.exitCode = 1; return; }
+  const service = new CoordinationService();
+  const ok = service.claimStaged(resolveAgentId(options), id);
+  console.log(ok ? chalk.green(`  ✓ claimed staged #${id} — run it, then: uap coord complete ${id} --result "<outcome>"`) : chalk.yellow(`  staged #${id} not available (already claimed or missing)`));
+  if (!ok) process.exitCode = 1;
+}
+
+async function completeCmd(options: CoordOptions): Promise<void> {
+  const id = parseInt(options.id || options.text || '', 10);
+  if (!Number.isFinite(id)) { console.log(chalk.yellow('  Usage: uap coord complete <staged-id> --result "<outcome>"')); process.exitCode = 1; return; }
+  const service = new CoordinationService();
+  const ok = service.completeStaged(resolveAgentId(options), id, options.result);
+  console.log(ok ? chalk.green(`  ✓ completed staged #${id} (credited the originator on the board)`) : chalk.yellow(`  staged #${id} not completable`));
   if (!ok) process.exitCode = 1;
 }

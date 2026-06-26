@@ -151,6 +151,27 @@ export class CoordinationDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
       CREATE INDEX IF NOT EXISTS idx_findings_supersedes ON findings(supersedes);
+
+      -- Staged work: relay/handoff + quota-pooling. An agent stages an artifact
+      -- plus an acceptance spec for ANY capable agent to pick up (build/run/
+      -- diagnose/ship split across agents), with capability/resource needs and
+      -- credit to the originator. Driven by the open-challenge norm: "stage a
+      -- candidate publicly for whoever has quota; credit the originator."
+      CREATE TABLE IF NOT EXISTS staged_work (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        originator TEXT NOT NULL,
+        title TEXT NOT NULL,
+        artifact TEXT,
+        acceptance TEXT,
+        needs TEXT,
+        status TEXT NOT NULL CHECK(status IN ('staged', 'claimed', 'completed', 'abandoned')),
+        claimant TEXT,
+        result TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_staged_status ON staged_work(status);
+      CREATE INDEX IF NOT EXISTS idx_staged_needs ON staged_work(needs);
     `);
   }
 
