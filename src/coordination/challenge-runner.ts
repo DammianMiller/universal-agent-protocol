@@ -12,7 +12,6 @@ import { spawn } from 'child_process';
 import type { CoordinationService } from './service.js';
 import type { LeaderboardEntry } from '../types/coordination.js';
 import { getMaxModelConcurrency, warmModelSlotBudget } from '../utils/model-slots.js';
-import { withModelSlot } from '../utils/model-slot-lease.js';
 
 export interface ParticipantContext {
   agentId: string;
@@ -135,8 +134,6 @@ export async function runChallengeAgents(
   // the inference backend; warm it (probe) once up front.
   await warmModelSlotBudget(cwd);
   const concurrency = Math.max(1, opts.concurrency ?? getMaxModelConcurrency(cwd));
-  // Cross-process slot budget the lease enforces (≥ in-process concurrency).
-  const slotBudget = getMaxModelConcurrency(cwd);
   const timeoutMs = opts.timeoutMs ?? 120_000;
   const prefix = opts.agentPrefix ?? 'agent';
 
@@ -156,42 +153,38 @@ export async function runChallengeAgents(
     let error: string | undefined;
 
     try {
-      // Hold a model slot for the duration of the participant's work so total
-      // concurrent model calls stay within budget even across processes.
-      await withModelSlot(
-        agentId,
-        async () => {
-          if (opts.participant) {
-            await opts.participant({
-              agentId,
-              challengeId: ch.id,
-              goal: ch.goal,
-              metric: ch.metric,
-              index: i,
-              service,
-            });
-          } else {
-            const cmd = interpolate(opts.cmd!, {
-              agent: agentId,
-              challenge: String(ch.id),
-              goal: ch.goal,
-              index: String(i),
-            });
-            const env: NodeJS.ProcessEnv = {
-              ...process.env,
-              UAP_AGENT_ID: agentId,
-              UAP_CHALLENGE_ID: String(ch.id),
-              UAP_CHALLENGE_GOAL: ch.goal,
-              UAP_CHALLENGE_METRIC: ch.metric ?? '',
-            };
-            const r = await runCommand(cmd, cwd, env, timeoutMs);
-            exitCode = r.exitCode;
-            error = r.error;
-            ok = r.exitCode === 0 && !r.error;
-          }
-        },
-        { service, budget: slotBudget, ttlMs: timeoutMs + 5_000, cwd }
-      );
+      // No slot lease here: a subprocess participant self-leases via its model
+      // client (per actual call), and the pool below bounds spawns — so wrapping
+      // here too would double-count the same call. In-process participants that
+      // call models also lease at the client.
+      if (opts.participant) {
+        await opts.participant({
+          agentId,
+          challengeId: ch.id,
+          goal: ch.goal,
+          metric: ch.metric,
+          index: i,
+          service,
+        });
+      } else {
+        const cmd = interpolate(opts.cmd!, {
+          agent: agentId,
+          challenge: String(ch.id),
+          goal: ch.goal,
+          index: String(i),
+        });
+        const env: NodeJS.ProcessEnv = {
+          ...process.env,
+          UAP_AGENT_ID: agentId,
+          UAP_CHALLENGE_ID: String(ch.id),
+          UAP_CHALLENGE_GOAL: ch.goal,
+          UAP_CHALLENGE_METRIC: ch.metric ?? '',
+        };
+        const r = await runCommand(cmd, cwd, env, timeoutMs);
+        exitCode = r.exitCode;
+        error = r.error;
+        ok = r.exitCode === 0 && !r.error;
+      }
     } catch (e) {
       ok = false;
       error = e instanceof Error ? e.message : String(e);

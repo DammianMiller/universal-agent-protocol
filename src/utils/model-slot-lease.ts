@@ -6,6 +6,7 @@
  * `withModelSlot(holder, fn)` acquires a slot (waiting when the budget is full),
  * runs `fn`, and releases — the right wrapper around any model call / agent spawn.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { CoordinationService } from '../coordination/service.js';
 import { getModelSlotBudget } from './model-slots.js';
 import { loadUapConfigRaw } from './config-loader.js';
@@ -26,6 +27,18 @@ export interface SlotLeaseOptions {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Heuristic: does this inference error indicate the backend is saturated? */
+export function isExhaustionError(err: unknown): boolean {
+  const m = err instanceof Error ? err.message : String(err);
+  return /\((?:429|408|502|503|504|529)\)|timed out|timeout|overloaded|too many requests|no slot|slots? (?:are )?full/i.test(m);
+}
+
+// Re-entrancy guard: nested withModelSlot calls within one async context reuse
+// the outer lease (count as one slot) so layered wrappers can't deadlock or
+// double-count. Cross-process callers (subprocesses) have a fresh store and
+// lease independently, which is correct.
+const holding = new AsyncLocalStorage<boolean>();
+
 function adaptiveEnabled(cwd?: string): boolean {
   try {
     const raw = loadUapConfigRaw(cwd ?? process.cwd()) as { modelConcurrency?: { adaptive?: boolean } } | null;
@@ -37,7 +50,9 @@ function adaptiveEnabled(cwd?: string): boolean {
 
 async function staticBudget(opts: SlotLeaseOptions): Promise<number> {
   if (opts.budget && opts.budget > 0) return opts.budget;
-  return (await getModelSlotBudget(opts.cwd)).budget;
+  // No probing on the per-call hot path — use env/config/cache/default. The
+  // cache is warmed by orchestrators (warmModelSlotBudget) and `uap coord slots`.
+  return (await getModelSlotBudget(opts.cwd, { probe: false })).budget;
 }
 
 /** Effective budget = min(static, adaptive). When backpressure is active the
@@ -89,16 +104,35 @@ export async function withModelSlot<T>(
   fn: () => Promise<T>,
   opts: SlotLeaseOptions = {}
 ): Promise<T> {
-  const { leaseId, service } = await acquireModelSlot(holder, opts);
+  // Already holding a slot in this async context → reuse it (re-entrant).
+  if (holding.getStore()) return fn();
+
+  // Fail-open: if the coordination layer is unavailable, run the call rather
+  // than block real work on infra problems.
+  let acquired: { leaseId: number | null; service: CoordinationService };
+  try {
+    acquired = await acquireModelSlot(holder, opts);
+  } catch {
+    return fn();
+  }
+  const { leaseId, service } = acquired;
   // Couldn't get a slot before the deadline → the backend is saturated.
   if (leaseId === null && adaptiveEnabled(opts.cwd)) {
-    service.recordModelExhaustion(await staticBudget({ ...opts, service }));
+    try {
+      service.recordModelExhaustion(await staticBudget({ ...opts, service }));
+    } catch {
+      /* ignore */
+    }
   }
   try {
-    const result = await fn();
-    if (adaptiveEnabled(opts.cwd)) service.recordModelSuccess(await staticBudget({ ...opts, service }));
-    return result;
+    return await holding.run(true, fn);
   } finally {
-    if (leaseId !== null) service.releaseModelSlot(leaseId);
+    if (leaseId !== null) {
+      try {
+        service.releaseModelSlot(leaseId);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
