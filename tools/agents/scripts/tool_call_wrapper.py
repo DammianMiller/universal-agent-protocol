@@ -561,14 +561,17 @@ class ToolCallClient:
                     **kwargs,
                 }
 
+                # Non-OpenAI sampling/server params (top_k, min_p, grammar,
+                # chat_template_kwargs) MUST be passed via extra_body — the OpenAI
+                # SDK rejects them as direct kwargs ("unexpected keyword argument
+                # 'top_k'"), which previously made every tool-call test fail before
+                # reaching the model. Collect them into one extra_body dict.
+                extra_body: dict = {}
+
                 # Strategy 5: Thinking mode suppression (model-specific)
                 if request_config.get("suppress_thinking"):
-                    request_params["extra_body"] = {
-                        "chat_template_kwargs": {
-                            "enable_thinking": request_config.get(
-                                "enable_thinking", False
-                            )
-                        }
+                    extra_body["chat_template_kwargs"] = {
+                        "enable_thinking": request_config.get("enable_thinking", False)
                     }
                     # Version check: llama.cpp >= 3761 supports chat_template_kwargs
                     # Older versions will ignore unknown extra_body keys
@@ -582,14 +585,19 @@ class ToolCallClient:
                     f"parallel={request_config.get('parallel_tool_calls', True)}"
                 )
 
+                # `stop` is a standard OpenAI param -> top-level kwarg.
                 if request_config.get("stop_sequences"):
                     request_params["stop"] = request_config["stop_sequences"]
+                # llama.cpp sampling params -> extra_body (forwarded by the SDK).
                 if request_config.get("top_k") is not None:
-                    request_params["top_k"] = request_config["top_k"]
+                    extra_body["top_k"] = request_config["top_k"]
                 if request_config.get("min_p") is not None:
-                    request_params["min_p"] = request_config["min_p"]
+                    extra_body["min_p"] = request_config["min_p"]
                 if grammar_text and tools:
-                    request_params["grammar"] = grammar_text
+                    extra_body["grammar"] = grammar_text
+
+                if extra_body:
+                    request_params["extra_body"] = extra_body
 
                 # Make API call
                 response = self._client.chat.completions.create(**request_params)
