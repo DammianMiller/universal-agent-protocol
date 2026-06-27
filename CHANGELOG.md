@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.76.2 (2026-06-27)
+
+- fix(proxy): don't classify an UNCLOSED `<think>` block as a malformed tool payload. Under llama `--reasoning auto`, Qwen3.6 often runs out of token budget mid-reasoning, emitting `<think> …meta-tool talk… args=` with no `</think>`. The malformed-pseudo-tool detector only stripped *balanced* `<think>…</think>`, so the meta-tool talk inside the unclosed block tripped the structural-marker branch → false `malformed_payload` rejections that stalled agentic builds (~11 false rejections in 40 min stalling an Octopus Invaders generation). `_looks_malformed_tool_payload` now also strips a trailing unclosed `<think>` (keeping any text before the opener so a genuine malformed payload there is still detected).
+
 ## v1.76.1 (2026-06-27)
 
 - fix(concurrency): deterministic backpressure cooldown (unflake CI)
