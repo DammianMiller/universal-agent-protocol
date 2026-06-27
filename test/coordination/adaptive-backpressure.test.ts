@@ -14,7 +14,7 @@ describe('adaptive backpressure (AIMD)', () => {
   const saved = process.env.UAP_BP_RECOVER_MS;
 
   beforeEach(() => {
-    process.env.UAP_BP_RECOVER_MS = '20'; // fast recovery for tests
+    process.env.UAP_BP_RECOVER_MS = '100000'; // long by default; tests set per-case
     dir = mkdtempSync(join(tmpdir(), 'uap-bp-'));
     mkdirSync(join(dir, 'agents', 'data', 'coordination'), { recursive: true });
     CoordinationDatabase.resetInstance();
@@ -40,11 +40,12 @@ describe('adaptive backpressure (AIMD)', () => {
   });
 
   it('does not recover within the cooldown, then additively increases', async () => {
-    process.env.UAP_BP_RECOVER_MS = '10000'; // long cooldown
+    // Cooldown is read per call, so flipping the env mid-test takes effect.
+    process.env.UAP_BP_RECOVER_MS = '100000'; // effectively no recovery
     service.recordModelExhaustion(8); // → 4
     expect(service.recordModelSuccess(8)).toBe(4); // still in cooldown
-    process.env.UAP_BP_RECOVER_MS = '10'; // short
-    await sleep(20);
+    process.env.UAP_BP_RECOVER_MS = '1'; // ~immediate recovery
+    await sleep(30); // comfortably past the 1ms cooldown
     expect(service.recordModelSuccess(8)).toBe(5); // +1
     expect(service.recordModelSuccess(8)).toBe(6);
   });

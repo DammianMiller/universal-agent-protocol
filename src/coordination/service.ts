@@ -1097,7 +1097,9 @@ export class CoordinationService {
   // Multiplicative-decrease on exhaustion, additive-increase on success toward
   // the ceiling. Shared across processes so the fleet backs off together.
 
-  private bpRecoverCooldownMs = parseInt(process.env.UAP_BP_RECOVER_MS || '4000', 10) || 4000;
+  private get bpRecoverCooldownMs(): number {
+    return parseInt(process.env.UAP_BP_RECOVER_MS || '4000', 10) || 4000;
+  }
   private bpDecreaseFactor = 0.5;
   private bpIncreaseStep = 1;
 

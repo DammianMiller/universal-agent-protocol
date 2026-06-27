@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.76.1 (2026-06-27)
+
+- fix(concurrency): deterministic backpressure cooldown (unflake CI)
+
+
 ## v1.76.0 (2026-06-27)
 
 - feat(concurrency): route all model calls through the slot lease + 429 hooks
