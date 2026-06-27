@@ -233,5 +233,7 @@ export class CoordinationDatabase {
 }
 
 export function getDefaultCoordinationDbPath(): string {
-  return './agents/data/coordination/coordination.db';
+  // UAP_COORD_DB lets a caller (or test) point the shared coordination DB at a
+  // specific path without changing cwd.
+  return process.env.UAP_COORD_DB || './agents/data/coordination/coordination.db';
 }

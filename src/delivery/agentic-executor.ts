@@ -18,6 +18,7 @@
  */
 
 import { spawnSync } from 'child_process';
+import { withModelSlot, recordModelSuccess, recordModelExhaustion, isExhaustionError } from '../utils/model-slot-lease.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
 import { join, dirname, resolve, relative, isAbsolute } from 'path';
 import type { ModelConfig } from '../models/types.js';
@@ -275,6 +276,27 @@ export function selectExecutorMode(
 }
 
 async function chat(
+  endpoint: string,
+  model: ModelConfig,
+  messages: ChatMessage[],
+  temperature?: number
+): Promise<ChatMessage> {
+  // Hold a model slot so the agentic tool-loop's calls comply with the slot
+  // budget (same work, bounded concurrency). 429/timeout feed backpressure.
+  if (process.env.UAP_MODEL_LEASE === '0') return _chat(endpoint, model, messages, temperature);
+  return withModelSlot(`agentic:${model.apiModel ?? 'default'}`, async () => {
+    try {
+      const m = await _chat(endpoint, model, messages, temperature);
+      await recordModelSuccess({}).catch(() => undefined);
+      return m;
+    } catch (err) {
+      if (isExhaustionError(err)) await recordModelExhaustion({}).catch(() => undefined);
+      throw err;
+    }
+  });
+}
+
+async function _chat(
   endpoint: string,
   model: ModelConfig,
   messages: ChatMessage[],

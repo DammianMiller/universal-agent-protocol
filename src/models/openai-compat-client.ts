@@ -32,6 +32,13 @@ function isLocalEndpoint(url: URL): boolean {
   return LOOPBACK_RE.test(url.hostname) || PRIVATE_HOST_RE.test(url.hostname);
 }
 
+import {
+  withModelSlot,
+  recordModelSuccess,
+  recordModelExhaustion,
+  isExhaustionError,
+} from '../utils/model-slot-lease.js';
+
 export class OpenAICompatClient implements ModelClient {
   private readonly defaultEndpoint: string;
   private readonly timeoutMs: number;
@@ -44,7 +51,34 @@ export class OpenAICompatClient implements ModelClient {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
+  /**
+   * Complete a prompt, holding a model slot for the duration so concurrent
+   * callers (deliver fan-out, parallel experts, multiple agents/processes) stay
+   * within the inference backend's slot budget — same work, just bounded
+   * concurrency. 429/timeout responses feed adaptive backpressure; 2xx feed
+   * recovery. The lease is re-entrant + fail-open. Disable with UAP_MODEL_LEASE=0.
+   */
   async complete(
+    model: ModelConfig,
+    prompt: string,
+    options?: { maxTokens?: number; timeout?: number; temperature?: number }
+  ): Promise<{ content: string; tokensUsed: { input: number; output: number }; latencyMs: number }> {
+    if (process.env.UAP_MODEL_LEASE === '0') {
+      return this._request(model, prompt, options);
+    }
+    return withModelSlot(`model:${model.apiModel ?? 'default'}`, async () => {
+      try {
+        const result = await this._request(model, prompt, options);
+        await recordModelSuccess({}).catch(() => undefined);
+        return result;
+      } catch (err) {
+        if (isExhaustionError(err)) await recordModelExhaustion({}).catch(() => undefined);
+        throw err;
+      }
+    });
+  }
+
+  private async _request(
     model: ModelConfig,
     prompt: string,
     options?: { maxTokens?: number; timeout?: number; temperature?: number }
