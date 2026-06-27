@@ -6339,6 +6339,22 @@ def _looks_malformed_tool_payload(text: str) -> bool:
         if not text.strip():
             return False
 
+    # 2026-06-27: Also strip a trailing UNCLOSED <think> (opener present, no
+    # matching </think>). Under `--reasoning auto` the model frequently runs out
+    # of its token budget mid-reasoning, emitting
+    #   "<think> ...let me write files via multiple sandbox calls... args="
+    # with no </think>. That is TRUNCATED reasoning, not a malformed tool call —
+    # but the balanced-only strip above left it intact, so the meta-tool talk
+    # inside it tripped the structural-marker / apology branches below
+    # (false-positive malformed_payload that stalled agentic builds, e.g. the
+    # Octopus Invaders generation: ~11 false rejections in 40 min). Drop from the
+    # first opener to end; KEEP any text before it so a genuine malformed payload
+    # preceding the reasoning is still detected.
+    if "<think>" in text and "</think>" not in text:
+        text = text[: text.index("<think>")]
+        if not text.strip():
+            return False
+
     # 2026-05-12: Strip orphan </parameter> and </function> closers that
     # have no matching opener. Qwen3.6 leaks these training residuals
     # after its visible answer when forced into tool_choice='required'
