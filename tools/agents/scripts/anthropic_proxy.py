@@ -1852,6 +1852,50 @@ upstream_semaphore: asyncio.Semaphore | None = None
 
 
 # ---------------------------------------------------------------------------
+# Session admission control — cap the number of DISTINCT "hot" sessions
+# ---------------------------------------------------------------------------
+# The semaphore above limits CONCURRENT REQUESTS. On a multi-slot llama.cpp
+# (--parallel N) llama's native prompt-cache keeps each session on its own slot
+# across turns — but only N slots exist. When MORE than N distinct sessions are
+# active, a returning session finds its slot reassigned to another session, its
+# KV gone, forcing a from-scratch reprocess of the whole context (brutal on an
+# SSM/Mamba model, which cannot restore partial KV: every eviction is a full
+# prefill). The per-request semaphore can't prevent this — it lets session A
+# finish + release, then admits session E, which evicts A's slot.
+#
+# Session admission caps the number of DISTINCT sessions holding a slot at once.
+# A new session over the limit WAITS (queues) until an admitted session goes
+# idle (no request for IDLE_TTL) and is pruned, instead of barging in and
+# evicting a hot session. Admission is STICKY across a session's turns; it is
+# released only by idle-TTL expiry (or, under sustained over-subscription, a
+# wait-timeout graceful-degrade that force-admits, evicting the LRU). Default
+# OFF — opt in via PROXY_SESSION_ADMISSION=on (set the LIMIT to the llama slot
+# count / --parallel value).
+PROXY_SESSION_ADMISSION = os.environ.get(
+    "PROXY_SESSION_ADMISSION", "off"
+).lower() not in {"", "0", "off", "false", "no"}
+# Max distinct hot sessions. Default = the concurrency limit (= llama slots).
+PROXY_SESSION_ADMISSION_LIMIT = int(
+    os.environ.get("PROXY_SESSION_ADMISSION_LIMIT", str(PROXY_CONCURRENCY_LIMIT))
+)
+# Seconds a session may be idle (no request) before its admission is pruned,
+# freeing a slot for a waiting session. Tune ABOVE typical inter-turn gaps so an
+# actively-working session is never pruned mid-task. 0 = never prune on idle.
+PROXY_SESSION_ADMISSION_IDLE_TTL = float(
+    os.environ.get("PROXY_SESSION_ADMISSION_IDLE_TTL", "90")
+)
+# Max seconds a new session waits for admission before graceful-degrade
+# (force-admit, evicting the LRU admitted session). 0 = wait indefinitely.
+PROXY_SESSION_ADMISSION_WAIT_TIMEOUT = float(
+    os.environ.get("PROXY_SESSION_ADMISSION_WAIT_TIMEOUT", "300")
+)
+# How often a waiter re-checks for a freed slot (re-prunes idle admissions).
+PROXY_SESSION_ADMISSION_POLL = float(
+    os.environ.get("PROXY_SESSION_ADMISSION_POLL", "3")
+)
+
+
+# ---------------------------------------------------------------------------
 # Slot save/restore — cross-session KV-cache preservation
 # ---------------------------------------------------------------------------
 # llama.cpp runs --parallel 1 (a single slot). When N distinct client
@@ -1901,6 +1945,12 @@ _slot_lru: "OrderedDict[str, float]" = OrderedDict()  # session -> last-access t
 _current_request_session: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "uap_current_request_session", default=None
 )
+
+# Session admission state. _admitted_sessions maps session_id -> last-seen
+# monotonic ts; OrderedDict insertion order is the LRU (oldest = front).
+# Guarded by _admission_cond's lock (created lazily on the running event loop).
+_admitted_sessions: "OrderedDict[str, float]" = OrderedDict()
+_admission_cond: "asyncio.Condition | None" = None
 
 
 def _slot_endpoint_base() -> str:
@@ -2052,6 +2102,93 @@ def _prepare_slot_save_dir() -> None:
         logger.warning("SLOT SAVE/RESTORE: startup dir prep failed: %s", exc)
 
 
+def _prune_idle_admissions(now: float) -> list[str]:
+    """Remove admitted sessions idle longer than the TTL; return their ids.
+    Caller must hold the admission lock. 0 TTL disables idle pruning."""
+    ttl = PROXY_SESSION_ADMISSION_IDLE_TTL
+    if ttl <= 0:
+        return []
+    stale = [sid for sid, ts in _admitted_sessions.items() if now - ts > ttl]
+    for sid in stale:
+        _admitted_sessions.pop(sid, None)
+    return stale
+
+
+def _try_admit_session(session_id: str, now: float) -> bool:
+    """Synchronous admission core (caller holds the admission lock). Returns
+    True if the session is admitted — already hot (refreshed) or newly admitted
+    into a free slot — False if the hot set is full. Pure/deterministic given
+    `now`, so it is unit-tested directly."""
+    _prune_idle_admissions(now)
+    if session_id in _admitted_sessions:
+        _admitted_sessions[session_id] = now
+        _admitted_sessions.move_to_end(session_id)
+        return True
+    if len(_admitted_sessions) < PROXY_SESSION_ADMISSION_LIMIT:
+        _admitted_sessions[session_id] = now
+        _admitted_sessions.move_to_end(session_id)
+        return True
+    return False
+
+
+async def _ensure_session_admitted(session_id: str | None) -> None:
+    """Block until `session_id` is admitted to the hot set (size <= LIMIT).
+
+    Sticky: admission persists across a session's turns and is released only by
+    idle-TTL pruning. A new session over the limit queues (waits) rather than
+    evicting a hot session. On wait-timeout it force-admits, evicting the LRU,
+    to avoid a hard stall (graceful degrade to pre-admission behaviour).
+    No-op when disabled or when there is no session id."""
+    global _admission_cond
+    if not PROXY_SESSION_ADMISSION or not session_id:
+        return
+    if _admission_cond is None:
+        _admission_cond = asyncio.Condition()
+    cond = _admission_cond
+    deadline = (
+        time.monotonic() + PROXY_SESSION_ADMISSION_WAIT_TIMEOUT
+        if PROXY_SESSION_ADMISSION_WAIT_TIMEOUT > 0
+        else None
+    )
+    waited = False
+    async with cond:
+        while True:
+            now = time.monotonic()
+            if _try_admit_session(session_id, now):
+                if waited:
+                    logger.info(
+                        "SESSION ADMISSION: admitted %s after wait (%d/%d hot)",
+                        session_id[:12], len(_admitted_sessions),
+                        PROXY_SESSION_ADMISSION_LIMIT,
+                    )
+                # A refresh/new admit may have pruned idle sessions; wake peers.
+                cond.notify_all()
+                return
+            # Hot set full and this session isn't in it.
+            if deadline is not None and now >= deadline:
+                evicted = "-"
+                if _admitted_sessions:
+                    evicted = next(iter(_admitted_sessions))  # LRU = oldest front
+                    _admitted_sessions.pop(evicted, None)
+                _admitted_sessions[session_id] = now
+                logger.warning(
+                    "SESSION ADMISSION: wait timeout (%ds), force-admitted %s "
+                    "(evicted LRU %s) — sustained over-subscription (>%d hot sessions)",
+                    int(PROXY_SESSION_ADMISSION_WAIT_TIMEOUT), session_id[:12],
+                    evicted[:12], PROXY_SESSION_ADMISSION_LIMIT,
+                )
+                cond.notify_all()
+                return
+            waited = True
+            timeout = PROXY_SESSION_ADMISSION_POLL
+            if deadline is not None:
+                timeout = max(0.0, min(timeout, deadline - now))
+            try:
+                await asyncio.wait_for(cond.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass  # re-loop: re-prune idle admissions, retry
+
+
 async def _acquire_upstream_slot() -> bool:
     """Acquire a semaphore slot for an upstream request.
 
@@ -2136,6 +2273,11 @@ async def _post_with_retry(
     rather than all hammering llama.cpp at once. Slot is released in a
     finally block so it's always returned to the pool even on error.
     """
+    # Session admission: cap DISTINCT hot sessions to <= the slot count so they
+    # don't evict each other's KV (sticky, released by idle-TTL). No-op when
+    # PROXY_SESSION_ADMISSION is off. Runs BEFORE the per-request semaphore so a
+    # queued new session waits without holding a concurrency slot.
+    await _ensure_session_admitted(_current_request_session.get())
     acquired = await _acquire_upstream_slot()
     if not acquired:
         logger.warning(
@@ -2272,7 +2414,19 @@ async def lifespan(app: FastAPI):
     global http_client
     global default_context_window
     global upstream_semaphore
+    global _admission_cond
     upstream_semaphore = asyncio.Semaphore(PROXY_CONCURRENCY_LIMIT)
+    # Bind the admission condition to THIS event loop and clear stale state.
+    _admission_cond = asyncio.Condition()
+    _admitted_sessions.clear()
+    if PROXY_SESSION_ADMISSION:
+        logger.info(
+            "SESSION ADMISSION: on (limit=%d hot sessions, idle_ttl=%.0fs, "
+            "wait_timeout=%.0fs)",
+            PROXY_SESSION_ADMISSION_LIMIT,
+            PROXY_SESSION_ADMISSION_IDLE_TTL,
+            PROXY_SESSION_ADMISSION_WAIT_TIMEOUT,
+        )
     logger.info(
         "CONCURRENCY: upstream semaphore initialized limit=%d queue_timeout=%.0fs",
         PROXY_CONCURRENCY_LIMIT,
@@ -2369,6 +2523,8 @@ async def lifespan(app: FastAPI):
     http_client = None
     if upstream_semaphore is not None:
         upstream_semaphore = None
+    _admission_cond = None
+    _admitted_sessions.clear()
     logger.info("Proxy shut down")
 
 
