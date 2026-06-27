@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.76.4 (2026-06-27)
+
+- feat(proxy): session-admission control (`PROXY_SESSION_ADMISSION=on`). Caps the number of DISTINCT "hot" sessions holding an upstream slot to `PROXY_SESSION_ADMISSION_LIMIT` (default = `PROXY_CONCURRENCY_LIMIT` = llama `--parallel` slots). The per-request semaphore limits concurrent *requests*; this limits concurrent *sessions* — a new session over the limit queues until an admitted session goes idle (`PROXY_SESSION_ADMISSION_IDLE_TTL`, default 90s) and is pruned, instead of evicting a hot session. On a multi-slot SSM/Mamba model (no partial-KV restore) every eviction is a full reprocess; admission prevents the >slots-sessions thrash. Sticky across a session's turns; graceful-degrades (force-admit, evict LRU) after `PROXY_SESSION_ADMISSION_WAIT_TIMEOUT` (default 300s). Default OFF.
+
+
 ## v1.76.3 (2026-06-27)
 
 - fix(tool-calls): route top_k/min_p/grammar via extra_body (test was 0/6)
