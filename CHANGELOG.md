@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.76.0 (2026-06-27)
+
+- feat(concurrency): route all model calls through the slot lease + 429 hooks
+
+
 ## v1.75.0 (2026-06-27)
 
 - feat(concurrency): adaptive backpressure (AIMD) on model slots
