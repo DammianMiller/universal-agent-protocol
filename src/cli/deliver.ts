@@ -603,11 +603,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     projectRoot,
     rungs.length > 0 || needsSelfGate
   );
+  // Endpoint resolution (both executors honor UAP_INFERENCE_ENDPOINT, which
+  // unifies them when set). Defaults differ ON PURPOSE: the blind path uses the
+  // OpenAI client default (the :4000 <think>-stripping proxy → clean file fences),
+  // while the agentic tool-loop goes :8080 DIRECT — routing its OpenAI tool calls
+  // through the Anthropic-tuned proxy stalls the loop. Garbled tool paths are
+  // handled by the in-process normalizer (path-normalize.ts), not the proxy.
   const agenticEndpoint =
     model.endpoint ?? options.endpoint ?? process.env.UAP_INFERENCE_ENDPOINT ?? 'http://localhost:8080/v1';
   const agentic = executorMode === 'agentic';
   if (agentic) {
-    console.log(chalk.cyan(`⚙ executor: agentic (tool-using loop)`));
+    console.log(chalk.cyan(`⚙ executor: agentic (tool-using loop) @ ${agenticEndpoint}`));
   }
   const executor: LoopExecutor = agentic
     ? createAgenticExecutor(model, {
