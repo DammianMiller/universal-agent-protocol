@@ -18,6 +18,7 @@
  */
 
 import { spawnSync } from 'child_process';
+import { normalizeToolPath } from './path-normalize.js';
 import { withModelSlot, recordModelSuccess, recordModelExhaustion, isExhaustionError } from '../utils/model-slot-lease.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
 import { join, dirname, resolve, relative, isAbsolute } from 'path';
@@ -194,6 +195,21 @@ function runTool(
   protectedFiles: ReadonlySet<string>,
   protectGateConfigs: boolean
 ): string {
+  let pathNote = '';
+  // Contain/repair garbled tool-call paths against the known project root before
+  // any filesystem op — the small model mangles prefixes/subdirs and the write
+  // would otherwise escape the root or land nowhere (the proxy fixes this for
+  // Claude Code; deliver's agentic path bypassed it).
+  if (
+    (name === 'read_file' || name === 'list_dir' || name === 'write_file') &&
+    typeof args.path === 'string'
+  ) {
+    const norm = normalizeToolPath(projectRoot, args.path, { forWrite: name === 'write_file' });
+    if (norm.changed) {
+      pathNote = ` (path corrected: ${args.path} -> ${norm.path})`;
+      args = { ...args, path: norm.path };
+    }
+  }
   try {
     if (name === 'read_file') {
       const abs = safePath(projectRoot, String(args.path));
@@ -223,7 +239,7 @@ function runTool(
       }
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, String(args.content ?? ''), 'utf-8');
-      return `OK: wrote ${String(args.path)} (${String(args.content ?? '').length} bytes)`;
+      return `OK: wrote ${String(args.path)} (${String(args.content ?? '').length} bytes)${pathNote}`;
     }
     if (name === 'run_bash') {
       // Snapshot protected files so a command cannot silently rewrite the
