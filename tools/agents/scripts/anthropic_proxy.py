@@ -498,6 +498,20 @@ PROXY_FORCE_NON_STREAM = os.environ.get(
     "off",
     "no",
 }
+# Streaming keep-alive heartbeat (seconds) for the guarded-non-stream path.
+# That path buffers the ENTIRE upstream generation before emitting any SSE
+# bytes, so a long generation (e.g. a 28k-token runaway taking ~14 min at
+# depth-slowed decode) sends the client nothing for the whole wait and the
+# client's streaming idle-timeout fires -> "API Error". When > 0, the proxy
+# emits an immediate `message_start` then periodic `ping` events to the client
+# while it awaits+guards the buffered upstream response, keeping the connection
+# alive; the buffered content is streamed once ready. 0 disables (old behavior).
+try:
+    PROXY_STREAM_HEARTBEAT_SECS = float(
+        os.environ.get("PROXY_STREAM_HEARTBEAT_SECS", "0")
+    )
+except ValueError:
+    PROXY_STREAM_HEARTBEAT_SECS = 0.0
 PROXY_FORCED_TOOL_DAMPENER = os.environ.get(
     "PROXY_FORCED_TOOL_DAMPENER", "on"
 ).lower() not in {
@@ -7838,19 +7852,84 @@ def openai_to_anthropic_response(
     }
 
 
-async def stream_anthropic_message(anthropic_resp: dict):
-    """Stream a finalized Anthropic message as SSE events."""
-    message = {
-        "id": anthropic_resp.get("id", f"msg_{uuid.uuid4().hex[:24]}"),
-        "type": "message",
-        "role": "assistant",
-        "content": [],
-        "model": anthropic_resp.get("model", "unknown"),
-        "stop_reason": None,
-        "stop_sequence": None,
-        "usage": {"input_tokens": 0, "output_tokens": 0},
-    }
-    yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': message})}\n\n"
+async def _heartbeat_then_buffered(produce_coro, model: str):
+    """SSE generator: keep-alive heartbeat wrapper for the guarded-non-stream path.
+
+    Emits an immediate ``message_start`` so the client registers an active
+    stream, then ``ping`` events every PROXY_STREAM_HEARTBEAT_SECS while
+    ``produce_coro`` (which awaits + guards the buffered upstream response) runs,
+    then streams the buffered content. Keeps the connection alive through long
+    buffered generations so the client's streaming idle-timeout does not fire.
+
+    ``produce_coro`` resolves to EITHER the finalized Anthropic response dict OR
+    a Starlette ``Response`` (the guarded path's error returns). Since the stream
+    has already committed to HTTP 200, an error Response is re-emitted as an SSE
+    ``error`` event rather than an HTTP status.
+    """
+    msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+    yield (
+        f"event: message_start\n"
+        f"data: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
+    )
+    interval = PROXY_STREAM_HEARTBEAT_SECS if PROXY_STREAM_HEARTBEAT_SECS > 0 else 15.0
+    task = asyncio.ensure_future(produce_coro)
+    try:
+        while True:
+            try:
+                # shield keeps the produce task alive across ping timeouts;
+                # only the wait_for wrapper is cancelled on each TimeoutError.
+                produced = await asyncio.wait_for(asyncio.shield(task), timeout=interval)
+                break
+            except asyncio.TimeoutError:
+                yield 'event: ping\ndata: {"type": "ping"}\n\n'
+    except asyncio.CancelledError:
+        # Client disconnected — cancel the in-flight produce and propagate.
+        task.cancel()
+        raise
+    except Exception as exc:
+        logger.error("heartbeat produce failed: %s", exc)
+        yield (
+            "event: error\n"
+            f"data: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': str(exc)[:500]}})}\n\n"
+        )
+        return
+
+    if isinstance(produced, Response):
+        # Guarded path returned an error Response; re-emit as an SSE error event.
+        try:
+            payload = json.loads(bytes(produced.body).decode("utf-8"))
+        except Exception:
+            payload = {
+                "type": "error",
+                "error": {"type": "overloaded_error", "message": "Upstream error"},
+            }
+        yield f"event: error\ndata: {json.dumps(payload)}\n\n"
+        return
+
+    # produced is the finalized Anthropic response dict — stream its content
+    # without a second message_start (already sent above).
+    async for chunk in stream_anthropic_message(produced, emit_message_start=False):
+        yield chunk
+
+
+async def stream_anthropic_message(anthropic_resp: dict, emit_message_start: bool = True):
+    """Stream a finalized Anthropic message as SSE events.
+
+    emit_message_start=False skips the leading message_start event for callers
+    (the heartbeat wrapper) that have already emitted one to start the stream.
+    """
+    if emit_message_start:
+        message = {
+            "id": anthropic_resp.get("id", f"msg_{uuid.uuid4().hex[:24]}"),
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "model": anthropic_resp.get("model", "unknown"),
+            "stop_reason": None,
+            "stop_sequence": None,
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        }
+        yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': message})}\n\n"
 
     content_blocks = anthropic_resp.get("content", []) or [{"type": "text", "text": ""}]
     block_index = 0
@@ -8528,88 +8607,108 @@ async def messages(request: Request):
         openai_body,
     )
     if use_guarded_non_stream:
-        strict_body = dict(openai_body)
-        strict_body["stream"] = False
+        async def _produce_guarded():
+            strict_body = dict(openai_body)
+            strict_body["stream"] = False
 
-        try:
-            strict_resp = await _post_with_generation_timeout(
-                client,
-                f"{LLAMA_CPP_BASE}/chat/completions",
-                strict_body,
-                {"Content-Type": "application/json"},
-            )
-        except Exception as exc:
-            # Check if upstream is hung before returning error
-            await _check_slot_hang(LLAMA_CPP_BASE.replace("/v1", "/slots"))
-            return Response(
-                content=json.dumps(
-                    {
-                        "type": "error",
-                        "error": {
-                            "type": "overloaded_error",
-                            "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
-                        },
-                    }
-                ),
-                status_code=529,
-                media_type="application/json",
-            )
+            try:
+                strict_resp = await _post_with_generation_timeout(
+                    client,
+                    f"{LLAMA_CPP_BASE}/chat/completions",
+                    strict_body,
+                    {"Content-Type": "application/json"},
+                )
+            except Exception as exc:
+                # Check if upstream is hung before returning error
+                await _check_slot_hang(LLAMA_CPP_BASE.replace("/v1", "/slots"))
+                return Response(
+                    content=json.dumps(
+                        {
+                            "type": "error",
+                            "error": {
+                                "type": "overloaded_error",
+                                "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                            },
+                        }
+                    ),
+                    status_code=529,
+                    media_type="application/json",
+                )
 
-        if strict_resp.status_code != 200:
-            error_text = strict_resp.text[:1000]
-            # Try the Gemma 4 PEG parse-failure recovery first — relax
-            # tool_choice='required' so the retry isn't constrained by the
-            # strict-grammar that triggered the parse failure.
-            relaxed = _is_gemma4_peg_parse_failure(strict_resp.status_code, error_text) and \
-                _relax_tool_choice_for_gemma4_peg_retry(strict_body, "strict-stream")
-            if relaxed:
-                try:
-                    strict_resp = await _post_with_generation_timeout(
-                        client,
-                        f"{LLAMA_CPP_BASE}/chat/completions",
-                        strict_body,
-                        {"Content-Type": "application/json"},
+            if strict_resp.status_code != 200:
+                error_text = strict_resp.text[:1000]
+                # Try the Gemma 4 PEG parse-failure recovery first — relax
+                # tool_choice='required' so the retry isn't constrained by the
+                # strict-grammar that triggered the parse failure.
+                relaxed = _is_gemma4_peg_parse_failure(strict_resp.status_code, error_text) and \
+                    _relax_tool_choice_for_gemma4_peg_retry(strict_body, "strict-stream")
+                if relaxed:
+                    try:
+                        strict_resp = await _post_with_generation_timeout(
+                            client,
+                            f"{LLAMA_CPP_BASE}/chat/completions",
+                            strict_body,
+                            {"Content-Type": "application/json"},
+                        )
+                    except Exception:
+                        pass  # fall through to next handler
+            if strict_resp.status_code != 200:
+                error_text = strict_resp.text[:1000]
+                if _maybe_disable_grammar_for_tools_error(
+                    strict_body,
+                    strict_resp.status_code,
+                    error_text,
+                    "strict-stream",
+                ):
+                    try:
+                        strict_resp = await _post_with_generation_timeout(
+                            client,
+                            f"{LLAMA_CPP_BASE}/chat/completions",
+                            strict_body,
+                            {"Content-Type": "application/json"},
+                        )
+                    except Exception as exc:
+                        return Response(
+                            content=json.dumps(
+                                {
+                                    "type": "error",
+                                    "error": {
+                                        "type": "overloaded_error",
+                                        "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                                    },
+                                }
+                            ),
+                            status_code=529,
+                            media_type="application/json",
+                        )
+
+            if strict_resp.status_code != 200:
+                error_text = strict_resp.text[:1000]
+                # Cycle 19 Option 2: For 503 "Loading model", don't advance state
+                # machine — return retriable 503 with Retry-After header so the
+                # client can retry without wasting state machine budget.
+                if _is_loading_model_503(strict_resp):
+                    logger.warning(
+                        "Upstream 503 Loading model (strict-stream) — returning retriable 503 without advancing state",
                     )
-                except Exception:
-                    pass  # fall through to next handler
-        if strict_resp.status_code != 200:
-            error_text = strict_resp.text[:1000]
-            if _maybe_disable_grammar_for_tools_error(
-                strict_body,
-                strict_resp.status_code,
-                error_text,
-                "strict-stream",
-            ):
-                try:
-                    strict_resp = await _post_with_generation_timeout(
-                        client,
-                        f"{LLAMA_CPP_BASE}/chat/completions",
-                        strict_body,
-                        {"Content-Type": "application/json"},
-                    )
-                except Exception as exc:
                     return Response(
                         content=json.dumps(
                             {
                                 "type": "error",
                                 "error": {
                                     "type": "overloaded_error",
-                                    "message": f"Upstream server unavailable after {PROXY_UPSTREAM_RETRY_MAX} retries: {exc}",
+                                    "message": "Upstream model is loading. Retry in 10 seconds.",
                                 },
                             }
                         ),
-                        status_code=529,
+                        status_code=503,
+                        headers={"Retry-After": "10"},
                         media_type="application/json",
                     )
-
-        if strict_resp.status_code != 200:
-            error_text = strict_resp.text[:1000]
-            # Cycle 19 Option 2: For 503 "Loading model", don't advance state
-            # machine — return retriable 503 with Retry-After header so the
-            # client can retry without wasting state machine budget.
-            if _is_loading_model_503(strict_resp):
-                logger.warning(
-                    "Upstream 503 Loading model (strict-stream) — returning retriable 503 without advancing state",
+                logger.error(
+                    "Upstream HTTP %d (strict-stream): %s",
+                    strict_resp.status_code,
+                    error_text,
                 )
                 return Response(
                     content=json.dumps(
@@ -8617,126 +8716,122 @@ async def messages(request: Request):
                             "type": "error",
                             "error": {
                                 "type": "overloaded_error",
-                                "message": "Upstream model is loading. Retry in 10 seconds.",
+                                "message": f"Upstream error (HTTP {strict_resp.status_code}): {error_text[:500]}",
                             },
                         }
                     ),
-                    status_code=503,
-                    headers={"Retry-After": "10"},
+                    status_code=529,
                     media_type="application/json",
                 )
-            logger.error(
-                "Upstream HTTP %d (strict-stream): %s",
-                strict_resp.status_code,
-                error_text,
+
+            openai_resp = strict_resp.json()
+            # Recover tool calls from <tool_call> XML before guardrails run
+            _maybe_extract_text_tool_calls(
+                openai_resp,
+                anthropic_tools=body.get("tools"),
+                suppress=monitor.suppress_text_tool_extraction,
             )
-            return Response(
-                content=json.dumps(
-                    {
-                        "type": "error",
-                        "error": {
-                            "type": "overloaded_error",
-                            "message": f"Upstream error (HTTP {strict_resp.status_code}): {error_text[:500]}",
-                        },
-                    }
-                ),
-                status_code=529,
-                media_type="application/json",
+            openai_resp = await _apply_unexpected_end_turn_guardrail(
+                client,
+                openai_resp,
+                strict_body,
+                body,
+                monitor,
+                session_id,
+            )
+            openai_resp = await _apply_malformed_tool_guardrail(
+                client,
+                openai_resp,
+                strict_body,
+                body,
+                monitor,
+                session_id,
             )
 
-        openai_resp = strict_resp.json()
-        # Recover tool calls from <tool_call> XML before guardrails run
-        _maybe_extract_text_tool_calls(
-            openai_resp,
-            anthropic_tools=body.get("tools"),
-            suppress=monitor.suppress_text_tool_extraction,
-        )
-        openai_resp = await _apply_unexpected_end_turn_guardrail(
-            client,
-            openai_resp,
-            strict_body,
-            body,
-            monitor,
-            session_id,
-        )
-        openai_resp = await _apply_malformed_tool_guardrail(
-            client,
-            openai_resp,
-            strict_body,
-            body,
-            monitor,
-            session_id,
-        )
-
-        openai_resp, was_degenerate = _detect_and_truncate_degenerate_repetition(openai_resp)
-        if was_degenerate:
-            # Retry with constrained parameters to avoid degenerate output.
-            # With tools: force tool_choice=required for a useful tool call.
-            # Without tools (finalize): retry with capped max_tokens for clean text.
-            has_tools = bool(strict_body.get("tools"))
-            retry_body = dict(strict_body)
-            retry_body["max_tokens"] = 2048
-            retry_body["temperature"] = 0.1
-            retry_body["stream"] = False
-            if has_tools:
-                retry_body["tool_choice"] = "required"
-                logger.warning("DEGENERATE RETRY: retrying with tool_choice=required max_tokens=2048")
-            else:
-                logger.warning("DEGENERATE RETRY: retrying text-only with max_tokens=2048 temp=0.1")
-            try:
-                retry_resp = await _post_with_generation_timeout(
-                    client, f"{LLAMA_CPP_BASE}/chat/completions", retry_body,
-                    {"Content-Type": "application/json"},
+            openai_resp, was_degenerate = _detect_and_truncate_degenerate_repetition(openai_resp)
+            if was_degenerate:
+                # Retry with constrained parameters to avoid degenerate output.
+                # With tools: force tool_choice=required for a useful tool call.
+                # Without tools (finalize): retry with capped max_tokens for clean text.
+                has_tools = bool(strict_body.get("tools"))
+                retry_body = dict(strict_body)
+                retry_body["max_tokens"] = 2048
+                retry_body["temperature"] = 0.1
+                retry_body["stream"] = False
+                if has_tools:
+                    retry_body["tool_choice"] = "required"
+                    logger.warning("DEGENERATE RETRY: retrying with tool_choice=required max_tokens=2048")
+                else:
+                    logger.warning("DEGENERATE RETRY: retrying text-only with max_tokens=2048 temp=0.1")
+                try:
+                    retry_resp = await _post_with_generation_timeout(
+                        client, f"{LLAMA_CPP_BASE}/chat/completions", retry_body,
+                        {"Content-Type": "application/json"},
+                    )
+                    if retry_resp.status_code == 200:
+                        retry_data = retry_resp.json()
+                        retry_text = _openai_message_text(retry_data)
+                        _, retry_degenerate = _detect_and_truncate_degenerate_repetition(retry_data)
+                        if retry_degenerate:
+                            logger.info("DEGENERATE RETRY: retry also degenerate, using truncated original")
+                        elif has_tools and (retry_data.get("choices", [{}])[0]
+                                .get("message", {}).get("tool_calls")):
+                            logger.info("DEGENERATE RETRY: success, got tool call")
+                            openai_resp = retry_data
+                        elif not has_tools and retry_text and len(retry_text) > 50:
+                            logger.info("DEGENERATE RETRY: success, got clean text (%d chars)", len(retry_text))
+                            openai_resp = retry_data
+                        else:
+                            logger.info("DEGENERATE RETRY: retry insufficient, using truncated original")
+                except Exception as exc:
+                    logger.warning("DEGENERATE RETRY: failed: %s", exc)
+            anthropic_resp = openai_to_anthropic_response(
+                openai_resp, model,
+                expose_thinking=isinstance(body.get("thinking"), dict)
+                    and (body["thinking"].get("type") or "").lower() == "enabled",
+                suppress_text_tool_extraction=monitor.suppress_text_tool_extraction,
+            )
+            _maybe_normalize_toolcall_paths(anthropic_resp, body)
+            # FINALIZE CONTINUATION: inject synthetic tool_use to keep client loop alive
+            if (
+                monitor.finalize_turn_active
+                and monitor.finalize_continuation_count < PROXY_FINALIZE_CONTINUATION_MAX
+                and anthropic_resp.get("stop_reason") == "end_turn"
+            ):
+                anthropic_resp = _inject_synthetic_continuation(anthropic_resp, monitor, body)
+            monitor.record_response(anthropic_resp.get("usage", {}).get("output_tokens", 0))
+            # Update last_input_tokens from upstream's actual prompt_tokens
+            upstream_input = anthropic_resp.get("usage", {}).get("input_tokens", 0)
+            if upstream_input > 0:
+                monitor.last_input_tokens = upstream_input
+            if PROXY_FORCE_NON_STREAM:
+                logger.info(
+                    "FORCED NON-STREAM: served stream response via guarded non-stream path"
                 )
-                if retry_resp.status_code == 200:
-                    retry_data = retry_resp.json()
-                    retry_text = _openai_message_text(retry_data)
-                    _, retry_degenerate = _detect_and_truncate_degenerate_repetition(retry_data)
-                    if retry_degenerate:
-                        logger.info("DEGENERATE RETRY: retry also degenerate, using truncated original")
-                    elif has_tools and (retry_data.get("choices", [{}])[0]
-                            .get("message", {}).get("tool_calls")):
-                        logger.info("DEGENERATE RETRY: success, got tool call")
-                        openai_resp = retry_data
-                    elif not has_tools and retry_text and len(retry_text) > 50:
-                        logger.info("DEGENERATE RETRY: success, got clean text (%d chars)", len(retry_text))
-                        openai_resp = retry_data
-                    else:
-                        logger.info("DEGENERATE RETRY: retry insufficient, using truncated original")
-            except Exception as exc:
-                logger.warning("DEGENERATE RETRY: failed: %s", exc)
-        anthropic_resp = openai_to_anthropic_response(
-            openai_resp, model,
-            expose_thinking=isinstance(body.get("thinking"), dict)
-                and (body["thinking"].get("type") or "").lower() == "enabled",
-            suppress_text_tool_extraction=monitor.suppress_text_tool_extraction,
-        )
-        _maybe_normalize_toolcall_paths(anthropic_resp, body)
-        # FINALIZE CONTINUATION: inject synthetic tool_use to keep client loop alive
-        if (
-            monitor.finalize_turn_active
-            and monitor.finalize_continuation_count < PROXY_FINALIZE_CONTINUATION_MAX
-            and anthropic_resp.get("stop_reason") == "end_turn"
-        ):
-            anthropic_resp = _inject_synthetic_continuation(anthropic_resp, monitor, body)
-        monitor.record_response(anthropic_resp.get("usage", {}).get("output_tokens", 0))
-        # Update last_input_tokens from upstream's actual prompt_tokens
-        upstream_input = anthropic_resp.get("usage", {}).get("input_tokens", 0)
-        if upstream_input > 0:
-            monitor.last_input_tokens = upstream_input
-        if PROXY_FORCE_NON_STREAM:
-            logger.info(
-                "FORCED NON-STREAM: served stream response via guarded non-stream path"
-            )
-        elif PROXY_MALFORMED_TOOL_STREAM_STRICT and _has_tool_definitions(body):
-            logger.info(
-                "STRICT STREAM GUARDRAIL: served stream response via guarded non-stream path"
-            )
-        else:
-            logger.info(
-                "REQUIRED TOOL STREAM GUARDRAIL: served stream response via guarded non-stream path"
-            )
+            elif PROXY_MALFORMED_TOOL_STREAM_STRICT and _has_tool_definitions(body):
+                logger.info(
+                    "STRICT STREAM GUARDRAIL: served stream response via guarded non-stream path"
+                )
+            else:
+                logger.info(
+                    "REQUIRED TOOL STREAM GUARDRAIL: served stream response via guarded non-stream path"
+                )
 
+            return anthropic_resp
+
+        if PROXY_STREAM_HEARTBEAT_SECS > 0:
+            return StreamingResponse(
+                _heartbeat_then_buffered(_produce_guarded(), model),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+        _produced = await _produce_guarded()
+        if isinstance(_produced, Response):
+            return _produced
+        anthropic_resp = _produced
         return StreamingResponse(
             stream_anthropic_message(anthropic_resp),
             media_type="text/event-stream",

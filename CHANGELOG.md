@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.76.6 (2026-06-28)
+
+- feat(proxy): streaming keep-alive heartbeat for the guarded-non-stream path (`PROXY_STREAM_HEARTBEAT_SECS`, default `0`=off). That path buffers the ENTIRE upstream generation before emitting any SSE bytes, so a long generation (e.g. a 28k-token runaway taking ~14 min at depth-slowed decode) sends the client nothing for the whole wait and the client's streaming idle-timeout fires → "API Error". When > 0, the proxy emits an immediate `message_start` then periodic `ping` events while it awaits+guards the buffered response, keeping the connection alive; the buffered content streams once ready. Guarded-path error returns become SSE `error` events (the stream has committed to HTTP 200). Default OFF preserves prior behavior exactly.
+
 ## v1.76.5 (2026-06-28)
 
 - fix(deliver): normalize garbled tool-call paths in the agentic executor
