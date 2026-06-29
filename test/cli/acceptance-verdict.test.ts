@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveAcceptanceVerdict, decideGateStrategy, shouldSkipAcceptanceJudge } from '../../src/cli/deliver.js';
+import { resolveAcceptanceVerdict, decideGateStrategy, shouldSkipAcceptanceJudge, resolveEvaluatorPreset } from '../../src/cli/deliver.js';
 import type { AcceptanceResult } from '../../src/delivery/acceptance-judge.js';
 
 function result(over: Partial<AcceptanceResult>): AcceptanceResult {
@@ -116,5 +116,36 @@ describe('shouldSkipAcceptanceJudge (B2 tiered acceptance)', () => {
     expect(
       shouldSkipAcceptanceJudge({ acceptanceEnabled: false, complexity: 'simple', acceptancePrimary: false })
     ).toBe(false);
+  });
+});
+
+
+describe('resolveEvaluatorPreset (generator≠evaluator)', () => {
+  it('returns null when no evaluator configured (single-model default)', () => {
+    expect(resolveEvaluatorPreset({ generatorPreset: 'qwen35-a3b' })).toBeNull();
+  });
+
+  it('returns null when evaluator equals the generator', () => {
+    expect(
+      resolveEvaluatorPreset({ evaluatorModel: 'qwen35-a3b', generatorPreset: 'qwen35-a3b' })
+    ).toBeNull();
+  });
+
+  it('returns the evaluator preset when it differs (flag)', () => {
+    expect(
+      resolveEvaluatorPreset({ evaluatorModel: 'opus', generatorPreset: 'qwen35-a3b' })
+    ).toBe('opus');
+  });
+
+  it('honors the env evaluator when no flag', () => {
+    expect(
+      resolveEvaluatorPreset({ generatorPreset: 'qwen35-a3b', envEvaluator: 'opus' })
+    ).toBe('opus');
+  });
+
+  it('flag wins over env', () => {
+    expect(
+      resolveEvaluatorPreset({ evaluatorModel: 'sonnet', generatorPreset: 'qwen35-a3b', envEvaluator: 'opus' })
+    ).toBe('sonnet');
   });
 });
