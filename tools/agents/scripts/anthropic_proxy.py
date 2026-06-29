@@ -206,6 +206,16 @@ PROXY_COORDINATION_TOOLS = {
 PROXY_COORDINATION_BAN_THRESHOLD = int(
     os.environ.get("PROXY_COORDINATION_BAN_THRESHOLD", "2")
 )
+# R4: early coordination-loop ban. The per-tool cycle ban above engages only
+# inside an active agentic loop (tool_results present). But a model can loop on a
+# coordination tool from the very FIRST moves -- e.g. repeatedly creating a task
+# ABOUT doing X instead of doing X (observed: TaskCreate x4 identical args at
+# session start) -- where the cycle detector never engages. This bans a
+# coordination tool after N consecutive IDENTICAL calls regardless of loop state.
+# 0 disables.
+PROXY_COORDINATION_EARLY_BAN = int(
+    os.environ.get("PROXY_COORDINATION_EARLY_BAN", "3")
+)
 # Force finalize after N consecutive forced_budget_exhausted events where
 # neither cycling nor stagnation was detected — catches "distinct but
 # unproductive" tool spam that defeats per-tool cycle detection.
@@ -1036,6 +1046,8 @@ class SessionMonitor:
     tool_state_unproductive_exhaustion_streak: int = 0
     last_tool_fingerprint: str = ""
     cycling_tool_names: list = field(default_factory=list)
+    coordination_repeat_streak: int = 0  # R4: consecutive identical coordination-tool calls
+    last_coordination_fp: str = ""       # R4: fingerprint of the last coordination call
     session_banned_tools: set = field(default_factory=set)  # tools banned for entire session after repeated cycling
     tool_cycle_counts: dict = field(default_factory=dict)  # {tool_name: cycle_count} across resets
     last_response_garbled: bool = False  # previous turn had garbled/malformed output
@@ -1200,6 +1212,33 @@ class SessionMonitor:
         # Keep last 30 entries
         if len(self.tool_call_history) > 30:
             self.tool_call_history = self.tool_call_history[-30:]
+
+        # R4: early coordination-loop ban (independent of the active-loop cycle
+        # detector). A coordination/bookkeeping tool repeated with IDENTICAL args
+        # is never productive; ban it directly so narrowing drops it next turn,
+        # breaking the "create a task ABOUT X instead of doing X" loop.
+        coord_names = [n for n in (tool_names or []) if n in PROXY_COORDINATION_TOOLS]
+        if fp and coord_names and fp == self.last_coordination_fp:
+            self.coordination_repeat_streak += 1
+        elif coord_names:
+            self.coordination_repeat_streak = 1
+            self.last_coordination_fp = fp
+        else:
+            self.coordination_repeat_streak = 0
+            self.last_coordination_fp = ""
+        if (
+            PROXY_COORDINATION_EARLY_BAN > 0
+            and self.coordination_repeat_streak >= PROXY_COORDINATION_EARLY_BAN
+        ):
+            for n in coord_names:
+                if n not in self.session_banned_tools:
+                    self.session_banned_tools.add(n)
+                    logger.warning(
+                        "TOOL BAN (R4 early): '%s' banned after %d consecutive "
+                        "identical coordination calls",
+                        n,
+                        self.coordination_repeat_streak,
+                    )
 
         # Recon-convergence (B1): count consecutive turns that use tools but
         # produce NO write/deliverable tool call. A turn that uses any write
