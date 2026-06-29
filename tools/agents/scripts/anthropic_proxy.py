@@ -515,6 +515,17 @@ PROXY_FORCE_NON_STREAM = os.environ.get(
     "off",
     "no",
 }
+# A2: stream-passthrough on required-tool turns. By default the proxy DOWNGRADES
+# a streaming request to the guarded non-stream path whenever tool_choice is
+# 'required', so it can buffer + validate/repair the tool call (observed: ~88%
+# of tool turns buffered, costing client-perceived streaming latency). When this
+# is ON, required-tool streaming turns stream through directly instead — relying
+# on llama.cpp's native tool_choice='required' constraint (measured tool-miss
+# rate ~0). force-non-stream and malformed-strict still buffer. Default OFF
+# (preserves the safe buffer+repair behavior); opt in for the latency win.
+PROXY_STREAM_REQUIRED_TOOL = os.environ.get(
+    "PROXY_STREAM_REQUIRED_TOOL", "off"
+).lower() not in {"", "0", "false", "off", "no"}
 # Streaming keep-alive heartbeat (seconds) for the guarded-non-stream path.
 # That path buffers the ENTIRE upstream generation before emitting any SSE
 # bytes, so a long generation (e.g. a 28k-token runaway taking ~14 min at
@@ -2742,6 +2753,11 @@ def _should_use_guarded_non_stream(
     if PROXY_MALFORMED_TOOL_STREAM_STRICT and has_tools:
         return True
 
+    # A2: when stream-passthrough is enabled, do NOT buffer required-tool turns
+    # (native tool_choice='required' constrains them); force-non-stream and
+    # malformed-strict above still apply.
+    if PROXY_STREAM_REQUIRED_TOOL:
+        return False
     return (
         has_tools
         and openai_body.get("tool_choice") == "required"

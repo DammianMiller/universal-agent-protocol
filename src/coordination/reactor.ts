@@ -142,7 +142,15 @@ export function resolve(
   // `deliver:routing`) whenever the task routes to a code capability, so the
   // agent calls deliver instead of editing source directly and tripping the gate.
   const deliverKey = 'deliver:routing';
-  const isCodeTask = (routeResult.matchedCapabilities ?? []).some((c) => CODE_CAPABILITIES.has(c));
+  // #3-C2: only fire when there is a real code signal — a routed code capability
+  // at/above the inject threshold, OR an actual source file in changedFiles.
+  // Prevents false-positives on low-confidence planning/monitoring prompts.
+  const SOURCE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|php|c|cc|cpp|h|hpp|cs|swift|kt)$/i;
+  const hasSourceFile = (ctx.changedFiles ?? []).some((f) => SOURCE_FILE_RE.test(f));
+  const codeCapMatch =
+    (routeResult.matchedCapabilities ?? []).some((c) => CODE_CAPABILITIES.has(c)) &&
+    confidence >= injectThreshold;
+  const isCodeTask = codeCapMatch || hasSourceFile;
   const deliverInject =
     isCodeTask && !(ctx.surfaced ?? []).includes(deliverKey)
       ? 'This task creates or modifies source code. Use the `deliver` tool ' +
