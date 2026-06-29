@@ -54,6 +54,31 @@ EXEMPT_PREFIXES = (
 TEST_MARKERS = (".test.", ".spec.", "_test.", "/test/", "/tests/", "/__tests__/")
 
 
+def _is_local_model_session() -> bool:
+    """True when this session targets a self-hosted/local model endpoint."""
+    base = (
+        os.environ.get("ANTHROPIC_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
+        or os.environ.get("UAP_INFERENCE_ENDPOINT")
+        or ""
+    ).lower()
+    return any(h in base for h in ("127.0.0.1", "localhost", "0.0.0.0", "::1"))
+
+
+# #2: a plain local-model session cannot effectively route through deliver and
+# deadlocks under block mode (it can read but never write -> recon loop, observed
+# live). Downgrade block->advisory for local sessions so the model can write
+# directly; the local proxy already guards it. Set UAP_DELIVER_LOCAL_ADVISORY=0
+# to keep strict block for local sessions too.
+_LOCAL_ADVISORY = os.environ.get("UAP_DELIVER_LOCAL_ADVISORY", "on").lower() not in {
+    "0",
+    "off",
+    "false",
+    "no",
+    "",
+}
+
+
 def main() -> None:
     op, args = parse_cli()
     if op not in EDIT_OPS:
@@ -99,6 +124,8 @@ def main() -> None:
     )
 
     mode = os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower()
+    if mode == "block" and _LOCAL_ADVISORY and _is_local_model_session():
+        mode = "advisory"  # #2: unblock plain local-model sessions
     if mode == "block":
         # R1: emit a machine-actionable routing signal so a capable harness can
         # auto-route the blocked change INTO `uap deliver` instead of leaving the
