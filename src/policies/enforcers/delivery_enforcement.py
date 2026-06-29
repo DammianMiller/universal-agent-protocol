@@ -85,11 +85,17 @@ def main() -> None:
     if os.environ.get("UAP_DELIVER_BYPASS") == "1":
         emit(True, "UAP_DELIVER_BYPASS override set")
 
+    # #3-F: terse, imperative, model-parseable. Weak local models otherwise
+    # retry the blocked edit or hallucinate completion ("the files exist") when
+    # the message is a passive explanation. State the exact next action.
     msg = (
-        f"delivery-enforcement: '{rel_posix}' is source code being edited directly. "
-        "Route substantive coding through `uap deliver` (drives a model to verified "
-        "completion against the gates), or set UAP_DELIVER_BYPASS=1 for a sanctioned "
-        "manual edit."
+        f"BLOCKED: do not edit '{rel_posix}' directly. "
+        "To create or change code, call the `deliver` tool "
+        "(or run: uap deliver \"<one-line description of the change>\"). "
+        "Deliver writes the files and verifies them against the gates. "
+        "Do NOT retry this edit. Do NOT say the file is written until deliver "
+        "reports success. "
+        "(Sanctioned manual edit only: set UAP_DELIVER_BYPASS=1.)"
     )
 
     mode = os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower()

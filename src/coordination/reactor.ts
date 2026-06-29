@@ -48,6 +48,15 @@ const DEFAULT_INJECT_THRESHOLD = 0.30;
 const DEFAULT_AUTO_SPAWN_THRESHOLD = 0.80;
 const DEFAULT_MAX_INJECT_CHARS = 1200;
 
+// #3-B: capabilities that imply writing/modifying source. When a task routes to
+// one of these, the reactor proactively tells the agent to route file writes
+// through `uap deliver` BEFORE it hits the (blocking) delivery-enforcement gate
+// — weak local models otherwise retry the blocked edit or hallucinate completion.
+const CODE_CAPABILITIES = new Set<string>([
+  'typescript', 'javascript', 'python', 'rust', 'go', 'cpp', 'java',
+  'frontend', 'backend', 'cli', 'api-design',
+]);
+
 interface InjectItem {
   key: string;
   name: string;
@@ -129,10 +138,28 @@ export function resolve(
       ? maybeCollaborationInjection(ctx.cwd, ctx.promptText)
       : null;
 
+  // #3-B: delivery routing. Surface up-front (deduped per session via
+  // `deliver:routing`) whenever the task routes to a code capability, so the
+  // agent calls deliver instead of editing source directly and tripping the gate.
+  const deliverKey = 'deliver:routing';
+  const isCodeTask = (routeResult.matchedCapabilities ?? []).some((c) => CODE_CAPABILITIES.has(c));
+  const deliverInject =
+    isCodeTask && !(ctx.surfaced ?? []).includes(deliverKey)
+      ? 'This task creates or modifies source code. Use the `deliver` tool ' +
+        '(or run `uap deliver "<one-line description>"`) to write code — direct ' +
+        'Edit/Write on source files is gated and will be blocked. Deliver writes ' +
+        'the files and verifies them against the gates; do not report completion ' +
+        'until deliver reports success.'
+      : null;
+
   // Standalone context blocks (design + board) ride even on low-confidence turns.
   const buildContextBlocks = (): { inject: string; keys: string[] } => {
     const blocks: string[] = [];
     const keys: string[] = [];
+    if (deliverInject) {
+      blocks.push(`## Writing code — route through deliver\n${deliverInject}`);
+      keys.push(deliverKey);
+    }
     if (collabInject) {
       blocks.push(`## Agent collaboration\n${collabInject}`);
       keys.push(collabKey);
