@@ -75,3 +75,31 @@ class TestDeliveryEnforcementWorktree(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import os as _os, subprocess as _sp, sys as _sys, json as _json, tempfile as _tf
+from pathlib import Path as _Path
+_ENF = _Path(__file__).resolve().parents[3] / "src" / "policies" / "enforcers" / "delivery_enforcement.py"
+
+class LocalAdvisoryTest(unittest.TestCase):
+    def _run(self, extra_env):
+        with _tf.TemporaryDirectory() as td:
+            root = _Path(td); (root/".git").mkdir()
+            f = root/"src"/"a.ts"; f.parent.mkdir(parents=True); f.write_text("x")
+            e = dict(_os.environ); e["UAP_REPO_ROOT"]=str(root)
+            for k in ("ANTHROPIC_BASE_URL","UAP_DELIVER_LOCAL_ADVISORY","UAP_DELIVER_ACTIVE"): e.pop(k, None)
+            e.update(extra_env)
+            p = _sp.run([_sys.executable, str(_ENF), "--operation","Write","--args",_json.dumps({"file_path":str(f)})], capture_output=True, text=True, env=e)
+            return p.returncode, _json.loads(p.stdout) if p.stdout.strip() else {}
+
+    def test_local_session_downgrades_to_advisory(self):
+        rc, out = self._run({"ANTHROPIC_BASE_URL":"http://127.0.0.1:4000"})
+        self.assertEqual(rc, 0); self.assertTrue(out["allowed"])
+
+    def test_local_advisory_off_keeps_block(self):
+        rc, out = self._run({"ANTHROPIC_BASE_URL":"http://127.0.0.1:4000","UAP_DELIVER_LOCAL_ADVISORY":"0"})
+        self.assertEqual(rc, 2)
+
+    def test_cloud_session_still_blocks(self):
+        rc, out = self._run({"ANTHROPIC_BASE_URL":"https://api.anthropic.com"})
+        self.assertEqual(rc, 2)

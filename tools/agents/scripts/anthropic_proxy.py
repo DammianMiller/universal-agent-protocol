@@ -3849,6 +3849,22 @@ def _resolve_state_machine_tool_choice(
     return None, "unknown_phase"
 
 
+def _writes_are_gated(openai_body: dict) -> bool:
+    """True when recent tool results show the harness is BLOCKING direct writes
+    (delivery-enforcement), so a "write the file" directive is futile and the
+    model must route through the deliver tool instead. #1: aligns the recon
+    directive with the gate to break the read-forever / can't-write deadlock."""
+    for m in (openai_body.get("messages") or [])[-8:]:
+        c = m.get("content")
+        text = c if isinstance(c, str) else (json.dumps(c) if c else "")
+        low = text.lower()
+        if "delivery-enforcement" in low or (
+            "blocked" in low and "deliver" in low and "tool" in low
+        ):
+            return True
+    return False
+
+
 def _maybe_inject_recon_convergence(
     openai_body: dict,
     monitor: "SessionMonitor",
@@ -3920,6 +3936,18 @@ def _maybe_inject_recon_convergence(
             "if strictly required to write it."
         )
         tier = "firm"
+    # #1: if the harness is blocking direct writes (delivery-enforcement), a
+    # "write the file" directive is impossible to satisfy and the model loops in
+    # recon. Redirect it to the deliver tool — the only write path under a gate.
+    if not escalate and _writes_are_gated(openai_body):
+        directive += (
+            " IMPORTANT: your direct Edit/Write calls are being BLOCKED by policy. "
+            "Do NOT try to write the file directly. Call the `deliver` tool (or run "
+            "`uap deliver \"<one-line task>\"`) to produce the deliverable — that is "
+            "the only path that can write here."
+        )
+        tier = tier + "+deliver-gated"
+
     msgs = openai_body.get("messages", [])
     msgs.append({"role": "user", "content": directive})
     openai_body["messages"] = msgs
