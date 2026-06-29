@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveAcceptanceVerdict, decideGateStrategy } from '../../src/cli/deliver.js';
+import { resolveAcceptanceVerdict, decideGateStrategy, shouldSkipAcceptanceJudge } from '../../src/cli/deliver.js';
 import type { AcceptanceResult } from '../../src/delivery/acceptance-judge.js';
 
 function result(over: Partial<AcceptanceResult>): AcceptanceResult {
@@ -86,5 +86,35 @@ describe('decideGateStrategy', () => {
     const d = decideGateStrategy({ hasAcceptance: A, noRealGates: true, forceSelfGate: false, selfGateAllowed: false });
     expect(d.acceptancePrimary).toBe(true);
     expect(d.noGatesError).toBe(false);
+  });
+});
+
+
+describe('shouldSkipAcceptanceJudge (B2 tiered acceptance)', () => {
+  it('skips the per-turn judge for a simple task when not acceptance-primary', () => {
+    expect(
+      shouldSkipAcceptanceJudge({ acceptanceEnabled: true, complexity: 'simple', acceptancePrimary: false })
+    ).toBe(true);
+  });
+
+  it('does NOT skip when acceptance is the only gate (acceptancePrimary)', () => {
+    expect(
+      shouldSkipAcceptanceJudge({ acceptanceEnabled: true, complexity: 'simple', acceptancePrimary: true })
+    ).toBe(false);
+  });
+
+  it('does NOT skip for moderate/complex tasks', () => {
+    expect(
+      shouldSkipAcceptanceJudge({ acceptanceEnabled: true, complexity: 'moderate', acceptancePrimary: false })
+    ).toBe(false);
+    expect(
+      shouldSkipAcceptanceJudge({ acceptanceEnabled: true, complexity: 'complex', acceptancePrimary: false })
+    ).toBe(false);
+  });
+
+  it('does NOT skip when acceptance is disabled', () => {
+    expect(
+      shouldSkipAcceptanceJudge({ acceptanceEnabled: false, complexity: 'simple', acceptancePrimary: false })
+    ).toBe(false);
   });
 });

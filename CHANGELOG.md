@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.78.0 (2026-06-29)
+
+- feat(proxy,deliver,reactor): stream-passthrough opt-in, tiered acceptance, reactor false-positive fix
+
+
 ## v1.77.0 (2026-06-29)
 
 - feat(proxy,reactor): coordination-loop ban + deliver-routing guidance for local models

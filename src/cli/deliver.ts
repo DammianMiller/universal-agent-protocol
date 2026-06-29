@@ -58,6 +58,24 @@ export function decideGateStrategy(opts: {
   return { acceptancePrimary, needsSelfGate, noGatesError };
 }
 
+/**
+ * B2 — tiered acceptance. The per-turn LLM acceptance judge is skipped for a
+ * `simple` task UNLESS it is the only verification (acceptancePrimary): the
+ * objective gates / self-gate (a runnable script) already cover simple work,
+ * so we avoid an LLM judge call every turn. Returns true to SKIP the judge.
+ */
+export function shouldSkipAcceptanceJudge(opts: {
+  acceptanceEnabled: boolean;
+  complexity?: string;
+  acceptancePrimary: boolean;
+}): boolean {
+  return (
+    opts.acceptanceEnabled &&
+    opts.complexity === 'simple' &&
+    !opts.acceptancePrimary
+  );
+}
+
 export function resolveAcceptanceVerdict(
   r: AcceptanceResult,
   acceptancePrimary: boolean
@@ -848,7 +866,20 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // judge checks the spec's requirements against the produced code and feeds
   // unmet criteria back so the loop iterates to COMPLETE the spec, not just to
   // stop crashing. Uses the blind (text) executor; fails open internally.
-  const acceptanceGate: AcceptanceGate | undefined = options.acceptance
+  // B2: tiered acceptance. The per-turn LLM acceptance judge is the recurring
+  // heavy cost. For a `simple` task it is skipped UNLESS acceptance is the only
+  // verification (acceptancePrimary) — objective/self-gate (a runnable script,
+  // i.e. a templated runtime check) covers simple tasks, so we avoid an LLM
+  // judge call per turn. Non-simple tasks are unchanged.
+  const skipJudgeForSimple = shouldSkipAcceptanceJudge({
+    acceptanceEnabled: Boolean(options.acceptance),
+    complexity: autoPlan?.complexity,
+    acceptancePrimary,
+  });
+  if (skipJudgeForSimple && !options.dryRun) {
+    console.log(chalk.cyan('⚖ acceptance: judge skipped for simple task (objective/self-gate covers it)'));
+  }
+  const acceptanceGate: AcceptanceGate | undefined = options.acceptance && !skipJudgeForSimple
     ? async (root) => {
         // Primary mode: the only objective rung is the trivial bootstrap, and the
         // real execution gate joins via redetect only on the NEXT turn (one-turn

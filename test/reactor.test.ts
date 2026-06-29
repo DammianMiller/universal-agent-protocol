@@ -175,21 +175,47 @@ describe('reactor.resolve — assist mode', () => {
 });
 
 
-describe('reactor.resolve — delivery routing (#3-B)', () => {
-  it('injects a deliver reminder when the task routes to a code capability', () => {
+describe('reactor.resolve — delivery routing (#3-B / #3-C2)', () => {
+  it('injects a deliver reminder for a code capability AT/ABOVE the inject threshold', () => {
     const r = resolve(
       { event: 'user-prompt', promptText: 'build a feature' },
       undefined,
       {
         capabilityRouter: stubCapabilityRouter({
           matchedCapabilities: ['typescript'],
-          confidence: 0,
+          confidence: 0.6,
         }),
         patternRouter: stubPatternRouter([]),
       }
     );
-    expect(r.inject).toContain('deliver');
     expect(r.inject.toLowerCase()).toContain('route through deliver');
+    expect(r.surfacedKeys).toContain('deliver:routing');
+  });
+
+  it('#3-C2: does NOT inject on a LOW-confidence code capability with no source file', () => {
+    const r = resolve(
+      { event: 'user-prompt', promptText: 'monitor the build and plan options' },
+      undefined,
+      {
+        capabilityRouter: stubCapabilityRouter({
+          matchedCapabilities: ['typescript'],
+          confidence: 0.1,
+        }),
+        patternRouter: stubPatternRouter([]),
+      }
+    );
+    expect(r.surfacedKeys).not.toContain('deliver:routing');
+  });
+
+  it('#3-C2: injects when changedFiles has a source file even at low confidence', () => {
+    const r = resolve(
+      { event: 'user-prompt', promptText: 'tweak it', changedFiles: ['src/foo.ts'] },
+      undefined,
+      {
+        capabilityRouter: stubCapabilityRouter({ matchedCapabilities: [], confidence: 0 }),
+        patternRouter: stubPatternRouter([]),
+      }
+    );
     expect(r.surfacedKeys).toContain('deliver:routing');
   });
 
@@ -200,7 +226,7 @@ describe('reactor.resolve — delivery routing (#3-B)', () => {
       {
         capabilityRouter: stubCapabilityRouter({
           matchedCapabilities: ['documentation'],
-          confidence: 0,
+          confidence: 0.6,
         }),
         patternRouter: stubPatternRouter([]),
       }
@@ -215,7 +241,7 @@ describe('reactor.resolve — delivery routing (#3-B)', () => {
       {
         capabilityRouter: stubCapabilityRouter({
           matchedCapabilities: ['typescript'],
-          confidence: 0,
+          confidence: 0.6,
         }),
         patternRouter: stubPatternRouter([]),
       }
@@ -223,3 +249,4 @@ describe('reactor.resolve — delivery routing (#3-B)', () => {
     expect(r.surfacedKeys).not.toContain('deliver:routing');
   });
 });
+
