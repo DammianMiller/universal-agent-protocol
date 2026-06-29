@@ -76,6 +76,23 @@ export function shouldSkipAcceptanceJudge(opts: {
   );
 }
 
+/**
+ * Generator≠Evaluator: resolve which model should AUTHOR + JUDGE the acceptance
+ * gate. Returns the evaluator preset id when it must differ from the generator
+ * (so the generator never grades its own work), or null to use the generator
+ * (single-model, unchanged). Honors --evaluator-model then
+ * UAP_DELIVER_EVALUATOR_MODEL.
+ */
+export function resolveEvaluatorPreset(opts: {
+  evaluatorModel?: string;
+  generatorPreset: string;
+  envEvaluator?: string;
+}): string | null {
+  const wanted = opts.evaluatorModel ?? opts.envEvaluator;
+  if (!wanted || wanted === opts.generatorPreset) return null;
+  return wanted;
+}
+
 export function resolveAcceptanceVerdict(
   r: AcceptanceResult,
   acceptancePrimary: boolean
@@ -129,6 +146,13 @@ export interface DeliverOptions {
   model?: string;
   projectRoot?: string;
   endpoint?: string;
+  /** `--evaluator-model <preset>`: a DIFFERENT model to AUTHOR + JUDGE the
+   *  acceptance gate than the one implementing, so the generator never grades
+   *  its own work (loop-engineering "separate generator from evaluator" rule).
+   *  Default (unset) = the generator model — single-model behavior unchanged. */
+  evaluatorModel?: string;
+  /** Endpoint override for the evaluator model. */
+  evaluatorEndpoint?: string;
   temperature?: string;
   gates?: string;
   /** `--no-self-gate` sets this false; default (undefined) keeps the fallback on. */
@@ -610,6 +634,30 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     return result.content;
   };
 
+  // Generator!=Evaluator (loop-engineering rule #1): when an evaluator model is
+  // configured, the acceptance gate is AUTHORED and JUDGED by a different model
+  // than the one implementing — so the generator never grades its own work.
+  // Pairs naturally with the barbell strategy (cheap generator, sharp evaluator).
+  // Defaults to the generator (single-model, unchanged) when unset.
+  const evaluatorPresetId = resolveEvaluatorPreset({
+    evaluatorModel: options.evaluatorModel,
+    generatorPreset: presetId,
+    envEvaluator: process.env.UAP_DELIVER_EVALUATOR_MODEL,
+  });
+  let evaluatorExecutor: LoopExecutor = blindExecutor;
+  if (evaluatorPresetId) {
+    const evalModel = resolveModel(evaluatorPresetId, options.evaluatorEndpoint);
+    const evalClient = new OpenAICompatClient();
+    evaluatorExecutor = async (prompt) => {
+      // Evaluators judge cool + deterministic; they do not brainstorm.
+      const r = await evalClient.complete(evalModel, prompt, { temperature: 0 });
+      return r.content;
+    };
+    if (!options.dryRun) {
+      console.log(chalk.cyan(`⚖ generator≠evaluator: gen=${model.id} eval=${evalModel.id}`));
+    }
+  }
+
   // Dynamic executor selection. The blind executor is one completion per turn
   // (cheap, but cannot inspect or run anything); the agentic executor runs a
   // tool-using loop (read/list/bash/write) and mutates the repo directly. 'auto'
@@ -658,7 +706,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     console.log(chalk.cyan('⚖ self-gate: authoring a task-specific acceptance check…'));
     // Author the gate with the blind executor — it is a single-shot script
     // write, not a task to solve agentically.
-    const sg = await authorAcceptanceGate({ instruction, projectRoot, executor: blindExecutor });
+    const sg = await authorAcceptanceGate({ instruction, projectRoot, executor: evaluatorExecutor });
     for (const note of sg.notes) console.log(chalk.dim(`    ${note}`));
     if (!sg.rung) {
       fail('Could not author an acceptance gate (model produced no runnable script).');
@@ -896,7 +944,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
             };
           }
         }
-        const r = await runAcceptanceGate({ spec: instruction, projectRoot: root, executor: blindExecutor });
+        const r = await runAcceptanceGate({ spec: instruction, projectRoot: root, executor: evaluatorExecutor });
         return resolveAcceptanceVerdict(r, acceptancePrimary);
       }
     : undefined;

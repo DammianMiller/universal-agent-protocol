@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.81.0 (2026-06-29)
+
+- feat(deliver): separate generator from evaluator (loop-engineering rule #1)
+
+
 ## v1.80.0 (2026-06-29)
 
 - feat(hooks): R1 follow-up — harness consumes route:deliver (deliver-autoroute)
