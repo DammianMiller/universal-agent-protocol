@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.80.0 (2026-06-29)
+
+- feat(hooks): R1 follow-up — harness consumes route:deliver (deliver-autoroute)
+
+
 ## v1.79.0 (2026-06-29)
 
 - feat(policies): enforcement self-protection (R2) + deliver routing signal (R1)
