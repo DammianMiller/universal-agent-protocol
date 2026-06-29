@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.83.0 (2026-06-30)
+
+- fix(policy,proxy): resolve recon-loop deadlock for plain local sessions (#1+#2)
+
+
 ## v1.82.0 (2026-06-30)
 
 - fix(policy,proxy): resolve worktree-creation loop on non-git projects (R1+R3+R4)
