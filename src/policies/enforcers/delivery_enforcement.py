@@ -100,7 +100,16 @@ def main() -> None:
 
     mode = os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower()
     if mode == "block":
-        emit(False, msg)
+        # R1: emit a machine-actionable routing signal so a capable harness can
+        # auto-route the blocked change INTO `uap deliver` instead of leaving the
+        # agent to flail. `route`/`deliverHint` are advisory extra fields; harness
+        # adapters that understand them route, others just show `reason`.
+        emit(
+            False,
+            msg,
+            route="deliver",
+            deliverHint=f'uap deliver "implement the intended change to {rel_posix}"',
+        )
 
     # Advisory (opt-out): never blocks. Surface the nudge, then allow.
     print(f"[delivery-enforcement advisory] {msg}", file=sys.stderr)
