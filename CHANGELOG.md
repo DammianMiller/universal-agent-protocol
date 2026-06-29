@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.82.0 (2026-06-30)
+
+- fix(policy,proxy): resolve worktree-creation loop on non-git projects (R1+R3+R4)
+
+
 ## v1.81.0 (2026-06-29)
 
 - feat(deliver): separate generator from evaluator (loop-engineering rule #1)

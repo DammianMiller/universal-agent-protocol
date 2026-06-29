@@ -46,10 +46,24 @@ def main() -> None:
     if os.environ.get("UAP_NO_WORKTREE") == "1":
         emit(True, "UAP_NO_WORKTREE override set")
 
+    # R1: a worktree cannot exist without git, so the requirement is
+    # UNSATISFIABLE on a non-git project -- blocking there is a guaranteed
+    # deadlock (the model loops creating tasks about a worktree it can never
+    # create). Fail open when there is no git metadata.
+    if not os.path.exists(os.path.join(str(root), ".git")):
+        emit(True, "not a git repo -- worktrees are not applicable")
+
+    # R3: imperative message with a working fallback command + a machine-
+    # actionable route hint. The old message pointed only at uap worktree
+    # create, which fails on hybrid/bare repos.
     emit(
         False,
-        f"worktree-required: '{rel}' must be edited inside .worktrees/NNN-<slug>/. "
-        "Run: uap worktree create <slug>",
+        f"BLOCKED: '{rel}' must be edited inside a worktree (.worktrees/NNN-<slug>/). "
+        "Create one FIRST, then edit there: `uap worktree create <slug>` "
+        "(or if that fails: `git worktree add .worktrees/001-<slug> -b feature/<slug>`). "
+        "Do NOT keep planning or creating tasks about the worktree -- run the command now.",
+        route="worktree",
+        worktreeHint="uap worktree create <slug>",
     )
 
 
