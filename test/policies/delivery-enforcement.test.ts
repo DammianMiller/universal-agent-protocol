@@ -9,19 +9,19 @@ function run(
   target: string,
   env: Record<string, string> = {},
   op = 'Edit'
-): { exit: number; allowed: boolean; reason: string } {
+): { exit: number; allowed: boolean; reason: string; route?: string } {
   const r = spawnSync(
     'python3',
     [ENFORCER, '--operation', op, '--args', JSON.stringify({ file_path: join(ROOT, target) })],
     { env: { ...process.env, UAP_REPO_ROOT: ROOT, ...env }, encoding: 'utf8' }
   );
-  let parsed: { allowed?: boolean; reason?: string } = {};
+  let parsed: { allowed?: boolean; reason?: string; route?: string } = {};
   try {
     parsed = JSON.parse(r.stdout || '{}');
   } catch {
     /* leave empty */
   }
-  return { exit: r.status ?? -1, allowed: parsed.allowed ?? false, reason: parsed.reason ?? '' };
+  return { exit: r.status ?? -1, allowed: parsed.allowed ?? false, reason: parsed.reason ?? '', route: parsed.route };
 }
 
 describe('delivery-enforcement enforcer', () => {
@@ -30,6 +30,12 @@ describe('delivery-enforcement enforcer', () => {
     expect(r.exit).toBe(2);
     expect(r.allowed).toBe(false);
     expect(r.reason).toMatch(/uap deliver/);
+  });
+
+  it('R1: a block emits a machine-actionable route:deliver signal', () => {
+    const r = run('src/feature.ts');
+    expect(r.exit).toBe(2);
+    expect(r.route).toBe('deliver');
   });
 
   it('advisory mode (opt-out): allows a source edit with a nudge (exit 0)', () => {

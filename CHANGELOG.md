@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.79.0 (2026-06-29)
+
+- feat(policies): enforcement self-protection (R2) + deliver routing signal (R1)
+
+
 ## v1.78.0 (2026-06-29)
 
 - feat(proxy,deliver,reactor): stream-passthrough opt-in, tiered acceptance, reactor false-positive fix
