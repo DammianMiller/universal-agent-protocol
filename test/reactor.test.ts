@@ -173,3 +173,53 @@ describe('reactor.resolve — assist mode', () => {
     }
   });
 });
+
+
+describe('reactor.resolve — delivery routing (#3-B)', () => {
+  it('injects a deliver reminder when the task routes to a code capability', () => {
+    const r = resolve(
+      { event: 'user-prompt', promptText: 'build a feature' },
+      undefined,
+      {
+        capabilityRouter: stubCapabilityRouter({
+          matchedCapabilities: ['typescript'],
+          confidence: 0,
+        }),
+        patternRouter: stubPatternRouter([]),
+      }
+    );
+    expect(r.inject).toContain('deliver');
+    expect(r.inject.toLowerCase()).toContain('route through deliver');
+    expect(r.surfacedKeys).toContain('deliver:routing');
+  });
+
+  it('does NOT inject for a non-code capability', () => {
+    const r = resolve(
+      { event: 'user-prompt', promptText: 'write the docs' },
+      undefined,
+      {
+        capabilityRouter: stubCapabilityRouter({
+          matchedCapabilities: ['documentation'],
+          confidence: 0,
+        }),
+        patternRouter: stubPatternRouter([]),
+      }
+    );
+    expect(r.surfacedKeys).not.toContain('deliver:routing');
+  });
+
+  it('dedupes when deliver:routing already surfaced this session', () => {
+    const r = resolve(
+      { event: 'user-prompt', promptText: 'build a feature', surfaced: ['deliver:routing'] },
+      undefined,
+      {
+        capabilityRouter: stubCapabilityRouter({
+          matchedCapabilities: ['typescript'],
+          confidence: 0,
+        }),
+        patternRouter: stubPatternRouter([]),
+      }
+    );
+    expect(r.surfacedKeys).not.toContain('deliver:routing');
+  });
+});

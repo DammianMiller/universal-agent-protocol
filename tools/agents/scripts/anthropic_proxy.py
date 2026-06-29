@@ -189,6 +189,23 @@ PROXY_TOOL_STATE_FINALIZE_THRESHOLD = int(
 PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT = int(
     os.environ.get("PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT", "3")
 )
+# #4 Coordination no-op suppression. Pure-bookkeeping tools (task/board status
+# updates) are never productive to repeat, so they are banned after fewer cycle
+# detections than the generic per-tool threshold. This targets the 35B-A3B
+# "update the task instead of doing the actual work" loop (observed live:
+# cycling_tools=['TaskUpdate']). Tunable via env; set the threshold to 0 to
+# disable the faster ban and fall back to the generic threshold.
+PROXY_COORDINATION_TOOLS = {
+    t.strip()
+    for t in os.environ.get(
+        "PROXY_COORDINATION_TOOLS",
+        "TaskUpdate,TaskCreate,TaskList,TaskGet,TaskOutput",
+    ).split(",")
+    if t.strip()
+}
+PROXY_COORDINATION_BAN_THRESHOLD = int(
+    os.environ.get("PROXY_COORDINATION_BAN_THRESHOLD", "2")
+)
 # Force finalize after N consecutive forced_budget_exhausted events where
 # neither cycling nor stagnation was detected — catches "distinct but
 # unproductive" tool spam that defeats per-tool cycle detection.
@@ -3662,15 +3679,26 @@ def _resolve_state_machine_tool_choice(
                 for part in fp.split("|"):
                     raw_names.append(part.split(":")[0])
             monitor.cycling_tool_names = list(dict.fromkeys(raw_names))
-            # Cycle 18 Option 2: track per-tool cycle counts and ban after 3 cycles
+            # Cycle 18 Option 2: track per-tool cycle counts and ban after N cycles.
+            # #4: coordination/bookkeeping tools (TaskUpdate etc.) are banned
+            # faster (PROXY_COORDINATION_BAN_THRESHOLD) since repeating them is
+            # never productive; other tools keep the generic threshold of 3.
             for name in monitor.cycling_tool_names:
                 monitor.tool_cycle_counts[name] = monitor.tool_cycle_counts.get(name, 0) + 1
-                if monitor.tool_cycle_counts[name] >= 3 and name not in monitor.session_banned_tools:
+                is_coord = (
+                    name in PROXY_COORDINATION_TOOLS
+                    and PROXY_COORDINATION_BAN_THRESHOLD > 0
+                )
+                ban_at = PROXY_COORDINATION_BAN_THRESHOLD if is_coord else 3
+                if monitor.tool_cycle_counts[name] >= ban_at and name not in monitor.session_banned_tools:
                     monitor.session_banned_tools.add(name)
                     logger.warning(
-                        "TOOL BAN: '%s' banned for session after %d cycle detections",
+                        "TOOL BAN: '%s' banned for session after %d cycle detections "
+                        "(threshold=%d%s)",
                         name,
                         monitor.tool_cycle_counts[name],
+                        ban_at,
+                        ", coordination" if is_coord else "",
                     )
             logger.warning(
                 "TOOL STATE MACHINE: entering review (cycle=%s repeat=%d stagnation=%d cycles=%d cycling_tools=%s)",
