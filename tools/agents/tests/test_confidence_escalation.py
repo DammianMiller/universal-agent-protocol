@@ -9,6 +9,8 @@ mod_path = Path(__file__).resolve().parents[3] / "tools" / "agents" / "scripts" 
 spec = importlib.util.spec_from_file_location("confidence_escalation", mod_path)
 ce = importlib.util.module_from_spec(spec)
 sys.modules["confidence_escalation"] = ce
+import tempfile, os as _os2
+_os2.environ["UAP_RECIPE_SIGNAL_DIR"] = tempfile.mkdtemp(prefix="uap-sig-")
 spec.loader.exec_module(ce)
 
 
@@ -131,6 +133,51 @@ class ApplyFusionTest(unittest.TestCase):  # #3
         out = run(ce.apply_recipe(resp("c0"), body(), {"model": "qwen", "messages": []},
                                   S(recipe="fusion", fusion_n=2), False, primary, judge))
         self.assertEqual(ce.extract_text(out), "c0")
+
+
+
+class CrossProcessSignalTest(unittest.TestCase):  # reactor -> proxy
+    def setUp(self):
+        import tempfile
+        self.d = tempfile.mkdtemp(prefix="uap-sig-test-")
+
+    def _write(self, name, sig):
+        import json, os
+        with open(os.path.join(self.d, name), "w") as f:
+            json.dump(sig, f)
+
+    def test_prompt_hash_match_consumed(self):
+        text = "build the thing"
+        h = ce.prompt_hash(text)
+        self._write(h + ".json", {"ts": __import__("time").time(), "recipe": "fusion"})
+        sig = ce.load_reactor_signal(text, signal_dir=self.d)
+        self.assertEqual(sig["recipe"], "fusion")
+
+    def test_stale_signal_ignored(self):
+        text = "old prompt"
+        self._write(ce.prompt_hash(text) + ".json", {"ts": 1, "recipe": "fusion"})
+        self.assertIsNone(ce.load_reactor_signal(text, signal_dir=self.d, ttl=180.0))
+
+    def test_latest_fallback(self):
+        self._write("latest.json", {"ts": __import__("time").time(), "recipe": "fusion"})
+        sig = ce.load_reactor_signal("anything not hashed", signal_dir=self.d)
+        self.assertEqual(sig["recipe"], "fusion")
+
+    def test_select_recipe_uses_reactor_recommendation(self):
+        text = "add a button"  # self-extract would say confidence (simple)
+        self._write(ce.prompt_hash(text) + ".json",
+                    {"ts": __import__("time").time(), "recipe": "fusion"})
+        import os
+        prev = os.environ.get("UAP_RECIPE_SIGNAL_DIR")
+        os.environ["UAP_RECIPE_SIGNAL_DIR"] = self.d
+        try:
+            r = ce.select_recipe(body(text), S(recipe="auto"), False)
+        finally:
+            if prev is None:
+                os.environ.pop("UAP_RECIPE_SIGNAL_DIR", None)
+            else:
+                os.environ["UAP_RECIPE_SIGNAL_DIR"] = prev
+        self.assertEqual(r, "fusion")  # reactor signal overrides the simple self-classification
 
 
 if __name__ == "__main__":

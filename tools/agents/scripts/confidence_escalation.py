@@ -27,8 +27,11 @@ Env:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import re
+import time
 from dataclasses import dataclass
 
 
@@ -175,20 +178,66 @@ def task_signals(anthropic_body: dict) -> dict:
     return {"complexity": query_complexity(text), "shape": task_shape(text)}
 
 
+# ---- cross-process: consume the harness reactor's actual routeResult ----
+# The reactor (TS, in the harness) writes a per-prompt signal keyed by a hash of
+# the normalized prompt, plus a rolling latest.json. The proxy reads it here so
+# recipe selection uses the reactor's real capability/complexity routing rather
+# than re-deriving it. Falls back to the proxy's own signal extraction on miss.
+def _default_signal_dir() -> str:
+    return os.environ.get("UAP_RECIPE_SIGNAL_DIR") or os.path.join(
+        os.path.expanduser("~"), ".cache", "uap", "recipe-signals"
+    )
+
+
+def normalize_prompt(text: str) -> str:
+    return " ".join((text or "").strip().lower().split())
+
+
+def prompt_hash(text: str) -> str:
+    return hashlib.sha1(normalize_prompt(text).encode("utf-8")).hexdigest()
+
+
+def load_reactor_signal(prompt_text, signal_dir=None, ttl=180.0, now=None):
+    """Return the reactor's signal dict for this prompt, or None. Exact
+    prompt-hash match first; then a recent latest.json fallback (single-session
+    common case). Fresh within ttl seconds. Never raises."""
+    d = signal_dir or _default_signal_dir()
+    now = time.time() if now is None else now
+    for path in (os.path.join(d, prompt_hash(prompt_text) + ".json"), os.path.join(d, "latest.json")):
+        try:
+            if os.path.exists(path):
+                with open(path) as f:
+                    sig = json.load(f)
+                if now - float(sig.get("ts", 0)) <= ttl:
+                    return sig
+        except Exception:
+            continue
+    return None
+
+
 def select_recipe(anthropic_body: dict, settings: Settings, has_tools: bool) -> str:
     if not settings.enabled or has_tools:
         return "single"
     if settings.recipe != "auto":
         return settings.recipe
-    # Task-shaped auto-selection (the article's lesson: best loop is task-shaped).
-    sig = task_signals(anthropic_body)
-    if settings.backend_configured() and (
-        sig["complexity"] == "complex" or sig["shape"] == "reasoning"
-    ):
-        # High reasoning variance / disagreement-prone -> breadth + judge.
+    text = latest_user_text(anthropic_body)
+    # Prefer the harness reactor's ACTUAL routeResult signal when fresh; else the
+    # proxy's own signal extraction (faithful port of query-complexity).
+    rsig = load_reactor_signal(text)
+    if rsig is not None:
+        rec = rsig.get("recipe")
+        if rec in {"single", "confidence", "fusion"}:
+            if rec == "fusion" and not settings.backend_configured():
+                return "confidence"
+            return rec
+        complexity = rsig.get("complexity") or query_complexity(text)
+        shape = rsig.get("shape") or task_shape(text)
+    else:
+        complexity = query_complexity(text)
+        shape = task_shape(text)
+    if settings.backend_configured() and (complexity == "complex" or shape == "reasoning"):
         return "fusion"
-    # Long-prompt fallback trigger (tunable) keeps the old escape hatch.
-    if settings.backend_configured() and len(latest_user_text(anthropic_body)) >= settings.auto_fusion_chars:
+    if settings.backend_configured() and len(text) >= settings.auto_fusion_chars:
         return "fusion"
     return "confidence"
 
