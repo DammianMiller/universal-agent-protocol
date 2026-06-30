@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.84.1 (2026-06-30)
+
+- perf(proxy): cache anthropic->openai tool conversion per session (A3)
+
+
 ## v1.84.0 (2026-06-30)
 
 - feat(policy): UAP_DELIVER_LOCAL_MODE — route local sessions through deliver (verified) or advisory
