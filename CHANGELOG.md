@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.84.0 (2026-06-30)
+
+- feat(policy): UAP_DELIVER_LOCAL_MODE — route local sessions through deliver (verified) or advisory
+
+
 ## v1.83.0 (2026-06-30)
 
 - fix(policy,proxy): resolve recon-loop deadlock for plain local sessions (#1+#2)
