@@ -52,17 +52,45 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual([x["temperature"] for x in v], [0.4, 0.6])
 
 
-class SelectorTest(unittest.TestCase):  # #2
+class SignalsTest(unittest.TestCase):  # reactor-aligned signals
+    def test_complexity_port(self):
+        # faithful to query-complexity.ts: "and then" multi-step + tech + file + 2 actions
+        self.assertEqual(ce.query_complexity("fix the bug in src/a.ts and then update the tests"), "complex")
+        self.assertEqual(ce.query_complexity("add a button"), "simple")
+        self.assertEqual(ce.query_complexity("implement a redis rate limiter"), "simple")
+        self.assertIn(ce.query_complexity("implement a redis rate limiter with tests and config"), ("moderate", "complex"))
+
+    def test_task_shape(self):
+        self.assertEqual(ce.task_shape("prove that x is even"), "reasoning")
+        self.assertEqual(ce.task_shape("Which is right? A) x B) y"), "reasoning")
+        self.assertEqual(ce.task_shape("refactor the function in app.ts"), "code")
+        self.assertEqual(ce.task_shape("what is the capital of france?"), "qa")
+        self.assertEqual(ce.task_shape("tell me a story"), "general")
+
+
+class SelectorTest(unittest.TestCase):  # #2 task-shaped
     def test_disabled_or_tools_single(self):
         self.assertEqual(ce.select_recipe(body(), S(enabled=False), False), "single")
         self.assertEqual(ce.select_recipe(body(), S(), True), "single")
 
-    def test_explicit_recipe(self):
-        self.assertEqual(ce.select_recipe(body(), S(recipe="fusion"), False), "fusion")
+    def test_explicit_recipe_overrides_signals(self):
+        self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="fusion"), False), "fusion")
+        self.assertEqual(ce.select_recipe(body("prove x is even"), S(recipe="confidence"), False), "confidence")
 
-    def test_auto_short_confidence_long_fusion(self):
-        self.assertEqual(ce.select_recipe(body("hi"), S(recipe="auto"), False), "confidence")
-        self.assertEqual(ce.select_recipe(body("x" * 700), S(recipe="auto"), False), "fusion")
+    def test_complex_task_routes_to_fusion(self):
+        self.assertEqual(
+            ce.select_recipe(body("fix the bug in src/a.ts and then update the tests"), S(recipe="auto"), False),
+            "fusion",
+        )
+
+    def test_reasoning_task_routes_to_fusion(self):
+        self.assertEqual(ce.select_recipe(body("prove that the sum of two evens is even"), S(recipe="auto"), False), "fusion")
+
+    def test_simple_task_routes_to_confidence(self):
+        self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="auto"), False), "confidence")
+
+    def test_no_backend_never_fusion(self):
+        self.assertEqual(ce.select_recipe(body("fix the bug in a.ts and then update tests"), S(recipe="auto", endpoint=""), False), "confidence")
 
 
 class ApplyConfidenceTest(unittest.TestCase):  # #1 / #5
