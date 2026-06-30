@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.89.0 (2026-06-30)
+
+- feat(proxy): Ratings + ReMoM recipes (+ Workflow = deliver), completing the looper set
+
+
 ## v1.88.0 (2026-06-30)
 
 - feat(reactor,proxy): cross-process recipe signals — proxy consumes the reactor's actual routeResult
