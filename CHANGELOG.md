@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.88.0 (2026-06-30)
+
+- feat(reactor,proxy): cross-process recipe signals — proxy consumes the reactor's actual routeResult
+
+
 ## v1.87.0 (2026-06-30)
 
 - feat(proxy): task-shaped recipe selection from reactor-aligned signals

@@ -1,4 +1,5 @@
 import { resolve, type ReactorContext, type ReactorOptions } from '../coordination/reactor.js';
+import { maybeWriteRecipeSignal } from '../coordination/recipe-signal.js';
 
 /**
  * Pure core of `uap react`: parse a JSON ReactorContext payload, resolve the
@@ -68,4 +69,13 @@ export async function reactCommand(options: ReactCommandOptions = {}): Promise<v
   if (options.maxInjectChars) opts.maxInjectChars = Number(options.maxInjectChars);
 
   process.stdout.write(runReact(payload, opts) + '\n');
+
+  // Cross-process: stamp the recipe signal for this prompt so the serving-layer
+  // proxy can route on the reactor's actual capability/complexity. Best-effort.
+  try {
+    const promptText = (JSON.parse(payload) as { promptText?: string }).promptText ?? '';
+    maybeWriteRecipeSignal(promptText);
+  } catch {
+    /* fail open */
+  }
 }
