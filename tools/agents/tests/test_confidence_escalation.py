@@ -15,10 +15,10 @@ spec.loader.exec_module(ce)
 
 
 def S(enabled=True, recipe="auto", signal="heuristic", threshold=0.5, fusion_n=3,
-      auto_chars=600, model="opus", endpoint="http://x/", key="k"):
+      auto_chars=600, model="opus", endpoint="http://x/", key="k", remom_quorum=2):
     return ce.Settings(enabled=enabled, recipe=recipe, signal=signal, threshold=threshold,
-                       fusion_n=fusion_n, auto_fusion_chars=auto_chars, model=model,
-                       endpoint=endpoint, api_key=key)
+                       fusion_n=fusion_n, remom_quorum=remom_quorum, auto_fusion_chars=auto_chars,
+                       model=model, endpoint=endpoint, api_key=key)
 
 
 def resp(text):
@@ -178,6 +178,57 @@ class CrossProcessSignalTest(unittest.TestCase):  # reactor -> proxy
             else:
                 os.environ["UAP_RECIPE_SIGNAL_DIR"] = prev
         self.assertEqual(r, "fusion")  # reactor signal overrides the simple self-classification
+
+
+
+class ApplyRatingsTest(unittest.TestCase):  # Ratings
+    def test_picks_highest_rated_candidate(self):
+        async def primary(v): return resp("cand-1")
+        scores = iter(["3", "9"])  # primary rated 3, fanout rated 9
+        async def judge(p): return resp(next(scores))
+        out = run(ce.apply_recipe(resp("cand-0"), body(), {"model": "q", "messages": []},
+                                  S(recipe="ratings", fusion_n=2), False, primary, judge))
+        self.assertEqual(ce.extract_text(out), "cand-1")
+
+
+class ApplyReMoMTest(unittest.TestCase):  # ReMoM
+    def test_synthesizes_when_quorum_met(self):
+        async def primary(v): return resp("evidence B")
+        async def judge(p): return resp("MERGED ANSWER")
+        out = run(ce.apply_recipe(resp("evidence A"), body(), {"model": "q", "messages": []},
+                                  S(recipe="remom", fusion_n=2), False, primary, judge))
+        self.assertEqual(ce.extract_text(out), "MERGED ANSWER")
+
+    def test_falls_back_to_best_evidence_when_synthesis_fails(self):
+        async def primary(v): return resp("a longer, more complete candidate answer")
+        async def judge(p): return None  # synthesis failed
+        out = run(ce.apply_recipe(resp("short"), body(), {"model": "q", "messages": []},
+                                  S(recipe="remom", fusion_n=2), False, primary, judge))
+        self.assertEqual(ce.extract_text(out), "a longer, more complete candidate answer")
+
+
+class WorkflowTest(unittest.TestCase):
+    def test_workflow_passes_through(self):  # Workflows = deliver's job
+        async def primary(v): return resp("x")
+        async def judge(p): return resp("y")
+        out = run(ce.apply_recipe(resp("PRIMARY"), body(), {}, S(recipe="workflow"), False, primary, judge))
+        self.assertEqual(ce.extract_text(out), "PRIMARY")
+
+
+class SettingsExtTest(unittest.TestCase):
+    def test_remom_quorum_default(self):
+        import os, tempfile
+        for k in ("PROXY_REMOM_QUORUM",): os.environ.pop(k, None)
+        self.assertEqual(ce.Settings.from_env().remom_quorum, 2)
+
+    def test_new_recipes_valid(self):
+        import os
+        for r in ("ratings", "remom", "workflow"):
+            os.environ["PROXY_RECIPE"] = r
+            try:
+                self.assertEqual(ce.Settings.from_env().recipe, r)
+            finally:
+                os.environ.pop("PROXY_RECIPE", None)
 
 
 if __name__ == "__main__":

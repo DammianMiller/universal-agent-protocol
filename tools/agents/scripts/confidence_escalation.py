@@ -42,6 +42,7 @@ class Settings:
     signal: str
     threshold: float
     fusion_n: int
+    remom_quorum: int
     auto_fusion_chars: int
     model: str
     endpoint: str
@@ -59,7 +60,7 @@ class Settings:
                 return default
 
         recipe = os.environ.get("PROXY_RECIPE", "auto").lower()
-        if recipe not in {"auto", "single", "confidence", "fusion"}:
+        if recipe not in {"auto", "single", "confidence", "fusion", "ratings", "remom", "workflow"}:
             recipe = "auto"
         signal = os.environ.get("PROXY_CONFIDENCE_SIGNAL", "heuristic").lower()
         if signal not in {"heuristic", "selfverify"}:
@@ -70,6 +71,7 @@ class Settings:
             signal=signal,
             threshold=num("PROXY_CONFIDENCE_THRESHOLD", 0.5, float),
             fusion_n=max(2, min(6, num("PROXY_FUSION_N", 3, int))),
+            remom_quorum=max(1, min(6, num("PROXY_REMOM_QUORUM", 2, int))),
             auto_fusion_chars=num("PROXY_AUTO_FUSION_CHARS", 600, int),
             model=os.environ.get("PROXY_ESCALATE_MODEL", ""),
             endpoint=os.environ.get("PROXY_ESCALATE_ENDPOINT", ""),
@@ -321,6 +323,26 @@ def parse_judge_index(text: str, n: int):
     return i if 0 <= i < n else None
 
 
+def build_synthesis_payload(anthropic_body: dict, candidate_texts: list[str], settings: Settings) -> dict:
+    q = latest_user_text(anthropic_body)
+    listing = "\n\n".join(f"[{i}]\n{t}" for i, t in enumerate(candidate_texts))
+    prompt = (
+        "Synthesize a SINGLE best answer to the REQUEST by merging the correct, "
+        "complementary parts of the candidate answers below. Resolve disagreements "
+        "and keep the required output format. Reply with ONLY the final answer."
+        "\n\nREQUEST:\n" + q + "\n\nCANDIDATES:\n" + listing
+    )
+    return {"model": settings.model, "max_tokens": anthropic_body.get("max_tokens", 4096),
+            "messages": [{"role": "user", "content": prompt}]}
+
+
+async def _fanout_candidates(primary_resp, openai_body, settings, call_primary):
+    """[primary] + up to fusion_n-1 temperature-varied breadth candidates."""
+    variants = build_fusion_variants(openai_body or {}, settings.fusion_n)
+    results = await asyncio.gather(*[call_primary(v) for v in variants], return_exceptions=True)
+    return [primary_resp] + [r for r in results if isinstance(r, dict)]
+
+
 def should_escalate(text: str, settings: Settings, has_tools: bool) -> bool:
     """Back-compat (heuristic confidence path)."""
     if not settings.enabled or not settings.backend_configured() or has_tools:
@@ -370,6 +392,42 @@ async def apply_recipe(primary_resp, anthropic_body, openai_body, settings, has_
             if idx is not None:
                 return candidates[idx]
             return primary_resp  # fallback to best valid evidence
+
+        if recipe == "ratings":
+            # Bounded ensemble: rate each candidate independently, pick the best.
+            candidates = await _fanout_candidates(primary_resp, openai_body, settings, call_primary)
+            if len(candidates) <= 1 or not settings.backend_configured() or call_judge is None:
+                return primary_resp
+            rs = await asyncio.gather(
+                *[call_judge(build_verify_payload(anthropic_body, extract_text(c), settings))
+                  for c in candidates],
+                return_exceptions=True,
+            )
+            scored = []
+            for c, jr2 in zip(candidates, rs):
+                sc = parse_verify_score(extract_text(jr2)) if isinstance(jr2, dict) else None
+                scored.append((sc if sc is not None else text_confidence(extract_text(c)), c))
+            return max(scored, key=lambda x: x[0])[1]
+
+        if recipe == "remom":
+            # Breadth -> quorum -> synthesis into the output contract; fall back
+            # to the best valid evidence if synthesis fails (no API error).
+            candidates = await _fanout_candidates(primary_resp, openai_body, settings, call_primary)
+            valid = [c for c in candidates if extract_text(c).strip()]
+            if len(valid) >= settings.remom_quorum and settings.backend_configured() and call_judge is not None:
+                synth = await call_judge(
+                    build_synthesis_payload(anthropic_body, [extract_text(c) for c in valid], settings)
+                )
+                if isinstance(synth, dict) and extract_text(synth).strip():
+                    return synth
+            return max(valid, key=lambda c: len(extract_text(c))) if valid else primary_resp
+
+        if recipe == "workflow":
+            # Workflows (planner/patcher/verifier under a contract) are the
+            # deliver convergence loop's job — it owns the real execution +
+            # acceptance gates and repo state a stateless serving turn lacks.
+            # Pass through; the harness routes workflow tasks through uap deliver.
+            return primary_resp
     except Exception:
         return primary_resp
     return primary_resp
