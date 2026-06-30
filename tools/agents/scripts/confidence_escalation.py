@@ -98,15 +98,97 @@ def extract_text(anthropic_resp: dict) -> str:
     return "".join(parts)
 
 
-# ---- #2 recipe selection --------------------------------------------------
+# ---- #2 recipe selection (reactor-aligned signals) ------------------------
+# Faithful port of src/utils/query-complexity.ts (the SAME difficulty signal the
+# reactor's capability-router / auto-optimizer use), plus a task-shape signal.
+# The serving layer extracts its own signals (vLLM-SR philosophy) so recipe
+# choice is task-shaped, not prompt-length guesswork. Optional override:
+# the harness may stamp x-uap-task-signal style hints into the request later.
+_TECH_PATTERNS = [
+    re.compile(r"debug|fix|error|exception|bug", re.I),
+    re.compile(r"implement|refactor|optimize|build", re.I),
+    re.compile(r"configure|setup|install|deploy", re.I),
+    re.compile(r"security|vulnerability|cve|auth", re.I),
+    re.compile(r"performance|memory|cpu|latency", re.I),
+    re.compile(r"database|query|migration|schema", re.I),
+    re.compile(r"test|coverage|mock|spec", re.I),
+]
+_FILE_RE = re.compile(r"[\w./\\-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|json|yaml|sh|sql)", re.I)
+_MULTISTEP = re.compile(r"and then|after that|followed by|step \d|first.*then|also|additionally", re.I)
+_WHYHOW = re.compile(r"^(why|how|what caused|explain)", re.I)
+_ACTIONS = re.compile(r"\b(fix|implement|configure|debug|create|update|delete|add|remove)\b", re.I)
+_REASONING = re.compile(
+    r"\b(prove|derive|theorem|reason|analy[sz]e|compare|evaluate|calculate|which of|true or false)\b"
+    r"|\b[A-D]\)\s", re.I,
+)
+_CODE = re.compile(r"```|\b(function|class|api|endpoint|module|compile|script)\b", re.I)
+
+
+def complexity_score(text: str) -> float:
+    """Port of query-complexity.ts measureQueryComplexity."""
+    t = text or ""
+    score = 0.0
+    wc = len(t.split())
+    if wc > 30:
+        score += 1.5
+    elif wc > 12:
+        score += 0.75
+    elif wc > 6:
+        score += 0.25
+    for pat in _TECH_PATTERNS:
+        if pat.search(t):
+            score += 0.4
+    files = _FILE_RE.findall(t)
+    score += len(files) * 0.3
+    if _MULTISTEP.search(t):
+        score += 1.0
+    if _WHYHOW.search(t):
+        score += 0.5
+    actions = _ACTIONS.findall(t)
+    if len(actions) > 1:
+        score += len(actions) * 0.3
+    return score
+
+
+def query_complexity(text: str) -> str:
+    score = complexity_score(text)
+    if score >= 2:
+        return "complex"
+    if score >= 1:
+        return "moderate"
+    return "simple"
+
+
+def task_shape(text: str) -> str:
+    t = text or ""
+    if _REASONING.search(t):
+        return "reasoning"
+    if _CODE.search(t) or _FILE_RE.search(t) or any(p.search(t) for p in _TECH_PATTERNS[:3]):
+        return "code"
+    if t.strip().endswith("?") and len(t.split()) <= 14:
+        return "qa"
+    return "general"
+
+
+def task_signals(anthropic_body: dict) -> dict:
+    text = latest_user_text(anthropic_body)
+    return {"complexity": query_complexity(text), "shape": task_shape(text)}
+
+
 def select_recipe(anthropic_body: dict, settings: Settings, has_tools: bool) -> str:
     if not settings.enabled or has_tools:
         return "single"
     if settings.recipe != "auto":
         return settings.recipe
-    # Auto: signal-driven. Longer/harder prompts have higher reasoning variance
-    # -> fusion (breadth+judge); shorter -> confidence (cheap, escalate if weak).
-    if len(latest_user_text(anthropic_body)) >= settings.auto_fusion_chars and settings.backend_configured():
+    # Task-shaped auto-selection (the article's lesson: best loop is task-shaped).
+    sig = task_signals(anthropic_body)
+    if settings.backend_configured() and (
+        sig["complexity"] == "complex" or sig["shape"] == "reasoning"
+    ):
+        # High reasoning variance / disagreement-prone -> breadth + judge.
+        return "fusion"
+    # Long-prompt fallback trigger (tunable) keeps the old escape hatch.
+    if settings.backend_configured() and len(latest_user_text(anthropic_body)) >= settings.auto_fusion_chars:
         return "fusion"
     return "confidence"
 
