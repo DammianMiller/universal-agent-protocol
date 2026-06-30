@@ -8003,38 +8003,68 @@ def openai_to_anthropic_response(
     }
 
 
-async def _maybe_confidence_escalate(anthropic_resp, anthropic_body, client):
-    """Confidence recipe: if the cheap primary answer scores below threshold,
-    escalate the same (non-tool) turn to the stronger backend and return its
-    answer. Default OFF; fails open (returns the original) on any problem."""
+async def _maybe_apply_recipe(anthropic_resp, anthropic_body, openai_body, client):
+    """Serving-layer recipe runtime (confidence / fusion, signal-selected).
+    Default OFF; fails open. call_primary re-runs the cheap primary (llama) for
+    fusion breadth; call_judge talks to the stronger escalation backend."""
     if _ce is None or not isinstance(anthropic_resp, dict):
         return anthropic_resp
     try:
         settings = _ce.Settings.from_env()
-        text = _ce.extract_text(anthropic_resp)
-        if not _ce.should_escalate(text, settings, _has_tool_definitions(anthropic_body)):
+        if not settings.enabled:
             return anthropic_resp
-        payload = _ce.build_escalation_payload(anthropic_body, settings)
-        url = settings.endpoint.rstrip("/") + "/v1/messages"
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": settings.api_key,
-            "anthropic-version": "2023-06-01",
-        }
-        resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
-        if resp.status_code == 200:
-            logger.warning(
-                "CONFIDENCE ESCALATION: primary confidence below %.2f -> escalated to %s",
-                settings.threshold, settings.model,
-            )
-            return resp.json()
-        logger.warning(
-            "CONFIDENCE ESCALATION: backend %s returned %d; keeping primary",
-            settings.model, resp.status_code,
+        model_name = (openai_body or {}).get("model", "default")
+
+        async def call_primary(openai_variant):
+            try:
+                r = await _post_with_generation_timeout(
+                    client,
+                    f"{LLAMA_CPP_BASE}/chat/completions",
+                    openai_variant,
+                    {"Content-Type": "application/json"},
+                )
+                if getattr(r, "status_code", 0) != 200:
+                    return None
+                return openai_to_anthropic_response(r.json(), model_name)
+            except Exception:
+                return None
+
+        async def call_judge(anthropic_payload):
+            try:
+                url = settings.endpoint.rstrip("/") + "/v1/messages"
+                r = await client.post(
+                    url,
+                    json=anthropic_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-api-key": settings.api_key,
+                        "anthropic-version": "2023-06-01",
+                    },
+                    timeout=120.0,
+                )
+                return r.json() if getattr(r, "status_code", 0) == 200 else None
+            except Exception:
+                return None
+
+        result = await _ce.apply_recipe(
+            anthropic_resp,
+            anthropic_body,
+            openai_body,
+            settings,
+            _has_tool_definitions(anthropic_body),
+            call_primary,
+            call_judge,
         )
+        if isinstance(result, dict) and result is not anthropic_resp:
+            logger.warning(
+                "RECIPE applied: recipe=%s signal=%s -> response changed",
+                _ce.select_recipe(anthropic_body, settings, _has_tool_definitions(anthropic_body)),
+                settings.signal,
+            )
+        return result if isinstance(result, dict) else anthropic_resp
     except Exception as exc:
-        logger.warning("CONFIDENCE ESCALATION: failed (%s); keeping primary", exc)
-    return anthropic_resp
+        logger.warning("RECIPE: failed (%s); keeping primary answer", exc)
+        return anthropic_resp
 
 
 async def _heartbeat_then_buffered(produce_coro, model: str):
@@ -9002,7 +9032,7 @@ async def messages(request: Request):
                     "REQUIRED TOOL STREAM GUARDRAIL: served stream response via guarded non-stream path"
                 )
 
-            anthropic_resp = await _maybe_confidence_escalate(anthropic_resp, body, client)
+            anthropic_resp = await _maybe_apply_recipe(anthropic_resp, body, openai_body, client)
             return anthropic_resp
 
         if PROXY_STREAM_HEARTBEAT_SECS > 0:
