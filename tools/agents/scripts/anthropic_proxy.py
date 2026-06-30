@@ -3351,7 +3351,28 @@ def anthropic_to_openai_response(anthropic_resp: dict) -> dict:
     }
 
 
+# A3: the anthropic->openai tool conversion + schema sanitize walks every tool's
+# (often deeply nested) JSON schema. The tool set is IDENTICAL across every turn
+# of a session, so this recomputed the same result each turn (observed: ~1
+# SCHEMA SANITIZE log per turn). Cache by a stable hash of the tool definitions.
+# Downstream only READS the converted dicts and FILTERS the list (narrowing), so
+# returning the cached object directly is safe.
+_TOOL_CONVERT_CACHE: "OrderedDict[str, list]" = OrderedDict()
+_TOOL_CONVERT_CACHE_MAX = 32
+
+
 def _convert_anthropic_tools_to_openai(anthropic_tools: list[dict]) -> list[dict]:
+    cache_key = None
+    try:
+        cache_key = hashlib.sha1(
+            json.dumps(anthropic_tools, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+    except Exception:
+        cache_key = None
+    if cache_key is not None and cache_key in _TOOL_CONVERT_CACHE:
+        _TOOL_CONVERT_CACHE.move_to_end(cache_key)
+        return _TOOL_CONVERT_CACHE[cache_key]
+
     converted = []
     removed_pattern_fields = 0
     for tool in anthropic_tools:
@@ -3375,6 +3396,10 @@ def _convert_anthropic_tools_to_openai(anthropic_tools: list[dict]) -> list[dict
             removed_pattern_fields,
             len(anthropic_tools),
         )
+    if cache_key is not None:
+        _TOOL_CONVERT_CACHE[cache_key] = converted
+        if len(_TOOL_CONVERT_CACHE) > _TOOL_CONVERT_CACHE_MAX:
+            _TOOL_CONVERT_CACHE.popitem(last=False)
     return converted
 
 
