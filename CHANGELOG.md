@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.87.0 (2026-06-30)
+
+- feat(proxy): task-shaped recipe selection from reactor-aligned signals
+
+
 ## v1.86.0 (2026-06-30)
 
 - feat(proxy): serving-layer recipe runtime — selector + Fusion + gate-as-confidence (#2,#3,#5)
