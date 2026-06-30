@@ -103,3 +103,32 @@ class LocalAdvisoryTest(unittest.TestCase):
     def test_cloud_session_still_blocks(self):
         rc, out = self._run({"ANTHROPIC_BASE_URL":"https://api.anthropic.com"})
         self.assertEqual(rc, 2)
+
+
+class LocalModeTest(unittest.TestCase):
+    def _run(self, env):
+        with _tf.TemporaryDirectory() as td:
+            root = _Path(td); (root/".git").mkdir()
+            f = root/"src"/"a.ts"; f.parent.mkdir(parents=True); f.write_text("x")
+            e = dict(_os.environ); e["UAP_REPO_ROOT"]=str(root)
+            for k in ("ANTHROPIC_BASE_URL","UAP_DELIVER_LOCAL_ADVISORY","UAP_DELIVER_LOCAL_MODE","UAP_DELIVER_ACTIVE"): e.pop(k, None)
+            e.update(env)
+            p = _sp.run([_sys.executable, str(_ENF), "--operation","Write","--args",_json.dumps({"file_path":str(f)})], capture_output=True, text=True, env=e)
+            return p.returncode, _json.loads(p.stdout) if p.stdout.strip() else {}
+
+    def test_local_mode_deliver_routes_through_deliver(self):
+        rc, out = self._run({"ANTHROPIC_BASE_URL":"http://127.0.0.1:4000","UAP_DELIVER_LOCAL_MODE":"deliver"})
+        self.assertEqual(rc, 2)
+        self.assertEqual(out.get("route"), "deliver")
+
+    def test_local_mode_advisory_allows(self):
+        rc, out = self._run({"ANTHROPIC_BASE_URL":"http://127.0.0.1:4000","UAP_DELIVER_LOCAL_MODE":"advisory"})
+        self.assertEqual(rc, 0); self.assertTrue(out["allowed"])
+
+    def test_local_mode_block_strict(self):
+        rc, out = self._run({"ANTHROPIC_BASE_URL":"http://127.0.0.1:4000","UAP_DELIVER_LOCAL_MODE":"block"})
+        self.assertEqual(rc, 2)
+
+    def test_default_is_advisory(self):
+        rc, out = self._run({"ANTHROPIC_BASE_URL":"http://127.0.0.1:4000"})
+        self.assertEqual(rc, 0)
