@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.86.0 (2026-06-30)
+
+- feat(proxy): serving-layer recipe runtime — selector + Fusion + gate-as-confidence (#2,#3,#5)
+
+
 ## v1.85.0 (2026-06-30)
 
 - feat(proxy): serving-layer confidence escalation (vLLM "Confidence" recipe)
