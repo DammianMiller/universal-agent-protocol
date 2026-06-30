@@ -65,18 +65,21 @@ def _is_local_model_session() -> bool:
     return any(h in base for h in ("127.0.0.1", "localhost", "0.0.0.0", "::1"))
 
 
-# #2: a plain local-model session cannot effectively route through deliver and
-# deadlocks under block mode (it can read but never write -> recon loop, observed
-# live). Downgrade block->advisory for local sessions so the model can write
-# directly; the local proxy already guards it. Set UAP_DELIVER_LOCAL_ADVISORY=0
-# to keep strict block for local sessions too.
-_LOCAL_ADVISORY = os.environ.get("UAP_DELIVER_LOCAL_ADVISORY", "on").lower() not in {
-    "0",
-    "off",
-    "false",
-    "no",
-    "",
-}
+# #2/#3a: how a LOCAL-model session is handled under block mode. A plain local
+# session deadlocks under strict block (can read, never write -> recon loop,
+# observed live). UAP_DELIVER_LOCAL_MODE selects the resolution:
+#   advisory (default) -> allow direct writes (fast; the proxy guards the model)
+#   deliver            -> keep the block + route:deliver so the change is driven
+#                         through `uap deliver` (VERIFIED path; pairs with
+#                         UAP_DELIVER_AUTOROUTE)
+#   block              -> strict block (no relaxation)
+# Back-compat: UAP_DELIVER_LOCAL_ADVISORY=0 maps to "block".
+def _local_mode() -> str:
+    m = os.environ.get("UAP_DELIVER_LOCAL_MODE", "").lower()
+    if m in {"advisory", "deliver", "block"}:
+        return m
+    adv = os.environ.get("UAP_DELIVER_LOCAL_ADVISORY", "on").lower()
+    return "advisory" if adv not in {"0", "off", "false", "no", ""} else "block"
 
 
 def main() -> None:
@@ -124,8 +127,11 @@ def main() -> None:
     )
 
     mode = os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower()
-    if mode == "block" and _LOCAL_ADVISORY and _is_local_model_session():
-        mode = "advisory"  # #2: unblock plain local-model sessions
+    if mode == "block" and _is_local_model_session():
+        # #3a: route-through-deliver keeps the block (route:deliver -> autoroute
+        # drives the verified deliver loop); advisory unblocks direct writes.
+        if _local_mode() == "advisory":
+            mode = "advisory"
     if mode == "block":
         # R1: emit a machine-actionable routing signal so a capable harness can
         # auto-route the blocked change INTO `uap deliver` instead of leaving the
