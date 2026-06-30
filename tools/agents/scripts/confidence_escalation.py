@@ -47,6 +47,7 @@ class Settings:
     model: str
     endpoint: str
     api_key: str
+    allow_self_judge: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -76,10 +77,31 @@ class Settings:
             model=os.environ.get("PROXY_ESCALATE_MODEL", ""),
             endpoint=os.environ.get("PROXY_ESCALATE_ENDPOINT", ""),
             api_key=os.environ.get("PROXY_ESCALATE_API_KEY", ""),
+            allow_self_judge=flag("PROXY_ALLOW_SELF_JUDGE"),
         )
 
     def backend_configured(self) -> bool:
         return bool(self.model and self.endpoint)
+
+    def judge_is_self(self, primary_model: str = "") -> bool:
+        """True when the configured judge model name matches the primary
+        (generator) model -- i.e. qwen judging qwen."""
+        pm = (primary_model or "").strip().lower()
+        jm = (self.model or "").strip().lower()
+        return bool(pm) and bool(jm) and pm == jm
+
+    def judge_available(self, primary_model: str = "") -> bool:
+        """A judge backend that is configured AND distinct from the primary
+        model. A same-model judge (qwen judging qwen) was MEASURED to add no
+        quality lift, so judge-dependent recipes (fusion / ratings / remom and
+        confidence-escalation) require a distinct judge by default and otherwise
+        downgrade to single. Set PROXY_ALLOW_SELF_JUDGE=1 to force self-judging.
+        When the primary model is unknown the judge is treated as distinct."""
+        if not self.backend_configured():
+            return False
+        if self.allow_self_judge:
+            return True
+        return not self.judge_is_self(primary_model)
 
 
 # ---- helpers --------------------------------------------------------------
@@ -222,6 +244,7 @@ def select_recipe(anthropic_body: dict, settings: Settings, has_tools: bool) -> 
         return "single"
     if settings.recipe != "auto":
         return settings.recipe
+    pm = (anthropic_body or {}).get("model", "")
     text = latest_user_text(anthropic_body)
     # Prefer the harness reactor's ACTUAL routeResult signal when fresh; else the
     # proxy's own signal extraction (faithful port of query-complexity).
@@ -229,7 +252,7 @@ def select_recipe(anthropic_body: dict, settings: Settings, has_tools: bool) -> 
     if rsig is not None:
         rec = rsig.get("recipe")
         if rec in {"single", "confidence", "fusion"}:
-            if rec == "fusion" and not settings.backend_configured():
+            if rec == "fusion" and not settings.judge_available(pm):
                 return "confidence"
             return rec
         complexity = rsig.get("complexity") or query_complexity(text)
@@ -237,9 +260,9 @@ def select_recipe(anthropic_body: dict, settings: Settings, has_tools: bool) -> 
     else:
         complexity = query_complexity(text)
         shape = task_shape(text)
-    if settings.backend_configured() and (complexity == "complex" or shape == "reasoning"):
+    if settings.judge_available(pm) and (complexity == "complex" or shape == "reasoning"):
         return "fusion"
-    if settings.backend_configured() and len(text) >= settings.auto_fusion_chars:
+    if settings.judge_available(pm) and len(text) >= settings.auto_fusion_chars:
         return "fusion"
     return "confidence"
 
@@ -351,8 +374,8 @@ def should_escalate(text: str, settings: Settings, has_tools: bool) -> bool:
 
 
 # ---- orchestration (injected callables) -----------------------------------
-async def _confidence_score(text, anthropic_body, settings, call_judge):
-    if settings.signal == "selfverify" and settings.backend_configured() and call_judge is not None:
+async def _confidence_score(text, anthropic_body, settings, call_judge, primary_model=""):
+    if settings.signal == "selfverify" and settings.judge_available(primary_model) and call_judge is not None:
         jr = await call_judge(build_verify_payload(anthropic_body, text, settings))
         score = parse_verify_score(extract_text(jr)) if isinstance(jr, dict) else None
         if score is not None:
@@ -370,10 +393,16 @@ async def apply_recipe(primary_resp, anthropic_body, openai_body, settings, has_
         if recipe == "single" or not isinstance(primary_resp, dict):
             return primary_resp
         primary_text = extract_text(primary_resp)
+        primary_model = (openai_body or {}).get("model", "")
+        # Judge-dependent recipes need a configured, DISTINCT (non-self) judge.
+        # A same-model judge adds no measured lift, so downgrade to single BEFORE
+        # spending fan-out / judge calls.
+        if recipe in {"fusion", "ratings", "remom"} and not settings.judge_available(primary_model):
+            return primary_resp
 
         if recipe == "confidence":
-            conf = await _confidence_score(primary_text, anthropic_body, settings, call_judge)
-            if conf < settings.threshold and settings.backend_configured() and call_judge is not None:
+            conf = await _confidence_score(primary_text, anthropic_body, settings, call_judge, primary_model)
+            if conf < settings.threshold and settings.judge_available(primary_model) and call_judge is not None:
                 esc = await call_judge(build_escalation_payload(anthropic_body, settings))
                 if isinstance(esc, dict):
                     return esc

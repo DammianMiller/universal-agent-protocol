@@ -3790,6 +3790,34 @@ class TestGenerationHangRecovery(unittest.TestCase):
         asyncio.run(_run())
 
 
+class EmptyOutputGuardTest(unittest.TestCase):
+    """#1: a no-tool turn whose entire response was inside <think> must never
+    collapse to an empty body (would silently break the Fusion/Confidence judge)."""
+
+    def test_all_think_no_tool_promotes_thinking_to_body(self):
+        openai_resp = {"choices": [{"message": {"content": "<think>the answer is 42</think>"},
+                                    "finish_reason": "stop"}]}
+        out = proxy.openai_to_anthropic_response(openai_resp, "qwen", expose_thinking=False)
+        texts = [b.get("text", "") for b in out["content"] if b.get("type") == "text"]
+        self.assertTrue(any("42" in t for t in texts))             # body is non-empty
+        self.assertTrue(all(b.get("type") != "thinking" for b in out["content"]))
+
+    def test_normal_post_think_body_unaffected(self):
+        openai_resp = {"choices": [{"message": {"content": "<think>reason</think>FINAL"},
+                                    "finish_reason": "stop"}]}
+        out = proxy.openai_to_anthropic_response(openai_resp, "qwen", expose_thinking=False)
+        texts = "".join(b.get("text", "") for b in out["content"] if b.get("type") == "text")
+        self.assertEqual(texts, "FINAL")                           # guard does not fire
+
+    def test_tool_only_response_not_padded(self):
+        openai_resp = {"choices": [{"message": {"content": "<think>x</think>",
+                        "tool_calls": [{"id": "a", "function": {"name": "bash",
+                        "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}
+        out = proxy.openai_to_anthropic_response(openai_resp, "qwen", expose_thinking=False)
+        self.assertTrue(any(b.get("type") == "tool_use" for b in out["content"]))
+        self.assertFalse(any(b.get("type") == "text" for b in out["content"]))
+
+
 if __name__ == "__main__":
     unittest.main()
 
