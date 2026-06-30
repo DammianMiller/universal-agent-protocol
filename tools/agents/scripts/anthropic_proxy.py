@@ -93,6 +93,11 @@ import sys
 import time
 import uuid
 from collections import OrderedDict, defaultdict, deque
+
+try:
+    import confidence_escalation as _ce  # serving-layer Confidence recipe
+except Exception:  # pragma: no cover - fail open if module missing
+    _ce = None
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -2791,6 +2796,16 @@ def _should_use_guarded_non_stream(
     has_tools = _has_tool_definitions(anthropic_body)
     if PROXY_MALFORMED_TOOL_STREAM_STRICT and has_tools:
         return True
+
+    # Confidence-escalation (vLLM "Confidence" recipe) needs the FULL answer
+    # buffered to score it before deciding whether to escalate. Buffer single-
+    # answer (no-tool) streaming turns when escalation is enabled. Default OFF.
+    if not has_tools and _ce is not None:
+        try:
+            if _ce.Settings.from_env().enabled:
+                return True
+        except Exception:
+            pass
 
     # A2: when stream-passthrough is enabled, do NOT buffer required-tool turns
     # (native tool_choice='required' constrains them); force-non-stream and
@@ -7988,6 +8003,40 @@ def openai_to_anthropic_response(
     }
 
 
+async def _maybe_confidence_escalate(anthropic_resp, anthropic_body, client):
+    """Confidence recipe: if the cheap primary answer scores below threshold,
+    escalate the same (non-tool) turn to the stronger backend and return its
+    answer. Default OFF; fails open (returns the original) on any problem."""
+    if _ce is None or not isinstance(anthropic_resp, dict):
+        return anthropic_resp
+    try:
+        settings = _ce.Settings.from_env()
+        text = _ce.extract_text(anthropic_resp)
+        if not _ce.should_escalate(text, settings, _has_tool_definitions(anthropic_body)):
+            return anthropic_resp
+        payload = _ce.build_escalation_payload(anthropic_body, settings)
+        url = settings.endpoint.rstrip("/") + "/v1/messages"
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": settings.api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
+        if resp.status_code == 200:
+            logger.warning(
+                "CONFIDENCE ESCALATION: primary confidence below %.2f -> escalated to %s",
+                settings.threshold, settings.model,
+            )
+            return resp.json()
+        logger.warning(
+            "CONFIDENCE ESCALATION: backend %s returned %d; keeping primary",
+            settings.model, resp.status_code,
+        )
+    except Exception as exc:
+        logger.warning("CONFIDENCE ESCALATION: failed (%s); keeping primary", exc)
+    return anthropic_resp
+
+
 async def _heartbeat_then_buffered(produce_coro, model: str):
     """SSE generator: keep-alive heartbeat wrapper for the guarded-non-stream path.
 
@@ -8953,6 +9002,7 @@ async def messages(request: Request):
                     "REQUIRED TOOL STREAM GUARDRAIL: served stream response via guarded non-stream path"
                 )
 
+            anthropic_resp = await _maybe_confidence_escalate(anthropic_resp, body, client)
             return anthropic_resp
 
         if PROXY_STREAM_HEARTBEAT_SECS > 0:

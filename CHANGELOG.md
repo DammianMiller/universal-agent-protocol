@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.85.0 (2026-06-30)
+
+- feat(proxy): serving-layer confidence escalation (vLLM "Confidence" recipe)
+
+
 ## v1.84.1 (2026-06-30)
 
 - perf(proxy): cache anthropic->openai tool conversion per session (A3)
