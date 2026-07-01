@@ -1,5 +1,6 @@
 import { resolve, type ReactorContext, type ReactorOptions } from '../coordination/reactor.js';
 import { maybeWriteRecipeSignal } from '../coordination/recipe-signal.js';
+import { loadUapConfigRaw } from '../utils/config-loader.js';
 
 /**
  * Pure core of `uap react`: parse a JSON ReactorContext payload, resolve the
@@ -12,6 +13,23 @@ export function runReact(payloadJson: string, opts?: ReactorOptions): string {
   // Default to the process cwd so the reactor can locate the project DESIGN.md
   // for design-system injection (hook adapters rarely set cwd explicitly).
   if (!ctx.cwd) ctx.cwd = process.cwd();
+  // Reactor can be turned off via .uap.json (reactor.enabled:false) — the guided
+  // setup writes this. Return a no-op result so hook adapters inject nothing.
+  try {
+    const cfg = loadUapConfigRaw(ctx.cwd) as { reactor?: { enabled?: boolean } } | null;
+    if (cfg?.reactor?.enabled === false) {
+      return JSON.stringify({
+        inject: '',
+        block: false,
+        reason: 'reactor disabled (.uap.json)',
+        actions: [],
+        surfacedKeys: [],
+        confidence: 0,
+      });
+    }
+  } catch {
+    /* fail open — reactor stays on */
+  }
   const result = resolve(ctx, opts);
   return JSON.stringify(result);
 }

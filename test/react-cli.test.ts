@@ -3,6 +3,9 @@
  * The harness adapters pipe a payload to `uap react` and consume this result.
  */
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { runReact } from '../src/cli/react';
 
 describe('uap react CLI core (runReact)', () => {
@@ -41,5 +44,28 @@ describe('uap react CLI core (runReact)', () => {
 
   it('throws on a malformed JSON payload', () => {
     expect(() => runReact('not-json')).toThrow();
+  });
+
+  it('returns a no-op result when reactor is disabled via .uap.json', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-react-off-'));
+    try {
+      writeFileSync(join(dir, '.uap.json'), JSON.stringify({ reactor: { enabled: false } }));
+      const parsed = JSON.parse(
+        runReact(
+          JSON.stringify({
+            event: 'user-prompt',
+            promptText: 'add JWT auth and fix the security vulnerability in login',
+            changedFiles: ['src/auth/login.ts'],
+            cwd: dir,
+          })
+        )
+      );
+      expect(parsed.inject).toBe('');
+      expect(parsed.block).toBe(false);
+      expect(parsed.actions).toHaveLength(0);
+      expect(parsed.reason).toContain('disabled');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

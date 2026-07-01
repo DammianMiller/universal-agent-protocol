@@ -6,6 +6,7 @@ import {
   applyWizardConfig,
   defaultSelections,
   profileChoicesFor,
+  writeProxyEnv,
 } from '../../src/cli/wizard-config.js';
 
 describe('defaultSelections', () => {
@@ -70,5 +71,91 @@ describe('applyWizardConfig', () => {
     expect(cfg.model.provider).toBe('anthropic');
     // non-local provider → no qwenOptimizations key
     expect(cfg.model.qwenOptimizations).toBeUndefined();
+  });
+});
+
+describe('applyWizardConfig — runtime feature sections', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-wizrt-'));
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ projectName: 'x' }));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('writes recipes / delivery / concurrency / collaboration / design / reactor', async () => {
+    const sel = defaultSelections({
+      recipes: {
+        enabled: true,
+        recipe: 'fusion',
+        confidenceThreshold: 0.6,
+        fusionN: 4,
+        allowSelfJudge: false,
+        judgeModel: 'claude-opus-4-8',
+        judgeEndpoint: 'https://api.anthropic.com',
+        judgeApiKey: 'sk-ant-secret',
+      },
+      delivery: { enforcement: 'advisory', localMode: 'deliver', runtimeVerify: true },
+      concurrency: { enabled: true, slots: 4 },
+      collaboration: { mode: 'always' },
+      design: { enabled: true, tokenGate: true },
+      reactor: { enabled: false },
+    });
+    await applyWizardConfig(dir, sel);
+    const cfg = JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf-8'));
+    expect(cfg.recipes.enabled).toBe(true);
+    expect(cfg.recipes.recipe).toBe('fusion');
+    expect(cfg.recipes.judge.model).toBe('claude-opus-4-8');
+    // secret API key must NEVER land in .uap.json
+    expect(JSON.stringify(cfg)).not.toContain('sk-ant-secret');
+    expect(cfg.delivery.enforcement).toBe('advisory');
+    expect(cfg.delivery.localMode).toBe('deliver');
+    expect(cfg.modelConcurrency.adaptive).toBe(true);
+    expect(cfg.modelConcurrency.slots).toBe(4);
+    expect(cfg.collaboration.mode).toBe('always');
+    expect(cfg.design.tokenGate).toBe(true);
+    expect(cfg.reactor.enabled).toBe(false);
+  });
+});
+
+describe('writeProxyEnv', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-proxyenv-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('emits PROXY_* + delivery env, including the secret judge key', () => {
+    const sel = defaultSelections({
+      recipes: {
+        enabled: true,
+        recipe: 'fusion',
+        confidenceThreshold: 0.5,
+        fusionN: 3,
+        allowSelfJudge: true,
+        judgeModel: 'claude-opus-4-8',
+        judgeEndpoint: 'https://api.anthropic.com',
+        judgeApiKey: 'sk-ant-secret',
+      },
+      delivery: { enforcement: 'advisory', localMode: 'deliver', runtimeVerify: false },
+    });
+    const p = writeProxyEnv(dir, sel);
+    expect(p).toBeTruthy();
+    const env = readFileSync(p as string, 'utf-8');
+    expect(env).toContain('PROXY_CONFIDENCE_ESCALATE=on');
+    expect(env).toContain('PROXY_RECIPE=fusion');
+    expect(env).toContain('PROXY_FUSION_N=3');
+    expect(env).toContain('PROXY_ALLOW_SELF_JUDGE=1');
+    expect(env).toContain('PROXY_ESCALATE_MODEL=claude-opus-4-8');
+    expect(env).toContain('PROXY_ESCALATE_API_KEY=sk-ant-secret');
+    expect(env).toContain('UAP_ENFORCE_DELIVERY=advisory');
+    expect(env).toContain('UAP_DELIVER_LOCAL_MODE=deliver');
+  });
+
+  it('writes PROXY_CONFIDENCE_ESCALATE=off when recipes disabled and omits key', () => {
+    const p = writeProxyEnv(dir, defaultSelections());
+    const env = readFileSync(p as string, 'utf-8');
+    expect(env).toContain('PROXY_CONFIDENCE_ESCALATE=off');
+    expect(env).not.toContain('PROXY_ESCALATE_API_KEY');
+    expect(env).toContain('UAP_DELIVER_LOCAL_MODE=advisory');
   });
 });

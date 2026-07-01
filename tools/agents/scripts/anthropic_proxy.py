@@ -107,6 +107,44 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 import uvicorn
 
+
+def _load_proxy_env_file() -> None:
+    """Load .uap/proxy.env (KEY=VALUE) written by `uap setup` into os.environ so
+    recipe / escalation / delivery selections reach the proxy without the user
+    hand-exporting env. Existing process env ALWAYS wins (setdefault). Walks up
+    from CWD to the filesystem root looking for a .uap/proxy.env; override the
+    path with UAP_PROXY_ENV_FILE. Runs before the import-time env reads below.
+    Fails open."""
+    try:
+        candidates = []
+        explicit = os.environ.get("UAP_PROXY_ENV_FILE")
+        if explicit:
+            candidates.append(Path(explicit))
+        d = Path.cwd()
+        for base in [d, *d.parents]:
+            candidates.append(base / ".uap" / "proxy.env")
+        for path in candidates:
+            try:
+                if not path.is_file():
+                    continue
+            except OSError:
+                continue
+            for raw in path.read_text().splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key:
+                    os.environ.setdefault(key, val)
+            break  # first file found wins
+    except Exception:
+        pass
+
+
+_load_proxy_env_file()
+
 # ---------------------------------------------------------------------------
 # Configuration (all configurable via environment variables)
 # ---------------------------------------------------------------------------

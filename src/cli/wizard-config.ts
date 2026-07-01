@@ -8,7 +8,7 @@
  * single source of truth and the config write is independently testable.
  */
 
-import { writeFileSync } from 'fs';
+import { writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { join } from 'path';
 
 export interface MemoryFeatures {
@@ -61,6 +61,43 @@ export interface BrowserFeatures {
   cloakBrowser: boolean;
 }
 
+export interface RecipeFeatures {
+  enabled: boolean;
+  recipe: 'auto' | 'single' | 'confidence' | 'fusion' | 'ratings' | 'remom';
+  confidenceThreshold: number;
+  fusionN: number;
+  allowSelfJudge: boolean;
+  judgeModel?: string;
+  judgeEndpoint?: string;
+  /** Written to .uap/proxy.env ONLY (secret) — never persisted to .uap.json. */
+  judgeApiKey?: string;
+}
+
+export interface DeliveryFeatures {
+  enforcement: 'block' | 'advisory' | 'off';
+  localMode: 'advisory' | 'deliver' | 'block';
+  runtimeVerify: boolean;
+}
+
+export interface ConcurrencyFeatures {
+  enabled: boolean; // adaptive AIMD backpressure
+  slots?: number;
+  endpoint?: string;
+}
+
+export interface CollaborationFeatures {
+  mode: 'auto' | 'always' | 'off';
+}
+
+export interface DesignFeatures {
+  enabled: boolean;
+  tokenGate: boolean;
+}
+
+export interface ReactorFeatures {
+  enabled: boolean;
+}
+
 export interface WizardSelections {
   /** init platform tokens (claude, factory, vscode, opencode, codex, …) */
   platforms: string[];
@@ -71,6 +108,12 @@ export interface WizardSelections {
   model: ModelFeatures;
   hooks: HooksFeatures;
   browser: BrowserFeatures;
+  recipes: RecipeFeatures;
+  delivery: DeliveryFeatures;
+  concurrency: ConcurrencyFeatures;
+  collaboration: CollaborationFeatures;
+  design: DesignFeatures;
+  reactor: ReactorFeatures;
 }
 
 /** Conservative defaults used by the non-interactive path and as prompt seeds. */
@@ -92,6 +135,18 @@ export function defaultSelections(overrides: Partial<WizardSelections> = {}): Wi
     model: { provider: 'anthropic', qwenOptimizations: false, toolCallProfile: 'claude-sonnet-4.6', costTracking: false, modelRouting: false },
     hooks: { sessionStart: true, preCompact: true, taskCompletion: false, autoApproveTools: false },
     browser: { cloakBrowser: false },
+    recipes: {
+      enabled: false,
+      recipe: 'auto',
+      confidenceThreshold: 0.5,
+      fusionN: 3,
+      allowSelfJudge: false,
+    },
+    delivery: { enforcement: 'block', localMode: 'advisory', runtimeVerify: false },
+    concurrency: { enabled: true },
+    collaboration: { mode: 'auto' },
+    design: { enabled: false, tokenGate: false },
+    reactor: { enabled: true },
     ...overrides,
   };
 }
@@ -203,6 +258,48 @@ export async function applyWizardConfig(
     // ── Browser ─────────────────────────────────────────────────────────
     if (selections.browser.cloakBrowser) config.browser = { cloakBrowser: true };
 
+    // ── Serving-layer recipes + escalation judge ────────────────────────
+    // (secret apiKey is NOT written here — see writeProxyEnv)
+    config.recipes = {
+      enabled: selections.recipes.enabled,
+      recipe: selections.recipes.recipe,
+      confidenceThreshold: selections.recipes.confidenceThreshold,
+      fusionN: selections.recipes.fusionN,
+      allowSelfJudge: selections.recipes.allowSelfJudge,
+      ...(selections.recipes.judgeModel || selections.recipes.judgeEndpoint
+        ? {
+            judge: {
+              ...(selections.recipes.judgeModel ? { model: selections.recipes.judgeModel } : {}),
+              ...(selections.recipes.judgeEndpoint ? { endpoint: selections.recipes.judgeEndpoint } : {}),
+            },
+          }
+        : {}),
+    };
+
+    // ── Delivery + runtime gates ────────────────────────────────────────
+    config.delivery = {
+      enforcement: selections.delivery.enforcement,
+      localMode: selections.delivery.localMode,
+      runtimeVerify: selections.delivery.runtimeVerify,
+    };
+
+    // ── Model-slot concurrency (real consumer: model-slot-lease/model-slots)
+    config.modelConcurrency = {
+      ...((config.modelConcurrency as Record<string, unknown>) || {}),
+      adaptive: selections.concurrency.enabled,
+      ...(selections.concurrency.slots ? { slots: selections.concurrency.slots } : {}),
+      ...(selections.concurrency.endpoint ? { endpoint: selections.concurrency.endpoint } : {}),
+    };
+
+    // ── Agent collaboration mode (real consumer: collaboration-inject) ───
+    config.collaboration = { mode: selections.collaboration.mode };
+
+    // ── DESIGN.md integration ───────────────────────────────────────────
+    config.design = { enabled: selections.design.enabled, tokenGate: selections.design.tokenGate };
+
+    // ── Reactor per-prompt injection ────────────────────────────────────
+    config.reactor = { enabled: selections.reactor.enabled };
+
     writeFileSync(configPath, JSON.stringify(config, null, 2));
     return configPath;
   } catch {
@@ -233,5 +330,51 @@ export function profileChoicesFor(
       ];
     default:
       return [{ label: 'generic', value: 'generic', hint: 'any OpenAI-compatible endpoint' }];
+  }
+}
+
+/**
+ * Emit `.uap/proxy.env` — the KEY=VALUE file the proxy launcher / systemd
+ * EnvironmentFile and the Python proxy's own fallback loader consume. This is
+ * where the recipe/escalation and delivery env vars (including the secret judge
+ * API key) live, so the guided-setup selections actually reach the running
+ * proxy without the user hand-exporting env. Returns the path written, or null.
+ */
+export function writeProxyEnv(cwd: string, selections: WizardSelections): string | null {
+  try {
+    const r = selections.recipes;
+    const d = selections.delivery;
+    const lines: string[] = [
+      '# Generated by `uap setup` — proxy runtime env (recipes, escalation, delivery).',
+      '# Sourced by the proxy launcher / systemd EnvironmentFile and by the Python',
+      '# proxy fallback loader. Existing process env always takes precedence.',
+    ];
+    // Recipes / escalation
+    lines.push(`PROXY_CONFIDENCE_ESCALATE=${r.enabled ? 'on' : 'off'}`);
+    lines.push(`PROXY_RECIPE=${r.recipe}`);
+    lines.push(`PROXY_CONFIDENCE_THRESHOLD=${r.confidenceThreshold}`);
+    lines.push(`PROXY_FUSION_N=${r.fusionN}`);
+    if (r.allowSelfJudge) lines.push('PROXY_ALLOW_SELF_JUDGE=1');
+    if (r.judgeModel) lines.push(`PROXY_ESCALATE_MODEL=${r.judgeModel}`);
+    if (r.judgeEndpoint) lines.push(`PROXY_ESCALATE_ENDPOINT=${r.judgeEndpoint}`);
+    if (r.judgeApiKey) lines.push(`PROXY_ESCALATE_API_KEY=${r.judgeApiKey}`);
+    // Delivery
+    if (d.enforcement !== 'block') lines.push(`UAP_ENFORCE_DELIVERY=${d.enforcement}`);
+    else lines.push('UAP_ENFORCE_DELIVERY=block');
+    lines.push(`UAP_DELIVER_LOCAL_MODE=${d.localMode}`);
+
+    const dir = join(cwd, '.uap');
+    mkdirSync(dir, { recursive: true });
+    const envPath = join(dir, 'proxy.env');
+    writeFileSync(envPath, lines.join('\n') + '\n');
+    // Contains a secret (judge API key) — restrict permissions best-effort.
+    try {
+      chmodSync(envPath, 0o600);
+    } catch {
+      /* non-POSIX / best-effort */
+    }
+    return envPath;
+  } catch {
+    return null;
   }
 }
