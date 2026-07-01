@@ -392,6 +392,48 @@ export const ModelConcurrencySchema = z.object({
   adaptive: z.boolean().optional(), // enable AIMD backpressure
 });
 
+// Serving-layer recipes (vLLM-SR style): Confidence / Fusion / Ratings / ReMoM
+// run behind the proxy. Consumed by the Python proxy via PROXY_* env, emitted to
+// .uap/proxy.env by `uap setup`. The escalation judge MUST be a model distinct
+// from the primary to add lift (a same-model judge was measured to add none).
+export const RecipesSchema = z.object({
+  enabled: z.boolean().default(false),
+  recipe: z.enum(['auto', 'single', 'confidence', 'fusion', 'ratings', 'remom']).default('auto'),
+  confidenceThreshold: z.number().min(0).max(1).default(0.5),
+  fusionN: z.number().int().min(2).max(6).default(3),
+  allowSelfJudge: z.boolean().default(false),
+  // Escalation/judge backend. apiKey is NEVER stored here (secret) -- it is
+  // written to .uap/proxy.env only.
+  judge: z
+    .object({
+      model: z.string().optional(),
+      endpoint: z.string().optional(),
+    })
+    .optional(),
+});
+
+// Delivery enforcement + runtime gates. enforcement/localMode map to the
+// UAP_ENFORCE_DELIVERY / UAP_DELIVER_LOCAL_MODE env consumed by the policy gate
+// and are emitted to .uap/proxy.env; runtimeVerify tracks the Stop-hook that runs
+// `uap verify` at session end.
+export const DeliverySchema = z.object({
+  enforcement: z.enum(['block', 'advisory', 'off']).default('block'),
+  localMode: z.enum(['advisory', 'deliver', 'block']).default('advisory'),
+  runtimeVerify: z.boolean().default(false),
+});
+
+// DESIGN.md integration (interrogate/lint + reactor design guidance + token gate).
+export const DesignSchema = z.object({
+  enabled: z.boolean().default(false),
+  tokenGate: z.boolean().default(false),
+});
+
+// Reactor: per-prompt capability/skill/pattern injection. On by default; a
+// wizard opt-out writes enabled:false which the react CLI honours.
+export const ReactorSchema = z.object({
+  enabled: z.boolean().default(true),
+});
+
 export const AgentContextConfigSchema = z.object({
   $schema: z.string().optional(),
   version: z.string().default('1.0.0'),
@@ -421,6 +463,14 @@ export const AgentContextConfigSchema = z.object({
   collaboration: CollaborationSchema.optional(),
   // Model-slot concurrency budget (don't exhaust inference slots)
   modelConcurrency: ModelConcurrencySchema.optional(),
+  // Serving-layer recipes + escalation judge (proxy-consumed via .uap/proxy.env)
+  recipes: RecipesSchema.optional(),
+  // Delivery enforcement + runtime verify gates
+  delivery: DeliverySchema.optional(),
+  // DESIGN.md integration
+  design: DesignSchema.optional(),
+  // Reactor per-prompt injection (on by default)
+  reactor: ReactorSchema.optional(),
   // Pattern reinforcement learning configuration
   patternRL: z
     .object({
