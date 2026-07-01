@@ -1,6 +1,13 @@
 # RTK — Rust Token Killer
 
-`v1.40.0` · `src/cli/rtk.ts`
+`v1.91.0` · `src/cli/rtk.ts`
+
+> **🏭 Where this fits:** Cross-cutting (keeps the belt from jamming) — every
+> `git status`, test run, and file dump your agent echoes floods the context
+> window, so it loses focus and burns budget on terminal noise. **What it
+> delivers:** 60–90% fewer tokens on CLI-command output, transparently, so
+> context stays lean at every station of the
+> [delivery pipeline](../guides/DELIVERY_PIPELINE.md).
 
 RTK (Rust Token Killer) is a fast CLI proxy that compresses and filters the
 output of command-line tools — `git status`, test runs, file reads, and similar
@@ -15,7 +22,9 @@ it; `uap rtk` manages installation and wiring.
 
 ## Why RTK + the MCP Router
 
-The two integrations target different sources of token waste and stack:
+The two integrations guard the same cross-cutting concern — keeping context lean
+so no station downstream jams — but target different sources of token waste, and
+they stack:
 
 | Layer | Tool | Saves on |
 |-------|------|----------|
@@ -76,7 +85,8 @@ Reports whether the `rtk` binary is installed, whether the rewrite hook
 Once the rewrite hook is installed, heavy CLI commands are transparently routed
 through RTK (e.g. `git status` is rewritten to `rtk git status`) with zero
 extra tokens of overhead — the agent issues normal commands and RTK compresses
-the output before it reaches the model.
+the output before it reaches the model. Your agent never knows the belt is being
+kept clear underneath it.
 
 UAP can nudge agents to route heavy CLIs through RTK via the `rtk_wrap.py`
 policy enforcer (`src/policies/enforcers/rtk_wrap.py`).
@@ -99,4 +109,5 @@ rtk --version         # verify the install
 reduction from both layers at once.
 
 See also: [MCP_ROUTER.md](MCP_ROUTER.md) ·
-[../architecture/OVERVIEW.md](../architecture/OVERVIEW.md)
+[../architecture/OVERVIEW.md](../architecture/OVERVIEW.md) ·
+[../guides/DELIVERY_PIPELINE.md](../guides/DELIVERY_PIPELINE.md)

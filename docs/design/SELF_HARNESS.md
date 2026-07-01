@@ -7,6 +7,14 @@
 > (Weakness Mining → Harness Proposal → Proposal Validation), no human engineer. Reports
 > Terminal-Bench-2.0 lifts incl. **Qwen3.5-35B-A3B 23.8%→38.1%** (our model's sibling).
 
+> **🏭 Where this fits:** Feedback station (the floor tunes its own machines) —
+> without it, the same failure mode recurs every run and a human has to hand-tune
+> the harness for each new model, which doesn't scale. **What it delivers:** an
+> autonomous loop that mines real failure traces, proposes bounded harness fixes,
+> validates them against real gates, and keeps only the winners — so the whole
+> [delivery pipeline](../guides/DELIVERY_PIPELINE.md) gets better at building the
+> next change instead of repeating the last mistake.
+
 ## 1. Why this, why now
 
 The paper's thesis is exactly the lesson of our manual harness-tuning campaign on Qwen3.6-35B-A3B:

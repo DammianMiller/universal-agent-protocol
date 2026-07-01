@@ -1,6 +1,8 @@
 # Memory System
 
-> UAP v1.40.0
+> UAP v1.91.0
+
+> **🏭 Where this fits:** INTAKE + FEEDBACK — the front and back doors of the [delivery pipeline](./DELIVERY_PIPELINE.md). At intake, a fresh agent forgets everything the last session learned and re-hallucinates scope; at feedback, nobody records the lesson, so the same mistake ships again next week. **What it delivers:** a persistent, searchable memory that hands each new agent the relevant past learnings on the way in, and captures durable lessons on the way out — so your team of agents gets smarter every run instead of starting from zero.
 
 The Universal Agent Protocol gives agents a persistent, multi-tier memory so
 that learnings survive across sessions, compactions, and even harness switches.
@@ -14,7 +16,8 @@ only the most relevant ones on demand via semantic search.
 ## The four tiers
 
 Memory flows from a cheap, high-churn staging area down to a durable, searchable
-archive. Each tier has a distinct cost/permanence trade-off.
+archive — think of it as raw notes at the head of the line being refined into
+finished, shelved knowledge. Each tier has a distinct cost/permanence trade-off.
 
 | Tier | Name | Storage | Purpose | Module(s) |
 |------|------|---------|---------|-----------|
@@ -71,7 +74,8 @@ threshold (default `0.35`).
 
 Not every observation deserves to be a memory. The write gate
 ([`write-gate.ts`](../../src/memory/write-gate.ts)) scores incoming content and
-**rejects low-value writes** before they consume storage or pollute recall.
+**rejects low-value writes** before they consume storage or pollute recall —
+quality control at the feedback door, so the archive stays high-signal.
 Rejections include:
 
 - Empty content
@@ -210,7 +214,8 @@ uap memory maintain [-v|--verbose]
 ## How agents use memory
 
 The recommended decision loop (see the project `CLAUDE.md`) wires memory into
-every task:
+every task — pulling context in at intake and pushing lessons back out at
+feedback:
 
 1. **READ** recent context with `uap memory query`.
 2. **QUERY** long-term memory for related learnings (semantic search).

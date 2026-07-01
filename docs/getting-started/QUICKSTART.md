@@ -1,8 +1,10 @@
 # Quickstart
 
-Get from a clean checkout to your first delivered task in about five minutes.
-This assumes you have already installed the CLI — see
-[Installation](./INSTALLATION.md) if not.
+> **🏭 The big idea:** UAP is the discipline layer for your AI delivery line — memory so agents remember, isolation so they don't clobber your repo, real verification so "done" means it actually runs, and coordination so many agents don't collide. See the [delivery pipeline](../guides/DELIVERY_PIPELINE.md) for the full station-by-station tour.
+
+Let's get you from a clean checkout to your first delivered task in about five
+minutes. This assumes you've already installed the CLI — head to
+[Installation](./INSTALLATION.md) first if not.
 
 ## 1. Set up your project (~1 min)
 
@@ -12,12 +14,13 @@ From the root of your project:
 uap setup
 ```
 
-This initializes `.uap.json`, the memory directories and database, generates
-`CLAUDE.md`, starts Qdrant (if Docker is available), wires the MCP Router, and
-installs the harness hooks. It finishes with a summary showing which steps
-succeeded.
+This lights up the delivery line: it initializes `.uap.json`, the memory
+directories and database, generates `CLAUDE.md`, starts Qdrant (if Docker is
+available), wires the MCP Router, and installs the harness hooks. It also writes
+a `.uap/proxy.env` that the proxy auto-loads, so your model wiring is ready to
+go. It finishes with a summary showing which steps succeeded.
 
-Confirm memory is healthy:
+Confirm memory — the station that lets your agent remember — is healthy:
 
 ```bash
 uap memory status
@@ -28,7 +31,8 @@ long-term endpoint reported at `http://localhost:6333`.
 
 ## 2. Store and query a memory (~1 min)
 
-Write a learning into long-term memory:
+This is the intake station: instead of starting every task from zero, your agent
+keeps what it learns. Write a learning into long-term memory:
 
 ```bash
 uap memory store "API keys are loaded from the QDRANT_API_KEY env var" -t config,memory -i 7
@@ -37,7 +41,7 @@ uap memory store "API keys are loaded from the QDRANT_API_KEY env var" -t config
 `-t` adds comma-separated tags and `-i` sets the importance score (1-10). The
 store applies a quality write gate by default; pass `-f` to bypass it.
 
-Now query it back semantically:
+Now query it back semantically — you don't need the exact words, just the idea:
 
 ```bash
 uap memory query "where do api keys come from"
@@ -49,9 +53,10 @@ matching entries with their similarity scores. Tune results with
 
 ## 3. Run `uap deliver` on a small task (~2 min)
 
-`uap deliver` is the convergence harness: it iterates a model against your
+`uap deliver` is the build-and-QC station: it iterates a model against your
 project's **real completion gates** (build, typecheck, test, lint) until every
-required gate passes or the turn budget is exhausted.
+required gate passes or the turn budget is exhausted. This is how "done" stops
+meaning "the model said so" and starts meaning "the code actually passed".
 
 First do a dry run to see the detected gates and plan without calling a model:
 
@@ -69,7 +74,7 @@ When the plan looks right, run it for real:
 uap deliver "fix the failing test in src/utils/dates"
 ```
 
-Notes on behaviour:
+A few things worth knowing:
 
 - The default model preset is `qwen35-a3b` (override with `-m <preset>` or the
   `UAP_DELIVER_MODEL` env var).
@@ -86,7 +91,8 @@ Notes on behaviour:
 
 ## 4. View the dashboard (~1 min)
 
-UAP ships a rich terminal dashboard. View the full system overview:
+UAP ships a rich terminal dashboard so you can watch the line from above. View
+the full system overview:
 
 ```bash
 uap dashboard overview

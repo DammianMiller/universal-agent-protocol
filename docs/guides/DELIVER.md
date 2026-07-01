@@ -1,8 +1,10 @@
 # `uap deliver` — the delivery harness
 
+> **🏭 Where this fits:** BUILD + QC/VERIFY — the two stations where a normal agentic workflow breaks hardest. Your agent writes plausible-but-wrong code (or empty, looping local-model output), then declares "done" on something that never compiled. **What it delivers:** a convergence loop that keeps working the code against your project's *real* gates — build, tests, lint, integration, even a dev deploy — and refuses to call it finished until they actually pass.
+
 `uap deliver` drives a model through a **convergence loop that iterates against your project's real completion gates until the work is actually delivered** — build green, tests passing, lint clean — not until the model *claims* it's done.
 
-It is UAP's answer to "the agent said it finished, but nothing compiles." Instead of a single shot, `deliver` runs an execute → verify → critique → iterate loop, feeding real gate failures back to the model and persisting until the gates pass or the run provably stalls.
+Think of it as the quality-control station on your [delivery pipeline](./DELIVERY_PIPELINE.md): raw code goes in, and nothing leaves the line until it has been inspected against the real definition of done. It is UAP's answer to "the agent said it finished, but nothing compiles." Instead of a single shot, `deliver` runs an execute → verify → critique → iterate loop, feeding real gate failures back to the model and persisting until the gates pass or the run provably stalls.
 
 ```bash
 uap deliver "implement the password reset flow"

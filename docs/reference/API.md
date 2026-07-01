@@ -1,8 +1,15 @@
 # UAP Programmatic API Reference
 
-> Public API of the `@miller-tech/uap` package. Version v1.40.0.
+> Public API of the `@miller-tech/uap` package. Version v1.91.0.
 
-Install and import:
+> **🏭 Where this fits:** Cross-cutting — the machine parts behind the line.
+> **What it delivers:** when the `uap` CLI isn't the right shape for your job,
+> these exports let you wire UAP's memory, routing, coordination, and MCP
+> stations straight into your own tools and drive the [delivery pipeline](../guides/DELIVERY_PIPELINE.md)
+> from your own code.
+
+If the CLI is the control panel, this is the parts bin — the same subsystems,
+exposed so you can bolt them into your own harness. Install and import:
 
 ```bash
 npm install @miller-tech/uap

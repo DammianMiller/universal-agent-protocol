@@ -1,11 +1,18 @@
 # Platform & Harness Reference
 
-> Universal Agent Protocol (UAP) v1.40.0
+> Universal Agent Protocol (UAP) v1.91.0
 
-UAP integrates with 9 agent harnesses. The canonical list is `ALL_TARGETS` in
-`src/cli/hooks.ts`. Every platform receives the UAP enforcement layer: lifecycle
-hooks, the DB-driven policy gate, and (where supported) the hierarchical MCP
-router.
+> **🏭 Where this fits:** Cross-cutting — the same line, whichever floor you work
+> on. **What it delivers:** every station of your [delivery pipeline](../guides/DELIVERY_PIPELINE.md)
+> — the guards, the policy gate, the lean-context router — shows up in whichever
+> agent harness you already use, so your rules travel with you instead of living
+> in one tool.
+
+You shouldn't have to rebuild the factory just because you switched agents. UAP
+integrates with 9 agent harnesses so the same enforcement layer follows you
+across all of them. The canonical list is `ALL_TARGETS` in `src/cli/hooks.ts`.
+Every platform receives the UAP enforcement layer: lifecycle hooks, the
+DB-driven policy gate, and (where supported) the hierarchical MCP router.
 
 ## Supported platforms
 

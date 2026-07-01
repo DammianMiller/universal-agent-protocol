@@ -1,6 +1,8 @@
 # MCP Router
 
-> UAP v1.40.0
+> UAP v1.91.0
+
+> **🏭 Where this fits:** CROSS-CUTTING — keeping the context window lean at every station of the [delivery pipeline](./DELIVERY_PIPELINE.md). In a normal agentic workflow every tool call dumps its full result into context, so mostly-irrelevant output crowds out the details your agent actually needs. **What it delivers:** a proxy that compresses tool output before it reaches the model — up to 98% fewer tokens on large results — so the agent keeps room for real work and you spend less per session.
 
 The MCP Router is a token-optimizing proxy that sits between an AI harness and
 its MCP tool servers. It is implemented as 11 modules under

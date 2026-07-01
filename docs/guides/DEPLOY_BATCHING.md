@@ -1,10 +1,18 @@
 # Deploy Batching
 
-> UAP v1.40.0
+> UAP v1.91.0
+
+> **🏭 Where this fits:** LINE COORDINATION → SHIPPING — this is the station
+> where parallel agents collide: two push to the same branch within seconds and
+> one gets rejected, or a burst of redundant deploys stampedes CI. **What it
+> delivers:** git and deploy actions are queued, squashed, and deduplicated into
+> one ordered batch — so many agents can ship down the same line without
+> trampling each other.
 
 When several agents work in parallel, they all want to commit, push, merge, and
-deploy at roughly the same time. Left unmanaged, that produces two failure
-modes:
+deploy at roughly the same time. That's the moment a normal agentic workflow
+falls apart at the end of the [delivery pipeline](./DELIVERY_PIPELINE.md). Left
+unmanaged, it produces two failure modes:
 
 - **Merge conflicts** — two agents push to the same branch within seconds of
   each other and the second push is rejected (or worse, races into a conflicted
@@ -15,7 +23,8 @@ modes:
 The deploy batcher solves this by *queueing* git/deploy actions and grouping
 them inside short, per-action-type time windows. Commits to the same branch are
 squashed, duplicate pushes and workflow triggers are deduplicated, and the
-result is executed as a single ordered batch.
+result is executed as a single ordered batch — the line coordinator that keeps
+the shipping station orderly.
 
 The implementation lives in
 [`src/coordination/deploy-batcher.ts`](../../src/coordination/deploy-batcher.ts),

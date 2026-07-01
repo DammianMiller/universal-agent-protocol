@@ -1,13 +1,19 @@
 # UAP CLI Reference
 
 > Complete command reference for the Universal Agent Protocol command-line interface (`uap`).
-> Version v1.50.0.
+> Version v1.91.0.
 
-The `uap` binary is the single entry point for every UAP capability: project
-initialization, the tiered memory system, git worktree workflow, multi-agent
-coordination, task management, the multi-model architecture, the MCP router,
-policy enforcement, the delivery convergence loop, and platform hook
-management.
+> **🏭 Where this fits:** Every station — this is the control panel for the whole
+> line. **What it delivers:** one binary that drives each stage of your
+> [delivery pipeline](../guides/DELIVERY_PIPELINE.md), from understanding the work
+> to shipping it safely, so you operate the factory from a single door.
+
+The `uap` binary is the single entry point for every UAP capability — the
+control panel for the whole line. From here you run project initialization, the
+tiered memory system (Intake/Feedback), the git worktree workflow (Isolation),
+multi-agent coordination (Line coordination), task management, the multi-model
+architecture (Prep/Routing), the MCP router, policy enforcement (cross-cutting),
+the delivery convergence loop (Build → QC/Verify), and platform hook management.
 
 ```bash
 uap --help          # top-level command list

@@ -1,8 +1,16 @@
 # Droids and Skills
 
-> Applies to UAP **v1.40.0**
+> Applies to UAP **v1.91.0**
 
-UAP ships two complementary extension mechanisms:
+> **🏭 Where this fits:** PREP/ROUTING — this is the station where a
+> generalist agent takes the wrong approach on specialist work: reviewing
+> security like a linter, refactoring without an architect's eye. **What it
+> delivers:** the right specialist station gets put in front of your model
+> *before* it starts — a security auditor for auth work, a language expert for
+> the language at hand — so the approach is right from the first line.
+
+UAP ships two complementary extension mechanisms that decide *who* and *how* at
+the prep stage of your [delivery pipeline](./DELIVERY_PIPELINE.md):
 
 - **Droids** — markdown-defined specialist agents (a reviewer, a language
   expert, an architect). Each droid is a focused persona with its own tools and
@@ -11,7 +19,9 @@ UAP ships two complementary extension mechanisms:
   protocol, a navigation technique, a memory operation).
 
 Droids answer *"who should do this?"*; skills answer *"how is this done?"*. A
-droid can pull in skills when a domain-specific workflow applies.
+droid can pull in skills when a domain-specific workflow applies. Think of them
+as swapping in the right specialist station for the job rather than sending
+everything down one generalist line.
 
 ## What a droid is
 

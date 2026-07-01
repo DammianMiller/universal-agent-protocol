@@ -1,6 +1,13 @@
 # MCP Router
 
-`v1.40.0` · `src/mcp-router/`
+`v1.91.0` · `src/mcp-router/`
+
+> **🏭 Where this fits:** Cross-cutting (keeps the belt from jamming) — every
+> station downstream stalls when your agent's context window is choked with
+> hundreds of tool schemas and raw tool dumps, so it loses the thread and burns
+> budget before doing any work. **What it delivers:** up to 98% fewer
+> tool-definition tokens and relevance-ranked tool output, so context stays lean
+> and work keeps moving down the [delivery pipeline](../guides/DELIVERY_PIPELINE.md).
 
 The MCP Router is a hierarchical Model Context Protocol server that sits in
 front of all of your downstream MCP servers and dramatically reduces the tokens
@@ -18,7 +25,8 @@ A normal MCP setup exposes every tool from every server directly to the model.
 With a dozen servers that is easily 150+ tool schemas at roughly ~500 tokens
 each — tens of thousands of tokens of context burned before the agent does any
 work. On top of that, tools like file readers and shell wrappers return large
-outputs that flood the context window.
+outputs that flood the context window. Either way, the belt jams: your agent is
+reasoning around clutter instead of the task.
 
 The router fixes both:
 
@@ -144,4 +152,5 @@ router's view, not deleted) and re-run `uap mcp-setup`.
   per-output FTS5 savings are computed live for each call and reported by
   `uap mcp-router stats`.
 - Pair the router with **RTK** for CLI-output savings — see
-  [RTK.md](RTK.md). The two are complementary (tool definitions + CLI output).
+  [RTK.md](RTK.md). The two are complementary (tool definitions + CLI output),
+  and together they keep the whole belt clear of context clutter.

@@ -1,15 +1,22 @@
 # Configuration
 
-UAP is configured through a project-level `.uap.json` file plus a set of
-environment variables. `uap init` / `uap setup` create `.uap.json` for you; this
-page documents the options that actually exist in the code so you can tune them
-by hand.
+> **🏭 Where this fits:** The control panel for the whole line — every station's knobs in one place. **What it delivers:** sensible defaults out of the box (via `uap setup`), and precise control when you want to tune how your [delivery pipeline](../guides/DELIVERY_PIPELINE.md) behaves.
+
+Most of the time you won't touch any of this — `uap init` / `uap setup` write a
+working `.uap.json` and a `.uap/proxy.env` for you, and the wizard picks sensible
+defaults for every station on the line. But when you're ready to tune how your
+delivery line behaves, this is the page. UAP is configured through the
+project-level `.uap.json` file plus a set of environment variables, and every
+option below actually exists in the code, so you can adjust it by hand with
+confidence. The proxy auto-loads `.uap/proxy.env`, so model wiring you set there
+is picked up automatically.
 
 ## Project config: `.uap.json`
 
 `.uap.json` lives at the project root and is validated against a strict schema —
-unknown keys and bad types are rejected. Every section is optional except
-`project`; defaults are applied for anything you omit.
+unknown keys and bad types are rejected, so a typo fails loudly instead of
+silently doing the wrong thing. Every section is optional except `project`;
+defaults are applied for anything you omit.
 
 ```json
 {
@@ -177,7 +184,9 @@ compare, presets, select, export, health) and `uap dashboard models`.
 
 ## Environment variables
 
-These are the environment variables read by the code.
+These are the environment variables read by the code. You'll usually leave them
+alone — the wizard writes what's needed into `.uap/proxy.env` — but here's the
+full set for when you want to override something.
 
 ### Memory & Qdrant
 

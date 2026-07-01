@@ -1,11 +1,23 @@
 # Running UAP Against Local Models
 
-> UAP v1.40.0
+> UAP v1.91.0
 
-UAP can drive its coding/convergence loop against **local models** served by
-[llama.cpp](https://github.com/ggml-org/llama.cpp) instead of a hosted API.
-This keeps inference on your own hardware (zero per-token cost) and works with
-quantized open-weight models such as Qwen 3.x.
+> **🏭 Where this fits:** BUILD — this is the station where a cheap local model
+> flails: plausible-but-wrong code, empty output, or a loop that never lands a
+> real change. **What it delivers:** the proxy and the convergence loop keep a
+> small, zero-per-token model on the rails so it produces *verified* code
+> instead of stubs — real results on a GPU you already own.
+
+Here's the pain: you *want* to run your agent on a local model — inference on
+your own hardware, zero per-token cost — but on its own a small quantized model
+rarely nails a non-trivial change. It one-shots something that looks right and
+doesn't compile.
+
+Here's the fix: UAP drives its coding/convergence loop against **local models**
+served by [llama.cpp](https://github.com/ggml-org/llama.cpp) instead of a hosted
+API. The loop iterates the model against your real gates until the change is
+verified — that's what turns a modest open-weight model such as Qwen 3.x into a
+productive station on your [delivery pipeline](./DELIVERY_PIPELINE.md).
 
 > **Just want the recommended local setup?** See
 > [Qwen3.6 35B-A3B on llama.cpp, by VRAM tier](QWEN36_LLAMACPP.md) for
@@ -123,8 +135,11 @@ to `http://localhost:4000/v1`.
 | `--deploy`          | On success, queue a commit of applied files into the deploy batcher |
 | `--dry-run`         | Show detected gates and plan without calling the model |
 
-A common local pattern is a cheap local executor that escalates to a hosted
-model only when it stalls:
+A common local pattern is a cheap local executor that escalates to a **stronger,
+distinct** model only when it stalls. This distinction matters: a same-model
+judge (a local model grading its own output) was measured to add no lift —
+escalation only pays off when the model you escalate *to* is genuinely more
+capable than the one that stalled.
 
 ```bash
 uap deliver "implement the retry logic" \

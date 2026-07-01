@@ -1,10 +1,21 @@
 # Installation
 
-The Universal Agent Protocol (UAP) is an autonomous AI agent memory system with
-CLAUDE.md protocol enforcement. It ships as a single npm package
-(`@miller-tech/uap`, v1.50.0) that installs the `uap` CLI.
+> **🏭 Where this fits:** Setting up the floor — before any station can run, UAP has to be installed and wired into your agent harness. **What it delivers:** one `npm install` + one `uap setup` and every station on the [delivery pipeline](../guides/DELIVERY_PIPELINE.md) is live in your project.
+
+Welcome. The Universal Agent Protocol (UAP) is the discipline layer that turns
+your AI agent into a reliable member of your software delivery line. Left to its
+own devices an agent forgets what it learned yesterday, picks the wrong approach,
+edits your main branch, writes plausible-but-wrong code, and cheerfully declares
+"done" on something that never actually ran. UAP puts a station at each of those
+break points so the work that comes off the line is trustworthy.
+
+It ships as a single npm package (`@miller-tech/uap`, v1.91.0) that installs the
+`uap` CLI. This page gets it onto your machine and wired into your project.
 
 ## Prerequisites
+
+You don't need all of these to start — UAP works with just Node, and turns on
+more stations as you provide the pieces.
 
 | Requirement | Needed for | Notes |
 | --- | --- | --- |
@@ -14,9 +25,10 @@ CLAUDE.md protocol enforcement. It ships as a single npm package
 | **Python 3** | Pattern RAG indexing & embeddings | Optional. `uap setup` creates a virtualenv and installs the pattern indexing dependencies. |
 | **A local OpenAI-compatible model** | `uap deliver`, multi-model routing | Optional. Points at an OpenAI-compatible `/v1` endpoint (default `http://localhost:4000/v1`). |
 
-UAP works without Docker, Python, or a local model — those steps are skipped and
-the corresponding features (semantic recall, pattern RAG, the convergence
-harness) are simply unavailable until you provide them.
+If you skip Docker, Python, or a local model, those steps are simply skipped and
+the matching features (semantic recall, pattern RAG, the convergence harness) sit
+dormant until you provide them later. Nothing breaks — you just start with fewer
+stations lit up.
 
 ## Install
 
@@ -32,7 +44,7 @@ npm install -g @miller-tech/uap
 uap --version
 ```
 
-This prints the installed package version (e.g. `1.50.0`).
+This prints the installed package version (e.g. `1.91.0`).
 
 ## One-command setup
 
@@ -42,14 +54,21 @@ From the root of the project you want to wire up, run:
 uap setup
 ```
 
-`uap setup` is a **guided, arrow-key wizard by default** (powered by
-@clack/prompts). It walks you through the configuration — harnesses, memory
-tiers, coordination, patterns, policies, model provider/profile, hooks — with
-**smart defaults inferred from your environment** (Docker → offer Qdrant; a
-detected local model endpoint → preselect the local provider/profile). Press
-Enter to accept the recommended path. On a non-TTY/CI run, or with
-`--non-interactive`/`-y`, it runs the same flow non-interactively with defaults
-so pipelines never hang on a prompt.
+`uap setup` is a **friendly, arrow-key guided wizard by default** (powered by
+@clack/prompts). It walks you through the whole delivery line, one station at a
+time — memory tiers so your agent remembers, patterns and the policy engine so it
+follows your rules, your model provider/profile, harness hooks, the browser
+dashboard, and the newer stations too: **recipes and the escalation judge,
+delivery gates, model-slot concurrency, cross-agent collaboration, DESIGN.md, and
+the reactor**. Each prompt comes with a **smart default inferred from your
+environment** (Docker → offer Qdrant; a detected local model endpoint →
+preselect the local provider/profile), so you can usually just press Enter to
+accept the recommended path.
+
+When it finishes, setup writes your `.uap.json` and a `.uap/proxy.env` (the proxy
+auto-loads that env file, so your model wiring is picked up automatically). On a
+non-TTY/CI run, or with `--non-interactive`/`-y`, it runs the same flow
+non-interactively with defaults so pipelines never hang on a prompt.
 
 Before it changes anything, setup **backs up your existing agent instruction
 files** (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, …, plus `.uap.json`) to
@@ -135,10 +154,10 @@ to overwrite existing configuration.
 
 ## Installing harness hooks
 
-UAP supports nine AI coding harnesses: **Claude Code, Factory, Cursor, VSCode,
+UAP works with nine AI coding harnesses: **Claude Code, Factory, Cursor, VSCode,
 OpenCode, Codex, ForgeCode, Oh-My-Pi, and Hermes**. `uap setup` installs hooks
-for the project's platforms automatically, but you can install or re-install them
-manually.
+for the platforms it finds in your project automatically, but you can install or
+re-install them by hand any time.
 
 Install hooks for every detected harness:
 

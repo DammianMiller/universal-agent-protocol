@@ -1,11 +1,18 @@
 # Database Schema Reference
 
-> Universal Agent Protocol (UAP) v1.40.0
+> Universal Agent Protocol (UAP) v1.91.0
 
-UAP persists state in a set of SQLite databases (via `better-sqlite3`, WAL mode)
-plus a Qdrant vector store for semantic search. All schemas below are grounded
-in source. Paths are resolved relative to the project working directory unless
-noted otherwise.
+> **🏭 Where this fits:** Cross-cutting — the shop's records and shift log.
+> **What it delivers:** the durable memory of your [delivery pipeline](../guides/DELIVERY_PIPELINE.md)
+> — tasks, coordination, policies, and what the floor has learned — so nothing a
+> station knows is lost when the session ends.
+
+These databases are the factory's paperwork: the job tickets, the coordination
+board, the enforced rulebook, and the long-term memory that lets tomorrow's
+session pick up where today's left off. UAP persists state in a set of SQLite
+databases (via `better-sqlite3`, WAL mode) plus a Qdrant vector store for
+semantic search. All schemas below are grounded in source. Paths are resolved
+relative to the project working directory unless noted otherwise.
 
 ## SQLite databases
 
