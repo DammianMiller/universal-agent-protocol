@@ -7979,6 +7979,28 @@ def openai_to_anthropic_response(
             }
         )
 
+    # Empty-output guard (no-tool path). Qwen-style models emit their whole
+    # response inside a <think> block even with enable_thinking=False; when the
+    # client did NOT opt into thinking (expose_thinking=False) the block is
+    # consumed and -- if the model produced nothing after </think> -- the
+    # response collapses to an empty text block. That empty body is useless to
+    # the client and silently breaks downstream consumers (notably the
+    # Fusion/Confidence judge, whose escalate call is a no-tool turn -- an empty
+    # judge reply makes apply_recipe fall back to the primary, so recipes
+    # degrade to single). When there is no text and no tool_use content but we
+    # DID capture thinking, surface the de-tagged thinking as the body rather
+    # than returning nothing.
+    _has_text = any(
+        b.get("type") == "text" and (b.get("text") or "").strip() for b in content
+    )
+    _has_tool_use = any(b.get("type") == "tool_use" for b in content)
+    if not _has_text and not _has_tool_use and thinking_chunks:
+        content.append({"type": "text", "text": "\n\n".join(thinking_chunks)})
+        logger.warning(
+            "EMPTY-OUTPUT GUARD: no-tool turn produced only <think> content; "
+            "promoted de-tagged thinking to the text body (would otherwise be empty)"
+        )
+
     stop_reason_map = {
         "stop": "end_turn",
         "length": "max_tokens",

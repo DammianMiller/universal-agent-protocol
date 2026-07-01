@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.90.0 (2026-06-30)
+
+- feat(proxy): unblock proxied recipes — no-tool empty-output guard + distinct-judge gating
+
+
 ## v1.89.0 (2026-06-30)
 
 - feat(proxy): Ratings + ReMoM recipes (+ Workflow = deliver), completing the looper set

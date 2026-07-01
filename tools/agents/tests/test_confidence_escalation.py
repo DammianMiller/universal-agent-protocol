@@ -231,5 +231,42 @@ class SettingsExtTest(unittest.TestCase):
                 os.environ.pop("PROXY_RECIPE", None)
 
 
+class JudgeGatingTest(unittest.TestCase):  # #2 stronger non-self judge
+    def test_judge_available_distinct_vs_self(self):
+        s = S(model="opus")  # judge=opus, primary=qwen -> distinct
+        self.assertTrue(s.judge_available("qwen"))
+        self.assertFalse(s.judge_available("opus"))          # self-judge blocked
+        self.assertFalse(S(model="qwen").judge_available("qwen"))
+        self.assertTrue(s.judge_available(""))               # unknown primary -> allow
+        self.assertFalse(S(model="", endpoint="").judge_available("qwen"))  # unconfigured
+
+    def test_allow_self_judge_override(self):
+        s = ce.Settings(enabled=True, recipe="fusion", signal="heuristic", threshold=0.5,
+                        fusion_n=2, remom_quorum=2, auto_fusion_chars=600, model="qwen",
+                        endpoint="http://x/", api_key="k", allow_self_judge=True)
+        self.assertTrue(s.judge_available("qwen"))
+
+    def test_self_judge_downgrades_fusion_without_calling_judge(self):
+        async def primary(v): raise AssertionError("fan-out must not run on self-judge")
+        async def judge(p): raise AssertionError("judge must not be called on self-judge")
+        # judge model == primary model ("qwen") -> downgrade to single
+        out = run(ce.apply_recipe(resp("c0"), body(), {"model": "qwen", "messages": []},
+                                  S(recipe="fusion", fusion_n=2, model="qwen"), False, primary, judge))
+        self.assertEqual(ce.extract_text(out), "c0")
+
+    def test_distinct_judge_still_runs_fusion(self):
+        async def primary(v): return resp("c1")
+        async def judge(p): return resp("1")
+        out = run(ce.apply_recipe(resp("c0"), body(), {"model": "qwen", "messages": []},
+                                  S(recipe="fusion", fusion_n=2, model="opus"), False, primary, judge))
+        self.assertEqual(ce.extract_text(out), "c1")
+
+    def test_select_recipe_skips_fusion_on_self_judge(self):
+        b = {"model": "qwen", "messages": [{"role": "user",
+             "content": "prove the theorem and analyze why x is even"}]}
+        self.assertEqual(ce.select_recipe(b, S(recipe="auto", model="qwen"), False), "confidence")
+        self.assertEqual(ce.select_recipe(b, S(recipe="auto", model="opus"), False), "fusion")
+
+
 if __name__ == "__main__":
     unittest.main()
