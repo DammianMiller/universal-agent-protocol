@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.91.0 (2026-07-01)
+
+- feat(setup): guide setup through ALL features (recipes/escalation, delivery, concurrency, collaboration, design, reactor)
+
+
 ## v1.90.0 (2026-06-30)
 
 - feat(proxy): unblock proxied recipes — no-tool empty-output guard + distinct-judge gating
