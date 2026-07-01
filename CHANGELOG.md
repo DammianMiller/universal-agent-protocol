@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.91.1 (2026-07-01)
+
+- docs: reframe all documentation around the software-delivery pipeline (friendly, benefit-first)
+
+
 ## v1.91.0 (2026-07-01)
 
 - feat(setup): guide setup through ALL features (recipes/escalation, delivery, concurrency, collaboration, design, reactor)
