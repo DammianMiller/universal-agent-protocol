@@ -117,6 +117,43 @@ describe('applyWizardConfig — runtime feature sections', () => {
   });
 });
 
+describe('applyWizardConfig — routing preset', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-wizroute-'));
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ projectName: 'x' }));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('writes multiModel from a selected routing preset', async () => {
+    const sel = defaultSelections({
+      model: {
+        provider: 'anthropic',
+        qwenOptimizations: false,
+        toolCallProfile: 'claude-sonnet-4.6',
+        costTracking: false,
+        modelRouting: true,
+        routingPreset: 'fable-local-opus',
+      },
+    });
+    await applyWizardConfig(dir, sel);
+    const cfg = JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf-8'));
+    expect(cfg.multiModel.enabled).toBe(true);
+    expect(cfg.multiModel.roles).toEqual({
+      planner: 'fable-5',
+      executor: 'qwen36-a3b',
+      reviewer: 'opus-4.8',
+      fallback: 'qwen36-a3b',
+    });
+  });
+
+  it('does not write multiModel when no routing preset is chosen', async () => {
+    await applyWizardConfig(dir, defaultSelections());
+    const cfg = JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf-8'));
+    expect(cfg.multiModel).toBeUndefined();
+  });
+});
+
 describe('writeProxyEnv', () => {
   let dir: string;
   beforeEach(() => {
