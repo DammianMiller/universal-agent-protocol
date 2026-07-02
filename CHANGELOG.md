@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.92.0 (2026-07-02)
+
+- feat(models,proxy): 2 named routing options + Claude Max OAuth passthrough
+
+
 ## v1.91.0 (2026-07-01)
 
 - feat(setup): guide setup through ALL features (recipes/escalation, delivery, concurrency, collaboration, design, reactor)
