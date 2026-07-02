@@ -1461,6 +1461,11 @@ program
     .description(
       'Multi-model architecture management (status, route, plan, compare, presets, select, export, health)'
     )
+    // The real subcommands (with their own options like --save) are lazily
+    // registered inside the action below, then argv is re-parsed. Allow unknown
+    // options/args through the FIRST parse so they survive to the re-parse.
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
     .action(async () => {
       // Re-register with full subcommands and re-parse
       const cmds = program.commands as unknown as Command[];

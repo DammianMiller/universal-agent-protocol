@@ -142,9 +142,100 @@ export const ModelPresets: Record<string, ModelConfig> = {
     costPer1MOutput: 12.0,
     capabilities: ['code-generation', 'execution', 'complex-reasoning', 'agentic'],
   },
+  'fable-5': {
+    id: 'fable-5',
+    name: 'Claude Fable 5',
+    provider: 'anthropic',
+    apiModel: 'claude-fable-5',
+    apiKeyEnvVar: 'ANTHROPIC_API_KEY',
+    maxContextTokens: 200000,
+    costPer1MInput: 5.0,
+    costPer1MOutput: 25.0,
+    capabilities: ['planning', 'complex-reasoning', 'code-generation', 'advanced-planning'],
+    modelContextBudget: 180000,
+  },
+  'haiku-4.5': {
+    id: 'haiku-4.5',
+    name: 'Claude Haiku 4.5',
+    provider: 'anthropic',
+    apiModel: 'claude-haiku-4-5-20251001',
+    apiKeyEnvVar: 'ANTHROPIC_API_KEY',
+    maxContextTokens: 200000,
+    costPer1MInput: 1.0,
+    costPer1MOutput: 5.0,
+    capabilities: ['code-generation', 'execution', 'simple-tasks', 'agentic'],
+    modelContextBudget: 180000,
+  },
+  'qwen36-a3b': {
+    id: 'qwen36-a3b',
+    name: 'Qwen 3.6 35B A3B (llama.cpp, local)',
+    provider: 'custom',
+    apiModel: 'qwen36-35b-a3b-iq4xs',
+    // Route through the anthropic-proxy (:4000) for <think>-stripping + tool/finalize
+    // guardrails (same rationale as qwen35-a3b), not llama :8080 raw.
+    endpoint: 'http://192.168.1.165:4000/v1',
+    maxContextTokens: 262144,
+    costPer1MInput: 0,
+    costPer1MOutput: 0,
+    capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
+    modelContextBudget: 131072,
+  },
 };
 
 export type ModelPresetId = keyof typeof ModelPresets;
+
+/**
+ * Named multi-model ROUTING options — role bundles you can pick with
+ * `uap model routing use <id>`, which writes the roles into `.uap.json`.
+ * Each role references a ModelPresets id. Cloud roles (planner/reviewer) run
+ * against Anthropic and work with a Claude Max plan via the proxy's OAuth
+ * passthrough; local roles run free on llama.cpp.
+ */
+export interface RoutingPreset {
+  id: string;
+  name: string;
+  description: string;
+  roles: { planner: string; executor: string; reviewer: string; fallback: string };
+  models: string[];
+  routingStrategy?: string;
+}
+
+export const RoutingPresets: Record<string, RoutingPreset> = {
+  'fable-local-opus': {
+    id: 'fable-local-opus',
+    name: 'Fable plan / local execute / Opus review',
+    description:
+      'Plan with Claude Fable 5, execute on local Qwen 3.6, review with Claude Opus 4.8, ' +
+      'fall back to local Qwen 3.6. Cloud is used only for planning and review (Max-plan ' +
+      'friendly); execution stays free and local.',
+    roles: {
+      planner: 'fable-5',
+      executor: 'qwen36-a3b',
+      reviewer: 'opus-4.8',
+      fallback: 'qwen36-a3b',
+    },
+    models: ['fable-5', 'qwen36-a3b', 'opus-4.8'],
+    routingStrategy: 'balanced',
+  },
+  'fable-haiku-opus': {
+    id: 'fable-haiku-opus',
+    name: 'Fable plan / Haiku execute / Opus review',
+    description:
+      'Plan with Claude Fable 5, execute with Claude Haiku 4.5 (fast cloud), review with ' +
+      'Claude Opus 4.8, fall back to local Qwen 3.6. All-cloud hot path with a free local ' +
+      'safety net.',
+    roles: {
+      planner: 'fable-5',
+      executor: 'haiku-4.5',
+      reviewer: 'opus-4.8',
+      fallback: 'qwen36-a3b',
+    },
+    models: ['fable-5', 'haiku-4.5', 'opus-4.8', 'qwen36-a3b'],
+    routingStrategy: 'performance-first',
+  },
+};
+
+export type RoutingPresetId = keyof typeof RoutingPresets;
 
 /**
  * Role assignment configuration - maps roles to models

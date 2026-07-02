@@ -16,12 +16,13 @@ import {
   createExecutor,
   MockModelClient,
   ModelPresets,
+  RoutingPresets,
   type MultiModelConfig,
 } from '../models/index.js';
 import { AgentContextConfig, MultiModelSchema } from '../types/config.js';
 
 // Config loading delegated to shared utility
-import { loadUapConfig } from '../utils/config-loader.js';
+import { loadUapConfig, findUapConfigPath, modifyUapConfig } from '../utils/config-loader.js';
 const loadConfig = () => loadUapConfig();
 
 /**
@@ -549,6 +550,62 @@ async function healthCommand(): Promise<void> {
 /**
  * Register model commands
  */
+/**
+ * Routing list command — show the named multi-model routing options.
+ */
+function routingListCommand(): void {
+  console.log(chalk.bold('\nAvailable model routing options:\n'));
+  for (const [id, p] of Object.entries(RoutingPresets)) {
+    console.log(`  ${chalk.cyan(id)} — ${p.name}`);
+    console.log(`     ${chalk.dim(p.description)}`);
+    console.log(
+      `     plan=${chalk.green(p.roles.planner)} exec=${chalk.blue(p.roles.executor)} ` +
+        `review=${chalk.yellow(p.roles.reviewer)} fallback=${chalk.red(p.roles.fallback)}\n`
+    );
+  }
+  console.log(chalk.dim('Apply one with: uap model routing use <id> --save'));
+}
+
+/**
+ * Routing use command — apply a named routing option to .uap.json (multiModel).
+ */
+async function routingUseCommand(id: string, options: { save?: boolean }): Promise<void> {
+  const preset = RoutingPresets[id];
+  if (!preset) {
+    console.error(
+      chalk.red(
+        `Unknown routing option '${id}'. Available: ${Object.keys(RoutingPresets).join(', ')}`
+      )
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const mmConfig: MultiModelConfig = {
+    enabled: true,
+    models: preset.models,
+    roles: { ...preset.roles },
+    routingStrategy:
+      (preset.routingStrategy as MultiModelConfig['routingStrategy']) || 'balanced',
+  };
+  console.log(chalk.bold(`\nRouting option: ${preset.name}`));
+  console.log(`  Planner:  ${chalk.green(preset.roles.planner)}`);
+  console.log(`  Executor: ${chalk.blue(preset.roles.executor)}`);
+  console.log(`  Reviewer: ${chalk.yellow(preset.roles.reviewer)}`);
+  console.log(`  Fallback: ${chalk.red(preset.roles.fallback)}`);
+  if (options.save) {
+    if (findUapConfigPath()) {
+      modifyUapConfig(process.cwd(), (cfg) => ({ ...cfg, multiModel: mmConfig }));
+      console.log(chalk.green('\n✓ Saved to .uap.json (multiModel).'));
+    } else {
+      console.warn(
+        chalk.yellow('\nNo .uap.json found — run `uap init` first, then re-run with --save.')
+      );
+    }
+  } else {
+    console.log(chalk.yellow('\nPreview only. Re-run with --save to persist to .uap.json.'));
+  }
+}
+
 export function registerModelCommands(program: Command): void {
   const model = program.command('model').description('Multi-model architecture management');
 
@@ -576,6 +633,14 @@ export function registerModelCommands(program: Command): void {
     .action(compareCommand);
 
   model.command('presets').description('List all available model presets').action(presetsCommand);
+
+  const routing = model.command('routing').description('Named multi-model routing options');
+  routing.command('list').description('List available routing options').action(routingListCommand);
+  routing
+    .command('use <id>')
+    .description('Apply a routing option (writes multiModel to .uap.json)')
+    .option('--save', 'Persist to .uap.json (otherwise preview only)')
+    .action(routingUseCommand);
 
   model
     .command('select')
