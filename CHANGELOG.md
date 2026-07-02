@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.93.1 (2026-07-02)
+
+- chore: bump version to 1.91.1
+- docs: reframe all documentation around the software-delivery pipeline (friendly, benefit-first)
+
+
 ## v1.93.0 (2026-07-02)
 
 - feat(setup): make the 2 routing options pickable in the guided wizard
