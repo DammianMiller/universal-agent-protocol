@@ -1,6 +1,6 @@
 # The UAP Protocol
 
-`v1.91.0`
+`v1.93.1`
 
 > **🏭 Where this fits:** Cross-cutting (the factory rulebook) — with no shared
 > contract, each station's rules are guesswork and your agent slips broken work

@@ -1,6 +1,6 @@
 # Policies
 
-> Applies to UAP v1.91.0
+> Applies to UAP v1.93.1
 
 > **🏭 Where this fits:** CROSS-CUTTING — the executable rules bolted to every station of the [delivery pipeline](./DELIVERY_PIPELINE.md). In a normal agentic workflow the "rules" live in a prose prompt the model is free to ignore; that's how work escapes isolation, skips tests, or ships without review. **What it delivers:** each rule is a Python enforcer that actually inspects an operation and can *block* it before it runs — worktree isolation, test deltas, expert review, schema diffs, artifact hygiene, and more — so the guardrails hold instead of merely being suggested.
 

@@ -1,7 +1,7 @@
 # UAP CLI Reference
 
 > Complete command reference for the Universal Agent Protocol command-line interface (`uap`).
-> Version v1.91.0.
+> Version v1.93.1.
 
 > **🏭 Where this fits:** Every station — this is the control panel for the whole
 > line. **What it delivers:** one binary that drives each stage of your

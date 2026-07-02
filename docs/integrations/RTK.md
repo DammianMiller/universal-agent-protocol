@@ -1,6 +1,6 @@
 # RTK — Rust Token Killer
 
-`v1.91.0` · `src/cli/rtk.ts`
+`v1.93.1` · `src/cli/rtk.ts`
 
 > **🏭 Where this fits:** Cross-cutting (keeps the belt from jamming) — every
 > `git status`, test run, and file dump your agent echoes floods the context

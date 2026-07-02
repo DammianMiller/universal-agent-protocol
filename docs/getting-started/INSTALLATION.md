@@ -9,7 +9,7 @@ edits your main branch, writes plausible-but-wrong code, and cheerfully declares
 "done" on something that never actually ran. UAP puts a station at each of those
 break points so the work that comes off the line is trustworthy.
 
-It ships as a single npm package (`@miller-tech/uap`, v1.91.0) that installs the
+It ships as a single npm package (`@miller-tech/uap`, v1.93.1) that installs the
 `uap` CLI. This page gets it onto your machine and wired into your project.
 
 ## Prerequisites
@@ -44,7 +44,7 @@ npm install -g @miller-tech/uap
 uap --version
 ```
 
-This prints the installed package version (e.g. `1.91.0`).
+This prints the installed package version (e.g. `1.93.1`).
 
 ## One-command setup
 

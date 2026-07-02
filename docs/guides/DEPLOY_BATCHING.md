@@ -1,6 +1,6 @@
 # Deploy Batching
 
-> UAP v1.91.0
+> UAP v1.93.1
 
 > **🏭 Where this fits:** LINE COORDINATION → SHIPPING — this is the station
 > where parallel agents collide: two push to the same branch within seconds and

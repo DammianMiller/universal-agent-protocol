@@ -1,6 +1,6 @@
 # Worktree Workflow
 
-> Applies to UAP v1.91.0
+> Applies to UAP v1.93.1
 
 > **🏭 Where this fits:** ISOLATION — the station where a normal agentic workflow smears half-finished edits across `main`, clobbers files, and lets parallel agents collide into corrupt merge state. **What it delivers:** every agent works on its own branch in its own checkout, so the project root stays clean, each unit of work has a tidy PR boundary, and any number of agents can run at once without stepping on each other.
 

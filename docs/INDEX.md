@@ -1,6 +1,6 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.91.0) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.93.1) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line.
 
 New here? The friendliest way in is the **[Delivery Pipeline tour](guides/DELIVERY_PIPELINE.md)** — it walks the whole factory floor, station by station, showing where agents normally break and what UAP puts in place to catch it. Then grab the [Quickstart](getting-started/QUICKSTART.md).
 

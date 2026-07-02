@@ -1,6 +1,6 @@
 # UAP Architecture Overview
 
-`v1.91.0` · 223 TypeScript modules across 18 `src/` subsystems · 170+ test suites
+`v1.93.1` · 223 TypeScript modules across 18 `src/` subsystems · 170+ test suites
 
 > **🏭 Where this fits:** Whole pipeline — this is the factory-floor map. A bare
 > agent walks work from an idea to a shipped change with no stations in between,
