@@ -1799,6 +1799,60 @@ def _summarize_pruned_block(dropped: list[dict]) -> str:
     return header + "\n" + "\n".join(breadcrumbs)
 
 
+def _truncate_oversized_message_content(messages: list, budget_tokens: int) -> bool:
+    """Truncate the largest message content in-place until the total fits
+    budget_tokens. Used when message-DROPPING cannot reduce below the window —
+    e.g. Claude Code's auto-compact sends a single `<transcript>` message LARGER
+    than the whole context window, so keeping even the last 2 messages overflows
+    and the pruner would otherwise thrash (prune -> still >100% -> retry).
+
+    Truncatable content = plain-string content, `text` blocks, and `tool_result`
+    blocks. Each truncated block keeps a head+tail slice (70/30) around a marker
+    so a summarization request still sees the start and end. Returns True if it
+    got the total under budget, False if nothing left worth truncating.
+    """
+    MARKER = "\n...[TRUNCATED FOR CONTEXT WINDOW]...\n"
+
+    def _texts(msg):
+        # yield (kind, block_or_None, text) for each truncatable content in msg
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            yield ("str", None, content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text":
+                        yield ("text", block, block.get("text", "") or "")
+                    elif block.get("type") == "tool_result":
+                        yield ("tool_result", block, _extract_text(block.get("content", "")))
+
+    for _ in range(40):  # bounded: each pass truncates the single largest block
+        total = sum(estimate_message_tokens(m) for m in messages)
+        if total <= budget_tokens:
+            return True
+        biggest = None  # (len, msg, kind, block, text)
+        for msg in messages:
+            for kind, block, text in _texts(msg):
+                if biggest is None or len(text) > biggest[0]:
+                    biggest = (len(text), msg, kind, block, text)
+        if biggest is None or biggest[0] < 400:
+            return False  # nothing left worth truncating
+        _, msg, kind, block, text = biggest
+        excess_tokens = total - budget_tokens
+        cut_chars = int(excess_tokens * CHARS_PER_TOKEN) + len(MARKER) + 512
+        keep = max(400, len(text) - cut_chars)
+        head = int(keep * 0.7)
+        tail = keep - head
+        new_text = text[:head] + MARKER + (text[-tail:] if tail > 0 else "")
+        if kind == "str":
+            msg["content"] = new_text
+        elif kind == "text":
+            block["text"] = new_text
+        elif kind == "tool_result":
+            block["content"] = new_text
+    return sum(estimate_message_tokens(m) for m in messages) <= budget_tokens
+
+
 def prune_conversation(
     anthropic_body: dict,
     context_window: int,
@@ -1834,7 +1888,19 @@ def prune_conversation(
     """
     messages = anthropic_body.get("messages", [])
     if len(messages) <= 4:
-        # Too few messages to prune meaningfully
+        # Too few messages to prune by DROPPING — but a single message can still
+        # exceed the whole window (Claude Code's auto-compact sends a
+        # `<transcript>` larger than the context window). Message-dropping can't
+        # help and returning as-is wedges the request in a prune->still-over->
+        # retry loop, so truncate the oversized content in-place to fit.
+        if messages and estimate_total_tokens(anthropic_body) > context_window:
+            budget = max(1, int(context_window * target_fraction))
+            logger.warning(
+                "Few-message request (%d msgs) exceeds window %d -- truncating oversized content to fit",
+                len(messages),
+                context_window,
+            )
+            _truncate_oversized_message_content(messages, budget)
         return anthropic_body
 
     target_tokens = int(context_window * target_fraction)
@@ -1877,26 +1943,25 @@ def prune_conversation(
     )
 
     if protected_tokens >= message_budget:
-        # Even protected messages exceed budget -- truncate tool_result content
-        # in the tail to fit
+        # Even the protected (undroppable) messages exceed budget. Message-
+        # dropping can't help, so truncate the largest content in-place to fit.
+        # Covers tool_result AND oversized user/text messages (the auto-compact
+        # <transcript> larger than the whole window) — the tool_result-only
+        # version left such a message intact, so pruning never converged and the
+        # request wedged in a prune->still-over->retry loop.
         logger.warning(
-            "Protected messages (%d tokens) exceed budget (%d) -- truncating tool results",
+            "Protected messages (%d tokens) exceed budget (%d) -- truncating oversized content",
             protected_tokens,
             message_budget,
         )
-        for msg in protected_tail:
-            content = msg.get("content", [])
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_result":
-                        result_text = _extract_text(block.get("content", ""))
-                        if len(result_text) > 2000:
-                            block["content"] = (
-                                result_text[:1000]
-                                + "\n...[TRUNCATED]...\n"
-                                + result_text[-500:]
-                            )
-        anthropic_body["messages"] = protected_head + protected_tail
+        protected = protected_head + protected_tail
+        fit = _truncate_oversized_message_content(protected, message_budget)
+        if not fit:
+            logger.warning(
+                "Post-truncation still over budget (%d msgs) -- forwarding truncated best-effort",
+                len(protected),
+            )
+        anthropic_body["messages"] = protected
         return anthropic_body
 
     remaining_budget = message_budget - protected_tokens
@@ -8669,6 +8734,30 @@ async def _passthrough_anthropic_request(
         status_code=resp.status_code,
         media_type=resp.headers.get("content-type", "application/json"),
     )
+
+
+@app.post("/v1/messages/count_tokens")
+async def count_tokens(request: Request):
+    """Anthropic-compatible token counter.
+
+    Claude Code calls POST /v1/messages/count_tokens to measure a request
+    against the context window and decide when to auto-compact. Returning 404
+    (unimplemented) blinds the client to the real window, so it sent auto-compact
+    `<transcript>` requests LARGER than the window -> single-oversized-message
+    overflow wedge. We estimate with the SAME accounting the pruner uses
+    (estimate_total_tokens) so the client's view matches the proxy's window math.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return Response(
+            content=json.dumps(
+                {"type": "error", "error": {"type": "invalid_request_error", "message": "invalid JSON body"}}
+            ),
+            status_code=400,
+            media_type="application/json",
+        )
+    return {"input_tokens": estimate_total_tokens(body)}
 
 
 @app.post("/v1/messages")

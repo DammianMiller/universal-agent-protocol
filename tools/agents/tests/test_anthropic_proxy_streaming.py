@@ -3372,9 +3372,14 @@ class TestPruningImprovements(unittest.TestCase):
                 {"role": "user", "content": "last"},
             ],
         }
-        # With keep_last=4, more middle messages should be prunable
-        result_8 = proxy.prune_conversation(dict(body), 2000, target_fraction=0.50, keep_last=8)
-        result_4 = proxy.prune_conversation(dict(body), 2000, target_fraction=0.50, keep_last=4)
+        # With keep_last=4, more middle messages should be prunable.
+        # deepcopy so the two calls are independent: prune_conversation truncates
+        # oversized message content IN PLACE (always has for tool_result; now
+        # also for text/string), so a shared shallow copy would let the first
+        # call's truncation leak into the second. Real requests never share objects.
+        import copy as _copy
+        result_8 = proxy.prune_conversation(_copy.deepcopy(body), 2000, target_fraction=0.50, keep_last=8)
+        result_4 = proxy.prune_conversation(_copy.deepcopy(body), 2000, target_fraction=0.50, keep_last=4)
         # keep_last=4 should result in fewer or equal messages
         self.assertLessEqual(
             len(result_4.get("messages", [])),
