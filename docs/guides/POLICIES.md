@@ -1,6 +1,8 @@
 # Policies
 
-> Applies to UAP v1.40.0
+> Applies to UAP v1.93.1
+
+> **🏭 Where this fits:** CROSS-CUTTING — the executable rules bolted to every station of the [delivery pipeline](./DELIVERY_PIPELINE.md). In a normal agentic workflow the "rules" live in a prose prompt the model is free to ignore; that's how work escapes isolation, skips tests, or ships without review. **What it delivers:** each rule is a Python enforcer that actually inspects an operation and can *block* it before it runs — worktree isolation, test deltas, expert review, schema diffs, artifact hygiene, and more — so the guardrails hold instead of merely being suggested.
 
 UAP policies are **executable gates, not prose**. Each policy can carry a Python
 enforcer that inspects an operation and decides whether it may proceed. A
@@ -51,7 +53,7 @@ on the rails — not as a containment mechanism against untrusted code.
 
 ## The enforcers
 
-The enforcers in
+Each enforcer guards a specific station of the pipeline. The enforcers in
 [`src/policies/enforcers/`](../../src/policies/enforcers/) group as follows.
 `_common.py` is shared helper code, not an enforcer.
 

@@ -1,6 +1,13 @@
 # The UAP Protocol
 
-`v1.40.0`
+`v1.93.1`
+
+> **🏭 Where this fits:** Cross-cutting (the factory rulebook) — with no shared
+> contract, each station's rules are guesswork and your agent slips broken work
+> past whichever gate it doesn't recognize. **What it delivers:** the normative
+> hook-and-gate contract that makes every station on the
+> [delivery pipeline](../guides/DELIVERY_PIPELINE.md) enforceable and portable —
+> the same rules apply whichever harness runs the line.
 
 This document specifies the **Universal Agent Protocol** itself: the contract
 between an AI agent harness and the UAP layer beneath it. It is normative —
@@ -12,6 +19,12 @@ UAP is not a wire protocol. It is a **convention enforced by hooks**: a small
 set of interception points the harness exposes, a defined hook lifecycle, an
 agent decision loop, and a set of gates that block work which violates the
 contract. Any harness that can run a hook before tool execution can host UAP.
+
+Read the sections below as the rules posted at each station on the floor:
+session start feeds the **intake** station, the pre-tool-use gates guard
+**isolation** and **build**, the decision loop threads **intake → build →
+feedback**, the worktree convention is the **isolation** station itself, and the
+completion gates are the **QC/verify** station that stops "done"-on-broken-code.
 
 ---
 
@@ -55,7 +68,8 @@ Hook scripts are generated and installed by `uap hooks install`
 
 ### 2.1 Session start
 
-On session start the harness runs the session-start hook, which MUST:
+The **intake station.** On session start the harness runs the session-start
+hook, which MUST:
 
 1. **Inject memory.** Query the short-term store (last-24h top memories plus
    open "session" loops of type action/goal/decision with importance ≥ 7) and
@@ -70,8 +84,8 @@ context, not a gate.
 
 ### 2.2 Pre-tool-use
 
-Before each tool call the harness runs the pre-tool-use hook, which runs the
-relevant gates for that tool. Conceptually:
+The **isolation and build gates.** Before each tool call the harness runs the
+pre-tool-use hook, which runs the relevant gates for that tool. Conceptually:
 
 ```
 pre-tool-use(tool, args):
@@ -96,9 +110,10 @@ across context compaction; the stop hook runs a completion checklist.
 
 ## 3. Agent decision loop
 
-A conforming agent SHOULD execute each task through this loop. The TypeScript
-implementation lives in `src/memory/dynamic-retrieval.ts` (query) and the
-short-term store / consolidator (record, promote).
+The belt path itself: intake pulls context in, act builds, and feedback carries
+lessons back out. A conforming agent SHOULD execute each task through this loop.
+The TypeScript implementation lives in `src/memory/dynamic-retrieval.ts` (query)
+and the short-term store / consolidator (record, promote).
 
 ```
         ┌──────────────────────────────────────────────┐
@@ -131,9 +146,10 @@ transient debugging state, and secrets MUST NOT be promoted.
 
 ## 4. Worktree convention
 
-All file edits MUST happen inside a git worktree under `.worktrees/NNN-<slug>/`.
-Edits to the project root are blocked by the worktree gate
-(`worktree_required.py`).
+The **isolation station.** All file edits MUST happen inside a git worktree
+under `.worktrees/NNN-<slug>/`. Edits to the project root are blocked by the
+worktree gate (`worktree_required.py`) — this is what keeps your agent off
+`master` and out of another agent's lane.
 
 ```bash
 uap worktree ensure --strict     # verify you are inside a worktree (exit 0)
@@ -158,9 +174,11 @@ Rules:
 
 ## 5. Completion gates
 
-Claiming a code change is DONE is prohibited until all gates pass. The gates are
-decomposed across policy enforcers and the `review`-stage policy logic in
-`policy-gate.ts` (auto-forced on completion / merge / deploy operations):
+The **QC/verify station — the one everyone skips.** Claiming a code change is
+DONE is prohibited until all gates pass; this is where "the agent said done on a
+red build" gets caught. The gates are decomposed across policy enforcers and the
+`review`-stage policy logic in `policy-gate.ts` (auto-forced on completion /
+merge / deploy operations):
 
 | Gate | Enforcer / mechanism | Requirement |
 |------|----------------------|-------------|

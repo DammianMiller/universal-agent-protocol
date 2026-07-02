@@ -2,11 +2,19 @@
 
 > **Install once. Every feature kicks in automatically.**
 
+> **🏭 Where this fits:** CROSS-CUTTING — this is what breaks in most agentic
+> setups: the safeguards exist but nobody remembers to run them, so the line
+> only runs as well as the operator's discipline that day. **What it delivers:**
+> the line runs itself — the right station on your [delivery
+> pipeline](./DELIVERY_PIPELINE.md) activates automatically for each task, with
+> no flags to set and nothing to remember.
+
 UAP is not a set of manual steps you orchestrate. It is a **policy-and-resolver
 layer** that sits between your coding agent (Claude Code, Opencode, Cursor,
 Windsurf, Codex, etc.) and the model you use. Every feature below activates
 **automatically** based on what the agent is doing — no config changes, no
-manual triggers, no prompts to remember.
+manual triggers, no prompts to remember. Each one guards a different station on
+the delivery line so the whole thing keeps running without you standing over it.
 
 ---
 

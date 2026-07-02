@@ -1,18 +1,32 @@
 # Pattern Library Reference
 
-> Universal Agent Protocol (UAP) v1.40.0
+> Universal Agent Protocol (UAP) v1.93.1
 
-UAP ships an execution-pattern library: a set of reusable problem-solving
-strategies that are matched to the current task and surfaced to the agent.
-Patterns are defined as markdown files under `.factory/patterns/`, catalogued
-in `.factory/patterns/index.json`, and retrieved on demand via a Qdrant-backed
+> **🏭 Where this fits:** Prep / Routing — before your agent starts cutting, it
+> should pick the right technique for the job. **What it delivers:** the right
+> proven playbook is matched to the task and handed to your agent, so it stops
+> improvising an approach that quietly breaks the [delivery pipeline](../guides/DELIVERY_PIPELINE.md)
+> two stations later.
+
+Left to itself, an agent invents a fresh (and often wrong) approach for every
+task. UAP's execution-pattern library is a rack of proven playbooks — reusable
+problem-solving strategies — that get matched to what you're actually doing and
+handed to the agent before it acts. That's the Prep/Routing station: right job,
+right technique, right bench.
+
+Several of these patterns are quietly the guardrails on the QC station too —
+they exist because agents love to skip verification. Patterns are defined as
+markdown files under `.factory/patterns/`, catalogued in
+`.factory/patterns/index.json`, and retrieved on demand via a Qdrant-backed
 RAG flow (`uap patterns query`).
 
 ## The 23 Patterns
 
 The canonical roster lives in `.factory/patterns/index.json`. Each pattern has
 a numeric (or string) id, a markdown body file, a title, an abbreviation, a
-category, and a keyword set used for retrieval.
+category, and a keyword set used for retrieval. The `Verification` category is
+the QC/Verify station in playbook form — the checks that turn "looks done" into
+"proven done."
 
 | ID | Title | Abbreviation | Category | What it does |
 |----|-------|--------------|----------|--------------|
@@ -42,20 +56,22 @@ category, and a keyword set used for retrieval.
 
 ### Always-on patterns
 
-Two patterns are unconditionally included regardless of the matched task, set
-in `src/coordination/pattern-router.ts`:
+Two patterns are the non-negotiable QC guards on the line — bolted on
+unconditionally regardless of the matched task, set in
+`src/coordination/pattern-router.ts`:
 
 ```js
 const alwaysIncludeIds = ['P12', 'P35']; // Output Existence, Decoder-First
 ```
 
-- **P12 (Output Existence Verification)** — guards against "claiming done"
-  without producing the artifact.
+- **P12 (Output Existence Verification)** — the anti-"claiming done" guard:
+  no artifact, no done.
 - **P35 (Decoder-First Analysis)** — anchors format/reverse-engineering work.
 
 ## How pattern RAG works
 
-Pattern retrieval is semantic, not keyword-based. The flow:
+Pattern retrieval is semantic, not keyword-based — the router matches on what
+the task *means*, not just the words in it. The flow:
 
 1. **Indexing** (`uap patterns index`) runs a generated Python indexer
    (`agents/scripts/index_patterns_to_qdrant.py`). It scans multiple sources —

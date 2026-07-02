@@ -1,8 +1,28 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.50.0) — a layer that gives AI coding agents memory, judgment, and the discipline to finish the job.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.93.1) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line.
 
-New here? Start with the [project README](../README.md), then [Getting Started](getting-started/).
+New here? The friendliest way in is the **[Delivery Pipeline tour](guides/DELIVERY_PIPELINE.md)** — it walks the whole factory floor, station by station, showing where agents normally break and what UAP puts in place to catch it. Then grab the [Quickstart](getting-started/QUICKSTART.md).
+
+---
+
+## Find your way by station
+
+UAP is organized like a delivery line. If you know which part of the pipeline you're trying to fix, start here:
+
+| Station | The break it prevents | Start with |
+|---|---|---|
+| **Intake** — understand the work | Amnesiac sessions, invented scope | [Memory](guides/MEMORY.md) · [Reactor](design/UAP_REACTOR.md) |
+| **Prep / routing** — right job, right station | Wrong approach or wrong-sized model | [Multi-Model Routing](guides/MULTI_MODEL.md) · [Patterns](reference/PATTERNS.md) · [Droids & Skills](guides/DROIDS_AND_SKILLS.md) |
+| **Isolation** — a bench per job | Editing `main`, clobbering files | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) |
+| **Build** — make the thing | Plausible-but-wrong code, stubs, empty output | [`uap deliver`](guides/DELIVER.md) · [Local Models](guides/LOCAL_MODELS.md) |
+| **QC / verify** — prove it runs | "Done" on code that never ran | [`uap deliver`](guides/DELIVER.md) · [Policies](guides/POLICIES.md) |
+| **Coordination** — many workers, one floor | Parallel agents colliding | [Coordination](guides/COORDINATION.md) · [Deploy Batching](guides/DEPLOY_BATCHING.md) |
+| **Shipping** — out the door safely | Regressions, red CI, skipped bumps | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) · [Policies](guides/POLICIES.md) |
+| **Feedback** — the floor learns | The same mistake every session | [Memory](guides/MEMORY.md) · [Self-Harness](design/SELF_HARNESS.md) |
+| *Cross-cutting* — the whole line | Ignored rules, bloated context | [Policies](guides/POLICIES.md) · [MCP Router](guides/MCP_ROUTER.md) |
+
+Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 
 ---
 
@@ -12,14 +32,15 @@ New here? Start with the [project README](../README.md), then [Getting Started](
 |---|---|
 | [Installation](getting-started/INSTALLATION.md) | Prerequisites, `npm install -g @miller-tech/uap`, what `uap setup` does, per-harness hook install |
 | [Quickstart](getting-started/QUICKSTART.md) | 5-minute path: setup → memory → `uap deliver` → dashboard |
-| [Configuration](getting-started/CONFIGURATION.md) | `.uap.json`, environment variables, Qdrant, model profiles |
+| [Configuration](getting-started/CONFIGURATION.md) | `.uap.json`, environment variables, `.uap/proxy.env`, Qdrant, model profiles |
 
 ## Guides
 
 | Doc | What it covers |
 |---|---|
+| [**The Delivery Pipeline**](guides/DELIVERY_PIPELINE.md) | The station-by-station tour — the big-picture map of the whole floor ⭐ |
 | [**What UAP Does Automatically**](guides/AUTOMATIC_FEATURES.md) | Every feature in benefit / when-it-kicks-in terms — install once, it all self-applies ⭐ |
-| [**`uap deliver`**](guides/DELIVER.md) | The delivery harness — convergence loop to verified completion, with tiered gates (fast → integration → deploy-dev) and a CI/deploy feedback loop ⭐ |
+| [**`uap deliver`**](guides/DELIVER.md) | The Build+QC harness — convergence loop to verified completion, tiered gates, CI/deploy feedback loop ⭐ |
 | [Memory](guides/MEMORY.md) | The 4-tier memory system, write-gates, semantic recall |
 | [MCP Router](guides/MCP_ROUTER.md) | Token-optimizing tool proxy + FTS5 output compression |
 | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) | Branch-per-feature isolation, auto-PR, enforcement |
@@ -35,10 +56,10 @@ New here? Start with the [project README](../README.md), then [Getting Started](
 
 | Doc | What it covers |
 |---|---|
-| [Overview](architecture/OVERVIEW.md) | System architecture, subsystems, tool-call flow |
+| [Overview](architecture/OVERVIEW.md) | System architecture as the delivery-line floor plan; subsystems, tool-call flow |
 | [Protocol](architecture/PROTOCOL.md) | The harness↔UAP contract, hook lifecycle, decision loop |
 | [Reactor (auto-apply)](design/UAP_REACTOR.md) | Dynamic experts/skills/patterns injected per prompt across harnesses; the assist vs enforce model, per-harness wiring |
-| [Self-Harness (proposal)](design/SELF_HARNESS.md) | Self-improving harness: autonomous mine→propose→validate loop over a bounded Mod DSL (scaffold/proxy-knob/middleware), cross-model transfer, online mining; grounds arXiv:2606.09498 in UAP's HALO + paired-bench |
+| [Self-Harness (proposal)](design/SELF_HARNESS.md) | Self-improving harness: autonomous mine→propose→validate loop over a bounded Mod DSL; cross-model transfer, online mining |
 
 ## Reference
 
@@ -46,7 +67,7 @@ New here? Start with the [project README](../README.md), then [Getting Started](
 |---|---|
 | [CLI](reference/CLI.md) | Every `uap` command and flag |
 | [API](reference/API.md) | Programmatic API surface |
-| [Features](reference/FEATURES.md) | Full feature catalog by subsystem |
+| [Features](reference/FEATURES.md) | Full feature catalog, mapped to the pipeline stages |
 | [Patterns](reference/PATTERNS.md) | The 23 Terminal-Bench patterns |
 | [Platforms](reference/PLATFORMS.md) | The 9 supported harnesses + support matrix |
 | [Configuration](reference/CONFIGURATION.md) | All config files and env vars |

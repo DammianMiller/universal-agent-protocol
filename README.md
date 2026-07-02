@@ -2,16 +2,16 @@
 
 # Universal Agent Protocol (UAP)
 
-**Give your AI coding agents memory, judgment, and the discipline to finish the job.**
+**The discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line.**
 
 [![npm](https://img.shields.io/npm/v/@miller-tech/uap?color=blue&label=npm)](https://www.npmjs.com/package/@miller-tech/uap)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
-[![Tests](https://img.shields.io/badge/tests-117_suites-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-170%2B_suites-brightgreen)](#testing)
 [![License](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 
-`v1.40.0` · 168 modules · 117 test suites · 9 agent harnesses
+`v1.93.1` · 220+ modules · 170+ test suites · 9 agent harnesses
 
-[Quickstart](#quickstart) · [Why UAP?](#why-uap) · [`uap deliver`](#the-deliver-harness) · [Architecture](#architecture) · [Benchmarks](#benchmarks) · [Docs](docs/INDEX.md)
+[Quickstart](#quickstart) · [Why UAP?](#why-uap) · [The delivery pipeline](docs/guides/DELIVERY_PIPELINE.md) · [`uap deliver`](#the-deliver-harness) · [Docs](docs/INDEX.md)
 
 </div>
 
@@ -19,19 +19,21 @@
 
 ## Why UAP?
 
-AI coding agents are capable but undisciplined. They forget everything between sessions, burn tokens echoing huge tool outputs, repeat the same mistakes, declare victory on work that doesn't compile, and trip over each other in shared repos. UAP is a production-tested layer that sits **underneath your agent harness** (Claude Code, Factory, Cursor, OpenCode, and more) and fixes these problems at the protocol level — no model change required.
+Shipping software with an AI agent is a lot like running a small factory floor. Intent comes in one end; working, verified, merged code should come out the other. In between are stations — understand the job, set up a bench, build it, **check it actually works**, ship it — and a jam at any one of them quietly ruins everything downstream.
 
-| The problem | What UAP does | Measured impact |
+Coding agents are capable but undisciplined line workers. They forget yesterday's shift, grab the wrong tool, build something that *looks* right, stamp it "done" without plugging it in, and trip over the other workers on the floor. That's not a problem you fix by swapping in a smarter model — it's a *process* problem. UAP is the process: it sits **underneath your agent harness** (Claude Code, Factory, Cursor, OpenCode, and more) and puts a station at every point where the line usually breaks — no model change required.
+
+| Where the line jams | What UAP puts there | What you get |
 |---|---|---|
-| Agents forget past sessions | 4-tier memory with semantic recall + write-gates | **49.7% fewer tokens** |
-| Tool output floods the context | MCP Router — tool-hiding + FTS5 output compression | **up to ~98%** on large tool calls |
-| Agents declare done on broken work | `uap deliver` — convergence loop against **real** gates | **+33pp** task success (25% → 58%) |
-| Repetitive mistakes | 23 Terminal-Bench patterns + learning loop | **68% fewer errors** |
-| Wrong model for the job | Multi-model router, 7 profiles | optimal cost/perf per task |
-| Agents step on each other | Worktree isolation + coordination service | conflict-free parallel work |
-| "Guidelines" get ignored | Policy gates as executable hooks, not prose | violations are **blocked**, not suggested |
+| Agent starts every session amnesiac | 4-tier memory with semantic recall + write-gates | It remembers your codebase and past decisions |
+| Tool output floods the context window | MCP Router — tool-hiding + output compression | Up to **~98%** smaller on big tool calls |
+| "Looks right" but doesn't run | `uap deliver` — a loop against your **real** gates | Code that compiles, not a mock-up of it |
+| Agent grades its own homework | Execution/runtime verify + a separate acceptance judge | "Done" means *verified* done |
+| Two agents clobber each other | Worktree isolation + live file coordination | Conflict-free parallel work |
+| "Guidelines" get ignored | Policy gates as executable hooks, not prose | Violations are **blocked**, not politely suggested |
+| Same mistake, every session | Memory promotion + pattern learning | The floor gets better every run |
 
-> Benchmarks below are from Terminal-Bench 2.0 (12 representative tasks). See [docs/benchmarks/](docs/benchmarks/) for the full methodology and raw data.
+**→ Take the full station-by-station tour: [The UAP Delivery Pipeline](docs/guides/DELIVERY_PIPELINE.md).**
 
 ---
 
@@ -41,12 +43,12 @@ AI coding agents are capable but undisciplined. They forget everything between s
 # Install globally
 npm install -g @miller-tech/uap
 
-# One-command setup in your project (memory, patterns, hooks, policies)
+# One friendly, arrow-key guided setup in your project
 cd your-project
 uap setup
 ```
 
-That's it. Your agent now has persistent memory, battle-tested patterns, policy gates, and multi-agent coordination wired into every session.
+`uap setup` walks you through the whole line — memory, patterns, policy gates, model routing, multi-agent coordination, and the verification gates — and wires it into every agent session. Take the defaults and you're one Enter away from a disciplined agent.
 
 ```bash
 uap memory query "how did we handle auth last time?"   # semantic recall
@@ -58,7 +60,7 @@ uap dashboard overview                                  # live task / agent / me
 
 ## The `deliver` harness
 
-`uap deliver` is the headline of the v1.27–v1.40 line: a **convergence loop that iterates a model against your project's real completion gates until the work is actually delivered** — build passes, tests pass, lint is clean — not until the model *thinks* it's done.
+The two stations that matter most are **Build** and **QC**, and `uap deliver` owns both. It's a **convergence loop that iterates a model against your project's real completion gates until the work is actually delivered** — build passes, tests pass, lint is clean — not until the model *thinks* it's done.
 
 ```bash
 uap deliver "implement the password reset flow"
@@ -66,36 +68,36 @@ uap deliver "implement the password reset flow"
 
 What happens under the hood:
 
-1. **Explore → plan → apply** — the model proposes changes; the applier writes them safely (pre-existing tests and gate configs are protected from being overwritten).
-2. **Verify against real gates** — a verifier ladder runs your build, tests, and lint. Nothing is "done" until they're green.
-3. **Critique & iterate** — failures feed back as structured guidance; the loop continues, **persisting until delivered** (extends past `--max-turns` to a ceiling, stopping on genuine stagnation).
-4. **Auto-optimization** — every task is classified by complexity and the matching aids (HALO trace analysis, divergent ideation, coordination, deploy batching) activate automatically.
+1. **Explore → plan → apply** — the model proposes changes; the applier writes them safely (existing tests and gate configs are protected from being overwritten).
+2. **Verify against real gates** — a verifier ladder runs your build, tests, and lint, and can *execute* the result (headless browser / vm-dom / child process) to prove it runs. Nothing is "done" until they're green.
+3. **Critique & iterate** — failures feed back as structured guidance and the loop continues, persisting until delivered.
+4. **Generator ≠ evaluator** — the check that signs off is deliberately not the model that wrote the code, so an agent can't confirm its own success.
 5. **Autonomy with a guidance channel** — runs the full mission without stopping to ask, while still accepting operator guidance mid-flight.
 
 It works with frontier models *and* local models (llama.cpp / Qwen) served over the Anthropic Messages API. See **[docs/guides/DELIVER.md](docs/guides/DELIVER.md)**.
 
 ---
 
-## Features
+## The line, station by station
 
-- **🧠 4-tier memory** — daily log → working cache → semantic (Qdrant) → long-term archive, with write-gates that block low-quality/duplicate memories and corrections that cascade across tiers.
-- **🗜️ MCP Router** — a token-optimizing tool proxy; large outputs are compressed via FTS5 intent search instead of dumped into context.
-- **🎯 `uap deliver`** — the convergence/delivery harness (above).
-- **🌳 Worktree workflow** — isolated branch-per-feature, auto-PR, safe cleanup; enforced so agents never edit the project root.
-- **🛡️ Policy gates** — 20 executable enforcers (worktree, test, schema-diff, expert-review, memory-before-plan, delivery-enforcement…) that *block* non-compliant tool calls.
-- **🤖 Expert droids & skills** — 38 specialized droids and 32 skills, with an expert-router that recommends a droid chain per task.
-- **🧭 Multi-model routing** — 7 profiles (Claude Opus/Sonnet/Haiku, GPT, Qwen, generic); the router picks by complexity, cost, and performance.
-- **🚦 Deploy batching & coordination** — batched git/deploy actions and overlap detection keep multi-agent work conflict-free.
-- **📊 Dashboard** — rich TUI/web views of tasks, agents, memory, benchmarks, and policy status.
-- **🔌 9 harnesses** — Claude Code, Factory, Cursor, VSCode, OpenCode, Codex, ForgeCode, Oh-My-Pi, Hermes.
+| Station | The break it prevents | Key machinery |
+|---|---|---|
+| **Intake** | Amnesiac sessions, invented scope | [Memory](docs/guides/MEMORY.md), reactor injection, [DESIGN.md](DESIGN.md) |
+| **Prep / routing** | Wrong approach, wrong-sized model | [Multi-model routing](docs/guides/MULTI_MODEL.md), [patterns](docs/reference/PATTERNS.md), [droids & skills](docs/guides/DROIDS_AND_SKILLS.md) |
+| **Isolation** | Editing `main`, clobbering files | [Worktrees](docs/guides/WORKTREE_WORKFLOW.md), live file coordination, delivery gate |
+| **Build** | Plausible-but-wrong code, stubs, empty output | [`uap deliver`](docs/guides/DELIVER.md), serving-layer recipes, [local-model guardrails](docs/guides/LOCAL_MODELS.md) |
+| **QC / verify** | "Done" on code that never ran | Completion gates, `uap verify`, acceptance judge, generator≠evaluator |
+| **Coordination** | Parallel agents colliding/deadlocking | [Coordination](docs/guides/COORDINATION.md), model-slot concurrency, [deploy batching](docs/guides/DEPLOY_BATCHING.md) |
+| **Shipping** | Regressions, red CI, skipped version bumps | Worktree→PR flow, version gates, CI feedback watcher |
+| **Feedback** | The same mistake every session | Memory promotion, pattern learning, session analysis |
 
-Full list with code-level detail: **[docs/reference/FEATURES.md](docs/reference/FEATURES.md)**.
+Running the whole length of the floor: **policy gates** (24 executable enforcers that *block* non-compliant tool calls — worktree, test, schema-diff, expert-review, delivery-enforcement…) and the **MCP Router** (keeps the context window lean). Full catalog: **[docs/reference/FEATURES.md](docs/reference/FEATURES.md)**.
 
 ---
 
 ## Architecture
 
-UAP installs hooks into your agent harness, then mediates every tool call through memory, policy, and token-optimization layers.
+UAP installs hooks into your agent harness, then mediates every tool call through the memory, policy, and token-optimization layers — a control booth over the whole line.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -106,32 +108,29 @@ UAP installs hooks into your agent harness, then mediates every tool call throug
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                       UAP CLI (uap)                         │
-│  setup · memory · deliver · worktree · policy · deploy      │
-│  task · droids · model · mcp-router · harness · ideate …    │
+│  setup · memory · deliver · verify · worktree · policy      │
+│  task · coord · droids · model · mcp-router · design …      │
 └──┬─────────┬──────────┬──────────┬──────────┬───────────────┘
    ▼         ▼          ▼          ▼          ▼
  Memory   Policy    MCP Router   Delivery   Coordination
- 4 tiers  20 gates  FTS5 compr.  harness    + deploy batch
+ 4 tiers  24 gates  compression  + verify   + deploy batch
 ```
 
-- **30+ CLI commands** across 18 source subsystems (168 TypeScript modules).
+- **30+ CLI commands** across 18 source subsystems (220+ TypeScript modules).
 - Deep dive: **[docs/architecture/OVERVIEW.md](docs/architecture/OVERVIEW.md)** · protocol spec: **[docs/architecture/PROTOCOL.md](docs/architecture/PROTOCOL.md)**.
 
 ---
 
 ## Benchmarks
 
-The honest, controlled result (paired A/B — same model, tasks, and seeds,
-toggling only UAP, with confidence intervals): **UAP's accuracy lift depends on
-whether the base agent already self-verifies.**
+The honest, controlled result (paired A/B — same model, tasks, and seeds, toggling only UAP, with confidence intervals): **UAP's accuracy lift depends on whether the base agent already checks its own work at the QC station.**
 
 | Baseline | UAP accuracy lift | |
 |---|---|---|
 | Agentic harness (self-tests) | **~0pp** (CI spans 0) | overhead only — value is efficiency/coordination |
 | Non-agentic single-shot model | **+20pp** (78%→98%, 95% CI [+8,+32], p=0.008) | gate loop repairs edge-case bugs |
 
-Run it yourself: `uap bench paired --adapter raw --suite benchmarks/suites/real-gate-gated`.
-Full analysis: **[docs/benchmarks/PAIRED_FINDINGS.md](docs/benchmarks/PAIRED_FINDINGS.md)**.
+That's the pipeline thesis in one table: the more an agent skips the QC station on its own, the more UAP's gates are worth. Run it yourself: `uap bench paired --adapter raw --suite benchmarks/suites/real-gate-gated`. Full analysis: **[docs/benchmarks/PAIRED_FINDINGS.md](docs/benchmarks/PAIRED_FINDINGS.md)**.
 
 <details><summary>Earlier uncontrolled Terminal-Bench numbers (confounded — see TBench Investigation)</summary>
 
@@ -149,6 +148,8 @@ Methodology, raw runs, and cost analysis: **[docs/benchmarks/](docs/benchmarks/)
 ---
 
 ## Supported harnesses
+
+Same line, whichever floor you code on.
 
 | Harness | Hooks | MCP Router | Policy gates |
 |---|---|---|---|
@@ -170,6 +171,7 @@ Install into all detected harnesses with `uap hooks install`; audit coverage wit
 
 | | |
 |---|---|
+| **[The Delivery Pipeline](docs/guides/DELIVERY_PIPELINE.md)** | The station-by-station tour — start here for the big picture |
 | **[Getting Started](docs/getting-started/)** | Installation, quickstart, configuration |
 | **[Guides](docs/guides/)** | deliver, memory, MCP router, worktrees, policies, multi-model, local models |
 | **[Architecture](docs/architecture/)** | System overview + the UAP protocol |
@@ -186,7 +188,7 @@ Start at the **[documentation index](docs/INDEX.md)**.
 ```bash
 npm install
 npm run build      # TypeScript compile
-npm test           # vitest — 117 suites
+npm test           # vitest — 170+ suites
 npm run bench      # benchmark suite
 ```
 

@@ -1,18 +1,28 @@
 # Multi-Model Routing
 
-> Applies to UAP **v1.40.0**
+> Applies to UAP **v1.93.1**
+
+> **🏭 Where this fits:** PREP/ROUTING — this is the station where a normal
+> agentic workflow sends *everything* to one model: paying premium-model rates
+> for routine edits, or trusting a cheap model with reasoning it can't handle.
+> **What it delivers:** the right job goes to the right station — a strong
+> planner for hard reasoning, a cheap/local executor for the bulk of the work —
+> so you pay for expensive thinking only when the work actually needs it.
 
 UAP runs agentic work across multiple LLMs instead of one. A high-capability
 model plans, a cheaper or local model executes, and a reviewer model checks the
 result. Routing decisions are made per task (and per subtask) so you pay for
-expensive reasoning only when the work actually needs it.
+expensive reasoning only when the work actually needs it — one of the early
+stations on your [delivery pipeline](./DELIVERY_PIPELINE.md), before a single
+line of code is written.
 
 ## Why multi-model
 
 A single frontier model is the simplest setup, but most of the tokens an agent
 spends are on routine execution — applying an edit, running a tool, writing a
 test — not on hard reasoning. Sending all of that to a premium model is
-expensive and slow.
+expensive and slow. Sending the *hard* reasoning to a cheap model is the
+opposite failure. Routing fixes both.
 
 Multi-model routing lets you:
 
@@ -129,6 +139,12 @@ The matched role is resolved to a concrete model via your role assignments.
 - `performance-first` — maximize quality, use the best model
 - `balanced` — balance cost and performance (default)
 - `adaptive` — learn from task results over time
+
+> **One nuance worth internalizing:** when an executor stalls and the work
+> escalates, escalate to a **stronger, distinct** model — not the same model in
+> a different seat. A same-model judge (a local model grading its own output)
+> was measured to add no lift. The value of routing comes from the *difference*
+> in capability between the station that got stuck and the one you hand off to.
 
 ## The `uap model` CLI
 

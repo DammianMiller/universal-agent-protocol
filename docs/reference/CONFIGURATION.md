@@ -1,9 +1,15 @@
 # Configuration Reference
 
-> Universal Agent Protocol (UAP) v1.40.0
+> Universal Agent Protocol (UAP) v1.93.1
 
-All configuration surfaces below are verified against source. Only options that
-exist in code are documented here.
+> **🏭 Where this fits:** Cross-cutting — the settings that tune every station.
+> **What it delivers:** the dials that decide how your [delivery pipeline](../guides/DELIVERY_PIPELINE.md)
+> runs — where memory lives, which model builds, how strict the gates are — so
+> the line behaves the way your project needs.
+
+Think of this as the machine's control settings: the values that tune each
+station on the line. All configuration surfaces below are verified against
+source. Only options that exist in code are documented here.
 
 ## Config files
 

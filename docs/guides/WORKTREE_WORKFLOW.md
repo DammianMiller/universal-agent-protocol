@@ -1,11 +1,15 @@
 # Worktree Workflow
 
-> Applies to UAP v1.40.0
+> Applies to UAP v1.93.1
+
+> **🏭 Where this fits:** ISOLATION — the station where a normal agentic workflow smears half-finished edits across `main`, clobbers files, and lets parallel agents collide into corrupt merge state. **What it delivers:** every agent works on its own branch in its own checkout, so the project root stays clean, each unit of work has a tidy PR boundary, and any number of agents can run at once without stepping on each other.
 
 UAP runs agents — often many of them at once — against a single repository. The
 worktree workflow exists to keep every edit an agent makes isolated on its own
 branch and its own checkout, so that agent work never touches the project root
-and parallel agents never collide. This guide explains why that matters, walks
+and parallel agents never collide. Think of it as giving each agent its own
+workstation on the [delivery pipeline](./DELIVERY_PIPELINE.md) instead of
+crowding them around one bench. This guide explains why that matters, walks
 through the full lifecycle, and documents every `uap worktree` subcommand.
 
 The implementation lives in [`src/cli/worktree.ts`](../../src/cli/worktree.ts).

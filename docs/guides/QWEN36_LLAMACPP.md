@@ -1,12 +1,21 @@
 # Qwen3.6 35B-A3B on llama.cpp, by VRAM tier — with UAP
 
+> **🏭 Where this fits:** BUILD — this is the station where a one-shot local
+> model breaks: it flails on a non-trivial change, emits plausible-but-wrong
+> code, or stalls. **What it delivers:** a copy-paste local stack (8–32 GB GPU)
+> where `uap deliver` drives the model against your real gates until the change
+> is *verified* — a cheap, on-your-own-hardware model that punches above its
+> weight.
+
 This is the recommended local stack for UAP: **Qwen3.6 35B-A3B** (a Mixture-of-
 Experts model with only **~3B active parameters** per token) served by
 **llama.cpp**, driven by **UAP's automatic features** — above all `uap deliver`,
 which iterates the model against your real build/test gates until the change is
-*verified*. That convergence loop is what lets a small, cheap, local model
-**punch well above its weight**: one-shot it would flail; driven to green it
-delivers.
+*verified*. That convergence loop is the station that keeps a small, cheap,
+local model on the rails and lets it **punch well above its weight**: one-shot
+it would flail; driven to green it delivers. (This is the BUILD stage of your
+[delivery pipeline](./DELIVERY_PIPELINE.md) — the point where naive agentic
+workflows ship stubs.)
 
 Because the active footprint is ~3B, this model runs usefully even on modest
 GPUs by **offloading the (sparse, mostly-idle) expert tensors to system RAM**

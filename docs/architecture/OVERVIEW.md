@@ -1,6 +1,21 @@
 # UAP Architecture Overview
 
-`v1.40.0` · 168 TypeScript modules across 18 `src/` subsystems · 117 test suites
+`v1.93.1` · 223 TypeScript modules across 18 `src/` subsystems · 170+ test suites
+
+> **🏭 Where this fits:** Whole pipeline — this is the factory-floor map. A bare
+> agent walks work from an idea to a shipped change with no stations in between,
+> so it forgets context, edits the wrong branch, writes plausible-but-broken
+> code, declares "done" on a red build, and repeats the mistake next session.
+> **What it delivers:** a station at every stage where an agentic workflow
+> normally breaks, so your agent's output comes off the line understood,
+> isolated, built, verified, coordinated, shipped, and remembered.
+
+Think of UAP as the **software-delivery pipeline** your agent runs on — a
+sausage-factory floor where each station guards one stage of turning an
+instruction into a merged, working change. The stations are UAP's subsystems.
+This document is the floor plan: what each station is, and which break it
+prevents. For the end-to-end walkthrough, see the
+[delivery pipeline guide](../guides/DELIVERY_PIPELINE.md).
 
 The Universal Agent Protocol (UAP) is a layer that sits **underneath** an AI
 coding agent's harness — Claude Code, Factory, Cursor, OpenCode, Codex, and
@@ -16,11 +31,36 @@ harness↔UAP contract, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
+## The pipeline at a glance
+
+Every station below maps to a stage where a normal agentic workflow breaks, and
+to the subsystem that guards it. Read this as the conveyor belt your work rides:
+
+| Stage | What breaks without a station | Station (subsystem) |
+|-------|-------------------------------|---------------------|
+| **1. Intake** — understand the work | agent forgets past sessions, hallucinates scope | 4-tier **memory**, **reactor** per-prompt injection, DESIGN.md |
+| **2. Prep / routing** — pick the approach | wrong model, wrong tactic | pattern router, query-complexity, **multi-model routing**, recipe selection |
+| **3. Isolation** — protect the tree | agent edits `master`, clobbers files, collides | **worktree**-per-feature, **file coordination**, delivery gate |
+| **4. Build** — write the code | plausible-but-wrong code, stubs, empty/looping local-model output | **deliver** loop, serving-layer recipes, proxy guardrails, local-model handling |
+| **5. QC / verify** — prove it works | *the big one:* agent says "done" on broken code and self-grades wrong | **completion gates**, execution/runtime verify, **acceptance judge**, generator≠evaluator, tiered gates |
+| **6. Line coordination** — many hands | parallel agents collide, duplicate, deadlock | **coordination DB**, collaboration board + challenge, model-slot concurrency, deploy batching |
+| **7. Shipping** — merge & release | regressions, broken CI, skipped version bumps | worktree→PR flow, version/completion gates, CI feedback watcher, never-regress, git-safety |
+| **8. Feedback** — learn from it | same mistake every session | **memory promotion**, pattern RL, session analysis |
+
+Cross-cutting through every station: **policy gates** are the executable rules
+posted at each station, the **MCP Router** keeps the context lean so the belt
+never jams, and UAP runs across **9 harnesses** so the same floor plan applies
+wherever your agent works.
+
+---
+
 ## The hook-mediation model
 
 A bare agent harness calls a tool (Edit, Write, Bash, a spawned sub-agent, an
 MCP tool) and the model sees the raw result. UAP inserts itself between the
-harness and the tool by registering hooks at the harness's interception points:
+harness and the tool by registering hooks at the harness's interception points —
+this is how every station gets a chance to inspect the work before it moves down
+the line:
 
 - **Claude Code / VSCode / Factory / Cursor** — `PreToolUse` hooks
 - **OpenCode** — the `tool.execute.before` plugin hook
@@ -93,9 +133,14 @@ src/
 
 ---
 
-## Subsystems
+## Subsystems (station by station)
 
-### Memory (`src/memory/`)
+### Memory (`src/memory/`) — Intake & Feedback stations
+
+**The break it prevents:** at intake, a fresh agent has amnesia — it re-litigates
+solved problems and hallucinates scope. At feedback, it drops the lesson it just
+learned and repeats the mistake tomorrow. Memory is the station that carries
+context onto the belt and carries lessons back off it.
 
 A four-tier memory system that gives the agent persistent context across
 sessions. The tiers (`src/memory/README.md`):
@@ -124,7 +169,9 @@ Key modules:
 - `memory-consolidator.ts` — summarizes working entries into session memory,
   extracts lessons, and dedups by content hash + embedding similarity.
 - `write-gate.ts` — a quality filter that scores candidate memories and only
-  persists those above threshold (prevents memory pollution).
+  persists those above threshold (prevents memory pollution). This is the
+  feedback station's own gate: only lessons that change future behavior get
+  promoted.
 - `knowledge-graph.ts` — the L4 graph: upsert entities, strengthen
   relationships, recursive-CTE traversal.
 - `context-compressor.ts` / `semantic-compression.ts` — token budgeting and
@@ -135,7 +182,11 @@ Key modules:
 - `model-router.ts` — benchmark-fingerprint LLM routing with feedback learning
   (consumed by `src/models/unified-router.ts`).
 
-### MCP Router (`src/mcp-router/`)
+### MCP Router (`src/mcp-router/`) — cross-cutting: keep the belt from jamming
+
+**The break it prevents:** a context window flooded with tool schemas and raw
+tool output stalls every station downstream. The router keeps context lean so
+work keeps moving.
 
 A hierarchical Model Context Protocol router that achieves large token savings
 by two independent mechanisms (`src/mcp-router/server.ts`,
@@ -158,7 +209,12 @@ The design target documented in source is ~75,000 tokens of tool definitions
 collapsed to ~700 (98%+). Per-output FTS5 savings are computed live per call.
 See [../integrations/MCP_ROUTER.md](../integrations/MCP_ROUTER.md) for setup.
 
-### Policies (`src/policies/`)
+### Policies (`src/policies/`) — cross-cutting: the rules posted at every station
+
+**The break it prevents:** rules that live in a README are advisory and get
+skipped under pressure. Policies are the executable rules bolted to each
+station — worktree, task, delivery, tests, review — so a violation stops the
+belt instead of sliding through.
 
 Project guidelines expressed as **executable hook gates** rather than prose.
 Two layers:
@@ -179,14 +235,23 @@ Enforcers cover the worktree gate (`worktree_required.py`), task discipline
 (`schema_diff_gate.py`), memory-before-plan, MCP-router-first, RTK wrapping, and
 more. Levels: **REQUIRED** blocks, **RECOMMENDED** logs, **OPTIONAL** informs.
 
-### Delivery — `uap deliver` (`src/delivery/`)
+### Delivery — `uap deliver` (`src/delivery/`) — Build & QC stations
+
+**The break it prevents:** this is the heart of the floor. Left alone, an agent
+emits plausible-but-wrong code and declares victory on a red build. The deliver
+loop won't let the work leave the Build/QC stations until the project's *real*
+gates actually pass.
 
 A 15-module convergence loop that drives an underlying model against the
 project's **real** completion gates until the work actually passes — the
 mechanism behind UAP's "agents stop declaring victory on broken code." See the
 [deliver flow](#how-uap-deliver-orchestrates) below.
 
-### Coordination (`src/coordination/`)
+### Coordination (`src/coordination/`) — Isolation & Line-coordination stations
+
+**The break it prevents:** put two agents on one repo and they edit the same
+file, duplicate work, or deadlock. This station gives every agent its own lane,
+announces who's touching what, and blocks live same-file collisions.
 
 Lets multiple agents work the same repo without colliding. A singleton SQLite
 DB (`database.ts`) backs an agent registry, work announcements, work claims,
@@ -208,7 +273,11 @@ droids from `capability-router.ts`. `pattern-router.ts` matches tasks to
 Terminal-Bench patterns (always enforcing **P12** Output Existence and
 **P35** Decoder-First).
 
-### Models (`src/models/`)
+### Models (`src/models/`) — Prep / routing station
+
+**The break it prevents:** an agent that reaches for the same model on every task
+either overpays for trivial edits or under-powers a hard migration. This station
+picks the right approach and model before the work hits the belt.
 
 Multi-model routing. `router.ts` classifies a task (complexity + type from
 keyword scoring) and `selectModel()` picks a model per the routing strategy —
@@ -221,7 +290,12 @@ model per subtask; `executor.ts` runs the plan level-by-level with retries and
 fallback; `execution-profiles.ts` tunes *how* the chosen model runs
 (temperature, budgets); `analytics.ts` records outcomes so routing improves.
 
-### Tasks (`src/tasks/`)
+### Tasks (`src/tasks/`) — Prep / routing & Line-coordination stations
+
+**The break it prevents:** work without a tracked task drifts scope, races other
+agents on the same files, and starts before its prerequisites are ready. This
+station gates each task through a decoder-first check and hands claims to the
+coordination lane.
 
 A dependency-aware task tracker (a Beads alternative) backed by SQLite
 (`tasks`, `task_dependencies`, `task_history`, `task_activity`,
@@ -232,18 +306,29 @@ release with overlap detection); `decoder-gate.ts` implements the P35
 Decoder-First pre-execution validator (droid schema, tool availability,
 claim conflicts, worktree requirement, ambiguity).
 
-### Dashboard (`src/dashboard/`)
+### Dashboard (`src/dashboard/`) — floor visibility
+
+**The break it prevents:** a floor you can't see is a floor you can't trust. This
+gives you a live view of every station.
 
 A live visualization layer (`uap dashboard`) over tasks, agents, memory,
 policies, models, and benchmark/session history, with an event stream for
 real-time updates.
 
-### Observability (`src/observability/`)
+### Observability (`src/observability/`) — Feedback station
+
+**The break it prevents:** without traces you can't tell *why* a run failed, so
+the floor never improves. This station records what really happened so the
+pipeline can be tuned.
 
 Emits HALO / OpenInference spans for delivery runs and tool calls, consumed by
 `uap harness analyze` to optimize agent execution from real traces.
 
-### Benchmark harness (`src/benchmarks/paired/`)
+### Benchmark harness (`src/benchmarks/paired/`) — measuring the floor
+
+**The break it prevents:** claims that a station helps are worthless without a
+controlled measurement. This harness toggles only the UAP scaffold and reports
+the honest delta.
 
 A controlled paired-A/B harness (`uap bench paired`) for measuring UAP's impact
 without confounds. It holds the base model + agent constant and toggles **only**
@@ -261,7 +346,8 @@ is **+20pp** over a non-agentic baseline and **~0pp** over an agentic one.
 
 ## How a tool call flows: memory → policy → MCP Router
 
-For a representative `execute_tool` call routed through the UAP MCP server:
+This is one item riding the belt through the mediation stations. For a
+representative `execute_tool` call routed through the UAP MCP server:
 
 ```
 1. Tool call arrives at the PreToolUse hook.
@@ -294,8 +380,10 @@ decision loop defined normatively in [PROTOCOL.md](PROTOCOL.md#agent-decision-lo
 
 ## How `uap deliver` orchestrates
 
-`uap deliver "<instruction>"` runs `ConvergenceLoop.deliver()`
-(`src/delivery/convergence-loop.ts`). The staged flow:
+This is the Build/QC station's inner mechanism — the part that refuses to pass
+work down the line until it actually runs green. `uap deliver "<instruction>"`
+runs `ConvergenceLoop.deliver()` (`src/delivery/convergence-loop.ts`). The
+staged flow:
 
 ```
 detect gates ──▶ baseline check ──▶ protect files ──▶ ╔═════ turn loop ═════╗
@@ -344,6 +432,7 @@ ceiling (default 30, hard cap 50), and stops once progress stalls.
 ## See also
 
 - [PROTOCOL.md](PROTOCOL.md) — the harness↔UAP contract and agent loop
+- [../guides/DELIVERY_PIPELINE.md](../guides/DELIVERY_PIPELINE.md) — the end-to-end delivery-pipeline walkthrough
 - [../integrations/MCP_ROUTER.md](../integrations/MCP_ROUTER.md) — MCP Router setup
 - [../integrations/RTK.md](../integrations/RTK.md) — RTK (Rust Token Killer)
 - [../../CONTRIBUTING.md](../../CONTRIBUTING.md) — development workflow

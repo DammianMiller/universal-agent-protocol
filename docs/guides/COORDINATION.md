@@ -1,6 +1,8 @@
 # Multi-Agent Coordination
 
-> UAP v1.40.0
+> UAP v1.93.1
+
+> **🏭 Where this fits:** LINE COORDINATION — the station where parallel agents on the [delivery pipeline](./DELIVERY_PIPELINE.md) quietly step on each other: two of them editing the same file, duplicating work, or deadlocking at merge. **What it delivers:** agents register, announce what they're about to touch, and check for overlaps *before* they start — so the line runs many workers at once and still stays conflict-free.
 
 When multiple agents work a codebase in parallel, the expensive failure is two
 of them editing the same file at the same time and colliding at merge. UAP's
@@ -34,7 +36,8 @@ and routing/pattern helpers. The CLI entry points are
 
 ## The announce / overlaps workflow
 
-The recommended flow, printed by `uap agent register` itself:
+The recommended flow, printed by `uap agent register` itself — think of it as
+each worker calling out "I've got this one" before reaching for a part:
 
 ```bash
 # 1. Register (once per agent)

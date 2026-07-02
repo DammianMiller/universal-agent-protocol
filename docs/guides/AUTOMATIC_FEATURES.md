@@ -1,6 +1,12 @@
 # UAP Automatic Features — What Fires When
 
-Install UAP (`npm i -g universal-agent-protocol`) and every feature below activates automatically. There are no flags to set, no config to edit. UAP observes your workflow and injects the right capability at the right time.
+> **🏭 Where this fits:** CROSS-CUTTING — this is what breaks in a normal
+> agentic workflow: every safeguard is a manual step, so the one you forget is
+> the one that bites you. **What it delivers:** every station on your [delivery
+> pipeline](./DELIVERY_PIPELINE.md) fires automatically at the right moment —
+> the line runs itself, no flags to set, no config to remember.
+
+Install UAP (`npm i -g universal-agent-protocol`) and every feature below activates automatically. There are no flags to set, no config to edit. UAP observes your workflow and injects the right capability at the right time — the right station on the line kicking in for each task, without you routing work by hand.
 
 ---
 
