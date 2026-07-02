@@ -718,7 +718,10 @@ PROXY_MODEL_PROFILE_PARAM = os.environ.get(
 
 DEFAULT_PASSTHROUGH_MODEL_PATTERNS = (
     re.compile(r"^claude-opus-4-6", re.IGNORECASE),
+    re.compile(r"^claude-opus-4-8", re.IGNORECASE),
     re.compile(r"^claude-sonnet-4-6", re.IGNORECASE),
+    re.compile(r"^claude-haiku-4-5", re.IGNORECASE),
+    re.compile(r"^claude-fable-5", re.IGNORECASE),
 )
 
 # ---------------------------------------------------------------------------
@@ -8580,14 +8583,24 @@ async def stream_anthropic_response(
 
 
 def _build_passthrough_headers(request: Request) -> dict | None:
-    api_key = request.headers.get("x-api-key") or ANTHROPIC_API_KEY
-    if not api_key:
-        return None
     headers = {
         "Content-Type": "application/json",
-        "x-api-key": api_key,
         "anthropic-version": request.headers.get("anthropic-version", "2023-06-01"),
     }
+    # Claude Code on a Claude Max / Pro plan authenticates with an OAuth *bearer*
+    # token (Authorization: Bearer sk-ant-oat...), NOT an API key. When the client
+    # sends one, forward it verbatim and do NOT attach x-api-key -- Anthropic
+    # rejects requests that carry both credentials. This lets the proxy sit
+    # transparently in front of api.anthropic.com for subscription-auth Claude
+    # Code sessions (point ANTHROPIC_BASE_URL at the proxy and it just works).
+    authorization = request.headers.get("authorization")
+    if authorization:
+        headers["Authorization"] = authorization
+    else:
+        api_key = request.headers.get("x-api-key") or ANTHROPIC_API_KEY
+        if not api_key:
+            return None
+        headers["x-api-key"] = api_key
     beta = request.headers.get("anthropic-beta")
     if beta:
         headers["anthropic-beta"] = beta
