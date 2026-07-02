@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.94.0 (2026-07-02)
+
+- fix(proxy): resolve the single-oversized-message context-overflow wedge. Claude Code's auto-compact sends a `<transcript>` as ONE message that can exceed the whole context window; the pruner reduces context by *dropping* messages, so with one giant undroppable message it never converged and thrashed (prune → still >100% → retry, observed live at 105–115% util with rate climbing). The pruner's existing content-truncation only handled `tool_result` blocks — a giant *user/text* message was left intact. New `_truncate_oversized_message_content` truncates the largest content in-place (plain-string / `text` / `tool_result`, head+tail keep around a marker) so pruning always converges, and the `len(messages) <= 4` early-return now truncates instead of bailing when a few-message request still exceeds the window.
+- feat(proxy): implement `POST /v1/messages/count_tokens` (was 404). Returns `{"input_tokens": N}` using the same `estimate_total_tokens` accounting the pruner uses, so Claude Code can measure against the real window and size its auto-compact input to fit — preventing the oversized-transcript request in the first place.
+- test: 6 new cases (oversized string/text/tool_result truncation, prune convergence on a transcript larger than the window, count_tokens value + invalid-JSON 400). Fixed `test_prune_conversation_accepts_keep_last` to deepcopy its body (the two calls shared message objects via a shallow copy; in-place text truncation now exposes that).
+
 ## v1.93.1 (2026-07-02)
 
 - chore: bump version to 1.91.1
