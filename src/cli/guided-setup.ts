@@ -17,6 +17,7 @@ import { runSetupSteps, type SetupOptions } from './setup.js';
 import { backupInstructionFiles } from './setup-backup.js';
 import { extractInteractive } from './setup-extract.js';
 import { isQdrantReachable } from './memory.js';
+import { RoutingPresets } from '../models/index.js';
 import { createClackUI, type PromptUI } from './prompt-ui.js';
 import {
   applyWizardConfig,
@@ -179,6 +180,31 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     required: false,
   });
 
+  // ── Multi-model routing option (shown when routing is enabled) ───────
+  let routingPreset = 'none';
+  if (modelExtras.includes('modelRouting')) {
+    routingPreset = await ui.select<string>({
+      message: 'Routing option (which model handles each role):',
+      options: [
+        { label: 'None - use a single model for everything', value: 'none' },
+        ...Object.values(RoutingPresets).map((p) => ({
+          label: p.name,
+          value: p.id,
+          hint: `exec=${p.roles.executor} review=${p.roles.reviewer}`,
+        })),
+      ],
+      initialValue: 'none',
+    });
+    if (routingPreset !== 'none') {
+      ui.note(
+        'The cloud roles run on Anthropic (Claude). On a Claude Max/Pro subscription these ' +
+          "roles route through the proxy's OAuth passthrough; otherwise set ANTHROPIC_API_KEY. " +
+          'Execution can stay free on the local model.',
+        'Routing'
+      );
+    }
+  }
+
   // ── Hooks ───────────────────────────────────────────────────────────
   const hk = await ui.multiselect<string>({
     message: 'Hooks & automation:',
@@ -331,6 +357,7 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
       toolCallProfile,
       costTracking: modelExtras.includes('costTracking'),
       modelRouting: modelExtras.includes('modelRouting'),
+      routingPreset,
     },
     hooks: {
       sessionStart: hk.includes('sessionStart'),

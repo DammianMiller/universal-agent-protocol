@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.93.0 (2026-07-02)
+
+- feat(setup): make the 2 routing options pickable in the guided wizard
+
+
 ## v1.92.0 (2026-07-02)
 
 - feat(models,proxy): 2 named routing options + Claude Max OAuth passthrough

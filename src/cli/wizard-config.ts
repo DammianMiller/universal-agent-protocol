@@ -10,6 +10,7 @@
 
 import { writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { join } from 'path';
+import { RoutingPresets } from '../models/index.js';
 
 export interface MemoryFeatures {
   shortTermMemory: boolean;
@@ -48,6 +49,8 @@ export interface ModelFeatures {
   toolCallProfile: string;
   costTracking: boolean;
   modelRouting: boolean;
+  /** Named RoutingPresets id (e.g. fable-local-opus); 'none'/undefined = single model. */
+  routingPreset?: string;
 }
 
 export interface HooksFeatures {
@@ -245,6 +248,19 @@ export async function applyWizardConfig(
       const toolCalls = (config.toolCalls as Record<string, unknown>) || {};
       toolCalls.modelProfile = selections.model.toolCallProfile;
       config.toolCalls = toolCalls;
+    }
+
+    // ── Multi-model routing option (from a named RoutingPreset) ─────────
+    if (selections.model.routingPreset && selections.model.routingPreset !== 'none') {
+      const preset = RoutingPresets[selections.model.routingPreset];
+      if (preset) {
+        config.multiModel = {
+          enabled: true,
+          models: preset.models,
+          roles: { ...preset.roles },
+          routingStrategy: preset.routingStrategy || 'balanced',
+        };
+      }
     }
 
     // ── Hooks ───────────────────────────────────────────────────────────
