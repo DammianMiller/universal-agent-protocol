@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.96.1 (2026-07-03)
+
+- fix(deliver): ideation seeds always generate — use the blind executor (agentic runs silently got static defaults) + retry transient empty completions
+
+
 ## v1.96.0 (2026-07-03)
 
 - feat(delivery): close the self-improvement loop — mined-weakness prompt feedback, escalation-aware resume, parallel worktree exploration, trace rotation + beads sync
