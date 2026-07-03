@@ -5,10 +5,11 @@
  * shape that the HALO engine (https://github.com/context-labs/HALO) ingests
  * for systemic harness-failure analysis. One JSON object per line.
  *
- * Opt-in and zero-overhead when disabled: every emit path short-circuits on
- * `isHaloTracingEnabled()` before doing any work. Enable with:
+ * ON BY DEFAULT (near-zero overhead: one JSONL append per span) so every run
+ * feeds the self-improvement loop; every emit path still short-circuits on
+ * `isHaloTracingEnabled()`. Configure with:
  *
- *   UAP_HALO_TRACE=1                       # turn on
+ *   UAP_HALO_TRACE=0                       # opt out (default: on)
  *   UAP_HALO_TRACE_PATH=/path/traces.jsonl # output file (default .uap/halo/traces.jsonl)
  *   UAP_HALO_PROJECT_ID=uap                # inference.project_id (default "uap")
  *
@@ -63,8 +64,11 @@ export interface HaloSpan {
 }
 
 export function isHaloTracingEnabled(): boolean {
-  const v = process.env.UAP_HALO_TRACE;
-  return v === '1' || v === 'true';
+  // Default ON: HALO tracing is a near-free JSONL append and feeds the
+  // self-improvement loop (auto-mining + `uap harness analyze`). Opt out with
+  // UAP_HALO_TRACE=0/false/off.
+  const v = (process.env.UAP_HALO_TRACE ?? '').toLowerCase();
+  return !(v === '0' || v === 'false' || v === 'off');
 }
 
 export function haloTracePath(): string {

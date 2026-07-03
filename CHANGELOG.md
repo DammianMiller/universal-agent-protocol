@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.95.0 (2026-07-03)
+
+- test(state): cover the no-scaffold guard for the state manifest
+- feat(delivery): fable-grade orchestration — durable runs, decomposition, always-on self-improvement (P1–P5)
+
+
 ## v1.94.0 (2026-07-02)
 
 - fix(proxy): resolve the single-oversized-message context-overflow wedge. Claude Code's auto-compact sends a `<transcript>` as ONE message that can exceed the whole context window; the pruner reduces context by *dropping* messages, so with one giant undroppable message it never converged and thrashed (prune → still >100% → retry, observed live at 105–115% util with rate climbing). The pruner's existing content-truncation only handled `tool_result` blocks — a giant *user/text* message was left intact. New `_truncate_oversized_message_content` truncates the largest content in-place (plain-string / `text` / `tool_result`, head+tail keep around a marker) so pruning always converges, and the `len(messages) <= 4` early-return now truncates instead of bailing when a few-message request still exceeds the window.

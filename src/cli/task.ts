@@ -42,7 +42,8 @@ type TaskAction =
   | 'stats'
   | 'board'
   | 'sync'
-  | 'compact';
+  | 'compact'
+  | 'reap';
 
 interface TaskOptions {
   // Create options
@@ -140,6 +141,9 @@ export async function taskCommand(action: TaskAction, options: TaskOptions = {})
       break;
     case 'compact':
       await compactTasks(service, options);
+      break;
+    case 'reap':
+      await reapTasks(service, options);
       break;
   }
 }
@@ -478,7 +482,36 @@ async function deleteTask(service: TaskService, options: TaskOptions): Promise<v
   }
 }
 
+async function reapTasks(service: TaskService, options: TaskOptions): Promise<void> {
+  const days = options.days ? parseInt(options.days, 10) : 14;
+  if (!Number.isInteger(days) || days < 1) {
+    console.error(chalk.red('--days must be a positive integer'));
+    process.exit(1);
+  }
+  const reaped = service.reapStale(days);
+  if (options.json) {
+    console.log(JSON.stringify(reaped, null, 2));
+    return;
+  }
+  if (reaped.length === 0) {
+    console.log(chalk.dim(`No stale in_progress tasks (threshold: ${days}d)`));
+    return;
+  }
+  console.log(chalk.yellow(`⟲ reaped ${reaped.length} stale in_progress task(s) → open:`));
+  for (const t of reaped) console.log(`  ${t.id}  ${t.title}`);
+}
+
 async function showReady(service: TaskService, options: TaskOptions): Promise<void> {
+  // Auto-reap: stale in_progress tasks (untouched > 14d) revert to open so
+  // the readiness view reflects reality instead of a permanently-stuck board.
+  try {
+    const reaped = service.reapStale();
+    if (reaped.length > 0 && !options.json) {
+      console.log(chalk.yellow(`⟲ auto-reaped ${reaped.length} stale in_progress task(s) → open`));
+    }
+  } catch {
+    // reaping is best-effort
+  }
   const tasks = service.ready();
 
   if (options.json) {

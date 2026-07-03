@@ -37,6 +37,8 @@ export interface AutoPlan {
   ideate: boolean;
   halo: boolean;
   coordinate: boolean;
+  /** LLM acceptance judge: verify spec behavioral completeness after gates pass */
+  acceptance: boolean;
   /** Run the integration tier locally (after the fast tier passes) */
   integration: boolean;
   /** Run a local dev deploy+smoke tier locally */
@@ -56,9 +58,11 @@ export interface AutoPlan {
  * Map instruction complexity to a convergence-aid plan.
  *
  *  - simple   → plain single-shot loop (aids would only add cost)
- *  - moderate → exploration ×3 + critic + practices + HALO + coordination
+ *  - moderate → exploration ×3 + critic + practices + ideation + acceptance
+ *               judge + HALO + coordination
  *  - complex  → the full stack (= --optimize): exploration ×4, critic,
- *               practices, escalation, ideation, HALO, coordination
+ *               practices, escalation, ideation, acceptance judge, HALO,
+ *               coordination
  *
  * The classifier is injectable for tests and future model-based upgrades.
  */
@@ -78,6 +82,7 @@ export function planAutoOptimization(
       ideate: false,
       halo: false,
       coordinate: false,
+      acceptance: false,
       integration: false,
       deployDev: false,
       watchCi: false,
@@ -92,14 +97,17 @@ export function planAutoOptimization(
       critic: true,
       practices: true,
       escalate: false,
-      ideate: false,
+      // Ideation is cheap (one seed-generation call) and pays off whenever
+      // exploration is on — divergent seeds beat the four static defaults.
+      ideate: true,
       halo: true,
       coordinate: true,
+      acceptance: true,
       integration: true,
       deployDev: false,
       watchCi: false,
       summary:
-        'moderate task → exploration ×3, critic, practices, integration tier, HALO, coordination',
+        'moderate task → exploration ×3, critic, practices, ideation, acceptance judge, integration tier, HALO, coordination',
     };
   }
 
@@ -112,10 +120,11 @@ export function planAutoOptimization(
     ideate: true,
     halo: true,
     coordinate: true,
+    acceptance: true,
     integration: true,
     deployDev: true,
     watchCi: true,
     summary:
-      'complex task → exploration ×4, critic, practices, escalation, ideation, integration + deploy-dev tiers, watch-ci (push stays opt-in), HALO, coordination',
+      'complex task → exploration ×4, critic, practices, escalation, ideation, acceptance judge, integration + deploy-dev tiers, watch-ci (push stays opt-in), HALO, coordination',
   };
 }

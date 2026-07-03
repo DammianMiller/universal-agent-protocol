@@ -95,6 +95,9 @@ const FILE_BLOCK_RE = /^(`{3,})file:([^\n]+)\n([\s\S]*?)^\1\s*$/gm;
  */
 const PROTECTED_SEGMENTS = new Set([
   '.git',
+  // Harness-owned state (run checkpoints, traces, practices): a model that can
+  // seed .uap/deliver-runs/* could plant a resumable mission / traversal runId.
+  '.uap',
   '.husky',
   '.github',
   '.gitlab',

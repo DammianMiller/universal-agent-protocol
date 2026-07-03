@@ -21,7 +21,7 @@ describe('planAutoOptimization', () => {
     expect(plan.escalate).toBe(false);
   });
 
-  it('gives moderate tasks exploration, critic, practices, HALO, coordination', () => {
+  it('gives moderate tasks exploration, critic, practices, ideation, acceptance, HALO, coordination', () => {
     const plan = planAutoOptimization('x', () => 'moderate');
     expect(plan).toMatchObject({
       complexity: 'moderate',
@@ -29,7 +29,8 @@ describe('planAutoOptimization', () => {
       critic: true,
       practices: true,
       escalate: false,
-      ideate: false,
+      ideate: true,
+      acceptance: true,
       halo: true,
       coordinate: true,
     });
@@ -44,6 +45,7 @@ describe('planAutoOptimization', () => {
       practices: true,
       escalate: true,
       ideate: true,
+      acceptance: true,
       halo: true,
       coordinate: true,
     });
@@ -115,6 +117,7 @@ describe('applyAutoPlan', () => {
       ideate: true,
       halo: true,
       coordinate: true,
+      acceptance: true,
       integration: true,
       deployDev: true,
     });

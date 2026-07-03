@@ -100,7 +100,7 @@ describe('createHaloDeliveryTracer', () => {
   });
 
   it('is a no-op when HALO tracing is disabled', () => {
-    delete process.env.UAP_HALO_TRACE;
+    process.env.UAP_HALO_TRACE = '0';
     const tracer = createHaloDeliveryTracer({
       instruction: 'x',
       modelId: 'm',

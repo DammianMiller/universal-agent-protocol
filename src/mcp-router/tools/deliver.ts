@@ -30,6 +30,7 @@ import { execFile } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, resolve, sep } from 'path';
 import { existsSync, realpathSync, statSync } from 'fs';
+import { isValidRunId } from '../../delivery/run-state.js';
 
 export interface DeliverArgs {
   /** The delivery/coding task instruction */
@@ -44,6 +45,22 @@ export interface DeliverArgs {
   dryRun?: boolean;
   /** Hard wall-clock cap in seconds (default 1800) */
   timeoutSec?: number;
+  /** Judge spec behavioral completeness (LLM) after objective gates pass */
+  acceptance?: boolean;
+  /** Separate evaluator model preset (generator never grades its own work) */
+  evaluatorModel?: string;
+  /** Escalation ladder on stagnation (widen → critic → reseed → stronger model) */
+  escalate?: boolean;
+  /** Register/announce/heartbeat via the coordination layer */
+  coordinate?: boolean;
+  /** Loop past maxTurns to a ceiling until every gate passes (CLI default: on) */
+  untilDelivered?: boolean;
+  /** Hard turn ceiling for untilDelivered (1-50) */
+  ceiling?: number;
+  /** Resume an interrupted durable run: a run id or 'latest' */
+  resume?: string;
+  /** Decompose the mission into sequential phases (auto for long complex tasks) */
+  decompose?: boolean;
 }
 
 export const DELIVER_TOOL_DEFINITION = {
@@ -82,6 +99,38 @@ Best for: implement a feature, fix a bug across files, refactor with tests. Not 
       timeoutSec: {
         type: 'number',
         description: 'Hard wall-clock cap in seconds (default 1800)',
+      },
+      acceptance: {
+        type: 'boolean',
+        description: 'After objective gates pass, judge spec behavioral completeness (LLM) and iterate on unmet requirements (auto-on for moderate/complex tasks)',
+      },
+      evaluatorModel: {
+        type: 'string',
+        description: 'Model preset that AUTHORS + JUDGES acceptance, separate from the generator',
+      },
+      escalate: {
+        type: 'boolean',
+        description: 'Escalation ladder on stagnation: widen exploration → critic → reseed ideation → stronger model',
+      },
+      coordinate: {
+        type: 'boolean',
+        description: 'Register the run with the coordination layer (announce, heartbeat, overlap detection)',
+      },
+      untilDelivered: {
+        type: 'boolean',
+        description: 'Loop past maxTurns to a hard ceiling until every gate passes (default: on; false disables)',
+      },
+      ceiling: {
+        type: 'number',
+        description: 'Hard turn ceiling for untilDelivered, 1-50 (default 30)',
+      },
+      resume: {
+        type: 'string',
+        description: "Resume an interrupted durable run: a run id or 'latest'",
+      },
+      decompose: {
+        type: 'boolean',
+        description: 'Decompose the mission into sequential phases, each converged by its own loop (auto for long complex tasks; false disables)',
       },
     },
     required: ['instruction'],
@@ -211,10 +260,14 @@ export interface DeliverResult {
  * aids, gates, test protection) is handled by deliver itself.
  */
 export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
-  const { instruction, projectRoot, maxTurns, model, dryRun = false, timeoutSec } = args;
+  const {
+    instruction, projectRoot, maxTurns, model, dryRun = false, timeoutSec,
+    acceptance, evaluatorModel, escalate, coordinate, untilDelivered, ceiling,
+    resume, decompose,
+  } = args;
 
-  if (!instruction || !instruction.trim()) {
-    return Promise.resolve({ ok: false, dryRun, error: 'instruction is required' });
+  if ((!instruction || !instruction.trim()) && !resume) {
+    return Promise.resolve({ ok: false, dryRun, error: 'instruction is required (or pass resume)' });
   }
   if (maxTurns !== undefined && (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_TURNS_LIMIT)) {
     return Promise.resolve({ ok: false, dryRun, error: `maxTurns must be an integer 1-${MAX_TURNS_LIMIT}` });
@@ -224,6 +277,15 @@ export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
   }
   if (model !== undefined && !/^[A-Za-z0-9._-]+$/.test(model)) {
     return Promise.resolve({ ok: false, dryRun, error: 'model must be a plain preset id' });
+  }
+  if (evaluatorModel !== undefined && !/^[A-Za-z0-9._-]+$/.test(evaluatorModel)) {
+    return Promise.resolve({ ok: false, dryRun, error: 'evaluatorModel must be a plain preset id' });
+  }
+  if (ceiling !== undefined && (!Number.isInteger(ceiling) || ceiling < 1 || ceiling > 50)) {
+    return Promise.resolve({ ok: false, dryRun, error: 'ceiling must be an integer 1-50' });
+  }
+  if (resume !== undefined && resume !== 'latest' && !isValidRunId(resume)) {
+    return Promise.resolve({ ok: false, dryRun, error: 'resume must be a plain run id or latest' });
   }
 
   const sandbox = resolveSandboxedRoot(projectRoot);
@@ -245,7 +307,16 @@ export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
   cliArgs.push('--project-root', root); // always explicit (confined above)
   if (maxTurns !== undefined) cliArgs.push('--max-turns', String(maxTurns));
   if (model) cliArgs.push('--model', model);
-  cliArgs.push('--', instruction);
+  if (acceptance) cliArgs.push('--acceptance');
+  if (evaluatorModel) cliArgs.push('--evaluator-model', evaluatorModel);
+  if (escalate) cliArgs.push('--escalate');
+  if (coordinate) cliArgs.push('--coordinate');
+  if (untilDelivered === false) cliArgs.push('--no-until-delivered');
+  if (ceiling !== undefined) cliArgs.push('--ceiling', String(ceiling));
+  if (resume) cliArgs.push('--resume', resume);
+  if (decompose === true) cliArgs.push('--decompose');
+  if (decompose === false) cliArgs.push('--no-decompose');
+  cliArgs.push('--', instruction ?? '');
 
   const timeoutMs = Math.min(MAX_TIMEOUT_SEC, Math.max(1, timeoutSec ?? DEFAULT_TIMEOUT_SEC)) * 1000;
 

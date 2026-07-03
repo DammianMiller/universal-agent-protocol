@@ -115,6 +115,13 @@ export function resolveAcceptanceVerdict(
   return { passed: r.passed, score: r.score, feedback: r.passed ? '' : gaps };
 }
 import { createAgenticExecutor, noopApplier, selectExecutorMode } from '../delivery/agentic-executor.js';
+import { loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
+import type { DeliverRunState } from '../delivery/run-state.js';
+import { phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
+import type { LifecycleHintProvider } from '../delivery/decompose.js';
+import type { DeliveryPhase } from '../delivery/decompose.js';
+import { completeDeliveryTask, openDeliveryTask, recordDeliveryOutcome, reopenDeliveryTask } from '../delivery/task-sync.js';
+import { autoMineHaloTraces, summarizeWeaknesses } from '../delivery/auto-mine.js';
 import type { ExecutorMode } from '../delivery/agentic-executor.js';
 import type { AutoPlan } from '../delivery/auto-optimizer.js';
 import { createHaloDeliveryTracer } from '../delivery/halo-trace.js';
@@ -213,6 +220,11 @@ export interface DeliverOptions {
   untilDelivered?: boolean;
   /** Hard turn ceiling for until-delivered (default 30). */
   ceiling?: string;
+  /** Resume an interrupted durable run: a run id or 'latest'. */
+  resume?: string;
+  /** Decompose an epic mission into sequential phases (auto for long complex
+   * tasks; commander sets false on --no-decompose). */
+  decompose?: boolean;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -259,7 +271,10 @@ function changedFiles(projectRoot: string): string[] {
       .filter(Boolean)
       // porcelain lines are "XY <path>"; drop the 3-char status prefix.
       .map((line) => line.slice(3))
-      .filter(Boolean);
+      .filter(Boolean)
+      // Harness-owned state (run checkpoints, traces, mined weaknesses) must
+      // never ride into the delivery commit on repos that don't ignore .uap/.
+      .filter((f) => !f.startsWith('.uap/') && !f.startsWith('.uap\\'));
   } catch {
     return [];
   }
@@ -317,6 +332,7 @@ export function applyAutoPlan(options: DeliverOptions, plan: AutoPlan): void {
   if (plan.ideate && options.ideate === undefined) options.ideate = true;
   if (plan.halo && options.halo === undefined) options.halo = true;
   if (plan.coordinate && options.coordinate === undefined) options.coordinate = true;
+  if (plan.acceptance && options.acceptance === undefined) options.acceptance = true;
   // Local tiers are safe to auto-enable. The watch-ci push boundary stays
   // OPT-IN even when the plan recommends it (plan.watchCi) — committing and
   // pushing is a side effect the user must request explicitly, mirroring the
@@ -335,6 +351,32 @@ export async function deliverCommand(instruction: string, options: DeliverOption
 }
 
 async function runDeliver(instruction: string, options: DeliverOptions): Promise<void> {
+  const projectRoot = resolve(options.projectRoot ?? process.cwd());
+
+  // Durable runs: `--resume <id|latest>` restores an interrupted mission —
+  // instruction, phase cursor, and the loop checkpoint — and continues it.
+  let resumeState: DeliverRunState | null = null;
+  if (options.resume) {
+    resumeState = loadRunState(projectRoot, options.resume);
+    if (!resumeState) {
+      fail(`No resumable run '${options.resume}' under ${projectRoot}/.uap/deliver-runs`);
+    }
+    if (!instruction.trim()) instruction = resumeState.instruction;
+    if (!options.dryRun) {
+      console.log(
+        chalk.cyan(
+          `⟲ resuming run ${resumeState.runId} (turn ${resumeState.checkpoint?.turn ?? 0} completed${resumeState.phases ? `, phase ${(resumeState.phaseIndex ?? 0) + 1}/${resumeState.phases.length}` : ''})`
+        )
+      );
+      // The state file is on the untrusted side of the boundary — always show
+      // the operator what mission they are about to continue.
+      console.log(chalk.dim(`  mission: ${resumeState.instruction.slice(0, 200)}`));
+    }
+  }
+  if (!instruction.trim()) {
+    fail('An instruction is required (or pass --resume <id|latest> to continue a prior run).');
+  }
+
   // Dynamic optimization (default on): classify the instruction and enable
   // the convergence aids that match its complexity, so non-trivial requests
   // always get outcome-improving aids without flags. Stands down when the
@@ -370,9 +412,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   if (options.halo) {
     process.env.UAP_HALO_TRACE = '1';
   }
+  // Anchor trace artifacts to the TARGET project: the exporter defaults to
+  // cwd, which is wrong (and commingles projects) under --project-root.
+  if (!process.env.UAP_HALO_TRACE_PATH) {
+    process.env.UAP_HALO_TRACE_PATH = join(projectRoot, '.uap', 'halo', 'traces.jsonl');
+  }
 
-  const projectRoot = resolve(options.projectRoot ?? process.cwd());
-  const presetId = options.model ?? process.env.UAP_DELIVER_MODEL ?? 'qwen35-a3b';
+  const presetId =
+    options.model ?? resumeState?.presetId ?? process.env.UAP_DELIVER_MODEL ?? 'qwen35-a3b';
 
   let maxTurns: number | undefined;
   if (options.maxTurns !== undefined) {
@@ -549,7 +596,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       auto: autoPlan ? autoPlan.summary : null,
       ideate: Boolean(options.ideate || options.ideateProject),
       ideateProject: options.ideateProject ?? null,
-      halo: Boolean(options.halo),
+      halo: Boolean(options.halo) || isHaloTracingEnabled(),
       coordinate: Boolean(options.coordinate),
       deploy: Boolean(options.deploy),
       protectTests: options.protectTests !== false,
@@ -557,6 +604,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       guidanceFile: options.guidanceFile ? resolve(options.guidanceFile) : null,
       untilDelivered,
       ceiling: untilDelivered ? (maxTurnsCeiling ?? DEFAULT_CLI_CEILING) : null,
+      acceptance: Boolean(options.acceptance),
+      decompose:
+        options.decompose ??
+        (process.env.UAP_DELIVER_DECOMPOSE !== '0' &&
+          shouldDecompose(instruction, autoPlan?.complexity)),
+      resume: resumeState?.runId ?? null,
       maxTier,
       tiers: [...new Set(rungs.map((r) => tierOf(r)))],
       watchCi,
@@ -639,11 +692,26 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // than the one implementing — so the generator never grades its own work.
   // Pairs naturally with the barbell strategy (cheap generator, sharp evaluator).
   // Defaults to the generator (single-model, unchanged) when unset.
-  const evaluatorPresetId = resolveEvaluatorPreset({
+  // Fallback chain: an explicitly-configured stronger/escalation model doubles
+  // as the evaluator when no dedicated evaluator is set — a sharp judge is the
+  // cheapest place to spend the strong model (barbell strategy), and it keeps
+  // generator≠evaluator ON by default wherever a second model exists at all.
+  let evaluatorPresetId = resolveEvaluatorPreset({
     evaluatorModel: options.evaluatorModel,
     generatorPreset: presetId,
-    envEvaluator: process.env.UAP_DELIVER_EVALUATOR_MODEL,
+    envEvaluator:
+      process.env.UAP_DELIVER_EVALUATOR_MODEL ??
+      options.escalateModel ??
+      process.env.UAP_ESCALATE_MODEL,
   });
+  // The escalation-env fallback must FAIL SOFT: a stale UAP_ESCALATE_MODEL
+  // must not break every run — only an explicit --evaluator-model may fail hard.
+  if (evaluatorPresetId && !options.evaluatorModel && !ModelPresets[evaluatorPresetId]) {
+    console.log(
+      chalk.yellow(`⚠ evaluator fallback '${evaluatorPresetId}' is not a known preset — using the generator as evaluator`)
+    );
+    evaluatorPresetId = null;
+  }
   let evaluatorExecutor: LoopExecutor = blindExecutor;
   if (evaluatorPresetId) {
     const evalModel = resolveModel(evaluatorPresetId, options.evaluatorEndpoint);
@@ -740,17 +808,21 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     );
   }
 
-  const escalation = options.escalate
-    ? createEscalationController({
-        tiers: defaultEscalationLadder({
-          candidates,
-          maxTurns: maxTurns ?? 5,
-          escalateExecutor,
-          escalateModelName,
-        }),
-        onEscalate: (tier, turn) => console.log(chalk.magenta(`  ↑ turn ${turn}: ${tier.label}`)),
-      })
-    : undefined;
+  // Escalation controllers hold stagnation state in closures, so each loop
+  // (each phase of a decomposed mission) gets a FRESH one — phase 2 must not
+  // start pre-escalated because phase 1 ended near 100%.
+  const makeEscalation = (): ReturnType<typeof createEscalationController> | undefined =>
+    options.escalate
+      ? createEscalationController({
+          tiers: defaultEscalationLadder({
+            candidates,
+            maxTurns: maxTurns ?? 5,
+            escalateExecutor,
+            escalateModelName,
+          }),
+          onEscalate: (tier, turn) => console.log(chalk.magenta(`  ↑ turn ${turn}: ${tier.label}`)),
+        })
+      : undefined;
 
   // Phase 4: learned best-practice cards for similar tasks. Retrieval is
   // semantic (embeddings) by default — better recall than keyword overlap —
@@ -927,6 +999,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   if (skipJudgeForSimple && !options.dryRun) {
     console.log(chalk.cyan('⚖ acceptance: judge skipped for simple task (objective/self-gate covers it)'));
   }
+  // Phased missions re-point the judge at the current phase's goal — judging
+  // phase 1 against the FULL mission would fail every phase by construction.
+  let acceptanceSpec = instruction;
   const acceptanceGate: AcceptanceGate | undefined = options.acceptance && !skipJudgeForSimple
     ? async (root) => {
         // Primary mode: the only objective rung is the trivial bootstrap, and the
@@ -944,7 +1019,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
             };
           }
         }
-        const r = await runAcceptanceGate({ spec: instruction, projectRoot: root, executor: evaluatorExecutor });
+        const r = await runAcceptanceGate({ spec: acceptanceSpec, projectRoot: root, executor: evaluatorExecutor });
         return resolveAcceptanceVerdict(r, acceptancePrimary);
       }
     : undefined;
@@ -955,6 +1030,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // the file-block applier to materialize.
     ...(agentic ? { applier: noopApplier } : {}),
     ...(acceptanceGate ? { acceptanceGate } : {}),
+  };
+
+  /** Compose the per-turn hooks with a FRESH escalation controller. */
+  const makeIterationHook = (): ReturnType<typeof composeIterationHooks> => {
+    const escalation = makeEscalation();
+    return composeIterationHooks(
+      (record) => printProgress(record),
+      (record) => haloTracer.onIteration(record),
+      coordinator ? (record) => coordinator.onIteration(record) : undefined,
+      escalation ? (record) => escalation.onIteration(record) : undefined
+    );
   };
 
   const loopConfig: ConvergenceConfig = {
@@ -990,14 +1076,153 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     guidanceProvider,
     untilDelivered,
     maxTurnsCeiling,
-    onIteration: composeIterationHooks(
-      (record) => printProgress(record),
-      (record) => haloTracer.onIteration(record),
-      coordinator ? (record) => coordinator.onIteration(record) : undefined,
-      escalation ? (record) => escalation.onIteration(record) : undefined
-    ),
+    // Stagnation-triggered ideation (escalation ladder tier): regenerate
+    // divergent seeds mid-run, steering away from the failing approach.
+    seedGenerator: async (instr, feedback) =>
+      generateStrategySeeds(
+        feedback ? `${instr}\n\nPrevious-attempt gate feedback (avoid approaches that led here):\n${feedback.slice(0, 800)}` : instr,
+        blindExecutor,
+        candidates ? { count: candidates } : {}
+      ),
+    onIteration: makeIterationHook(),
   };
-  const loop = new ConvergenceLoop(loopConfig, executor, seams);
+  // ---- Durable run + optional mission decomposition (fable-style) ----
+  const runId = resumeState?.runId ?? newRunId();
+  let phases: DeliveryPhase[] | undefined = resumeState?.phases;
+  let phaseIndex = resumeState?.phaseIndex ?? 0;
+  const phaseSummaries: string[] = [...(resumeState?.phaseSummaries ?? [])];
+  // A mission-scoped self-gate or acceptance-primary target cannot judge
+  // individual phases — phase 1 would be graded against the whole mission —
+  // so decomposition stands down in those modes.
+  const decomposeWanted =
+    !needsSelfGate &&
+    !acceptancePrimary &&
+    (options.decompose === true ||
+      (options.decompose === undefined &&
+        process.env.UAP_DELIVER_DECOMPOSE !== '0' &&
+        shouldDecompose(instruction, autoPlan?.complexity)));
+  if (!phases && decomposeWanted && !resumeState) {
+    console.log(chalk.cyan('🧩 decompose: planning sequential delivery phases…'));
+    // ExpertOrchestrator lifecycle chain → phase-shaping hints (fail-soft).
+    let lifecycleHints: LifecycleHintProvider | undefined;
+    try {
+      const { planFromDescription } = await import('../coordination/expert-orchestrator.js');
+      lifecycleHints = (instr) => {
+        const chain = planFromDescription(instr);
+        const byPhase = new Map<string, string[]>();
+        for (const step of chain.steps) {
+          const list = byPhase.get(step.phase) ?? [];
+          if (list.length < 3) list.push(step.droid);
+          byPhase.set(step.phase, list);
+        }
+        const lines = [...byPhase.entries()].map(([ph, droids]) => `- ${ph}: ${droids.join(', ')}`);
+        return lines.length > 0 ? lines.join('\n') : null;
+      };
+    } catch {
+      lifecycleHints = undefined;
+    }
+    const planned = await planDeliveryPhases(instruction, evaluatorExecutor, lifecycleHints);
+    if (planned.length >= 2) {
+      phases = planned;
+      console.log(chalk.cyan(`🧩 ${planned.length} phases: ${planned.map((ph) => ph.title).join(' → ')}`));
+    } else {
+      console.log(chalk.dim('  decompose: no usable multi-phase plan — running as a single mission'));
+    }
+  }
+  const runState: DeliverRunState = {
+    runId,
+    instruction,
+    presetId,
+    projectRoot,
+    status: 'running',
+    createdAt: resumeState?.createdAt ?? new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    checkpoint: resumeState?.checkpoint,
+    phases,
+    phaseIndex,
+    phaseSummaries: [...phaseSummaries],
+  };
+  saveRunState(runState);
+  // Persist loop state after every turn so this run survives interruption.
+  loopConfig.onCheckpoint = (cp) => {
+    runState.checkpoint = cp;
+    saveRunState(runState);
+  };
+  // The restored checkpoint feeds exactly one loop (the in-flight phase).
+  let resumeCheckpoint = resumeState?.checkpoint;
+
+  // Task/memory trail: the run is a live task while it converges. A resumed
+  // run reuses its original task instead of opening a duplicate.
+  const missionTask = resumeState?.taskId
+    ? await reopenDeliveryTask(resumeState.taskId, projectRoot)
+    : await openDeliveryTask(instruction, projectRoot);
+  runState.taskId = missionTask?.id ?? resumeState?.taskId;
+
+  /** Sequential phased delivery: each phase runs its own convergence loop
+   * against the same gates; later phases see one-line summaries of what the
+   * earlier phases already built. Baseline checks are off — a green tree
+   * means the PREVIOUS phase is done, not the next one. */
+  const runPhasedMission = async (): Promise<DeliveryResult> => {
+    const all: DeliveryResult = {
+      success: true,
+      alreadyDelivered: false,
+      turns: 0,
+      bestScore: 0,
+      bestTurn: 0,
+      history: [],
+      finalFeedback: '',
+      finalOutput: '',
+      totalDurationMs: 0,
+    };
+    for (; phaseIndex < phases!.length; phaseIndex++) {
+      runState.phaseIndex = phaseIndex;
+      saveRunState(runState);
+      const phase = phases![phaseIndex];
+      console.log(chalk.bold(`▶ phase ${phaseIndex + 1}/${phases!.length}: ${phase.title}`));
+      const phaseTask = await openDeliveryTask(
+        `${phase.title} — ${phase.goal.slice(0, 120)}`,
+        projectRoot,
+        missionTask?.id
+      );
+      const phaseLoop = new ConvergenceLoop(
+        {
+          ...loopConfig,
+          baselineCheck: false,
+          resumeFrom: resumeCheckpoint,
+          onIteration: makeIterationHook(),
+        },
+        executor,
+        seams
+      );
+      const resumedTurns = resumeCheckpoint?.history.length ?? 0;
+      resumeCheckpoint = undefined;
+      const phaseText = phaseInstruction(instruction, phases!, phaseIndex, phaseSummaries);
+      // The acceptance judge grades THIS phase's goal, not the whole mission.
+      acceptanceSpec = phaseText;
+      const phaseResult = await phaseLoop.deliver(phaseText);
+      all.turns += phaseResult.turns - resumedTurns;
+      all.history.push(...phaseResult.history);
+      all.totalDurationMs += phaseResult.totalDurationMs;
+      if (phaseResult.bestScore > all.bestScore) {
+        all.bestScore = phaseResult.bestScore;
+        all.bestTurn = phaseResult.bestTurn;
+      }
+      all.finalFeedback = phaseResult.finalFeedback;
+      all.finalOutput = phaseResult.finalOutput;
+      completeDeliveryTask(phaseTask, phaseResult);
+      if (!phaseResult.success) {
+        all.success = false;
+        break;
+      }
+      phaseSummaries.push(
+        `${phase.title}: ${phase.goal.slice(0, 140)} (delivered in ${phaseResult.turns} turn(s))`
+      );
+      runState.phaseSummaries = [...phaseSummaries];
+      runState.checkpoint = undefined; // belongs to the finished phase
+      saveRunState(runState);
+    }
+    return all;
+  };
 
   // --keep-best (never regress): capture the starting required-gate score and a
   // project snapshot so we can roll back if deliver ends up WORSE than it
@@ -1025,7 +1250,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
 
   let result: DeliveryResult;
   try {
-    result = await loop.deliver(instruction);
+    if (phases && phases.length >= 2) {
+      result = await runPhasedMission();
+    } else {
+      if (resumeCheckpoint) loopConfig.resumeFrom = resumeCheckpoint;
+      const loop = new ConvergenceLoop(loopConfig, executor, seams);
+      result = await loop.deliver(instruction);
+    }
 
     // CI watch boundary + re-converge: once local tiers are green, commit/push
     // the worktree branch and watch the CI run. On CI/deploy failure, feed the
@@ -1078,7 +1309,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         }
         console.log(chalk.cyan('  ⟲ re-converging against CI feedback…'));
         const reconvergeLoop = new ConvergenceLoop(
-          { ...loopConfig, baselineCheck: false },
+          { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onCheckpoint: undefined },
           executor,
           seams
         );
@@ -1105,6 +1336,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       totalDurationMs: 0,
     };
     haloTracer.finish(aborted);
+    runState.status = 'interrupted';
+    saveRunState(runState);
     if (coordinator) {
       await coordinator.finish(aborted);
     }
@@ -1134,6 +1367,25 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   }
 
   haloTracer.finish(result);
+
+  // Durable-run bookkeeping + task/memory trail (all fail-soft): the run's
+  // outcome lands in the task DB and short-term memory so future sessions
+  // know exactly what was delivered (or what failed and why).
+  runState.status = result.success ? 'delivered' : 'failed';
+  if (result.success) runState.checkpoint = undefined;
+  saveRunState(runState);
+  completeDeliveryTask(missionTask, result);
+  await recordDeliveryOutcome(instruction, projectRoot, result, model.id);
+
+  // Close the HALO observe→learn loop: mine the trace tail for recurring
+  // failure patterns after every run — no operator step required.
+  if (isHaloTracingEnabled()) {
+    const mined = autoMineHaloTraces(model.id);
+    const minedSummary = summarizeWeaknesses(mined.reports);
+    if (minedSummary && !options.json) {
+      console.log(chalk.dim(`  ⛏ halo auto-mine: ${minedSummary}`));
+    }
+  }
 
   // Deploy batching (uap deploy): queue a commit of the applied files so the
   // batcher can squash/execute it on its window. Queued before finish() so
@@ -1194,6 +1446,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       JSON.stringify(
         {
           ...rest,
+          runId,
           finalOutput: finalOutput.slice(0, 4000),
           ...(deployActionId !== null ? { deployActionId } : {}),
           ...(isHaloTracingEnabled() ? { haloTracePath: haloTracePath() } : {}),

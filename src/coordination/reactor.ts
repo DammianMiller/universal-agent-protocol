@@ -3,6 +3,7 @@ import { PatternRouter, getPatternRouter } from './pattern-router.js';
 import { maybeDesignInjection } from '../design/reactor-inject.js';
 import { maybeBoardInjection } from './board-inject.js';
 import { maybeCollaborationInjection } from './collaboration-inject.js';
+import { maybeStateInjection } from '../state/reactor-inject.js';
 
 export type ReactorEvent = 'session-start' | 'user-prompt' | 'pre-tool' | 'post-tool' | 'stop' | 'session-end';
 
@@ -119,6 +120,16 @@ export function resolve(
       ? maybeDesignInjection(ctx.cwd, ctx.promptText, ctx.changedFiles)
       : null;
 
+  // Implementation-state manifest: machine-derived project identity + exact
+  // implementation state (version, branch, latest shipped changes) so every
+  // session starts with real knowledge instead of drifted docs. Deduped per
+  // session via `state:manifest`.
+  const stateKey = 'state:manifest';
+  const stateInject =
+    ctx.cwd && !(ctx.surfaced ?? []).includes(stateKey)
+      ? maybeStateInjection(ctx.cwd)
+      : null;
+
   // Collaboration board: surface recent peer posts (findings/dead-ends/flags/
   // handoffs) so shared knowledge compounds. Fires regardless of routing
   // confidence; deduped per session via the `board:recent` surfaced key.
@@ -164,6 +175,10 @@ export function resolve(
   const buildContextBlocks = (): { inject: string; keys: string[] } => {
     const blocks: string[] = [];
     const keys: string[] = [];
+    if (stateInject) {
+      blocks.push(`## Project state (auto-generated)\n${stateInject}`);
+      keys.push(stateKey);
+    }
     if (deliverInject) {
       blocks.push(`## Writing code — route through deliver\n${deliverInject}`);
       keys.push(deliverKey);
@@ -298,6 +313,7 @@ export function resolve(
   result.reason =
     `Routing confidence ${confidence.toFixed(2)}` +
     `${matchedPatterns && matchedPatterns.length > 0 ? ', patterns matched' : ''}` +
+    `${stateInject ? ', project-state surfaced' : ''}` +
     `${collabInject ? ', collaboration activated' : ''}` +
     `${boardInject ? ', board surfaced' : ''}` +
     `${designInject ? ', design-system surfaced' : ''}`;

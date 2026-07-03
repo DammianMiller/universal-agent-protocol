@@ -106,12 +106,24 @@ describe('halo-exporter', () => {
       rmSync(dir, { recursive: true, force: true });
     });
 
-    it('is a no-op when tracing is disabled', () => {
+    it('is a no-op when tracing is explicitly disabled', () => {
       const path = join(dir, 'traces.jsonl');
+      process.env.UAP_HALO_TRACE = '0';
       process.env.UAP_HALO_TRACE_PATH = path;
       expect(isHaloTracingEnabled()).toBe(false);
       recordToolSpan('github.create_issue', 0, 1, true);
       expect(existsSync(path)).toBe(false);
+    });
+
+    it('is ON by default (unset env) and honors off aliases', () => {
+      delete process.env.UAP_HALO_TRACE;
+      expect(isHaloTracingEnabled()).toBe(true);
+      for (const off of ['0', 'false', 'off']) {
+        process.env.UAP_HALO_TRACE = off;
+        expect(isHaloTracingEnabled()).toBe(false);
+      }
+      process.env.UAP_HALO_TRACE = '1';
+      expect(isHaloTracingEnabled()).toBe(true);
     });
 
     it('appends one valid JSONL span per call when enabled', () => {
