@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.96.5 (2026-07-03)
+
+- fix(proxy): recon-convergence must count OpenAI-style tool-loop writes (write_file/edit_file/save_file)
+
+
 ## v1.96.4 (2026-07-03)
 
 - fix(models): long HTTP timeouts + transient retry for model calls — undici's 300s headersTimeout was killing long local-model turns
