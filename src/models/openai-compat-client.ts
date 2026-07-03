@@ -7,13 +7,14 @@
  * endpoints.
  */
 
+import { fetchModelWithRetry, modelHttpTimeoutMs } from './long-fetch.js';
 import type { ModelConfig } from './types.js';
 import type { ModelClient } from './executor.js';
 
 export interface OpenAICompatClientOptions {
   /** Fallback endpoint when the ModelConfig has none (default: UAP_INFERENCE_ENDPOINT or http://localhost:4000/v1) */
   defaultEndpoint?: string;
-  /** Request timeout in ms (default 300000) */
+  /** Abort timeout in ms (default: UAP_MODEL_HTTP_TIMEOUT_MS, 30 min) */
   timeoutMs?: number;
 }
 
@@ -23,7 +24,7 @@ interface ChatCompletionResponse {
   error?: { message?: string } | string;
 }
 
-const DEFAULT_TIMEOUT_MS = 300_000;
+const DEFAULT_TIMEOUT_MS = modelHttpTimeoutMs();
 
 const LOOPBACK_RE = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?)$/i;
 const PRIVATE_HOST_RE = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
@@ -100,7 +101,7 @@ export class OpenAICompatClient implements ModelClient {
     const timer = setTimeout(() => controller.abort(), timeout);
 
     try {
-      const response = await fetch(url, {
+      const response = await fetchModelWithRetry(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

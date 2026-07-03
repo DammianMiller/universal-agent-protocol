@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSy
 import { join, dirname, resolve, relative, isAbsolute } from 'path';
 import type { ModelConfig } from '../models/types.js';
 import type { LoopExecutor } from './convergence-loop.js';
+import { fetchModelWithRetry } from '../models/long-fetch.js';
 import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks } from './applier.js';
 
@@ -320,7 +321,10 @@ async function _chat(
 ): Promise<ChatMessage> {
   const url = `${endpoint.replace(/\/$/, '')}/chat/completions`;
   const apiKey = model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined;
-  const res = await fetch(url, {
+  // Long headers/body timeouts + transient-failure retry: a local model
+  // prefilling a big tool-loop prompt exceeds global fetch's 300s headers
+  // timeout, which killed whole turns as `TypeError: fetch failed`.
+  const res = await fetchModelWithRetry(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
     body: JSON.stringify({
