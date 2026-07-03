@@ -8,6 +8,7 @@ import {
   deliverCommand,
   hasExplicitAidFlags,
   applyAutoPlan,
+  effectiveCandidates,
 } from '../../src/cli/deliver.js';
 import type { DeliverOptions } from '../../src/cli/deliver.js';
 
@@ -188,3 +189,16 @@ describe('runDeliver auto gating (dry-run integration)', () => {
     expect(await dryRunAuto({ critic: true })).toBeNull();
   });
 });
+
+describe('effectiveCandidates (explorer × agentic guard)', () => {
+  it('forces single-candidate turns for the agentic executor', () => {
+    expect(effectiveCandidates(true, 4)).toBeUndefined();
+    expect(effectiveCandidates(true, undefined)).toBeUndefined();
+  });
+
+  it('leaves blind-executor exploration untouched', () => {
+    expect(effectiveCandidates(false, 4)).toBe(4);
+    expect(effectiveCandidates(false, undefined)).toBeUndefined();
+  });
+});
+

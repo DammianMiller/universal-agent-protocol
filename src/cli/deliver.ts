@@ -300,6 +300,15 @@ function resolveModel(presetId: string, endpointOverride?: string): ModelConfig 
 }
 
 /**
+ * Explorer candidates act through the file-block applier, which the agentic
+ * tool-loop bypasses — agentic runs must use single-candidate turns. PURE,
+ * exported for tests (the wedge this guards shipped once already).
+ */
+export function effectiveCandidates(agentic: boolean, candidates?: number): number | undefined {
+  return agentic ? undefined : candidates;
+}
+
+/**
  * True when the user steered any aid explicitly — auto mode must then stand
  * down so flags remain the single source of truth for the run. Exported for
  * tests; commander leaves unset booleans undefined, so a present value
@@ -751,6 +760,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   if (agentic) {
     console.log(chalk.cyan(`⚙ executor: agentic (tool-using loop) @ ${agenticEndpoint}`));
   }
+  // Best-of-N exploration acts through the file-block applier, which the
+  // agentic tool-loop bypasses (noop applier, direct repo mutation): agentic
+  // "candidates" would all write the same tree, report zero applied files,
+  // never be committable, and the turn would score 0 with no gate run — a
+  // guaranteed-stagnation wedge. Force single-candidate turns instead.
+  if (agentic && candidates) {
+    console.log(
+      chalk.dim('  explorer: disabled for the agentic executor (candidates need the file-block applier) — single-candidate turns')
+    );
+  }
+  candidates = effectiveCandidates(agentic, candidates);
   const executor: LoopExecutor = agentic
     ? createAgenticExecutor(model, {
         projectRoot,
@@ -906,7 +926,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       );
     }
   }
-  if (!seeds && (options.ideate || options.ideateProject)) {
+  if ((options.ideate || options.ideateProject) && agentic) {
+    console.log(chalk.dim('💡 ideation skipped: seeds act through the explorer, which the agentic executor cannot use'));
+  }
+  if (!seeds && (options.ideate || options.ideateProject) && !agentic) {
     console.log(chalk.cyan('💡 Generating divergent strategy seeds…'));
     // Ideation is a TEXT completion (one JSON array), like the judge/critic —
     // NEVER the agentic tool-loop executor, which cannot answer a text prompt
