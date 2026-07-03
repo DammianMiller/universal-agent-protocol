@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.96.2 (2026-07-03)
+
+- fix(deliver): agentic runs never use the explorer — candidates require the file-block applier
+
+
 ## v1.96.1 (2026-07-03)
 
 - fix(deliver): ideation seeds always generate — use the blind executor (agentic runs silently got static defaults) + retry transient empty completions

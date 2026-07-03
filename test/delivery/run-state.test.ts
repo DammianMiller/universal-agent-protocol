@@ -205,6 +205,35 @@ describe('convergence loop checkpoint + resume', () => {
     expect(result.history.length).toBe(6);
   });
 
+  it('regenerateSeeds never BOOTSTRAPS exploration on a non-explorer run', async () => {
+    let executorCalls = 0;
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: '/tmp',
+        maxTurns: 2,
+        rungs: [RUNG],
+        baselineCheck: false,
+        seedGenerator: async () => [
+          { id: 'a', hint: 'STRATEGY: a' },
+          { id: 'b', hint: 'STRATEGY: b' },
+        ],
+        onIteration: (r) => (r.turn === 1 ? { regenerateSeeds: true } : undefined),
+      },
+      async () => {
+        executorCalls++;
+        return '```file:a.txt\nx\n```';
+      },
+      {
+        ladderRunner: () => ladder(false),
+        applier: async () => ({ filesWritten: ['a.txt'], rejected: [] }),
+      }
+    );
+    await loop.deliver('do it');
+    // Two single-candidate turns — the reseed directive must NOT have spawned
+    // a best-of-N explorer (which would multiply executor calls).
+    expect(executorCalls).toBe(2);
+  });
+
   it('checkpoints escalation state and restores it on resume (no silent de-escalation)', async () => {
     // Run 1: an onIteration directive escalates (widen + critic + model switch);
     // the next checkpoint must capture that state.
