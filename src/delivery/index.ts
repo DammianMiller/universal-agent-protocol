@@ -22,7 +22,41 @@ export {
   type PracticeProvider,
   type PromptBuilder,
   type PromptContext,
+  type LoopCheckpoint,
 } from './convergence-loop.js';
+
+export {
+  saveRunState,
+  loadRunState,
+  newRunId,
+  isValidRunId,
+  deliverRunsDir,
+  type DeliverRunState,
+  type DeliverRunStatus,
+} from './run-state.js';
+
+export {
+  planDeliveryPhases,
+  parsePhaseArray,
+  phaseInstruction,
+  shouldDecompose,
+  type DeliveryPhase,
+} from './decompose.js';
+
+export {
+  autoMineHaloTraces,
+  summarizeWeaknesses,
+  isAutoMineEnabled,
+  type AutoMineResult,
+} from './auto-mine.js';
+
+export {
+  openDeliveryTask,
+  completeDeliveryTask,
+  recordDeliveryOutcome,
+  hasTaskDb,
+  type DeliveryTaskHandle,
+} from './task-sync.js';
 
 export {
   createEscalationController,

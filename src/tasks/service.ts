@@ -301,6 +301,29 @@ export class TaskService {
     return this.get(id) ?? existing;
   }
 
+  /**
+   * Staleness reaper: revert `in_progress` tasks nobody has touched in
+   * `days` back to `open` (with an audit note) so they surface in
+   * `uap task ready` instead of rotting as permanently-active. Returns the
+   * reaped tasks. Idempotent and cheap — safe to run at session start.
+   */
+  reapStale(days = 14): Task[] {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const rows = this.db
+      .prepare(`SELECT id, notes FROM tasks WHERE status = 'in_progress' AND updated_at < ?`)
+      .all(cutoff) as Array<{ id: string; notes: string | null }>;
+    const reaped: Task[] = [];
+    for (const row of rows) {
+      const note = `[auto-reaped ${new Date().toISOString().slice(0, 10)}] stale in_progress (untouched > ${days}d) → open`;
+      const updated = this.update(row.id, {
+        status: 'open',
+        notes: row.notes ? `${row.notes}\n${note}` : note,
+      });
+      if (updated) reaped.push(updated);
+    }
+    return reaped;
+  }
+
   close(id: string, reason?: string): Task | null {
     const task = this.get(id);
     if (!task) return null;

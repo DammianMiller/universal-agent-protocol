@@ -139,6 +139,12 @@ export interface IterationDirective {
   enableCritic?: boolean;
   /** Swap the model/executor (model escalation) */
   switchExecutor?: LoopExecutor;
+  /**
+   * Regenerate divergent strategy seeds (requires ConvergenceConfig.seedGenerator).
+   * Used by the escalation ladder when the loop stagnates: fresh, feedback-aware
+   * seeds re-diversify exploration instead of retrying the same failed strategies.
+   */
+  regenerateSeeds?: boolean;
   /** Human-readable reason, surfaced in logs and the iteration record */
   note?: string;
 }
@@ -170,6 +176,7 @@ export function composeIterationHooks(
       }
       if (directive.stop) merged.stop = true;
       if (directive.enableCritic) merged.enableCritic = true;
+      if (directive.regenerateSeeds) merged.regenerateSeeds = true;
       if (directive.switchExecutor) merged.switchExecutor = directive.switchExecutor;
       if (typeof directive.setCandidates === 'number') merged.setCandidates = directive.setCandidates;
       if (
@@ -283,6 +290,46 @@ export interface ConvergenceConfig {
    * `--ceiling`). Also caps escalation's raiseMaxTurns under untilDelivered.
    */
   maxTurnsCeiling?: number;
+  /**
+   * Called after every completed turn with serializable loop state so callers
+   * can persist it (durable runs). Fail-soft: a throwing callback is ignored.
+   */
+  onCheckpoint?: (checkpoint: LoopCheckpoint) => void;
+  /**
+   * Resume an interrupted run from a persisted checkpoint: prior history,
+   * prompt context, and stagnation counters are restored and the loop
+   * continues at checkpoint.turn + 1 with a fresh `maxTurns` budget.
+   */
+  resumeFrom?: LoopCheckpoint;
+  /**
+   * Regenerates divergent strategy seeds mid-run (see IterationDirective.
+   * regenerateSeeds). Receives the instruction plus the latest gate feedback so
+   * fresh seeds steer AWAY from the failing region of solution space.
+   */
+  seedGenerator?: (instruction: string, feedback?: string) => Promise<StrategySeed[]>;
+}
+
+/**
+ * Serializable loop state persisted after every turn so an interrupted run can
+ * be resumed (`uap deliver --resume`). Contains only harness-owned data plus
+ * the truncated prompt-context strings the next turn would have received —
+ * no functions, no full model transcripts.
+ */
+export interface LoopCheckpoint {
+  /** Last completed 1-based turn. */
+  turn: number;
+  history: IterationRecord[];
+  /** Prompt context carried into the next turn (practices/protectedFiles are re-derived on resume). */
+  prevContext: {
+    previousOutput?: string;
+    feedback?: string;
+    applyError?: string;
+    previousFiles?: string[];
+    critique?: string[];
+  };
+  bestSoFar: number;
+  bestAcceptance: number;
+  stagnantTurns: number;
 }
 
 const DEFAULT_MAX_TURNS = 5;
@@ -748,7 +795,26 @@ export class ConvergenceLoop {
     let finalFeedback = '';
     let prevContext: Omit<PromptContext, 'instruction' | 'turn'> = { practices, protectedFiles: protectedList };
 
-    for (let turn = 1; turn <= maxTurns; turn++) {
+    // Resume: restore prior history/context/counters and continue where the
+    // interrupted run left off, with a fresh `maxTurns` budget on top.
+    let startTurn = 1;
+    const resume = this.config.resumeFrom;
+    if (resume && resume.turn >= 1 && resume.history.length > 0) {
+      history.push(...resume.history);
+      prevContext = { ...resume.prevContext, practices, protectedFiles: protectedList };
+      bestSoFar = resume.bestSoFar ?? -1;
+      bestAcceptance = resume.bestAcceptance ?? -1;
+      stagnantTurns = resume.stagnantTurns ?? 0;
+      startTurn = resume.turn + 1;
+      // Fresh budget of `maxTurns` more turns from the resume point — but the
+      // until-delivered ceiling stays a HARD cap across process boundaries:
+      // repeated interrupt+resume must never grant unbounded turns.
+      maxTurns = untilDelivered
+        ? Math.min(resume.turn + maxTurns, maxTurnsCeiling)
+        : resume.turn + maxTurns;
+    }
+
+    for (let turn = startTurn; turn <= maxTurns; turn++) {
       const turnStart = Date.now();
 
       // Re-detect gates: a from-scratch build has no artifact at t0, so the
@@ -794,6 +860,27 @@ export class ConvergenceLoop {
         acceptanceMet = judged.acceptanceMet;
       }
 
+      // Close the one-turn re-detection lag: a turn that PASSES having just
+      // written the project's first artifact was verified against pre-artifact
+      // gates (the execution/build/test gates only became detectable after the
+      // apply). Re-detect NOW and, if new gates joined, re-verify this same
+      // turn against the full set before declaring success.
+      if (
+        outcome.ladder?.passed &&
+        this.config.redetectRungs &&
+        (outcome.filesApplied.length > 0 || this.config.alwaysVerify)
+      ) {
+        const merged = this.mergeDetectedRungs(rungs);
+        if (merged.length > rungs.length) {
+          rungs = merged;
+          let reladder = await ladderRunner(rungs, this.config.projectRoot, this.config.ladderOptions);
+          const rejudged = await this.judgeAcceptance(reladder);
+          reladder = rejudged.ladder;
+          acceptanceMet = rejudged.acceptanceMet ?? acceptanceMet;
+          outcome.ladder = reladder;
+        }
+      }
+
       finalOutput = outcome.output || finalOutput;
       if (outcome.ladder) {
         finalFeedback = outcome.ladder.feedback;
@@ -837,12 +924,32 @@ export class ConvergenceLoop {
         // Bind to the current (possibly just-switched) executor, not the base.
         critic = this.config.criticFactory(executor);
       }
+      if (directive.regenerateSeeds && this.config.seedGenerator) {
+        // Stagnation-triggered ideation: fresh, feedback-aware divergent seeds
+        // re-diversify exploration away from the failing region. Fail-soft —
+        // a generator error keeps the current seeds.
+        try {
+          const fresh = await this.config.seedGenerator(
+            instruction,
+            outcome.ladder?.feedback ?? outcome.applyError
+          );
+          if (fresh.length >= 2) {
+            explorerSettings = {
+              ...(explorerSettings ?? {}),
+              seeds: fresh,
+              candidates: explorerSettings?.candidates ?? Math.min(fresh.length, 4),
+            };
+          }
+        } catch {
+          // keep current seeds
+        }
+      }
       if (typeof directive.raiseMaxTurns === 'number' && directive.raiseMaxTurns > maxTurns) {
         // Under untilDelivered the ceiling is a HARD cap: an escalation
         // controller's raiseMaxTurns cannot push the budget past it, so the
         // "never an unbounded loop" guarantee holds even with --escalate.
         maxTurns = untilDelivered
-          ? Math.min(directive.raiseMaxTurns, maxTurnsCeiling)
+          ? Math.max(maxTurns, Math.min(directive.raiseMaxTurns, maxTurnsCeiling))
           : directive.raiseMaxTurns;
       }
 
@@ -903,6 +1010,29 @@ export class ConvergenceLoop {
         practices,
         protectedFiles: protectedList,
       };
+
+      // Durable runs: persist serializable loop state so an interrupted run
+      // can resume at this exact point. Fail-soft by contract.
+      if (this.config.onCheckpoint) {
+        try {
+          this.config.onCheckpoint({
+            turn,
+            history: [...history],
+            prevContext: {
+              previousOutput: prevContext.previousOutput,
+              feedback: prevContext.feedback,
+              applyError: prevContext.applyError,
+              previousFiles: prevContext.previousFiles,
+              critique: prevContext.critique,
+            },
+            bestSoFar,
+            bestAcceptance,
+            stagnantTurns,
+          });
+        } catch {
+          // checkpointing must never break the run
+        }
+      }
     }
 
     let bestScore = 0;

@@ -141,7 +141,7 @@ def main() -> None:
             False,
             msg,
             route="deliver",
-            deliverHint=f'uap deliver "implement the intended change to {rel_posix}"',
+            deliverHint=f'implement the intended change to {rel_posix}',
         )
 
     # Advisory (opt-out): never blocks. Surface the nudge, then allow.

@@ -534,7 +534,7 @@ program
 program
   .command('deliver')
   .description('Convergence loop: iterate a model against real completion gates until delivery')
-  .argument('<instruction...>', 'Task instruction for the model')
+  .argument('[instruction...]', 'Task instruction for the model (optional with --resume)')
   .option('--max-turns <n>', 'Maximum execute→verify iterations', '5')
   .option('-m, --model <preset>', 'Model preset id (default: $UAP_DELIVER_MODEL or qwen35-a3b)')
   .option('--project-root <path>', 'Project whose gates define delivery (default: cwd)')
@@ -565,6 +565,9 @@ program
   .option('--guidance-file <path>', 'Poll this file each turn for operator guidance; steer a running mission (write to the file) without stopping it')
   .option('--no-until-delivered', 'Disable loop-until-delivered (ON by default: extends past --max-turns to a ceiling, stopping on stagnation)')
   .option('--ceiling <n>', 'Hard turn ceiling for until-delivered (1-50, default 30)')
+  .option('--resume <id>', "Resume an interrupted durable run: a run id or 'latest' (.uap/deliver-runs)")
+  .option('--decompose', 'Decompose the mission into sequential phases, each converged by its own loop (auto for long complex tasks)')
+  .option('--no-decompose', 'Never decompose, even for epic-shaped instructions')
   .option('--no-integration', 'Skip the integration tier (on by default when a test:integration/e2e suite or pytest integration marker is detected)')
   .option('--deploy-dev', 'Run a local dev deploy + smoke tier (bring up compose / start server, smoke-check, tear down) after the fast tier passes')
   .option('--no-deploy-dev', 'Disable the local dev deploy tier even when auto/optimize would enable it')
@@ -575,9 +578,9 @@ program
   .option('--ci-timeout <minutes>', 'CI watch budget in minutes (1-120, default 20)')
   .option('--dry-run', 'Show detected gates and plan without calling the model')
   .option('--json', 'Emit JSON result')
-  .action(async (instructionParts: string[], options) => {
+  .action(async (instructionParts: string[] | undefined, options) => {
     const cmd = await lazy.deliver();
-    await cmd(instructionParts.join(' '), options);
+    await cmd((instructionParts ?? []).join(' '), options);
   });
 
 program
@@ -1234,6 +1237,15 @@ program
       .option('--days <days>', 'Compact tasks older than N days', '90')
       .action(async (options) => {
         (await lazy.task())('compact', options);
+      })
+  )
+  .addCommand(
+    new Command('reap')
+      .description('Revert stale in_progress tasks (untouched > N days) back to open')
+      .option('--days <days>', 'Staleness threshold in days', '14')
+      .option('--json', 'Output as JSON')
+      .action(async (options) => {
+        (await lazy.task())('reap', options);
       })
   );
 

@@ -25,6 +25,8 @@ export interface EscalationTier {
   raiseMaxTurns?: number;
   /** Escalate to a stronger model */
   switchExecutor?: LoopExecutor;
+  /** Regenerate divergent strategy seeds (needs ConvergenceConfig.seedGenerator) */
+  regenerateSeeds?: boolean;
 }
 
 export interface EscalationConfig {
@@ -71,6 +73,10 @@ export function defaultEscalationLadder(options: DefaultLadderOptions = {}): Esc
   const tiers: EscalationTier[] = [
     { label: `widen exploration (${candidates} candidates)`, setCandidates: candidates },
     { label: 'enable critic', enableCritic: true },
+    // Stagnation-triggered ideation: before paying for a stronger model,
+    // re-diversify — fresh feedback-aware seeds explore a different region of
+    // solution space. No-op when the loop has no seedGenerator configured.
+    { label: 'reseed divergent strategies (ideation)', regenerateSeeds: true },
   ];
   if (options.escalateExecutor) {
     tiers.push({
@@ -128,6 +134,7 @@ export function createEscalationController(config: EscalationConfig): Escalation
         enableCritic: tier.enableCritic,
         raiseMaxTurns: tier.raiseMaxTurns,
         switchExecutor: tier.switchExecutor,
+        regenerateSeeds: tier.regenerateSeeds,
         note: `escalate → ${tier.label}`,
       };
     },
