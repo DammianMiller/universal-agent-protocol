@@ -47,8 +47,17 @@ export {
   autoMineHaloTraces,
   summarizeWeaknesses,
   isAutoMineEnabled,
+  weaknessGuidance,
+  loadPersistedWeaknesses,
   type AutoMineResult,
 } from './auto-mine.js';
+
+export {
+  createGitWorktreeProvider,
+  isParallelExploreEnabled,
+  type CandidateWorkspace,
+  type WorkspaceProvider,
+} from './candidate-workspace.js';
 
 export {
   openDeliveryTask,

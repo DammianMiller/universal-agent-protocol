@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.96.0 (2026-07-03)
+
+- feat(delivery): close the self-improvement loop — mined-weakness prompt feedback, escalation-aware resume, parallel worktree exploration, trace rotation + beads sync
+
+
 ## v1.95.0 (2026-07-03)
 
 - test(state): cover the no-scaffold guard for the state manifest

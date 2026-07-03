@@ -43,7 +43,8 @@ type TaskAction =
   | 'board'
   | 'sync'
   | 'compact'
-  | 'reap';
+  | 'reap'
+  | 'sync-beads';
 
 interface TaskOptions {
   // Create options
@@ -144,6 +145,9 @@ export async function taskCommand(action: TaskAction, options: TaskOptions = {})
       break;
     case 'reap':
       await reapTasks(service, options);
+      break;
+    case 'sync-beads':
+      await syncBeads(service, options);
       break;
   }
 }
@@ -482,6 +486,25 @@ async function deleteTask(service: TaskService, options: TaskOptions): Promise<v
   }
 }
 
+async function syncBeads(service: TaskService, options: TaskOptions): Promise<void> {
+  const { hasBeads, syncBeadsToTasks } = await import('../tasks/beads-sync.js');
+  const root = process.cwd();
+  if (!hasBeads(root)) {
+    console.log(chalk.dim('No .beads/issues.jsonl in this project — nothing to sync'));
+    return;
+  }
+  const result = syncBeadsToTasks(root, service);
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(
+    chalk.green(
+      `beads sync: ${result.imported} imported, ${result.updated} updated, ${result.unchanged} unchanged${result.skipped ? chalk.yellow(`, ${result.skipped} skipped`) : ''}`
+    )
+  );
+}
+
 async function reapTasks(service: TaskService, options: TaskOptions): Promise<void> {
   const days = options.days ? parseInt(options.days, 10) : 14;
   if (!Number.isInteger(days) || days < 1) {
@@ -502,6 +525,19 @@ async function reapTasks(service: TaskService, options: TaskOptions): Promise<vo
 }
 
 async function showReady(service: TaskService, options: TaskOptions): Promise<void> {
+  // Auto-sync beads: if the project carries a legacy beads tracker, fold its
+  // issues into the board so readiness reflects ALL known work. Fail-soft.
+  try {
+    const { hasBeads, syncBeadsToTasks } = await import('../tasks/beads-sync.js');
+    if (hasBeads(process.cwd())) {
+      const r = syncBeadsToTasks(process.cwd(), service);
+      if ((r.imported > 0 || r.updated > 0) && !options.json) {
+        console.log(chalk.dim(`⇄ beads sync: ${r.imported} imported, ${r.updated} updated`));
+      }
+    }
+  } catch {
+    // beads sync is best-effort
+  }
   // Auto-reap: stale in_progress tasks (untouched > 14d) revert to open so
   // the readiness view reflects reality instead of a permanently-stuck board.
   try {

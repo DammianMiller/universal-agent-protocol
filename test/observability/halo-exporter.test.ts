@@ -115,6 +115,25 @@ describe('halo-exporter', () => {
       expect(existsSync(path)).toBe(false);
     });
 
+    it('rotates the trace file past the size cap', async () => {
+      const { recordHaloSpan, _resetRotationCounter } = await import('../../src/observability/halo-exporter.js');
+      const path = join(dir, 'traces.jsonl');
+      process.env.UAP_HALO_TRACE = '1';
+      process.env.UAP_HALO_TRACE_PATH = path;
+      process.env.UAP_HALO_TRACE_MAX_BYTES = '10';
+      _resetRotationCounter();
+      try {
+        // The size check runs every 100 appends; the 100th append rotates.
+        for (let i = 0; i < 101; i++) {
+          recordHaloSpan({ kind: 'TOOL', name: `t${i}`, startTimeMs: 0, endTimeMs: 1, ok: true });
+        }
+        expect(existsSync(`${path}.1`)).toBe(true);
+        expect(existsSync(path)).toBe(true);
+      } finally {
+        delete process.env.UAP_HALO_TRACE_MAX_BYTES;
+      }
+    });
+
     it('is ON by default (unset env) and honors off aliases', () => {
       delete process.env.UAP_HALO_TRACE;
       expect(isHaloTracingEnabled()).toBe(true);

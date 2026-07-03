@@ -1247,6 +1247,14 @@ program
       .action(async (options) => {
         (await lazy.task())('reap', options);
       })
+  )
+  .addCommand(
+    new Command('sync-beads')
+      .description('Import/refresh issues from a legacy .beads tracker into the task DB (idempotent)')
+      .option('--json', 'Output as JSON')
+      .action(async (options) => {
+        (await lazy.task())('sync-beads', options);
+      })
   );
 
 // Compliance - protocol verification and auto-fix

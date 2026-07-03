@@ -117,6 +117,34 @@ function readState(projectRoot: string, runId: string): DeliverRunState | null {
     if (parsed.taskId !== undefined && (typeof parsed.taskId !== 'string' || !/^uap-[0-9a-f]{8}$/.test(parsed.taskId))) {
       delete parsed.taskId;
     }
+    if (parsed.checkpoint) {
+      const cp = parsed.checkpoint;
+      // Seeds are re-injected verbatim into every candidate prompt on resume —
+      // enforce the same bounds the ideation generator does at creation time.
+      if (cp.seeds !== undefined) {
+        if (!Array.isArray(cp.seeds)) {
+          delete cp.seeds;
+        } else {
+          const seeds = [];
+          for (const seed of cp.seeds.slice(0, 8)) {
+            if (typeof seed !== 'object' || seed === null) continue;
+            const { id, hint } = seed as { id?: unknown; hint?: unknown };
+            if (typeof id !== 'string' || typeof hint !== 'string') continue;
+            if (!/^[a-z0-9][a-z0-9-]{0,47}$/.test(id)) continue;
+            seeds.push({ id, hint: hint.slice(0, 400) });
+          }
+          cp.seeds = seeds.length >= 2 ? seeds : undefined;
+        }
+      }
+      if (cp.candidates !== undefined) {
+        cp.candidates =
+          typeof cp.candidates === 'number' && Number.isFinite(cp.candidates)
+            ? Math.min(8, Math.max(2, Math.round(cp.candidates)))
+            : undefined;
+      }
+      cp.criticEnabled = cp.criticEnabled === undefined ? undefined : Boolean(cp.criticEnabled);
+      cp.modelEscalated = cp.modelEscalated === undefined ? undefined : Boolean(cp.modelEscalated);
+    }
     return parsed;
   } catch {
     return null;

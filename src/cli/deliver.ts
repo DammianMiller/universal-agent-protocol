@@ -121,7 +121,8 @@ import { phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delive
 import type { LifecycleHintProvider } from '../delivery/decompose.js';
 import type { DeliveryPhase } from '../delivery/decompose.js';
 import { completeDeliveryTask, openDeliveryTask, recordDeliveryOutcome, reopenDeliveryTask } from '../delivery/task-sync.js';
-import { autoMineHaloTraces, summarizeWeaknesses } from '../delivery/auto-mine.js';
+import { autoMineHaloTraces, summarizeWeaknesses, weaknessGuidance, loadPersistedWeaknesses } from '../delivery/auto-mine.js';
+import { createGitWorktreeProvider } from '../delivery/candidate-workspace.js';
 import type { ExecutorMode } from '../delivery/agentic-executor.js';
 import type { AutoPlan } from '../delivery/auto-optimizer.js';
 import { createHaloDeliveryTracer } from '../delivery/halo-trace.js';
@@ -830,7 +831,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // provider is reachable. `--no-semantic` forces the keyword path.
   const practiceStore = options.practices ? new FilePracticeStore(defaultPracticePath(projectRoot)) : undefined;
   const useSemantic = options.semantic !== false;
-  const practiceProvider = practiceStore
+  const storePracticeProvider = practiceStore
     ? async (task: string): Promise<string[]> => {
         if (useSemantic) {
           const { getEmbeddingService } = await import('../memory/embeddings.js');
@@ -844,6 +845,21 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         return practiceStore.retrieve(task).map((c) => c.guidance);
       }
     : undefined;
+  // Weakness → prompt feedback: guidance distilled from the PREVIOUS runs'
+  // auto-mined failure patterns rides the same practice channel, so what the
+  // harness observed failing changes what the model is told this run.
+  // Harness-authored text only; fail-soft; empty when nothing was mined.
+  const minedGuidance = isHaloTracingEnabled() ? weaknessGuidance(loadPersistedWeaknesses()) : [];
+  if (minedGuidance.length > 0 && !options.dryRun) {
+    console.log(chalk.dim(`  ⛏ applying ${minedGuidance.length} mined-weakness guidance line(s) from previous runs`));
+  }
+  const practiceProvider =
+    storePracticeProvider || minedGuidance.length > 0
+      ? async (task: string): Promise<string[]> => {
+          const fromStore = storePracticeProvider ? await storePracticeProvider(task) : [];
+          return [...fromStore, ...minedGuidance];
+        }
+      : undefined;
 
   const printProgress = (record: IterationRecord): void => {
     const pct = Math.round(record.score * 100);
@@ -1066,7 +1082,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     },
     // Judge/critic evaluate text, so they always use the blind executor even
     // when the loop's executor is agentic.
-    explorer: candidates ? { candidates, seeds, judge: createModelJudge(blindExecutor) } : undefined,
+    // Best-of-N with git-worktree isolation when available: candidates verify
+    // CONCURRENTLY in their own trees (clean git repo required; falls back to
+    // the sequential shared-tree path otherwise).
+    explorer: candidates
+      ? {
+          candidates,
+          seeds,
+          judge: createModelJudge(blindExecutor),
+          workspaceProvider: agentic ? undefined : (createGitWorktreeProvider(projectRoot) ?? undefined),
+        }
+      : undefined,
     critic: options.critic ? createModelCritic(blindExecutor) : undefined,
     // Critic evaluates text; keep it on a blind completion even if the loop
     // escalates the (agentic) executor.
@@ -1151,6 +1177,26 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // The restored checkpoint feeds exactly one loop (the in-flight phase).
   let resumeCheckpoint = resumeState?.checkpoint;
 
+  // A model switch cannot serialize into the checkpoint; when the interrupted
+  // run had escalated to the stronger model, re-bind it here so resume is not
+  // a silent de-escalation. Falls back to the normal executor when no
+  // stronger model is configured in this environment.
+  let runExecutor = executor;
+  if (resumeCheckpoint?.modelEscalated) {
+    if (escalateExecutor && !agentic) {
+      // Agentic runs keep their tool-loop executor: the blind escalation
+      // executor pairs with the noop applier and would never touch the repo.
+      runExecutor = escalateExecutor;
+      console.log(chalk.magenta(`  ↑ resume: re-binding escalated model (${escalateModelName ?? 'stronger model'})`));
+    } else if (!escalateExecutor) {
+      console.log(
+        chalk.yellow(
+          '⚠ resume: the interrupted run had escalated to a stronger model, but none is configured here (--escalate-model / UAP_ESCALATE_MODEL) — continuing on the base model'
+        )
+      );
+    }
+  }
+
   // Task/memory trail: the run is a live task while it converges. A resumed
   // run reuses its original task instead of opening a duplicate.
   const missionTask = resumeState?.taskId
@@ -1191,7 +1237,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           resumeFrom: resumeCheckpoint,
           onIteration: makeIterationHook(),
         },
-        executor,
+        resumeCheckpoint ? runExecutor : executor,
         seams
       );
       const resumedTurns = resumeCheckpoint?.history.length ?? 0;
@@ -1254,7 +1300,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       result = await runPhasedMission();
     } else {
       if (resumeCheckpoint) loopConfig.resumeFrom = resumeCheckpoint;
-      const loop = new ConvergenceLoop(loopConfig, executor, seams);
+      const loop = new ConvergenceLoop(loopConfig, runExecutor, seams);
       result = await loop.deliver(instruction);
     }
 
