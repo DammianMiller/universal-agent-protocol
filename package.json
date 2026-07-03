@@ -1,6 +1,6 @@
 {
   "name": "@miller-tech/uap",
-  "version": "1.96.3",
+  "version": "1.96.4",
   "description": "Autonomous AI agent memory system with CLAUDE.md protocol enforcement",
   "type": "module",
   "main": "dist/index.js",
@@ -82,6 +82,7 @@
     "js-yaml": "^4.1.0",
     "ora": "^8.0.1",
     "simple-git": "^3.22.0",
+    "undici": "^6.27.0",
     "ws": "^8.19.0",
     "zod": "^3.23.8"
   },
