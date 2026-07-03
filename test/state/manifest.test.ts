@@ -49,12 +49,21 @@ describe('state manifest', () => {
     }
   });
 
-  it('persists to .uap/state-manifest.json and reads it back fresh', () => {
+  it('persists to .uap/state-manifest.json when the project already has .uap/', () => {
+    mkdirSync(join(dir, '.uap'), { recursive: true });
     const written = writeStateManifest(dir);
     expect(written).not.toBeNull();
     expect(existsSync(manifestPath(dir))).toBe(true);
     const read = readOrRefreshManifest(dir);
     expect(read!.version).toBe('2.3.4');
+  });
+
+  it('never scaffolds .uap/ into a repo that does not carry UAP state', () => {
+    const manifest = writeStateManifest(dir);
+    // Digest still available in-memory for injection…
+    expect(manifest!.version).toBe('2.3.4');
+    // …but nothing written to disk.
+    expect(existsSync(join(dir, '.uap'))).toBe(false);
   });
 
   it('renders a compact digest with version and recent changes', () => {
