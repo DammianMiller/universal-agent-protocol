@@ -305,6 +305,13 @@ _WRITE_TOOL_CLASS = frozenset({
     "write", "edit", "multiedit", "notebookedit",
     "str_replace", "str_replace_editor", "str_replace_based_edit_tool",
     "create_file", "applypatch", "apply_patch",
+    # OpenAI-style tool-loop names (uap deliver's agentic executor and other
+    # OpenAI-compat agents). Without these, every agentic round that WRITES
+    # files still counted as a no-write turn, the recon-convergence streak
+    # grew unbounded, and the proxy injected "stop exploring, synthesize"
+    # directives into a loop that was mid-build — observed live at
+    # no_write_streak=62 with the model then emitting files as plain text.
+    "write_file", "edit_file", "save_file",
 })
 
 PROXY_GUARDRAIL_RETRY = os.environ.get("PROXY_GUARDRAIL_RETRY", "on").lower() not in {
