@@ -70,3 +70,27 @@ describe('escalation controller', () => {
     expect(ctrl.tierIndex()).toBe(0);
   });
 });
+
+describe('defaultEscalationLadder exploration gating', () => {
+  it('includes widen + reseed tiers by default', async () => {
+    const { defaultEscalationLadder } = await import('../../src/delivery/escalation.js');
+    const tiers = defaultEscalationLadder({});
+    expect(tiers.some((t) => t.setCandidates !== undefined)).toBe(true);
+    expect(tiers.some((t) => t.regenerateSeeds)).toBe(true);
+  });
+
+  it('omits ALL exploration tiers for agentic runs (includeExploration: false)', async () => {
+    const { defaultEscalationLadder } = await import('../../src/delivery/escalation.js');
+    const strong = async (): Promise<string> => 'x';
+    const tiers = defaultEscalationLadder({
+      includeExploration: false,
+      escalateExecutor: strong,
+    });
+    expect(tiers.some((t) => t.setCandidates !== undefined)).toBe(false);
+    expect(tiers.some((t) => t.regenerateSeeds)).toBe(false);
+    // critic + model-switch tiers remain
+    expect(tiers.some((t) => t.enableCritic)).toBe(true);
+    expect(tiers.some((t) => t.switchExecutor === strong)).toBe(true);
+  });
+});
+

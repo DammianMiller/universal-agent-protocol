@@ -817,6 +817,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     options.escalate
       ? createEscalationController({
           tiers: defaultEscalationLadder({
+            includeExploration: !agentic,
             candidates,
             maxTurns: maxTurns ?? 5,
             escalateExecutor,

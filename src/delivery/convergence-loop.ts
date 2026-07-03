@@ -953,7 +953,9 @@ export class ConvergenceLoop {
         // Bind to the current (possibly just-switched) executor, not the base.
         critic = this.config.criticFactory(executor);
       }
-      if (directive.regenerateSeeds && this.config.seedGenerator) {
+      if (directive.regenerateSeeds && this.config.seedGenerator && explorerSettings) {
+        // Reseed REPLACES seeds on an already-active explorer; it must never
+        // bootstrap exploration on a run whose executor can't use it (agentic).
         // Stagnation-triggered ideation: fresh, feedback-aware divergent seeds
         // re-diversify exploration away from the failing region. Fail-soft —
         // a generator error keeps the current seeds.

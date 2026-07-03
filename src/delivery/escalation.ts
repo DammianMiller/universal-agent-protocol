@@ -52,6 +52,11 @@ const DEFAULT_STAGNATION_TURNS = 2;
 const DEFAULT_EPSILON = 0.01;
 
 export interface DefaultLadderOptions {
+  /** Include exploration-based tiers (widen best-of-N, reseed ideation).
+   * Set false for agentic executors: candidates act through the file-block
+   * applier, which the agentic tool-loop bypasses — widening exploration
+   * there produces unscored, unisolated candidates (default true). */
+  includeExploration?: boolean;
   /** Candidates to widen exploration to on the first escalation (default 3) */
   candidates?: number;
   /** Current turn budget; the model-switch tier raises it by +2 */
@@ -70,13 +75,18 @@ export interface DefaultLadderOptions {
  */
 export function defaultEscalationLadder(options: DefaultLadderOptions = {}): EscalationTier[] {
   const candidates = Math.max(3, options.candidates ?? 3);
+  const exploration = options.includeExploration !== false;
   const tiers: EscalationTier[] = [
-    { label: `widen exploration (${candidates} candidates)`, setCandidates: candidates },
+    ...(exploration
+      ? [{ label: `widen exploration (${candidates} candidates)`, setCandidates: candidates }]
+      : []),
     { label: 'enable critic', enableCritic: true },
     // Stagnation-triggered ideation: before paying for a stronger model,
     // re-diversify — fresh feedback-aware seeds explore a different region of
     // solution space. No-op when the loop has no seedGenerator configured.
-    { label: 'reseed divergent strategies (ideation)', regenerateSeeds: true },
+    ...(exploration
+      ? [{ label: 'reseed divergent strategies (ideation)', regenerateSeeds: true }]
+      : []),
   ];
   if (options.escalateExecutor) {
     tiers.push({
