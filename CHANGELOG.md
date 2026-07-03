@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.96.3 (2026-07-03)
+
+- fix(deliver): land the CLI-side agentic explorer guard (single-candidate turns + skip ideation)
+
+
 ## v1.96.2 (2026-07-03)
 
 - fix(deliver): agentic runs never use the explorer — candidates require the file-block applier
