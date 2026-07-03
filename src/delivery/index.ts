@@ -53,6 +53,18 @@ export {
 } from './auto-mine.js';
 
 export {
+  runVisualGate,
+  discoverEntryPages,
+  judgePage,
+  motionBetween,
+  visualRuntimeNote,
+  type VisualVerdict,
+  type PageVisualReport,
+  type VisualGateOptions,
+  type VisualBrowserDriver,
+} from './visual-gate.js';
+
+export {
   createGitWorktreeProvider,
   isParallelExploreEnabled,
   type CandidateWorkspace,

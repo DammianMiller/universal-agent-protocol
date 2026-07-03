@@ -593,6 +593,7 @@ program
   .option('--gates <ids>', 'Comma-separated rung-id subset (e.g. build,test,execution)')
   .option('--timeout <ms>', 'Per-rung timeout override in milliseconds')
   .option('--acceptance <specfile>', 'Judge behavioral completeness against a spec file (LLM acceptance gate; --strict to gate on it)')
+  .option('--no-visual', 'Skip the visual gate (renders entry pages headlessly, checks blank/static/errors, saves screenshots to .uap/visual)')
   .option('-m, --model <preset>', 'Model preset for the acceptance gate (default: $UAP_DELIVER_MODEL or qwen35-a3b)')
   .option('--endpoint <url>', 'Override the model endpoint for the acceptance gate')
   .option('--json', 'Emit JSON result')
@@ -609,6 +610,7 @@ program
       acceptanceFile: options.acceptance,
       model: options.model,
       endpoint: options.endpoint,
+      visual: options.visual,
     });
   });
 

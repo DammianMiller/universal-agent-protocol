@@ -27,6 +27,7 @@ import { planAutoOptimization } from '../delivery/auto-optimizer.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
 import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
 import { runExecutionGate } from '../delivery/execution-gate.js';
+import { runVisualGate, visualRuntimeNote } from '../delivery/visual-gate.js';
 import type { AcceptanceGate } from '../delivery/convergence-loop.js';
 
 /**
@@ -1059,6 +1060,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // before completeness is judged — closing the gap where a 1-turn build
         // could be declared delivered on the judge alone. Idempotent with the
         // redetected execution rung on later turns.
+        let visualNote = '';
         if (acceptancePrimary) {
           const exec = await runExecutionGate(root);
           if (!exec.passed) {
@@ -1067,8 +1069,22 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
               feedback: `EXECUTION FAILED — the code must run before it can be accepted:\n${exec.outputTail}`,
             };
           }
+          // Visual gate: watch the artifact RUN — blank canvas, static rAF
+          // scene, or runtime errors during observation block acceptance, and
+          // the observation summary becomes judge evidence (a code-evidence
+          // judge cannot see a never-started animation; this can).
+          const visual = await runVisualGate(root);
+          if (!visual.skipped && !visual.passed) {
+            return { passed: false, feedback: visual.feedback };
+          }
+          visualNote = visualRuntimeNote(visual);
         }
-        const r = await runAcceptanceGate({ spec: acceptanceSpec, projectRoot: root, executor: evaluatorExecutor });
+        const r = await runAcceptanceGate({
+          spec: acceptanceSpec,
+          projectRoot: root,
+          executor: evaluatorExecutor,
+          ...(visualNote ? { runtimeNote: visualNote } : {}),
+        });
         return resolveAcceptanceVerdict(r, acceptancePrimary);
       }
     : undefined;
