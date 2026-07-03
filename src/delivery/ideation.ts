@@ -21,9 +21,14 @@ import { DEFAULT_STRATEGY_SEEDS, MAX_CANDIDATES } from './explorer.js';
 export interface IdeationOptions {
   /** Number of seeds to request (default 4, capped at MAX_CANDIDATES) */
   count?: number;
+  /** Model attempts before falling back to the static defaults (default 2).
+   * Local-model completions are occasionally empty/degenerate (proxy no-tool
+   * turns, sampling flukes); one retry recovers most of them. */
+  attempts?: number;
 }
 
 const DEFAULT_SEED_COUNT = 4;
+const DEFAULT_ATTEMPTS = 2;
 const MAX_HINT_CHARS = 400;
 
 function buildIdeationPrompt(instruction: string, count: number): string {
@@ -85,14 +90,17 @@ export async function generateStrategySeeds(
   options: IdeationOptions = {}
 ): Promise<StrategySeed[]> {
   const count = Math.min(MAX_CANDIDATES, Math.max(2, options.count ?? DEFAULT_SEED_COUNT));
-  try {
-    const raw = await executor(buildIdeationPrompt(instruction, count));
-    const seeds = parseSeedArray(raw);
-    // Require at least two usable seeds — one seed defeats the purpose of
-    // divergent exploration and signals a degenerate model response.
-    if (seeds.length >= 2) return seeds.slice(0, count);
-  } catch {
-    // fall through to defaults
+  const attempts = Math.max(1, options.attempts ?? DEFAULT_ATTEMPTS);
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const raw = await executor(buildIdeationPrompt(instruction, count));
+      const seeds = parseSeedArray(raw);
+      // Require at least two usable seeds — one seed defeats the purpose of
+      // divergent exploration and signals a degenerate model response.
+      if (seeds.length >= 2) return seeds.slice(0, count);
+    } catch {
+      // fall through to retry / defaults
+    }
   }
   return DEFAULT_STRATEGY_SEEDS;
 }
