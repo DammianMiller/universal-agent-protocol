@@ -39,3 +39,14 @@ describe('recon-convergence write-tool class', () => {
   });
 });
 
+describe('no-tool thinking floor', () => {
+  it('bumps small no-tool max_tokens so evaluator verdicts survive Qwen mandatory thinking', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    // Without this floor, acceptance-judge/critic/ideation calls (~4096
+    // max_tokens, tools=0) are consumed entirely by <think> and come back as
+    // unparseable de-tagged reasoning — observed live on every judgment.
+    expect(contents).toContain('PROXY_THINKING_MIN_NO_TOOLS');
+    expect(contents).toContain('thinking-floor (no-tool)');
+  });
+});
+
