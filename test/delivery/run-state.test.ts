@@ -204,4 +204,60 @@ describe('convergence loop checkpoint + resume', () => {
     expect(liveTurns).toBe(2);
     expect(result.history.length).toBe(6);
   });
+
+  it('checkpoints escalation state and restores it on resume (no silent de-escalation)', async () => {
+    // Run 1: an onIteration directive escalates (widen + critic + model switch);
+    // the next checkpoint must capture that state.
+    const checkpoints: LoopCheckpoint[] = [];
+    const strong = async (): Promise<string> => '```file:a.txt\nx\n```';
+    const loop1 = new ConvergenceLoop(
+      {
+        projectRoot: '/tmp',
+        maxTurns: 2,
+        rungs: [RUNG],
+        baselineCheck: false,
+        criticFactory: () => async () => ({ fixList: ['fix it'] }),
+        onIteration: (r) =>
+          r.turn === 1 ? { setCandidates: 3, enableCritic: true, switchExecutor: strong } : undefined,
+        onCheckpoint: (cp) => checkpoints.push(cp),
+      },
+      async () => '```file:a.txt\nx\n```',
+      {
+        ladderRunner: () => ladder(false),
+        applier: async () => ({ filesWritten: ['a.txt'], rejected: [] }),
+      }
+    );
+    await loop1.deliver('do it');
+    const last = checkpoints[checkpoints.length - 1];
+    expect(last.candidates).toBe(3);
+    expect(last.criticEnabled).toBe(true);
+    expect(last.modelEscalated).toBe(true);
+
+    // Run 2 (resume): critic is re-enabled via the factory and the escalation
+    // flags persist through the next checkpoint.
+    let criticRebuilt = false;
+    const checkpoints2: LoopCheckpoint[] = [];
+    const loop2 = new ConvergenceLoop(
+      {
+        projectRoot: '/tmp',
+        maxTurns: 1,
+        rungs: [RUNG],
+        baselineCheck: false,
+        resumeFrom: last,
+        criticFactory: () => {
+          criticRebuilt = true;
+          return async () => ({ fixList: [] });
+        },
+        onCheckpoint: (cp) => checkpoints2.push(cp),
+      },
+      async () => 'no file blocks here',
+      {
+        ladderRunner: () => ladder(false),
+        applier: async () => ({ filesWritten: [], rejected: [] }),
+      }
+    );
+    await loop2.deliver('do it');
+    expect(criticRebuilt).toBe(true);
+    expect(checkpoints2[checkpoints2.length - 1].modelEscalated).toBe(true);
+  });
 });

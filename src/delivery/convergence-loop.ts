@@ -121,6 +121,8 @@ export interface ExplorerSettings {
   candidates?: number;
   seeds?: StrategySeed[];
   judge?: Judge;
+  /** Per-candidate isolated workspaces → concurrent candidate verification. */
+  workspaceProvider?: import('./candidate-workspace.js').WorkspaceProvider;
 }
 
 /**
@@ -330,6 +332,14 @@ export interface LoopCheckpoint {
   bestSoFar: number;
   bestAcceptance: number;
   stagnantTurns: number;
+  /** Escalation state applied mid-run, so a resumed run is NOT silently
+   *  de-escalated: exploration width + seeds and the critic are restored by
+   *  the loop; a model switch cannot serialize, so `modelEscalated` is a
+   *  signal the CLI uses to re-bind the stronger executor before resuming. */
+  candidates?: number;
+  seeds?: StrategySeed[];
+  criticEnabled?: boolean;
+  modelEscalated?: boolean;
 }
 
 const DEFAULT_MAX_TURNS = 5;
@@ -604,6 +614,7 @@ export class ConvergenceLoop {
       candidates: settings.candidates,
       seeds: settings.seeds,
       judge: settings.judge,
+      workspaceProvider: settings.workspaceProvider,
       projectRoot: this.config.projectRoot,
       rungs,
       ladderOptions: this.config.ladderOptions,
@@ -702,6 +713,7 @@ export class ConvergenceLoop {
     let executor = this.executor;
     let explorerSettings = this.config.explorer;
     let critic = this.config.critic;
+    let modelEscalated = false;
 
     const history: IterationRecord[] = [];
     const previousOutputChars = this.config.previousOutputChars ?? DEFAULT_PREVIOUS_OUTPUT_CHARS;
@@ -763,7 +775,11 @@ export class ConvergenceLoop {
         const inner = this.ladderRunner;
         ladderRunner = async (gateRungs, root, opts) => {
           const ladderResult = await inner(gateRungs, root, opts);
-          const check = verifyAndRestore(this.config.projectRoot, integrity);
+          // Verify the tree the gates actually ran in — under workspace
+          // isolation `root` is a per-candidate worktree, and checking the
+          // main tree would both miss in-workspace tampering and race
+          // concurrent candidates' restores.
+          const check = verifyAndRestore(root, integrity);
           if (check.tampered.length > 0) {
             return {
               ...ladderResult,
@@ -806,6 +822,18 @@ export class ConvergenceLoop {
       bestAcceptance = resume.bestAcceptance ?? -1;
       stagnantTurns = resume.stagnantTurns ?? 0;
       startTurn = resume.turn + 1;
+      // Restore mid-run escalation state so resume is not a silent downgrade.
+      if (typeof resume.candidates === 'number' && resume.candidates >= 2) {
+        explorerSettings = {
+          ...(explorerSettings ?? {}),
+          candidates: resume.candidates,
+          seeds: resume.seeds && resume.seeds.length >= 2 ? resume.seeds : explorerSettings?.seeds,
+        };
+      }
+      if (resume.criticEnabled && !critic && this.config.criticFactory) {
+        critic = this.config.criticFactory(executor);
+      }
+      modelEscalated = Boolean(resume.modelEscalated);
       // Fresh budget of `maxTurns` more turns from the resume point — but the
       // until-delivered ceiling stays a HARD cap across process boundaries:
       // repeated interrupt+resume must never grant unbounded turns.
@@ -916,6 +944,7 @@ export class ConvergenceLoop {
       // Apply escalation directives to the run-state for subsequent turns
       if (directive.switchExecutor) {
         executor = directive.switchExecutor;
+        modelEscalated = true;
       }
       if (typeof directive.setCandidates === 'number') {
         explorerSettings = { ...(explorerSettings ?? {}), candidates: directive.setCandidates };
@@ -1028,6 +1057,10 @@ export class ConvergenceLoop {
             bestSoFar,
             bestAcceptance,
             stagnantTurns,
+            candidates: explorerSettings?.candidates,
+            seeds: explorerSettings?.seeds,
+            criticEnabled: Boolean(critic),
+            modelEscalated,
           });
         } catch {
           // checkpointing must never break the run

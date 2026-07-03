@@ -18,7 +18,7 @@
  * Failures here never throw into the caller — tracing must not break execution.
  */
 
-import { appendFileSync, mkdirSync } from 'fs';
+import { appendFileSync, mkdirSync, renameSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { randomBytes, createHash } from 'crypto';
 
@@ -143,6 +143,37 @@ export function buildHaloSpan(input: HaloSpanInput): HaloSpan {
 
 let _warned = false;
 
+/** Size-based rotation: with tracing on by default the file must not grow
+ * unboundedly. Checked every ROTATE_CHECK_EVERY appends (stat is not free);
+ * above the cap the file rotates to `<path>.1`, replacing the previous
+ * rotation — one generation of history is enough for auto-mining. */
+const ROTATE_CHECK_EVERY = 100;
+const DEFAULT_MAX_TRACE_BYTES = 10 * 1024 * 1024;
+let _appendsSinceCheck = 0;
+
+function maxTraceBytes(): number {
+  const v = Number(process.env.UAP_HALO_TRACE_MAX_BYTES);
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_MAX_TRACE_BYTES;
+}
+
+function maybeRotate(path: string): void {
+  _appendsSinceCheck += 1;
+  if (_appendsSinceCheck < ROTATE_CHECK_EVERY) return;
+  _appendsSinceCheck = 0;
+  try {
+    if (statSync(path).size > maxTraceBytes()) {
+      renameSync(path, `${path}.1`);
+    }
+  } catch {
+    // missing file / racing writer — rotation is best-effort
+  }
+}
+
+/** Reset rotation counter. Test-only. */
+export function _resetRotationCounter(): void {
+  _appendsSinceCheck = 0;
+}
+
 /** Append a span to the trace file. No-op when tracing is disabled. */
 export function recordHaloSpan(input: HaloSpanInput): void {
   if (!isHaloTracingEnabled()) return;
@@ -150,6 +181,7 @@ export function recordHaloSpan(input: HaloSpanInput): void {
     const span = buildHaloSpan(input);
     const path = haloTracePath();
     mkdirSync(dirname(path), { recursive: true });
+    maybeRotate(path);
     appendFileSync(path, JSON.stringify(span) + '\n');
   } catch (err) {
     if (!_warned) {

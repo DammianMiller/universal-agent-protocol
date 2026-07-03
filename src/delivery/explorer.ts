@@ -29,6 +29,7 @@ import type { LadderRunner, LoopExecutor } from './convergence-loop.js';
 import { applyFileBlocks, applyFileBlocksWithRollback } from './applier.js';
 import type { Applier, ApplyOptions, ApplyResult, RevertibleApply } from './applier.js';
 import type { Judge } from './judge.js';
+import type { WorkspaceProvider } from './candidate-workspace.js';
 
 /** Hard ceiling on candidates per turn — guards direct library callers
  * (the CLI caps lower); each candidate costs a model call + a full gate run. */
@@ -95,6 +96,14 @@ export interface ExplorerConfig {
   /** Apply-stage options (e.g. protected pre-existing test files) */
   applyOptions?: ApplyOptions;
   onCandidate?: (candidate: CandidateResult) => void;
+  /**
+   * Per-candidate isolated workspaces (git worktrees): when present, candidates
+   * are applied + verified CONCURRENTLY, each in its own tree — no shared-tree
+   * gate races, no loser side effects leaking into later candidates. A provider
+   * returning null (or throwing) drops that candidate back to the sequential
+   * in-tree path. The winner is still committed + re-verified in the real tree.
+   */
+  workspaceProvider?: WorkspaceProvider;
 }
 
 const DEFAULT_CANDIDATES = 3;
@@ -129,28 +138,25 @@ export async function exploreAndCommit(
     })
   );
 
-  // 2. Evaluate sequentially on the same baseline via apply → verify → rollback
-  const candidates: CandidateResult[] = [];
-  for (let i = 0; i < generations.length; i++) {
-    const { seed, output, error } = generations[i];
-    const id = `c${i + 1}`;
+  // 2. Evaluate candidates. With a workspace provider each candidate gets an
+  // isolated tree and they run CONCURRENTLY; otherwise fall back to the
+  // sequential in-tree apply → verify → rollback on the shared baseline.
+  const errorCandidate = (id: string, strategy: string, error: string): CandidateResult => ({
+    id,
+    strategy,
+    output: '',
+    applyResult: null,
+    ladder: null,
+    error,
+    passed: false,
+    score: 0,
+  });
 
-    if (error) {
-      const candidate: CandidateResult = {
-        id,
-        strategy: seed.id,
-        output: '',
-        applyResult: null,
-        ladder: null,
-        error,
-        passed: false,
-        score: 0,
-      };
-      candidates.push(candidate);
-      config.onCandidate?.(candidate);
-      continue;
-    }
-
+  const evaluateInTree = async (
+    id: string,
+    seed: StrategySeed,
+    output: string
+  ): Promise<CandidateResult> => {
     const { result: applyResult, restore } = applyRevertible(output, config.projectRoot, config.applyOptions);
     let ladder: LadderResult | null = null;
     try {
@@ -160,8 +166,7 @@ export async function exploreAndCommit(
     } finally {
       restore();
     }
-
-    const candidate: CandidateResult = {
+    return {
       id,
       strategy: seed.id,
       output,
@@ -170,8 +175,76 @@ export async function exploreAndCommit(
       passed: ladder?.passed ?? false,
       score: ladder?.score ?? 0,
     };
-    candidates.push(candidate);
-    config.onCandidate?.(candidate);
+  };
+
+  const evaluateInWorkspace = async (
+    id: string,
+    seed: StrategySeed,
+    output: string
+  ): Promise<CandidateResult | null> => {
+    let workspace: ReturnType<NonNullable<WorkspaceProvider>> = null;
+    try {
+      workspace = config.workspaceProvider!();
+    } catch {
+      workspace = null;
+    }
+    if (!workspace) return null; // fall back to the sequential path
+    try {
+      const applyResult = await apply(output, workspace.root, config.applyOptions);
+      let ladder: LadderResult | null = null;
+      if (!applyResult.error && applyResult.filesWritten.length > 0) {
+        ladder = await ladderRunner(config.rungs, workspace.root, config.ladderOptions);
+      }
+      return {
+        id,
+        strategy: seed.id,
+        output,
+        applyResult,
+        ladder,
+        passed: ladder?.passed ?? false,
+        score: ladder?.score ?? 0,
+      };
+    } catch (err) {
+      return errorCandidate(id, seed.id, err instanceof Error ? err.message : String(err));
+    } finally {
+      workspace.cleanup();
+    }
+  };
+
+  let candidates: CandidateResult[];
+  if (config.workspaceProvider) {
+    // Parallel pass in isolated workspaces. A candidate whose workspace could
+    // not be created falls back to the shared tree — those MUST run
+    // sequentially (after the parallel batch), or their gates would race.
+    const evaluated = await Promise.all(
+      generations.map(async ({ seed, output, error }, i) => {
+        const id = `c${i + 1}`;
+        const candidate = error
+          ? errorCandidate(id, seed.id, error)
+          : await evaluateInWorkspace(id, seed, output);
+        if (candidate) config.onCandidate?.(candidate); // stream progress as each finishes
+        return candidate;
+      })
+    );
+    candidates = [];
+    for (let i = 0; i < evaluated.length; i++) {
+      const { seed, output } = generations[i];
+      let candidate = evaluated[i];
+      if (!candidate) {
+        candidate = await evaluateInTree(`c${i + 1}`, seed, output);
+        config.onCandidate?.(candidate);
+      }
+      candidates.push(candidate);
+    }
+  } else {
+    candidates = [];
+    for (let i = 0; i < generations.length; i++) {
+      const { seed, output, error } = generations[i];
+      const id = `c${i + 1}`;
+      const candidate = error ? errorCandidate(id, seed.id, error) : await evaluateInTree(id, seed, output);
+      candidates.push(candidate);
+      config.onCandidate?.(candidate);
+    }
   }
 
   // Only candidates that wrote files and reached a real ladder run are
