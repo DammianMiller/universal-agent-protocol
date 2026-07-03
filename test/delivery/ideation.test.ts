@@ -111,3 +111,32 @@ describe('seedsFromIdeas', () => {
     expect(seeds[0].hint).toContain('a');
   });
 });
+
+describe('generateStrategySeeds retry', () => {
+  it('recovers when the first completion is empty/degenerate', async () => {
+    let calls = 0;
+    const executor = async (): Promise<string> => {
+      calls++;
+      if (calls === 1) return ''; // transient empty completion (proxy no-tool quirk)
+      return '[{"id":"grid-first","hint":"STRATEGY: a"},{"id":"loop-first","hint":"STRATEGY: b"}]';
+    };
+    const { generateStrategySeeds } = await import('../../src/delivery/ideation.js');
+    const seeds = await generateStrategySeeds('task', executor);
+    expect(calls).toBe(2);
+    expect(seeds.map((s) => s.id)).toEqual(['grid-first', 'loop-first']);
+  });
+
+  it('falls back to the static defaults only after all attempts fail', async () => {
+    let calls = 0;
+    const executor = async (): Promise<string> => {
+      calls++;
+      throw new Error('down');
+    };
+    const { generateStrategySeeds } = await import('../../src/delivery/ideation.js');
+    const { DEFAULT_STRATEGY_SEEDS } = await import('../../src/delivery/explorer.js');
+    const seeds = await generateStrategySeeds('task', executor, { attempts: 3 });
+    expect(calls).toBe(3);
+    expect(seeds).toBe(DEFAULT_STRATEGY_SEEDS);
+  });
+});
+

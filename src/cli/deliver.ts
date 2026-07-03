@@ -22,6 +22,7 @@ import { createModelCritic } from '../delivery/critic.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import type { StrategySeed } from '../delivery/explorer.js';
 import { generateStrategySeeds, seedsFromIdeas } from '../delivery/ideation.js';
+import { DEFAULT_STRATEGY_SEEDS } from '../delivery/explorer.js';
 import { planAutoOptimization } from '../delivery/auto-optimizer.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
 import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
@@ -906,11 +907,19 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   }
   if (!seeds && (options.ideate || options.ideateProject)) {
     console.log(chalk.cyan('💡 Generating divergent strategy seeds…'));
+    // Ideation is a TEXT completion (one JSON array), like the judge/critic —
+    // NEVER the agentic tool-loop executor, which cannot answer a text prompt
+    // and silently forced the static-defaults fallback on every agentic run.
     seeds = await generateStrategySeeds(
       instruction,
-      executor,
+      blindExecutor,
       candidates ? { count: candidates } : {}
     );
+    if (seeds === DEFAULT_STRATEGY_SEEDS) {
+      console.log(
+        chalk.yellow('💡 Seed generation fell back to the static defaults (model returned no usable seeds)')
+      );
+    }
     console.log(chalk.cyan(`💡 Seeds: ${seeds.map((s) => s.id).join(', ')}`));
   }
   // Seeds act through the explorer — turn best-of-N on when ideation supplied
