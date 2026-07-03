@@ -4276,6 +4276,13 @@ def build_openai_request(
         # retries (observed Shannon: max_tokens=512 + tools=7 -> ~5 retries
         # per turn). Bump up to THINKING_MIN_FOR_TOOLS for these requests.
         THINKING_MIN_FOR_TOOLS = 2048
+        # No-tool turns need thinking headroom too: evaluator calls (acceptance
+        # judge, critic, ideation) request ~4096 max_tokens, Qwen spends all of
+        # it inside <think>, the EMPTY-OUTPUT GUARD promotes truncated
+        # reasoning as the body, and the caller gets an unparseable verdict —
+        # observed live as every acceptance judgment failing. Bump small
+        # no-tool budgets so the model can finish thinking AND answer.
+        THINKING_MIN_NO_TOOLS = int(os.environ.get("PROXY_THINKING_MIN_NO_TOOLS", "8192"))
         if skip_floor:
             requested_max = requested_raw
             # Even when skipping the big floor, bump small tool-turn
@@ -4289,6 +4296,18 @@ def build_openai_request(
                 requested_max = THINKING_MIN_FOR_TOOLS
                 logger.info(
                     "MAX_TOKENS thinking-floor: %d -> %d (tool turn, Qwen mandatory thinking)",
+                    requested_raw,
+                    requested_max,
+                )
+            elif (
+                not has_tools
+                and THINKING_MIN_NO_TOOLS > 0
+                and requested_raw < THINKING_MIN_NO_TOOLS
+                and requested_raw > 16  # leave true preflight alone
+            ):
+                requested_max = THINKING_MIN_NO_TOOLS
+                logger.info(
+                    "MAX_TOKENS thinking-floor (no-tool): %d -> %d (Qwen mandatory thinking; evaluator verdicts need room after <think>)",
                     requested_raw,
                     requested_max,
                 )

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.96.6 (2026-07-03)
+
+- fix(proxy): no-tool thinking floor — evaluator verdicts were consumed by Qwen's mandatory <think>
+
+
 ## v1.96.5 (2026-07-03)
 
 - fix(proxy): recon-convergence must count OpenAI-style tool-loop writes (write_file/edit_file/save_file)
