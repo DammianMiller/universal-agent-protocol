@@ -26,3 +26,16 @@ describe('anthropic_proxy guardrails', () => {
     expect(contents).toContain('4.6');
   });
 });
+
+describe('recon-convergence write-tool class', () => {
+  it('recognizes OpenAI-style tool-loop write tools so agentic builds never count as recon', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    // uap deliver's agentic executor writes via write_file; if the recon
+    // detector stops counting it as a write, the proxy re-poisons mid-build
+    // agentic sessions with "synthesize now" directives (no_write_streak=62
+    // observed live before this guard).
+    expect(contents).toContain('"write_file"');
+    expect(contents).toContain('"edit_file"');
+  });
+});
+
