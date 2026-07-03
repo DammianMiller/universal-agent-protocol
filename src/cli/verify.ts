@@ -11,6 +11,7 @@
 
 import { detectRungs, runTieredLadder, tierOf, type GateRung, type GateTier, type LadderResult } from '../delivery/verifier-ladder.js';
 import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
+import { runVisualGate, discoverEntryPages, type VisualVerdict } from '../delivery/visual-gate.js';
 import type { LoopExecutor } from '../delivery/convergence-loop.js';
 
 export interface VerifyOptions {
@@ -32,6 +33,10 @@ export interface VerifyOptions {
   acceptanceSpec?: string;
   /** Model executor for the acceptance gate (injected; verifyCommand builds it). */
   acceptanceExecutor?: LoopExecutor;
+  /** Visual gate: render entry pages, check blank/static/errors, save
+   * screenshots (default ON for web artifacts; false disables; fail-open
+   * without a browser). */
+  visual?: boolean;
 }
 
 export interface VerifyResult {
@@ -43,6 +48,7 @@ export interface VerifyResult {
   ladder?: LadderResult;
   rungs: GateRung[];
   acceptance?: AcceptanceResult;
+  visual?: VisualVerdict;
 }
 
 /** Core verify logic — pure-ish (no process.exit), so it is unit-testable. */
@@ -93,7 +99,20 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
   });
 
-  const report = formatReport(ladder) + acceptanceReport;
+  // Visual gate: the rendered truth. Runs by default whenever the project has
+  // entry pages (opts.visual === false disables); fail-open without a browser.
+  // --runtime-only (the Stop hook's cheap path) skips it unless explicitly
+  // forced with visual: true — sampling frames in a real browser is not cheap,
+  // and minimal fixtures legitimately render near-blank.
+  let visual: VisualVerdict | undefined;
+  const visualWanted = opts.visual === true || (opts.visual !== false && !opts.runtimeOnly);
+  if (visualWanted && discoverEntryPages(dir).length > 0) {
+    visual = await runVisualGate(dir);
+  }
+  const visualBlocks = Boolean(visual && !visual.skipped && !visual.passed);
+  const visualReport = visual ? `\n${visual.feedback}` : '';
+
+  const report = formatReport(ladder) + visualReport + acceptanceReport;
   // Exit-code contract for the Stop hook: 0 = verified, 1 = a REAL gate failure
   // (the code is broken), 3 = INFRA failure (gate timed out / could not spawn /
   // killed by signal). The hook hard-blocks only on 1; 3 fails OPEN so a flaky
@@ -106,14 +125,18 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     exitCode = realFailures.length > 0 ? 1 : 3;
   }
   if (acceptanceBlocks && exitCode === 0) exitCode = 1;
+  // Visual problems are REAL failures (blank canvas, static rAF scene,
+  // runtime errors observed while watching) — they gate like broken code.
+  if (visualBlocks && exitCode === 0) exitCode = 1;
   return {
-    passed: ladder.passed && !acceptanceBlocks,
+    passed: ladder.passed && !acceptanceBlocks && !visualBlocks,
     exitCode,
     empty: false,
     report,
     ladder,
     rungs,
     acceptance,
+    visual,
   };
 }
 
