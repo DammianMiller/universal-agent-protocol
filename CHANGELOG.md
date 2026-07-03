@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.97.0 (2026-07-03)
+
+- feat(verify,deliver): visual gate — verify the RENDERED artifact behaves and looks right, not just that it loads
+
+
 ## v1.96.6 (2026-07-03)
 
 - fix(proxy): no-tool thinking floor — evaluator verdicts were consumed by Qwen's mandatory <think>
