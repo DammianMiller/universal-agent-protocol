@@ -537,6 +537,7 @@ program
   .argument('[instruction...]', 'Task instruction for the model (optional with --resume)')
   .option('--max-turns <n>', 'Maximum execute→verify iterations', '5')
   .option('-m, --model <preset>', 'Model preset id (default: $UAP_DELIVER_MODEL or qwen35-a3b)')
+  .option('--routing <preset>', 'Complexity-tier routing: pick the executor model by task complexity from a named routing preset (e.g. cost-tiered, speed-tiered). Ignored when --model is set. Env: UAP_DELIVER_ROUTING')
   .option('--project-root <path>', 'Project whose gates define delivery (default: cwd)')
   .option('--endpoint <url>', 'Override the model endpoint (OpenAI-compatible /v1)')
   .option('--temperature <t>', 'Sampling temperature (default: execution-profile value)')
