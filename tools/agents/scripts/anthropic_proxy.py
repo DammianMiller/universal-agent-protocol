@@ -205,6 +205,32 @@ PROXY_FORCED_HARD_RELEASE = int(os.environ.get("PROXY_FORCED_HARD_RELEASE", "30"
 PROXY_CONTEXT_RELEASE_THRESHOLD = float(
     os.environ.get("PROXY_CONTEXT_RELEASE_THRESHOLD", "0.90")
 )
+# ---------------------------------------------------------------------------
+# STUCK-BREAK guardrail: a small model can recognize it is looping ("I've been
+# stuck in a loop, let me break out") yet keep repeating the SAME failing tool
+# call -- meta-cognition without an exit. Two signals, both observed live on a
+# qwen3.6 session that looped ~18min fetching a rate-limited GitHub API:
+#   (a) repeated self-reported "stuck" assistant text, and
+#   (b) repeated tool calls hitting a known rate-limited API host.
+# When either streak crosses its threshold the proxy forces a TERMINAL turn:
+# tool_choice back to auto + a firm directive to stop retrying and either
+# proceed without the unreachable resource or ask the operator. Default on;
+# PROXY_STUCK_BREAK=off to disable.
+PROXY_STUCK_BREAK = os.environ.get("PROXY_STUCK_BREAK", "on").lower() not in {
+    "0", "false", "off", "no",
+}
+# Self-reported-stuck phrases (lowercased match). Deliberately narrow.
+_STUCK_PHRASE_RE = re.compile(
+    r"stuck in a loop|been stuck|break out of (?:this|the) loop|going in circles|"
+    r"repeating myself|same (?:thing|error) (?:again|repeatedly)",
+    re.IGNORECASE,
+)
+# Tool args reaching into a rate-limited REST API host (the wrong channel; the
+# hint steers to the browser tool / git clone, which are not rate-limited).
+_RATE_LIMITED_API_RE = re.compile(r"api\.github\.com", re.IGNORECASE)
+PROXY_STUCK_TEXT_THRESHOLD = int(os.environ.get("PROXY_STUCK_TEXT_THRESHOLD", "2"))
+PROXY_STUCK_API_THRESHOLD = int(os.environ.get("PROXY_STUCK_API_THRESHOLD", "3"))
+
 PROXY_TOOL_STATE_MACHINE = os.environ.get(
     "PROXY_TOOL_STATE_MACHINE", "on"
 ).lower() not in {
@@ -1128,6 +1154,9 @@ class SessionMonitor:
     recon_hard_fires: int = 0  # Fix E: monotonic count of recon hard-tier firings
     catastrophic_ctx_streak: int = 0  # Fix F: consecutive turns raw ctx >= finalize ratio
     unexpected_end_turn_count: int = 0  # end_turn without tool_use in active loop
+    self_stuck_streak: int = 0  # consecutive assistant texts self-reporting a loop
+    rate_limited_api_streak: int = 0  # consecutive tool calls hitting a rate-limited API host
+    stuck_break_fires: int = 0  # monotonic count of forced stuck-breaks
     tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
     malformed_tool_streak: int = 0  # consecutive malformed pseudo tool payloads
     invalid_tool_call_streak: int = 0  # consecutive invalid tool arg payloads
@@ -1362,6 +1391,40 @@ class SessionMonitor:
                 if name.lower() in {n.lower() for n in _READ_ONLY_TOOL_CLASS} and target:
                     by_tool = self.tool_target_history.setdefault(name, {})
                     by_tool[target] = by_tool.get(target, 0) + 1
+
+    def note_assistant_text(self, text: str) -> None:
+        """Track the model self-reporting that it is stuck (STUCK-BREAK signal
+        (a)). A matching turn increments the streak; a non-matching turn resets
+        it, so only SUSTAINED self-reported looping trips the break."""
+        if not PROXY_STUCK_BREAK or not text:
+            self.self_stuck_streak = 0
+            return
+        if _STUCK_PHRASE_RE.search(text):
+            self.self_stuck_streak += 1
+        else:
+            self.self_stuck_streak = 0
+
+    def note_tool_arg_hosts(self, arg_blobs: list) -> None:
+        """Track repeated tool calls into a rate-limited API host (STUCK-BREAK
+        signal (b)). Reset when a turn uses none, so only a sustained wrong-
+        channel loop trips the hint."""
+        if not PROXY_STUCK_BREAK:
+            return
+        blob = " ".join(a for a in arg_blobs if isinstance(a, str))
+        if _RATE_LIMITED_API_RE.search(blob):
+            self.rate_limited_api_streak += 1
+        else:
+            self.rate_limited_api_streak = 0
+
+    def should_force_stuck_break(self) -> tuple[bool, str]:
+        """True + reason when a terminal break should be forced this turn."""
+        if not PROXY_STUCK_BREAK:
+            return False, ""
+        if self.self_stuck_streak >= PROXY_STUCK_TEXT_THRESHOLD:
+            return True, f"self-reported stuck x{self.self_stuck_streak}"
+        if self.rate_limited_api_streak >= PROXY_STUCK_API_THRESHOLD:
+            return True, f"rate-limited-API retries x{self.rate_limited_api_streak}"
+        return False, ""
 
     def has_duplicate_read_target(self, threshold: int = 2) -> tuple[bool, str]:
         """Check if any read-only tool has re-read the same target >= threshold times.
@@ -4067,6 +4130,36 @@ def _writes_are_gated(openai_body: dict) -> bool:
     return False
 
 
+def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> None:
+    """Force a terminal turn when the model is looping self-awarely or hammering
+    a rate-limited API. Unlike the cycle-breaker (which narrows tools), this
+    STOPS tool coercion and tells the model to synthesize / ask / route around
+    the unreachable resource -- converting the model's own "I'm stuck" into an
+    actual exit. Fires at most escalating; monotonic counter for telemetry."""
+    should, reason = monitor.should_force_stuck_break()
+    if not should:
+        return
+    monitor.stuck_break_fires += 1
+    # Release the tool-choice coercion so a plain text turn is allowed.
+    if openai_body.get("tool_choice") == "required":
+        openai_body["tool_choice"] = "auto"
+    directive = (
+        "\n\nSTOP — you are repeating a failing action (" + reason + "). Do NOT "
+        "retry the same tool or fetch again. If a resource is unreachable (e.g. a "
+        "rate-limited GitHub REST API), switch channel: use the browser tool or "
+        "`git clone` (git protocol), NOT api.github.com. If it is still "
+        "unavailable, proceed WITHOUT it using what you already have, or ask the "
+        "operator the single blocking question in one sentence. Take a DIFFERENT "
+        "action now."
+    )
+    msgs = openai_body.get("messages") or []
+    if msgs and msgs[0].get("role") == "system":
+        msgs[0]["content"] = (msgs[0].get("content") or "") + directive
+    else:
+        msgs.insert(0, {"role": "system", "content": directive.strip()})
+    logger.warning("STUCK-BREAK: forced terminal turn (%s, fires=%d)", reason, monitor.stuck_break_fires)
+
+
 def _maybe_inject_recon_convergence(
     openai_body: dict,
     monitor: "SessionMonitor",
@@ -4845,6 +4938,8 @@ def build_openai_request(
     # toward its deliverable regardless of tool-turn phase. Passed the full
     # pre-narrowing toolset so it can restore a dropped write tool.
     _maybe_inject_recon_convergence(openai_body, monitor, full_openai_tools)
+
+    _maybe_inject_stuck_break(openai_body, monitor)
 
     _apply_thinking_grammar(openai_body)
 
@@ -8612,6 +8707,12 @@ async def stream_anthropic_response(
         tc_names,
         [a[:200] for a in tc_args],
     )
+    # STUCK-BREAK signals: feed the assistant text + tool args to the monitor.
+    try:
+        monitor.note_assistant_text(accumulated_text)
+        monitor.note_tool_arg_hosts(list(tc_args))
+    except Exception:
+        pass
 
     # -------------------------------------------------------------------
     # Post-stream: recover <tool_call> XML from accumulated text
