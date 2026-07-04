@@ -29,7 +29,18 @@ export interface DeliveryPhase {
 }
 
 const MIN_PHASES = 2;
-const MAX_PHASES = 5;
+/**
+ * Phase-count ceiling. Raised from the original 5 and made operator-tunable via
+ * UAP_DELIVER_MAX_PHASES so genuinely epic missions (design → build →
+ * operational readiness) can decompose into more than five stages. Bounded to a
+ * hard ceiling so a bad env value can't explode the planning surface.
+ */
+const MAX_PHASES_HARD_CEILING = 20;
+function maxPhases(): number {
+  const raw = Number(process.env.UAP_DELIVER_MAX_PHASES);
+  if (Number.isFinite(raw) && raw >= MIN_PHASES) return Math.min(Math.floor(raw), MAX_PHASES_HARD_CEILING);
+  return 8;
+}
 /** Only instructions this long are epic-shaped enough to auto-decompose. */
 const AUTO_DECOMPOSE_MIN_CHARS = 200;
 
@@ -70,7 +81,7 @@ export function parsePhaseArray(text: string): DeliveryPhase[] {
     seen.add(slug);
     const rawDeps = (entry as { deps?: unknown }).deps;
     const deps = Array.isArray(rawDeps)
-      ? rawDeps.filter((d): d is string => typeof d === 'string').map((d) => d.trim().toLowerCase()).slice(0, MAX_PHASES)
+      ? rawDeps.filter((d): d is string => typeof d === 'string').map((d) => d.trim().toLowerCase()).slice(0, maxPhases())
       : undefined;
     phases.push({
       id: slug,
@@ -78,7 +89,7 @@ export function parsePhaseArray(text: string): DeliveryPhase[] {
       goal: goal.trim().slice(0, 600),
       ...(deps && deps.length > 0 ? { deps } : {}),
     });
-    if (phases.length >= MAX_PHASES) break;
+    if (phases.length >= maxPhases()) break;
   }
   return topoOrder(phases);
 }
@@ -122,7 +133,7 @@ function buildDecomposePrompt(instruction: string, hintProvider?: LifecycleHintP
 
   return [
     'You are a delivery planner. Split the mission below into SEQUENTIAL phases',
-    `(${MIN_PHASES}-${MAX_PHASES}), each independently verifiable by the project's build/test`,
+    `(${MIN_PHASES}-${maxPhases()}), each independently verifiable by the project's build/test`,
     'gates. Every phase must leave the project in a working state — no phase may',
     'end with intentionally broken builds. Order phases so later ones build on',
     'earlier ones. Do NOT invent scope the mission does not imply.',

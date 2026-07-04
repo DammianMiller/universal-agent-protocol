@@ -3,7 +3,7 @@
  * per-phase instruction composition.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   parsePhaseArray,
   planDeliveryPhases,
@@ -25,16 +25,18 @@ describe('parsePhaseArray', () => {
     expect(phases[1].goal).toBe('Implement the core logic');
   });
 
-  it('drops malformed entries, dedupes slugs, and caps at 5 phases', () => {
+  it('drops malformed entries and dedupes slugs (default cap 8)', () => {
     const entries = Array.from({ length: 8 }, (_, i) => ({
       id: i < 2 ? 'same' : `p${i}`,
       title: `T${i}`,
       goal: `G${i}`,
     }));
+    // 8 entries, first two share the slug 'same' -> 7 unique, all within the
+    // default cap of 8, and the malformed {id:'bad'} entry is dropped.
     const raw = JSON.stringify([{ id: 'bad' }, ...entries]);
     const phases = parsePhaseArray(raw);
-    expect(phases.length).toBe(5);
-    expect(new Set(phases.map((p) => p.id)).size).toBe(5);
+    expect(phases.length).toBe(7);
+    expect(new Set(phases.map((p) => p.id)).size).toBe(7);
   });
 
   it('returns [] on garbage', () => {
@@ -85,5 +87,32 @@ describe('phaseInstruction', () => {
     expect(text).toContain('CURRENT PHASE 2/2 — B');
     expect(text).toContain('do b');
     expect(text).toContain('A: done in 2 turns');
+  });
+});
+
+
+describe('configurable phase cap (UAP_DELIVER_MAX_PHASES)', () => {
+  const mk = (n: number) =>
+    JSON.stringify(
+      Array.from({ length: n }, (_, i) => ({ id: `p${i}`, title: `Phase ${i}`, goal: `do ${i}` }))
+    );
+
+  afterEach(() => {
+    delete process.env.UAP_DELIVER_MAX_PHASES;
+  });
+
+  it('defaults to allowing more than the old 5-phase ceiling', () => {
+    // 7 well-formed phases — the old cap was 5; the new default (8) keeps all 7.
+    expect(parsePhaseArray(mk(7))).toHaveLength(7);
+  });
+
+  it('honors an explicit UAP_DELIVER_MAX_PHASES override', () => {
+    process.env.UAP_DELIVER_MAX_PHASES = '3';
+    expect(parsePhaseArray(mk(9))).toHaveLength(3);
+  });
+
+  it('clamps a runaway override to the hard ceiling (20)', () => {
+    process.env.UAP_DELIVER_MAX_PHASES = '999';
+    expect(parsePhaseArray(mk(25))).toHaveLength(20);
   });
 });
