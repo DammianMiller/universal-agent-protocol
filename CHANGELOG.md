@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.104.2 (2026-07-05)
+
+- fix(hooks): honor stop_hook_active in stop.sh so it can't wedge the agent
+
+
 ## v1.104.1 (2026-07-04)
 
 - fix(dashboard): ship web/ + vendor uPlot locally so dash serve is fully wired
