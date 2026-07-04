@@ -36,6 +36,22 @@ export {
 } from './run-state.js';
 
 export {
+  extractContract,
+  type ContractResult,
+} from './contract-extractor.js';
+
+export {
+  orchestrate,
+  assembleTaskContext,
+  governContext,
+  type OrchestratorTask,
+  type TaskOutcome,
+  type AssembledContext,
+  type OrchestratorConfig,
+  type OrchestratorResult,
+} from './task-orchestrator.js';
+
+export {
   planDeliveryPhases,
   parsePhaseArray,
   phaseInstruction,
