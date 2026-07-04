@@ -225,6 +225,10 @@ export interface DeliverOptions {
   ceiling?: string;
   /** Resume an interrupted durable run: a run id or 'latest'. */
   resume?: string;
+  /** Lazy-UAP (default ON): one bare single turn first; the convergence aids
+   * engage only if it fails the gates. commander sets false on --no-lazy;
+   * UAP_DELIVER_LAZY=0 disables globally. */
+  lazy?: boolean;
   /** Decompose an epic mission into sequential phases (auto for long complex
    * tasks; commander sets false on --no-decompose). */
   decompose?: boolean;
@@ -564,6 +568,24 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // differs from its own assertions (e.g. `small:{size:36}` vs a grep for
   // `SMALL_OCTOPUS_SIZE.*36`) — false negatives that block delivery of correct
   // code. The judge evaluates the spec semantically. --force-self-gate overrides.
+  // P6 — gate thickening: a single required rung is a WEAK optimization
+  // target; the brutal bench measured the failure mode directly (iterate-to-
+  // gate-green converged to gate-satisfying-but-wrong code, +2/-3 on the
+  // thin-gate task). When the visible gate set is thin, enable the acceptance
+  // judge so the spec itself thickens the target. UAP_DELIVER_THICKEN=0 opts out.
+  const thinGates =
+    !noRealGates &&
+    process.env.UAP_DELIVER_THICKEN !== '0' &&
+    rungs.filter((r) => r.required).length <= 1;
+  if (thinGates && options.acceptance === undefined) {
+    options.acceptance = true;
+    if (!options.dryRun) {
+      console.log(
+        chalk.cyan('⚖ thin gate set (≤1 required rung) — acceptance judge enabled to thicken the target')
+      );
+    }
+  }
+
   const { acceptancePrimary, needsSelfGate, noGatesError } = decideGateStrategy({
     hasAcceptance: Boolean(options.acceptance),
     noRealGates,
@@ -698,6 +720,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const result = await client.complete(model, prompt, { temperature });
     return result.content;
   };
+  // JSON-verdict channel (P4): evaluator calls that must return parseable
+  // JSON (judge/critic/ideation/decompose verdicts) are tagged so the proxy
+  // grammar-constrains the completion to a bare JSON value. Other servers
+  // ignore the tag; parses become deterministic on the UAP proxy.
+  const jsonBlindExecutor: LoopExecutor = async (prompt) => {
+    const result = await client.complete(model, prompt, { temperature, jsonResponse: true });
+    return result.content;
+  };
 
   // Generator!=Evaluator (loop-engineering rule #1): when an evaluator model is
   // configured, the acceptance gate is AUTHORED and JUDGED by a different model
@@ -725,12 +755,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     evaluatorPresetId = null;
   }
   let evaluatorExecutor: LoopExecutor = blindExecutor;
+  let verdictExecutor: LoopExecutor = jsonBlindExecutor;
   if (evaluatorPresetId) {
     const evalModel = resolveModel(evaluatorPresetId, options.evaluatorEndpoint);
     const evalClient = new OpenAICompatClient();
     evaluatorExecutor = async (prompt) => {
       // Evaluators judge cool + deterministic; they do not brainstorm.
       const r = await evalClient.complete(evalModel, prompt, { temperature: 0 });
+      return r.content;
+    };
+    verdictExecutor = async (prompt) => {
+      const r = await evalClient.complete(evalModel, prompt, { temperature: 0, jsonResponse: true });
       return r.content;
     };
     if (!options.dryRun) {
@@ -937,7 +972,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // and silently forced the static-defaults fallback on every agentic run.
     seeds = await generateStrategySeeds(
       instruction,
-      blindExecutor,
+      jsonBlindExecutor,
       candidates ? { count: candidates } : {}
     );
     if (seeds === DEFAULT_STRATEGY_SEEDS) {
@@ -1082,7 +1117,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         const r = await runAcceptanceGate({
           spec: acceptanceSpec,
           projectRoot: root,
-          executor: evaluatorExecutor,
+          executor: verdictExecutor,
           ...(visualNote ? { runtimeNote: visualNote } : {}),
         });
         return resolveAcceptanceVerdict(r, acceptancePrimary);
@@ -1138,14 +1173,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       ? {
           candidates,
           seeds,
-          judge: createModelJudge(blindExecutor),
+          judge: createModelJudge(jsonBlindExecutor),
           workspaceProvider: agentic ? undefined : (createGitWorktreeProvider(projectRoot) ?? undefined),
         }
       : undefined,
-    critic: options.critic ? createModelCritic(blindExecutor) : undefined,
+    critic: options.critic ? createModelCritic(jsonBlindExecutor) : undefined,
     // Critic evaluates text; keep it on a blind completion even if the loop
     // escalates the (agentic) executor.
-    criticFactory: (ex) => createModelCritic(agentic ? blindExecutor : ex),
+    criticFactory: (ex) => createModelCritic(agentic ? jsonBlindExecutor : ex),
     practiceProvider,
     protectTests: options.protectTests,
     guidanceProvider,
@@ -1156,7 +1191,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     seedGenerator: async (instr, feedback) =>
       generateStrategySeeds(
         feedback ? `${instr}\n\nPrevious-attempt gate feedback (avoid approaches that led here):\n${feedback.slice(0, 800)}` : instr,
-        blindExecutor,
+        jsonBlindExecutor,
         candidates ? { count: candidates } : {}
       ),
     onIteration: makeIterationHook(),
@@ -1166,12 +1201,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   let phases: DeliveryPhase[] | undefined = resumeState?.phases;
   let phaseIndex = resumeState?.phaseIndex ?? 0;
   const phaseSummaries: string[] = [...(resumeState?.phaseSummaries ?? [])];
-  // A mission-scoped self-gate or acceptance-primary target cannot judge
-  // individual phases — phase 1 would be graded against the whole mission —
-  // so decomposition stands down in those modes.
+  // A mission-scoped self-gate cannot judge individual phases, so
+  // decomposition stands down there. Acceptance-primary is fine now: the
+  // judge's spec is phase-scoped (acceptanceSpec follows the current phase).
   const decomposeWanted =
     !needsSelfGate &&
-    !acceptancePrimary &&
     (options.decompose === true ||
       (options.decompose === undefined &&
         process.env.UAP_DELIVER_DECOMPOSE !== '0' &&
@@ -1196,7 +1230,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     } catch {
       lifecycleHints = undefined;
     }
-    const planned = await planDeliveryPhases(instruction, evaluatorExecutor, lifecycleHints);
+    const planned = await planDeliveryPhases(instruction, verdictExecutor, lifecycleHints);
     if (planned.length >= 2) {
       phases = planned;
       console.log(chalk.cyan(`🧩 ${planned.length} phases: ${planned.map((ph) => ph.title).join(' → ')}`));
@@ -1345,7 +1379,44 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
 
   let result: DeliveryResult;
   try {
-    if (phases && phases.length >= 2) {
+    // P1 — Lazy-UAP: measured on the brutal suite, scaffold-from-turn-1 both
+    // wastes tokens on tasks the model can one-shot AND can regress clean
+    // one-shots. So: one bare turn (no seeds/critic/practices/exploration,
+    // acceptance + gates still judge it) — engage the full machinery only if
+    // it fails. Skipped on resume (the mission is already mid-flight).
+    let lazySolved = false;
+    const lazyWanted =
+      options.lazy !== false && process.env.UAP_DELIVER_LAZY !== '0' && !resumeState;
+    if (lazyWanted) {
+      console.log(chalk.cyan('⚡ lazy attempt: one bare turn before engaging the convergence aids…'));
+      const lazyLoop = new ConvergenceLoop(
+        {
+          projectRoot,
+          maxTurns: 1,
+          rungs,
+          alwaysVerify: agentic ? true : undefined,
+          redetectRungs: true,
+          redetectFilter: loopConfig.redetectFilter,
+          protectTests: options.protectTests,
+          onIteration: (record) => printProgress(record),
+        },
+        executor,
+        seams
+      );
+      const lazyResult = await lazyLoop.deliver(instruction);
+      if (lazyResult.success) {
+        lazySolved = true;
+        result = lazyResult;
+        console.log(chalk.green('⚡ lazy: solved by the bare attempt — convergence aids skipped'));
+      } else {
+        // The lazy ladder just ran and failed — don't pay for a baseline check.
+        loopConfig.baselineCheck = false;
+        console.log(chalk.dim('  lazy attempt did not pass — engaging the full convergence stack'));
+      }
+    }
+    if (lazySolved) {
+      result = result!;
+    } else if (phases && phases.length >= 2) {
       result = await runPhasedMission();
     } else {
       if (resumeCheckpoint) loopConfig.resumeFrom = resumeCheckpoint;

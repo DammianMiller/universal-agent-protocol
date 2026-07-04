@@ -62,7 +62,7 @@ export class OpenAICompatClient implements ModelClient {
   async complete(
     model: ModelConfig,
     prompt: string,
-    options?: { maxTokens?: number; timeout?: number; temperature?: number }
+    options?: { maxTokens?: number; timeout?: number; temperature?: number; jsonResponse?: boolean }
   ): Promise<{ content: string; tokensUsed: { input: number; output: number }; latencyMs: number }> {
     if (process.env.UAP_MODEL_LEASE === '0') {
       return this._request(model, prompt, options);
@@ -82,7 +82,7 @@ export class OpenAICompatClient implements ModelClient {
   private async _request(
     model: ModelConfig,
     prompt: string,
-    options?: { maxTokens?: number; timeout?: number; temperature?: number }
+    options?: { maxTokens?: number; timeout?: number; temperature?: number; jsonResponse?: boolean }
   ): Promise<{ content: string; tokensUsed: { input: number; output: number }; latencyMs: number }> {
     const endpoint = (model.endpoint ?? this.defaultEndpoint).replace(/\/$/, '');
     const apiKey = model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined;
@@ -106,6 +106,10 @@ export class OpenAICompatClient implements ModelClient {
         headers: {
           'Content-Type': 'application/json',
           ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          // Evaluator verdicts: the UAP proxy grammar-constrains this
+          // completion to a bare JSON value (no <think> preamble), so judge/
+          // critic/ideation parses are deterministic. Ignored by other servers.
+          ...(options?.jsonResponse ? { 'x-uap-json-response': '1' } : {}),
         },
         body: JSON.stringify({
           model: model.apiModel,

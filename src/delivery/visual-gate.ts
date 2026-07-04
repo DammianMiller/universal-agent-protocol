@@ -78,6 +78,32 @@ export interface VisualVerdict {
   screenshotDir: string | null;
 }
 
+/**
+ * Project-declared visual targets (P8): `.uap/visual-targets.json` raises the
+ * gate's thresholds so aesthetic requirements become in-loop convergence
+ * pressure instead of a post-hoc opinion. All fields optional; per-page
+ * overrides win over file-level values, which win over the built-in floors.
+ * Shape: { minDistinctColors, maxDominantRatio, minMotionRatio,
+ *          pages: { "<file>.html": { ...same fields } } }
+ */
+export interface VisualTargets {
+  minDistinctColors?: number;
+  maxDominantRatio?: number;
+  minMotionRatio?: number;
+  pages?: Record<string, { minDistinctColors?: number; maxDominantRatio?: number; minMotionRatio?: number }>;
+}
+
+export function readVisualTargets(projectRoot: string): VisualTargets {
+  try {
+    const path = join(projectRoot, '.uap', 'visual-targets.json');
+    if (!existsSync(path)) return {};
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as VisualTargets;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 const GRID = 24;
 const DEFAULT_SAMPLES = 3;
 const DEFAULT_INTERVAL_MS = 900;
@@ -159,8 +185,15 @@ export function motionBetween(a: string[] | undefined, b: string[] | undefined):
   return changed / a.length;
 }
 
-/** Pure verdict for one page from its observations — unit-testable. */
-export function judgePage(report: Omit<PageVisualReport, 'problems'>): string[] {
+/** Pure verdict for one page from its observations — unit-testable. Optional
+ * thresholds (project visual targets) tighten the built-in floors. */
+export function judgePage(
+  report: Omit<PageVisualReport, 'problems'>,
+  targets: { minDistinctColors?: number; maxDominantRatio?: number; minMotionRatio?: number } = {}
+): string[] {
+  const minColors = Math.max(MIN_DISTINCT_COLORS, targets.minDistinctColors ?? 0);
+  const maxDominant = Math.min(MAX_DOMINANT_RATIO, targets.maxDominantRatio ?? 1);
+  const minMotion = Math.max(MIN_MOTION_RATIO, targets.minMotionRatio ?? 0);
   const problems: string[] = [];
   if (!report.loaded) {
     problems.push('page did not load');
@@ -170,14 +203,14 @@ export function judgePage(report: Omit<PageVisualReport, 'problems'>): string[] 
     problems.push(`uncaught runtime error(s) during observation: ${report.runtimeErrors[0].slice(0, 200)}`);
   }
   if (report.hasCanvas) {
-    if (report.distinctColors < MIN_DISTINCT_COLORS || report.dominantRatio > MAX_DOMINANT_RATIO) {
+    if (report.distinctColors < minColors || report.dominantRatio > maxDominant) {
       problems.push(
-        `canvas renders blank/near-blank (${report.distinctColors} distinct colors, dominant color covers ${Math.round(report.dominantRatio * 100)}%)`
+        `canvas renders below the visual floor (${report.distinctColors} distinct colors < ${minColors} required, dominant color covers ${Math.round(report.dominantRatio * 100)}%)`
       );
     }
-    if (report.expectsAnimation && report.motionRatio < MIN_MOTION_RATIO) {
+    if (report.expectsAnimation && report.motionRatio < minMotion) {
       problems.push(
-        `page uses requestAnimationFrame but the canvas is STATIC (${(report.motionRatio * 100).toFixed(1)}% of cells changed between samples) — the scene is not actually animating`
+        `page uses requestAnimationFrame but motion is ${(report.motionRatio * 100).toFixed(1)}% (< ${(minMotion * 100).toFixed(1)}% required) — the scene is not animating enough`
       );
     }
   } else if (report.expectsAnimation) {
@@ -202,6 +235,7 @@ export async function runVisualGate(
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
+  const visualTargets = readVisualTargets(projectRoot);
   const screenshotDir = join(projectRoot, '.uap', 'visual');
   try {
     mkdirSync(screenshotDir, { recursive: true });
@@ -292,7 +326,8 @@ export async function runVisualGate(
         runtimeErrors: errors,
         screenshots: shots,
       };
-      pages.push({ ...base, problems: judgePage(base) });
+      const pageTargets = { ...visualTargets, ...(visualTargets.pages?.[file] ?? {}) };
+      pages.push({ ...base, problems: judgePage(base, pageTargets) });
     }
   } catch (e) {
     return {

@@ -110,7 +110,22 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     visual = await runVisualGate(dir);
   }
   const visualBlocks = Boolean(visual && !visual.skipped && !visual.passed);
-  const visualReport = visual ? `\n${visual.feedback}` : '';
+  let visualReport = visual ? `\n${visual.feedback}` : '';
+  // Vision review (advisory): when a vision model is configured, score the
+  // saved screenshots against the acceptance spec (or a generic quality bar).
+  if (visual && !visual.skipped) {
+    try {
+      const { judgeScreenshots, visionSummary, visionJudgeConfigured } = await import('../delivery/vision-judge.js');
+      if (visionJudgeConfigured()) {
+        const shots = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
+        const verdict = await judgeScreenshots(shots, opts.acceptanceSpec ?? 'A polished, working application UI.');
+        const summary = visionSummary(verdict);
+        if (summary) visualReport += `\n${summary}`;
+      }
+    } catch {
+      // vision review is best-effort
+    }
+  }
 
   const report = formatReport(ladder) + visualReport + acceptanceReport;
   // Exit-code contract for the Stop hook: 0 = verified, 1 = a REAL gate failure

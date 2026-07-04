@@ -514,29 +514,42 @@ export class RawCompletionAdapter implements AgentAdapter {
 
   async run(ctx: AgentRunContext): Promise<AgentRunResult> {
     const useGate = ctx.condition.components.has('gates') && Boolean(ctx.task.gateCmd);
-    const files = readRepoFiles(ctx.workdir);
-    const fileDump = files
-      .map((f) => `<<<FILE ${f.path}>>>\n${f.content}\n<<<END>>>`)
-      .join('\n\n');
+    const lazy = Boolean(ctx.condition.lazy);
 
-    const messages: { role: string; content: string }[] = [
-      { role: 'system', content: FILE_MARKER_SYSTEM },
-      {
-        role: 'user',
-        content:
-          `Task: ${ctx.task.instruction}\n\nCurrent files:\n\n${fileDump}\n\n` +
-          'Output the full updated content of each file you change, using the FILE markers.',
-      },
-    ];
+    // Stateless per-iteration prompt: rebuilt from the CURRENT tree + latest
+    // gate output each round, so tokens per completion stay bounded instead of
+    // growing with accumulated history (P5). `bare` drops the injected UAP
+    // scaffold (AGENTS.md) from the prompt — the lazy condition's first shot.
+    const buildMessages = (bare: boolean, gateOut: string | null): { role: string; content: string }[] => {
+      const files = readRepoFiles(ctx.workdir).filter((f) => !(bare && f.path === 'AGENTS.md'));
+      const fileDump = files
+        .map((f) => `<<<FILE ${f.path}>>>\n${f.content}\n<<<END>>>`)
+        .join('\n\n');
+      return [
+        { role: 'system', content: FILE_MARKER_SYSTEM },
+        {
+          role: 'user',
+          content:
+            `Task: ${ctx.task.instruction}\n\nCurrent files:\n\n${fileDump}\n\n` +
+            (gateOut
+              ? `The gate command failed on the current files:\n${gateOut}\n\nFix the code and output the full updated content of each file you change, using the FILE markers.`
+              : 'Output the full updated content of each file you change, using the FILE markers.'),
+        },
+      ];
+    };
 
     let totalTokens = 0;
     let turns = 0;
     let gateRuns = 0;
     let error: string | null = null;
     const logParts: string[] = [];
-    const maxIters = useGate ? this.maxGateIters : 1;
+    // Lazy gets its bare attempt PLUS the gate budget; classic gets the budget.
+    const maxIters = useGate ? this.maxGateIters + (lazy ? 1 : 0) : 1;
+    let lastGateOut: string | null = null;
 
     for (let iter = 0; iter < maxIters; iter++) {
+      const bare = lazy && iter === 0;
+      const messages = buildMessages(bare, lastGateOut);
       const chat = await chatCompletion(
         this.endpoint,
         ctx.model,
@@ -565,14 +578,7 @@ export class RawCompletionAdapter implements AgentAdapter {
       gateRuns++;
       if (gate.status === 0) break;
       if (iter === maxIters - 1) break; // out of budget
-      const gateOut = `${gate.stdout ?? ''}\n${gate.stderr ?? ''}`.slice(-2000);
-      messages.push({ role: 'assistant', content: chat.content });
-      messages.push({
-        role: 'user',
-        content:
-          `The gate command \`${ctx.task.gateCmd}\` failed:\n${gateOut}\n\n` +
-          'Fix the code and re-output the full updated files using the FILE markers.',
-      });
+      lastGateOut = `${gate.stdout ?? ''}\n${gate.stderr ?? ''}`.slice(-2000);
     }
 
     return {
@@ -586,3 +592,54 @@ export class RawCompletionAdapter implements AgentAdapter {
     };
   }
 }
+
+/**
+ * Deliver adapter — runs the REAL `uap deliver` CLI per cell, so the treatment
+ * arm is the full convergence stack (gate loop + critic + acceptance + lazy
+ * attempt + escalation), not the raw gate loop. Baseline arm still gets a bare
+ * single completion via the raw adapter path semantics is NOT used here:
+ * baseline cells run deliver with UAP_DELIVER_AUTO=0 --no-until-delivered
+ * --max-turns 1 --no-lazy (one bare loop turn), so both arms share the same
+ * executor plumbing and only the UAP machinery toggles.
+ */
+export class DeliverCliAdapter implements AgentAdapter {
+  readonly id = 'deliver';
+  private readonly cliPath: string;
+  constructor(cliPath?: string) {
+    this.cliPath = cliPath ?? process.env.UAP_BENCH_DELIVER_CLI ?? 'dist/bin/cli.js';
+  }
+  async run(ctx: AgentRunContext): Promise<AgentRunResult> {
+    const { execFile } = await import('child_process');
+    const baseline = ctx.condition.components.size === 0;
+    const args = [this.cliPath, 'deliver', '--json', '--project-root', ctx.workdir];
+    if (baseline) {
+      args.push('--no-auto', '--no-until-delivered', '--max-turns', '1', '--no-lazy', '--no-decompose');
+    }
+    args.push('--', ctx.task.instruction);
+    const env: NodeJS.ProcessEnv = { ...process.env, UAP_DELIVER_MODEL: ctx.model };
+    if (ctx.condition.lazy) env.UAP_DELIVER_LAZY = '1';
+    const timeoutMs = ctx.task.agentTimeoutSec * 1000 * 3;
+    return new Promise((resolvePromise) => {
+      execFile(process.execPath, args, { cwd: ctx.workdir, env, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+        let turns = 1;
+        try {
+          const m = stdout.match(/\{[\s\S]*\}\s*$/);
+          if (m) {
+            const r = JSON.parse(m[0]) as { turns?: number };
+            if (typeof r.turns === 'number') turns = r.turns;
+          }
+        } catch { /* metrics best-effort */ }
+        resolvePromise({
+          tokens: null,
+          costUsd: null,
+          turns,
+          toolCalls: 0,
+          wellFormed: null,
+          error: err && (err as Error & { killed?: boolean }).killed ? 'timeout' : null,
+          rawLog: stdout.slice(-4000),
+        });
+      });
+    });
+  }
+}
+

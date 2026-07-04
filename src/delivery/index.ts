@@ -53,11 +53,20 @@ export {
 } from './auto-mine.js';
 
 export {
+  judgeScreenshots,
+  parseVisionVerdict,
+  visionSummary,
+  visionJudgeConfigured,
+  type VisionVerdict,
+} from './vision-judge.js';
+
+export {
   runVisualGate,
   discoverEntryPages,
   judgePage,
   motionBetween,
   visualRuntimeNote,
+  readVisualTargets,
   type VisualVerdict,
   type PageVisualReport,
   type VisualGateOptions,

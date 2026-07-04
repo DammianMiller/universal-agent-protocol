@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.98.0 (2026-07-04)
+
+- feat(deliver,bench,proxy,visual): measured-performance uplift — lazy-UAP, JSON-verdict grammar, thin-gate thickening, DAG phases, visual targets + vision judge, bounded bench prompts
+
+
 ## v1.97.0 (2026-07-03)
 
 - feat(verify,deliver): visual gate — verify the RENDERED artifact behaves and looks right, not just that it loads

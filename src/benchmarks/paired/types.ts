@@ -88,6 +88,8 @@ export interface Condition {
   label: string;
   /** Components enabled for this arm. */
   components: ReadonlySet<UapComponent>;
+  /** Bare first attempt; UAP surface only engages after a gate failure. */
+  lazy?: boolean;
 }
 
 export function makeBaselineCondition(): Condition {
@@ -96,6 +98,16 @@ export function makeBaselineCondition(): Condition {
 
 export function makeFullCondition(): Condition {
   return { label: 'uap-full', components: new Set(UAP_COMPONENTS) };
+}
+
+/**
+ * Lazy-UAP: attempt the task BARE first (no scaffold in the prompt); engage
+ * the UAP surface + gate iteration only if the bare attempt fails the gate.
+ * Measures whether "UAP on failure only" keeps the correctness win while
+ * eliminating scaffold-induced regressions and first-shot overhead.
+ */
+export function makeLazyCondition(): Condition {
+  return { label: 'uap-lazy', components: new Set(UAP_COMPONENTS), lazy: true };
 }
 
 /** True when this condition is the bare-agent baseline (no UAP at all). */

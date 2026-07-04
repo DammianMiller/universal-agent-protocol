@@ -50,3 +50,12 @@ describe('no-tool thinking floor', () => {
   });
 });
 
+describe('json-response grammar (evaluator verdicts)', () => {
+  it('grammar-constrains header-tagged no-tool requests so verdicts always parse', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    expect(contents).toContain('PROXY_JSON_RESPONSE_GRAMMAR');
+    expect(contents).toContain('x-uap-json-response');
+    expect(contents).toContain('_apply_json_response_grammar');
+  });
+});
+
