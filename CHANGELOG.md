@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.100.1 (2026-07-04)
+
+- fix(proxy): STUCK-BREAK guardrail — force a terminal turn when a small model loops self-awarely
+
+
 ## v1.100.0 (2026-07-04)
 
 - feat(deliver): complexity-tier model routing — pick the executor model by task complexity
