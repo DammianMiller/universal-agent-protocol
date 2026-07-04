@@ -39,6 +39,7 @@ const lazy = {
   ideate: () => import('../cli/ideate.js').then((m) => m.ideateCommand),
   deliver: () => import('../cli/deliver.js').then((m) => m.deliverCommand),
   verify: () => import('../cli/verify.js').then((m) => m.verifyCommand),
+  orchestratorToggle: () => import('../cli/orchestrator-toggle.js').then((m) => m.orchestratorToggleCommand),
   benchPaired: () => import('../cli/bench.js').then((m) => m.benchPairedCommand),
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
@@ -571,6 +572,7 @@ program
   .option('--decompose', 'Decompose the mission into sequential phases, each converged by its own loop (auto for long complex tasks)')
   .option('--no-decompose', 'Never decompose, even for epic-shaped instructions')
   .option('--orchestrate', 'Run decomposed tasks through the blackboard orchestrator with MINIMAL per-task context (each task sees only its goal + direct-dependency outputs) — for small-context models on large builds. Implies --decompose.')
+  .option('--no-orchestrate', 'Disable the blackboard orchestrator for this run (decomposed missions fall back to the sequential phase runner)')
   .option('--no-integration', 'Skip the integration tier (on by default when a test:integration/e2e suite or pytest integration marker is detected)')
   .option('--deploy-dev', 'Run a local dev deploy + smoke tier (bring up compose / start server, smoke-check, tear down) after the fast tier passes')
   .option('--no-deploy-dev', 'Disable the local dev deploy tier even when auto/optimize would enable it')
@@ -584,6 +586,14 @@ program
   .action(async (instructionParts: string[] | undefined, options) => {
     const cmd = await lazy.deliver();
     await cmd((instructionParts ?? []).join(' '), options);
+  });
+
+program
+  .command('orchestrator [state]')
+  .description('Toggle the long multi-turn deliver orchestrator: on | off | auto (default) | status. Persists to .uap.json (deliver.orchestrate).')
+  .action(async (state) => {
+    const cmd = await lazy.orchestratorToggle();
+    await cmd(state);
   });
 
 program

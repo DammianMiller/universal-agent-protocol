@@ -123,6 +123,7 @@ import { createAgenticExecutor, noopApplier, selectExecutorMode } from '../deliv
 import { loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
+import { loadUapConfigRaw } from '../utils/config-loader.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { extractContract } from '../delivery/contract-extractor.js';
 import type { OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
@@ -1270,6 +1271,18 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // A mission-scoped self-gate cannot judge individual phases, so
   // decomposition stands down there. Acceptance-primary is fine now: the
   // judge's spec is phase-scoped (acceptanceSpec follows the current phase).
+  // Orchestration enablement (the long multi-turn coordinator). AUTO-ON for
+  // any decomposed mission — minimal-context orchestration is strictly better
+  // than the full-mission phase prompt for small models — unless the operator
+  // disables it: --no-orchestrate (options.orchestrate === false),
+  // UAP_DELIVER_ORCHESTRATE=0, or `.uap.json` deliver.orchestrate === false /
+  // 'off'. `uap orchestrator on|off|auto` writes that key.
+  const cfgRaw = (() => { try { return loadUapConfigRaw(projectRoot) ?? {}; } catch { return {}; } })();
+  const cfgOrch = ((cfgRaw.deliver as Record<string, unknown> | undefined)?.orchestrate);
+  const orchestrateEnabled =
+    options.orchestrate !== false &&
+    process.env.UAP_DELIVER_ORCHESTRATE !== '0' &&
+    cfgOrch !== false && cfgOrch !== 'off';
   const decomposeWanted =
     !needsSelfGate &&
     (options.orchestrate === true ||
@@ -1568,7 +1581,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
     if (lazySolved) {
       result = result!;
-    } else if (phases && phases.length >= 2 && options.orchestrate) {
+    } else if (phases && phases.length >= 2 && orchestrateEnabled) {
       result = await runOrchestratedMission();
     } else if (phases && phases.length >= 2) {
       result = await runPhasedMission();
