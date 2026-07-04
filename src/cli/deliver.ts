@@ -24,6 +24,9 @@ import type { StrategySeed } from '../delivery/explorer.js';
 import { generateStrategySeeds, seedsFromIdeas } from '../delivery/ideation.js';
 import { DEFAULT_STRATEGY_SEEDS } from '../delivery/explorer.js';
 import { planAutoOptimization } from '../delivery/auto-optimizer.js';
+import { RoutingPresets, resolvePresetModel } from '../models/types.js';
+import type { TaskComplexity } from '../models/types.js';
+import { measureQueryComplexity } from '../utils/query-complexity.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
 import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
 import { runExecutionGate } from '../delivery/execution-gate.js';
@@ -154,6 +157,12 @@ import { detectExecutionProfile } from '../models/execution-profiles.js';
 export interface DeliverOptions {
   maxTurns?: string;
   model?: string;
+  /** `--routing <preset>`: complexity-tier routing. Classify the task and pick
+   * the executor model for its complexity from the named routing preset's tier
+   * map (trivial→cheapest/fastest, hard→escalate). Ignored when --model is set
+   * (explicit user choice wins) or the preset id is unknown. Env:
+   * UAP_DELIVER_ROUTING. */
+  routing?: string;
   projectRoot?: string;
   endpoint?: string;
   /** `--evaluator-model <preset>`: a DIFFERENT model to AUTHOR + JUDGE the
@@ -295,6 +304,35 @@ function fail(message: string): never {
 
 class ExitError extends Error {}
 
+/** Deliver's 3-level complexity (simple/moderate/complex) → the routing tier
+ * scale (low/medium/high/critical). Deliver's classifier never emits
+ * 'critical' — that tier is reserved for keyword-driven escalation. */
+const COMPLEXITY_TO_TIER: Record<string, TaskComplexity> = {
+  simple: 'low',
+  moderate: 'medium',
+  complex: 'high',
+};
+
+/**
+ * Complexity-tier routing (P: per-task model selection). Returns the model id
+ * to execute this task on, or null to leave the caller's default untouched.
+ * PURE — unit-tested. Precedence is enforced by the caller: an explicit
+ * --model always wins; this only fires when routing is requested and no model
+ * was pinned.
+ */
+export function resolveTierModel(
+  routingId: string | undefined,
+  instruction: string
+): { model: string; tier: TaskComplexity; preset: string } | null {
+  const id = routingId ?? process.env.UAP_DELIVER_ROUTING;
+  if (!id) return null;
+  const preset = RoutingPresets[id];
+  if (!preset) return null;
+  const complexity = measureQueryComplexity(instruction, { moderate: 1, complex: 2 });
+  const tier = COMPLEXITY_TO_TIER[complexity] ?? 'medium';
+  return { model: resolvePresetModel(preset, { complexity: tier, role: 'executor' }), tier, preset: id };
+}
+
 function resolveModel(presetId: string, endpointOverride?: string): ModelConfig {
   const preset = ModelPresets[presetId];
   if (!preset) {
@@ -434,8 +472,27 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     process.env.UAP_HALO_TRACE_PATH = join(projectRoot, '.uap', 'halo', 'traces.jsonl');
   }
 
+  // Complexity-tier routing: when --routing (or UAP_DELIVER_ROUTING) names a
+  // preset and the user did NOT pin --model, execute on the model the preset
+  // assigns to this task's complexity tier. Explicit --model and a resumed
+  // run's preset always win (user intent / mid-flight consistency).
+  const tierRoute =
+    options.model === undefined && resumeState === null
+      ? resolveTierModel(options.routing, instruction)
+      : null;
   const presetId =
-    options.model ?? resumeState?.presetId ?? process.env.UAP_DELIVER_MODEL ?? 'qwen35-a3b';
+    options.model ??
+    resumeState?.presetId ??
+    tierRoute?.model ??
+    process.env.UAP_DELIVER_MODEL ??
+    'qwen35-a3b';
+  if (tierRoute && !options.dryRun) {
+    console.log(
+      chalk.cyan(
+        `\u26a1 tier routing: '${tierRoute.preset}' \u2192 ${tierRoute.tier} complexity \u2192 ${tierRoute.model}`
+      )
+    );
+  }
 
   let maxTurns: number | undefined;
   if (options.maxTurns !== undefined) {
@@ -628,6 +685,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       escalate: Boolean(options.escalate),
       escalateModel: options.escalate ? (options.escalateModel ?? process.env.UAP_ESCALATE_MODEL ?? null) : null,
       auto: autoPlan ? autoPlan.summary : null,
+      tierRouting: tierRoute ? `${tierRoute.preset} \u2192 ${tierRoute.tier} \u2192 ${tierRoute.model}` : null,
       ideate: Boolean(options.ideate || options.ideateProject),
       ideateProject: options.ideateProject ?? null,
       halo: Boolean(options.halo) || isHaloTracingEnabled(),
