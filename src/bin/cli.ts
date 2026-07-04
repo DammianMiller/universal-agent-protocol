@@ -570,6 +570,7 @@ program
   .option('--no-lazy', 'Skip the lazy bare first attempt (by default one bare turn runs before the convergence aids engage)')
   .option('--decompose', 'Decompose the mission into sequential phases, each converged by its own loop (auto for long complex tasks)')
   .option('--no-decompose', 'Never decompose, even for epic-shaped instructions')
+  .option('--orchestrate', 'Run decomposed tasks through the blackboard orchestrator with MINIMAL per-task context (each task sees only its goal + direct-dependency outputs) — for small-context models on large builds. Implies --decompose.')
   .option('--no-integration', 'Skip the integration tier (on by default when a test:integration/e2e suite or pytest integration marker is detected)')
   .option('--deploy-dev', 'Run a local dev deploy + smoke tier (bring up compose / start server, smoke-check, tear down) after the fast tier passes')
   .option('--no-deploy-dev', 'Disable the local dev deploy tier even when auto/optimize would enable it')

@@ -123,6 +123,9 @@ import { createAgenticExecutor, noopApplier, selectExecutorMode } from '../deliv
 import { loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
+import { orchestrate } from '../delivery/task-orchestrator.js';
+import { extractContract } from '../delivery/contract-extractor.js';
+import type { OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
 import type { LifecycleHintProvider } from '../delivery/decompose.js';
 import type { DeliveryPhase } from '../delivery/decompose.js';
 import { completeDeliveryTask, openDeliveryTask, recordDeliveryOutcome, reopenDeliveryTask } from '../delivery/task-sync.js';
@@ -241,6 +244,11 @@ export interface DeliverOptions {
   /** Decompose an epic mission into sequential phases (auto for long complex
    * tasks; commander sets false on --no-decompose). */
   decompose?: boolean;
+  /** `--orchestrate`: run decomposed tasks through the blackboard orchestrator
+   * with MINIMAL per-task context (each task sees only its goal + its direct
+   * dependencies' outputs), so small-context models can multi-step through
+   * large builds. Implies --decompose. */
+  orchestrate?: boolean;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -1264,7 +1272,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // judge's spec is phase-scoped (acceptanceSpec follows the current phase).
   const decomposeWanted =
     !needsSelfGate &&
-    (options.decompose === true ||
+    (options.orchestrate === true ||
+      options.decompose === true ||
       (options.decompose === undefined &&
         process.env.UAP_DELIVER_DECOMPOSE !== '0' &&
         shouldDecompose(instruction, autoPlan?.complexity)));
@@ -1349,6 +1358,91 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
    * against the same gates; later phases see one-line summaries of what the
    * earlier phases already built. Baseline checks are off — a green tree
    * means the PREVIOUS phase is done, not the next one. */
+  /**
+   * P1+P2 — orchestrated delivery: decomposed tasks execute on a blackboard,
+   * each in a FRESH MINIMAL context (its goal + direct-dependency outputs only)
+   * instead of the full-mission phase prompt. Reuses the convergence loop as
+   * the per-task executor; a completed task publishes a compact summary its
+   * dependents read instead of source.
+   */
+  const runOrchestratedMission = async (): Promise<DeliveryResult> => {
+    const all: DeliveryResult = {
+      success: true, alreadyDelivered: false, turns: 0, bestScore: 0, bestTurn: 0,
+      history: [], finalFeedback: '', finalOutput: '', totalDurationMs: 0,
+    };
+    const tasks: OrchestratorTask[] = phases!.map((ph) => ({
+      id: ph.id, title: ph.title, goal: ph.goal, ...(ph.deps ? { deps: ph.deps } : {}),
+    }));
+    const orchResult = await orchestrate({
+      mission: instruction,
+      tasks,
+      contextBudgetChars: Number(process.env.UAP_DELIVER_CONTEXT_BUDGET ?? 6000),
+      runTask: async (ctx, task): Promise<TaskOutcome> => {
+        console.log(
+          chalk.bold(`\u25b6 task ${task.id}: ${task.title}`) +
+            chalk.dim(` (ctx ${ctx.prompt.length} chars, deps: ${ctx.includedDeps.join(',') || 'none'})`)
+        );
+        const taskRecord = await openDeliveryTask(
+          `${task.title} — ${task.goal.slice(0, 120)}`,
+          projectRoot,
+          missionTask?.id
+        );
+        acceptanceSpec = ctx.prompt;
+        const loop = new ConvergenceLoop(
+          { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onIteration: makeIterationHook() },
+          executor,
+          seams
+        );
+        const r = await loop.deliver(ctx.prompt);
+        all.turns += r.turns;
+        all.history.push(...r.history);
+        all.totalDurationMs += r.totalDurationMs;
+        if (r.bestScore > all.bestScore) {
+          all.bestScore = r.bestScore;
+          all.bestTurn = r.bestTurn;
+        }
+        all.finalFeedback = r.finalFeedback;
+        all.finalOutput = r.finalOutput;
+        completeDeliveryTask(taskRecord, r);
+        const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
+        // P4 — extract the VERIFIED public contract of what this task built so
+        // dependents load the interface (a few hundred chars), not the source.
+        let contract: string | undefined;
+        if (r.success && files.length > 0) {
+          try {
+            const { readFileSync } = await import('fs');
+            const { join } = await import('path');
+            const srcs = files
+              .filter((f) => /\.(js|mjs|cjs|ts|tsx|jsx|py)$/.test(f))
+              .map((f) => {
+                try {
+                  return { path: f, content: readFileSync(join(projectRoot, f), 'utf-8') };
+                } catch {
+                  return null;
+                }
+              })
+              .filter((x): x is { path: string; content: string } => x !== null);
+            contract = extractContract(srcs).contract || undefined;
+          } catch {
+            contract = undefined;
+          }
+        }
+        return {
+          taskId: task.id,
+          success: r.success,
+          turns: r.turns,
+          summary: `${task.goal.slice(0, 160)}${files.length ? ` [files: ${files.join(', ')}]` : ''}`,
+          ...(contract ? { contract } : {}),
+        };
+      },
+    });
+    all.success = orchResult.success;
+    if (!orchResult.success) {
+      all.finalFeedback = `orchestration incomplete — failed tasks: ${orchResult.failed.join(', ')}\n${all.finalFeedback}`;
+    }
+    return all;
+  };
+
   const runPhasedMission = async (): Promise<DeliveryResult> => {
     const all: DeliveryResult = {
       success: true,
@@ -1474,6 +1568,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
     if (lazySolved) {
       result = result!;
+    } else if (phases && phases.length >= 2 && options.orchestrate) {
+      result = await runOrchestratedMission();
     } else if (phases && phases.length >= 2) {
       result = await runPhasedMission();
     } else {
