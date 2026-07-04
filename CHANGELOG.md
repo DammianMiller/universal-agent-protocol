@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.104.0 (2026-07-04)
+
+- feat(deliver): epic controller — loop massive missions as fresh-session epics
+
+
 ## v1.103.0 (2026-07-04)
 
 - test: raise timeout on heavy barrel-import tests to fix load flake
