@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.99.0 (2026-07-04)
+
+- feat(models): per-complexity model routing tiers — granular cost/speed control, coherent with lifecycle roles
+
+
 ## v1.98.1 (2026-07-04)
 
 - fix(bench): lazy budget parity + track the real-gate-brutal suite in git
