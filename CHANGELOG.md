@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.103.0 (2026-07-04)
+
+- test: raise timeout on heavy barrel-import tests to fix load flake
+- feat(deliver): wire orchestrator memory in/out, re-planning feed, tunable phase cap
+- chore: bump version to 1.102.0
+- feat(cli): auto-on deliver orchestrator + on/off toggle commands
+
+
 ## v1.102.0 (2026-07-04)
 
 - feat(cli): auto-on deliver orchestrator + on/off toggle commands
