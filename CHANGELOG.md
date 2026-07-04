@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.104.1 (2026-07-04)
+
+- fix(dashboard): ship web/ + vendor uPlot locally so dash serve is fully wired
+
+
 ## v1.104.0 (2026-07-04)
 
 - feat(deliver): epic controller — loop massive missions as fresh-session epics
