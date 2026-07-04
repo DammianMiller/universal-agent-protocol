@@ -29,7 +29,7 @@
     "install:web": "bash scripts/setup/install-web.sh",
     "install:desktop": "bash scripts/setup/install-desktop.sh",
     "install:cloakbrowser": "tsx scripts/setup/install-cloakbrowser.ts",
-    "postinstall": "echo '\n✨ Run: npx @miller-tech/uap init --interactive'",
+    "postinstall": "echo '\n\u2728 Run: npx @miller-tech/uap init --interactive'",
     "version:patch": "bash scripts/version-bump.sh patch",
     "version:minor": "bash scripts/version-bump.sh minor",
     "version:major": "bash scripts/version-bump.sh major",
@@ -102,10 +102,12 @@
     "prettier": "^3.2.4",
     "tsx": "^4.21.0",
     "typescript": "^5.3.3",
+    "uplot": "1.6.31",
     "vitest": "^1.2.0"
   },
   "files": [
     "dist",
+    "web",
     "docs",
     "config",
     "templates",
