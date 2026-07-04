@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.101.1 (2026-07-04)
+
+- chore: bump version to 1.101.0
+- feat(delivery): P3 design store + P4 verified interface registry + P5 re-planning + P6 context governor
+
+
 ## v1.101.0 (2026-07-04)
 
 - feat(delivery): P3 design store + P4 verified interface registry + P5 re-planning + P6 context governor
