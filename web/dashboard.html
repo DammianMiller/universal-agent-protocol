@@ -8,8 +8,8 @@
       rel="icon"
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x26A1;</text></svg>"
     />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
+    <link rel="stylesheet" href="/vendor/uPlot.min.css">
+    <script src="/vendor/uPlot.iife.min.js"></script>
     <style>
       :root {
         --bg: #0d1117;
@@ -819,6 +819,13 @@
       }
 
       let chartsInit = false;
+      // Seed each uPlot legend to the LATEST data point so the values read as
+      // live numbers instead of '--' until the user hovers. Fail-safe per chart.
+      function seedLegends() {
+        [chartTasks, chartCompression, chartDeploy, chartHitrate, chartCompliance].forEach(u => {
+          try { if (u && u.data && u.data[0] && u.data[0].length) u.setLegend({ idx: u.data[0].length - 1 }); } catch (e) { /* legend seed best-effort */ }
+        });
+      }
       function updateAllCharts(ts) {
         if (!uplotReady || !ts || ts.length < 2) return;
         const parseHR = p => { const h=p.memoryHitsMisses?.hitRate; return typeof h==='string'?parseFloat(h)||0:h||0; };
@@ -830,6 +837,7 @@
           chartHitrate = initSparkline('chart-hitrate', ts, parseHR, CC.hitRate, 'Hit Rate %');
           chartCompliance = initSparkline('chart-compliance', ts, parseBR, CC.blockRate, 'Block Rate %');
           chartsInit = true;
+          seedLegends();
           return;
         }
         // Update data
@@ -839,6 +847,7 @@
         if (chartDeploy) chartDeploy.setData([timestamps, ts.map(p=>(p.deployBuckets?.queued||0)+(p.deployBuckets?.executing||0)+(p.deployBuckets?.batched||0))]);
         if (chartHitrate) chartHitrate.setData([timestamps, ts.map(parseHR)]);
         if (chartCompliance) chartCompliance.setData([timestamps, ts.map(parseBR)]);
+        seedLegends();
       }
 
       // ══════════════════════════════

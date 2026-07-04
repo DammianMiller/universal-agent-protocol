@@ -66,6 +66,16 @@ function resolveDashboardHtml(): string | null {
 
 const DASHBOARD_HTML_PATH = resolveDashboardHtml();
 
+/** Directory of static dashboard assets (vendored libs, e.g. uPlot), resolved
+ * next to the dashboard HTML so it works in-place and in a global install. */
+const WEB_DIR = DASHBOARD_HTML_PATH ? dirname(DASHBOARD_HTML_PATH) : null;
+
+const STATIC_CONTENT_TYPES: Record<string, string> = {
+  '.js': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+};
+
 export interface DashboardServerOptions {
   port?: number;
   host?: string;
@@ -218,6 +228,27 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
         await memory.setLevel(id, level as 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id, level }));
+        return;
+      }
+
+      // Static vendored assets (e.g. /vendor/uPlot.iife.min.js). Served from the
+      // web dir so the dashboard has ZERO external/CDN dependencies and its
+      // charts work fully offline. Path-traversal guarded to the vendor dir.
+      if (url.startsWith('/vendor/') && WEB_DIR) {
+        const rel = decodeURIComponent(url.split('?')[0].replace(/^\/+/, ''));
+        const abs = join(WEB_DIR, rel);
+        const vendorRoot = join(WEB_DIR, 'vendor');
+        if (!abs.startsWith(vendorRoot) || !existsSync(abs)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'asset not found' }));
+          return;
+        }
+        const ext = abs.slice(abs.lastIndexOf('.'));
+        res.writeHead(200, {
+          'Content-Type': STATIC_CONTENT_TYPES[ext] || 'application/octet-stream',
+          'Cache-Control': 'public, max-age=86400',
+        });
+        res.end(readFileSync(abs));
         return;
       }
 
