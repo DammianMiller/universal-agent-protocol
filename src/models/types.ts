@@ -196,6 +196,16 @@ export interface RoutingPreset {
   name: string;
   description: string;
   roles: { planner: string; executor: string; reviewer: string; fallback: string };
+  /**
+   * Per-task-complexity model routing (cost/speed control, orthogonal to the
+   * lifecycle roles above). When present, a task's classified complexity picks
+   * the EXECUTION model directly — trivial work runs on the cheapest/fastest
+   * model, hard work escalates — instead of collapsing onto the executor role.
+   * Any tier left unset falls back to the executor role model, so a partial
+   * map stays coherent. Consumed by `uap model routing use`, which materializes
+   * it into the router's routingMatrix.
+   */
+  tiers?: Partial<Record<TaskComplexity, string>>;
   models: string[];
   routingStrategy?: string;
 }
@@ -233,7 +243,82 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
     models: ['fable-5', 'haiku-4.5', 'opus-4.8', 'qwen36-a3b'],
     routingStrategy: 'performance-first',
   },
+  'cost-tiered': {
+    id: 'cost-tiered',
+    name: 'Cost-tiered (local-first, escalate by complexity)',
+    description:
+      'Minimize cost: trivial/low tasks run FREE on local Qwen 3.6; medium adds a fast ' +
+      'cloud model (Haiku) only when needed; high/critical escalate to Opus 4.8. Plan on ' +
+      'Fable, review on Opus. Cheapest capable model per complexity.',
+    roles: {
+      planner: 'fable-5',
+      executor: 'qwen36-a3b',
+      reviewer: 'opus-4.8',
+      fallback: 'qwen36-a3b',
+    },
+    tiers: {
+      low: 'qwen36-a3b',
+      medium: 'qwen36-a3b',
+      high: 'opus-4.8',
+      critical: 'opus-4.8',
+    },
+    models: ['fable-5', 'qwen36-a3b', 'haiku-4.5', 'opus-4.8'],
+    routingStrategy: 'cost-optimized',
+  },
+  'speed-tiered': {
+    id: 'speed-tiered',
+    name: 'Speed-tiered (fast cloud, escalate quality by complexity)',
+    description:
+      'Maximize speed: low/medium tasks run on Haiku 4.5 (fast cloud); high on Fable 5; ' +
+      'critical on Opus 4.8. Plan on Fable, review on Opus, free local fallback. Fastest ' +
+      'model that still clears the complexity bar.',
+    roles: {
+      planner: 'fable-5',
+      executor: 'haiku-4.5',
+      reviewer: 'opus-4.8',
+      fallback: 'qwen36-a3b',
+    },
+    tiers: {
+      low: 'haiku-4.5',
+      medium: 'haiku-4.5',
+      high: 'fable-5',
+      critical: 'opus-4.8',
+    },
+    models: ['fable-5', 'haiku-4.5', 'opus-4.8', 'qwen36-a3b'],
+    routingStrategy: 'performance-first',
+  },
 };
+
+/**
+ * Materialize a preset's complexity tiers into the router's routingMatrix
+ * (single-model-per-tier form). Tiers absent from the preset are omitted, so
+ * the router falls back to the executor role for them — coherent by default.
+ * Exported + pure for testing and for `uap model routing use`.
+ */
+export function tiersToRoutingMatrix(
+  preset: RoutingPreset
+): Record<string, string> | undefined {
+  if (!preset.tiers) return undefined;
+  const matrix: Record<string, string> = {};
+  for (const [complexity, modelId] of Object.entries(preset.tiers)) {
+    if (modelId) matrix[complexity] = modelId;
+  }
+  return Object.keys(matrix).length > 0 ? matrix : undefined;
+}
+
+/**
+ * Resolve the model for a (complexity, role) pair against a preset: the
+ * complexity tier wins for the execution path; otherwise the role model.
+ * Pure — the single source of truth for "which model does this task get".
+ */
+export function resolvePresetModel(
+  preset: RoutingPreset,
+  opts: { complexity?: TaskComplexity; role?: keyof RoutingPreset['roles'] }
+): string {
+  const { complexity, role = 'executor' } = opts;
+  if (complexity && preset.tiers?.[complexity]) return preset.tiers[complexity] as string;
+  return preset.roles[role];
+}
 
 export type RoutingPresetId = keyof typeof RoutingPresets;
 
@@ -314,10 +399,10 @@ export const MultiModelConfigSchema = z.object({
   routingMatrix: z
     .record(
       z.enum(['low', 'medium', 'high', 'critical']),
-      z.object({
-        planner: z.string(),
-        executor: z.string(),
-      })
+      z.union([
+        z.string(), // new: one model id for this complexity tier
+        z.object({ planner: z.string(), executor: z.string() }), // legacy form
+      ])
     )
     .optional(),
 

@@ -280,20 +280,25 @@ export class ModelRouter {
   selectModel(complexity: TaskComplexity, taskType: string, keywords: string[]): ModelSelection {
     const strategy = this.config.routingStrategy || 'balanced';
 
-    // Check routingMatrix override first - user-specified per-complexity model assignments
+    // Check routingMatrix override first - user-specified per-complexity model
+    // assignments. Two accepted forms: a single model id string (new, tier
+    // routing) or the legacy { planner, executor } pair.
     if (this.config.routingMatrix?.[complexity]) {
       const matrixEntry = this.config.routingMatrix[complexity];
+      const isHigh = complexity === 'critical' || complexity === 'high';
       const modelId =
-        complexity === 'critical' || complexity === 'high'
-          ? matrixEntry.planner
-          : matrixEntry.executor;
+        typeof matrixEntry === 'string'
+          ? matrixEntry
+          : isHigh
+            ? matrixEntry.planner
+            : matrixEntry.executor;
       const model = this.models.get(modelId) || ModelPresets[modelId as keyof typeof ModelPresets];
       if (model) {
         return {
           model,
           fallback: undefined,
-          role: complexity === 'critical' || complexity === 'high' ? 'planner' : 'executor',
-          reasoning: `routingMatrix override for ${complexity} complexity: using ${model.name}`,
+          role: isHigh ? 'planner' : 'executor',
+          reasoning: `routingMatrix (complexity tier '${complexity}'): using ${model.name}`,
           estimatedCost: this.estimateCost(model, 10000, 5000),
         };
       }

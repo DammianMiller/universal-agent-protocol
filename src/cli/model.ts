@@ -18,6 +18,7 @@ import {
   ModelPresets,
   RoutingPresets,
   type MultiModelConfig,
+  tiersToRoutingMatrix,
 } from '../models/index.js';
 import { AgentContextConfig, MultiModelSchema } from '../types/config.js';
 
@@ -560,8 +561,15 @@ function routingListCommand(): void {
     console.log(`     ${chalk.dim(p.description)}`);
     console.log(
       `     plan=${chalk.green(p.roles.planner)} exec=${chalk.blue(p.roles.executor)} ` +
-        `review=${chalk.yellow(p.roles.reviewer)} fallback=${chalk.red(p.roles.fallback)}\n`
+        `review=${chalk.yellow(p.roles.reviewer)} fallback=${chalk.red(p.roles.fallback)}`
     );
+    if (p.tiers) {
+      const tierStr = (['low', 'medium', 'high', 'critical'] as const)
+        .map((t) => `${t}=${p.tiers?.[t] ?? '\u00b7'}`)
+        .join(' ');
+      console.log(`     ${chalk.dim('tiers:')} ${chalk.cyan(tierStr)}`);
+    }
+    console.log('');
   }
   console.log(chalk.dim('Apply one with: uap model routing use <id> --save'));
 }
@@ -580,18 +588,29 @@ async function routingUseCommand(id: string, options: { save?: boolean }): Promi
     process.exitCode = 1;
     return;
   }
+  const routingMatrix = tiersToRoutingMatrix(preset);
   const mmConfig: MultiModelConfig = {
     enabled: true,
     models: preset.models,
     roles: { ...preset.roles },
     routingStrategy:
       (preset.routingStrategy as MultiModelConfig['routingStrategy']) || 'balanced',
+    ...(routingMatrix ? { routingMatrix: routingMatrix as MultiModelConfig['routingMatrix'] } : {}),
   };
   console.log(chalk.bold(`\nRouting option: ${preset.name}`));
   console.log(`  Planner:  ${chalk.green(preset.roles.planner)}`);
   console.log(`  Executor: ${chalk.blue(preset.roles.executor)}`);
   console.log(`  Reviewer: ${chalk.yellow(preset.roles.reviewer)}`);
   console.log(`  Fallback: ${chalk.red(preset.roles.fallback)}`);
+  if (routingMatrix) {
+    console.log(chalk.bold('  Complexity tiers (per-task routing):'));
+    for (const tier of ['low', 'medium', 'high', 'critical'] as const) {
+      const modelId = routingMatrix[tier] ?? preset.roles.executor + chalk.dim(' (executor default)');
+      console.log(`    ${tier.padEnd(9)} → ${chalk.cyan(modelId)}`);
+    }
+  } else {
+    console.log(chalk.dim('  No complexity tiers — execution uses the executor role for all tasks.'));
+  }
   if (options.save) {
     if (findUapConfigPath()) {
       modifyUapConfig(process.cwd(), (cfg) => ({ ...cfg, multiModel: mmConfig }));
