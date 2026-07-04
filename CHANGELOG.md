@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.98.1 (2026-07-04)
+
+- fix(bench): lazy budget parity + track the real-gate-brutal suite in git
+
+
 ## v1.98.0 (2026-07-04)
 
 - feat(deliver,bench,proxy,visual): measured-performance uplift — lazy-UAP, JSON-verdict grammar, thin-gate thickening, DAG phases, visual targets + vision judge, bounded bench prompts
