@@ -6,6 +6,17 @@
 # Enforces: completion-gate, mandatory-testing-deployment policies.
 set -euo pipefail
 
+# --- stop_hook_active guard (Claude Code) ---
+# When we are ALREADY inside a Stop-hook continuation loop, Claude Code sets
+# stop_hook_active=true in the hook JSON. Never block again in that case —
+# blocking here on every retry is what makes the client force-override after
+# ~9 consecutive blocks. Read the hook JSON from stdin once, bounded so a
+# missing/empty stdin can never hang the hook.
+STOP_HOOK_INPUT="$(timeout 2 cat 2>/dev/null || true)"
+if printf '%s' "$STOP_HOOK_INPUT" | grep -qE '"stop_hook_active"[[:space:]]*:[[:space:]]*true'; then
+  exit 0
+fi
+
 # --- Loop Protection ---
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "${HOOK_DIR}/loop-protection.sh" ]; then
