@@ -829,6 +829,55 @@ def _load_thinking_grammar(path: str) -> str:
 
 THINKING_GBNF = _load_thinking_grammar(PROXY_THINKING_GRAMMAR_PATH)
 
+# JSON-response grammar (evaluator verdicts): when a client marks a no-tool
+# request with the x-uap-json-response header, constrain sampling to a bare
+# JSON value. Kills the "<think> ate the verdict / unparseable judgment"
+# failure class at the decoder. Default on; PROXY_JSON_RESPONSE_GRAMMAR=off.
+PROXY_JSON_RESPONSE_GRAMMAR = os.environ.get(
+    "PROXY_JSON_RESPONSE_GRAMMAR", "on"
+).lower() not in {"0", "false", "off", "no"}
+PROXY_JSON_RESPONSE_GRAMMAR_PATH = os.path.abspath(
+    os.environ.get(
+        "PROXY_JSON_RESPONSE_GRAMMAR_PATH",
+        os.path.join(os.path.dirname(__file__), "..", "config", "json-response.gbnf"),
+    )
+)
+
+
+def _load_json_response_grammar(path: str) -> str:
+    if not PROXY_JSON_RESPONSE_GRAMMAR:
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError as exc:
+        logger.warning("JSON-response grammar disabled: failed to read %s (%s)", path, exc)
+        return ""
+
+
+JSON_RESPONSE_GBNF = _load_json_response_grammar(PROXY_JSON_RESPONSE_GRAMMAR_PATH)
+
+
+def _apply_json_response_grammar(openai_body: dict, anthropic_body: dict) -> None:
+    """Constrain a marked no-tool request to emit a bare JSON value.
+
+    Fires only when the client tagged the request (x-uap-json-response, staged
+    into the body as _uap_json_response), there are no tools, the grammar
+    loaded, and nothing upstream set a grammar already. Thinking is forced off
+    — the grammar forbids a <think> preamble by construction.
+    """
+    if not anthropic_body.get("_uap_json_response"):
+        return
+    if not JSON_RESPONSE_GBNF:
+        return
+    if openai_body.get("tools") or openai_body.get("grammar"):
+        return
+    openai_body["grammar"] = JSON_RESPONSE_GBNF
+    openai_body["enable_thinking"] = False
+    ctk = openai_body.setdefault("chat_template_kwargs", {})
+    ctk["enable_thinking"] = False
+    logger.info("JSON-RESPONSE grammar applied (evaluator verdict turn)")
+
 
 def _apply_thinking_grammar(request_body: dict) -> None:
     """Apply the structured-thinking GBNF grammar to non-tool turns.
@@ -4798,6 +4847,8 @@ def build_openai_request(
     _maybe_inject_recon_convergence(openai_body, monitor, full_openai_tools)
 
     _apply_thinking_grammar(openai_body)
+
+    _apply_json_response_grammar(openai_body, anthropic_body)
 
     # qwen3.5-enhanced.jinja (the MTP/130 config template) rejects an assistant
     # PREFILL (trailing assistant message) unless thinking is disabled VIA
@@ -8802,6 +8853,11 @@ async def messages(request: Request):
     is_stream = body.get("stream", False)
     model = body.get("model", "default")
     client_id = resolve_client_id(request)
+
+    # Evaluator-verdict marker: clients tag JSON-only completions via header;
+    # stage it into the body so build_openai_request can grammar-constrain it.
+    if request.headers.get("x-uap-json-response"):
+        body["_uap_json_response"] = True
 
     # Periodically re-detect context window from upstream (handles server restarts)
     await _maybe_recheck_context_window()

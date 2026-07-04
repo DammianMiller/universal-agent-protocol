@@ -1,0 +1,15 @@
+{
+  "name": "Dependency-graph task scheduler with priorities and cancellation",
+  "instruction": "Implement Scheduler in scheduler.py (stdlib only). API: add(name, deps=None, priority=0) registers a task with a list of dependency names (deps may reference tasks added later; resolve at run() time; unknown deps at run() raise KeyError). cancel(name) removes the task AND, transitively, every task that depends on it (directly or through any chain); cancelling an unknown name is a no-op. run() returns the execution order as a list of names: a task runs only after ALL its deps have run; among tasks whose deps are satisfied ('ready'), the HIGHEST priority runs first; ties break by insertion order (earliest added first). If the remaining graph contains a cycle, run() raises CycleError (define it in scheduler.py, subclass of Exception) whose message contains the names of the cycle members in some order. run() must be repeatable (calling it twice returns the same list) and must not mutate registration state.",
+  "difficulty": "hard",
+  "tags": [
+    "feature",
+    "python",
+    "graphs",
+    "multi-constraint"
+  ],
+  "gateCmd": "python3 -c \"from scheduler import Scheduler;s=Scheduler();s.add('a');s.add('b',deps=['a']);o=s.run();assert o==['a','b'],o;print('gate ok')\"",
+  "verifyCmd": "python3 -c \"\nfrom scheduler import Scheduler, CycleError\ns=Scheduler()\ns.add('c',deps=['a','b'],priority=5)\ns.add('a',priority=1)\ns.add('b',priority=9)\no=s.run()\nassert o==['b','a','c'],('priority order',o)\nassert s.run()==o,'repeatable'\ns=Scheduler()\ns.add('x');s.add('y');s.add('z')\nassert s.run()==['x','y','z'],'insertion tie-break'\ns=Scheduler()\ns.add('a',deps=['b']);s.add('b',deps=['a']);s.add('free')\ntry:\n    s.run();assert False,'cycle not raised'\nexcept CycleError as e:\n    m=str(e);assert 'a' in m and 'b' in m,('cycle members',m)\ns=Scheduler()\ns.add('root');s.add('mid',deps=['root']);s.add('leaf',deps=['mid']);s.add('side',deps=['root'])\ns.cancel('mid')\no=s.run()\nassert o==['root','side'],('transitive cancel',o)\ns.cancel('ghost')\nassert s.run()==['root','side'],'cancel unknown noop'\ns=Scheduler()\ns.add('n',deps=['missing'])\ntry:\n    s.run();assert False,'KeyError expected'\nexcept KeyError:\n    pass\ns=Scheduler()\ns.add('late_dep_user',deps=['later'],priority=0)\ns.add('later',priority=0)\nassert s.run()==['later','late_dep_user'],'forward deps resolve at run'\nprint('ok')\n\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 420
+}

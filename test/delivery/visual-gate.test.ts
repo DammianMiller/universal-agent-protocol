@@ -61,12 +61,12 @@ describe('judgePage (pure verdict)', () => {
 
   it('fails a blank canvas', () => {
     const problems = judgePage({ ...base, distinctColors: 1, dominantRatio: 1 });
-    expect(problems.join(' ')).toContain('blank');
+    expect(problems.join(' ')).toContain('below the visual floor');
   });
 
   it('fails a STATIC scene that promises animation', () => {
     const problems = judgePage({ ...base, motionRatio: 0 });
-    expect(problems.join(' ')).toContain('STATIC');
+    expect(problems.join(' ')).toContain('not animating enough');
   });
 
   it('allows a static page that never promised animation', () => {
@@ -122,7 +122,7 @@ describe('runVisualGate (integration with fake browser)', () => {
       intervalMs: 1,
     });
     expect(verdict.passed).toBe(false);
-    expect(verdict.feedback).toContain('STATIC');
+    expect(verdict.feedback).toContain('not animating enough');
   });
 
   it('fails open (skipped) when no browser can launch', async () => {

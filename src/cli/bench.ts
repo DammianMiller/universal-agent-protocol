@@ -28,9 +28,13 @@ import {
   type AgentAdapter,
   type Condition,
   type RunnerConfig,
+  makeLazyCondition,
+  DeliverCliAdapter,
 } from '../benchmarks/paired/index.js';
 
 export interface BenchPairedOptions {
+  /** Add the uap-lazy condition (bare first attempt, UAP on gate failure). */
+  lazy?: boolean;
   suite?: string;
   adapter?: string;
   model?: string;
@@ -58,8 +62,12 @@ function pickAdapter(name: string, model: string): AgentAdapter {
       // Non-agentic single-shot completion; gate loop when the 'gates' component
       // is active. Isolates UAP gate value vs a baseline that cannot self-verify.
       return new RawCompletionAdapter();
+    case 'deliver':
+      // The REAL convergence stack: cells run `uap deliver` itself, so the
+      // treatment is the full machine (lazy attempt, critic, acceptance, ...).
+      return new DeliverCliAdapter();
     default:
-      throw new Error(`Unknown adapter '${name}' (expected: mock | opencode | claude | raw)`);
+      throw new Error(`Unknown adapter '${name}' (expected: mock | opencode | claude | raw | deliver)`);
   }
 }
 
@@ -84,6 +92,7 @@ export async function benchPairedCommand(options: BenchPairedOptions = {}): Prom
   const conditions: Condition[] = options.ablation
     ? buildAblationConditions()
     : [makeBaselineCondition(), makeFullCondition()];
+  if (options.lazy && !options.ablation) conditions.push(makeLazyCondition());
 
   const adapter = pickAdapter(adapterName, model);
   const workRoot = tmpWorkRoot();

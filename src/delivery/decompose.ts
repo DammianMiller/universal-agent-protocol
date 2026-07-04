@@ -23,6 +23,9 @@ export interface DeliveryPhase {
   title: string;
   /** What this phase must accomplish (imperative, gate-verifiable). */
   goal: string;
+  /** Phase ids this phase depends on (DAG). Execution is topologically
+   * ordered; independent phases are candidates for future parallel dispatch. */
+  deps?: string[];
 }
 
 const MIN_PHASES = 2;
@@ -65,10 +68,43 @@ export function parsePhaseArray(text: string): DeliveryPhase[] {
     const slug = rawId.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
     if (!slug || seen.has(slug)) continue;
     seen.add(slug);
-    phases.push({ id: slug, title: title.trim().slice(0, 120), goal: goal.trim().slice(0, 600) });
+    const rawDeps = (entry as { deps?: unknown }).deps;
+    const deps = Array.isArray(rawDeps)
+      ? rawDeps.filter((d): d is string => typeof d === 'string').map((d) => d.trim().toLowerCase()).slice(0, MAX_PHASES)
+      : undefined;
+    phases.push({
+      id: slug,
+      title: title.trim().slice(0, 120),
+      goal: goal.trim().slice(0, 600),
+      ...(deps && deps.length > 0 ? { deps } : {}),
+    });
     if (phases.length >= MAX_PHASES) break;
   }
-  return phases;
+  return topoOrder(phases);
+}
+
+/**
+ * Topologically order phases by their declared deps (unknown deps dropped;
+ * a cycle degrades to the original order — decomposition must never wedge).
+ * Insertion order is the tie-break, preserving the planner's intent.
+ */
+export function topoOrder(phases: DeliveryPhase[]): DeliveryPhase[] {
+  const ids = new Set(phases.map((p) => p.id));
+  const cleaned = phases.map((p) => ({
+    ...p,
+    ...(p.deps ? { deps: p.deps.filter((d) => ids.has(d) && d !== p.id) } : {}),
+  }));
+  const done = new Set<string>();
+  const out: DeliveryPhase[] = [];
+  const remaining = [...cleaned];
+  while (remaining.length > 0) {
+    const idx = remaining.findIndex((p) => (p.deps ?? []).every((d) => done.has(d)));
+    if (idx === -1) return phases; // cycle — fail soft to planner order
+    const [next] = remaining.splice(idx, 1);
+    done.add(next.id);
+    out.push(next);
+  }
+  return out;
 }
 
 function buildDecomposePrompt(instruction: string, hintProvider?: LifecycleHintProvider): string {
@@ -94,8 +130,9 @@ function buildDecomposePrompt(instruction: string, hintProvider?: LifecycleHintP
     '',
     `MISSION: ${instruction}`,
     '',
-    'Respond with ONLY a JSON array:',
-    '[{"id": "<kebab-slug>", "title": "<short name>", "goal": "<what this phase must accomplish>"}]',
+    'Respond with ONLY a JSON array. Each phase may declare deps (ids of',
+    'phases it builds on); phases without deps between them are independent:',
+    '[{"id": "<kebab-slug>", "title": "<short name>", "goal": "<what this phase must accomplish>", "deps": ["<id>"]}]',
   ].join('\n');
 }
 
