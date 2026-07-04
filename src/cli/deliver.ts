@@ -123,6 +123,7 @@ import { createAgenticExecutor, noopApplier, selectExecutorMode } from '../deliv
 import { loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { parsePhaseArray, phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
+import { runEpics, type Epic, type EpicRunResult } from '../delivery/epic-controller.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { extractContract } from '../delivery/contract-extractor.js';
@@ -250,6 +251,11 @@ export interface DeliverOptions {
    * dependencies' outputs), so small-context models can multi-step through
    * large builds. Implies --decompose. */
   orchestrate?: boolean;
+  /** `--epics`: run a MASSIVE mission as a sequence of epics via the epic
+   * controller — each epic is a fresh mission (fresh context, only prior epics'
+   * summaries injected), looped with fresh sessions until accepted. Auto for
+   * very long complex missions; commander sets false on --no-epics. */
+  epics?: boolean;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -1283,6 +1289,19 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     options.orchestrate !== false &&
     process.env.UAP_DELIVER_ORCHESTRATE !== '0' &&
     cfgOrch !== false && cfgOrch !== 'off';
+  // Epic controller (P7): the outer loop above orchestration. A massive mission
+  // (very long + complex) is a SEQUENCE of epics, each run as its own fresh
+  // mission and looped with fresh sessions until accepted. Opt-in via --epics /
+  // UAP_DELIVER_EPICS=1; auto only for genuinely epic-scale instructions so it
+  // never fires on ordinary tasks. Never on self-gate or resume.
+  const epicsEnabled =
+    !needsSelfGate && !resumeState &&
+    (options.epics === true ||
+      process.env.UAP_DELIVER_EPICS === '1' ||
+      (options.epics !== false &&
+        process.env.UAP_DELIVER_EPICS !== '0' &&
+        autoPlan?.complexity === 'complex' &&
+        instruction.trim().length >= 1200));
   const decomposeWanted =
     !needsSelfGate &&
     (options.orchestrate === true ||
@@ -1573,6 +1592,77 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     return all;
   };
 
+  /**
+   * P7 — epic controller: run a massive mission as a SEQUENCE of epics. Each
+   * epic is executed as its OWN fresh mission (fresh convergence context; only
+   * prior epics' compact summaries are injected — never their source or the
+   * full spec). An epic that fails its gates is retried with a fresh session
+   * that is fed the previous attempt's failure, looped until accepted or the
+   * per-epic attempt budget is spent. The blackboard orchestrator still runs
+   * WITHIN each epic when that epic itself decomposes.
+   */
+  const runEpicMission = async (): Promise<DeliveryResult> => {
+    const all: DeliveryResult = {
+      success: true, alreadyDelivered: false, turns: 0, bestScore: 0, bestTurn: 0,
+      history: [], finalFeedback: '', finalOutput: '', totalDurationMs: 0,
+    };
+    const planned = await planDeliveryPhases(instruction, verdictExecutor);
+    const epics: Epic[] = (planned.length >= 2
+      ? planned
+      : [{ id: 'mission', title: 'Mission', goal: instruction }]
+    ).map((ph) => ({ id: ph.id, title: ph.title, goal: ph.goal, ...(ph.deps ? { deps: ph.deps } : {}) }));
+    console.log(chalk.cyan(`\u{1f5c2}  epic controller: ${epics.length} epic(s): ${epics.map((e) => e.title).join(' \u2192 ')}`));
+
+    const epicResult = await runEpics({
+      mission: instruction,
+      epics,
+      maxAttemptsPerEpic: Number(process.env.UAP_DELIVER_EPIC_ATTEMPTS ?? 2),
+      onEpic: (epic, outcome) => {
+        console.log(
+          (outcome.accepted ? chalk.green('  \u2713') : chalk.red('  \u2717')) +
+            chalk.dim(` epic ${epic.id}: ${outcome.accepted ? 'accepted' : 'failed'} after ${outcome.attempts} attempt(s), ${outcome.turns} turn(s)`)
+        );
+      },
+      runEpic: async (epic, ctx): Promise<EpicRunResult> => {
+        const priors = ctx.priorSummaries.length
+          ? `\n\nALREADY BUILT (prior epics \u2014 build on them, do not redo):\n${ctx.priorSummaries.map((sm, i) => `${i + 1}. ${sm}`).join('\n')}`
+          : '';
+        const retry = ctx.lastFailure ? `\n\nPREVIOUS ATTEMPT FEEDBACK (fix this):\n${ctx.lastFailure}` : '';
+        const scoped =
+          `OVERALL MISSION (context): ${instruction.slice(0, 300)}\n\n` +
+          `EPIC \u2014 ${epic.title}:\n${epic.goal}${priors}${retry}\n\n` +
+          'Deliver ONLY this epic. All gates must pass at the end.';
+        console.log(chalk.bold(`\u25b6 epic ${epic.id} (attempt ${ctx.attempt}): ${epic.title}`));
+        acceptanceSpec = scoped; // the in-loop acceptance judge grades THIS epic
+        const epicTask = await openDeliveryTask(`${epic.title} \u2014 ${epic.goal.slice(0, 120)}`, projectRoot, missionTask?.id);
+        const loop = new ConvergenceLoop(
+          { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onIteration: makeIterationHook() },
+          executor,
+          seams
+        );
+        const r = await loop.deliver(scoped);
+        all.turns += r.turns;
+        all.history.push(...r.history);
+        all.totalDurationMs += r.totalDurationMs;
+        if (r.bestScore > all.bestScore) { all.bestScore = r.bestScore; all.bestTurn = r.bestTurn; }
+        all.finalFeedback = r.finalFeedback;
+        all.finalOutput = r.finalOutput;
+        completeDeliveryTask(epicTask, r);
+        const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
+        return {
+          success: r.success,
+          turns: r.turns,
+          summary: `${epic.goal.slice(0, 140)}${files.length ? ` [files: ${files.join(', ')}]` : ''}`,
+        };
+      },
+    });
+    all.success = epicResult.success;
+    if (!epicResult.success) {
+      all.finalFeedback = `epic controller incomplete \u2014 failed epic(s): ${epicResult.failed.join(', ')}\n${all.finalFeedback}`;
+    }
+    return all;
+  };
+
   // --keep-best (never regress): capture the starting required-gate score and a
   // project snapshot so we can roll back if deliver ends up WORSE than it
   // started. Only meaningful with real gates — a self-authored proxy gate is
@@ -1606,7 +1696,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // it fails. Skipped on resume (the mission is already mid-flight).
     let lazySolved = false;
     const lazyWanted =
-      options.lazy !== false && process.env.UAP_DELIVER_LAZY !== '0' && !resumeState;
+      options.lazy !== false && process.env.UAP_DELIVER_LAZY !== '0' && !resumeState && !epicsEnabled;
     if (lazyWanted) {
       console.log(chalk.cyan('⚡ lazy attempt: one bare turn before engaging the convergence aids…'));
       const lazyLoop = new ConvergenceLoop(
@@ -1636,6 +1726,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
     if (lazySolved) {
       result = result!;
+    } else if (epicsEnabled) {
+      result = await runEpicMission();
     } else if (phases && phases.length >= 2 && orchestrateEnabled) {
       result = await runOrchestratedMission();
     } else if (phases && phases.length >= 2) {
