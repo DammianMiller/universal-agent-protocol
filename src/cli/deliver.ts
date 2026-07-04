@@ -122,14 +122,14 @@ export function resolveAcceptanceVerdict(
 import { createAgenticExecutor, noopApplier, selectExecutorMode } from '../delivery/agentic-executor.js';
 import { loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
-import { phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
+import { parsePhaseArray, phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { extractContract } from '../delivery/contract-extractor.js';
 import type { OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
 import type { LifecycleHintProvider } from '../delivery/decompose.js';
 import type { DeliveryPhase } from '../delivery/decompose.js';
-import { completeDeliveryTask, openDeliveryTask, recordDeliveryOutcome, reopenDeliveryTask } from '../delivery/task-sync.js';
+import { completeDeliveryTask, openDeliveryTask, recordDeliveryOutcome, recordOrchestratorTaskOutcome, reopenDeliveryTask } from '../delivery/task-sync.js';
 import { autoMineHaloTraces, summarizeWeaknesses, weaknessGuidance, loadPersistedWeaknesses } from '../delivery/auto-mine.js';
 import { createGitWorktreeProvider } from '../delivery/candidate-workspace.js';
 import type { ExecutorMode } from '../delivery/agentic-executor.js';
@@ -1390,6 +1390,36 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       mission: instruction,
       tasks,
       contextBudgetChars: Number(process.env.UAP_DELIVER_CONTEXT_BUDGET ?? 6000),
+      maxTasks: Number(process.env.UAP_DELIVER_MAX_TASKS ?? 40),
+      // P3 — per-task memory retrieval: pull the few most relevant established
+      // decisions/patterns/gotchas for THIS task's goal (a small semantic
+      // query, not the full spec), so a fresh-context task reconstructs "what
+      // am I building and why" from memory. Fail-soft → no design lines.
+      retrieveDesign: async (task): Promise<string[]> => {
+        try {
+          const { retrieveDynamicMemoryContext } = await import('../memory/dynamic-retrieval.js');
+          const mem = await retrieveDynamicMemoryContext(task.goal, projectRoot, { maxTokens: 400 });
+          const lines: string[] = [];
+          for (const m of mem.relevantMemories.slice(0, 4)) lines.push(m.content.slice(0, 160));
+          for (const g of mem.gotchas.slice(0, 2)) lines.push(`gotcha: ${g.slice(0, 140)}`);
+          for (const pat of mem.patterns.slice(0, 2)) lines.push(`pattern: ${pat.slice(0, 140)}`);
+          return lines;
+        } catch {
+          return [];
+        }
+      },
+      // P3/P4 — durable publish: a completed task's verified contract lands in
+      // short-term memory so later tasks (and future fresh sessions) retrieve
+      // the interface from memory instead of re-reading source.
+      publish: async (outcome, task): Promise<void> => {
+        if (!outcome.success) return;
+        await recordOrchestratorTaskOutcome(
+          task.id,
+          task.title,
+          outcome.contract ?? outcome.summary,
+          projectRoot
+        );
+      },
       runTask: async (ctx, task): Promise<TaskOutcome> => {
         console.log(
           chalk.bold(`\u25b6 task ${task.id}: ${task.title}`) +
@@ -1440,12 +1470,37 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
             contract = undefined;
           }
         }
+        // P5 — adaptive re-planning feed: a task may surface work the initial
+        // plan missed by emitting a `NEW_TASKS: [ {id,title,goal,deps} ]` JSON
+        // array in its output. Parsed through the same validator as the planner
+        // (well-formed only), then folded into the DAG by orchestrate() (which
+        // dedupes, topo-resorts, and caps at maxTasks). Only structural fields
+        // are used — never free-form model text as durable memory.
+        let newTasks: OrchestratorTask[] | undefined;
+        if (r.success) {
+          try {
+            const marker = /NEW_TASKS:\s*(\[[\s\S]*?\])/.exec(r.finalOutput || r.finalFeedback || '');
+            if (marker) {
+              const parsed = parsePhaseArray(marker[1]).filter((t) => t.id !== task.id);
+              if (parsed.length > 0) {
+                newTasks = parsed.map((t) => ({
+                  id: t.id, title: t.title, goal: t.goal,
+                  ...(t.deps ? { deps: t.deps } : {}),
+                }));
+                console.log(chalk.dim(`  ↳ re-planning: task ${task.id} discovered ${newTasks.length} follow-up task(s)`));
+              }
+            }
+          } catch {
+            newTasks = undefined;
+          }
+        }
         return {
           taskId: task.id,
           success: r.success,
           turns: r.turns,
           summary: `${task.goal.slice(0, 160)}${files.length ? ` [files: ${files.join(', ')}]` : ''}`,
           ...(contract ? { contract } : {}),
+          ...(newTasks && newTasks.length > 0 ? { newTasks } : {}),
         };
       },
     });

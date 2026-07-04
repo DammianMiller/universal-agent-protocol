@@ -165,3 +165,29 @@ export async function recordDeliveryOutcome(
     // memory recording is best-effort
   }
 }
+
+/**
+ * Publish a completed orchestrator task's verified interface to durable
+ * short-term memory (P3/P4). Later tasks in the same DAG — and future fresh
+ * sessions — retrieve this via the semantic memory query, so a dependent loads
+ * "what already exists" from memory rather than re-reading source. Stored as a
+ * `decision` so it surfaces as established context, never as untrusted model
+ * output (only the harness-composed contract/summary is persisted). Fail-soft.
+ */
+export async function recordOrchestratorTaskOutcome(
+  taskId: string,
+  taskTitle: string,
+  contractOrSummary: string,
+  projectRoot: string
+): Promise<void> {
+  if (!existsSync(memoryDbPath(projectRoot))) return;
+  try {
+    const { SQLiteShortTermMemory } = await import('../memory/short-term/sqlite.js');
+    const memory = new SQLiteShortTermMemory({ dbPath: memoryDbPath(projectRoot) });
+    const content = `[orchestrator] task '${taskId}' (${taskTitle.slice(0, 80)}) built — interface: ${contractOrSummary.slice(0, 400)}`;
+    await memory.store('decision', content, 6);
+    await memory.close?.();
+  } catch {
+    // durable publish is best-effort; the in-run blackboard is authoritative
+  }
+}
