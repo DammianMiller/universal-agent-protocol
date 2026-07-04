@@ -543,8 +543,11 @@ export class RawCompletionAdapter implements AgentAdapter {
     let gateRuns = 0;
     let error: string | null = null;
     const logParts: string[] = [];
-    // Lazy gets its bare attempt PLUS the gate budget; classic gets the budget.
-    const maxIters = useGate ? this.maxGateIters + (lazy ? 1 : 0) : 1;
+    // Budget parity: the lazy bare attempt counts INSIDE the same iteration
+    // budget as uap-full, so the arms are strictly comparable. (The first
+    // 1.98.0 measurement gave lazy +1 iteration — its +5pp edge over full is
+    // confounded by that; the vs-baseline win is unaffected.)
+    const maxIters = useGate ? this.maxGateIters : 1;
     let lastGateOut: string | null = null;
 
     for (let iter = 0; iter < maxIters; iter++) {
