@@ -23,7 +23,7 @@ import {
 import { AgentContextConfig, MultiModelSchema } from '../types/config.js';
 
 // Config loading delegated to shared utility
-import { loadUapConfig, findUapConfigPath, modifyUapConfig } from '../utils/config-loader.js';
+import { loadUapConfig, loadUapConfigRaw, findUapConfigPath, modifyUapConfig } from '../utils/config-loader.js';
 const loadConfig = () => loadUapConfig();
 
 /**
@@ -625,6 +625,67 @@ async function routingUseCommand(id: string, options: { save?: boolean }): Promi
   }
 }
 
+/**
+ * `uap model routing on|off|status` — toggle the whole multi-model routing
+ * table on/off (multiModel.enabled) or report the active table + tiers.
+ */
+function routingToggleCommand(state: 'on' | 'off' | 'status'): void {
+  let raw: Record<string, unknown> = {};
+  try {
+    raw = loadUapConfigRaw() ?? {};
+  } catch {
+    raw = {};
+  }
+  const mm = (raw.multiModel as Record<string, unknown> | undefined) ?? undefined;
+
+  if (state === 'status') {
+    const enabled = Boolean(mm?.enabled);
+    console.log(`Model routing: ${enabled ? chalk.green('ENABLED') : chalk.red('DISABLED')}`);
+    if (mm) {
+      const roles = mm.roles as Record<string, string> | undefined;
+      if (roles) {
+        console.log(
+          `  plan=${chalk.green(roles.planner)} exec=${chalk.blue(roles.executor)} ` +
+            `review=${chalk.yellow(roles.reviewer)} fallback=${chalk.red(roles.fallback)}`
+        );
+      }
+      const matrix = mm.routingMatrix as Record<string, unknown> | undefined;
+      if (matrix) {
+        const tiers = ['low', 'medium', 'high', 'critical']
+          .map((t) => `${t}=${typeof matrix[t] === 'string' ? matrix[t] : '·'}`)
+          .join(' ');
+        console.log(`  ${chalk.dim('complexity tiers:')} ${chalk.cyan(tiers)}`);
+      }
+      console.log(`  strategy: ${mm.routingStrategy ?? 'balanced'}`);
+    } else {
+      console.log(chalk.dim('  No multiModel table configured — apply one with: uap model routing use <id> --save'));
+    }
+    return;
+  }
+
+  if (!findUapConfigPath()) {
+    console.error(chalk.yellow('No .uap.json found — run `uap init` first, then re-run.'));
+    process.exitCode = 1;
+    return;
+  }
+  if (state === 'on' && !mm) {
+    console.error(
+      chalk.yellow('No routing table configured yet. Pick one first: uap model routing use <id> --save')
+    );
+    process.exitCode = 1;
+    return;
+  }
+  modifyUapConfig(process.cwd(), (cfg) => {
+    const existing = ((cfg as Record<string, unknown>).multiModel as Record<string, unknown> | undefined) ?? {};
+    return { ...cfg, multiModel: { ...existing, enabled: state === 'on' } };
+  });
+  console.log(
+    state === 'on'
+      ? chalk.green('✓ Model routing ENABLED (.uap.json multiModel.enabled = true).')
+      : chalk.green('✓ Model routing DISABLED — all roles use the single default model.')
+  );
+}
+
 export function registerModelCommands(program: Command): void {
   const model = program.command('model').description('Multi-model architecture management');
 
@@ -660,6 +721,18 @@ export function registerModelCommands(program: Command): void {
     .description('Apply a routing option (writes multiModel to .uap.json)')
     .option('--save', 'Persist to .uap.json (otherwise preview only)')
     .action(routingUseCommand);
+  routing
+    .command('on')
+    .description('Enable multi-model routing (multiModel.enabled = true in .uap.json)')
+    .action(() => routingToggleCommand('on'));
+  routing
+    .command('off')
+    .description('Disable multi-model routing (all roles fall back to the single default model)')
+    .action(() => routingToggleCommand('off'));
+  routing
+    .command('status')
+    .description('Show whether routing is enabled and which table/tiers are active')
+    .action(() => routingToggleCommand('status'));
 
   model
     .command('select')
