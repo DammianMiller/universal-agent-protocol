@@ -59,3 +59,17 @@ describe('json-response grammar (evaluator verdicts)', () => {
   });
 });
 
+describe('stuck-break guardrail (self-aware loop + rate-limited API)', () => {
+  it('forces a terminal turn on sustained self-reported-stuck or API-retry loops', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    expect(contents).toContain('PROXY_STUCK_BREAK');
+    expect(contents).toContain('_maybe_inject_stuck_break');
+    expect(contents).toContain('note_assistant_text');
+    // steers to the non-rate-limited channels
+    expect(contents).toContain('api.github.com');
+    expect(contents).toMatch(/git clone|browser tool/);
+    // releases tool coercion so a plain text/synthesis turn is allowed
+    expect(contents).toContain("openai_body[\"tool_choice\"] = \"auto\"");
+  });
+});
+
