@@ -2,6 +2,11 @@
 
 ## v1.108.0 (2026-07-05)
 
+- fix(policies): cluster-routing scoped to Bash commands only + heredoc bodies stripped before pattern-matching (ported from pay2u) — file writes that merely mention cluster product names no longer trip the gate
+
+
+## v1.108.0 (2026-07-05)
+
 - feat(dashboard): real per-influence token savings + orchestration hierarchy
 
 

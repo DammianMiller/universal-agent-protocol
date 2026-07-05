@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import arg_str, emit, parse_cli, run  # noqa: E402
+from _common import emit, parse_cli, run  # noqa: E402
 
 DOMAINS = {
     "openobserve": re.compile(
@@ -31,7 +31,16 @@ def pick_domain(blob: str) -> str:
 
 def main() -> None:
     op, args = parse_cli()
-    blob = f"{op} {arg_str(args)}"
+    # Scope: only Bash invocations dispatch cluster commands. Other tools
+    # (Write/Edit/Read/etc.) may legitimately mention cluster product names
+    # in file content without that being a kubectl/helm call.
+    if op != "Bash":
+        emit(True, "non-Bash tool call")
+    # Strip heredoc bodies so file content written via cat <<MARK ... MARK
+    # does not pattern-match the trigger regex below.
+    cmd = args.get("command", "") if isinstance(args, dict) else ""
+    cmd = re.sub(r'<<\s*[\x27\x22]?(\w+)[\x27\x22]?[\s\S]*?\n\1\b', "", cmd)
+    blob = f"{op} {cmd}"
 
     if not re.search(r"\b(kubectl|helm)\b", blob):
         emit(True, "not a kubectl/helm call")
