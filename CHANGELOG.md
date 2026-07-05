@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.105.0 (2026-07-05)
+
+- feat(handsfree): Fable-parity hands-free persistence for ANY model (A+B+C+D)
+
+
 ## v1.104.2 (2026-07-05)
 
 - fix(hooks): honor stop_hook_active in stop.sh so it can't wedge the agent

@@ -124,6 +124,7 @@ import { loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { parsePhaseArray, phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { runEpics, type Epic, type EpicRunResult } from '../delivery/epic-controller.js';
+import { initLedger, markItem } from '../delivery/completion-ledger.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { extractContract } from '../delivery/contract-extractor.js';
@@ -1613,11 +1614,19 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     ).map((ph) => ({ id: ph.id, title: ph.title, goal: ph.goal, ...(ph.deps ? { deps: ph.deps } : {}) }));
     console.log(chalk.cyan(`\u{1f5c2}  epic controller: ${epics.length} epic(s): ${epics.map((e) => e.title).join(' \u2192 ')}`));
 
+    // Hands-free: auto-populate the completion ledger so the whole multi-epic
+    // build has an objective, cross-session definition of done (Option B). The
+    // Stop hook + reactor consult it to keep any model going until 100%.
+    try {
+      initLedger(projectRoot, instruction, epics.map((e) => ({ id: e.id, title: e.title, kind: 'epic' as const, ...(e.deps ? { deps: e.deps } : {}) })));
+    } catch { /* ledger is best-effort */ }
+
     const epicResult = await runEpics({
       mission: instruction,
       epics,
       maxAttemptsPerEpic: Number(process.env.UAP_DELIVER_EPIC_ATTEMPTS ?? 2),
       onEpic: (epic, outcome) => {
+        try { markItem(projectRoot, epic.id, outcome.accepted ? 'done' : 'failed', outcome.accepted ? undefined : outcome.summary); } catch { /* best-effort */ }
         console.log(
           (outcome.accepted ? chalk.green('  \u2713') : chalk.red('  \u2717')) +
             chalk.dim(` epic ${epic.id}: ${outcome.accepted ? 'accepted' : 'failed'} after ${outcome.attempts} attempt(s), ${outcome.turns} turn(s)`)
