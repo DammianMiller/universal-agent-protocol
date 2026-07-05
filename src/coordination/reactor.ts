@@ -4,6 +4,7 @@ import { maybeDesignInjection } from '../design/reactor-inject.js';
 import { maybeBoardInjection } from './board-inject.js';
 import { maybeCollaborationInjection } from './collaboration-inject.js';
 import { maybeStateInjection } from '../state/reactor-inject.js';
+import { maybePersistenceInjection } from './persistence-inject.js';
 
 export type ReactorEvent = 'session-start' | 'user-prompt' | 'pre-tool' | 'post-tool' | 'stop' | 'session-end';
 
@@ -149,6 +150,16 @@ export function resolve(
       ? maybeCollaborationInjection(ctx.cwd, ctx.promptText)
       : null;
 
+  // Hands-free persistence (Options A-D): when a multi-epic build is in
+  // progress (active completion ledger with remaining items), inject a
+  // "keep going until the whole build is complete — REMAINING: ..." directive
+  // so any model persists like Fable. Deduped per session via `handsfree:persist`.
+  const persistKey = 'handsfree:persist';
+  const persistInject =
+    ctx.cwd && !(ctx.surfaced ?? []).includes(persistKey)
+      ? maybePersistenceInjection(ctx.cwd)
+      : null;
+
   // #3-B: delivery routing. Surface up-front (deduped per session via
   // `deliver:routing`) whenever the task routes to a code capability, so the
   // agent calls deliver instead of editing source directly and tripping the gate.
@@ -186,6 +197,10 @@ export function resolve(
     if (collabInject) {
       blocks.push(`## Agent collaboration\n${collabInject}`);
       keys.push(collabKey);
+    }
+    if (persistInject) {
+      blocks.push(`## Hands-free build — keep going until 100% complete\n${persistInject}`);
+      keys.push(persistKey);
     }
     if (boardInject) {
       blocks.push(`## Collaboration board\n${boardInject}`);

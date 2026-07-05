@@ -27,6 +27,24 @@ if [ -f "${HOOK_DIR}/loop-protection.sh" ]; then
 fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
+
+# --- Hands-free persistence (Option A) ---
+# Block session-end (exit 2) while a multi-epic build's completion ledger is
+# still incomplete, so ANY model loops to 100% like Fable. Fully guarded: the
+# stop_hook_active check above already short-circuits the client retry loop;
+# this only blocks when an ACTIVE ledger has remaining items, applies the
+# per-model profile, and is bounded by block/stagnation counters (never spins).
+# Fail-open on any error (missing CLI, no ledger, etc.).
+if command -v uap >/dev/null 2>&1; then
+  set +e
+  HF_OUT="$( (cd "$PROJECT_DIR" && printf '%s' "${STOP_HOOK_INPUT:-}" | uap handsfree stop-check) 2>&1 )"
+  HF_CODE=$?
+  set -e
+  if [ "${HF_CODE:-0}" -eq 2 ]; then
+    printf '%s\n' "$HF_OUT" >&2
+    exit 2
+  fi
+fi
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
 COORD_DB="${PROJECT_DIR}/agents/data/coordination/coordination.db"
 

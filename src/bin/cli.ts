@@ -40,6 +40,7 @@ const lazy = {
   deliver: () => import('../cli/deliver.js').then((m) => m.deliverCommand),
   verify: () => import('../cli/verify.js').then((m) => m.verifyCommand),
   orchestratorToggle: () => import('../cli/orchestrator-toggle.js').then((m) => m.orchestratorToggleCommand),
+  handsfree: () => import('../cli/handsfree.js').then((m) => m.handsfreeCommand),
   benchPaired: () => import('../cli/bench.js').then((m) => m.benchPairedCommand),
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
@@ -588,6 +589,17 @@ program
   .action(async (instructionParts: string[] | undefined, options) => {
     const cmd = await lazy.deliver();
     await cmd((instructionParts ?? []).join(' '), options);
+  });
+
+program
+  .command('handsfree [subcommand] [arg]')
+  .alias('hf')
+  .description('Hands-free persistence: status | on | off | init | complete <id> | fail <id> | remaining | stop-check. Auto-on; drives any model to loop until the multi-epic build ledger is 100% complete.')
+  .option('--mission <text>', 'Mission text for `init`')
+  .option('--items <json>', 'JSON array of ledger items for `init`')
+  .action(async (subcommand, arg, options) => {
+    const cmd = await lazy.handsfree();
+    await cmd(subcommand, arg, options);
   });
 
 program
