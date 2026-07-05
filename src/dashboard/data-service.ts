@@ -6,6 +6,8 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { getSavingsByInfluence, type SavingsByInfluence } from './savings.js';
+import { getOrchestrationTree, type OrchestrationTree } from './orchestration-tree.js';
 import { loadUapConfig } from '../utils/config-loader.js';
 import { join } from 'path';
 import { execSync } from 'child_process';
@@ -644,6 +646,8 @@ export interface DashboardData {
   timeSeries: TimeSeriesPoint[];
   compliance: ComplianceData;
   deployBuckets: DeployBucketData | DeployBatchSummary;
+  savingsByInfluence: SavingsByInfluence;
+  orchestrationTree: OrchestrationTree;
 }
 
 // ── Data Gathering ──
@@ -712,6 +716,8 @@ export async function getDashboardData(): Promise<DashboardData> {
     deployBuckets,
     session: sessionTelemetry,
     sessions,
+    savingsByInfluence: getSavingsByInfluence(cwd),
+    orchestrationTree: getOrchestrationTree(cwd),
   };
 }
 
