@@ -15,6 +15,7 @@ import {
   isComplete,
   progress,
   formatRemaining,
+  syncLedgerFromTodos,
 } from '../../src/delivery/completion-ledger.js';
 import {
   classifyModelFamily,
@@ -141,5 +142,49 @@ describe('reactor persistence injection (D)', () => {
     initLedger(dir, 'mission', [{ id: 'e1', title: 'A' }]);
     markItem(dir, 'e1', 'done');
     expect(maybePersistenceInjection(dir)).toBeNull();
+  });
+});
+
+
+describe('auto-seed from todos (full automation)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-todos-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('mirrors a TodoWrite plan into the ledger with mapped statuses', () => {
+    const l = syncLedgerFromTodos(dir, [
+      { content: 'Design schema', status: 'completed' },
+      { content: 'Build API', status: 'in_progress' },
+      { content: 'Write tests', status: 'pending' },
+    ])!;
+    expect(l.items).toHaveLength(3);
+    expect(l.items[0].status).toBe('done');
+    expect(l.items[1].status).toBe('in_progress');
+    expect(l.items[2].status).toBe('pending');
+    expect(progress(l).pct).toBe(33);
+  });
+
+  it('preserves mission + createdAt across re-syncs and follows todo status', () => {
+    const first = syncLedgerFromTodos(dir, [{ content: 'A', status: 'pending' }, { content: 'B', status: 'pending' }])!;
+    const created = first.createdAt;
+    const second = syncLedgerFromTodos(dir, [{ content: 'A', status: 'completed' }, { content: 'B', status: 'completed' }])!;
+    expect(second.createdAt).toBe(created);
+    expect(second.items.every((i) => i.status === 'done')).toBe(true);
+  });
+
+  it('de-collides duplicate slugs and ignores empty content', () => {
+    const l = syncLedgerFromTodos(dir, [
+      { content: 'Same task', status: 'pending' },
+      { content: 'Same task', status: 'pending' },
+      { content: '   ', status: 'pending' },
+    ])!;
+    expect(l.items).toHaveLength(2);
+    expect(new Set(l.items.map((i) => i.id)).size).toBe(2);
+  });
+
+  it('returns null for an empty todo list', () => {
+    expect(syncLedgerFromTodos(dir, [])).toBeNull();
   });
 });

@@ -111,6 +111,9 @@ function copyHookScripts(targetHooksDir: string): void {
     'session-end.sh',
     // Reactor adapter: per-prompt dynamic capability injection via `uap react`.
     'uap-reactor-prompt.sh',
+    // Hands-free auto-seed: mirror the model's TodoWrite plan into the
+    // completion ledger (PostToolUse) so interactive builds seed a ledger.
+    'uap-todo-ledger.sh',
     // Schema-change reminder (PostToolUse): enforce gap-fill.
     'uap-schema-post.sh',
     // The DB-driven policy gate (policies.db + .policy-tools/*.py). Without it,
@@ -255,6 +258,10 @@ async function installClaudeHooks(cwd: string): Promise<void> {
           { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-schema-post.sh"' },
         ],
       },
+      {
+        matcher: 'TodoWrite',
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-todo-ledger.sh"' }],
+      },
     ],
     PreCompact: [
       {
@@ -358,6 +365,10 @@ async function installFactoryHooks(cwd: string): Promise<void> {
           { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/post-tool-use-edit-write.sh' },
           { type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-schema-post.sh' },
         ],
+      },
+      {
+        matcher: 'TodoWrite',
+        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-todo-ledger.sh' }],
       },
     ],
     PreCompact: [
@@ -509,6 +520,10 @@ async function installVscodeHooks(cwd: string): Promise<void> {
           { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-tool-use-edit-write.sh"' },
           { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-schema-post.sh"' },
         ],
+      },
+      {
+        matcher: 'TodoWrite',
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-todo-ledger.sh"' }],
       },
     ],
     PreCompact: [
