@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.107.0 (2026-07-05)
+
+- feat(policies): workdir-scope allows ~/.claude/projects (Claude Code auto-memory/session storage) — blocking it silently broke agent memory recording
+- feat(policies): four new built-in policies ported from pay2u — adr-guard (ADR-embedded rule blocks gate writes), bearer-lockdown (cookie-only-frontend invariants), local-build-before-push (Docker compile gate before push/PR), ship-loop-gate (task completion requires merged/deployed/monitored/verified evidence)
+
+
 ## v1.106.0 (2026-07-05)
 
 - feat(handsfree): full automation — auto-seed ledger from plan + auto-resume

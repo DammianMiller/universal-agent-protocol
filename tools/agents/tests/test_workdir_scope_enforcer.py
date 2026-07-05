@@ -76,6 +76,16 @@ class TestWorkdirScopeEnforcer(unittest.TestCase):
         out, c = run("Write", {"file_path": "/tmp/uap-scratch/x"}, self.root)
         self._allow(out, c, "/tmp scratch")
 
+    def test_claude_memory_dir_allowed(self):
+        # ~/.claude/projects is the Claude Code harness's auto-memory/session
+        # storage; the harness instructs agents to write memories there.
+        out, c = run(
+            "Write",
+            {"file_path": str(Path.home() / ".claude/projects/-x-proj/memory/note.md")},
+            self.root,
+        )
+        self._allow(out, c, "claude memory dir")
+
     def test_worktree_path_allowed(self):
         out, c = run("Write", {"file_path": str(self.root / ".worktrees/001-x/f.ts")}, self.root)
         self._allow(out, c, "worktree path")

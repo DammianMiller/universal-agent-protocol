@@ -13,7 +13,8 @@ Allowed targets:
   * anything under the current working tree (UAP_WORKTREE_ROOT) or the main
     checkout (UAP_REPO_ROOT) — worktrees included;
   * relative paths (they resolve under the project root);
-  * a scratch allow-list: /tmp, $TMPDIR, ~/.cache/uap, ~/.config/uap, plus any
+  * a scratch allow-list: /tmp, $TMPDIR, ~/.cache/uap, ~/.config/uap,
+    ~/.claude/projects (Claude Code auto-memory/session storage), plus any
     colon-separated prefixes in UAP_WORKDIR_ALLOW.
 
 Escape hatch: UAP_WORKDIR_SCOPE_OFF=1 allows everything (operator override).
@@ -58,7 +59,17 @@ def _allowed_roots() -> list[Path]:
 
     add(worktree_root())
     add(repo_root())
-    for p in ("/tmp", os.environ.get("TMPDIR", "/tmp"), "~/.cache/uap", "~/.config/uap"):
+    # ~/.claude/projects is the Claude Code harness's own storage (auto-memory
+    # topic files, MEMORY.md index, session/transcript data). The harness
+    # instructs agents to persist memories there; blocking it silently breaks
+    # memory recording (observed on pay2u 2026-07-05).
+    for p in (
+        "/tmp",
+        os.environ.get("TMPDIR", "/tmp"),
+        "~/.cache/uap",
+        "~/.config/uap",
+        "~/.claude/projects",
+    ):
         add(_expand(p))
     for p in os.environ.get("UAP_WORKDIR_ALLOW", "").split(":"):
         if p.strip():

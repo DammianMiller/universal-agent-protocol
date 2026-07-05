@@ -13,8 +13,11 @@ command whose create/move destination (`mkdir`, `touch`, `cp`, `mv`, `install`,
 `tee`, output redirection) — resolves OUTSIDE the working tree is **blocked**.
 
 In scope (allowed): the current working tree and main checkout (worktrees
-included), relative paths, and a scratch allow-list (`/tmp`, `$TMPDIR`,
-`~/.cache/uap`, `~/.config/uap`, plus `UAP_WORKDIR_ALLOW` prefixes).
+included), relative paths, `/dev/*` device sinks (`2>/dev/null` is not a
+write), and a scratch allow-list (`/tmp`, `$TMPDIR`, `~/.cache/uap`,
+`~/.config/uap`, `~/.claude/projects` — the Claude Code harness's own
+auto-memory/session storage, which agents are instructed to write to — plus
+`UAP_WORKDIR_ALLOW` prefixes).
 
 ## Why
 
