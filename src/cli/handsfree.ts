@@ -28,7 +28,9 @@ import {
   isComplete,
   formatRemaining,
   progress,
+  syncLedgerFromTodos,
   type NewItem,
+  type TodoInput,
 } from '../delivery/completion-ledger.js';
 import { loadPersistenceConfig, resolveActiveModel } from '../delivery/handsfree-config.js';
 import { resolvePersistenceProfile } from '../delivery/persistence-profile.js';
@@ -245,8 +247,51 @@ export async function handsfreeCommand(
       return;
     }
 
+    case 'sync-todos': {
+      // Auto-seed (full automation): mirror the model's plan (TodoWrite) into
+      // the completion ledger so an interactive multi-step build gets a ledger
+      // with zero manual `init`. Silent + fail-open; only seeds a real plan.
+      const cfg = loadPersistenceConfig(cwd);
+      if (cfg.enabled === false) return;
+      const input = await readStdin();
+      let todos: TodoInput[] = [];
+      try {
+        const payload = JSON.parse(input) as { tool_input?: { todos?: TodoInput[] }; todos?: TodoInput[] };
+        todos = payload.tool_input?.todos ?? payload.todos ?? [];
+      } catch {
+        return;
+      }
+      const minTodos = Number(process.env.UAP_HANDSFREE_MIN_TODOS ?? 3);
+      // Only auto-seed a genuine multi-step plan. But once a ledger exists, keep
+      // it in sync even if the list temporarily shrinks below the threshold.
+      const { ledgerExists } = await import('../delivery/completion-ledger.js');
+      if (todos.length < minTodos && !ledgerExists(cwd)) return;
+      if (todos.length === 0) return;
+      syncLedgerFromTodos(cwd, todos, options.mission);
+      return;
+    }
+
+    case 'resume-banner': {
+      // Auto-resume: on session start, surface an in-progress build so the
+      // model picks it back up without being asked. Prints nothing otherwise.
+      const cfg = loadPersistenceConfig(cwd);
+      if (cfg.enabled === false) return;
+      const ledger = loadLedger(cwd);
+      if (!ledger || isComplete(ledger)) return;
+      const p = progress(ledger);
+      console.log('## Resuming a build in progress (hands-free)');
+      console.log(
+        `A multi-epic build is ${p.done}/${p.total} (${p.pct}%) complete and was left unfinished. ` +
+          'Resume it now and keep going hands-free until every item is done — do not wait to be asked, ' +
+          'do not restart from scratch.'
+      );
+      console.log('');
+      console.log(formatRemaining(ledger, 20));
+      return;
+    }
+
     default:
-      console.error(chalk.red(`Unknown handsfree subcommand '${sub}'. Use: status | on | off | init | complete | fail | remaining | stop-check`));
+      console.error(chalk.red(`Unknown handsfree subcommand '${sub}'. Use: status | on | off | init | complete | fail | remaining | sync-todos | resume-banner | stop-check`));
       process.exitCode = 1;
   }
 }

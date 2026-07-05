@@ -171,3 +171,66 @@ function nowISO(): string {
   // Date.now/new Date are fine at runtime (not inside a workflow script).
   return new Date().toISOString();
 }
+
+
+export interface TodoInput {
+  content: string;
+  status?: 'pending' | 'in_progress' | 'completed';
+}
+
+/** Slugify a todo's content into a stable ledger id. */
+function todoSlug(content: string, index: number): string {
+  const base = content
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  return base || `item-${index + 1}`;
+}
+
+function mapTodoStatus(s: TodoInput['status']): LedgerStatus {
+  if (s === 'completed') return 'done';
+  if (s === 'in_progress') return 'in_progress';
+  return 'pending';
+}
+
+/**
+ * Mirror a model's plan (Claude Code TodoWrite list) into the completion
+ * ledger — the auto-seed for interactive multi-step builds. The todo list IS
+ * the plan-in-progress, with authoritative statuses, so the ledger simply
+ * tracks it: created on first sync, statuses updated on every sync, and the
+ * mission/createdAt preserved across syncs. Duplicate slugs are de-collided.
+ * Returns the resulting ledger, or null when there is nothing to seed.
+ */
+export function syncLedgerFromTodos(
+  cwd: string,
+  todos: TodoInput[],
+  mission?: string
+): CompletionLedger | null {
+  const clean = (todos || []).filter((t) => t && typeof t.content === 'string' && t.content.trim());
+  if (clean.length === 0) return null;
+
+  const prior = loadLedger(cwd);
+  const seen = new Set<string>();
+  const items: LedgerItem[] = clean.map((t, i) => {
+    let id = todoSlug(t.content, i);
+    while (seen.has(id)) id = `${id}-${i}`;
+    seen.add(id);
+    return {
+      id,
+      title: t.content.trim().slice(0, 200),
+      kind: 'task' as const,
+      status: mapTodoStatus(t.status),
+      updatedAt: nowISO(),
+    };
+  });
+
+  const ledger: CompletionLedger = {
+    mission: (prior?.mission || mission || 'Interactive multi-step build').slice(0, 500),
+    createdAt: prior?.createdAt ?? nowISO(),
+    updatedAt: nowISO(),
+    items,
+  };
+  saveLedger(cwd, ledger);
+  return ledger;
+}

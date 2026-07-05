@@ -241,6 +241,15 @@ if [ -f "$TASK_DB" ] && [ "$TASK_BLOCKED" -gt 0 ]; then
   fi
 fi
 
+# Hands-free auto-resume: surface an in-progress build's remaining work so the
+# session picks it back up without being asked. Silent when nothing is pending.
+if command -v uap >/dev/null 2>&1; then
+  resume_banner="$( ( cd "$PROJECT_DIR" 2>/dev/null && uap handsfree resume-banner 2>/dev/null ) || true )"
+  if [ -n "$resume_banner" ]; then
+    output+=$'\n'"$resume_banner"$'\n'
+  fi
+fi
+
 if [ -n "$output" ]; then
   echo "$output"
 fi
