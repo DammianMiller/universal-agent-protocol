@@ -578,6 +578,23 @@
         </div>
       </div>
 
+      <!-- Token Savings by Influence -->
+      <div class="full-row" id="savings-panel">
+        <div class="panel">
+          <h2>Token Savings by Influence</h2>
+          <div id="savings-summary" style="margin-bottom:12px;font-size:14px"></div>
+          <div id="savings-table" class="table-wrap"><div class="empty">No savings data</div></div>
+        </div>
+      </div>
+
+      <!-- Orchestrations & Hierarchy -->
+      <div class="full-row" id="orch-panel">
+        <div class="panel">
+          <h2>Orchestrations &amp; Hierarchy <span style="font-size:11px;color:var(--fg3);font-weight:400" id="orch-label"></span></h2>
+          <div id="orch-tree"><div class="empty">No orchestrations yet</div></div>
+        </div>
+      </div>
+
       <!-- Task Board -->
       <div class="full-row" id="kanban-panel" style="display:none">
         <div class="panel">
@@ -1107,6 +1124,8 @@
         });
 
         safe('kanban', () => renderKanban(tasks));
+        safe('savings', () => renderSavings(data.savingsByInfluence));
+        safe('orchestration', () => renderOrchestration(data.orchestrationTree));
 
         safe('performance', () => {
           const hp = (data.performance||{}).hotPaths || [];
@@ -1135,6 +1154,60 @@
       const TYPE_ICONS = {task:'\u25C6',bug:'\uD83D\uDC1B',feature:'\u2728',epic:'\uD83C\uDFAF',chore:'\uD83D\uDD27',story:'\uD83D\uDCD6'};
       const PRIO_LABELS = ['P0','P1','P2','P3','P4'];
       let prevCardMap = new Map();
+      function renderSavings(sv) {
+        sv = sv || { influences: [], totalTokensSaved: 0, totalCostSavedUsd: 0 };
+        const badge = (q) => {
+          const c = q === 'measured' ? '#3fb950' : q === 'estimated' ? '#d29922' : '#484f58';
+          return `<span style="color:${c};font-size:10px;text-transform:uppercase;border:1px solid ${c};border-radius:3px;padding:1px 5px">${q}</span>`;
+        };
+        setHTML('savings-summary',
+          `<strong style="color:#58a6ff;font-size:18px">${fmt(sv.totalTokensSaved)}</strong> tokens · ` +
+          `<strong style="color:#3fb950;font-size:18px">$${(sv.totalCostSavedUsd||0).toFixed(2)}</strong> saved across all UAP influences`);
+        if (!sv.influences.length) { setHTML('savings-table', '<div class="empty">No savings data</div>'); return; }
+        const rows = sv.influences.map(i =>
+          `<tr><td>${esc(i.influence)}</td><td style="text-align:right">${fmt(i.tokensSaved)}</td>` +
+          `<td style="text-align:right;color:#3fb950">$${(i.costSavedUsd||0).toFixed(4)}</td>` +
+          `<td>${badge(i.quality)}</td><td style="color:var(--fg3);font-size:11px">${esc(i.detail||'')}</td></tr>`).join('');
+        setHTML('savings-table',
+          `<table><thead><tr><th>Influence</th><th style="text-align:right">Tokens saved</th>` +
+          `<th style="text-align:right">Cost saved</th><th>Quality</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table>`);
+      }
+
+      function orchNode(n, depth) {
+        const pad = depth * 16;
+        const sc = { done:'#3fb950', in_progress:'#58a6ff', blocked:'#f85149', failed:'#f85149', open:'#8b949e', pending:'#8b949e' }[n.status] || '#8b949e';
+        const icon = n.type === 'epic' ? '🎯' : n.type === 'feature' ? '✨' : n.type === 'phase' ? '▶' : '•';
+        const agents = (n.agents && n.agents.length) ? ` <span style="color:#a371f7;font-size:10px">[${n.agents.join(', ')}]</span>` : '';
+        let html = `<div style="padding:3px 0 3px ${pad}px;border-left:1px solid var(--border)">` +
+          `<span style="color:${sc}">●</span> ${icon} <span>${esc((n.title||n.id).slice(0,70))}</span>` +
+          ` <span style="color:var(--fg3);font-size:10px">${n.status}</span>${agents}</div>`;
+        for (const c of (n.children||[])) html += orchNode(c, depth + 1);
+        return html;
+      }
+
+      function renderOrchestration(ot) {
+        ot = ot || { missions: [], ledger: null, agents: [], hasHierarchy: false };
+        setText('orch-label', `${ot.missions.length} root(s) · ${ot.agents.length} agent(s)`);
+        let html = '';
+        if (ot.ledger) {
+          const L = ot.ledger;
+          html += `<div style="margin-bottom:14px;padding:10px;background:var(--bg2);border-radius:6px">` +
+            `<div style="font-weight:600;margin-bottom:6px">Active build: ${L.mission.slice(0,80)} ` +
+            `<span style="color:#58a6ff">${L.done}/${L.total} (${L.pct}%)</span></div>`;
+          html += L.items.map(it => {
+            const sc = { done:'#3fb950', in_progress:'#58a6ff', failed:'#f85149', pending:'#8b949e' }[it.status] || '#8b949e';
+            const dep = it.deps && it.deps.length ? ` <span style="color:var(--fg3);font-size:10px">⇠ ${it.deps.join(',')}</span>` : '';
+            return `<div style="padding:2px 0"><span style="color:${sc}">●</span> ${it.kind==='epic'?'🎯':'•'} ${esc(it.title.slice(0,70))} <span style="color:var(--fg3);font-size:10px">${it.status}</span>${dep}</div>`;
+          }).join('');
+          html += `</div>`;
+        }
+        const withKids = ot.missions.filter(m => (m.children||[]).length > 0);
+        const shown = (withKids.length ? withKids : ot.missions).slice(0, 20);
+        if (!ot.ledger && shown.length === 0) { setHTML('orch-tree', '<div class="empty">No orchestrations yet — run an epic/orchestrated build</div>'); return; }
+        html += shown.map(m => orchNode(m, 0)).join('');
+        setHTML('orch-tree', html);
+      }
+
       function renderKanban(tasks) {
         const items=tasks.items||[], cols={open:[],in_progress:[],blocked:[],done:[],wont_do:[]}, ncm=new Map();
         for (const i of items) { if(cols[i.status]) cols[i.status].push(i); ncm.set(i.id,i.status); }
@@ -1159,6 +1232,7 @@
 
       // ── Helpers ──
       function setText(id,val){const e=document.getElementById(id);if(e)e.textContent=String(val);}
+      function setHTML(id,html){const e=document.getElementById(id);if(e)e.innerHTML=html;}
       function fmt(n){if(typeof n!=='number'||isNaN(n))return'0';return Math.round(n).toLocaleString();}
       function capitalize(s){return s?s.charAt(0).toUpperCase()+s.slice(1):'';}
       const MODEL_NAMES={'opus-4.6':'Claude Opus 4.6','sonnet-4.6':'Claude Sonnet 4.6','gpt-5.4':'GPT 5.4','gpt-5.3-codex':'GPT 5.3 Codex','qwen35':'Qwen 3.5 35B A3B','qwen35-a3b':'Qwen 3.5 35B A3B'};

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.108.0 (2026-07-05)
+
+- feat(dashboard): real per-influence token savings + orchestration hierarchy
+
+
 ## v1.107.0 (2026-07-05)
 
 - feat(policies): workdir-scope allows ~/.claude/projects (Claude Code auto-memory/session storage) — blocking it silently broke agent memory recording
