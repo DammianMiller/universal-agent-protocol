@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.106.0 (2026-07-05)
+
+- feat(handsfree): full automation — auto-seed ledger from plan + auto-resume
+
+
 ## v1.105.0 (2026-07-05)
 
 - feat(handsfree): Fable-parity hands-free persistence for ANY model (A+B+C+D)
