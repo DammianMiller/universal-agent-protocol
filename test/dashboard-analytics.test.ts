@@ -4,7 +4,7 @@
  * correct results when data exists.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -23,6 +23,13 @@ describe('getSavingsByInfluence', () => {
     const routing = sv.influences.find((i) => i.influence.startsWith('Model routing'))!;
     expect(routing.quality).toBe('unmeasured');
     expect(routing.costSavedUsd).toBe(0);
+  });
+
+  it('makes the empty routing state explicit (why it is idle), not a silent zero', () => {
+    const routing = getSavingsByInfluence(dir).influences.find((i) => i.influence.startsWith('Model routing'))!;
+    expect(routing.quality).toBe('unmeasured');
+    expect(routing.detail).toMatch(/inactive/i);
+    expect(routing.detail).toMatch(/no UAP-routed tasks/i);
   });
 
   it('computes the routing counterfactual vs the frontier model (measured)', () => {
@@ -77,5 +84,19 @@ describe('getOrchestrationTree', () => {
     expect(t.ledger!.total).toBe(2);
     expect(t.ledger!.pct).toBe(50);
     expect(t.hasHierarchy).toBe(true);
+  });
+});
+
+describe('dashboard.html renderSavings — explicit idle state', () => {
+  it('renders unmeasured influences as a dimmed em-dash, not a $0 cell', () => {
+    const src = readFileSync('web/dashboard.html', 'utf-8');
+    const start = src.indexOf('function renderSavings');
+    expect(start).toBeGreaterThan(-1);
+    const block = src.slice(start, start + 1400);
+    // idle rows are branched on quality and rendered via the shared idle cell,
+    // never through the real cost/token formatting.
+    expect(block).toContain("i.quality === 'unmeasured'");
+    expect(block).toContain('idleCell');
+    expect(block).toMatch(/idle \? idleCell/);
   });
 });
