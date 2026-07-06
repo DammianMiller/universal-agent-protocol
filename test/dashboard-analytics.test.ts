@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { getSavingsByInfluence } from '../src/dashboard/savings.js';
+import { getSavingsByInfluence, __setRtkRunnerForTest } from '../src/dashboard/savings.js';
 import { getOrchestrationTree } from '../src/dashboard/orchestration-tree.js';
 
 describe('getSavingsByInfluence', () => {
@@ -110,5 +110,41 @@ describe('dashboard.html renderSavings — explicit idle state', () => {
     expect(block).toContain("i.quality === 'unmeasured'");
     expect(block).toContain('idleCell');
     expect(block).toMatch(/idle \? idleCell/);
+  });
+});
+
+describe('rtk savings cache (perf)', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'uap-rtk-')); });
+  afterEach(() => { __setRtkRunnerForTest(null); rmSync(dir, { recursive: true, force: true }); });
+
+  it('runs `rtk gain` at most once across rapid dashboard refreshes (cached)', () => {
+    let calls = 0;
+    __setRtkRunnerForTest(() => { calls += 1; return JSON.stringify({ summary: { total_saved: 1000, avg_savings_pct: 60, total_commands: 42 } }); });
+    const a = getSavingsByInfluence(dir);
+    getSavingsByInfluence(dir);
+    getSavingsByInfluence(dir);
+    expect(calls).toBe(1); // 3 reads, one subprocess (was 3 * ~1.9s -> ~1.9s once/TTL)
+    const rtk = a.influences.find((i) => i.influence.startsWith('RTK'))!;
+    expect(rtk.quality).toBe('measured');
+    expect(rtk.tokensSaved).toBe(1000);
+  });
+
+  it('clears the cache when the runner is swapped (fresh value)', () => {
+    let calls = 0;
+    __setRtkRunnerForTest(() => { calls += 1; return JSON.stringify({ summary: { total_saved: 5 } }); });
+    expect(getSavingsByInfluence(dir).influences.find((i) => i.influence.startsWith('RTK'))!.tokensSaved).toBe(5);
+    __setRtkRunnerForTest(() => { calls += 1; return JSON.stringify({ summary: { total_saved: 9 } }); });
+    expect(getSavingsByInfluence(dir).influences.find((i) => i.influence.startsWith('RTK'))!.tokensSaved).toBe(9);
+    expect(calls).toBe(2);
+  });
+
+  it('caches failures too (a broken rtk does not re-run every refresh)', () => {
+    let calls = 0;
+    __setRtkRunnerForTest(() => { calls += 1; throw new Error('rtk missing'); });
+    const a = getSavingsByInfluence(dir).influences.find((i) => i.influence.startsWith('RTK'))!;
+    getSavingsByInfluence(dir);
+    expect(calls).toBe(1);
+    expect(a.quality).toBe('unmeasured');
   });
 });

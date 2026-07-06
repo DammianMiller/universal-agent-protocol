@@ -12,12 +12,12 @@ const proxyPath = join(rootDir, 'tools/agents/scripts/anthropic_proxy.py');
 describe('Anthropic proxy model list', () => {
   const content = readFileSync(proxyPath, 'utf-8');
 
-  it('includes Shannon canonical Claude IDs (haiku 4.5, sonnet 4.6, opus 4.7)', () => {
+  it('includes Shannon canonical Claude IDs (haiku 4.5, sonnet 4.6, opus 4.8)', () => {
     // Driven by ~/dev/shannon-keygraph/.env defaults
     // ANTHROPIC_SMALL/MEDIUM/LARGE_MODEL
     expect(content).toContain('claude-haiku-4-5-20251001');
     expect(content).toContain('claude-sonnet-4-6');
-    expect(content).toContain('claude-opus-4-7');
+    expect(content).toContain('claude-opus-4-8');
   });
 
   it('includes the local Qwen model ID for actual routing target', () => {
