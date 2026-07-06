@@ -74,7 +74,7 @@ function rtkSaving(): InfluenceSaving {
 function routingSaving(cwd: string): InfluenceSaving {
   const dbPath = join(cwd, 'agents', 'data', 'memory', 'model_analytics.db');
   if (!existsSync(dbPath)) {
-    return { influence: 'Model routing (cheaper models)', tokensSaved: 0, costSavedUsd: 0, detail: 'no analytics yet', quality: 'unmeasured' };
+    return { influence: 'Model routing (cheaper models)', tokensSaved: 0, costSavedUsd: 0, detail: 'inactive — no UAP-routed tasks recorded yet (Claude Code cloud routes via /model, not UAP)', quality: 'unmeasured' };
   }
   try {
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });

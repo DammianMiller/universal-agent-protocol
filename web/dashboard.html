@@ -1164,10 +1164,18 @@
           `<strong style="color:#58a6ff;font-size:18px">${fmt(sv.totalTokensSaved)}</strong> tokens · ` +
           `<strong style="color:#3fb950;font-size:18px">$${(sv.totalCostSavedUsd||0).toFixed(2)}</strong> saved across all UAP influences`);
         if (!sv.influences.length) { setHTML('savings-table', '<div class="empty">No savings data</div>'); return; }
-        const rows = sv.influences.map(i =>
-          `<tr><td>${esc(i.influence)}</td><td style="text-align:right">${fmt(i.tokensSaved)}</td>` +
-          `<td style="text-align:right;color:#3fb950">$${(i.costSavedUsd||0).toFixed(4)}</td>` +
-          `<td>${badge(i.quality)}</td><td style="color:var(--fg3);font-size:11px">${esc(i.detail||'')}</td></tr>`).join('');
+        // Unmeasured influences (e.g. routing with no UAP-driven calls yet) render an
+        // explicit dimmed "—" rather than a real-looking $0, so idle != broken.
+        const idleCell = '<span style="color:var(--fg3)" title="not active / no data recorded yet">\u2014</span>';
+        const rows = sv.influences.map(i => {
+          const idle = i.quality === 'unmeasured';
+          const tok = idle ? idleCell : fmt(i.tokensSaved);
+          const cost = idle ? idleCell : `<span style="color:#3fb950">$${(i.costSavedUsd||0).toFixed(4)}</span>`;
+          return `<tr${idle ? ' style="opacity:.55"' : ''}><td>${esc(i.influence)}</td>` +
+            `<td style="text-align:right">${tok}</td>` +
+            `<td style="text-align:right">${cost}</td>` +
+            `<td>${badge(i.quality)}</td><td style="color:var(--fg3);font-size:11px">${esc(i.detail||'')}</td></tr>`;
+        }).join('');
         setHTML('savings-table',
           `<table><thead><tr><th>Influence</th><th style="text-align:right">Tokens saved</th>` +
           `<th style="text-align:right">Cost saved</th><th>Quality</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table>`);
