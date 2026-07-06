@@ -24,6 +24,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
+import { profileForRouting, profileForProvider } from '../models/profile-map.js';
 
 // Get script directory for ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -47,30 +48,45 @@ const CONFIG_TEMPLATE = join(CONFIG_DIR, 'chat_template.jinja');
  * Falls back to 'generic' if no profile is specified.
  */
 function detectModelProfile(): string {
-  // 1. Explicit env var
+  // 1. Explicit env var override always wins.
   if (process.env.UAP_MODEL_PROFILE) {
     return process.env.UAP_MODEL_PROFILE;
   }
 
-  // 2. Check .uap.json for model profile
   const uapConfigPath = join(UAP_ROOT, '.uap.json');
   if (existsSync(uapConfigPath)) {
     try {
       const config = JSON.parse(readFileSync(uapConfigPath, 'utf-8'));
+
+      // 2. Explicit hand-set pin still wins over auto-derivation.
       if (config?.toolCalls?.modelProfile) {
         return config.toolCalls.modelProfile;
+      }
+
+      // 3. Auto-switch: derive the profile from the active model routing
+      //    (the executor role — the model that emits the tool calls).
+      const fromRouting = profileForRouting(config?.multiModel);
+      if (fromRouting) {
+        return fromRouting;
+      }
+
+      // 4. Single-model setups: fall back to the configured provider default.
+      const provider = config?.model?.provider as string | undefined;
+      if (provider) {
+        return profileForProvider(provider);
       }
     } catch {
       // ignore parse errors
     }
   }
 
-  // 3. Check if a model-specific settings file exists
+  // 5. Legacy local-settings sniff.
   const settingsPath = join(UAP_ROOT, 'config', 'qwen35-settings.json');
   if (existsSync(settingsPath)) {
-    return 'qwen35-a3b';
+    return 'qwen35';
   }
 
+  // 6. Safe default.
   return 'generic';
 }
 
@@ -235,12 +251,15 @@ function detectPython(): string | null {
   return null;
 }
 
-async function setup(): Promise<void> {
-  let profile = detectModelProfile();
+async function setup(opts?: { profile?: string }): Promise<void> {
+  // When a caller (e.g. the guided setup) passes a profile, run fully
+  // non-interactively: no picker, and DO NOT pin toolCalls.modelProfile —
+  // pinning would defeat the routing-driven auto-switch this profile relies on.
+  let profile = opts?.profile ?? detectModelProfile();
 
-  // Interactive profile selection
+  // Interactive profile selection (standalone CLI only)
   const isInteractive = process.stdout.isTTY;
-  if (isInteractive) {
+  if (isInteractive && !opts?.profile) {
     console.log(chalk.cyan('\n  UAP Tool Call Setup\n'));
     profile = await promptProfileSelection(profile);
 
@@ -621,12 +640,12 @@ async function proxy(): Promise<void> {
 }
 
 // Dispatch command from argv
-function dispatch(args: string[]): void {
+function dispatch(args: string[], opts?: { profile?: string }): void {
   const command = args[0];
 
   switch (command) {
     case 'setup':
-      setup();
+      setup(opts);
       break;
     case 'test':
       test();
@@ -698,9 +717,12 @@ Examples:
  * When called without arguments (from bin/tool-calls.ts),
  * parses process.argv for the command.
  */
-export async function toolCallsCommand(command?: string): Promise<void> {
+export async function toolCallsCommand(
+  command?: string,
+  opts?: { profile?: string }
+): Promise<void> {
   if (command) {
-    dispatch([command]);
+    dispatch([command], opts);
   } else {
     // argv[0] = node, argv[1] = script path, argv[2+] = commands
     const args = process.argv.slice(2);

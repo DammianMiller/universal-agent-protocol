@@ -18,11 +18,11 @@ import { backupInstructionFiles } from './setup-backup.js';
 import { extractInteractive } from './setup-extract.js';
 import { isQdrantReachable } from './memory.js';
 import { RoutingPresets } from '../models/index.js';
+import { profileForRouting, profileForProvider } from '../models/profile-map.js';
 import { createClackUI, type PromptUI } from './prompt-ui.js';
 import {
   applyWizardConfig,
   defaultSelections,
-  profileChoicesFor,
   writeProxyEnv,
   type ModelFeatures,
   type RecipeFeatures,
@@ -164,12 +164,6 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     ],
     initialValue: localModel ? 'local' : 'anthropic',
   });
-  const profiles = profileChoicesFor(provider);
-  const toolCallProfile = await ui.select<string>({
-    message: 'Model profile:',
-    options: profiles,
-    initialValue: provider === 'local' && localModel ? 'qwen35-a3b' : profiles[0]?.value,
-  });
   const modelExtras = await ui.multiselect<string>({
     message: 'Model extras:',
     options: [
@@ -204,6 +198,16 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
       );
     }
   }
+
+  // Derive the effective tool-call profile automatically. It AUTO-SWITCHES to
+  // match the routed executor model (or the provider default for single-model
+  // setups). Nothing is pinned to .uap.json, so changing the routing later
+  // re-derives it at runtime (see src/models/profile-map.ts + tool-calls.ts).
+  const effectiveProfile =
+    routingPreset !== 'none'
+      ? profileForRouting({ enabled: true, roles: RoutingPresets[routingPreset]?.roles }) ??
+        profileForProvider(provider)
+      : profileForProvider(provider);
 
   // ── Hooks ───────────────────────────────────────────────────────────
   const hk = await ui.multiselect<string>({
@@ -353,8 +357,11 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     },
     model: {
       provider,
-      qwenOptimizations: toolCallProfile === 'qwen35-a3b',
-      toolCallProfile,
+      qwenOptimizations: effectiveProfile.startsWith('qwen'),
+      // Left empty on purpose: the runtime auto-switches the profile from the
+      // active routing/provider (see profile-map.ts). Pinning here would defeat
+      // that. applyWizardConfig only persists toolCalls.modelProfile when set.
+      toolCallProfile: '',
       costTracking: modelExtras.includes('costTracking'),
       modelRouting: modelExtras.includes('modelRouting'),
       routingPreset,
@@ -399,7 +406,7 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
 
   // ── Confirm + apply ─────────────────────────────────────────────────
   const proceed = await ui.confirm({
-    message: `Apply setup for [${platform.join(', ')}] · provider=${provider}/${toolCallProfile} · long-term mem=${longTerm ? 'on' : 'off'} · patterns=${withPatterns ? 'on' : 'off'} · recipes=${recipesOn ? recipeMode : 'off'} · deliver=${deliverEnforcement}?`,
+    message: `Apply setup for [${platform.join(', ')}] · provider=${provider}/${effectiveProfile} · long-term mem=${longTerm ? 'on' : 'off'} · patterns=${withPatterns ? 'on' : 'off'} · recipes=${recipesOn ? recipeMode : 'off'} · deliver=${deliverEnforcement}?`,
     initialValue: true,
   });
   if (!proceed) {
@@ -443,10 +450,12 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
 
   // Apply profile-specific tool-call fixes for any non-generic profile (faithful
   // to the legacy wizard). In-process + fail-soft; falls back to a reminder.
-  if (selections.model.toolCallProfile && selections.model.toolCallProfile !== 'generic') {
+  if (effectiveProfile && effectiveProfile !== 'generic') {
     try {
       const { toolCallsCommand } = await import('./tool-calls.js');
-      await toolCallsCommand('setup');
+      // Pass the derived profile: applies profile-specific tool-call fixes
+      // WITHOUT re-prompting or pinning (preserves runtime auto-switch).
+      await toolCallsCommand('setup', { profile: effectiveProfile });
     } catch {
       ui.note('Run `uap-tool-calls setup` to apply profile-specific tool-call fixes.', 'Next step');
     }

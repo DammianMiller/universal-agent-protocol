@@ -1,0 +1,72 @@
+{
+  "_profile": "claude-opus-4.8",
+  "_description": "Anthropic Claude Opus 4.8 (claude-opus-4-8). Most capable Opus-tier model — state-of-the-art long-horizon agentic execution, knowledge work, and memory. 1M context, 128K max output. Adaptive thinking + effort control (temperature/top_p/top_k and budget_tokens are removed on this model). Best for complex multi-step reasoning and autonomous coding where accuracy matters more than speed.",
+
+  "model": "claude-opus-4-8",
+  "provider": "anthropic",
+  "api_base_url": "https://api.anthropic.com",
+  "max_tokens": 64000,
+  "timeout_ms": 600000,
+  "context_window": 1000000,
+
+  "sampling_parameters_supported": false,
+  "_sampling_comment": "temperature, top_p, and top_k are removed on Opus 4.8 and return HTTP 400. Steer behaviour with prompting and the effort control instead.",
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": true,
+
+  "reasoning": {
+    "mode": "adaptive",
+    "effort": "xhigh",
+    "display": "summarized",
+    "_comment": "Opus 4.8 uses adaptive thinking only; budget_tokens is removed (400). effort=xhigh is the sweet spot for coding/agentic work; drop to low/medium for routine tasks. Streaming is required for max_tokens above ~16K."
+  },
+
+  "extended_thinking": {
+    "enabled": true,
+    "mode": "adaptive",
+    "_comment": "Adaptive thinking — no fixed budget_tokens (removed on Opus 4.8). Depth is controlled by reasoning.effort."
+  },
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "max_tool_calls_per_turn": 128,
+    "_comment": "Native parallel tool use with strong self-regulation. No forced tool_choice needed — Opus 4.8 uses tools reliably on its own."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "Opus 4.8 natively supports parallel tool calls."
+  },
+
+  "fast_mode": {
+    "supported": true,
+    "beta": "fast-mode-2026-02-01",
+    "_comment": "Opus 4.8 is the durable fast-capable tier (speed=fast on client.beta.messages). Premium pricing; not available on Batch/Priority/third-party platforms."
+  },
+
+  "pricing": {
+    "input_per_1m": 5.0,
+    "output_per_1m": 25.0,
+    "cache_write_per_1m": 6.25,
+    "cache_read_per_1m": 0.5,
+    "currency": "USD",
+    "_comment": "1M context at standard pricing — no long-context premium. Prompt caching gives ~90% discount on cache reads."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 1000,
+    "tokens_per_minute": 80000,
+    "_comment": "Default tier limits. Higher tiers available via Anthropic."
+  },
+
+  "running_config": {
+    "description": "Anthropic hosted API. Requires ANTHROPIC_API_KEY environment variable (or an `ant auth login` profile / Claude Max OAuth via the proxy).",
+    "env_vars": {
+      "ANTHROPIC_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "claude-opus-4.8"
+    }
+  }
+}

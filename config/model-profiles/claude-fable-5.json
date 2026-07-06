@@ -1,0 +1,78 @@
+{
+  "_profile": "claude-fable-5",
+  "_description": "Anthropic Claude Fable 5 (claude-fable-5). Anthropic's most capable widely released model — the most demanding reasoning and long-horizon agentic work. 1M context (default), 128K max output. Thinking is ALWAYS on (omit the thinking parameter); the raw chain of thought is never returned. temperature/top_p/top_k and budget_tokens are removed. Requires 30-day data retention (not available under ZDR). Use only for the hardest tasks — pricing exceeds Opus tier.",
+
+  "model": "claude-fable-5",
+  "provider": "anthropic",
+  "api_base_url": "https://api.anthropic.com",
+  "max_tokens": 64000,
+  "timeout_ms": 900000,
+  "context_window": 1000000,
+
+  "sampling_parameters_supported": false,
+  "_sampling_comment": "temperature, top_p, and top_k are removed on Fable 5 and return HTTP 400. Steer with prompting and effort.",
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": true,
+
+  "reasoning": {
+    "mode": "always_on",
+    "effort": "high",
+    "display": "summarized",
+    "_comment": "Fable 5 thinking is always on — do NOT send a thinking config (an explicit {type:'disabled'} 400s; omit the param). Control depth with effort (low..max). Raw chain of thought is never returned; display=summarized surfaces a readable summary. Long turns are normal — plan timeouts/streaming."
+  },
+
+  "extended_thinking": {
+    "enabled": true,
+    "mode": "always_on",
+    "_comment": "Always-on adaptive thinking; no budget_tokens (removed). Do not pass a thinking parameter on the wire."
+  },
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "max_tool_calls_per_turn": 128,
+    "_comment": "Excellent parallel tool use and long-lived sub-agent coordination. No forced tool_choice needed."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "Fable 5 natively supports parallel tool calls and asynchronous sub-agent delegation."
+  },
+
+  "refusal_fallback": {
+    "enabled": true,
+    "beta": "server-side-fallback-2026-06-01",
+    "fallback_model": "claude-opus-4-8",
+    "_comment": "Safety classifiers may return stop_reason=refusal (HTTP 200). Opt into server-side fallbacks so a benign-but-declined request is transparently re-served by Opus 4.8 in the same call."
+  },
+
+  "requirements": {
+    "data_retention_days": 30,
+    "_comment": "Fable 5 is unavailable under zero data retention — requests from a ZDR org 400 on every call."
+  },
+
+  "pricing": {
+    "input_per_1m": 10.0,
+    "output_per_1m": 50.0,
+    "cache_write_per_1m": 12.5,
+    "cache_read_per_1m": 1.0,
+    "currency": "USD",
+    "_comment": "Above Opus tier — reserve for the hardest reasoning/agentic work."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 500,
+    "tokens_per_minute": 60000,
+    "_comment": "Default tier limits. Higher tiers available via Anthropic."
+  },
+
+  "running_config": {
+    "description": "Anthropic hosted API. Requires ANTHROPIC_API_KEY and an org with >= 30-day data retention.",
+    "env_vars": {
+      "ANTHROPIC_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "claude-fable-5"
+    }
+  }
+}

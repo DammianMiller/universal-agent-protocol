@@ -1,0 +1,69 @@
+{
+  "_profile": "claude-haiku-4.5",
+  "_description": "Anthropic Claude Haiku 4.5 (claude-haiku-4-5-20251001). Fastest and most cost-effective current Claude model. 200K context, 64K max output, strong tool calling for high-throughput agentic work. Supports adaptive thinking; the effort parameter is NOT supported (it errors). Best for rapid iteration, simple-to-medium tool use, classification, and cost-sensitive workloads.",
+
+  "model": "claude-haiku-4-5-20251001",
+  "provider": "anthropic",
+  "api_base_url": "https://api.anthropic.com",
+  "max_tokens": 16384,
+  "temperature": 1.0,
+  "top_p": 1.0,
+  "timeout_ms": 120000,
+  "context_window": 200000,
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": true,
+
+  "reasoning": {
+    "mode": "adaptive",
+    "effort_supported": false,
+    "_comment": "Haiku 4.5 supports adaptive thinking but NOT the effort parameter (effort=* returns 400). Do not send output_config.effort. budget_tokens is not used on 4.5."
+  },
+
+  "extended_thinking": {
+    "enabled": true,
+    "mode": "adaptive",
+    "_comment": "Adaptive thinking supported. No effort control on Haiku 4.5."
+  },
+
+  "dynamic_temperature": {
+    "enabled": false,
+    "_comment": "Default temp=1.0 is recommended by Anthropic for most use cases."
+  },
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "max_tool_calls_per_turn": 128,
+    "_comment": "Strong tool calling for a fast/cheap model; good for high-throughput fan-out."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "Haiku 4.5 supports parallel tool calls natively."
+  },
+
+  "pricing": {
+    "input_per_1m": 1.0,
+    "output_per_1m": 5.0,
+    "cache_write_per_1m": 1.25,
+    "cache_read_per_1m": 0.1,
+    "currency": "USD",
+    "_comment": "Cheapest current Claude. Ideal for cost-sensitive, latency-sensitive workloads."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 4000,
+    "tokens_per_minute": 400000,
+    "_comment": "Default tier limits. Separate rate-limit pool from Haiku 3.x."
+  },
+
+  "running_config": {
+    "description": "Anthropic hosted API. Requires ANTHROPIC_API_KEY environment variable.",
+    "env_vars": {
+      "ANTHROPIC_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "claude-haiku-4.5"
+    }
+  }
+}
