@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.111.1 (2026-07-06)
+
+- perf(dashboard): cache `rtk gain` so refreshes drop ~2.8s -> ~10ms
+- feat(proxy): add Sonnet 5 model support + active discrimination
+
+
 ## v1.111.0 (2026-07-06)
 
 - feat(proxy): per-project routing/cost telemetry so dashboards see proxy model calls

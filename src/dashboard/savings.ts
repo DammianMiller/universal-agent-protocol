@@ -46,19 +46,45 @@ function frontierCost(): { in: number; out: number } {
   return { in: opus?.costPer1MInput ?? 7.5, out: opus?.costPer1MOutput ?? 37.5 };
 }
 
-/** RTK savings from `rtk gain --format json` (measured). */
+/**
+ * RTK savings from `rtk gain --format json` (measured).
+ *
+ * `rtk gain` is a ~2s subprocess (it analyses command history) and dominated the
+ * dashboard's per-refresh cost. The figure changes slowly, so we CACHE it with a
+ * short TTL: on the dashboard's 2s push loop we serve the cached value and only
+ * re-run rtk once per TTL. Both success and failure are cached so a missing/slow
+ * rtk cannot re-hang every refresh.
+ */
+const RTK_CACHE_TTL_MS = 30_000;
+let rtkCache: { at: number; value: InfluenceSaving } | null = null;
+
+const defaultRtkRunner = (): string =>
+  execFileSync('rtk', ['gain', '--format', 'json'], {
+    encoding: 'utf-8',
+    timeout: 5000,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+
+/** The `rtk gain` invocation (test seam). */
+let runRtkGain: () => string = defaultRtkRunner;
+
+/** Test-only: swap the rtk runner and clear the cache (pass null to restore). */
+export function __setRtkRunnerForTest(fn: (() => string) | null): void {
+  runRtkGain = fn ?? defaultRtkRunner;
+  rtkCache = null;
+}
+
 function rtkSaving(): InfluenceSaving {
+  const now = Date.now();
+  if (rtkCache && now - rtkCache.at < RTK_CACHE_TTL_MS) return rtkCache.value;
+  let value: InfluenceSaving;
   try {
-    const raw = execFileSync('rtk', ['gain', '--format', 'json'], {
-      encoding: 'utf-8',
-      timeout: 5000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
+    const raw = runRtkGain();
     const data = JSON.parse(raw) as { summary?: { total_saved?: number; avg_savings_pct?: number; total_commands?: number } };
     const saved = Math.max(0, Math.round(data.summary?.total_saved ?? 0));
     const pct = Math.round(data.summary?.avg_savings_pct ?? 0);
     const cmds = data.summary?.total_commands ?? 0;
-    return {
+    value = {
       influence: 'RTK (dev-command compression)',
       tokensSaved: saved,
       costSavedUsd: saved * BLENDED_USD_PER_TOKEN,
@@ -66,8 +92,10 @@ function rtkSaving(): InfluenceSaving {
       quality: 'measured',
     };
   } catch {
-    return { influence: 'RTK (dev-command compression)', tokensSaved: 0, costSavedUsd: 0, detail: 'rtk not available', quality: 'unmeasured' };
+    value = { influence: 'RTK (dev-command compression)', tokensSaved: 0, costSavedUsd: 0, detail: 'rtk not available', quality: 'unmeasured' };
   }
+  rtkCache = { at: now, value };
+  return value;
 }
 
 /** Model-routing savings: counterfactual (all on frontier) minus actual spend. */
