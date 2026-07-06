@@ -31,11 +31,17 @@ _MAX_SCAN_CHARS = 24_000
 _MAX_CANDIDATE_PATHS = 40
 _MAX_WALK_UP = 8
 
+# Must match src/models/analytics.ts exactly (esp. the `id` PK) — the dashboard's
+# getModelData reads `ORDER BY id`, which errors on an id-less table. For an
+# existing project the TS side already created this (CREATE IF NOT EXISTS no-ops);
+# this shape matters only when the proxy creates the table first for a fresh project.
 _CREATE_SQL = (
     "CREATE TABLE IF NOT EXISTS task_outcomes ("
-    "modelId TEXT, taskType TEXT, complexity TEXT, success INTEGER, "
-    "durationMs INTEGER, tokensIn INTEGER, tokensOut INTEGER, cost REAL, "
-    "taskId TEXT, timestamp TEXT)"
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+    "modelId TEXT NOT NULL, taskType TEXT NOT NULL, complexity TEXT NOT NULL, "
+    "success INTEGER NOT NULL, durationMs INTEGER NOT NULL, "
+    "tokensIn INTEGER NOT NULL DEFAULT 0, tokensOut INTEGER NOT NULL DEFAULT 0, "
+    "cost REAL NOT NULL DEFAULT 0, taskId TEXT, timestamp TEXT NOT NULL)"
 )
 
 

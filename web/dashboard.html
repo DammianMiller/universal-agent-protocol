@@ -962,7 +962,7 @@
 
           // Cost Optimization
           const co = models.costOptimization || {};
-          document.getElementById('model-cost-opt').innerHTML = `<div class="kv"><span class="label">Enabled</span><span class="value ${co.enabled?'green':'yellow'}">${co.enabled?'Yes':'No'}</span></div><div class="kv"><span class="label">Target Reduction</span><span class="value">${co.targetReduction?(co.targetReduction*100).toFixed(0)+'%':'N/A'}</span></div><div class="kv"><span class="label">Max Degradation</span><span class="value">${co.maxPerformanceDegradation?(co.maxPerformanceDegradation*100).toFixed(0)+'%':'N/A'}</span></div>`;
+          document.getElementById('model-cost-opt').innerHTML = `<div class="kv"><span class="label">Enabled</span><span class="value ${co.enabled?'green':'yellow'}">${co.enabled?'Yes':'No'}</span></div><div class="kv"><span class="label">Target Reduction</span><span class="value">${co.targetReduction?co.targetReduction.toFixed(0)+'%':'N/A'}</span></div><div class="kv"><span class="label">Max Degradation</span><span class="value">${co.maxPerformanceDegradation?co.maxPerformanceDegradation.toFixed(0)+'%':'N/A'}</span></div>`;
 
           // Routing Matrix
           const mx = Object.entries(models.routingMatrix||{});
@@ -1253,7 +1253,7 @@
       function setHTML(id,html){const e=document.getElementById(id);if(e)e.innerHTML=html;}
       function fmt(n){if(typeof n!=='number'||isNaN(n))return'0';return Math.round(n).toLocaleString();}
       function capitalize(s){return s?s.charAt(0).toUpperCase()+s.slice(1):'';}
-      const MODEL_NAMES={'opus-4.6':'Claude Opus 4.6','sonnet-4.6':'Claude Sonnet 4.6','gpt-5.4':'GPT 5.4','gpt-5.3-codex':'GPT 5.3 Codex','qwen35':'Qwen 3.5 35B A3B','qwen35-a3b':'Qwen 3.5 35B A3B'};
+      const MODEL_NAMES={'fable-5':'Fable 5','opus-4.8':'Claude Opus 4.8','opus-4.6':'Claude Opus 4.6','sonnet-5':'Claude Sonnet 5','sonnet-4.6':'Claude Sonnet 4.6','haiku-4.5':'Claude Haiku 4.5','qwen36-a3b':'Qwen 3.6 35B A3B','qwen35-a3b':'Qwen 3.5 35B A3B','qwen35':'Qwen 3.5 35B A3B','gpt-5.4':'GPT 5.4','gpt-5.3-codex':'GPT 5.3 Codex'};
       function modelName(id){return MODEL_NAMES[id]||id||'unknown';}
       function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 

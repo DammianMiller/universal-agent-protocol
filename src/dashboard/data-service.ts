@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
-import { getSavingsByInfluence, type SavingsByInfluence } from './savings.js';
+import { getSavingsByInfluence, frontierCost, type SavingsByInfluence } from './savings.js';
 import { getOrchestrationTree, type OrchestrationTree } from './orchestration-tree.js';
 import { loadUapConfig } from '../utils/config-loader.js';
 import { join } from 'path';
@@ -794,37 +794,34 @@ function buildSessionTelemetry(
       );
     `);
 
-    // Get session info - create a default one if none exists
-    let sessionRowRaw = db.prepare('SELECT * FROM sessions ORDER BY created_at DESC LIMIT 1').get();
-    if (!sessionRowRaw) {
-      // Seed an active session from current runtime
-      db.prepare(
-        `INSERT OR IGNORE INTO sessions (id, created_at, status) VALUES (?, datetime('now', '-2 hours'), 'active')`
-      ).run(`session-${Date.now()}`);
-      sessionRowRaw = db.prepare('SELECT * FROM sessions ORDER BY created_at DESC LIMIT 1').get();
-    }
-    if (!sessionRowRaw) {
-      db.close();
-      return undefined;
-    }
-    const sessionRow = sessionRowRaw as Record<string, unknown>;
+    // Read the latest REAL session. This is a read path — never fabricate one.
+    // If none exists, synthesize an in-memory row with an honest (current) start
+    // so uptime reflects reality instead of a seeded "-2h", and nothing is written.
+    const sessionRowRaw = db.prepare('SELECT * FROM sessions ORDER BY created_at DESC LIMIT 1').get();
+    const sessionRow = (sessionRowRaw as Record<string, unknown> | undefined) ?? {
+      id: `session-${Date.now()}`,
+      created_at: new Date().toISOString(),
+      status: 'active',
+    };
 
-    // Seed agents from coordination data if the agents table is empty
-    const agentCount = (db.prepare('SELECT COUNT(*) as cnt FROM agents').get() as any)?.cnt || 0;
-    if (agentCount === 0 && coordination.agents.length > 0) {
-      const models = ['opus-4.6', 'qwen35-a3b'];
-      const insertAgent = db.prepare(
-        `INSERT OR IGNORE INTO agents (id, name, type, status, currentTask, tokensUsed, model, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      );
-      for (let i = 0; i < coordination.agents.length; i++) {
-        const a = coordination.agents[i];
-        const model = models[i % models.length]; // alternate models
-        insertAgent.run(a.id, a.name, a.type || 'main', a.status, a.task || '', 0, model, a.startedAt || new Date().toISOString());
-      }
+    // Read REAL agents from the session DB. If empty, fall back to the live
+    // coordination agents IN-MEMORY (real ids/names/status) — never seed the DB
+    // from a read path, and never invent a model (it stays 'unknown' until
+    // analytics links a real model to the agent id below).
+    let agents = db.prepare('SELECT * FROM agents ORDER BY started_at DESC').all() as any[];
+    if (agents.length === 0 && coordination.agents.length > 0) {
+      agents = coordination.agents.map((a) => ({
+        id: a.id,
+        name: a.name,
+        type: a.type || 'main',
+        status: a.status,
+        currentTask: a.task || '',
+        tokensUsed: 0,
+        model: '',
+        started_at: a.startedAt || new Date().toISOString(),
+        durationMs: 0,
+      }));
     }
-
-    // Get agents from session DB
-    const agents = db.prepare('SELECT * FROM agents ORDER BY started_at DESC').all();
 
     // Get skills
     const skills = db.prepare('SELECT * FROM skills WHERE active = 1 ORDER BY loaded_at DESC').all();
@@ -1017,20 +1014,17 @@ function buildSessionTelemetry(
       };
     });
 
-    // Compute real cost savings using session stats compression data
     const stats = globalSessionStats.getSummary();
-    const compressionSavings =
-      stats.totalRawBytes > 0
-        ? (1 - stats.totalContextBytes / stats.totalRawBytes) * 100
-        : 0;
-    // Estimate cost without UAP: use 1.4x multiplier (40% overhead from uncompressed context)
-    const estimatedCostWithoutUap = totalCost > 0 ? totalCost * 1.4 : effectiveTokensUsed * 0.000003 * 1.4;
+    // Cost-without-UAP = the REAL counterfactual of running every token on the
+    // frontier (opus) model, vs actual spend. No magic 1.4x multiplier: for a
+    // local zero-cost model this correctly reflects the full frontier cost avoided.
+    const fc = frontierCost();
+    const estimatedCostWithoutUap =
+      (totalTokensIn / 1_000_000) * fc.in + (totalTokensOut / 1_000_000) * fc.out;
     const realCostSavingsPercent =
       estimatedCostWithoutUap > 0
         ? Math.round(((estimatedCostWithoutUap - totalCost) / estimatedCostWithoutUap) * 100)
-        : compressionSavings > 0
-          ? Math.round(compressionSavings)
-          : 0;
+        : 0;
 
     // Calculate uptime from session row
     const createdAt = sessionRow.created_at as string | undefined;
@@ -1051,7 +1045,7 @@ function buildSessionTelemetry(
       tokensIn: totalTokensIn,
       tokensOut: totalTokensOut,
       tokensSaved: stats.totalRawBytes > 0 ? stats.totalRawBytes - stats.totalContextBytes : 0,
-      toolCalls: stats.totalCalls || coordination.activeAgents || 0,
+      toolCalls: stats.totalCalls || 0, // honest: no tool-call telemetry in the dashboard process (not the active-agent count)
       policyChecks: compliance.totalChecks,
       policyBlocks: compliance.totalBlocks,
       filesBackedUp: 0,
@@ -1429,18 +1423,20 @@ function getMemoryData(cwd: string): MemoryData {
   };
 }
 
-function getModelData(cwd: string): ModelData {
+export function getModelData(cwd: string): ModelData {
   let roles = { planner: 'opus-4.6', executor: 'qwen35-a3b', reviewer: 'opus-4.6', fallback: 'qwen35-a3b' };
   let strategy = 'balanced';
   let enabled = false;
   let availableModels: string[] = ['opus-4.6', 'qwen35-a3b'];
   let routingMatrix: Record<string, { planner: string; executor: string }> = {};
   let routingRules: ModelData['routingRules'] = [];
+  // Honest default: when a project does not configure cost optimization we do NOT
+  // fabricate 90/20/3 — zeros render as "N/A" so the panel reflects real config.
   let costOptimization: ModelData['costOptimization'] = {
     enabled: false,
-    targetReduction: 90,
-    maxPerformanceDegradation: 20,
-    fallbackThreshold: 3,
+    targetReduction: 0,
+    maxPerformanceDegradation: 0,
+    fallbackThreshold: 0,
   };
 
   try {

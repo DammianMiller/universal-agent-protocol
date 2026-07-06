@@ -40,7 +40,7 @@ export interface SavingsByInfluence {
 /** Blended $/token used to value RTK/compression token savings (~sonnet input). */
 const BLENDED_USD_PER_TOKEN = 3.0 / 1_000_000;
 
-function frontierCost(): { in: number; out: number } {
+export function frontierCost(): { in: number; out: number } {
   // Reference "without-UAP" model = the most expensive configured frontier model.
   const opus = ModelPresets['opus-4.8'] || ModelPresets['opus-4.6'] || ModelPresets['claude-opus-4'];
   return { in: opus?.costPer1MInput ?? 7.5, out: opus?.costPer1MOutput ?? 37.5 };

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.111.2 (2026-07-06)
+
+- fix(dashboard): de-fabricate session/model panels + fix proxy telemetry schema
+
+
 ## v1.111.1 (2026-07-06)
 
 - perf(dashboard): cache `rtk gain` so refreshes drop ~2.8s -> ~10ms
