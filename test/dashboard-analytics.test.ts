@@ -32,6 +32,18 @@ describe('getSavingsByInfluence', () => {
     expect(routing.detail).toMatch(/no UAP-routed tasks/i);
   });
 
+  it('reports exists-but-empty analytics as unmeasured (dimmed), not measured $0 (D)', () => {
+    const mdir = join(dir, 'agents', 'data', 'memory');
+    mkdirSync(mdir, { recursive: true });
+    const db = new Database(join(mdir, 'model_analytics.db'));
+    db.exec('CREATE TABLE task_outcomes (modelId TEXT, taskType TEXT, complexity TEXT, success INTEGER, durationMs INTEGER, tokensIn INTEGER, tokensOut INTEGER, cost REAL, taskId TEXT, timestamp TEXT);');
+    db.close(); // table present, zero rows
+    const routing = getSavingsByInfluence(dir).influences.find((i) => i.influence.startsWith('Model routing'))!;
+    expect(routing.quality).toBe('unmeasured');
+    expect(routing.costSavedUsd).toBe(0);
+    expect(routing.detail).toMatch(/no UAP-routed tasks/i);
+  });
+
   it('computes the routing counterfactual vs the frontier model (measured)', () => {
     const mdir = join(dir, 'agents', 'data', 'memory');
     mkdirSync(mdir, { recursive: true });

@@ -282,13 +282,27 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
   const wss = new WebSocketServer({ server });
 
   const pushInterval = setInterval(async () => {
-    if (wss.clients.size === 0) return;
+    if (wss.clients.size === 0 && sseClients.size === 0) return;
     try {
       const data = await getDashboardData();
       const payload = JSON.stringify(data);
       for (const client of wss.clients) {
         if (client.readyState === WebSocket.OPEN) {
           client.send(payload);
+        }
+      }
+      // Also push the live snapshot to SSE clients as a NAMED `snapshot` event so
+      // /api/events is a genuine live cross-process path for the main dashboard
+      // (the event bus alone only carries in-process activity events). Named so it
+      // does not collide with the default-`message` activity feed. (C)
+      if (sseClients.size > 0) {
+        const frame = `event: snapshot\ndata: ${payload}\n\n`;
+        for (const res of sseClients) {
+          try {
+            res.write(frame);
+          } catch {
+            sseClients.delete(res);
+          }
         }
       }
     } catch {
@@ -309,9 +323,14 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
   const cwd = process.cwd();
 
   server.listen(port, host, () => {
-    console.log(`UAP Dashboard server running at http://${host}:${port}`);
-    console.log(`WebSocket available at ws://${host}:${port}`);
-    console.log(`SSE event stream at http://${host}:${port}/api/events`);
+    const shown = host === '0.0.0.0' ? 'localhost' : host;
+    console.log(`UAP Dashboard server running at http://${shown}:${port}`);
+    if (host === '0.0.0.0') {
+      console.log(`  bound to all interfaces (0.0.0.0) — reachable on the LAN at http://<this-host-ip>:${port}`);
+    } else if (host === 'localhost' || host === '127.0.0.1') {
+      console.log(`  loopback only — for remote/LAN access restart with: uap dash serve --host 0.0.0.0`);
+    }
+    console.log(`WebSocket + SSE live updates at ws://${shown}:${port} and http://${shown}:${port}/api/events`);
 
     // Seed dashboard data from project state
     try {

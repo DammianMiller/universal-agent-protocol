@@ -685,6 +685,16 @@
               renderLiveEvents();
             } catch {}
           };
+          // Full live snapshot (cross-process) — used when the WebSocket is down so
+          // SSE alone keeps the dashboard live rather than falling to slow polling. (C)
+          eventSource.addEventListener('snapshot', (e) => {
+            if (ws && ws.readyState === WebSocket.OPEN) return;
+            try {
+              render(JSON.parse(e.data));
+              document.getElementById('ws-status').className = 'status-dot connected';
+              document.getElementById('refresh-info').textContent = 'Live (SSE) - ' + new Date().toLocaleTimeString();
+            } catch {}
+          });
           eventSource.onerror = () => { eventSource.close(); setTimeout(connectSSE, 5000); };
         } catch {}
       }
