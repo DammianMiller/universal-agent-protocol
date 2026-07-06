@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.114.0 (2026-07-06)
+
+- feat(dashboard): persist compression + performance panels to a cross-process store
+
+
 ## v1.113.0 (2026-07-06)
 
 - fix(dashboard): de-fabricate model panel via raw config; wire routing auto-activation into setup
