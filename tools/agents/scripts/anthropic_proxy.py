@@ -401,6 +401,22 @@ except Exception:  # pragma: no cover - optional middleware
     _TOOLCALL_NORMALIZER_OK = False
 
 
+def _record_project_telemetry(body, model, usage) -> None:
+    """Fail-open per-project routing/cost telemetry: derive the request's project
+    dir and append a task_outcomes row to its analytics DB so per-project
+    dashboards see the model calls this shared proxy makes. See
+    tools/agents/scripts/project_telemetry.py. Never raises."""
+    try:
+        import sys as _s
+        _d = os.path.dirname(os.path.abspath(__file__))
+        if _d not in _s.path:
+            _s.path.insert(0, _d)
+        import project_telemetry as _pt
+        _pt.record_from_request(body, model, usage)
+    except Exception:
+        pass
+
+
 def _toolcall_workdir_hint(messages: list, limit: int = 8000) -> str:
     """Recent text/tool_result content (capped) so derive_workdir can recover the
     real workdir echoed in command outputs even when the model's own tool-call
@@ -9364,6 +9380,7 @@ async def messages(request: Request):
             upstream_input = anthropic_resp.get("usage", {}).get("input_tokens", 0)
             if upstream_input > 0:
                 monitor.last_input_tokens = upstream_input
+            _record_project_telemetry(body, model, anthropic_resp.get("usage", {}))
             if PROXY_FORCE_NON_STREAM:
                 logger.info(
                     "FORCED NON-STREAM: served stream response via guarded non-stream path"
@@ -9803,6 +9820,7 @@ async def messages(request: Request):
         if upstream_input > 0:
             monitor.last_input_tokens = upstream_input
 
+        _record_project_telemetry(body, model, anthropic_resp.get("usage", {}))
         return anthropic_resp
 
 
