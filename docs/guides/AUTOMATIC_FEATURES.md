@@ -126,6 +126,65 @@ Install UAP (`npm i -g universal-agent-protocol`) and every feature below activa
 
 ---
 
+## Long-Task Autonomy (Hands-Free) ✨
+
+*The Fable-parity layer: any model runs a huge build to 100% without a human in
+the loop. Full guide: [The Orchestrator & Hands-Free Persistence](ORCHESTRATOR.md).*
+
+### Orchestrator (blackboard, minimal context)
+**What it does:** Decomposes a complex mission into a task DAG and runs each task
+in a **fresh, minimal context** — its own goal + the verified interface
+contracts of its direct dependencies + a small memory pull — instead of one
+giant prompt. Publishes each task's contract back for dependents and future
+sessions; can adaptively add discovered tasks (`NEW_TASKS`).
+
+**When it kicks in:** Automatically for any decomposed mission (auto-on). Turn
+off with `uap orchestrator off` / `--no-orchestrate`.
+
+**Why it matters:** A small-context local model (Qwen3.6) can multi-step through
+a build far larger than its window, because it never has to hold the whole thing.
+
+### Epic Controller (loop epics as fresh sessions)
+**What it does:** For a *massive* mission (design → build → operational
+readiness), runs it as a **sequence of epics**, each a fresh mission that sees
+only prior epics' summaries. An epic that fails its gates is retried with a
+fresh session fed the last failure — looped until accepted.
+
+**When it kicks in:** Auto for genuinely epic-scale missions (complex *and*
+≥ 1200 chars); force with `--epics`.
+
+**Why it matters:** "Start a new session per task, inject only what's needed,
+loop until complete" — without you orchestrating it by hand.
+
+### Hands-Free Persistence (can't stop until done)
+**What it does:** A **completion ledger** (`.uap/completion-ledger.json`) is the
+objective definition of done for the whole build. The Stop hook **blocks
+session-end** while any item remains, handing the model a *"NOT DONE —
+REMAINING: …"* message; the reactor injects a *"keep going"* directive each
+turn. Intensity is model-aware (trust Fable, nudge Opus/GPT, firmly drive
+local models), and it's bounded so it can never wedge.
+
+**When it kicks in:** Auto-on whenever an active ledger has remaining items.
+Casual sessions with no build in progress are untouched. Disable with
+`uap handsfree off` / `UAP_HANDSFREE=0`.
+
+**Why it matters:** Every model behaves like Fable on long tasks — persisting to
+objective completion instead of stopping at the first plausible finish.
+
+### Plan Auto-Seed & Auto-Resume
+**What it does:** When the model writes a plan (Claude Code `TodoWrite`), a hook
+**mirrors it into the ledger automatically** — no manual `init`. On session
+start, an unfinished build is **auto-resumed** (*"Resuming a build in progress —
+N/M done, REMAINING: …"*).
+
+**When it kicks in:** Any interactive session with a real multi-step plan
+(≥ 3 todos). `uap deliver` epic mode seeds the ledger directly.
+
+**Why it matters:** The whole loop is zero-touch — the model's own plan becomes
+the definition of done, and work resumes across sessions without being asked.
+
+---
+
 ## Developer Experience
 
 ### RTK (Rust Token Killer)
@@ -134,6 +193,18 @@ Install UAP (`npm i -g universal-agent-protocol`) and every feature below activa
 **When it kicks in:** Automatically for every shell command you run. No flags needed.
 
 **Why it matters:** Token costs add up fast. RTK transparently optimizes every command without you thinking about it.
+
+### Dashboard — Savings & Orchestration Visibility
+**What it does:** `uap dash serve` shows **Token Savings by Influence** (real
+tokens/cost saved per mechanism — RTK, model routing, context compression — with
+honest *measured/estimated* labels) and an **Orchestrations & Hierarchy** tree
+(the live mission → epic → task tree with the agents on each node and the active
+build ledger's progress).
+
+**When it kicks in:** Whenever you run `uap dash serve` (open `http://localhost:3847`).
+
+**Why it matters:** See exactly where UAP is saving you tokens and how a
+long-running build is progressing — no guesswork.
 
 ### HALO (High-Level Agent Orchestrator)
 **What it does:** Provides a high-level orchestration layer for complex multi-step tasks, automatically decomposing them into subtasks and managing dependencies.

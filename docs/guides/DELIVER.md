@@ -42,6 +42,13 @@ uap deliver "migrate the auth module to JWT" --guidance-file ./guidance.txt
 echo "prefer RS256 and keep the existing /login route" >> ./guidance.txt
 ```
 
+For **huge, multi-epic builds**, `deliver` goes further: it decomposes the
+mission into a task DAG (the **blackboard orchestrator**, minimal fresh context
+per task) and, for epic-scale work, loops whole **epics as fresh sessions**
+until each is accepted. Combined with **hands-free persistence**, any model —
+local or frontier — runs the build to 100% without stopping. See
+**[The Orchestrator & Hands-Free Persistence](ORCHESTRATOR.md)**.
+
 ---
 
 ## Auto-optimization
