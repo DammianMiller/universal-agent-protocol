@@ -42,6 +42,39 @@ describe('getModelData — honest, config-driven (no fabricated defaults)', () =
     expect(m.costOptimization).toMatchObject({ enabled: true, targetReduction: 42, maxPerformanceDegradation: 7 });
   });
 
+  it('does NOT fabricate 90/20/3 when costOptimization is configured but partial', () => {
+    // A costOptimization object that omits fields must fall back to honest zeros
+    // (renders N/A), never the legacy 90/20/3 placeholders.
+    writeConfig({ enabled: true, costOptimization: { enabled: true } });
+    const m = getModelData(dir);
+    expect(m.costOptimization.enabled).toBe(true);
+    expect(m.costOptimization.targetReduction).toBe(0);
+    expect(m.costOptimization.maxPerformanceDegradation).toBe(0);
+    expect(m.costOptimization.fallbackThreshold).toBe(0);
+  });
+
+  it('returns honest-empty roles / availableModels when multiModel is unconfigured (no opus-4.6/qwen35 seed)', () => {
+    writeConfig(undefined);
+    const m = getModelData(dir);
+    expect(m.roles).toEqual({ planner: '', executor: '', reviewer: '', fallback: '' });
+    expect(m.availableModels).toEqual([]);
+    expect(m.enabled).toBe(false);
+  });
+
+  it('passes tier-form routingMatrix (complexity -> model string) through intact', () => {
+    // cost/speed/sonnet-5 presets write a string-per-tier matrix; the panel must
+    // surface it, not blank it out.
+    writeConfig({ enabled: true, routingMatrix: { low: 'qwen36-a3b', high: 'opus-4.8' } });
+    const m = getModelData(dir);
+    expect(m.routingMatrix).toEqual({ low: 'qwen36-a3b', high: 'opus-4.8' });
+  });
+
+  it('normalizes ModelConfig-object entries in availableModels to ids (no [object Object])', () => {
+    writeConfig({ enabled: true, models: [{ id: 'opus-4.8' }, 'qwen36-a3b'] });
+    const m = getModelData(dir);
+    expect(m.availableModels).toEqual(['opus-4.8', 'qwen36-a3b']);
+  });
+
   it('reflects configured roles + models live (not the stale opus-4.6/qwen35 defaults)', () => {
     writeConfig({ enabled: true, roles: { planner: 'fable-5', executor: 'haiku-4.5', reviewer: 'opus-4.8', fallback: 'qwen36-a3b' }, models: ['fable-5', 'haiku-4.5', 'opus-4.8', 'qwen36-a3b'], routingStrategy: 'performance-first' });
     const m = getModelData(dir);
@@ -63,6 +96,11 @@ describe('getModelData — honest, config-driven (no fabricated defaults)', () =
     const m = getModelData(dir);
     expect(m.recentRoutingDecisions.length).toBe(1);
     expect(m.recentRoutingDecisions[0].modelUsed).toBe('qwen36-a3b');
+    // Honest empty reasoning — task_outcomes has no reasoning column, so we do
+    // NOT stamp every decision 'auto-select'.
+    expect(m.recentRoutingDecisions[0].reasoning).toBe('');
+    // availableModels is derived from REAL analytics when config lists none.
+    expect(m.availableModels).toEqual(['qwen36-a3b']);
     expect(m.sessionUsage.length).toBe(1);
     // A project with routing telemetry reads as effectively-enabled even if the
     // config flag is off — because real routing IS happening.
