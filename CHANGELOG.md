@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.108.1 (2026-07-06)
+
+- docs: orchestrator + hands-free persistence + dashboard analytics (automagic)
+- fix(policies): cluster-routing gates Bash commands only + strips heredocs (from pay2u)
+
+
 ## v1.108.0 (2026-07-05)
 
 - fix(policies): cluster-routing scoped to Bash commands only + heredoc bodies stripped before pattern-matching (ported from pay2u) — file writes that merely mention cluster product names no longer trip the gate
