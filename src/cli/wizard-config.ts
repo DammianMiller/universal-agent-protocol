@@ -10,7 +10,8 @@
 
 import { writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { join } from 'path';
-import { RoutingPresets } from '../models/index.js';
+import { RoutingPresets, passthroughModelsForPreset } from '../models/index.js';
+import { upsertProxyEnvVars } from './systemd-services.js';
 
 export interface MemoryFeatures {
   shortTermMemory: boolean;
@@ -379,10 +380,28 @@ export function writeProxyEnv(cwd: string, selections: WizardSelections): string
     else lines.push('UAP_ENFORCE_DELIVERY=block');
     lines.push(`UAP_DELIVER_LOCAL_MODE=${d.localMode}`);
 
+    // Anthropic passthrough — keep the proxy in sync with the routing choice so
+    // a picked preset works first-time: cloud tiers (planner/reviewer) reach the
+    // real Anthropic API while local ids stay on llama; an all-local preset
+    // ("__local_only__") forces everything local. Empty (default) = passthrough
+    // all claude- models via the proxy's built-in patterns.
+    const routingId = selections.model.routingPreset;
+    const routingPreset =
+      routingId && routingId !== 'none' ? RoutingPresets[routingId] : undefined;
+    const passthrough = routingPreset ? passthroughModelsForPreset(routingPreset) : '';
+    lines.push(`ANTHROPIC_PASSTHROUGH_MODELS=${passthrough}`);
+
     const dir = join(cwd, '.uap');
     mkdirSync(dir, { recursive: true });
     const envPath = join(dir, 'proxy.env');
     writeFileSync(envPath, lines.join('\n') + '\n');
+    // Mirror the passthrough into the systemd EnvironmentFile the running
+    // service actually reads (this .uap/proxy.env is only the fallback loader).
+    try {
+      upsertProxyEnvVars({ ANTHROPIC_PASSTHROUGH_MODELS: passthrough });
+    } catch {
+      /* proxy env sync is best-effort — .uap/proxy.env still written */
+    }
     // Contains a secret (judge API key) — restrict permissions best-effort.
     try {
       chmodSync(envPath, 0o600);
