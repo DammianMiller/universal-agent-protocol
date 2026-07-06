@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.112.0 (2026-07-07)
+
+- feat(models): auto-switch tool-call profile from model routing
+
+
 ## v1.111.3 (2026-07-06)
 
 - fix(hooks): prevent SIGPIPE crash in Stop hook completion gate
