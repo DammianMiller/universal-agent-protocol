@@ -753,7 +753,9 @@ DEFAULT_PASSTHROUGH_MODEL_PATTERNS = (
     re.compile(r"^claude-opus-4-6", re.IGNORECASE),
     re.compile(r"^claude-opus-4-8", re.IGNORECASE),
     re.compile(r"^claude-sonnet-4-6", re.IGNORECASE),
+    re.compile(r"^claude-sonnet-5", re.IGNORECASE),
     re.compile(r"^claude-haiku-4-5", re.IGNORECASE),
+    re.compile(r"^claude-haiku-3-5", re.IGNORECASE),
     re.compile(r"^claude-fable-5", re.IGNORECASE),
 )
 
@@ -10118,7 +10120,8 @@ async def models():
         "data": [
             {"id": "claude-haiku-4-5-20251001", "object": "model"},
             {"id": "claude-sonnet-4-6", "object": "model"},
-            {"id": "claude-opus-4-7", "object": "model"},
+            {"id": "claude-sonnet-5-20250514", "object": "model"},
+            {"id": "claude-fable-5", "object": "model"},
             {"id": "qwen36-35b-a3b-iq4xs", "object": "model"},
         ]
     }

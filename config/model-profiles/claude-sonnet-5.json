@@ -1,0 +1,28 @@
+{
+  "name": "Claude Sonnet 5",
+  "model": "claude-sonnet-5-20250514",
+  "max_tokens": 8192,
+  "temperature": 0.5,
+  "top_p": 0.9,
+  "top_k": 40,
+  "context_window": 200000,
+  "stop_sequences": [],
+  "presence_penalty": 0.0,
+  "frequency_penalty": 0.0,
+  "reasoning": {
+    "enabled": true,
+    "effort": "medium",
+    "budget": 16000
+  },
+  "tools": {
+    "enabled": true,
+    "max_concurrent": 10,
+    "auto_invoke": true
+  },
+  "guardrails": {
+    "loop_detection": true,
+    "tool_narrowing": true,
+    "cycle_breaking": true,
+    "context_pruning": true
+  }
+}

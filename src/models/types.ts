@@ -154,6 +154,25 @@ export const ModelPresets: Record<string, ModelConfig> = {
     capabilities: ['planning', 'complex-reasoning', 'code-generation', 'advanced-planning'],
     modelContextBudget: 180000,
   },
+  'sonnet-5': {
+    id: 'sonnet-5',
+    name: 'Claude Sonnet 5',
+    provider: 'anthropic',
+    apiModel: 'claude-sonnet-5-20250514',
+    apiKeyEnvVar: 'ANTHROPIC_API_KEY',
+    maxContextTokens: 200000,
+    costPer1MInput: 3.75,
+    costPer1MOutput: 18.75,
+    capabilities: [
+      'planning',
+      'code-generation',
+      'execution',
+      'review',
+      'agentic',
+      'complex-reasoning',
+    ],
+    modelContextBudget: 180000,
+  },
   'haiku-4.5': {
     id: 'haiku-4.5',
     name: 'Claude Haiku 4.5',
@@ -286,6 +305,28 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
     },
     models: ['fable-5', 'haiku-4.5', 'opus-4.8', 'qwen36-a3b'],
     routingStrategy: 'performance-first',
+  },
+  'sonnet-5-tiered': {
+    id: 'sonnet-5-tiered',
+    name: 'Sonnet 5 primary (balanced speed/quality, escalate to Opus)',
+    description:
+      'Use Sonnet 5 as the primary model for most tasks (excellent balance of speed and ' +
+      'quality); escalate to Opus 4.8 for critical/high complexity. Plan on Sonnet 5, ' +
+      'review on Opus 4.8, free local fallback. Best value for everyday agentic work.',
+    roles: {
+      planner: 'sonnet-5',
+      executor: 'sonnet-5',
+      reviewer: 'opus-4.8',
+      fallback: 'qwen36-a3b',
+    },
+    tiers: {
+      low: 'sonnet-5',
+      medium: 'sonnet-5',
+      high: 'opus-4.8',
+      critical: 'opus-4.8',
+    },
+    models: ['sonnet-5', 'opus-4.8', 'qwen36-a3b'],
+    routingStrategy: 'balanced',
   },
 };
 
