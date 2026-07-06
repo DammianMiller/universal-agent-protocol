@@ -82,6 +82,19 @@ function routingSaving(cwd: string): InfluenceSaving {
       .prepare('SELECT COUNT(*) n, SUM(tokensIn) ti, SUM(tokensOut) to_, SUM(cost) c FROM task_outcomes')
       .get() as { n: number; ti: number | null; to_: number | null; c: number | null };
     db.close();
+    // Exists-but-empty: the DB is present (a prior UAP run created it) but no
+    // task has been routed THROUGH UAP's executor yet — the normal case when a
+    // project drives models via opencode/the proxy. Report it honestly as
+    // unmeasured (dimmed) rather than a real-looking measured $0. (D + B)
+    if (!row.n || row.n === 0) {
+      return {
+        influence: 'Model routing (cheaper models)',
+        tokensSaved: 0,
+        costSavedUsd: 0,
+        detail: 'no UAP-routed tasks recorded yet (this project routes via the proxy/opencode, not UAP\'s executor)',
+        quality: 'unmeasured',
+      };
+    }
     const tokensIn = row.ti ?? 0;
     const tokensOut = row.to_ ?? 0;
     const actual = row.c ?? 0;

@@ -55,6 +55,7 @@ interface DashboardOptions {
   compact?: boolean;
   taskId?: string;
   port?: number;
+  host?: string;
 }
 
 export async function dashboardCommand(
@@ -106,7 +107,10 @@ export async function dashboardCommand(
 
 async function serveDashboard(options: DashboardOptions): Promise<void> {
   const { startDashboardServer } = await import('../dashboard/server.js');
-  const server = startDashboardServer({ port: (options as { port?: number }).port || 3847 });
+  const server = startDashboardServer({
+    port: (options as { port?: number }).port || 3847,
+    host: (options as { host?: string }).host,
+  });
 
   // Keep alive until Ctrl+C
   process.on('SIGINT', () => {
