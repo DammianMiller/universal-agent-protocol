@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.111.0 (2026-07-06)
+
+- feat(proxy): per-project routing/cost telemetry so dashboards see proxy model calls
+
+
 ## v1.110.0 (2026-07-06)
 
 - feat(dashboard): configurable bind host + cross-process SSE live push + honest empty-analytics
