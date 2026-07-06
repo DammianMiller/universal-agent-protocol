@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.110.0 (2026-07-06)
+
+- feat(dashboard): configurable bind host + cross-process SSE live push + honest empty-analytics
+- revert(claude-md): restore SESSION START block (lossy trim broke compliance gate)
+- test: give policy-gate fixture a .git so the worktree guard engages
+- fix: drop stray agents/docker-compose.yml duplicate (D10 guard; canonical is tools/agents/docker-compose.qdrant.yml)
+- chore(harness): sync integration hooks/gates/policies; untrack secret-bearing settings.local.json
+
+
 ## v1.109.1 (2026-07-06)
 
 - fix(dashboard): render idle/unmeasured influences explicitly, not a $0
