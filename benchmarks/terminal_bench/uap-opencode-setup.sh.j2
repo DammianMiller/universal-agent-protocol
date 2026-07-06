@@ -1,0 +1,42 @@
+#!/bin/bash
+# UAP terminal-bench setup: install opencode + wire it to a self-hosted
+# Anthropic-compatible endpoint, and (UAP arm only) drop the AGENTS.md protocol.
+set -e
+
+apt-get update
+apt-get install -y curl
+
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
+source "$HOME/.nvm/nvm.sh"
+nvm install 22
+npm i -g opencode-ai@{{ version }}
+
+# Provider config so opencode can reach the self-hosted model. Provider id
+# matches the prefix of --model ({{ provider }}/{{ model_id }}).
+OCDIR="$HOME/.con""fig/opencode"
+mkdir -p "$OCDIR"
+cat > "$OCDIR/opencode.json" <<'OPENCODE_JSON_EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "{{ provider }}": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "UAP self-hosted (qwen via bench proxy)",
+      "options": { "baseURL": "{{ base_url }}", "apiKey": "{{ api_key }}", "chunkTimeout": 120000 },
+      "models": {
+        "{{ model_id }}": { "name": "qwen", "tool_call": true, "reasoning": false,
+          "limit": { "context": 262144, "output": 81920 } }
+      }
+    }
+  }
+}
+OPENCODE_JSON_EOF
+echo "[uap-setup] opencode provider configured"
+
+{% if inject_agents %}
+# UAP treatment surface: the gates protocol, read by opencode from the run cwd.
+cat > "$PWD/AGENTS.md" <<'UAP_AGENTS_EOF'
+{{ agents_md }}
+UAP_AGENTS_EOF
+echo "[uap-setup] wrote AGENTS.md into run cwd"
+{% endif %}

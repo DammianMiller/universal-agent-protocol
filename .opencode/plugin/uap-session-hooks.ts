@@ -38,6 +38,49 @@ export const UAPSessionHooks: Plugin = async ({ client, $ }) => {
           }
         } catch { /* fail safely */ }
       }
+
+      // Runtime execution gate on idle (session end). OpenCode event
+      // handlers cannot hard-block the session, so this is advisory: it runs
+      // the cheap execution gate when code changed and surfaces a runtime
+      // failure loudly + into context so the next turn fixes it. (Claude/
+      // Factory/Cursor/VSCode get a hard exit-2 block via stop.sh.)
+      if (event.type === "session.idle") {
+        try {
+          if (process.env.UAP_VERIFY_ON_STOP === "0") return
+          const ch = await $`git diff --name-only HEAD`.quiet().nothrow()
+          const un = await $`git ls-files --others --exclude-standard`.quiet().nothrow()
+          const changed = ch.stdout.toString() + un.stdout.toString()
+          if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/m.test(changed)) return
+          // Portable timeout: bun's shell has no `timeout` builtin and macOS
+          // lacks GNU timeout (ships as `gtimeout`). Resolve a real binary via
+          // Bun.which; if neither exists, run verify directly — it enforces its
+          // own internal rung timeouts. Avoids `bun: command not found: timeout`.
+          const tmo = (typeof Bun !== "undefined" && (Bun.which("timeout") || Bun.which("gtimeout"))) || ""
+          const res = tmo
+            ? await $`${tmo} 120 uap verify --strict --runtime-only`.quiet().nothrow()
+            : await $`uap verify --strict --runtime-only`.quiet().nothrow()
+          if (res.exitCode === 1) {
+            const msg = (res.stdout.toString() + res.stderr.toString()).trim()
+            console.error("[UAP] RUNTIME EXECUTION GATE FAILED — the code does not run:\n" + msg)
+            if (output && output.context) output.context.push("<uap-context>RUNTIME GATE FAILED — the code does not run. Fix before finishing:\n" + msg + "</uap-context>")
+          }
+        } catch { /* fail open */ }
+      }
+    },
+
+    // Pre-tool-use policy gate. OpenCode aborts the tool call when this
+    // hook throws, so a blocked verdict (exit 2) becomes a hard block.
+    "tool.execute.before": async (input, output) => {
+      try {
+        const payload = JSON.stringify({ tool_name: input.tool, tool_input: (output && output.args) || {} })
+        const res = await $`echo ${payload} | bash .opencode/hooks/uap-policy-gate.sh`.quiet().nothrow()
+        if (res.exitCode === 2) {
+          const reason = (res.stderr.toString() || res.stdout.toString()).trim()
+          throw new Error("[UAP policy blocked] " + reason)
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.indexOf("[UAP policy blocked]") === 0) throw e
+      }
     },
 
     "experimental.session.compacting": async (_input, output) => {

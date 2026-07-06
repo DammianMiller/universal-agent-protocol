@@ -58,6 +58,15 @@
             "command": "f=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-tool-use-edit-write.sh\"; if [ -f \"$f\" ]; then bash \"$f\"; else exit 0; fi"
           }
         ]
+      },
+      {
+        "matcher": "TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-todo-ledger.sh\""
+          }
+        ]
       }
     ],
     "PreCompact": [

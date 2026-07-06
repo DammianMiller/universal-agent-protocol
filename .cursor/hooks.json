@@ -32,6 +32,10 @@
       {
         "matcher": "Edit|Write",
         "command": ".cursor/hooks/post-tool-use-edit-write.sh"
+      },
+      {
+        "matcher": "Edit|Write",
+        "command": ".cursor/hooks/uap-schema-post.sh"
       }
     ],
     "preCompact": [
@@ -52,6 +56,11 @@
     "sessionEnd": [
       {
         "command": ".cursor/hooks/session-end.sh"
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "command": ".cursor/hooks/uap-reactor-prompt.sh"
       }
     ]
   }
