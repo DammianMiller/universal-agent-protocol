@@ -17,6 +17,7 @@ import { concurrentMap } from '../utils/concurrency-pool.js';
 import { getTaskEventBus } from '../tasks/event-bus.js';
 import { withTimeout } from '../utils/concurrency.js';
 import { getPerformanceMonitor } from '../utils/performance-monitor.js';
+import { persistPerfSample } from '../utils/telemetry-store.js';
 import { recordTaskOutcome as recordModelRouterOutcome } from '../memory/model-router.js';
 import type { ModelId } from '../memory/model-router.js';
 
@@ -327,9 +328,11 @@ export class TaskExecutor {
 
     const duration = Date.now() - startTime;
 
-    // Record performance metrics
+    // Record performance metrics (in-process singleton + persisted store for the dashboard)
     monitor.record(`executor.${model.id}`, duration);
     monitor.record(`executor.subtask.${subtask.type || 'unknown'}`, duration);
+    persistPerfSample(process.cwd(), `executor.${model.id}`, duration);
+    persistPerfSample(process.cwd(), `executor.subtask.${subtask.type || 'unknown'}`, duration);
 
     // Calculate cost
     const cost = this.router.estimateCost(

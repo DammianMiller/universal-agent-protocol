@@ -33,6 +33,7 @@ import { getPredictiveMemoryService } from './predictive-memory.js';
 import { getSpeculativeCache } from './speculative-cache.js';
 import { contentHash, jaccardSimilarity } from '../utils/string-similarity.js';
 import { getPerformanceMonitor } from '../utils/performance-monitor.js';
+import { persistPerfSample } from '../utils/telemetry-store.js';
 import {
   detectAmbiguity,
   formatAmbiguityForContext,
@@ -436,6 +437,8 @@ export async function retrieveDynamicMemoryContext(
   const retrievalDuration = performance.now() - retrievalStart;
   perfMonitor.record('memory.dynamicRetrieval', retrievalDuration);
   perfMonitor.record(`memory.retrieval.${queryComplexity}`, retrievalDuration);
+  persistPerfSample(process.cwd(), 'memory.dynamicRetrieval', retrievalDuration);
+  persistPerfSample(process.cwd(), `memory.retrieval.${queryComplexity}`, retrievalDuration);
 
   // Record access for predictive memory learning
   try {
