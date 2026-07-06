@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "uap-router": {
+      "command": "uap",
+      "args": [
+        "mcp-router",
+        "start"
+      ]
+    }
+  }
+}

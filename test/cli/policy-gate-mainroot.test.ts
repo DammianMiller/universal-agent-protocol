@@ -31,6 +31,10 @@ const COMMON_SRC = join(POLICY_TOOLS, '_common.py');
 
 function makeProject(): string {
   const proj = mkdtempSync(join(tmpdir(), 'uap-pgate-'));
+  // A worktree is unsatisfiable without git, so the enforcer fails open on a
+  // non-git project (avoids a create-worktree deadlock loop). Give the fixture a
+  // .git so the worktree guard actually engages and can be exercised here.
+  mkdirSync(join(proj, '.git'), { recursive: true });
   mkdirSync(join(proj, 'agents', 'data', 'memory'), { recursive: true });
   mkdirSync(join(proj, '.policy-tools'), { recursive: true });
   mkdirSync(join(proj, '.factory', 'hooks'), { recursive: true });

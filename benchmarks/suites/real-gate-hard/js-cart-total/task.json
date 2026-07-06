@@ -1,0 +1,14 @@
+{
+  "name": "Shopping cart total with discount and tax",
+  "instruction": "cart.js exports computeTotal(items, discountPct, taxPct), currently a stub. Implement it: sum price*qty for each item, apply the percentage discount to that subtotal, then apply the percentage tax to the discounted amount. Keep the export shape.",
+  "difficulty": "medium",
+  "tags": [
+    "feature",
+    "javascript",
+    "edge-cases"
+  ],
+  "gateCmd": "node test.js",
+  "verifyCmd": "node -e \"const t=require('./cart.js');const c=(a,b)=>Math.abs(a-b)<1e-6;const T=[[[[{price:10,qty:2}],0,0],20],[[[{price:10,qty:2}],10,0],18],[[[{price:10,qty:2}],0,10],22],[[[{price:10,qty:2}],10,10],19.8],[[[],50,20],0],[[[{price:1,qty:1},{price:2,qty:2}],0,0],5],[[[{price:5,qty:4}],25,0],15],[[[{price:100,qty:1}],10,5],94.5]];for(const [a,e] of T){const g=t(JSON.parse(JSON.stringify(a[0])),a[1],a[2]);if(!c(g,e)){console.error('FAIL',JSON.stringify(a),g,'exp',e);process.exit(1);}}console.log('VERIFY OK');\"",
+  "verifyTimeoutSec": 30,
+  "agentTimeoutSec": 240
+}

@@ -30,6 +30,11 @@ export UAP_REPO_ROOT="$MAIN_ROOT"
 # actual WORKING TREE, not the (possibly bare) MAIN_ROOT. Expose the current checkout
 # so _common.worktree_root() targets the worktree when an op runs from inside one.
 export UAP_WORKTREE_ROOT="$CHECKOUT_ROOT"
+# Delivery enforcement defaults to BLOCK for UAP-managed projects: substantive
+# source edits must route through `uap deliver` (verified completion against the
+# gates). The `:-` preserves any explicit operator/CI override (advisory|block).
+# Escape hatches still apply: UAP_DELIVER_ACTIVE=1 (inside deliver) / UAP_DELIVER_BYPASS=1.
+export UAP_ENFORCE_DELIVERY="${UAP_ENFORCE_DELIVERY:-block}"
 cd "$MAIN_ROOT"
 
 TOOL="$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tool_name") or d.get("tool") or "")' 2>/dev/null || true)"
@@ -50,10 +55,20 @@ while IFS='|' read -r pid pname tool; do
 try: d=json.loads(sys.stdin.read()); print("1" if d.get("allowed",True) else "0")
 except: print("1")' 2>/dev/null || echo 1)"
   if [[ "$allowed" == "0" ]]; then
-    reason="$(printf '%s' "$out" | python3 -c 'import json,sys;
+    # R1: consume the enforcer's route:deliver signal (log intent, opt-in
+    # background auto-route to `uap deliver`). Falls back to the plain reason if
+    # the helper is missing/fails.
+    msg=""
+    if [[ -f "$HOOK_DIR/deliver_autoroute.py" ]]; then
+      msg="$(printf '%s' "$out" | python3 "$HOOK_DIR/deliver_autoroute.py" --tool "$TOOL" --args "$ARGS" --root "$MAIN_ROOT" --policy "$pname" 2>/dev/null || true)"
+    fi
+    if [[ -z "$msg" ]]; then
+      reason="$(printf '%s' "$out" | python3 -c 'import json,sys;
 try: print(json.loads(sys.stdin.read()).get("reason",""))
 except: print("")' 2>/dev/null || echo "")"
-    echo "[UAP policy blocked: $pname] $reason" >&2
+      msg="[UAP policy blocked: $pname] $reason"
+    fi
+    echo "$msg" >&2
     exit 2
   fi
 done < <(sqlite3 "$DB" "SELECT p.id, p.name, t.toolName FROM policies p JOIN executable_tools t ON t.policyId=p.id WHERE p.isActive=1;")
