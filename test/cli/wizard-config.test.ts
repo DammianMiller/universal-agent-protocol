@@ -147,6 +147,45 @@ describe('applyWizardConfig — routing preset', () => {
     });
   });
 
+  it('materializes complexity tiers into routingMatrix for a tiered preset (parity with `model routing use`)', async () => {
+    const sel = defaultSelections({
+      model: {
+        provider: 'anthropic',
+        qwenOptimizations: false,
+        toolCallProfile: 'claude-sonnet-4.6',
+        costTracking: false,
+        modelRouting: true,
+        routingPreset: 'cost-tiered',
+      },
+    });
+    await applyWizardConfig(dir, sel);
+    const cfg = JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf-8'));
+    expect(cfg.multiModel.enabled).toBe(true);
+    // cost-tiered runs low/medium free on local, escalates high/critical to Opus.
+    expect(cfg.multiModel.routingMatrix).toEqual({
+      low: 'qwen36-a3b',
+      medium: 'qwen36-a3b',
+      high: 'opus-4.8',
+      critical: 'opus-4.8',
+    });
+  });
+
+  it('omits routingMatrix for a non-tiered preset (role-based routing only)', async () => {
+    const sel = defaultSelections({
+      model: {
+        provider: 'anthropic',
+        qwenOptimizations: false,
+        toolCallProfile: 'claude-sonnet-4.6',
+        costTracking: false,
+        modelRouting: true,
+        routingPreset: 'fable-local-opus',
+      },
+    });
+    await applyWizardConfig(dir, sel);
+    const cfg = JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf-8'));
+    expect(cfg.multiModel.routingMatrix).toBeUndefined();
+  });
+
   it('does not write multiModel when no routing preset is chosen', async () => {
     await applyWizardConfig(dir, defaultSelections());
     const cfg = JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf-8'));

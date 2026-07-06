@@ -953,7 +953,7 @@
           let rh = '';
           for (const [role, model] of Object.entries(models.roles||{})) {
             const c = role==='planner'?'green':role==='executor'?'cyan':role==='reviewer'?'purple':'';
-            rh += `<div class="kv"><span class="label">${esc(capitalize(role))}</span><span class="value ${c}">${esc(modelName(String(model)))}</span></div>`;
+            rh += `<div class="kv"><span class="label">${esc(capitalize(role))}</span><span class="value ${c}">${model?esc(modelName(String(model))):'—'}</span></div>`;
           }
           document.getElementById('model-roles').innerHTML = rh;
 
@@ -968,7 +968,12 @@
           const mx = Object.entries(models.routingMatrix||{});
           if (mx.length > 0) {
             let h = '<table><tr><th>Task Type</th><th>Planner</th><th>Executor</th></tr>';
-            for (const [tt, m] of mx) h += `<tr><td>${esc(tt)}</td><td style="color:var(--green)">${esc(modelName(m.planner||'-'))}</td><td style="color:var(--cyan)">${esc(modelName(m.executor||'-'))}</td></tr>`;
+            for (const [tt, m] of mx) {
+              const isObj = m && typeof m === 'object';
+              const planner = isObj ? (m.planner||'-') : '-';
+              const executor = isObj ? (m.executor||'-') : String(m);
+              h += `<tr><td>${esc(tt)}</td><td style="color:var(--green)">${esc(modelName(planner))}</td><td style="color:var(--cyan)">${esc(modelName(executor))}</td></tr>`;
+            }
             document.getElementById('model-routing-matrix').innerHTML = h+'</table>';
           } else { document.getElementById('model-routing-matrix').innerHTML = '<div class="empty">No routing matrix</div>'; }
 

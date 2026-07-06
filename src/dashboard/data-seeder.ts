@@ -123,66 +123,11 @@ export function seedDashboardData(cwd: string): SeederState {
     /* ignore */
   }
 
-  // 4. Queue deploy actions from real git tags and commits (INSERT OR IGNORE)
-  if (coordDb) {
-    try {
-      const hasDQ = coordDb
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='deploy_queue'")
-        .all();
-      if (hasDQ.length > 0) {
-        try {
-          const tags = execSync('git tag --sort=-creatordate --format="%(refname:short)"', {
-            encoding: 'utf-8',
-            cwd,
-            stdio: ['pipe', 'pipe', 'pipe'],
-          }).trim();
-          if (tags) {
-            const insertDeploy = coordDb.prepare(
-              `INSERT OR IGNORE INTO deploy_queue (agent_id, action_type, target, payload, status, queued_at, priority) VALUES (?, 'deploy', ?, ?, 'completed', ?, 5)`
-            );
-            for (const tag of tags.split('\n').filter(Boolean).slice(0, 5)) {
-              insertDeploy.run(agentId, tag, JSON.stringify({ tag }), now);
-              deploysQueued++;
-            }
-          }
-        } catch {
-          /* ignore */
-        }
-        try {
-          const commits = execSync('git log --oneline -5 --format="%H"', {
-            encoding: 'utf-8',
-            cwd,
-            stdio: ['pipe', 'pipe', 'pipe'],
-          }).trim();
-          if (commits) {
-            const insertDeploy = coordDb.prepare(
-              `INSERT OR IGNORE INTO deploy_queue (agent_id, action_type, target, payload, status, queued_at, priority) VALUES (?, 'commit', 'main', ?, 'completed', ?, 5)`
-            );
-            for (const hash of commits.split('\n').filter(Boolean)) {
-              insertDeploy.run(agentId, JSON.stringify({ commit: hash.slice(0, 8) }), now);
-              deploysQueued++;
-            }
-          }
-        } catch {
-          /* ignore */
-        }
-      }
-      // 5. Create batch records
-      const hasDB = coordDb
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='deploy_batches'")
-        .all();
-      if (hasDB.length > 0 && deploysQueued > 0) {
-        coordDb
-          .prepare(
-            `INSERT OR IGNORE INTO deploy_batches (id, created_at, executed_at, status, result) VALUES (?, ?, ?, 'completed', 'seeded from git history')`
-          )
-          .run(`batch-seed-${Date.now()}`, now, now);
-        batchesCreated++;
-      }
-    } catch {
-      /* ignore */
-    }
-  }
+  // NOTE: deploy_queue / deploy_batches are intentionally NOT seeded from git.
+  // A git tag or commit is not a deploy event; inserting them as status='completed'
+  // deploys (timestamped at seed time) would be synthetic data — which this module
+  // promises never to generate. The Deploy panel therefore reflects only real
+  // deploy_queue rows written by the actual deploy path (honest-empty until then).
 
   if (coordDb) {
     try {
