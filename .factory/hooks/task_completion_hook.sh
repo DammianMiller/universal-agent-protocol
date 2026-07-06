@@ -42,7 +42,7 @@ if git rev-parse --git-dir > /dev/null 2>&1; then
     esac
     
     # Use commit message as summary (first line only)
-    SUMMARY=$(echo "$LAST_MSG" | head -c 100)
+    SUMMARY=$(echo "$LAST_MSG" | head -c 100) || true
 fi
 
 # Record the outcome (silently)

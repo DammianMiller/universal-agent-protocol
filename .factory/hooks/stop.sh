@@ -73,7 +73,7 @@ if [ "$CODE_CHANGED" = "true" ]; then
   # Gate 2: Build check (heuristic — check if dist/ is newer than last src change)
   if [ -d "${PROJECT_DIR}/dist" ]; then
     DIST_TIME=$(stat -c %Y "${PROJECT_DIR}/dist" 2>/dev/null || echo "0")
-    SRC_TIME=$(find "${PROJECT_DIR}/src" -name "*.ts" -newer "${PROJECT_DIR}/dist" 2>/dev/null | head -1)
+    SRC_TIME=$(find "${PROJECT_DIR}/src" -name "*.ts" -newer "${PROJECT_DIR}/dist" -print -quit 2>/dev/null)
     if [ -z "$SRC_TIME" ]; then
       output+="[PASS] Build appears up-to-date (dist/ newer than src/)"$'\n'
     else

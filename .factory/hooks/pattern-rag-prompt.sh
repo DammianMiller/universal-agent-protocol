@@ -60,7 +60,7 @@ elif [ "$CONTEXT_LEVEL" = "verbose" ]; then
   TOP_K=2
 fi
 
-TRUNCATED=$(echo "$PROMPT" | head -c "$TRUNCATE_LEN")
+TRUNCATED=$(echo "$PROMPT" | head -c "$TRUNCATE_LEN") || true
 
 PATTERNS=$("$VENV_PYTHON" "$QUERY_SCRIPT" "$TRUNCATED" --top "$TOP_K" --min-score 0.35 --format context 2>/dev/null || true)
 
