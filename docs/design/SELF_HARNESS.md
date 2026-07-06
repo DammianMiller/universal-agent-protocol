@@ -60,9 +60,10 @@ mine→propose→validate→accept and persists results. Humans do both today.
                                    key=(model_family, failure_sig)        (env + scaffold snapshot)
 ```
 
-New code lives under `src/self-harness/`: `orchestrator.ts`, `mine.ts`, `propose.ts`, `mods.ts` (the
-DSL), `apply.ts`, `transfer.ts`, plus `uap self-harness` CLI. It **reuses** `benchmarks/paired/` for
-validation and the HALO exporter for mining — no reimplementation.
+New code lives under `src/self-harness/`: `orchestrator.ts` (one iteration), `validate.ts` (the real
+paired-bench validator), `run.ts` (the committing loop + versioned snapshot), `mine.ts`, `propose.ts`,
+`mods.ts` (the DSL), `transfer.ts`, plus the `uap self-harness` CLI. It **reuses** `benchmarks/paired/`
+for validation and the HALO exporter for mining — no reimplementation.
 
 ## 4. The Modification DSL — bounded, typed, reversible
 
@@ -171,9 +172,15 @@ Controls:
 - **P0 — Plumbing (small).** Promote the failure-mode logs to structured HALO spans; add the held-out
   regression suite; pin a stable `signature` hashing. *Exit:* `uap harness analyze` emits a typed
   `WeaknessReport`.
-- **P1 — Closed loop, env+scaffold DSL (Option A).** `uap self-harness run` orchestrating
-  mine→propose→validate→accept over `env`+`scaffold` Mods, reusing `benchmarks/paired/`. *Exit:* one
-  autonomous iteration that accepts a real Mod (e.g. re-discovers `LLAMA_N_PREDICT=4096`) with stats.
+- **P1 — Closed loop, env DSL (Option A). [BUILT]** `uap self-harness run` orchestrates
+  mine→propose→validate→decide over `env` Mods, reusing `benchmarks/paired/`. The real validator
+  (`validate.ts`) runs a baseline arm, physically toggles the env knob + restarts the server, runs a
+  candidate arm, reverts, and pairs the two into a `Comparison`; held-out runs the same way. `--apply`
+  commits accepted Mods to the env file, restarts once, and writes a **versioned profile snapshot**
+  (`run.ts`, `profile.ts`) + append-only history; without it the run is a pure dry-run that touches
+  nothing. *Exit met:* one autonomous iteration accepts a real env Mod (e.g. re-discovers
+  `LLAMA_N_PREDICT=4096`) with paired stats. `scaffold`/`middleware` Mods are not auto-validated here —
+  they route through the human-gated pending queue (§9).
 - **P2 — Middleware Mods (Option B).** Add the `middleware` Mod class + the `toolcall-path-normalizer`.
   *Exit:* the loop proposes+validates the normalizer and measurably cuts path-garbling on the medium
   suite (the ceiling manual fixes couldn't crack).

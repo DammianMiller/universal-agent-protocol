@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.109.0 (2026-07-06)
+
+- feat(self-harness): close the loop — `uap self-harness run` + real paired-bench validator
+
+
 ## v1.108.1 (2026-07-06)
 
 - docs: orchestrator + hands-free persistence + dashboard analytics (automagic)

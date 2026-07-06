@@ -6,9 +6,14 @@
  * to a KEY=value env file (e.g. ~/.config/uap/llama-server.env) and captures the
  * prior value for one-step revert; scaffold/middleware Mods are recorded in the
  * profile (their physical wiring is P1+/P2). All edits are reversible.
+ *
+ * A committing `uap self-harness run` also persists a `ProfileSnapshot` (a
+ * versioned env+scaffold+middleware snapshot) so any accepted change is auditable
+ * and one-command revertible (design §4, §10).
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 import type { UapComponent } from '../benchmarks/paired/types.js';
 import { KNOB_ALLOWLIST, KnownKnob, EnvMod, isKnownKnob } from './mods.js';
 
@@ -87,4 +92,39 @@ export function knobDefault(key: KnownKnob): string | null {
   // observed current value rather than guess.
   void KNOB_ALLOWLIST[key];
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Versioned profile snapshot (persisted per committing self-harness iteration).
+// ---------------------------------------------------------------------------
+
+/**
+ * A versioned snapshot of the accepted harness profile. Written per committing
+ * `uap self-harness run` so any change is bisectable and one-revert reversible.
+ */
+export interface ProfileSnapshot {
+  /** Monotonic version (previous + 1); 1 for the first committed iteration. */
+  version: number;
+  updatedAt: string;
+  model: string;
+  profile: HarnessProfile;
+  /** One-line descriptions of the Mods accepted in this iteration. */
+  accepted: string[];
+  provenance: string;
+}
+
+/** Load the latest profile snapshot, or null if none / unreadable. */
+export function loadProfileSnapshot(path: string): ProfileSnapshot | null {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as ProfileSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist a profile snapshot (pretty JSON), creating parent dirs as needed. */
+export function saveProfileSnapshot(path: string, snap: ProfileSnapshot): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(snap, null, 2) + '\n', 'utf-8');
 }
