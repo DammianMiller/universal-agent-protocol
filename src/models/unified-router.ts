@@ -34,6 +34,7 @@ import type {
  */
 const BENCHMARK_TO_RULE_MODEL_MAP: Record<string, string> = {
   'opus-4.6': 'opus-4.6',
+  'sonnet-5': 'sonnet-5',
   'sonnet-4.6': 'sonnet-4.6',
   haiku: 'haiku',
   'qwen35-a3b': 'qwen35-a3b',
@@ -43,6 +44,7 @@ const BENCHMARK_TO_RULE_MODEL_MAP: Record<string, string> = {
 
 const RULE_TO_BENCHMARK_MODEL_MAP: Record<string, ModelId> = {
   'opus-4.6': 'opus-4.6',
+  'sonnet-5': 'sonnet-5',
   'sonnet-4.6': 'sonnet-4.6',
   haiku: 'haiku',
   'qwen35-a3b': 'qwen35-a3b',

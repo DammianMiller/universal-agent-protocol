@@ -26,6 +26,7 @@ const __dirname = dirname(__filename);
 export type ModelId =
   | 'opus-4.8'
   | 'opus-4.6'
+  | 'sonnet-5'
   | 'sonnet-4.6'
   | 'haiku'
   | 'qwen35-a3b'
@@ -71,7 +72,7 @@ const DEFAULT_CONFIG: RoutingConfig = {
   preferAccuracy: true,
   maxCostPerTask: 0.05,
   maxLatencyMs: 120000,
-  availableModels: ['opus-4.8', 'opus-4.6', 'sonnet-4.6', 'haiku', 'qwen35-a3b', 'gpt-5.4', 'gpt-5.3-codex'],
+  availableModels: ['opus-4.8', 'opus-4.6', 'sonnet-5', 'sonnet-4.6', 'haiku', 'qwen35-a3b', 'gpt-5.4', 'gpt-5.3-codex'],
 };
 
 // OPTIMIZATION 5: Pre-seeded with benchmark data for per-category routing
@@ -126,6 +127,31 @@ const MODEL_FINGERPRINTS: Record<ModelId, ModelFingerprint> = {
       'file-ops': { attempts: 5, successes: 4 },
       'ml-training': { attempts: 3, successes: 3 },
       'constraint-satisfaction': { attempts: 3, successes: 3 },
+    },
+  },
+  'sonnet-5': {
+    id: 'sonnet-5',
+    strengths: [
+      'balance',
+      'code-generation',
+      'review',
+      'agentic',
+      'tool-use',
+      'complex-reasoning',
+      'planning',
+    ],
+    weaknesses: ['cost'],
+    avgLatencyMs: 16000,
+    successRate: 0.88,
+    costPerTask: 0.012,
+    maxComplexity: 'hard',
+    bestCategories: ['coding', 'debugging', 'testing', 'file-ops', 'security'],
+    categoryStats: {
+      coding: { attempts: 5, successes: 5 },
+      debugging: { attempts: 3, successes: 3 },
+      testing: { attempts: 3, successes: 3 },
+      'file-ops': { attempts: 3, successes: 3 },
+      security: { attempts: 2, successes: 2 },
     },
   },
   'sonnet-4.6': {

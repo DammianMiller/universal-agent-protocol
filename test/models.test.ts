@@ -296,6 +296,16 @@ describe('ModelPresets', () => {
     expect(ModelPresets['sonnet-4.6'].costPer1MInput).toBe(3.0);
   });
 
+  it('should have sonnet-5 preset', () => {
+    expect(ModelPresets['sonnet-5']).toBeDefined();
+    expect(ModelPresets['sonnet-5'].provider).toBe('anthropic');
+    expect(ModelPresets['sonnet-5'].apiModel).toBe('claude-sonnet-5-20250514');
+    expect(ModelPresets['sonnet-5'].costPer1MInput).toBe(3.75);
+    expect(ModelPresets['sonnet-5'].costPer1MOutput).toBe(18.75);
+    expect(ModelPresets['sonnet-5'].capabilities).toContain('code-generation');
+    expect(ModelPresets['sonnet-5'].capabilities).toContain('complex-reasoning');
+  });
+
   it('should have haiku preset', () => {
     expect(ModelPresets['haiku']).toBeDefined();
     expect(ModelPresets['haiku'].provider).toBe('anthropic');

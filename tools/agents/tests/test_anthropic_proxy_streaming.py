@@ -5199,7 +5199,7 @@ class TestModelsEndpoint(unittest.TestCase):
         # Shannon-required Claude IDs (must include — per project policy)
         self.assertIn("claude-haiku-4-5-20251001", ids)
         self.assertIn("claude-sonnet-4-6", ids)
-        self.assertIn("claude-opus-4-7", ids)
+        self.assertIn("claude-sonnet-5-20250514", ids)
 
         # Local model — what llama-server actually serves. Tracks the
         # active model: qwen36-35b-a3b-iq4xs as of the 2026-05-17 switch
