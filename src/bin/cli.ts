@@ -704,6 +704,29 @@ selfHarness
     await cmd('analyze', options);
   });
 selfHarness
+  .command('run')
+  .description('Autonomous loop: mine -> propose -> validate (real paired bench per Mod) -> decide -> (with --apply) commit + versioned snapshot')
+  .option('--records <path>', 'Baseline paired-bench output dir or records.jsonl to mine')
+  .option('--suite <dir>', 'Validation task suite (required)')
+  .option('--heldout <dir>', 'Held-out regression suite (disjoint tasks)')
+  .option('--env <path>', 'Env file for the current harness profile (default ~/.config/uap/llama-server.env)')
+  .option('--adapter <name>', 'Agent adapter: mock | opencode | claude | raw | deliver (default mock)')
+  .option('--model <id>', 'Model id (default: inferred from records)')
+  .option('--epochs <n>', 'Paired seeds per (task, arm) (default 5)')
+  .option('--concurrency <n>', 'Max concurrent cells (default 4)')
+  .option('--max-candidates <n>', 'Max candidate Mods to validate this iteration (default 3)')
+  .option('--seed <n>', 'Paired-statistics seed (default 1)')
+  .option('--transfer <path>', 'Cross-model transfer store to seed proposals from')
+  .option('--snapshot <path>', 'Versioned profile snapshot path (default ~/.uap/self-harness/profile.json)')
+  .option('--history <path>', 'History JSONL path (default ~/.uap/self-harness/history.jsonl)')
+  .option('--restart-cmd <cmd>', 'Shell command to restart the inference server after committing env Mods (--apply only)')
+  .option('--apply', 'Physically commit accepted env Mods + restart + persist snapshot (default: dry-run)')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.selfHarness();
+    await cmd('run', options);
+  });
+selfHarness
   .command('transfer')
   .description('List the cross-model transfer store (accepted/rejected Mods keyed by failure signature)')
   .option('--transfer <path>', 'Transfer store path (default ~/.uap/self-harness/transfer.json)')
