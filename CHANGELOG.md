@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.109.1 (2026-07-06)
+
+- fix(dashboard): render idle/unmeasured influences explicitly, not a $0
+
+
 ## v1.109.0 (2026-07-06)
 
 - feat(self-harness): close the loop — `uap self-harness run` + real paired-bench validator
