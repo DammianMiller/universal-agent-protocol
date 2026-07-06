@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.115.0 (2026-07-06)
+
+- chore: bump version to 1.112.0
+- feat(routing): wire proxy passthrough when a routing preset is applied
+
+
 ## v1.113.0 (2026-07-06)
 
 - fix(dashboard): de-fabricate model panel via raw config; wire routing auto-activation into setup
