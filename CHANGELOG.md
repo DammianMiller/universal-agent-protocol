@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.111.3 (2026-07-06)
+
+- fix(hooks): prevent SIGPIPE crash in Stop hook completion gate
+
+
 ## v1.111.2 (2026-07-06)
 
 - fix(dashboard): de-fabricate session/model panels + fix proxy telemetry schema
