@@ -22,6 +22,8 @@ import { profileForRouting, profileForProvider } from '../models/profile-map.js'
 import { createClackUI, type PromptUI } from './prompt-ui.js';
 import {
   applyWizardConfig,
+  maxSelections,
+  minSelections,
   defaultSelections,
   writeProxyEnv,
   type ModelFeatures,
@@ -42,7 +44,7 @@ const HARNESSES: HarnessChoice[] = [
   { label: 'Codex', value: 'codex' },
 ];
 
-function dockerAvailable(): boolean {
+export function dockerAvailable(): boolean {
   try {
     return spawnSync('docker', ['--version'], { timeout: 4000, stdio: 'ignore' }).status === 0;
   } catch {
@@ -51,7 +53,7 @@ function dockerAvailable(): boolean {
 }
 
 /** Probe a couple of conventional local OpenAI-compatible endpoints. */
-async function detectLocalModel(): Promise<string | null> {
+export async function detectLocalModel(): Promise<string | null> {
   const candidates = [
     process.env.UAP_INFERENCE_ENDPOINT,
     process.env.OPENAI_BASE_URL,
@@ -94,6 +96,36 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     required: true,
   });
   const platform = platforms.length > 0 ? platforms : ['claude'];
+
+  // ── Setup profile ───────────────────────────────────────────────────
+  // An explicit --profile skips the prompt (also drives non-interactive runs).
+  const profile: 'recommended' | 'maximum' | 'minimal' = options.profile
+    ? options.profile
+    : await ui.select<'recommended' | 'maximum' | 'minimal'>({
+        message: 'Setup profile:',
+        options: [
+          { label: 'Recommended - smart defaults, customize each option', value: 'recommended' },
+          { label: 'Maximum - every feature on for peak performance (routing, gates, recipes, handsfree, proxy autostart)', value: 'maximum' },
+          { label: 'Minimal - core only (short-term memory, coordination, patterns)', value: 'minimal' },
+        ],
+        initialValue: 'recommended',
+      });
+
+  if (profile !== 'recommended') {
+    const ctx = { platforms: platform, localModel, hasDocker };
+    const presetSelections = profile === 'maximum' ? maxSelections(ctx) : minSelections(ctx);
+    ui.note(
+      profile === 'maximum'
+        ? 'Maximum profile: all features enabled at their most capable settings' +
+            (hasDocker ? '' : ' (Qdrant tiers skipped - Docker not detected)') +
+            (localModel ? '' : ' (routing left on single-model - no local endpoint)') +
+            '.'
+        : 'Minimal profile: core essentials only.',
+      'Profile'
+    );
+    await finalizeGuidedSetup(cwd, ui, options, presetSelections);
+    return;
+  }
 
   // ── Memory (short-term always on; pick the richer tiers) ────────────
   const mem = await ui.multiselect<string>({
@@ -404,6 +436,33 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     proxy: { autostart: proxyAutostart },
   });
 
+  await finalizeGuidedSetup(cwd, ui, options, selections);
+}
+
+export async function finalizeGuidedSetup(
+  cwd: string,
+  ui: PromptUI,
+  options: SetupOptions,
+  selections: WizardSelections
+): Promise<void> {
+  // Display/notes scalars + the effective tool-call profile are ALL derived from
+  // `selections` so this runs identically for the detailed (recommended) flow,
+  // the interactive preset flow, and the non-interactive `--profile` path.
+  const routingId = selections.model.routingPreset;
+  const effectiveProfile =
+    routingId && routingId !== 'none'
+      ? profileForRouting({ enabled: true, roles: RoutingPresets[routingId]?.roles }) ??
+        profileForProvider(selections.model.provider)
+      : profileForProvider(selections.model.provider);
+  const platform = selections.platforms;
+  const provider = selections.model.provider;
+  const longTerm = selections.memory.longTermMemory;
+  const recipesOn = selections.recipes.enabled;
+  const recipeMode = selections.recipes.recipe;
+  const deliverEnforcement = selections.delivery.enforcement;
+  const judgeModel = selections.recipes.judgeModel;
+  const allowSelfJudge = selections.recipes.allowSelfJudge;
+  const cloakBrowser = selections.browser.cloakBrowser;
   const withMemory = true; // short-term is always on
   const withPatterns = selections.patterns.patternLibrary || selections.patterns.patternRag;
 
@@ -420,7 +479,14 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
 
   // ── Confirm + apply ─────────────────────────────────────────────────
   const proceed = await ui.confirm({
-    message: `Apply setup for [${platform.join(', ')}] · provider=${provider}/${effectiveProfile} · long-term mem=${longTerm ? 'on' : 'off'} · patterns=${withPatterns ? 'on' : 'off'} · recipes=${recipesOn ? recipeMode : 'off'} · deliver=${deliverEnforcement}?`,
+    message:
+      `Apply setup for [${platform.join(', ')}] · provider=${provider}/${effectiveProfile} · ` +
+      `long-term mem=${longTerm ? 'on' : 'off'} · patterns=${withPatterns ? 'on' : 'off'} · ` +
+      `recipes=${recipesOn ? recipeMode : 'off'} · deliver=${deliverEnforcement} · ` +
+      `handsfree=${selections.handsfree.enabled ? (selections.handsfree.intensity ?? 'on') : 'off'} · ` +
+      `proxy-autostart=${selections.proxy.autostart ? 'on' : 'off'} · ` +
+      `auto-approve-tools=${selections.hooks.autoApproveTools ? 'ON' : 'off'} · ` +
+      `cloakbrowser=${cloakBrowser ? 'on' : 'off'}?`,
     initialValue: true,
   });
   if (!proceed) {

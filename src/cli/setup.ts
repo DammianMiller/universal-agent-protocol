@@ -26,6 +26,7 @@ export interface SetupOptions {
   extract?: boolean; // --no-extract skips custom-content extraction
   extractAuto?: boolean; // --extract-auto extracts without prompting
   backup?: boolean; // --no-backup disables instruction-file backup
+  profile?: 'recommended' | 'maximum' | 'minimal'; // --profile preset bundle
 }
 
 /**
@@ -54,6 +55,21 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
   if (resolveInteractive(options)) {
     const { runGuidedSetup } = await import('./guided-setup.js');
     return runGuidedSetup(options);
+  }
+
+  // Non-interactive `--profile maximum|minimal`: apply the SAME bundle through the
+  // shared finalize path (init + config + proxy env + steps + tool-call profile),
+  // so a headless run matches the interactive preset exactly. Reproducible.
+  if (options.profile === 'maximum' || options.profile === 'minimal') {
+    const { finalizeGuidedSetup, detectLocalModel, dockerAvailable } = await import('./guided-setup.js');
+    const { maxSelections, minSelections } = await import('./wizard-config.js');
+    const { createNonInteractiveUI } = await import('./prompt-ui.js');
+    const localModel = await detectLocalModel();
+    const hasDocker = dockerAvailable();
+    const ctx = { platforms: options.platform ?? ['all'], localModel, hasDocker };
+    const selections = options.profile === 'maximum' ? maxSelections(ctx) : minSelections(ctx);
+    await finalizeGuidedSetup(cwd, createNonInteractiveUI(), options, selections);
+    return;
   }
 
   const withPatterns = options.patterns !== false;

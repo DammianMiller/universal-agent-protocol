@@ -108,6 +108,13 @@ export interface ProxyFeatures {
   autostart: boolean;
 }
 
+export interface HandsfreeFeatures {
+  /** Force any model to keep working until a multi-epic build ledger is 100% done. */
+  enabled: boolean;
+  /** Forcing intensity: 'light' (Fable) | 'moderate' (frontier) | 'aggressive' (local). */
+  intensity?: 'light' | 'moderate' | 'aggressive';
+}
+
 export interface WizardSelections {
   /** init platform tokens (claude, factory, vscode, opencode, codex, …) */
   platforms: string[];
@@ -125,6 +132,7 @@ export interface WizardSelections {
   design: DesignFeatures;
   reactor: ReactorFeatures;
   proxy: ProxyFeatures;
+  handsfree: HandsfreeFeatures;
 }
 
 /** Conservative defaults used by the non-interactive path and as prompt seeds. */
@@ -159,8 +167,68 @@ export function defaultSelections(overrides: Partial<WizardSelections> = {}): Wi
     design: { enabled: false, tokenGate: false },
     reactor: { enabled: true },
     proxy: { autostart: false },
+    handsfree: { enabled: false },
     ...overrides,
   };
+}
+
+/** Environment context for preset selection (detected before the profile choice). */
+export interface PresetContext {
+  platforms: string[];
+  localModel?: string | null;
+  hasDocker?: boolean;
+}
+
+/**
+ * "Maximum" profile — every feature enabled at its most capable setting for peak
+ * performance and the fullest feature set. Qdrant-dependent tiers (long-term
+ * memory, pattern RAG/RL) are gated on Docker being present so they can actually
+ * run; routing uses the local-first preset when a local model is detected.
+ */
+export function maxSelections(ctx: PresetContext): WizardSelections {
+  const local = Boolean(ctx.localModel);
+  const docker = Boolean(ctx.hasDocker);
+  return defaultSelections({
+    platforms: ctx.platforms,
+    memory: { shortTermMemory: true, longTermMemory: docker, knowledgeGraph: docker, prepopDocs: true, prepopGit: true },
+    multiAgent: { coordinationDb: true, worktreeIsolation: true, deployBatching: true, agentMessaging: true },
+    patterns: { patternLibrary: true, patternRag: docker, reinforcementLearning: docker },
+    policy: { policyEngine: true, imageAssetVerification: true, iacStateParity: true, iacPipelineEnforcement: true, kubectlVerifyBackport: true, definitionOfDoneIac: true, customPoliciesDir: true },
+    model: { provider: local ? 'local' : 'anthropic', qwenOptimizations: local, toolCallProfile: '', costTracking: true, modelRouting: true, routingPreset: local ? 'fable-local-opus' : 'none' },
+    hooks: { sessionStart: true, preCompact: true, taskCompletion: true, autoApproveTools: true },
+    browser: { cloakBrowser: true },
+    // fusion + self-judge so recipes give lift without requiring an external judge key.
+    recipes: { enabled: true, recipe: 'fusion', confidenceThreshold: 0.5, fusionN: 3, allowSelfJudge: true },
+    delivery: { enforcement: 'block', localMode: 'deliver', runtimeVerify: true },
+    concurrency: { enabled: true, ...(ctx.localModel ? { endpoint: ctx.localModel } : {}) },
+    collaboration: { mode: 'always' },
+    design: { enabled: true, tokenGate: true },
+    reactor: { enabled: true },
+    proxy: { autostart: true },
+    handsfree: { enabled: true, intensity: local ? 'aggressive' : 'moderate' },
+  });
+}
+
+/** "Minimal" profile — core essentials only (lean, low-friction). */
+export function minSelections(ctx: PresetContext): WizardSelections {
+  return defaultSelections({
+    platforms: ctx.platforms,
+    memory: { shortTermMemory: true, longTermMemory: false, knowledgeGraph: false, prepopDocs: false, prepopGit: false },
+    multiAgent: { coordinationDb: true, worktreeIsolation: true, deployBatching: false, agentMessaging: false },
+    patterns: { patternLibrary: true, patternRag: false, reinforcementLearning: false },
+    policy: { policyEngine: false, imageAssetVerification: false, iacStateParity: false, iacPipelineEnforcement: false, kubectlVerifyBackport: false, definitionOfDoneIac: false, customPoliciesDir: false },
+    model: { provider: ctx.localModel ? 'local' : 'anthropic', qwenOptimizations: false, toolCallProfile: '', costTracking: false, modelRouting: false, routingPreset: 'none' },
+    hooks: { sessionStart: true, preCompact: false, taskCompletion: false, autoApproveTools: false },
+    browser: { cloakBrowser: false },
+    recipes: { enabled: false, recipe: 'auto', confidenceThreshold: 0.5, fusionN: 3, allowSelfJudge: false },
+    delivery: { enforcement: 'advisory', localMode: 'advisory', runtimeVerify: false },
+    concurrency: { enabled: false },
+    collaboration: { mode: 'off' },
+    design: { enabled: false, tokenGate: false },
+    reactor: { enabled: false },
+    proxy: { autostart: false },
+    handsfree: { enabled: false },
+  });
 }
 
 /**
@@ -331,6 +399,14 @@ export async function applyWizardConfig(
     config.reactor = { enabled: selections.reactor.enabled };
 
     config.proxy = { ...(config.proxy as object ?? {}), autostart: selections.proxy.autostart };
+
+    if (selections.handsfree.enabled) {
+      config.handsfree = {
+        ...(config.handsfree as object ?? {}),
+        enabled: true,
+        ...(selections.handsfree.intensity ? { intensity: selections.handsfree.intensity } : {}),
+      };
+    }
 
     writeFileSync(configPath, JSON.stringify(config, null, 2));
     return configPath;
