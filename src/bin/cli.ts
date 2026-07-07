@@ -41,6 +41,7 @@ const lazy = {
   verify: () => import('../cli/verify.js').then((m) => m.verifyCommand),
   orchestratorToggle: () => import('../cli/orchestrator-toggle.js').then((m) => m.orchestratorToggleCommand),
   handsfree: () => import('../cli/handsfree.js').then((m) => m.handsfreeCommand),
+  proxy: () => import('../cli/proxy.js').then((m) => m.proxyCommand),
   benchPaired: () => import('../cli/bench.js').then((m) => m.benchPairedCommand),
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
@@ -126,6 +127,19 @@ program
   .option('-i, --interactive', 'Run the guided wizard (now the default; kept for back-compat)')
   .action(async (options) => {
     (await lazy.setup())(options);
+  });
+
+program
+  .command('proxy [subcommand]')
+  .description('Reference-counted, session-scoped proxy lifecycle: ensure | release | status | start | stop | restart | enable | disable')
+  .option('--client <id>', 'Client/session id (defaults to session env or parent pid)')
+  .option('--client-pid <n>', 'Long-lived agent pid for liveness (hooks pass $PPID)')
+  .option('--port <n>', 'Proxy port (default 4000 / $PROXY_PORT)')
+  .option('--quiet', 'Suppress output (used by hooks)')
+  .option('--if-enabled', 'No-op unless .uap.json proxy.autostart is true (hook-safe)')
+  .option('--json', 'Machine-readable status output')
+  .action(async (subcommand, options) => {
+    await (await lazy.proxy())(subcommand, options);
   });
 
 program
