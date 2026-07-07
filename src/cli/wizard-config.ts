@@ -329,32 +329,6 @@ export async function applyWizardConfig(
   }
 }
 
-/** Model profile choices per provider (label + value + hint). */
-export function profileChoicesFor(
-  provider: ModelFeatures['provider']
-): { label: string; value: string; hint: string }[] {
-  switch (provider) {
-    case 'anthropic':
-      return [
-        { label: 'claude-sonnet-4.6', value: 'claude-sonnet-4.6', hint: 'recommended — best speed/cost/quality' },
-        { label: 'claude-opus-4.6', value: 'claude-opus-4.6', hint: 'most capable, deep reasoning' },
-        { label: 'claude-haiku-3.5', value: 'claude-haiku-3.5', hint: 'fastest/cheapest' },
-      ];
-    case 'openai':
-      return [
-        { label: 'gpt-5.4', value: 'gpt-5.4', hint: 'recommended general-purpose' },
-        { label: 'gpt-5.3-codex', value: 'gpt-5.3-codex', hint: 'code-specialized' },
-      ];
-    case 'local':
-      return [
-        { label: 'generic', value: 'generic', hint: 'any OpenAI-compatible server' },
-        { label: 'qwen35-a3b', value: 'qwen35-a3b', hint: 'recommended for local — Qwen optimizations' },
-      ];
-    default:
-      return [{ label: 'generic', value: 'generic', hint: 'any OpenAI-compatible endpoint' }];
-  }
-}
-
 /**
  * Emit `.uap/proxy.env` — the KEY=VALUE file the proxy launcher / systemd
  * EnvironmentFile and the Python proxy's own fallback loader consume. This is
