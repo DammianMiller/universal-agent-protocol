@@ -102,6 +102,12 @@ export interface ReactorFeatures {
   enabled: boolean;
 }
 
+export interface ProxyFeatures {
+  /** Hook-driven, reference-counted proxy autostart (start with the session,
+   *  adopt an existing one, stop only when the last client leaves). */
+  autostart: boolean;
+}
+
 export interface WizardSelections {
   /** init platform tokens (claude, factory, vscode, opencode, codex, …) */
   platforms: string[];
@@ -118,6 +124,7 @@ export interface WizardSelections {
   collaboration: CollaborationFeatures;
   design: DesignFeatures;
   reactor: ReactorFeatures;
+  proxy: ProxyFeatures;
 }
 
 /** Conservative defaults used by the non-interactive path and as prompt seeds. */
@@ -151,6 +158,7 @@ export function defaultSelections(overrides: Partial<WizardSelections> = {}): Wi
     collaboration: { mode: 'auto' },
     design: { enabled: false, tokenGate: false },
     reactor: { enabled: true },
+    proxy: { autostart: false },
     ...overrides,
   };
 }
@@ -321,6 +329,8 @@ export async function applyWizardConfig(
 
     // ── Reactor per-prompt injection ────────────────────────────────────
     config.reactor = { enabled: selections.reactor.enabled };
+
+    config.proxy = { ...(config.proxy as object ?? {}), autostart: selections.proxy.autostart };
 
     writeFileSync(configPath, JSON.stringify(config, null, 2));
     return configPath;

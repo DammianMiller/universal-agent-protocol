@@ -332,6 +332,13 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     initialValue: true,
   });
 
+  // ── Proxy autostart ─────────────────────────────────────────────────
+  const proxyAutostart = await ui.confirm({
+    message:
+      'Auto-start the local proxy with your agent session? (reference-counted: reuses an existing proxy, stops only when the last agent leaves)',
+    initialValue: Boolean(localModel),
+  });
+
   const selections: WizardSelections = defaultSelections({
     platforms: platform,
     memory: {
@@ -394,6 +401,7 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     collaboration: { mode: collabMode },
     design: { enabled: designOn, tokenGate: designTokenGate },
     reactor: { enabled: reactorOn },
+    proxy: { autostart: proxyAutostart },
   });
 
   const withMemory = true; // short-term is always on
