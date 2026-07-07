@@ -41,5 +41,69 @@ class ReconDirectiveTest(unittest.TestCase):
         self.assertNotIn("being BLOCKED by policy", d)
 
 
+
+class ProactiveGateDetectionTest(unittest.TestCase):
+    """A: gate detected from the harness banner BEFORE any write is attempted.
+
+    A read-forever session never triggers the reactive (blocked tool_result)
+    path, so the deliver redirect must fire from the gate banner in context."""
+
+    def test_system_banner_route_through_deliver(self):
+        body = {"messages": [
+            {"role": "system", "content": "Writing code — route through deliver. Use the deliver tool."},
+            {"role": "user", "content": "read the next file"},
+        ]}
+        self.assertTrue(ap._writes_are_gated(body))
+
+    def test_gated_and_will_be_blocked_banner(self):
+        body = {"messages": [
+            {"role": "user", "content": "direct Edit/Write on source files is gated and will be blocked"},
+        ]}
+        self.assertTrue(ap._writes_are_gated(body))
+
+    def test_no_banner_and_no_block_is_ungated(self):
+        body = {"messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "read the next file"},
+        ]}
+        self.assertFalse(ap._writes_are_gated(body))
+
+
+class DeliverIsWriteToolTest(unittest.TestCase):
+    """A: deliver is the only write path under a gate; it must count as a write."""
+
+    def test_deliver_in_write_tool_class(self):
+        self.assertIn("deliver", ap._WRITE_TOOL_CLASS)
+
+
+class FirmTierReleasesToolChoiceTest(unittest.TestCase):
+    """B: the firm tier must release the 'required' coercion so the model can
+    actually write / call deliver / stop instead of being forced into a read."""
+
+    def test_firm_tier_releases_required(self):
+        m = ap.SessionMonitor(context_window=132096)
+        m.consecutive_no_write_turns = ap.PROXY_RECON_CONVERGENCE_THRESHOLD  # firm
+        body = {"messages": [{"role": "user", "content": "reading"}],
+                "tools": [{"name": "Write"}], "tool_choice": "required"}
+        ap._maybe_inject_recon_convergence(body, m)
+        self.assertEqual(body.get("tool_choice"), "auto")
+
+
+class HardMultiplierTest(unittest.TestCase):
+    """C: hard-tier onset is governed by the configurable multiplier (default
+    1.5x, earlier than the old hard-coded 2x)."""
+
+    def test_multiplier_invariant(self):
+        self.assertGreaterEqual(ap.PROXY_RECON_HARD_MULTIPLIER, 1.0)
+
+    def test_hard_tier_directive_at_multiplier(self):
+        m = ap.SessionMonitor(context_window=132096)
+        streak = int(ap.PROXY_RECON_HARD_MULTIPLIER * ap.PROXY_RECON_CONVERGENCE_THRESHOLD) + 1
+        m.consecutive_no_write_turns = streak
+        body = {"messages": [{"role": "user", "content": "reading"}], "tools": [{"name": "Write"}]}
+        ap._maybe_inject_recon_convergence(body, m)
+        self.assertIn("STOP", body["messages"][-1]["content"])
+
+
 if __name__ == "__main__":
     unittest.main()
