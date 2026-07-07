@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.120.0 (2026-07-07)
+
+- feat(proxy): reference-counted, session-scoped proxy lifecycle via hooks
+
+
 ## v1.119.3 (2026-07-07)
 
 - fix(routing): clear stale toolCalls.modelProfile pin on `model routing use`
