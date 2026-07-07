@@ -15,7 +15,6 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  writeFileSync,
   statSync,
   copyFileSync,
   readdirSync,
@@ -23,7 +22,6 @@ import {
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import chalk from 'chalk';
-import inquirer from 'inquirer';
 import { profileForRouting, profileForProvider } from '../models/profile-map.js';
 
 // Get script directory for ES modules
@@ -130,108 +128,6 @@ function loadModelProfile(profile: string): Record<string, unknown> | null {
   return null;
 }
 
-/**
- * Profile metadata for the interactive selection menu.
- * Each profile includes a short description and key highlights.
- */
-interface ProfileInfo {
-  name: string;
-  description: string;
-  highlights: string[];
-}
-
-/**
- * Discover all available model profiles from config/model-profiles/.
- * Returns structured info including descriptions parsed from the JSON files.
- */
-function discoverProfiles(): ProfileInfo[] {
-  const profiles: ProfileInfo[] = [];
-
-  if (existsSync(PROFILES_DIR)) {
-    for (const f of readdirSync(PROFILES_DIR).sort()) {
-      if (!f.endsWith('.json')) continue;
-      const name = f.replace('.json', '');
-      try {
-        const data = JSON.parse(readFileSync(join(PROFILES_DIR, f), 'utf-8'));
-        const desc = (data._description as string) || '';
-        const highlights: string[] = [];
-        if (data.context_window)
-          highlights.push(`ctx: ${Number(data.context_window).toLocaleString()}`);
-        if (data.temperature) highlights.push(`temp: ${data.temperature}`);
-        if (data.server_optimization?.flash_attention) highlights.push('flash-attn');
-        if (data.server_optimization?.speculative_decoding?.enabled) highlights.push('spec-decode');
-        profiles.push({ name, description: desc, highlights });
-      } catch {
-        profiles.push({ name, description: '', highlights: [] });
-      }
-    }
-  }
-
-  return profiles;
-}
-
-/**
- * Save the selected model profile to .uap.json so it persists across sessions.
- */
-function saveProfileToConfig(profileName: string): void {
-  const uapConfigPath = join(UAP_ROOT, '.uap.json');
-  let config: Record<string, unknown> = {};
-
-  if (existsSync(uapConfigPath)) {
-    try {
-      config = JSON.parse(readFileSync(uapConfigPath, 'utf-8'));
-    } catch {
-      // start fresh if corrupt
-    }
-  }
-
-  // Merge toolCalls.modelProfile into existing config
-  const toolCalls = (config.toolCalls as Record<string, unknown>) || {};
-  toolCalls.modelProfile = profileName;
-  config.toolCalls = toolCalls;
-
-  writeFileSync(uapConfigPath, JSON.stringify(config, null, 2) + '\n');
-}
-
-/**
- * Interactive profile selection menu using inquirer.
- * Shows all available profiles with descriptions and lets the user pick one.
- */
-async function promptProfileSelection(currentProfile: string): Promise<string> {
-  const profiles = discoverProfiles();
-
-  if (profiles.length === 0) {
-    console.log(chalk.yellow('No model profiles found in config/model-profiles/'));
-    return currentProfile;
-  }
-
-  console.log(chalk.bold('\n  Available Model Profiles:\n'));
-
-  // Build choices with descriptions
-  const choices = profiles.map((p) => {
-    const active = p.name === currentProfile ? chalk.green(' (active)') : '';
-    const hints = p.highlights.length > 0 ? chalk.dim(` [${p.highlights.join(', ')}]`) : '';
-    return {
-      name: `${chalk.bold(p.name)}${active}${hints}\n    ${chalk.dim(p.description.slice(0, 120))}`,
-      value: p.name,
-      short: p.name,
-    };
-  });
-
-  const { selectedProfile } = await inquirer.prompt<{ selectedProfile: string }>([
-    {
-      type: 'list',
-      name: 'selectedProfile',
-      message: 'Select a model profile',
-      choices,
-      default: currentProfile,
-      pageSize: 15,
-    },
-  ]);
-
-  return selectedProfile;
-}
-
 function ensureDir(dir: string): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
@@ -252,39 +148,28 @@ function detectPython(): string | null {
 }
 
 async function setup(opts?: { profile?: string }): Promise<void> {
-  // When a caller (e.g. the guided setup) passes a profile, run fully
-  // non-interactively: no picker, and DO NOT pin toolCalls.modelProfile —
-  // pinning would defeat the routing-driven auto-switch this profile relies on.
-  let profile = opts?.profile ?? detectModelProfile();
+  // Fully automatic: the profile is auto-detected from the active model routing
+  // / provider (see profile-map.ts), or passed by a caller such as the guided
+  // setup. There is no interactive picker and no `toolCalls.modelProfile` pin —
+  // the active profile always auto-switches with the routing.
+  const profile = opts?.profile ?? detectModelProfile();
+  console.log(chalk.cyan(`\nSetting up Tool Call infrastructure (profile: ${profile})...\n`));
 
-  // Interactive profile selection (standalone CLI only)
-  const isInteractive = process.stdout.isTTY;
-  if (isInteractive && !opts?.profile) {
-    console.log(chalk.cyan('\n  UAP Tool Call Setup\n'));
-    profile = await promptProfileSelection(profile);
-
-    // Persist the selection
-    saveProfileToConfig(profile);
-    console.log(chalk.green(`\n  Profile "${profile}" saved to .uap.json\n`));
-
-    // Show profile details
-    const profileData = loadModelProfile(profile);
-    if (profileData) {
-      console.log(chalk.bold('  Profile Details:'));
-      if (profileData.model) console.log(`    Model:          ${profileData.model}`);
-      if (profileData.temperature) console.log(`    Temperature:    ${profileData.temperature}`);
-      if (profileData.context_window)
-        console.log(`    Context window: ${Number(profileData.context_window).toLocaleString()}`);
-      if (profileData.max_tokens)
-        console.log(`    Max tokens:     ${Number(profileData.max_tokens).toLocaleString()}`);
-      const serverOpt = profileData.server_optimization as Record<string, unknown> | undefined;
-      if (serverOpt?.flash_attention) console.log(`    Flash attn:     enabled`);
-      const specDecode = serverOpt?.speculative_decoding as Record<string, unknown> | undefined;
-      if (specDecode?.enabled) console.log(`    Spec decode:    enabled`);
-      console.log('');
-    }
-  } else {
-    console.log(chalk.cyan(`\nSetting up Tool Call infrastructure (profile: ${profile})...\n`));
+  // Show profile details for transparency (read-only; nothing is persisted).
+  const profileData = loadModelProfile(profile);
+  if (profileData) {
+    console.log(chalk.bold('  Profile Details:'));
+    if (profileData.model) console.log(`    Model:          ${profileData.model}`);
+    if (profileData.temperature) console.log(`    Temperature:    ${profileData.temperature}`);
+    if (profileData.context_window)
+      console.log(`    Context window: ${Number(profileData.context_window).toLocaleString()}`);
+    if (profileData.max_tokens)
+      console.log(`    Max tokens:     ${Number(profileData.max_tokens).toLocaleString()}`);
+    const serverOpt = profileData.server_optimization as Record<string, unknown> | undefined;
+    if (serverOpt?.flash_attention) console.log(`    Flash attn:     enabled`);
+    const specDecode = serverOpt?.speculative_decoding as Record<string, unknown> | undefined;
+    if (specDecode?.enabled) console.log(`    Spec decode:    enabled`);
+    console.log('');
   }
 
   // Ensure directories exist

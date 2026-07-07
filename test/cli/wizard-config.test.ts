@@ -5,7 +5,6 @@ import { join } from 'path';
 import {
   applyWizardConfig,
   defaultSelections,
-  profileChoicesFor,
   writeProxyEnv,
 } from '../../src/cli/wizard-config.js';
 
@@ -18,15 +17,6 @@ describe('defaultSelections', () => {
     expect(d.model.provider).toBe('anthropic');
     const o = defaultSelections({ platforms: ['codex'] });
     expect(o.platforms).toEqual(['codex']);
-  });
-});
-
-describe('profileChoicesFor', () => {
-  it('returns provider-appropriate profiles', () => {
-    expect(profileChoicesFor('anthropic').map((p) => p.value)).toContain('claude-sonnet-4.6');
-    expect(profileChoicesFor('openai').map((p) => p.value)).toContain('gpt-5.4');
-    expect(profileChoicesFor('local').map((p) => p.value)).toContain('qwen35-a3b');
-    expect(profileChoicesFor('custom').map((p) => p.value)).toEqual(['generic']);
   });
 });
 
