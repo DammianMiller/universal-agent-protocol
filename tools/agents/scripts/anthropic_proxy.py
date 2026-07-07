@@ -380,6 +380,13 @@ _WRITE_TOOL_CLASS = frozenset({
     # directives into a loop that was mid-build — observed live at
     # no_write_streak=62 with the model then emitting files as plain text.
     "write_file", "edit_file", "save_file",
+    # A: `deliver` is the ONLY write path when delivery-enforcement gates
+    # direct Edit/Write. Counting it as a write means (a) a deliver call
+    # resets the no-write streak instead of looking like more exploration,
+    # and (b) the recon-convergence restore loop re-injects `deliver` when
+    # narrowing dropped it, so a gated "route through deliver" directive is
+    # actually satisfiable.
+    "deliver",
 })
 
 # Open-ended exploration tools the agent uses to make a DIFFERENT move once a
@@ -614,6 +621,15 @@ def _maybe_normalize_toolcall_paths(anthropic_resp: dict, request_body: dict) ->
 PROXY_RECON_CONVERGENCE_THRESHOLD = int(
     os.environ.get("PROXY_RECON_CONVERGENCE_THRESHOLD", "40")
 )
+# Fix C: the hard tier historically fired at 2x the base threshold (80 turns
+# at the default 40) -- far too late; the model burns ~40 extra turns reading
+# before the stronger "STOP, write now / release tool_choice" directive kicks
+# in. This multiplier makes the hard-tier onset configurable. 1.5x (60 turns)
+# escalates sooner while still leaving the firm tier a working window. Clamped
+# to >= 1.0 so the hard tier can never precede the firm tier.
+PROXY_RECON_HARD_MULTIPLIER = max(1.0, float(
+    os.environ.get("PROXY_RECON_HARD_MULTIPLIER", "1.5")
+))
 # Fix E: the recon hard tier (streak >= 2x threshold) fires a directive + flips
 # tool_choice to 'auto', but `consecutive_no_write_turns` resets to 0 whenever
 # the model emits any write tool — so a loop that periodically writes sawtooths
@@ -4304,16 +4320,47 @@ def _resolve_state_machine_tool_choice(
 
 
 def _writes_are_gated(openai_body: dict) -> bool:
-    """True when recent tool results show the harness is BLOCKING direct writes
-    (delivery-enforcement), so a "write the file" directive is futile and the
-    model must route through the deliver tool instead. #1: aligns the recon
-    directive with the gate to break the read-forever / can't-write deadlock."""
-    for m in (openai_body.get("messages") or [])[-8:]:
+    """True when the harness is BLOCKING direct writes (delivery-enforcement),
+    so a "write the file" directive is futile and the model must route through
+    the deliver tool instead. Aligns the recon directive with the gate to break
+    the read-forever / can't-write deadlock.
+
+    Two detection paths:
+      * reactive -- a recent tool_result shows a write was actually blocked
+        (last 8 messages); and
+      * proactive (A) -- the harness gate banner is present anywhere in the
+        context (system / injected-user prompt). A session stuck reading
+        forever NEVER attempts a doomed write, so the reactive path never
+        fires and the deliver redirect never triggers -- the loop is
+        permanent. The proactive path fires the redirect on turn 1 of the
+        streak. Phrases matched are stable harness strings, not model output.
+    """
+    msgs = openai_body.get("messages") or []
+    # Reactive: a recent turn was actually blocked by the gate.
+    for m in msgs[-8:]:
         c = m.get("content")
         text = c if isinstance(c, str) else (json.dumps(c) if c else "")
         low = text.lower()
         if "delivery-enforcement" in low or (
             "blocked" in low and "deliver" in low and "tool" in low
+        ):
+            return True
+    # Proactive (A): the gate banner is present in context (esp. the system /
+    # UserPromptSubmit-injected prompt announcing "route through deliver").
+    # Bounded scan: the banner lives in the system prompt(s) or the recent
+    # window, never deep in history -- so we only serialize/lower those, not
+    # the whole (66k-token) transcript on this stuck-path hot request.
+    system_msgs = [m for m in msgs if m.get("role") == "system"]
+    for m in system_msgs + msgs[-8:]:
+        if m.get("role") not in ("system", "user"):
+            continue
+        c = m.get("content")
+        text = c if isinstance(c, str) else (json.dumps(c) if c else "")
+        low = text.lower()
+        if (
+            "gated and will be blocked" in low
+            or "route through deliver" in low
+            or ("direct edit/write" in low and "gated" in low)
         ):
             return True
     return False
@@ -4419,7 +4466,8 @@ def _maybe_inject_recon_convergence(
     observed failure mode of an agentic recon task wandering for hundreds
     of turns and never converging to the synthesis/write step. Two
     escalation tiers: a firm "switch to synthesis" directive, then a hard
-    "STOP, write it now" once the streak is 2x over threshold.
+    "STOP, write it now" once the streak crosses PROXY_RECON_HARD_MULTIPLIER
+    x threshold (default 1.5x).
 
     `full_tools` is the request's tool list *before* `_narrow_tools_for_request`
     pruned it. When the directive fires, any write/deliverable tool that
@@ -4436,7 +4484,7 @@ def _maybe_inject_recon_convergence(
     # Report the *raw* (pre-prune) utilization — post-prune util understates the
     # blow-up (~30%) and makes the directive's "context is at X%" misleading.
     util = max(monitor.get_utilization(), monitor.get_raw_utilization())
-    hard = streak >= 2 * PROXY_RECON_CONVERGENCE_THRESHOLD
+    hard = streak >= PROXY_RECON_HARD_MULTIPLIER * PROXY_RECON_CONVERGENCE_THRESHOLD
     escalate = False
     if hard:
         monitor.recon_hard_fires += 1  # Fix E: monotonic, never reset
@@ -4512,13 +4560,16 @@ def _maybe_inject_recon_convergence(
         # writing it rebuilds the streak and re-fires — bounded, not permanent.
         monitor.consecutive_no_write_turns = 0
     else:
-        if hard:
-            # Fix C: at the hard tier, drop the structural requirement to call a
-            # tool. Earlier logic forced tool_choice='required' for the active
-            # agentic loop, which directly contradicts "produce your deliverable
-            # NOW / do not run anything else" — the model is forbidden from
-            # terminating and must emit yet another tool call, so the streak
-            # climbs unbounded. Releasing to 'auto' lets it actually write/stop.
+        # Fix C (hard) + Fix B (firm): drop the structural "must call a tool"
+        # coercion at BOTH directive tiers. The state machine forces
+        # tool_choice='required' during the active agentic loop; paired with a
+        # "switch to synthesis / write your deliverable now" directive that is a
+        # trap -- the model cannot terminate and, when it does not pick the
+        # write tool, emits another read, so the streak climbs unbounded.
+        # Releasing to 'auto' lets it write, call deliver, or stop. (Previously
+        # only the hard tier released; the firm tier left the coercion on, which
+        # is where the observed read-forever loop lived.)
+        if openai_body.get("tool_choice") == "required" or hard:
             openai_body["tool_choice"] = "auto"
             openai_body.pop("grammar", None)
         # Re-inject any write/deliverable tool that narrowing dropped, so the

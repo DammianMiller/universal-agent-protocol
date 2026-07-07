@@ -1,8 +1,16 @@
 # Changelog
 
+## v1.119.2 (2026-07-07)
+
+- chore: bump version to 1.119.1
+- chore: bump version to 1.118.3
+- fix(proxy): break RECON read-forever deadlock (proactive gate + firm-tier release)
+
+
 ## v1.119.1 (2026-07-07)
 
-- fix(proxy): reattach messages list in STUCK-BREAK injector when empty
+- chore: bump version to 1.118.3
+- fix(proxy): break RECON read-forever deadlock (proactive gate + firm-tier release)
 
 
 ## v1.119.0 (2026-07-07)
