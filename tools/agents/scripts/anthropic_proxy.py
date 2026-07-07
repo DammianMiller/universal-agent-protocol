@@ -1275,6 +1275,7 @@ class SessionMonitor:
     and enable proactive context management before overflow occurs."""
 
     context_window: int = 0  # Auto-detected or configured
+    sandboxed: bool = False  # True when the client is a `uap sandbox` (bwrap) session (X-Uap-Sandbox header)
     total_requests: int = 0
     last_input_tokens: int = 0  # Estimated input tokens of last request
     last_output_tokens: int = 0  # Actual output tokens of last response
@@ -4366,6 +4367,46 @@ def _writes_are_gated(openai_body: dict) -> bool:
     return False
 
 
+# MCP tool prefixes a bubblewrap sandbox (`uap sandbox`) cannot reach: the
+# claude-in-chrome browser extension talks over a socket that is not bound into
+# the sandbox mount namespace, so every browser_batch call dead-ends. Offering
+# these tools to a sandboxed session guarantees a fetch/tool-selection loop.
+# Env-configurable (colon-separated) so a deployment that DOES bind the browser
+# extension socket into the sandbox can disable stripping (set empty), or extend
+# it to other sandbox-unreachable MCP servers. Default: the claude-in-chrome
+# browser bridge, empirically unreachable in the bwrap namespace (observed live:
+# browser_batch dead-ended repeatedly and the model reported it unavailable).
+_SANDBOX_UNREACHABLE_TOOL_PREFIXES = tuple(
+    p
+    for p in os.environ.get(
+        "PROXY_SANDBOX_UNREACHABLE_PREFIXES", "mcp__claude-in-chrome__"
+    ).split(":")
+    if p
+)
+
+
+def _strip_sandbox_unreachable_tools(body: dict) -> int:
+    """Drop browser/extension MCP tools a bwrap sandbox can't reach from the
+    Anthropic-format tool list in ``body['tools']``. Returns the count removed
+    so the caller can log it. The model then falls back to WebFetch / local
+    file reads instead of looping on an unreachable browser_batch."""
+    tools = body.get("tools")
+    if not isinstance(tools, list) or not _SANDBOX_UNREACHABLE_TOOL_PREFIXES:
+        return 0
+    kept = [
+        t
+        for t in tools
+        if not (
+            isinstance(t, dict)
+            and str(t.get("name", "")).startswith(_SANDBOX_UNREACHABLE_TOOL_PREFIXES)
+        )
+    ]
+    removed = len(tools) - len(kept)
+    if removed:
+        body["tools"] = kept
+    return removed
+
+
 def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> None:
     """Force a terminal turn when the model is looping self-awarely or hammering
     a rate-limited API. Unlike the cycle-breaker (which narrows tools), this
@@ -4379,11 +4420,18 @@ def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> N
     # Release the tool-choice coercion so a plain text turn is allowed.
     if openai_body.get("tool_choice") == "required":
         openai_body["tool_choice"] = "auto"
+    # Sandboxed sessions can't reach the browser extension, so don't steer them
+    # to it (that is the very dead-end this guard is trying to break).
+    channel_hint = (
+        "use `git clone` (git protocol) or WebFetch"
+        if monitor.sandboxed
+        else "use the browser tool or `git clone` (git protocol)"
+    )
     directive = (
         "\n\nSTOP — you are repeating a failing action (" + reason + "). Do NOT "
         "retry the same tool or fetch again. If a resource is unreachable (e.g. a "
-        "rate-limited GitHub REST API), switch channel: use the browser tool or "
-        "`git clone` (git protocol), NOT api.github.com. If it is still "
+        "rate-limited GitHub REST API), switch channel: " + channel_hint + ", NOT "
+        "api.github.com. If it is still "
         "unavailable, proceed WITHOUT it using what you already have, or ask the "
         "operator the single blocking question in one sentence. Take a DIFFERENT "
         "action now."
@@ -9278,6 +9326,21 @@ async def messages(request: Request):
     if request.headers.get("x-uap-json-response"):
         body["_uap_json_response"] = True
 
+    # Sandboxed sessions (`uap sandbox` / bwrap) set X-Uap-Sandbox:1 via
+    # ANTHROPIC_CUSTOM_HEADERS. The sandbox can't reach the claude-in-chrome
+    # browser extension, so strip its MCP tools here (before passthrough, so it
+    # applies to local AND cloud sessions) — the model then uses WebFetch or
+    # local file reads instead of looping on an unreachable browser_batch.
+    sandboxed = (request.headers.get("x-uap-sandbox") or "").strip() == "1"
+    if sandboxed:
+        _stripped = _strip_sandbox_unreachable_tools(body)
+        if _stripped:
+            logger.warning(
+                "SANDBOX: stripped %d unreachable browser MCP tool(s) "
+                "(bwrap cannot reach the claude-in-chrome extension)",
+                _stripped,
+            )
+
     # Periodically re-detect context window from upstream (handles server restarts)
     await _maybe_recheck_context_window()
 
@@ -9286,6 +9349,7 @@ async def messages(request: Request):
         return await _passthrough_anthropic_request(request, body, is_stream)
     session_id = resolve_session_id(request, body)
     monitor = get_session_monitor(session_id)
+    monitor.sandboxed = sandboxed
     # Per-turn flag: only the turn whose breaker strips tools suppresses the
     # response-side prose->tool_call resurrection. Clear it at request entry so a
     # prior finalize turn never bleeds into the next turn's normal extraction.
