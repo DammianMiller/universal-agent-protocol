@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.118.3 (2026-07-07)
+
+- fix(proxy): break RECON read-forever deadlock (proactive gate + firm-tier release)
+
+
 ## v1.118.2 (2026-07-07)
 
 - fix(proxy): keep the exploration escape hatch available during cycle-break
