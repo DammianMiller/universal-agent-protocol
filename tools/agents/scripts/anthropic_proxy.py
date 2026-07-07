@@ -340,6 +340,83 @@ _WRITE_TOOL_CLASS = frozenset({
     "write_file", "edit_file", "save_file",
 })
 
+# Open-ended exploration tools the agent uses to make a DIFFERENT move once a
+# read/grep/glob loop is broken. The code cannot enumerate every exploration
+# tool, but these are the universal escape hatches. Cycle-break narrowing must
+# NEVER strip these: a cycling *Bash* means "vary the command" (handled by the
+# injected cycle hint), NOT "lose the ability to run bash at all". Excluding
+# Bash here stranded autonomous ("auto mode") agents with no way to explore the
+# filesystem — the whole toolset minus its exploration escape hatch.
+_EXPLORATION_ESCAPE_TOOLS = frozenset({
+    "bash", "shell", "sh", "run_bash", "runbash", "run_command",
+    "run_terminal_cmd", "execute_command", "executecommand", "terminal",
+    "webfetch", "web_fetch", "fetch", "websearch", "web_search",
+    "agent", "task", "dispatch_agent",
+})
+
+
+def _narrow_tools_for_cycle_break(tools, cycling_tool_names, session_banned_tools):
+    """Drop cycling + session-banned tools from the toolset, expanding to the
+    whole read-only class when any excluded tool is read-only.
+
+    The open-ended exploration escape hatch (Bash/WebFetch/Agent) is kept out of
+    the CYCLING-derived exclusion: a cycling Bash means "vary the command"
+    (handled by the injected cycle hint), not "lose the ability to run bash".
+    An explicit session ban is a stronger, deliberate signal (a tool that keeps
+    malforming) and IS still honored, even for those tools.
+
+    Returns ``(narrowed_tools, expanded_read_only_class)``. Tool-name matching is
+    case-insensitive so "Bash"/"bash" and "Read"/"read" behave identically.
+    """
+    read_only_lower = {c.lower() for c in _READ_ONLY_TOOL_CLASS}
+    cycling_lower = {n.lower() for n in cycling_tool_names}
+    banned_lower = {n.lower() for n in session_banned_tools}
+    # Expand to the full read-only class if any excluded tool is read-only
+    # (preserves the original trigger over cycling ∪ banned).
+    expanded = any(n in read_only_lower for n in (cycling_lower | banned_lower))
+    cycling_exclude = set(cycling_lower)
+    if expanded:
+        cycling_exclude |= read_only_lower
+    # Never let the cycling path narrow away the exploration escape hatch — that
+    # is exactly the filesystem-exploration capability the cycle-break is trying
+    # to redirect the agent toward.
+    cycling_exclude -= _EXPLORATION_ESCAPE_TOOLS
+    exclude_set = cycling_exclude | banned_lower
+
+    def _name(t):
+        return ((t.get("function", {}) or {}).get("name", "") or "").lower()
+
+    narrowed = [t for t in tools if _name(t) not in exclude_set]
+
+    # Floor invariant: a loop-breaker must never strand the agent. If narrowing
+    # would remove the last way to make a DIFFERENT move — i.e. no exploration
+    # escape hatch AND no write tool survives, but the original set had one —
+    # keep the original toolset. This closes the door where an explicit ban of
+    # the sole exploration tool re-creates the very "can't explore" bug.
+    write_lower = {w.lower() for w in _WRITE_TOOL_CLASS}
+
+    def _has_action_path(tool_list):
+        names = {_name(t) for t in tool_list}
+        return bool(names & _EXPLORATION_ESCAPE_TOOLS) or bool(names & write_lower)
+
+    if _has_action_path(tools) and not _has_action_path(narrowed):
+        return list(tools), expanded
+    return narrowed, expanded
+
+
+def _should_auto_ban(name, cycle_count, ban_at):
+    """Whether a cycling tool should be added to session_banned_tools this round.
+
+    The auto-ban accumulator is itself cycling-derived (ban after N detections),
+    so exploration escape-hatch tools (Bash/WebFetch/Agent) are NEVER auto-banned
+    — banning Bash would re-strip the agent's only way to explore the filesystem
+    on the Nth cycle, re-creating the bug the narrowing exemption fixes for
+    earlier cycles. Repeated Bash is redirected via the injected cycle hint.
+    """
+    if name.lower() in _EXPLORATION_ESCAPE_TOOLS:
+        return False
+    return cycle_count >= ban_at
+
 PROXY_GUARDRAIL_RETRY = os.environ.get("PROXY_GUARDRAIL_RETRY", "on").lower() not in {
     "0",
     "false",
@@ -4028,7 +4105,13 @@ def _resolve_state_machine_tool_choice(
                     and PROXY_COORDINATION_BAN_THRESHOLD > 0
                 )
                 ban_at = PROXY_COORDINATION_BAN_THRESHOLD if is_coord else 3
-                if monitor.tool_cycle_counts[name] >= ban_at and name not in monitor.session_banned_tools:
+                # Exploration escape-hatch tools are never auto-banned — see
+                # _should_auto_ban (banning Bash re-creates the "can't explore"
+                # bug since the ban is itself cycling-derived).
+                if (
+                    _should_auto_ban(name, monitor.tool_cycle_counts[name], ban_at)
+                    and name not in monitor.session_banned_tools
+                ):
                     monitor.session_banned_tools.add(name)
                     logger.warning(
                         "TOOL BAN: '%s' banned for session after %d cycle detections "
@@ -4853,16 +4936,15 @@ def build_openai_request(
                 (monitor.cycling_tool_names or monitor.session_banned_tools)
                 and "tools" in openai_body
             ):
-                exclude_set = set(monitor.cycling_tool_names) | monitor.session_banned_tools
-                # Expand to full read-only class if any cycling tool is read-only
-                if any(n.lower() in {c.lower() for c in _READ_ONLY_TOOL_CLASS} for n in exclude_set):
-                    exclude_set |= _READ_ONLY_TOOL_CLASS
                 original_count = len(openai_body["tools"])
-                narrowed = [
-                    t
-                    for t in openai_body["tools"]
-                    if t.get("function", {}).get("name") not in exclude_set
-                ]
+                # Drop cycling/banned tools (and the read-only class if any
+                # cycling tool is read-only) but always keep the exploration
+                # escape hatch — see _narrow_tools_for_cycle_break.
+                narrowed, expanded_read_only = _narrow_tools_for_cycle_break(
+                    openai_body["tools"],
+                    monitor.cycling_tool_names,
+                    monitor.session_banned_tools,
+                )
                 if narrowed:
                     openai_body["tools"] = narrowed
                     # Only log on first activation or phase transitions to reduce noise
@@ -4872,7 +4954,7 @@ def build_openai_request(
                             original_count,
                             len(narrowed),
                             monitor.cycling_tool_names,
-                            any(n.lower() in {c.lower() for c in _READ_ONLY_TOOL_CLASS} for n in monitor.cycling_tool_names),
+                            expanded_read_only,
                         )
                 else:
                     logger.warning(
