@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.118.1 (2026-07-07)
+
+- refactor(tool-calls): make standalone `uap-tool-calls setup` fully automatic
+
+
 ## v1.118.0 (2026-07-07)
 
 - feat(models): auto-switch tool-call profile from model routing
