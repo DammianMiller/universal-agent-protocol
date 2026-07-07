@@ -108,8 +108,65 @@ describe('stop-check decision (A + anti-spin)', () => {
     expect(decideStopCheck(dir, false).block).toBe(false); // complete
   });
 
-  it('no ledger => never blocks (casual sessions unaffected)', () => {
-    expect(decideStopCheck(dir, false).block).toBe(false);
+  it('no ledger + nudge disabled => never blocks (casual sessions unaffected)', () => {
+    const prev = process.env.UAP_HANDSFREE_PRELEDGER;
+    process.env.UAP_HANDSFREE_PRELEDGER = '0';
+    try {
+      expect(decideStopCheck(dir, false).block).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.UAP_HANDSFREE_PRELEDGER;
+      else process.env.UAP_HANDSFREE_PRELEDGER = prev;
+    }
+  });
+
+  it('Fix C: no ledger + driven model => nudges once, then gives up (never wedges)', () => {
+    // executor is qwen35-a3b (aggressive/injectAutonomy) per beforeEach.
+    const first = decideStopCheck(dir, false);
+    expect(first.block).toBe(true);
+    expect(first.message).toMatch(/no build plan exists yet|TodoWrite/);
+    const second = decideStopCheck(dir, false);
+    expect(second.block).toBe(false); // bounded by PRE_LEDGER_MAX (default 1)
+    expect(second.giveUp).toBe(true);
+  });
+
+  it('Fix C: pre-ledger nudge honors stop_hook_active (never re-blocks)', () => {
+    expect(decideStopCheck(dir, true).block).toBe(false);
+  });
+
+  it('Fix C: Fable (trusted intrinsic persistence) is never pre-ledger blocked', () => {
+    const prev = process.env.UAP_ACTIVE_MODEL;
+    process.env.UAP_ACTIVE_MODEL = 'claude-fable-5';
+    try {
+      // Fable is light/injectAutonomy=false -> no planning nudge.
+      expect(decideStopCheck(dir, false).block).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.UAP_ACTIVE_MODEL;
+      else process.env.UAP_ACTIVE_MODEL = prev;
+    }
+  });
+
+  it('Fix C: casual frontier session is NOT pre-ledger blocked (local-only scope)', () => {
+    const prev = process.env.UAP_ACTIVE_MODEL;
+    process.env.UAP_ACTIVE_MODEL = 'opus-4.8'; // frontier -> post-ledger blocker only
+    try {
+      expect(decideStopCheck(dir, false).block).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.UAP_ACTIVE_MODEL;
+      else process.env.UAP_ACTIVE_MODEL = prev;
+    }
+  });
+
+  it('Fix C: a ledger appearing after a pre-ledger nudge does not corrupt the main counters', () => {
+    // executor qwen35-a3b (local) per beforeEach -> first no-ledger call nudges.
+    const first = decideStopCheck(dir, false);
+    expect(first.block).toBe(true);
+    expect(first.message).toMatch(/no build plan exists yet|TodoWrite/);
+    // The model then lays out the plan -> ledger exists. The main path must block
+    // on the real remaining items (not carry the pre-ledger block count).
+    initLedger(dir, 'mission', items);
+    const afterLedger = decideStopCheck(dir, false);
+    expect(afterLedger.block).toBe(true);
+    expect(afterLedger.message).toMatch(/multi-epic build is incomplete/);
   });
 
   it('gives up (allows stop) after stagnation with no progress — never wedges', () => {

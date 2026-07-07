@@ -23,6 +23,8 @@ export function loadPersistenceConfig(cwd: string = process.cwd()): PersistenceC
     enabled: hf.enabled !== false && process.env.UAP_HANDSFREE !== '0',
     ...(envIntensity ? { intensity: envIntensity } : hf.intensity ? { intensity: hf.intensity } : {}),
     ...(hf.overrides ? { overrides: hf.overrides } : {}),
+    // Fix C: pre-ledger nudge, default ON; disable via config or UAP_HANDSFREE_PRELEDGER=0.
+    preLedgerNudge: hf.preLedgerNudge !== false && process.env.UAP_HANDSFREE_PRELEDGER !== '0',
   };
 }
 
