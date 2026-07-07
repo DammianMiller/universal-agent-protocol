@@ -361,6 +361,23 @@ export function resolvePresetModel(
   return preset.roles[role];
 }
 
+/**
+ * Compute the `ANTHROPIC_PASSTHROUGH_MODELS` proxy env value for a routing
+ * preset. When the preset uses any CLOUD (Claude) model, returns an empty
+ * string — the proxy then falls back to its default passthrough patterns,
+ * which prefix-match every claude- api id (robust to date-suffixed names) and
+ * forward planner/reviewer turns to the real Anthropic API while local ids
+ * (e.g. qwen) stay on llama-server. When the preset is all-local, returns the
+ * "__local_only__" sentinel so the proxy serves everything locally. This lets a
+ * picked routing option work first-time without hand-editing the proxy env.
+ */
+export function passthroughModelsForPreset(preset: RoutingPreset): string {
+  const usesCloud = preset.models.some((id) =>
+    (ModelPresets[id]?.apiModel ?? '').toLowerCase().startsWith('claude-')
+  );
+  return usesCloud ? '' : '__local_only__';
+}
+
 export type RoutingPresetId = keyof typeof RoutingPresets;
 
 /**

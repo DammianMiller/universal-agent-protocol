@@ -19,11 +19,13 @@ import {
   RoutingPresets,
   type MultiModelConfig,
   tiersToRoutingMatrix,
+  passthroughModelsForPreset,
 } from '../models/index.js';
 import { AgentContextConfig, MultiModelSchema } from '../types/config.js';
 
 // Config loading delegated to shared utility
 import { loadUapConfig, loadUapConfigRaw, findUapConfigPath, modifyUapConfig } from '../utils/config-loader.js';
+import { upsertProxyEnvVars } from './systemd-services.js';
 const loadConfig = () => loadUapConfig();
 
 /**
@@ -615,6 +617,27 @@ async function routingUseCommand(id: string, options: { save?: boolean }): Promi
     if (findUapConfigPath()) {
       modifyUapConfig(process.cwd(), (cfg) => ({ ...cfg, multiModel: mmConfig }));
       console.log(chalk.green('\n✓ Saved to .uap.json (multiModel).'));
+      // Wire the proxy so the choice works first-time: cloud tiers
+      // (planner/reviewer) pass through to the real Anthropic API; an all-local
+      // preset forces every model local. Without this the proxy keeps its prior
+      // ANTHROPIC_PASSTHROUGH_MODELS and silently serves cloud tiers on qwen.
+      try {
+        const passthrough = passthroughModelsForPreset(preset);
+        const envPath = upsertProxyEnvVars({ ANTHROPIC_PASSTHROUGH_MODELS: passthrough });
+        const desc =
+          passthrough === '__local_only__'
+            ? 'all models served locally (no Anthropic passthrough)'
+            : 'cloud tiers (planner/reviewer) pass through to the Anthropic API';
+        console.log(chalk.green(`✓ Proxy passthrough wired in ${envPath}`));
+        console.log(chalk.dim(`  ${desc}`));
+        console.log(
+          chalk.dim('  Restart to apply: systemctl --user restart uap-anthropic-proxy.service')
+        );
+      } catch (err) {
+        console.warn(
+          chalk.yellow(`\n⚠ Saved routing, but could not update proxy env: ${(err as Error).message}`)
+        );
+      }
     } else {
       console.warn(
         chalk.yellow('\nNo .uap.json found — run `uap init` first, then re-run with --save.')

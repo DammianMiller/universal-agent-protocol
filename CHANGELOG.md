@@ -1,8 +1,9 @@
 # Changelog
 
-## v1.114.0 (2026-07-06)
+## v1.115.0 (2026-07-06)
 
-- feat(dashboard): persist compression + performance panels to a cross-process store
+- chore: bump version to 1.112.0
+- feat(routing): wire proxy passthrough when a routing preset is applied
 
 
 ## v1.113.0 (2026-07-06)
