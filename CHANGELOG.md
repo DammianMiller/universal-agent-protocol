@@ -1,8 +1,13 @@
 # Changelog
 
-## v1.112.0 (2026-07-07)
+## v1.116.0 (2026-07-07)
 
 - feat(models): auto-switch tool-call profile from model routing
+
+
+## v1.113.0 (2026-07-06)
+
+- fix(dashboard): de-fabricate model panel via raw config; wire routing auto-activation into setup
 
 
 ## v1.111.3 (2026-07-06)

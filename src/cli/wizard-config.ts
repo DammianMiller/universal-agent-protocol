@@ -10,7 +10,7 @@
 
 import { writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { join } from 'path';
-import { RoutingPresets } from '../models/index.js';
+import { RoutingPresets, tiersToRoutingMatrix } from '../models/index.js';
 
 export interface MemoryFeatures {
   shortTermMemory: boolean;
@@ -254,11 +254,16 @@ export async function applyWizardConfig(
     if (selections.model.routingPreset && selections.model.routingPreset !== 'none') {
       const preset = RoutingPresets[selections.model.routingPreset];
       if (preset) {
+        // Mirror `uap model routing use <id>` exactly: materialize the preset's
+        // complexity tiers into a routingMatrix so tiered presets (cost/speed/
+        // sonnet-5) route per-complexity from setup, not only by lifecycle role.
+        const routingMatrix = tiersToRoutingMatrix(preset);
         config.multiModel = {
           enabled: true,
           models: preset.models,
           roles: { ...preset.roles },
           routingStrategy: preset.routingStrategy || 'balanced',
+          ...(routingMatrix ? { routingMatrix } : {}),
         };
       }
     }

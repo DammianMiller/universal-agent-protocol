@@ -170,7 +170,10 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
       { label: 'Cost tracking', value: 'costTracking' },
       { label: 'Model routing (multi-model)', value: 'modelRouting' },
     ],
-    initialValues: [],
+    // Auto-activate routing when a local model is present: the local-first
+    // presets keep execution free/local and send only plan/review to the cloud,
+    // so routing is the sensible default exactly when a local endpoint exists.
+    initialValues: localModel ? ['modelRouting'] : [],
     required: false,
   });
 
@@ -187,7 +190,10 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
           hint: `exec=${p.roles.executor} review=${p.roles.reviewer}`,
         })),
       ],
-      initialValue: 'none',
+      // With a local model detected, default to the local-first preset so setup
+      // auto-activates a sensible routing table (free local execution, Fable
+      // planning, Opus review) instead of leaving routing on 'none'.
+      initialValue: localModel ? 'fable-local-opus' : 'none',
     });
     if (routingPreset !== 'none') {
       ui.note(

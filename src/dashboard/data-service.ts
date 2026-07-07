@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { getSavingsByInfluence, frontierCost, type SavingsByInfluence } from './savings.js';
 import { getOrchestrationTree, type OrchestrationTree } from './orchestration-tree.js';
-import { loadUapConfig } from '../utils/config-loader.js';
+import { loadUapConfigRaw } from '../utils/config-loader.js';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
@@ -257,7 +257,7 @@ function getSessionHistory(cwd: string): SessionHistoryEntry[] {
           sessionId: id,
           status: status === 'active' ? 'active' : 'ended',
           startedAt: createdAt,
-          endedAt: status === 'active' ? null : createdAt, // approximate
+          endedAt: null, // end time not tracked in session.db — honest null, not created_at
           durationMs: status === 'active' ? Date.now() - startMs : 0,
           tokensIn: 0,
           tokensOut: 0,
@@ -431,7 +431,9 @@ export interface ModelData {
   strategy: string;
   enabled: boolean;
   availableModels: string[];
-  routingMatrix: Record<string, { planner: string; executor: string }>;
+  // Two shapes: task-type -> {planner,executor} (role matrix) OR complexity
+  // tier -> model id (string), as produced by tiersToRoutingMatrix / tier presets.
+  routingMatrix: Record<string, string | { planner: string; executor: string }>;
   routingRules: Array<{
     keywords?: string[];
     complexity?: string;
@@ -850,9 +852,11 @@ function buildSessionTelemetry(
       .all();
 
     const routingDetails: RoutingDecision[] = routingDecisions.map((r: any) => ({
-      timestamp: r.timestamp || new Date().toISOString(),
+      // Honest empties: never invent a "now" timestamp or an 'auto-select'
+      // reason for a decision the DB did not record.
+      timestamp: r.timestamp || '',
       modelUsed: r.model_used || 'unknown',
-      reasoning: r.reasoning || 'auto-select',
+      reasoning: r.reasoning || '',
       taskType: r.task_type || '',
       complexity: r.complexity || '',
       tokensIn: r.tokens_in || 0,
@@ -1424,11 +1428,13 @@ function getMemoryData(cwd: string): MemoryData {
 }
 
 export function getModelData(cwd: string): ModelData {
-  let roles = { planner: 'opus-4.6', executor: 'qwen35-a3b', reviewer: 'opus-4.6', fallback: 'qwen35-a3b' };
+  // Honest defaults: empty until real multiModel config loads — never seed a
+  // fabricated routing table the panel would render as real config.
+  let roles = { planner: '', executor: '', reviewer: '', fallback: '' };
   let strategy = 'balanced';
   let enabled = false;
-  let availableModels: string[] = ['opus-4.6', 'qwen35-a3b'];
-  let routingMatrix: Record<string, { planner: string; executor: string }> = {};
+  let availableModels: string[] = [];
+  let routingMatrix: Record<string, string | { planner: string; executor: string }> = {};
   let routingRules: ModelData['routingRules'] = [];
   // Honest default: when a project does not configure cost optimization we do NOT
   // fabricate 90/20/3 — zeros render as "N/A" so the panel reflects real config.
@@ -1440,22 +1446,32 @@ export function getModelData(cwd: string): ModelData {
   };
 
   try {
-    const cfg = loadUapConfig(cwd);
+    // Read RAW config (not schema-parsed): the dashboard must reflect what the
+    // user actually configured, never zod .default() values (e.g. the
+    // MultiModelConfigSchema opus-4.6/qwen35 + 90/20/3 defaults), which would
+    // otherwise render as fabricated 'real' routing/cost config.
+    const cfg = loadUapConfigRaw(cwd);
     if (cfg?.multiModel) {
       const mm = cfg.multiModel as Record<string, unknown>;
       enabled = (mm.enabled as boolean) ?? false;
       if (mm.roles) roles = { ...roles, ...(mm.roles as Record<string, string>) };
       if (mm.routingStrategy) strategy = mm.routingStrategy as string;
-      if (mm.models && Array.isArray(mm.models) && mm.models.length > 0) availableModels = mm.models as string[];
+      if (mm.models && Array.isArray(mm.models) && mm.models.length > 0) {
+        // models entries may be preset-id strings or full ModelConfig objects —
+        // normalize to ids so the panel never renders '[object Object]'.
+        availableModels = (mm.models as unknown[]).map((m) =>
+          typeof m === 'string' ? m : ((m as { id?: string } | null)?.id ?? String(m))
+        );
+      }
       if (mm.routingMatrix) routingMatrix = mm.routingMatrix as typeof routingMatrix;
       if (mm.routing && Array.isArray(mm.routing)) routingRules = mm.routing as typeof routingRules;
       if (mm.costOptimization) {
         const co = mm.costOptimization as Record<string, unknown>;
         costOptimization = {
           enabled: (co.enabled as boolean) ?? false,
-          targetReduction: (co.targetReduction as number) ?? 90,
-          maxPerformanceDegradation: (co.maxPerformanceDegradation as number) ?? 20,
-          fallbackThreshold: (co.fallbackThreshold as number) ?? 3,
+          targetReduction: (co.targetReduction as number) ?? 0,
+          maxPerformanceDegradation: (co.maxPerformanceDegradation as number) ?? 0,
+          fallbackThreshold: (co.fallbackThreshold as number) ?? 0,
         };
       }
     }
@@ -1512,9 +1528,11 @@ export function getModelData(cwd: string): ModelData {
         timestamp: string;
       }>;
       recentRoutingDecisions = recentRows.map((r) => ({
-        timestamp: r.timestamp || new Date().toISOString(),
+        timestamp: r.timestamp || '',
         modelUsed: r.modelId || 'unknown',
-        reasoning: 'auto-select',
+        // task_outcomes has no reasoning column — leave empty rather than
+        // labelling every decision 'auto-select'.
+        reasoning: '',
         taskType: r.taskType || 'unknown',
         complexity: r.complexity || 'medium',
         success: r.success === 1,
@@ -1530,7 +1548,12 @@ export function getModelData(cwd: string): ModelData {
   }
 
   // Ensure defaults are returned if not loaded from config
-  const finalAvailableModels = (availableModels && availableModels.length > 0) ? availableModels : ['opus-4.6', 'qwen35-a3b'];
+  // When multiModel is unconfigured, surface the models that ACTUALLY produced
+  // analytics (real telemetry) instead of a fabricated placeholder list.
+  const finalAvailableModels =
+    availableModels && availableModels.length > 0
+      ? availableModels
+      : Array.from(new Set(sessionUsage.map((s) => s.modelId).filter((m) => m && m !== 'unknown')));
   const finalRoutingRules = (routingRules && routingRules.length > 0) ? routingRules : [];
 
   // Router is effectively enabled if explicitly configured OR if there are
