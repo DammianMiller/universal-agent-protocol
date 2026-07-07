@@ -38,7 +38,12 @@ import { resolvePersistenceProfile } from '../delivery/persistence-profile.js';
 interface AntiSpinState {
   blocks: number;
   lastRemaining: number;
+  /** Fix C: consecutive pre-ledger nudges issued (before any ledger exists). */
+  preLedgerBlocks?: number;
 }
+
+/** Fix C: hard cap on pre-ledger nudges so a planning stall can never wedge. */
+const PRE_LEDGER_MAX = Math.max(0, Number(process.env.UAP_HANDSFREE_PRELEDGER_MAX ?? 1));
 
 function statePath(cwd: string): string {
   return join(cwd, '.uap', 'handsfree-state.json');
@@ -60,7 +65,7 @@ function saveState(cwd: string, st: AntiSpinState): void {
   }
 }
 function resetState(cwd: string): void {
-  saveState(cwd, { blocks: 0, lastRemaining: Number.MAX_SAFE_INTEGER });
+  saveState(cwd, { blocks: 0, lastRemaining: Number.MAX_SAFE_INTEGER, preLedgerBlocks: 0 });
 }
 
 async function readStdin(): Promise<string> {
@@ -87,7 +92,44 @@ export function decideStopCheck(
   if (stopHookActive) return { block: false, message: 'stop_hook_active — never re-block' };
 
   const ledger = loadLedger(cwd);
-  if (!ledger) return { block: false, message: 'no active build ledger' };
+  if (!ledger) {
+    // Fix C: pre-ledger safety net. A LOCAL model (qwen) can defer at the
+    // PLANNING stage — "I need more exploration cycles to complete the plan" —
+    // and end the turn before ever writing a TodoWrite plan, so no ledger exists
+    // and the build silently stops. Nudge it (bounded to PRE_LEDGER_MAX,
+    // anti-wedge) to lay out the plan and start. Scoped to the LOCAL family only:
+    // it is the one that emits these deferrals and drives hands-free builds here.
+    // Frontier models keep their post-ledger blocker + intrinsic persistence, and
+    // Fable is trusted — so a casual (non-build) frontier/Fable session is never
+    // pre-ledger blocked. Disable via config / UAP_HANDSFREE_PRELEDGER=0.
+    const preProfile = resolvePersistenceProfile(resolveActiveModel(cwd), cfg);
+    const nudgeOn = cfg.preLedgerNudge !== false && PRE_LEDGER_MAX > 0;
+    const driven = preProfile.stopHookBlocks && preProfile.injectAutonomy && preProfile.family === 'local';
+    if (!nudgeOn || !driven) {
+      return { block: false, message: 'no active build ledger' };
+    }
+    const st0 = loadState(cwd);
+    const pre = st0.preLedgerBlocks ?? 0;
+    if (pre >= PRE_LEDGER_MAX) {
+      resetState(cwd);
+      return {
+        block: false,
+        giveUp: true,
+        message:
+          `hands-free pre-ledger nudge exhausted after ${pre} attempt(s) — no ` +
+          'build plan was started; allowing stop. Consider escalating the model.',
+      };
+    }
+    saveState(cwd, { ...st0, preLedgerBlocks: pre + 1 });
+    return {
+      block: true,
+      message:
+        'NOT DONE — hands-free is on but no build plan exists yet. Do NOT stop to ' +
+        'ask for more cycles or permission. Lay out the full build as a TodoWrite ' +
+        'plan now (it auto-creates the completion ledger) and start building the ' +
+        'first item this turn.',
+    };
+  }
   if (isComplete(ledger)) {
     resetState(cwd);
     return { block: false, message: 'build complete — all ledger items done' };

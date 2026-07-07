@@ -231,6 +231,48 @@ _RATE_LIMITED_API_RE = re.compile(r"api\.github\.com", re.IGNORECASE)
 PROXY_STUCK_TEXT_THRESHOLD = int(os.environ.get("PROXY_STUCK_TEXT_THRESHOLD", "2"))
 PROXY_STUCK_API_THRESHOLD = int(os.environ.get("PROXY_STUCK_API_THRESHOLD", "3"))
 
+# ---------------------------------------------------------------------------
+# DEFERRAL-BREAK guardrail (Fix A): a model can end a turn with plain prose that
+# DEFERS the work instead of doing it -- "I need more exploration cycles to
+# complete the plan", "let me continue exploring", "I'll need a few more passes"
+# -- with NO tool call. This is a turn-ending *capitulation*, not a loop
+# admission, so STUCK-BREAK's phrase list never matches it; and because it is a
+# no-tool turn, recon-convergence never advanced its streak either (that counter
+# only moves on turns that emit tool calls). The stall therefore slips through
+# every guardrail and silently halts a hands-free build (observed live: a run of
+# back-to-back session-ends with "Code changed: false"). When a no-tool turn
+# matches the deferral phrasing PROXY_DEFERRAL_THRESHOLD times in a row, the
+# proxy forces the NEXT turn to take a concrete action: tool_choice=required plus
+# a firm "continue autonomously, you will not be re-prompted" directive. This is
+# the INVERSE of STUCK-BREAK (which releases to a prose exit) -- a deferral means
+# work REMAINS, so we drive an action rather than allow a stop. Default on;
+# PROXY_DEFERRAL_BREAK=off to disable.
+PROXY_DEFERRAL_BREAK = os.environ.get("PROXY_DEFERRAL_BREAK", "on").lower() not in {
+    "0", "false", "off", "no",
+}
+# Turn-ending deferral/capitulation phrases (lowercased match). Deliberately
+# narrow -- it must catch "I need more exploration cycles to complete the plan"
+# and close kin, WITHOUT firing on ordinary forward-looking narration that is
+# actually followed by a tool call (the no-tool-turn gate handles that too).
+_DEFERRAL_PHRASE_RE = re.compile(
+    r"need (?:more|additional|further|extra) (?:exploration |investigation |research )?"
+    r"(?:cycles|passes|turns|iterations|rounds)"
+    r"|more (?:exploration |investigation )?(?:cycles|passes|iterations) "
+    r"(?:to|are needed|is needed|required|before)"
+    r"|to (?:complete|finish|continue) (?:the|my) (?:plan|exploration|investigation)"
+    r"|(?:let me|allow me to|i'?ll|i will|i need to|i'?d need to|"
+    r"we(?:'?ll| will| need to)) (?:keep|continue) "
+    r"(?:exploring|investigating|researching|working through|going)"
+    r"|(?:once|after) i(?:'ve| have)? (?:explored|investigated|gathered|reviewed) "
+    r"(?:more|additional|further|enough)"
+    r"|need to (?:gather|do|run|perform) (?:more|additional|further) "
+    r"(?:exploration|research|investigation|analysis)",
+    re.IGNORECASE,
+)
+# Fire on the FIRST deferral by default: a single "I need more cycles" no-tool
+# turn IS the halt, unlike STUCK-BREAK which waits for a sustained loop.
+PROXY_DEFERRAL_THRESHOLD = int(os.environ.get("PROXY_DEFERRAL_THRESHOLD", "1"))
+
 PROXY_TOOL_STATE_MACHINE = os.environ.get(
     "PROXY_TOOL_STATE_MACHINE", "on"
 ).lower() not in {
@@ -1268,6 +1310,8 @@ class SessionMonitor:
     self_stuck_streak: int = 0  # consecutive assistant texts self-reporting a loop
     rate_limited_api_streak: int = 0  # consecutive tool calls hitting a rate-limited API host
     stuck_break_fires: int = 0  # monotonic count of forced stuck-breaks
+    deferral_streak: int = 0  # consecutive no-tool turns deferring the work (Fix A)
+    deferral_break_fires: int = 0  # monotonic count of forced deferral-breaks (Fix A)
     tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
     malformed_tool_streak: int = 0  # consecutive malformed pseudo tool payloads
     invalid_tool_call_streak: int = 0  # consecutive invalid tool arg payloads
@@ -1536,6 +1580,50 @@ class SessionMonitor:
         if self.rate_limited_api_streak >= PROXY_STUCK_API_THRESHOLD:
             return True, f"rate-limited-API retries x{self.rate_limited_api_streak}"
         return False, ""
+
+    def note_deferral_signal(self, text: str, had_tool_call: bool) -> None:
+        """Track a turn-ending deferral/capitulation stall (Fix A): a plain-text
+        assistant turn with NO tool call that asks for more cycles / more
+        exploration / permission to keep going instead of taking the next build
+        action. Only a no-tool turn whose text matches the deferral phrasing
+        increments the streak; ANY tool call or non-matching text resets it, so a
+        model that actually acts (or writes a normal summary) is never flagged."""
+        if not PROXY_DEFERRAL_BREAK:
+            self.deferral_streak = 0
+            return
+        if (not had_tool_call) and text and _DEFERRAL_PHRASE_RE.search(text):
+            self.deferral_streak += 1
+        else:
+            self.deferral_streak = 0
+
+    def should_force_deferral_break(self) -> tuple[bool, str]:
+        """True + reason when a deferral-break should be forced this turn."""
+        if not PROXY_DEFERRAL_BREAK:
+            return False, ""
+        if self.deferral_streak >= PROXY_DEFERRAL_THRESHOLD:
+            return True, f"deferral/plan-capitulation x{self.deferral_streak}"
+        return False, ""
+
+    def recon_convergence_pending(self) -> bool:
+        """True when recon-convergence will own this turn. DEFERRAL-BREAK yields
+        to it (as it does to STUCK-BREAK) so the two guards never emit
+        contradictory tool_choice/directives in the same request. Fix B makes
+        their triggers climb in lockstep on prose-only stalls, so without this
+        yield a deep prose stall could trip both and undo recon's terminal tier
+        (which may strip tools and force a plain-text summary that ends the task)."""
+        return (
+            PROXY_RECON_CONVERGENCE_THRESHOLD > 0
+            and self.consecutive_no_write_turns >= PROXY_RECON_CONVERGENCE_THRESHOLD
+        )
+
+    def note_no_tool_turn(self) -> None:
+        """Fix B: a plain-text assistant turn with no tool call is still a
+        non-write turn, so advance the recon-convergence streak. The old code
+        only moved `consecutive_no_write_turns` on turns that emitted tool calls,
+        so a model that stalls in prose (no tools at all) froze the counter and
+        never escalated to the recon-convergence directive. Resets, like the
+        tool-turn path, whenever a write tool is later emitted."""
+        self.consecutive_no_write_turns += 1
 
     def has_duplicate_read_target(self, threshold: int = 2) -> tuple[bool, str]:
         """Check if any read-only tool has re-read the same target >= threshold times.
@@ -4308,6 +4396,60 @@ def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> N
     logger.warning("STUCK-BREAK: forced terminal turn (%s, fires=%d)", reason, monitor.stuck_break_fires)
 
 
+def _maybe_inject_deferral_break(openai_body: dict, monitor: "SessionMonitor") -> None:
+    """Convert a turn-ending deferral into forward motion (Fix A).
+
+    The model ended a turn with prose that DEFERS the work -- "I need more
+    exploration cycles to complete the plan", "let me continue exploring" -- with
+    no tool call, instead of taking the next build step. That stall is invisible
+    to STUCK-BREAK (not a loop-admission phrase) and to recon-convergence (a
+    no-tool turn never advanced its streak), so it silently ends a hands-free
+    build. This forces the NEXT turn to ACT: it forces tool_choice and tells the
+    model it will not be re-prompted. The INVERSE of STUCK-BREAK, which releases
+    to a prose exit -- a deferral means work REMAINS.
+    """
+    should, reason = monitor.should_force_deferral_break()
+    if not should:
+        return
+    # STUCK-BREAK (a self-aware loop wanting a prose exit) is the more urgent
+    # signal; if it will fire this turn, yield to it rather than force a tool.
+    stuck, _ = monitor.should_force_stuck_break()
+    if stuck:
+        return
+    # Also yield to recon-convergence: once the no-write streak is deep enough
+    # for recon to own the turn (it may strip tools / force a terminal summary),
+    # a "keep building" deferral directive would directly contradict it.
+    if monitor.recon_convergence_pending():
+        return
+    # Only force an action if there are tools to call and the choice is not
+    # already pinned to a specific tool by an earlier guard.
+    has_tools = bool(openai_body.get("tools"))
+    if has_tools and openai_body.get("tool_choice") in (None, "auto"):
+        openai_body["tool_choice"] = "required"
+    monitor.deferral_break_fires += 1
+    directive = (
+        "\n\nCONTINUE AUTONOMOUSLY (" + reason + "). You do NOT need more "
+        "exploration cycles, another pass, or permission, and you will NOT be "
+        "re-prompted to keep going. Do the next concrete step of the plan NOW: "
+        "pick the next un-built file/component and create it with the write tool "
+        "(or run the next required command). Never end a turn with only a plan, a "
+        "status note, or a request for more cycles -- take the action this turn."
+    )
+    msgs = openai_body.get("messages")
+    if not isinstance(msgs, list):
+        msgs = []
+    if msgs and msgs[0].get("role") == "system":
+        msgs[0]["content"] = (msgs[0].get("content") or "") + directive
+    else:
+        msgs.insert(0, {"role": "system", "content": directive.strip()})
+    openai_body["messages"] = msgs  # reattach in case messages was empty/absent
+    logger.warning(
+        "DEFERRAL-BREAK: forced action turn (%s, fires=%d)",
+        reason,
+        monitor.deferral_break_fires,
+    )
+
+
 def _maybe_inject_recon_convergence(
     openai_body: dict,
     monitor: "SessionMonitor",
@@ -5092,6 +5234,10 @@ def build_openai_request(
 
     _maybe_inject_stuck_break(openai_body, monitor)
 
+    # DEFERRAL-BREAK (Fix A): after stuck-break, drive a no-tool deferral turn
+    # into a concrete action. Runs last so it can yield to stuck-break.
+    _maybe_inject_deferral_break(openai_body, monitor)
+
     _apply_thinking_grammar(openai_body)
 
     _apply_json_response_grammar(openai_body, anthropic_body)
@@ -5223,12 +5369,21 @@ def _record_last_assistant_tool_calls(
     messages = anthropic_body.get("messages", [])
     tool_fingerprints = []
     tool_targets: dict[str, str] = {}
+    assistant_had_text = False  # Fix B: did the last assistant turn emit prose?
     for msg in reversed(messages):
         if msg.get("role") != "assistant":
             continue
         content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            assistant_had_text = True
         if isinstance(content, list):
             for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and str(block.get("text", "")).strip()
+                ):
+                    assistant_had_text = True
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     tool_fingerprints.append(_tool_call_fingerprint(block))
                     # Extract target key for read-only dedup (Option 3)
@@ -5252,6 +5407,12 @@ def _record_last_assistant_tool_calls(
             fingerprint=fingerprint,
         )
         return fingerprint
+    # Fix B: no tool call in the last assistant turn. A plain-text turn is still
+    # a non-write turn, so advance the recon-convergence streak (previously it
+    # only moved on tool turns, freezing the counter through prose-only stalls).
+    # Guard on real prose so an empty/absent assistant turn never inflates it.
+    if assistant_had_text:
+        monitor.note_no_tool_turn()
     return ""
 
 
@@ -8862,6 +9023,9 @@ async def stream_anthropic_response(
     try:
         monitor.note_assistant_text(accumulated_text)
         monitor.note_tool_arg_hosts(list(tc_args))
+        # DEFERRAL-BREAK signal (Fix A): a no-tool prose turn that defers the
+        # work. `tc_names` empty means this turn emitted no tool call.
+        monitor.note_deferral_signal(accumulated_text, bool(tc_names))
     except Exception:
         pass
 

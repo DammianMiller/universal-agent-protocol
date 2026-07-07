@@ -1,8 +1,8 @@
 # Changelog
 
-## v1.118.3 (2026-07-07)
+## v1.119.0 (2026-07-07)
 
-- fix(proxy): break RECON read-forever deadlock (proactive gate + firm-tier release)
+- feat(proxy,handsfree): break deferral/plan-capitulation stalls for hands-free builds
 
 
 ## v1.118.2 (2026-07-07)

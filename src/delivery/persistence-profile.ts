@@ -77,6 +77,15 @@ export interface PersistenceConfig {
   intensity?: PersistenceIntensity;
   /** per-model overrides keyed by model id substring. */
   overrides?: Record<string, Partial<PersistenceProfile>>;
+  /**
+   * Fix C: pre-ledger safety net. When hands-free is ON but NO completion
+   * ledger exists yet, a driven model (local/frontier) can defer at the
+   * planning stage — "I need more exploration cycles to complete the plan" —
+   * and end the turn before ever writing a plan, so nothing blocks the stop.
+   * When enabled, the Stop hook nudges once (bounded, anti-wedge) to lay out
+   * the plan and start building. Default ON; only ever nudges driven models.
+   */
+  preLedgerNudge?: boolean;
 }
 
 /**
