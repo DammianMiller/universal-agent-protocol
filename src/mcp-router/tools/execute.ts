@@ -10,6 +10,7 @@ import type { ToolSearchIndex } from '../search/fuzzy.js';
 import type { McpClientPool } from '../executor/client.js';
 import { compressToolOutput } from '../output-compressor.js';
 import { globalSessionStats } from '../session-stats.js';
+import { persistCompressionSample } from '../../utils/telemetry-store.js';
 import { isExpertToolPath, expertNameFromPath, consultExpert } from '../experts/registry.js';
 import { recordToolSpan } from '../../observability/halo-exporter.js';
 import { getPolicyGate, PolicyViolationError } from '../../policies/policy-gate.js';
@@ -137,6 +138,7 @@ export async function handleExecuteTool(
       };
     }
     globalSessionStats.record(path, consult.consultation.length, consult.consultation.length);
+    persistCompressionSample(process.cwd(), path, consult.consultation.length, consult.consultation.length);
     recordToolSpan(path, startTime, Date.now(), true, { 'expert.droid': droidName });
     return {
       success: true,
@@ -210,8 +212,14 @@ export async function handleExecuteTool(
     // See v1.4.1 revert notes: Qwen3.5 needs the structured envelope preserved.
     const compressed = compressToolOutput(rawResult, { intent });
 
-    // Record stats
+    // Record stats (in-process singleton + persisted store for the dashboard)
     globalSessionStats.record(
+      path,
+      compressed.stats.originalBytes,
+      compressed.stats.compressedBytes
+    );
+    persistCompressionSample(
+      process.cwd(),
       path,
       compressed.stats.originalBytes,
       compressed.stats.compressedBytes

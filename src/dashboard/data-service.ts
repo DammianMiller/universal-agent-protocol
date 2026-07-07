@@ -14,6 +14,7 @@ import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { globalSessionStats } from '../mcp-router/session-stats.js';
 import { getPerformanceMonitor, type PerformanceMetrics } from '../utils/performance-monitor.js';
+import { readCompressionStats, readPerfMetrics } from '../utils/telemetry-store.js';
 
 // ── TTL Cache for subprocess calls (git/docker don't change faster than 30s) ──
 interface CachedSubprocessResult<T> {
@@ -55,6 +56,12 @@ export interface TimeSeriesPoint {
 function getTelemetryDb(cwd: string): Database.Database {
   const dbPath = join(cwd, 'agents', 'data', 'memory', 'telemetry.db');
   const db = new Database(dbPath);
+  // telemetry.db is a cross-process store (written here + by the telemetry-store
+  // producers). Match their WAL/timeout settings so concurrent writes don't
+  // silently drop under lock contention.
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('busy_timeout = 10000');
   db.exec(`
     CREATE TABLE IF NOT EXISTS time_series (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -712,7 +719,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     models: getModelData(cwd),
     tasks,
     coordination,
-    performance: getPerformanceData(),
+    performance: getPerformanceData(cwd),
     timeSeries: getTimeSeriesHistory(cwd),
     compliance,
     deployBuckets,
@@ -1230,7 +1237,7 @@ function getAuditData(cwd: string): AuditEntry[] {
   }
 }
 
-function getMemoryData(cwd: string): MemoryData {
+export function getMemoryData(cwd: string): MemoryData {
   const memDbPath = join(cwd, 'agents/data/memory/short_term.db');
   let l1Entries = 0;
   let l1SizeKB = 0;
@@ -1306,14 +1313,19 @@ function getMemoryData(cwd: string): MemoryData {
     }
   }
 
-  // Get compression stats from session stats
+  // Get compression stats. The in-process `globalSessionStats` singleton is only
+  // populated in the MCP-router/executor processes, so in the `dash serve`
+  // process it is empty. Prefer the persisted store (cross-process truth), fall
+  // back to the in-memory singleton (same-process callers/tests), then derive
+  // from model_analytics.db as a last resort.
+  const persistedCompression = readCompressionStats(cwd);
   const stats = globalSessionStats.getSummary();
+  const usePersisted = persistedCompression.totalCalls > 0;
 
-  // Try real compression ratio from model_analytics.db
-  let compressionRaw = stats.totalRawBytes;
-  let compressionCtx = stats.totalContextBytes;
-  let compressionSavings = stats.savingsPercent;
-  const compressionCalls = stats.totalCalls;
+  let compressionRaw = usePersisted ? persistedCompression.rawBytes : stats.totalRawBytes;
+  let compressionCtx = usePersisted ? persistedCompression.contextBytes : stats.totalContextBytes;
+  let compressionSavings = usePersisted ? persistedCompression.savingsPercent : stats.savingsPercent;
+  let compressionCalls = usePersisted ? persistedCompression.totalCalls : stats.totalCalls;
 
   const analyticsDbPath = join(cwd, 'agents', 'data', 'memory', 'model_analytics.db');
   if (existsSync(analyticsDbPath) && compressionRaw === 0) {
@@ -1324,11 +1336,14 @@ function getMemoryData(cwd: string): MemoryData {
         .all();
       if (hasTable.length > 0) {
         const row = aDb
-          .prepare('SELECT SUM(tokensIn) as ti, SUM(tokensOut) as to2 FROM task_outcomes')
-          .get() as { ti: number | null; to2: number | null } | undefined;
+          .prepare(
+            'SELECT SUM(tokensIn) as ti, SUM(tokensOut) as to2, COUNT(*) as n FROM task_outcomes'
+          )
+          .get() as { ti: number | null; to2: number | null; n: number | null } | undefined;
         if (row && row.ti && row.to2 && row.ti + row.to2 > 0) {
           compressionRaw = row.ti + row.to2;
           compressionCtx = row.to2;
+          compressionCalls = row.n || 0; // was fixed 0 — derive call count from outcomes
           const ratio = row.to2 / (row.ti + row.to2);
           compressionSavings = ((1 - ratio) * 100).toFixed(1) + '%';
         }
@@ -2091,12 +2106,18 @@ function getComplianceData(cwd: string): ComplianceData {
 }
 
 /**
- * Get performance metrics from the global PerformanceMonitor.
- * Surfaces p50/p95/p99 latency data for all monitored operations.
+ * Get performance metrics. The in-process PerformanceMonitor singleton is only
+ * populated in the executor/memory processes, so the `dash serve` process reads
+ * it empty. Merge the persisted store (cross-process truth) over any
+ * in-process-only metrics so the panel is live regardless of which process
+ * generated the samples.
  */
-function getPerformanceData(): PerformanceData {
+export function getPerformanceData(cwd: string): PerformanceData {
   const monitor = getPerformanceMonitor();
-  const allMetrics = monitor.exportMetrics();
+  const inMem = monitor.exportMetrics();
+  const persisted = readPerfMetrics(cwd);
+  // Persisted wins on key collisions (it reflects all processes, not just this one).
+  const allMetrics = { ...inMem, ...persisted };
 
   // Build hot paths list sorted by call count (most active first)
   const hotPaths = Object.entries(allMetrics)

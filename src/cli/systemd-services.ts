@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import os from 'os';
 import { join } from 'path';
 
@@ -212,6 +212,12 @@ export function installSystemdUserServices(
       'PROXY_GUARDRAIL_RETRY=on',
       'PROXY_SESSION_TTL_SECS=7200',
       '',
+      '# Anthropic passthrough — empty forwards all claude- models to the real',
+      '# Anthropic API (planner/reviewer tiers) while local ids stay on llama.',
+      '# "__local_only__" forces every model local. Auto-managed by',
+      '# `uap model routing use` and `uap setup` from the chosen routing preset.',
+      'ANTHROPIC_PASSTHROUGH_MODELS=',
+      '',
     ].join('\n'),
     installed,
     skipped,
@@ -247,4 +253,47 @@ export function installSystemdUserServices(
     userServiceDir,
     envDir,
   };
+}
+
+
+/** Absolute path to the proxy's systemd EnvironmentFile. */
+export function proxyEnvPath(homeDir: string = os.homedir()): string {
+  return join(homeDir, '.config', 'uap', 'anthropic-proxy.env');
+}
+
+/**
+ * Idempotently set KEY=value lines in the proxy's systemd EnvironmentFile — the
+ * file the running uap-anthropic-proxy service reads. Creates the file/dir if
+ * missing; for each key, replaces its last existing assignment (matching
+ * systemd EnvironmentFile last-wins semantics) or appends it, preserving all
+ * other lines and comments. Returns the path written. The running service picks
+ * the change up on `systemctl --user restart uap-anthropic-proxy`.
+ */
+export function upsertProxyEnvVars(
+  vars: Record<string, string>,
+  homeDir: string = os.homedir()
+): string {
+  const path = proxyEnvPath(homeDir);
+  mkdirSync(join(homeDir, '.config', 'uap'), { recursive: true });
+  const existing = existsSync(path) ? readFileSync(path, 'utf8') : '';
+  const lines = existing.length ? existing.split('\n') : [];
+  for (const [key, value] of Object.entries(vars)) {
+    const assignment = `${key}=${value}`;
+    let replaced = false;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i].startsWith(`${key}=`)) {
+        lines[i] = assignment;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) {
+      if (lines.length && lines[lines.length - 1] === '') lines.pop();
+      lines.push(assignment);
+    }
+  }
+  let out = lines.join('\n');
+  if (!out.endsWith('\n')) out += '\n';
+  writeFileSync(path, out);
+  return path;
 }
