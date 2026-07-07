@@ -3465,8 +3465,10 @@ class TestCycleBreakOptions(unittest.TestCase):
             setattr(proxy, "PROXY_TOOL_STATE_STAGNATION_THRESHOLD", old_stagnation)
             setattr(proxy, "PROXY_TOOL_STATE_CYCLE_WINDOW", old_cycle_window)
 
-    def test_cycle_break_narrows_tools(self):
-        """Option 2: cycling tools are excluded from the tools array during review."""
+    def test_cycle_break_keeps_bash_exploration(self):
+        """Cycling on Bash must NOT strip the Bash tool — it is the agent's
+        exploration escape hatch. (Regression: the cycle-break used to exclude
+        Bash by name, blocking all filesystem exploration.)"""
         old_state = getattr(proxy, "PROXY_TOOL_STATE_MACHINE")
         old_min_msgs = getattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES")
         old_forced = getattr(proxy, "PROXY_TOOL_STATE_FORCED_BUDGET")
@@ -3516,9 +3518,10 @@ class TestCycleBreakOptions(unittest.TestCase):
 
             openai = proxy.build_openai_request(body, monitor)
             self.assertEqual(monitor.tool_turn_phase, "review")
-            # Bash should be excluded, Read and Write should remain
+            # Bash is the exploration escape hatch — it must remain available
+            # even while cycling. Read and Write remain too.
             tool_names = [t["function"]["name"] for t in openai.get("tools", [])]
-            self.assertNotIn("Bash", tool_names)
+            self.assertIn("Bash", tool_names)
             self.assertIn("Read", tool_names)
             self.assertIn("Write", tool_names)
         finally:
@@ -4548,7 +4551,8 @@ class TestReadOnlyCycleClassExclusion(unittest.TestCase):
                 setattr(proxy, k, v)
 
     def test_non_read_tool_cycling_no_class_expansion(self):
-        """When 'bash' is cycling, only 'bash' is excluded, not read-only tools."""
+        """When 'bash' is cycling, the read-only class is NOT expanded, and bash
+        itself is preserved as the exploration escape hatch."""
         old_vals = {
             "PROXY_TOOL_STATE_MACHINE": getattr(proxy, "PROXY_TOOL_STATE_MACHINE"),
             "PROXY_TOOL_STATE_MIN_MESSAGES": getattr(proxy, "PROXY_TOOL_STATE_MIN_MESSAGES"),
@@ -4581,8 +4585,9 @@ class TestReadOnlyCycleClassExclusion(unittest.TestCase):
             remaining_names = [
                 t.get("function", {}).get("name") for t in openai_body.get("tools", [])
             ]
-            self.assertNotIn("bash", remaining_names)
-            # Read-only tools should still be available
+            # bash is an exploration escape hatch — cycling does not strip it.
+            self.assertIn("bash", remaining_names)
+            # Read-only tools should still be available (no class expansion)
             self.assertIn("read", remaining_names)
             self.assertIn("glob", remaining_names)
             self.assertIn("grep", remaining_names)
@@ -4685,16 +4690,20 @@ class TestPersistentCycleExclusion(unittest.TestCase):
             body = self._make_body_with_tools(all_tools)
             monitor = proxy.SessionMonitor(context_window=262144)
 
-            # Simulate bash cycling that triggers review
-            monitor.cycling_tool_names = ["bash"]
+            # Simulate a non-exploration tool cycling that triggers review. (Bash
+            # is exempt from cycling exclusion, so use 'edit' to exercise the
+            # persistence path.)
+            monitor.cycling_tool_names = ["edit"]
             monitor.tool_turn_phase = "act"
             monitor.tool_state_forced_budget_remaining = 5
 
             openai = proxy.build_openai_request(body, monitor)
 
-            # In act phase with cycling_tool_names set, bash should be excluded
+            # In act phase with cycling_tool_names set, the cycling tool stays
+            # excluded — but the exploration escape hatch (bash) is preserved.
             remaining = [t["function"]["name"] for t in openai.get("tools", [])]
-            self.assertNotIn("bash", remaining)
+            self.assertNotIn("edit", remaining)
+            self.assertIn("bash", remaining)
             self.assertIn("read", remaining)
             self.assertIn("write", remaining)
         finally:
