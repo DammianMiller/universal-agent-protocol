@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.119.0 (2026-07-07)
+
+- feat(proxy,handsfree): break deferral/plan-capitulation stalls for hands-free builds
+
+
 ## v1.118.2 (2026-07-07)
 
 - fix(proxy): keep the exploration escape hatch available during cycle-break
