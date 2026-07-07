@@ -56,7 +56,11 @@ function detectModelProfile(): string {
     try {
       const config = JSON.parse(readFileSync(uapConfigPath, 'utf-8'));
 
-      // 2. Explicit hand-set pin still wins over auto-derivation.
+      // 2. Explicit hand-set pin still wins over auto-derivation. NOTE:
+      //    `uap model routing use` clears this pin on every routing switch
+      //    (see clearToolCallProfilePin) so a stale pin can't silently
+      //    override a new routing choice; UAP_MODEL_PROFILE (above) is the
+      //    durable, routing-independent override.
       if (config?.toolCalls?.modelProfile) {
         return config.toolCalls.modelProfile;
       }

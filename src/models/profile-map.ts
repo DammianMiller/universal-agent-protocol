@@ -93,3 +93,32 @@ export function profileForProvider(provider: string | null | undefined): string 
   if (!provider) return GENERIC_PROFILE;
   return PROVIDER_DEFAULT_PROFILE[provider] ?? GENERIC_PROFILE;
 }
+
+/**
+ * Remove a stale `toolCalls.modelProfile` pin from a `.uap.json` config object
+ * so the tool-call profile AUTO-FOLLOWS routing again. `uap model routing use`
+ * must call this: `detectModelProfile()` returns an explicit pin BEFORE it
+ * consults `multiModel` (the routing executor), so a leftover pin silently
+ * overrides the routing choice and the client keeps launching the pinned
+ * (often local) model. An explicit override is still available via the
+ * `UAP_MODEL_PROFILE` env var, which outranks both. Pure + non-mutating:
+ * returns a new config plus the cleared pin value (or null when there was none).
+ */
+export function clearToolCallProfilePin(
+  config: Record<string, unknown>
+): { config: Record<string, unknown>; cleared: string | null } {
+  const tc = config.toolCalls as Record<string, unknown> | undefined;
+  if (!tc || typeof tc.modelProfile !== 'string') {
+    return { config, cleared: null };
+  }
+  const cleared = tc.modelProfile;
+  const { modelProfile: _dropped, ...restTc } = tc;
+  const next: Record<string, unknown> = { ...config };
+  if (Object.keys(restTc).length > 0) {
+    next.toolCalls = restTc;
+  } else {
+    delete next.toolCalls;
+  }
+  return { config: next, cleared };
+}
+

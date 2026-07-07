@@ -101,9 +101,6 @@
     "routing": true,
     "qwenOptimizations": true
   },
-  "toolCalls": {
-    "modelProfile": "qwen35-a3b"
-  },
   "multiModel": {
     "enabled": true,
     "models": [

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.119.3 (2026-07-07)
+
+- fix(routing): clear stale toolCalls.modelProfile pin on `model routing use`
+- chore: bump version to 1.119.1
+- fix(proxy): reattach messages list in STUCK-BREAK injector when empty
+
+
 ## v1.119.2 (2026-07-07)
 
 - chore: bump version to 1.119.1

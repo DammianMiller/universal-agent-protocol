@@ -26,6 +26,7 @@ import { AgentContextConfig, MultiModelSchema } from '../types/config.js';
 // Config loading delegated to shared utility
 import { loadUapConfig, loadUapConfigRaw, findUapConfigPath, modifyUapConfig } from '../utils/config-loader.js';
 import { upsertProxyEnvVars } from './systemd-services.js';
+import { profileForModelId, clearToolCallProfilePin } from '../models/profile-map.js';
 const loadConfig = () => loadUapConfig();
 
 /**
@@ -615,8 +616,27 @@ async function routingUseCommand(id: string, options: { save?: boolean }): Promi
   }
   if (options.save) {
     if (findUapConfigPath()) {
-      modifyUapConfig(process.cwd(), (cfg) => ({ ...cfg, multiModel: mmConfig }));
+      let clearedPin: string | null = null;
+      modifyUapConfig(process.cwd(), (cfg) => {
+        const withRouting: Record<string, unknown> = { ...cfg, multiModel: mmConfig };
+        // Clearing a stale tool-call profile pin is REQUIRED here: it takes
+        // priority over routing in detectModelProfile(), so leaving it would
+        // silently pin the executor to the old (often local) model despite the
+        // routing switch. UAP_MODEL_PROFILE still overrides if a user wants to.
+        const res = clearToolCallProfilePin(withRouting);
+        clearedPin = res.cleared;
+        return res.config;
+      });
       console.log(chalk.green('\n✓ Saved to .uap.json (multiModel).'));
+      if (clearedPin) {
+        const derived = profileForModelId(preset.roles.executor);
+        console.log(
+          chalk.green(
+            `✓ Cleared stale tool-call profile pin '${clearedPin}' — profile now ` +
+            `auto-follows routing (executor ${preset.roles.executor} → ${derived}).`
+          )
+        );
+      }
       // Wire the proxy so the choice works first-time: cloud tiers
       // (planner/reviewer) pass through to the real Anthropic API; an all-local
       // preset forces every model local. Without this the proxy keeps its prior

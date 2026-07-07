@@ -8,6 +8,7 @@ import {
   profileForModelId,
   profileForRouting,
   profileForProvider,
+  clearToolCallProfilePin,
   GENERIC_PROFILE,
 } from '../../src/models/profile-map.js';
 
@@ -68,6 +69,34 @@ describe('profileForProvider', () => {
     expect(profileForProvider('custom')).toBe(GENERIC_PROFILE);
     expect(profileForProvider('unknown')).toBe(GENERIC_PROFILE);
     expect(profileForProvider(undefined)).toBe(GENERIC_PROFILE);
+  });
+});
+
+
+describe('clearToolCallProfilePin', () => {
+  it('removes a stale modelProfile pin so the profile auto-follows routing', () => {
+    const cfg = { toolCalls: { modelProfile: 'qwen35-a3b' }, multiModel: { enabled: true } };
+    const { config, cleared } = clearToolCallProfilePin(cfg);
+    expect(cleared).toBe('qwen35-a3b');
+    expect(config.toolCalls).toBeUndefined();
+    // routing block is left intact
+    expect((config.multiModel as { enabled?: boolean }).enabled).toBe(true);
+  });
+
+  it('preserves other toolCalls keys (e.g. llmServer) when clearing the pin', () => {
+    const cfg = { toolCalls: { modelProfile: 'qwen35-a3b', llmServer: 'http://127.0.0.1:4000' } };
+    const { config, cleared } = clearToolCallProfilePin(cfg);
+    expect(cleared).toBe('qwen35-a3b');
+    expect(config.toolCalls).toEqual({ llmServer: 'http://127.0.0.1:4000' });
+  });
+
+  it('is a no-op (cleared=null) when there is no pin, and does not mutate input', () => {
+    const cfg = { toolCalls: { llmServer: 'x' }, other: 1 };
+    const { config, cleared } = clearToolCallProfilePin(cfg);
+    expect(cleared).toBeNull();
+    expect(config).toBe(cfg);
+    const cfg2 = { multiModel: { enabled: true } };
+    expect(clearToolCallProfilePin(cfg2).cleared).toBeNull();
   });
 });
 
