@@ -117,6 +117,10 @@ program
   .option('--no-extract', 'Do not detect/extract custom instruction content into policies/skills')
   .option('--extract-auto', 'In non-interactive mode, auto-extract custom content (default: report only)')
   .option(
+    '--profile <name>',
+    'Setup profile bundle: recommended | maximum | minimal (skips per-option prompts)'
+  )
+  .option(
     '--systemd-services',
     'Optionally scaffold user systemd services for llama.cpp and anthropic proxy'
   )
