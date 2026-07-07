@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.119.1 (2026-07-07)
+
+- fix(proxy): reattach messages list in STUCK-BREAK injector when empty
+
+
 ## v1.119.0 (2026-07-07)
 
 - feat(proxy,handsfree): break deferral/plan-capitulation stalls for hands-free builds
