@@ -4341,11 +4341,14 @@ def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> N
         "operator the single blocking question in one sentence. Take a DIFFERENT "
         "action now."
     )
-    msgs = openai_body.get("messages") or []
+    msgs = openai_body.get("messages")
+    if not isinstance(msgs, list):
+        msgs = []
     if msgs and msgs[0].get("role") == "system":
         msgs[0]["content"] = (msgs[0].get("content") or "") + directive
     else:
         msgs.insert(0, {"role": "system", "content": directive.strip()})
+    openai_body["messages"] = msgs  # reattach in case messages was empty/absent
     logger.warning("STUCK-BREAK: forced terminal turn (%s, fires=%d)", reason, monitor.stuck_break_fires)
 
 
