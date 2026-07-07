@@ -20,6 +20,24 @@ import { existsSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
+/**
+ * Build the ANTHROPIC_CUSTOM_HEADERS value for a sandboxed session: append the
+ * `X-Uap-Sandbox: 1` marker (which the proxy uses to strip sandbox-unreachable
+ * MCP tools) to any pre-existing headers rather than clobbering them. Claude
+ * Code forwards this env var verbatim to its endpoint as HTTP headers
+ * (newline-separated "Name: Value" pairs).
+ */
+export function sandboxCustomHeaders(existing: string | undefined): string {
+  const marker = 'X-Uap-Sandbox: 1';
+  const prior = existing?.trim();
+  if (!prior) return marker;
+  // Idempotent: don't duplicate the marker (nested sandbox, or user pre-set it).
+  const already = prior
+    .split('\n')
+    .some((h) => h.trim().toLowerCase() === marker.toLowerCase());
+  return already ? prior : `${prior}\n${marker}`;
+}
+
 function fail(msg: string, code = 2): never {
   console.error(`uap sandbox: ${msg}`);
   process.exit(code);
@@ -85,9 +103,16 @@ export async function sandboxCommand(command: string[]): Promise<void> {
   for (const p of (process.env.UAP_SANDBOX_ALLOW || '').split(':')) {
     if (p && existsSync(p)) args.push('--bind', p, p);
   }
+  // Tell the proxy this session is sandboxed so it can strip MCP tools the
+  // bubblewrap sandbox can't reach (the claude-in-chrome browser extension
+  // socket is unreachable here — offering browser_batch guarantees dead-end
+  // loops). Claude Code forwards ANTHROPIC_CUSTOM_HEADERS verbatim to its
+  // endpoint; append rather than clobber any pre-existing value.
+  const customHeaders = sandboxCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS);
   args.push(
     '--setenv', 'HOME', home,
     '--setenv', 'UAP_SANDBOX_ACTIVE', '1',
+    '--setenv', 'ANTHROPIC_CUSTOM_HEADERS', customHeaders,
     '--chdir', workdir,
   );
 
