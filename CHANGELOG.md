@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.119.4 (2026-07-07)
+
+- fix(sandbox): strip unreachable browser MCP tools from sandboxed sessions
+
+
 ## v1.119.3 (2026-07-07)
 
 - fix(routing): clear stale toolCalls.modelProfile pin on `model routing use`
