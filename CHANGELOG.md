@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.121.0 (2026-07-07)
+
+- feat(setup): add Maximum/Recommended/Minimal setup profiles
+- chore: bump version to 1.119.4
+- fix(sandbox): strip unreachable browser MCP tools from sandboxed sessions
+
+
 ## v1.120.0 (2026-07-07)
 
 - feat(proxy): reference-counted, session-scoped proxy lifecycle via hooks
