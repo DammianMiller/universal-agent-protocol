@@ -3,6 +3,9 @@
 ## v1.120.0 (2026-07-07)
 
 - feat(proxy): reference-counted, session-scoped proxy lifecycle via hooks
+## v1.119.4 (2026-07-07)
+
+- fix(sandbox): strip unreachable browser MCP tools from sandboxed sessions
 
 
 ## v1.119.3 (2026-07-07)
