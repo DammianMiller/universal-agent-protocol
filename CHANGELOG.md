@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.118.2 (2026-07-07)
+
+- fix(proxy): keep the exploration escape hatch available during cycle-break
+
+
 ## v1.118.1 (2026-07-07)
 
 - refactor(tool-calls): make standalone `uap-tool-calls setup` fully automatic
