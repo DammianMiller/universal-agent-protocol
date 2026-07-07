@@ -16,6 +16,7 @@ import { createHash } from 'crypto';
 import { concurrentMap } from '../utils/concurrency-pool.js';
 import { createLogger } from '../utils/logger.js';
 import { getPerformanceMonitor } from '../utils/performance-monitor.js';
+import { persistPerfSample } from '../utils/telemetry-store.js';
 import { cosineSimilarity as sharedCosineSimilarity } from '../utils/string-similarity.js';
 
 const log = createLogger('embeddings');
@@ -817,7 +818,9 @@ export class EmbeddingService {
     }
 
     const monitor = getPerformanceMonitor();
+    const embedStart = performance.now();
     const embedding = await monitor.measure('embedding.embed', () => this.provider!.embed(text));
+    persistPerfSample(process.cwd(), 'embedding.embed', performance.now() - embedStart);
 
     // Memory-pressure-aware eviction (C2 optimization)
     const heapUsed = process.memoryUsage().heapUsed;
@@ -873,7 +876,12 @@ export class EmbeddingService {
 
     // Generate embeddings for uncached texts
     if (uncachedTexts.length > 0) {
-      const newEmbeddings = await this.provider!.embedBatch(uncachedTexts);
+      const monitor = getPerformanceMonitor();
+      const batchStart = performance.now();
+      const newEmbeddings = await monitor.measure('embedding.embedBatch', () =>
+        this.provider!.embedBatch(uncachedTexts)
+      );
+      persistPerfSample(process.cwd(), 'embedding.embedBatch', performance.now() - batchStart);
       for (let i = 0; i < uncachedTexts.length; i++) {
         const idx = uncachedIndices[i];
         results[idx] = newEmbeddings[i];

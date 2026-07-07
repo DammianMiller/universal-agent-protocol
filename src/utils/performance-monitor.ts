@@ -13,6 +13,27 @@ export interface PerformanceMetrics {
 }
 
 /**
+ * Compute latency percentiles from a set of duration samples. Shared by the
+ * in-memory PerformanceMonitor and the persisted telemetry store so both
+ * surface identical statistics regardless of which process produced the data.
+ * Returns null for an empty sample set.
+ */
+export function computePercentiles(samples: number[]): PerformanceMetrics | null {
+  if (samples.length === 0) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const count = sorted.length;
+  return {
+    avg: sorted.reduce((a, b) => a + b, 0) / count,
+    p50: sorted[Math.floor(count * 0.5)] ?? 0,
+    p95: sorted[Math.floor(count * 0.95)] ?? 0,
+    p99: sorted[Math.floor(count * 0.99)] ?? 0,
+    min: sorted[0] ?? 0,
+    max: sorted[count - 1] ?? 0,
+    count,
+  };
+}
+
+/**
  * Monitor performance of operations with percentile tracking
  */
 export class PerformanceMonitor {
@@ -56,21 +77,7 @@ export class PerformanceMonitor {
    * Get statistics for a metric
    */
   getStats(metric: string): PerformanceMetrics | null {
-    const entries = this.metrics.get(metric);
-    if (!entries || entries.length === 0) return null;
-
-    const sorted = [...entries].sort((a, b) => a - b);
-    const count = sorted.length;
-
-    return {
-      avg: sorted.reduce((a, b) => a + b, 0) / count,
-      p50: sorted[Math.floor(count * 0.5)] ?? 0,
-      p95: sorted[Math.floor(count * 0.95)] ?? 0,
-      p99: sorted[Math.floor(count * 0.99)] ?? 0,
-      min: sorted[0] ?? 0,
-      max: sorted[count - 1] ?? 0,
-      count,
-    };
+    return computePercentiles(this.metrics.get(metric) ?? []);
   }
 
   /**
