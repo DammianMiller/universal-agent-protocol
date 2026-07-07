@@ -1,28 +1,66 @@
 {
-  "name": "Claude Sonnet 5",
-  "model": "claude-sonnet-5-20250514",
-  "max_tokens": 8192,
-  "temperature": 0.5,
-  "top_p": 0.9,
-  "top_k": 40,
-  "context_window": 200000,
-  "stop_sequences": [],
-  "presence_penalty": 0.0,
-  "frequency_penalty": 0.0,
+  "_profile": "claude-sonnet-5",
+  "_description": "Anthropic Claude Sonnet 5 (claude-sonnet-5). Best combination of speed and intelligence in the Sonnet tier — near-Opus quality on coding and agentic work at Sonnet cost. 1M context, 128K max output. Adaptive thinking on by default; non-default temperature/top_p/top_k are rejected; budget_tokens is removed. New tokenizer (~30% more tokens than Sonnet 4.6). Best value for everyday agentic work.",
+
+  "model": "claude-sonnet-5",
+  "provider": "anthropic",
+  "api_base_url": "https://api.anthropic.com",
+  "max_tokens": 32000,
+  "timeout_ms": 300000,
+  "context_window": 1000000,
+
+  "sampling_parameters_supported": false,
+  "_sampling_comment": "Non-default temperature/top_p/top_k are rejected on Sonnet 5 (400). Omit them; steer with prompting and effort.",
+
+  "optimize_for_tool_calls": true,
+  "enable_thinking": true,
+
   "reasoning": {
-    "enabled": true,
-    "effort": "medium",
-    "budget": 16000
+    "mode": "adaptive",
+    "effort": "high",
+    "display": "summarized",
+    "_comment": "Adaptive thinking is on by default (omitting thinking runs adaptive). effort=high is the default; raise to xhigh for the hardest coding/agentic tasks. budget_tokens is removed. New tokenizer uses ~30% more tokens than Sonnet 4.6 — size max_tokens with headroom."
   },
-  "tools": {
+
+  "extended_thinking": {
     "enabled": true,
-    "max_concurrent": 10,
-    "auto_invoke": true
+    "mode": "adaptive",
+    "_comment": "Adaptive thinking — no fixed budget_tokens (removed). Depth is controlled by reasoning.effort (low..max, including xhigh)."
   },
-  "guardrails": {
-    "loop_detection": true,
-    "tool_narrowing": true,
-    "cycle_breaking": true,
-    "context_pruning": true
+
+  "tool_calling": {
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "max_tool_calls_per_turn": 128,
+    "_comment": "More agentic than Sonnet 4.6 by default — reaches for tools and self-verification readily. No forced tool_choice needed."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "Sonnet 5 natively supports parallel tool calls."
+  },
+
+  "pricing": {
+    "input_per_1m": 3.0,
+    "output_per_1m": 15.0,
+    "cache_write_per_1m": 3.75,
+    "cache_read_per_1m": 0.3,
+    "currency": "USD",
+    "_comment": "Introductory pricing $2/$10 per 1M through 2026-08-31, then $3/$15. Near-Opus quality at Sonnet cost."
+  },
+
+  "rate_limits": {
+    "requests_per_minute": 2000,
+    "tokens_per_minute": 160000,
+    "_comment": "Default tier limits. Higher throughput than Opus."
+  },
+
+  "running_config": {
+    "description": "Anthropic hosted API. Requires ANTHROPIC_API_KEY environment variable (or an `ant auth login` profile / Claude Max OAuth via the proxy).",
+    "env_vars": {
+      "ANTHROPIC_API_KEY": "<your-api-key>",
+      "UAP_MODEL_PROFILE": "claude-sonnet-5"
+    }
   }
 }

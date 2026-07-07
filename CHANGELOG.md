@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.118.0 (2026-07-07)
+
+- feat(models): auto-switch tool-call profile from model routing
+
+
 ## v1.117.0 (2026-07-07)
 
 - feat(dashboard): persist compression + performance panels to a cross-process store (telemetry.db, WAL); fix comp-calls fixed-0; shared computePercentiles
