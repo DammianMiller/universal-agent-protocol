@@ -1800,8 +1800,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   let baselineGateScore = 0;
   if (keepBest) {
     baselineGateScore = runLadder(fastRungs, projectRoot).score;
-    regressSnapshot = snapshotTree(projectRoot);
-    console.log(chalk.dim(`  no-regress: baseline gate score ${baselineGateScore.toFixed(2)} (snapshot taken)`));
+    const snapResult = snapshotTree(projectRoot);
+    if (snapResult.ok) {
+      regressSnapshot = snapResult.path;
+      console.log(chalk.dim(`  no-regress: baseline gate score ${baselineGateScore.toFixed(2)} (snapshot taken)`));
+    } else {
+      const label = snapResult.reason === 'size-cap' ? 'snapshot skipped' : 'snapshot failed';
+      console.log(chalk.yellow(`  no-regress: ${label} — ${snapResult.detail}; rollback disabled for this run`));
+    }
   }
 
   // Mark this run (and the gate subprocesses it spawns) as deliver-driven so
@@ -1945,6 +1951,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     if (coordinator) {
       await coordinator.finish(aborted);
     }
+    // The post-run restore/dispose block below never runs after a throw —
+    // dispose here so the error path doesn't leak the snapshot.
+    if (regressSnapshot) {
+      disposeSnapshot(regressSnapshot);
+      regressSnapshot = null;
+    }
     throw err;
   } finally {
     if (priorDeliverActive === undefined) delete process.env.UAP_DELIVER_ACTIVE;
@@ -1956,18 +1968,29 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   if (keepBest && regressSnapshot) {
     const endScore = runLadder(fastRungs, projectRoot).score;
     if (endScore < baselineGateScore) {
-      restoreTree(projectRoot, regressSnapshot);
-      console.log(
-        chalk.yellow(
-          `  ↩ no-regress: reverted (end gate score ${endScore.toFixed(2)} < baseline ${baselineGateScore.toFixed(2)})`
-        )
-      );
+      try {
+        restoreTree(projectRoot, regressSnapshot);
+        console.log(
+          chalk.yellow(
+            `  ↩ no-regress: reverted (end gate score ${endScore.toFixed(2)} < baseline ${baselineGateScore.toFixed(2)})`
+          )
+        );
+        disposeSnapshot(regressSnapshot);
+      } catch (restoreErr) {
+        // restoreTree marked the snapshot preserve — do NOT dispose it; it may
+        // be the only good copy of the pre-run tree.
+        console.log(
+          chalk.red(
+            `  ↩ no-regress: restore failed (${(restoreErr as Error).message}) — snapshot preserved at ${regressSnapshot}`
+          )
+        );
+      }
     } else {
       console.log(
         chalk.dim(`  no-regress: kept (end gate score ${endScore.toFixed(2)} ≥ baseline ${baselineGateScore.toFixed(2)})`)
       );
+      disposeSnapshot(regressSnapshot);
     }
-    disposeSnapshot(regressSnapshot);
   }
 
   haloTracer.finish(result);

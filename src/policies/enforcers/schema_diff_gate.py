@@ -16,7 +16,10 @@ WATCHED_RE = re.compile(
     r"infra/helm_charts/[^/]*envoy|infra/helm_charts/[^/]*sentinel)",
     re.I,
 )
-COMMIT_OPS = {"git-commit", "git commit", "Bash"}
+# NOTE: bare "Bash" used to be in this set, which made EVERY shell command a
+# gate point — including the `uap schema-diff` remedy itself (self-deadlock).
+# Gate only actual commit/push commands (main() also inspects cmd content).
+COMMIT_OPS = {"git-commit", "git commit"}
 RECENT_SEC = 3600
 
 
@@ -35,17 +38,31 @@ def schema_diff_ok(root: Path) -> bool:
         return False
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
-        cur = con.execute(
-            "SELECT timestamp FROM session_memories "
-            "WHERE content LIKE '%schema-diff%pass%' "
-            "ORDER BY id DESC LIMIT 1"
-        )
-        row = cur.fetchone()
+        # `uap memory store` writes to `memories` (type 'action'), while older
+        # UAP wrote session rows to `session_memories` — accept the marker from
+        # either table so the documented remedy actually clears the gate.
+        row = None
+        for table in ("memories", "session_memories"):
+            try:
+                cur = con.execute(
+                    f"SELECT timestamp FROM {table} "
+                    "WHERE content LIKE '%schema-diff%pass%' "
+                    "ORDER BY id DESC LIMIT 1"
+                )
+                r = cur.fetchone()
+                if r and (row is None or r[0] > row[0]):
+                    row = r
+            except sqlite3.Error:
+                continue
         con.close()
         if not row:
             return False
         try:
-            ts = time.mktime(time.strptime(row[0][:19], "%Y-%m-%dT%H:%M:%S"))
+            # Timestamps are stored as UTC ISO-8601 (trailing 'Z'); parse them
+            # as UTC — time.mktime would misread them as local time and expire
+            # the marker hours early (or late) depending on the host TZ.
+            import calendar
+            ts = calendar.timegm(time.strptime(row[0][:19], "%Y-%m-%dT%H:%M:%S"))
         except Exception:  # noqa: BLE001
             return False
         return (time.time() - ts) < RECENT_SEC
