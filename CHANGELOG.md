@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.127.2 (2026-07-08)
+
+- chore: bump version to 1.127.1
+- fix(delivery): harden --keep-best snapshots (tmpfs exhaustion, leaks, restore safety)
+- docs: reverse-engineered documentation set + security audit report + fixes sync
+- fix(security): authenticate dashboard policy mutations (audit D1 — keystone)
+
+
 ## v1.127.1 (2026-07-08)
 
 - fix(delivery): harden --keep-best snapshots (tmpfs exhaustion, leaks, restore safety)
