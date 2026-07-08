@@ -135,3 +135,37 @@ describe('createAcceptanceChurnBreaker', () => {
     expect(b.check('spec', reject).overridden).toBe(true); // fires immediately
   });
 });
+
+describe('gatherEvidence — priority ordering (data files cannot starve source)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-evidence-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('includes package.json and src even when huge data files walk first', () => {
+    // "data" sorts before "package.json"/"src" in the walk; three 26KB files
+    // used to consume the whole 60K budget so the judge never saw the code.
+    mkdirSync(join(dir, 'data'));
+    mkdirSync(join(dir, 'src'));
+    for (const n of ['a', 'b', 'c']) writeFileSync(join(dir, 'data', `legacy-${n}.txt`), 'x'.repeat(26_000));
+    writeFileSync(join(dir, 'package.json'), '{"name":"demo","scripts":{"test":"node --test"}}');
+    writeFileSync(join(dir, 'src', 'slug.js'), 'export function slugify(t) { return t; }');
+    const ev = gatherEvidence(dir);
+    expect(ev).toContain('=== package.json ===');
+    expect(ev).toContain('=== src/slug.js ===');
+    expect(ev).toContain('export function slugify');
+    // data files are present but head-only (≤ ~1.5K each), never 20K slabs
+    const dataSlab = ev.split('=== data/legacy-a.txt ===')[1]?.split('===')[0] ?? '';
+    expect(dataSlab.length).toBeLessThan(2_000);
+  });
+
+  it('a directory of many data files cannot exhaust the file-count cap before source is walked', () => {
+    mkdirSync(join(dir, 'assets'));
+    mkdirSync(join(dir, 'src'));
+    for (let i = 0; i < 60; i++) writeFileSync(join(dir, 'assets', `note-${String(i).padStart(2, '0')}.txt`), `note ${i}`);
+    writeFileSync(join(dir, 'src', 'main.js'), 'export const main = 1;');
+    const ev = gatherEvidence(dir, 40);
+    expect(ev).toContain('=== src/main.js ===');
+  });
+});
