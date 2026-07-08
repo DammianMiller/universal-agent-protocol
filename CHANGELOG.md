@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.130.2 (2026-07-08)
+
+- fix(policies): resolve built-in policy schema/enforcer dirs relative to the INSTALLED PACKAGE (dist/cli -> pkg root), not process.cwd(). A globally-installed uap found ZERO built-in policies when run from any project other than this repo, so 'uap policy install <name>' failed and 'uap policy matrix' showed 0 available. Verified: matrix lists all 33 built-ins (incl. the pay2u pack) from a fresh dir.
+
+
 ## v1.130.1 (2026-07-08)
 
 - feat(policies): pay2u policy pack (pay2u-architecture-rules/quick-reference/enforcement-hooks) as an opt-in advisory example pack, selectable in the setup policy matrix and installable individually; new `uap policy matrix` lists ALL policies (built-in + installed) with status/level/stage/source and the toggle/adjust commands. Also fixed 3 pre-existing built-in schemas with out-of-enum categories (adr-guard/merge-deploy-monitor-verify/ship-loop-gate) that crash getAllPolicies() once installed; a new test validates the whole schema set.
