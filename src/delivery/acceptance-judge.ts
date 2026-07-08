@@ -57,13 +57,35 @@ const DEFAULT_MAX_FILES = 40;
 // judge to report implemented features as "not visible" (false MISS).
 const DEFAULT_MAX_CHARS = 60_000;
 const PER_FILE_CHARS = 20_000;
+/** Data/doc files are context, not implementation — a small head suffices. */
+const DATA_FILE_CHARS = 1_500;
+
+/**
+ * Evidence priority. Alphabetical walk order let big flat data files (e.g.
+ * data/*.txt walked before src/) consume the ENTIRE evidence budget, so the
+ * judge never saw package.json or src/ and correctly reported every
+ * requirement "not visible" — rejecting objectively-green turns forever.
+ * Priority 0 = configs + implementation source, 1 = tests + structured data,
+ * 2 = docs/plain data (head-only).
+ */
+function evidencePriority(name: string): number {
+  if (/^(package\.json|tsconfig.*\.json|pyproject\.toml|cargo\.toml|go\.mod|gemfile)$/i.test(name)) return 0;
+  if (/\.(test|spec)\.[a-z]+$/i.test(name)) return 1;
+  if (/\.(js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|rb|html|css)$/i.test(name)) return 0;
+  if (/\.json$/i.test(name)) return 1;
+  return 2; // md, txt, misc data
+}
 
 /** Bounded walk gathering source-file evidence (path-labelled, truncated). */
 export function gatherEvidence(projectRoot: string, maxFiles = DEFAULT_MAX_FILES, maxChars = DEFAULT_MAX_CHARS): string {
   const root = projectRoot;
-  const files: string[] = [];
+  // Collect a generous candidate pool FIRST, then priority-order and cut to
+  // maxFiles — so neither walk order nor a data-heavy directory can starve
+  // the implementation out of the evidence.
+  const candidateCap = maxFiles * 10;
+  const files: Array<{ abs: string; prio: number }> = [];
   const walk = (dir: string, depth: number): void => {
-    if (depth > 8 || files.length >= maxFiles) return;
+    if (depth > 8 || files.length >= candidateCap) return;
     let entries: string[];
     try {
       entries = readdirSync(dir);
@@ -71,7 +93,7 @@ export function gatherEvidence(projectRoot: string, maxFiles = DEFAULT_MAX_FILES
       return;
     }
     for (const e of entries) {
-      if (files.length >= maxFiles) return;
+      if (files.length >= candidateCap) return;
       if (SKIP_DIRS.has(e) || (e.startsWith('.') && e !== '.')) continue;
       const abs = join(dir, e);
       let st;
@@ -82,23 +104,28 @@ export function gatherEvidence(projectRoot: string, maxFiles = DEFAULT_MAX_FILES
       }
       if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) walk(abs, depth + 1);
-      else if (st.isFile() && SRC_EXT.test(e) && e !== 'package-lock.json' && !SECRET_FILE_RE.test(e) && st.size <= 200_000) files.push(abs);
+      else if (st.isFile() && SRC_EXT.test(e) && e !== 'package-lock.json' && !SECRET_FILE_RE.test(e) && st.size <= 200_000) {
+        files.push({ abs, prio: evidencePriority(e) });
+      }
     }
   };
   walk(root, 0);
+  files.sort((a, b) => a.prio - b.prio); // stable: walk order preserved within a class
+  const chosen = files.slice(0, maxFiles);
 
   let out = '';
   let used = 0;
-  for (const abs of files) {
+  for (const f of chosen) {
     if (used >= maxChars) break;
     let content: string;
     try {
-      content = readFileSync(abs, 'utf-8');
+      content = readFileSync(f.abs, 'utf-8');
     } catch {
       continue;
     }
-    const rel = relative(root, abs);
-    const budget = Math.min(content.length, maxChars - used, PER_FILE_CHARS);
+    const rel = relative(root, f.abs);
+    const perFileCap = f.prio === 2 ? DATA_FILE_CHARS : PER_FILE_CHARS;
+    const budget = Math.min(content.length, maxChars - used, perFileCap);
     out += `\n=== ${rel} ===\n${content.slice(0, budget)}\n`;
     used += budget;
   }

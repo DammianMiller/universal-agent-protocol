@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.124.1 (2026-07-08)
+
+- fix(deliver): acceptance-judge evidence starvation — gatherEvidence walked directories alphabetically and let big flat data files (e.g. data/*.txt at 20K chars each) consume the whole 60K evidence budget, so the judge never saw package.json/src and correctly reported every requirement "not visible" (the real cause of judge-rejects-green-turns churn; the local qwen judge was fine). Evidence is now priority-ordered (configs+source > tests/json > docs/data), candidates are pooled before the file-count cap, and data files contribute a 1.5K head only. Secondary-mode judging also receives the objective-gates-passed fact as runtime evidence. Live probe: green project 0.00→1.00 on real specs; missing-implementation control still rejects at 0.00.
+
 ## v1.124.0 (2026-07-08)
 
 - fix(deliver): acceptance-judge churn breaker — the secondary judge (objective gates green) can reject only N consecutive turns per spec (UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT, default 2) before the gates win; epic mode now grades the epic GOAL (+criteria) instead of the full process prompt whose unverifiable instructions caused perpetual rejections.

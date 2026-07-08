@@ -1227,11 +1227,18 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           }
           visualNote = visualRuntimeNote(visual);
         }
+        // Secondary mode reaches this gate ONLY on turns whose objective
+        // gates all passed — hand the judge that fact as evidence, so
+        // requirements like "make the tests pass" are graded on the gate
+        // result instead of speculated about from static code.
+        const runtimeNote = acceptancePrimary
+          ? visualNote
+          : 'Objective project gates (build/test suite) ALL PASSED on this turn — treat test/build-related requirements as objectively verified.';
         const r = await runAcceptanceGate({
           spec: acceptanceSpec,
           projectRoot: root,
           executor: verdictExecutor,
-          ...(visualNote ? { runtimeNote: visualNote } : {}),
+          ...(runtimeNote ? { runtimeNote } : {}),
         });
         const verdict = resolveAcceptanceVerdict(r, acceptancePrimary);
         // Secondary mode only: this gate is reached exclusively on turns whose
