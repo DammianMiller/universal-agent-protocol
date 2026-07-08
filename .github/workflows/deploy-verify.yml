@@ -62,6 +62,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install proxy test deps
+        # The proxy test modules import the proxy, which needs these at import
+        # time — the job shipped without them and has been red since it landed.
+        # (Full third-party set of anthropic_proxy.py + the test modules.)
+        run: pip install fastapi uvicorn httpx openai
       - name: Run security enforcer + proxy tests
         run: npm run test:enforcers
 
