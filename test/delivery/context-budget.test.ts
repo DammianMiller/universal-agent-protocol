@@ -18,6 +18,8 @@ import {
 import { planDeliveryPhases } from '../../src/delivery/decompose.js';
 import { runEpics, type Epic, type EpicRunResult } from '../../src/delivery/epic-controller.js';
 import { createAgenticExecutor } from '../../src/delivery/agentic-executor.js';
+import { ConvergenceLoop } from '../../src/delivery/convergence-loop.js';
+import type { LadderResult } from '../../src/delivery/verifier-ladder.js';
 
 const ok = (summary: string, turns = 1): EpicRunResult => ({ success: true, summary, turns });
 
@@ -110,6 +112,35 @@ describe('createAgenticExecutor — context budget stop', () => {
       expect(out).toContain(CONTEXT_BUDGET_MARKER);
       expect(out).toContain('too large for one session');
       expect(fetchSpy).not.toHaveBeenCalled(); // never sent the doomed request
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ConvergenceLoop — budgetStopped tagging', () => {
+  it('marks history records whose executor session was budget-stopped', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ctxb-loop-'));
+    try {
+      const ladder = (): LadderResult => ({
+        passed: false,
+        score: 0,
+        feedback: 'gates red',
+        results: [{ id: 't', name: 't', passed: false, skipped: false, exitCode: 1, durationMs: 1, outputTail: 'fail' }],
+      });
+      const loop = new ConvergenceLoop(
+        {
+          projectRoot: dir,
+          maxTurns: 1,
+          baselineCheck: false,
+          alwaysVerify: true,
+          rungs: [{ id: 't', name: 't', command: 'node', args: ['-e', ''], required: true, timeoutMs: 1000 }],
+        },
+        async () => `${CONTEXT_BUDGET_MARKER} session reached ~9000 of 5734 estimated tokens after 3 round(s)`,
+        { applier: async () => ({ filesWritten: [], rejected: [] }), ladderRunner: ladder }
+      );
+      const result = await loop.deliver('x');
+      expect(result.history[0].budgetStopped).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

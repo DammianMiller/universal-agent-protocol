@@ -126,7 +126,7 @@ import { parsePhaseArray, phaseInstruction, planDeliveryPhases, shouldDecompose 
 import { runEpics, type Epic, type EpicRunResult } from '../delivery/epic-controller.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
-import { resolveSessionTokenBudget, sessionWorkingBudget } from '../delivery/context-budget.js';
+import { resolveSessionTokenBudget, sessionWorkingBudget, CONTEXT_BUDGET_MARKER } from '../delivery/context-budget.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { extractContract } from '../delivery/contract-extractor.js';
 import type { OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
@@ -1697,10 +1697,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         all.finalOutput = r.finalOutput;
         completeDeliveryTask(epicTask, r);
         const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
+        // Rail sizing: surface budget exhaustion to the epic controller — its
+        // split path keys off CONTEXT_BUDGET_MARKER in the failure summary,
+        // and the goal-based summary would otherwise swallow the signal.
+        const budgetHit = !r.success && r.history.some((h) => h.budgetStopped);
         return {
           success: r.success,
           turns: r.turns,
-          summary: `${epic.goal.slice(0, 140)}${files.length ? ` [files: ${files.join(', ')}]` : ''}`,
+          summary:
+            `${epic.goal.slice(0, 140)}${files.length ? ` [files: ${files.join(', ')}]` : ''}` +
+            (budgetHit ? ` ${CONTEXT_BUDGET_MARKER} session(s) exceeded the context budget — scope is too large for one session` : ''),
         };
       },
     });
