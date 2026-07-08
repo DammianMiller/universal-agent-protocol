@@ -67,6 +67,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Protocol](architecture/PROTOCOL.md) | The harness↔UAP contract, hook lifecycle, decision loop |
 | [Reactor (auto-apply)](design/UAP_REACTOR.md) | Dynamic experts/skills/patterns injected per prompt across harnesses; the assist vs enforce model, per-harness wiring |
 | [Self-Harness (proposal)](design/SELF_HARNESS.md) | Self-improving harness: autonomous mine→propose→validate loop over a bounded Mod DSL; cross-model transfer, online mining |
+| [Product Naming (analysis)](design/PRODUCT_NAMING.md) | UAP rename candidates: availability sweeps (npm/PyPI/domains), AI-space collision checks, railway-theme shortlist, recommendation |
 
 ## Reference
 
