@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.122.1 (2026-07-08)
+
+- fix(dashboard): address review — advance SSE watermark unconditionally + 2s telemetry busy_timeout
+
+
 ## v1.122.0 (2026-07-08)
 
 - feat(dashboard): wire Live Events cross-process + de-fabricate session panels; quiet sandbox log
