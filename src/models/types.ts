@@ -113,7 +113,7 @@ export const ModelPresets: Record<string, ModelConfig> = {
     // Hitting :8080 raw under `--reasoning auto` let reasoning leak into
     // `uap deliver`-authored gate scripts (verify.sh became an unclosed <think>
     // block -> bash syntax error -> unsatisfiable gate -> infinite verify loop).
-    endpoint: 'http://192.168.1.165:4000/v1',
+    endpoint: 'http://127.0.0.1:4000/v1',
     maxContextTokens: 262144,
     costPer1MInput: 0,
     costPer1MOutput: 0,
@@ -193,7 +193,7 @@ export const ModelPresets: Record<string, ModelConfig> = {
     apiModel: 'qwen36-35b-a3b-iq4xs',
     // Route through the anthropic-proxy (:4000) for <think>-stripping + tool/finalize
     // guardrails (same rationale as qwen35-a3b), not llama :8080 raw.
-    endpoint: 'http://192.168.1.165:4000/v1',
+    endpoint: 'http://127.0.0.1:4000/v1',
     maxContextTokens: 262144,
     costPer1MInput: 0,
     costPer1MOutput: 0,
