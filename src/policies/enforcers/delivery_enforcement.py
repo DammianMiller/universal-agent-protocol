@@ -86,32 +86,40 @@ def main() -> None:
     op, args = parse_cli()
     if op not in EDIT_OPS:
         emit(True, "not a file-edit operation")
+        return
 
     target = args.get("file_path") or args.get("path") or args.get("target") or ""
     if not target:
         emit(True, "no file path in args")
+        return
 
     root = repo_root()
     try:
         rel = str(Path(target).resolve().relative_to(root))
     except ValueError:
         emit(True, "target outside repo")
+        return
 
     rel_posix = rel.replace(os.sep, "/")
     low = rel_posix.lower()
 
     if not low.endswith(SOURCE_EXTS):
         emit(True, "not source code")
+        return
     if any(rel_posix.startswith(p) for p in EXEMPT_PREFIXES):
         emit(True, f"exempt path: {rel_posix}")
+        return
     if any(m in "/" + low for m in TEST_MARKERS):
         emit(True, "test file (protected by deliver itself)")
+        return
 
     # Escape hatches.
     if os.environ.get("UAP_DELIVER_ACTIVE") == "1":
         emit(True, "inside a deliver-driven run")
+        return
     if os.environ.get("UAP_DELIVER_BYPASS") == "1":
         emit(True, "UAP_DELIVER_BYPASS override set")
+        return
 
     # #3-F: terse, imperative, model-parseable. Weak local models otherwise
     # retry the blocked edit or hallucinate completion ("the files exist") when
@@ -143,6 +151,7 @@ def main() -> None:
             route="deliver",
             deliverHint=f'implement the intended change to {rel_posix}',
         )
+        return
 
     # Advisory (opt-out): never blocks. Surface the nudge, then allow.
     print(f"[delivery-enforcement advisory] {msg}", file=sys.stderr)
