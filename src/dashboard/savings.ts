@@ -16,7 +16,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import Database from 'better-sqlite3';
 import { ModelPresets } from '../models/types.js';
-import { globalSessionStats } from '../mcp-router/session-stats.js';
+import { readCompressionStats } from '../utils/telemetry-store.js';
 
 export interface InfluenceSaving {
   /** Mechanism name, e.g. "RTK (command compression)". */
@@ -141,17 +141,23 @@ function routingSaving(cwd: string): InfluenceSaving {
   }
 }
 
-/** Context-compression savings from the in-process session stats. */
-function compressionSaving(): InfluenceSaving {
+/**
+ * Context-compression savings from the PERSISTED telemetry store. The
+ * in-process `globalSessionStats` singleton is empty in the `dash serve`
+ * process (it's only populated in the mcp-router/executor processes), so this
+ * row read $0/unmeasured even when compression_stats had data. Read the same
+ * cross-process store the Memory panel uses.
+ */
+function compressionSaving(cwd: string): InfluenceSaving {
   try {
-    const s = globalSessionStats.getSummary();
-    const savedBytes = Math.max(0, (s.totalRawBytes ?? 0) - (s.totalContextBytes ?? 0));
+    const s = readCompressionStats(cwd);
+    const savedBytes = Math.max(0, s.rawBytes - s.contextBytes);
     const tokens = Math.round(savedBytes / 4); // ~4 bytes/token
     return {
       influence: 'Context compression',
       tokensSaved: tokens,
       costSavedUsd: tokens * BLENDED_USD_PER_TOKEN,
-      detail: tokens > 0 ? `${s.compressionEvents ?? 0} compressions, ${s.savingsPercent ?? '0%'} of tool output` : 'no compression this session',
+      detail: tokens > 0 ? `${s.totalCalls} compressions, ${s.savingsPercent} of tool output` : 'no compression recorded',
       quality: tokens > 0 ? 'measured' : 'unmeasured',
     };
   } catch {
@@ -160,7 +166,7 @@ function compressionSaving(): InfluenceSaving {
 }
 
 export function getSavingsByInfluence(cwd: string = process.cwd()): SavingsByInfluence {
-  const influences = [rtkSaving(), routingSaving(cwd), compressionSaving()];
+  const influences = [rtkSaving(), routingSaving(cwd), compressionSaving(cwd)];
   return {
     influences,
     totalTokensSaved: influences.reduce((a, i) => a + i.tokensSaved, 0),

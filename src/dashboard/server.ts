@@ -14,7 +14,7 @@ import { fileURLToPath } from 'url';
 import { getDashboardData } from './data-service.js';
 import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
-import { getDashboardEventBus, type DashboardEvent } from './event-stream.js';
+import { readEventsSince, readRecentEvents } from '../utils/telemetry-store.js';
 
 /**
  * Resolve the dashboard HTML file using multiple strategies.
@@ -89,19 +89,41 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
 
   // Track SSE clients for live event streaming
   const sseClients = new Set<ServerResponse>();
+  const cwd = process.cwd();
 
-  // Subscribe to dashboard events and forward to SSE clients
-  const eventBus = getDashboardEventBus();
-  const unsubscribe = eventBus.subscribe((event: DashboardEvent) => {
-    const data = `data: ${JSON.stringify(event)}\n\n`;
-    for (const client of sseClients) {
-      try {
-        client.write(data);
-      } catch {
-        sseClients.delete(client);
+  // The Live Events feed is fed CROSS-PROCESS from the persisted dashboard_events
+  // table (telemetry.db), not the in-process event bus — emitters fire in the
+  // mcp-router/executor processes, whose in-memory bus this `dash serve` process
+  // can never see. A single poller reads new rows and fans them out to SSE
+  // clients. lastEventId starts at the current max so we don't replay old rows to
+  // the poller (fresh clients still get a recent-history burst on connect).
+  let lastEventId = (readRecentEvents(cwd, 1)[0]?.id) ?? 0;
+  const eventPoller = setInterval(() => {
+    let fresh;
+    try {
+      fresh = readEventsSince(cwd, lastEventId, 200);
+    } catch {
+      return;
+    }
+    if (!fresh.length) return;
+    // Advance the watermark UNCONDITIONALLY (even with no clients) so it never
+    // freezes at the server-start max. A frozen watermark makes the first client
+    // that connects after an idle period receive the connect-burst AND a poller
+    // resend of the same rows. Advancing here keeps the poller strictly ahead of
+    // the burst; the client-side id-dedup covers the residual one-tick window.
+    lastEventId = fresh[fresh.length - 1].id;
+    if (sseClients.size === 0) return;
+    for (const event of fresh) {
+      const data = `data: ${JSON.stringify(event)}\n\n`;
+      for (const client of sseClients) {
+        try {
+          client.write(data);
+        } catch {
+          sseClients.delete(client);
+        }
       }
     }
-  });
+  }, updateInterval);
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url || '/';
@@ -135,8 +157,9 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
           'Access-Control-Allow-Origin': '*',
         });
 
-        // Send recent event history as initial burst
-        const history = eventBus.getHistory(50);
+        // Send recent event history as initial burst — from the persisted store
+        // (cross-process), not the always-empty in-process bus.
+        const history = readRecentEvents(cwd, 50);
         for (const event of history) {
           res.write(`data: ${JSON.stringify(event)}\n\n`);
         }
@@ -167,7 +190,7 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
         const limit = parseInt(urlObj.searchParams.get('limit') || '50', 10);
         const sinceId = parseInt(urlObj.searchParams.get('since') || '0', 10);
 
-        const events = sinceId > 0 ? eventBus.getEventsSince(sinceId) : eventBus.getHistory(limit);
+        const events = sinceId > 0 ? readEventsSince(cwd, sinceId, limit) : readRecentEvents(cwd, limit);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(events));
@@ -320,8 +343,6 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
     }
   });
 
-  const cwd = process.cwd();
-
   server.listen(port, host, () => {
     const shown = host === '0.0.0.0' ? 'localhost' : host;
     console.log(`UAP Dashboard server running at http://${shown}:${port}`);
@@ -345,7 +366,7 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
 
   return {
     close: () => {
-      unsubscribe();
+      clearInterval(eventPoller);
       clearInterval(pushInterval);
       // Cleanup seeder (clear heartbeat, mark agent completed)
       try {

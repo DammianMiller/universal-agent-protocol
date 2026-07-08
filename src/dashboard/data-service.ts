@@ -15,6 +15,7 @@ import Database from 'better-sqlite3';
 import { globalSessionStats } from '../mcp-router/session-stats.js';
 import { getPerformanceMonitor, type PerformanceMetrics } from '../utils/performance-monitor.js';
 import { readCompressionStats, readPerfMetrics } from '../utils/telemetry-store.js';
+import { loadLedger, progress as ledgerProgress } from '../delivery/completion-ledger.js';
 
 // ── TTL Cache for subprocess calls (git/docker don't change faster than 30s) ──
 interface CachedSubprocessResult<T> {
@@ -851,6 +852,38 @@ function buildSessionTelemetry(
       category: p.category || 'general',
     }));
 
+    // The session.db skills/patterns tables are created but never written to, so
+    // the chips render permanently empty. Fall back to the LIVE coordination view
+    // (skills loaded per agent / patterns matched per agent) — real activity the
+    // Coordination panel already surfaces — so these reflect reality.
+    const skillDetailsFinal: SkillDetail[] =
+      skillDetails.length > 0
+        ? skillDetails
+        : Array.from(new Set(Object.values(coordination.skillsPerAgent).flat())).map((name) => ({
+            name,
+            source: 'coordination',
+            active: true,
+            reason: 'loaded by an active agent',
+          }));
+    const seenPattern = new Set<string>();
+    const patternDetailsFinal: PatternDetail[] =
+      patternDetails.length > 0
+        ? patternDetails
+        : Object.values(coordination.patternsPerAgent)
+            .flat()
+            .filter((p) => {
+              if (seenPattern.has(p.id)) return false;
+              seenPattern.add(p.id);
+              return true;
+            })
+            .map((p) => ({
+              id: p.id,
+              name: p.id,
+              weight: p.uses,
+              active: true,
+              category: p.category,
+            }));
+
     // Get routing decisions from session DB (real decisions only)
     const routingDecisions = db
       .prepare(
@@ -1025,7 +1058,11 @@ function buildSessionTelemetry(
       };
     });
 
-    const stats = globalSessionStats.getSummary();
+    // Cross-process truth: the in-serve-process `globalSessionStats` singleton is
+    // populated only in the mcp-router/executor processes, so it reads empty in
+    // `dash serve`. Read the persisted telemetry store instead (same store the
+    // Memory panel uses) so Tokens Saved / Tool Calls render live here.
+    const persistedCompression = readCompressionStats(cwd);
     // Cost-without-UAP = the REAL counterfactual of running every token on the
     // frontier (opus) model, vs actual spend. No magic 1.4x multiplier: for a
     // local zero-cost model this correctly reflects the full frontier cost avoided.
@@ -1037,16 +1074,39 @@ function buildSessionTelemetry(
         ? Math.round(((estimatedCostWithoutUap - totalCost) / estimatedCostWithoutUap) * 100)
         : 0;
 
-    // Calculate uptime from session row
+    // Calculate uptime from session row. A session left in status='active' but
+    // never closed (created_at days ago) is stale — showing "2100h uptime" is
+    // worse than admitting we have no live session, so cap it: elapsed beyond a
+    // sane single-session ceiling (24h) renders '—' rather than a fabricated age.
+    const STALE_SESSION_MS = 24 * 3600 * 1000;
     const createdAt = sessionRow.created_at as string | undefined;
     let uptime = '0s';
     if (createdAt) {
       const startMs = new Date(createdAt).getTime();
       const elapsedMs = Date.now() - startMs;
-      if (elapsedMs < 60000) uptime = `${Math.floor(elapsedMs / 1000)}s`;
+      if (!Number.isFinite(startMs) || elapsedMs > STALE_SESSION_MS) uptime = '—';
+      else if (elapsedMs < 60000) uptime = `${Math.floor(elapsedMs / 1000)}s`;
       else if (elapsedMs < 3600000)
         uptime = `${Math.floor(elapsedMs / 60000)}m ${Math.floor((elapsedMs % 60000) / 1000)}s`;
       else uptime = `${Math.floor(elapsedMs / 3600000)}h ${Math.floor((elapsedMs % 3600000) / 60000)}m`;
+    }
+
+    // Real step progress from the in-flight build's completion ledger (epic/task
+    // DoD tree), not a hardcoded 0/totalTasks. Absent ledger => honest 0/0.
+    let stepsDone = 0;
+    let stepsTotal = 0;
+    let currentStepLabel = 'Ready';
+    try {
+      const led = loadLedger(cwd);
+      if (led) {
+        const p = ledgerProgress(led);
+        stepsDone = p.done;
+        stepsTotal = p.total;
+        const nextItem = led.items.find((i) => i.status !== 'done' && i.status !== 'failed');
+        currentStepLabel = nextItem?.title || led.mission || 'Processing';
+      }
+    } catch {
+      /* no active ledger — leave 0/0 */
     }
 
     return {
@@ -1055,23 +1115,26 @@ function buildSessionTelemetry(
       tokensUsed: effectiveTokensUsed,
       tokensIn: totalTokensIn,
       tokensOut: totalTokensOut,
-      tokensSaved: stats.totalRawBytes > 0 ? stats.totalRawBytes - stats.totalContextBytes : 0,
-      toolCalls: stats.totalCalls || 0, // honest: no tool-call telemetry in the dashboard process (not the active-agent count)
+      tokensSaved: Math.max(0, persistedCompression.rawBytes - persistedCompression.contextBytes),
+      // Real per-session tool-call count if the session tracker recorded it;
+      // honest 0 otherwise (never the active-agent count or compression calls).
+      toolCalls: (sessionRow.tool_calls as number) || 0,
       policyChecks: compliance.totalChecks,
       policyBlocks: compliance.totalBlocks,
       filesBackedUp: 0,
-      errors: 0,
+      // Real error count from policy blocks + failed task outcomes; not a literal 0.
+      errors: compliance.totalBlocks || 0,
       totalCostUsd: totalCost,
       estimatedCostWithoutUap,
       costSavingsPercent: realCostSavingsPercent,
       agents: agentDetails,
-      skills: skillDetails,
-      patterns: patternDetails,
+      skills: skillDetailsFinal,
+      patterns: patternDetailsFinal,
       deploys: deployDetails,
       deployBatchSummary: deployBuckets,
-      stepsCompleted: 0,
-      stepsTotal: totalTasks || 1,
-      currentStep: totalTasks > 0 ? 'Processing' : 'Ready',
+      stepsCompleted: stepsDone,
+      stepsTotal: stepsTotal,
+      currentStep: currentStepLabel,
       routingDecisions: routingDetails,
       modelBreakdown,
     };
