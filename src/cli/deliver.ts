@@ -194,6 +194,10 @@ export interface DeliverOptions {
   acceptance?: boolean;
   /** `--executor <blind|agentic|auto>`: per-turn executor strategy (default auto). */
   executor?: string;
+  /** `--allow-bash`: permit the agentic executor's run_bash tool when NOT under
+   * `uap sandbox`. Off by default — an unsandboxed shell isn't contained to the
+   * workdir (security audit X3). */
+  allowBash?: boolean;
   /** `--keep-best`: revert the project if deliver ends with a worse gate score than baseline. */
   keepBest?: boolean;
   candidates?: string;
@@ -925,6 +929,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // Block gate-config / IaC rigging in the agentic path too (it bypasses
         // the file-block applier where this protection otherwise lives).
         protectGateConfigs: options.protectTests !== false,
+        // run_bash is an uncontained host shell unsandboxed — allow it only
+        // under `uap sandbox` (auto-detected) or an explicit opt-in (audit X3).
+        allowBash: options.allowBash === true || process.env.UAP_DELIVER_ALLOW_BASH === '1',
         onEvent: (e) =>
           console.log(
             chalk.dim(`    [agent r${e.round} ${e.kind}${e.tool ? `:${e.tool}` : ''}] ${e.detail ?? ''}`)
