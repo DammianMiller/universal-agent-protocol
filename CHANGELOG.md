@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.122.0 (2026-07-08)
+
+- feat(dashboard): wire Live Events cross-process + de-fabricate session panels; quiet sandbox log
+
+
 ## v1.121.0 (2026-07-07)
 
 - feat(setup): add Maximum/Recommended/Minimal setup profiles
