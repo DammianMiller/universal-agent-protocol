@@ -9,7 +9,7 @@
 [![Tests](https://img.shields.io/badge/tests-170%2B_suites-brightgreen)](#testing)
 [![License](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 
-`v1.93.1` · 220+ modules · 170+ test suites · 9 agent harnesses
+`v1.124.1` · 220+ modules · 200+ test suites · 9 agent harnesses
 
 [Quickstart](#quickstart) · [Why UAP?](#why-uap) · [The delivery pipeline](docs/guides/DELIVERY_PIPELINE.md) · [`uap deliver`](#the-deliver-harness) · [Docs](docs/INDEX.md)
 
