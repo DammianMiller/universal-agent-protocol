@@ -25,6 +25,7 @@ import type { StrategySeed } from './explorer.js';
 import { exploreAndCommit } from './explorer.js';
 import type { Judge } from './judge.js';
 import type { Critic } from './critic.js';
+import { CONTEXT_BUDGET_MARKER } from './context-budget.js';
 
 export type LoopExecutor = (prompt: string) => Promise<string>;
 
@@ -96,6 +97,12 @@ export interface IterationRecord {
   /** Fraction of spec criteria met when the acceptance gate ran (0..1); undefined
    *  when no acceptance gate is configured or objective gates didn't pass. */
   acceptanceMet?: number;
+  /**
+   * True when this turn's executor session was hard-stopped by its context
+   * token budget (rail sizing — see delivery/context-budget.ts). Callers use
+   * this to route budget-exhausted work to the epic split path.
+   */
+  budgetStopped?: boolean;
   durationMs: number;
 }
 
@@ -926,6 +933,7 @@ export class ConvergenceLoop {
         candidates: outcome.candidates,
         judgeRationale: outcome.judgeRationale,
         acceptanceMet,
+        ...(outcome.output?.includes(CONTEXT_BUDGET_MARKER) ? { budgetStopped: true } : {}),
         durationMs: Date.now() - turnStart,
       };
       history.push(record);
