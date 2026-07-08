@@ -8,8 +8,9 @@
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
+import { randomBytes } from 'crypto';
 import { readFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { getDashboardData } from './data-service.js';
 import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
@@ -91,6 +92,26 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
   const sseClients = new Set<ServerResponse>();
   const cwd = process.cwd();
 
+  // Mutation auth (security audit D1): the policy-mutation POST routes disable
+  // security controls (delivery-enforcement, self-protect) and persist the
+  // change to the DB. Without a gate, any LAN host (--host 0.0.0.0) or any web
+  // page the operator visits (CORS was `*`, and /toggle reads no body → a
+  // no-cors simple POST fires it) could neutralize enforcement. Fix: require an
+  // unguessable per-session token in a CUSTOM header on every mutation. A
+  // cross-origin page can't read it (same-origin-only injection into the served
+  // HTML) and can't set a custom header on a simple request; a LAN attacker
+  // can't read it (printed to the operator's console only). Override for
+  // automation via UAP_DASHBOARD_TOKEN. Read routes stay open (localhost).
+  const mutationToken = process.env.UAP_DASHBOARD_TOKEN || randomBytes(24).toString('hex');
+  const mutationAuthorized = (req: IncomingMessage): boolean => {
+    const provided = req.headers['x-uap-dashboard-token'];
+    return typeof provided === 'string' && provided === mutationToken;
+  };
+  const denyMutation = (res: ServerResponse): void => {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized: dashboard mutation requires the session token (see the console where `uap dashboard serve` was started).' }));
+  };
+
   // The Live Events feed is fed CROSS-PROCESS from the persisted dashboard_events
   // table (telemetry.db), not the in-process event bus — emitters fire in the
   // mcp-router/executor processes, whose in-memory bus this `dash serve` process
@@ -128,10 +149,13 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url || '/';
 
-    // CORS headers
+    // CORS headers. Reads stay open (localhost dashboard, read-only data), but
+    // mutations are gated by the token header below — the token, not the origin,
+    // is the real defense (a foreign origin can neither read the token nor,
+    // therefore, forge the header).
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Uap-Dashboard-Token');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -199,6 +223,7 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
 
       // API: Toggle policy
       if (url.startsWith('/api/policy/') && url.endsWith('/toggle') && req.method === 'POST') {
+        if (!mutationAuthorized(req)) return denyMutation(res);
         const id = url.split('/')[3];
         const memory = getPolicyMemoryManager();
         const policy = await memory.getPolicy(id);
@@ -215,6 +240,7 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
 
       // API: Set policy stage
       if (url.startsWith('/api/policy/') && url.endsWith('/stage') && req.method === 'POST') {
+        if (!mutationAuthorized(req)) return denyMutation(res);
         const id = url.split('/')[3];
         const body = await readBody(req);
         const parsed = parseJsonBody(body);
@@ -237,6 +263,7 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
 
       // API: Set policy level
       if (url.startsWith('/api/policy/') && url.endsWith('/level') && req.method === 'POST') {
+        if (!mutationAuthorized(req)) return denyMutation(res);
         const id = url.split('/')[3];
         const body = await readBody(req);
         const parsed = parseJsonBody(body);
@@ -260,7 +287,10 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
       if (url.startsWith('/vendor/') && WEB_DIR) {
         const rel = decodeURIComponent(url.split('?')[0].replace(/^\/+/, ''));
         const abs = join(WEB_DIR, rel);
-        const vendorRoot = join(WEB_DIR, 'vendor');
+        // Guard with a trailing separator so sibling dirs whose name merely
+        // starts with "vendor" (e.g. web/vendor-secret/) are NOT served — a
+        // bare `startsWith(vendorRoot)` prefix match let them through (audit D1b).
+        const vendorRoot = join(WEB_DIR, 'vendor') + sep;
         if (!abs.startsWith(vendorRoot) || !existsSync(abs)) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'asset not found' }));
@@ -278,7 +308,13 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
       // Serve HTML dashboard
       if (url === '/' || url === '/index.html') {
         if (DASHBOARD_HTML_PATH) {
-          const html = readFileSync(DASHBOARD_HTML_PATH, 'utf-8');
+          // Inject the per-session mutation token so the SAME-ORIGIN UI can send
+          // it on policy mutations. A cross-origin page cannot read this HTML
+          // (CORS blocks the cross-origin read), so it never sees the token.
+          const html = readFileSync(DASHBOARD_HTML_PATH, 'utf-8').replace(
+            /__UAP_DASHBOARD_TOKEN__/g,
+            mutationToken
+          );
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end(html);
         } else {
@@ -352,6 +388,14 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
       console.log(`  loopback only — for remote/LAN access restart with: uap dash serve --host 0.0.0.0`);
     }
     console.log(`WebSocket + SSE live updates at ws://${shown}:${port} and http://${shown}:${port}/api/events`);
+    // Policy mutations (enable/disable/stage/level) require this token. The
+    // dashboard UI gets it automatically (injected into the served page); any
+    // other client must send it as `X-Uap-Dashboard-Token`. Override with
+    // UAP_DASHBOARD_TOKEN. Without it, an unauthenticated caller cannot disable
+    // enforcement (security audit D1).
+    if (!process.env.UAP_DASHBOARD_TOKEN) {
+      console.log(`  policy-mutation token: ${mutationToken}`);
+    }
 
     // Seed dashboard data from project state
     try {
