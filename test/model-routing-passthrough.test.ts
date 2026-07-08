@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { RoutingPresets, passthroughModelsForPreset, type RoutingPreset } from '../src/models/index.js';
-import { upsertProxyEnvVars, proxyEnvPath } from '../src/cli/systemd-services.js';
+import { upsertProxyEnvVars, proxyEnvPath, readProxyEnvVar } from '../src/cli/systemd-services.js';
 
 describe('passthroughModelsForPreset', () => {
   it('returns empty (use default patterns) for a cloud-using preset', () => {
@@ -46,5 +46,38 @@ describe('upsertProxyEnvVars', () => {
     expect(out).toContain('PROXY_LOG_LEVEL=INFO');
     expect(out).not.toContain('__local_only__');
     expect(out).toContain('ANTHROPIC_PASSTHROUGH_MODELS=');
+  });
+});
+
+describe('readProxyEnvVar (operator local-only pin detection)', () => {
+  let home: string;
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'uap-readenv-')); });
+  afterEach(() => { rmSync(home, { recursive: true, force: true }); });
+
+  it('returns null when the file is missing', () => {
+    expect(readProxyEnvVar('ANTHROPIC_PASSTHROUGH_MODELS', home)).toBeNull();
+  });
+
+  it('returns the last-wins value of the key', () => {
+    const p = proxyEnvPath(home);
+    mkdirSync(join(home, '.config', 'uap'), { recursive: true });
+    writeFileSync(p, 'ANTHROPIC_PASSTHROUGH_MODELS=\nPROXY_PORT=4000\nANTHROPIC_PASSTHROUGH_MODELS=__local_only__\n');
+    expect(readProxyEnvVar('ANTHROPIC_PASSTHROUGH_MODELS', home)).toBe('__local_only__');
+  });
+
+  it('detects the local-only pin so the routing writer can preserve it', () => {
+    const p = proxyEnvPath(home);
+    mkdirSync(join(home, '.config', 'uap'), { recursive: true });
+    writeFileSync(p, 'ANTHROPIC_PASSTHROUGH_MODELS=__local_only__\n');
+    // This is the exact check the routing-use guard makes before overwriting.
+    const pinned = readProxyEnvVar('ANTHROPIC_PASSTHROUGH_MODELS', home) === '__local_only__';
+    expect(pinned).toBe(true);
+  });
+
+  it('returns empty string (not the pin) when passthrough is cloud-enabled', () => {
+    const p = proxyEnvPath(home);
+    mkdirSync(join(home, '.config', 'uap'), { recursive: true });
+    writeFileSync(p, 'ANTHROPIC_PASSTHROUGH_MODELS=\n');
+    expect(readProxyEnvVar('ANTHROPIC_PASSTHROUGH_MODELS', home)).toBe('');
   });
 });
