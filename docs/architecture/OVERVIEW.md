@@ -1,6 +1,11 @@
 # UAP Architecture Overview
 
-`v1.93.1` · 223 TypeScript modules across 18 `src/` subsystems · 170+ test suites
+`v1.124.1` · ~223 TypeScript modules across 18 `src/` subsystems · 200+ test suites
+
+> **Code-verified reference:** this narrative overview is the intent-level floor plan. For
+> the reverse-engineered, implementation-accurate map — including trust boundaries,
+> enforcement planes, and where enforcement diverges from the prose — see
+> [`documentation/architecture.md`](../../documentation/architecture.md).
 
 > **🏭 Where this fits:** Whole pipeline — this is the factory-floor map. A bare
 > agent walks work from an idea to a shipped change with no stations in between,

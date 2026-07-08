@@ -1,6 +1,11 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.93.1) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.124.1) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line.
+
+> **Reviewing the system?** The reverse-engineered, code-verified reference set lives in
+> [`documentation/`](../documentation/architecture.md): architecture, flows, permissions
+> (incl. trust boundaries and enforcement gaps), variables/secrets, scheduled work, and
+> embedded automation. Start there for an honest map of what's enforced vs. documented.
 
 New here? The friendliest way in is the **[Delivery Pipeline tour](guides/DELIVERY_PIPELINE.md)** — it walks the whole factory floor, station by station, showing where agents normally break and what UAP puts in place to catch it. Then grab the [Quickstart](getting-started/QUICKSTART.md).
 
@@ -45,6 +50,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Memory](guides/MEMORY.md) | The 4-tier memory system, write-gates, semantic recall |
 | [MCP Router](guides/MCP_ROUTER.md) | Token-optimizing tool proxy + FTS5 output compression |
 | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) | Branch-per-feature isolation, auto-PR, enforcement |
+| [Sandbox](guides/SANDBOX.md) | Kernel-level (bubblewrap) write isolation — the boundary that survives `--dangerously-skip-permissions` |
 | [Policies](guides/POLICIES.md) | Executable policy gates that block non-compliant tool calls |
 | [Multi-Model Routing](guides/MULTI_MODEL.md) | Plan → route → execute across 7 model profiles |
 | [Droids & Skills](guides/DROIDS_AND_SKILLS.md) | 38 expert droids, 32 skills, the expert router |
