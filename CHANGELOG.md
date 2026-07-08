@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.128.2 (2026-07-08)
+
+- fix(policies): schema-diff-gate self-deadlock + marker table/timezone; delivery-enforcement fall-through returns
+
+
 ## v1.128.1 (2026-07-08)
 
 - fix(security): audit hardening round 2 — proxy bind/auth, hook fail-closed, sandboxed run_bash, CI enforcer gate
