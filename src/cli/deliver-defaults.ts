@@ -23,6 +23,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const DELIVERY_POLICY = 'delivery-enforcement';
 const DELIVERY_ENFORCER = 'delivery_enforcement';
+const SELF_PROTECT_POLICY = 'enforcement-self-protect';
+const SELF_PROTECT_ENFORCER = 'enforcement_self_protect';
 
 /**
  * Resolve a package data file, trying the installed package root (dist/cli ->
@@ -44,28 +46,31 @@ export interface EnsureDeliveryResult {
 }
 
 /**
- * Install + enable the delivery-enforcement policy. Idempotent: re-installs the
- * enforcer code and ensures the policy is enabled without creating duplicates.
+ * Install + enable a policy and attach its Python enforcer. Idempotent:
+ * find-by-name so re-running never creates duplicate rows; re-materializes the
+ * enforcer code and ensures the policy is enabled. Shared by the
+ * delivery-enforcement and self-protect defaults so both register the same way
+ * the runtime hook (uap-policy-gate.sh) expects — a policy row JOINed to an
+ * executable_tools row that points at `.policy-tools/<id>_<enforcer>.py`.
  */
-export async function ensureDeliveryEnforcement(): Promise<EnsureDeliveryResult> {
+async function ensurePolicyEnforcer(
+  policyName: string,
+  enforcerName: string,
+  missingReason: string
+): Promise<EnsureDeliveryResult> {
   const mdPath = resolvePackageFile(
-    join('src', 'policies', 'schemas', 'policies', `${DELIVERY_POLICY}.md`)
+    join('src', 'policies', 'schemas', 'policies', `${policyName}.md`)
   );
   const enforcerPath = resolvePackageFile(
-    join('src', 'policies', 'enforcers', `${DELIVERY_ENFORCER}.py`)
+    join('src', 'policies', 'enforcers', `${enforcerName}.py`)
   );
 
   if (!mdPath) {
-    return {
-      installed: false,
-      enabled: false,
-      enforcerAttached: false,
-      reason: 'delivery-enforcement policy schema not found in package',
-    };
+    return { installed: false, enabled: false, enforcerAttached: false, reason: missingReason };
   }
 
   const memory = getPolicyMemoryManager();
-  const existing = (await memory.getAllPolicies()).find((p) => p.name === DELIVERY_POLICY);
+  const existing = (await memory.getAllPolicies()).find((p) => p.name === policyName);
 
   let id: string;
   let installed = false;
@@ -78,11 +83,7 @@ export async function ensureDeliveryEnforcement(): Promise<EnsureDeliveryResult>
 
   let enforcerAttached = false;
   if (enforcerPath) {
-    await getPolicyToolRegistry().storeToolCode(
-      id,
-      DELIVERY_ENFORCER,
-      readFileSync(enforcerPath, 'utf-8')
-    );
+    await getPolicyToolRegistry().storeToolCode(id, enforcerName, readFileSync(enforcerPath, 'utf-8'));
     enforcerAttached = true;
   }
 
@@ -90,6 +91,36 @@ export async function ensureDeliveryEnforcement(): Promise<EnsureDeliveryResult>
   getPolicyGate().invalidateCache();
 
   return { installed, enabled: true, enforcerAttached };
+}
+
+/**
+ * Install + enable the delivery-enforcement policy. Idempotent: re-installs the
+ * enforcer code and ensures the policy is enabled without creating duplicates.
+ */
+export async function ensureDeliveryEnforcement(): Promise<EnsureDeliveryResult> {
+  return ensurePolicyEnforcer(
+    DELIVERY_POLICY,
+    DELIVERY_ENFORCER,
+    'delivery-enforcement policy schema not found in package'
+  );
+}
+
+/**
+ * Install + enable the enforcement-self-protect policy and ATTACH its enforcer
+ * — the step that was missing, leaving self-protect inert (documented as active
+ * but never registered, so the runtime gate never ran it; the delivery enforcer
+ * meanwhile exempts src/policies/, so nothing stopped the agent editing the
+ * enforcement control surface). This closes that gap: once attached, the
+ * policy-gate hook runs enforcement_self_protect.py on every Edit/Write/Bash and
+ * blocks writes to the policy DB tooling, enforcers, .uap.json, proxy env, and
+ * the gate hook scripts (operator override: UAP_SELF_PROTECT_OFF=1).
+ */
+export async function ensureSelfProtect(): Promise<EnsureDeliveryResult> {
+  return ensurePolicyEnforcer(
+    SELF_PROTECT_POLICY,
+    SELF_PROTECT_ENFORCER,
+    'enforcement-self-protect policy schema not found in package'
+  );
 }
 
 export interface WireDeliverMcpResult {

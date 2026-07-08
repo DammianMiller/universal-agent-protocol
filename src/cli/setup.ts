@@ -266,11 +266,16 @@ export async function runSetupSteps(cwd: string, options: SetupOptions): Promise
   // is installed + enabled here, coding agents are routed through `uap deliver`.
   const deliverSpinner = ora('Enabling delivery-enforcement + wiring deliver tool...').start();
   try {
-    const { ensureDeliveryEnforcement, wireDeliverMcp } = await import('./deliver-defaults.js');
+    const { ensureDeliveryEnforcement, ensureSelfProtect, wireDeliverMcp } = await import('./deliver-defaults.js');
     const result = await ensureDeliveryEnforcement();
     wireDeliverMcp(cwd);
+    // Register the self-protect enforcer alongside delivery-enforcement so the
+    // gate is non-disableable by the agent (previously inert — attached here so
+    // the runtime hook actually runs it). Fail-soft: never blocks setup.
+    const sp = await ensureSelfProtect().catch(() => ({ enabled: false, enforcerAttached: false } as const));
     if (result.enabled) {
-      deliverSpinner.succeed('delivery-enforcement active (block by default) + deliver tool wired');
+      const spNote = sp.enabled && sp.enforcerAttached ? ' + self-protect' : '';
+      deliverSpinner.succeed(`delivery-enforcement active (block by default)${spNote} + deliver tool wired`);
     } else {
       deliverSpinner.warn(`delivery-enforcement not enabled: ${result.reason ?? 'unknown'}`);
     }

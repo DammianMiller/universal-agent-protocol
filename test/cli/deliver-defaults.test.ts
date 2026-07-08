@@ -28,7 +28,7 @@ vi.mock('../../src/policies/policy-gate.js', () => ({
   getPolicyGate: () => ({ invalidateCache }),
 }));
 
-import { ensureDeliveryEnforcement, wireDeliverMcp } from '../../src/cli/deliver-defaults.js';
+import { ensureDeliveryEnforcement, ensureSelfProtect, wireDeliverMcp } from '../../src/cli/deliver-defaults.js';
 
 describe('wireDeliverMcp', () => {
   let dir: string;
@@ -100,5 +100,35 @@ describe('ensureDeliveryEnforcement', () => {
     expect(r.enabled).toBe(true);
     expect(storeRawPolicy).not.toHaveBeenCalled();
     expect(togglePolicy).toHaveBeenCalledWith('existing-id', true);
+  });
+});
+
+describe('ensureSelfProtect', () => {
+  beforeEach(() => {
+    existingPolicies = [];
+    storeRawPolicy.mockClear();
+    storeToolCode.mockClear();
+    togglePolicy.mockClear();
+    invalidateCache.mockClear();
+  });
+
+  it('installs, ATTACHES the self-protect enforcer, and enables it (closes the inert-gate gap)', async () => {
+    const r = await ensureSelfProtect();
+    expect(r.enabled).toBe(true);
+    expect(r.enforcerAttached).toBe(true);
+    // The attach is the whole fix — the policy row existed before but had no
+    // executable_tools row, so the runtime hook never ran it.
+    expect(storeToolCode).toHaveBeenCalledWith('policy-id-123', 'enforcement_self_protect', expect.any(String));
+    expect(togglePolicy).toHaveBeenCalledWith('policy-id-123', true);
+  });
+
+  it('is idempotent against the pre-existing (previously-inert) policy rows: attaches without creating a duplicate', async () => {
+    // Mirrors the live DB: a self-protect row exists but has no enforcer.
+    existingPolicies = [{ id: 'inert-row', name: 'enforcement-self-protect' }];
+    const r = await ensureSelfProtect();
+    expect(r.installed).toBe(false);
+    expect(storeRawPolicy).not.toHaveBeenCalled(); // no new duplicate row
+    expect(storeToolCode).toHaveBeenCalledWith('inert-row', 'enforcement_self_protect', expect.any(String));
+    expect(togglePolicy).toHaveBeenCalledWith('inert-row', true);
   });
 });

@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.125.0 (2026-07-08)
+
+- fix(security): register the enforcement-self-protect enforcer at setup/init. It shipped as source + a policy doc but was never attached to an executable_tools row, so the runtime policy-gate hook never ran it — the gate was documented as non-disableable but was inert, and since delivery-enforcement exempts src/policies/, nothing stopped an agent editing the enforcement control surface (policy DB tooling, enforcers, .uap.json, proxy env, gate hook scripts). ensureSelfProtect() now attaches it idempotently (find-by-name, no duplicate rows) alongside ensureDeliveryEnforcement. Verified: enforcer blocks the 4 tamper paths, allows normal edits/bash, honors UAP_SELF_PROTECT_OFF=1.
+
 ## v1.124.1 (2026-07-08)
 
 - fix(deliver): acceptance-judge evidence starvation — gatherEvidence walked directories alphabetically and let big flat data files (e.g. data/*.txt at 20K chars each) consume the whole 60K evidence budget, so the judge never saw package.json/src and correctly reported every requirement "not visible" (the real cause of judge-rejects-green-turns churn; the local qwen judge was fine). Evidence is now priority-ordered (configs+source > tests/json > docs/data), candidates are pooled before the file-count cap, and data files contribute a 1.5K head only. Secondary-mode judging also receives the objective-gates-passed fact as runtime evidence. Live probe: green project 0.00→1.00 on real specs; missing-implementation control still rejects at 0.00.
