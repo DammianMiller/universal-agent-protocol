@@ -179,13 +179,17 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
         subs = null; // fail-soft: an unplannable split just keeps the failure
       }
       if (subs && subs.length >= 2) {
-        // Force a sequential chain (the original epic's deps are already
-        // satisfied; sub-order is the planner's intent) and namespace ids so
-        // they can't collide with sibling epics.
-        const chained: Epic[] = subs.map((s, i) => ({
+        // Sub-epics run in planner order (the for-loop is sequential and
+        // topoOrder is stable) but are deliberately NOT dep-chained: a
+        // budget-split piece often fails gates only because the WHOLE isn't
+        // assembled yet, and later pieces — each a fresh session over the
+        // accumulated repo state — can still complete it. Chaining would skip
+        // every remaining piece on the first partial failure. Ids are
+        // namespaced so they can't collide with sibling epics.
+        const chained: Epic[] = subs.map((s) => ({
           ...s,
           id: `${epic.id}.${s.id}`.slice(0, 64),
-          ...(i > 0 ? { deps: [`${epic.id}.${subs![i - 1].id}`.slice(0, 64)] } : { deps: [] }),
+          deps: [],
         }));
         const subResult = await runEpics({
           ...config,
@@ -195,7 +199,13 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
         });
         epicTurns += subResult.turns; // flows into totalTurns below
         outcomes.push(...subResult.outcomes);
-        accepted = subResult.success;
+        // Delivered when every piece passed OR when the FINAL piece passed:
+        // earlier pieces often "fail" only because the whole wasn't assembled
+        // yet — a green final piece means the accumulated state passes the
+        // project gates, i.e. the epic's goal is delivered.
+        const finalPieceGreen =
+          subResult.outcomes.length > 0 && subResult.outcomes[subResult.outcomes.length - 1].accepted;
+        accepted = subResult.success || finalPieceGreen;
         lastSummary = accepted
           ? `split into ${chained.length} sub-epics (context auto-size): ${subResult.outcomes.map((o) => o.summary).join('; ')}`
           : `split into ${chained.length} sub-epics after context-budget exhaustion; failed: ${subResult.failed.join(', ')}`;

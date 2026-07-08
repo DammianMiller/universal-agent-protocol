@@ -212,6 +212,30 @@ describe('runEpics — split on context-budget exhaustion', () => {
     expect(res.success).toBe(false);
   });
 
+  it('later sub-epics run despite an earlier partial failure, and a green final piece delivers the epic', async () => {
+    const ran: string[] = [];
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'big', title: 'Big', goal: 'three modules' }],
+      maxAttemptsPerEpic: 1,
+      runEpic: async (epic) => {
+        ran.push(epic.id);
+        if (epic.id === 'big') return { success: false, summary: `${CONTEXT_BUDGET_MARKER} over`, turns: 1 };
+        // pieces 1 and 2 fail full-project gates (whole not assembled yet);
+        // piece 3 completes the assembly and gates go green
+        return epic.id.endsWith('p3') ? ok('assembled, gates green') : { success: false, summary: 'gates still red', turns: 1 };
+      },
+      splitEpic: async () => [
+        { id: 'p1', title: 'P1', goal: 'module 1' },
+        { id: 'p2', title: 'P2', goal: 'module 2' },
+        { id: 'p3', title: 'P3', goal: 'module 3' },
+      ],
+    });
+    // all three pieces ran (no dep-chain skipping after p1's partial failure)
+    expect(ran).toEqual(['big', 'big.p1', 'big.p2', 'big.p3']);
+    expect(res.completed).toContain('big'); // final piece green => epic delivered
+  });
+
   it('sub-epics see prior summaries from epics completed before the split', async () => {
     const priorsSeen: Record<string, string[]> = {};
     await runEpics({
