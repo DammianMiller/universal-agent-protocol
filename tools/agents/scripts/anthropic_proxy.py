@@ -155,7 +155,16 @@ ANTHROPIC_API_BASE = os.environ.get(
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_PASSTHROUGH_MODELS = os.environ.get("ANTHROPIC_PASSTHROUGH_MODELS", "")
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4000"))
-PROXY_HOST = os.environ.get("PROXY_HOST", "0.0.0.0")
+# Bind loopback by DEFAULT (security audit: an unauthenticated 0.0.0.0 listener
+# let any LAN host drive the local model and reach cloud passthrough). To run
+# the proxy as a shared LAN service, set PROXY_HOST=0.0.0.0 AND set
+# PROXY_AUTH_TOKEN so the exposure is credential-gated.
+PROXY_HOST = os.environ.get("PROXY_HOST", "127.0.0.1")
+# Optional shared secret. When set, every request to a model route must present
+# it as `Authorization: Bearer <token>` or `X-Uap-Proxy-Token: <token>`. Unset
+# (default) = no check, which is safe only because the default bind is loopback.
+# The health probe stays open so liveness checks don't need the secret.
+PROXY_AUTH_TOKEN = os.environ.get("PROXY_AUTH_TOKEN", "").strip()
 PROXY_LOG_LEVEL = os.environ.get("PROXY_LOG_LEVEL", "INFO").upper()
 PROXY_READ_TIMEOUT = float(os.environ.get("PROXY_READ_TIMEOUT", "180"))
 PROXY_GENERATION_TIMEOUT = float(os.environ.get("PROXY_GENERATION_TIMEOUT", "300"))
@@ -3050,6 +3059,46 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+# Open paths that never require the shared secret (liveness / discovery), so a
+# LAN health check or an SDK model-list probe works without the token.
+_PROXY_AUTH_OPEN_PATHS = frozenset({"/health", "/", "/v1/models"})
+
+
+@app.middleware("http")
+async def _shared_secret_auth(request: Request, call_next):
+    """Gate every request behind PROXY_AUTH_TOKEN when it is set.
+
+    No-op when the token is unset (the default; safe only because the default
+    bind is loopback). When set — the intended posture for a shared LAN service
+    (PROXY_HOST=0.0.0.0) — a request must present the token as
+    `Authorization: Bearer <token>` or `X-Uap-Proxy-Token: <token>`; otherwise
+    401. Uses a constant-time compare to avoid a timing oracle.
+    """
+    if PROXY_AUTH_TOKEN and request.url.path not in _PROXY_AUTH_OPEN_PATHS and request.method != "OPTIONS":
+        provided = request.headers.get("x-uap-proxy-token", "")
+        if not provided:
+            auth = request.headers.get("authorization", "")
+            if auth.lower().startswith("bearer "):
+                provided = auth[7:].strip()
+        import hmac as _hmac
+
+        if not (provided and _hmac.compare_digest(provided, PROXY_AUTH_TOKEN)):
+            return Response(
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "authentication_error",
+                            "message": "missing or invalid proxy token (set X-Uap-Proxy-Token or Authorization: Bearer)",
+                        },
+                    }
+                ),
+                status_code=401,
+                media_type="application/json",
+            )
+    return await call_next(request)
 
 # NOTE: Concurrency control is enforced by _acquire_upstream_slot() inside
 # _post_with_retry (the single point where we hit llama.cpp). An earlier

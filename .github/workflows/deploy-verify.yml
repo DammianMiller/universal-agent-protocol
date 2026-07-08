@@ -43,7 +43,27 @@ jobs:
       - name: Type-check
         run: npx --no-install tsc --noEmit
       - name: Test
-        run: npm test
+        run: npm run test:ci
+
+  # The runtime policy-enforcement plane is Python (.policy-tools enforcers +
+  # the proxy). These security-critical tests gate self-protect, workdir-scope,
+  # sandbox tool-strip, path containment, and proxy env handling — they must run
+  # in CI or the whole enforcement layer can regress silently on a green PR.
+  # Scoped to the self-contained security set (via `npm run test:enforcers`);
+  # two files are excluded as a KNOWN pre-existing-red backlog, not by omission:
+  #   - test_delivery_enforcement_worktree (4 failing, needs a worktree fixture)
+  #   - test_anthropic_proxy_streaming     (7 failing)
+  # Fix those, then add them to test:enforcers so this gate covers them too.
+  enforcers:
+    name: Policy Enforcers (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run security enforcer + proxy tests
+        run: npm run test:enforcers
 
   deploy-dev:
     name: deploy-dev

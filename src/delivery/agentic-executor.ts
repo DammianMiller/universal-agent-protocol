@@ -56,6 +56,17 @@ export interface AgenticExecutorOptions {
   /** Optional sink for a structured trace of what the agent did. */
   onEvent?: (event: AgenticEvent) => void;
   /**
+   * Allow the `run_bash` tool to execute (default false). run_bash is the model
+   * running an UNCONTAINED host shell when not sandboxed — `cwd` is not a
+   * boundary, so it can read ~/.ssh, curl secrets out, or write outside the
+   * workdir (security audit X3). It executes only when the session is
+   * kernel-contained (`uap sandbox` sets UAP_SANDBOX_ACTIVE=1, auto-detected)
+   * OR the operator explicitly opts in (`--allow-bash` / UAP_DELIVER_ALLOW_BASH=1).
+   * Otherwise run_bash returns a refusal telling the model to use read/write
+   * tools; the rest of the agentic loop is unaffected.
+   */
+  allowBash?: boolean;
+  /**
    * Hard estimated-token ceiling for one agentic session (the per-rail
    * serving context × working fraction — see delivery/context-budget.ts).
    * Checked before every model round; when the accumulated conversation
@@ -206,7 +217,8 @@ function runTool(
   args: Record<string, unknown>,
   bashTimeoutMs: number,
   protectedFiles: ReadonlySet<string>,
-  protectGateConfigs: boolean
+  protectGateConfigs: boolean,
+  allowBash: boolean
 ): string {
   let pathNote = '';
   // Contain/repair garbled tool-call paths against the known project root before
@@ -255,6 +267,16 @@ function runTool(
       return `OK: wrote ${String(args.path)} (${String(args.content ?? '').length} bytes)${pathNote}`;
     }
     if (name === 'run_bash') {
+      // Containment gate (audit X3): run_bash is an uncontained host shell when
+      // not sandboxed. Refuse unless kernel-contained or explicitly allowed.
+      if (!allowBash) {
+        return (
+          'ERROR: run_bash is disabled — an unsandboxed shell is not contained to the ' +
+          'workdir. Use read_file/list_dir/write_file to make and inspect changes. ' +
+          'To enable shell access, run this deliver under `uap sandbox` or pass ' +
+          '--allow-bash (UAP_DELIVER_ALLOW_BASH=1).'
+        );
+      }
       // Snapshot protected files so a command cannot silently rewrite the
       // oracle to make a wrong answer pass.
       const snap = protectedFiles.size > 0 ? snapshotProtected(projectRoot, protectedFiles) : new Map();
@@ -371,6 +393,12 @@ export function createAgenticExecutor(
   const bashTimeoutMs = opts.bashTimeoutMs ?? 30_000;
   const protectedFiles = opts.protectedFiles ?? new Set<string>();
   const protectGateConfigs = opts.protectGateConfigs ?? true;
+  // run_bash executes only when kernel-contained (uap sandbox sets
+  // UAP_SANDBOX_ACTIVE=1) or the operator explicitly opts in (audit X3).
+  const allowBash =
+    opts.allowBash === true ||
+    process.env.UAP_SANDBOX_ACTIVE === '1' ||
+    process.env.UAP_DELIVER_ALLOW_BASH === '1';
 
   return async (prompt: string): Promise<string> => {
     const messages: ChatMessage[] = [
@@ -431,7 +459,8 @@ export function createAgenticExecutor(
               { path: block.path, content: block.content },
               bashTimeoutMs,
               protectedFiles,
-              protectGateConfigs
+              protectGateConfigs,
+              allowBash
             );
             opts.onEvent?.({
               round,
@@ -478,7 +507,8 @@ export function createAgenticExecutor(
           args,
           bashTimeoutMs,
           protectedFiles,
-          protectGateConfigs
+          protectGateConfigs,
+          allowBash
         );
         opts.onEvent?.({
           round,
