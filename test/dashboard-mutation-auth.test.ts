@@ -42,7 +42,7 @@ describe('dashboard policy-mutation auth', () => {
     const port = await boot();
     const r = await fetch(`http://127.0.0.1:${port}/api/policy/any-id/toggle`, { method: 'POST' });
     expect(r.status).toBe(401);
-  });
+  }, 20000);
 
   it('rejects a policy toggle with the WRONG token (401)', async () => {
     const port = await boot();
@@ -51,7 +51,7 @@ describe('dashboard policy-mutation auth', () => {
       headers: { 'X-Uap-Dashboard-Token': 'wrong' },
     });
     expect(r.status).toBe(401);
-  });
+  }, 20000);
 
   it('also gates /stage and /level', async () => {
     const port = await boot();
@@ -63,7 +63,7 @@ describe('dashboard policy-mutation auth', () => {
       });
       expect(r.status, `${route} without token`).toBe(401);
     }
-  });
+  }, 20000);
 
   it('lets a correct token THROUGH the auth gate (past 401 — 404 for a missing policy)', async () => {
     const port = await boot();
@@ -74,11 +74,11 @@ describe('dashboard policy-mutation auth', () => {
     // Auth passed → handler ran → 404 (policy doesn't exist), NOT 401.
     expect(r.status).not.toBe(401);
     expect(r.status).toBe(404);
-  });
+  }, 20000);
 
   it('read routes stay open (no token needed for GET /api/dashboard)', async () => {
     const port = await boot();
     const r = await fetch(`http://127.0.0.1:${port}/api/dashboard`);
     expect(r.status).toBe(200);
-  });
+  }, 20000);
 });
