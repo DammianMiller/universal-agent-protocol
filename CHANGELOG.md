@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.130.1 (2026-07-08)
+
+- feat(policies): pay2u policy pack (pay2u-architecture-rules/quick-reference/enforcement-hooks) as an opt-in advisory example pack, selectable in the setup policy matrix and installable individually; new `uap policy matrix` lists ALL policies (built-in + installed) with status/level/stage/source and the toggle/adjust commands. Also fixed 3 pre-existing built-in schemas with out-of-enum categories (adr-guard/merge-deploy-monitor-verify/ship-loop-gate) that crash getAllPolicies() once installed; a new test validates the whole schema set.
+
+
 ## v1.130.0 (2026-07-08)
 
 - test(dashboard): fix SSE partial-frame parsing + load-tolerant timeouts

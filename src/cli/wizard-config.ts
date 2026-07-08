@@ -42,6 +42,9 @@ export interface PolicyFeatures {
   kubectlVerifyBackport: boolean;
   definitionOfDoneIac: boolean;
   customPoliciesDir: boolean;
+  /** The pay2u example policy pack (advisory architecture/reference policies).
+   * Opt-in — off by default so ordinary projects don't get pay2u-specific rules. */
+  pay2uPolicies: boolean;
 }
 
 export interface ModelFeatures {
@@ -150,6 +153,7 @@ export function defaultSelections(overrides: Partial<WizardSelections> = {}): Wi
       kubectlVerifyBackport: true,
       definitionOfDoneIac: true,
       customPoliciesDir: false,
+      pay2uPolicies: false,
     },
     model: { provider: 'anthropic', qwenOptimizations: false, toolCallProfile: 'claude-sonnet-4.6', costTracking: false, modelRouting: false },
     hooks: { sessionStart: true, preCompact: true, taskCompletion: false, autoApproveTools: false },
@@ -193,7 +197,7 @@ export function maxSelections(ctx: PresetContext): WizardSelections {
     memory: { shortTermMemory: true, longTermMemory: docker, knowledgeGraph: docker, prepopDocs: true, prepopGit: true },
     multiAgent: { coordinationDb: true, worktreeIsolation: true, deployBatching: true, agentMessaging: true },
     patterns: { patternLibrary: true, patternRag: docker, reinforcementLearning: docker },
-    policy: { policyEngine: true, imageAssetVerification: true, iacStateParity: true, iacPipelineEnforcement: true, kubectlVerifyBackport: true, definitionOfDoneIac: true, customPoliciesDir: true },
+    policy: { policyEngine: true, imageAssetVerification: true, iacStateParity: true, iacPipelineEnforcement: true, kubectlVerifyBackport: true, definitionOfDoneIac: true, customPoliciesDir: true, pay2uPolicies: false },
     model: { provider: local ? 'local' : 'anthropic', qwenOptimizations: local, toolCallProfile: '', costTracking: true, modelRouting: true, routingPreset: local ? 'fable-local-opus' : 'none' },
     hooks: { sessionStart: true, preCompact: true, taskCompletion: true, autoApproveTools: true },
     browser: { cloakBrowser: true },
@@ -216,7 +220,7 @@ export function minSelections(ctx: PresetContext): WizardSelections {
     memory: { shortTermMemory: true, longTermMemory: false, knowledgeGraph: false, prepopDocs: false, prepopGit: false },
     multiAgent: { coordinationDb: true, worktreeIsolation: true, deployBatching: false, agentMessaging: false },
     patterns: { patternLibrary: true, patternRag: false, reinforcementLearning: false },
-    policy: { policyEngine: false, imageAssetVerification: false, iacStateParity: false, iacPipelineEnforcement: false, kubectlVerifyBackport: false, definitionOfDoneIac: false, customPoliciesDir: false },
+    policy: { policyEngine: false, imageAssetVerification: false, iacStateParity: false, iacPipelineEnforcement: false, kubectlVerifyBackport: false, definitionOfDoneIac: false, customPoliciesDir: false, pay2uPolicies: false },
     model: { provider: ctx.localModel ? 'local' : 'anthropic', qwenOptimizations: false, toolCallProfile: '', costTracking: false, modelRouting: false, routingPreset: 'none' },
     hooks: { sessionStart: true, preCompact: false, taskCompletion: false, autoApproveTools: false },
     browser: { cloakBrowser: false },

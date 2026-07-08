@@ -1,6 +1,6 @@
 # ship-loop-gate
 
-**Category**: process
+**Category**: workflow
 **Level**: REQUIRED
 **Enforcement Stage**: pre-exec
 **Tags**: ship-loop, task, completion, evidence, merge-deploy-monitor-verify
