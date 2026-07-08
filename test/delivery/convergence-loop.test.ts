@@ -265,3 +265,74 @@ describe('ConvergenceLoop', () => {
     await expect(badTurns.deliver('task')).rejects.toThrow(/maxTurns/);
   });
 });
+
+describe('ConvergenceLoop — raiseMaxTurns is always ceiling-capped', () => {
+  it('an escalation raiseMaxTurns cannot push past maxTurnsCeiling even without untilDelivered', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-loop-cap-'));
+    try {
+      let executorCalls = 0;
+      const loop = new ConvergenceLoop(
+        {
+          projectRoot: dir,
+          maxTurns: 1,
+          maxTurnsCeiling: 1, // operator's explicit --max-turns mirrored as hard cap
+          rungs: stubRungs(),
+          baselineCheck: false,
+          alwaysVerify: true,
+          // escalation-style directive: try to buy 5 more turns every iteration
+          onIteration: () => ({ raiseMaxTurns: 6 }),
+        },
+        async () => {
+          executorCalls++;
+          return 'no progress';
+        },
+        {
+          applier: async () => ({ filesWritten: [], rejected: [] }),
+          ladderRunner: () => ladderResult(0, false),
+        }
+      );
+      const result = await loop.deliver('x');
+      expect(executorCalls).toBe(1); // the raise was clamped to the ceiling
+      expect(result.turns).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('without an explicit cap (high ceiling), a raise still extends as designed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-loop-raise-'));
+    try {
+      let executorCalls = 0;
+      let raised = false;
+      const loop = new ConvergenceLoop(
+        {
+          projectRoot: dir,
+          maxTurns: 1,
+          maxTurnsCeiling: 10,
+          rungs: stubRungs(),
+          baselineCheck: false,
+          alwaysVerify: true,
+          onIteration: () => {
+            if (!raised) {
+              raised = true;
+              return { raiseMaxTurns: 2 };
+            }
+            return undefined;
+          },
+        },
+        async () => {
+          executorCalls++;
+          return 'no progress';
+        },
+        {
+          applier: async () => ({ filesWritten: [], rejected: [] }),
+          ladderRunner: () => ladderResult(0, false),
+        }
+      );
+      await loop.deliver('x');
+      expect(executorCalls).toBe(2); // raise honored up to the ceiling
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
