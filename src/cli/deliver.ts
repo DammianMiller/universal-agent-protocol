@@ -156,6 +156,7 @@ import { commitPushAndWatch } from '../delivery/ci-watcher.js';
 import type { DeployEnvironment } from '../delivery/ci-watcher.js';
 import { snapshotTree, restoreTree, disposeSnapshot } from '../delivery/snapshot.js';
 import { snapshotProtection } from '../delivery/spec-imports.js';
+import { listGateConfigFiles } from '../delivery/applier.js';
 import { OpenAICompatClient } from '../models/openai-compat-client.js';
 import { ModelPresets } from '../models/types.js';
 import type { ModelConfig } from '../models/types.js';
@@ -1325,10 +1326,20 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     criticFactory: (ex) => createModelCritic(agentic ? jsonBlindExecutor : ex),
     practiceProvider,
     protectTests: options.protectTests,
-    // When deliver authors its own acceptance gate, snapshot that script for
-    // runtime integrity so a run_bash overwrite to `exit 0` is caught+restored
-    // (applier already blocks write_file overwrites; security audit X1).
-    ...(needsSelfGate ? { extraProtectedPaths: ['.uap-deliver/verify.sh'] } : {}),
+    // Runtime-integrity snapshot set beyond the auto-detected tests/oracle:
+    //  - the self-authored gate script (X1), and
+    //  - existing gate-config + package/lockfiles (X5) — the applier blocks the
+    //    model WRITING these, but run_bash bypasses the applier, so snapshot +
+    //    restore any a gate run mutates (e.g. `npm pkg set scripts.test=…`).
+    // Only when protectTests is on (the integrity guard is gated on it).
+    ...(options.protectTests !== false
+      ? {
+          extraProtectedPaths: [
+            ...(needsSelfGate ? ['.uap-deliver/verify.sh'] : []),
+            ...listGateConfigFiles(projectRoot),
+          ],
+        }
+      : {}),
     guidanceProvider,
     untilDelivered,
     maxTurnsCeiling,

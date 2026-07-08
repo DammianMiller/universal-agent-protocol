@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.129.0 (2026-07-08)
+
+- fix(security): extend the runtime integrity snapshot to gate-config files (audit X5). The applier blocks the model WRITING package.json/tsconfig/vitest.config/etc., but run_bash bypasses the applier, so  could rig the gate uncaught. deliver now snapshots existing gate-config + package/lockfiles (new applier.listGateConfigFiles, bounded shallow scan skipping node_modules/.git) alongside the self-gate script; any a gate run mutates is restored and the turn discarded. Gated on --protect-tests (on by default).
+
 ## v1.128.0 (2026-07-08)
 
 - fix(security): four audit hardening changes. (1) Proxy binds **127.0.0.1 by default** (was 0.0.0.0 unauthenticated); optional shared secret PROXY_AUTH_TOKEN (X-Uap-Proxy-Token / Authorization: Bearer, constant-time compare, /health+/v1/models open) for shared-LAN-service use. (2) policy-gate hook FAILS CLOSED for the enforcement control surface: an op touching policy DB/enforcers/.uap.json/proxy-env/hook-scripts (or a bypass/relax flag) is BLOCKED whenever self-protect cannot run (no DB, no sqlite3, missing/errored enforcer, or not registered) — normal ops still fail open so a broken enforcer never wedges all work. (3) agentic run_bash is DISABLED unless kernel-contained (uap sandbox → UAP_SANDBOX_ACTIVE=1, auto-detected) or explicitly allowed (--allow-bash / UAP_DELIVER_ALLOW_BASH=1) — an unsandboxed shell isn't contained to the workdir. (4) CI now runs the Python security-enforcer suite (npm run test:enforcers, 65 tests) as a job in deploy-verify.yml, and uses vitest run (test:ci). NOTE for shared-LAN deployments: set PROXY_HOST=127.0.0.1 OR add PROXY_AUTH_TOKEN + update clients.
