@@ -161,6 +161,46 @@ export function isGateConfigBasename(base: string): boolean {
   return GATE_CONFIG_RES.some((re) => re.test(lower));
 }
 
+/** True when a basename is package.json / a lockfile / an npm rc (gate input). */
+export function isProtectedBasename(base: string): boolean {
+  return PROTECTED_BASENAMES.has(base.toLowerCase());
+}
+
+/**
+ * List EXISTING gate-config + package/lockfile paths under `projectRoot`
+ * (project-relative, POSIX), for the runtime integrity snapshot. The applier
+ * blocks the model WRITING these, but `run_bash` bypasses the applier — so the
+ * convergence loop snapshots the existing ones and restores any a gate run
+ * mutates, discarding that turn (security audit X5: e.g.
+ * `run_bash("npm pkg set scripts.test='exit 0'")` rigging the gate).
+ *
+ * Bounded shallow walk (depth ≤ maxDepth, skips SKIP dirs) — these files live at
+ * or near the root; a full-tree scan isn't worth the cost. Fail-soft: an
+ * unreadable dir contributes nothing.
+ */
+export function listGateConfigFiles(projectRoot: string, maxDepth = 2): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, depth: number): void => {
+    if (depth > maxDepth) return;
+    let entries: import('fs').Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        if (WALK_SKIP_SEGMENTS.has(e.name) || e.name.startsWith('.')) continue;
+        walk(join(dir, e.name), depth + 1);
+      } else if (e.isFile() && (isGateConfigBasename(e.name) || isProtectedBasename(e.name))) {
+        out.push(relative(projectRoot, join(dir, e.name)).split(sep).join('/'));
+      }
+    }
+  };
+  walk(projectRoot, 0);
+  return out;
+}
+
 /**
  * Reason a relative path must not be written by an autonomous executor, or null
  * when the write is allowed. Single source of truth for the segment / basename /

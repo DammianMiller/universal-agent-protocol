@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.129.0 (2026-07-08)
+
+- fix(security): extend the runtime integrity snapshot to gate-config files (audit X5). The applier blocks the model WRITING package.json/tsconfig/vitest.config/etc., but run_bash bypasses the applier, so `run_bash("npm pkg set scripts.test=exit 0")` could rig the gate uncaught. deliver now snapshots existing gate-config + package/lockfiles (new applier.listGateConfigFiles, bounded shallow scan skipping node_modules/.git) alongside the self-gate script; any a gate run mutates is restored and the turn discarded. Gated on --protect-tests (on by default).
+
+
 ## v1.128.3 (2026-07-08)
 
 - fix(delivery): snapshot follow-ups — secret exclusion, typed result, host-aware reaper

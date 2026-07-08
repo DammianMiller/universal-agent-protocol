@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, symlinkSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { applyFileBlocks, applyFileBlocksWithRollback } from '../../src/delivery/applier.js';
+import { applyFileBlocks, applyFileBlocksWithRollback, listGateConfigFiles } from '../../src/delivery/applier.js';
 
 describe('applier hardening', () => {
   let dir: string;
@@ -93,5 +93,35 @@ describe('applier hardening', () => {
     const r = applyFileBlocks('```file:.uap-deliver/verify.sh\n#!/usr/bin/env bash\nexit 0\n```', dir);
     expect(existsSync(join(dir, '.uap-deliver/verify.sh'))).toBe(false);
     expect(r.rejected.length).toBeGreaterThan(0);
+  });
+});
+
+describe('listGateConfigFiles (integrity snapshot set — security audit X5)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'gatecfg-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('enumerates existing gate-config + package/lockfiles, project-relative', () => {
+    writeFileSync(join(dir, 'package.json'), '{}');
+    writeFileSync(join(dir, 'package-lock.json'), '{}');
+    writeFileSync(join(dir, 'tsconfig.json'), '{}');
+    writeFileSync(join(dir, 'vitest.config.ts'), 'export default {}');
+    writeFileSync(join(dir, 'src.ts'), 'ok'); // not a gate config
+    const found = listGateConfigFiles(dir);
+    expect(found).toContain('package.json');
+    expect(found).toContain('package-lock.json');
+    expect(found).toContain('tsconfig.json');
+    expect(found).toContain('vitest.config.ts');
+    expect(found).not.toContain('src.ts');
+  });
+
+  it('skips node_modules/.git and only lists files that actually exist', () => {
+    mkdirSync(join(dir, 'node_modules'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules/package.json'), '{}'); // must be ignored
+    writeFileSync(join(dir, 'package.json'), '{}');
+    const found = listGateConfigFiles(dir);
+    expect(found).toEqual(['package.json']);
   });
 });
