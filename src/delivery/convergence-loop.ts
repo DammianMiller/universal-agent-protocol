@@ -984,12 +984,11 @@ export class ConvergenceLoop {
         }
       }
       if (typeof directive.raiseMaxTurns === 'number' && directive.raiseMaxTurns > maxTurns) {
-        // Under untilDelivered the ceiling is a HARD cap: an escalation
-        // controller's raiseMaxTurns cannot push the budget past it, so the
-        // "never an unbounded loop" guarantee holds even with --escalate.
-        maxTurns = untilDelivered
-          ? Math.max(maxTurns, Math.min(directive.raiseMaxTurns, maxTurnsCeiling))
-          : directive.raiseMaxTurns;
+        // The ceiling is ALWAYS a hard cap on escalation raises — with or
+        // without untilDelivered — so an operator's explicit --max-turns
+        // (which the CLI mirrors into the ceiling) cannot be exceeded, and
+        // the "never an unbounded loop" guarantee holds even with --escalate.
+        maxTurns = Math.max(maxTurns, Math.min(directive.raiseMaxTurns, maxTurnsCeiling));
       }
 
       // Persist-until-delivered: extend the budget one turn at a time while we

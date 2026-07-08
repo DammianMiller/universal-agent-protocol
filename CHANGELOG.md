@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.124.0 (2026-07-08)
+
+- fix(deliver): acceptance-judge churn breaker — the secondary judge (objective gates green) can reject only N consecutive turns per spec (UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT, default 2) before the gates win; epic mode now grades the epic GOAL (+criteria) instead of the full process prompt whose unverifiable instructions caused perpetual rejections.
+- fix(deliver): explicit --max-turns is a hard cap — the CLI records the option source, mirrors an explicit value into maxTurnsCeiling, and the loop now clamps escalation raiseMaxTurns to the ceiling ALWAYS (previously uncapped without untilDelivered), so neither default-on until-delivered nor auto-escalation can exceed an operator-set turn budget.
+
 ## v1.123.2 (2026-07-08)
 
 - fix(deliver): budget-split sub-epics are no longer dep-chained — later pieces run despite an earlier partial failure (each is a fresh session over accumulated repo state), and a green FINAL piece counts the parent epic as delivered (earlier pieces often fail gates only because the whole was not assembled yet).

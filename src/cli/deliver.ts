@@ -28,7 +28,7 @@ import { RoutingPresets, resolvePresetModel } from '../models/types.js';
 import type { TaskComplexity } from '../models/types.js';
 import { measureQueryComplexity } from '../utils/query-complexity.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
-import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
+import { runAcceptanceGate, formatAcceptanceReport, createAcceptanceChurnBreaker, type AcceptanceResult } from '../delivery/acceptance-judge.js';
 import { runExecutionGate } from '../delivery/execution-gate.js';
 import { runVisualGate, visualRuntimeNote } from '../delivery/visual-gate.js';
 import type { AcceptanceGate } from '../delivery/convergence-loop.js';
@@ -163,6 +163,10 @@ import { detectExecutionProfile } from '../models/execution-profiles.js';
 
 export interface DeliverOptions {
   maxTurns?: string;
+  /** True when --max-turns was passed on the command line (vs the commander
+   * default) — set by the CLI action via getOptionValueSource. An explicit
+   * value is a hard cap on until-delivered/escalation extensions. */
+  maxTurnsExplicit?: boolean;
   model?: string;
   /** `--routing <preset>`: complexity-tier routing. Classify the task and pick
    * the executor model for its complexity from the named routing preset's tier
@@ -536,6 +540,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   }
   if (untilDelivered && maxTurnsCeiling === undefined) {
     maxTurnsCeiling = DEFAULT_CLI_CEILING;
+  }
+  // An operator-supplied --max-turns is a HARD CAP: neither the default-on
+  // until-delivered extension nor an escalation tier's raiseMaxTurns may push
+  // past it (the loop clamps every extension to the ceiling). An explicit
+  // --ceiling still wins as the (higher) hard bound when both are given.
+  if (options.maxTurnsExplicit && maxTurns !== undefined && options.ceiling === undefined) {
+    maxTurnsCeiling = maxTurns;
+    if (!options.dryRun) {
+      console.log(chalk.dim(`  --max-turns ${maxTurns} set explicitly — hard cap (until-delivered/escalation cannot extend it)`));
+    }
   }
 
   let temperature: number | undefined;
@@ -1180,6 +1194,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // Phased missions re-point the judge at the current phase's goal — judging
   // phase 1 against the FULL mission would fail every phase by construction.
   let acceptanceSpec = instruction;
+  // Secondary-judge churn breaker: bounds consecutive judge rejections of
+  // objectively-green turns per spec (env UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT,
+  // default 2), after which the objective gates win. Primary mode is exempt.
+  const acceptanceChurnBreaker = createAcceptanceChurnBreaker(
+    Number(process.env.UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT ?? 2)
+  );
   const acceptanceGate: AcceptanceGate | undefined = options.acceptance && !skipJudgeForSimple
     ? async (root) => {
         // Primary mode: the only objective rung is the trivial bootstrap, and the
@@ -1213,7 +1233,22 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           executor: verdictExecutor,
           ...(visualNote ? { runtimeNote: visualNote } : {}),
         });
-        return resolveAcceptanceVerdict(r, acceptancePrimary);
+        const verdict = resolveAcceptanceVerdict(r, acceptancePrimary);
+        // Secondary mode only: this gate is reached exclusively on turns whose
+        // objective gates ALL passed, so a bounded number of consecutive judge
+        // rejections hands the verdict back to the gates instead of wedging.
+        if (!acceptancePrimary) {
+          const checked = acceptanceChurnBreaker.check(acceptanceSpec, verdict);
+          if (checked.overridden) {
+            console.log(
+              chalk.yellow(
+                '  ⚖ acceptance: judge rejected consecutive objectively-green turns — accepting on gates (raise UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT to let the judge argue longer)'
+              )
+            );
+          }
+          return checked;
+        }
+        return verdict;
       }
     : undefined;
 
@@ -1681,7 +1716,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           `EPIC \u2014 ${epic.title}:\n${epic.goal}${priors}${retry}\n\n` +
           'Deliver ONLY this epic. All gates must pass at the end.';
         console.log(chalk.bold(`\u25b6 epic ${epic.id} (attempt ${ctx.attempt}): ${epic.title}`));
-        acceptanceSpec = scoped; // the in-loop acceptance judge grades THIS epic
+        // Grade the epic's DELIVERABLE, not the process prompt: the scoped
+        // prompt carries process instructions ("read X first"), prior-epic
+        // summaries, and retry feedback — none verifiable from code, so a
+        // small judge rejects objectively-green turns against them forever.
+        acceptanceSpec =
+          `EPIC — ${epic.title}:\n${epic.goal}` +
+          (epic.criteria?.length ? `\nAcceptance criteria:\n${epic.criteria.map((c) => `- ${c}`).join('\n')}` : '');
         const epicTask = await openDeliveryTask(`${epic.title} \u2014 ${epic.goal.slice(0, 120)}`, projectRoot, missionTask?.id);
         const loop = new ConvergenceLoop(
           { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onIteration: makeIterationHook() },

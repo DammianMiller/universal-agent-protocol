@@ -227,3 +227,49 @@ export function formatAcceptanceReport(result: AcceptanceResult): string {
   const lines = result.criteria.map((c) => `  [${c.met ? 'MET ' : 'MISS'}] ${c.requirement}${c.met ? '' : ` — ${c.reason}`}`);
   return [head, ...lines].join('\n');
 }
+
+/**
+ * Churn breaker for the SECONDARY acceptance judge (objective gates exist and
+ * passed; the judge only advises). Small local judges reject objectively-green
+ * turns indefinitely when the spec contains process-shaped criteria they can't
+ * verify from code ("read the files first", prior-attempt feedback) — wedging
+ * the loop at 100% gates. This bounds consecutive judge flips per spec: after
+ * `limit` consecutive rejections of green turns, the objective gates win.
+ *
+ * NOT for primary mode — there the judge IS the convergence target and the
+ * loop's stagnation guard provides the bound.
+ */
+export function createAcceptanceChurnBreaker(limit: number): {
+  check(
+    spec: string,
+    verdict: { passed: boolean; feedback: string; score?: number }
+  ): { passed: boolean; feedback: string; score?: number; overridden?: boolean };
+} {
+  const cap = Math.max(1, Math.floor(limit));
+  let flips = 0;
+  let currentSpec: string | undefined;
+  return {
+    check(spec, verdict) {
+      if (currentSpec !== spec) {
+        currentSpec = spec;
+        flips = 0;
+      }
+      if (verdict.passed) {
+        flips = 0;
+        return verdict;
+      }
+      flips++;
+      if (flips >= cap) {
+        return {
+          passed: true,
+          overridden: true,
+          score: verdict.score,
+          feedback:
+            `accepted on objective gates after ${flips} consecutive acceptance-judge rejections of ` +
+            `objectively-green turns; last judge feedback (advisory): ${verdict.feedback.slice(0, 300)}`,
+        };
+      }
+      return verdict;
+    },
+  };
+}

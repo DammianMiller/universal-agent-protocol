@@ -6,6 +6,7 @@ import {
   runAcceptanceGate,
   gatherEvidence,
   extractJsonObject,
+  createAcceptanceChurnBreaker,
   formatAcceptanceReport,
 } from '../../src/delivery/acceptance-judge.js';
 
@@ -99,5 +100,38 @@ describe('runAcceptanceGate', () => {
     expect(r.passed).toBe(true);
     expect(r.parseError).toMatch(/no source evidence/);
     rmSync(empty, { recursive: true, force: true });
+  });
+});
+
+describe('createAcceptanceChurnBreaker', () => {
+  const reject = { passed: false, feedback: 'unverifiable gap' };
+  const accept = { passed: true, feedback: '' };
+
+  it('lets the judge reject up to limit-1 times, then hands the verdict to the gates', () => {
+    const b = createAcceptanceChurnBreaker(2);
+    expect(b.check('spec', reject).passed).toBe(false); // flip 1: judge stands
+    const second = b.check('spec', reject); // flip 2: breaker fires
+    expect(second.passed).toBe(true);
+    expect(second.overridden).toBe(true);
+    expect(second.feedback).toContain('advisory');
+  });
+
+  it('a passing verdict resets the consecutive-flip counter', () => {
+    const b = createAcceptanceChurnBreaker(2);
+    expect(b.check('spec', reject).passed).toBe(false);
+    expect(b.check('spec', accept).passed).toBe(true);
+    expect(b.check('spec', reject).passed).toBe(false); // counter restarted
+  });
+
+  it('a spec change (new phase/epic) resets the counter', () => {
+    const b = createAcceptanceChurnBreaker(2);
+    expect(b.check('epic-1', reject).passed).toBe(false);
+    expect(b.check('epic-2', reject).passed).toBe(false); // fresh spec, flip 1
+    expect(b.check('epic-2', reject).overridden).toBe(true);
+  });
+
+  it('clamps a nonsensical limit to at least 1', () => {
+    const b = createAcceptanceChurnBreaker(0);
+    expect(b.check('spec', reject).overridden).toBe(true); // fires immediately
   });
 });

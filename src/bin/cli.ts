@@ -604,7 +604,10 @@ program
   .option('--ci-timeout <minutes>', 'CI watch budget in minutes (1-120, default 20)')
   .option('--dry-run', 'Show detected gates and plan without calling the model')
   .option('--json', 'Emit JSON result')
-  .action(async (instructionParts: string[] | undefined, options) => {
+  .action(async (instructionParts: string[] | undefined, options, command) => {
+    // Explicit --max-turns is a hard cap downstream; the commander default
+    // ('5') is indistinguishable by value, so record the option's source.
+    options.maxTurnsExplicit = command.getOptionValueSource?.('maxTurns') === 'cli';
     const cmd = await lazy.deliver();
     await cmd((instructionParts ?? []).join(' '), options);
   });
