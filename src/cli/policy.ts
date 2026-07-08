@@ -16,10 +16,24 @@ import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { getPolicyToolRegistry } from '../policies/policy-tools.js';
 import { convertPolicyToClaude } from '../policies/convert-policy-to-claude.js';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-const POLICY_DIR = join(process.cwd(), 'src', 'policies', 'schemas', 'policies');
-const ENFORCER_DIR = join(process.cwd(), 'src', 'policies', 'enforcers');
+// Resolve built-in schema/enforcer dirs relative to the INSTALLED PACKAGE
+// (dist/cli -> package root -> src/policies/...), falling back to cwd for
+// in-repo dev. A plain process.cwd() base found ZERO built-ins when `uap` runs
+// from any project other than this repo (so `uap policy install`/`matrix` were
+// silently empty when installed globally).
+const __dirname = dirname(fileURLToPath(import.meta.url));
+function resolvePolicyDir(sub: string): string {
+  const candidates = [
+    join(__dirname, '..', '..', 'src', 'policies', sub), // dist/cli -> pkg root
+    join(process.cwd(), 'src', 'policies', sub), // running inside this repo
+  ];
+  return candidates.find((c) => existsSync(c)) ?? candidates[0];
+}
+const POLICY_DIR = resolvePolicyDir('schemas/policies');
+const ENFORCER_DIR = resolvePolicyDir('enforcers');
 
 /**
  * If an enforcer Python file exists alongside the installed policy (same
