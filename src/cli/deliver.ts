@@ -1789,11 +1789,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   let baselineGateScore = 0;
   if (keepBest) {
     baselineGateScore = runLadder(fastRungs, projectRoot).score;
-    regressSnapshot = snapshotTree(projectRoot);
-    if (regressSnapshot) {
+    const snapResult = snapshotTree(projectRoot);
+    if (snapResult.ok) {
+      regressSnapshot = snapResult.path;
       console.log(chalk.dim(`  no-regress: baseline gate score ${baselineGateScore.toFixed(2)} (snapshot taken)`));
     } else {
-      console.log(chalk.yellow('  no-regress: snapshot unavailable — rollback disabled for this run'));
+      const label = snapResult.reason === 'size-cap' ? 'snapshot skipped' : 'snapshot failed';
+      console.log(chalk.yellow(`  no-regress: ${label} — ${snapResult.detail}; rollback disabled for this run`));
     }
   }
 

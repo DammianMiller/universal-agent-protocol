@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.128.3 (2026-07-08)
+
+- fix(delivery): snapshot follow-ups — secret exclusion, typed result, host-aware reaper
+- ci: complete the enforcer job's Python deps (fastapi, uvicorn)
+- ci: install httpx+openai for the Python enforcer job (red since it landed)
+
+
 ## v1.128.2 (2026-07-08)
 
 - fix(policies): schema-diff-gate self-deadlock + marker table/timezone; delivery-enforcement fall-through returns

@@ -145,11 +145,19 @@ The pre-run snapshot lands on real disk under `~/.cache/uap/snapshots`
 (`UAP_SNAPSHOT_DIR` overrides; absolute paths only) — never `/tmp`, which is
 RAM-backed on many Linux systems. Derived directories (`.git`,
 `node_modules`, `target`, `.venv`, `dist`, `build`, …) are neither
-snapshotted nor touched by a rollback, at any depth. Trees larger than
-`UAP_SNAPSHOT_MAX_MB` (default 4096) skip the snapshot and the run proceeds
-with rollback disabled. Snapshots orphaned by killed runs are reaped
-automatically on the next `--keep-best` run; a snapshot whose restore failed
-is preserved and its path printed.
+snapshotted nor touched by a rollback, at any depth. Secret-bearing files
+(`.env*`, `.npmrc`, `.netrc`, `*.pem`/`*.key`/`*.p12`/`*.pfx`, `id_rsa` &
+friends) follow the same symmetric contract: they are never copied into
+snapshot storage, and a rollback never reverts or deletes them — even inside
+directories created after the snapshot. Committed env templates
+(`.env.example`/`.sample`/`.template`/`.dist`) are treated as source and roll
+back normally. Trees larger
+than `UAP_SNAPSHOT_MAX_MB` (default 4096) skip the snapshot and the run
+proceeds with rollback disabled. Snapshots orphaned by killed runs are reaped
+automatically on the next `--keep-best` run (snapshots created on another
+host or in a container are judged only by a 7-day age backstop, never by
+local pid liveness); a snapshot whose restore failed is preserved and its
+path printed.
 
 ---
 
