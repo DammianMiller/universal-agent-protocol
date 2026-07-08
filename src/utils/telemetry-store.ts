@@ -55,7 +55,12 @@ function openStore(cwd: string): Database.Database | null {
     // repo (coordination/tasks/analytics).
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
-    db.pragma('busy_timeout = 10000');
+    // 2s (not 10s): these are best-effort telemetry writes on the mcp-router /
+    // executor HOT PATH (per-tool-call compression + event inserts). Under lock
+    // contention a dropped sample is strictly better than a multi-second
+    // synchronous stall of the Node event loop, which would block all concurrent
+    // tool calls. Telemetry must never break a hot path.
+    db.pragma('busy_timeout = 2000');
     db.exec(`
       CREATE TABLE IF NOT EXISTS compression_stats (
         tool TEXT PRIMARY KEY,

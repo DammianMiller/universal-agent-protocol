@@ -99,7 +99,6 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
   // the poller (fresh clients still get a recent-history burst on connect).
   let lastEventId = (readRecentEvents(cwd, 1)[0]?.id) ?? 0;
   const eventPoller = setInterval(() => {
-    if (sseClients.size === 0) return;
     let fresh;
     try {
       fresh = readEventsSince(cwd, lastEventId, 200);
@@ -107,7 +106,13 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
       return;
     }
     if (!fresh.length) return;
+    // Advance the watermark UNCONDITIONALLY (even with no clients) so it never
+    // freezes at the server-start max. A frozen watermark makes the first client
+    // that connects after an idle period receive the connect-burst AND a poller
+    // resend of the same rows. Advancing here keeps the poller strictly ahead of
+    // the burst; the client-side id-dedup covers the residual one-tick window.
     lastEventId = fresh[fresh.length - 1].id;
+    if (sseClients.size === 0) return;
     for (const event of fresh) {
       const data = `data: ${JSON.stringify(event)}\n\n`;
       for (const client of sseClients) {
