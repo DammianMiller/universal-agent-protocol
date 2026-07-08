@@ -118,7 +118,8 @@ export const ModelPresets: Record<string, ModelConfig> = {
     costPer1MInput: 0,
     costPer1MOutput: 0,
     capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
-    modelContextBudget: 131072,
+    // 2026-07-08: per-rail serving context (llama --parallel 2 over ctx 360k = 180k/rail).
+    modelContextBudget: 180000,
   },
   'gpt-5.4': {
     id: 'gpt-5.4',
@@ -197,7 +198,8 @@ export const ModelPresets: Record<string, ModelConfig> = {
     costPer1MInput: 0,
     costPer1MOutput: 0,
     capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
-    modelContextBudget: 131072,
+    // 2026-07-08: per-rail serving context (llama --parallel 2 over ctx 360k = 180k/rail).
+    modelContextBudget: 180000,
   },
 };
 

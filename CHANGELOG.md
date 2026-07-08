@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.123.0 (2026-07-08)
+
+- feat(deliver): context auto-size — epics/sessions sized to the serving rail (on by default). Session token budget resolves env → `.uap.json` deliver.sessionTokenBudget → model preset `modelContextBudget` (qwen presets → 180000, the 180k/rail llama serving window), × 0.7 working fraction (stays under the proxy prune threshold). Epic planner is told the per-session budget; the agentic executor hard-stops before an over-budget round (`[context-budget]` marker); the epic controller re-plans a budget-exhausted epic into sub-epics (one level). Epics now auto-enable for ANY complex mission (was: complex AND ≥1200 chars). Disable: `UAP_DELIVER_AUTOSIZE=0` / `deliver.autoSizeEpics=false`.
+
 ## v1.122.1 (2026-07-08)
 
 - fix(dashboard): address review — advance SSE watermark unconditionally + 2s telemetry busy_timeout
