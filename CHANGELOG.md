@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.123.2 (2026-07-08)
+
+- fix(deliver): budget-split sub-epics are no longer dep-chained — later pieces run despite an earlier partial failure (each is a fresh session over accumulated repo state), and a green FINAL piece counts the parent epic as delivered (earlier pieces often fail gates only because the whole was not assembled yet).
+
 ## v1.123.1 (2026-07-08)
 
 - fix(deliver): propagate `[context-budget]` to the epic split path. The epic runner's failure summary is goal-based, so the executor's budget marker never reached the controller's split check (found in live verification; unit tests stubbed the boundary). ConvergenceLoop now tags `IterationRecord.budgetStopped` and the epic runner appends the marker to failed-run summaries when any turn was budget-stopped.
