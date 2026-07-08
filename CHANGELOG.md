@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.129.2 (2026-07-08)
+
+- fix(dashboard): record telemetry on the streaming path + configurable refresh interval
+- fix(models): point qwen preset endpoints at 127.0.0.1:4000 (loopback)
+
+
 ## v1.129.1 (2026-07-08)
 
 - fix(models): point qwen35-a3b/qwen36-a3b preset endpoints at 127.0.0.1:4000 (were 192.168.1.165:4000). After the proxy was bound loopback-only, the LAN-IP endpoint refused connections, so uap deliver/agentic tooling could not reach the model backend and sessions spiralled into backend-debugging loops. All consumers are on-host; loopback is correct.

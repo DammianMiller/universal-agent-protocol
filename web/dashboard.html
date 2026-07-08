@@ -629,6 +629,9 @@
       // page is opened without the server substitution (mutations then 401).
       const DASHBOARD_TOKEN = '__UAP_DASHBOARD_TOKEN__'.startsWith('__UAP') ? '' : '__UAP_DASHBOARD_TOKEN__';
       const MUTATION_HEADERS = { 'X-Uap-Dashboard-Token': DASHBOARD_TOKEN };
+      // Server-injected push cadence (uap dash serve --refresh); the fallback
+      // poll below matches it. 2000 when opened without server substitution.
+      const REFRESH_MS = Number('__UAP_DASH_REFRESH_MS__') > 0 ? Number('__UAP_DASH_REFRESH_MS__') : 2000;
       let ws = null;
       let reconnectTimer = null;
       let reconnectDelay = 1000;
@@ -1281,7 +1284,7 @@
       setInterval(async()=>{
         if(ws&&ws.readyState===WebSocket.OPEN)return;
         try{const r=await fetch(API_URL+'/api/dashboard');if(!r.ok)return;const d=await r.json();if(d)render(d);document.getElementById('ws-status').className='status-dot polling';document.getElementById('refresh-info').textContent='Polling - '+new Date().toLocaleTimeString();document.title='UAP Dashboard - Polling';}catch{}
-      }, 2000);
+      }, REFRESH_MS);
 
       // Resize: re-init charts
       let resizeT;
