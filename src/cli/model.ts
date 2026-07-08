@@ -25,7 +25,7 @@ import { AgentContextConfig, MultiModelSchema } from '../types/config.js';
 
 // Config loading delegated to shared utility
 import { loadUapConfig, loadUapConfigRaw, findUapConfigPath, modifyUapConfig } from '../utils/config-loader.js';
-import { upsertProxyEnvVars } from './systemd-services.js';
+import { upsertProxyEnvVars, readProxyEnvVar } from './systemd-services.js';
 import { profileForModelId, clearToolCallProfilePin } from '../models/profile-map.js';
 const loadConfig = () => loadUapConfig();
 
@@ -580,7 +580,10 @@ function routingListCommand(): void {
 /**
  * Routing use command — apply a named routing option to .uap.json (multiModel).
  */
-async function routingUseCommand(id: string, options: { save?: boolean }): Promise<void> {
+async function routingUseCommand(
+  id: string,
+  options: { save?: boolean; allowPassthrough?: boolean }
+): Promise<void> {
   const preset = RoutingPresets[id];
   if (!preset) {
     console.error(
@@ -643,16 +646,39 @@ async function routingUseCommand(id: string, options: { save?: boolean }): Promi
       // ANTHROPIC_PASSTHROUGH_MODELS and silently serves cloud tiers on qwen.
       try {
         const passthrough = passthroughModelsForPreset(preset);
-        const envPath = upsertProxyEnvVars({ ANTHROPIC_PASSTHROUGH_MODELS: passthrough });
-        const desc =
-          passthrough === '__local_only__'
-            ? 'all models served locally (no Anthropic passthrough)'
-            : 'cloud tiers (planner/reviewer) pass through to the Anthropic API';
-        console.log(chalk.green(`✓ Proxy passthrough wired in ${envPath}`));
-        console.log(chalk.dim(`  ${desc}`));
-        console.log(
-          chalk.dim('  Restart to apply: systemctl --user restart uap-anthropic-proxy.service')
-        );
+        // Honor an operator LOCAL-ONLY pin. `ANTHROPIC_PASSTHROUGH_MODELS=__local_only__`
+        // is a deliberate lockdown of api.anthropic.com routing; routing to a
+        // cloud-inclusive preset must NOT silently clear it (that re-enabled cloud
+        // passthrough repeatedly against policy). Preserve the pin and tell the
+        // operator how to override, unless they explicitly opt in.
+        const pinnedLocalOnly = readProxyEnvVar('ANTHROPIC_PASSTHROUGH_MODELS') === '__local_only__';
+        const allowPassthrough =
+          process.env.UAP_ALLOW_PROXY_PASSTHROUGH === '1' || options.allowPassthrough === true;
+        if (pinnedLocalOnly && passthrough !== '__local_only__' && !allowPassthrough) {
+          console.log(
+            chalk.yellow(
+              '⚠ Proxy is pinned LOCAL-ONLY (ANTHROPIC_PASSTHROUGH_MODELS=__local_only__) — keeping it.'
+            )
+          );
+          console.log(
+            chalk.dim(
+              `  This preset would route cloud tiers to Anthropic; not enabling it against the pin.\n` +
+                `  To allow passthrough: re-run with --allow-passthrough (or UAP_ALLOW_PROXY_PASSTHROUGH=1),\n` +
+                `  or remove the pin (env file + the systemd Environment= line if present).`
+            )
+          );
+        } else {
+          const envPath = upsertProxyEnvVars({ ANTHROPIC_PASSTHROUGH_MODELS: passthrough });
+          const desc =
+            passthrough === '__local_only__'
+              ? 'all models served locally (no Anthropic passthrough)'
+              : 'cloud tiers (planner/reviewer) pass through to the Anthropic API';
+          console.log(chalk.green(`✓ Proxy passthrough wired in ${envPath}`));
+          console.log(chalk.dim(`  ${desc}`));
+          console.log(
+            chalk.dim('  Restart to apply: systemctl --user restart uap-anthropic-proxy.service')
+          );
+        }
       } catch (err) {
         console.warn(
           chalk.yellow(`\n⚠ Saved routing, but could not update proxy env: ${(err as Error).message}`)
@@ -763,6 +789,7 @@ export function registerModelCommands(program: Command): void {
     .command('use <id>')
     .description('Apply a routing option (writes multiModel to .uap.json)')
     .option('--save', 'Persist to .uap.json (otherwise preview only)')
+    .option('--allow-passthrough', 'Allow enabling Anthropic cloud passthrough even if the proxy is pinned __local_only__ (operator override)')
     .action(routingUseCommand);
   routing
     .command('on')
