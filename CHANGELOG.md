@@ -1,8 +1,16 @@
 # Changelog
 
+## v1.130.1 (2026-07-08)
+
+- feat(policies): pay2u policy pack (pay2u-architecture-rules/quick-reference/enforcement-hooks) as an opt-in advisory example pack, selectable in the setup policy matrix and installable individually; new `uap policy matrix` lists ALL policies (built-in + installed) with status/level/stage/source and the toggle/adjust commands. Also fixed 3 pre-existing built-in schemas with out-of-enum categories (adr-guard/merge-deploy-monitor-verify/ship-loop-gate) that crash getAllPolicies() once installed; a new test validates the whole schema set.
+
+
 ## v1.130.0 (2026-07-08)
 
-- feat(policies): pay2u policy pack + policy matrix. Ports pay2u's 3 project policies (architecture invariants, cluster quick-reference, enforcement-hooks summary) into the built-in set as an opt-in advisory pack (pay2u-architecture-rules/quick-reference/enforcement-hooks), selectable in the setup policy matrix and installable individually. New  lists ALL policies (built-in + installed) with status/level/stage/source and the toggle/adjust commands. Also fixed 3 pre-existing built-in schemas with out-of-enum categories (adr-guard/merge-deploy-monitor-verify/ship-loop-gate) that would crash getAllPolicies() if installed; a new test validates the whole schema set.
+- test(dashboard): fix SSE partial-frame parsing + load-tolerant timeouts
+- feat(dashboard): task board shows epic/story groupings and hierarchy
+- fix(proxy): enforce local-only passthrough default in the ExecStart script
+
 
 ## v1.129.5 (2026-07-08)
 

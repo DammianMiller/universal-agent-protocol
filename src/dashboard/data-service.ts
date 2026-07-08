@@ -485,6 +485,14 @@ export interface TaskItem {
   priority: number;
   assignee: string | null;
   updatedAt: string;
+  parentId: string | null;
+  /** Direct parent's title, when known — breadcrumbs beat opaque ids. */
+  parentTitle: string | null;
+  /** Root ancestor (epic/mission) this task belongs to; own id when a root. */
+  groupId: string;
+  groupTitle: string;
+  /** Distance from the group root (0 = root itself) — drives board indenting. */
+  depth: number;
 }
 
 export interface TaskData {
@@ -1654,7 +1662,7 @@ export function getModelData(cwd: string): ModelData {
   };
 }
 
-function getTaskData(cwd: string): TaskData {
+export function getTaskData(cwd: string): TaskData {
   const taskDbPath = join(cwd, '.uap/tasks/tasks.db');
   const result: TaskData = { total: 0, done: 0, inProgress: 0, blocked: 0, open: 0, items: [] };
 
@@ -1682,7 +1690,7 @@ function getTaskData(cwd: string): TaskData {
       // Fetch individual task items for kanban board (most recent 50)
       const rows = db
         .prepare(
-          `SELECT id, title, type, status, priority, assignee, updated_at
+          `SELECT id, title, type, status, priority, assignee, updated_at, parent_id
          FROM tasks
          WHERE status NOT IN ('done', 'wont_do')
          ORDER BY priority ASC, updated_at DESC
@@ -1696,12 +1704,13 @@ function getTaskData(cwd: string): TaskData {
         priority: number;
         assignee: string | null;
         updated_at: string;
+        parent_id: string | null;
       }>;
 
       // Also fetch recent done/wont_do (last 10)
       const doneRows = db
         .prepare(
-          `SELECT id, title, type, status, priority, assignee, updated_at
+          `SELECT id, title, type, status, priority, assignee, updated_at, parent_id
          FROM tasks
          WHERE status IN ('done', 'wont_do')
          ORDER BY updated_at DESC
@@ -1715,7 +1724,43 @@ function getTaskData(cwd: string): TaskData {
         priority: number;
         assignee: string | null;
         updated_at: string;
+        parent_id: string | null;
       }>;
+
+      // Resolve each item's group (root ancestor) so the board can cluster
+      // epic/story/task families even when the ancestor itself is outside the
+      // 50-item window. The linkage map is cheap (three small columns); it is
+      // capped newest-first so on very large DBs it truncates the same end of
+      // history the item windows ignore — never the tasks on the board.
+      const linkage = new Map<string, { title: string; parent: string | null }>();
+      for (const l of db
+        .prepare('SELECT id, title, parent_id FROM tasks ORDER BY rowid DESC LIMIT 5000')
+        .all() as Array<{ id: string; title: string; parent_id: string | null }>) {
+        linkage.set(l.id, { title: l.title, parent: l.parent_id });
+      }
+      const resolveGroup = (
+        id: string
+      ): { groupId: string; groupTitle: string; parentTitle: string | null; depth: number } => {
+        let cur = id;
+        let depth = 0;
+        const seen = new Set<string>([cur]);
+        for (;;) {
+          const node = linkage.get(cur);
+          const parent = node?.parent;
+          // Stop at a root, a dangling parent_id, or a cycle.
+          if (!parent || !linkage.has(parent) || seen.has(parent)) break;
+          seen.add(parent);
+          cur = parent;
+          depth++;
+        }
+        const direct = linkage.get(id)?.parent;
+        return {
+          groupId: cur,
+          groupTitle: linkage.get(cur)?.title ?? cur,
+          parentTitle: (direct && linkage.get(direct)?.title) || null,
+          depth,
+        };
+      };
 
       result.items = [...rows, ...doneRows].map((r) => ({
         id: r.id,
@@ -1725,6 +1770,8 @@ function getTaskData(cwd: string): TaskData {
         priority: r.priority,
         assignee: r.assignee,
         updatedAt: r.updated_at,
+        parentId: r.parent_id,
+        ...resolveGroup(r.id),
       }));
 
       db.close();
