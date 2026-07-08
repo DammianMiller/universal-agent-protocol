@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.127.1 (2026-07-08)
+
+- fix(delivery): harden --keep-best snapshots (tmpfs exhaustion, leaks, restore safety)
+- docs: reverse-engineered documentation set + security audit report + fixes sync
+- fix(security): authenticate dashboard policy mutations (audit D1 — keystone)
+
+
 ## v1.127.0 (2026-07-08)
 
 - fix(security): authenticate dashboard policy mutations (audit D1 — the keystone). POST /api/policy/:id/{toggle,stage,level} disable+persist security controls (delivery-enforcement, self-protect) but had NO auth and CORS , so any LAN host (--host 0.0.0.0) or any web page the operator visited could neutralize enforcement — undoing the v1.125.0 self-protect registration with a single request. Now every mutation requires an unguessable per-session token in the X-Uap-Dashboard-Token header (override UAP_DASHBOARD_TOKEN, else random per boot, printed to the operator console). The same-origin dashboard UI gets it via server-side injection into the served page; a cross-origin page cannot read it and cannot forge the custom header on a simple request. Read routes stay open (localhost). Also (D1b) the /vendor/* static guard now uses a trailing-separator compare so sibling  dirs are not served.
