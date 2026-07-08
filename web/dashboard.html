@@ -623,6 +623,12 @@
     <script>
       const WS_URL = `ws://${location.host}`;
       const API_URL = `http://${location.host}`;
+      // Per-session token for policy mutations (security audit D1). The server
+      // injects it into this page (same-origin only); it is sent as a custom
+      // header so a cross-site request can't forge it. Falls back to '' when the
+      // page is opened without the server substitution (mutations then 401).
+      const DASHBOARD_TOKEN = '__UAP_DASHBOARD_TOKEN__'.startsWith('__UAP') ? '' : '__UAP_DASHBOARD_TOKEN__';
+      const MUTATION_HEADERS = { 'X-Uap-Dashboard-Token': DASHBOARD_TOKEN };
       let ws = null;
       let reconnectTimer = null;
       let reconnectDelay = 1000;
@@ -1166,9 +1172,9 @@
       }
 
       // ── API Actions ──
-      async function togglePolicy(id) { try { const r=await fetch(`${API_URL}/api/policy/${id}/toggle`,{method:'POST'}); if(!r.ok)throw new Error(); const d=await r.json(); showToast(`Policy ${d.isActive?'enabled':'disabled'}`,'success'); } catch { showToast('Failed to toggle policy','error'); } }
-      async function setStage(id,stage) { try { const r=await fetch(`${API_URL}/api/policy/${id}/stage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage})}); if(!r.ok)throw new Error(); showToast(`Stage: ${stage}`,'success'); } catch { showToast('Failed to set stage','error'); } }
-      async function setLevel(id,level) { try { const r=await fetch(`${API_URL}/api/policy/${id}/level`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({level})}); if(!r.ok)throw new Error(); showToast(`Level: ${level}`,'success'); } catch { showToast('Failed to set level','error'); } }
+      async function togglePolicy(id) { try { const r=await fetch(`${API_URL}/api/policy/${id}/toggle`,{method:'POST',headers:MUTATION_HEADERS}); if(!r.ok)throw new Error(); const d=await r.json(); showToast(`Policy ${d.isActive?'enabled':'disabled'}`,'success'); } catch { showToast('Failed to toggle policy','error'); } }
+      async function setStage(id,stage) { try { const r=await fetch(`${API_URL}/api/policy/${id}/stage`,{method:'POST',headers:{'Content-Type':'application/json',...MUTATION_HEADERS},body:JSON.stringify({stage})}); if(!r.ok)throw new Error(); showToast(`Stage: ${stage}`,'success'); } catch { showToast('Failed to set stage','error'); } }
+      async function setLevel(id,level) { try { const r=await fetch(`${API_URL}/api/policy/${id}/level`,{method:'POST',headers:{'Content-Type':'application/json',...MUTATION_HEADERS},body:JSON.stringify({level})}); if(!r.ok)throw new Error(); showToast(`Level: ${level}`,'success'); } catch { showToast('Failed to set level','error'); } }
 
       // ── Kanban ──
       const TYPE_ICONS = {task:'\u25C6',bug:'\uD83D\uDC1B',feature:'\u2728',epic:'\uD83C\uDFAF',chore:'\uD83D\uDD27',story:'\uD83D\uDCD6'};

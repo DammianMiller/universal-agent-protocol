@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.127.0 (2026-07-08)
+
+- fix(security): authenticate dashboard policy mutations (audit D1 — the keystone). POST /api/policy/:id/{toggle,stage,level} disable+persist security controls (delivery-enforcement, self-protect) but had NO auth and CORS , so any LAN host (--host 0.0.0.0) or any web page the operator visited could neutralize enforcement — undoing the v1.125.0 self-protect registration with a single request. Now every mutation requires an unguessable per-session token in the X-Uap-Dashboard-Token header (override UAP_DASHBOARD_TOKEN, else random per boot, printed to the operator console). The same-origin dashboard UI gets it via server-side injection into the served page; a cross-origin page cannot read it and cannot forge the custom header on a simple request. Read routes stay open (localhost). Also (D1b) the /vendor/* static guard now uses a trailing-separator compare so sibling  dirs are not served.
+
 ## v1.126.0 (2026-07-08)
 
 - fix(security): deliver-plane hardening from the static audit. (X2/X2b) The agentic executor's run_bash and the self-gate authoring/validation spawns now use the shared, secret-stripped env (previously ran with the full host env → a prompt-injected task could exfiltrate provider/host creds); the strip regex is broadened past API_KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL to also catch SSH_AUTH_SOCK, DATABASE_URL/*_URI, *_PRIVATE_KEY, KUBECONFIG, SESSION/COOKIE, DSN, SA_KEY. Secret-strip is now one module (was duplicated in verifier-ladder + execution-gate). (X1) .uap-deliver is a protected applier segment and the self-authored gate script is added to the runtime integrity snapshot, so a model can no longer overwrite its own acceptance gate to exit 0 (via write_file OR run_bash). Env-strip is defense-in-depth, not containment — file-based creds and egress still require uap sandbox.
