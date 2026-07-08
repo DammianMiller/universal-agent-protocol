@@ -342,6 +342,10 @@
       .kanban-col-header.done { border-left: 3px solid var(--green); color: var(--green); }
       .kanban-col-header.wont_do { border-left: 3px solid var(--fg3); color: var(--fg3); }
       .kanban-cards { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 40px; }
+      .kanban-group { font-size: 10px; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 4px 0; border-top: 1px dashed var(--border); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .kanban-group:first-child { border-top: none; margin-top: 0; }
+      .kanban-card.card-child { margin-left: 8px; border-left: 2px solid var(--border); }
+      .kanban-card .card-crumb { color: var(--fg3); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .kanban-card {
         background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
         padding: 8px 10px; cursor: default;
@@ -1247,23 +1251,66 @@
 
       function renderKanban(tasks) {
         const items=tasks.items||[], cols={open:[],in_progress:[],blocked:[],done:[],wont_do:[]}, ncm=new Map();
-        for (const i of items) { if(cols[i.status]) cols[i.status].push(i); ncm.set(i.id,i.status); }
+        // A "family" is a group with real hierarchy anywhere on the board \u2014
+        // those get headers + indenting; standalone tasks keep the flat look.
+        const groupCounts=new Map(), families=new Set();
+        for (const i of items) {
+          if(cols[i.status]) cols[i.status].push(i); ncm.set(i.id,i.status);
+          const g=i.groupId||i.id; groupCounts.set(g,(groupCounts.get(g)||0)+1);
+          if((i.depth||0)>0) families.add(g);
+        }
+        for (const [g,n] of groupCounts) if(n>1) families.add(g);
         setText('kb-open-count',cols.open.length); setText('kb-progress-count',cols.in_progress.length);
         setText('kb-blocked-count',cols.blocked.length); setText('kb-done-count',cols.done.length); setText('kb-wontdo-count',cols.wont_do.length);
-        renderCol('kb-open',cols.open,ncm); renderCol('kb-progress',cols.in_progress,ncm); renderCol('kb-blocked',cols.blocked,ncm); renderCol('kb-done',cols.done,ncm); renderCol('kb-wontdo',cols.wont_do,ncm);
+        renderCol('kb-open',cols.open,ncm,families); renderCol('kb-progress',cols.in_progress,ncm,families); renderCol('kb-blocked',cols.blocked,ncm,families); renderCol('kb-done',cols.done,ncm,families); renderCol('kb-wontdo',cols.wont_do,ncm,families);
         const p=document.getElementById('kanban-panel'); if(p) p.style.display=items.length>0?'':'none';
         prevCardMap=ncm;
       }
-      function renderCol(cid,items,ncm) {
+      function renderCol(cid,items,ncm,families) {
         const c=document.getElementById(cid); if(!c) return;
         if(!items.length) { c.innerHTML='<div class="kanban-empty">No tasks</div>'; return; }
+        // Families first (clustered per group: root, then children by depth),
+        // then ungrouped singles \u2014 priority breaks ties everywhere.
+        const fam=families||new Set();
+        const sorted=[...items].sort((a,b)=>{
+          const ga=fam.has(a.groupId||a.id)?0:1, gb=fam.has(b.groupId||b.id)?0:1;
+          if(ga!==gb) return ga-gb;
+          if((a.groupId||a.id)!==(b.groupId||b.id))
+            // Tiebreak on groupId: distinct groups with identical titles
+            // (auto-created deliver missions) must not interleave.
+            return String(a.groupTitle||a.title||'').localeCompare(String(b.groupTitle||b.title||''))
+              || String(a.groupId||a.id).localeCompare(String(b.groupId||b.id));
+          if((a.depth||0)!==(b.depth||0)) return (a.depth||0)-(b.depth||0);
+          return (a.priority!=null?a.priority:2)-(b.priority!=null?b.priority:2);
+        });
         const ids=new Set(items.map(i=>i.id));
-        c.querySelectorAll('.kanban-card').forEach(el=>{ if(!ids.has(el.dataset.id)){el.classList.add('card-exit');el.addEventListener('animationend',()=>el.remove(),{once:true});} });
-        for (const item of items) {
+        c.querySelectorAll('.kanban-card').forEach(el=>{
+          if(ids.has(el.dataset.id)||el.classList.contains('card-exit')) return;
+          // Clear the inline animation:none that reconciliation sets on live
+          // cards — it outranks the .card-exit rule, and a never-starting
+          // animation means animationend never fires and the card never leaves.
+          el.style.animation='';
+          el.classList.add('card-exit');
+          el.addEventListener('animationend',()=>el.remove(),{once:true});
+          setTimeout(()=>el.remove(),600); // fallback if the animation is skipped
+        });
+        c.querySelectorAll('.kanban-group,.kanban-empty').forEach(el=>el.remove());
+        let lastGroup=null;
+        for (const item of sorted) {
+          const g=item.groupId||item.id;
+          if(fam.has(g)&&g!==lastGroup){
+            const h=document.createElement('div');h.className='kanban-group';h.textContent='\u25B8 '+(item.groupTitle||g);h.title=item.groupTitle||g;c.appendChild(h);
+          }
+          lastGroup=g;
           let card=c.querySelector('.kanban-card[data-id="'+item.id+'"]');
-          if(!card){card=document.createElement('div');card.className='kanban-card';card.dataset.id=item.id;if(prevCardMap.has(item.id)&&prevCardMap.get(item.id)!==item.status){card.style.animation='none';requestAnimationFrame(()=>{card.style.animation='';});}c.appendChild(card);}else{card.style.animation='none';}
+          if(!card){card=document.createElement('div');card.className='kanban-card';card.dataset.id=item.id;if(prevCardMap.has(item.id)&&prevCardMap.get(item.id)!==item.status){card.style.animation='none';requestAnimationFrame(()=>{card.style.animation='';});}}else{card.style.animation='none';}
+          c.appendChild(card); // appendChild moves existing nodes into group order
+          card.classList.toggle('card-child',(item.depth||0)>0);
           const ti=TYPE_ICONS[item.type]||'\u25C6',pl=PRIO_LABELS[item.priority]||'P2',pc='p'+(item.priority!=null?item.priority:2),as=item.assignee?' \u00B7 '+esc(item.assignee):'';
-          card.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><span class="card-id">'+esc(item.id)+'</span><span>'+ti+'</span></div><div class="card-title">'+esc(item.title||'Untitled')+'</div><div class="card-meta"><span class="card-priority '+pc+'">'+pl+'</span><span>'+esc(item.type)+as+'</span></div>';
+          // Grandchildren carry a breadcrumb to their direct parent \u2014 the group
+          // header only names the root.
+          const crumb=(item.depth||0)>1&&item.parentId?'<div class="card-crumb">\u21B3 '+esc(item.parentTitle||item.parentId)+'</div>':'';
+          card.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><span class="card-id">'+esc(item.id)+'</span><span>'+ti+'</span></div>'+crumb+'<div class="card-title">'+esc(item.title||'Untitled')+'</div><div class="card-meta"><span class="card-priority '+pc+'">'+pl+'</span><span>'+esc(item.type)+as+'</span></div>';
         }
       }
 
