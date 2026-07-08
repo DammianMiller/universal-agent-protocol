@@ -126,6 +126,7 @@ import { parsePhaseArray, phaseInstruction, planDeliveryPhases, shouldDecompose 
 import { runEpics, type Epic, type EpicRunResult } from '../delivery/epic-controller.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
+import { resolveSessionTokenBudget, sessionWorkingBudget } from '../delivery/context-budget.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { extractContract } from '../delivery/contract-extractor.js';
 import type { OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
@@ -881,11 +882,29 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     );
   }
   candidates = effectiveCandidates(agentic, candidates);
+  // Context auto-size (on by default): size every deliver session to the
+  // serving rail (per-slot llama context, e.g. 180k at --parallel 2 / ctx
+  // 360k) so epics/sessions always COMPLETE within the context they get.
+  // Budget = rail (env UAP_DELIVER_SESSION_TOKEN_BUDGET → .uap.json
+  // deliver.sessionTokenBudget → model preset modelContextBudget) × the
+  // working fraction that keeps sessions below the proxy's prune threshold.
+  // Disable with UAP_DELIVER_AUTOSIZE=0 or `.uap.json` deliver.autoSizeEpics=false.
+  const cfgRawEarly = (() => { try { return loadUapConfigRaw(projectRoot) ?? {}; } catch { return {}; } })();
+  const cfgAutoSize = (cfgRawEarly.deliver as Record<string, unknown> | undefined)?.autoSizeEpics;
+  const autoSizeEnabled =
+    process.env.UAP_DELIVER_AUTOSIZE !== '0' && cfgAutoSize !== false && cfgAutoSize !== 'off';
+  const sessionBudget = autoSizeEnabled
+    ? sessionWorkingBudget(resolveSessionTokenBudget(model, cfgRawEarly))
+    : undefined;
+  if (sessionBudget) {
+    console.log(chalk.dim(`  context auto-size: sessions budgeted to ~${sessionBudget.toLocaleString()} tokens (rail-fit)`));
+  }
   const executor: LoopExecutor = agentic
     ? createAgenticExecutor(model, {
         projectRoot,
         endpoint: agenticEndpoint,
         temperature,
+        contextTokenBudget: sessionBudget,
         // Block oracle tampering: protected test files are read-only to the agent.
         protectedFiles:
           options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles : new Set<string>(),
@@ -1291,18 +1310,26 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     process.env.UAP_DELIVER_ORCHESTRATE !== '0' &&
     cfgOrch !== false && cfgOrch !== 'off';
   // Epic controller (P7): the outer loop above orchestration. A massive mission
-  // (very long + complex) is a SEQUENCE of epics, each run as its own fresh
-  // mission and looped with fresh sessions until accepted. Opt-in via --epics /
-  // UAP_DELIVER_EPICS=1; auto only for genuinely epic-scale instructions so it
-  // never fires on ordinary tasks. Never on self-gate or resume.
+  // (complex) is a SEQUENCE of epics, each run as its own fresh mission and
+  // looped with fresh sessions until accepted. ON BY DEFAULT for any
+  // complex-classified mission (2026-07-08 — was: complex AND ≥1200 chars):
+  // with context auto-size the epic controller is the mechanism that keeps
+  // every session inside its serving rail, so it must engage whenever a
+  // mission is complex enough to risk outgrowing one session. Simple/moderate
+  // missions stay single-loop (still rail-budgeted via the agentic executor).
+  // Disable with --no-epics / UAP_DELIVER_EPICS=0 / `.uap.json` deliver.epics
+  // false|'off'; force with --epics / UAP_DELIVER_EPICS=1 / deliver.epics
+  // true|'on'. Never on self-gate or resume.
+  const cfgEpics = (cfgRaw.deliver as Record<string, unknown> | undefined)?.epics;
   const epicsEnabled =
     !needsSelfGate && !resumeState &&
+    options.epics !== false &&
+    process.env.UAP_DELIVER_EPICS !== '0' &&
+    cfgEpics !== false && cfgEpics !== 'off' &&
     (options.epics === true ||
       process.env.UAP_DELIVER_EPICS === '1' ||
-      (options.epics !== false &&
-        process.env.UAP_DELIVER_EPICS !== '0' &&
-        autoPlan?.complexity === 'complex' &&
-        instruction.trim().length >= 1200));
+      cfgEpics === true || cfgEpics === 'on' ||
+      autoPlan?.complexity === 'complex');
   const decomposeWanted =
     !needsSelfGate &&
     (options.orchestrate === true ||
@@ -1330,7 +1357,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     } catch {
       lifecycleHints = undefined;
     }
-    const planned = await planDeliveryPhases(instruction, verdictExecutor, lifecycleHints);
+    const planned = await planDeliveryPhases(instruction, verdictExecutor, lifecycleHints, { sessionTokenBudget: sessionBudget });
     if (planned.length >= 2) {
       phases = planned;
       console.log(chalk.cyan(`🧩 ${planned.length} phases: ${planned.map((ph) => ph.title).join(' → ')}`));
@@ -1607,7 +1634,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       success: true, alreadyDelivered: false, turns: 0, bestScore: 0, bestTurn: 0,
       history: [], finalFeedback: '', finalOutput: '', totalDurationMs: 0,
     };
-    const planned = await planDeliveryPhases(instruction, verdictExecutor);
+    const planned = await planDeliveryPhases(instruction, verdictExecutor, undefined, { sessionTokenBudget: sessionBudget });
     const epics: Epic[] = (planned.length >= 2
       ? planned
       : [{ id: 'mission', title: 'Mission', goal: instruction }]
@@ -1625,6 +1652,18 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       mission: instruction,
       epics,
       maxAttemptsPerEpic: Number(process.env.UAP_DELIVER_EPIC_ATTEMPTS ?? 2),
+      // Context auto-size: an epic whose sessions hit the rail budget is
+      // re-planned into smaller sub-epics (one level) instead of just failing.
+      splitEpic: sessionBudget
+        ? async (epic, lastFailure) => {
+            console.log(chalk.yellow(`  ✂ epic ${epic.id} outgrew its ~${sessionBudget.toLocaleString()}-token session budget — re-planning as sub-epics`));
+            const subGoal =
+              `${epic.goal}\n\n(The previous attempt ran out of session context` +
+              `${lastFailure ? `: ${lastFailure.slice(0, 300)}` : ''}. Split this into smaller, independently completable phases.)`;
+            const subs = await planDeliveryPhases(subGoal, verdictExecutor, undefined, { sessionTokenBudget: sessionBudget });
+            return subs.length >= 2 ? subs.map((s) => ({ id: s.id, title: s.title, goal: s.goal })) : null;
+          }
+        : undefined,
       onEpic: (epic, outcome) => {
         try { markItem(projectRoot, epic.id, outcome.accepted ? 'done' : 'failed', outcome.accepted ? undefined : outcome.summary); } catch { /* best-effort */ }
         console.log(

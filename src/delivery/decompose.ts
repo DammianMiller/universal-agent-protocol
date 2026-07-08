@@ -118,7 +118,21 @@ export function topoOrder(phases: DeliveryPhase[]): DeliveryPhase[] {
   return out;
 }
 
-function buildDecomposePrompt(instruction: string, hintProvider?: LifecycleHintProvider): string {
+export interface PlanPhasesOptions {
+  /**
+   * Per-session (per-rail) token budget each phase must complete within. When
+   * set, the planner is told to scope phases so a fresh agent session —
+   * prompt + code it reads + tool output + its own edits — finishes inside
+   * this budget, preferring more, smaller phases over fewer large ones.
+   */
+  sessionTokenBudget?: number;
+}
+
+function buildDecomposePrompt(
+  instruction: string,
+  hintProvider?: LifecycleHintProvider,
+  opts?: PlanPhasesOptions
+): string {
   // Lifecycle hints (phases + experts) shape the split. Fail-soft — a
   // throwing provider just omits the hints.
   let lifecycleHint = '';
@@ -131,12 +145,22 @@ function buildDecomposePrompt(instruction: string, hintProvider?: LifecycleHintP
     lifecycleHint = '';
   }
 
+  // Rail sizing: each phase runs in ONE fresh agent session with a hard
+  // context ceiling, so the planner must scope phases to fit it.
+  const budgetHint = opts?.sessionTokenBudget
+    ? [
+        '',
+        `CONTEXT LIMIT: each phase is delivered by an autonomous agent in ONE fresh session with a hard context budget of ~${opts.sessionTokenBudget} tokens (roughly ${opts.sessionTokenBudget * 4} characters — the phase prompt, every file the agent reads, all tool output, and its own edits ALL count against it). Scope every phase so it completes comfortably within that budget: prefer MORE, SMALLER phases over fewer large ones, and never bundle broad multi-file refactors into a single phase.`,
+      ].join('\n')
+    : '';
+
   return [
     'You are a delivery planner. Split the mission below into SEQUENTIAL phases',
     `(${MIN_PHASES}-${maxPhases()}), each independently verifiable by the project's build/test`,
     'gates. Every phase must leave the project in a working state — no phase may',
     'end with intentionally broken builds. Order phases so later ones build on',
     'earlier ones. Do NOT invent scope the mission does not imply.',
+    budgetHint,
     lifecycleHint,
     '',
     `MISSION: ${instruction}`,
@@ -155,10 +179,11 @@ function buildDecomposePrompt(instruction: string, hintProvider?: LifecycleHintP
 export async function planDeliveryPhases(
   instruction: string,
   executor: LoopExecutor,
-  hintProvider?: LifecycleHintProvider
+  hintProvider?: LifecycleHintProvider,
+  opts?: PlanPhasesOptions
 ): Promise<DeliveryPhase[]> {
   try {
-    const raw = await executor(buildDecomposePrompt(instruction, hintProvider));
+    const raw = await executor(buildDecomposePrompt(instruction, hintProvider, opts));
     const phases = parsePhaseArray(raw);
     return phases.length >= MIN_PHASES ? phases : [];
   } catch {

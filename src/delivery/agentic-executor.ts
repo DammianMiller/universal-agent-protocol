@@ -27,6 +27,7 @@ import type { LoopExecutor } from './convergence-loop.js';
 import { fetchModelWithRetry } from '../models/long-fetch.js';
 import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks } from './applier.js';
+import { estimateMessagesTokens, CONTEXT_BUDGET_MARKER } from './context-budget.js';
 
 export interface AgenticExecutorOptions {
   projectRoot: string;
@@ -53,6 +54,16 @@ export interface AgenticExecutorOptions {
   protectGateConfigs?: boolean;
   /** Optional sink for a structured trace of what the agent did. */
   onEvent?: (event: AgenticEvent) => void;
+  /**
+   * Hard estimated-token ceiling for one agentic session (the per-rail
+   * serving context × working fraction — see delivery/context-budget.ts).
+   * Checked before every model round; when the accumulated conversation
+   * estimate crosses it, the session ends with a CONTEXT_BUDGET_MARKER
+   * summary instead of sending a request that would overflow (or get pruned
+   * mid-flight by the proxy). The epic controller keys its split-and-retry
+   * path off that marker. Omit to disable (legacy unbounded behavior).
+   */
+  contextTokenBudget?: number;
 }
 
 export interface AgenticEvent {
@@ -371,6 +382,24 @@ export function createAgenticExecutor(
 
     const summaries: string[] = [];
     for (let round = 1; round <= maxRounds; round++) {
+      // Rail sizing: stop BEFORE sending a request that would outgrow the
+      // session's context budget — a clean under-budget stop with a partial
+      // summary beats an overflow/prune that silently loses session state.
+      if (opts.contextTokenBudget) {
+        const est = estimateMessagesTokens(messages);
+        if (est >= opts.contextTokenBudget) {
+          opts.onEvent?.({
+            round,
+            kind: 'error',
+            detail: `context budget reached: ~${est}/${opts.contextTokenBudget} est. tokens`,
+          });
+          return (
+            `${CONTEXT_BUDGET_MARKER} session reached ~${est} of ${opts.contextTokenBudget} estimated tokens ` +
+            `after ${round - 1} round(s) — the task is too large for one session and must be split. ` +
+            `Work completed so far: ${summaries.slice(-5).join('; ') || 'none'}`
+          );
+        }
+      }
       let msg: ChatMessage;
       try {
         msg = await chat(opts.endpoint, model, messages, opts.temperature);

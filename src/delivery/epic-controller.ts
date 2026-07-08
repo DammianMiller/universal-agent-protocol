@@ -23,6 +23,7 @@
 
 import type { DeliveryPhase } from './decompose.js';
 import { topoOrder } from './decompose.js';
+import { CONTEXT_BUDGET_MARKER } from './context-budget.js';
 
 /** A top-level epic — the same shape as a phase, one lifecycle level up. */
 export interface Epic extends DeliveryPhase {
@@ -71,6 +72,21 @@ export interface EpicControllerConfig {
   maxAttemptsPerEpic?: number;
   /** Progress hook. */
   onEpic?: (epic: Epic, outcome: EpicOutcome) => void;
+  /**
+   * Rail sizing (context auto-size): when an epic exhausts its attempts AND
+   * its last failure indicates the session outgrew its context budget (the
+   * executor's CONTEXT_BUDGET_MARKER), this is asked to re-plan the epic as
+   * smaller sub-epics. Returning ≥2 sub-epics runs them immediately, in
+   * order, through the same controller (one level deep — sub-epics never
+   * split again); the epic counts as accepted iff ALL sub-epics are. Return
+   * null/[] to decline. Fail-soft: a throw declines the split.
+   */
+  splitEpic?: (epic: Epic, lastFailure?: string) => Promise<Epic[] | null>;
+  /**
+   * Seed summaries of epics completed BEFORE this controller ran — used by
+   * the split recursion so sub-epics still see what earlier epics built.
+   */
+  initialPriorSummaries?: string[];
 }
 
 export interface EpicControllerResult {
@@ -95,7 +111,7 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
 
   const done = new Set<string>();
   const failed = new Set<string>();
-  const priorSummaries: string[] = [];
+  const priorSummaries: string[] = [...(config.initialPriorSummaries ?? [])];
   const outcomes: EpicOutcome[] = [];
   let totalTurns = 0;
 
@@ -148,6 +164,41 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
         lastFailure = result.success
           ? `attempt ${attempts} delivered but did not pass acceptance: ${result.summary}`
           : `attempt ${attempts} failed to deliver: ${result.summary}`;
+      }
+    }
+
+    // Rail sizing: an epic that failed because its sessions outgrew the
+    // context budget is too big for one rail — re-plan it as smaller
+    // sub-epics and run them in place (one split level; sub-epics inherit
+    // the prior summaries but never split again).
+    if (!accepted && config.splitEpic && (lastFailure ?? '').includes(CONTEXT_BUDGET_MARKER)) {
+      let subs: Epic[] | null = null;
+      try {
+        subs = await config.splitEpic(epic, lastFailure);
+      } catch {
+        subs = null; // fail-soft: an unplannable split just keeps the failure
+      }
+      if (subs && subs.length >= 2) {
+        // Force a sequential chain (the original epic's deps are already
+        // satisfied; sub-order is the planner's intent) and namespace ids so
+        // they can't collide with sibling epics.
+        const chained: Epic[] = subs.map((s, i) => ({
+          ...s,
+          id: `${epic.id}.${s.id}`.slice(0, 64),
+          ...(i > 0 ? { deps: [`${epic.id}.${subs![i - 1].id}`.slice(0, 64)] } : { deps: [] }),
+        }));
+        const subResult = await runEpics({
+          ...config,
+          epics: chained,
+          splitEpic: undefined, // one level only — a sub-epic that still overflows fails
+          initialPriorSummaries: [...priorSummaries],
+        });
+        epicTurns += subResult.turns; // flows into totalTurns below
+        outcomes.push(...subResult.outcomes);
+        accepted = subResult.success;
+        lastSummary = accepted
+          ? `split into ${chained.length} sub-epics (context auto-size): ${subResult.outcomes.map((o) => o.summary).join('; ')}`
+          : `split into ${chained.length} sub-epics after context-budget exhaustion; failed: ${subResult.failed.join(', ')}`;
       }
     }
 
