@@ -536,18 +536,19 @@ except Exception:  # pragma: no cover - optional middleware
     _TOOLCALL_NORMALIZER_OK = False
 
 
-def _record_project_telemetry(body, model, usage) -> None:
+def _record_project_telemetry(body, model, usage, duration_ms: float = 0.0) -> None:
     """Fail-open per-project routing/cost telemetry: derive the request's project
-    dir and append a task_outcomes row to its analytics DB so per-project
-    dashboards see the model calls this shared proxy makes. See
-    tools/agents/scripts/project_telemetry.py. Never raises."""
+    dir and append a task_outcomes row (plus a dashboard live-feed event) to its
+    analytics/telemetry DBs so per-project dashboards see the model calls this
+    shared proxy makes. See tools/agents/scripts/project_telemetry.py. Never
+    raises."""
     try:
         import sys as _s
         _d = os.path.dirname(os.path.abspath(__file__))
         if _d not in _s.path:
             _s.path.insert(0, _d)
         import project_telemetry as _pt
-        _pt.record_from_request(body, model, usage)
+        _pt.record_from_request(body, model, usage, duration_ms=duration_ms)
     except Exception:
         pass
 
@@ -8930,6 +8931,7 @@ async def stream_anthropic_response(
     - Proper upstream response closure on client disconnect
     """
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+    stream_started = time.monotonic()
 
     # message_start
     yield (
@@ -9257,16 +9259,40 @@ async def stream_anthropic_response(
     upstream_input = int(upstream_usage.get("prompt_tokens") or 0)
     if upstream_input > 0:
         monitor.last_input_tokens = upstream_input
+    final_output = int(upstream_usage.get("completion_tokens") or 0)
+    if final_output <= 0:
+        # Upstream sent no usable usage (older servers ignore stream_options):
+        # estimate from everything actually generated — text, tool-call
+        # arguments, and reasoning — at ~4 chars/token, never below the
+        # per-delta chunk count.
+        generated_chars = (
+            sum(len(c) for c in text_chunks)
+            # isinstance guard: the XML-recovery path stores a bare sentinel
+            # (tool_calls_by_index["_xml_recovered"] = True) in this map.
+            + sum(
+                len(tc.get("arguments", ""))
+                for tc in tool_calls_by_index.values()
+                if isinstance(tc, dict)
+            )
+            + sum(len(c) for c in reasoning_chunks)
+        )
+        final_output = max(output_tokens, (generated_chars + 3) // 4)
     usage_final = {
         "input_tokens": upstream_input or getattr(monitor, "last_input_tokens", 0) or 0,
-        "output_tokens": int(upstream_usage.get("completion_tokens") or 0) or output_tokens,
+        "output_tokens": final_output,
     }
     # After message_stop (never delays the client's final frame; a disconnect
     # parked exactly on that yield skips recording, matching the non-stream
     # "completed responses only" semantics) and off the event loop (a locked
     # analytics DB must not stall token delivery for concurrent sessions).
     try:
-        await asyncio.to_thread(_record_project_telemetry, anthropic_body, model, usage_final)
+        await asyncio.to_thread(
+            _record_project_telemetry,
+            anthropic_body,
+            model,
+            usage_final,
+            (time.monotonic() - stream_started) * 1000.0,
+        )
     except Exception:
         pass
 
@@ -9836,7 +9862,12 @@ async def messages(request: Request):
             upstream_input = anthropic_resp.get("usage", {}).get("input_tokens", 0)
             if upstream_input > 0:
                 monitor.last_input_tokens = upstream_input
-            _record_project_telemetry(body, model, anthropic_resp.get("usage", {}))
+            # Off the event loop: the recorder now writes TWO DBs (analytics +
+            # dashboard telemetry) with 2s busy timeouts — a lock stall here
+            # would block every concurrent session's turn.
+            await asyncio.to_thread(
+                _record_project_telemetry, body, model, anthropic_resp.get("usage", {})
+            )
             if PROXY_FORCE_NON_STREAM:
                 logger.info(
                     "FORCED NON-STREAM: served stream response via guarded non-stream path"
@@ -9877,6 +9908,10 @@ async def messages(request: Request):
 
     if is_stream:
         openai_body["stream"] = True
+        # Without this, OpenAI-compat upstreams (llama-server included) omit
+        # completion_tokens from the final stream chunk — the reason streamed
+        # tool-use turns recorded tokensOut=0 in per-project telemetry.
+        openai_body["stream_options"] = {"include_usage": True}
 
         # Retry upstream connection with backoff to handle
         # llama-server restarts gracefully instead of 500-ing to the client.
@@ -10276,7 +10311,10 @@ async def messages(request: Request):
         if upstream_input > 0:
             monitor.last_input_tokens = upstream_input
 
-        _record_project_telemetry(body, model, anthropic_resp.get("usage", {}))
+        # Off the event loop — see the guarded-non-stream call site.
+        await asyncio.to_thread(
+            _record_project_telemetry, body, model, anthropic_resp.get("usage", {})
+        )
         return anthropic_resp
 
 
