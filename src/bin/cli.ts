@@ -566,6 +566,7 @@ program
   .option('--force-self-gate', 'Author a task-specific acceptance gate even when project gates exist')
   .option('--acceptance', 'After objective gates pass, judge spec behavioral completeness (LLM) and feed unmet requirements back so the loop completes the spec')
   .option('--executor <mode>', 'Per-turn executor: blind (one completion), agentic (tool-using read/list/bash/write loop), or auto (agentic when there is repo context/gates to inspect)', 'auto')
+  .option('--allow-bash', "Permit the agentic executor's run_bash tool when NOT running under `uap sandbox`. Off by default: an unsandboxed shell is not contained to the workdir. Auto-enabled under `uap sandbox`.")
   .option('--evaluator-model <preset>', 'Author + judge the acceptance gate with a DIFFERENT model than the implementer (separate generator from evaluator; pairs with the barbell strategy). Default: same as --model')
   .option('--evaluator-endpoint <url>', 'Endpoint override for --evaluator-model')
   .option('--keep-best', 'Never regress: snapshot the project first and roll back if deliver ends with a worse required-gate score than it started (real gates only)')

@@ -132,4 +132,41 @@ describe('createAgenticExecutor — file recovery when the model skips tool call
     await exec('go');
     expect(readFileSync(join(dir, 'calc.test.js'), 'utf-8')).toBe('original');
   });
+
+  const bashCall = (cmd: string) => ({
+    content: null,
+    tool_calls: [{ id: 'b1', type: 'function', function: { name: 'run_bash', arguments: JSON.stringify({ command: cmd }) } }],
+  });
+  const finishCall = { content: null, tool_calls: [{ id: 'f1', type: 'function', function: { name: 'finish', arguments: '{"summary":"done"}' } }] };
+
+  it('refuses run_bash by default (unsandboxed) — the command never executes (audit X3)', async () => {
+    const marker = join(dir, 'bash-ran.txt');
+    mockChatSequence([bashCall(`touch ${marker}`), finishCall]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('go');
+    expect(existsSync(marker)).toBe(false); // command did NOT run
+  });
+
+  it('runs run_bash when explicitly allowed (--allow-bash)', async () => {
+    const marker = join(dir, 'bash-ran-2.txt');
+    mockChatSequence([bashCall(`touch ${marker}`), finishCall]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1', allowBash: true });
+    await exec('go');
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it('auto-allows run_bash under uap sandbox (UAP_SANDBOX_ACTIVE=1)', async () => {
+    const marker = join(dir, 'bash-ran-3.txt');
+    const prev = process.env.UAP_SANDBOX_ACTIVE;
+    process.env.UAP_SANDBOX_ACTIVE = '1';
+    try {
+      mockChatSequence([bashCall(`touch ${marker}`), finishCall]);
+      const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+      await exec('go');
+      expect(existsSync(marker)).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.UAP_SANDBOX_ACTIVE;
+      else process.env.UAP_SANDBOX_ACTIVE = prev;
+    }
+  });
 });
