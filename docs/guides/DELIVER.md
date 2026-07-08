@@ -137,6 +137,19 @@ uap deliver "add the orders endpoint" --until-deployed
 | `--project-root <path>` | Project whose gates define delivery (default: cwd) |
 | `--dry-run` | Show detected gates and plan without calling the model |
 | `--json` | Emit a JSON result |
+| `--keep-best` | Never regress: snapshot the project first, roll back if the run ends with a worse required-gate score |
+
+### `--keep-best` snapshots
+
+The pre-run snapshot lands on real disk under `~/.cache/uap/snapshots`
+(`UAP_SNAPSHOT_DIR` overrides; absolute paths only) — never `/tmp`, which is
+RAM-backed on many Linux systems. Derived directories (`.git`,
+`node_modules`, `target`, `.venv`, `dist`, `build`, …) are neither
+snapshotted nor touched by a rollback, at any depth. Trees larger than
+`UAP_SNAPSHOT_MAX_MB` (default 4096) skip the snapshot and the run proceeds
+with rollback disabled. Snapshots orphaned by killed runs are reaped
+automatically on the next `--keep-best` run; a snapshot whose restore failed
+is preserved and its path printed.
 
 ---
 
