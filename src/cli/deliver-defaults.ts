@@ -123,6 +123,34 @@ export async function ensureSelfProtect(): Promise<EnsureDeliveryResult> {
   );
 }
 
+/** The pay2u example pack — advisory policies with no enforcer (see the
+ * schema files + docs/guides/POLICY_PACK_PAY2U.md). Selectable in the setup
+ * policy matrix and installable individually. */
+export const PAY2U_PACK_POLICIES = [
+  'pay2u-architecture-rules',
+  'pay2u-quick-reference',
+  'pay2u-enforcement-hooks',
+] as const;
+
+/**
+ * Install + enable the pay2u policy pack. Each is advisory (no Python
+ * enforcer), so ensurePolicyEnforcer installs the .md and enables it without
+ * attaching a tool. Idempotent (find-by-name, no duplicates). Returns per-policy
+ * results so the caller can report what installed.
+ */
+export async function ensurePay2uPolicies(): Promise<
+  Array<{ name: string } & EnsureDeliveryResult>
+> {
+  const out: Array<{ name: string } & EnsureDeliveryResult> = [];
+  for (const name of PAY2U_PACK_POLICIES) {
+    // name===enforcerName: the enforcer .py doesn't exist for these advisory
+    // policies, so ensurePolicyEnforcer skips the attach and just installs+enables.
+    const r = await ensurePolicyEnforcer(name, name, `${name} policy schema not found in package`);
+    out.push({ name, ...r });
+  }
+  return out;
+}
+
 export interface WireDeliverMcpResult {
   claude: boolean;
   opencode: boolean;

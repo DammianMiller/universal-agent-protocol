@@ -42,6 +42,140 @@ async function autoAttachEnforcer(policyName: string): Promise<string | null> {
   return toolName;
 }
 
+/** One row of the policy matrix: a built-in and/or installed policy with its
+ * effective settings. Pure data so the matrix is testable without a DB/TTY. */
+export interface PolicyMatrixRow {
+  name: string;
+  builtin: boolean;
+  installed: boolean;
+  enabled: boolean;
+  level: string;
+  stage: string;
+  category: string;
+  id?: string;
+}
+
+/** Parse `**Level**` / `**Category**` / `**Enforcement Stage**` from a built-in
+ * schema markdown (fail-soft defaults). */
+export function parsePolicyMeta(md: string): { level: string; category: string; stage: string } {
+  const grab = (label: string, dflt: string): string => {
+    const m = md.match(new RegExp(`\\*\\*${label}\\*\\*:\\s*([^\\n]+)`, 'i'));
+    return m ? m[1].trim() : dflt;
+  };
+  return {
+    level: grab('Level', 'OPTIONAL'),
+    category: grab('Category', 'custom'),
+    stage: grab('Enforcement Stage', 'pre-exec'),
+  };
+}
+
+/**
+ * Build the full policy matrix: every built-in schema policy merged with the
+ * installed-policy rows, so the operator sees ALL policies and their current
+ * settings in one place. Pure: takes the built-in list (name → parsed meta) and
+ * the installed policies. Installed values win for level/stage/status.
+ */
+export function buildPolicyMatrix(
+  builtins: Array<{ name: string; level: string; category: string; stage: string }>,
+  installed: Array<{ id: string; name: string; isActive: boolean; level?: string; category?: string; enforcementStage?: string }>
+): PolicyMatrixRow[] {
+  const byName = new Map<string, PolicyMatrixRow>();
+  for (const b of builtins) {
+    byName.set(b.name, {
+      name: b.name,
+      builtin: true,
+      installed: false,
+      enabled: false,
+      level: b.level,
+      stage: b.stage,
+      category: b.category,
+    });
+  }
+  for (const p of installed) {
+    const existing = byName.get(p.name);
+    const row: PolicyMatrixRow = {
+      name: p.name,
+      builtin: existing?.builtin ?? false,
+      installed: true,
+      enabled: p.isActive,
+      level: p.level ?? existing?.level ?? 'OPTIONAL',
+      stage: p.enforcementStage ?? existing?.stage ?? 'pre-exec',
+      category: p.category ?? existing?.category ?? 'custom',
+      id: p.id,
+    };
+    byName.set(p.name, row);
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Read built-in policy schema files (excludes UPPERCASE README-style files). */
+function listBuiltinPolicies(): Array<{ name: string; level: string; category: string; stage: string }> {
+  if (!existsSync(POLICY_DIR)) return [];
+  return readdirSync(POLICY_DIR)
+    .filter((f) => f.endsWith('.md') && f !== f.toUpperCase()) // skip PACK READMEs
+    .map((f) => {
+      const name = f.replace(/\.md$/, '');
+      const meta = parsePolicyMeta(readFileSync(join(POLICY_DIR, f), 'utf-8'));
+      return { name, ...meta };
+    });
+}
+
+/**
+ * Matrix command - list ALL policies (built-in + installed) with their settings
+ * (status/level/stage/category) in one table, and show how to toggle/adjust each.
+ * The "policy setup where all policies are listed and their settings can be
+ * toggled/adjusted" surface.
+ */
+async function matrixCommand(): Promise<void> {
+  const installed = await getPolicyMemoryManager().getAllPolicies();
+  const rows = buildPolicyMatrix(
+    listBuiltinPolicies(),
+    installed.map((p) => ({
+      id: p.id,
+      name: p.name,
+      isActive: p.isActive,
+      level: p.level,
+      category: p.category,
+      enforcementStage: p.enforcementStage,
+    }))
+  );
+
+  console.log(chalk.bold('\n=== UAP Policy Matrix ===\n'));
+  const nameW = Math.min(38, Math.max(20, ...rows.map((r) => r.name.length)) + 1);
+  const head =
+    chalk.dim(
+      `${'STATUS'.padEnd(9)}${'POLICY'.padEnd(nameW)}${'LEVEL'.padEnd(13)}${'STAGE'.padEnd(11)}${'SOURCE'.padEnd(10)}CATEGORY`
+    );
+  console.log(head);
+  for (const r of rows) {
+    const status = !r.installed
+      ? chalk.gray('· avail ')
+      : r.enabled
+        ? chalk.green('✓ on    ')
+        : chalk.red('✗ off   ');
+    const level =
+      r.level === 'REQUIRED' ? chalk.red(r.level)
+        : r.level === 'RECOMMENDED' ? chalk.yellow(r.level)
+          : chalk.gray(r.level);
+    const source = r.builtin ? chalk.blue('built-in') : chalk.magenta('custom');
+    console.log(
+      `${status} ${chalk.cyan(r.name.padEnd(nameW))}${level.padEnd(13 + 10)}${chalk.blue(r.stage.padEnd(11))}${source.padEnd(10 + 9)}${chalk.dim(r.category)}`
+    );
+  }
+  const on = rows.filter((r) => r.installed && r.enabled).length;
+  const off = rows.filter((r) => r.installed && !r.enabled).length;
+  const avail = rows.filter((r) => !r.installed).length;
+  console.log(
+    chalk.dim(`\n${on} enabled · ${off} installed-but-off · ${avail} available (not installed)\n`)
+  );
+  console.log(chalk.bold('Adjust:'));
+  console.log(chalk.dim('  Install available : uap policy install <name>'));
+  console.log(chalk.dim('  Enable / disable  : uap policy toggle <id>   (or enable/disable <id>)'));
+  console.log(chalk.dim('  Change level      : uap policy level <id> REQUIRED|RECOMMENDED|OPTIONAL'));
+  console.log(chalk.dim('  Change stage      : uap policy stage <id> pre-exec|post-exec|review|always'));
+  console.log(chalk.dim('  IDs are shown by  : uap policy list'));
+}
+
 /**
  * List command - show all policies
  */
@@ -219,6 +353,11 @@ export function registerPolicyCommands(program: Command): void {
   const policy = program.command('policy').description('UAP policy management');
 
   policy.command('list').description('List all policies and their status').action(listCommand);
+
+  policy
+    .command('matrix')
+    .description('Show ALL policies (built-in + installed) with settings, and how to toggle/adjust them')
+    .action(matrixCommand);
 
   policy.command('install <name>').description('Install a built-in policy').action(installCommand);
 

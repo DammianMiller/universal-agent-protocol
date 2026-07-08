@@ -179,6 +179,7 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
         { label: 'Definition of Done (IaC)', value: 'definitionOfDoneIac' },
         { label: 'Image & Asset Verification', value: 'imageAssetVerification' },
         { label: 'Custom policies directory (./policies)', value: 'customPoliciesDir' },
+        { label: 'pay2u policy pack (advisory architecture/reference example)', value: 'pay2uPolicies' },
       ],
       initialValues: ['iacStateParity', 'iacPipelineEnforcement', 'kubectlVerifyBackport', 'definitionOfDoneIac'],
       required: false,
@@ -399,6 +400,7 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
       kubectlVerifyBackport: pol.includes('kubectlVerifyBackport'),
       definitionOfDoneIac: pol.includes('definitionOfDoneIac'),
       customPoliciesDir: pol.includes('customPoliciesDir'),
+      pay2uPolicies: pol.includes('pay2uPolicies'),
     },
     model: {
       provider,
@@ -509,6 +511,19 @@ export async function finalizeGuidedSetup(
   // patterns, policy, model/profile, hooks, browser).
   const written = await applyWizardConfig(cwd, selections);
   if (written) ui.note('Wizard configuration written to .uap.json', 'Config');
+
+  // Install the pay2u example policy pack when selected in the policy matrix
+  // (advisory, no enforcer). Idempotent + fail-soft — never blocks setup.
+  if (selections.policy.policyEngine && selections.policy.pay2uPolicies) {
+    try {
+      const { ensurePay2uPolicies } = await import('./deliver-defaults.js');
+      const results = await ensurePay2uPolicies();
+      const n = results.filter((r) => r.enabled).length;
+      ui.note(`Installed the pay2u policy pack (${n} policies) — see \`uap policy matrix\`.`, 'Policy');
+    } catch {
+      /* pack install is best-effort */
+    }
+  }
 
   // Emit the proxy runtime env (recipes / escalation / delivery) so the running
   // proxy consumes the selections without the user hand-exporting env vars.

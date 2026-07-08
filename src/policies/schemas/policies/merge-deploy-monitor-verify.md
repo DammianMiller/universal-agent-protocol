@@ -2,7 +2,7 @@
 
 **ID**: `policy-merge-deploy-monitor-verify`
 **Name**: Merge, Deploy, Monitor, Verify Before Done
-**Category**: completion
+**Category**: release
 **Level**: REQUIRED
 **Enforcement Stage**: review
 **Version**: 1.0

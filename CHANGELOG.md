@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.130.0 (2026-07-08)
+
+- feat(policies): pay2u policy pack + policy matrix. Ports pay2u's 3 project policies (architecture invariants, cluster quick-reference, enforcement-hooks summary) into the built-in set as an opt-in advisory pack (pay2u-architecture-rules/quick-reference/enforcement-hooks), selectable in the setup policy matrix and installable individually. New  lists ALL policies (built-in + installed) with status/level/stage/source and the toggle/adjust commands. Also fixed 3 pre-existing built-in schemas with out-of-enum categories (adr-guard/merge-deploy-monitor-verify/ship-loop-gate) that would crash getAllPolicies() if installed; a new test validates the whole schema set.
+
 ## v1.129.5 (2026-07-08)
 
 - fix(proxy): enforce the local-only passthrough DEFAULT in the ExecStart continuity script (empty/unset ANTHROPIC_PASSTHROUGH_MODELS fails SAFE to __local_only__). A systemd Environment= pin does NOT hold — EnvironmentFile= overrides Environment= — and the env file keeps drifting to empty via routing/setup; the script export runs after systemd and wins. Explicit non-empty (cloud) values preserved. Verified: runtime __local_only__ with an empty env file.
