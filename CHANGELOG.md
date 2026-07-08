@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.129.3 (2026-07-08)
+
+- fix(proxy): honor an operator LOCAL-ONLY pin. `uap model routing use <cloud-preset>` (and setup) regenerated ANTHROPIC_PASSTHROUGH_MODELS to empty, silently re-enabling api.anthropic.com passthrough and repeatedly clobbering an operator __local_only__ lockdown. The routing writer now PRESERVES an existing __local_only__ pin and tells the operator how to override (--allow-passthrough / UAP_ALLOW_PROXY_PASSTHROUGH=1). New readProxyEnvVar() helper reads the current pin.
+
 ## v1.129.2 (2026-07-08)
 
 - fix(dashboard): record telemetry on the streaming path + configurable refresh interval
