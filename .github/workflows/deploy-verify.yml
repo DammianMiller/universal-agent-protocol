@@ -65,7 +65,8 @@ jobs:
       - name: Install proxy test deps
         # The proxy test modules import the proxy, which needs these at import
         # time — the job shipped without them and has been red since it landed.
-        run: pip install httpx openai
+        # (Full third-party set of anthropic_proxy.py + the test modules.)
+        run: pip install fastapi uvicorn httpx openai
       - name: Run security enforcer + proxy tests
         run: npm run test:enforcers
 
