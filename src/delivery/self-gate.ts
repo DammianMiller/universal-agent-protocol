@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'fs';
 import { join } from 'path';
 import type { GateRung } from './verifier-ladder.js';
 import type { LoopExecutor } from './convergence-loop.js';
+import { sanitizedEnv } from './sanitized-env.js';
 
 const GATE_DIR = '.uap-deliver';
 const GATE_FILE = 'verify.sh';
@@ -101,7 +102,8 @@ function runGate(
     cwd: projectRoot,
     timeout: timeoutMs,
     encoding: 'utf-8',
-    env: { ...process.env, CI: 'true' },
+    // Model-authored gate script: strip host/provider secrets (audit).
+    env: sanitizedEnv(),
   });
   if (r.error) {
     return { exitCode: null, spawnError: true, outputTail: String(r.error.message).slice(-500) };

@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.126.0 (2026-07-08)
+
+- fix(security): deliver-plane hardening from the static audit. (X2/X2b) The agentic executor's run_bash and the self-gate authoring/validation spawns now use the shared, secret-stripped env (previously ran with the full host env → a prompt-injected task could exfiltrate provider/host creds); the strip regex is broadened past API_KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL to also catch SSH_AUTH_SOCK, DATABASE_URL/*_URI, *_PRIVATE_KEY, KUBECONFIG, SESSION/COOKIE, DSN, SA_KEY. Secret-strip is now one module (was duplicated in verifier-ladder + execution-gate). (X1) .uap-deliver is a protected applier segment and the self-authored gate script is added to the runtime integrity snapshot, so a model can no longer overwrite its own acceptance gate to exit 0 (via write_file OR run_bash). Env-strip is defense-in-depth, not containment — file-based creds and egress still require uap sandbox.
+
 ## v1.125.0 (2026-07-08)
 
 - fix(security): register the enforcement-self-protect enforcer at setup/init. It shipped as source + a policy doc but was never attached to an executable_tools row, so the runtime policy-gate hook never ran it — the gate was documented as non-disableable but was inert, and since delivery-enforcement exempts src/policies/, nothing stopped an agent editing the enforcement control surface (policy DB tooling, enforcers, .uap.json, proxy env, gate hook scripts). ensureSelfProtect() now attaches it idempotently (find-by-name, no duplicate rows) alongside ensureDeliveryEnforcement. Verified: enforcer blocks the 4 tamper paths, allows normal edits/bash, honors UAP_SELF_PROTECT_OFF=1.
