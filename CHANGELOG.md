@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.129.3 (2026-07-08)
+
+- fix(proxy): real tool-turn output tokens + dashboard live-feed for plain sessions
+
+
 ## v1.129.2 (2026-07-08)
 
 - fix(dashboard): record telemetry on the streaming path + configurable refresh interval
