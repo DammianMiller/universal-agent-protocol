@@ -18,6 +18,7 @@ Design constraints (it runs in the hot path of a live proxy):
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -171,19 +172,135 @@ def record_task_outcome(
         return False
 
 
-def record_from_request(body: dict, model: str, usage: dict, *, task_id: str = "") -> bool:
+# ── dashboard live-feed (telemetry.db) ─────────────────────────────────────
+# The Live Events / Performance panels read <project>/agents/data/memory/
+# telemetry.db, which is otherwise written only by the TS producers
+# (mcp-router/executor). Plain claude+proxy sessions never run those, so the
+# panels stayed empty forever. The proxy is the one process that sees every
+# turn — mirror the turn into the same store. Compression stats are NOT
+# fabricated here: the proxy does no compression, that panel is honestly
+# empty for plain sessions.
+#
+# DDL matches src/utils/telemetry-store.ts exactly (CREATE IF NOT EXISTS
+# no-ops when the TS side created the tables first; the shape only matters
+# when the proxy creates them for a fresh project).
+_TELEMETRY_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS perf_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  metric TEXT NOT NULL,
+  duration_ms REAL NOT NULL,
+  ts TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_perf_samples_metric ON perf_samples(metric);
+CREATE TABLE IF NOT EXISTS dashboard_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL DEFAULT (datetime('now')),
+  category TEXT NOT NULL,
+  type TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'info',
+  title TEXT NOT NULL,
+  detail TEXT,
+  metadata TEXT
+);
+"""
+
+# NOTE: the TS side trims events harder (MAX_PERSISTED_EVENTS = 500); this
+# looser cap only matters for proxy-only projects where no TS producer runs.
+_EVENTS_KEEP = 5000
+_PERF_KEEP_PER_METRIC = 1000  # mirrors telemetry-store.ts PERF_SAMPLES_PER_METRIC
+# Best-effort trim trigger: global across projects and not thread-safe, so a
+# given DB trims roughly every 50*N-projects inserts — overshoot is bounded
+# by the DELETEs themselves, precision is not needed here.
+_trim_counter = 0
+
+
+def record_dashboard_turn(
+    project_dir: str,
+    model: str,
+    tokens_in: int,
+    tokens_out: int,
+    duration_ms: float = 0.0,
+) -> bool:
+    """Mirror one completed proxy turn into the project's telemetry.db so the
+    dashboard's Live Events and Performance panels move for plain
+    claude+proxy sessions. Never raises; a dropped event is strictly better
+    than a stalled turn."""
+    global _trim_counter
+    try:
+        db_dir = os.path.join(project_dir, "agents", "data", "memory")
+        if not os.path.isdir(db_dir):
+            return False
+        conn = sqlite3.connect(os.path.join(db_dir, "telemetry.db"), timeout=1.0)
+        try:
+            # Match the TS producers' settings so cross-process writes don't
+            # silently drop under lock contention (busy_timeout 2000: telemetry
+            # must never stall the hot path).
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA busy_timeout = 2000")
+            conn.executescript(_TELEMETRY_CREATE_SQL)
+            conn.execute(
+                "INSERT INTO dashboard_events (category, type, severity, title, metadata) "
+                "VALUES ('model', 'turn', 'info', ?, ?)",
+                (
+                    f"{model}: {int(tokens_out or 0)} tok out / {int(tokens_in or 0)} in",
+                    json.dumps(
+                        {
+                            "model": str(model or "unknown"),
+                            "tokensIn": int(tokens_in or 0),
+                            "tokensOut": int(tokens_out or 0),
+                            "durationMs": round(float(duration_ms or 0), 1),
+                        }
+                    ),
+                ),
+            )
+            if duration_ms and duration_ms > 0:
+                conn.execute(
+                    "INSERT INTO perf_samples (metric, duration_ms) VALUES ('proxy_turn_ms', ?)",
+                    (float(duration_ms),),
+                )
+            _trim_counter += 1
+            if _trim_counter % 50 == 0:
+                conn.execute(
+                    "DELETE FROM dashboard_events WHERE id NOT IN "
+                    "(SELECT id FROM dashboard_events ORDER BY id DESC LIMIT ?)",
+                    (_EVENTS_KEEP,),
+                )
+                conn.execute(
+                    "DELETE FROM perf_samples WHERE metric = 'proxy_turn_ms' AND id NOT IN "
+                    "(SELECT id FROM perf_samples WHERE metric = 'proxy_turn_ms' "
+                    "ORDER BY id DESC LIMIT ?)",
+                    (_PERF_KEEP_PER_METRIC,),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception:
+        return False
+
+
+def record_from_request(
+    body: dict, model: str, usage: dict, *, task_id: str = "", duration_ms: float = 0.0
+) -> bool:
     """Proxy hot-path entry point: derive project + record. Never raises."""
     try:
         project_dir = derive_project_dir(body or {})
         if not project_dir:
             return False
         u = usage or {}
-        return record_task_outcome(
+        tokens_in = int(u.get("input_tokens") or 0)
+        tokens_out = int(u.get("output_tokens") or 0)
+        wrote = record_task_outcome(
             project_dir,
             model,
-            int(u.get("input_tokens") or 0),
-            int(u.get("output_tokens") or 0),
+            tokens_in,
+            tokens_out,
+            duration_ms=int(duration_ms or 0),
             task_id=task_id,
         )
+        if wrote:
+            record_dashboard_turn(project_dir, model, tokens_in, tokens_out, duration_ms)
+        return wrote
     except Exception:
         return False
