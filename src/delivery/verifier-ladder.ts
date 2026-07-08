@@ -116,19 +116,12 @@ export interface LadderOptions {
 const DEFAULT_TIMEOUT_MS = 300_000;
 export const DEFAULT_TAIL_CHARS = 2_000;
 
-/** Env vars matching these patterns are stripped before running gate
- * commands — project scripts (and npm lifecycle hooks) in arbitrary
- * --project-root checkouts must not inherit provider credentials. */
-const SECRET_ENV_RE = /(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i;
-
-export function sanitizedEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { CI: 'true' };
-  for (const [key, value] of Object.entries(process.env)) {
-    if (SECRET_ENV_RE.test(key)) continue;
-    env[key] = value;
-  }
-  return env;
-}
+// Secret-stripping for gate spawns now lives in ./sanitized-env (shared with
+// the execution/self gates and the agentic executor's own shell; the pattern
+// was broadened after an audit found SSH_AUTH_SOCK/DATABASE_URL/*_PRIVATE_KEY
+// surviving). Re-exported for existing importers.
+export { sanitizedEnv } from './sanitized-env.js';
+import { sanitizedEnv } from './sanitized-env.js';
 
 /**
  * Detect the gate rungs available in a project from its package.json scripts.

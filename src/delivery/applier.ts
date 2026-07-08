@@ -98,6 +98,13 @@ const PROTECTED_SEGMENTS = new Set([
   // Harness-owned state (run checkpoints, traces, practices): a model that can
   // seed .uap/deliver-runs/* could plant a resumable mission / traversal runId.
   '.uap',
+  // The self-authored acceptance gate lives here (self-gate.ts writes
+  // .uap-deliver/verify.sh, the sole required gate for no-native-gate
+  // projects). Protecting it stops the model rewriting its own gate to `exit
+  // 0` to pass vacuously — the one gate config the applier left unguarded
+  // (security audit X1). NOTE: run_bash bypasses the applier, so the integrity
+  // guard also snapshots this script (see convergence-loop integrity capture).
+  '.uap-deliver',
   '.husky',
   '.github',
   '.gitlab',

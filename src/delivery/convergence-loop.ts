@@ -273,6 +273,14 @@ export interface ConvergenceConfig {
    */
   protectTests?: boolean;
   /**
+   * Extra project-relative paths to include in the runtime integrity snapshot
+   * beyond the auto-detected tests/oracle — e.g. the self-authored acceptance
+   * gate script (`.uap-deliver/verify.sh`), which the model could otherwise
+   * rewrite via run_bash to pass vacuously (security audit X1). Restored if
+   * mutated during a gate run, discarding that turn.
+   */
+  extraProtectedPaths?: string[];
+  /**
    * Polled once before each turn for operator guidance to steer the mission
    * WITHOUT stopping it: any returned text is injected into that turn's
    * prompt as high-priority guidance. Return undefined/'' for no change.
@@ -765,6 +773,14 @@ export class ConvergenceLoop {
         protectedFiles = undefined;
         protectedList = undefined;
       }
+    }
+    // Additional harness-owned paths to snapshot for integrity (security audit
+    // X1): the self-authored gate script (.uap-deliver/verify.sh). The applier
+    // now blocks write_file/file-block overwrites of it, but run_bash bypasses
+    // the applier — snapshotting it here means a run_bash rewrite to `exit 0`
+    // is detected and restored, discarding that turn like any oracle tamper.
+    if (this.config.extraProtectedPaths?.length) {
+      protectedList = [...(protectedList ?? []), ...this.config.extraProtectedPaths];
     }
     const applyOptions: ApplyOptions | undefined = protectTests
       ? { protectedFiles, protectGateConfigs: true }

@@ -1318,6 +1318,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     criticFactory: (ex) => createModelCritic(agentic ? jsonBlindExecutor : ex),
     practiceProvider,
     protectTests: options.protectTests,
+    // When deliver authors its own acceptance gate, snapshot that script for
+    // runtime integrity so a run_bash overwrite to `exit 0` is caught+restored
+    // (applier already blocks write_file overwrites; security audit X1).
+    ...(needsSelfGate ? { extraProtectedPaths: ['.uap-deliver/verify.sh'] } : {}),
     guidanceProvider,
     untilDelivered,
     maxTurnsCeiling,

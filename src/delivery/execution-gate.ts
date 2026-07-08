@@ -22,6 +22,7 @@ import { extname, join, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 import vm from 'vm';
 import type { GateRung } from './verifier-ladder.js';
+import { sanitizedEnv } from './sanitized-env.js';
 
 /**
  * Env for spawned smoke-runs with secret-bearing vars stripped, mirroring
@@ -30,14 +31,9 @@ import type { GateRung } from './verifier-ladder.js';
  * forms. Generated code runs in this child, so it must never inherit
  * provider credentials it could exfiltrate.
  */
+// Shared secret-strip (broadened past API_KEY/TOKEN/… after an audit).
 function gateEnv(): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (/API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(k)) continue;
-    out[k] = v;
-  }
-  out.CI = 'true';
-  return out;
+  return sanitizedEnv();
 }
 
 export type ArtifactType = 'web' | 'node' | 'cli' | 'lib';

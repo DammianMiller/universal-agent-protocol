@@ -28,6 +28,7 @@ import { fetchModelWithRetry } from '../models/long-fetch.js';
 import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks } from './applier.js';
 import { estimateMessagesTokens, CONTEXT_BUDGET_MARKER } from './context-budget.js';
+import { sanitizedEnv } from './sanitized-env.js';
 
 export interface AgenticExecutorOptions {
   projectRoot: string;
@@ -257,11 +258,15 @@ function runTool(
       // Snapshot protected files so a command cannot silently rewrite the
       // oracle to make a wrong answer pass.
       const snap = protectedFiles.size > 0 ? snapshotProtected(projectRoot, protectedFiles) : new Map();
+      // Secret-stripped env: run_bash is the model running arbitrary shell, so
+      // it must not inherit provider/host credentials it could exfiltrate
+      // (audit: previously ran with the full host env). Not containment —
+      // file-based creds and egress still need `uap sandbox`.
       const r = spawnSync('bash', ['-c', String(args.command)], {
         cwd: projectRoot,
         timeout: bashTimeoutMs,
         encoding: 'utf-8',
-        env: { ...process.env, CI: 'true' },
+        env: sanitizedEnv(),
       });
       const restored = snap.size > 0 ? restoreProtected(snap) : [];
       const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(0, 4000);

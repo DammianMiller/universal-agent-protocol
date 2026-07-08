@@ -86,4 +86,12 @@ describe('applier hardening', () => {
     // first.txt must not survive the failed, rolled-back application
     expect(existsSync(join(dir, 'first.txt'))).toBe(false);
   });
+
+  it('refuses to write the self-authored acceptance gate (.uap-deliver — security audit X1)', () => {
+    // The model must not be able to overwrite its own gate script to pass
+    // vacuously. .uap-deliver is a protected segment.
+    const r = applyFileBlocks('```file:.uap-deliver/verify.sh\n#!/usr/bin/env bash\nexit 0\n```', dir);
+    expect(existsSync(join(dir, '.uap-deliver/verify.sh'))).toBe(false);
+    expect(r.rejected.length).toBeGreaterThan(0);
+  });
 });
