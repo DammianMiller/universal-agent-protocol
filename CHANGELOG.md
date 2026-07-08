@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.129.1 (2026-07-08)
+
+- fix(models): point qwen35-a3b/qwen36-a3b preset endpoints at 127.0.0.1:4000 (were 192.168.1.165:4000). After the proxy was bound loopback-only, the LAN-IP endpoint refused connections, so uap deliver/agentic tooling could not reach the model backend and sessions spiralled into backend-debugging loops. All consumers are on-host; loopback is correct.
+
 ## v1.129.0 (2026-07-08)
 
 - fix(security): extend the runtime integrity snapshot to gate-config files (audit X5). The applier blocks the model WRITING package.json/tsconfig/vitest.config/etc., but run_bash bypasses the applier, so `run_bash("npm pkg set scripts.test=exit 0")` could rig the gate uncaught. deliver now snapshots existing gate-config + package/lockfiles (new applier.listGateConfigFiles, bounded shallow scan skipping node_modules/.git) alongside the self-gate script; any a gate run mutates is restored and the turn discarded. Gated on --protect-tests (on by default).
