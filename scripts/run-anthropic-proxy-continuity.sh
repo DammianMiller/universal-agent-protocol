@@ -3,6 +3,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Fail-safe passthrough default: when ANTHROPIC_PASSTHROUGH_MODELS is unset OR
+# EMPTY, default it to __local_only__ (no api.anthropic.com forwarding) rather
+# than the code's empty=forward-cloud default. Set here in the ExecStart script
+# so it wins over systemd's EnvironmentFile (which overrides Environment=, so a
+# systemd Environment= pin cannot hold) and over the env file drifting back to
+# empty via `uap model routing use`/setup. An operator who genuinely wants cloud
+# passthrough sets an explicit non-empty value (a comma list of claude- ids),
+# which is preserved. This is the durable enforcement of the local-only policy.
+export ANTHROPIC_PASSTHROUGH_MODELS="${ANTHROPIC_PASSTHROUGH_MODELS:-__local_only__}"
+
 export PROXY_PORT="${PROXY_PORT:-4000}"
 export LLAMA_CPP_BASE="${LLAMA_CPP_BASE:-http://127.0.0.1:8080/v1}"
 export PROXY_LOG_LEVEL="${PROXY_LOG_LEVEL:-INFO}"

@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.129.5 (2026-07-08)
+
+- fix(proxy): enforce the local-only passthrough DEFAULT in the ExecStart continuity script (empty/unset ANTHROPIC_PASSTHROUGH_MODELS fails SAFE to __local_only__). A systemd Environment= pin does NOT hold — EnvironmentFile= overrides Environment= — and the env file keeps drifting to empty via routing/setup; the script export runs after systemd and wins. Explicit non-empty (cloud) values preserved. Verified: runtime __local_only__ with an empty env file.
+
 ## v1.129.4 (2026-07-08)
 
 - fix(proxy): preserve an operator __local_only__ pin against routing/setup rewrites
