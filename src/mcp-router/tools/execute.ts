@@ -13,6 +13,7 @@ import { globalSessionStats } from '../session-stats.js';
 import { persistCompressionSample } from '../../utils/telemetry-store.js';
 import { isExpertToolPath, expertNameFromPath, consultExpert } from '../experts/registry.js';
 import { recordToolSpan } from '../../observability/halo-exporter.js';
+import { emitAgentEvent, emitPolicyEvent } from '../../dashboard/event-stream.js';
 import { getPolicyGate, PolicyViolationError } from '../../policies/policy-gate.js';
 import { CoordinationService } from '../../coordination/service.js';
 import { isPathInsideWorktree, isExemptFromWorktree } from '../../cli/worktree.js';
@@ -137,8 +138,11 @@ export async function handleExecuteTool(
         executionTimeMs: Date.now() - startTime,
       };
     }
-    globalSessionStats.record(path, consult.consultation.length, consult.consultation.length);
-    persistCompressionSample(process.cwd(), path, consult.consultation.length, consult.consultation.length);
+    // NOTE: an expert-droid consultation is NOT a context-compression event.
+    // Previously this recorded record(path, len, len) / persistCompressionSample(len, len)
+    // — raw == context — which wrote a bogus 0%-savings sample that pinned the
+    // Compression panel's savings at 0%. Real compression is recorded at the
+    // genuine compression call site below; consultations only get a tool span.
     recordToolSpan(path, startTime, Date.now(), true, { 'expert.droid': droidName });
     return {
       success: true,
@@ -255,6 +259,15 @@ export async function handleExecuteTool(
     // Omit from the return value to save ~50 tokens per call — server.ts
     // no longer needs stripDiagnostics.
     recordToolSpan(path, startTime, Date.now(), true, { 'tool.server': serverName });
+    // Feed the dashboard Live Events activity stream (cross-process via
+    // telemetry.db). Best-effort inside emit; never blocks the tool call.
+    emitAgentEvent(
+      'tool',
+      toolName,
+      'success',
+      `${serverName} · ${compressed.stats.compressedBytes}b`,
+      { tool: path, server: serverName }
+    );
     return {
       success: true,
       result: compressed.output,
@@ -268,6 +281,7 @@ export async function handleExecuteTool(
         'tool.server': serverName,
         'error.kind': 'policy',
       });
+      emitPolicyEvent('block', `Blocked ${toolName}`, false, error.message, { tool: path });
       return {
         success: false,
         error: `[POLICY BLOCKED] ${error.message}`,
@@ -276,6 +290,13 @@ export async function handleExecuteTool(
       };
     }
     recordToolSpan(path, startTime, Date.now(), false, { 'tool.server': serverName });
+    emitAgentEvent(
+      'tool',
+      toolName,
+      'error',
+      error instanceof Error ? error.message : String(error),
+      { tool: path, server: serverName }
+    );
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error),

@@ -16,6 +16,8 @@
  *   - system: errors, warnings, info
  */
 
+import { persistEvent } from '../utils/telemetry-store.js';
+
 export type DashboardEventCategory =
   | 'policy'
   | 'memory'
@@ -84,6 +86,15 @@ class DashboardEventBus {
     this.history.push(event);
     if (this.history.length > MAX_EVENT_HISTORY) {
       this.history = this.history.slice(-MAX_EVENT_HISTORY);
+    }
+
+    // Persist cross-process: emitters run in the mcp-router/executor/memory
+    // processes, but the Live Events feed is served by the SEPARATE `dash serve`
+    // process. Without this, its in-process bus is always empty. Best-effort.
+    try {
+      persistEvent(process.cwd(), { category, type, severity, title, detail, metadata });
+    } catch {
+      /* telemetry must never break a hot path */
     }
 
     for (const handler of this.handlers) {

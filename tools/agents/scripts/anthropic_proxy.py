@@ -923,6 +923,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PROFILE_DIR = PROJECT_ROOT / "config" / "model-profiles"
 PROFILE_CACHE: dict[str, dict | None] = {}
 PROFILE_WARNED: set[str] = set()
+# Sandbox browser-tool stripping fires on EVERY request of a sandboxed session
+# (v1.119.4). Logging it at WARNING per request floods the journal (~140/2h for a
+# handful of sessions). Track which clients we've already told, log once each at
+# INFO. Bounded to avoid unbounded growth across long-lived proxies.
+_SANDBOX_STRIP_LOGGED: set[str] = set()
 
 _client_request_times: dict[str, deque[float]] = defaultdict(deque)
 _client_rate_last_log: dict[str, float] = defaultdict(float)
@@ -9334,11 +9339,16 @@ async def messages(request: Request):
     sandboxed = (request.headers.get("x-uap-sandbox") or "").strip() == "1"
     if sandboxed:
         _stripped = _strip_sandbox_unreachable_tools(body)
-        if _stripped:
-            logger.warning(
-                "SANDBOX: stripped %d unreachable browser MCP tool(s) "
-                "(bwrap cannot reach the claude-in-chrome extension)",
+        if _stripped and client_id not in _SANDBOX_STRIP_LOGGED:
+            if len(_SANDBOX_STRIP_LOGGED) > 512:
+                _SANDBOX_STRIP_LOGGED.clear()
+            _SANDBOX_STRIP_LOGGED.add(client_id)
+            logger.info(
+                "SANDBOX: stripping %d unreachable browser MCP tool(s) for %s "
+                "(bwrap cannot reach the claude-in-chrome extension; logged once "
+                "per session)",
                 _stripped,
+                client_id,
             )
 
     # Periodically re-detect context window from upstream (handles server restarts)

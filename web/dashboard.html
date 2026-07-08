@@ -680,6 +680,9 @@
           eventSource.onmessage = (e) => {
             try {
               const ev = JSON.parse(e.data);
+              // Dedup by id: the connect-burst and the cross-process poller can
+              // briefly overlap. Ignore events we already hold.
+              if (ev.id != null && liveEvents.some((x) => x.id === ev.id)) return;
               liveEvents.unshift(ev);
               if (liveEvents.length > 20) liveEvents.pop();
               renderLiveEvents();
@@ -705,7 +708,9 @@
         for (const ev of liveEvents) {
           const cat = ev.category || ev.type || 'system';
           const ts = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '';
-          const msg = ev.message || ev.detail || JSON.stringify(ev.data || '').slice(0, 80);
+          const title = ev.title || ev.message || '';
+          const detail = ev.detail || '';
+          const msg = (title && detail) ? `${title} — ${detail}` : (title || detail || JSON.stringify(ev.data || '').slice(0, 80));
           html += `<div class="event-row"><span class="event-time">${esc(ts)}</span><span class="event-cat cat-${esc(cat)}">${esc(cat)}</span><span class="event-msg">${esc(msg)}</span></div>`;
         }
         c.innerHTML = html;

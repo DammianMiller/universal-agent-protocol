@@ -71,6 +71,16 @@ function openStore(cwd: string): Database.Database | null {
         ts TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_perf_samples_metric ON perf_samples(metric);
+      CREATE TABLE IF NOT EXISTS dashboard_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT (datetime('now')),
+        category TEXT NOT NULL,
+        type TEXT NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'info',
+        title TEXT NOT NULL,
+        detail TEXT,
+        metadata TEXT
+      );
     `);
     dbCache.set(cwd, db);
     return db;
@@ -136,6 +146,133 @@ export function readCompressionStats(cwd: string): PersistedCompressionStats {
     return { rawBytes, contextBytes, savingsPercent, totalCalls: row.calls || 0 };
   } catch {
     return empty;
+  }
+}
+
+/** Shape of a dashboard event as persisted (kept structural to avoid a cyclic
+ * import with event-stream.ts, which imports this module). */
+export interface PersistedDashboardEvent {
+  id: number;
+  timestamp: string;
+  category: string;
+  type: string;
+  severity: string;
+  title: string;
+  detail?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** Keep at most this many events (rolling) so the table can't grow unbounded. */
+const MAX_PERSISTED_EVENTS = 500;
+let eventInsertCount = 0;
+
+/**
+ * Persist a single dashboard event so it is visible to the (separate) `dash
+ * serve` process. Best-effort/fail-open. Returns the new row id, or 0 on failure.
+ */
+export function persistEvent(
+  cwd: string,
+  ev: {
+    category: string;
+    type: string;
+    severity: string;
+    title: string;
+    detail?: string;
+    metadata?: Record<string, unknown>;
+  }
+): number {
+  const db = openStore(cwd);
+  if (!db) return 0;
+  try {
+    const info = db
+      .prepare(
+        `INSERT INTO dashboard_events (category, type, severity, title, detail, metadata)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        ev.category,
+        ev.type,
+        ev.severity || 'info',
+        ev.title,
+        ev.detail ?? null,
+        ev.metadata ? JSON.stringify(ev.metadata) : null
+      );
+    if (++eventInsertCount % 50 === 0) {
+      db.prepare(
+        `DELETE FROM dashboard_events WHERE id <= (
+           SELECT MAX(id) - ? FROM dashboard_events
+         )`
+      ).run(MAX_PERSISTED_EVENTS);
+    }
+    return Number(info.lastInsertRowid) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function mapEventRow(r: {
+  id: number;
+  ts: string;
+  category: string;
+  type: string;
+  severity: string;
+  title: string;
+  detail: string | null;
+  metadata: string | null;
+}): PersistedDashboardEvent {
+  let metadata: Record<string, unknown> | undefined;
+  if (r.metadata) {
+    try {
+      metadata = JSON.parse(r.metadata);
+    } catch {
+      /* ignore bad json */
+    }
+  }
+  return {
+    id: r.id,
+    timestamp: r.ts,
+    category: r.category,
+    type: r.type,
+    severity: r.severity,
+    title: r.title,
+    detail: r.detail ?? undefined,
+    metadata,
+  };
+}
+
+/** Read events with id > afterId (chronological), capped at `limit`. */
+export function readEventsSince(cwd: string, afterId: number, limit = 100): PersistedDashboardEvent[] {
+  if (!existsSync(telemetryDbPath(cwd))) return [];
+  const db = openStore(cwd);
+  if (!db) return [];
+  try {
+    const rows = db
+      .prepare(
+        `SELECT id, ts, category, type, severity, title, detail, metadata
+         FROM dashboard_events WHERE id > ? ORDER BY id ASC LIMIT ?`
+      )
+      .all(afterId, limit) as Parameters<typeof mapEventRow>[0][];
+    return rows.map(mapEventRow);
+  } catch {
+    return [];
+  }
+}
+
+/** Read the most recent `limit` events (chronological order). */
+export function readRecentEvents(cwd: string, limit = 50): PersistedDashboardEvent[] {
+  if (!existsSync(telemetryDbPath(cwd))) return [];
+  const db = openStore(cwd);
+  if (!db) return [];
+  try {
+    const rows = db
+      .prepare(
+        `SELECT id, ts, category, type, severity, title, detail, metadata
+         FROM dashboard_events ORDER BY id DESC LIMIT ?`
+      )
+      .all(limit) as Parameters<typeof mapEventRow>[0][];
+    return rows.reverse().map(mapEventRow);
+  } catch {
+    return [];
   }
 }
 
