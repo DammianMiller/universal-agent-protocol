@@ -56,6 +56,8 @@ interface DashboardOptions {
   taskId?: string;
   port?: number;
   host?: string;
+  /** Snapshot push/poll interval in seconds (`--refresh`). */
+  refresh?: string;
 }
 
 export async function dashboardCommand(
@@ -107,9 +109,14 @@ export async function dashboardCommand(
 
 async function serveDashboard(options: DashboardOptions): Promise<void> {
   const { startDashboardServer } = await import('../dashboard/server.js');
+  // --refresh takes seconds (human-friendly); the UAP_DASH_REFRESH_MS env
+  // override (consumed in the server) takes milliseconds.
+  const refreshSeconds = Number((options as { refresh?: string }).refresh);
+  const updateIntervalMs = refreshSeconds > 0 ? Math.round(refreshSeconds * 1000) : undefined;
   const server = startDashboardServer({
     port: (options as { port?: number }).port || 3847,
     host: (options as { host?: string }).host,
+    updateIntervalMs,
   });
 
   // Keep alive until Ctrl+C

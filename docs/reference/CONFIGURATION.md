@@ -91,6 +91,7 @@ Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
 | `UAP_BENCHMARK_PARALLEL` | Parallel model count in benchmarks | — |
 | `UAP_SNAPSHOT_DIR` | Base dir for `--keep-best` snapshots (absolute path) | `~/.cache/uap/snapshots` |
 | `UAP_SNAPSHOT_MAX_MB` | Skip the `--keep-best` snapshot (rollback disabled) when the tree exceeds this size | `4096` |
+| `UAP_DASH_REFRESH_MS` | Dashboard live snapshot push/poll interval in ms (`--refresh` flag wins; min 250) | `2000` |
 | `HERMES_HOME` | Hermes home dir | `~/.hermes` |
 | `FACTORY_PROJECT_DIR` | Project dir in Factory hook commands | — |
 | `FORGE_UAP_PROJECT` | Project dir in ForgeCode hook scripts | `.` |

@@ -21,7 +21,7 @@
     "start": "node dist/bin/cli.js",
     "test": "vitest",
     "test:ci": "vitest run",
-    "test:enforcers": "python3 -m unittest tools.agents.tests.test_enforcement_self_protect tools.agents.tests.test_workdir_scope_enforcer tools.agents.tests.test_path_containment tools.agents.tests.test_path_normalizer_hardened tools.agents.tests.test_sandbox_tool_strip tools.agents.tests.test_proxy_env_loader tools.agents.tests.test_stream_required_tool tools.agents.tests.test_tool_call_wrapper_profiles tools.agents.tests.test_tool_convert_cache",
+    "test:enforcers": "python3 -m unittest tools.agents.tests.test_enforcement_self_protect tools.agents.tests.test_schema_diff_gate tools.agents.tests.test_stream_telemetry tools.agents.tests.test_workdir_scope_enforcer tools.agents.tests.test_path_containment tools.agents.tests.test_path_normalizer_hardened tools.agents.tests.test_sandbox_tool_strip tools.agents.tests.test_proxy_env_loader tools.agents.tests.test_stream_required_tool tools.agents.tests.test_tool_call_wrapper_profiles tools.agents.tests.test_tool_convert_cache",
     "test:coverage": "vitest --coverage",
     "bench": "vitest --config vitest.bench.config.ts",
     "lint": "eslint src --ext .ts",

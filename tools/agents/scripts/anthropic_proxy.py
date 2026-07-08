@@ -8954,6 +8954,12 @@ async def stream_anthropic_response(
     text_chunks: list[str] = []  # accumulate text for logging
     reasoning_chunks: list[str] = []  # accumulate reasoning for fallback
 
+    # Real token counts from upstream's final usage chunk (llama-server /
+    # OpenAI emit it on the last data frame). The per-delta output_tokens
+    # counter is a chunk count that misses tool-call deltas entirely; prefer
+    # upstream truth for telemetry and the session monitor.
+    upstream_usage: dict = {}
+
     try:
         async for line in openai_stream.aiter_lines():
             if not line.startswith("data: "):
@@ -8965,6 +8971,9 @@ async def stream_anthropic_response(
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
+
+            if isinstance(chunk.get("usage"), dict):
+                upstream_usage = chunk["usage"]
 
             choice = (chunk.get("choices") or [{}])[0]
             delta = choice.get("delta", {})
@@ -9238,6 +9247,28 @@ async def stream_anthropic_response(
 
     # message_stop
     yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+
+    # Per-project telemetry for the TRUE streaming path. The only other call
+    # sites are on the non-stream / guarded-non-stream paths, so streaming
+    # sessions (the client default) wrote no task_outcomes rows and
+    # per-project dashboards froze at the last non-stream response.
+    # Prefer upstream's real usage: last_input_tokens is a char-based request
+    # estimate, and the per-delta counter misses tool-call turns entirely.
+    upstream_input = int(upstream_usage.get("prompt_tokens") or 0)
+    if upstream_input > 0:
+        monitor.last_input_tokens = upstream_input
+    usage_final = {
+        "input_tokens": upstream_input or getattr(monitor, "last_input_tokens", 0) or 0,
+        "output_tokens": int(upstream_usage.get("completion_tokens") or 0) or output_tokens,
+    }
+    # After message_stop (never delays the client's final frame; a disconnect
+    # parked exactly on that yield skips recording, matching the non-stream
+    # "completed responses only" semantics) and off the event loop (a locked
+    # analytics DB must not stall token delivery for concurrent sessions).
+    try:
+        await asyncio.to_thread(_record_project_telemetry, anthropic_body, model, usage_final)
+    except Exception:
+        pass
 
 
 # ===========================================================================

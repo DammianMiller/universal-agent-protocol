@@ -557,7 +557,7 @@ Aliased as `dash`.
 | `agents` | `-v` | Agent activity, resource claims, coordination status |
 | `memory` | `-v` | Memory system health, capacity, layer architecture |
 | `progress` | `-v` | Completion tracking per-priority and per-type |
-| `serve` | `-p, --port` (3847) | Start the web-based dashboard server with live updates |
+| `serve` | `-p, --port` (3847), `--host`, `--refresh <seconds>` (2) | Start the web-based dashboard server with live updates; `--refresh` sets the snapshot push/poll cadence (min 0.25s, env `UAP_DASH_REFRESH_MS`) |
 | `stats` | `-v` | Session context consumption stats with per-tool breakdown |
 | `session` | `-v`, `--compact` | Live UAP session state: infra, patterns, skills, git, policies |
 | `benchmark` | `-v` | Benchmark results and performance comparison |

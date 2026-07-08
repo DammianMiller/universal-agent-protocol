@@ -1488,8 +1488,16 @@ program
       .description('Start web-based dashboard server with real-time updates')
       .option('-p, --port <number>', 'Port to listen on (default: 3847)', '3847')
       .option('--host <host>', 'Interface to bind (default: localhost; use 0.0.0.0 for LAN/remote access)', 'localhost')
+      .option(
+        '--refresh <seconds>',
+        'Live snapshot push/poll interval in seconds (min 0.25; default 2, or UAP_DASH_REFRESH_MS)'
+      )
       .action(async (options) => {
-        (await lazy.dashboard())('serve', { port: parseInt(options.port), host: options.host });
+        (await lazy.dashboard())('serve', {
+          port: parseInt(options.port),
+          host: options.host,
+          refresh: options.refresh,
+        });
       })
   )
   .addCommand(

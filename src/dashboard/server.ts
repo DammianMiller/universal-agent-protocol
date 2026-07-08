@@ -86,7 +86,15 @@ export interface DashboardServerOptions {
 export function startDashboardServer(options: DashboardServerOptions = {}): { close: () => void } {
   const port = options.port || 3847;
   const host = options.host || 'localhost';
-  const updateInterval = options.updateIntervalMs || 2000;
+  // Precedence: explicit option (--refresh) > UAP_DASH_REFRESH_MS > 2000.
+  // Floor 250ms — getDashboardData reads several DBs per snapshot, so a
+  // too-small interval would peg the event loop. Ceiling 1h — past 2^31-1ms,
+  // setInterval overflows and spins at 1ms, the exact opposite of "slow".
+  const envRefresh = Number(process.env.UAP_DASH_REFRESH_MS);
+  const updateInterval = Math.min(
+    3_600_000,
+    Math.max(250, options.updateIntervalMs || (envRefresh > 0 ? envRefresh : 0) || 2000)
+  );
 
   // Track SSE clients for live event streaming
   const sseClients = new Set<ServerResponse>();
@@ -311,10 +319,11 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
           // Inject the per-session mutation token so the SAME-ORIGIN UI can send
           // it on policy mutations. A cross-origin page cannot read this HTML
           // (CORS blocks the cross-origin read), so it never sees the token.
-          const html = readFileSync(DASHBOARD_HTML_PATH, 'utf-8').replace(
-            /__UAP_DASHBOARD_TOKEN__/g,
-            mutationToken
-          );
+          const html = readFileSync(DASHBOARD_HTML_PATH, 'utf-8')
+            .replace(/__UAP_DASHBOARD_TOKEN__/g, mutationToken)
+            // The client's fallback poll should tick at the same cadence the
+            // server pushes; injected so one --refresh flag governs both.
+            .replace(/__UAP_DASH_REFRESH_MS__/g, String(updateInterval));
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end(html);
         } else {
