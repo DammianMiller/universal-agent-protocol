@@ -400,11 +400,15 @@ export async function initCommand(options: InitOptions): Promise<void> {
   // agents are routed through `uap deliver` (block mode via the policy-gate hook).
   const deliverSpinner = ora('Enabling delivery-enforcement + wiring deliver tool...').start();
   try {
-    const { ensureDeliveryEnforcement, wireDeliverMcp } = await import('./deliver-defaults.js');
+    const { ensureDeliveryEnforcement, ensureSelfProtect, wireDeliverMcp } = await import('./deliver-defaults.js');
     const result = await ensureDeliveryEnforcement();
     wireDeliverMcp(cwd);
+    // Attach the self-protect enforcer too (previously shipped but never
+    // registered → inert). Fail-soft: never blocks init.
+    const sp = await ensureSelfProtect().catch(() => ({ enabled: false, enforcerAttached: false } as const));
     if (result.enabled) {
-      deliverSpinner.succeed('delivery-enforcement active (block by default) + deliver tool wired');
+      const spNote = sp.enabled && sp.enforcerAttached ? ' + self-protect' : '';
+      deliverSpinner.succeed(`delivery-enforcement active (block by default)${spNote} + deliver tool wired`);
     } else {
       deliverSpinner.warn(`delivery-enforcement not enabled: ${result.reason ?? 'unknown'}`);
     }
