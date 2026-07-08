@@ -63,10 +63,9 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install proxy runtime deps
-        # Four of the enforcer tests import the proxy module (sandbox tool-strip,
-        # env-loader, stream-required, tool-call-wrapper), which needs
-        # fastapi/uvicorn/httpx. Without these the suite fails at import.
-        run: pip install -r tools/agents/scripts/requirements-proxy.txt
+        # Enforcer tests import the proxy module (fastapi/uvicorn/httpx) and the
+        # tool-call wrapper (openai). Without these the suite fails at import.
+        run: pip install -r tools/agents/scripts/requirements-proxy.txt openai
       - name: Run security enforcer + proxy tests
         run: npm run test:enforcers
 
