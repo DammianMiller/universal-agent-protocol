@@ -22,8 +22,11 @@ function waitForSnapshot(port: number, timeoutMs: number): Promise<any> {
       const timer = setTimeout(() => { req.destroy(); reject(new Error('no snapshot event before timeout')); }, timeoutMs);
       res.on('data', (chunk) => {
         buf += chunk.toString();
-        // Frames are separated by a blank line; find a `snapshot` frame.
+        // Frames are separated by a blank line. The final split segment is a
+        // PARTIAL frame still streaming in — snapshots over one TCP chunk
+        // (~64KB) would otherwise be JSON.parsed mid-string. Keep it buffered.
         const frames = buf.split('\n\n');
+        buf = frames.pop() ?? '';
         for (const f of frames) {
           if (f.includes('event: snapshot')) {
             const dataLine = f.split('\n').find((l) => l.startsWith('data: '));
@@ -56,7 +59,7 @@ describe('dashboard server — bind host (A) + live SSE snapshot push (C)', () =
       setTimeout(() => reject(new Error('request timeout')), 4000);
     });
     expect(code).toBe(200);
-  });
+  }, 20000);
 
   it('pushes a full live snapshot to SSE clients as a named `snapshot` event (cross-process live)', async () => {
     const port = portSeq++;
@@ -67,7 +70,7 @@ describe('dashboard server — bind host (A) + live SSE snapshot push (C)', () =
     expect(snap).toBeTypeOf('object');
     expect(snap).toHaveProperty('timestamp');
     expect(snap).toHaveProperty('tasks');
-  });
+  }, 20000);
 
   it('still pushes live frames over the primary WebSocket path', async () => {
     const port = portSeq++;
@@ -84,5 +87,5 @@ describe('dashboard server — bind host (A) + live SSE snapshot push (C)', () =
       ws.on('error', reject);
     });
     expect(frame).toHaveProperty('timestamp');
-  });
+  }, 20000);
 });

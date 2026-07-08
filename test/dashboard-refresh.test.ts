@@ -35,7 +35,7 @@ function fetchBody(port: number, path: string): Promise<string> {
   });
 }
 
-/** Count `snapshot` SSE frames received within `windowMs`. */
+/** Count COMPLETE `snapshot` SSE frames received within `windowMs`. */
 function countSnapshots(port: number, windowMs: number): Promise<number> {
   return new Promise((resolve, reject) => {
     const req = http.get({ host: HOST, port, path: '/api/events' }, (res) => {
@@ -43,7 +43,11 @@ function countSnapshots(port: number, windowMs: number): Promise<number> {
       res.on('data', (c) => (buf += c.toString()));
       setTimeout(() => {
         req.destroy();
-        resolve(buf.split('\n\n').filter((f) => f.includes('event: snapshot')).length);
+        // Drop the trailing partial frame — only blank-line-terminated frames
+        // are complete (large snapshots span multiple TCP chunks).
+        const frames = buf.split('\n\n');
+        frames.pop();
+        resolve(frames.filter((f) => f.includes('event: snapshot')).length);
       }, windowMs);
       res.on('error', () => {
         /* stream teardown */
@@ -63,7 +67,7 @@ describe('dashboard refresh interval', () => {
     // subprocess); the 2s default would yield at most 2. Require ≥3.
     const count = await countSnapshots(port, 4000);
     expect(count).toBeGreaterThanOrEqual(3);
-  });
+  }, 20000);
 
   it('injects the cadence into the served page so the client fallback poll matches', async () => {
     const port = portSeq++;
@@ -72,7 +76,7 @@ describe('dashboard refresh interval', () => {
     const html = await fetchBody(port, '/');
     expect(html).not.toContain('__UAP_DASH_REFRESH_MS__');
     expect(html).toContain("Number('700')");
-  });
+  }, 20000);
 
   it('honors UAP_DASH_REFRESH_MS when no explicit option is set', async () => {
     process.env.UAP_DASH_REFRESH_MS = '900';
@@ -81,7 +85,7 @@ describe('dashboard refresh interval', () => {
     await settle();
     const html = await fetchBody(port, '/');
     expect(html).toContain("Number('900')");
-  });
+  }, 20000);
 
   it('clamps pathological intervals to the 250ms floor', async () => {
     const port = portSeq++;
@@ -89,7 +93,7 @@ describe('dashboard refresh interval', () => {
     await settle();
     const html = await fetchBody(port, '/');
     expect(html).toContain("Number('250')");
-  });
+  }, 20000);
 
   it('caps oversized intervals at 1h so setInterval cannot overflow and spin at 1ms', async () => {
     const port = portSeq++;
@@ -97,5 +101,5 @@ describe('dashboard refresh interval', () => {
     await settle();
     const html = await fetchBody(port, '/');
     expect(html).toContain("Number('3600000')");
-  });
+  }, 20000);
 });

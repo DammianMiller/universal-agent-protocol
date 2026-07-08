@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.130.0 (2026-07-08)
+
+- test(dashboard): fix SSE partial-frame parsing + load-tolerant timeouts
+- feat(dashboard): task board shows epic/story groupings and hierarchy
+- fix(proxy): enforce local-only passthrough default in the ExecStart script
+
+
 ## v1.129.5 (2026-07-08)
 
 - fix(proxy): enforce the local-only passthrough DEFAULT in the ExecStart continuity script (empty/unset ANTHROPIC_PASSTHROUGH_MODELS fails SAFE to __local_only__). A systemd Environment= pin does NOT hold — EnvironmentFile= overrides Environment= — and the env file keeps drifting to empty via routing/setup; the script export runs after systemd and wins. Explicit non-empty (cloud) values preserved. Verified: runtime __local_only__ with an empty env file.
