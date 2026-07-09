@@ -158,5 +158,52 @@ class ContaminationBreakerPreservesStateTest(unittest.TestCase):
         self.assertIn("step two", blob)
 
 
+class PrunerStateCarryoverTest(unittest.TestCase):
+    """#2 companion: the CONTEXT PRUNER (not just the contamination breaker)
+    must carry the plan + files-written across a drop, or a long build re-reads
+    its own output after every prune (observed live: `cat lib.rs` ×16)."""
+
+    def test_prune_marker_carries_written_files(self):
+        long = "x " * 800  # ~400 tok each — large middle, small head/tail
+        messages = [{"role": "user", "content": "build the org-model crate"}]
+        # a WRITE in the middle (will be dropped) — the breadcrumb never
+        # captures write actions, only tool_result reads.
+        messages.append({"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Write",
+             "input": {"file_path": "org-model/src/person.rs"}}]})
+        for _ in range(6):  # large read results fill the middle
+            messages.append({"role": "user", "content": [
+                {"type": "tool_result", "content": "read " + long}]})
+        for t in ["a", "b", "c", "d"]:  # small recent tail (protected, fits)
+            messages.append({"role": "user", "content": t})
+
+        body = {"messages": messages}
+        m = ap.SessionMonitor(context_window=4000)
+        out = ap.prune_conversation(body, context_window=4000, monitor=m,
+                                    target_fraction=0.4, keep_last=4)
+        blob = "\n".join(
+            b if isinstance(b, str) else str(b)
+            for msg in out["messages"] for b in [msg.get("content", "")]
+        )
+        # the dropped Write action survives as a carryover manifest entry
+        self.assertIn("STATE CARRYOVER", blob)
+        self.assertIn("org-model/src/person.rs", blob)
+
+    def test_no_carryover_on_fresh_prune_still_prunes(self):
+        """A prune with no plan/writes to carry still works (breadcrumb only)."""
+        long = "y " * 800
+        messages = [{"role": "user", "content": "explore"}]
+        for _ in range(6):
+            messages.append({"role": "user", "content": [
+                {"type": "tool_result", "content": "read " + long}]})
+        for t in ["a", "b", "c", "d"]:
+            messages.append({"role": "user", "content": t})
+        m = ap.SessionMonitor(context_window=4000)
+        out = ap.prune_conversation({"messages": messages}, context_window=4000,
+                                    monitor=m, target_fraction=0.4, keep_last=4)
+        # no crash, and it did drop (fewer messages than input)
+        self.assertLess(len(out["messages"]), len(messages))
+
+
 if __name__ == "__main__":
     unittest.main()

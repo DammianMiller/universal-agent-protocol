@@ -2320,10 +2320,24 @@ def prune_conversation(
     kept_msgs = middle[drop_count:]
 
     if dropped:
-        # Replace the dropped block with a findings-breadcrumb summary (B2).
+        # Replace the dropped block with a findings-breadcrumb summary (B2),
+        # PLUS a state-carryover (plan + files ALREADY WRITTEN) reconstructed
+        # from the full pre-prune conversation. The breadcrumb only captures
+        # tool_result *reads*; it never captures the assistant's own write
+        # actions, so on a long build the pruner drops the write-history and the
+        # model forgets what it created — then re-reads/re-creates its own files
+        # (observed live: `cat lib.rs` ×16 at ctx 140% on a 3-day session). The
+        # carryover keeps "you already wrote X — don't redo it" across the drop.
+        # (#2 companion: the contamination breaker already carries this; the
+        # pruner is the HIGHER-frequency state-dropper on huge sessions, so the
+        # carryover matters most here.)
+        carry = _extract_state_carryover(messages)
+        marker_content = _summarize_pruned_block(dropped)
+        if carry:
+            marker_content = f"{carry}\n\n{marker_content}"
         prune_marker = {
             "role": "user",
-            "content": _summarize_pruned_block(dropped),
+            "content": marker_content,
         }
         anthropic_body["messages"] = (
             protected_head + [prune_marker] + kept_msgs + protected_tail
