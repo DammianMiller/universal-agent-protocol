@@ -71,6 +71,13 @@ export interface GateRung {
    * never flips a passing rung to failed.
    */
   teardown?: { command: string; args: string[]; timeoutMs: number };
+  /**
+   * Exit codes that count as a pass (default [0]). Lets marker-scoped pytest
+   * rungs treat "no tests collected" (exit 5) as a vacuous pass instead of a
+   * permanent required failure on repos that declare the marker but have not
+   * written marked tests yet.
+   */
+  passExitCodes?: number[];
 }
 
 /** Effective tier for a rung — absent tier means the original `fast` band. */
@@ -271,18 +278,41 @@ export function detectIntegrationRungs(
   // pytest integration marker — only when no npm integration script already
   // covers it, to avoid double-running in polyglot repos.
   if (rungs.length === 0 && pytestHasIntegrationMarker(projectRoot)) {
+    // A full-suite coverage fail-under poisons marker-scoped subset runs (the
+    // deselected majority reads as uncovered), so disable coverage for this
+    // rung when the pytest config wires pytest-cov in. Exit 5 ("no tests ran")
+    // is a vacuous pass: the marker being declared does not mean marked tests
+    // exist yet, and a required rung that can never pass wedges every mission
+    // on the repo (observed live 2026-07-10).
+    const args = ['-m', 'pytest', '-m', 'integration', '-q'];
+    if (pytestConfigUsesCov(projectRoot)) args.push('--no-cov');
     rungs.push({
       id: 'pytest:integration',
       name: 'Integration tests (pytest -m integration)',
       command: 'python3',
-      args: ['-m', 'pytest', '-m', 'integration', '-q'],
+      args,
       required: true,
       timeoutMs: integrationTimeout,
       tier: 'integration',
+      passExitCodes: [0, 5],
     });
   }
 
   return rungs;
+}
+
+/** True when a pytest config wires pytest-cov into addopts (`--cov`). */
+function pytestConfigUsesCov(projectRoot: string): boolean {
+  for (const file of ['pyproject.toml', 'pytest.ini', 'setup.cfg', 'tox.ini']) {
+    const p = join(projectRoot, file);
+    if (!existsSync(p)) continue;
+    try {
+      if (/--cov\b/.test(readFileSync(p, 'utf-8'))) return true;
+    } catch {
+      /* unreadable config */
+    }
+  }
+  return false;
 }
 
 /** True when a pytest config declares an `integration` marker. */
@@ -486,7 +516,9 @@ export function runRung(rung: GateRung, projectRoot: string, tailChars: number =
 
   const durationMs = Date.now() - start;
   const exitCode = res.status;
-  const passed = exitCode === 0;
+  // A spawn error / signal leaves status null — never a pass, whatever the
+  // rung's passExitCodes say.
+  const passed = exitCode !== null && (rung.passExitCodes ?? [0]).includes(exitCode);
 
   // spawnSync reports timeouts/missing binaries via res.error (+ res.signal),
   // with status null and empty output — without this the model would get a
