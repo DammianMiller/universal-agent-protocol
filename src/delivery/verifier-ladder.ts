@@ -569,15 +569,30 @@ export function formatFeedback(results: RungResult[], rungs: GateRung[]): string
     lines.push(`- ${r.name}${optional}: ${status}`);
   }
 
-  const firstFailure =
-    results.find((r) => !r.passed && !r.skipped && requiredIds.has(r.id)) ??
-    results.find((r) => !r.passed && !r.skipped);
-  if (firstFailure && firstFailure.outputTail) {
+  const firstRequiredFailure = results.find(
+    (r) => !r.passed && !r.skipped && requiredIds.has(r.id)
+  );
+  if (firstRequiredFailure && firstRequiredFailure.outputTail) {
     lines.push('');
-    lines.push(`Fix this gate first — ${firstFailure.name} output:`);
+    lines.push(`Fix this gate first — ${firstRequiredFailure.name} output:`);
     lines.push('```');
-    lines.push(firstFailure.outputTail);
+    lines.push(firstRequiredFailure.outputTail);
     lines.push('```');
+  } else {
+    // Optional-only failures must NOT carry the "fix this first" imperative or
+    // the failure tail: on an otherwise-green baseline the tail baits the model
+    // into burning whole attempts on a non-blocking rung instead of the task
+    // goal (observed live 2026-07-10: 13/13 writes against an optional lint
+    // rung whose eslint plugin crash the agent could never fix, zero writes
+    // toward the epic goal).
+    const firstOptionalFailure = results.find((r) => !r.passed && !r.skipped);
+    if (firstOptionalFailure) {
+      lines.push('');
+      lines.push(
+        `Note: ${firstOptionalFailure.name} is failing but is OPTIONAL — it does not block ` +
+          'acceptance. Do not prioritize it over the task goal.'
+      );
+    }
   }
 
   return lines.join('\n');

@@ -211,5 +211,18 @@ describe('verifier-ladder', () => {
       expect(feedback).toContain('real failure');
       expect(feedback).not.toContain('lint noise');
     });
+
+    it('optional-only failures get a de-prioritizing note, never the failure tail', () => {
+      const rungs = [rung('lint', 'x', [], false), rung('test', 'x', [])];
+      const results: RungResult[] = [
+        { id: 'lint', name: 'lint', passed: false, skipped: false, exitCode: 1, durationMs: 1, outputTail: 'lint noise' },
+        { id: 'test', name: 'test', passed: true, skipped: false, exitCode: 0, durationMs: 1, outputTail: '' },
+      ];
+      const feedback = formatFeedback(results, rungs);
+      expect(feedback).not.toContain('Fix this gate first');
+      expect(feedback).not.toContain('lint noise');
+      expect(feedback).toContain('OPTIONAL');
+      expect(feedback).toContain('Do not prioritize it over the task goal');
+    });
   });
 });
