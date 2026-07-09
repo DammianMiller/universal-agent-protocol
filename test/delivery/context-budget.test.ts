@@ -257,4 +257,55 @@ describe('runEpics — split on context-budget exhaustion', () => {
     });
     expect(priorsSeen['big.a'].some((p) => p.includes('First'))).toBe(true);
   });
+
+  it('(#5) splits on an ordinary (non-budget) failure when splitOnAnyFailure is set', async () => {
+    let splitAsked = false;
+    const ran: string[] = [];
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'e', title: 'E', goal: 'g' }],
+      maxAttemptsPerEpic: 1,
+      splitOnAnyFailure: true,
+      runEpic: async (epic) => {
+        ran.push(epic.id);
+        if (epic.id === 'e') return { success: false, summary: 'tests failed', turns: 1 };
+        return ok(`${epic.id} done`);
+      },
+      splitEpic: async () => {
+        splitAsked = true;
+        return [
+          { id: 'a', title: 'A', goal: 'a' },
+          { id: 'b', title: 'B', goal: 'b' },
+        ];
+      },
+    });
+    expect(splitAsked).toBe(true); // auto-escalation: give-up became a re-split
+    expect(ran).toEqual(['e', 'e.a', 'e.b']);
+    expect(res.success).toBe(true);
+  });
+
+  it('(#4c) recurses splitDepth levels — a sub-epic that still overflows is split again', async () => {
+    let splitCalls = 0;
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'big', title: 'Big', goal: 'g' }],
+      maxAttemptsPerEpic: 1,
+      splitDepth: 2,
+      // only leaf pieces (two namespaced levels deep, e.g. big.a.a) pass; the
+      // parent and the first-level pieces overflow their budget.
+      runEpic: async (epic) =>
+        /\.[a-z]\.[a-z]$/.test(epic.id)
+          ? ok(`${epic.id} done`)
+          : { success: false, summary: `${CONTEXT_BUDGET_MARKER} over`, turns: 1 },
+      splitEpic: async () => {
+        splitCalls++;
+        return [
+          { id: 'a', title: 'A', goal: 'a' },
+          { id: 'b', title: 'B', goal: 'b' },
+        ];
+      },
+    });
+    expect(splitCalls).toBeGreaterThan(1); // split at level 1 AND again at level 2
+    expect(res.success).toBe(true);
+  });
 });

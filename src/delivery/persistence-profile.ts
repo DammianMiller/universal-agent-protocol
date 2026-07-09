@@ -36,8 +36,11 @@ const PROFILES: Record<Exclude<PersistenceIntensity, 'off'>, Omit<PersistencePro
   light: { intensity: 'light', stopHookBlocks: true, maxBlocks: 3, stagnationLimit: 2, injectAutonomy: false },
   // Opus/Sonnet/GPT — nudge past premature-done; moderate blocking.
   moderate: { intensity: 'moderate', stopHookBlocks: true, maxBlocks: 6, stagnationLimit: 3, injectAutonomy: true },
-  // qwen / small local — firmly drive; more blocks tolerated, tighter stagnation.
-  aggressive: { intensity: 'aggressive', stopHookBlocks: true, maxBlocks: 9, stagnationLimit: 3, injectAutonomy: true },
+  // qwen / small local — firmly drive; more blocks tolerated. (#4d) maxBlocks
+  // 9→12 and stagnationLimit 3→4 give a huge multi-epic build more runway
+  // before give-up, now that #2 (state carryover) and #3 (force-write) keep the
+  // model making real progress across resets. Still finite — anti-spin holds.
+  aggressive: { intensity: 'aggressive', stopHookBlocks: true, maxBlocks: 12, stagnationLimit: 4, injectAutonomy: true },
 };
 
 const OFF_PROFILE: Omit<PersistenceProfile, 'model' | 'family'> = {
@@ -114,6 +117,21 @@ export function resolvePersistenceProfile(
       if (model.toLowerCase().includes(key.toLowerCase())) {
         profile = { ...profile, ...ov, model, family };
       }
+    }
+  }
+
+  // (#4d) Env caps: raise the hands-free runway for a huge mission without
+  // weakening per-family defaults. Applied last so an explicit operator value
+  // wins. Only meaningful when the profile blocks; both stay finite (clamped
+  // to 50) so the "never spin forever" guarantee holds.
+  if (profile.stopHookBlocks) {
+    const envBlocks = Number(process.env.UAP_HANDSFREE_MAX_BLOCKS);
+    const envStag = Number(process.env.UAP_HANDSFREE_STAGNATION_LIMIT);
+    if (Number.isFinite(envBlocks) && envBlocks >= 1) {
+      profile = { ...profile, maxBlocks: Math.min(Math.floor(envBlocks), 50) };
+    }
+    if (Number.isFinite(envStag) && envStag >= 1) {
+      profile = { ...profile, stagnationLimit: Math.min(Math.floor(envStag), 50) };
     }
   }
   return profile;

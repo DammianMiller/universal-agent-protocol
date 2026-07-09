@@ -83,6 +83,34 @@ describe('persistence profile (C)', () => {
     expect(local.maxBlocks).toBeGreaterThan(resolvePersistenceProfile('opus-4.8').maxBlocks);
   });
 
+  it('(#4d) local aggressive profile has the raised runway (maxBlocks 12, stagnation 4)', () => {
+    const p = resolvePersistenceProfile('qwen35-a3b');
+    expect(p.maxBlocks).toBe(12);
+    expect(p.stagnationLimit).toBe(4);
+  });
+
+  it('(#4d) env caps raise the hands-free runway (clamped, still finite)', () => {
+    const prev = {
+      b: process.env.UAP_HANDSFREE_MAX_BLOCKS,
+      s: process.env.UAP_HANDSFREE_STAGNATION_LIMIT,
+    };
+    process.env.UAP_HANDSFREE_MAX_BLOCKS = '20';
+    process.env.UAP_HANDSFREE_STAGNATION_LIMIT = '7';
+    try {
+      const p = resolvePersistenceProfile('qwen35-a3b');
+      expect(p.maxBlocks).toBe(20);
+      expect(p.stagnationLimit).toBe(7);
+      // clamp: a runaway value is bounded, never infinite
+      process.env.UAP_HANDSFREE_MAX_BLOCKS = '9999';
+      expect(resolvePersistenceProfile('qwen35-a3b').maxBlocks).toBe(50);
+    } finally {
+      if (prev.b === undefined) delete process.env.UAP_HANDSFREE_MAX_BLOCKS;
+      else process.env.UAP_HANDSFREE_MAX_BLOCKS = prev.b;
+      if (prev.s === undefined) delete process.env.UAP_HANDSFREE_STAGNATION_LIMIT;
+      else process.env.UAP_HANDSFREE_STAGNATION_LIMIT = prev.s;
+    }
+  });
+
   it('disabled config yields an off profile that never blocks', () => {
     const p = resolvePersistenceProfile('opus-4.8', { enabled: false });
     expect(p.intensity).toBe('off');
@@ -173,9 +201,31 @@ describe('stop-check decision (A + anti-spin)', () => {
     initLedger(dir, 'mission', [{ id: 'e1', title: 'A' }]);
     const outcomes: boolean[] = [];
     for (let i = 0; i < 5; i++) outcomes.push(decideStopCheck(dir, false).block);
-    // aggressive profile: stagnationLimit 3 -> blocks a few times, then a give-up (false)
+    // aggressive profile: blocks a few times, then a give-up (false)
     expect(outcomes.slice(0, 3).every((b) => b)).toBe(true);
     expect(outcomes).toContain(false);
+  });
+
+  it('(#1) routes a large stalled build to `uap deliver --epics` on give-up', () => {
+    initLedger(dir, 'mission', items); // 3 items => large multi-item build
+    let giveUpMsg = '';
+    for (let i = 0; i < 30; i++) {
+      const r = decideStopCheck(dir, false);
+      if (r.giveUp) { giveUpMsg = r.message; break; }
+    }
+    expect(giveUpMsg).toContain('uap deliver --epics');
+    expect(giveUpMsg).toContain('FRESH session');
+  });
+
+  it('(#1) small builds keep the plain escalate/split guidance', () => {
+    initLedger(dir, 'mission', [{ id: 'only', title: 'One' }]); // single item
+    let giveUpMsg = '';
+    for (let i = 0; i < 30; i++) {
+      const r = decideStopCheck(dir, false);
+      if (r.giveUp) { giveUpMsg = r.message; break; }
+    }
+    expect(giveUpMsg).toContain('escalating the model or splitting');
+    expect(giveUpMsg).not.toContain('uap deliver --epics');
   });
 });
 
