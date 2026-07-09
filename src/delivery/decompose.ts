@@ -39,7 +39,10 @@ const MAX_PHASES_HARD_CEILING = 20;
 function maxPhases(): number {
   const raw = Number(process.env.UAP_DELIVER_MAX_PHASES);
   if (Number.isFinite(raw) && raw >= MIN_PHASES) return Math.min(Math.floor(raw), MAX_PHASES_HARD_CEILING);
-  return 8;
+  // (#4a) Default 8→10: a huge mission was being squeezed into ≤8 phases, each
+  // then too big for a rail. Still bounded by the hard ceiling; env overrides up
+  // to 20 for the largest missions.
+  return 10;
 }
 /** Only instructions this long are epic-shaped enough to auto-decompose. */
 const AUTO_DECOMPOSE_MIN_CHARS = 200;

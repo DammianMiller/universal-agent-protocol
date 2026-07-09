@@ -1715,19 +1715,32 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const epicResult = await runEpics({
       mission: instruction,
       epics,
-      maxAttemptsPerEpic: Number(process.env.UAP_DELIVER_EPIC_ATTEMPTS ?? 2),
-      // Context auto-size: an epic whose sessions hit the rail budget is
-      // re-planned into smaller sub-epics (one level) instead of just failing.
-      splitEpic: sessionBudget
-        ? async (epic, lastFailure) => {
-            console.log(chalk.yellow(`  ✂ epic ${epic.id} outgrew its ~${sessionBudget.toLocaleString()}-token session budget — re-planning as sub-epics`));
-            const subGoal =
-              `${epic.goal}\n\n(The previous attempt ran out of session context` +
-              `${lastFailure ? `: ${lastFailure.slice(0, 300)}` : ''}. Split this into smaller, independently completable phases.)`;
-            const subs = await planDeliveryPhases(subGoal, verdictExecutor, undefined, { sessionTokenBudget: sessionBudget });
-            return subs.length >= 2 ? subs.map((s) => ({ id: s.id, title: s.title, goal: s.goal })) : null;
-          }
-        : undefined,
+      maxAttemptsPerEpic: Number(process.env.UAP_DELIVER_EPIC_ATTEMPTS ?? 3), // (#4b) 2→3
+      // (#4c) Recursive split depth: a huge epic that still can't land after a
+      // split is split again, one level shallower, until each piece fits a rail
+      // — instead of failing the whole mission at the first split. Bounded.
+      splitDepth: Math.max(1, Number(process.env.UAP_DELIVER_EPIC_SPLIT_DEPTH ?? 2)),
+      // (#5) Auto-escalation: re-plan a failed epic into smaller pieces and
+      // retry them rather than declaring the mission incomplete. On by default
+      // for the epic path (already gated to complex missions); disable with
+      // UAP_DELIVER_SPLIT_ON_ANY_FAILURE=0 to restore budget-exhaustion-only.
+      splitOnAnyFailure: process.env.UAP_DELIVER_SPLIT_ON_ANY_FAILURE !== '0',
+      // Re-plan a failed epic into sub-epics. Fires on context-budget
+      // exhaustion (rail auto-size) and, under splitOnAnyFailure, on any
+      // exhausted-attempts failure (auto-escalation). Always provided so #5 has
+      // a planner; declines (null) when it can't produce ≥2 pieces.
+      splitEpic: async (epic, lastFailure) => {
+        const budgetHit = (lastFailure ?? '').includes(CONTEXT_BUDGET_MARKER);
+        const reason = budgetHit
+          ? `outgrew its ~${(sessionBudget ?? 0).toLocaleString()}-token session budget`
+          : 'could not be delivered whole after all attempts';
+        console.log(chalk.yellow(`  ✂ epic ${epic.id} ${reason} — re-planning as smaller sub-epics`));
+        const subGoal =
+          `${epic.goal}\n\n(The previous attempt did not complete` +
+          `${lastFailure ? `: ${lastFailure.slice(0, 300)}` : ''}. Split this into smaller, independently completable phases.)`;
+        const subs = await planDeliveryPhases(subGoal, verdictExecutor, undefined, { sessionTokenBudget: sessionBudget });
+        return subs.length >= 2 ? subs.map((s) => ({ id: s.id, title: s.title, goal: s.goal })) : null;
+      },
       onEpic: (epic, outcome) => {
         try { markItem(projectRoot, epic.id, outcome.accepted ? 'done' : 'failed', outcome.accepted ? undefined : outcome.summary); } catch { /* best-effort */ }
         console.log(

@@ -68,8 +68,27 @@ export interface EpicControllerConfig {
    * treated as "not accepted" so the controller retries rather than wedging.
    */
   checkAcceptance?: (epic: Epic, result: EpicRunResult) => boolean | Promise<boolean>;
-  /** Max fresh-session attempts per epic before it is declared failed. Default 2. */
+  /** Max fresh-session attempts per epic before it is declared failed. Default 3. */
   maxAttemptsPerEpic?: number;
+  /**
+   * (#4c) Max recursive split levels when an epic can't be delivered whole.
+   * Default 1 (one level: an over-budget epic splits into sub-epics, which
+   * never re-split). deliver raises this for LARGE missions so a genuinely huge
+   * epic recursively shrinks — a sub-epic that still can't land is split again,
+   * one level shallower — until each piece fits a rail, instead of failing the
+   * whole mission at the first split. Bounded: the depth counter decrements to
+   * 0, and each `splitEpic` planner can decline (return null) to stop early.
+   */
+  splitDepth?: number;
+  /**
+   * (#5) When true, split a failed epic on ANY exhausted-attempts failure, not
+   * only on context-budget exhaustion — turning "epic failed, mission
+   * incomplete" into "re-plan it into smaller pieces and try those." Default
+   * false (budget exhaustion only, preserving the conservative path). deliver
+   * enables it for large missions so give-up becomes auto-escalation. Still
+   * bounded by `splitDepth` and by the planner's option to decline the split.
+   */
+  splitOnAnyFailure?: boolean;
   /** Progress hook. */
   onEpic?: (epic: Epic, outcome: EpicOutcome) => void;
   /**
@@ -97,7 +116,7 @@ export interface EpicControllerResult {
   outcomes: EpicOutcome[];
 }
 
-const DEFAULT_MAX_ATTEMPTS = 2;
+const DEFAULT_MAX_ATTEMPTS = 3;
 
 /**
  * Run the epic sequence. Epics execute in dependency order; an epic whose
@@ -167,14 +186,25 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
       }
     }
 
-    // Rail sizing: an epic that failed because its sessions outgrew the
-    // context budget is too big for one rail — re-plan it as smaller
-    // sub-epics and run them in place (one split level; sub-epics inherit
-    // the prior summaries but never split again).
-    if (!accepted && config.splitEpic && (lastFailure ?? '').includes(CONTEXT_BUDGET_MARKER)) {
+    // Rail sizing + auto-escalation: an epic that exhausted its attempts is
+    // re-planned as smaller sub-epics and run in place, rather than failing the
+    // whole mission. Fires on context-budget exhaustion always, and on ANY
+    // failure when splitOnAnyFailure is set (#5). Recurses up to `splitDepth`
+    // levels (#4c): sub-epics inherit the prior summaries and may split again
+    // one level shallower until each piece fits a rail. Default depth 1 keeps
+    // the conservative one-level behavior.
+    const depthRemaining = config.splitDepth ?? 1;
+    const budgetExhausted = (lastFailure ?? '').includes(CONTEXT_BUDGET_MARKER);
+    const splitFn = config.splitEpic;
+    const shouldSplit =
+      !accepted &&
+      !!splitFn &&
+      depthRemaining > 0 &&
+      (budgetExhausted || config.splitOnAnyFailure === true);
+    if (shouldSplit && splitFn) {
       let subs: Epic[] | null = null;
       try {
-        subs = await config.splitEpic(epic, lastFailure);
+        subs = await splitFn(epic, lastFailure);
       } catch {
         subs = null; // fail-soft: an unplannable split just keeps the failure
       }
@@ -194,7 +224,7 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
         const subResult = await runEpics({
           ...config,
           epics: chained,
-          splitEpic: undefined, // one level only — a sub-epic that still overflows fails
+          splitDepth: depthRemaining - 1, // recurse one level shallower (#4c); 0 ⇒ no re-split
           initialPriorSummaries: [...priorSummaries],
         });
         epicTurns += subResult.turns; // flows into totalTurns below
@@ -206,9 +236,10 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
         const finalPieceGreen =
           subResult.outcomes.length > 0 && subResult.outcomes[subResult.outcomes.length - 1].accepted;
         accepted = subResult.success || finalPieceGreen;
+        const splitReason = budgetExhausted ? 'context auto-size' : 'auto-escalation';
         lastSummary = accepted
-          ? `split into ${chained.length} sub-epics (context auto-size): ${subResult.outcomes.map((o) => o.summary).join('; ')}`
-          : `split into ${chained.length} sub-epics after context-budget exhaustion; failed: ${subResult.failed.join(', ')}`;
+          ? `split into ${chained.length} sub-epics (${splitReason}): ${subResult.outcomes.map((o) => o.summary).join('; ')}`
+          : `split into ${chained.length} sub-epics (${splitReason}); failed: ${subResult.failed.join(', ')}`;
       }
     }
 

@@ -154,7 +154,18 @@ export function decideStopCheck(
       giveUp: true,
       message:
         `hands-free give-up after ${blocks} block(s) with no progress — ` +
-        `${rem} item(s) still remain. Consider escalating the model or splitting the work.`,
+        `${rem} item(s) still remain.` +
+        (rem >= 3
+          ? // (#1) A large multi-item build stalling in ONE long session is the
+            // single-session context-thrash failure mode. Route the remaining
+            // work to the epic controller, where each epic runs in a FRESH
+            // session (only prior-epic summaries carried) and so can't
+            // accumulate the thrash that stalls one session.
+            ' This is a large multi-item build stalling in one long session. Re-run the ' +
+            'remaining work with `uap deliver --epics` — it runs each epic in a FRESH ' +
+            'session (fresh context, prior-epic summaries only), avoiding the ' +
+            'single-session context thrash that stalls large builds.'
+          : ' Consider escalating the model or splitting the work.'),
     };
   }
 

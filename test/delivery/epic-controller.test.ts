@@ -103,4 +103,16 @@ describe('runEpics', () => {
     expect(res.success).toBe(false); // never accepted
     expect(calls).toBe(2); // but it retried the full budget rather than crashing
   });
+
+  it('(#4b) defaults to 3 fresh-session attempts per epic', async () => {
+    let calls = 0;
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'e', title: 'E', goal: 'g' }],
+      // no maxAttemptsPerEpic → default
+      runEpic: async () => { calls++; return fail('nope'); },
+    });
+    expect(calls).toBe(3);
+    expect(res.success).toBe(false);
+  });
 });
