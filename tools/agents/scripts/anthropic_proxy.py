@@ -4645,6 +4645,7 @@ def _maybe_inject_recon_convergence(
     openai_body["messages"] = msgs
 
     restored: list[str] = []
+    stripped: list[str] = []
     if escalate:
         # Strip tools entirely so the only possible response is terminal prose.
         openai_body.pop("tools", None)
@@ -4691,11 +4692,44 @@ def _maybe_inject_recon_convergence(
                     present.add(name.lower())
                     restored.append(name)
 
+        # FORCE-WRITE (hard tier): a nudge that leaves BOTH read and write tools
+        # available lets the model keep picking a read — the live failure mode
+        # (no_write_streak climbing to 45+ while write tools were re-injected but
+        # tool_choice stayed 'auto', so the model just read again). At the hard
+        # tier, remove the exploration path (read-only class + escape hatches) so
+        # the only actions left are write/deliver, and force tool_choice=required
+        # so a write MUST happen this turn. Floor-guarded: if stripping would
+        # leave no write path, leave the toolset untouched (never strand — the
+        # firm tier keeps reads, the escalate tier strips everything). Bounded:
+        # if the model still produces no write, the streak keeps climbing and the
+        # next fire escalates to the terminal-summary tier above.
+        if hard:
+            tools_now = openai_body.get("tools") or []
+            deny = {c.lower() for c in _READ_ONLY_TOOL_CLASS} | {
+                e.lower() for e in _EXPLORATION_ESCAPE_TOOLS
+            }
+            write_lower = {w.lower() for w in _WRITE_TOOL_CLASS}
+
+            def _rc_name(t: dict) -> str:
+                return ((t.get("function", {}) or {}).get("name", "") or "").lower()
+
+            kept = [t for t in tools_now if _rc_name(t) not in deny]
+            if kept and any(_rc_name(t) in write_lower for t in kept):
+                stripped = [
+                    ((t.get("function", {}) or {}).get("name", "") or "")
+                    for t in tools_now
+                    if _rc_name(t) in deny
+                ]
+                if stripped:
+                    openai_body["tools"] = kept
+                    openai_body["tool_choice"] = "required"
+                    openai_body.pop("grammar", None)
+
     logger.warning(
         "RECON CONVERGENCE: injected %s directive (no_write_streak=%d, hard_fires=%d, "
-        "ctx=%.0f%%, tool_choice=%s, restored_write_tools=%s)",
+        "ctx=%.0f%%, tool_choice=%s, restored_write_tools=%s, stripped_read_tools=%s)",
         tier, streak, monitor.recon_hard_fires, util * 100,
-        openai_body.get("tool_choice", "stripped"), restored or "none",
+        openai_body.get("tool_choice", "stripped"), restored or "none", stripped or "none",
     )
 
 
@@ -8151,6 +8185,94 @@ async def _apply_malformed_tool_guardrail(
     )
 
 
+def _extract_state_carryover(messages: list[dict], max_files: int = 20) -> str | None:
+    """Reconstruct mission state (plan + files written) from a conversation that
+    is about to be pruned by the contamination breaker, so the reset does not
+    throw away what the build has planned and done.
+
+    The contamination/attractor reset keeps only the first user turn (+ a short
+    tail), dropping the middle of the conversation — which is where the TodoWrite
+    plan and the file-write actions live. On a huge build that drop destroys
+    mission state: the model then re-explores from scratch, regrows the history,
+    overflows again, and thrashes. The client's on-disk ledger is not visible to
+    the proxy, but the plan and the writes ARE in the message stream, so
+    reconstruct a compact carryover from them and re-inject it after the reset.
+
+    Returns a carryover block, or None when no state is found (fresh session).
+    """
+    write_lower = {w.lower() for w in _WRITE_TOOL_CLASS}
+    plan_tools = {
+        "todowrite", "taskcreate", "taskupdate", "task_create", "task_update",
+        "todo_write", "update_todo_list",
+    }
+    latest_plan: list[str] = []
+    files: list[str] = []
+    seen: set[str] = set()
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        content = m.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = (block.get("name") or "").lower()
+            inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+            if name in plan_tools:
+                todos = inp.get("todos") or inp.get("tasks") or inp.get("items")
+                if isinstance(todos, list):
+                    rendered = []
+                    for t in todos:
+                        if not isinstance(t, dict):
+                            continue
+                        text = (
+                            t.get("content") or t.get("title")
+                            or t.get("task") or t.get("description") or ""
+                        ).strip()
+                        if not text:
+                            continue
+                        status = (t.get("status") or t.get("state") or "").strip().lower()
+                        mark = {
+                            "completed": "x", "done": "x", "complete": "x",
+                            "in_progress": "~", "in-progress": "~", "active": "~",
+                        }.get(status, " ")
+                        rendered.append(f"  [{mark}] {text}")
+                    if rendered:
+                        latest_plan = rendered  # keep the MOST RECENT plan only
+            elif name in write_lower:
+                path = (
+                    inp.get("file_path") or inp.get("path")
+                    or inp.get("target") or inp.get("filename") or inp.get("task")
+                )
+                if isinstance(path, str) and path.strip() and path not in seen:
+                    seen.add(path)
+                    files.append(path.strip())
+    if not latest_plan and not files:
+        return None
+    parts = [
+        "[STATE CARRYOVER — preserved across the reset; do NOT restart from "
+        "scratch or re-explore what is already done]"
+    ]
+    if latest_plan:
+        parts.append(
+            "Your current plan (most recent TodoWrite) — resume the first "
+            "unfinished item ([ ] = todo, [~] = in progress, [x] = done):"
+        )
+        parts.extend(latest_plan[:40])
+    if files:
+        shown = files[-max_files:]
+        omitted = len(files) - len(shown)
+        head_note = f" (showing last {len(shown)} of {len(files)})" if omitted > 0 else ""
+        parts.append(f"Files you have already written/edited this session{head_note}:")
+        parts.extend(f"  - {p}" for p in shown)
+    parts.append(
+        "Continue the plan from where it stands. Take the next concrete action "
+        "toward the first unfinished item now."
+    )
+    return "\n".join(parts)
+
+
 def _maybe_apply_session_contamination_breaker(
     anthropic_body: dict, monitor: SessionMonitor, session_id: str
 ) -> dict:
@@ -8283,7 +8405,11 @@ def _maybe_apply_session_contamination_breaker(
                 "Just call the tool."
             ),
         }
-        new_messages = head + [reset_marker]
+        carry = _extract_state_carryover(messages)
+        new_messages = (
+            head + [reset_marker, {"role": "user", "content": carry}]
+            if carry else head + [reset_marker]
+        )
         monitor.attractor_correction_active = True
         log_reason = "attractor"
     else:
@@ -8296,7 +8422,9 @@ def _maybe_apply_session_contamination_breaker(
                 "Continue from the recent context and emit valid tool calls with strict JSON arguments only.]"
             ),
         }
-        new_messages = head + [reset_marker] + tail
+        carry = _extract_state_carryover(messages)
+        carry_msgs = [{"role": "user", "content": carry}] if carry else []
+        new_messages = head + [reset_marker] + carry_msgs + tail
         log_reason = "standard"
 
     updated_body = dict(anthropic_body)
