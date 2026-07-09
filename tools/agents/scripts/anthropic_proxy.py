@@ -4235,6 +4235,15 @@ def _resolve_state_machine_tool_choice(
         if dup_target and not cycle_looping and not stagnating:
             cycle_looping = True
             cycle_repeat = 2
+            # Consume the evidence: the per-target counts are cumulative for
+            # the life of the tool loop, so without this reset the detector
+            # stays latched after one legitimate 3x re-read and re-breaks the
+            # cycle on EVERY later act turn — even productive ones reading
+            # distinct new files — inflating review_cycles toward a premature
+            # forced finalize (observed live 2026-07-09: 57 fires in one
+            # evening, still firing during distinct-file reads). Clearing
+            # demands 3 fresh repeats before the next fire.
+            monitor.reset_tool_targets()
             logger.warning(
                 "TOOL STATE MACHINE: duplicate read target detected for '%s', triggering early cycle break",
                 dup_tool,

@@ -196,6 +196,13 @@ export function detectRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIM
     });
   }
 
+  // Rust gates are detected UNCONDITIONALLY, not only when npm rungs are
+  // absent: a polyglot root (package.json + Cargo.toml) previously produced
+  // npm-only rungs, so cargo work could never turn a phase green — observed
+  // live 2026-07-09, an 8-phase Rust mission stagnated to its turn cap because
+  // every turn was judged by `npm run build` alone.
+  rungs.push(...detectCargoRungs(projectRoot, timeoutMs));
+
   // Non-npm projects (the common case for polyglot CLI tasks) expose their
   // checks differently. Detect the real ones so deliver gates on the task's
   // own verifier instead of a hallucinated self-gate.
@@ -357,6 +364,39 @@ export function detectDeployDevRung(
   }
 
   return null;
+}
+
+/**
+ * Cargo gates for Rust projects (root Cargo.toml). `cargo check` is the
+ * required compile gate; `cargo test` runs and is reported but does not block
+ * (a pre-existing red test in a large workspace would otherwise wedge every
+ * phase of a long mission — the acceptance judge still sees its result).
+ * Workspace builds routinely exceed the generic 5-minute rung timeout on a
+ * cold target dir, so cargo rungs get a 15-minute floor.
+ */
+export function detectCargoRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): GateRung[] {
+  if (!existsSync(join(projectRoot, 'Cargo.toml'))) return [];
+  const cargoTimeoutMs = Math.max(timeoutMs, 900_000);
+  return [
+    {
+      id: 'cargo-check',
+      name: 'Check (cargo check --workspace)',
+      command: 'cargo',
+      args: ['check', '--workspace'],
+      required: true,
+      timeoutMs: cargoTimeoutMs,
+      tier: 'fast',
+    },
+    {
+      id: 'cargo-test',
+      name: 'Tests (cargo test --workspace)',
+      command: 'cargo',
+      args: ['test', '--workspace'],
+      required: false,
+      timeoutMs: cargoTimeoutMs,
+      tier: 'fast',
+    },
+  ];
 }
 
 /**

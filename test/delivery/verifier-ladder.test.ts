@@ -51,6 +51,31 @@ describe('verifier-ladder', () => {
       writeFileSync(join(dir, 'package.json'), 'not json');
       expect(detectRungs(dir)).toEqual([]);
     });
+
+    it('adds cargo rungs for a Rust project (Cargo.toml)', () => {
+      writeFileSync(join(dir, 'Cargo.toml'), '[package]\nname = "x"\n');
+      const rungs = detectRungs(dir);
+      expect(rungs.map((r) => r.id)).toEqual(['cargo-check', 'cargo-test']);
+      expect(rungs.find((r) => r.id === 'cargo-check')?.required).toBe(true);
+      // A pre-existing red test in a big workspace must not wedge every phase.
+      expect(rungs.find((r) => r.id === 'cargo-test')?.required).toBe(false);
+    });
+
+    it('adds cargo rungs ALONGSIDE npm rungs in a polyglot root, npm first', () => {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ scripts: { build: 'vite build' } })
+      );
+      writeFileSync(join(dir, 'Cargo.toml'), '[workspace]\nmembers = ["crates/*"]\n');
+      const ids = detectRungs(dir).map((r) => r.id);
+      expect(ids).toEqual(['build', 'cargo-check', 'cargo-test']);
+    });
+
+    it('gives cargo rungs a 15-minute timeout floor for cold workspace builds', () => {
+      writeFileSync(join(dir, 'Cargo.toml'), '[package]\nname = "x"\n');
+      const rungs = detectRungs(dir, 30_000);
+      expect(rungs.find((r) => r.id === 'cargo-check')?.timeoutMs).toBe(900_000);
+    });
   });
 
   describe('runRung', () => {
