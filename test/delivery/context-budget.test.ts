@@ -10,6 +10,7 @@ import { join } from 'path';
 import {
   resolveSessionTokenBudget,
   sessionWorkingBudget,
+  discoverModelContextWindow,
   estimateMessagesTokens,
   CONTEXT_BUDGET_MARKER,
   DEFAULT_SESSION_TOKEN_BUDGET,
@@ -56,6 +57,59 @@ describe('resolveSessionTokenBudget', () => {
 
   it('sessionWorkingBudget applies the prune-threshold-aligned fraction', () => {
     expect(sessionWorkingBudget(180000)).toBe(Math.floor(180000 * SESSION_WORKING_FRACTION));
+  });
+
+  it('discovered live window beats the preset but loses to env/config', () => {
+    expect(resolveSessionTokenBudget({ modelContextBudget: 180000 }, undefined, 200000)).toBe(200000);
+    expect(
+      resolveSessionTokenBudget(
+        { modelContextBudget: 180000 },
+        { deliver: { sessionTokenBudget: 100000 } },
+        200000
+      )
+    ).toBe(100000);
+    process.env.UAP_DELIVER_SESSION_TOKEN_BUDGET = '150000';
+    expect(resolveSessionTokenBudget({ modelContextBudget: 180000 }, undefined, 200000)).toBe(150000);
+    delete process.env.UAP_DELIVER_SESSION_TOKEN_BUDGET;
+  });
+
+  it('an insane discovered value falls through to the preset', () => {
+    expect(resolveSessionTokenBudget({ modelContextBudget: 180000 }, undefined, 10)).toBe(180000);
+  });
+});
+
+describe('discoverModelContextWindow', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('reads context_window from the proxy /v1/context', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+      ok: String(url).includes('/v1/context'),
+      json: async () => ({ context_window: 180224 }),
+    })));
+    expect(await discoverModelContextWindow('http://127.0.0.1:4000/v1')).toBe(180224);
+  });
+
+  it('falls back to llama /props n_ctx when /v1/context is unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).includes('/v1/context')) return { ok: false, json: async () => ({}) };
+      return { ok: true, json: async () => ({ default_generation_settings: { n_ctx: 131072 } }) };
+    }));
+    expect(await discoverModelContextWindow('http://127.0.0.1:8080/v1')).toBe(131072);
+  });
+
+  it('returns undefined when nothing is reachable (fail-soft → preset)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED'); }));
+    expect(await discoverModelContextWindow('http://127.0.0.1:9999/v1')).toBeUndefined();
+  });
+
+  it('returns undefined for a missing or invalid endpoint', async () => {
+    expect(await discoverModelContextWindow(undefined)).toBeUndefined();
+    expect(await discoverModelContextWindow('not-a-url')).toBeUndefined();
+  });
+
+  it('rejects an insane discovered value (below the sanity floor)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ context_window: 10 }) })));
+    expect(await discoverModelContextWindow('http://x/v1')).toBeUndefined();
   });
 });
 
