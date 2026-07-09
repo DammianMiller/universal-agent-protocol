@@ -118,8 +118,10 @@ export const ModelPresets: Record<string, ModelConfig> = {
     costPer1MInput: 0,
     costPer1MOutput: 0,
     capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
-    // 2026-07-08: per-rail serving context (llama --parallel 2 over ctx 360k = 180k/rail).
-    modelContextBudget: 180000,
+    // 2026-07-09: per-rail serving context (llama --parallel 3 over ctx 390k = 130k/rail).
+    // NB: v1.132.0 auto-discovers the live per-rail window from the proxy
+    // (/v1/context), so this is the fallback when discovery is unreachable.
+    modelContextBudget: 130000,
   },
   'gpt-5.4': {
     id: 'gpt-5.4',
@@ -198,8 +200,10 @@ export const ModelPresets: Record<string, ModelConfig> = {
     costPer1MInput: 0,
     costPer1MOutput: 0,
     capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
-    // 2026-07-08: per-rail serving context (llama --parallel 2 over ctx 360k = 180k/rail).
-    modelContextBudget: 180000,
+    // 2026-07-09: per-rail serving context (llama --parallel 3 over ctx 390k = 130k/rail).
+    // NB: v1.132.0 auto-discovers the live per-rail window from the proxy
+    // (/v1/context), so this is the fallback when discovery is unreachable.
+    modelContextBudget: 130000,
   },
 };
 
