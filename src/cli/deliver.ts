@@ -126,7 +126,7 @@ import { parsePhaseArray, phaseInstruction, planDeliveryPhases, shouldDecompose 
 import { runEpics, type Epic, type EpicRunResult } from '../delivery/epic-controller.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
-import { resolveSessionTokenBudget, sessionWorkingBudget, CONTEXT_BUDGET_MARKER } from '../delivery/context-budget.js';
+import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow, CONTEXT_BUDGET_MARKER } from '../delivery/context-budget.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { extractContract } from '../delivery/contract-extractor.js';
 import type { OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
@@ -912,11 +912,20 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   const cfgAutoSize = (cfgRawEarly.deliver as Record<string, unknown> | undefined)?.autoSizeEpics;
   const autoSizeEnabled =
     process.env.UAP_DELIVER_AUTOSIZE !== '0' && cfgAutoSize !== false && cfgAutoSize !== 'off';
+  // Auto-discover the ACTUAL per-rail context window of the model being called
+  // (proxy /v1/context → llama /props) so sizing tracks the live model instead
+  // of a hardcoded preset — maximum ctx use of whatever is actually serving.
+  // Fail-soft: unreachable/slow discovery falls back to the preset. An explicit
+  // env/config budget still wins (deliberate cap).
+  const discoveredCtx = autoSizeEnabled
+    ? await discoverModelContextWindow(model.endpoint ?? agenticEndpoint)
+    : undefined;
   const sessionBudget = autoSizeEnabled
-    ? sessionWorkingBudget(resolveSessionTokenBudget(model, cfgRawEarly))
+    ? sessionWorkingBudget(resolveSessionTokenBudget(model, cfgRawEarly, discoveredCtx))
     : undefined;
   if (sessionBudget) {
-    console.log(chalk.dim(`  context auto-size: sessions budgeted to ~${sessionBudget.toLocaleString()} tokens (rail-fit)`));
+    const src = discoveredCtx ? `discovered ${discoveredCtx.toLocaleString()}` : 'preset';
+    console.log(chalk.dim(`  context auto-size: sessions budgeted to ~${sessionBudget.toLocaleString()} tokens (rail-fit, ${src})`));
   }
   const executor: LoopExecutor = agentic
     ? createAgenticExecutor(model, {
@@ -1375,25 +1384,19 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     cfgOrch !== false && cfgOrch !== 'off';
   // Epic controller (P7): the outer loop above orchestration. A massive mission
   // (complex) is a SEQUENCE of epics, each run as its own fresh mission and
-  // looped with fresh sessions until accepted. ON BY DEFAULT for any
-  // complex-classified mission (2026-07-08 — was: complex AND ≥1200 chars):
-  // with context auto-size the epic controller is the mechanism that keeps
-  // every session inside its serving rail, so it must engage whenever a
-  // mission is complex enough to risk outgrowing one session. Simple/moderate
-  // missions stay single-loop (still rail-budgeted via the agentic executor).
-  // Disable with --no-epics / UAP_DELIVER_EPICS=0 / `.uap.json` deliver.epics
-  // false|'off'; force with --epics / UAP_DELIVER_EPICS=1 / deliver.epics
-  // true|'on'. Never on self-gate or resume.
+  // looped with fresh sessions until accepted. ON BY DEFAULT for EVERY mission
+  // (2026-07-09 — was: only complex-classified). Each epic runs in a FRESH
+  // session (fresh context, prior-epic summaries only) — the structural fix for
+  // single-session context thrash — and a trivial mission simply decomposes to
+  // one epic, so the wrapper is cheap. Disable per-run with --no-epics /
+  // UAP_DELIVER_EPICS=0 / `.uap.json` deliver.epics false|'off'. Never on
+  // self-gate or resume (those are special single-pass modes).
   const cfgEpics = (cfgRaw.deliver as Record<string, unknown> | undefined)?.epics;
   const epicsEnabled =
     !needsSelfGate && !resumeState &&
     options.epics !== false &&
     process.env.UAP_DELIVER_EPICS !== '0' &&
-    cfgEpics !== false && cfgEpics !== 'off' &&
-    (options.epics === true ||
-      process.env.UAP_DELIVER_EPICS === '1' ||
-      cfgEpics === true || cfgEpics === 'on' ||
-      autoPlan?.complexity === 'complex');
+    cfgEpics !== false && cfgEpics !== 'off';
   const decomposeWanted =
     !needsSelfGate &&
     (options.orchestrate === true ||

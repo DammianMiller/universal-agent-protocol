@@ -27,8 +27,14 @@ export const DEFAULT_SESSION_TOKEN_BUDGET = 131072;
  * anthropic-proxy's prune threshold (PROXY_CONTEXT_PRUNE_THRESHOLD=0.70): a
  * session that finishes below 70% of the rail is never pruned mid-mission, so
  * an epic sized to the working budget completes with its full context intact.
+ * Operator-tunable via UAP_DELIVER_WORKING_FRACTION (0<f≤1) to push toward
+ * maximum ctx use — but keep it ALIGNED with the proxy prune threshold, or
+ * sessions sized past the threshold get pruned mid-mission (defeating it).
  */
-export const SESSION_WORKING_FRACTION = 0.7;
+export const SESSION_WORKING_FRACTION = ((): number => {
+  const raw = Number(process.env.UAP_DELIVER_WORKING_FRACTION);
+  return Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : 0.7;
+})();
 
 /** Floor below which a budget value is treated as a misconfiguration. */
 const MIN_SANE_BUDGET = 8192;
@@ -38,19 +44,82 @@ function saneBudget(raw: unknown): number | undefined {
   return Number.isFinite(n) && n >= MIN_SANE_BUDGET ? Math.floor(n) : undefined;
 }
 
-/** Resolve the full per-session (per-rail) token budget. */
+/**
+ * Resolve the full per-session (per-rail) token budget.
+ *
+ * Precedence: explicit operator override (env) → project config → the
+ * DISCOVERED live window of the model actually being called (see
+ * discoverModelContextWindow) → the model preset → a conservative default. The
+ * discovered value sits above the preset so sizing auto-adapts to whatever
+ * model/ctx is live (a rail resize, a different model) instead of a hardcoded
+ * preset, while an explicit env/config value still wins for a deliberate cap.
+ */
 export function resolveSessionTokenBudget(
   model?: Pick<ModelConfig, 'modelContextBudget' | 'maxContextTokens'>,
-  cfgRaw?: Record<string, unknown>
+  cfgRaw?: Record<string, unknown>,
+  discovered?: number
 ): number {
   const fromEnv = saneBudget(process.env.UAP_DELIVER_SESSION_TOKEN_BUDGET);
   if (fromEnv) return fromEnv;
   const deliverCfg = cfgRaw?.deliver as Record<string, unknown> | undefined;
   const fromCfg = saneBudget(deliverCfg?.sessionTokenBudget);
   if (fromCfg) return fromCfg;
+  const fromDiscovered = saneBudget(discovered);
+  if (fromDiscovered) return fromDiscovered;
   const fromModel = saneBudget(model?.modelContextBudget ?? model?.maxContextTokens);
   if (fromModel) return fromModel;
   return DEFAULT_SESSION_TOKEN_BUDGET;
+}
+
+/**
+ * Auto-discover the SERVING model's actual per-rail context window so sizing
+ * adapts to whatever model/ctx is live, rather than a hardcoded preset. Queries
+ * the anthropic-proxy's `/v1/context` first (authoritative per-rail window,
+ * auto-updated from llama's `/slots`), then falls back to llama.cpp's native
+ * `/props` (`n_ctx`). Returns undefined on any failure — the caller falls back
+ * to the preset. Fail-soft and time-boxed so discovery can never block or wedge
+ * a deliver run.
+ */
+export async function discoverModelContextWindow(
+  endpoint: string | undefined,
+  timeoutMs = 1500
+): Promise<number | undefined> {
+  if (!endpoint) return undefined;
+  let origin: string;
+  try {
+    origin = new URL(endpoint).origin;
+  } catch {
+    return undefined;
+  }
+  const attempts: Array<{ url: string; pick: (j: Record<string, unknown>) => unknown }> = [
+    { url: `${origin}/v1/context`, pick: (j) => j.context_window },
+    {
+      url: `${origin}/props`,
+      pick: (j) => {
+        const gen = j.default_generation_settings as Record<string, unknown> | undefined;
+        return gen?.n_ctx ?? j.n_ctx;
+      },
+    },
+  ];
+  for (const a of attempts) {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), timeoutMs);
+      let res: Response;
+      try {
+        res = await fetch(a.url, { signal: ctl.signal });
+      } finally {
+        clearTimeout(t);
+      }
+      if (!res.ok) continue;
+      const j = (await res.json()) as Record<string, unknown>;
+      const n = saneBudget(a.pick(j));
+      if (n) return n;
+    } catch {
+      /* unreachable/timeout/parse — try next attempt, then fall back to preset */
+    }
+  }
+  return undefined;
 }
 
 /** The budget a session may actually consume (rail × working fraction). */
