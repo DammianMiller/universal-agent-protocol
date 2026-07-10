@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.135.1 (2026-07-10)
+
+- fix(dashboard): self-diagnosing SQLite health — a missing/incompatible better-sqlite3 native binding (e.g. a global `npm i -g` done with --ignore-scripts, or a Node ABI bump) made every DB-backed panel silently read empty. getDashboardData now probes the binding and exposes a `health` field; dash serve prints a loud remediation warning at startup and the UI shows a fixed banner instead of a dead-looking dashboard.
+
 ## v1.135.0 (2026-07-10)
 
 - feat(dashboard): tabbed console — Overview (aggregate KPIs + live charts + drill-down) plus Tasks & Epics, Agents & Sessions, Orchestration, Deliver, Policies, Models, Memory tabs
