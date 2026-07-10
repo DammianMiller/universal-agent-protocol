@@ -71,6 +71,13 @@ export interface GateRung {
    * never flips a passing rung to failed.
    */
   teardown?: { command: string; args: string[]; timeoutMs: number };
+  /**
+   * Exit codes that count as a pass (default [0]). Lets marker-scoped pytest
+   * rungs treat "no tests collected" (exit 5) as a vacuous pass instead of a
+   * permanent required failure on repos that declare the marker but have not
+   * written marked tests yet.
+   */
+  passExitCodes?: number[];
 }
 
 /** Effective tier for a rung — absent tier means the original `fast` band. */
@@ -196,6 +203,13 @@ export function detectRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIM
     });
   }
 
+  // Rust gates are detected UNCONDITIONALLY, not only when npm rungs are
+  // absent: a polyglot root (package.json + Cargo.toml) previously produced
+  // npm-only rungs, so cargo work could never turn a phase green — observed
+  // live 2026-07-09, an 8-phase Rust mission stagnated to its turn cap because
+  // every turn was judged by `npm run build` alone.
+  rungs.push(...detectCargoRungs(projectRoot, timeoutMs));
+
   // Non-npm projects (the common case for polyglot CLI tasks) expose their
   // checks differently. Detect the real ones so deliver gates on the task's
   // own verifier instead of a hallucinated self-gate.
@@ -264,18 +278,41 @@ export function detectIntegrationRungs(
   // pytest integration marker — only when no npm integration script already
   // covers it, to avoid double-running in polyglot repos.
   if (rungs.length === 0 && pytestHasIntegrationMarker(projectRoot)) {
+    // A full-suite coverage fail-under poisons marker-scoped subset runs (the
+    // deselected majority reads as uncovered), so disable coverage for this
+    // rung when the pytest config wires pytest-cov in. Exit 5 ("no tests ran")
+    // is a vacuous pass: the marker being declared does not mean marked tests
+    // exist yet, and a required rung that can never pass wedges every mission
+    // on the repo (observed live 2026-07-10).
+    const args = ['-m', 'pytest', '-m', 'integration', '-q'];
+    if (pytestConfigUsesCov(projectRoot)) args.push('--no-cov');
     rungs.push({
       id: 'pytest:integration',
       name: 'Integration tests (pytest -m integration)',
       command: 'python3',
-      args: ['-m', 'pytest', '-m', 'integration', '-q'],
+      args,
       required: true,
       timeoutMs: integrationTimeout,
       tier: 'integration',
+      passExitCodes: [0, 5],
     });
   }
 
   return rungs;
+}
+
+/** True when a pytest config wires pytest-cov into addopts (`--cov`). */
+function pytestConfigUsesCov(projectRoot: string): boolean {
+  for (const file of ['pyproject.toml', 'pytest.ini', 'setup.cfg', 'tox.ini']) {
+    const p = join(projectRoot, file);
+    if (!existsSync(p)) continue;
+    try {
+      if (/--cov\b/.test(readFileSync(p, 'utf-8'))) return true;
+    } catch {
+      /* unreadable config */
+    }
+  }
+  return false;
 }
 
 /** True when a pytest config declares an `integration` marker. */
@@ -357,6 +394,39 @@ export function detectDeployDevRung(
   }
 
   return null;
+}
+
+/**
+ * Cargo gates for Rust projects (root Cargo.toml). `cargo check` is the
+ * required compile gate; `cargo test` runs and is reported but does not block
+ * (a pre-existing red test in a large workspace would otherwise wedge every
+ * phase of a long mission — the acceptance judge still sees its result).
+ * Workspace builds routinely exceed the generic 5-minute rung timeout on a
+ * cold target dir, so cargo rungs get a 15-minute floor.
+ */
+export function detectCargoRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): GateRung[] {
+  if (!existsSync(join(projectRoot, 'Cargo.toml'))) return [];
+  const cargoTimeoutMs = Math.max(timeoutMs, 900_000);
+  return [
+    {
+      id: 'cargo-check',
+      name: 'Check (cargo check --workspace)',
+      command: 'cargo',
+      args: ['check', '--workspace'],
+      required: true,
+      timeoutMs: cargoTimeoutMs,
+      tier: 'fast',
+    },
+    {
+      id: 'cargo-test',
+      name: 'Tests (cargo test --workspace)',
+      command: 'cargo',
+      args: ['test', '--workspace'],
+      required: false,
+      timeoutMs: cargoTimeoutMs,
+      tier: 'fast',
+    },
+  ];
 }
 
 /**
@@ -446,7 +516,9 @@ export function runRung(rung: GateRung, projectRoot: string, tailChars: number =
 
   const durationMs = Date.now() - start;
   const exitCode = res.status;
-  const passed = exitCode === 0;
+  // A spawn error / signal leaves status null — never a pass, whatever the
+  // rung's passExitCodes say.
+  const passed = exitCode !== null && (rung.passExitCodes ?? [0]).includes(exitCode);
 
   // spawnSync reports timeouts/missing binaries via res.error (+ res.signal),
   // with status null and empty output — without this the model would get a
@@ -497,15 +569,30 @@ export function formatFeedback(results: RungResult[], rungs: GateRung[]): string
     lines.push(`- ${r.name}${optional}: ${status}`);
   }
 
-  const firstFailure =
-    results.find((r) => !r.passed && !r.skipped && requiredIds.has(r.id)) ??
-    results.find((r) => !r.passed && !r.skipped);
-  if (firstFailure && firstFailure.outputTail) {
+  const firstRequiredFailure = results.find(
+    (r) => !r.passed && !r.skipped && requiredIds.has(r.id)
+  );
+  if (firstRequiredFailure && firstRequiredFailure.outputTail) {
     lines.push('');
-    lines.push(`Fix this gate first — ${firstFailure.name} output:`);
+    lines.push(`Fix this gate first — ${firstRequiredFailure.name} output:`);
     lines.push('```');
-    lines.push(firstFailure.outputTail);
+    lines.push(firstRequiredFailure.outputTail);
     lines.push('```');
+  } else {
+    // Optional-only failures must NOT carry the "fix this first" imperative or
+    // the failure tail: on an otherwise-green baseline the tail baits the model
+    // into burning whole attempts on a non-blocking rung instead of the task
+    // goal (observed live 2026-07-10: 13/13 writes against an optional lint
+    // rung whose eslint plugin crash the agent could never fix, zero writes
+    // toward the epic goal).
+    const firstOptionalFailure = results.find((r) => !r.passed && !r.skipped);
+    if (firstOptionalFailure) {
+      lines.push('');
+      lines.push(
+        `Note: ${firstOptionalFailure.name} is failing but is OPTIONAL — it does not block ` +
+          'acceptance. Do not prioritize it over the task goal.'
+      );
+    }
   }
 
   return lines.join('\n');

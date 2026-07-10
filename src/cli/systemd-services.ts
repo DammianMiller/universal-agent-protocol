@@ -216,7 +216,13 @@ export function installSystemdUserServices(
       '# Anthropic API (planner/reviewer tiers) while local ids stay on llama.',
       '# "__local_only__" forces every model local. Auto-managed by',
       '# `uap model routing use` and `uap setup` from the chosen routing preset.',
-      'ANTHROPIC_PASSTHROUGH_MODELS=',
+      // Carry an operator LOCAL-ONLY pin across forced regeneration: `uap
+      // setup --force` used to rewrite this line to the empty (cloud
+      // passthrough) default, silently reversing the pin that `uap model
+      // routing use` goes out of its way to honor (readProxyEnvVar below).
+      `ANTHROPIC_PASSTHROUGH_MODELS=${
+        readProxyEnvVar('ANTHROPIC_PASSTHROUGH_MODELS') === '__local_only__' ? '__local_only__' : ''
+      }`,
       '',
     ].join('\n'),
     installed,

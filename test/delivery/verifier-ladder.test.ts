@@ -51,6 +51,64 @@ describe('verifier-ladder', () => {
       writeFileSync(join(dir, 'package.json'), 'not json');
       expect(detectRungs(dir)).toEqual([]);
     });
+
+    it('adds cargo rungs for a Rust project (Cargo.toml)', () => {
+      writeFileSync(join(dir, 'Cargo.toml'), '[package]\nname = "x"\n');
+      const rungs = detectRungs(dir);
+      expect(rungs.map((r) => r.id)).toEqual(['cargo-check', 'cargo-test']);
+      expect(rungs.find((r) => r.id === 'cargo-check')?.required).toBe(true);
+      // A pre-existing red test in a big workspace must not wedge every phase.
+      expect(rungs.find((r) => r.id === 'cargo-test')?.required).toBe(false);
+    });
+
+    it('adds cargo rungs ALONGSIDE npm rungs in a polyglot root, npm first', () => {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ scripts: { build: 'vite build' } })
+      );
+      writeFileSync(join(dir, 'Cargo.toml'), '[workspace]\nmembers = ["crates/*"]\n');
+      const ids = detectRungs(dir).map((r) => r.id);
+      expect(ids).toEqual(['build', 'cargo-check', 'cargo-test']);
+    });
+
+    it('gives cargo rungs a 15-minute timeout floor for cold workspace builds', () => {
+      writeFileSync(join(dir, 'Cargo.toml'), '[package]\nname = "x"\n');
+      const rungs = detectRungs(dir, 30_000);
+      expect(rungs.find((r) => r.id === 'cargo-check')?.timeoutMs).toBe(900_000);
+    });
+
+    it('pytest integration rung: exit 5 passes, --no-cov added only with pytest-cov', () => {
+      writeFileSync(
+        join(dir, 'pyproject.toml'),
+        '[tool.pytest.ini_options]\nmarkers = ["integration: integration test"]\naddopts = ["--cov=."]\n'
+      );
+      const rung = detectRungs(dir).find((r) => r.id === 'pytest:integration');
+      expect(rung?.passExitCodes).toEqual([0, 5]);
+      expect(rung?.args).toContain('--no-cov');
+
+      // Without --cov in the config, --no-cov must NOT be passed (pytest-cov
+      // may be absent and an unknown flag hard-fails the run).
+      writeFileSync(
+        join(dir, 'pyproject.toml'),
+        '[tool.pytest.ini_options]\nmarkers = ["integration: integration test"]\n'
+      );
+      expect(
+        detectRungs(dir)
+          .find((r) => r.id === 'pytest:integration')
+          ?.args.includes('--no-cov')
+      ).toBe(false);
+    });
+  });
+
+  describe('runRung passExitCodes', () => {
+    it('treats a listed non-zero exit as a pass, default stays 0-only', () => {
+      const exit5: GateRung = {
+        ...rung('vacuous', 'bash', ['-c', 'exit 5']),
+        passExitCodes: [0, 5],
+      };
+      expect(runRung(exit5, dir).passed).toBe(true);
+      expect(runRung(rung('plain', 'bash', ['-c', 'exit 5']), dir).passed).toBe(false);
+    });
   });
 
   describe('runRung', () => {
@@ -152,6 +210,19 @@ describe('verifier-ladder', () => {
       const feedback = formatFeedback(results, rungs);
       expect(feedback).toContain('real failure');
       expect(feedback).not.toContain('lint noise');
+    });
+
+    it('optional-only failures get a de-prioritizing note, never the failure tail', () => {
+      const rungs = [rung('lint', 'x', [], false), rung('test', 'x', [])];
+      const results: RungResult[] = [
+        { id: 'lint', name: 'lint', passed: false, skipped: false, exitCode: 1, durationMs: 1, outputTail: 'lint noise' },
+        { id: 'test', name: 'test', passed: true, skipped: false, exitCode: 0, durationMs: 1, outputTail: '' },
+      ];
+      const feedback = formatFeedback(results, rungs);
+      expect(feedback).not.toContain('Fix this gate first');
+      expect(feedback).not.toContain('lint noise');
+      expect(feedback).toContain('OPTIONAL');
+      expect(feedback).toContain('Do not prioritize it over the task goal');
     });
   });
 });
