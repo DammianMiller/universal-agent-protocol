@@ -6,6 +6,20 @@
 # Enforces: completion-gate, mandatory-testing-deployment policies.
 set -euo pipefail
 
+# --- Re-entrancy guard (canonical Claude Code Stop-hook contract) ---
+# Claude Code sets `stop_hook_active: true` on the Stop payload when the session
+# is ALREADY continuing *because this hook blocked once*. Blocking again on that
+# re-entry forces an unbounded Stop→continue→Stop loop, so we must relent. Read
+# the payload from stdin (a pipe under Claude Code) and allow the stop. Tolerate
+# absent/other stdin (a TTY or a harness that sends no payload) — never block.
+STOP_HOOK_PAYLOAD=""
+if [ ! -t 0 ]; then
+  STOP_HOOK_PAYLOAD="$(cat 2>/dev/null || true)"
+fi
+if printf '%s' "$STOP_HOOK_PAYLOAD" | grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*true'; then
+  exit 0
+fi
+
 # --- Loop Protection ---
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "${HOOK_DIR}/loop-protection.sh" ]; then
@@ -13,6 +27,9 @@ if [ -f "${HOOK_DIR}/loop-protection.sh" ]; then
   if lp_should_suppress "stop"; then
     exit 0
   fi
+  # Advance the per-session counter so the circuit-breaker can bound a runaway
+  # Stop loop. Without this call the counter stays 0 and the guard is inert.
+  lp_record_invocation "stop" 2>/dev/null || true
 fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
@@ -180,7 +197,11 @@ if [ "$CODE_CHANGED" = "true" ] && [ "${UAP_VERIFY_ON_STOP:-1}" != "0" ] && comm
     fi
     # set +e: a failing command substitution under `set -e` would abort the hook
     # (allowing stop) before we can inspect the code and decide to block.
-    VERIFY_OUT="$(cd "$PROJECT_DIR" && $TIMEOUT_WRAP uap verify --strict --runtime-only --dir "$PROJECT_DIR" 2>&1)"
+    # NOT --strict: strict upgrades "no runnable artifact detected" (a vacuous,
+    # nothing-to-run project — every fresh/empty install) from a SKIP (RC 0) into
+    # a hard failure (RC 1), which would exit 2 forever. Non-strict returns RC 1
+    # ONLY on a genuine runtime failure, which is the sole case we want to block.
+    VERIFY_OUT="$(cd "$PROJECT_DIR" && $TIMEOUT_WRAP uap verify --runtime-only --dir "$PROJECT_DIR" 2>&1)"
     VERIFY_RC=$?
   fi
   set -e
