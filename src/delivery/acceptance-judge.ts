@@ -111,7 +111,9 @@ export function gatherEvidence(
     if (depth > 8 || files.length >= candidateCap) return;
     let entries: string[];
     try {
-      entries = readdirSync(dir);
+      // Sorted: readdir returns filesystem hash order, which made evidence
+      // content (and therefore judge verdicts) vary between machines/runs.
+      entries = readdirSync(dir).sort();
     } catch {
       return;
     }
@@ -183,21 +185,51 @@ export function gatherEvidence(
   deduped.sort((a, b) => a.prio - b.prio); // stable: insertion order preserved within a class
   const chosen = deduped.slice(0, maxFiles);
 
-  let out = '';
+  // Two-pass assembly. The old single pass `break`-ed when the char budget
+  // ran out, so a few large early files silently erased every file after
+  // them — the judge then reported those files as "not present" (observed
+  // live 2026-07-11: four 9-20K spec-named modules exhausted the 60K budget
+  // and eight 600-byte sibling stubs vanished from evidence; which files
+  // starved even varied with readdir hash order). Pass 1 guarantees EVERY
+  // chosen file a head (existence + its opening lines — enough to verify
+  // "file X exists and registers Y"); pass 2 spends the remaining budget
+  // extending files in priority order.
+  const contents = new Map<string, string>();
+  for (const f of chosen) {
+    try {
+      contents.set(f.abs, readFileSync(f.abs, 'utf-8'));
+    } catch {
+      /* unreadable — skip */
+    }
+  }
+  const HEAD_CHARS = 600;
+  const granted = new Map<string, number>();
   let used = 0;
   for (const f of chosen) {
-    if (used >= maxChars) break;
-    let content: string;
-    try {
-      content = readFileSync(f.abs, 'utf-8');
-    } catch {
-      continue;
-    }
-    const rel = relative(root, f.abs);
+    const content = contents.get(f.abs);
+    if (content === undefined || used >= maxChars) continue;
+    const head = Math.min(content.length, HEAD_CHARS, maxChars - used);
+    granted.set(f.abs, head);
+    used += head;
+  }
+  for (const f of chosen) {
+    const content = contents.get(f.abs);
+    if (content === undefined || used >= maxChars) continue;
     const perFileCap = f.prio === 2 ? DATA_FILE_CHARS : PER_FILE_CHARS;
-    const budget = Math.min(content.length, maxChars - used, perFileCap);
-    out += `\n=== ${rel} ===\n${content.slice(0, budget)}\n`;
-    used += budget;
+    const cur = granted.get(f.abs) ?? 0;
+    const extra = Math.min(content.length, perFileCap) - cur;
+    if (extra <= 0) continue;
+    const grant = Math.min(extra, maxChars - used);
+    granted.set(f.abs, cur + grant);
+    used += grant;
+  }
+  let out = '';
+  for (const f of chosen) {
+    const content = contents.get(f.abs);
+    const take = granted.get(f.abs) ?? 0;
+    if (content === undefined || take <= 0) continue;
+    const rel = relative(root, f.abs);
+    out += `\n=== ${rel} ===\n${content.slice(0, take)}\n`;
   }
   return out.trim();
 }
