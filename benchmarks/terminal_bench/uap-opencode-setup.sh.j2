@@ -28,7 +28,8 @@ cat > "$OCDIR/opencode.json" <<'OPENCODE_JSON_EOF'
           "limit": { "context": 262144, "output": 81920 } }
       }
     }
-  }
+  },
+  "permission": { "edit": "allow", "bash": "allow", "webfetch": "allow", "external_directory": "allow" }
 }
 OPENCODE_JSON_EOF
 echo "[uap-setup] opencode provider configured"
