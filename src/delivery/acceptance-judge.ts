@@ -76,8 +76,31 @@ function evidencePriority(name: string): number {
   return 2; // md, txt, misc data
 }
 
+/**
+ * Path-like tokens the spec explicitly names (files or directories). These are
+ * what the judge is being asked to verify, so they get guaranteed evidence
+ * slots: at repo scale the alphabetical candidate walk fills its pool long
+ * before late-alphabet directories — observed live 2026-07-11, a mission whose
+ * whole deliverable lived under web/dash/ was judged 0/4 with "no such file"
+ * while every file sat on disk, because web/ never entered the candidate pool.
+ */
+function specReferencedPaths(spec: string): string[] {
+  const out = new Set<string>();
+  for (const m of spec.matchAll(/[\w.@-]+(?:\/[\w.@*-]+)+/g)) {
+    // Strip trailing punctuation from prose (e.g. "web/dash/styles.css —").
+    const p = m[0].replace(/[.,;:)]+$/, '');
+    if (!p.includes('//') && !p.startsWith('http')) out.add(p);
+  }
+  return [...out];
+}
+
 /** Bounded walk gathering source-file evidence (path-labelled, truncated). */
-export function gatherEvidence(projectRoot: string, maxFiles = DEFAULT_MAX_FILES, maxChars = DEFAULT_MAX_CHARS): string {
+export function gatherEvidence(
+  projectRoot: string,
+  maxFiles = DEFAULT_MAX_FILES,
+  maxChars = DEFAULT_MAX_CHARS,
+  spec?: string
+): string {
   const root = projectRoot;
   // Collect a generous candidate pool FIRST, then priority-order and cut to
   // maxFiles — so neither walk order nor a data-heavy directory can starve
@@ -109,9 +132,37 @@ export function gatherEvidence(projectRoot: string, maxFiles = DEFAULT_MAX_FILES
       }
     }
   };
+  // Spec-referenced paths first: exact files at priority -1 (uncuttable),
+  // spec-named directories walked before the root walk so their contents make
+  // the candidate pool even in huge repos.
+  if (spec) {
+    for (const rel of specReferencedPaths(spec)) {
+      if (rel.includes('..')) continue; // stay inside projectRoot
+      const abs = join(root, rel);
+      let st;
+      try {
+        st = lstatSync(abs);
+      } catch {
+        continue; // spec mentions it but it doesn't exist (yet) — nothing to show
+      }
+      if (st.isFile() && SRC_EXT.test(abs) && !SECRET_FILE_RE.test(abs) && st.size <= 200_000) {
+        files.push({ abs, prio: -1 });
+      } else if (st.isDirectory()) {
+        walk(abs, 1);
+      }
+    }
+  }
   walk(root, 0);
-  files.sort((a, b) => a.prio - b.prio); // stable: walk order preserved within a class
-  const chosen = files.slice(0, maxFiles);
+  // Dedupe (a spec-referenced file can also be found by a walk) keeping the
+  // best (lowest) priority per path.
+  const best = new Map<string, { abs: string; prio: number }>();
+  for (const f of files) {
+    const cur = best.get(f.abs);
+    if (!cur || f.prio < cur.prio) best.set(f.abs, f);
+  }
+  const deduped = [...best.values()];
+  deduped.sort((a, b) => a.prio - b.prio); // stable: insertion order preserved within a class
+  const chosen = deduped.slice(0, maxFiles);
 
   let out = '';
   let used = 0;
@@ -201,7 +252,7 @@ export function extractJsonObject(text: string): Record<string, unknown> | null 
  * never wedge delivery on its own nondeterminism.
  */
 export async function runAcceptanceGate(opts: AcceptanceOptions): Promise<AcceptanceResult> {
-  const evidence = opts.evidence ?? gatherEvidence(opts.projectRoot, opts.maxFiles, opts.maxChars);
+  const evidence = opts.evidence ?? gatherEvidence(opts.projectRoot, opts.maxFiles, opts.maxChars, opts.spec);
   if (!evidence.trim()) {
     return { passed: true, score: 1, criteria: [], parseError: 'no source evidence found' };
   }
