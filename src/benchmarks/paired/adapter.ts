@@ -280,6 +280,31 @@ function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
+/**
+ * Best-effort parser for mini-SWE-agent. It has no stable machine-readable usage
+ * stream, so we scan for a trailing JSON summary (some configs emit one) and pull
+ * common fields; otherwise metrics stay null and correctness (from verifyCmd)
+ * remains the ground truth. Absent metrics never invalidate a run.
+ */
+export const parseMiniSweUsage: UsageParser = (stdout) => {
+  const m = stdout.match(/\{[\s\S]*\}\s*$/);
+  if (!m) return {};
+  try {
+    const obj = JSON.parse(m[0]) as Record<string, unknown>;
+    const usage = (obj.usage ?? {}) as Record<string, unknown>;
+    const tokens = num(obj.tokens) || num(usage.total_tokens);
+    const turns = num(obj.steps ?? obj.n_calls ?? obj.turns);
+    const cost = num(obj.cost ?? obj.cost_usd);
+    return {
+      tokens: tokens > 0 ? tokens : null,
+      costUsd: cost > 0 ? cost : null,
+      turns: turns > 0 ? turns : null,
+    };
+  } catch {
+    return {};
+  }
+};
+
 /** Claude Code headless adapter (`claude -p ... --output-format json`). */
 export function claudeAdapter(model: string): SubprocessAdapter {
   return new SubprocessAdapter({
@@ -313,6 +338,29 @@ export function opencodeAdapter(model: string): SubprocessAdapter {
     args: ['run', '--model', model, '--format', 'json', '--dir', '{workdir}', '{instruction}'],
     parseUsage: parseOpencodeUsage,
   });
+}
+
+/**
+ * mini-SWE-agent adapter — the community-standard bash-only scaffold.
+ *
+ * Its purpose in this harness is an EXTERNAL comparability anchor: run it as its
+ * own baseline so the opencode-baseline arm can be situated against the public
+ * SWE-bench leaderboard. It also happens to be the most robust control for Qwen
+ * via llama.cpp — a single bash tool, no structured tool-calls, so none of the
+ * tool-call garbling that unfairly punishes a structured-call baseline.
+ *
+ * The SubprocessAdapter already runs with cwd = the scratch repo, so mini simply
+ * operates in place. Binary and args are overridable (versions/flags drift):
+ *   UAP_MINISWE_BIN   default 'mini'
+ *   UAP_MINISWE_ARGS  space-separated arg template (must embed the model itself);
+ *                     '{instruction}' and '{workdir}' are substituted per run.
+ */
+export function miniSweAdapter(model: string): SubprocessAdapter {
+  const bin = process.env.UAP_MINISWE_BIN || 'mini';
+  const args = process.env.UAP_MINISWE_ARGS
+    ? process.env.UAP_MINISWE_ARGS.split(' ').filter(Boolean)
+    : ['-y', '-m', model, '-t', '{instruction}'];
+  return new SubprocessAdapter({ id: 'mini-swe-agent', bin, args, parseUsage: parseMiniSweUsage });
 }
 
 // ---------------------------------------------------------------------------

@@ -34,6 +34,8 @@ import {
   hash01,
   parseOpencodeUsage,
   parseFileBlocks,
+  parseMiniSweUsage,
+  miniSweAdapter,
   SubprocessAdapter,
 } from '../src/benchmarks/paired/adapter.js';
 import { TaskSpecSchema } from '../src/benchmarks/paired/types.js';
@@ -254,6 +256,49 @@ describe('adapter: raw FILE-block parser', () => {
 });
 
 // ---------------------------------------------------------------------------
+describe('adapter: mini-swe-agent (external comparability anchor)', () => {
+  // The SubprocessAdapter keeps its config private; read it structurally for the
+  // unit test rather than spawning `mini` (not installed in CI).
+  type Cfg = { cfg: { id: string; bin: string; args: string[] } };
+  const cfgOf = (a: unknown) => (a as unknown as Cfg).cfg;
+
+  it('defaults to `mini`, embeds the model, and substitutes the instruction', () => {
+    const a = miniSweAdapter('qwen36-a3b');
+    expect(a.id).toBe('mini-swe-agent');
+    const cfg = cfgOf(a);
+    expect(cfg.bin).toBe('mini');
+    expect(cfg.args).toContain('qwen36-a3b');
+    expect(cfg.args).toContain('{instruction}');
+  });
+
+  it('honors UAP_MINISWE_BIN / UAP_MINISWE_ARGS overrides', () => {
+    const prevBin = process.env.UAP_MINISWE_BIN;
+    const prevArgs = process.env.UAP_MINISWE_ARGS;
+    try {
+      process.env.UAP_MINISWE_BIN = 'mini-extra';
+      process.env.UAP_MINISWE_ARGS = '--model local/qwen -t {instruction}';
+      const cfg = cfgOf(miniSweAdapter('ignored'));
+      expect(cfg.bin).toBe('mini-extra');
+      expect(cfg.args).toEqual(['--model', 'local/qwen', '-t', '{instruction}']);
+    } finally {
+      if (prevBin === undefined) delete process.env.UAP_MINISWE_BIN;
+      else process.env.UAP_MINISWE_BIN = prevBin;
+      if (prevArgs === undefined) delete process.env.UAP_MINISWE_ARGS;
+      else process.env.UAP_MINISWE_ARGS = prevArgs;
+    }
+  });
+
+  it('parseMiniSweUsage reads a trailing JSON summary and is null-safe otherwise', () => {
+    const withSummary = parseMiniSweUsage(
+      'step 1\nstep 2\n{"steps": 4, "cost": 0.12, "usage": {"total_tokens": 5000}}\n'
+    );
+    expect(withSummary.turns).toBe(4);
+    expect(withSummary.costUsd).toBeCloseTo(0.12);
+    expect(withSummary.tokens).toBe(5000);
+    expect(parseMiniSweUsage('no json here\n')).toEqual({});
+  });
+});
+
 describe('suite loading + verify ground truth', () => {
   it('loads the smoke suite (3 tasks, sorted)', () => {
     const tasks = loadSuite(SMOKE_SUITE);

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.133.0 (2026-07-10)
+
+- feat(bench): built-in mini-swe-agent adapter for paired uplift A/B
+- docs: two-agent UAP walkthrough + SWE-bench Pro paired-uplift bench config
+- feat: single-prompt epic missions — write-time compile feedback, zero-diff acceptance, gate integrity, advisory MCP caps
+- fix: never bait the executor with optional-gate failure tails
+- fix: pytest integration rung — vacuous pass on exit 5, --no-cov with pytest-cov
+- fix: cargo gates in polyglot repos, dup-target latch, local-only pin survival
+
+
 ## v1.130.2 (2026-07-08)
 
 - fix(policies): resolve built-in policy schema/enforcer dirs relative to the INSTALLED PACKAGE (dist/cli -> pkg root), not process.cwd(). A globally-installed uap found ZERO built-in policies when run from any project other than this repo, so 'uap policy install <name>' failed and 'uap policy matrix' showed 0 available. Verified: matrix lists all 33 built-ins (incl. the pay2u pack) from a fresh dir.

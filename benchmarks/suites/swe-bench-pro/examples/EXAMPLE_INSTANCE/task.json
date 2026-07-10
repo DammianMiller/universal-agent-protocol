@@ -1,0 +1,13 @@
+{
+  "id": "acme__widgets-4821",
+  "name": "acme/widgets — Cache.get_many() drops keys when a shard times out",
+  "instruction": "Cache.get_many() silently drops keys whose backing shard raised a TimeoutError, so callers see a partial dict with no signal that anything failed. Make get_many() re-raise a CacheShardTimeout that lists the missing keys once all reachable shards have been queried, without failing the whole call when a shard simply has no data. Existing single-key get() behaviour and the retry/backoff path must be unchanged.",
+  "difficulty": "hard",
+  "tags": ["swe-bench-pro", "acme/widgets"],
+  "repoDir": "repo",
+  "setupCmd": "bash .swebench/setup.sh",
+  "gateCmd": "bash .swebench/gate.sh",
+  "verifyCmd": "bash .swebench/verify.sh",
+  "verifyTimeoutSec": 1800,
+  "agentTimeoutSec": 2400
+}
