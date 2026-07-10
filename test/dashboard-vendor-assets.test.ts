@@ -29,25 +29,26 @@ describe('dashboard packaging', () => {
 });
 
 describe('dashboard server /vendor route', () => {
-  let server: { close: () => void } | undefined;
+  let server: { close: () => void; readonly port: number } | undefined;
   afterEach(() => {
     server?.close();
     server = undefined;
   });
 
+  // Bind an OS-assigned ephemeral port (port: 0) and learn the real port from
+  // `onListening` — the old `3900 + Date.now()%900` could collide (EADDRINUSE).
   const boot = async (): Promise<number> => {
-    const port = 3900 + Math.floor((Date.now() % 900));
-    server = startDashboardServer({ port, host: '127.0.0.1' });
-    // wait for listen
-    for (let i = 0; i < 40; i++) {
-      try {
-        const r = await fetch(`http://127.0.0.1:${port}/vendor/uPlot.min.css`);
-        if (r.status !== 0) return port;
-      } catch {
-        await new Promise((res) => setTimeout(res, 50));
-      }
-    }
-    return port;
+    return await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('dashboard server never listened')), 5000);
+      server = startDashboardServer({
+        port: 0,
+        host: '127.0.0.1',
+        onListening: ({ port }) => {
+          clearTimeout(timer);
+          resolve(port);
+        },
+      });
+    });
   };
 
   it('serves the vendored uPlot JS with a javascript content-type', async () => {

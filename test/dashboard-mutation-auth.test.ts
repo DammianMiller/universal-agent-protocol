@@ -10,7 +10,7 @@ import { startDashboardServer } from '../src/dashboard/server.js';
 const TOKEN = 'test-dashboard-token-fixed';
 
 describe('dashboard policy-mutation auth', () => {
-  let server: { close: () => void } | undefined;
+  let server: { close: () => void; readonly port: number } | undefined;
   let prevToken: string | undefined;
 
   beforeEach(() => {
@@ -24,17 +24,21 @@ describe('dashboard policy-mutation auth', () => {
     else process.env.UAP_DASHBOARD_TOKEN = prevToken;
   });
 
+  // Bind an OS-assigned ephemeral port (port: 0) and learn the real port from
+  // `onListening`. The old approach hard-coded `3800 + Date.now()%90`, which
+  // collided ~1/90 with a locally running `uap dash serve` on :3847 → EADDRINUSE.
   const boot = async (): Promise<number> => {
-    const port = 3800 + Math.floor((Date.now() % 90));
-    server = startDashboardServer({ port, host: '127.0.0.1' });
-    for (let i = 0; i < 40; i++) {
-      try {
-        const r = await fetch(`http://127.0.0.1:${port}/api/dashboard`);
-        if (r.status !== 0) return port;
-      } catch {
-        await new Promise((res) => setTimeout(res, 50));
-      }
-    }
+    const port = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('dashboard server never listened')), 5000);
+      server = startDashboardServer({
+        port: 0,
+        host: '127.0.0.1',
+        onListening: ({ port }) => {
+          clearTimeout(timer);
+          resolve(port);
+        },
+      });
+    });
     return port;
   };
 
@@ -79,6 +83,22 @@ describe('dashboard policy-mutation auth', () => {
   it('read routes stay open (no token needed for GET /api/dashboard)', async () => {
     const port = await boot();
     const r = await fetch(`http://127.0.0.1:${port}/api/dashboard`);
+    expect(r.status).toBe(200);
+  }, 20000);
+
+  // Behaviour added to kill the flaky-port collision: port 0 → real ephemeral port.
+  it('port 0 binds an OS-assigned ephemeral port (not the 3847 default)', async () => {
+    const port = await boot();
+    expect(port).toBeGreaterThan(0);
+    expect(port).not.toBe(3847);
+    expect(port).not.toBe(0);
+  }, 20000);
+
+  it('the returned handle exposes the actual bound port', async () => {
+    const port = await boot();
+    expect(server?.port).toBe(port);
+    // And that port is really serving.
+    const r = await fetch(`http://127.0.0.1:${server?.port}/api/dashboard`);
     expect(r.status).toBe(200);
   }, 20000);
 });

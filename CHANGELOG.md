@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.133.2 (2026-07-10)
+
+- fix(dashboard): bind ephemeral port in tests to kill EADDRINUSE flake
+
+
 ## v1.133.1 (2026-07-10)
 
 - fix(hooks): stop the fresh-install Claude Code Stop-hook infinite loop
