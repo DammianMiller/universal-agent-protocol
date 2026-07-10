@@ -53,6 +53,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) | Branch-per-feature isolation, auto-PR, enforcement |
 | [Sandbox](guides/SANDBOX.md) | Kernel-level (bubblewrap) write isolation — the boundary that survives `--dangerously-skip-permissions` |
 | [Policies](guides/POLICIES.md) | Executable policy gates that block non-compliant tool calls |
+| [**Policy Selection & Recommendations**](guides/POLICY_SELECTION.md) | Which policies to enable for your workflow — a recommended core + tailored sets by scenario; `uap policy recommend` ⭐ |
 | [Multi-Model Routing](guides/MULTI_MODEL.md) | Plan → route → execute across 7 model profiles |
 | [Droids & Skills](guides/DROIDS_AND_SKILLS.md) | 38 expert droids, 32 skills, the expert router |
 | [Deploy Batching](guides/DEPLOY_BATCHING.md) | Conflict-free batched git/deploy actions |
@@ -79,6 +80,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Patterns](reference/PATTERNS.md) | The 23 Terminal-Bench patterns |
 | [Platforms](reference/PLATFORMS.md) | The 9 supported harnesses + support matrix |
 | [Configuration](reference/CONFIGURATION.md) | All config files and env vars |
+| [**Configuration Reference**](reference/CONFIGURATION_REFERENCE.md) | Every setting `uap config` exposes — what it does, default, and a recommendation (generated from the registry); `uap config list/explain/set/doctor/wizard` ⭐ |
 | [Database Schema](reference/DATABASE_SCHEMA.md) | SQLite databases + Qdrant collections |
 
 ## Integrations

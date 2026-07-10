@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { Command, Option } from 'commander';
+import { registerConfigCommands } from '../cli/config-command.js';
 import { existsSync, readFileSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -118,7 +119,7 @@ program
   .option('--extract-auto', 'In non-interactive mode, auto-extract custom content (default: report only)')
   .option(
     '--profile <name>',
-    'Setup profile bundle: recommended | maximum | minimal (skips per-option prompts)'
+    'Setup profile bundle: recommended | maximum | minimal | custom (custom = baseline + the `uap config` expert configurator exposing every setting + policy selection)'
   )
   .option(
     '--systemd-services',
@@ -1796,6 +1797,9 @@ program
     });
   policyCmd.addHelpText('after', '\n  Run `uap policy <subcommand>` for details.');
 }
+
+// `uap config` — inspect, learn, and set every UAP setting from the registry.
+registerConfigCommands(program);
 
 // UAP for Oh-My-Pi - dashboard and controls for omp users
 const uapOmpCmd = new Command('uap-omp');
