@@ -38,8 +38,10 @@ describe('runtime-gate timeout is portable (no bare `timeout`)', () => {
     // The fix resolves a real binary and degrades gracefully.
     expect(plugin).toContain('Bun.which("timeout")');
     expect(plugin).toContain('Bun.which("gtimeout")');
-    // Still invokes the verify gate.
-    expect(plugin).toContain('uap verify --strict --runtime-only');
+    // Still invokes the verify gate — but NOT with --strict (strict false-blocks
+    // on "nothing runnable"; see the fresh-install Stop-loop fix).
+    expect(plugin).toContain('uap verify --runtime-only');
+    expect(plugin).not.toMatch(/verify --strict/);
   });
 
   it('stop.sh template degrades to gtimeout / no-wrapper instead of a bare timeout', async () => {
