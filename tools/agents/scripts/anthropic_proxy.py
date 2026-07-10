@@ -184,6 +184,27 @@ PROXY_CONTEXT_WINDOW = int(os.environ.get("PROXY_CONTEXT_WINDOW", "0"))
 PROXY_CONTEXT_PRUNE_THRESHOLD = float(
     os.environ.get("PROXY_CONTEXT_PRUNE_THRESHOLD", "0.85")
 )
+# Compaction forcing (Option A, 2026-07-10): Claude Code decides when to
+# auto-compact against ITS believed model window (~200k) using
+# /v1/messages/count_tokens, so an HONEST count on a smaller local rail lets
+# every session grow into the "thrash band" — above the rail (per-request
+# critical prunes, findings evaporate, read-only doom loops; observed live:
+# 87 reads / 0 writes in 30 min at 122% utilization) but below the client's
+# compact trigger (~92.5% of 200k). Scaling the reported count makes the
+# client compact BEFORE the rail. "auto" (default) derives the scale from the
+# LIVE rail at call time — assumed_window / (rail * target_fraction) — so it
+# tracks rail resizes; a number forces that scale; "1"/"off" disables.
+PROXY_COUNT_TOKENS_SCALE = os.environ.get("PROXY_COUNT_TOKENS_SCALE", "auto")
+PROXY_CLIENT_ASSUMED_WINDOW = int(
+    os.environ.get("PROXY_CLIENT_ASSUMED_WINDOW", "200000")
+)
+# Where compaction should land sessions, as a fraction of the rail. Unset
+# (0) = auto: just under the pruner threshold (x0.95), so the client's own
+# compaction fires BEFORE the proxy ever needs to prune — the pruner stays on
+# purely as a backstop. An explicit value overrides (clamped to <1).
+PROXY_COMPACT_TARGET_FRACTION = float(
+    os.environ.get("PROXY_COMPACT_TARGET_FRACTION", "0")
+)
 PROXY_CONTEXT_PRUNE_TARGET_FRACTION = float(
     os.environ.get("PROXY_CONTEXT_PRUNE_TARGET_FRACTION", "0.50")
 )
@@ -9563,7 +9584,62 @@ async def count_tokens(request: Request):
             status_code=400,
             media_type="application/json",
         )
-    return {"input_tokens": estimate_total_tokens(body)}
+    est = estimate_total_tokens(body)
+    scale = _count_tokens_scale()
+    if scale > 1.0:
+        scaled = int(est * scale)
+        # Once per scale value, explain the discrepancy an operator would
+        # otherwise chase between this endpoint and the pruner's numbers.
+        global _count_scale_logged
+        if _count_scale_logged != scale:
+            _count_scale_logged = scale
+            logger.info(
+                "COMPACT FORCING: scaling count_tokens by %.2f "
+                "(client assumed window %d, rail %d) — client auto-compact "
+                "fires at ~%d real tokens, before the pruner",
+                scale,
+                PROXY_CLIENT_ASSUMED_WINDOW,
+                default_context_window if default_context_window > 0 else PROXY_CONTEXT_WINDOW,
+                int(PROXY_CLIENT_ASSUMED_WINDOW * 0.925 / scale),
+            )
+        return {"input_tokens": scaled}
+    return {"input_tokens": est}
+
+
+_count_scale_logged: float = 0.0
+
+
+def _count_tokens_scale() -> float:
+    """Resolve the count_tokens compaction-forcing scale (>= 1.0; 1.0 = off).
+
+    "auto" derives it from the LIVE rail each call so a rail resize (server
+    restart with a different --ctx-size) re-tunes the client's compact point
+    without a proxy restart.
+    """
+    raw = PROXY_COUNT_TOKENS_SCALE.strip().lower()
+    if raw in ("", "off", "none", "0", "1", "1.0"):
+        return 1.0
+    if raw != "auto":
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            return 1.0
+    window = default_context_window if default_context_window > 0 else PROXY_CONTEXT_WINDOW
+    if window <= 0:
+        return 1.0
+    frac = (
+        PROXY_COMPACT_TARGET_FRACTION
+        if 0 < PROXY_COMPACT_TARGET_FRACTION < 1
+        # Auto: land compaction just under the pruner trigger so the client
+        # compacts before the proxy ever prunes (pruner = backstop only).
+        else min(0.9, PROXY_CONTEXT_PRUNE_THRESHOLD * 0.95)
+    )
+    target = window * frac
+    if target <= 0 or PROXY_CLIENT_ASSUMED_WINDOW <= target:
+        # Rail already exceeds the client's own compact point — honest counts
+        # are fine, the client compacts before the rail unaided.
+        return 1.0
+    return PROXY_CLIENT_ASSUMED_WINDOW / target
 
 
 @app.post("/v1/messages")
