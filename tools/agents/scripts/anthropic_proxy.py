@@ -1350,6 +1350,7 @@ class SessionMonitor:
     deferral_streak: int = 0  # consecutive no-tool turns deferring the work (Fix A)
     deferral_break_fires: int = 0  # monotonic count of forced deferral-breaks (Fix A)
     tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
+    last_request_msg_count: int = 0  # Message count of the previous request (compaction-boundary detection)
     malformed_tool_streak: int = 0  # consecutive malformed pseudo tool payloads
     invalid_tool_call_streak: int = 0  # consecutive invalid tool arg payloads
     required_tool_miss_streak: int = 0  # required tool turns with no tool call
@@ -9814,6 +9815,32 @@ async def messages(request: Request):
         last_role,
         last_text,
     )
+
+    # --- Compaction-boundary detection: a client-side auto-compact collapses
+    # the conversation (observed live 2026-07-10: msgs 61 -> 3) into a fresh
+    # epoch whose last assistant message is the text-only SUMMARY. Anti-spin
+    # counters accumulated before the boundary (consecutive_forced_count,
+    # starvation/no-write streaks, tool-state machine) then misfire on the
+    # very first post-compact turn — the starvation breaker stripped tools
+    # from a brand-new epoch because the summary "looked like" a text-only
+    # stall. A halving-plus collapse of the message count is the boundary
+    # signal; reset the per-conversation spin state so the new epoch starts
+    # clean. (Token accounting is NOT reset — record_request below re-measures
+    # the compacted size naturally.)
+    prev_msg_count = getattr(monitor, "last_request_msg_count", 0)
+    if prev_msg_count >= 8 and n_messages <= prev_msg_count // 2:
+        monitor.reset_tool_turn_state(reason="compaction_boundary")
+        monitor.consecutive_forced_count = 0
+        monitor.no_progress_streak = 0
+        monitor.tool_starvation_streak = 0
+        monitor.consecutive_no_write_turns = 0
+        logger.info(
+            "COMPACTION BOUNDARY: message count collapsed %d -> %d; reset "
+            "tool-turn/anti-spin state for the fresh epoch",
+            prev_msg_count,
+            n_messages,
+        )
+    monitor.last_request_msg_count = n_messages
 
     # --- Option F: Estimate tokens and record in session monitor ---
     estimated_tokens = estimate_total_tokens(body)
