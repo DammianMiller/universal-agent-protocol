@@ -37,8 +37,16 @@ export interface DeliverArgs {
   instruction: string;
   /** Project whose gates define delivery (default: cwd) */
   projectRoot?: string;
-  /** Maximum execute→verify iterations (1-20) */
+  /** Maximum execute→verify iterations (1-20). ADVISORY unless hardCap is true. */
   maxTurns?: number;
+  /**
+   * Only when true are maxTurns/ceiling forwarded to the CLI, where an
+   * explicit --max-turns is a HARD cap (v1.124.0). LLM clients dutifully copy
+   * the schema's example numbers, and a 20-turn hard cap on a platform-scale
+   * mission guarantees a premature stop (observed live 2026-07-09) — so by
+   * default the CLI runs flagless: epics + until-delivered self-manage turns.
+   */
+  hardCap?: boolean;
   /** Model preset id (default: $UAP_DELIVER_MODEL) */
   model?: string;
   /** Only classify complexity + show the plan; do not call the model */
@@ -71,6 +79,8 @@ Route any substantive coding/delivery task here instead of editing by hand when 
 
 Use dryRun:true first to see the complexity classification and plan (fast, no model calls). Then call without dryRun to actually deliver.
 
+Long missions: runs are DURABLE — if the call times out mid-mission, call again with resume:'latest' to continue from the checkpoint instead of restarting. Leave maxTurns/ceiling unset (epics + until-delivered self-manage turns); pass a larger timeoutSec for platform-scale work.
+
 Best for: implement a feature, fix a bug across files, refactor with tests. Not for: trivial one-line edits, pure questions, or non-code docs.`,
   inputSchema: {
     type: 'object' as const,
@@ -85,7 +95,13 @@ Best for: implement a feature, fix a bug across files, refactor with tests. Not 
       },
       maxTurns: {
         type: 'number',
-        description: 'Maximum execute→verify iterations, 1-20 (default: 5)',
+        description:
+          'LEAVE UNSET for real missions — deliver self-manages turns until delivered (epics + until-delivered). Ignored unless hardCap is true, in which case it becomes a HARD stop, 1-20.',
+      },
+      hardCap: {
+        type: 'boolean',
+        description:
+          'Set true ONLY to force a hard turn budget (maxTurns/ceiling become hard stops). Default false: turn limits are self-managed and maxTurns/ceiling are ignored.',
       },
       model: {
         type: 'string',
@@ -122,7 +138,8 @@ Best for: implement a feature, fix a bug across files, refactor with tests. Not 
       },
       ceiling: {
         type: 'number',
-        description: 'Hard turn ceiling for untilDelivered, 1-50 (default 30)',
+        description:
+          'Hard turn ceiling for untilDelivered, 1-50. Ignored unless hardCap is true — leave unset for real missions.',
       },
       resume: {
         type: 'string',
@@ -139,7 +156,10 @@ Best for: implement a feature, fix a bug across files, refactor with tests. Not 
 
 const MAX_TURNS_LIMIT = 20;
 const DEFAULT_TIMEOUT_SEC = 1800;
-const MAX_TIMEOUT_SEC = 3600;
+// Platform-scale epic missions legitimately run for hours; runs are durable
+// (resume:'latest' picks up where a timeout cut off), so the cap is a
+// watchdog against a hung child, not a mission budget.
+const MAX_TIMEOUT_SEC = 14400;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 /**
@@ -261,7 +281,7 @@ export interface DeliverResult {
  */
 export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
   const {
-    instruction, projectRoot, maxTurns, model, dryRun = false, timeoutSec,
+    instruction, projectRoot, maxTurns, hardCap, model, dryRun = false, timeoutSec,
     acceptance, evaluatorModel, escalate, coordinate, untilDelivered, ceiling,
     resume, decompose,
   } = args;
@@ -305,14 +325,18 @@ export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
   const cliArgs = [cli, 'deliver', '--json'];
   if (dryRun) cliArgs.push('--dry-run');
   cliArgs.push('--project-root', root); // always explicit (confined above)
-  if (maxTurns !== undefined) cliArgs.push('--max-turns', String(maxTurns));
+  // Turn caps are forwarded ONLY under an explicit hardCap: the CLI treats
+  // --max-turns/--ceiling as hard stops, and LLM clients copy small example
+  // numbers into every call — which killed platform-scale missions at turn 20.
+  // Flagless, deliver's epics + until-delivered machinery self-manages turns.
+  if (hardCap === true && maxTurns !== undefined) cliArgs.push('--max-turns', String(maxTurns));
   if (model) cliArgs.push('--model', model);
   if (acceptance) cliArgs.push('--acceptance');
   if (evaluatorModel) cliArgs.push('--evaluator-model', evaluatorModel);
   if (escalate) cliArgs.push('--escalate');
   if (coordinate) cliArgs.push('--coordinate');
   if (untilDelivered === false) cliArgs.push('--no-until-delivered');
-  if (ceiling !== undefined) cliArgs.push('--ceiling', String(ceiling));
+  if (hardCap === true && ceiling !== undefined) cliArgs.push('--ceiling', String(ceiling));
   if (resume) cliArgs.push('--resume', resume);
   if (decompose === true) cliArgs.push('--decompose');
   if (decompose === false) cliArgs.push('--no-decompose');

@@ -266,7 +266,10 @@ export function formatAcceptanceReport(result: AcceptanceResult): string {
  * NOT for primary mode — there the judge IS the convergence target and the
  * loop's stagnation guard provides the bound.
  */
-export function createAcceptanceChurnBreaker(limit: number): {
+export function createAcceptanceChurnBreaker(
+  limit: number,
+  hasChangeEvidence?: () => boolean
+): {
   check(
     spec: string,
     verdict: { passed: boolean; feedback: string; score?: number }
@@ -286,6 +289,15 @@ export function createAcceptanceChurnBreaker(limit: number): {
         return verdict;
       }
       flips++;
+      // Zero-diff guard: "objectively green" only means PROGRESS when this
+      // spec's turns actually changed something. On a green-at-rest baseline a
+      // no-op turn is green by construction, and the breaker rubber-stamped
+      // four hollow epics in a row (observed live 2026-07-10). Without change
+      // evidence the judge keeps the verdict — a genuinely already-satisfied
+      // goal must win the judge on evidence, not outlast it.
+      if (hasChangeEvidence && !hasChangeEvidence()) {
+        return verdict;
+      }
       if (flips >= cap) {
         return {
           passed: true,

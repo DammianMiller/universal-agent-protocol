@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -55,7 +55,7 @@ describe('verifier-ladder', () => {
     it('adds cargo rungs for a Rust project (Cargo.toml)', () => {
       writeFileSync(join(dir, 'Cargo.toml'), '[package]\nname = "x"\n');
       const rungs = detectRungs(dir);
-      expect(rungs.map((r) => r.id)).toEqual(['cargo-check', 'cargo-test']);
+      expect(rungs.map((r) => r.id)).toEqual(['cargo-members', 'cargo-check', 'cargo-test']);
       expect(rungs.find((r) => r.id === 'cargo-check')?.required).toBe(true);
       // A pre-existing red test in a big workspace must not wedge every phase.
       expect(rungs.find((r) => r.id === 'cargo-test')?.required).toBe(false);
@@ -68,13 +68,30 @@ describe('verifier-ladder', () => {
       );
       writeFileSync(join(dir, 'Cargo.toml'), '[workspace]\nmembers = ["crates/*"]\n');
       const ids = detectRungs(dir).map((r) => r.id);
-      expect(ids).toEqual(['build', 'cargo-check', 'cargo-test']);
+      expect(ids).toEqual(['build', 'cargo-members', 'cargo-check', 'cargo-test']);
     });
 
     it('gives cargo rungs a 15-minute timeout floor for cold workspace builds', () => {
       writeFileSync(join(dir, 'Cargo.toml'), '[package]\nname = "x"\n');
       const rungs = detectRungs(dir, 30_000);
       expect(rungs.find((r) => r.id === 'cargo-check')?.timeoutMs).toBe(900_000);
+    });
+
+    it('cargo-members rung fails on a crate missing from [workspace] members', () => {
+      writeFileSync(join(dir, 'Cargo.toml'), '[workspace]\nmembers = [\n    "crates/listed",\n]\n');
+      mkdirSync(join(dir, 'crates', 'listed'), { recursive: true });
+      writeFileSync(join(dir, 'crates', 'listed', 'Cargo.toml'), '[package]\nname="a"\n');
+      mkdirSync(join(dir, 'crates', 'hidden'), { recursive: true });
+      writeFileSync(join(dir, 'crates', 'hidden', 'Cargo.toml'), '[package]\nname="b"\n');
+
+      const membersRung = detectRungs(dir).find((r) => r.id === 'cargo-members')!;
+      const fail = runRung(membersRung, dir);
+      expect(fail.passed).toBe(false);
+      expect(fail.outputTail).toContain('crates/hidden');
+
+      // A members glob covers everything.
+      writeFileSync(join(dir, 'Cargo.toml'), '[workspace]\nmembers = ["crates/*"]\n');
+      expect(runRung(membersRung, dir).passed).toBe(true);
     });
 
     it('pytest integration rung: exit 5 passes, --no-cov added only with pytest-cov', () => {

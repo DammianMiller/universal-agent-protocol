@@ -409,6 +409,25 @@ export function detectCargoRungs(projectRoot: string, timeoutMs: number = DEFAUL
   const cargoTimeoutMs = Math.max(timeoutMs, 900_000);
   return [
     {
+      // Membership guard: a crate directory absent from [workspace] members is
+      // INVISIBLE to every cargo gate — its code "passes" without ever being
+      // compiled (observed live 2026-07-10: an epic's crate was accepted with
+      // 47 latent compile errors because it wasn't a member). Runs before the
+      // check rung so the failure message names the missing crates.
+      id: 'cargo-members',
+      name: 'Workspace membership (crates/* all in [workspace] members)',
+      command: 'bash',
+      args: [
+        '-c',
+        // A members glob ("crates/*") covers everything; otherwise every
+        // crates/<dir>/Cargo.toml must appear verbatim in the root manifest.
+        'grep -qE \'"crates/\\*"\' Cargo.toml && exit 0; missing=""; for t in crates/*/Cargo.toml; do [ -e "$t" ] || continue; d=$(dirname "$t"); grep -q "\\"$d\\"" Cargo.toml || missing="$missing $d"; done; [ -z "$missing" ] && exit 0; echo "NOT in [workspace] members:$missing — code outside the workspace is invisible to cargo gates and does NOT count as delivered; add each path to [workspace] members in the root Cargo.toml"; exit 1',
+      ],
+      required: true,
+      timeoutMs: Math.min(timeoutMs, 30_000),
+      tier: 'fast',
+    },
+    {
       id: 'cargo-check',
       name: 'Check (cargo check --workspace)',
       command: 'cargo',

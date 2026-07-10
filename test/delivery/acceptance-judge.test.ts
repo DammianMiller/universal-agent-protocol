@@ -134,6 +134,20 @@ describe('createAcceptanceChurnBreaker', () => {
     const b = createAcceptanceChurnBreaker(0);
     expect(b.check('spec', reject).overridden).toBe(true); // fires immediately
   });
+
+  it('zero-diff guard: never overrides the judge without change evidence', () => {
+    let writes = 0;
+    const b = createAcceptanceChurnBreaker(2, () => writes > 0);
+    // No files changed: the breaker can never fire, however many rejections.
+    for (let i = 0; i < 5; i++) {
+      const v = b.check('spec', reject);
+      expect(v.passed).toBe(false);
+      expect(v.overridden).toBeUndefined();
+    }
+    // Once the spec's turns produced real changes, the bound applies again.
+    writes = 3;
+    expect(b.check('spec', reject).overridden).toBe(true);
+  });
 });
 
 describe('gatherEvidence — priority ordering (data files cannot starve source)', () => {
