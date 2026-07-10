@@ -12,7 +12,7 @@ import { randomBytes } from 'crypto';
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname, sep } from 'path';
 import { fileURLToPath } from 'url';
-import { getDashboardData } from './data-service.js';
+import { getDashboardData, probeDatabaseHealth } from './data-service.js';
 import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { readEventsSince, readRecentEvents } from '../utils/telemetry-store.js';
@@ -452,6 +452,17 @@ export function startDashboardServer(
     if (!process.env.UAP_DASHBOARD_TOKEN) {
       console.log(`  policy-mutation token: ${mutationToken}`);
     }
+
+    // DB-layer health: a missing native binding makes every panel silently
+    // empty — warn loudly with the fix so the operator isn't left guessing.
+    try {
+      const dbHealth = probeDatabaseHealth(cwd);
+      if (!dbHealth.ok) {
+        console.warn('\n\u26A0 UAP Dashboard: SQLite layer UNAVAILABLE — every DB-backed panel will read EMPTY.');
+        console.warn(`  cause: ${dbHealth.error}`);
+        console.warn(`  fix:   ${dbHealth.remediation}\n`);
+      }
+    } catch { /* never block startup on the probe */ }
 
     // Seed dashboard data from project state
     try {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { dashboardBundle } from './helpers/dashboard-bundle.js';
 
 describe('Tool call server configuration', () => {
   it('should expose UAP_LLM_SERVER override in tool call wrapper', () => {
@@ -26,7 +27,9 @@ describe('Tool call server configuration', () => {
   });
 
   it('should show updated model names in dashboard list', () => {
-    const content = readFileSync(join(process.cwd(), 'web', 'dashboard.html'), 'utf-8');
+    // PR #410 (dashboard-uplift): the MODEL_NAMES list moved from inline
+    // dashboard.html into web/dash/core.js — assert against the bundle.
+    const content = dashboardBundle();
     expect(content).toContain('gpt-5.4');
     expect(content).toContain('gpt-5.3-codex');
     expect(content).toContain('sonnet-4.6');

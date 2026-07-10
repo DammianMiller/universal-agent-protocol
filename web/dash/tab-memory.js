@@ -1,26 +1,12 @@
-// tab-memory.js — Memory tab stub
-// Registers with UAP.registerTab and renders a 'coming soon' message.
+/**
+ * tab-memory.js — Memory tab stub
+ * Registers with UAP.registerTab and renders a "coming soon" message
+ * (textContent only, per the module contract — no innerHTML).
+ */
 
-(function () {
-  'use strict';
-
-  const TAB_ID = 'memory';
-  const TAB_LABEL = 'Memory';
-
-  function render(root, state) {
-    root.innerHTML = '';
-
-    const comingSoon = document.createElement('div');
-    comingSoon.className = 'tab-coming-soon';
-    comingSoon.textContent = 'Coming soon: Memory tab will display L1-L4 cache, compression, hit/miss gauge, and recent queries.';
-
-    root.appendChild(comingSoon);
+UAP.registerTab('memory', {
+  label: 'Memory',
+  render(root, state) {
+    root.textContent = 'Memory — coming soon';
   }
-
-  if (typeof UAP !== 'undefined' && typeof UAP.registerTab === 'function') {
-    UAP.registerTab(TAB_ID, {
-      label: TAB_LABEL,
-      render: render
-    });
-  }
-})();
+});

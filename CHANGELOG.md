@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.135.2 (2026-07-11)
+
+- fix(bench): terminal-bench opencode harness was unusable headless — the generated `opencode.json` had no `permission` config, so `opencode run` auto-rejected every tool call (both arms scored 0%, a void A/B). Added `permission {edit,bash,webfetch,external_directory: allow}` and switched the default container→host endpoint to the portable docker bridge (`172.17.0.1:8080`). Verified: qwen3.6-35B-A3B + opencode now runs genuine attempts (33% baseline vs 42% with the UAP AGENTS.md gates protocol on a 12-task TB-1.0 subset).
+
+## v1.135.1 (2026-07-10)
+
+- fix(dashboard): self-diagnosing SQLite health — a missing/incompatible better-sqlite3 native binding (e.g. a global `npm i -g` done with --ignore-scripts, or a Node ABI bump) made every DB-backed panel silently read empty. getDashboardData now probes the binding and exposes a `health` field; dash serve prints a loud remediation warning at startup and the UI shows a fixed banner instead of a dead-looking dashboard.
+
 ## v1.135.0 (2026-07-10)
 
 - feat(dashboard): tabbed console — Overview (aggregate KPIs + live charts + drill-down) plus Tasks & Epics, Agents & Sessions, Orchestration, Deliver, Policies, Models, Memory tabs

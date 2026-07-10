@@ -14,7 +14,7 @@
  */
 
 import { lstatSync, readdirSync, readFileSync } from 'fs';
-import { join, relative } from 'path';
+import { join, relative, dirname } from 'path';
 import type { LoopExecutor } from './convergence-loop.js';
 
 export interface AcceptanceCriterion {
@@ -76,8 +76,31 @@ function evidencePriority(name: string): number {
   return 2; // md, txt, misc data
 }
 
+/**
+ * Path-like tokens the spec explicitly names (files or directories). These are
+ * what the judge is being asked to verify, so they get guaranteed evidence
+ * slots: at repo scale the alphabetical candidate walk fills its pool long
+ * before late-alphabet directories — observed live 2026-07-11, a mission whose
+ * whole deliverable lived under web/dash/ was judged 0/4 with "no such file"
+ * while every file sat on disk, because web/ never entered the candidate pool.
+ */
+function specReferencedPaths(spec: string): string[] {
+  const out = new Set<string>();
+  for (const m of spec.matchAll(/[\w.@-]+(?:\/[\w.@*-]+)+/g)) {
+    // Strip trailing punctuation from prose (e.g. "web/dash/styles.css —").
+    const p = m[0].replace(/[.,;:)]+$/, '');
+    if (!p.includes('//') && !p.startsWith('http')) out.add(p);
+  }
+  return [...out];
+}
+
 /** Bounded walk gathering source-file evidence (path-labelled, truncated). */
-export function gatherEvidence(projectRoot: string, maxFiles = DEFAULT_MAX_FILES, maxChars = DEFAULT_MAX_CHARS): string {
+export function gatherEvidence(
+  projectRoot: string,
+  maxFiles = DEFAULT_MAX_FILES,
+  maxChars = DEFAULT_MAX_CHARS,
+  spec?: string
+): string {
   const root = projectRoot;
   // Collect a generous candidate pool FIRST, then priority-order and cut to
   // maxFiles — so neither walk order nor a data-heavy directory can starve
@@ -88,7 +111,9 @@ export function gatherEvidence(projectRoot: string, maxFiles = DEFAULT_MAX_FILES
     if (depth > 8 || files.length >= candidateCap) return;
     let entries: string[];
     try {
-      entries = readdirSync(dir);
+      // Sorted: readdir returns filesystem hash order, which made evidence
+      // content (and therefore judge verdicts) vary between machines/runs.
+      entries = readdirSync(dir).sort();
     } catch {
       return;
     }
@@ -109,25 +134,102 @@ export function gatherEvidence(projectRoot: string, maxFiles = DEFAULT_MAX_FILES
       }
     }
   };
+  // Spec-referenced paths first: exact files at priority -1 (uncuttable),
+  // spec-named directories walked before the root walk so their contents make
+  // the candidate pool even in huge repos. In BOTH cases the parent directory
+  // is walked too: specs routinely reference files in template form
+  // ("web/dash/tab-<name>.js") whose literal token never resolves, and the
+  // siblings of a named file are usually the rest of the deliverable —
+  // observed live 2026-07-11: 8 tab files sat next to the spec-named
+  // styles.css yet were judged "not present" (4/7 MET instead of 7/7).
+  if (spec) {
+    const dirsToWalk = new Set<string>();
+    for (const rel of specReferencedPaths(spec)) {
+      if (rel.includes('..')) continue; // stay inside projectRoot
+      const abs = join(root, rel);
+      let st;
+      try {
+        st = lstatSync(abs);
+      } catch {
+        // Token doesn't resolve (template form / not created yet) — its
+        // parent directory is still the best evidence lead.
+        const parent = dirname(abs);
+        if (parent.startsWith(root) && parent !== root) dirsToWalk.add(parent);
+        continue;
+      }
+      if (st.isFile() && SRC_EXT.test(abs) && !SECRET_FILE_RE.test(abs) && st.size <= 200_000) {
+        files.push({ abs, prio: -1 });
+        const parent = dirname(abs);
+        if (parent.startsWith(root) && parent !== root) dirsToWalk.add(parent);
+      } else if (st.isDirectory()) {
+        dirsToWalk.add(abs);
+      }
+    }
+    for (const d of dirsToWalk) {
+      try {
+        if (lstatSync(d).isDirectory()) walk(d, 1);
+      } catch {
+        /* parent doesn't exist either — nothing to walk */
+      }
+    }
+  }
   walk(root, 0);
-  files.sort((a, b) => a.prio - b.prio); // stable: walk order preserved within a class
-  const chosen = files.slice(0, maxFiles);
+  // Dedupe (a spec-referenced file can also be found by a walk) keeping the
+  // best (lowest) priority per path.
+  const best = new Map<string, { abs: string; prio: number }>();
+  for (const f of files) {
+    const cur = best.get(f.abs);
+    if (!cur || f.prio < cur.prio) best.set(f.abs, f);
+  }
+  const deduped = [...best.values()];
+  deduped.sort((a, b) => a.prio - b.prio); // stable: insertion order preserved within a class
+  const chosen = deduped.slice(0, maxFiles);
 
-  let out = '';
+  // Two-pass assembly. The old single pass `break`-ed when the char budget
+  // ran out, so a few large early files silently erased every file after
+  // them — the judge then reported those files as "not present" (observed
+  // live 2026-07-11: four 9-20K spec-named modules exhausted the 60K budget
+  // and eight 600-byte sibling stubs vanished from evidence; which files
+  // starved even varied with readdir hash order). Pass 1 guarantees EVERY
+  // chosen file a head (existence + its opening lines — enough to verify
+  // "file X exists and registers Y"); pass 2 spends the remaining budget
+  // extending files in priority order.
+  const contents = new Map<string, string>();
+  for (const f of chosen) {
+    try {
+      contents.set(f.abs, readFileSync(f.abs, 'utf-8'));
+    } catch {
+      /* unreadable — skip */
+    }
+  }
+  const HEAD_CHARS = 600;
+  const granted = new Map<string, number>();
   let used = 0;
   for (const f of chosen) {
-    if (used >= maxChars) break;
-    let content: string;
-    try {
-      content = readFileSync(f.abs, 'utf-8');
-    } catch {
-      continue;
-    }
-    const rel = relative(root, f.abs);
+    const content = contents.get(f.abs);
+    if (content === undefined || used >= maxChars) continue;
+    const head = Math.min(content.length, HEAD_CHARS, maxChars - used);
+    granted.set(f.abs, head);
+    used += head;
+  }
+  for (const f of chosen) {
+    const content = contents.get(f.abs);
+    if (content === undefined || used >= maxChars) continue;
     const perFileCap = f.prio === 2 ? DATA_FILE_CHARS : PER_FILE_CHARS;
-    const budget = Math.min(content.length, maxChars - used, perFileCap);
-    out += `\n=== ${rel} ===\n${content.slice(0, budget)}\n`;
-    used += budget;
+    const cur = granted.get(f.abs) ?? 0;
+    const extra = Math.min(content.length, perFileCap) - cur;
+    if (extra <= 0) continue;
+    const grant = Math.min(extra, maxChars - used);
+    granted.set(f.abs, cur + grant);
+    used += grant;
+  }
+  let out = '';
+  for (const f of chosen) {
+    const content = contents.get(f.abs);
+    const take = granted.get(f.abs) ?? 0;
+    if (content === undefined || take <= 0) continue;
+    const rel = relative(root, f.abs);
+    out += `\n=== ${rel} ===\n${content.slice(0, take)}\n`;
   }
   return out.trim();
 }
@@ -201,7 +303,7 @@ export function extractJsonObject(text: string): Record<string, unknown> | null 
  * never wedge delivery on its own nondeterminism.
  */
 export async function runAcceptanceGate(opts: AcceptanceOptions): Promise<AcceptanceResult> {
-  const evidence = opts.evidence ?? gatherEvidence(opts.projectRoot, opts.maxFiles, opts.maxChars);
+  const evidence = opts.evidence ?? gatherEvidence(opts.projectRoot, opts.maxFiles, opts.maxChars, opts.spec);
   if (!evidence.trim()) {
     return { passed: true, score: 1, criteria: [], parseError: 'no source evidence found' };
   }

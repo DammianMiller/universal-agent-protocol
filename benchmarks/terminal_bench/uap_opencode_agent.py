@@ -28,7 +28,7 @@ from terminal_bench.agents.installed_agents.opencode.opencode_agent import (
 # The endpoint the in-container opencode calls. The proxy binds 0.0.0.0:4100 on
 # the host, so the task container reaches it via the host's LAN IP. Override per
 # environment with UAP_TB_BASE_URL / UAP_TB_API_KEY.
-UAP_TB_BASE_URL = os.environ.get("UAP_TB_BASE_URL", "http://192.168.1.165:4100/v1")
+UAP_TB_BASE_URL = os.environ.get("UAP_TB_BASE_URL", "http://172.17.0.1:8080/v1")
 UAP_TB_API_KEY = os.environ.get("UAP_TB_API_KEY", "sk-qwen35b")
 
 # The UAP treatment surface (gates discipline). Kept terminal-task-flavoured:

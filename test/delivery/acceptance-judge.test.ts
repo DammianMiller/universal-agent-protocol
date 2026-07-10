@@ -174,6 +174,58 @@ describe('gatherEvidence — priority ordering (data files cannot starve source)
     expect(dataSlab.length).toBeLessThan(2_000);
   });
 
+  it('spec-referenced paths reach evidence even when the candidate pool saturates first', () => {
+    // Repo-scale failure (2026-07-11 live): candidateCap = maxFiles*10 fills
+    // during the alphabetical walk long before late-alphabet dirs, so a
+    // mission delivering into web/dash/ was judged "no such file" with every
+    // file on disk. Saturate the pool with early-alphabet dirs, then assert a
+    // spec that names web/dash/styles.css still gets it into evidence.
+    for (const d of ['aaa', 'bbb', 'ccc']) {
+      mkdirSync(join(dir, d));
+      for (let i = 0; i < 40; i++) writeFileSync(join(dir, d, `f${String(i).padStart(2, '0')}.js`), `// ${d}/${i}\n`);
+    }
+    mkdirSync(join(dir, 'web', 'dash'), { recursive: true });
+    writeFileSync(join(dir, 'web', 'dash', 'styles.css'), '.tabbar { display: flex; }');
+    writeFileSync(join(dir, 'web', 'dash', 'tab-overview.js'), "UAP.registerTab('overview', {});");
+
+    const maxFiles = 10; // candidateCap 100 < 120 early-alphabet files → pool saturates
+    const without = gatherEvidence(dir, maxFiles);
+    expect(without).not.toContain('web/dash/styles.css');
+
+    const spec = 'Create web/dash/styles.css with the tab bar styles, and stub tabs under web/dash/.';
+    const withSpec = gatherEvidence(dir, maxFiles, undefined, spec);
+    expect(withSpec).toContain('=== web/dash/styles.css ===');
+    expect(withSpec).toContain('.tabbar');
+    // The spec-named DIRECTORY was walked too, so its other files made the pool.
+    expect(withSpec).toContain('web/dash/tab-overview.js');
+
+    // Template-form references ("web/dash/tab-<name>.js") never resolve as
+    // literal paths — the parent directory must still be walked (live 4/7
+    // false-MISS, 2026-07-11). Also: siblings of a named file are evidence.
+    const templateSpec = 'Create 8 stub tab files web/dash/tab-<name>.js for each tab.';
+    const withTemplate = gatherEvidence(dir, maxFiles, undefined, templateSpec);
+    expect(withTemplate).toContain('web/dash/tab-overview.js');
+  });
+
+  it('guaranteed heads: small files survive big files exhausting the char budget', () => {
+    // Live 2026-07-11: four 9-20K spec-named modules consumed the whole 60K
+    // evidence budget and eight 600-byte sibling stubs vanished — the judge
+    // reported them "not present". Every chosen file must get at least a head.
+    mkdirSync(join(dir, 'web', 'dash'), { recursive: true });
+    for (const big of ['styles.css', 'charts.js', 'core.js', 'tabs.js']) {
+      writeFileSync(join(dir, 'web', 'dash', big), ('/* bulk */ '.repeat(2200))); // ~24K each
+    }
+    for (const t of ['overview', 'tasks', 'agents', 'memory']) {
+      writeFileSync(join(dir, 'web', 'dash', `tab-${t}.js`), `UAP.registerTab('${t}', { render(r){ r.textContent='${t} — coming soon'; } });`);
+    }
+    const spec = 'Create web/dash/styles.css, web/dash/charts.js, web/dash/core.js and stub tab files web/dash/tab-<name>.js.';
+    const ev = gatherEvidence(dir, 20, 60_000, spec);
+    for (const t of ['overview', 'tasks', 'agents', 'memory']) {
+      expect(ev).toContain(`=== web/dash/tab-${t}.js ===`);
+      expect(ev).toContain(`UAP.registerTab('${t}'`);
+    }
+  });
+
   it('a directory of many data files cannot exhaust the file-count cap before source is walked', () => {
     mkdirSync(join(dir, 'assets'));
     mkdirSync(join(dir, 'src'));

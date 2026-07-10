@@ -1,26 +1,12 @@
-// tab-policies.js — Policies tab stub
-// Registers with UAP.registerTab and renders a 'coming soon' message.
+/**
+ * tab-policies.js — Policies tab stub
+ * Registers with UAP.registerTab and renders a "coming soon" message
+ * (textContent only, per the module contract — no innerHTML).
+ */
 
-(function () {
-  'use strict';
-
-  const TAB_ID = 'policies';
-  const TAB_LABEL = 'Policies';
-
-  function render(root, state) {
-    root.innerHTML = '';
-
-    const comingSoon = document.createElement('div');
-    comingSoon.className = 'tab-coming-soon';
-    comingSoon.textContent = 'Coming soon: Policies tab will display policies table, compliance status, audit log, and live events.';
-
-    root.appendChild(comingSoon);
+UAP.registerTab('policies', {
+  label: 'Policies',
+  render(root, state) {
+    root.textContent = 'Policies — coming soon';
   }
-
-  if (typeof UAP !== 'undefined' && typeof UAP.registerTab === 'function') {
-    UAP.registerTab(TAB_ID, {
-      label: TAB_LABEL,
-      render: render
-    });
-  }
-})();
+});
