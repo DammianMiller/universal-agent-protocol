@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.134.0 (2026-07-10)
+
+- feat(setup): custom/expert config profile — a settings registry, `uap config`, and policy recommendations
+- feat(proxy): compaction forcing — scale count_tokens so clients compact before the rail
+
+
 ## v1.133.2 (2026-07-10)
 
 - fix(dashboard): bind ephemeral port in tests to kill EADDRINUSE flake
