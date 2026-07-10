@@ -9,7 +9,7 @@
  * (tmp + rename) and fail-soft — persistence must never break a run.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
 import type { LoopCheckpoint } from './convergence-loop.js';
@@ -34,6 +34,8 @@ export interface DeliverRunState {
   phaseSummaries?: string[];
   /** Task-DB id opened for this mission, so --resume reuses it instead of duplicating. */
   taskId?: string;
+  /** OS pid of the deliver process that owns this run (operator cancel target). */
+  pid?: number;
 }
 
 export function deliverRunsDir(projectRoot: string): string {
@@ -177,4 +179,45 @@ export function loadRunState(projectRoot: string, runId: string): DeliverRunStat
     if (!best || state.updatedAt > best.updatedAt) best = state;
   }
   return best;
+}
+
+/** List all persisted runs for a project, most-recently-updated first. */
+export function listRuns(projectRoot: string): DeliverRunState[] {
+  const dir = deliverRunsDir(projectRoot);
+  if (!existsSync(dir)) return [];
+  let entries: string[];
+  try { entries = readdirSync(dir); } catch { return []; }
+  const runs: DeliverRunState[] = [];
+  for (const id of entries) {
+    if (!isValidRunId(id)) continue;
+    const state = readState(projectRoot, id);
+    if (state) runs.push(state);
+  }
+  runs.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  return runs;
+}
+
+/** Path to the cooperative stop-file for a run (an operator/dashboard cancel). */
+export function stopFilePath(projectRoot: string, runId: string): string {
+  return join(deliverRunsDir(projectRoot), runId, 'STOP');
+}
+
+/** True when a stop has been requested for this run. Checked by the loop per turn. */
+export function isStopRequested(projectRoot: string, runId: string): boolean {
+  try { return isValidRunId(runId) && existsSync(stopFilePath(projectRoot, runId)); } catch { return false; }
+}
+
+/** Request a cooperative stop: write the run's STOP file (creating the dir if needed). */
+export function requestStop(projectRoot: string, runId: string): boolean {
+  try {
+    const dir = join(deliverRunsDir(projectRoot), runId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'STOP'), new Date().toISOString(), 'utf-8');
+    return true;
+  } catch { return false; }
+}
+
+/** Clear a stale stop-file so a fresh/resumed run is not instantly interrupted. */
+export function clearStop(projectRoot: string, runId: string): void {
+  try { const p = stopFilePath(projectRoot, runId); if (existsSync(p)) unlinkSync(p); } catch { /* ignore */ }
 }

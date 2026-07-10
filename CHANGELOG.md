@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.135.0 (2026-07-10)
+
+- feat(dashboard): tabbed console — Overview (aggregate KPIs + live charts + drill-down) plus Tasks & Epics, Agents & Sessions, Orchestration, Deliver, Policies, Models, Memory tabs
+- feat(dashboard): full lifecycle management from the UI — create/update/close/delete tasks, advance/reset epic ledger, orchestrator on/off/auto, launch/cancel/resume deliver runs, deregister/clean agents (all behind the mutation-token gate, destructive actions confirmed)
+- feat(deliver): cooperative cancel — per-turn stop-file poll in the convergence loop; deliver stamps its pid and marks a run interrupted on stop; run-state gains listRuns() + stop-file helpers; cancel is authoritative for orphaned runs
+- feat(dashboard): per-agent/session drill-down drawers; modular web/dash/{core,tabs}.js + styles.css served under /dash/ (no-store for app code)
+
 ## v1.134.0 (2026-07-10)
 
 - feat(setup): custom/expert config profile — a settings registry, `uap config`, and policy recommendations

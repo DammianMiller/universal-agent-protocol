@@ -16,6 +16,7 @@ import { globalSessionStats } from '../mcp-router/session-stats.js';
 import { getPerformanceMonitor, type PerformanceMetrics } from '../utils/performance-monitor.js';
 import { readCompressionStats, readPerfMetrics } from '../utils/telemetry-store.js';
 import { loadLedger, progress as ledgerProgress } from '../delivery/completion-ledger.js';
+import { listRuns, type DeliverRunState } from '../delivery/run-state.js';
 
 // ── TTL Cache for subprocess calls (git/docker don't change faster than 30s) ──
 interface CachedSubprocessResult<T> {
@@ -666,6 +667,10 @@ export interface DashboardData {
   deployBuckets: DeployBucketData | DeployBatchSummary;
   savingsByInfluence: SavingsByInfluence;
   orchestrationTree: OrchestrationTree;
+  /** Durable deliver runs (registry) — powers the Deliver tab + monitoring. */
+  deliverRuns: DeliverRunState[];
+  /** Effective orchestrator setting (on|off|auto) for the Orchestration toggle. */
+  orchestrate: string;
 }
 
 // ── Data Gathering ──
@@ -718,6 +723,16 @@ export async function getDashboardData(): Promise<DashboardData> {
   // Get all session history (current + past)
   const sessions = getSessionHistory(cwd);
 
+  // Deliver run registry + effective orchestrator setting (both fail-soft).
+  let deliverRuns: DeliverRunState[] = [];
+  try { deliverRuns = listRuns(cwd); } catch { deliverRuns = []; }
+  let orchestrate = 'auto';
+  try {
+    const raw = loadUapConfigRaw(cwd) ?? {};
+    const o = (raw.deliver as Record<string, unknown> | undefined)?.orchestrate;
+    orchestrate = o === false || o === 'off' ? 'off' : o === true || o === 'on' ? 'on' : 'auto';
+  } catch { orchestrate = 'auto'; }
+
   return {
     timestamp: new Date().toISOString(),
     system: getSystemData(cwd),
@@ -736,6 +751,8 @@ export async function getDashboardData(): Promise<DashboardData> {
     sessions,
     savingsByInfluence: getSavingsByInfluence(cwd),
     orchestrationTree: getOrchestrationTree(cwd),
+    deliverRuns,
+    orchestrate,
   };
 }
 

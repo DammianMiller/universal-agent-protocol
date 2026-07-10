@@ -313,6 +313,11 @@ export interface ConvergenceConfig {
    */
   onCheckpoint?: (checkpoint: LoopCheckpoint) => void;
   /**
+   * Cooperative cancel: polled before each turn. Returning true breaks the loop
+   * so the caller can mark the run interrupted (dashboard/operator stop-file).
+   */
+  shouldStop?: () => boolean | Promise<boolean>;
+  /**
    * Resume an interrupted run from a persisted checkpoint: prior history,
    * prompt context, and stagnation counters are restored and the loop
    * continues at checkpoint.turn + 1 with a fresh `maxTurns` budget.
@@ -867,6 +872,16 @@ export class ConvergenceLoop {
 
     for (let turn = startTurn; turn <= maxTurns; turn++) {
       const turnStart = Date.now();
+
+      // Cooperative cancel (dashboard/operator): stop BEFORE any model work this
+      // turn. Fail-open — a broken predicate must never wedge the loop.
+      if (this.config.shouldStop) {
+        try {
+          if (await this.config.shouldStop()) break;
+        } catch {
+          /* ignore predicate errors */
+        }
+      }
 
       // Re-detect gates: a from-scratch build has no artifact at t0, so the
       // execution gate (and build/test/lint) only become detectable once the
