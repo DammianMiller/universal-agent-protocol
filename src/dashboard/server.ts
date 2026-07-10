@@ -78,13 +78,24 @@ const STATIC_CONTENT_TYPES: Record<string, string> = {
 };
 
 export interface DashboardServerOptions {
+  /** Port to bind. Pass 0 for an OS-assigned ephemeral port (read the actual
+   *  port back via `onListening` or the returned `.port`). Default 3847. */
   port?: number;
   host?: string;
   updateIntervalMs?: number;
+  /** Fired once the server is listening, with the actually-bound port — the only
+   *  reliable way to learn the port when `port: 0` was requested. */
+  onListening?: (info: { port: number; host: string }) => void;
 }
 
-export function startDashboardServer(options: DashboardServerOptions = {}): { close: () => void } {
-  const port = options.port || 3847;
+export function startDashboardServer(
+  options: DashboardServerOptions = {}
+): { close: () => void; readonly port: number } {
+  // `??` not `||`: port 0 is a valid request (OS-assigned ephemeral) and must
+  // not collapse to the 3847 default.
+  const requestedPort = options.port ?? 3847;
+  // Updated to the real bound port once the server is listening.
+  let boundPort = requestedPort;
   const host = options.host || 'localhost';
   // Precedence: explicit option (--refresh) > UAP_DASH_REFRESH_MS > 2000.
   // Floor 250ms — getDashboardData reads several DBs per snapshot, so a
@@ -218,7 +229,7 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
 
       // API: Get event history
       if (url.startsWith('/api/events/history')) {
-        const urlObj = new URL(url, `http://${host}:${port}`);
+        const urlObj = new URL(url, `http://${host}:${boundPort}`);
         const limit = parseInt(urlObj.searchParams.get('limit') || '50', 10);
         const sinceId = parseInt(urlObj.searchParams.get('since') || '0', 10);
 
@@ -388,15 +399,19 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
     }
   });
 
-  server.listen(port, host, () => {
+  server.listen(requestedPort, host, () => {
+    // Resolve the real port now that we're listening (matters when port 0 was
+    // requested — the OS picked a free one).
+    const addr = server.address();
+    if (addr && typeof addr === 'object') boundPort = addr.port;
     const shown = host === '0.0.0.0' ? 'localhost' : host;
-    console.log(`UAP Dashboard server running at http://${shown}:${port}`);
+    console.log(`UAP Dashboard server running at http://${shown}:${boundPort}`);
     if (host === '0.0.0.0') {
-      console.log(`  bound to all interfaces (0.0.0.0) — reachable on the LAN at http://<this-host-ip>:${port}`);
+      console.log(`  bound to all interfaces (0.0.0.0) — reachable on the LAN at http://<this-host-ip>:${boundPort}`);
     } else if (host === 'localhost' || host === '127.0.0.1') {
       console.log(`  loopback only — for remote/LAN access restart with: uap dash serve --host 0.0.0.0`);
     }
-    console.log(`WebSocket + SSE live updates at ws://${shown}:${port} and http://${shown}:${port}/api/events`);
+    console.log(`WebSocket + SSE live updates at ws://${shown}:${boundPort} and http://${shown}:${boundPort}/api/events`);
     // Policy mutations (enable/disable/stage/level) require this token. The
     // dashboard UI gets it automatically (injected into the served page); any
     // other client must send it as `X-Uap-Dashboard-Token`. Override with
@@ -415,9 +430,16 @@ export function startDashboardServer(options: DashboardServerOptions = {}): { cl
     } catch {
       /* seeder failure is non-fatal */
     }
+
+    // Signal readiness with the actually-bound port (essential for port: 0).
+    options.onListening?.({ port: boundPort, host });
   });
 
   return {
+    // Reflects the real bound port after listening (the requested port before).
+    get port() {
+      return boundPort;
+    },
     close: () => {
       clearInterval(eventPoller);
       clearInterval(pushInterval);
