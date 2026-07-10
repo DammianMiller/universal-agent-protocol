@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.133.1 (2026-07-10)
+
+- fix(hooks): stop the fresh-install Claude Code Stop-hook infinite loop
+
+
 ## v1.133.0 (2026-07-10)
 
 - feat(bench): built-in mini-swe-agent adapter for paired uplift A/B
