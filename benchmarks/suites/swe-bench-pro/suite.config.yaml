@@ -63,12 +63,14 @@ run:
 # External comparability reference (NOT the paired toggle — a separate anchor).
 external_reference:
   agent: mini-SWE-agent
+  adapter: mini                 # built-in: uap bench paired --adapter mini
+  env_overrides: [UAP_MINISWE_BIN, UAP_MINISWE_ARGS]
   why: >
     Bash-only, no structured tool-calls — the community-standard control and the
     most robust baseline for Qwen via llama.cpp (avoids tool-call garbling that
-    would unfairly punish opencode's baseline). Run it separately to situate the
-    opencode-baseline arm against the public leaderboard. Requires a mini-SWE-agent
-    adapter (not yet a built-in `uap bench paired` adapter — see README "extending").
+    would unfairly punish opencode's baseline). Run it separately (its own bare
+    baseline, same suite + seeds) to situate the opencode-baseline arm against the
+    public leaderboard. See README "mini-SWE-agent reference arm".
 
 prerequisites:
   - pip install swebench            # official evaluator (for verify.sh official mode)

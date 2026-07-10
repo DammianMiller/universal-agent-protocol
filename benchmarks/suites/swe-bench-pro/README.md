@@ -119,13 +119,29 @@ the basis for the McNemar 2×2 and paired-bootstrap stats in
    (mid-2026 aggregators); re-pull exact Qwen3.6 scores from the primary
    SWE-bench Pro leaderboard before publishing.
 
+## mini-SWE-agent reference arm
+
+`mini-swe-agent` is a **built-in adapter** (`--adapter mini`) — the community-
+standard bash-only scaffold and the most robust baseline for local Qwen (no
+structured tool-calls to garble). Run it as a separate baseline for cross-harness
+comparability against the public leaderboard:
+
+```bash
+# external comparability anchor (its own bare baseline, same suite + seeds)
+uap bench paired --suite ../swe-bench-pro-generated --adapter mini \
+    --model qwen36-a3b --epochs 5
+
+# overrides if your mini version/flags or local-serving setup differ:
+UAP_MINISWE_BIN=mini UAP_MINISWE_ARGS='--model openai/qwen36-a3b -t {instruction}' \
+    uap bench paired --suite ../swe-bench-pro-generated --adapter mini --epochs 5
+```
+
+`mini` operates in the scratch repo (the harness sets its cwd); point its model
+at the proxy `:4000` the same way opencode does. Metrics parsing is best-effort
+(`parseMiniSweUsage`) — correctness always comes from `verify.sh`.
+
 ## Extending
 
-- **mini-SWE-agent reference arm** — add a `miniSweAdapter` in
-  `src/benchmarks/paired/adapter.ts` (a `SubprocessAdapter` invoking
-  `mini-swe-agent`/`mini` in `{workdir}` with the instruction), register it in
-  `src/cli/bench.ts` `pickAdapter`, then run it as a separate baseline for
-  cross-harness comparability against the public leaderboard.
 - **Terminal-Bench 2.0 (secondary)** — a separate Harbor/Terminus adapter; the
   canonical harness-native confirmatory instrument.
 - **RoadmapBench (stretch)** — partial-credit scoring; the most sensitive detector

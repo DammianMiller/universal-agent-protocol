@@ -19,6 +19,7 @@ import {
   makeBaselineCondition,
   makeFullCondition,
   MockAdapter,
+  miniSweAdapter,
   opencodeAdapter,
   RawCompletionAdapter,
   renderAblationMarkdown,
@@ -58,6 +59,11 @@ function pickAdapter(name: string, model: string): AgentAdapter {
       return opencodeAdapter(model);
     case 'claude':
       return claudeAdapter(model);
+    case 'mini':
+    case 'mini-swe-agent':
+      // Community-standard bash-only scaffold; external comparability anchor and
+      // the most robust baseline for local Qwen (no structured tool-calls).
+      return miniSweAdapter(model);
     case 'raw':
       // Non-agentic single-shot completion; gate loop when the 'gates' component
       // is active. Isolates UAP gate value vs a baseline that cannot self-verify.
@@ -67,7 +73,9 @@ function pickAdapter(name: string, model: string): AgentAdapter {
       // treatment is the full machine (lazy attempt, critic, acceptance, ...).
       return new DeliverCliAdapter();
     default:
-      throw new Error(`Unknown adapter '${name}' (expected: mock | opencode | claude | raw | deliver)`);
+      throw new Error(
+        `Unknown adapter '${name}' (expected: mock | opencode | claude | mini | raw | deliver)`
+      );
   }
 }
 

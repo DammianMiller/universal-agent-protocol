@@ -49,3 +49,6 @@ echo "✓ done — report in benchmark-results/paired-<timestamp>/report.md"
 echo "  Headline: paired Δ resolve-rate (uap-full − baseline) with 95% CI."
 echo "  Reminder: report the split + scaffold; ≥5 seeds; verify Qwen numbers"
 echo "            against the primary SWE-bench Pro leaderboard before publishing."
+echo
+echo "  External anchor (run separately for public comparability):"
+echo "    uap bench paired --suite \"$SUITE_DIR\" --adapter mini --model \"$MODEL\" --epochs $EPOCHS"
