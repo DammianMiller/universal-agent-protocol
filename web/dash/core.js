@@ -42,7 +42,8 @@
   var MODEL_NAMES = { 'fable-5': 'Fable 5', 'opus-4.8': 'Claude Opus 4.8', 'opus-4.6': 'Claude Opus 4.6', 'sonnet-5': 'Claude Sonnet 5', 'sonnet-4.6': 'Claude Sonnet 4.6', 'haiku-4.5': 'Claude Haiku 4.5', 'qwen36-a3b': 'Qwen 3.6 35B A3B', 'qwen35-a3b': 'Qwen 3.5 35B A3B', 'qwen35': 'Qwen 3.5 35B A3B', 'gpt-5.4': 'GPT 5.4', 'gpt-5.3-codex': 'GPT 5.3 Codex' };
   function modelName(id) { return MODEL_NAMES[id] || id || 'unknown'; }
 
-  // Hyperscript DOM builder (textContent-safe; pass {html} only for pre-escaped strings).
+  // Hyperscript DOM builder — XSS-safe by construction: strings only ever land
+  // in textContent / text nodes, never innerHTML.
   function el(tag, attrs) {
     var e = document.createElement(tag), i;
     if (attrs) {
@@ -52,7 +53,6 @@
         if (v == null) continue;
         if (k === 'class') e.className = v;
         else if (k === 'text') e.textContent = v;
-        else if (k === 'html') e.innerHTML = v;
         else if (k === 'style' && typeof v === 'object') { for (var sk in v) e.style[sk] = v[sk]; }
         else if (k === 'dataset' && typeof v === 'object') { for (var dk in v) e.dataset[dk] = v[dk]; }
         else if (k.slice(0, 2) === 'on' && typeof v === 'function') e.addEventListener(k.slice(2).toLowerCase(), v);
@@ -149,7 +149,7 @@
     drawerEl.querySelector('#drawer-title').textContent = title;
     var body = drawerEl.querySelector('#drawer-body');
     clear(body);
-    if (typeof contentNode === 'string') body.innerHTML = contentNode; else if (contentNode) body.appendChild(contentNode);
+    if (typeof contentNode === 'string') body.textContent = contentNode; else if (contentNode) body.appendChild(contentNode);
     drawerEl.classList.add('open');
     drawerBackdrop.classList.add('open');
   }
@@ -161,7 +161,7 @@
     var open = !!opts.open;
     var header = el('div', { class: 'collapsible-header' + (open ? ' open' : '') }, title);
     var inner = el('div', { class: 'cb-inner' });
-    if (typeof bodyNode === 'string') inner.innerHTML = bodyNode; else if (bodyNode) inner.appendChild(bodyNode);
+    if (typeof bodyNode === 'string') inner.textContent = bodyNode; else if (bodyNode) inner.appendChild(bodyNode);
     var body = el('div', { class: 'collapsible-body' + (open ? ' open' : '') }, inner);
     header.addEventListener('click', function () { header.classList.toggle('open'); body.classList.toggle('open'); });
     return el('div', { class: 'collapsible' }, header, body);
@@ -179,79 +179,19 @@
     }).catch(function (e) { toast(e.message || 'Request failed', 'err'); throw e; });
   }
 
-  // ─────────────────────────── charts (uPlot) ───────────────────────────
-  var uplotReady = typeof uPlot !== 'undefined';
-  var CC = { done: '#3fb950', inProg: '#58a6ff', blocked: '#f85149', open: '#484f58', agents: '#bc8cff', raw: '#58a6ff', ctx: '#3fb950', hitRate: '#bc8cff', deploy: '#58a6ff', blockRate: '#f85149' };
-  var chartReg = {}; // id -> { u, host }
-  function tsUnix(arr) { return arr.map(function (p) { return new Date(p.timestamp).getTime() / 1000; }); }
-  function addTooltip(u, colors, labels, fmtVal) {
-    var tt = el('div', { class: 'u-tooltip' }); tt.style.display = 'none'; u.root.appendChild(tt);
-    u.hooks.setCursor = u.hooks.setCursor || [];
-    u.hooks.setCursor.push(function () {
-      var idx = u.cursor.idx, left = u.cursor.left, top = u.cursor.top;
-      if (idx == null) { tt.style.display = 'none'; return; }
-      var date = new Date(u.data[0][idx] * 1000);
-      var rows = '<div class="tt-time">' + date.toLocaleTimeString() + '</div>';
-      for (var i = 1; i < u.series.length; i++) {
-        if (!u.series[i].show) continue;
-        var val = u.data[i][idx]; if (val == null) continue;
-        var c = colors[i - 1] || '#fff', l = labels[i - 1] || '';
-        var v = fmtVal ? fmtVal(val, i) : val.toLocaleString();
-        rows += '<div class="tt-row"><span class="tt-dot" style="background:' + c + '"></span><span class="tt-label">' + l + '</span><span class="tt-val">' + v + '</span></div>';
-      }
-      tt.innerHTML = rows; tt.style.display = ''; tt.style.left = (left + 16) + 'px'; tt.style.top = Math.max(0, top - 10) + 'px';
-    });
-  }
-  var AXIS = { stroke: '#484f58', grid: { stroke: '#21262d' }, ticks: { stroke: '#21262d' }, font: '10px SF Mono,monospace' };
-  function heroOpts(kind, w) {
-    if (kind === 'tasks') return {
-      width: w, height: 260, cursor: { sync: { key: 'uap' }, focus: { prox: 30 } },
-      scales: { x: { time: true }, y: { min: 0 }, agents: { min: 0 } },
-      axes: [AXIS, Object.assign({}, AXIS, { size: 50 }), { stroke: CC.agents, grid: { show: false }, side: 1, font: '10px SF Mono,monospace', size: 50, scale: 'agents' }],
-      series: [{}, { label: 'Done', stroke: CC.done, fill: CC.done + '30', width: 2 }, { label: 'In Prog', stroke: CC.inProg, fill: CC.inProg + '30', width: 2 }, { label: 'Blocked', stroke: CC.blocked, fill: CC.blocked + '20', width: 2 }, { label: 'Open', stroke: CC.open, fill: CC.open + '20', width: 1, dash: [4, 2] }, { label: 'Agents', stroke: CC.agents, width: 2, dash: [6, 3], scale: 'agents' }],
-    };
-    return {
-      width: w, height: 260, cursor: { sync: { key: 'uap' }, focus: { prox: 30 } },
-      scales: { x: { time: true }, y: { min: 0 }, pct: { min: 0, max: 100 } },
-      axes: [AXIS, Object.assign({}, AXIS, { size: 50, values: function (_, v) { return v.map(function (x) { return x + ' KB'; }); } }), { stroke: CC.hitRate, grid: { show: false }, side: 1, font: '10px SF Mono,monospace', size: 50, scale: 'pct', values: function (_, v) { return v.map(function (x) { return x + '%'; }); } }],
-      series: [{}, { label: 'Raw', stroke: CC.raw, fill: CC.raw + '20', width: 2 }, { label: 'Compressed', stroke: CC.ctx, fill: CC.ctx + '20', width: 2 }, { label: 'Hit Rate', stroke: CC.hitRate, width: 2, dash: [6, 3], scale: 'pct' }],
-    };
-  }
-  var parseHR = function (p) { var h = p.memoryHitsMisses && p.memoryHitsMisses.hitRate; return typeof h === 'string' ? parseFloat(h) || 0 : h || 0; };
-  var parseBR = function (p) { var b = p.compliance && p.compliance.blockRate; return typeof b === 'string' ? parseFloat(b) || 0 : b || 0; };
-  function heroData(kind, ts) {
-    var x = tsUnix(ts);
-    if (kind === 'tasks') return [x, ts.map(function (p) { return (p.tasks && p.tasks.done) || 0; }), ts.map(function (p) { return (p.tasks && p.tasks.inProgress) || 0; }), ts.map(function (p) { return (p.tasks && p.tasks.blocked) || 0; }), ts.map(function (p) { return (p.tasks && p.tasks.open) || 0; }), ts.map(function (p) { return (p.coordination && p.coordination.activeAgents) || 0; })];
-    return [x, ts.map(function (p) { return Math.round(((p.compression && p.compression.rawBytes) || 0) / 1024); }), ts.map(function (p) { return Math.round(((p.compression && p.compression.contextBytes) || 0) / 1024); }), ts.map(parseHR)];
-  }
-  function syncHero(id, kind, ts) {
-    if (!uplotReady || !ts || ts.length < 2) return;
-    var host = document.getElementById(id); if (!host) return;
-    var reg = chartReg[id], data = heroData(kind, ts);
-    if (!reg || reg.host !== host || !document.body.contains(reg.u.root)) {
-      if (reg && reg.u) { try { reg.u.destroy(); } catch (e) {} }
-      clear(host);
-      var u = new uPlot(heroOpts(kind, host.clientWidth || 600), data, host);
-      addTooltip(u, kind === 'tasks' ? [CC.done, CC.inProg, CC.blocked, CC.open, CC.agents] : [CC.raw, CC.ctx, CC.hitRate], kind === 'tasks' ? ['Done', 'In Progress', 'Blocked', 'Open', 'Active Agents'] : ['Raw KB', 'Compressed KB', 'Hit Rate %'], kind === 'tasks' ? null : function (v, i) { return i === 3 ? v + '%' : v + ' KB'; });
-      chartReg[id] = { u: u, host: host };
-    } else { reg.u.setData(data); }
-    seedLegend(chartReg[id].u);
-  }
-  function syncSpark(id, ts, fn, color, label) {
-    if (!uplotReady || !ts || ts.length < 2) return;
-    var host = document.getElementById(id); if (!host) return;
-    var reg = chartReg[id], data = [tsUnix(ts), ts.map(fn)];
-    if (!reg || reg.host !== host || !document.body.contains(reg.u.root)) {
-      if (reg && reg.u) { try { reg.u.destroy(); } catch (e) {} }
-      clear(host);
-      var u = new uPlot({ width: host.clientWidth || 300, height: 60, cursor: { sync: { key: 'uap' }, focus: { prox: 30 }, points: { show: false } }, legend: { show: false }, scales: { x: { time: true }, y: { min: 0 } }, axes: [{ show: false }, { show: false }], series: [{}, { stroke: color, fill: color + '25', width: 1.5 }] }, data, host);
-      chartReg[id] = { u: u, host: host, label: label };
-    } else { reg.u.setData(data); }
-    seedLegend(chartReg[id].u);
-  }
-  function seedLegend(u) { try { if (u && u.data && u.data[0] && u.data[0].length) u.setLegend({ idx: u.data[0].length - 1 }); } catch (e) {} }
-  function resetCharts() { for (var id in chartReg) { try { chartReg[id].u.destroy(); } catch (e) {} } chartReg = {}; }
-  var charts = { syncHero: syncHero, syncSpark: syncSpark, parseHR: parseHR, parseBR: parseBR, CC: CC, ready: uplotReady };
+  // ─────────────────────────── charts ───────────────────────────
+  // uPlot chart + sparkline builders live in charts.js (loaded before core.js):
+  // mkChart / initSparkline / addTooltip / updateAllCharts ported 1:1 from the
+  // original dashboard, plus the syncHero/syncSpark registry adapters the tabs
+  // use. Re-exported here as UAP.charts so tab modules have a single entry point.
+  var charts = window.UAPCharts || {
+    ready: false, CC: {},
+    syncHero: function () {}, syncSpark: function () {}, resetCharts: function () {},
+    mkChart: function () { return null; }, initSparkline: function () { return null; },
+    addTooltip: function () {}, updateAllCharts: function () {},
+    parseHR: function () { return 0; }, parseBR: function () { return 0; },
+  };
+  function resetCharts() { charts.resetCharts(); }
 
   // ─────────────────────────── tab registry + router ───────────────────────────
   var tabs = {}; // id -> { label, render, update }
