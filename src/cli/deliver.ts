@@ -1214,8 +1214,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // Secondary-judge churn breaker: bounds consecutive judge rejections of
   // objectively-green turns per spec (env UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT,
   // default 2), after which the objective gates win. Primary mode is exempt.
+  // Change-evidence for the breaker's zero-diff guard: files applied since the
+  // current acceptance spec (epic) began. Incremented by the iteration hook,
+  // reset wherever acceptanceSpec is re-pointed.
+  const specChangeEvidence = { writes: 0 };
   const acceptanceChurnBreaker = createAcceptanceChurnBreaker(
-    Number(process.env.UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT ?? 2)
+    Number(process.env.UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT ?? 2),
+    () => specChangeEvidence.writes > 0
   );
   const acceptanceGate: AcceptanceGate | undefined = options.acceptance && !skipJudgeForSimple
     ? async (root) => {
@@ -1289,6 +1294,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const escalation = makeEscalation();
     return composeIterationHooks(
       (record) => printProgress(record),
+      (record) => {
+        // Feed the acceptance breaker's zero-diff guard.
+        if (record.filesApplied.length > 0) specChangeEvidence.writes += record.filesApplied.length;
+        return undefined;
+      },
       (record) => haloTracer.onIteration(record),
       coordinator ? (record) => coordinator.onIteration(record) : undefined,
       escalation ? (record) => escalation.onIteration(record) : undefined
@@ -1545,6 +1555,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           missionTask?.id
         );
         acceptanceSpec = ctx.prompt;
+        specChangeEvidence.writes = 0;
         const loop = new ConvergenceLoop(
           { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onIteration: makeIterationHook() },
           executor,
@@ -1662,6 +1673,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       const phaseText = phaseInstruction(instruction, phases!, phaseIndex, phaseSummaries);
       // The acceptance judge grades THIS phase's goal, not the whole mission.
       acceptanceSpec = phaseText;
+      specChangeEvidence.writes = 0;
       const phaseResult = await phaseLoop.deliver(phaseText);
       all.turns += phaseResult.turns - resumedTurns;
       all.history.push(...phaseResult.history);
@@ -1768,6 +1780,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         acceptanceSpec =
           `EPIC — ${epic.title}:\n${epic.goal}` +
           (epic.criteria?.length ? `\nAcceptance criteria:\n${epic.criteria.map((c) => `- ${c}`).join('\n')}` : '');
+        specChangeEvidence.writes = 0; // fresh epic — breaker needs fresh diff evidence
         const epicTask = await openDeliveryTask(`${epic.title} \u2014 ${epic.goal.slice(0, 120)}`, projectRoot, missionTask?.id);
         const loop = new ConvergenceLoop(
           { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onIteration: makeIterationHook() },

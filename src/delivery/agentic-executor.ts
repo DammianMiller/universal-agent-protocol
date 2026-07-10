@@ -20,13 +20,13 @@
 import { spawnSync } from 'child_process';
 import { normalizeToolPath } from './path-normalize.js';
 import { withModelSlot, recordModelSuccess, recordModelExhaustion, isExhaustionError } from '../utils/model-slot-lease.js';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'fs';
 import { join, dirname, resolve, relative, isAbsolute } from 'path';
 import type { ModelConfig } from '../models/types.js';
 import type { LoopExecutor } from './convergence-loop.js';
 import { fetchModelWithRetry } from '../models/long-fetch.js';
 import type { ApplyResult } from './applier.js';
-import { protectedWritePathReason, parseFileBlocks } from './applier.js';
+import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles } from './applier.js';
 import { estimateMessagesTokens, CONTEXT_BUDGET_MARKER } from './context-budget.js';
 import { sanitizedEnv } from './sanitized-env.js';
 
@@ -264,7 +264,14 @@ function runTool(
       }
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, String(args.content ?? ''), 'utf-8');
-      return `OK: wrote ${String(args.path)} (${String(args.content ?? '').length} bytes)${pathNote}`;
+      // Per-write compile feedback for Rust: without it, a weak model writes
+      // whole turns of code against types it invented, and the turn-end gate
+      // reports an avalanche it cannot dig out of (observed live 2026-07-10:
+      // 47 → 653 errors across one epic attempt). An incremental warm
+      // `cargo check` is ~2s and stops the spiral at the first bad write.
+      // Feedback only — the write itself always lands. UAP_DELIVER_RUST_WRITE_CHECK=0 disables.
+      const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
+      return `OK: wrote ${String(args.path)} (${String(args.content ?? '').length} bytes)${pathNote}${rustCheckNote}`;
     }
     if (name === 'run_bash') {
       // Containment gate (audit X3): run_bash is an uncontained host shell when
@@ -280,6 +287,18 @@ function runTool(
       // Snapshot protected files so a command cannot silently rewrite the
       // oracle to make a wrong answer pass.
       const snap = protectedFiles.size > 0 ? snapshotProtected(projectRoot, protectedFiles) : new Map();
+      // Gate-config writes are blocked on the write_file path, but sed / `git
+      // checkout` / `npm pkg set` through run_bash bypassed that check entirely
+      // (observed live 2026-07-10: an executor reverted a pyproject.toml gate
+      // fix via bash). Snapshot the same configs and restore any the command
+      // mutates; a repo-root conftest.py the command CREATES (pytest collection
+      // policy, not a fixture) is removed the same way.
+      const gateCfgKeys = protectGateConfigs
+        ? new Set(listGateConfigFiles(projectRoot))
+        : new Set<string>();
+      const gateSnap = gateCfgKeys.size > 0 ? snapshotProtected(projectRoot, gateCfgKeys) : new Map();
+      const rootConftest = resolve(projectRoot, 'conftest.py');
+      const hadRootConftest = existsSync(rootConftest);
       // Secret-stripped env: run_bash is the model running arbitrary shell, so
       // it must not inherit provider/host credentials it could exfiltrate
       // (audit: previously ran with the full host env). Not containment —
@@ -291,17 +310,60 @@ function runTool(
         env: sanitizedEnv(),
       });
       const restored = snap.size > 0 ? restoreProtected(snap) : [];
+      const gateRestored = gateSnap.size > 0 ? restoreProtected(gateSnap) : [];
+      let conftestNote = '';
+      if (protectGateConfigs && !hadRootConftest && existsSync(rootConftest)) {
+        try {
+          rmSync(rootConftest);
+          conftestNote =
+            '\n[blocked: removed the repo-root conftest.py your command created — it controls pytest collection (gate-rigging); put fixtures in a nested tests/conftest.py]';
+        } catch {
+          /* best effort */
+        }
+      }
       const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(0, 4000);
       const note =
-        restored.length > 0
+        (restored.length > 0
           ? `\n[blocked: restored ${restored.length} protected file(s) your command modified]`
-          : '';
+          : '') +
+        (gateRestored.length > 0
+          ? `\n[blocked: restored ${gateRestored.length} gate-config file(s) your command modified — change the implementation, not the gate]`
+          : '') +
+        conftestNote;
       return `exit=${r.status ?? 'null'}\n${out}${note}`;
     }
     return `ERROR: unknown tool ${name}`;
   } catch (err) {
     return `ERROR: ${String(err).slice(0, 200)}`;
   }
+}
+
+/**
+ * After a Rust-relevant write, run an incremental `cargo check` and return a
+ * compact feedback note for the tool result ('' when not applicable). Errors
+ * never fail the write — the model gets the compiler's view immediately and
+ * fixes 1-2 errors instead of drowning in hundreds at turn end.
+ */
+function maybeRustWriteCheck(projectRoot: string, rel: string): string {
+  if (process.env.UAP_DELIVER_RUST_WRITE_CHECK === '0') return '';
+  const isRust = /\.rs$/.test(rel) || /(^|\/)Cargo\.toml$/.test(rel);
+  if (!isRust || !existsSync(join(projectRoot, 'Cargo.toml'))) return '';
+  const r = spawnSync('cargo', ['check', '--workspace', '--message-format', 'short'], {
+    cwd: projectRoot,
+    timeout: 120_000,
+    encoding: 'utf-8',
+    env: sanitizedEnv(),
+  });
+  if (r.error || r.status === null) return '\n[cargo check: did not complete — verify manually]';
+  if (r.status === 0) return '\n[cargo check: clean]';
+  const errLines = `${r.stderr ?? ''}`
+    .split('\n')
+    .filter((l) => /error(\[|:)/.test(l));
+  const shown = errLines.slice(0, 12).join('\n').slice(0, 1500);
+  return (
+    `\n[cargo check now FAILING — fix these BEFORE writing anything else ` +
+    `(${errLines.length} error line(s)):\n${shown}]`
+  );
 }
 
 /** Does the project hold any file worth inspecting (beyond scaffolding)? */

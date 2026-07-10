@@ -144,6 +144,11 @@ const GATE_CONFIG_RES = [
   /^pytest\.ini$/,
   /^setup\.cfg$/,
   /^pyproject\.toml$/,
+  /^tox\.ini$/,
+  // Lint gate configs: observed live 2026-07-10 — an executor gutted
+  // eslint.config.js (139/157 lines) to dodge a red lint rung.
+  /^eslint\.config\.[^/]+$/,
+  /^\.eslintrc(\.[^/]+)?$/,
   // Deploy / IaC gate inputs (deploy-dev + CI tiers).
   /^docker-compose(\.[^/]+)?\.ya?ml$/,
   /^compose(\.[^/]+)?\.ya?ml$/,
@@ -224,6 +229,14 @@ export function protectedWritePathReason(
   }
   if (protectGateConfigs && isGateConfigBasename(base)) {
     return `writes to ${base} are not allowed (gate-config / IaC — rigging the gate by indirection)`;
+  }
+  // A REPO-ROOT conftest.py is collection policy, not a fixture: one
+  // `collect_ignore_glob` line silently blinds every pytest gate (observed
+  // live 2026-07-10 — an executor wrote `collect_ignore_glob = ["sidecars/*"]`
+  // to dodge failing sidecar suites). Nested conftest.py files (tests/**)
+  // remain writable — those are legitimate fixture modules.
+  if (protectGateConfigs && segments.length === 1 && base === 'conftest.py') {
+    return 'writes to the repo-root conftest.py are not allowed (it controls pytest collection — gate-rigging by indirection); put fixtures in a nested tests/conftest.py';
   }
   return null;
 }

@@ -32,3 +32,17 @@ describe('protectedWritePathReason (agentic + applier shared blocklist)', () => 
     expect(isGateConfigBasename('docker-compose.yml')).toBe(true);
   });
 });
+
+describe('gate-config additions (2026-07-10 live gaming incidents)', () => {
+  it('blocks eslint configs and root conftest.py under protectGateConfigs', () => {
+    for (const p of ['eslint.config.js', 'eslint.config.mjs', '.eslintrc.json', 'conftest.py', 'tox.ini']) {
+      expect(protectedWritePathReason(p, true)).not.toBeNull();
+    }
+    expect(isGateConfigBasename('eslint.config.js')).toBe(true);
+  });
+
+  it('nested conftest.py stays writable (fixtures are legitimate)', () => {
+    expect(protectedWritePathReason('tests/conftest.py', true)).toBeNull();
+    expect(protectedWritePathReason('sidecars/x/tests/conftest.py', true)).toBeNull();
+  });
+});
