@@ -8957,7 +8957,7 @@ async def _maybe_apply_recipe(anthropic_resp, anthropic_body, openai_body, clien
         return anthropic_resp
 
 
-async def _heartbeat_then_buffered(produce_coro, model: str):
+async def _heartbeat_then_buffered(produce_coro, model: str, input_tokens: int = 0):
     """SSE generator: keep-alive heartbeat wrapper for the guarded-non-stream path.
 
     Emits an immediate ``message_start`` so the client registers an active
@@ -8974,7 +8974,7 @@ async def _heartbeat_then_buffered(produce_coro, model: str):
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     yield (
         f"event: message_start\n"
-        f"data: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
+        f"data: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': input_tokens, 'output_tokens': 0}}})}\n\n"
     )
     interval = PROXY_STREAM_HEARTBEAT_SECS if PROXY_STREAM_HEARTBEAT_SECS > 0 else 15.0
     task = asyncio.ensure_future(produce_coro)
@@ -9032,7 +9032,13 @@ async def stream_anthropic_message(anthropic_resp: dict, emit_message_start: boo
             "model": anthropic_resp.get("model", "unknown"),
             "stop_reason": None,
             "stop_sequence": None,
-            "usage": {"input_tokens": 0, "output_tokens": 0},
+            "usage": {
+                "input_tokens": int(
+                    (anthropic_resp.get("usage", {}) or {}).get("input_tokens", 0)
+                    * _count_tokens_scale()
+                ),
+                "output_tokens": 0,
+            },
         }
         yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': message})}\n\n"
 
@@ -9074,11 +9080,13 @@ async def stream_anthropic_message(anthropic_resp: dict, emit_message_start: boo
             )
         block_index += 1
 
-    output_tokens = anthropic_resp.get("usage", {}).get("output_tokens", 0)
+    resp_usage = anthropic_resp.get("usage", {}) or {}
+    output_tokens = resp_usage.get("output_tokens", 0)
+    scaled_input = int(resp_usage.get("input_tokens", 0) * _count_tokens_scale())
     stop_reason = anthropic_resp.get("stop_reason", "end_turn")
     yield (
         "event: message_delta\n"
-        f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': {'output_tokens': output_tokens}})}\n\n"
+        f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': {'input_tokens': scaled_input, 'output_tokens': output_tokens}})}\n\n"
     )
     yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
 
@@ -9105,10 +9113,11 @@ async def stream_anthropic_response(
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     stream_started = time.monotonic()
 
-    # message_start
+    # message_start — carries the client's (scaled) input size; a hardcoded 0
+    # here blinded clients to their own context usage (compaction never fired).
     yield (
         f"event: message_start\n"
-        f"data: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
+        f"data: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': _client_input_tokens(monitor), 'output_tokens': 0}}})}\n\n"
     )
 
     # content_block_start for text (index 0)
@@ -9413,10 +9422,12 @@ async def stream_anthropic_response(
     if _is_unexpected_end_turn(synthetic_openai_resp, anthropic_body):
         monitor.unexpected_end_turn_count += 1
 
-    # message_delta with final stop reason
+    # message_delta with final stop reason. Repeats the (scaled) input size so
+    # clients that read usage from the delta rather than message_start still
+    # see their context usage — the compaction-forcing signal.
     yield (
         f"event: message_delta\n"
-        f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': finish_reason, 'stop_sequence': None}, 'usage': {'output_tokens': output_tokens}})}\n\n"
+        f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': finish_reason, 'stop_sequence': None}, 'usage': {'input_tokens': _client_input_tokens(monitor), 'output_tokens': output_tokens}})}\n\n"
     )
 
     # message_stop
@@ -9640,6 +9651,42 @@ def _count_tokens_scale() -> float:
         # are fine, the client compacts before the rail unaided.
         return 1.0
     return PROXY_CLIENT_ASSUMED_WINDOW / target
+
+
+def _client_input_tokens(monitor) -> int:
+    """Input size to REPORT to the client, scaled for compaction forcing.
+
+    Streaming responses historically hardcoded ``input_tokens: 0`` in
+    message_start — the client could never see its own context usage, so its
+    auto-compaction NEVER fired and sessions ground against the pruner forever
+    (the actual root cause of the interactive thrash band; count_tokens
+    scaling alone was insufficient because the dominant clients don't call
+    it). Reports the PRE-prune estimate — the client's own conversation size,
+    which is what its compaction decision is about — times the forcing scale.
+    """
+    est = (
+        getattr(monitor, "pre_prune_input_tokens", 0)
+        or getattr(monitor, "last_input_tokens", 0)
+        or 0
+    )
+    return int(est * _count_tokens_scale())
+
+
+def _scale_client_usage(anthropic_resp: dict) -> dict:
+    """Shallow-copy a finalized response with usage.input_tokens scaled for the
+    CLIENT. Internal consumers (pruner accounting, telemetry) read the original
+    dict's honest numbers — only the wire copy lies, and it lies consistently
+    with count_tokens and the streaming frames."""
+    scale = _count_tokens_scale()
+    usage = anthropic_resp.get("usage")
+    if scale <= 1.0 or not isinstance(usage, dict):
+        return anthropic_resp
+    out = dict(anthropic_resp)
+    out["usage"] = {
+        **usage,
+        "input_tokens": int(usage.get("input_tokens", 0) * scale),
+    }
+    return out
 
 
 @app.post("/v1/messages")
@@ -10113,7 +10160,7 @@ async def messages(request: Request):
 
         if PROXY_STREAM_HEARTBEAT_SECS > 0:
             return StreamingResponse(
-                _heartbeat_then_buffered(_produce_guarded(), model),
+                _heartbeat_then_buffered(_produce_guarded(), model, _client_input_tokens(monitor)),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -10542,7 +10589,9 @@ async def messages(request: Request):
         await asyncio.to_thread(
             _record_project_telemetry, body, model, anthropic_resp.get("usage", {})
         )
-        return anthropic_resp
+        # Wire copy only: telemetry above and monitor accounting keep the
+        # honest numbers; the client sees the compaction-forcing scale.
+        return _scale_client_usage(anthropic_resp)
 
 
 @app.post("/anthropic/v1/messages")
