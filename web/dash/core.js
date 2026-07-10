@@ -316,11 +316,25 @@
     var blocks = (d.compliance && d.compliance.totalBlocks) || 0;
     badge('policies', blocks, blocks > 0);
   }
+  // A missing/incompatible better-sqlite3 binding makes every DB-backed panel
+  // silently empty. Surface it as a fixed banner instead of a dead-looking UI.
+  function renderHealth(hh) {
+    var existing = document.getElementById('db-health-banner');
+    if (!hh || hh.ok) { if (existing) existing.remove(); return; }
+    if (!existing) {
+      existing = el('div', { id: 'db-health-banner', role: 'alert', style: { position: 'fixed', top: '0', left: '0', right: '0', zIndex: '2000', background: 'var(--red)', color: '#fff', padding: '8px 16px', fontSize: '12px', textAlign: 'center' } });
+      document.body.appendChild(existing);
+      document.body.style.paddingTop = '34px';
+    }
+    existing.textContent = '\u26A0 Dashboard database unavailable — panels read empty. ' + (hh.remediation || hh.error || '');
+  }
+
   function applySnapshot(d) {
     if (!d) return;
     state = d; UAP.state = d;
     try { updateHeader(d); } catch (e) {}
     try { updateBadges(d); } catch (e) {}
+    try { renderHealth(d.health); } catch (e) {}
     refreshActive();
     for (var i = 0; i < snapSubs.length; i++) { try { snapSubs[i](d); } catch (e) {} }
   }

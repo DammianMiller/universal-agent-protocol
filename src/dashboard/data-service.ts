@@ -671,6 +671,40 @@ export interface DashboardData {
   deliverRuns: DeliverRunState[];
   /** Effective orchestrator setting (on|off|auto) for the Orchestration toggle. */
   orchestrate: string;
+  /** SQLite layer health — false means every DB-backed panel silently reads empty. */
+  health: DbHealth;
+}
+
+export interface DbHealth {
+  ok: boolean;
+  error?: string;
+  remediation?: string;
+}
+
+/**
+ * Probe the better-sqlite3 native binding with a throwaway in-memory DB. When it
+ * fails (missing/incompatible native binding — e.g. a global install done with
+ * --ignore-scripts, or a Node ABI bump), EVERY DB read in getDashboardData throws
+ * and is swallowed into an empty default, so the whole dashboard looks dead. This
+ * turns that silent failure into an explicit, actionable signal.
+ */
+export function probeDatabaseHealth(_cwd: string): DbHealth {
+  try {
+    const db = new Database(':memory:');
+    db.prepare('SELECT 1 AS ok').get();
+    db.close();
+    return { ok: true };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const binding = /bindings file|NODE_MODULE_VERSION|\.node\b|was compiled against/i.test(msg);
+    return {
+      ok: false,
+      error: msg.split('\n')[0],
+      remediation: binding
+        ? 'better-sqlite3 native binding missing/incompatible — run `npm rebuild better-sqlite3` in the UAP install dir (a global `npm i -g` with --ignore-scripts skips it).'
+        : 'The dashboard could not open its SQLite layer; all DB-backed panels read empty until resolved.',
+    };
+  }
 }
 
 // ── Data Gathering ──
@@ -753,6 +787,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     orchestrationTree: getOrchestrationTree(cwd),
     deliverRuns,
     orchestrate,
+    health: probeDatabaseHealth(cwd),
   };
 }
 
