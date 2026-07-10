@@ -4,12 +4,13 @@
  * correct results when data exists.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { getSavingsByInfluence, __setRtkRunnerForTest } from '../src/dashboard/savings.js';
 import { getOrchestrationTree } from '../src/dashboard/orchestration-tree.js';
+import { dashboardBundle } from './helpers/dashboard-bundle.js';
 
 describe('getSavingsByInfluence', () => {
   let dir: string;
@@ -99,17 +100,20 @@ describe('getOrchestrationTree', () => {
   });
 });
 
-describe('dashboard.html renderSavings — explicit idle state', () => {
+describe('dashboard savings table — explicit idle state', () => {
   it('renders unmeasured influences as a dimmed em-dash, not a $0 cell', () => {
-    const src = readFileSync('web/dashboard.html', 'utf-8');
-    const start = src.indexOf('function renderSavings');
+    // PR #410 (dashboard-uplift): renderSavings moved from inline
+    // dashboard.html into the Memory tab of web/dash/tabs.js (the
+    // "Token Savings by Influence" panel); the shared idleCell constant
+    // became inline muted em-dash spans in the idle branch.
+    const src = dashboardBundle();
+    const start = src.indexOf("'Token Savings by Influence'");
     expect(start).toBeGreaterThan(-1);
     const block = src.slice(start, start + 1400);
-    // idle rows are branched on quality and rendered via the shared idle cell,
+    // idle rows are branched on quality and rendered as dimmed em-dashes,
     // never through the real cost/token formatting.
     expect(block).toContain("i.quality === 'unmeasured'");
-    expect(block).toContain('idleCell');
-    expect(block).toMatch(/idle \? idleCell/);
+    expect(block).toMatch(/idle \? el\('span', \{ class: 'muted', text: '—' \}\)/);
   });
 });
 

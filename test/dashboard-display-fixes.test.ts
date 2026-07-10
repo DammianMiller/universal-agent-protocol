@@ -12,6 +12,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
+import { dashboardBundle } from './helpers/dashboard-bundle.js';
 
 describe('Dashboard Display Fixes', () => {
   describe('Duplicate tool registration removed', () => {
@@ -61,12 +62,13 @@ describe('Dashboard Display Fixes', () => {
   });
 
   describe('Web dashboard panels use correct classes', () => {
-    it('Policies panel uses class="panel"', () => {
-      const source = readFileSync('web/dashboard.html', 'utf-8');
-      const section = source.indexOf('Policies');
-      expect(section).toBeGreaterThan(-1);
-      const before = source.slice(Math.max(0, section - 80), section);
-      expect(before).toContain('class="panel');
+    it('Policies panel is built via the shared panel() helper (class "panel")', () => {
+      // PR #410 (dashboard-uplift): panels moved from inline dashboard.html
+      // markup to web/dash/tabs.js, where every panel is built by the shared
+      // panel() helper — which stamps class 'panel' on its root div.
+      const source = dashboardBundle();
+      expect(source).toContain("panel('Policies')");
+      expect(source).toMatch(/el\('div', \{ class: 'panel' \}/);
     });
   });
 
