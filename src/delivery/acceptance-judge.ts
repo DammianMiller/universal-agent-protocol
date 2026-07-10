@@ -14,7 +14,7 @@
  */
 
 import { lstatSync, readdirSync, readFileSync } from 'fs';
-import { join, relative } from 'path';
+import { join, relative, dirname } from 'path';
 import type { LoopExecutor } from './convergence-loop.js';
 
 export interface AcceptanceCriterion {
@@ -134,8 +134,14 @@ export function gatherEvidence(
   };
   // Spec-referenced paths first: exact files at priority -1 (uncuttable),
   // spec-named directories walked before the root walk so their contents make
-  // the candidate pool even in huge repos.
+  // the candidate pool even in huge repos. In BOTH cases the parent directory
+  // is walked too: specs routinely reference files in template form
+  // ("web/dash/tab-<name>.js") whose literal token never resolves, and the
+  // siblings of a named file are usually the rest of the deliverable —
+  // observed live 2026-07-11: 8 tab files sat next to the spec-named
+  // styles.css yet were judged "not present" (4/7 MET instead of 7/7).
   if (spec) {
+    const dirsToWalk = new Set<string>();
     for (const rel of specReferencedPaths(spec)) {
       if (rel.includes('..')) continue; // stay inside projectRoot
       const abs = join(root, rel);
@@ -143,12 +149,25 @@ export function gatherEvidence(
       try {
         st = lstatSync(abs);
       } catch {
-        continue; // spec mentions it but it doesn't exist (yet) — nothing to show
+        // Token doesn't resolve (template form / not created yet) — its
+        // parent directory is still the best evidence lead.
+        const parent = dirname(abs);
+        if (parent.startsWith(root) && parent !== root) dirsToWalk.add(parent);
+        continue;
       }
       if (st.isFile() && SRC_EXT.test(abs) && !SECRET_FILE_RE.test(abs) && st.size <= 200_000) {
         files.push({ abs, prio: -1 });
+        const parent = dirname(abs);
+        if (parent.startsWith(root) && parent !== root) dirsToWalk.add(parent);
       } else if (st.isDirectory()) {
-        walk(abs, 1);
+        dirsToWalk.add(abs);
+      }
+    }
+    for (const d of dirsToWalk) {
+      try {
+        if (lstatSync(d).isDirectory()) walk(d, 1);
+      } catch {
+        /* parent doesn't exist either — nothing to walk */
       }
     }
   }

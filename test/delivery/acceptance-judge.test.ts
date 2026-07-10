@@ -198,6 +198,13 @@ describe('gatherEvidence — priority ordering (data files cannot starve source)
     expect(withSpec).toContain('.tabbar');
     // The spec-named DIRECTORY was walked too, so its other files made the pool.
     expect(withSpec).toContain('web/dash/tab-overview.js');
+
+    // Template-form references ("web/dash/tab-<name>.js") never resolve as
+    // literal paths — the parent directory must still be walked (live 4/7
+    // false-MISS, 2026-07-11). Also: siblings of a named file are evidence.
+    const templateSpec = 'Create 8 stub tab files web/dash/tab-<name>.js for each tab.';
+    const withTemplate = gatherEvidence(dir, maxFiles, undefined, templateSpec);
+    expect(withTemplate).toContain('web/dash/tab-overview.js');
   });
 
   it('a directory of many data files cannot exhaust the file-count cap before source is walked', () => {
