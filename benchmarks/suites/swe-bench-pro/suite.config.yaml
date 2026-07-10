@@ -1,0 +1,83 @@
+# SWE-bench Pro — paired UAP-uplift A/B configuration
+# =====================================================
+# Measures the HARNESS delta on a fixed base model:
+#     uplift = score(Qwen3.6 + UAP) − score(Qwen3.6 + plain agent)
+#
+# `uap bench paired` is CLI-flag driven; this file is the canonical record of
+# the run parameters and is consumed by run-ab.sh. See README.md for rationale.
+
+benchmark:
+  name: SWE-bench Pro (public split)
+  why_primary: >
+    Real GitHub issues with HIDDEN FAIL_TO_PASS / PASS_TO_PASS test suites — the
+    truest analog to UAP's converge-to-green gate. Multi-file, contamination-
+    resistant vs Verified, ideal Qwen-tier headroom (~53%, far from floor and
+    ceiling). Public Scale leaderboard for comparability.
+  dataset: SWE-bench/SWE-bench_Pro           # HF dataset id (public split)
+  split_note: >
+    ALWAYS report which split + which scaffold produced a number — SWE-bench Pro
+    has conflicting "best" figures across splits/scaffolds.
+
+# The fixed variables — identical across both arms (only the harness toggles).
+model:
+  id: qwen36-a3b                # must match the model id opencode/proxy serves
+  served_by: uap-anthropic-proxy :4000 -> ik-llama/llama.cpp :8080
+  decode: { temperature: 0.2, top_p: 0.95 }   # pin for reproducibility
+  context_window: 65536
+  note: hold weights, quant, decode params, context, and tool budget constant.
+
+# The A/B arms. The paired harness runs both as CONDITIONS in one invocation so
+# records pair cell-for-cell on the same seed (common-random-numbers).
+arms:
+  baseline:
+    label: baseline
+    description: bare opencode + Qwen3.6, no UAP scaffold (all components off)
+    components: []
+  treatment:
+    label: uap-full
+    description: same opencode + Qwen3.6 with the full UAP surface injected
+    components: [gates, worktree, memory, experts, skills, patterns]
+  lazy:                          # optional 3rd arm (--lazy)
+    label: uap-lazy
+    description: bare first attempt; UAP engages only on gate failure
+    components: [gates, worktree, memory, experts, skills, patterns]
+    lazy: true
+
+adapter:
+  id: opencode                   # base agent held constant across arms
+  invocation: opencode run --model {model} --format json --dir {workdir} {instruction}
+  alt:
+    deliver: >
+      --adapter deliver runs the REAL `uap deliver` CLI as the treatment (full
+      convergence stack) with a bare 1-turn baseline; use to measure the deliver
+      machine specifically rather than prompt-injected scaffolding.
+
+run:
+  epochs: 5                      # seeds per (task,arm); ≥5 for stable CIs
+  concurrency: 4                 # cells in flight; keep ≤ inference slot budget
+  seed: 1                        # RNG seed for the paired bootstrap
+  iterations: 10000              # bootstrap resamples
+  ablation: false                # true => turn each component off individually
+  rope_margin: 0.0               # ROPE band for practical-equivalence calls
+
+# External comparability reference (NOT the paired toggle — a separate anchor).
+external_reference:
+  agent: mini-SWE-agent
+  why: >
+    Bash-only, no structured tool-calls — the community-standard control and the
+    most robust baseline for Qwen via llama.cpp (avoids tool-call garbling that
+    would unfairly punish opencode's baseline). Run it separately to situate the
+    opencode-baseline arm against the public leaderboard. Requires a mini-SWE-agent
+    adapter (not yet a built-in `uap bench paired` adapter — see README "extending").
+
+prerequisites:
+  - pip install swebench            # official evaluator (for verify.sh official mode)
+  - Docker daemon running           # SWE-bench Pro instance images
+  - opencode installed + opencode.json routing Qwen to the proxy :4000
+  - uap-anthropic-proxy running (uap proxy) with Qwen served at :8080
+  - a SWE-bench Pro instances file (JSONL/JSON) to feed generate.py
+
+statistics:
+  paired: true                   # McNemar 2x2 on correctness; paired bootstrap on deltas
+  report: benchmark-results/paired-<timestamp>/report.md
+  headline_metric: paired Δ resolve-rate with 95% CI (never a single-run number)

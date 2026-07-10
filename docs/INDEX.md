@@ -47,6 +47,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [**What UAP Does Automatically**](guides/AUTOMATIC_FEATURES.md) | Every feature in benefit / when-it-kicks-in terms — install once, it all self-applies ⭐ |
 | [**`uap deliver`**](guides/DELIVER.md) | The Build+QC harness — convergence loop to verified completion, tiered gates, CI/deploy feedback loop ⭐ |
 | [**Orchestrator & Hands-Free**](guides/ORCHESTRATOR.md) | The long-task autonomy layer — blackboard orchestrator, epic controller, completion ledger, auto-seed/resume; any model runs a huge build to 100% hands-free ⭐ |
+| [**UAP Across Two Agents & Uplift**](guides/TWO_AGENTS_AND_UPLIFT.md) | The whole line applied seam-by-seam to opencode+Qwen3.6 (local) and Claude Code+Opus 4.8 (cloud), plus the benchmark that measures UAP uplift — diagrams + `benchmarks/suites/swe-bench-pro/` config |
 | [Memory](guides/MEMORY.md) | The 4-tier memory system, write-gates, semantic recall |
 | [MCP Router](guides/MCP_ROUTER.md) | Token-optimizing tool proxy + FTS5 output compression |
 | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) | Branch-per-feature isolation, auto-PR, enforcement |
