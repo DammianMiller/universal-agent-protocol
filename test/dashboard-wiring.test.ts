@@ -4,12 +4,13 @@
  * model panel and the frontier-cost counterfactual.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { getModelData } from '../src/dashboard/data-service.js';
 import { frontierCost } from '../src/dashboard/savings.js';
+import { dashboardBundle } from './helpers/dashboard-bundle.js';
 
 describe('frontierCost', () => {
   it('returns the frontier (opus) $/1M rates, not zero', () => {
@@ -108,8 +109,10 @@ describe('getModelData — honest, config-driven (no fabricated defaults)', () =
   });
 });
 
-describe('dashboard.html — no stale hardcoded model map / cost-opt unit bug', () => {
-  const html = () => readFileSync('web/dashboard.html', 'utf-8');
+describe('dashboard bundle — no stale hardcoded model map / cost-opt unit bug', () => {
+  // PR #410 (dashboard-uplift): MODEL_NAMES and the models panel moved from
+  // inline dashboard.html into web/dash/core.js / tabs.js.
+  const html = () => dashboardBundle();
   it('MODEL_NAMES includes the current canonical models', () => {
     const s = html();
     for (const id of ['fable-5', 'opus-4.8', 'haiku-4.5', 'qwen36-a3b']) {
