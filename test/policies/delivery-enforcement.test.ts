@@ -5,6 +5,24 @@ import { join } from 'path';
 const ENFORCER = join(process.cwd(), 'src', 'policies', 'enforcers', 'delivery_enforcement.py');
 const ROOT = process.cwd();
 
+/**
+ * The enforcer honors ambient exemptions by design — which makes a raw
+ * `...process.env` spread non-hermetic: an operator's UAP_ENFORCE_DELIVERY=
+ * advisory, or the UAP_DELIVER_ACTIVE=1 that deliver sets for its own gate
+ * subprocesses, leaks in and flips the "block by default" assertions (exit 0
+ * where exit 2 is expected). That made these tests red on any operator box —
+ * and unconditionally red when the UAP repo itself is the target of a deliver
+ * run (`npm test` gate can then NEVER pass: a live mission burned its turn
+ * budget against it, 2026-07-10). Strip the enforcement-relevant vars; each
+ * test states its policy env explicitly.
+ */
+const ENFORCEMENT_ENV_VARS = ['UAP_ENFORCE_DELIVERY', 'UAP_DELIVER_ACTIVE', 'UAP_DELIVER_BYPASS'];
+function hermeticEnv(): NodeJS.ProcessEnv {
+  const e: NodeJS.ProcessEnv = { ...process.env };
+  for (const k of ENFORCEMENT_ENV_VARS) delete e[k];
+  return e;
+}
+
 function run(
   target: string,
   env: Record<string, string> = {},
@@ -13,7 +31,7 @@ function run(
   const r = spawnSync(
     'python3',
     [ENFORCER, '--operation', op, '--args', JSON.stringify({ file_path: join(ROOT, target) })],
-    { env: { ...process.env, UAP_REPO_ROOT: ROOT, ...env }, encoding: 'utf8' }
+    { env: { ...hermeticEnv(), UAP_REPO_ROOT: ROOT, ...env }, encoding: 'utf8' }
   );
   let parsed: { allowed?: boolean; reason?: string; route?: string } = {};
   try {
