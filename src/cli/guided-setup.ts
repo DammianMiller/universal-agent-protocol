@@ -99,17 +99,29 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
 
   // ── Setup profile ───────────────────────────────────────────────────
   // An explicit --profile skips the prompt (also drives non-interactive runs).
-  const profile: 'recommended' | 'maximum' | 'minimal' = options.profile
-    ? options.profile
-    : await ui.select<'recommended' | 'maximum' | 'minimal'>({
+  const profile: 'recommended' | 'maximum' | 'minimal' | 'custom' = options.profile
+    ? (options.profile as 'recommended' | 'maximum' | 'minimal' | 'custom')
+    : await ui.select<'recommended' | 'maximum' | 'minimal' | 'custom'>({
         message: 'Setup profile:',
         options: [
           { label: 'Recommended - smart defaults, customize each option', value: 'recommended' },
           { label: 'Maximum - every feature on for peak performance (routing, gates, recipes, handsfree, proxy autostart)', value: 'maximum' },
           { label: 'Minimal - core only (short-term memory, coordination, patterns)', value: 'minimal' },
+          { label: 'Custom - baseline, then tune EVERY setting yourself + pick policies (expert)', value: 'custom' },
         ],
         initialValue: 'recommended',
       });
+
+  // Custom: lay down a minimal working baseline, then hand off to the expert
+  // configurator that exposes every setting + scenario-based policy selection.
+  if (profile === 'custom') {
+    const ctx = { platforms: platform, localModel, hasDocker };
+    ui.note('Custom profile: a working baseline, then tune every setting yourself.', 'Profile');
+    await finalizeGuidedSetup(cwd, ui, options, minSelections(ctx));
+    const { runConfigWizard } = await import('./config-wizard.js');
+    await runConfigWizard(cwd, {});
+    return;
+  }
 
   if (profile !== 'recommended') {
     const ctx = { platforms: platform, localModel, hasDocker };

@@ -373,6 +373,43 @@ export function registerPolicyCommands(program: Command): void {
     .description('Show ALL policies (built-in + installed) with settings, and how to toggle/adjust them')
     .action(matrixCommand);
 
+  policy
+    .command('recommend [scenario]')
+    .description('Recommend policies for a workflow (solo-local | team | ci-gated | high-autonomy | security | ui)')
+    .action(async (scenario?: string) => {
+      const { CORE, SCENARIOS, getScenario, recommendedFor } = await import(
+        '../config/policy-recommendations.js'
+      );
+      if (!scenario) {
+        console.log(chalk.bold('\nPolicy recommendations\n'));
+        console.log('Always recommended (the safety floor):');
+        for (const r of CORE) console.log(`  ${chalk.green(r.slug)} — ${chalk.dim(r.why)}`);
+        console.log('\nScenarios — run ' + chalk.cyan('uap policy recommend <id>') + ' for a tailored set:');
+        for (const s of SCENARIOS) console.log(`  ${chalk.yellow(s.id.padEnd(14))} ${s.title} — ${chalk.dim(s.blurb)}`);
+        console.log('\nInteractive: ' + chalk.cyan('uap config wizard') + ' (or ' + chalk.cyan('uap setup --profile custom') + ')\n');
+        return;
+      }
+      const sc = getScenario(scenario);
+      if (!sc) {
+        console.error(
+          chalk.red(`Unknown scenario '${scenario}'. One of: ${SCENARIOS.map((s) => s.id).join(', ')}`)
+        );
+        process.exitCode = 2;
+        return;
+      }
+      const recs = recommendedFor(scenario);
+      const coreSlugs = new Set(CORE.map((c) => c.slug));
+      console.log(chalk.bold(`\nRecommended policies — ${sc.title}`));
+      console.log(chalk.dim(sc.blurb) + '\n');
+      for (const r of recs) {
+        const tag = coreSlugs.has(r.slug) ? chalk.dim(' (core)') : '';
+        console.log(`  ${chalk.green(r.slug)}${tag} — ${chalk.dim(r.why)}`);
+      }
+      console.log('\nInstall all:');
+      console.log('  ' + chalk.cyan(recs.map((r) => `uap policy install ${r.slug}`).join(' && ')));
+      console.log('\nReview what is active: ' + chalk.cyan('uap policy matrix') + '\n');
+    });
+
   policy.command('install <name>').description('Install a built-in policy').action(installCommand);
 
   policy.command('enable <id>').description('Enable a policy by ID').action(enableCommand);

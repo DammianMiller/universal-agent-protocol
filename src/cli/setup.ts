@@ -26,7 +26,7 @@ export interface SetupOptions {
   extract?: boolean; // --no-extract skips custom-content extraction
   extractAuto?: boolean; // --extract-auto extracts without prompting
   backup?: boolean; // --no-backup disables instruction-file backup
-  profile?: 'recommended' | 'maximum' | 'minimal'; // --profile preset bundle
+  profile?: 'recommended' | 'maximum' | 'minimal' | 'custom'; // --profile preset bundle
 }
 
 /**
@@ -49,6 +49,29 @@ export async function setupCommand(options: SetupOptions): Promise<void> {
 
   // Run the self-update check once, up front, for every mode.
   maybeSelfUpdate(options);
+
+  // `--profile custom`: the expert path. Lay down a working baseline (init +
+  // services + hooks), then hand off to the interactive configurator that
+  // exposes EVERY setting with explanations + recommendations and scenario-based
+  // policy selection. Works on a TTY (interactive) or prints headless guidance.
+  if (options.profile === 'custom') {
+    console.log(chalk.bold('\n⚙  UAP custom setup — baseline, then expert configuration\n'));
+    // Use the SAME baseline as the interactive "Custom" pick (finalize with the
+    // minimal preset) so both entrypoints are reproducible, then hand off to the
+    // expert configurator.
+    const { finalizeGuidedSetup, detectLocalModel, dockerAvailable } = await import('./guided-setup.js');
+    const { minSelections } = await import('./wizard-config.js');
+    const { createNonInteractiveUI } = await import('./prompt-ui.js');
+    const ctx = {
+      platforms: options.platform ?? ['all'],
+      localModel: await detectLocalModel(),
+      hasDocker: dockerAvailable(),
+    };
+    await finalizeGuidedSetup(cwd, createNonInteractiveUI(), options, minSelections(ctx));
+    const { runConfigWizard } = await import('./config-wizard.js');
+    await runConfigWizard(cwd, {});
+    return;
+  }
 
   // Guided wizard is the DEFAULT (interactive TTY); non-interactive/CI run the
   // scripted path below.
