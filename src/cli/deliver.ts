@@ -120,7 +120,7 @@ export function resolveAcceptanceVerdict(
   return { passed: r.passed, score: r.score, feedback: r.passed ? '' : gaps };
 }
 import { createAgenticExecutor, noopApplier, selectExecutorMode } from '../delivery/agentic-executor.js';
-import { loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
+import { clearStop, isStopRequested, loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { parsePhaseArray, phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { runEpics, type Epic, type EpicRunResult } from '../delivery/epic-controller.js';
@@ -1448,6 +1448,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     presetId,
     projectRoot,
     status: 'running',
+    pid: process.pid,
     createdAt: resumeState?.createdAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     checkpoint: resumeState?.checkpoint,
@@ -1461,6 +1462,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     runState.checkpoint = cp;
     saveRunState(runState);
   };
+  // Cooperative cancel from the dashboard: the loop polls this each turn.
+  loopConfig.shouldStop = () => isStopRequested(projectRoot, runId);
+  clearStop(projectRoot, runId);
   // The restored checkpoint feeds exactly one loop (the in-flight phase).
   let resumeCheckpoint = resumeState?.checkpoint;
 
@@ -2027,8 +2031,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // Durable-run bookkeeping + task/memory trail (all fail-soft): the run's
   // outcome lands in the task DB and short-term memory so future sessions
   // know exactly what was delivered (or what failed and why).
-  runState.status = result.success ? 'delivered' : 'failed';
+  runState.status = result.success
+    ? 'delivered'
+    : isStopRequested(projectRoot, runId)
+      ? 'interrupted'
+      : 'failed';
   if (result.success) runState.checkpoint = undefined;
+  clearStop(projectRoot, runId);
   saveRunState(runState);
   completeDeliveryTask(missionTask, result);
   await recordDeliveryOutcome(instruction, projectRoot, result, model.id);

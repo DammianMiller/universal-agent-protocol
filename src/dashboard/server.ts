@@ -16,6 +16,12 @@ import { getDashboardData } from './data-service.js';
 import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { readEventsSince, readRecentEvents } from '../utils/telemetry-store.js';
+import {
+  handleTaskCreate, handleTaskUpdate, handleTaskClose, handleTaskDelete, handleTaskClaim,
+  handleLedgerItem, handleLedgerReset, handleLedgerInit, handleOrchestratorToggle,
+  handleAgentDeregister, handleAgentCleanStale,
+  handleDeliverLaunch, handleDeliverCancel, handleDeliverResume,
+} from './controls.js';
 
 /**
  * Resolve the dashboard HTML file using multiple strategies.
@@ -303,24 +309,50 @@ export function startDashboardServer(
       // Static vendored assets (e.g. /vendor/uPlot.iife.min.js). Served from the
       // web dir so the dashboard has ZERO external/CDN dependencies and its
       // charts work fully offline. Path-traversal guarded to the vendor dir.
-      if (url.startsWith('/vendor/') && WEB_DIR) {
+      if ((url.startsWith('/vendor/') || url.startsWith('/dash/')) && WEB_DIR) {
         const rel = decodeURIComponent(url.split('?')[0].replace(/^\/+/, ''));
         const abs = join(WEB_DIR, rel);
         // Guard with a trailing separator so sibling dirs whose name merely
         // starts with "vendor" (e.g. web/vendor-secret/) are NOT served — a
         // bare `startsWith(vendorRoot)` prefix match let them through (audit D1b).
-        const vendorRoot = join(WEB_DIR, 'vendor') + sep;
-        if (!abs.startsWith(vendorRoot) || !existsSync(abs)) {
+        const staticRoot = join(WEB_DIR, url.startsWith('/dash/') ? 'dash' : 'vendor') + sep;
+        if (!abs.startsWith(staticRoot) || !existsSync(abs)) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'asset not found' }));
           return;
         }
         const ext = abs.slice(abs.lastIndexOf('.'));
+        // /vendor/ is immutable (pinned lib versions) → cache hard. /dash/ is the
+        // app code that changes every release → no-store so an upgraded dashboard
+        // shows immediately instead of serving a day-stale bundle.
+        const cacheControl = url.startsWith('/dash/') ? 'no-store' : 'public, max-age=86400';
         res.writeHead(200, {
           'Content-Type': STATIC_CONTENT_TYPES[ext] || 'application/octet-stream',
-          'Cache-Control': 'public, max-age=86400',
+          'Cache-Control': cacheControl,
         });
         res.end(readFileSync(abs));
+        return;
+      }
+
+      // ── Control mutations (dashboard write surface) — ALL token-gated ──
+      if (req.method === 'POST' && CONTROL_PREFIXES.some((p) => url === p || url.startsWith(p + '/'))) {
+        if (!mutationAuthorized(req)) return denyMutation(res);
+        try {
+          const raw = await readBody(req);
+          const parsedBody = raw && raw.trim() ? parseJsonBody(raw) : {};
+          const result = await routeControl(url.split('?')[0], cwd, parsedBody);
+          if (result === undefined) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Unknown control route' }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'error';
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: msg }));
+        }
         return;
       }
 
@@ -487,4 +519,29 @@ function parseJsonBody(body: string): Record<string, unknown> {
   } catch {
     throw new Error('Invalid JSON in request body');
   }
+}
+
+const CONTROL_PREFIXES = ['/api/tasks', '/api/ledger', '/api/orchestrator', '/api/agents', '/api/deliver'];
+
+async function routeControl(url: string, cwd: string, body: Record<string, unknown>): Promise<unknown> {
+  const seg = url.split('/').filter(Boolean); // ['api','tasks','<id>','update']
+  const dec = (s: string): string => decodeURIComponent(s);
+  if (url === '/api/tasks') return handleTaskCreate(body);
+  if (seg[1] === 'tasks' && seg.length === 4) {
+    const id = dec(seg[2]);
+    if (seg[3] === 'update') return handleTaskUpdate(id, body);
+    if (seg[3] === 'close') return handleTaskClose(id, body);
+    if (seg[3] === 'delete') return handleTaskDelete(id);
+    if (seg[3] === 'claim') return handleTaskClaim(id, body);
+  }
+  if (url === '/api/ledger/reset') return handleLedgerReset(cwd);
+  if (url === '/api/ledger/init') return handleLedgerInit(cwd, body);
+  if (seg[1] === 'ledger' && seg[2] === 'item' && seg[3]) return handleLedgerItem(cwd, dec(seg[3]), body);
+  if (url === '/api/orchestrator') return handleOrchestratorToggle(cwd, body);
+  if (url === '/api/agents/clean') return handleAgentCleanStale();
+  if (seg[1] === 'agents' && seg.length === 4 && seg[3] === 'deregister') return handleAgentDeregister(dec(seg[2]));
+  if (url === '/api/deliver/launch') return handleDeliverLaunch(cwd, body);
+  if (seg[1] === 'deliver' && seg.length === 4 && seg[3] === 'cancel') return handleDeliverCancel(cwd, dec(seg[2]));
+  if (seg[1] === 'deliver' && seg.length === 4 && seg[3] === 'resume') return handleDeliverResume(cwd, dec(seg[2]));
+  return undefined;
 }
