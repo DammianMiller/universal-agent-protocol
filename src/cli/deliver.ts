@@ -119,7 +119,7 @@ export function resolveAcceptanceVerdict(
   }
   return { passed: r.passed, score: r.score, feedback: r.passed ? '' : gaps };
 }
-import { createAgenticExecutor, noopApplier, selectExecutorMode } from '../delivery/agentic-executor.js';
+import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
 import { clearStop, isStopRequested, loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { parsePhaseArray, phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
@@ -963,12 +963,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const src = discoveredCtx ? `discovered ${discoveredCtx.toLocaleString()}` : 'preset';
     console.log(chalk.dim(`  context auto-size: sessions budgeted to ~${sessionBudget.toLocaleString()} tokens (rail-fit, ${src})`));
   }
+  // Contracts-first epics: files an ACCEPTED contracts epic touched are locked
+  // read-only for later epics. Mutable by reference — the epic controller
+  // grows it between epics; the executor reads it live on every tool call.
+  const contractLock = new Set<string>();
   const executor: LoopExecutor = agentic
     ? createAgenticExecutor(model, {
         projectRoot,
         endpoint: agenticEndpoint,
         temperature,
         contextTokenBudget: sessionBudget,
+        contractFiles: contractLock,
         // Block oracle tampering: protected test files are read-only to the agent.
         protectedFiles:
           options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles : new Set<string>(),
@@ -1753,12 +1758,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       success: true, alreadyDelivered: false, turns: 0, bestScore: 0, bestTurn: 0,
       history: [], finalFeedback: '', finalOutput: '', totalDurationMs: 0,
     };
-    const planned = await planDeliveryPhases(instruction, verdictExecutor, undefined, { sessionTokenBudget: sessionBudget });
+    const contractsFirst = process.env.UAP_DELIVER_CONTRACTS !== '0';
+    const planned = await planDeliveryPhases(instruction, verdictExecutor, undefined, {
+      sessionTokenBudget: sessionBudget,
+      contractsFirst,
+    });
     const epics: Epic[] = (planned.length >= 2
       ? planned
       : [{ id: 'mission', title: 'Mission', goal: instruction }]
-    ).map((ph) => ({ id: ph.id, title: ph.title, goal: ph.goal, ...(ph.deps ? { deps: ph.deps } : {}) }));
+    ).map((ph) => ({ id: ph.id, title: ph.title, goal: ph.goal, ...(ph.deps ? { deps: ph.deps } : {}), ...(ph.contracts ? { contracts: true } : {}) }));
     console.log(chalk.cyan(`\u{1f5c2}  epic controller: ${epics.length} epic(s): ${epics.map((e) => e.title).join(' \u2192 ')}`));
+    let lastContractEpicFiles: string[] = [];
 
     // Hands-free: auto-populate the completion ledger so the whole multi-epic
     // build has an objective, cross-session definition of done (Option B). The
@@ -1798,6 +1808,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       },
       onEpic: (epic, outcome) => {
         try { markItem(projectRoot, epic.id, outcome.accepted ? 'done' : 'failed', outcome.accepted ? undefined : outcome.summary); } catch { /* best-effort */ }
+        if (epic.contracts && outcome.accepted && lastContractEpicFiles.length > 0) {
+          const locked = lockContractFiles(contractLock, projectRoot, lastContractEpicFiles);
+          if (locked.length > 0) {
+            console.log(chalk.cyan(`  \u{1f512} contracts locked for later epics: ${locked.join(', ')}`));
+          }
+        }
         console.log(
           (outcome.accepted ? chalk.green('  \u2713') : chalk.red('  \u2717')) +
             chalk.dim(` epic ${epic.id}: ${outcome.accepted ? 'accepted' : 'failed'} after ${outcome.attempts} attempt(s), ${outcome.turns} turn(s)`)
@@ -1808,9 +1824,18 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           ? `\n\nALREADY BUILT (prior epics \u2014 build on them, do not redo):\n${ctx.priorSummaries.map((sm, i) => `${i + 1}. ${sm}`).join('\n')}`
           : '';
         const retry = ctx.lastFailure ? `\n\nPREVIOUS ATTEMPT FEEDBACK (fix this):\n${ctx.lastFailure}` : '';
+        // Contracts-first steering: the contracts epic is told its output IS
+        // the frozen API; later epics are told which files are locked and to
+        // build against them exactly. Locked paths also land in the judge's
+        // spec, so spec-referenced evidence guarantees it SEES the contracts.
+        const contractsNote = epic.contracts
+          ? '\n\nThis is the CONTRACTS epic: define the COMPLETE shared types/interfaces/registry APIs the later epics will build against. They must compile, with minimal stub bodies. After this epic is accepted these files are FROZEN for the rest of the mission — make the signatures right.'
+          : contractLock.size > 0
+            ? `\n\nLOCKED CONTRACTS (read-only — write attempts will be refused): ${[...contractLock].join(', ')}. Build against these exact APIs; make YOUR code match their imports, type names and signatures.`
+            : '';
         const scoped =
           `OVERALL MISSION (context): ${instruction.slice(0, 300)}\n\n` +
-          `EPIC \u2014 ${epic.title}:\n${epic.goal}${priors}${retry}\n\n` +
+          `EPIC \u2014 ${epic.title}:\n${epic.goal}${priors}${retry}${contractsNote}\n\n` +
           'Deliver ONLY this epic. All gates must pass at the end.';
         console.log(chalk.bold(`\u25b6 epic ${epic.id} (attempt ${ctx.attempt}): ${epic.title}`));
         // Grade the epic's DELIVERABLE, not the process prompt: the scoped
@@ -1819,7 +1844,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // small judge rejects objectively-green turns against them forever.
         acceptanceSpec =
           `EPIC — ${epic.title}:\n${epic.goal}` +
-          (epic.criteria?.length ? `\nAcceptance criteria:\n${epic.criteria.map((c) => `- ${c}`).join('\n')}` : '');
+          (epic.criteria?.length ? `\nAcceptance criteria:\n${epic.criteria.map((c) => `- ${c}`).join('\n')}` : '') +
+          (!epic.contracts && contractLock.size > 0 ? `\n(Builds against locked contracts: ${[...contractLock].join(', ')})` : '');
         specChangeEvidence.writes = 0; // fresh epic — breaker needs fresh diff evidence
         const epicTask = await openDeliveryTask(`${epic.title} \u2014 ${epic.goal.slice(0, 120)}`, projectRoot, missionTask?.id);
         const loop = new ConvergenceLoop(
@@ -1836,6 +1862,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         all.finalOutput = r.finalOutput;
         completeDeliveryTask(epicTask, r);
         const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
+        if (epic.contracts) lastContractEpicFiles = files;
         // Rail sizing: surface budget exhaustion to the epic controller — its
         // split path keys off CONTEXT_BUDGET_MARKER in the failure summary,
         // and the goal-based summary would otherwise swallow the signal.

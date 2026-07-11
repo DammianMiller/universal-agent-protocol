@@ -26,6 +26,15 @@ export interface DeliveryPhase {
   /** Phase ids this phase depends on (DAG). Execution is topologically
    * ordered; independent phases are candidates for future parallel dispatch. */
   deps?: string[];
+  /**
+   * True for a CONTRACTS phase: it establishes the mission's shared types /
+   * interfaces / registries first, and once accepted the files it created are
+   * LOCKED (read-only) for every later phase. Prevents the observed failure
+   * mode where a weak model rewrites the shared type system differently in
+   * each later phase (a live mission compounded 47 → 653 compile errors by
+   * re-inventing its registry API module by module).
+   */
+  contracts?: boolean;
 }
 
 const MIN_PHASES = 2;
@@ -86,11 +95,13 @@ export function parsePhaseArray(text: string): DeliveryPhase[] {
     const deps = Array.isArray(rawDeps)
       ? rawDeps.filter((d): d is string => typeof d === 'string').map((d) => d.trim().toLowerCase()).slice(0, maxPhases())
       : undefined;
+    const contracts = (entry as { contracts?: unknown }).contracts === true;
     phases.push({
       id: slug,
       title: title.trim().slice(0, 120),
       goal: goal.trim().slice(0, 600),
       ...(deps && deps.length > 0 ? { deps } : {}),
+      ...(contracts ? { contracts: true } : {}),
     });
     if (phases.length >= maxPhases()) break;
   }
@@ -129,6 +140,11 @@ export interface PlanPhasesOptions {
    * this budget, preferring more, smaller phases over fewer large ones.
    */
   sessionTokenBudget?: number;
+  /**
+   * Ask the planner to emit a CONTRACTS phase first (shared types/interfaces,
+   * later locked read-only) when the mission spans modules that share types.
+   */
+  contractsFirst?: boolean;
 }
 
 function buildDecomposePrompt(
@@ -157,6 +173,20 @@ function buildDecomposePrompt(
       ].join('\n')
     : '';
 
+  const contractsHint = opts?.contractsFirst
+    ? [
+        '',
+        'CONTRACTS FIRST: if the mission spans multiple modules/files that share',
+        'types, interfaces, registries, or schemas, the FIRST phase must be a',
+        'CONTRACTS phase (set "contracts": true on it): it defines the complete',
+        'shared type signatures / interfaces / registry APIs the later phases',
+        'build against — compiling, with minimal stub bodies. Later phases must',
+        'treat those contract files as READ-ONLY (they will be locked) and list',
+        'the contracts phase in their deps. A single-module mission needs no',
+        'contracts phase.',
+      ].join('\n')
+    : '';
+
   return [
     'You are a delivery planner. Split the mission below into SEQUENTIAL phases',
     `(${MIN_PHASES}-${maxPhases()}), each independently verifiable by the project's build/test`,
@@ -164,13 +194,14 @@ function buildDecomposePrompt(
     'end with intentionally broken builds. Order phases so later ones build on',
     'earlier ones. Do NOT invent scope the mission does not imply.',
     budgetHint,
+    contractsHint,
     lifecycleHint,
     '',
     `MISSION: ${instruction}`,
     '',
     'Respond with ONLY a JSON array. Each phase may declare deps (ids of',
     'phases it builds on); phases without deps between them are independent:',
-    '[{"id": "<kebab-slug>", "title": "<short name>", "goal": "<what this phase must accomplish>", "deps": ["<id>"]}]',
+    '[{"id": "<kebab-slug>", "title": "<short name>", "goal": "<what this phase must accomplish>", "deps": ["<id>"], "contracts": false}]',
   ].join('\n');
 }
 

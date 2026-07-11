@@ -26,7 +26,7 @@ import type { ModelConfig } from '../models/types.js';
 import type { LoopExecutor } from './convergence-loop.js';
 import { fetchModelWithRetry } from '../models/long-fetch.js';
 import type { ApplyResult } from './applier.js';
-import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles } from './applier.js';
+import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename } from './applier.js';
 import { estimateMessagesTokens, CONTEXT_BUDGET_MARKER } from './context-budget.js';
 import { sanitizedEnv } from './sanitized-env.js';
 
@@ -45,6 +45,14 @@ export interface AgenticExecutorOptions {
    * pass gates by rewriting the oracle.
    */
   protectedFiles?: ReadonlySet<string>;
+  /**
+   * LOCKED CONTRACT files (project-relative lowercased keys, like
+   * protectedFiles) — the shared types/interfaces an accepted contracts epic
+   * established. write_file refuses them and run_bash restores mutations, so
+   * later epics build AGAINST the contracts instead of re-inventing them.
+   * Passed as a mutable Set by the epic controller and grown between epics.
+   */
+  contractFiles?: ReadonlySet<string>;
   /**
    * Block writes to gate-config / IaC files (tsconfig, vitest/jest config,
    * docker-compose, Dockerfile, *.tf, serverless, …) and protected segments
@@ -172,6 +180,33 @@ function safePath(projectRoot: string, p: string): string {
 }
 
 /** Normalize an absolute path to the protected-set key shape (lowercased, /). */
+const EMPTY_SET: ReadonlySet<string> = new Set();
+
+/**
+ * Add an accepted contracts epic's files to the live contract lock, skipping
+ * files other machinery owns (manifests/lockfiles stay editable so later
+ * epics can add crates/deps; gate configs and tests have their own
+ * protection). Returns the project-relative paths newly locked — for the
+ * operator log and the later epics' prompts.
+ */
+export function lockContractFiles(lock: Set<string>, projectRoot: string, files: string[]): string[] {
+  const locked: string[] = [];
+  for (const f of files) {
+    const rel = f.split(/[\\/]/).join('/');
+    const base = (rel.split('/').pop() ?? '').toLowerCase();
+    if (!base) continue;
+    if (/^(package\.json|package-lock\.json|cargo\.toml|cargo\.lock|pyproject\.toml|go\.mod|go\.sum)$/.test(base) || base.endsWith('.lock')) continue;
+    if (isGateConfigBasename(base)) continue;
+    if (/\.(test|spec)\.[a-z]+$/.test(base)) continue;
+    const key = protectedKey(projectRoot, resolve(projectRoot, rel));
+    if (!lock.has(key)) {
+      lock.add(key);
+      locked.push(rel);
+    }
+  }
+  return locked;
+}
+
 export function protectedKey(projectRoot: string, abs: string): string {
   return relative(projectRoot, abs).split(/[\\/]/).join('/').toLowerCase();
 }
@@ -218,7 +253,8 @@ function runTool(
   bashTimeoutMs: number,
   protectedFiles: ReadonlySet<string>,
   protectGateConfigs: boolean,
-  allowBash: boolean
+  allowBash: boolean,
+  contractFiles: ReadonlySet<string> = EMPTY_SET
 ): string {
   let pathNote = '';
   // Contain/repair garbled tool-call paths against the known project root before
@@ -254,6 +290,13 @@ function runTool(
       if (protectedFiles.has(protectedKey(projectRoot, abs))) {
         return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
       }
+      if (contractFiles.has(protectedKey(projectRoot, abs))) {
+        return (
+          `ERROR: ${String(args.path)} is a LOCKED CONTRACT file — the contracts phase established ` +
+          'this shared API and later phases must BUILD AGAINST it, not modify it. Adjust YOUR code ' +
+          'to match the contract exactly (imports, type names, signatures).'
+        );
+      }
       // Gate-config / IaC protection: the agentic path bypasses the file-block
       // applier, so enforce the same blocklist here or the model can rig the
       // (tiered) gates by writing tsconfig/compose/Dockerfile/*.tf/etc.
@@ -287,6 +330,7 @@ function runTool(
       // Snapshot protected files so a command cannot silently rewrite the
       // oracle to make a wrong answer pass.
       const snap = protectedFiles.size > 0 ? snapshotProtected(projectRoot, protectedFiles) : new Map();
+      const contractSnap = contractFiles.size > 0 ? snapshotProtected(projectRoot, contractFiles) : new Map();
       // Gate-config writes are blocked on the write_file path, but sed / `git
       // checkout` / `npm pkg set` through run_bash bypassed that check entirely
       // (observed live 2026-07-10: an executor reverted a pyproject.toml gate
@@ -311,6 +355,7 @@ function runTool(
       });
       const restored = snap.size > 0 ? restoreProtected(snap) : [];
       const gateRestored = gateSnap.size > 0 ? restoreProtected(gateSnap) : [];
+      const contractRestored = contractSnap.size > 0 ? restoreProtected(contractSnap) : [];
       let conftestNote = '';
       if (protectGateConfigs && !hadRootConftest && existsSync(rootConftest)) {
         try {
@@ -328,6 +373,9 @@ function runTool(
           : '') +
         (gateRestored.length > 0
           ? `\n[blocked: restored ${gateRestored.length} gate-config file(s) your command modified — change the implementation, not the gate]`
+          : '') +
+        (contractRestored.length > 0
+          ? `\n[blocked: restored ${contractRestored.length} LOCKED CONTRACT file(s) your command modified — build against the contract, do not rewrite it]`
           : '') +
         conftestNote;
       return `exit=${r.status ?? 'null'}\n${out}${note}`;
@@ -454,6 +502,8 @@ export function createAgenticExecutor(
   const maxRounds = opts.maxToolRounds ?? 12;
   const bashTimeoutMs = opts.bashTimeoutMs ?? 30_000;
   const protectedFiles = opts.protectedFiles ?? new Set<string>();
+  // Live reference — the epic controller grows this Set between epics.
+  const contractFiles = opts.contractFiles ?? EMPTY_SET;
   const protectGateConfigs = opts.protectGateConfigs ?? true;
   // run_bash executes only when kernel-contained (uap sandbox sets
   // UAP_SANDBOX_ACTIVE=1) or the operator explicitly opts in (audit X3).
@@ -522,7 +572,8 @@ export function createAgenticExecutor(
               bashTimeoutMs,
               protectedFiles,
               protectGateConfigs,
-              allowBash
+              allowBash,
+              contractFiles
             );
             opts.onEvent?.({
               round,
@@ -570,7 +621,8 @@ export function createAgenticExecutor(
           bashTimeoutMs,
           protectedFiles,
           protectGateConfigs,
-          allowBash
+          allowBash,
+          contractFiles
         );
         opts.onEvent?.({
           round,

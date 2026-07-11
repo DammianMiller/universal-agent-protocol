@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync
 import { tmpdir } from 'os';
 import { join, sep } from 'path';
 import {
+  lockContractFiles,
   selectExecutorMode,
   protectedKey,
   noopApplier,
@@ -168,5 +169,27 @@ describe('createAgenticExecutor — file recovery when the model skips tool call
       if (prev === undefined) delete process.env.UAP_SANDBOX_ACTIVE;
       else process.env.UAP_SANDBOX_ACTIVE = prev;
     }
+  });
+});
+
+
+describe('lockContractFiles (contracts-first epics)', () => {
+  it('locks source files, skips manifests/lockfiles/gate-configs/tests, dedupes', () => {
+    const lock = new Set<string>();
+    const root = '/proj';
+    const locked = lockContractFiles(lock, root, [
+      'src/registry.ts',
+      'src/types.ts',
+      'Cargo.toml',
+      'package.json',
+      'yarn.lock',
+      'tsconfig.json',
+      'src/registry.test.ts',
+    ]);
+    expect(locked).toEqual(['src/registry.ts', 'src/types.ts']);
+    expect(lock.has(protectedKey(root, '/proj/src/registry.ts'))).toBe(true);
+    expect(lock.has(protectedKey(root, '/proj/Cargo.toml'))).toBe(false);
+    // Re-locking is a no-op (already locked → not reported again).
+    expect(lockContractFiles(lock, root, ['src/registry.ts'])).toEqual([]);
   });
 });
