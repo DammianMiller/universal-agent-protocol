@@ -149,7 +149,7 @@ import {
   extractKeywords,
   retrievePracticesSemantic,
 } from '../delivery/practice.js';
-import { detectRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER } from '../delivery/verifier-ladder.js';
+import { detectRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER, demoteBaselineFailures } from '../delivery/verifier-ladder.js';
 import type { GateTier, LadderRunFn, GateRung } from '../delivery/verifier-ladder.js';
 import { runDeployDevLadder } from '../delivery/deploy-dev-gate.js';
 import { commitPushAndWatch } from '../delivery/ci-watcher.js';
@@ -709,6 +709,42 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       chalk.cyan('⚖ acceptance: LLM judge is the convergence target (no objective project gates; self-gate skipped)')
     );
   }
+
+  // Baseline-delta gating: a required rung that is ALREADY red cannot be a
+  // regression this mission causes, but it makes acceptance unreachable and
+  // eats the whole turn budget (two live missions wedged this way). Preflight
+  // once and demote baseline-red required rungs to optional — they still run
+  // and report; only NEW failures block. Off-switches: env
+  // UAP_DELIVER_BASELINE_DELTA=0 or `.uap.json` deliver.baselineDelta=false.
+  if (
+    rungs.length > 0 &&
+    !needsSelfGate &&
+    !options.dryRun &&
+    process.env.UAP_DELIVER_BASELINE_DELTA !== '0' &&
+    (() => {
+      try {
+        const cfg = loadUapConfigRaw(projectRoot) as { deliver?: { baselineDelta?: boolean } } | null;
+        return cfg?.deliver?.baselineDelta !== false;
+      } catch {
+        return true;
+      }
+    })()
+  ) {
+    const bd = demoteBaselineFailures(rungs, projectRoot);
+    if (bd.demoted.length > 0) {
+      rungs = bd.rungs;
+      console.log(
+        chalk.yellow(
+          `  ⚖ baseline-delta: ${bd.demoted.length} pre-existing failure(s) demoted to non-blocking ` +
+            `(${bd.demoted.map((d) => d.id).join(', ')}) — only NEW failures block acceptance ` +
+            `(preflight ${(bd.preflightMs / 1000).toFixed(0)}s)`
+        )
+      );
+    } else {
+      console.log(chalk.dim(`  baseline-delta: baseline green (preflight ${(bd.preflightMs / 1000).toFixed(0)}s)`));
+    }
+  }
+
 
   if (options.dryRun) {
     const summary = {

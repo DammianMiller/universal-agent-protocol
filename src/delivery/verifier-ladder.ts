@@ -396,6 +396,55 @@ export function detectDeployDevRung(
   return null;
 }
 
+/** Annotation appended to a baseline-red rung's name when it is demoted. */
+export const BASELINE_DEMOTION_NOTE = '[pre-existing failure at baseline — non-blocking]';
+
+export interface BaselineDeltaResult {
+  /** The rung list with baseline-red required rungs demoted to optional. */
+  rungs: GateRung[];
+  /** What was demoted, with the baseline failure tail for the record. */
+  demoted: Array<{ id: string; name: string; outputTail: string }>;
+  /** Wall-clock cost of the preflight. */
+  preflightMs: number;
+}
+
+/**
+ * Baseline-delta gating: preflight the ladder ONCE at mission start and demote
+ * any REQUIRED rung that is already red to optional (annotated). A rung that
+ * was red before the mission began cannot be a regression the mission caused —
+ * yet as a required rung it makes acceptance unreachable, so the model burns
+ * its whole turn budget against a failure it did not create and often cannot
+ * fix (observed across two live missions: a repo whose npm test was red at
+ * baseline consumed every attempt of three consecutive runs; a crashed eslint
+ * config captured 13/13 writes of an epic). Demotion-to-optional reuses the
+ * existing machinery end-to-end: optional rungs still run and report, the
+ * feedback builder explicitly de-prioritizes them below the task goal, and
+ * NEW failures (green at baseline → red now) still block as before.
+ *
+ * Preflights only side-effect-free tiers (fast/integration) and skips rungs
+ * with teardown hooks; everything else passes through untouched. Rung-level
+ * granularity: new breakage WITHIN an already-red rung is not distinguished —
+ * the failure output still reaches the model and judge, and --keep-best
+ * remains the whole-tree regression backstop.
+ */
+export function demoteBaselineFailures(
+  rungs: GateRung[],
+  projectRoot: string,
+  tailChars: number = DEFAULT_TAIL_CHARS
+): BaselineDeltaResult {
+  const PREFLIGHT_TIERS = new Set<GateTier>(['fast', 'integration']);
+  const start = Date.now();
+  const demoted: BaselineDeltaResult['demoted'] = [];
+  const out = rungs.map((r) => {
+    if (!r.required || !PREFLIGHT_TIERS.has(tierOf(r)) || r.teardown) return r;
+    const res = runRung(r, projectRoot, tailChars);
+    if (res.passed) return r;
+    demoted.push({ id: r.id, name: r.name, outputTail: res.outputTail });
+    return { ...r, required: false, name: `${r.name} ${BASELINE_DEMOTION_NOTE}` };
+  });
+  return { rungs: out, demoted, preflightMs: Date.now() - start };
+}
+
 /**
  * Cargo gates for Rust projects (root Cargo.toml). `cargo check` is the
  * required compile gate; `cargo test` runs and is reported but does not block
