@@ -5881,6 +5881,52 @@ def _openai_has_tool_calls(openai_resp: dict) -> bool:
     return bool(_extract_openai_tool_calls(openai_resp))
 
 
+def _json_close_suffix(fragment: str) -> str:
+    """Minimal suffix that closes a truncated JSON fragment so it parses.
+
+    Streamed tool-call arguments cut off by the token limit (finish_reason=
+    length) used to reach the client as unterminated JSON — Claude Code then
+    throws InputValidationError ("could not be parsed as JSON ... first 200 of
+    N bytes") and retries into the same wall. Scanning with the same
+    in-string/escape/nesting rules a JSON parser uses, this returns the
+    characters needed to terminate the fragment: a visible truncation marker +
+    closing quote when cut mid-string, then closers for every open object /
+    array. Returns '' when the fragment already parses (or is empty).
+    """
+    if not fragment:
+        return ""
+    try:
+        json.loads(fragment)
+        return ""
+    except Exception:
+        pass
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in fragment:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack:
+            stack.pop()
+    suffix = ""
+    if in_string:
+        if escaped:
+            suffix += "\\"  # complete the dangling escape as a literal backslash
+        suffix += "\u2026[TRUNCATED BY TOKEN LIMIT]\""
+    suffix += "".join(reversed(stack))
+    return suffix
+
+
 def _parse_openai_function_arguments(raw_args) -> tuple[dict | None, str | None]:
     if isinstance(raw_args, dict):
         return raw_args, None
@@ -9383,6 +9429,24 @@ async def stream_anthropic_response(
     if tool_calls_by_index and not xml_recovered:
         for tc in tool_calls_by_index.values():
             if isinstance(tc, dict) and "block_index" in tc:
+                # Truncation repair: if the accumulated arguments do not parse
+                # (token-limit cut mid-JSON), stream one final fragment that
+                # closes the JSON validly — with a visible marker when cut
+                # inside a string — so the client can always parse the block.
+                # stop_reason still reports max_tokens; the marker makes the
+                # truncation visible in whatever the tool writes.
+                repair = _json_close_suffix(tc.get("arguments", ""))
+                if repair:
+                    tc["arguments"] = tc.get("arguments", "") + repair
+                    logger.warning(
+                        "STREAM TOOL-CALL REPAIR: closed truncated '%s' arguments (+%d chars) — client would otherwise fail to parse",
+                        tc.get("name", "?"),
+                        len(repair),
+                    )
+                    yield (
+                        f"event: content_block_delta\n"
+                        f"data: {json.dumps({'type': 'content_block_delta', 'index': tc['block_index'], 'delta': {'type': 'input_json_delta', 'partial_json': repair}})}\n\n"
+                    )
                 yield (
                     f"event: content_block_stop\n"
                     f"data: {json.dumps({'type': 'content_block_stop', 'index': tc['block_index']})}\n\n"
@@ -10235,12 +10299,14 @@ async def messages(request: Request):
                 # Without tools (finalize): retry with capped max_tokens for clean text.
                 has_tools = bool(strict_body.get("tools"))
                 retry_body = dict(strict_body)
-                retry_body["max_tokens"] = 2048
+                # Tool retries need room for Qwen's mandatory thinking PLUS
+                # complete tool-call arguments — 2048 produced truncated JSON.
+                retry_body["max_tokens"] = 8192 if has_tools else 2048
                 retry_body["temperature"] = 0.1
                 retry_body["stream"] = False
                 if has_tools:
                     retry_body["tool_choice"] = "required"
-                    logger.warning("DEGENERATE RETRY: retrying with tool_choice=required max_tokens=2048")
+                    logger.warning("DEGENERATE RETRY: retrying with tool_choice=required max_tokens=8192")
                 else:
                     logger.warning("DEGENERATE RETRY: retrying text-only with max_tokens=2048 temp=0.1")
                 try:
@@ -10689,10 +10755,11 @@ async def messages(request: Request):
         openai_resp, was_degenerate = _detect_and_truncate_degenerate_repetition(openai_resp)
         # Degenerate retry for non-guarded stream path
         if was_degenerate and openai_body.get("tools"):
-            logger.warning("DEGENERATE RETRY (stream): retrying with tool_choice=required max_tokens=2048")
+            logger.warning("DEGENERATE RETRY (stream): retrying with tool_choice=required max_tokens=8192")
             retry_body = dict(openai_body)
             retry_body["tool_choice"] = "required"
-            retry_body["max_tokens"] = 2048
+            # See non-stream site: 2048 starves thinking + tool args.
+            retry_body["max_tokens"] = 8192
             retry_body["temperature"] = 0.1
             retry_body["stream"] = False
             try:
