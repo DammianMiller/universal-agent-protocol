@@ -186,7 +186,13 @@ PROXY_MAX_CONNECTIONS = int(os.environ.get("PROXY_MAX_CONNECTIONS", "20"))
 # /proc/net/tcp, counts CLOSE-WAIT sockets to the upstream, and triggers a
 # (safe, stream-preserving) pool self-heal when they exceed the threshold.
 PROXY_CLOSEWAIT_REAP_THRESHOLD = int(os.environ.get("PROXY_CLOSEWAIT_REAP_THRESHOLD", "30"))
-PROXY_CLOSEWAIT_REAP_INTERVAL = float(os.environ.get("PROXY_CLOSEWAIT_REAP_INTERVAL", "45"))
+# Reaper is OPT-IN (default 0 = off): live 2026-07-12 under a SATURATED
+# upstream (llama at 3/3 slots), its pool-swap mechanism turned a slow
+# abandoned-connection leak into ReadError->500 bursts (74 500s/16min) —
+# constant swaps churned in-flight connections. The graceful path
+# (PoolTimeout -> 529 backoff + a large PROXY_MAX_CONNECTIONS) handles the
+# leak without client-visible errors. Set >0 to re-enable the reaper.
+PROXY_CLOSEWAIT_REAP_INTERVAL = float(os.environ.get("PROXY_CLOSEWAIT_REAP_INTERVAL", "0"))
 PROXY_CONTEXT_WINDOW = int(os.environ.get("PROXY_CONTEXT_WINDOW", "0"))
 PROXY_CONTEXT_PRUNE_THRESHOLD = float(
     os.environ.get("PROXY_CONTEXT_PRUNE_THRESHOLD", "0.85")
