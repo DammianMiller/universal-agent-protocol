@@ -57,6 +57,14 @@ run and risks regressing a correct solution.
 Confirm the working state by executing commands, not by guessing. Inspect the
 files and the actual error output before and after each change. Prefer the
 smallest change that makes the gates pass.
+
+## When to escalate to the `deliver` tool (intelligent routing)
+First try to complete the task with direct edits and your own build/test checks.
+But if after ~2 focused attempts the build or tests STILL fail, stop hand-editing
+and call the `deliver` tool with a one-line description of the change — it runs a
+verified execute->test->fix convergence loop until the gates pass. One-shot the
+simple tasks directly; escalate to `deliver` only when you are genuinely stuck.
+Never loop indefinitely on manual edits.
 """
 
 
@@ -122,8 +130,7 @@ class OpencodeUAP(_LocalOpencodeAgent):
         # ENDPOINT points the in-container `uap deliver` at host qwen.
         model_id = self._model_name.split("/", 1)[1] if "/" in self._model_name else self._model_name
         return {
-            "UAP_ENFORCE_DELIVERY": "block",
-            "UAP_DELIVER_LOCAL_MODE": "block",
+            "UAP_ENFORCE_DELIVERY": "advisory",  # LAZY: allow one-shot; escalate to deliver on failure
             "UAP_INFERENCE_ENDPOINT": "http://172.17.0.1:8080/v1",
             "UAP_DELIVER_MODEL": model_id,
         }
