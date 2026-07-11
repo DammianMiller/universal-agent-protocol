@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.136.1 (2026-07-11)
+
+- fix(policy): delivery-enforcement now recognizes opencode's `filePath` tool-arg key (plus `filename`/`file`) in addition to Claude's `file_path` — previously opencode Write/Edit calls slipped through the gate ungated because the enforcer only looked for `file_path`/`path`/`target`, so "route through deliver" never fired for opencode. Validated: opencode-format edits to source now hard-block (exit 2, route:deliver) in block mode; test files still exempt. 3 new tests.
+- chore(bench): terminal-bench full-UAP arm setup hardened — git-init the run cwd so the policy gate's repo_root anchors correctly, install `.opencode` plugin runtime deps so project plugins load, force UAP_DELIVER_LOCAL_MODE=block via the agent `_env`. (Note: opencode headless `run` still does not invoke the project-plugin tool.execute.before gate in-container — the remaining faithful-benchmark blocker, opencode-side.)
+
 ## v1.136.0 (2026-07-11)
 
 - feat(proxy): MANDATE-DELIVER — when delivery-enforcement blocks a direct source edit, the proxy now FORCES the next turn to call the `deliver` tool for ANY model (pins tool_choice to the deliver tool). The enforcer's `route:deliver` signal was previously only honored by harnesses that understood it, so weak local models saw the "route through deliver" text and deadlocked (RECON loop). Now the routing is binding regardless of model/harness. Marker is enforcer-block-specific (the reactor's standing guidance does not false-trigger). Env: PROXY_MANDATE_DELIVER=off to disable.

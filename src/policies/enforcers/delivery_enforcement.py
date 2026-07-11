@@ -88,7 +88,13 @@ def main() -> None:
         emit(True, "not a file-edit operation")
         return
 
-    target = args.get("file_path") or args.get("path") or args.get("target") or ""
+    # Accept the file-path key under any common agent spelling: file_path
+    # (Claude), filePath (opencode), path/target/filename/file (misc tools).
+    # Without filePath, opencode Write/Edit calls slipped through unrecognized.
+    target = (
+        args.get("file_path") or args.get("filePath") or args.get("path")
+        or args.get("target") or args.get("filename") or args.get("file") or ""
+    )
     if not target:
         emit(True, "no file path in args")
         return

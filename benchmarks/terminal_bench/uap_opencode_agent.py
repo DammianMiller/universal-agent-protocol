@@ -113,6 +113,21 @@ class OpencodeUAP(_LocalOpencodeAgent):
         v["base_url"] = UAP_TB_UAP_BASE_URL  # route through the guardrail proxy
         return v
 
+    @property
+    def _env(self):  # type: ignore[override]
+        # Runtime env for the in-container opencode AND its policy-gate hook
+        # subprocess. BLOCK mode incl. local sessions (the enforcer otherwise
+        # relaxes local-model writes to advisory) so a direct edit is GATED ->
+        # the proxy's MANDATE-DELIVER forces the deliver tool. UAP_INFERENCE_
+        # ENDPOINT points the in-container `uap deliver` at host qwen.
+        model_id = self._model_name.split("/", 1)[1] if "/" in self._model_name else self._model_name
+        return {
+            "UAP_ENFORCE_DELIVERY": "block",
+            "UAP_DELIVER_LOCAL_MODE": "block",
+            "UAP_INFERENCE_ENDPOINT": "http://172.17.0.1:8080/v1",
+            "UAP_DELIVER_MODEL": model_id,
+        }
+
     @staticmethod
     def name() -> str:
         return "opencode-uap"
