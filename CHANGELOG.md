@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.136.0 (2026-07-11)
+
+- feat(proxy): MANDATE-DELIVER — when delivery-enforcement blocks a direct source edit, the proxy now FORCES the next turn to call the `deliver` tool for ANY model (pins tool_choice to the deliver tool). The enforcer's `route:deliver` signal was previously only honored by harnesses that understood it, so weak local models saw the "route through deliver" text and deadlocked (RECON loop). Now the routing is binding regardless of model/harness. Marker is enforcer-block-specific (the reactor's standing guidance does not false-trigger). Env: PROXY_MANDATE_DELIVER=off to disable.
+- fix(bench): terminal-bench UAP arm now installs the FULL UAP surface — `uap init -p opencode` wires the uap-router MCP `deliver` tool + delivery-enforcement hooks + reactor into the run cwd, sets UAP_INFERENCE_ENDPOINT for in-container deliver, and routes opencode through the UAP proxy (:4100) so MANDATE-DELIVER is in the loop. Previously the "UAP arm" was only an AGENTS.md prompt (no orchestrate/deliver/ideate), which under-represented UAP.
+
 ## v1.135.2 (2026-07-11)
 
 - fix(bench): terminal-bench opencode harness was unusable headless — the generated `opencode.json` had no `permission` config, so `opencode run` auto-rejected every tool call (both arms scored 0%, a void A/B). Added `permission {edit,bash,webfetch,external_directory: allow}` and switched the default container→host endpoint to the portable docker bridge (`172.17.0.1:8080`). Verified: qwen3.6-35B-A3B + opencode now runs genuine attempts (33% baseline vs 42% with the UAP AGENTS.md gates protocol on a 12-task TB-1.0 subset).

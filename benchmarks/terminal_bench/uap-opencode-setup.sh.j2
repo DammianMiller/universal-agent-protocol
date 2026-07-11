@@ -40,4 +40,18 @@ cat > "$PWD/AGENTS.md" <<'UAP_AGENTS_EOF'
 {{ agents_md }}
 UAP_AGENTS_EOF
 echo "[uap-setup] wrote AGENTS.md into run cwd"
+
+# FULL UAP surface (this is what makes "opencode + UAP" auto-apply the stack, not
+# just a discipline prompt): install the uap CLI, then `uap init` wires the
+# uap-router MCP server (the `deliver` tool) + delivery-enforcement hooks +
+# reactor plugin into the run cwd. Result: the reactor injects experts/skills/
+# patterns and steers to deliver; direct source edits are GATED; the proxy's
+# MANDATE-DELIVER forces the `deliver` tool; deliver runs orchestrate/ideate.
+npm i -g @miller-tech/uap >/dev/null 2>&1 || echo "[uap-setup] uap CLI install FAILED"
+export UAP_INFERENCE_ENDPOINT="http://172.17.0.1:8080/v1"   # in-container deliver -> host qwen
+export UAP_DELIVER_MODEL="{{ model_id }}"
+export UAP_ENFORCE_DELIVERY=block
+( cd "$PWD" && uap init -p opencode -f >/dev/null 2>&1 ) \
+  && echo "[uap-setup] full UAP surface installed (deliver MCP tool + enforcement + reactor)" \
+  || echo "[uap-setup] uap init FAILED — UAP arm degraded to AGENTS.md only"
 {% endif %}
