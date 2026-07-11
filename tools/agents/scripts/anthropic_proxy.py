@@ -2283,8 +2283,22 @@ def prune_conversation(
     # Budget for messages
     message_budget = target_tokens - overhead_tokens
     if message_budget <= 0:
-        logger.error("System prompt + tools alone exceed target budget!")
-        return anthropic_body
+        # Tool-heavy clients (observed: 37 MCP tools whose schema estimate x1.5
+        # safety factor exceeds the whole 40% critical-prune target) used to
+        # ERROR-RETURN here with the body untouched — no pruning at all, so the
+        # session pinned at 115%+, Option E clamped every output to 1024 tokens,
+        # and all substantial writes truncated forever (24+ consecutive no-op
+        # prunes + circuit breaker every turn). The schemas are client-fixed
+        # and non-droppable; give MESSAGES a minimal floor and prune into it
+        # best-effort instead of giving up.
+        message_budget = max(1, int(context_window * 0.20))
+        logger.warning(
+            "System+tools overhead (~%d est tokens) consumes the %.0f%% prune "
+            "target — pruning messages into a floor budget of %d tokens instead",
+            overhead_tokens,
+            target_fraction * 100,
+            message_budget,
+        )
 
     # Always keep the first user message and the last N messages
     KEEP_LAST = keep_last
