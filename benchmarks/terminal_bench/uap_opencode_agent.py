@@ -29,6 +29,10 @@ from terminal_bench.agents.installed_agents.opencode.opencode_agent import (
 # the host, so the task container reaches it via the host's LAN IP. Override per
 # environment with UAP_TB_BASE_URL / UAP_TB_API_KEY.
 UAP_TB_BASE_URL = os.environ.get("UAP_TB_BASE_URL", "http://172.17.0.1:8080/v1")
+# The UAP arm routes through the UAP proxy (:4100, container-reachable) so the
+# proxy guardrails — including MANDATE-DELIVER, which forces the `deliver` tool
+# when a direct edit is gated — are in the loop. Baseline stays direct to qwen.
+UAP_TB_UAP_BASE_URL = os.environ.get("UAP_TB_UAP_BASE_URL", "http://172.17.0.1:4100/v1")
 UAP_TB_API_KEY = os.environ.get("UAP_TB_API_KEY", "sk-qwen35b")
 
 # The UAP treatment surface (gates discipline). Kept terminal-task-flavoured:
@@ -99,9 +103,30 @@ class OpencodeBaseline(_LocalOpencodeAgent):
 
 
 class OpencodeUAP(_LocalOpencodeAgent):
-    """UAP-on: identical, plus the AGENTS.md gates protocol in the run cwd."""
+    """UAP-on: full UAP surface (MCP deliver tool + enforcement + reactor via
+    `uap init`), routed through the UAP proxy so MANDATE-DELIVER is in the loop."""
 
     _inject_agents = True
+
+    def _get_template_variables(self):  # type: ignore[override]
+        v = super()._get_template_variables()
+        v["base_url"] = UAP_TB_UAP_BASE_URL  # route through the guardrail proxy
+        return v
+
+    @property
+    def _env(self):  # type: ignore[override]
+        # Runtime env for the in-container opencode AND its policy-gate hook
+        # subprocess. BLOCK mode incl. local sessions (the enforcer otherwise
+        # relaxes local-model writes to advisory) so a direct edit is GATED ->
+        # the proxy's MANDATE-DELIVER forces the deliver tool. UAP_INFERENCE_
+        # ENDPOINT points the in-container `uap deliver` at host qwen.
+        model_id = self._model_name.split("/", 1)[1] if "/" in self._model_name else self._model_name
+        return {
+            "UAP_ENFORCE_DELIVERY": "block",
+            "UAP_DELIVER_LOCAL_MODE": "block",
+            "UAP_INFERENCE_ENDPOINT": "http://172.17.0.1:8080/v1",
+            "UAP_DELIVER_MODEL": model_id,
+        }
 
     @staticmethod
     def name() -> str:
