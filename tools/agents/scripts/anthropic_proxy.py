@@ -180,6 +180,13 @@ PROXY_SLOT_HANG_TIMEOUT = float(os.environ.get("PROXY_SLOT_HANG_TIMEOUT", "120")
 PROXY_UPSTREAM_RETRY_MAX = int(os.environ.get("PROXY_UPSTREAM_RETRY_MAX", "3"))
 PROXY_UPSTREAM_RETRY_DELAY_SECS = float(os.environ.get("PROXY_UPSTREAM_RETRY_DELAY_SECS", "5"))
 PROXY_MAX_CONNECTIONS = int(os.environ.get("PROXY_MAX_CONNECTIONS", "20"))
+# CLOSE-WAIT reaper: abandoned upstream connections (a cancelled request
+# whose httpx connection is never closed — llama's response sits unread in
+# the socket, CLOSE-WAIT) accrue and saturate the pool. The reaper reads
+# /proc/net/tcp, counts CLOSE-WAIT sockets to the upstream, and triggers a
+# (safe, stream-preserving) pool self-heal when they exceed the threshold.
+PROXY_CLOSEWAIT_REAP_THRESHOLD = int(os.environ.get("PROXY_CLOSEWAIT_REAP_THRESHOLD", "30"))
+PROXY_CLOSEWAIT_REAP_INTERVAL = float(os.environ.get("PROXY_CLOSEWAIT_REAP_INTERVAL", "45"))
 PROXY_CONTEXT_WINDOW = int(os.environ.get("PROXY_CONTEXT_WINDOW", "0"))
 PROXY_CONTEXT_PRUNE_THRESHOLD = float(
     os.environ.get("PROXY_CONTEXT_PRUNE_THRESHOLD", "0.85")
@@ -2423,6 +2430,60 @@ _UPSTREAM_RETRY_EXCEPTIONS = (
 )
 
 
+_upstream_active: int = 0  # requests currently reading an upstream response (all paths)
+
+
+def _upstream_port() -> int:
+    """The upstream (llama) TCP port, for CLOSE-WAIT accounting."""
+    try:
+        return int(LLAMA_CPP_BASE.rsplit(":", 1)[1].split("/")[0])
+    except Exception:
+        return 8080
+
+
+def _count_upstream_close_wait() -> int:
+    """Count CLOSE-WAIT sockets to the upstream port via /proc/net/tcp.
+
+    Cheap (one file read), no subprocess. TCP state 08 == CLOSE_WAIT; the
+    remote port is hex in the 3rd column's ':PORT' suffix.
+    """
+    port_hex = f"{_upstream_port():04X}"
+    n = 0
+    try:
+        with open("/proc/net/tcp", "r") as fh:
+            next(fh, None)
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                if parts[3] == "08" and parts[2].endswith(":" + port_hex):
+                    n += 1
+    except Exception:
+        return 0
+    return n
+
+
+async def _closewait_reaper() -> None:
+    """Periodic: reap abandoned upstream CLOSE-WAIT connections.
+
+    When they exceed the threshold, replace the pool (safe self-heal) — the
+    retired pool's aclose (once its legit in-flight drains) force-closes the
+    abandoned connections, which have no in-flight coroutine of their own.
+    """
+    if PROXY_CLOSEWAIT_REAP_INTERVAL <= 0:
+        return
+    while True:
+        try:
+            await asyncio.sleep(PROXY_CLOSEWAIT_REAP_INTERVAL)
+            cw = _count_upstream_close_wait()
+            if cw >= PROXY_CLOSEWAIT_REAP_THRESHOLD:
+                _maybe_reset_http_client(f"CLOSE-WAIT reaper ({cw} abandoned upstream connections)")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("CLOSE-WAIT reaper error: %s", exc)
+
+
 def _detach_aclose(closeable) -> None:
     """Close an upstream stream/response on a DETACHED task so it completes
     even when the requesting ASGI task is being cancelled (client disconnect).
@@ -2493,17 +2554,16 @@ def _maybe_reset_http_client(reason: str) -> bool:
         reason,
     )
 
+    baseline = _upstream_active
     async def _retire() -> None:
-        # Wait a full generation-timeout before force-closing the old pool:
-        # STREAMING requests (the client default) keep the old client until
-        # their stream completes, and aclose() would reset them into a
-        # ReadError burst (live 2026-07-11: a self-heal's early aclose killed
-        # ~30 in-flight streams, whose #434 retries then re-saturated the pool
-        # → cascade). GENERATION_TIMEOUT bounds the longest legit stream, so
-        # after it every in-flight request on the old client has finished and
-        # aclose() only reaps any residual zombie. (Drain-aware early-close was
-        # unsafe: the in-flight counter did not track the streaming path.)
-        await asyncio.sleep(max(60.0, PROXY_GENERATION_TIMEOUT))
+        # Close the old pool once its legit in-flight requests (ALL paths — the
+        # _upstream_active counter now wraps streaming AND buffered) drain
+        # below the level at retire time, so aclose() force-closes only the
+        # ABANDONED CLOSE-WAIT connections (which have no in-flight coroutine)
+        # and never a live stream. Capped at GENERATION_TIMEOUT as a backstop.
+        deadline = time.time() + max(60.0, PROXY_GENERATION_TIMEOUT)
+        while time.time() < deadline and _upstream_active >= baseline and _upstream_active > 0:
+            await asyncio.sleep(1.0)
         try:
             await old_client.aclose()
         except Exception:
@@ -2992,10 +3052,15 @@ async def _post_with_retry_inner(
     payload: dict,
     headers: dict,
 ) -> httpx.Response:
+    global _upstream_active
     last_exc: Exception | None = None
     for attempt in range(PROXY_UPSTREAM_RETRY_MAX):
         try:
-            resp = await client.post(url, json=payload, headers=headers)
+            _upstream_active += 1
+            try:
+                resp = await client.post(url, json=payload, headers=headers)
+            finally:
+                _upstream_active -= 1
             # Cycle 19 Option 1: if 503 "Loading model", wait for health then retry
             if _is_loading_model_503(resp):
                 logger.warning(
@@ -3129,6 +3194,8 @@ async def lifespan(app: FastAPI):
         LLAMA_CPP_BASE,
     )
 
+    _reaper_task = asyncio.ensure_future(_closewait_reaper())
+
     # Auto-detect context window from upstream server
     default_context_window = await detect_context_window(http_client)
     for mon in session_monitors.values():
@@ -3195,6 +3262,7 @@ async def lifespan(app: FastAPI):
     )
 
     yield
+    _reaper_task.cancel()
     await http_client.aclose()
     http_client = None
     if upstream_semaphore is not None:
@@ -9422,6 +9490,8 @@ async def stream_anthropic_response(
     - Graceful error recovery on upstream connection drops
     - Proper upstream response closure on client disconnect
     """
+    global _upstream_active
+    _upstream_active += 1
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     stream_started = time.monotonic()
 
@@ -9565,6 +9635,7 @@ async def stream_anthropic_response(
         logger.error("Unexpected stream error: %s: %s", type(exc).__name__, exc)
         finish_reason = "end_turn"
     finally:
+        _upstream_active -= 1
         # Detached close: a bare 'await aclose()' here is itself cancellable
         # when the client disconnected (the common case), leaving the upstream
         # connection un-closed → CLOSE-WAIT leak. Detaching guarantees it runs.
@@ -9843,10 +9914,13 @@ def _build_passthrough_headers(request: Request) -> dict | None:
 
 
 async def _stream_passthrough(resp: httpx.Response):
+    global _upstream_active
+    _upstream_active += 1
     try:
         async for chunk in resp.aiter_bytes():
             yield chunk
     finally:
+        _upstream_active -= 1
         _detach_aclose(resp)
 
 
