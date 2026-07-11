@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.136.2 (2026-07-11)
+
+- fix(bench): terminal-bench full-UAP arm now installs `sqlite3` (+ git) in the container. THE root cause of the faithful benchmark not working: the policy gate (`uap-policy-gate.sh`) reads `policies.db` via the `sqlite3` CLI, which the base image lacks — so the gate query silently failed and FAIL-OPENED, letting opencode edit directly and never routing through deliver. With sqlite3 present (and the v1.136.1 filePath fix), the full chain is proven in a container: opencode edit → BLOCKED by delivery-enforcement → opencode calls the `deliver` tool. Validated end-to-end via docker exec.
+
 ## v1.135.2 (2026-07-11)
 
 - fix(bench): terminal-bench opencode harness was unusable headless — the generated `opencode.json` had no `permission` config, so `opencode run` auto-rejected every tool call (both arms scored 0%, a void A/B). Added `permission {edit,bash,webfetch,external_directory: allow}` and switched the default container→host endpoint to the portable docker bridge (`172.17.0.1:8080`). Verified: qwen3.6-35B-A3B + opencode now runs genuine attempts (33% baseline vs 42% with the UAP AGENTS.md gates protocol on a 12-task TB-1.0 subset).

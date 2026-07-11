@@ -4,7 +4,10 @@
 set -e
 
 apt-get update
-apt-get install -y curl
+# curl (opencode install) + git (policy gate anchors policies.db to the repo root)
+# + sqlite3 (the policy gate reads policies.db via the sqlite3 CLI — WITHOUT it the
+# gate query fails and fail-opens, so delivery-enforcement never blocks the agent).
+apt-get install -y curl git sqlite3
 
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
 source "$HOME/.nvm/nvm.sh"
