@@ -120,6 +120,7 @@ export function resolveAcceptanceVerdict(
   return { passed: r.passed, score: r.score, feedback: r.passed ? '' : gaps };
 }
 import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
+import { createRepairEscalation } from '../delivery/repair-escalation.js';
 import { clearStop, isStopRequested, loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { parsePhaseArray, phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
@@ -963,6 +964,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const src = discoveredCtx ? `discovered ${discoveredCtx.toLocaleString()}` : 'preset';
     console.log(chalk.dim(`  context auto-size: sessions budgeted to ~${sessionBudget.toLocaleString()} tokens (rail-fit, ${src})`));
   }
+  // Repair escalation (compile-error death-spiral breaker): when the error
+  // count GROWS across turns, one narrow "make it compile" pass runs in a
+  // fresh focused session — on the stronger model when configured, else the
+  // same model (narrow scope + fresh context is most of the win). Default on
+  // for the agentic executor; UAP_DELIVER_REPAIR_ESCALATION=0 disables.
+  const repairModelId = options.escalateModel ?? process.env.UAP_ESCALATE_MODEL;
+  const repairModel = repairModelId ? resolveModel(repairModelId, undefined) : model;
+
   // Contracts-first epics: files an ACCEPTED contracts epic touched are locked
   // read-only for later epics. Mutable by reference — the epic controller
   // grows it between epics; the executor reads it live on every tool call.
@@ -989,6 +998,26 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           ),
       })
     : blindExecutor;
+
+  // The repair pass reuses the SAME protections as the main agent (protected
+  // tests, gate configs, contract lock) — a repair must fix code, not gates.
+  const repairAgent: LoopExecutor | undefined = agentic
+    ? createAgenticExecutor(repairModel, {
+        projectRoot,
+        endpoint: agenticEndpoint,
+        temperature: 0.2,
+        contextTokenBudget: sessionBudget,
+        contractFiles: contractLock,
+        protectedFiles:
+          options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles : new Set<string>(),
+        protectGateConfigs: options.protectTests !== false,
+        allowBash: options.allowBash === true || process.env.UAP_DELIVER_ALLOW_BASH === '1',
+        onEvent: (e) =>
+          console.log(
+            chalk.dim(`    [repair r${e.round} ${e.kind}${e.tool ? `:${e.tool}` : ''}] ${e.detail ?? ''}`)
+          ),
+      })
+    : undefined;
 
   // Self-authored acceptance gate: give deliver a real convergence target when
   // the project exposes none. The gate must FAIL on the current unsolved repo
@@ -1030,6 +1059,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       chalk.dim('  escalation: no stronger model configured ($UAP_ESCALATE_MODEL) — cheap tiers only')
     );
   }
+
 
   // Escalation controllers hold stagnation state in closures, so each loop
   // (each phase of a decomposed mission) gets a FRESH one — phase 2 must not
@@ -1333,6 +1363,27 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   /** Compose the per-turn hooks with a FRESH escalation controller. */
   const makeIterationHook = (): ReturnType<typeof composeIterationHooks> => {
     const escalation = makeEscalation();
+    const repair =
+      repairAgent && process.env.UAP_DELIVER_REPAIR_ESCALATION !== '0'
+        ? createRepairEscalation({
+            originalExecutor: executor,
+            onTrigger: (count, prevCount, turn) =>
+              console.log(
+                chalk.magenta(
+                  `  ⛑ turn ${turn}: compile errors growing (${prevCount} → ${count}) — dispatching narrow repair pass` +
+                    (repairModelId ? ` on ${repairModel.name}` : '')
+                )
+              ),
+            runRepair: (errorTail, errorCount) =>
+              repairAgent(
+                `REPAIR MISSION — the build is broken and getting WORSE (${errorCount} compile errors, rising turn over turn). ` +
+                  'Your ONLY goal: make the project compile / type-check again. Fix the errors below with MINIMAL diffs. ' +
+                  'Do NOT add features, do NOT redesign, do NOT touch tests or configs — read the failing files, reconcile ' +
+                  'the types/imports/signatures, and stop when the check passes.\n\nCURRENT ERRORS (tail):\n' +
+                  errorTail
+              ),
+          })
+        : undefined;
     return composeIterationHooks(
       (record) => printProgress(record),
       (record) => {
@@ -1341,6 +1392,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         return undefined;
       },
       (record) => haloTracer.onIteration(record),
+      repair ? (record) => repair.onIteration(record) : undefined,
       coordinator ? (record) => coordinator.onIteration(record) : undefined,
       escalation ? (record) => escalation.onIteration(record) : undefined
     );
