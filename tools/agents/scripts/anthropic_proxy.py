@@ -2423,6 +2423,26 @@ _UPSTREAM_RETRY_EXCEPTIONS = (
 )
 
 
+def _detach_aclose(closeable) -> None:
+    """Close an upstream stream/response on a DETACHED task so it completes
+    even when the requesting ASGI task is being cancelled (client disconnect).
+    An in-line ``await x.aclose()`` in a streaming finally can itself be
+    cancelled before it closes the socket, leaking the upstream connection —
+    it accrues as CLOSE-WAIT and eventually saturates the pool (live
+    2026-07-11: CW climbed 26→52 with zero client errors after the cascade was
+    fixed). ensure_future schedules the close independently of the dying task.
+    """
+    async def _run() -> None:
+        try:
+            await closeable.aclose()
+        except Exception:
+            pass
+    try:
+        asyncio.ensure_future(_run())
+    except RuntimeError:
+        pass  # no running loop — nothing to detach onto
+
+
 def _build_http_client() -> httpx.AsyncClient:
     """Upstream client factory — used at startup AND by pool self-healing."""
     return httpx.AsyncClient(
@@ -9545,8 +9565,10 @@ async def stream_anthropic_response(
         logger.error("Unexpected stream error: %s: %s", type(exc).__name__, exc)
         finish_reason = "end_turn"
     finally:
-        # Always close the upstream response to stop LLM generation
-        await openai_stream.aclose()
+        # Detached close: a bare 'await aclose()' here is itself cancellable
+        # when the client disconnected (the common case), leaving the upstream
+        # connection un-closed → CLOSE-WAIT leak. Detaching guarantees it runs.
+        _detach_aclose(openai_stream)
 
     # Close any open tool call blocks (skip if XML recovery already emitted them)
     xml_recovered = tool_calls_by_index.pop("_xml_recovered", False)
@@ -9821,9 +9843,11 @@ def _build_passthrough_headers(request: Request) -> dict | None:
 
 
 async def _stream_passthrough(resp: httpx.Response):
-    async for chunk in resp.aiter_bytes():
-        yield chunk
-    await resp.aclose()
+    try:
+        async for chunk in resp.aiter_bytes():
+            yield chunk
+    finally:
+        _detach_aclose(resp)
 
 
 async def _passthrough_anthropic_request(
