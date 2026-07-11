@@ -2406,6 +2406,63 @@ def prune_conversation(
 # Module-level httpx.AsyncClient for connection reuse + keep-alive.
 # Granular timeouts: short connect, long read for streaming LLM output.
 http_client: httpx.AsyncClient | None = None
+_last_pool_reset_ts: float = 0.0
+
+
+def _build_http_client() -> httpx.AsyncClient:
+    """Upstream client factory — used at startup AND by pool self-healing."""
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(
+            connect=10.0,  # 10s to establish connection
+            read=PROXY_READ_TIMEOUT,  # configurable (default 10 min)
+            write=30.0,  # 30s to send the request body
+            pool=10.0,  # 10s to acquire a pool connection
+        ),
+        limits=httpx.Limits(
+            max_connections=PROXY_MAX_CONNECTIONS,
+            max_keepalive_connections=PROXY_MAX_CONNECTIONS // 2,
+            keepalive_expiry=120,
+        ),
+    )
+
+
+def _maybe_reset_http_client(reason: str) -> bool:
+    """Pool self-healing: swap in a fresh AsyncClient, retiring the old one.
+
+    Rare cancellation races (asyncio.wait_for cutting an httpx send mid-
+    response — the guarded non-stream path every tool turn uses) leak
+    connections the pool counts as busy forever; observed live as 12
+    CLOSE-WAIT zombies out of a 20-connection pool and a 205-request
+    PoolTimeout 500-storm. There is no public API to reap them, so on
+    saturation we REPLACE the client: new requests get a fresh pool
+    immediately (handlers snapshot the global per request), in-flight
+    requests finish on the old object, which is closed after a grace period.
+    Cooldown-guarded so a burst cannot thrash clients.
+    """
+    global http_client, _last_pool_reset_ts
+    now = time.time()
+    if now - _last_pool_reset_ts < 60:
+        return False
+    if http_client is None:
+        return False
+    _last_pool_reset_ts = now
+    old_client = http_client
+    http_client = _build_http_client()
+    logger.error(
+        "POOL SELF-HEAL: replaced upstream connection pool (%s); old pool closes after grace period",
+        reason,
+    )
+
+    async def _retire() -> None:
+        # Long grace: in-flight generations legitimately run for many minutes.
+        await asyncio.sleep(max(60.0, PROXY_READ_TIMEOUT))
+        try:
+            await old_client.aclose()
+        except Exception:
+            pass
+
+    asyncio.ensure_future(_retire())
+    return True
 
 # ---------------------------------------------------------------------------
 # Concurrency Control
@@ -3016,19 +3073,7 @@ async def lifespan(app: FastAPI):
         PROXY_CONCURRENCY_QUEUE_TIMEOUT,
     )
     _prepare_slot_save_dir()
-    http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(
-            connect=10.0,  # 10s to establish connection
-            read=PROXY_READ_TIMEOUT,  # configurable (default 10 min)
-            write=30.0,  # 30s to send the request body
-            pool=10.0,  # 10s to acquire a pool connection
-        ),
-        limits=httpx.Limits(
-            max_connections=PROXY_MAX_CONNECTIONS,
-            max_keepalive_connections=PROXY_MAX_CONNECTIONS // 2,
-            keepalive_expiry=120,
-        ),
-    )
+    http_client = _build_http_client()
     logger.info(
         "Proxy started: listening on %s:%d -> upstream %s",
         PROXY_HOST,
@@ -3117,6 +3162,28 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+@app.exception_handler(httpx.PoolTimeout)
+async def _pool_timeout_handler(request: Request, exc: httpx.PoolTimeout):
+    """Saturated upstream pool: answer 529 overloaded (Anthropic semantics —
+    clients back off with jitter instead of fast-retrying a 500 traceback,
+    which amplified the storm) and trigger pool self-healing."""
+    _maybe_reset_http_client("PoolTimeout on " + request.url.path)
+    return Response(
+        content=json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "type": "overloaded_error",
+                    "message": "Upstream connection pool saturated — retry shortly.",
+                },
+            }
+        ),
+        status_code=529,
+        media_type="application/json",
+        headers={"retry-after": "10"},
+    )
+
 
 
 # Open paths that never require the shared secret (liveness / discovery), so a
