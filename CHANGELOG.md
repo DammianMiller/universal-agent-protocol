@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.136.2 (2026-07-11)
+
+- fix(bench): terminal-bench full-UAP arm now installs `sqlite3` (+ git) in the container. THE root cause of the faithful benchmark not working: the policy gate (`uap-policy-gate.sh`) reads `policies.db` via the `sqlite3` CLI, which the base image lacks — so the gate query silently failed and FAIL-OPENED, letting opencode edit directly and never routing through deliver. With sqlite3 present (and the v1.136.1 filePath fix), the full chain is proven in a container: opencode edit → BLOCKED by delivery-enforcement → opencode calls the `deliver` tool. Validated end-to-end via docker exec.
 ## v1.136.1 (2026-07-11)
 
 - fix(policy): delivery-enforcement now recognizes opencode's `filePath` tool-arg key (plus `filename`/`file`) in addition to Claude's `file_path` — previously opencode Write/Edit calls slipped through the gate ungated because the enforcer only looked for `file_path`/`path`/`target`, so "route through deliver" never fired for opencode. Validated: opencode-format edits to source now hard-block (exit 2, route:deliver) in block mode; test files still exempt. 3 new tests.
