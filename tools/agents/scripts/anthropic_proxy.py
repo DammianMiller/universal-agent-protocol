@@ -2420,8 +2420,14 @@ def _build_http_client() -> httpx.AsyncClient:
         ),
         limits=httpx.Limits(
             max_connections=PROXY_MAX_CONNECTIONS,
-            max_keepalive_connections=PROXY_MAX_CONNECTIONS // 2,
-            keepalive_expiry=120,
+            # No upstream keepalive: llama.cpp closes idle keepalive
+            # connections faster than a 120s expiry, so they piled as
+            # CLOSE-WAIT and exhausted the pool (live: 51 zombies, PoolTimeout
+            # 500-storm). The upstream is localhost at low concurrency —
+            # connection reuse saves microseconds and is not worth the leak
+            # class. Each request opens and cleanly closes its own connection.
+            max_keepalive_connections=0,
+            keepalive_expiry=0,
         ),
     )
 
@@ -2454,8 +2460,10 @@ def _maybe_reset_http_client(reason: str) -> bool:
     )
 
     async def _retire() -> None:
-        # Long grace: in-flight generations legitimately run for many minutes.
-        await asyncio.sleep(max(60.0, PROXY_READ_TIMEOUT))
+        # Grace = the longest a legit in-flight generation can run
+        # (GENERATION_TIMEOUT bounds it); after that, aclose() force-closes
+        # the old pool INCLUDING any leaked/zombie connections.
+        await asyncio.sleep(max(60.0, PROXY_GENERATION_TIMEOUT))
         try:
             await old_client.aclose()
         except Exception:
