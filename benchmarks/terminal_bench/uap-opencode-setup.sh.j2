@@ -51,7 +51,20 @@ npm i -g @miller-tech/uap >/dev/null 2>&1 || echo "[uap-setup] uap CLI install F
 export UAP_INFERENCE_ENDPOINT="http://172.17.0.1:8080/v1"   # in-container deliver -> host qwen
 export UAP_DELIVER_MODEL="{{ model_id }}"
 export UAP_ENFORCE_DELIVERY=block
+# The policy gate anchors policies.db/.policy-tools to the GIT REPO ROOT; a fresh
+# task cwd may not be a repo, which would make the gate silently find no DB and
+# fail open. Ensure /app is a repo BEFORE uap init so init seeds the surface here.
+git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1 || git -C "$PWD" init -q
 ( cd "$PWD" && uap init -p opencode -f >/dev/null 2>&1 ) \
   && echo "[uap-setup] full UAP surface installed (deliver MCP tool + enforcement + reactor)" \
   || echo "[uap-setup] uap init FAILED — UAP arm degraded to AGENTS.md only"
+# opencode auto-loads .opencode/plugin/*.ts (incl. the tool.execute.before policy
+# gate) only when the .opencode dep runtime is present. uap init writes the plugin
+# files + package.json but not node_modules — install them so the GATE actually
+# fires (without this, opencode edits directly and enforcement never runs).
+if [ -f "$PWD/.opencode/package.json" ]; then
+  ( cd "$PWD/.opencode" && ( bun install >/dev/null 2>&1 || npm install >/dev/null 2>&1 ) ) \
+    && echo "[uap-setup] opencode plugin runtime deps installed (gate active)" \
+    || echo "[uap-setup] opencode plugin dep install FAILED (gate will not load)"
+fi
 {% endif %}
