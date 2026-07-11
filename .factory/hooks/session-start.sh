@@ -250,14 +250,6 @@ if command -v uap >/dev/null 2>&1; then
   fi
 fi
 
-# Session-scoped proxy autostart (opt-in via .uap.json proxy.autostart). Starts
-# the proxy if none is running, or ADOPTS an already-running one. Reference-
-# counted: released only when the last client leaves. Fail-open, never blocks.
-if command -v uap >/dev/null 2>&1; then
-  _uap_pc="${CLAUDE_SESSION_ID:-${FACTORY_SESSION_ID:-${CURSOR_SESSION_ID:-${UAP_SESSION_ID:-ppid-$PPID}}}}"
-  ( cd "$PROJECT_DIR" 2>/dev/null && timeout 30 uap proxy ensure --if-enabled --quiet --client "$_uap_pc" --client-pid "$PPID" ) >/dev/null 2>&1 || true
-fi
-
 if [ -n "$output" ]; then
   echo "$output"
 fi

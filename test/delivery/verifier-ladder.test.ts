@@ -7,6 +7,8 @@ import {
   runLadder,
   runRung,
   formatFeedback,
+  demoteBaselineFailures,
+  BASELINE_DEMOTION_NOTE,
   type GateRung,
   type RungResult,
 } from '../../src/delivery/verifier-ladder.js';
@@ -114,6 +116,41 @@ describe('verifier-ladder', () => {
           .find((r) => r.id === 'pytest:integration')
           ?.args.includes('--no-cov')
       ).toBe(false);
+    });
+  });
+
+  describe('demoteBaselineFailures (baseline-delta gating)', () => {
+    it('demotes a baseline-red required rung to optional with the annotation', () => {
+      const red = rung('red', 'bash', ['-c', 'echo broken >&2; exit 1']);
+      const green = rung('green', 'bash', ['-c', 'exit 0']);
+      const r = demoteBaselineFailures([red, green], dir);
+      const demotedRed = r.rungs.find((x) => x.id === 'red')!;
+      expect(demotedRed.required).toBe(false);
+      expect(demotedRed.name).toContain(BASELINE_DEMOTION_NOTE);
+      expect(r.rungs.find((x) => x.id === 'green')!.required).toBe(true);
+      expect(r.demoted).toHaveLength(1);
+      expect(r.demoted[0].outputTail).toContain('broken');
+    });
+
+    it('a NEW failure still blocks: demoted ladder passes, then fails when a green rung breaks', () => {
+      const red = rung('pre-existing', 'bash', ['-c', 'exit 1']);
+      const green = rung('healthy', 'bash', ['-c', `test ! -f ${join(dir, 'regress.flag')}`]);
+      const { rungs: adjusted } = demoteBaselineFailures([red, green], dir);
+      expect(runLadder(adjusted, dir).passed).toBe(true); // red is non-blocking now
+      writeFileSync(join(dir, 'regress.flag'), '1'); // the mission breaks the green rung
+      expect(runLadder(adjusted, dir).passed).toBe(false); // regression blocks
+    });
+
+    it('leaves optional, teardown-bearing, and non-preflight-tier rungs untouched', () => {
+      const optional = { ...rung('opt', 'bash', ['-c', 'exit 1'], false) };
+      const withTeardown: GateRung = {
+        ...rung('deployish', 'bash', ['-c', 'exit 1']),
+        teardown: { command: 'true', args: [], timeoutMs: 1000 },
+      };
+      const runtimeTier: GateRung = { ...rung('exec', 'bash', ['-c', 'exit 1']), tier: 'runtime' };
+      const r = demoteBaselineFailures([optional, withTeardown, runtimeTier], dir);
+      expect(r.rungs).toEqual([optional, withTeardown, runtimeTier]);
+      expect(r.demoted).toHaveLength(0);
     });
   });
 

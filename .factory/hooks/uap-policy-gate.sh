@@ -42,18 +42,73 @@ ARGS="$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.st
 
 [[ -z "$TOOL" ]] && exit 0
 
+# FAIL-CLOSED for the enforcement control surface. The gate is fail-SOFT by
+# design (a broken/absent enforcer must not wedge ALL work) — but that same
+# fail-open makes anything that BREAKS the enforcer a silent bypass of the
+# self-protect control. So: if THIS operation touches the enforcement surface
+# (policy DB/enforcers, .uap.json, proxy env, hook scripts) or sets a
+# bypass/relax flag, the gate fails CLOSED (exit 2) whenever the self-protect
+# enforcer cannot actually run and make the call. Normal ops keep failing open.
+SEC_SENSITIVE="$(printf '%s' "$ARGS" | TOOL="$TOOL" python3 -c '
+import json, os, re, sys
+try: a = json.loads(sys.stdin.read() or "{}")
+except Exception: a = {}
+markers = ("/.policy-tools/", "/src/policies/", "/policies/", "/.uap.json",
+           ".uap.json", "/.uap/", "anthropic-proxy.env", "uap-policy-gate.sh",
+           "uap-reactor-prompt.sh", "pre-tool-use")
+target = a.get("file_path") or a.get("path") or a.get("target") or ""
+cmd = a.get("command") or ""
+low = ("/" + str(target)).lower()
+hit = any(m in low for m in markers)
+bypass = re.search(
+    r"UAP_DELIVER_BYPASS\s*=\s*[\x27\"]?1|UAP_ENFORCE_DELIVERY\s*=\s*[\x27\"]?(advisory|off|0|false|no)"
+    r"|UAP_SELF_PROTECT_OFF\s*=\s*[\x27\"]?1|UAP_NO_WORKTREE\s*=\s*[\x27\"]?1|UAP_WORKDIR_SCOPE_OFF\s*=\s*[\x27\"]?1",
+    cmd, re.I)
+print("1" if (hit or bypass) else "0")
+' 2>/dev/null || echo 1)"
+
+# Operator out-of-band override disables the fail-closed guard too.
+[[ "${UAP_SELF_PROTECT_OFF:-}" == "1" ]] && SEC_SENSITIVE=0
+
+fail_closed() {
+  echo "[UAP policy gate] FAIL-CLOSED: this operation touches the enforcement control surface but the self-protect enforcer could not run (${1:-machinery unavailable}). Blocked so a broken/absent gate can't become a bypass. (Operator override: UAP_SELF_PROTECT_OFF=1.)" >&2
+  exit 2
+}
+
 DB="$MAIN_ROOT/agents/data/memory/policies.db"
-[[ ! -f "$DB" ]] && exit 0
+if [[ ! -f "$DB" ]]; then
+  [[ "$SEC_SENSITIVE" == "1" ]] && fail_closed "policies.db not found"
+  exit 0
+fi
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  [[ "$SEC_SENSITIVE" == "1" ]] && fail_closed "sqlite3 not on PATH"
+  exit 0
+fi
+
+# Did the self-protect enforcer actually run and make a decision this call?
+sec_enforcer_ran=0
 
 # Iterate active policies with attached executable tools
 while IFS='|' read -r pid pname tool; do
   [[ -z "$pid" ]] && continue
   enforcer="$MAIN_ROOT/.policy-tools/${pid}_${tool}.py"
-  [[ ! -f "$enforcer" ]] && continue
+  if [[ ! -f "$enforcer" ]]; then
+    # A missing self-protect enforcer on a sensitive op = fail closed.
+    [[ "$SEC_SENSITIVE" == "1" && "$tool" == "enforcement_self_protect" ]] && fail_closed "enforcer file missing"
+    continue
+  fi
   out="$(python3 "$enforcer" --operation "$TOOL" --args "$ARGS" 2>/dev/null || true)"
   allowed="$(printf '%s' "$out" | python3 -c 'import json,sys;
 try: d=json.loads(sys.stdin.read()); print("1" if d.get("allowed",True) else "0")
-except: print("1")' 2>/dev/null || echo 1)"
+except: print("2")' 2>/dev/null || echo 2)"
+  # allowed=2 => enforcer errored / emitted unparseable output. For a sensitive
+  # op via the self-protect enforcer, that error must NOT default to allow.
+  if [[ "$tool" == "enforcement_self_protect" ]]; then
+    [[ "$SEC_SENSITIVE" == "1" && "$allowed" == "2" ]] && fail_closed "enforcer errored"
+    sec_enforcer_ran=1
+  fi
+  # For all other enforcers, an error still fails open (unchanged behavior).
+  [[ "$allowed" == "2" ]] && allowed=1
   if [[ "$allowed" == "0" ]]; then
     # R1: consume the enforcer's route:deliver signal (log intent, opt-in
     # background auto-route to `uap deliver`). Falls back to the plain reason if
@@ -72,5 +127,9 @@ except: print("")' 2>/dev/null || echo "")"
     exit 2
   fi
 done < <(sqlite3 "$DB" "SELECT p.id, p.name, t.toolName FROM policies p JOIN executable_tools t ON t.policyId=p.id WHERE p.isActive=1;")
+
+# A sensitive op that no self-protect enforcer ever evaluated = the control
+# surface is unguarded (self-protect not registered/active). Fail closed.
+[[ "$SEC_SENSITIVE" == "1" && "$sec_enforcer_ran" == "0" ]] && fail_closed "self-protect not registered/active"
 
 exit 0
