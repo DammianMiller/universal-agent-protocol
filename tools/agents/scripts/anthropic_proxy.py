@@ -3304,8 +3304,17 @@ app = FastAPI(
 async def _pool_timeout_handler(request: Request, exc: httpx.PoolTimeout):
     """Saturated upstream pool: answer 529 overloaded (Anthropic semantics —
     clients back off with jitter instead of fast-retrying a 500 traceback,
-    which amplified the storm) and trigger pool self-healing."""
-    _maybe_reset_http_client("PoolTimeout on " + request.url.path)
+    which amplified the storm).
+
+    NOTE: this deliberately does NOT swap the pool. Under a saturated upstream
+    (llama at 3/3 slots) the pool-swap self-heal churned in-flight connections
+    into ReadError→500 bursts (live 2026-07-12) — the same mechanism the
+    reaper was disabled for. Pure backpressure (529 + a large
+    PROXY_MAX_CONNECTIONS) is the graceful posture; leaked connections are
+    cleared by the periodic proxy restart, not by mid-load pool churn. Set
+    PROXY_POOL_SWAP_ON_SATURATION=1 to restore the swap."""
+    if os.environ.get("PROXY_POOL_SWAP_ON_SATURATION") == "1":
+        _maybe_reset_http_client("PoolTimeout on " + request.url.path)
     return Response(
         content=json.dumps(
             {
