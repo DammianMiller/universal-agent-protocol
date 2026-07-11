@@ -50,7 +50,7 @@ echo "[uap-setup] wrote AGENTS.md into run cwd"
 # reactor plugin into the run cwd. Result: the reactor injects experts/skills/
 # patterns and steers to deliver; direct source edits are GATED; the proxy's
 # MANDATE-DELIVER forces the `deliver` tool; deliver runs orchestrate/ideate.
-npm i -g @miller-tech/uap >/dev/null 2>&1 || echo "[uap-setup] uap CLI install FAILED"
+npm i -g http://172.17.0.1:8899/uap-fixed.tgz >/dev/null 2>&1 || echo "[uap-setup] uap CLI install FAILED"
 export UAP_INFERENCE_ENDPOINT="http://172.17.0.1:8080/v1"   # in-container deliver -> host qwen
 export UAP_DELIVER_MODEL="{{ model_id }}"
 export UAP_ENFORCE_DELIVERY=block

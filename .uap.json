@@ -105,16 +105,17 @@
     "enabled": true,
     "models": [
       "fable-5",
-      "qwen36-a3b",
-      "opus-4.8"
+      "haiku-4.5",
+      "opus-4.8",
+      "qwen36-a3b"
     ],
     "roles": {
       "planner": "fable-5",
-      "executor": "qwen36-a3b",
+      "executor": "haiku-4.5",
       "reviewer": "opus-4.8",
       "fallback": "qwen36-a3b"
     },
-    "routingStrategy": "balanced"
+    "routingStrategy": "performance-first"
   },
   "hooks": {
     "sessionStart": true,
@@ -127,14 +128,14 @@
   },
   "recipes": {
     "enabled": true,
-    "recipe": "fusion",
+    "recipe": "auto",
     "confidenceThreshold": 0.5,
     "fusionN": 3,
     "allowSelfJudge": true
   },
   "delivery": {
     "enforcement": "block",
-    "localMode": "deliver",
+    "localMode": "block",
     "runtimeVerify": true
   },
   "modelConcurrency": {
@@ -150,12 +151,5 @@
   },
   "reactor": {
     "enabled": true
-  },
-  "proxy": {
-    "autostart": true
-  },
-  "handsfree": {
-    "enabled": true,
-    "intensity": "aggressive"
   }
 }
