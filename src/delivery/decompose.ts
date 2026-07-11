@@ -35,6 +35,14 @@ export interface DeliveryPhase {
    * re-inventing its registry API module by module).
    */
   contracts?: boolean;
+  /**
+   * True for a SCAFFOLD phase: it creates compiling module skeletons — full
+   * public signatures with todo!()/NotImplementedError bodies — that later
+   * FILL phases (declaring it in deps) implement WITHOUT changing signatures.
+   * Splits "design the shape" from "write the logic", the two things a weak
+   * model cannot do simultaneously at scale.
+   */
+  scaffold?: boolean;
 }
 
 const MIN_PHASES = 2;
@@ -96,12 +104,14 @@ export function parsePhaseArray(text: string): DeliveryPhase[] {
       ? rawDeps.filter((d): d is string => typeof d === 'string').map((d) => d.trim().toLowerCase()).slice(0, maxPhases())
       : undefined;
     const contracts = (entry as { contracts?: unknown }).contracts === true;
+    const scaffold = (entry as { scaffold?: unknown }).scaffold === true;
     phases.push({
       id: slug,
       title: title.trim().slice(0, 120),
       goal: goal.trim().slice(0, 600),
       ...(deps && deps.length > 0 ? { deps } : {}),
       ...(contracts ? { contracts: true } : {}),
+      ...(scaffold ? { scaffold: true } : {}),
     });
     if (phases.length >= maxPhases()) break;
   }
@@ -145,6 +155,11 @@ export interface PlanPhasesOptions {
    * later locked read-only) when the mission spans modules that share types.
    */
   contractsFirst?: boolean;
+  /**
+   * Ask the planner to structure large implementation work as SCAFFOLD phases
+   * (compiling skeletons, todo!() bodies) followed by FILL phases.
+   */
+  scaffoldFirst?: boolean;
 }
 
 function buildDecomposePrompt(
@@ -187,6 +202,18 @@ function buildDecomposePrompt(
       ].join('\n')
     : '';
 
+  const scaffoldHint = opts?.scaffoldFirst
+    ? [
+        '',
+        'SCAFFOLD THEN FILL: for LARGE implementation phases (a whole module /',
+        'many functions), prefer a pair: first a SCAFFOLD phase (set',
+        '"scaffold": true) that creates the compiling skeleton — complete',
+        'public signatures, wired imports/exports, todo!()-style stub bodies —',
+        'then FILL phase(s) depending on it that implement the stub bodies',
+        'WITHOUT changing any signature. Small phases need no scaffold.',
+      ].join('\n')
+    : '';
+
   return [
     'You are a delivery planner. Split the mission below into SEQUENTIAL phases',
     `(${MIN_PHASES}-${maxPhases()}), each independently verifiable by the project's build/test`,
@@ -195,13 +222,14 @@ function buildDecomposePrompt(
     'earlier ones. Do NOT invent scope the mission does not imply.',
     budgetHint,
     contractsHint,
+    scaffoldHint,
     lifecycleHint,
     '',
     `MISSION: ${instruction}`,
     '',
     'Respond with ONLY a JSON array. Each phase may declare deps (ids of',
     'phases it builds on); phases without deps between them are independent:',
-    '[{"id": "<kebab-slug>", "title": "<short name>", "goal": "<what this phase must accomplish>", "deps": ["<id>"], "contracts": false}]',
+    '[{"id": "<kebab-slug>", "title": "<short name>", "goal": "<what this phase must accomplish>", "deps": ["<id>"], "contracts": false, "scaffold": false}]',
   ].join('\n');
 }
 

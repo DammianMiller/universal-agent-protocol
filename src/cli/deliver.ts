@@ -1811,14 +1811,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       history: [], finalFeedback: '', finalOutput: '', totalDurationMs: 0,
     };
     const contractsFirst = process.env.UAP_DELIVER_CONTRACTS !== '0';
+    const scaffoldFirst = process.env.UAP_DELIVER_SCAFFOLD !== '0';
     const planned = await planDeliveryPhases(instruction, verdictExecutor, undefined, {
       sessionTokenBudget: sessionBudget,
       contractsFirst,
+      scaffoldFirst,
     });
     const epics: Epic[] = (planned.length >= 2
       ? planned
       : [{ id: 'mission', title: 'Mission', goal: instruction }]
-    ).map((ph) => ({ id: ph.id, title: ph.title, goal: ph.goal, ...(ph.deps ? { deps: ph.deps } : {}), ...(ph.contracts ? { contracts: true } : {}) }));
+    ).map((ph) => ({ id: ph.id, title: ph.title, goal: ph.goal, ...(ph.deps ? { deps: ph.deps } : {}), ...(ph.contracts ? { contracts: true } : {}), ...(ph.scaffold ? { scaffold: true } : {}) }));
     console.log(chalk.cyan(`\u{1f5c2}  epic controller: ${epics.length} epic(s): ${epics.map((e) => e.title).join(' \u2192 ')}`));
     let lastContractEpicFiles: string[] = [];
 
@@ -1885,9 +1887,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           : contractLock.size > 0
             ? `\n\nLOCKED CONTRACTS (read-only — write attempts will be refused): ${[...contractLock].join(', ')}. Build against these exact APIs; make YOUR code match their imports, type names and signatures.`
             : '';
+        const scaffoldIds = new Set(epics.filter((e) => e.scaffold).map((e) => e.id));
+        const fillsScaffold = !epic.scaffold && (epic.deps ?? []).some((d) => scaffoldIds.has(d));
+        const scaffoldNote = epic.scaffold
+          ? '\n\nThis is a SCAFFOLD epic: create the compiling SKELETON only — complete public signatures, wired imports/exports, and todo!()-style stub bodies (todo!() / raise NotImplementedError / throw new Error("TODO")). Do NOT implement the logic; a later FILL epic does that. The build/check gates must pass.'
+          : fillsScaffold
+            ? '\n\nThis is a FILL epic: the skeleton already exists with correct signatures. IMPLEMENT the stub bodies (todo!()/NotImplementedError/TODO throws) — do NOT change any existing signature, rename anything, or restructure modules. When you finish, no stub markers should remain in the files this epic fills.'
+            : '';
         const scoped =
           `OVERALL MISSION (context): ${instruction.slice(0, 300)}\n\n` +
-          `EPIC \u2014 ${epic.title}:\n${epic.goal}${priors}${retry}${contractsNote}\n\n` +
+          `EPIC \u2014 ${epic.title}:\n${epic.goal}${priors}${retry}${contractsNote}${scaffoldNote}\n\n` +
           'Deliver ONLY this epic. All gates must pass at the end.';
         console.log(chalk.bold(`\u25b6 epic ${epic.id} (attempt ${ctx.attempt}): ${epic.title}`));
         // Grade the epic's DELIVERABLE, not the process prompt: the scoped
@@ -1897,7 +1906,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         acceptanceSpec =
           `EPIC — ${epic.title}:\n${epic.goal}` +
           (epic.criteria?.length ? `\nAcceptance criteria:\n${epic.criteria.map((c) => `- ${c}`).join('\n')}` : '') +
-          (!epic.contracts && contractLock.size > 0 ? `\n(Builds against locked contracts: ${[...contractLock].join(', ')})` : '');
+          (!epic.contracts && contractLock.size > 0 ? `\n(Builds against locked contracts: ${[...contractLock].join(', ')})` : '') +
+          (fillsScaffold ? '\n(FILL epic: no todo!()/NotImplementedError/TODO-throw stub markers may remain in the files it implements; signatures must be unchanged.)' : '') +
+          (epic.scaffold ? '\n(SCAFFOLD epic: complete compiling signatures with stub bodies are the DELIVERABLE — unimplemented logic is expected and correct here.)' : '');
         specChangeEvidence.writes = 0; // fresh epic — breaker needs fresh diff evidence
         const epicTask = await openDeliveryTask(`${epic.title} \u2014 ${epic.goal.slice(0, 120)}`, projectRoot, missionTask?.id);
         const loop = new ConvergenceLoop(

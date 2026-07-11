@@ -12,7 +12,7 @@
  */
 
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, lstatSync } from 'fs';
 import { join } from 'path';
 import { synthesizeExecutionRung } from './execution-gate.js';
 
@@ -221,6 +221,8 @@ export function detectRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIM
   // deploy+smoke. These are appended after the fast band so cheap-first
   // promotion (runTieredLadder) runs them only once the fast tier is green.
   rungs.push(...detectIntegrationRungs(projectRoot, scripts, timeoutMs));
+  const migration = detectMigrationRung(projectRoot);
+  if (migration) rungs.push(migration);
   const deployDev = detectDeployDevRung(projectRoot, scripts, timeoutMs);
   if (deployDev) rungs.push(deployDev);
 
@@ -495,6 +497,51 @@ export function detectCargoRungs(projectRoot: string, timeoutMs: number = DEFAUL
       tier: 'fast',
     },
   ];
+}
+
+/**
+ * Migration validation: run the project's SQL migrations against an EPHEMERAL
+ * postgres before they can ship broken. A live mission shipped migrations
+ * with FK-ordering bugs and a name collision with a legacy table because they
+ * never met a database until a human applied them (2026-07-09). Added when a
+ * migrations/ dir with .sql files exists; the script itself no-ops with a
+ * pass when docker or sqlx is unavailable (vacuous, like the pytest marker
+ * rung), and cleans its container via trap + a fixed name so an orphan from a
+ * killed run is removed by the next one. Tier `integration`: runs only after
+ * the fast tier is green; baseline-delta gating demotes it when the CURRENT
+ * migration chain is already broken at mission start.
+ */
+export function detectMigrationRung(projectRoot: string): GateRung | null {
+  const dir = join(projectRoot, 'migrations');
+  try {
+    if (!lstatSync(dir).isDirectory()) return null;
+    if (!readdirSync(dir).some((f) => f.endsWith('.sql'))) return null;
+  } catch {
+    return null;
+  }
+  const script = [
+    'set -u',
+    'command -v docker >/dev/null 2>&1 || { echo "migration gate skipped: docker unavailable"; exit 0; }',
+    'command -v sqlx >/dev/null 2>&1 || { echo "migration gate skipped: sqlx-cli unavailable"; exit 0; }',
+    'NAME=uap-migrate-gate',
+    'docker rm -f "$NAME" >/dev/null 2>&1 || true',
+    "trap 'docker rm -f \"$NAME\" >/dev/null 2>&1 || true' EXIT TERM INT",
+    'docker run -d --name "$NAME" -e POSTGRES_PASSWORD=uap -e POSTGRES_DB=uap_migrate_gate -p 127.0.0.1::5432 postgres:16-alpine >/dev/null || { echo "migration gate: failed to start postgres container"; exit 1; }',
+    'PORT=$(docker port "$NAME" 5432/tcp | head -1 | sed "s/.*://")',
+    'ok=""',
+    'for i in $(seq 1 120); do docker exec "$NAME" pg_isready -U postgres -q 2>/dev/null && ok=1 && break; sleep 0.5; done',
+    '[ -n "$ok" ] || { echo "migration gate: postgres did not become ready"; exit 1; }',
+    'DATABASE_URL="postgres://postgres:uap@127.0.0.1:$PORT/uap_migrate_gate" sqlx migrate run',
+  ].join('\n');
+  return {
+    id: 'migrations',
+    name: 'Migrations (sqlx migrate run vs ephemeral postgres)',
+    command: 'bash',
+    args: ['-c', script],
+    required: true,
+    timeoutMs: 180_000,
+    tier: 'integration',
+  };
 }
 
 /**

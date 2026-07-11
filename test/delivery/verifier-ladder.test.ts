@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   detectRungs,
+  detectMigrationRung,
   runLadder,
   runRung,
   formatFeedback,
@@ -151,6 +152,29 @@ describe('verifier-ladder', () => {
       const r = demoteBaselineFailures([optional, withTeardown, runtimeTier], dir);
       expect(r.rungs).toEqual([optional, withTeardown, runtimeTier]);
       expect(r.demoted).toHaveLength(0);
+    });
+  });
+
+  describe('detectMigrationRung', () => {
+    it('adds a required integration rung when migrations/*.sql exist', () => {
+      mkdirSync(join(dir, 'migrations'));
+      writeFileSync(join(dir, 'migrations', '0001_init.sql'), 'CREATE TABLE t(id INT);');
+      const rung = detectMigrationRung(dir)!;
+      expect(rung).not.toBeNull();
+      expect(rung.required).toBe(true);
+      expect(rung.tier).toBe('integration');
+      const script = rung.args[1];
+      // Self-contained lifecycle: tool-absence no-ops, trap-based cleanup.
+      expect(script).toContain('command -v docker');
+      expect(script).toContain('sqlx migrate run');
+      expect(script).toContain('trap');
+    });
+
+    it('returns null without a migrations dir or without .sql files', () => {
+      expect(detectMigrationRung(dir)).toBeNull();
+      mkdirSync(join(dir, 'migrations'));
+      writeFileSync(join(dir, 'migrations', 'README.md'), 'x');
+      expect(detectMigrationRung(dir)).toBeNull();
     });
   });
 

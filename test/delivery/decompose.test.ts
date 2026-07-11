@@ -22,6 +22,16 @@ describe('parsePhaseArray', () => {
     expect(phases[1].contracts).toBeUndefined();
   });
 
+  it('carries the scaffold flag through', () => {
+    const raw = JSON.stringify([
+      { id: 'skel', title: 'Module Skeleton', goal: 'signatures + todo bodies', scaffold: true },
+      { id: 'fill', title: 'Implement', goal: 'fill the bodies', deps: ['skel'] },
+    ]);
+    const phases = parsePhaseArray(raw);
+    expect(phases[0].scaffold).toBe(true);
+    expect(phases[1].scaffold).toBeUndefined();
+  });
+
   it('extracts a valid phase plan from noisy model output', () => {
     const raw = [
       'Here is the plan:',
