@@ -2407,6 +2407,7 @@ def prune_conversation(
 # Granular timeouts: short connect, long read for streaming LLM output.
 http_client: httpx.AsyncClient | None = None
 _last_pool_reset_ts: float = 0.0
+_upstream_inflight: int = 0
 
 
 def _build_http_client() -> httpx.AsyncClient:
@@ -2459,11 +2460,16 @@ def _maybe_reset_http_client(reason: str) -> bool:
         reason,
     )
 
+    inflight_at_retire = _upstream_inflight
     async def _retire() -> None:
-        # Grace = the longest a legit in-flight generation can run
-        # (GENERATION_TIMEOUT bounds it); after that, aclose() force-closes
-        # the old pool INCLUDING any leaked/zombie connections.
-        await asyncio.sleep(max(60.0, PROXY_GENERATION_TIMEOUT))
+        # Close the retired pool as soon as its legit in-flight requests drain
+        # (a zombie/leaked connection has NO in-flight coroutine, so once the
+        # real requests finish, aclose() closes only zombies) — or at the
+        # grace deadline, whichever comes first. Old fixed 30-min grace let
+        # zombies linger a full generation-timeout after every self-heal.
+        deadline = time.time() + max(60.0, PROXY_GENERATION_TIMEOUT)
+        while time.time() < deadline and _upstream_inflight >= inflight_at_retire and _upstream_inflight > 0:
+            await asyncio.sleep(2.0)
         try:
             await old_client.aclose()
         except Exception:
@@ -2952,10 +2958,15 @@ async def _post_with_retry_inner(
     payload: dict,
     headers: dict,
 ) -> httpx.Response:
+    global _upstream_inflight
     last_exc: Exception | None = None
     for attempt in range(PROXY_UPSTREAM_RETRY_MAX):
         try:
-            resp = await client.post(url, json=payload, headers=headers)
+            _upstream_inflight += 1
+            try:
+                resp = await client.post(url, json=payload, headers=headers)
+            finally:
+                _upstream_inflight -= 1
             # Cycle 19 Option 1: if 503 "Loading model", wait for health then retry
             if _is_loading_model_503(resp):
                 logger.warning(
@@ -9251,8 +9262,17 @@ async def _heartbeat_then_buffered(produce_coro, model: str, input_tokens: int =
             except asyncio.TimeoutError:
                 yield 'event: ping\ndata: {"type": "ping"}\n\n'
     except asyncio.CancelledError:
-        # Client disconnected — cancel the in-flight produce and propagate.
+        # Client disconnected — cancel the in-flight produce AND await its
+        # cleanup so httpx returns/closes the upstream connection before we
+        # unwind. Without the await, the cancel is merely requested and the
+        # socket strands in CLOSE-WAIT (the connection-leak → PoolTimeout 500
+        # storm root cause). Shielded + time-boxed so a stuck close can't hang
+        # the disconnect path.
         task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            pass
         raise
     except Exception as exc:
         logger.error("heartbeat produce failed: %s", exc)
