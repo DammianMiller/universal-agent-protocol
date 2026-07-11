@@ -12,6 +12,16 @@ import {
 } from '../../src/delivery/decompose.js';
 
 describe('parsePhaseArray', () => {
+  it('carries the contracts flag through (and drops non-true values)', () => {
+    const raw = JSON.stringify([
+      { id: 'contracts', title: 'Shared Contracts', goal: 'define the shared types', contracts: true },
+      { id: 'impl', title: 'Implementation', goal: 'build against the contracts', deps: ['contracts'], contracts: 'yes' },
+    ]);
+    const phases = parsePhaseArray(raw);
+    expect(phases[0].contracts).toBe(true);
+    expect(phases[1].contracts).toBeUndefined();
+  });
+
   it('extracts a valid phase plan from noisy model output', () => {
     const raw = [
       'Here is the plan:',
