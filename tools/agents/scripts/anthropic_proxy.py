@@ -2407,7 +2407,20 @@ def prune_conversation(
 # Granular timeouts: short connect, long read for streaming LLM output.
 http_client: httpx.AsyncClient | None = None
 _last_pool_reset_ts: float = 0.0
-_upstream_inflight: int = 0
+
+# Transient upstream failures that are safe to retry (a fresh POST re-runs
+# the request). Single source of truth — used by BOTH the buffered
+# _post_with_retry_inner AND the streaming send loop, which previously had
+# divergent copies (the streaming copy lacked ReadError, so a mid-setup
+# connection reset on a streamed turn 500'd; live 2026-07-11).
+_UPSTREAM_RETRY_EXCEPTIONS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.RemoteProtocolError,
+    httpx.ReadTimeout,
+    httpx.ReadError,
+    httpx.WriteError,
+)
 
 
 def _build_http_client() -> httpx.AsyncClient:
@@ -2460,16 +2473,17 @@ def _maybe_reset_http_client(reason: str) -> bool:
         reason,
     )
 
-    inflight_at_retire = _upstream_inflight
     async def _retire() -> None:
-        # Close the retired pool as soon as its legit in-flight requests drain
-        # (a zombie/leaked connection has NO in-flight coroutine, so once the
-        # real requests finish, aclose() closes only zombies) — or at the
-        # grace deadline, whichever comes first. Old fixed 30-min grace let
-        # zombies linger a full generation-timeout after every self-heal.
-        deadline = time.time() + max(60.0, PROXY_GENERATION_TIMEOUT)
-        while time.time() < deadline and _upstream_inflight >= inflight_at_retire and _upstream_inflight > 0:
-            await asyncio.sleep(2.0)
+        # Wait a full generation-timeout before force-closing the old pool:
+        # STREAMING requests (the client default) keep the old client until
+        # their stream completes, and aclose() would reset them into a
+        # ReadError burst (live 2026-07-11: a self-heal's early aclose killed
+        # ~30 in-flight streams, whose #434 retries then re-saturated the pool
+        # → cascade). GENERATION_TIMEOUT bounds the longest legit stream, so
+        # after it every in-flight request on the old client has finished and
+        # aclose() only reaps any residual zombie. (Drain-aware early-close was
+        # unsafe: the in-flight counter did not track the streaming path.)
+        await asyncio.sleep(max(60.0, PROXY_GENERATION_TIMEOUT))
         try:
             await old_client.aclose()
         except Exception:
@@ -2958,15 +2972,10 @@ async def _post_with_retry_inner(
     payload: dict,
     headers: dict,
 ) -> httpx.Response:
-    global _upstream_inflight
     last_exc: Exception | None = None
     for attempt in range(PROXY_UPSTREAM_RETRY_MAX):
         try:
-            _upstream_inflight += 1
-            try:
-                resp = await client.post(url, json=payload, headers=headers)
-            finally:
-                _upstream_inflight -= 1
+            resp = await client.post(url, json=payload, headers=headers)
             # Cycle 19 Option 1: if 503 "Loading model", wait for health then retry
             if _is_loading_model_503(resp):
                 logger.warning(
@@ -2979,19 +2988,7 @@ async def _post_with_retry_inner(
                     continue  # retry the request now that upstream is healthy
                 return resp  # return the 503 if health wait timed out
             return resp
-        except (
-            httpx.ConnectError,
-            httpx.ConnectTimeout,
-            httpx.RemoteProtocolError,
-            httpx.ReadTimeout,
-            # Transient mid-response connection resets (peer closed the socket,
-            # e.g. a pool swap or a brief network blip) are retryable — they
-            # were surfacing as uncaught 500s (live 2026-07-11: an 18x
-            # ReadError burst). WriteError covers a reset while sending the
-            # request body.
-            httpx.ReadError,
-            httpx.WriteError,
-        ) as exc:
+        except _UPSTREAM_RETRY_EXCEPTIONS as exc:
             last_exc = exc
             if attempt < PROXY_UPSTREAM_RETRY_MAX - 1:
                 logger.warning(
@@ -10549,7 +10546,7 @@ async def messages(request: Request):
                 # Connection succeeded – break out of retry loop
                 last_exc = None
                 break
-            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadTimeout) as exc:
+            except _UPSTREAM_RETRY_EXCEPTIONS as exc:
                 last_exc = exc
                 if attempt < MAX_UPSTREAM_RETRIES - 1:
                     logger.warning(
