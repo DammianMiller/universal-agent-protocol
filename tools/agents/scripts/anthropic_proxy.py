@@ -2979,11 +2979,23 @@ async def _post_with_retry_inner(
                     continue  # retry the request now that upstream is healthy
                 return resp  # return the 503 if health wait timed out
             return resp
-        except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadTimeout) as exc:
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.RemoteProtocolError,
+            httpx.ReadTimeout,
+            # Transient mid-response connection resets (peer closed the socket,
+            # e.g. a pool swap or a brief network blip) are retryable — they
+            # were surfacing as uncaught 500s (live 2026-07-11: an 18x
+            # ReadError burst). WriteError covers a reset while sending the
+            # request body.
+            httpx.ReadError,
+            httpx.WriteError,
+        ) as exc:
             last_exc = exc
             if attempt < PROXY_UPSTREAM_RETRY_MAX - 1:
                 logger.warning(
-                    "Upstream connect failed (attempt %d/%d): %s – retrying in %.0fs",
+                    "Upstream transient error (attempt %d/%d): %s – retrying in %.0fs",
                     attempt + 1,
                     PROXY_UPSTREAM_RETRY_MAX,
                     type(exc).__name__,
