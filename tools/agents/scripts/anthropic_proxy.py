@@ -2292,7 +2292,13 @@ def prune_conversation(
         # and non-droppable; give MESSAGES a minimal floor and prune into it
         # best-effort instead of giving up.
         message_budget = max(1, int(context_window * 0.20))
-        logger.warning(
+        # The condition is PERMANENT for a tool-heavy client (fires per
+        # request, observed every ~2s) — warn once per session, then debug.
+        already = bool(monitor is not None and getattr(monitor, "floor_budget_logged", False))
+        log = logger.debug if already else logger.warning
+        if monitor is not None:
+            monitor.floor_budget_logged = True
+        log(
             "System+tools overhead (~%d est tokens) consumes the %.0f%% prune "
             "target — pruning messages into a floor budget of %d tokens instead",
             overhead_tokens,
