@@ -2430,9 +2430,6 @@ _UPSTREAM_RETRY_EXCEPTIONS = (
 )
 
 
-_upstream_active: int = 0  # requests currently reading an upstream response (all paths)
-
-
 def _upstream_port() -> int:
     """The upstream (llama) TCP port, for CLOSE-WAIT accounting."""
     try:
@@ -2484,6 +2481,20 @@ async def _closewait_reaper() -> None:
             logger.warning("CLOSE-WAIT reaper error: %s", exc)
 
 
+def _inflight_inc(client) -> None:
+    try:
+        client._uap_inflight += 1
+    except Exception:
+        pass
+
+
+def _inflight_dec(client) -> None:
+    try:
+        client._uap_inflight -= 1
+    except Exception:
+        pass
+
+
 def _detach_aclose(closeable) -> None:
     """Close an upstream stream/response on a DETACHED task so it completes
     even when the requesting ASGI task is being cancelled (client disconnect).
@@ -2506,7 +2517,7 @@ def _detach_aclose(closeable) -> None:
 
 def _build_http_client() -> httpx.AsyncClient:
     """Upstream client factory — used at startup AND by pool self-healing."""
-    return httpx.AsyncClient(
+    c = httpx.AsyncClient(
         timeout=httpx.Timeout(
             connect=10.0,  # 10s to establish connection
             read=PROXY_READ_TIMEOUT,  # configurable (default 10 min)
@@ -2525,6 +2536,12 @@ def _build_http_client() -> httpx.AsyncClient:
             keepalive_expiry=0,
         ),
     )
+    # Per-CLIENT in-flight counter: a retired pool must drain on ITS OWN
+    # requests (a global counter can't isolate it — new-pool traffic keeps a
+    # global high, so the retire waited the full backstop and never reaped;
+    # live 2026-07-11: reaper fired 7x, CLOSE-WAIT still climbed 30→50).
+    c._uap_inflight = 0  # type: ignore[attr-defined]
+    return c
 
 
 def _maybe_reset_http_client(reason: str) -> bool:
@@ -2554,15 +2571,14 @@ def _maybe_reset_http_client(reason: str) -> bool:
         reason,
     )
 
-    baseline = _upstream_active
     async def _retire() -> None:
-        # Close the old pool once its legit in-flight requests (ALL paths — the
-        # _upstream_active counter now wraps streaming AND buffered) drain
-        # below the level at retire time, so aclose() force-closes only the
-        # ABANDONED CLOSE-WAIT connections (which have no in-flight coroutine)
-        # and never a live stream. Capped at GENERATION_TIMEOUT as a backstop.
+        # Close the old pool once ITS OWN in-flight requests (per-client
+        # counter — streaming + buffered) drain to zero: no live request
+        # remains on the old client, so aclose() force-closes only its
+        # ABANDONED CLOSE-WAIT connections and never a live stream. Capped at
+        # GENERATION_TIMEOUT as a backstop.
         deadline = time.time() + max(60.0, PROXY_GENERATION_TIMEOUT)
-        while time.time() < deadline and _upstream_active >= baseline and _upstream_active > 0:
+        while time.time() < deadline and getattr(old_client, "_uap_inflight", 0) > 0:
             await asyncio.sleep(1.0)
         try:
             await old_client.aclose()
@@ -3052,15 +3068,14 @@ async def _post_with_retry_inner(
     payload: dict,
     headers: dict,
 ) -> httpx.Response:
-    global _upstream_active
     last_exc: Exception | None = None
     for attempt in range(PROXY_UPSTREAM_RETRY_MAX):
         try:
-            _upstream_active += 1
+            _inflight_inc(client)
             try:
                 resp = await client.post(url, json=payload, headers=headers)
             finally:
-                _upstream_active -= 1
+                _inflight_dec(client)
             # Cycle 19 Option 1: if 503 "Loading model", wait for health then retry
             if _is_loading_model_503(resp):
                 logger.warning(
@@ -9490,8 +9505,8 @@ async def stream_anthropic_response(
     - Graceful error recovery on upstream connection drops
     - Proper upstream response closure on client disconnect
     """
-    global _upstream_active
-    _upstream_active += 1
+    _sr_client = getattr(openai_stream, "_uap_client", None)
+    _inflight_inc(_sr_client) if _sr_client is not None else None
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     stream_started = time.monotonic()
 
@@ -9635,7 +9650,8 @@ async def stream_anthropic_response(
         logger.error("Unexpected stream error: %s: %s", type(exc).__name__, exc)
         finish_reason = "end_turn"
     finally:
-        _upstream_active -= 1
+        if _sr_client is not None:
+            _inflight_dec(_sr_client)
         # Detached close: a bare 'await aclose()' here is itself cancellable
         # when the client disconnected (the common case), leaving the upstream
         # connection un-closed → CLOSE-WAIT leak. Detaching guarantees it runs.
@@ -9914,13 +9930,15 @@ def _build_passthrough_headers(request: Request) -> dict | None:
 
 
 async def _stream_passthrough(resp: httpx.Response):
-    global _upstream_active
-    _upstream_active += 1
+    _pt_client = getattr(resp, "_uap_client", None)
+    if _pt_client is not None:
+        _inflight_inc(_pt_client)
     try:
         async for chunk in resp.aiter_bytes():
             yield chunk
     finally:
-        _upstream_active -= 1
+        if _pt_client is not None:
+            _inflight_dec(_pt_client)
         _detach_aclose(resp)
 
 
@@ -9962,6 +9980,7 @@ async def _passthrough_anthropic_request(
         resp = await client.send(
             client.build_request("POST", url, json=body, headers=headers, timeout=pt_timeout)
         )
+        setattr(resp, "_uap_client", client)
         if resp.status_code != 200:
             return Response(
                 content=resp.text,
@@ -10641,6 +10660,7 @@ async def messages(request: Request):
                     ),
                     stream=True,
                 )
+                setattr(resp, "_uap_client", client)
                 # Connection succeeded – break out of retry loop
                 last_exc = None
                 break
@@ -10715,6 +10735,7 @@ async def messages(request: Request):
                     ),
                     stream=True,
                 )
+                setattr(resp, "_uap_client", client)
                 if resp.status_code == 200:
                     return StreamingResponse(
                         stream_anthropic_response(resp, model, monitor, body),
@@ -10739,6 +10760,7 @@ async def messages(request: Request):
                     ),
                     stream=True,
                 )
+                setattr(resp, "_uap_client", client)
                 if resp.status_code == 200:
                     return StreamingResponse(
                         stream_anthropic_response(resp, model, monitor, body),
