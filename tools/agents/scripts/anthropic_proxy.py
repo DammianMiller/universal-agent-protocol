@@ -1349,6 +1349,7 @@ class SessionMonitor:
     stuck_break_fires: int = 0  # monotonic count of forced stuck-breaks
     deferral_streak: int = 0  # consecutive no-tool turns deferring the work (Fix A)
     deferral_break_fires: int = 0  # monotonic count of forced deferral-breaks (Fix A)
+    mandate_deliver_fires: int = 0  # monotonic count of forced deliver-routings (mandate)
     tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
     last_request_msg_count: int = 0  # Message count of the previous request (compaction-boundary detection)
     malformed_tool_streak: int = 0  # consecutive malformed pseudo tool payloads
@@ -4601,6 +4602,121 @@ def _maybe_inject_deferral_break(openai_body: dict, monitor: "SessionMonitor") -
     )
 
 
+# MANDATE-DELIVER guardrail: delivery-enforcement blocks a direct source edit and
+# tells the model to "call the `deliver` tool", but the enforcer's route:deliver
+# signal is only honored by harnesses that understand it -- weak local models see
+# the text and flail (RECON deadlock). This makes the routing BINDING for ANY
+# model: on detecting the enforcer's block marker in the just-returned turn AND a
+# deliver-class tool in the request, pin tool_choice to that tool so the next turn
+# MUST call deliver. PROXY_MANDATE_DELIVER=off disables.
+PROXY_MANDATE_DELIVER = os.environ.get("PROXY_MANDATE_DELIVER", "on").lower() not in {
+    "0", "off", "false", "no",
+}
+# Enforcer-block-SPECIFIC phrases only (src/policies/enforcers/delivery_enforcement.py).
+# Deliberately NOT matching the reactor's STANDING "route through deliver" guidance
+# (which is injected every turn) -- only the actual block event must trigger.
+_DELIVER_BLOCK_RE = re.compile(
+    r"BLOCKED: do not edit|do NOT retry this edit|\"route\"\s*:\s*\"deliver\"",
+    re.IGNORECASE,
+)
+
+
+def _deliver_tool_name(tools) -> "str | None":
+    """Name of a deliver-class tool in the request (exact `deliver` or an
+    MCP-namespaced `..._deliver`), or None when the agent has no deliver tool."""
+    if not isinstance(tools, list):
+        return None
+    for t in tools:
+        name = ((t.get("function", {}) or {}).get("name", "") or "")
+        low = name.lower()
+        if low == "deliver" or low.endswith("__deliver") or low.endswith("_deliver") or (
+            "deliver" in low and "delivery" not in low
+        ):
+            return name
+    return None
+
+
+def _recent_text_has_block(messages) -> bool:
+    """True when a user/tool message in the current turn's tail carries the
+    delivery-enforcement block marker (a direct edit was just gated)."""
+    if not isinstance(messages, list):
+        return False
+    for m in reversed(messages[-4:]):
+        role = m.get("role")
+        if role == "assistant":
+            break  # older blocks belong to a prior, already-handled turn
+        if role not in ("user", "tool"):
+            continue
+        content = m.get("content")
+        text = ""
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            parts = []
+            for c in content:
+                if isinstance(c, dict):
+                    parts.append(c.get("text") or c.get("content") or "")
+                else:
+                    parts.append(str(c))
+            text = " ".join(parts)
+        if text and _DELIVER_BLOCK_RE.search(text):
+            return True
+    return False
+
+
+def _assistant_already_called_deliver(messages, deliver_name: str) -> bool:
+    """True if the MOST RECENT assistant turn already called the deliver tool --
+    then we must NOT re-force (let the tool result return); prevents a force loop."""
+    if not isinstance(messages, list):
+        return False
+    for m in reversed(messages):
+        if m.get("role") != "assistant":
+            continue
+        for tc in (m.get("tool_calls") or []):
+            if ((tc.get("function", {}) or {}).get("name", "") or "").lower() == deliver_name.lower():
+                return True
+        return False  # only inspect the latest assistant turn
+    return False
+
+
+def _maybe_inject_mandate_deliver(openai_body: dict, monitor: "SessionMonitor") -> None:
+    """MANDATORY deliver-routing: when a direct source edit was just blocked by
+    delivery-enforcement, force the next turn to call the `deliver` tool for ANY
+    model. Pins tool_choice to the deliver tool + injects a terse directive.
+    Runs before the softer guards so the pin stands. PROXY_MANDATE_DELIVER=off."""
+    if not PROXY_MANDATE_DELIVER:
+        return
+    deliver_name = _deliver_tool_name(openai_body.get("tools"))
+    if not deliver_name:
+        return  # cannot mandate a tool the agent does not have
+    messages = openai_body.get("messages")
+    if not _recent_text_has_block(messages):
+        return
+    if _assistant_already_called_deliver(messages, deliver_name):
+        return  # deliver is already in flight -- don't loop on it
+    openai_body["tool_choice"] = {"type": "function", "function": {"name": deliver_name}}
+    monitor.mandate_deliver_fires += 1
+    directive = (
+        "\n\nMANDATORY: your direct source edit was BLOCKED by delivery-enforcement. "
+        "You MUST call the `" + deliver_name + "` tool now with a one-line description "
+        "of the change. Do NOT retry the edit, do NOT claim the file is written, do "
+        "NOT explain -- call `" + deliver_name + "` this turn. Deliver writes the "
+        "files and verifies them against the gates."
+    )
+    msgs = openai_body.get("messages")
+    if not isinstance(msgs, list):
+        msgs = []
+    if msgs and msgs[0].get("role") == "system":
+        msgs[0]["content"] = (msgs[0].get("content") or "") + directive
+    else:
+        msgs.insert(0, {"role": "system", "content": directive.strip()})
+    openai_body["messages"] = msgs
+    logger.warning(
+        "MANDATE-DELIVER: pinned tool_choice to deliver (tool=%s, fires=%d)",
+        deliver_name, monitor.mandate_deliver_fires,
+    )
+
+
 def _maybe_inject_recon_convergence(
     openai_body: dict,
     monitor: "SessionMonitor",
@@ -5415,6 +5531,11 @@ def build_openai_request(
     # session wandering in exploration without producing a write is nudged
     # toward its deliverable regardless of tool-turn phase. Passed the full
     # pre-narrowing toolset so it can restore a dropped write tool.
+    # MANDATE-DELIVER: a just-blocked direct edit MUST route to the deliver tool
+    # (makes the enforcer's route:deliver signal binding for any model). Runs first
+    # so the forced tool_choice pins before the softer guards.
+    _maybe_inject_mandate_deliver(openai_body, monitor)
+
     _maybe_inject_recon_convergence(openai_body, monitor, full_openai_tools)
 
     _maybe_inject_stuck_break(openai_body, monitor)
