@@ -2,6 +2,10 @@
 
 ## v1.136.2 (2026-07-11)
 
+- chore(bench): terminal-bench UAP arm is now LAZY (matches UAP's --lazy philosophy) — opencode one-shots the task directly with full UAP context (reactor + AGENTS.md gate discipline + the deliver tool available) and escalates to `deliver`'s verified-convergence loop ONLY when its build/tests fail after a couple of attempts. Forcing deliver on every edit timed out all tasks on a weak local model; lazy escalation one-shots the easy tasks and rescues the hard ones. Pair with `tb run --global-agent-timeout-sec 1200` for small models (per-task default 360s is too short for deliver on qwen).
+
+## v1.136.2 (2026-07-11)
+
 - fix(bench): terminal-bench full-UAP arm now installs `sqlite3` (+ git) in the container. THE root cause of the faithful benchmark not working: the policy gate (`uap-policy-gate.sh`) reads `policies.db` via the `sqlite3` CLI, which the base image lacks — so the gate query silently failed and FAIL-OPENED, letting opencode edit directly and never routing through deliver. With sqlite3 present (and the v1.136.1 filePath fix), the full chain is proven in a container: opencode edit → BLOCKED by delivery-enforcement → opencode calls the `deliver` tool. Validated end-to-end via docker exec.
 ## v1.136.1 (2026-07-11)
 
