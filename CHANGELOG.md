@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.147.3 (2026-07-12)
+
+- fix(dashboard): resilient policy read — one bad row no longer 500s /api/policies
+
+
 ## v1.147.2 (2026-07-12)
 
 - chore(policy): remove dead validate-plan-before-build + fix local-build worktree resolution
