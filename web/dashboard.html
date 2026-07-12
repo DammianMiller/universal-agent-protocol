@@ -47,5 +47,8 @@
     <script src="/dash/charts.js"></script>
     <script src="/dash/core.js"></script>
     <script src="/dash/tabs.js"></script>
+    <!-- Loaded AFTER tabs.js so its registerTab('policies') overrides the inline
+         stub with the full policy-management panel (view/duplicate/reorder/AI-order/import/export). -->
+    <script src="/dash/tab-policies.js"></script>
   </body>
 </html>

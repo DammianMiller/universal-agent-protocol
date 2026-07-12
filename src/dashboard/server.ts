@@ -15,7 +15,79 @@ import { fileURLToPath } from 'url';
 import { getDashboardData, probeDatabaseHealth } from './data-service.js';
 import { seedDashboardData, cleanupSeeder } from './data-seeder.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
+import { heuristicOrder, buildOrderPrompt, parseOrderResponse, type OrderablePolicy } from '../policies/policy-order.js';
 import { readEventsSince, readRecentEvents } from '../utils/telemetry-store.js';
+
+/** First prose sentence of a policy's markdown (its description), fail-soft. */
+function policyPromptDescription(md: string): string {
+  if (!md) return '';
+  const lines = md.split('\n');
+  const ruleIdx = lines.findIndex((l) => /^##\s+rule/i.test(l.trim()));
+  const scan = ruleIdx >= 0 ? lines.slice(ruleIdx + 1) : lines;
+  for (const raw of scan) {
+    const l = raw.trim();
+    if (!l || l.startsWith('#') || /^\*\*[^*]+\*\*:/.test(l) || l.startsWith('- ') || l.startsWith('>')) continue;
+    return l.replace(/`/g, '').replace(/\s+/g, ' ').slice(0, 160);
+  }
+  return '';
+}
+
+/**
+ * Suggest a policy firing order. Always computes the deterministic heuristic;
+ * when `useAi`, asks the local model to refine it (with a rationale) and falls
+ * back to the heuristic on any failure. Returns ordered {id,name} pairs so the
+ * caller can apply it via /api/policies/reorder.
+ */
+async function suggestPolicyOrder(useAi: boolean): Promise<{
+  order: Array<{ id: string; name: string }>;
+  rationale: string;
+  source: 'ai' | 'heuristic';
+}> {
+  const all = await getPolicyMemoryManager().getAllPoliciesUnfiltered();
+  const idByName = new Map(all.map((p) => [p.name, p.id]));
+  const orderable: OrderablePolicy[] = all.map((p) => ({
+    id: p.id,
+    name: p.name,
+    category: p.category,
+    level: p.level,
+    stage: p.enforcementStage,
+    description: policyPromptDescription(p.rawMarkdown),
+  }));
+  const heuristicNames = heuristicOrder(orderable).map((p) => p.name);
+  let names = heuristicNames;
+  let rationale = 'Ordered by stage (pre-exec first) → level (REQUIRED first) → cheap fail-fast category first.';
+  let source: 'ai' | 'heuristic' = 'heuristic';
+
+  if (useAi) {
+    try {
+      const endpoint = process.env.UAP_INFERENCE_ENDPOINT || 'http://127.0.0.1:8080/v1';
+      const model = process.env.UAP_DELIVER_MODEL || 'local';
+      const { fetchModelWithRetry } = await import('../models/long-fetch.js');
+      const res = await fetchModelWithRetry(`${endpoint.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, max_tokens: 1200, messages: [{ role: 'user', content: buildOrderPrompt(orderable) }] }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+        const content = data.choices?.[0]?.message?.content ?? '';
+        const suggestion = parseOrderResponse(content, orderable.map((p) => p.name));
+        if (suggestion) {
+          names = suggestion.order;
+          rationale = suggestion.rationale || rationale;
+          source = 'ai';
+        }
+      }
+    } catch {
+      /* fall back to heuristic */
+    }
+  }
+  return {
+    order: names.map((n) => ({ id: idByName.get(n) ?? '', name: n })).filter((x) => x.id),
+    rationale,
+    source,
+  };
+}
 import {
   handleTaskCreate, handleTaskUpdate, handleTaskClose, handleTaskDelete, handleTaskClaim,
   handleLedgerItem, handleLedgerReset, handleLedgerInit, handleOrchestratorToggle,
@@ -303,6 +375,130 @@ export function startDashboardServer(
         await memory.setLevel(id, level as 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id, level }));
+        return;
+      }
+
+      // API: List all policies (incl. inactive) with description + prompt,
+      // ordered by priority (fires-earliest first) for the management panel.
+      if (url === '/api/policies' && req.method === 'GET') {
+        const memory = getPolicyMemoryManager();
+        const all = await memory.getAllPoliciesUnfiltered();
+        const list = all
+          .map((p) => ({
+            id: p.id,
+            name: p.name,
+            category: p.category,
+            level: p.level,
+            stage: p.enforcementStage,
+            priority: p.priority ?? 50,
+            isActive: p.isActive,
+            description: policyPromptDescription(p.rawMarkdown),
+          }))
+          .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.name.localeCompare(b.name));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ policies: list }));
+        return;
+      }
+
+      // API: Full policy incl. rawMarkdown (the prompt) for the detail drawer.
+      if (url.startsWith('/api/policy/') && url.split('/').length === 4 && req.method === 'GET') {
+        const id = url.split('/')[3];
+        const policy = await getPolicyMemoryManager().getPolicy(id);
+        if (!policy) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Policy not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          id: policy.id, name: policy.name, category: policy.category, level: policy.level,
+          stage: policy.enforcementStage, priority: policy.priority ?? 50, isActive: policy.isActive,
+          description: policyPromptDescription(policy.rawMarkdown), rawMarkdown: policy.rawMarkdown,
+        }));
+        return;
+      }
+
+      // API: Duplicate a policy
+      if (url.startsWith('/api/policy/') && url.endsWith('/duplicate') && req.method === 'POST') {
+        if (!mutationAuthorized(req)) return denyMutation(res);
+        const id = url.split('/')[3];
+        const newId = await getPolicyMemoryManager().duplicatePolicy(id);
+        if (!newId) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Policy not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: newId }));
+        return;
+      }
+
+      // API: Set a single policy's priority
+      if (url.startsWith('/api/policy/') && url.endsWith('/priority') && req.method === 'POST') {
+        if (!mutationAuthorized(req)) return denyMutation(res);
+        const id = url.split('/')[3];
+        const parsed = parseJsonBody(await readBody(req));
+        const priority = Number(parsed.priority);
+        if (!Number.isFinite(priority)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'priority must be a number' }));
+          return;
+        }
+        await getPolicyMemoryManager().setPolicyPriority(id, priority);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id, priority }));
+        return;
+      }
+
+      // API: Reorder policies (assign descending priorities from an id list)
+      if (url === '/api/policies/reorder' && req.method === 'POST') {
+        if (!mutationAuthorized(req)) return denyMutation(res);
+        const parsed = parseJsonBody(await readBody(req));
+        const order = Array.isArray(parsed.order) ? (parsed.order as unknown[]).map(String) : [];
+        await getPolicyMemoryManager().reorderPolicies(order);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ reordered: order.length }));
+        return;
+      }
+
+      // API: Export all policies as a portable bundle (download)
+      if (url === '/api/policies/export' && req.method === 'GET') {
+        const bundle = getPolicyMemoryManager().exportPolicies();
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Content-Disposition': 'attachment; filename="uap-policies.json"',
+        });
+        res.end(JSON.stringify(bundle, null, 2));
+        return;
+      }
+
+      // API: Import policies from a bundle
+      if (url === '/api/policies/import' && req.method === 'POST') {
+        if (!mutationAuthorized(req)) return denyMutation(res);
+        const bundle = parseJsonBody(await readBody(req)) as { policies?: Array<Record<string, unknown>> };
+        const result = await getPolicyMemoryManager().importPolicies(bundle);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+        return;
+      }
+
+      // API: Dedupe policies
+      if (url === '/api/policies/dedupe' && req.method === 'POST') {
+        if (!mutationAuthorized(req)) return denyMutation(res);
+        const result = await getPolicyMemoryManager().dedupePolicies();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+        return;
+      }
+
+      // API: Suggest an intelligent firing order (heuristic + optional AI refine)
+      if (url === '/api/policies/suggest-order' && req.method === 'POST') {
+        if (!mutationAuthorized(req)) return denyMutation(res);
+        const parsed = parseJsonBody(await readBody(req));
+        const useAi = parsed.ai !== false; // default: try AI, fall back to heuristic
+        const result = await suggestPolicyOrder(useAi);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
         return;
       }
 
