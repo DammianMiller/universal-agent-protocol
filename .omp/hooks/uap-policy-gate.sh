@@ -16,7 +16,40 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # from inside a worktree the gate found no policies.db and silently skipped ALL
 # policy enforcement. Anchor DB + enforcer paths to MAIN_ROOT to fix that, while
 # keeping the enforcer working directory on the actual working tree.
-CHECKOUT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+# Resolve the working tree the operation TARGETS, not just the hook's own cwd.
+# For a Bash op the command usually `cd`s into a worktree before running git, but
+# this hook fires BEFORE that cd — so using the hook's cwd yielded the MAIN
+# checkout and made git-diff enforcers (expert-review, local-build) reason about
+# the wrong branch on compound `cd worktree && git ...` commands. Prefer, in
+# order: a leading `cd <path>` in the command, the payload's invocation cwd, then
+# git-toplevel from the hook's cwd.
+_CD_TARGET="$(UAP_PAYLOAD="$PAYLOAD" python3 - <<'PYEOF'
+import json, os, re
+try:
+    d = json.loads(os.environ.get("UAP_PAYLOAD") or "{}")
+    ti = d.get("tool_input") or d.get("args") or {}
+    cmd = ti.get("command") or ""
+    m = re.match(r'\s*cd\s+(?:"([^"]+)"|\x27([^\x27]+)\x27|([^\s;&|]+))', cmd)
+    print((m.group(1) or m.group(2) or m.group(3)) if m else "")
+except Exception:
+    print("")
+PYEOF
+)"
+_PAYLOAD_CWD="$(UAP_PAYLOAD="$PAYLOAD" python3 - <<'PYEOF'
+import json, os
+try:
+    print(json.loads(os.environ.get("UAP_PAYLOAD") or "{}").get("cwd") or "")
+except Exception:
+    print("")
+PYEOF
+)"
+CHECKOUT_ROOT=""
+for _cand in "$_CD_TARGET" "$_PAYLOAD_CWD"; do
+  [[ -z "$_cand" || ! -d "$_cand" ]] && continue
+  _top="$(git -C "$_cand" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "$_top" ]] && { CHECKOUT_ROOT="$_top"; break; }
+done
+[[ -z "$CHECKOUT_ROOT" ]] && CHECKOUT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -z "$CHECKOUT_ROOT" ]] && CHECKOUT_ROOT="$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd || pwd)"
 MAIN_ROOT="${CHECKOUT_ROOT%%/.worktrees/*}"
 
