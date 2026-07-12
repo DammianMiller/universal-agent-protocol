@@ -666,6 +666,7 @@ program
   .option('--no-visual', 'Skip the visual gate (renders entry pages headlessly, checks blank/static/errors, saves screenshots to .uap/visual)')
   .option('--approve-visual', 'Approve the current render as the visual regression baseline (.uap/visual/baseline) instead of gating on drift')
   .option('--user-paths', 'Run the user-path validation gate: execute .uap/user-paths.json journeys through the real client (headless browser / HTTP / built CLI)')
+  .option('--user-paths-auto', 'Stop-hook mode: run the user-path gate only when delivery.userValidation is on and the last report is missing/stale/failed for the current tree')
   .option('-m, --model <preset>', 'Model preset for the acceptance gate (default: $UAP_DELIVER_MODEL or qwen35-a3b)')
   .option('--endpoint <url>', 'Override the model endpoint for the acceptance gate')
   .option('--json', 'Emit JSON result')
@@ -685,6 +686,7 @@ program
       visual: options.visual,
       approveVisual: Boolean(options.approveVisual),
       userPaths: Boolean(options.userPaths),
+      userPathsAuto: Boolean(options.userPathsAuto),
     });
   });
 
