@@ -1960,6 +1960,60 @@ last_session_id = ""
 _last_ctx_recheck_ts: float = 0.0
 _CTX_RECHECK_INTERVAL: float = 60.0  # Re-detect context window every 60s
 
+# ── Vision (multimodal) support ──────────────────────────────────────────────
+# The upstream llama-server advertises image support in /props
+# (modalities.vision: true when launched with --mmproj). When available, the
+# proxy passes Anthropic `image` content blocks through to the model as
+# OpenAI image_url data-URI parts, so coding agents can visually check their
+# outputs (screenshots, rendered pages). PROXY_VISION=auto probes and
+# self-configures per upstream; on/off force it.
+PROXY_VISION = os.environ.get("PROXY_VISION", "auto").strip().lower()
+# Rough per-image token cost for context accounting (Qwen-VL-class encoders
+# land in the hundreds-to-~1k range per image at typical screenshot sizes).
+PROXY_IMAGE_TOKEN_ESTIMATE = int(os.environ.get("PROXY_IMAGE_TOKEN_ESTIMATE", "800"))
+upstream_vision: bool = False
+_last_vision_recheck_ts: float = 0.0
+_VISION_RECHECK_INTERVAL: float = 60.0
+
+
+def vision_enabled() -> bool:
+    if PROXY_VISION == "on":
+        return True
+    if PROXY_VISION == "off":
+        return False
+    return upstream_vision
+
+
+async def _maybe_recheck_vision() -> None:
+    """Periodically re-probe upstream /props for vision support (auto mode).
+
+    Handles server restarts that add/remove --mmproj mid-session. Non-blocking:
+    skips inside the check interval; failures keep the last known value.
+    """
+    global upstream_vision, _last_vision_recheck_ts
+    if PROXY_VISION != "auto":
+        return
+    now = time.time()
+    if now - _last_vision_recheck_ts < _VISION_RECHECK_INTERVAL:
+        return
+    _last_vision_recheck_ts = now
+    if http_client is None:
+        return
+    try:
+        props_url = LLAMA_CPP_BASE.replace("/v1", "/props")
+        resp = await http_client.get(props_url, timeout=2.0)
+        if resp.status_code == 200:
+            modalities = (resp.json() or {}).get("modalities") or {}
+            detected = bool(modalities.get("vision"))
+            if detected != upstream_vision:
+                logger.warning(
+                    "VISION: upstream modalities.vision=%s — image passthrough %s",
+                    detected, "ENABLED" if detected else "DISABLED",
+                )
+                upstream_vision = detected
+    except Exception:
+        pass  # Non-critical; retry next interval
+
 
 def _cleanup_stale_monitors(now_ts: float) -> None:
     stale = [
@@ -2087,6 +2141,13 @@ def estimate_message_tokens(msg: dict) -> int:
                     tokens += estimate_tokens(json.dumps(block.get("input", {})))
                 elif block.get("type") == "tool_result":
                     tokens += estimate_tokens(_extract_text(block.get("content", "")))
+                    inner = block.get("content")
+                    if isinstance(inner, list):
+                        tokens += PROXY_IMAGE_TOKEN_ESTIMATE * sum(
+                            1 for b in inner if isinstance(b, dict) and b.get("type") == "image"
+                        )
+                elif block.get("type") == "image":
+                    tokens += PROXY_IMAGE_TOKEN_ESTIMATE
     return tokens
 
 
@@ -3387,6 +3448,29 @@ async def _shared_secret_auth(request: Request, call_next):
 # ===========================================================================
 
 
+def _image_block_to_openai(block: dict) -> dict | None:
+    """Anthropic image block → OpenAI image_url part (data URI or URL)."""
+    src = block.get("source") or {}
+    if src.get("type") == "base64" and src.get("data"):
+        media_type = src.get("media_type", "image/png")
+        return {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{src['data']}"}}
+    if src.get("type") == "url" and src.get("url"):
+        return {"type": "image_url", "image_url": {"url": src["url"]}}
+    return None
+
+
+def _extract_images(content) -> list[dict]:
+    """Collect OpenAI image_url parts nested in Anthropic content."""
+    images: list[dict] = []
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "image":
+                part = _image_block_to_openai(b)
+                if part:
+                    images.append(part)
+    return images
+
+
 def anthropic_to_openai_messages(anthropic_body: dict) -> list[dict]:
     """Convert Anthropic message format to OpenAI message format.
 
@@ -3443,11 +3527,22 @@ def anthropic_to_openai_messages(anthropic_body: dict) -> list[dict]:
             messages.append({"role": role, "content": content})
         elif isinstance(content, list):
             parts = []
+            image_parts: list[dict] = []
             for block in content:
                 if isinstance(block, str):
                     parts.append(block)
                 elif block.get("type") == "text":
                     parts.append(block.get("text", ""))
+                elif block.get("type") == "image":
+                    # Vision passthrough: forward as an OpenAI image_url part
+                    # when the upstream model has an mmproj loaded; otherwise
+                    # leave an explicit placeholder (silent drops made agents
+                    # think the model saw the screenshot).
+                    part = _image_block_to_openai(block) if vision_enabled() else None
+                    if part:
+                        image_parts.append(part)
+                    else:
+                        parts.append("[image omitted: the serving model has no vision support]")
                 elif block.get("type") == "thinking":
                     # Drop thinking blocks from user/assistant content when
                     # echoed back into history — model shouldn't see them.
@@ -3480,15 +3575,44 @@ def anthropic_to_openai_messages(anthropic_body: dict) -> list[dict]:
                     tu_id = block.get("tool_use_id", "")
                     if isinstance(tu_id, str) and tu_id.startswith("toolu_"):
                         tu_id = tu_id[len("toolu_"):]
+                    tr_text = _extract_text(block.get("content", ""))
+                    tr_images = _extract_images(block.get("content", "")) if vision_enabled() else []
+                    if not vision_enabled():
+                        inner = block.get("content")
+                        n_imgs = (
+                            sum(1 for b in inner if isinstance(b, dict) and b.get("type") == "image")
+                            if isinstance(inner, list) else 0
+                        )
+                        if n_imgs:
+                            tr_text = (tr_text + f"\n[{n_imgs} image(s) omitted: the serving model has no vision support]").strip()
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tu_id,
-                            "content": _extract_text(block.get("content", "")),
+                            "content": tr_text,
                         }
                     )
+                    if tr_images:
+                        # OpenAI tool messages are text-only for llama.cpp —
+                        # deliver tool-result images as an adjacent user turn
+                        # so the model actually SEES them.
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "[image(s) attached from the preceding tool result]"},
+                                    *tr_images,
+                                ],
+                            }
+                        )
                     continue
-            if parts:
+            if image_parts:
+                typed: list[dict] = []
+                if parts:
+                    typed.append({"type": "text", "text": "\n".join(parts)})
+                typed.extend(image_parts)
+                messages.append({"role": role, "content": typed})
+            elif parts:
                 messages.append({"role": role, "content": "\n".join(parts)})
 
     return messages
@@ -10175,6 +10299,7 @@ async def messages(request: Request):
 
     # Periodically re-detect context window from upstream (handles server restarts)
     await _maybe_recheck_context_window()
+    await _maybe_recheck_vision()
 
     if _should_passthrough_model(model):
         logger.info("PASSTHROUGH: model=%s -> %s", model, ANTHROPIC_API_BASE)
