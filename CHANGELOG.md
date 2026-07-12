@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.148.1 (2026-07-12)
+
+- fix(policy): self-protect anchors "/policies/" to a path segment, not any substring
+- chore: bump version to 1.148.0
+- feat(dashboard): record policy-gate executions so compliance shows real data
+- chore: bump version to 1.148.0
+- chore: bump version to 1.148.0
+- feat(setup): install ALL policies (with their levels) by default in every uap setup
+
+
 ## v1.148.0 (2026-07-12)
 
 - chore: bump version to 1.148.0
