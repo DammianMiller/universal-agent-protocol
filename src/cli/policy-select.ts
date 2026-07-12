@@ -71,13 +71,19 @@ export function policyDescription(name: string): string {
  * The full selectable universe: every built-in policy with live install/enable
  * status merged in. Async because it reads the policy store.
  */
+/** Normalize a policy name/slug for matching: filenames are kebab slugs but the
+ * stored `name` is the schema H1 title (e.g. "Enforcement Self-Protect"). */
+function normPolicyKey(s: string): string {
+  return s.toLowerCase().replace(/[\s_]+/g, '-').replace(/-+/g, '-').trim();
+}
+
 export async function listPolicyChoices(): Promise<PolicyChoice[]> {
   const builtins = listBuiltinPolicies();
   const installed = await getPolicyMemoryManager().getAllPolicies();
-  const byName = new Map(installed.map((p) => [p.name, p]));
+  const byName = new Map(installed.map((p) => [normPolicyKey(p.name), p]));
   return builtins
     .map((b) => {
-      const inst = byName.get(b.name);
+      const inst = byName.get(normPolicyKey(b.name));
       const level = (inst?.level ?? b.level ?? 'OPTIONAL').toUpperCase();
       return {
         name: b.name,

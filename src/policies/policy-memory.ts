@@ -1,20 +1,67 @@
 import { Policy, PolicySchema } from './schemas/policy.js';
 import { DatabaseManager } from './database-manager.js';
 
+/** One deduplication decision: which row to keep for a name and which to drop. */
+export interface DedupGroup {
+  name: string;
+  keep: string;
+  remove: string[];
+}
+
+/**
+ * PURE dedup planner: group policies by name and, for any name with more than
+ * one row, choose the survivor (active first, then highest version, then newest
+ * updatedAt, then stable id order) and mark the rest for removal. Only returns
+ * groups that actually have duplicates. No DB access — trivially testable.
+ */
+export function planDedup(
+  policies: Array<{ id: string; name: string; isActive: boolean; version: number; updatedAt: string }>
+): DedupGroup[] {
+  const byName = new Map<string, typeof policies>();
+  for (const p of policies) {
+    const list = byName.get(p.name) ?? [];
+    list.push(p);
+    byName.set(p.name, list);
+  }
+  const groups: DedupGroup[] = [];
+  for (const [name, list] of byName) {
+    if (list.length < 2) continue;
+    const ranked = [...list].sort((a, b) => {
+      if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+      if (a.version !== b.version) return b.version - a.version;
+      if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? 1 : -1;
+      return a.id < b.id ? -1 : 1;
+    });
+    groups.push({ name, keep: ranked[0].id, remove: ranked.slice(1).map((r) => r.id) });
+  }
+  return groups;
+}
+
 export class PolicyMemoryManager {
   private _db: DatabaseManager | null = null;
 
+  /** Optional explicit DB path — used by tests to point at a temp policies.db.
+   * Production callers use the no-arg singleton (default cwd-relative path). */
+  constructor(private readonly dbPath?: string) {}
+
   private get db(): DatabaseManager {
     if (!this._db) {
-      this._db = new DatabaseManager();
+      this._db = new DatabaseManager(this.dbPath);
     }
     return this._db;
   }
 
   async storeRawPolicy(rawMarkdown: string, metadata: Partial<Policy> = {}): Promise<string> {
-    const policyId = crypto.randomUUID();
     const name = this.extractPolicyName(rawMarkdown);
     const extractedMetadata = this.extractPolicyMetadata(rawMarkdown);
+
+    // Upsert by NAME, not a fresh UUID: re-installing/re-selecting the same
+    // policy must UPDATE the existing row in place, never insert a duplicate.
+    // An existing same-named policy keeps its id + enabled state + createdAt and
+    // has its version bumped; only a genuinely new name mints a new id.
+    const existing = this.db.findOnePolicy({ name }) as { id?: string; isActive?: unknown; createdAt?: string; version?: number } | null;
+    const policyId = existing?.id ?? crypto.randomUUID();
+    const now = new Date().toISOString();
 
     const policy: Policy = {
       id: policyId,
@@ -25,15 +72,43 @@ export class PolicyMemoryManager {
         metadata.enforcementStage || extractedMetadata.enforcementStage || 'pre-exec',
       rawMarkdown,
       tags: metadata.tags || extractedMetadata.tags || [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      version: 1,
-      isActive: true,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      version: existing ? (Number(existing.version) || 1) + 1 : 1,
+      // Preserve an operator's enable/disable choice across re-install; default on.
+      isActive: existing ? existing.isActive === true || existing.isActive === 1 : true,
       priority: metadata.priority ?? 50,
     };
 
     this.db.upsertPolicy(policy as unknown as Record<string, unknown>);
     return policyId;
+  }
+
+  /**
+   * Remove duplicate policy rows that share a name (legacy rows created before
+   * storeRawPolicy upserted by name). Keeps one canonical row per name — an
+   * ACTIVE row wins, then the highest version, then the newest updatedAt — and
+   * deletes the rest. Returns what changed. Pure planning lives in planDedup().
+   */
+  async dedupePolicies(): Promise<{ removed: number; kept: number; groups: DedupGroup[] }> {
+    const rows = this.db.getAllPolicyRows() as Array<{ id: string; name: string; isActive: unknown; version?: number; updatedAt?: string }>;
+    const groups = planDedup(
+      rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        isActive: r.isActive === true || r.isActive === 1,
+        version: Number(r.version) || 0,
+        updatedAt: r.updatedAt ?? '',
+      }))
+    );
+    let removed = 0;
+    for (const g of groups) {
+      for (const id of g.remove) {
+        this.db.deletePolicyById(id);
+        removed++;
+      }
+    }
+    return { removed, kept: groups.length, groups };
   }
 
   private extractPolicyMetadata(markdown: string): {
