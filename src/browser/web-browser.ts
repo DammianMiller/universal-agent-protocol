@@ -143,6 +143,26 @@ export class WebBrowser {
     await this.page!['waitForLoadState'](state);
   }
 
+  async click(selector: string): Promise<void> {
+    if (!this.page) throw new Error('Browser not initialized');
+    await this.page!['locator'](selector)['click']({ timeout: 10_000 });
+  }
+
+  async fill(selector: string, value: string): Promise<void> {
+    if (!this.page) throw new Error('Browser not initialized');
+    await this.page!['locator'](selector)['fill'](value, { timeout: 10_000 });
+  }
+
+  async press(key: string): Promise<void> {
+    if (!this.page) throw new Error('Browser not initialized');
+    await this.page!['keyboard']['press'](key);
+  }
+
+  async isVisible(selector: string): Promise<boolean> {
+    if (!this.page) throw new Error('Browser not initialized');
+    return await this.page!['locator'](selector)['isVisible']();
+  }
+
   async close(): Promise<void> {
     if (this.context) {
       await this.context!['close']();

@@ -13,6 +13,13 @@ import { detectRungs, runTieredLadder, tierOf, type GateRung, type GateTier, typ
 import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
 import { runVisualGate, discoverEntryPages, type VisualVerdict } from '../delivery/visual-gate.js';
 import { resolveFidelity, type ResolvedFidelity } from '../delivery/fidelity.js';
+import {
+  checkUserValidationFreshness,
+  createUserValidationRunner,
+  resolveUserValidationMode,
+  synthesizeUserValidationRung,
+} from '../delivery/user-validation.js';
+import { loadUapConfigRaw } from '../utils/config-loader.js';
 import { compareVisualBaseline, driftSummary, approveVisualBaseline } from '../delivery/visual-baseline.js';
 import type { LoopExecutor } from '../delivery/convergence-loop.js';
 
@@ -43,6 +50,14 @@ export interface VerifyOptions {
   fidelity?: ResolvedFidelity;
   /** Approve the current run's screenshots as the regression baseline (no gating). */
   approveVisual?: boolean;
+  /** Run the user-path validation gate (.uap/user-paths.json journeys through
+   * the real client). Standalone flag; deliver wires it as the terminal rung. */
+  userPaths?: boolean;
+  /** Stop-hook mode: run the user-path gate ONLY when the done-claim is not
+   * already covered — i.e. delivery.userValidation is on, a manifest exists,
+   * and the last report is missing/stale/failed for the CURRENT tree. A
+   * fresh-pass report (code unchanged since validation) skips the cost. */
+  userPathsAuto?: boolean;
 }
 
 export interface VerifyResult {
@@ -69,6 +84,24 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   }
   if (opts.runtimeOnly) {
     rungs = rungs.filter((r) => tierOf(r) === 'runtime');
+  }
+
+  let uvMode: 'block' | 'advisory' | null = opts.userPaths ? 'block' : null;
+  if (!uvMode && opts.userPathsAuto) {
+    const raw = (() => { try { return loadUapConfigRaw(dir) ?? {}; } catch { return {}; } })();
+    const mode = resolveUserValidationMode(
+      ((raw as Record<string, unknown>).delivery as Record<string, unknown> | undefined)?.userValidation
+    );
+    if (mode !== 'off') {
+      const fresh = checkUserValidationFreshness(dir);
+      // fresh-pass: the CURRENT tree already validated green — no cost, no rung.
+      // na: no manifest/paths — nothing to run.
+      if (fresh.status !== 'fresh-pass' && fresh.status !== 'na') uvMode = mode;
+    }
+  }
+  if (uvMode) {
+    const uvRung = synthesizeUserValidationRung(uvMode);
+    if (uvRung && !rungs.some((r) => r.id === uvRung.id)) rungs = [...rungs, uvRung];
   }
 
   // The acceptance gate (behavioral completeness) can run with or without
@@ -106,6 +139,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   const maxTier: GateTier = opts.full ? 'deploy-dev' : fidelity.max ? 'integration' : 'runtime';
   const ladder = await runTieredLadder(rungs, dir, {
     maxTier,
+    ...(uvMode ? { userValidationRunner: createUserValidationRunner() } : {}),
     ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
   });
 
