@@ -204,7 +204,7 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     const { listPolicyChoices } = await import('./policy-select.js');
     const choices = await listPolicyChoices();
     const customize = await ui.confirm({
-      message: `Pick which of the ${choices.length} individual policies to enforce? (default: REQUIRED + recommended)`,
+      message: `Customize which of the ${choices.length} policies to enforce? (default: ALL, each with its level)`,
       initialValue: false,
     });
     if (customize) {
@@ -215,9 +215,9 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
           label: `${c.name}${c.protected ? ' (required)' : ''}`,
           hint: `${c.category} · ${c.level}${c.description ? ` — ${c.description}` : ''}`,
         })),
-        initialValues: choices
-          .filter((c) => (c.installed && c.enabled) || c.protected || c.level === 'RECOMMENDED')
-          .map((c) => c.name),
+        // Default ALL policies checked (each installs with its schema level); the
+        // pay2u example pack stays unchecked unless the user opts in.
+        initialValues: choices.filter((c) => !c.name.startsWith('pay2u')).map((c) => c.name),
         required: false,
       });
     }
@@ -562,16 +562,19 @@ export async function finalizeGuidedSetup(
   const written = await applyWizardConfig(cwd, selections);
   if (written) ui.note('Wizard configuration written to .uap.json', 'Config');
 
-  // Apply the per-policy selection (init has set up the policy store above).
-  // 'all'/'recommended' resolve to concrete names; an explicit list is applied
-  // verbatim. REQUIRED policies always stay on.
-  if (selections.policy.selectedPolicies) {
+  // Apply the per-policy selection. By DEFAULT every setup installs ALL policies
+  // with their schema-declared level (REQUIRED/RECOMMENDED/OPTIONAL) — the pay2u
+  // example pack stays opt-in behind its own flag. 'all'/'recommended' resolve to
+  // concrete names; an explicit list is applied verbatim. Skipped only when the
+  // policy engine is off.
+  if (selections.policy.policyEngine) {
     try {
-      const { listPolicyChoices, applyPolicySelection, recommendedSelection } = await import('./policy-select.js');
-      const sel = selections.policy.selectedPolicies;
+      const { listPolicyChoices, applyPolicySelection, recommendedSelection, defaultSetupPolicies } = await import('./policy-select.js');
+      const choices = await listPolicyChoices();
+      const sel = selections.policy.selectedPolicies ?? 'all';
       let names: string[];
-      if (sel === 'all') names = (await listPolicyChoices()).map((c) => c.name);
-      else if (sel === 'recommended') names = recommendedSelection(await listPolicyChoices());
+      if (sel === 'all') names = defaultSetupPolicies(choices, selections.policy.pay2uPolicies);
+      else if (sel === 'recommended') names = recommendedSelection(choices);
       else names = sel;
       const r = await applyPolicySelection(names);
       const n = r.installed.length + r.enabled.length;
