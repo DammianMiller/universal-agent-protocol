@@ -95,3 +95,66 @@ describe('delivery-enforcement enforcer', () => {
     expect(r.reason).toMatch(/not a file-edit/);
   });
 });
+
+// A/B: fast-path + deliver-running back-off. These need full args (old/new
+// strings, lock state) so they use a dedicated runner.
+function runArgs(
+  args: Record<string, unknown>,
+  env: Record<string, string> = {}
+): { exit: number; allowed: boolean; reason: string; route?: string } {
+  const r = spawnSync('python3', [ENFORCER, '--operation', 'Edit', '--args', JSON.stringify(args)], {
+    env: { ...hermeticEnv(), UAP_REPO_ROOT: ROOT, ...env },
+    encoding: 'utf8',
+  });
+  let p: { allowed?: boolean; reason?: string; route?: string } = {};
+  try { p = JSON.parse(r.stdout || '{}'); } catch { /* empty */ }
+  return { exit: r.status ?? -1, allowed: p.allowed ?? false, reason: p.reason ?? '', route: p.route };
+}
+
+const big = 'x'.repeat(400);
+
+describe('delivery-enforcement — fast-path (A) and deliver back-off (B)', () => {
+  it('A: a root-level test.js basename is exempt (fast feedback loop)', () => {
+    const r = runArgs({ file_path: join(ROOT, 'test.js'), old_string: big, new_string: big }, { UAP_ENFORCE_DELIVERY: 'block' });
+    expect(r.exit).toBe(0);
+    expect(r.reason).toMatch(/test file/);
+  });
+
+  it('A: a trivial edit to source is allowed directly', () => {
+    const r = runArgs({ file_path: join(ROOT, 'src/x.ts'), old_string: 'a=1', new_string: 'a=2' }, { UAP_ENFORCE_DELIVERY: 'block' });
+    expect(r.exit).toBe(0);
+    expect(r.reason).toMatch(/trivial edit fast-path/);
+  });
+
+  it('A: a substantive source edit still routes through deliver', () => {
+    const r = runArgs({ file_path: join(ROOT, 'src/x.ts'), old_string: big, new_string: 'y'.repeat(400) }, { UAP_ENFORCE_DELIVERY: 'block' });
+    expect(r.exit).toBe(2);
+    expect(r.route).toBe('deliver');
+  });
+
+  it('A: fast-path off makes a trivial edit route through deliver again', () => {
+    const r = runArgs({ file_path: join(ROOT, 'src/x.ts'), old_string: 'a=1', new_string: 'a=2' }, { UAP_ENFORCE_DELIVERY: 'block', UAP_DELIVER_FASTPATH: 'off' });
+    expect(r.exit).toBe(2);
+    expect(r.route).toBe('deliver');
+  });
+
+  it('B: a substantive edit while a live deliver holds the lock returns route:wait', () => {
+    const { mkdtempSync, writeFileSync, mkdirSync, rmSync } = require('fs') as typeof import('fs');
+    const dir = mkdtempSync(join(require('os').tmpdir(), 'uap-backoff-'));
+    try {
+      mkdirSync(join(dir, '.uap'), { recursive: true });
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      // hold the lock with a live pid (our parent)
+      writeFileSync(join(dir, '.uap', 'deliver.lock'), `${process.ppid}|now`);
+      const r = runArgs(
+        { file_path: join(dir, 'src/x.ts'), old_string: big, new_string: 'y'.repeat(400) },
+        { UAP_ENFORCE_DELIVERY: 'block', UAP_REPO_ROOT: dir }
+      );
+      expect(r.exit).toBe(2);
+      expect(r.route).toBe('wait');
+      expect(r.reason).toMatch(/ALREADY in progress/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -50,8 +50,67 @@ EXEMPT_PREFIXES = (
     "src/policies/", "scripts/", "docs/", "policies/", "test/", "tests/",
 )
 
-# Test files are protected by deliver itself; never gate them here.
-TEST_MARKERS = (".test.", ".spec.", "_test.", "/test/", "/tests/", "/__tests__/")
+# Test files are protected by deliver itself; never gate them here. Covers the
+# path markers AND a file whose basename IS a test (e.g. a root-level `test.js`,
+# `tests.py`, `spec.ts`, `test_foo.py`, `foo.test.tsx`) — those are the fast
+# feedback loop and must not each trigger a full deliver cycle.
+TEST_MARKERS = (".test.", ".spec.", "_test.", "test_", "/test/", "/tests/", "/__tests__/", "/spec/", "/specs/")
+_TEST_BASENAMES = ("test", "tests", "spec", "specs", "conftest")
+
+
+def _is_test_file(rel_posix: str) -> bool:
+    low = rel_posix.lower()
+    if any(m in "/" + low for m in TEST_MARKERS):
+        return True
+    stem = low.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    return stem in _TEST_BASENAMES or stem.startswith("test") or stem.endswith("test") or stem.endswith("spec")
+
+
+# Trivial-edit fast-path: a tiny change (a one-line tweak, a constant, a typo)
+# does not warrant a full deliver decompose→epics→gates cycle — on a slow local
+# executor that is ~10+ min per edit. Below this many changed characters the
+# edit is allowed directly (advisory nudge only). UAP_DELIVER_FASTPATH=off
+# disables; UAP_DELIVER_TRIVIAL_EDIT_CHARS tunes the threshold.
+def _fastpath_on() -> bool:
+    return os.environ.get("UAP_DELIVER_FASTPATH", "on").lower() not in {"0", "off", "false", "no"}
+
+
+def _trivial_edit_chars() -> int:
+    try:
+        return max(0, int(os.environ.get("UAP_DELIVER_TRIVIAL_EDIT_CHARS", "240")))
+    except ValueError:
+        return 240
+
+
+def _changed_chars(args: dict) -> int | None:
+    """Total changed characters for an Edit/MultiEdit, or None when it can't be
+    measured (e.g. a whole-file Write) — None means 'not trivially small'."""
+    def pair(o: object, n: object) -> int:
+        return len(str(o or "")) + len(str(n or ""))
+    if "edits" in args and isinstance(args["edits"], list):
+        return sum(
+            pair(e.get("old_string") or e.get("oldString"), e.get("new_string") or e.get("newString"))
+            for e in args["edits"] if isinstance(e, dict)
+        )
+    old = args.get("old_string") or args.get("oldString")
+    new = args.get("new_string") or args.get("newString")
+    if old is not None or new is not None:
+        return pair(old, new)
+    return None  # Write (full content) — not a trivial edit
+
+
+def _deliver_lock_holder(root: Path) -> str | None:
+    """PID string of a LIVE deliver run holding the project lock, else None."""
+    lock = root / ".uap" / "deliver.lock"
+    try:
+        pid = int((lock.read_text().split("|")[0] or "").strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        os.kill(pid, 0)
+        return str(pid)
+    except OSError:
+        return None
 
 
 def _is_local_model_session() -> bool:
@@ -115,8 +174,8 @@ def main() -> None:
     if any(rel_posix.startswith(p) for p in EXEMPT_PREFIXES):
         emit(True, f"exempt path: {rel_posix}")
         return
-    if any(m in "/" + low for m in TEST_MARKERS):
-        emit(True, "test file (protected by deliver itself)")
+    if _is_test_file(rel_posix):
+        emit(True, "test file (fast feedback loop; deliver protects it via gates)")
         return
 
     # Escape hatches.
@@ -125,6 +184,36 @@ def main() -> None:
         return
     if os.environ.get("UAP_DELIVER_BYPASS") == "1":
         emit(True, "UAP_DELIVER_BYPASS override set")
+        return
+
+    # A — trivial-edit fast-path: allow a tiny change directly (advisory) rather
+    # than paying a full deliver cycle for a one-liner.
+    if _fastpath_on():
+        changed = _changed_chars(args)
+        if changed is not None and changed <= _trivial_edit_chars():
+            print(
+                f"[delivery-enforcement] trivial edit to '{rel_posix}' "
+                f"({changed} chars) — allowed directly; route substantive changes through deliver.",
+                file=sys.stderr,
+            )
+            emit(True, f"trivial edit fast-path ({changed} <= {_trivial_edit_chars()} chars)")
+            return
+
+    # B — a deliver run is ALREADY working this project. Do NOT launch another
+    # (the lock would reject it anyway) and do NOT let the model keep editing/
+    # testing the same code underneath it — tell it to WAIT. route:wait so the
+    # autoroute stands down instead of enqueuing a duplicate.
+    holder = _deliver_lock_holder(root)
+    if holder is not None and os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower() == "block":
+        emit(
+            False,
+            f"WAIT: a `uap deliver` run (pid {holder}) is ALREADY in progress for this project and is "
+            f"changing the code — do NOT edit '{rel_posix}', and do NOT re-run tests on it yet. "
+            "Let that run finish (check: uap deliver --resume latest / its output), THEN re-verify. "
+            "Launching or editing now only conflicts with the in-flight run.",
+            route="wait",
+            deliverHint="",
+        )
         return
 
     # #3-F: terse, imperative, model-parseable. Weak local models otherwise
