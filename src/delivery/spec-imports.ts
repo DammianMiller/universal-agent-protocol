@@ -24,8 +24,8 @@
  * while closing the fixture/helper channel. All analysis is fail-soft.
  */
 
-import { readFileSync, statSync } from 'fs';
-import { dirname, isAbsolute, relative, resolve, sep } from 'path';
+import { existsSync, readFileSync, statSync } from 'fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { isTestFilePath, listTestFiles } from './applier.js';
 
 /** Directory names whose contents are oracle material when a spec imports them. */
@@ -465,7 +465,15 @@ export function snapshotProtection(projectRoot: string): ProtectionSnapshot {
   } catch {
     extra = [];
   }
-  const display = [...new Set([...tests, ...extra])].sort();
+  // The user-path manifest is gate DEFINITION, not implementation: a model
+  // that edits/deletes .uap/user-paths.json mid-run weakens its own
+  // user-validation journeys and the terminal rung would then validate the
+  // watered-down manifest (same gaming class as rewriting a gate script via
+  // run_bash). Protect it whenever it exists at mission start; a mission
+  // with no manifest yet stays free to gain one via the planner.
+  const manifest = join('.uap', 'user-paths.json');
+  const manifestExists = existsSync(join(projectRoot, manifest));
+  const display = [...new Set([...tests, ...extra, ...(manifestExists ? [manifest] : [])])].sort();
   return {
     protectedFiles: new Set(display.map((f) => f.toLowerCase())),
     display,
