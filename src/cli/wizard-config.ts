@@ -45,6 +45,10 @@ export interface PolicyFeatures {
   /** The pay2u example policy pack (advisory architecture/reference policies).
    * Opt-in — off by default so ordinary projects don't get pay2u-specific rules. */
   pay2uPolicies: boolean;
+  /** Explicit per-policy selection (names) to enforce, applied after init via
+   * applyPolicySelection. undefined = leave the default mandatory set as-is.
+   * 'all' | 'recommended' are resolved to concrete names at apply time. */
+  selectedPolicies?: string[] | 'all' | 'recommended';
 }
 
 export interface ModelFeatures {
@@ -208,7 +212,7 @@ export function maxSelections(ctx: PresetContext): WizardSelections {
     memory: { shortTermMemory: true, longTermMemory: docker, knowledgeGraph: docker, prepopDocs: true, prepopGit: true },
     multiAgent: { coordinationDb: true, worktreeIsolation: true, deployBatching: true, agentMessaging: true },
     patterns: { patternLibrary: true, patternRag: docker, reinforcementLearning: docker },
-    policy: { policyEngine: true, imageAssetVerification: true, iacStateParity: true, iacPipelineEnforcement: true, kubectlVerifyBackport: true, definitionOfDoneIac: true, customPoliciesDir: true, pay2uPolicies: false },
+    policy: { policyEngine: true, imageAssetVerification: true, iacStateParity: true, iacPipelineEnforcement: true, kubectlVerifyBackport: true, definitionOfDoneIac: true, customPoliciesDir: true, pay2uPolicies: false, selectedPolicies: 'recommended' },
     model: { provider: local ? 'local' : 'anthropic', qwenOptimizations: local, toolCallProfile: '', costTracking: true, modelRouting: true, routingPreset: local ? 'fable-local-opus' : 'none' },
     hooks: { sessionStart: true, preCompact: true, taskCompletion: true, autoApproveTools: true },
     browser: { cloakBrowser: true },

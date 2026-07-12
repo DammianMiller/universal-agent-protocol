@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.142.0 (2026-07-12)
+
+- feat(policy): selectable policies — `uap policy select` + setup picker
+
+
 ## v1.141.0 (2026-07-12)
 
 - feat(policy): register enforcement-infra-protect — stop the model killing its own inference stack
