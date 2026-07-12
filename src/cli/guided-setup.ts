@@ -377,6 +377,17 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     initialValue: true,
   });
 
+  // ── Maximum fidelity ────────────────────────────────────────────────
+  // Default ON: correctness + visual correctness are the point. `max` raises
+  // every verification gate and turns on always-on visual/vision review + the
+  // commit-time visual enforcer. Users can drop to `standard` for fast
+  // exploratory iteration.
+  const maxFidelity = await ui.confirm({
+    message:
+      'Maximum fidelity — raise all verification gates and visually verify every UI (render + aesthetic review + regression baselines + commit gate)?',
+    initialValue: true,
+  });
+
   // ── Proxy autostart ─────────────────────────────────────────────────
   const proxyAutostart = await ui.confirm({
     message:
@@ -448,6 +459,7 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     design: { enabled: designOn, tokenGate: designTokenGate },
     reactor: { enabled: reactorOn },
     proxy: { autostart: proxyAutostart },
+    fidelity: { mode: maxFidelity ? 'max' : 'standard' },
   });
 
   await finalizeGuidedSetup(cwd, ui, options, selections);
