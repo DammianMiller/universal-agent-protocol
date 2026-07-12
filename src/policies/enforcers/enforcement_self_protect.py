@@ -41,8 +41,6 @@ PROTECTED_MARKERS = (
     "uap-reactor-prompt.sh",
     "pre-tool-use",
 )
-# Normalize leading-slash matching for repo-relative paths.
-PROTECTED_REL = tuple(m.lstrip("/") for m in PROTECTED_MARKERS)
 
 # Bash patterns that persist a bypass or relax enforcement.
 BYPASS_PATTERNS = (
@@ -64,8 +62,11 @@ OVERRIDE = os.environ.get("UAP_SELF_PROTECT_OFF") == "1"
 
 
 def _is_protected_path(rel_posix: str) -> bool:
-    low = rel_posix.lower()
-    return any(m in ("/" + low) for m in PROTECTED_REL)
+    # Ensure a leading separator so slash-anchored markers ("/policies/",
+    # "/src/policies/", …) match only a genuine path SEGMENT. Filename markers
+    # ("uap-policy-gate.sh", "anthropic-proxy.env") still match as substrings.
+    low = "/" + rel_posix.lower().lstrip("/")
+    return any(m in low for m in PROTECTED_MARKERS)
 
 
 def main() -> None:
