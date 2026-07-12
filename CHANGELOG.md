@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.137.0 (2026-07-12)
+
+- feat(self-tuning): LLM-guided self-tuning system (5-phase) to raise small models toward Opus
+- docs: LLM self-tuning analysis — design plan for raising small models toward Opus 4.8
+- fix(proxy): 529 backpressure without pool-swap — pure graceful degradation under saturation
+- fix(proxy): make the CLOSE-WAIT reaper opt-in (default off) — pool-swap churn harms a saturated upstream
+- fix(proxy): per-client in-flight counter so the reaper's retire actually reaps
+- fix(proxy): CLOSE-WAIT reaper + accurate in-flight drain — bound abandoned upstream connections
+- fix(proxy): detach upstream stream-close so client disconnects can't leak connections
+- fix(proxy): self-heal no longer kills in-flight streams (the ReadError-burst cascade) + unify retry set
+- fix(proxy): retry transient upstream ReadError/WriteError instead of 500ing
+- fix(proxy): close upstream connection on client-cancelled requests — the real leak
+- fix(proxy): eliminate the CLOSE-WAIT leak at its source — no upstream keepalive
+- fix(proxy): pool-timeout 500 storm — 529 overloaded + connection-pool self-healing
+- feat(deliver): migration validation gate + scaffold-then-fill phases — P2 backlog complete
+- feat(deliver): repair escalation — narrow 'make it compile' pass breaks the compile-error death spiral
+- chore(proxy): floor-budget warning once per session — it fires per request on tool-heavy clients
+- fix(proxy): tool-heavy sessions could never be pruned — floor the message budget instead of giving up
+- fix(proxy): truncated streaming tool calls now close validly; tool retries get a survivable budget
+- feat(deliver): contracts-first epics — shared APIs planned first, then locked read-only
+- chore: drop ambient local files swept in by conflicted-autostash staging
+- feat(deliver): baseline-delta gating — pre-existing failures report, only NEW failures block
+- chore(bench): lazy terminal-bench UAP arm — one-shot, escalate to deliver on failure
+- fix(bench): install sqlite3 in the terminal-bench UAP arm — the gate needs it (v1.136.2)
+
+
 ## v1.136.2 (2026-07-11)
 
 - chore(bench): terminal-bench UAP arm is now LAZY (matches UAP's --lazy philosophy) — opencode one-shots the task directly with full UAP context (reactor + AGENTS.md gate discipline + the deliver tool available) and escalates to `deliver`'s verified-convergence loop ONLY when its build/tests fail after a couple of attempts. Forcing deliver on every edit timed out all tasks on a weak local model; lazy escalation one-shots the easy tasks and rescues the hard ones. Pair with `tb run --global-agent-timeout-sec 1200` for small models (per-task default 360s is too short for deliver on qwen).
