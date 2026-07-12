@@ -153,6 +153,12 @@ export async function judgeScreenshots(
     const body = {
       model,
       max_tokens: 800,
+      // Disable model "thinking" for this call. A local reasoning model (e.g.
+      // Qwen3.6 launched with --reasoning auto) otherwise spends the whole token
+      // budget in reasoning_content and returns EMPTY content — the JSON verdict
+      // never lands, so the review silently produced nothing. chat_template_kwargs
+      // is honored by llama.cpp/vLLM and ignored by cloud OpenAI-compat APIs.
+      chat_template_kwargs: { enable_thinking: false },
       messages: [
         {
           role: 'user',
@@ -186,9 +192,14 @@ export async function judgeScreenshots(
       body: JSON.stringify(body),
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    const content = data.choices?.[0]?.message?.content ?? '';
-    return parseVisionVerdict(content);
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
+    };
+    const msg = data.choices?.[0]?.message;
+    // Prefer content; fall back to reasoning_content for any model that still
+    // reasons (belt-and-suspenders alongside enable_thinking:false above) — the
+    // verdict JSON may be embedded in the reasoning trace.
+    return parseVisionVerdict(msg?.content || '') ?? parseVisionVerdict(msg?.reasoning_content || '');
   } catch {
     return null;
   }
