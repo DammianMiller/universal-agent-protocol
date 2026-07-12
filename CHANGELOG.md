@@ -1,9 +1,8 @@
 # Changelog
 
-## v1.148.0 (2026-07-12)
+## v1.147.4 (2026-07-12)
 
-- chore: bump version to 1.147.3
-- fix(dashboard): resilient policy read — one bad row no longer 500s /api/policies
+- fix(policy-gate): resolve the worktree the op TARGETS, not just the hook's cwd
 
 
 ## v1.147.3 (2026-07-12)
