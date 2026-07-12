@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import emit, parse_cli, repo_root, run  # noqa: E402
+from _common import emit, parse_cli, worktree_root, run  # noqa: E402
 
 MARKER = ".uap/local-build-pass.txt"
 
@@ -80,7 +80,10 @@ def main() -> None:
     if os.environ.get("UAP_SKIP_LOCAL_BUILD") == "1":
         emit(True, "UAP_SKIP_LOCAL_BUILD=1 override (justify in commit msg)")
 
-    root = repo_root()
+    # The push happens from the WORKING TREE the op runs in (the worktree when a
+    # push runs from inside one), not the pinned main checkout — mirror the
+    # expert-review fix so the changed-files diff targets the right branch.
+    root = worktree_root()
 
     changed = _changed_files(root)
     needs_build = any(
