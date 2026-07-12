@@ -147,10 +147,19 @@ describe('11: Dependencies cleaned up', () => {
     expect(pkg.dependencies).toHaveProperty('cloakbrowser');
   });
 
-  it('glob and playwright-core should be in devDependencies (not imported in src/)', () => {
+  it('glob stays in devDependencies (not imported in src/)', () => {
     const pkg = JSON.parse(readFileSync('package.json', 'utf-8'));
     expect(pkg.devDependencies).toHaveProperty('glob');
-    expect(pkg.devDependencies).toHaveProperty('playwright-core');
+  });
+
+  it('playwright-core is a RUNTIME dependency (cloakbrowser imports it at runtime)', () => {
+    // Regression guard for the inverse mistake: with it in devDependencies
+    // every production `npm i -g` shipped a broken headless browser — the
+    // visual gate silently skipped and browser user-paths were
+    // environment-skipped (browserAvailable: false). See PR #460.
+    const pkg = JSON.parse(readFileSync('package.json', 'utf-8'));
+    expect(pkg.dependencies).toHaveProperty('playwright-core');
+    expect(pkg.devDependencies).not.toHaveProperty('playwright-core');
   });
 
   it('should NOT have @types/chalk in devDependencies', () => {
