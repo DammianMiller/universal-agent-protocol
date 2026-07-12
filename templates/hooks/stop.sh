@@ -201,7 +201,17 @@ if [ "$CODE_CHANGED" = "true" ] && [ "${UAP_VERIFY_ON_STOP:-1}" != "0" ] && comm
     # nothing-to-run project — every fresh/empty install) from a SKIP (RC 0) into
     # a hard failure (RC 1), which would exit 2 forever. Non-strict returns RC 1
     # ONLY on a genuine runtime failure, which is the sole case we want to block.
-    VERIFY_OUT="$(cd "$PROJECT_DIR" && $TIMEOUT_WRAP uap verify --runtime-only --dir "$PROJECT_DIR" 2>&1)"
+    # User-path gate (P3): when delivery.userValidation is on and the last
+    # validation report is missing/stale/failed for the CURRENT tree, the
+    # done-claim must re-prove the critical user journeys through the real
+    # client. Fresh-pass reports skip the cost entirely. Version-skew guard:
+    # only pass the flag when this uap build knows it, so an older CLI fails
+    # OPEN instead of erroring on an unknown option.
+    UV_AUTO=""
+    if uap verify --help 2>/dev/null | grep -q 'user-paths-auto'; then
+      UV_AUTO="--user-paths-auto"
+    fi
+    VERIFY_OUT="$(cd "$PROJECT_DIR" && $TIMEOUT_WRAP uap verify --runtime-only $UV_AUTO --dir "$PROJECT_DIR" 2>&1)"
     VERIFY_RC=$?
   fi
   set -e
@@ -210,7 +220,7 @@ if [ "$CODE_CHANGED" = "true" ] && [ "${UAP_VERIFY_ON_STOP:-1}" != "0" ] && comm
   # 127 = missing, any other = internal — none should ever wedge a session.
   if [ "$VERIFY_RC" = "1" ]; then
     echo ""
-    echo "## RUNTIME EXECUTION GATE FAILED — the code does not run"
+    echo "## RUNTIME/USER-PATH GATE FAILED — the code does not run or does not work for a real user"
     echo "$VERIFY_OUT"
     echo ""
     echo "Fix the runtime error above before finishing. (Set UAP_VERIFY_ON_STOP=0 to bypass.)"

@@ -17,9 +17,9 @@
  * browser paths skipped (rung non-blocking) rather than failing delivery on an
  * environment gap — but the skip is loud in the report and the judge note.
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { GateRung, LadderResult, LadderRunFn, RungResult } from './verifier-ladder.js';
@@ -63,6 +63,9 @@ export interface ValidationReport {
   verdict: 'pass' | 'fail' | 'na';
   naReason?: string;
   browserAvailable: boolean;
+  /** Source-state stamp at run time (computeTreeStamp) — a report whose stamp
+   * no longer matches the tree is STALE: code changed after validation. */
+  treeStamp?: string;
 }
 
 /* ------------------------------------------------------------------ trust */
@@ -368,8 +371,13 @@ export async function runUserValidation(
   const timeoutMs = opts.timeoutMs ?? 20_000;
   const loaded = loadUserPaths(projectRoot);
 
-  const finish = (report: Omit<ValidationReport, 'startedAt' | 'finishedAt'>): ValidationReport => {
-    const full: ValidationReport = { ...report, startedAt, finishedAt: new Date().toISOString() };
+  const finish = (report: Omit<ValidationReport, 'startedAt' | 'finishedAt' | 'treeStamp'>): ValidationReport => {
+    const full: ValidationReport = {
+      ...report,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      treeStamp: computeTreeStamp(projectRoot),
+    };
     try {
       const file = join(projectRoot, VALIDATION_REPORT_FILE);
       mkdirSync(join(projectRoot, 'agents', 'data', 'validation'), { recursive: true });
@@ -472,6 +480,92 @@ export async function runUserValidation(
   });
 }
 
+/* ------------------------------------------------------------- freshness */
+
+const STAMP_SKIP_DIRS = new Set([
+  'node_modules', '.git', 'dist', 'build', 'out', 'coverage', 'agents', '.uap',
+  '.worktrees', 'vendor', 'target', '__pycache__',
+]);
+const STAMP_SRC_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|rb|java|c|cc|cpp|h|hpp|cs|php|html|css|vue|svelte)$/i;
+
+/**
+ * Stamp of the current source state. Git-backed when possible (HEAD +
+ * porcelain status + diff hashes), so ANY tracked edit changes the stamp;
+ * non-git projects fall back to a bounded newest-source-mtime scan.
+ */
+export function computeTreeStamp(projectRoot: string): string {
+  try {
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const status = execFileSync('git', ['status', '--porcelain=v1'], { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 8_000_000 });
+    // Exclude UAP's own artifacts (the validation report/screenshots, run
+    // state) — writing the report must not invalidate the stamp it carries.
+    // Manifest edits are caught separately via the report's manifestHash.
+    const relevant = status
+      .split('\n')
+      .filter((line) => {
+        const path = line.slice(3);
+        return line.trim() !== '' && !path.startsWith('agents/') && !path.startsWith('.uap/');
+      })
+      .join('\n');
+    const diff = execFileSync('git', ['diff', 'HEAD', '--', '.', ':(exclude)agents', ':(exclude).uap'], { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32_000_000 });
+    return `git:${head}:${sha256Text(relevant + '\u0000' + diff)}`;
+  } catch {
+    // Non-git fallback: newest source mtime, bounded walk (depth 6).
+    let newest = 0;
+    const walk = (dir: string, depth: number): void => {
+      if (depth > 6) return;
+      let entries: string[];
+      try { entries = readdirSync(dir); } catch { return; }
+      for (const name of entries) {
+        if (name.startsWith('.') || STAMP_SKIP_DIRS.has(name)) continue;
+        const abs = join(dir, name);
+        try {
+          const st = statSync(abs);
+          if (st.isDirectory()) walk(abs, depth + 1);
+          else if (STAMP_SRC_RE.test(name) && st.mtimeMs > newest) newest = st.mtimeMs;
+        } catch { /* transient */ }
+      }
+    };
+    walk(projectRoot, 0);
+    return `mtime:${Math.floor(newest)}`;
+  }
+}
+
+export type UserValidationFreshness =
+  | { status: 'na'; reason: string }
+  | { status: 'missing' }
+  | { status: 'stale' }
+  | { status: 'fresh-pass'; report: ValidationReport }
+  | { status: 'fresh-fail'; report: ValidationReport };
+
+/**
+ * Can the session claim "done" on the strength of the existing report?
+ * fresh-pass = report matches the CURRENT tree and all paths passed.
+ * Anything else means the gate must (re)run before a done-claim stands.
+ */
+export function checkUserValidationFreshness(projectRoot: string): UserValidationFreshness {
+  const manifest = loadUserPaths(projectRoot);
+  if (!manifest) return { status: 'na', reason: `no ${USER_PATHS_FILE} manifest` };
+  if (manifest.ok && manifest.manifest && manifest.manifest.paths.length === 0) {
+    return { status: 'na', reason: 'manifest has no paths' };
+  }
+  const file = join(projectRoot, VALIDATION_REPORT_FILE);
+  if (!existsSync(file)) return { status: 'missing' };
+  let report: ValidationReport;
+  try {
+    report = JSON.parse(readFileSync(file, 'utf8')) as ValidationReport;
+  } catch {
+    return { status: 'missing' };
+  }
+  if (!report.treeStamp || report.treeStamp !== computeTreeStamp(projectRoot)) return { status: 'stale' };
+  // A changed manifest invalidates the report even when source is untouched —
+  // new/edited journeys have not been proven yet.
+  const currentManifestHash = manifest.ok && manifest.manifest ? sha256Text(JSON.stringify(manifest.manifest)) : null;
+  if (currentManifestHash !== report.manifestHash) return { status: 'stale' };
+  if (report.verdict === 'fail') return { status: 'fresh-fail', report };
+  return { status: 'fresh-pass', report };
+}
+
 /* --------------------------------------------------------- ladder wiring */
 
 /** Synthesize the terminal user-validation rung. `required` mirrors the
@@ -514,6 +608,10 @@ export function createUserValidationRunner(runOpts: RunUserValidationOptions = {
       passed,
       skipped,
       exitCode: passed ? 0 : 1,
+      // A failing user path is a REAL gate failure (the artifact is broken for
+      // a user), not infra — 'exit' maps it to verify RC 1, the only code the
+      // stop hook hard-blocks on.
+      ...(passed ? {} : { failureReason: 'exit' as const }),
       durationMs: Date.now() - started,
       outputTail:
         (report.verdict === 'na' ? `NA: ${report.naReason ?? ''}\n` : '') +
