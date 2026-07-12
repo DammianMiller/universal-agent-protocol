@@ -63,11 +63,28 @@ export UAP_REPO_ROOT="$MAIN_ROOT"
 # actual WORKING TREE, not the (possibly bare) MAIN_ROOT. Expose the current checkout
 # so _common.worktree_root() targets the worktree when an op runs from inside one.
 export UAP_WORKTREE_ROOT="$CHECKOUT_ROOT"
-# Delivery enforcement defaults to BLOCK for UAP-managed projects: substantive
-# source edits must route through `uap deliver` (verified completion against the
-# gates). The `:-` preserves any explicit operator/CI override (advisory|block).
-# Escape hatches still apply: UAP_DELIVER_ACTIVE=1 (inside deliver) / UAP_DELIVER_BYPASS=1.
-export UAP_ENFORCE_DELIVERY="${UAP_ENFORCE_DELIVERY:-block}"
+# Delivery enforcement level. The project's .uap.json `delivery.enforcement` is
+# AUTHORITATIVE (it's the deliberate, reproducible IaC setting) — a stale ambient
+# UAP_ENFORCE_DELIVERY from a long-running client (e.g. an opencode session
+# launched months ago when an env export was still in .bashrc) must NOT silently
+# downgrade a project configured to `block` and let the agent bypass deliver.
+# Precedence: .uap.json delivery.enforcement > ambient env > default block.
+# Per-edit sanctioned bypass (UAP_DELIVER_BYPASS=1) and the in-deliver exemption
+# (UAP_DELIVER_ACTIVE=1) are unaffected — those are handled by the enforcer.
+_cfg_enforce="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    v = (d.get("delivery") or {}).get("enforcement")
+    print(v if v in ("block", "advisory", "off") else "")
+except Exception:
+    print("")
+' "$MAIN_ROOT/.uap.json" 2>/dev/null || true)"
+if [[ -n "$_cfg_enforce" ]]; then
+  export UAP_ENFORCE_DELIVERY="$_cfg_enforce"
+else
+  export UAP_ENFORCE_DELIVERY="${UAP_ENFORCE_DELIVERY:-block}"
+fi
 cd "$MAIN_ROOT"
 
 TOOL="$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tool_name") or d.get("tool") or "")' 2>/dev/null || true)"
@@ -182,7 +199,14 @@ except: print("")' 2>/dev/null || echo "")"
     echo "$msg" >&2
     exit 2
   fi
-done < <(sqlite3 "$DB" "SELECT p.id, p.name, t.toolName FROM policies p JOIN executable_tools t ON t.policyId=p.id WHERE p.isActive=1;")
+# ORDER BY priority DESC: the policies table has a `priority` column but the
+# gate previously ignored it, iterating in rowid order — so a high-priority
+# routing/safety policy (e.g. delivery-enforcement, infra-protect) could be
+# pre-empted by a lower-priority edit-gate that happened to be registered
+# first, and the agent saw the wrong routing message. Honor priority now so
+# the intended policy fires first. (Blocking short-circuits at exit 2, so the
+# highest-priority applicable block wins.) Name is the stable tiebreak.
+done < <(sqlite3 "$DB" "SELECT p.id, p.name, t.toolName FROM policies p JOIN executable_tools t ON t.policyId=p.id WHERE p.isActive=1 ORDER BY p.priority DESC, p.name ASC;")
 
 # A sensitive op that no self-protect enforcer ever evaluated = the control
 # surface is unguarded (self-protect not registered/active). Fail closed.
