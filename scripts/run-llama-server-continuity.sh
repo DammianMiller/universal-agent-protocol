@@ -122,4 +122,39 @@ if [[ -n "$LLAMA_EXTRA_ARGS" ]]; then
   args+=("${extra[@]}")
 fi
 
+# ── Vision projector: default to the ACTIVE model ────────────────────────────
+# The mmproj (multimodal vision projector) should track whichever model is
+# actually serving, not a pinned path. Precedence:
+#   1. explicit --mmproj already in LLAMA_EXTRA_ARGS  -> respected (override)
+#   2. LLAMA_MMPROJ set                               -> used verbatim
+#   3. auto-discover a projector alongside LLAMA_MODEL -> vision follows the model
+# Swap LLAMA_MODEL and vision re-homes automatically; a model with no companion
+# projector simply serves text-only (no error).
+if [[ " ${args[*]} " != *" --mmproj "* ]]; then
+  mmproj=""
+  if [[ -n "${LLAMA_MMPROJ:-}" ]]; then
+    mmproj="$LLAMA_MMPROJ"
+  else
+    model_dir="$(dirname "$LLAMA_MODEL")"
+    model_base="$(basename "$LLAMA_MODEL")"; model_base="${model_base%.gguf}"
+    # Prefer a projector whose name shares the model's leading token (e.g.
+    # "Qwen3.6-…" → "Qwen3.6-…-mmproj*"), then any generic mmproj in the dir.
+    model_stem="${model_base%%-*}"
+    for cand in \
+      "$model_dir/${model_base}"*mmproj*.gguf \
+      "$model_dir/"*"${model_stem}"*mmproj*.gguf \
+      "$model_dir/"mmproj*F16.gguf \
+      "$model_dir/"mmproj*.gguf \
+      "$model_dir/"*mmproj*.gguf; do
+      if [[ -f "$cand" ]]; then mmproj="$cand"; break; fi
+    done
+  fi
+  if [[ -n "$mmproj" && -f "$mmproj" ]]; then
+    args+=(--mmproj "$mmproj")
+    echo "vision: mmproj auto-selected for active model → $mmproj" >&2
+  else
+    echo "vision: no mmproj projector found for $(basename "$LLAMA_MODEL") — serving text-only" >&2
+  fi
+fi
+
 exec "$LLAMA_BIN" "${args[@]}"
