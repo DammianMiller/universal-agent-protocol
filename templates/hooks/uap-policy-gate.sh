@@ -182,7 +182,14 @@ except: print("")' 2>/dev/null || echo "")"
     echo "$msg" >&2
     exit 2
   fi
-done < <(sqlite3 "$DB" "SELECT p.id, p.name, t.toolName FROM policies p JOIN executable_tools t ON t.policyId=p.id WHERE p.isActive=1;")
+# ORDER BY priority DESC: the policies table has a `priority` column but the
+# gate previously ignored it, iterating in rowid order — so a high-priority
+# routing/safety policy (e.g. delivery-enforcement, infra-protect) could be
+# pre-empted by a lower-priority edit-gate that happened to be registered
+# first, and the agent saw the wrong routing message. Honor priority now so
+# the intended policy fires first. (Blocking short-circuits at exit 2, so the
+# highest-priority applicable block wins.) Name is the stable tiebreak.
+done < <(sqlite3 "$DB" "SELECT p.id, p.name, t.toolName FROM policies p JOIN executable_tools t ON t.policyId=p.id WHERE p.isActive=1 ORDER BY p.priority DESC, p.name ASC;")
 
 # A sensitive op that no self-protect enforcer ever evaluated = the control
 # surface is unguarded (self-protect not registered/active). Fail closed.
