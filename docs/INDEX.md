@@ -1,6 +1,6 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.124.1) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.137.1) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line.
 
 > **Reviewing the system?** The reverse-engineered, code-verified reference set lives in
 > [`documentation/`](../documentation/architecture.md): architecture, flows, permissions
@@ -24,7 +24,7 @@ UAP is organized like a delivery line. If you know which part of the pipeline yo
 | **QC / verify** — prove it runs | "Done" on code that never ran | [`uap deliver`](guides/DELIVER.md) · [Policies](guides/POLICIES.md) |
 | **Coordination** — many workers, one floor | Parallel agents colliding | [Coordination](guides/COORDINATION.md) · [Deploy Batching](guides/DEPLOY_BATCHING.md) |
 | **Shipping** — out the door safely | Regressions, red CI, skipped bumps | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) · [Policies](guides/POLICIES.md) |
-| **Feedback** — the floor learns | The same mistake every session | [Memory](guides/MEMORY.md) · [Self-Harness](design/SELF_HARNESS.md) |
+| **Feedback** — the floor learns | The same mistake every session | [Memory](guides/MEMORY.md) · [Self-Harness](design/SELF_HARNESS.md) · [Self-Tuning](guides/SELF_TUNING.md) |
 | *Cross-cutting* — the whole line | Ignored rules, bloated context | [Policies](guides/POLICIES.md) · [MCP Router](guides/MCP_ROUTER.md) |
 
 Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
@@ -54,12 +54,14 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Sandbox](guides/SANDBOX.md) | Kernel-level (bubblewrap) write isolation — the boundary that survives `--dangerously-skip-permissions` |
 | [Policies](guides/POLICIES.md) | Executable policy gates that block non-compliant tool calls |
 | [**Policy Selection & Recommendations**](guides/POLICY_SELECTION.md) | Which policies to enable for your workflow — a recommended core + tailored sets by scenario; `uap policy recommend` ⭐ |
+| [Pay2U Policy Pack](guides/POLICY_PACK_PAY2U.md) | The pay2u-tailored policy bundle |
 | [Multi-Model Routing](guides/MULTI_MODEL.md) | Plan → route → execute across 7 model profiles |
-| [Droids & Skills](guides/DROIDS_AND_SKILLS.md) | 38 expert droids, 32 skills, the expert router |
+| [Droids & Skills](guides/DROIDS_AND_SKILLS.md) | 38 expert droids, 36 skills, the expert router |
 | [Deploy Batching](guides/DEPLOY_BATCHING.md) | Conflict-free batched git/deploy actions |
 | [Coordination](guides/COORDINATION.md) | Multi-agent overlap detection |
 | [Local Models](guides/LOCAL_MODELS.md) | Running agents against local llama.cpp / Qwen models |
 | [Qwen3.6 on llama.cpp by VRAM](guides/QWEN36_LLAMACPP.md) | Tiered 8/12/16/24/32 GB setup; how `uap deliver` uplifts small local models |
+| [**LLM Self-Tuning**](guides/SELF_TUNING.md) | `uap tune` — raise a small model toward Opus by tuning UAP's flag surface with a benchmark-validated LLM/GP-BO loop; quality scoring, model profiles, auto-on real-time adaptation ⭐ |
 
 ## Architecture
 
@@ -68,7 +70,8 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Overview](architecture/OVERVIEW.md) | System architecture as the delivery-line floor plan; subsystems, tool-call flow |
 | [Protocol](architecture/PROTOCOL.md) | The harness↔UAP contract, hook lifecycle, decision loop |
 | [Reactor (auto-apply)](design/UAP_REACTOR.md) | Dynamic experts/skills/patterns injected per prompt across harnesses; the assist vs enforce model, per-harness wiring |
-| [Self-Harness (proposal)](design/SELF_HARNESS.md) | Self-improving harness: autonomous mine→propose→validate loop over a bounded Mod DSL; cross-model transfer, online mining |
+| [Self-Harness](design/SELF_HARNESS.md) | Self-improving harness (shipped as `uap self-harness`): autonomous mine→propose→validate loop over a bounded Mod DSL; cross-model transfer, online mining |
+| [LLM Self-Tuning (analysis)](design/LLM_SELF_TUNING_ANALYSIS.md) | The design behind `uap tune`: quality signal, LLM-guided + Gaussian-process flag search, closed-loop validation, model profiles, real-time adaptation |
 
 ## Reference
 

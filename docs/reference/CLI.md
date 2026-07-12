@@ -29,7 +29,7 @@ runs, keeping `--help` fast.
 | Command | Purpose |
 |---------|---------|
 | [`init`](#init) | Initialize agent context in the current project |
-| [`setup`](#setup) | One-command setup: init + Qdrant + Python deps + index patterns |
+| [`setup`](#setup) | Guided setup wizard (arrow-key), or `--profile maximum\|minimal\|custom`; backs up instruction files, extracts custom content |
 | [`analyze`](#analyze) | Analyze project structure and emit metadata |
 | [`generate`](#generate) | Generate or update CLAUDE.md and related files |
 | [`update`](#update) | Update CLAUDE.md, memory system, and related components |
@@ -41,6 +41,19 @@ runs, keeping `--help` fast.
 | [`expert-route`](#expert-route) | Recommend an expert droid chain for a task |
 | [`deliver`](#deliver) | Convergence loop: iterate a model against gates until delivery |
 | [`harness`](#harness) | HALO harness optimization over execution traces |
+| [`bench`](#bench) | Controlled paired (UAP-on vs UAP-off) benchmark with CIs |
+| [`self-harness`](#self-harness) | Self-improving harness: mine failures → propose → validate → commit |
+| [`tune`](#tune) | LLM self-tuning: raise a small model toward Opus by tuning UAP flags |
+| [`verify`](#verify) | Runtime verification gate: prove changed code actually runs |
+| [`config`](#config) | Inspect and change every UAP setting (`.uap.json` / `.uap/proxy.env`) |
+| [`design`](#design) | DESIGN.md interrogation, lint, and the off-token UI gate |
+| [`proxy`](#proxy) | Reference-counted, session-scoped local inference proxy lifecycle |
+| [`orchestrator`](#orchestrator) | Toggle the long multi-turn deliver orchestrator |
+| [`handsfree`](#handsfree) (`hf`) | Hands-free persistence: loop any model to a 100% ledger |
+| [`challenge`](#challenge) | Open multi-agent challenge with a significance-gated leaderboard |
+| [`sandbox`](#sandbox) | Run a command with a kernel-enforced writable-dir boundary |
+| [`react`](#react) | Resolve dynamic experts/skills/patterns for a lifecycle event (JSON) |
+| [`status`](#status) | Show HALO trace collection state |
 | [`ideate`](#ideate) | Divergent ideation (open-collider) for hard problems |
 | [`coord`](#coord) | Agent coordination and status |
 | [`agent`](#agent) | Agent lifecycle, work coordination, and communication |
@@ -376,6 +389,254 @@ uap harness analyze --prompt "why do test gates keep failing?"
 ```
 
 The trace file defaults to `$UAP_HALO_TRACE_PATH` or `.uap/halo/traces.jsonl`.
+
+---
+
+## `bench`
+
+Controlled paired benchmark — hold the base model + agent constant and toggle
+UAP on/off over the same real-gate suite and seeds, then report paired deltas
+with confidence intervals, a McNemar gate-value 2×2, and a cost–accuracy Pareto.
+
+| Subcommand | Key flags | Purpose |
+|------------|-----------|---------|
+| `paired` | `--suite`, `--adapter <mock\|opencode\|claude\|mini\|raw\|deliver>`, `--model`, `--epochs`, `--concurrency`, `--ablation`, `--lazy`, `--seed`, `--iterations`, `--rope-margin`, `--out`, `--json` | Run the UAP-on vs UAP-off A/B; writes `records.jsonl` + Markdown/JSON reports |
+
+```bash
+uap bench paired --adapter opencode --model qwen36-a3b --epochs 5
+uap bench paired --ablation            # leave-one-out per UAP component
+```
+
+See [Paired Harness](../benchmarks/PAIRED_HARNESS.md) for the methodology.
+
+---
+
+## `self-harness`
+
+Self-improving harness: mine model-specific failures from traces, propose a
+bounded, reversible modification (the "Mod" DSL), validate it with a real paired
+bench, and — with `--apply` — commit it and snapshot a versioned profile.
+
+| Subcommand | Key flags | Purpose |
+|------------|-----------|---------|
+| `analyze` | `--records`, `--env`, `--transfer`, `--json` | Mine weaknesses + propose candidate Mods (read-only) |
+| `run` | `--records`, `--suite`, `--heldout`, `--adapter`, `--model`, `--epochs`, `--max-candidates`, `--apply`, `--json` | The full loop; `--apply` commits + snapshots |
+| `transfer` | `--transfer`, `--json` | List the cross-model transfer store |
+| `mine-prod` | `--traces`, `--unit`, `--since`, `--pending`, `--json` | Mine production traces → enqueue proposals (never applies) |
+| `pending` / `prune` | `--pending`, `--transfer`, `--json` | Inspect / ablation-prune the queue + store |
+| `tune` | (alias of `uap tune`) | The LLM/GP flag self-tuning loop |
+
+```bash
+uap self-harness run --suite benchmarks/suites/real-gate --adapter opencode
+```
+
+See [Self-Harness (design)](../design/SELF_HARNESS.md).
+
+---
+
+## `tune`
+
+LLM self-tuning — raise a small model (e.g. qwen3.6) toward Opus-level output by
+tuning UAP's own flag surface (recipes, hands-free, memory, concurrency, proxy
+guardrails) with a benchmark-validated closed loop. An LLM proposes small flag
+changes when a judge model is configured; otherwise a Gaussian-process Bayesian
+optimizer picks the next config. `uap self-harness tune` is an alias.
+
+| Flag | Purpose |
+|------|---------|
+| `--model <id>` | Executor model family to tune (default `qwen36-a3b`) |
+| `--adapter <name>` | `mock \| opencode \| claude \| mini \| raw \| deliver` |
+| `--judge <id>` | Judge/tuner model; else `recipes.judge.model`, else GP-only |
+| `--phase <name>` | Force one search phase: `coarse \| medium \| fine \| combinatorial` |
+| `--max-iterations <n>` | Tuning-loop budget (default 6) |
+| `--epochs`, `--concurrency`, `--iterations`, `--seed` | Paired-bench + stats controls |
+| `--apply` | Commit accepted configs + save the profile (default: dry-run) |
+| `--json` | Machine-readable result |
+
+```bash
+uap tune --model qwen36-a3b --adapter opencode --judge opus-4.8 --apply
+uap tune --adapter mock --max-iterations 3 --json     # offline smoke test
+```
+
+See [LLM Self-Tuning](../guides/SELF_TUNING.md).
+
+---
+
+## `verify`
+
+Run the project's completion gates — including the **runtime execution gate**
+that actually runs the changed code — against the current files and report
+pass/fail. This is what the Stop hook calls to block "done" on code that never
+ran.
+
+| Flag | Purpose |
+|------|---------|
+| `-d, --dir <path>` | Project directory (default: cwd) |
+| `--strict` | Treat "no verifiable gates" as a failure (fail-closed) |
+| `--runtime-only` | Run only the cheap runtime execution gate |
+| `--full` | Also run the expensive integration / deploy-dev tiers |
+| `--gates <ids>` | Comma-separated rung subset (e.g. `build,test,execution`) |
+| `--acceptance <specfile>` | LLM acceptance gate: judge behavioral completeness vs a spec |
+| `--no-visual` | Skip the headless visual gate |
+| `-m, --model`, `--endpoint` | Model + endpoint for the acceptance gate |
+| `--timeout <ms>`, `--json` | Per-rung timeout; JSON output |
+
+```bash
+uap verify --runtime-only          # prove the artifact runs
+uap verify --acceptance spec.md --strict
+```
+
+---
+
+## `config`
+
+Inspect and change every UAP setting from one place — the single source of truth
+is `src/config/settings-registry.ts`, which also generates the
+[Configuration Reference](CONFIGURATION_REFERENCE.md).
+
+| Subcommand | Purpose |
+|------------|---------|
+| `list` | All settings + current values |
+| `get <key>` / `explain <key>` | Read / learn one setting |
+| `set <key> <value>` | Change it (writes `.uap.json`, `.uap/proxy.env`, or prints a shell export) |
+| `doctor` | Flag risky / sub-optimal settings |
+| `wizard` | Interactive expert configurator (also `uap setup --profile custom`) |
+| `docs` | Regenerate `docs/reference/CONFIGURATION_REFERENCE.md` from the registry |
+
+```bash
+uap config set recipes.enabled true
+uap config set realtimeAdapt.enabled false   # opt out of real-time adaptation
+uap config doctor
+```
+
+---
+
+## `design`
+
+DESIGN.md integration: interrogate an existing UI into a design brief, lint UI
+work against it, and gate off-token colors / off-scale spacing.
+
+| Flag | Purpose |
+|------|---------|
+| `-d, --project-dir <path>` | Project directory (default: cwd) |
+| `-o, --out <path>` | Output path for `interrogate` (default `DESIGN.md`) |
+| `--force` | Overwrite an existing DESIGN.md |
+| `-f, --file <path>` | Target file (lint/check) or `"old,new"` (diff) |
+| `--json` | Machine-readable output |
+
+---
+
+## `proxy`
+
+Reference-counted, session-scoped lifecycle for the local inference proxy (the
+Anthropic-compatible gateway in front of a local llama.cpp/Qwen). Hooks
+`ensure`/`release` it per session so it starts on demand and stops when the last
+session leaves — but it never kills a proxy that systemd manages or that other
+sessions still use.
+
+`uap proxy [ensure | release | status | start | stop | restart | enable | disable]`
+
+| Flag | Purpose |
+|------|---------|
+| `--client <id>` | Client/session id (defaults to the session env or parent pid) |
+| `--client-pid <n>` | Long-lived agent pid for liveness (hooks pass `$PPID`) |
+| `--port <n>` | Proxy port (default 4000 / `$PROXY_PORT`) |
+| `--if-enabled` | No-op unless `.uap.json` `proxy.autostart` is true (hook-safe) |
+| `--quiet` / `--json` | Suppress output (hooks) / machine-readable status |
+
+```bash
+uap proxy status --json
+uap proxy restart          # e.g. after changing PROXY_* in .uap/proxy.env
+```
+
+The proxy binds `127.0.0.1` by default; see the proxy `PROXY_*` settings in the
+[Configuration Reference](CONFIGURATION_REFERENCE.md) and [Local Models](../guides/LOCAL_MODELS.md).
+
+---
+
+## `orchestrator`
+
+Toggle the long multi-turn deliver orchestrator (blackboard decomposition +
+epic controller for big autonomous builds). Persists to `.uap.json`
+(`deliver.orchestrate`).
+
+`uap orchestrator [on | off | auto | status]` — `auto` (default) engages it only
+for large multi-epic work. See [Orchestrator & Hands-Free](../guides/ORCHESTRATOR.md).
+
+---
+
+## `handsfree`
+
+Hands-free persistence (alias `hf`): drive any model to keep working until the
+multi-epic build **completion ledger** is 100% done instead of stopping early.
+Auto-on.
+
+`uap handsfree [status | on | off | init | complete <id> | fail <id> | remaining | stop-check]`
+
+| Flag | Purpose |
+|------|---------|
+| `--mission <text>` | Mission text for `init` |
+| `--items <json>` | JSON array of ledger items for `init` |
+
+See [Orchestrator & Hands-Free](../guides/ORCHESTRATOR.md).
+
+---
+
+## `challenge`
+
+Open multi-agent challenge: a shared goal, verified submissions, and a
+significance-gated leaderboard (scores within a ROPE margin of the leader are
+ties, not wins).
+
+| Subcommand | Key flags | Purpose |
+|------------|-----------|---------|
+| `open` | `--metric <name>`, `--rope-margin <x>`, `--lower-is-better` | Open a challenge with a shared goal + scoring metric |
+| `submit` / `leaderboard` / `status` | — | Submit a verified result / view the ranked board / show state |
+
+```bash
+uap challenge open --metric tps --rope-margin 4
+```
+
+---
+
+## `sandbox`
+
+Run a command with a kernel-enforced workdir boundary (bubblewrap): only the
+current dir + scratch are writable, so writes outside fail at the kernel — the
+boundary `--dangerously-skip-permissions` cannot bypass.
+
+```bash
+uap sandbox -- <command> [args...]
+```
+
+See [Sandbox](../guides/SANDBOX.md).
+
+---
+
+## `react`
+
+Resolve the dynamic UAP capabilities (experts / skills / patterns) for a
+lifecycle event and emit JSON — the engine behind the per-prompt Reactor. Hook
+adapters pipe a JSON `ReactorContext` on stdin; the flags below are for manual
+invocation.
+
+| Flag | Purpose |
+|------|---------|
+| `--event <event>` | `user-prompt \| session-start \| pre-tool \| post-tool \| stop \| session-end` |
+| `--prompt <text>` | Prompt text (when not piping a JSON payload) |
+| `-f, --files <files...>` | Changed files (routing signal) |
+| `--inject-threshold <n>` | Min confidence to inject (default 0.30) |
+| `--auto-spawn-threshold <n>` | Min confidence to auto-spawn an expert (default 0.80) |
+| `--max-inject-chars <n>` | Inject character budget (default 1200) |
+
+See [Reactor (auto-apply)](../design/UAP_REACTOR.md).
+
+---
+
+## `status`
+
+Show HALO trace collection state (enabled, path, span count). `--json` for
+machine-readable output. (Equivalent to `uap harness status`.)
 
 ---
 

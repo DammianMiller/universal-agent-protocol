@@ -88,6 +88,14 @@ Install UAP (`npm i -g universal-agent-protocol`) and every feature below activa
 
 **Why it matters:** No manual tuning. The right parameters are applied automatically for each model family.
 
+### Real-Time Adaptation (self-tuning) ✨
+
+**What it does:** During a session the reactor watches live signals — tool-failure rate, per-turn quality, context-window pressure, and RECON no-write streaks — and, when one breaches a threshold, emits a per-session adjustment the proxy honors mid-flight: escalate the turn to the judge model (fusion), converge sooner (lower the recon threshold), or force synthesis to break an exploration loop.
+
+**When it kicks in:** Auto-on. It is conservative — a signal is emitted only on a real threshold breach, so a nominal session is unchanged. Opt out with `uap config set realtimeAdapt.enabled false` (or `UAP_REALTIME_ADAPT=0`).
+
+**Why it matters:** The static per-model config (`uap tune`) can't foresee everything; this catches the failures that only show up live, escalating a small model exactly when it starts to struggle. See [LLM Self-Tuning](SELF_TUNING.md).
+
 ---
 
 ## Memory & Context

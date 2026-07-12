@@ -231,7 +231,19 @@ Hierarchical MCP router that collapses 150+ MCP tools to 2
 | Subsystem | Description |
 |-----------|-------------|
 | Observability (`observability/halo-exporter.ts`) | Emits agent/LLM/tool spans as OTLP/OpenInference JSONL for the HALO engine. Opt-in via `UAP_HALO_TRACE`; zero-overhead when off. |
-| Telemetry (`telemetry/session-telemetry.ts`) | Session-level telemetry capture. |
+| Telemetry (`telemetry/session-telemetry.ts`) | Session-level telemetry capture, incl. per-turn quality estimates for real-time tuning. |
+
+## Self-Improvement (`src/self-harness/`, `src/self-tuning/`) — Feedback
+
+> **Stage: Feedback.** The floor doesn't just log its mistakes — it rewrites its
+> own harness to stop making them. Two closed loops, both validated by the same
+> paired benchmark so a "fix" is never accepted on faith.
+
+| Subsystem | Description |
+|-----------|-------------|
+| Self-Harness (`self-harness/`) | Autonomous mine → propose → validate → decide loop over a bounded, reversible **Mod DSL** (proxy/llama env knobs, scaffold text, middleware, and settings-registry `ConfigMod`s). Cross-model transfer store; online production-trace mining. Fixes **correctness** bugs. `uap self-harness`. |
+| Self-Tuning (`self-tuning/`) | `uap tune` — raises a small model toward Opus by tuning UAP's flag surface against a multi-dimensional **quality** score. LLM-guided proposals with a real Gaussian-process Bayesian-optimizer fallback; atomic rollback-safe flag writes; per-model tuning profiles (bundled qwen3.6 / Opus). |
+| Real-time adaptation (`self-tuning/realtime-adaptor.ts`) | Per-session flag adjustments from live signals (tool-failure / quality / context pressure / RECON loop) over the adaptation-signal channel the proxy honors mid-session. **Auto-on**; opt out with `realtimeAdapt.enabled:false`. |
 
 ## Browser & Benchmarks — QC / Verify
 
@@ -267,7 +279,10 @@ similarity, and system resource detection.
 
 The `uap` CLI is the single door into the whole factory (top-level commands):
 `init`, `setup`, `analyze`, `generate`, `memory`, `patterns`, `worktree`,
-`sync`, `droids`, `expert-route`, `deliver`, `harness` (HALO), `ideate`,
-`coord`, `agent`, `deploy`, `task`, `compliance`, `coordination`, `skill`,
-`update`, `dashboard` (alias `dash`), `model`, `mcp-router`, `hooks`,
-`tool-calls`, `rtk`, `mcp-setup`, `schema-diff`, `policy`, `uap-omp`.
+`sync`, `droids`, `expert-route`, `deliver`, `verify`, `harness` (HALO),
+`bench`, `self-harness`, `tune`, `config`, `design`, `proxy`, `orchestrator`,
+`handsfree` (`hf`), `challenge`, `sandbox`, `react`, `ideate`, `coord`, `agent`,
+`deploy`, `task`, `compliance`, `coordination`, `skill`, `update`,
+`dashboard` (alias `dash`), `model`, `mcp-router`, `hooks`, `tool-calls`,
+`rtk`, `mcp-setup`, `schema-diff`, `policy`, `uap-omp`. See
+[CLI reference](CLI.md) for every command and flag.
