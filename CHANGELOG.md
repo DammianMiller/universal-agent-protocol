@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.143.0 (2026-07-12)
+
+- fix(policy): prevent duplicate policies + `uap policy dedupe` to clean up existing
+
+
 ## v1.142.0 (2026-07-12)
 
 - feat(policy): selectable policies — `uap policy select` + setup picker
