@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.137.2 (2026-07-12)
+
+- docs: document LLM self-tuning + backfill 13 undocumented CLI commands
+
+
 ## v1.137.1 (2026-07-12)
 
 - feat(self-tuning): real-time adaptation auto-on with opt-out toggle
