@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.148.0 (2026-07-12)
+
+- feat(setup): install ALL policies (with their levels) by default in every uap setup
+
+
 ## v1.147.2 (2026-07-12)
 
 - chore(policy): remove dead validate-plan-before-build + fix local-build worktree resolution
