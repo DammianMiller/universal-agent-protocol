@@ -97,6 +97,9 @@ const MANDATORY_POLICIES = [
   // `uap fidelity max` / `uap setup --profile maximum` activates the commit-time
   // visual-verification gate with no re-setup.
   'visual-verification',
+  // Always active: block the model from killing/displacing the inference stack
+  // it runs on (llama :8080 / proxy :4000 / embeddings :8081).
+  'enforcement-infra-protect',
 ];
 
 async function installPolicy(policyName: string): Promise<void> {
