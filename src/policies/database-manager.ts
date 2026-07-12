@@ -225,6 +225,17 @@ export class DatabaseManager {
     return rows.map((r) => this.deserializeRow(r) as unknown as PolicyRow);
   }
 
+  /** Every policy row, active or not — needed for dedup/maintenance. */
+  getAllPolicyRows(): PolicyRow[] {
+    const rows = this.db.prepare('SELECT * FROM policies').all() as Record<string, unknown>[];
+    return rows.map((r) => this.deserializeRow(r) as unknown as PolicyRow);
+  }
+
+  /** Delete a policy by id. Executable tools cascade (FK ON DELETE CASCADE). */
+  deletePolicyById(id: string): void {
+    this.db.prepare('DELETE FROM policies WHERE id = ?').run(id);
+  }
+
   // --- CRUD for executable_tools table ---
 
   upsertExecutableTool(data: Record<string, unknown>): void {

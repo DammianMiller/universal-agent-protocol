@@ -261,6 +261,32 @@ async function selectCommand(options: {
 }
 
 /**
+ * Dedupe command — remove duplicate policy rows that share a name (legacy rows
+ * from before install upserted by name), keeping one canonical each.
+ */
+async function dedupeCommand(options: { json?: boolean }): Promise<void> {
+  const manager = getPolicyMemoryManager();
+  const { removed, kept, groups } = await manager.dedupePolicies();
+  try {
+    getPolicyGate().invalidateCache();
+  } catch {
+    /* best-effort */
+  }
+  if (options.json) {
+    console.log(JSON.stringify({ removed, dedupedNames: kept, groups }));
+    return;
+  }
+  if (removed === 0) {
+    console.log(chalk.green('\n✓ No duplicate policies — nothing to clean up.'));
+    return;
+  }
+  console.log(chalk.bold(`\nRemoved ${removed} duplicate policy row(s) across ${kept} name(s):`));
+  for (const g of groups) {
+    console.log(`  ${chalk.cyan(g.name)}: kept 1, removed ${chalk.yellow(String(g.remove.length))}`);
+  }
+}
+
+/**
  * List command - show all policies
  */
 async function listCommand(): Promise<void> {
@@ -453,6 +479,12 @@ export function registerPolicyCommands(program: Command): void {
     .option('--all', 'select every available policy')
     .option('--json', 'emit JSON result')
     .action(selectCommand);
+
+  policy
+    .command('dedupe')
+    .description('Remove duplicate policy rows (same name), keeping one canonical each')
+    .option('--json', 'Emit JSON')
+    .action(dedupeCommand);
 
   policy
     .command('recommend [scenario]')

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.145.0 (2026-07-12)
+
+- chore: bump version to 1.143.0
+- fix(policy): prevent duplicate policies + `uap policy dedupe` to clean up existing
+
+
 ## v1.144.0 (2026-07-12)
 
 - feat(delivery): P3 — user-path validation enforced on interactive done-claims (stop hook + opencode idle)
