@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.144.0 (2026-07-12)
+
+- feat(delivery): P3 — user-path validation enforced on interactive done-claims (stop hook + opencode idle)
+
+
+## v1.143.0 (2026-07-12)
+
+- feat(hooks): infra-protect rules in the bash dangerous-command guard
+- feat(delivery): user-path validation gate — the artifact must work for a REAL user before DELIVERED
+
+
 ## v1.142.0 (2026-07-12)
 
 - feat(policy): selectable policies — `uap policy select` + setup picker

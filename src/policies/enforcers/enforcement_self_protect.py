@@ -51,6 +51,7 @@ BYPASS_PATTERNS = (
     re.compile(r"UAP_SELF_PROTECT_OFF\s*=\s*['\"]?1", re.I),
     re.compile(r"UAP_NO_WORKTREE\s*=\s*['\"]?1", re.I),
     re.compile(r"UAP_WORKDIR_SCOPE_OFF\s*=\s*['\"]?1", re.I),
+    re.compile(r"UAP_USER_VALIDATION\s*=\s*['\"]?0", re.I),
 )
 # Destructive ops against the enforcer/policy surface.
 DESTRUCTIVE = re.compile(
