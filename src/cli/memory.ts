@@ -34,7 +34,8 @@ type MemoryAction =
   | 'prepopulate'
   | 'promote'
   | 'correct'
-  | 'maintain';
+  | 'maintain'
+  | 'bridge';
 
 interface MemoryOptions {
   search?: string;
@@ -49,6 +50,7 @@ interface MemoryOptions {
   since?: string;
   verbose?: boolean;
   force?: boolean;
+  all?: boolean;
   correction?: string;
   reason?: string;
 }
@@ -106,6 +108,22 @@ export async function memoryCommand(
     case 'maintain':
       await maintainMemory(cwd, options);
       break;
+    case 'bridge': {
+      const { bridgeMemory } = await import('../memory/bridge.js');
+      const results = bridgeMemory(cwd, { all: options.all });
+      console.log(chalk.cyan("\nMemory bridge — native agent memory now points at the UAP store:"));
+      for (const r of results) {
+        const err = String(r.action).startsWith('error');
+        console.log(`  ${err ? chalk.red('\u2717') : chalk.green('\u2713')} ${r.label} (${r.action})  ${chalk.dim(r.file)}`);
+      }
+      if (results.length === 0) {
+        console.log(chalk.yellow('  No coding-agent memory files detected. Re-run with --all to write them anyway.'));
+      } else {
+        const changed = results.filter((r) => r.action === 'created' || r.action === 'updated').length;
+        console.log(chalk.dim(`\n  ${changed} file(s) updated. Agents reading these now recall UAP memory. Refresh anytime: uap memory bridge`));
+      }
+      break;
+    }
   }
 }
 

@@ -230,6 +230,14 @@ program
       })
   )
   .addCommand(
+    new Command('bridge')
+      .description("Hijack each coding agent's native memory file (Claude MEMORY.md, AGENTS.md, GEMINI.md, Cursor, Copilot) to point at UAP's unified memory")
+      .option('--all', 'Also write files for agents not currently detected')
+      .action(async (options) => {
+        (await lazy.memory())('bridge', options);
+      })
+  )
+  .addCommand(
     new Command('prepopulate')
       .description('Prepopulate memory from documentation and git history')
       .option('--docs', 'Import from documentation only')
