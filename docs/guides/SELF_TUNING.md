@@ -95,18 +95,15 @@ The runtime source of truth is the typed constants in
 `src/self-tuning/profiles/*.ts`; the sibling `*.json` files are human-readable
 reference artifacts.
 
-## Real-time adaptation (opt-in)
+## Real-time adaptation (auto-on)
 
 The proxy freezes `PROXY_*` at startup and has no reload endpoint, so mid-session
 tuning rides a per-session **adaptation signal** file — the same mechanism as the
-recipe signal. Enable it with:
+recipe signal. It is **on by default** and conservative: a signal is emitted only
+when a live signal actually breaches a threshold, so a nominal session behaves
+exactly as before.
 
-```bash
-export PROXY_REALTIME_ADAPT=1   # proxy side: honor adaptation signals
-export UAP_REALTIME_ADAPT=1     # emitter side: reactor emits them
-```
-
-When enabled, live signals map to conservative, hot-reloadable adjustments:
+Live signals map to hot-reloadable adjustments:
 
 | Signal | Adjustment |
 |--------|-----------|
@@ -114,8 +111,19 @@ When enabled, live signals map to conservative, hot-reloadable adjustments:
 | context-window utilization ↑ | converge sooner (lower recon threshold) |
 | RECON no-write streak ↑ | force synthesis / deliver now |
 
-With both flags unset (the default), nothing is emitted or honored and behavior
-is unchanged.
+### Turning it off
+
+The reactor emitter is the effective master switch — with it off, no signal is
+written, so the proxy has nothing to honor. Any of these opts out:
+
+```bash
+uap config set realtimeAdapt.enabled false   # persistent, project-level (recommended)
+export UAP_REALTIME_ADAPT=0                   # per-shell override (wins over config)
+uap config set PROXY_REALTIME_ADAPT false     # also make the proxy ignore signals
+```
+
+Precedence for the emitter: explicit call arg → `UAP_REALTIME_ADAPT` env →
+`.uap.json realtimeAdapt.enabled` → default **on**.
 
 ## How it relates to Self-Harness
 

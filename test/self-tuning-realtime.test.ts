@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, existsSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -94,7 +94,7 @@ describe('emitAdaptation — gating + persistence', () => {
   });
 });
 
-describe('realtimeAdaptEnabled', () => {
+describe('realtimeAdaptEnabled — auto-on with opt-out', () => {
   it('honors the explicit override and env', () => {
     expect(realtimeAdaptEnabled(true)).toBe(true);
     expect(realtimeAdaptEnabled(false)).toBe(false);
@@ -105,6 +105,35 @@ describe('realtimeAdaptEnabled', () => {
     expect(realtimeAdaptEnabled()).toBe(false);
     if (prev === undefined) delete process.env.UAP_REALTIME_ADAPT;
     else process.env.UAP_REALTIME_ADAPT = prev;
+  });
+
+  it('defaults ON when env unset and no config opt-out', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-adapt-default-'));
+    const prev = process.env.UAP_REALTIME_ADAPT;
+    delete process.env.UAP_REALTIME_ADAPT;
+    try {
+      expect(realtimeAdaptEnabled(undefined, dir)).toBe(true); // no .uap.json → default on
+    } finally {
+      if (prev !== undefined) process.env.UAP_REALTIME_ADAPT = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('opts out via .uap.json realtimeAdapt.enabled:false', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-adapt-cfgoff-'));
+    const prev = process.env.UAP_REALTIME_ADAPT;
+    delete process.env.UAP_REALTIME_ADAPT;
+    try {
+      writeFileSync(join(dir, '.uap.json'), JSON.stringify({ realtimeAdapt: { enabled: false } }));
+      expect(realtimeAdaptEnabled(undefined, dir)).toBe(false);
+      // env override still wins over config
+      process.env.UAP_REALTIME_ADAPT = '1';
+      expect(realtimeAdaptEnabled(undefined, dir)).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.UAP_REALTIME_ADAPT;
+      else process.env.UAP_REALTIME_ADAPT = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

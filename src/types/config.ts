@@ -471,6 +471,9 @@ export const AgentContextConfigSchema = z.object({
   design: DesignSchema.optional(),
   // Reactor per-prompt injection (on by default)
   reactor: ReactorSchema.optional(),
+  // Real-time flag adaptation (LLM Self-Tuning P4) — auto-on; set enabled:false
+  // to opt out. No zod default so an absent key isn't fabricated as `true`.
+  realtimeAdapt: z.object({ enabled: z.boolean() }).partial().optional(),
   // Pattern reinforcement learning configuration
   patternRL: z
     .object({

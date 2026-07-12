@@ -253,11 +253,14 @@ def _adaptation_signal_dir() -> str:
 
 
 def realtime_adapt_enabled() -> bool:
-    return str(os.environ.get("PROXY_REALTIME_ADAPT", "")).strip().lower() in (
-        "1",
-        "true",
-        "on",
-        "yes",
+    # Auto-on: honor a fresh adaptation signal by default. Opt out with
+    # PROXY_REALTIME_ADAPT=0/false/off. (The emitter is the real master switch —
+    # with it off, no signal exists to honor.)
+    return str(os.environ.get("PROXY_REALTIME_ADAPT", "")).strip().lower() not in (
+        "0",
+        "false",
+        "off",
+        "no",
     )
 
 

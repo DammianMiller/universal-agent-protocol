@@ -11,6 +11,9 @@ ce = importlib.util.module_from_spec(spec)
 sys.modules["confidence_escalation"] = ce
 import tempfile, os as _os2
 _os2.environ["UAP_RECIPE_SIGNAL_DIR"] = tempfile.mkdtemp(prefix="uap-sig-")
+# Isolate the (now auto-on) real-time adaptation dir to an empty temp so no test
+# accidentally reads a stray ~/.cache adaptation signal from the dev machine.
+_os2.environ["UAP_ADAPTATION_SIGNAL_DIR"] = tempfile.mkdtemp(prefix="uap-adapt-empty-")
 spec.loader.exec_module(ce)
 
 
@@ -272,22 +275,22 @@ class AdaptationSignalTest(unittest.TestCase):  # LLM-Self-Tuning real-time adap
     def setUp(self):
         import tempfile, os
         self.d = tempfile.mkdtemp(prefix="uap-adapt-test-")
-        # Isolate the reactor-signal dir so it never pre-empts our selection.
         self.empty = tempfile.mkdtemp(prefix="uap-empty-sig-")
-        self._prev_recipe = os.environ.get("UAP_RECIPE_SIGNAL_DIR")
-        self._prev_adapt = os.environ.get("PROXY_REALTIME_ADAPT")
+        self._saved = {k: os.environ.get(k) for k in
+                       ("UAP_RECIPE_SIGNAL_DIR", "UAP_ADAPTATION_SIGNAL_DIR", "PROXY_REALTIME_ADAPT")}
+        # Isolate the reactor-signal dir so it never pre-empts our selection, and
+        # point the adaptation dir at this test's dir.
         os.environ["UAP_RECIPE_SIGNAL_DIR"] = self.empty
+        os.environ["UAP_ADAPTATION_SIGNAL_DIR"] = self.d
+        os.environ.pop("PROXY_REALTIME_ADAPT", None)
 
     def tearDown(self):
         import os
-        if self._prev_recipe is None:
-            os.environ.pop("UAP_RECIPE_SIGNAL_DIR", None)
-        else:
-            os.environ["UAP_RECIPE_SIGNAL_DIR"] = self._prev_recipe
-        if self._prev_adapt is None:
-            os.environ.pop("PROXY_REALTIME_ADAPT", None)
-        else:
-            os.environ["PROXY_REALTIME_ADAPT"] = self._prev_adapt
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     def _write(self, name, sig):
         import json, os
@@ -302,38 +305,44 @@ class AdaptationSignalTest(unittest.TestCase):  # LLM-Self-Tuning real-time adap
         self.assertIsNone(ce.load_adaptation_signal("old", signal_dir=self.d, ttl=180.0))
         self.assertIsNone(ce.load_adaptation_signal("nope", signal_dir=self.d))
 
-    def test_latest_fallback_and_sanitized_id(self):
+    def test_latest_fallback(self):
         import time
         self._write("latest.json", {"ts": time.time(), "recipe": "fusion"})
         self.assertEqual(ce.load_adaptation_signal(signal_dir=self.d)["recipe"], "fusion")
 
-    def test_opt_in_escalation(self):
-        import os, time
-        os.environ["UAP_ADAPTATION_SIGNAL_DIR"] = self.d
+    def test_enabled_by_default_and_opt_out(self):
+        import os
+        self.assertTrue(ce.realtime_adapt_enabled())  # unset -> auto-on
+        os.environ["PROXY_REALTIME_ADAPT"] = "0"
+        self.assertFalse(ce.realtime_adapt_enabled())
+        os.environ["PROXY_REALTIME_ADAPT"] = "true"
+        self.assertTrue(ce.realtime_adapt_enabled())
+
+    def test_auto_on_escalation(self):
+        import time
         self._write("latest.json", {"ts": time.time(), "escalate": True})
-        try:
-            # Disabled: a short prompt stays on the cheaper 'confidence' recipe.
-            os.environ["PROXY_REALTIME_ADAPT"] = "0"
-            self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="auto"), False), "confidence")
-            # Enabled: the fresh adaptation signal escalates this turn to fusion.
-            os.environ["PROXY_REALTIME_ADAPT"] = "1"
-            self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="auto"), False), "fusion")
-        finally:
-            os.environ.pop("UAP_ADAPTATION_SIGNAL_DIR", None)
+        # Auto-on (PROXY_REALTIME_ADAPT unset): the fresh signal escalates to fusion.
+        self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="auto"), False), "fusion")
+
+    def test_opt_out_disables_escalation(self):
+        import os, time
+        self._write("latest.json", {"ts": time.time(), "escalate": True})
+        os.environ["PROXY_REALTIME_ADAPT"] = "0"
+        # Disabled: a short prompt stays on the cheaper 'confidence' recipe.
+        self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="auto"), False), "confidence")
+
+    def test_no_signal_no_escalation(self):
+        # Auto-on but no signal present → normal selection (confidence for a short prompt).
+        self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="auto"), False), "confidence")
 
     def test_no_escalation_without_judge(self):
-        import os, time
-        os.environ["UAP_ADAPTATION_SIGNAL_DIR"] = self.d
-        os.environ["PROXY_REALTIME_ADAPT"] = "1"
+        import time
         self._write("latest.json", {"ts": time.time(), "escalate": True})
-        try:
-            # judge == primary model → no distinct judge → never escalate to fusion.
-            self.assertNotEqual(
-                ce.select_recipe(body("add a button"), S(recipe="auto", model="qwen"), False),
-                "fusion",
-            )
-        finally:
-            os.environ.pop("UAP_ADAPTATION_SIGNAL_DIR", None)
+        # judge == primary model → no distinct judge → never escalate to fusion.
+        self.assertNotEqual(
+            ce.select_recipe(body("add a button"), S(recipe="auto", model="qwen"), False),
+            "fusion",
+        )
 
 
 if __name__ == "__main__":

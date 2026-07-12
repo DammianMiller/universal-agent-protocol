@@ -97,17 +97,19 @@ export async function reactCommand(options: ReactCommandOptions = {}): Promise<v
     /* fail open */
   }
 
-  // Real-time flag adaptation (opt-in, UAP_REALTIME_ADAPT): emit a per-session
-  // adjustment from live context pressure so the proxy can converge/escalate
-  // mid-session (P4). Lazy + gated + fail-open so it never slows the hook.
+  // Real-time flag adaptation (P4, auto-on; opt out via realtimeAdapt.enabled or
+  // UAP_REALTIME_ADAPT=0): emit a per-session adjustment from live context
+  // pressure so the proxy can converge/escalate mid-session. Lazy + gated +
+  // fail-open so it never slows the hook.
   try {
+    const cwd = process.cwd();
     const { realtimeAdaptEnabled } = await import('../self-tuning/realtime-adaptor.js');
-    if (realtimeAdaptEnabled()) {
+    if (realtimeAdaptEnabled(undefined, cwd)) {
       const { emitAdaptation, fetchSessionContext } = await import('../self-tuning/realtime-adaptor.js');
       const { defaultFlagConfig } = await import('../self-tuning/flags.js');
       const parsed = JSON.parse(payload) as { sessionId?: string };
       const ctxSignals = await fetchSessionContext();
-      emitAdaptation(parsed.sessionId ?? 'session', ctxSignals, defaultFlagConfig());
+      emitAdaptation(parsed.sessionId ?? 'session', ctxSignals, defaultFlagConfig(), { enabled: true, cwd });
     }
   } catch {
     /* fail open */

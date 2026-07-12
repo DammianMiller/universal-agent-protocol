@@ -22,6 +22,7 @@ import {
   AdaptationSignal,
   writeAdaptationSignal,
 } from '../coordination/adaptation-signal.js';
+import { loadUapConfigRaw } from '../utils/config-loader.js';
 import { FlagConfig, flagValue } from './flags.js';
 
 /** Live session signals (any subset). Absent fields are treated as nominal. */
@@ -101,19 +102,36 @@ export function computeAdaptation(
 }
 
 export interface EmitOptions extends AdaptationThresholds {
-  /** Master switch. Default: UAP_REALTIME_ADAPT env is truthy. */
+  /** Explicit master switch. Default: auto-on unless opted out (env/config). */
   enabled?: boolean;
+  /** Project dir for the config opt-out check. Default process.cwd(). */
+  cwd?: string;
   /** Signal directory override (tests). */
   dir?: string;
   /** "now" in unix seconds (host may lack Date). */
   now?: number;
 }
 
-/** True when real-time adaptation is enabled (opt-in). */
-export function realtimeAdaptEnabled(explicit?: boolean): boolean {
+/**
+ * True when real-time adaptation is enabled. AUTO-ON by default; opt out via
+ * either `UAP_REALTIME_ADAPT` (0/false/off) or `.uap.json` `realtimeAdapt.enabled:
+ * false`. Precedence: explicit arg → env (if set) → config → default(true).
+ * The emitter is the effective master switch — with it off, no signal is written
+ * so the proxy has nothing to honor, regardless of PROXY_REALTIME_ADAPT.
+ */
+export function realtimeAdaptEnabled(explicit?: boolean, cwd?: string): boolean {
   if (explicit !== undefined) return explicit;
   const v = (process.env.UAP_REALTIME_ADAPT ?? '').toLowerCase();
-  return v === '1' || v === 'true' || v === 'on' || v === 'yes';
+  if (v) return v === '1' || v === 'true' || v === 'on' || v === 'yes';
+  try {
+    const raw = loadUapConfigRaw(cwd ?? process.cwd()) as
+      | { realtimeAdapt?: { enabled?: boolean } }
+      | null;
+    if (raw?.realtimeAdapt?.enabled === false) return false;
+  } catch {
+    /* fall through to default */
+  }
+  return true; // auto-on
 }
 
 /**
@@ -126,7 +144,7 @@ export function emitAdaptation(
   current: FlagConfig,
   opts: EmitOptions = {},
 ): AdaptationSignal | null {
-  if (!realtimeAdaptEnabled(opts.enabled)) return null;
+  if (!realtimeAdaptEnabled(opts.enabled, opts.cwd)) return null;
   const now = opts.now ?? Date.now() / 1000;
   const sig = computeAdaptation(sessionId, signals, current, now, opts);
   if (sig) {
