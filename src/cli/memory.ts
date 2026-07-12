@@ -2,8 +2,8 @@ import chalk from 'chalk';
 import ora from 'ora';
 import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, writeFileSync, statSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, writeFileSync, statSync, readdirSync, readFileSync } from 'fs';
+import { join, dirname } from 'path';
 import { execSync } from 'child_process';
 // QdrantClient lazy-loaded via shared utility (saves ~100ms startup)
 import { getQdrantClientClass } from '../utils/lazy-imports.js';
@@ -35,7 +35,8 @@ type MemoryAction =
   | 'promote'
   | 'correct'
   | 'maintain'
-  | 'bridge';
+  | 'bridge'
+  | 'sync-files';
 
 interface MemoryOptions {
   search?: string;
@@ -53,6 +54,7 @@ interface MemoryOptions {
   all?: boolean;
   correction?: string;
   reason?: string;
+  dir?: string;
 }
 
 export async function memoryCommand(
@@ -107,6 +109,9 @@ export async function memoryCommand(
       break;
     case 'maintain':
       await maintainMemory(cwd, options);
+      break;
+    case 'sync-files':
+      await syncMemoryFiles(cwd, options);
       break;
     case 'bridge': {
       const { bridgeMemory } = await import('../memory/bridge.js');
@@ -917,6 +922,80 @@ function toDeterministicUuid(value: string): string {
   const clockSeqLow = hash.slice(18, 20);
   const node = hash.slice(20, 32);
   return `${timeLow}-${timeMid}-${timeHighAndVersion}-${clockSeq}${clockSeqLow}-${node}`;
+}
+
+/**
+ * Sync Claude Code memory topic files (markdown + frontmatter) into the Qdrant
+ * long-term store so `uap memory query` recalls them. The plain `store` path only
+ * reaches SQLite / working memory; this embeds + upserts each file (deterministic,
+ * idempotent id) through the same pipeline prepopulate uses.
+ */
+async function syncMemoryFiles(cwd: string, options: MemoryOptions): Promise<void> {
+  const { claudeMemoryIndexPath } = await import('../memory/bridge.js');
+  const dir = options.dir || dirname(claudeMemoryIndexPath(cwd));
+  if (!existsSync(dir)) {
+    console.log(chalk.yellow(`No memory directory at ${dir}. Nothing to sync.`));
+    return;
+  }
+  const files = readdirSync(dir).filter((f) => f.endsWith('.md') && f !== 'MEMORY.md');
+  if (files.length === 0) {
+    console.log(chalk.yellow(`No memory topic files in ${dir}.`));
+    return;
+  }
+
+  const typeMap: Record<string, MemoryEntry['type']> = {
+    feedback: 'lesson',
+    project: 'decision',
+    reference: 'observation',
+    user: 'observation',
+  };
+
+  const entries: MemoryEntry[] = [];
+  for (const file of files) {
+    const slug = file.replace(/\.md$/, '');
+    const full = join(dir, file);
+    const raw = readFileSync(full, 'utf-8');
+    let name = slug;
+    let description = '';
+    let fmType = 'lesson';
+    let body = raw;
+    if (raw.startsWith('---')) {
+      const end = raw.indexOf('\n---', 3);
+      if (end !== -1) {
+        const fm = raw.slice(3, end);
+        body = raw.slice(end + 4).trim();
+        for (const line of fm.split('\n')) {
+          const m = /^(name|description|type):\s*(.*)$/.exec(line.trim());
+          if (m) {
+            if (m[1] === 'name') name = m[2];
+            else if (m[1] === 'description') description = m[2];
+            else fmType = m[2];
+          }
+        }
+      }
+    }
+    const content = `${name} \u2014 ${description}\n\n${body}`.slice(0, 1500).trim();
+    entries.push({
+      id: `memfile:${slug}`,
+      timestamp: statSync(full).mtime.toISOString(),
+      type: typeMap[fmType] || 'lesson',
+      content,
+      tags: ['claude-memory', fmType, slug],
+      importance: fmType === 'feedback' || fmType === 'project' ? 8 : 6,
+      metadata: { source: 'memory-file', file, docTitle: name, section: 'memory' },
+    });
+  }
+
+  const spinner = ora(`Embedding + upserting ${entries.length} memory files...`).start();
+  const config: AgentContextConfig =
+    loadUapConfig(cwd) ??
+    ({ version: '1.0.0', project: { name: 'project', defaultBranch: 'main' } } as AgentContextConfig);
+  const result = await storeLongTermToQdrant(entries, config);
+  if (result.stored > 0) {
+    spinner.succeed(`Synced ${result.stored} memory files \u2192 ${result.backend}`);
+  } else {
+    spinner.fail(`Sync failed: ${result.reason || 'unknown'} (${result.backend})`);
+  }
 }
 
 async function storeLongTermToQdrant(

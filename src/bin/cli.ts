@@ -239,6 +239,16 @@ program
       })
   )
   .addCommand(
+    new Command('sync-files')
+      .description(
+        'Embed Claude Code memory topic files (~/.claude/projects/<cwd>/memory/*.md) into Qdrant so they are recall-able via query'
+      )
+      .option('--dir <path>', 'Memory directory (default: the Claude Code project memory dir for cwd)')
+      .action(async (options) => {
+        (await lazy.memory())('sync-files', options);
+      })
+  )
+  .addCommand(
     new Command('prepopulate')
       .description('Prepopulate memory from documentation and git history')
       .option('--docs', 'Import from documentation only')
