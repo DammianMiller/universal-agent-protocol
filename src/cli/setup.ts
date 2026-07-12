@@ -240,6 +240,19 @@ export async function runSetupSteps(cwd: string, options: SetupOptions): Promise
     // Non-fatal
   }
 
+  // Step 3d: Prepopulate long-term memory from project docs + git history so the
+  // agent has recall from turn one — the "complete integration" step. Best-effort;
+  // needs Qdrant (long-term store). Skipped cleanly when Qdrant is down.
+  if (qdrantReady) {
+    try {
+      const { memoryCommand } = await import('./memory.js');
+      await memoryCommand('prepopulate', { docs: true, git: true });
+      console.log(chalk.green('  Memory prepopulated (docs + git history)'));
+    } catch {
+      console.log(chalk.yellow('  Memory prepopulate skipped (non-fatal)'));
+    }
+  }
+
   if (!withPatterns) {
     console.log(chalk.green('\n Setup complete (patterns disabled).\n'));
     return;
@@ -317,6 +330,20 @@ export async function runSetupSteps(cwd: string, options: SetupOptions): Promise
     hooksSpinner.succeed('Hooks installed (run `uap hooks doctor` to verify coverage)');
   } catch (err) {
     hooksSpinner.warn('Hook install failed: ' + err);
+  }
+
+  // Step 7c: Refresh the memory bridge across every detected coding agent so their
+  // native memory files (Claude MEMORY.md, AGENTS.md, GEMINI.md, Cursor, Copilot)
+  // point at the now-populated UAP memory. init wrote them first; refresh here so
+  // the mirrored recent-memory list includes what prepopulate just imported.
+  try {
+    const { bridgeMemory } = await import('../memory/bridge.js');
+    const b = bridgeMemory(cwd, {}).filter((r) => r.action === 'created' || r.action === 'updated');
+    if (b.length > 0) {
+      console.log(chalk.green(`  Memory bridge: ${b.length} coding-agent memory file(s) now point at UAP memory`));
+    }
+  } catch {
+    // Non-fatal — the bridge already ran during init.
   }
 
   // Step 7b: DESIGN.md — auto-interrogate an existing UI into a design system,

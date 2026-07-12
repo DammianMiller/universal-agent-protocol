@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.138.0 (2026-07-12)
+
+- feat(memory): memory bridge — `uap memory bridge` hijacks each coding agent's native memory/instruction file (Claude Code memory index, AGENTS.md for opencode/codex/factory, GEMINI, Cursor rules, Copilot instructions) to point at UAP's unified cross-agent memory. Idempotent, non-destructive marked block that declares UAP canonical, gives recall/store commands, and mirrors recent memories inline. Auto-runs on `uap init`.
+- feat(setup): `uap setup` now completes the full integration automatically — memory PREPOPULATE (docs + git history) plus a memory-bridge refresh across all detected agents, on top of init + services + patterns + MCP + enforcement + hooks.
+
 ## v1.137.3 (2026-07-12)
 
 - docs: add Inference Proxy guide + refresh DELIVER.md for v1.13x sub-features

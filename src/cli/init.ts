@@ -384,6 +384,21 @@ export async function initCommand(options: InitOptions): Promise<void> {
     console.error(chalk.red(error));
   }
 
+  // Memory bridge: hijack each coding agent's NATIVE memory file (Claude Code's
+  // MEMORY.md, AGENTS.md, GEMINI.md, ...) to point at UAP's unified memory, so
+  // every agent recalls/stores through one shared store instead of a silo.
+  try {
+    const { bridgeMemory } = await import('../memory/bridge.js');
+    const bridged = bridgeMemory(cwd, {}).filter(
+      (r) => r.action === 'created' || r.action === 'updated'
+    );
+    if (bridged.length > 0) {
+      console.log(chalk.green(`\u2714 Memory bridge: pointed ${bridged.length} native agent memory file(s) at UAP memory`));
+    }
+  } catch {
+    /* bridge is best-effort — never block init */
+  }
+
   // Platform-specific setup (create directories only, never delete)
   for (const platform of platforms) {
     const platformSpinner = ora(`Setting up ${platform}...`).start();
