@@ -332,6 +332,20 @@ export async function runSetupSteps(cwd: string, options: SetupOptions): Promise
     hooksSpinner.warn('Hook install failed: ' + err);
   }
 
+  // Step 7a: Install ALL default policies (every built-in policy with its
+  // schema-declared level; the pay2u example pack stays opt-in). The interactive
+  // wizard + profiles do this via finalizeGuidedSetup; the non-interactive path
+  // needs it explicitly so `uap setup` ALWAYS ends with the full policy set armed.
+  const polSpinner = ora('Installing default policy set...').start();
+  try {
+    const { installAllDefaultPolicies } = await import('./policy-select.js');
+    const r = await installAllDefaultPolicies(false);
+    const n = r.installed.length + r.enabled.length;
+    polSpinner.succeed(`Policies armed (${n} installed/enabled; \`uap policy list\` to review)`);
+  } catch (err) {
+    polSpinner.warn('Policy install failed: ' + err);
+  }
+
   // Step 7c: Refresh the memory bridge across every detected coding agent so their
   // native memory files (Claude MEMORY.md, AGENTS.md, GEMINI.md, Cursor, Copilot)
   // point at the now-populated UAP memory. init wrote them first; refresh here so

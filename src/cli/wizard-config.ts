@@ -212,7 +212,7 @@ export function maxSelections(ctx: PresetContext): WizardSelections {
     memory: { shortTermMemory: true, longTermMemory: docker, knowledgeGraph: docker, prepopDocs: true, prepopGit: true },
     multiAgent: { coordinationDb: true, worktreeIsolation: true, deployBatching: true, agentMessaging: true },
     patterns: { patternLibrary: true, patternRag: docker, reinforcementLearning: docker },
-    policy: { policyEngine: true, imageAssetVerification: true, iacStateParity: true, iacPipelineEnforcement: true, kubectlVerifyBackport: true, definitionOfDoneIac: true, customPoliciesDir: true, pay2uPolicies: false, selectedPolicies: 'recommended' },
+    policy: { policyEngine: true, imageAssetVerification: true, iacStateParity: true, iacPipelineEnforcement: true, kubectlVerifyBackport: true, definitionOfDoneIac: true, customPoliciesDir: true, pay2uPolicies: false, selectedPolicies: 'all' },
     model: { provider: local ? 'local' : 'anthropic', qwenOptimizations: local, toolCallProfile: '', costTracking: true, modelRouting: true, routingPreset: local ? 'fable-local-opus' : 'none' },
     hooks: { sessionStart: true, preCompact: true, taskCompletion: true, autoApproveTools: true },
     browser: { cloakBrowser: true },

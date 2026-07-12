@@ -165,3 +165,22 @@ export async function applyPolicySelection(selectedNames: string[]): Promise<Sel
 export function recommendedSelection(choices: PolicyChoice[]): string[] {
   return choices.filter((c) => c.level === 'REQUIRED' || c.level === 'RECOMMENDED').map((c) => c.name);
 }
+
+/**
+ * The policies `uap setup` installs by DEFAULT: EVERY built-in policy, each with
+ * its schema-declared level (REQUIRED/RECOMMENDED/OPTIONAL), EXCLUDING the pay2u
+ * example pack — that stays opt-in behind its own flag (`includePay2u`). This is
+ * what "apply all policies + their current state as the setup default" means.
+ */
+export function defaultSetupPolicies(choices: PolicyChoice[], includePay2u = false): string[] {
+  return choices.filter((c) => includePay2u || !c.name.startsWith('pay2u')).map((c) => c.name);
+}
+
+/**
+ * Non-interactive setup convenience: install ALL default policies (see
+ * defaultSetupPolicies) into the project store. Fail-soft.
+ */
+export async function installAllDefaultPolicies(includePay2u = false): Promise<SelectionResult> {
+  const choices = await listPolicyChoices();
+  return applyPolicySelection(defaultSetupPolicies(choices, includePay2u));
+}
