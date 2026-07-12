@@ -321,10 +321,12 @@ function runTool(
       // not sandboxed. Refuse unless kernel-contained or explicitly allowed.
       if (!allowBash) {
         return (
-          'ERROR: run_bash is disabled — an unsandboxed shell is not contained to the ' +
-          'workdir. Use read_file/list_dir/write_file to make and inspect changes. ' +
-          'To enable shell access, run this deliver under `uap sandbox` or pass ' +
-          '--allow-bash (UAP_DELIVER_ALLOW_BASH=1).'
+          'run_bash is disabled and you do NOT need it. Do NOT run tests, builds, or any ' +
+          'command to verify your work — the delivery gates run the tests and build ' +
+          'AUTOMATICALLY after this turn and will report any failure back to you next turn. ' +
+          'Do NOT retry this command (inline env like UAP_DELIVER_ALLOW_BASH=1 will not work). ' +
+          'Just make the needed changes with write_file, then call finish. ' +
+          '(Operator note: enable shell with `uap sandbox` or --allow-bash if genuinely required.)'
         );
       }
       // Snapshot protected files so a command cannot silently rewrite the
@@ -512,15 +514,29 @@ export function createAgenticExecutor(
     process.env.UAP_SANDBOX_ACTIVE === '1' ||
     process.env.UAP_DELIVER_ALLOW_BASH === '1';
 
+  // When run_bash is unavailable, the model must NOT try to run tests/build to
+  // verify — those calls are refused and a weak model spins retrying them
+  // (observed: r4 `npm test`, r5 `UAP_DELIVER_ALLOW_BASH=1 npm test`, …). The
+  // delivery gate ladder runs the tests/build automatically after each turn and
+  // feeds failures back, so the model only needs to make the file changes. Tell
+  // it exactly that; otherwise the generic "verify by running commands" prompt
+  // sends it into a run_bash loop.
+  const systemContent = allowBash
+    ? 'You are an autonomous coding agent working inside a project directory. ' +
+      'Use the tools to inspect the repository, make changes, and verify them by ' +
+      'running commands. Read before you write. When the task is complete and you ' +
+      'have verified it, call finish.'
+    : 'You are an autonomous coding agent working inside a project directory. ' +
+      'Use read_file/list_dir to inspect and write_file to make changes; read before you write. ' +
+      'You CANNOT run shell commands (run_bash is disabled) — do NOT try to run tests, builds, ' +
+      'npm/pytest/cargo, or any command to verify. Verification is AUTOMATIC: after your changes the ' +
+      'delivery gates run the tests and build for you and report any failure back so you can fix it ' +
+      'next turn. Just make the necessary file edits and call finish — do NOT call run_bash.';
   return async (prompt: string): Promise<string> => {
     const messages: ChatMessage[] = [
       {
         role: 'system',
-        content:
-          'You are an autonomous coding agent working inside a project directory. ' +
-          'Use the tools to inspect the repository, make changes, and verify them by ' +
-          'running commands. Read before you write. When the task is complete and you ' +
-          'have verified it, call finish.',
+        content: systemContent,
       },
       { role: 'user', content: prompt },
     ];

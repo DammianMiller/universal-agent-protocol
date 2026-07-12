@@ -148,6 +148,39 @@ describe('createAgenticExecutor — file recovery when the model skips tool call
     expect(existsSync(marker)).toBe(false); // command did NOT run
   });
 
+  it('when run_bash is disabled: system prompt tells the model NOT to self-verify (gates are automatic)', async () => {
+    const bodies: string[] = [];
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(String((init as { body?: string })?.body ?? ''));
+      return chatResponse(finishCall.tool_calls ? finishCall : { content: 'done' }) as unknown as Response;
+    });
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' }); // allowBash false
+    await exec('go');
+    const sys = JSON.parse(bodies[0]).messages.find((m: { role: string }) => m.role === 'system').content as string;
+    expect(sys).toMatch(/CANNOT run shell commands/);
+    expect(sys).toMatch(/do NOT try to run tests/i);
+    expect(sys).toMatch(/Verification is AUTOMATIC/i);
+  });
+
+  it('run_bash refusal tells the model verification is automatic and not to retry', async () => {
+    const bodies: string[] = [];
+    let i = 0;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(String((init as { body?: string })?.body ?? ''));
+      const msg = i++ === 0 ? bashCall('npm test') : finishCall;
+      return chatResponse(msg) as unknown as Response;
+    });
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('go');
+    // The 2nd request carries the tool result (the refusal) fed back to the
+    // model — identify it by the refusal's unique phrase (the system prompt
+    // also mentions run_bash, so match on 'do NOT need it').
+    const allText = JSON.stringify(JSON.parse(bodies[1]).messages);
+    expect(allText).toMatch(/do NOT need it/i);
+    expect(allText).toMatch(/delivery gates run the tests/i);
+    expect(allText).toMatch(/do NOT retry/i);
+  });
+
   it('runs run_bash when explicitly allowed (--allow-bash)', async () => {
     const marker = join(dir, 'bash-ran-2.txt');
     mockChatSequence([bashCall(`touch ${marker}`), finishCall]);
