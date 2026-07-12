@@ -189,7 +189,11 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     if (fidelity.visionEndpoint && !process.env.UAP_VISION_ENDPOINT) process.env.UAP_VISION_ENDPOINT = fidelity.visionEndpoint;
     if (fidelity.visionModel && !process.env.UAP_VISION_MODEL) process.env.UAP_VISION_MODEL = fidelity.visionModel;
     try {
-      const { judgeScreenshots, visionSummary, visionJudgeConfigured, readDesignContext } = await import('../delivery/vision-judge.js');
+      const { judgeScreenshots, visionSummary, visionJudgeConfigured, autodetectLocalVision, readDesignContext } = await import('../delivery/vision-judge.js');
+      // Default the judge to the ACTIVE local model when it isn't explicitly
+      // configured — a local vision-capable model (Qwen3.6 + mmproj) should be
+      // used rather than reporting "no vision model".
+      if (!visionJudgeConfigured()) await autodetectLocalVision();
       if (visionJudgeConfigured()) {
         const shots = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
         const verdict = await judgeScreenshots(
@@ -204,7 +208,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
           visualReport += `\n✗ max fidelity: aesthetic score ${verdict.score}/10 is below the ${fidelity.visionMinScore} threshold.`;
         }
       } else if (fidelity.max) {
-        visualReport += '\n⚠ max fidelity: no vision model configured — aesthetic review skipped. Set UAP_VISION_ENDPOINT/MODEL (uap setup) to enable blocking review.';
+        visualReport += '\n⚠ max fidelity: no vision model available — aesthetic review skipped. No local vision-capable model was detected (llama-server /props modalities.vision) and UAP_VISION_ENDPOINT/MODEL is unset. Launch the model with an --mmproj projector, or set UAP_VISION_ENDPOINT/MODEL (uap setup).';
       }
     } catch {
       // vision review is best-effort; never let it throw out of verify
