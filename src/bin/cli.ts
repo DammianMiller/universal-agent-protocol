@@ -48,6 +48,7 @@ const lazy = {
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
+  fidelity: () => import('../cli/fidelity.js').then((m) => m.fidelityCommand),
 };
 
 // Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
@@ -663,6 +664,7 @@ program
   .option('--timeout <ms>', 'Per-rung timeout override in milliseconds')
   .option('--acceptance <specfile>', 'Judge behavioral completeness against a spec file (LLM acceptance gate; --strict to gate on it)')
   .option('--no-visual', 'Skip the visual gate (renders entry pages headlessly, checks blank/static/errors, saves screenshots to .uap/visual)')
+  .option('--approve-visual', 'Approve the current render as the visual regression baseline (.uap/visual/baseline) instead of gating on drift')
   .option('-m, --model <preset>', 'Model preset for the acceptance gate (default: $UAP_DELIVER_MODEL or qwen35-a3b)')
   .option('--endpoint <url>', 'Override the model endpoint for the acceptance gate')
   .option('--json', 'Emit JSON result')
@@ -680,7 +682,18 @@ program
       model: options.model,
       endpoint: options.endpoint,
       visual: options.visual,
+      approveVisual: Boolean(options.approveVisual),
     });
+  });
+
+program
+  .command('fidelity')
+  .description('Inspect or set the maximum-fidelity verification mode (raised gates + always-on visual/vision review)')
+  .argument('[action]', 'max | standard (omit to show status)')
+  .option('--json', 'Emit JSON')
+  .action(async (action, options) => {
+    const cmd = await lazy.fidelity();
+    await cmd(action, { json: Boolean(options.json) });
   });
 
 // Paired UAP benchmark — controlled UAP-on vs UAP-off A/B

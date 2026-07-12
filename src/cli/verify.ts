@@ -12,6 +12,8 @@
 import { detectRungs, runTieredLadder, tierOf, type GateRung, type GateTier, type LadderResult } from '../delivery/verifier-ladder.js';
 import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
 import { runVisualGate, discoverEntryPages, type VisualVerdict } from '../delivery/visual-gate.js';
+import { resolveFidelity, type ResolvedFidelity } from '../delivery/fidelity.js';
+import { compareVisualBaseline, driftSummary, approveVisualBaseline } from '../delivery/visual-baseline.js';
 import type { LoopExecutor } from '../delivery/convergence-loop.js';
 
 export interface VerifyOptions {
@@ -37,6 +39,10 @@ export interface VerifyOptions {
    * screenshots (default ON for web artifacts; false disables; fail-open
    * without a browser). */
   visual?: boolean;
+  /** Override the resolved fidelity mode (default: resolveFidelity(dir)). Test seam. */
+  fidelity?: ResolvedFidelity;
+  /** Approve the current run's screenshots as the regression baseline (no gating). */
+  approveVisual?: boolean;
 }
 
 export interface VerifyResult {
@@ -54,6 +60,7 @@ export interface VerifyResult {
 /** Core verify logic — pure-ish (no process.exit), so it is unit-testable. */
 export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult> {
   const dir = opts.dir ?? process.cwd();
+  const fidelity = opts.fidelity ?? resolveFidelity(dir);
   let rungs = detectRungs(dir);
 
   if (opts.gates) {
@@ -70,9 +77,10 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     opts.acceptanceSpec && opts.acceptanceExecutor
       ? await runAcceptanceGate({ spec: opts.acceptanceSpec, projectRoot: dir, executor: opts.acceptanceExecutor })
       : undefined;
-  // Acceptance is a JUDGMENT: it only affects the exit code under --strict, so
-  // its nondeterminism never hard-blocks a session by default.
-  const acceptanceBlocks = Boolean(acceptance && !acceptance.passed && opts.strict);
+  // Acceptance is a JUDGMENT: by default it only affects the exit code under
+  // --strict, so its nondeterminism never hard-blocks a session. Under max
+  // fidelity the acceptance judge is REQUIRED — a failing verdict blocks.
+  const acceptanceBlocks = Boolean(acceptance && !acceptance.passed && (opts.strict || fidelity.max));
   const acceptanceReport = acceptance ? `\n${formatAcceptanceReport(acceptance)}` : '';
 
   if (rungs.length === 0) {
@@ -93,7 +101,9 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     };
   }
 
-  const maxTier: GateTier = opts.full ? 'deploy-dev' : 'runtime';
+  // Cheap-first floor. Max fidelity promotes past `runtime` into `integration`
+  // so integration-tier gates run before "done" (standard stops at runtime).
+  const maxTier: GateTier = opts.full ? 'deploy-dev' : fidelity.max ? 'integration' : 'runtime';
   const ladder = await runTieredLadder(rungs, dir, {
     maxTier,
     ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
@@ -105,25 +115,88 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // forced with visual: true — sampling frames in a real browser is not cheap,
   // and minimal fixtures legitimately render near-blank.
   let visual: VisualVerdict | undefined;
-  const visualWanted = opts.visual === true || (opts.visual !== false && !opts.runtimeOnly);
-  if (visualWanted && discoverEntryPages(dir).length > 0) {
+  // Under max fidelity the visual gate runs even on the runtime-only (Stop-hook)
+  // path — a UI that renders wrong is a real failure regardless of how cheap the
+  // caller wanted to be.
+  const visualWanted = opts.visual === true || (opts.visual !== false && (!opts.runtimeOnly || fidelity.max));
+  const hasEntryPages = discoverEntryPages(dir).length > 0;
+  if (visualWanted && hasEntryPages) {
     visual = await runVisualGate(dir);
   }
-  const visualBlocks = Boolean(visual && !visual.skipped && !visual.passed);
+  // Standard: a no-browser SKIP fails open. Max: fail CLOSED — a project with
+  // entry pages that could not be visually observed is NOT verified.
+  const visualBlocks = Boolean(visual && !visual.passed && (fidelity.max || !visual.skipped));
   let visualReport = visual ? `\n${visual.feedback}` : '';
-  // Vision review (advisory): when a vision model is configured, score the
-  // saved screenshots against the acceptance spec (or a generic quality bar).
+
+  // Visual regression baselines. --approve-visual pins the current look; otherwise
+  // (when baselines are enabled and the gate actually rendered) compare against the
+  // approved baseline and, under max fidelity, block on drift beyond threshold.
+  let baselineBlocks = false;
   if (visual && !visual.skipped) {
+    if (opts.approveVisual) {
+      const approved = approveVisualBaseline(dir);
+      visualReport += `\n✓ visual baseline approved (${approved.length} page(s)) → .uap/visual/baseline/`;
+    } else if (fidelity.visualBaselines) {
+      const drifts = compareVisualBaseline(dir);
+      const summary = driftSummary(drifts);
+      if (summary) visualReport += `\n${summary}`;
+      if (fidelity.max && drifts.some((d) => d.drifted)) baselineBlocks = true;
+    }
+  }
+  if (fidelity.max && visual?.skipped) {
+    visualReport += '\n⚠ max fidelity: entry pages exist but no headless browser was available — visual verification could not run (fail-closed).';
+  }
+  // Vision aesthetic review. Standard: advisory (adds context to the report).
+  // Max: BLOCKING — a rendered UI that scores below fidelity.visionMinScore is a
+  // real failure. Bridges the resolved vision endpoint/model into the env the
+  // vision judge reads, so `fidelity.visionEndpoint` config works without export.
+  let visionBlocks = false;
+  if (visual && !visual.skipped) {
+    if (fidelity.visionEndpoint && !process.env.UAP_VISION_ENDPOINT) process.env.UAP_VISION_ENDPOINT = fidelity.visionEndpoint;
+    if (fidelity.visionModel && !process.env.UAP_VISION_MODEL) process.env.UAP_VISION_MODEL = fidelity.visionModel;
     try {
-      const { judgeScreenshots, visionSummary, visionJudgeConfigured } = await import('../delivery/vision-judge.js');
+      const { judgeScreenshots, visionSummary, visionJudgeConfigured, readDesignContext } = await import('../delivery/vision-judge.js');
       if (visionJudgeConfigured()) {
         const shots = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
-        const verdict = await judgeScreenshots(shots, opts.acceptanceSpec ?? 'A polished, working application UI.');
+        const verdict = await judgeScreenshots(
+          shots,
+          opts.acceptanceSpec ?? 'A polished, working application UI.',
+          readDesignContext(dir)
+        );
         const summary = visionSummary(verdict);
         if (summary) visualReport += `\n${summary}`;
+        if (fidelity.max && verdict && verdict.score < fidelity.visionMinScore) {
+          visionBlocks = true;
+          visualReport += `\n✗ max fidelity: aesthetic score ${verdict.score}/10 is below the ${fidelity.visionMinScore} threshold.`;
+        }
+      } else if (fidelity.max) {
+        visualReport += '\n⚠ max fidelity: no vision model configured — aesthetic review skipped. Set UAP_VISION_ENDPOINT/MODEL (uap setup) to enable blocking review.';
       }
     } catch {
-      // vision review is best-effort
+      // vision review is best-effort; never let it throw out of verify
+    }
+  }
+
+  // Record a visual-verification marker so the commit-time enforcer can tell
+  // whether the UI on disk has been visually observed since it last changed.
+  // Written whenever the gate actually rendered (not on a no-browser skip).
+  if (visual && !visual.skipped) {
+    try {
+      const { writeFileSync, mkdirSync } = await import('fs');
+      const { join } = await import('path');
+      const visualPassed = visual.passed && !visionBlocks && !baselineBlocks;
+      const markerDir = join(dir, '.uap', 'visual');
+      mkdirSync(markerDir, { recursive: true });
+      writeFileSync(
+        join(markerDir, 'last-verdict.json'),
+        JSON.stringify(
+          { passed: visualPassed, mode: fidelity.mode, at: Math.floor(Date.now() / 1000), pages: visual.pages.map((p) => p.file) },
+          null,
+          2
+        )
+      );
+    } catch {
+      // marker is best-effort; a missing marker just makes the enforcer block (fail-closed)
     }
   }
 
@@ -142,9 +215,11 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   if (acceptanceBlocks && exitCode === 0) exitCode = 1;
   // Visual problems are REAL failures (blank canvas, static rAF scene,
   // runtime errors observed while watching) — they gate like broken code.
-  if (visualBlocks && exitCode === 0) exitCode = 1;
+  // visionBlocks (max fidelity, low aesthetic score) and baselineBlocks (visual
+  // regression drift) gate the same way.
+  if ((visualBlocks || visionBlocks || baselineBlocks) && exitCode === 0) exitCode = 1;
   return {
-    passed: ladder.passed && !acceptanceBlocks && !visualBlocks,
+    passed: ladder.passed && !acceptanceBlocks && !visualBlocks && !visionBlocks && !baselineBlocks,
     exitCode,
     empty: false,
     report,

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.140.0 (2026-07-12)
+
+- feat(fidelity): default interactive setup to max + DESIGN.md-aware vision + structural baseline
+
+
+## v1.139.0 (2026-07-12)
+
+- feat(fidelity): maximum-fidelity mode + always-on visual/vision verification
+
+
 ## v1.138.1 (2026-07-12)
 
 - fix(memory): bridge mirror surfaces insight memories, not lifecycle noise

@@ -434,6 +434,24 @@ export const ReactorSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+// Maximum-fidelity mode. `max` flips every verification default to its
+// strongest setting (raised verifier floor, acceptance judge required,
+// blocking vision review, fail-CLOSED visual gate) so a delivery is accepted
+// only when it is built, runs, LOOKS right, and matches the spec. The
+// UAP_FIDELITY env var overrides this at runtime. vision* configure the
+// vision-capable endpoint used for aesthetic review (default: the local model).
+export const FidelitySchema = z.object({
+  mode: z.enum(['standard', 'max']).default('standard'),
+  /** Vision model id for aesthetic screenshot review (OpenAI-compat, image_url). */
+  visionModel: z.string().optional(),
+  /** Vision endpoint base URL (e.g. http://127.0.0.1:8080/v1). */
+  visionEndpoint: z.string().optional(),
+  /** Minimum aesthetic score (0–10) a UI must reach under `max` before it blocks. */
+  visionMinScore: z.number().min(0).max(10).default(6),
+  /** Keep approved screenshots as regression baselines and block on visual drift. */
+  visualBaselines: z.boolean().default(true),
+});
+
 export const AgentContextConfigSchema = z.object({
   $schema: z.string().optional(),
   version: z.string().default('1.0.0'),
@@ -471,6 +489,8 @@ export const AgentContextConfigSchema = z.object({
   design: DesignSchema.optional(),
   // Reactor per-prompt injection (on by default)
   reactor: ReactorSchema.optional(),
+  // Maximum-fidelity mode (raised gates + always-on visual/vision verification)
+  fidelity: FidelitySchema.optional(),
   // Real-time flag adaptation (LLM Self-Tuning P4) — auto-on; set enabled:false
   // to opt out. No zod default so an absent key isn't fabricated as `true`.
   realtimeAdapt: z.object({ enabled: z.boolean() }).partial().optional(),
