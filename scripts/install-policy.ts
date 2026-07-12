@@ -93,6 +93,10 @@ const MANDATORY_POLICIES = [
   // Inactive (fails open) until a project has a DESIGN.md token allow-list;
   // installed eagerly so `uap design interrogate` activates it with no re-setup.
   'design-token-gate',
+  // Inactive (fails open) unless fidelity is `max`; installed eagerly so
+  // `uap fidelity max` / `uap setup --profile maximum` activates the commit-time
+  // visual-verification gate with no re-setup.
+  'visual-verification',
 ];
 
 async function installPolicy(policyName: string): Promise<void> {

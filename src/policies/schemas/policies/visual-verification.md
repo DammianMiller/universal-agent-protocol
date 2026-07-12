@@ -50,3 +50,21 @@ After any delivery with a rendered artifact: run `uap verify --dir <project>`,
 Read the `.uap/visual/*.png` screenshots, apply design/aesthetic judgment
 (spacing, palette, hierarchy, motion feel), fix what looks wrong, and re-verify.
 "It passed the gates" is not "it looks right".
+
+## Commit-time enforcer (max fidelity)
+
+Under maximum fidelity (`.uap.json` `fidelity.mode: max` or `UAP_FIDELITY=max`),
+the Python enforcer `visual_verification.py` fires on `git commit` and **blocks**
+the commit when UI files are staged but have not been visually verified since
+they last changed:
+
+- `uap verify` writes `.uap/visual/last-verdict.json` (`{passed, mode, at}`)
+  whenever the visual gate actually renders.
+- The enforcer blocks if that marker is missing, records a non-passing verdict,
+  or is older than any staged UI file's on-disk mtime (the look changed after it
+  was last observed).
+
+This is the **non-bypassable backstop** for agentic / opencode / direct-edit
+sessions that never run `uap deliver` or the Stop-hook `uap verify`. It is
+INACTIVE (fails open) when fidelity is `standard`. Escape hatch (justify in the
+commit message): `UAP_VISUAL_GATE_OFF=1`.

@@ -161,12 +161,29 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Root-level entry pages: index.html first, then other .html files. */
+/** Common build-output dirs a framework project renders into (served from root). */
+const BUILD_OUTPUT_DIRS = ['dist', 'build', 'out'];
+
+/**
+ * Entry pages to render. Root-level `.html` first (index first); if the project
+ * has none — the shape of a React/Vue/Svelte app that only produces HTML after a
+ * build — fall back to the built `index.html` under dist/build/out so framework
+ * UIs are covered, not silently skipped. The static server serves projectRoot,
+ * so a nested entry like `dist/index.html` navigates fine.
+ */
 export function discoverEntryPages(projectRoot: string): string[] {
   try {
-    const all = readdirSync(projectRoot).filter((f) => f.toLowerCase().endsWith('.html'));
-    all.sort((a, b) => (a === 'index.html' ? -1 : b === 'index.html' ? 1 : a.localeCompare(b)));
-    return all.slice(0, MAX_PAGES);
+    const root = readdirSync(projectRoot).filter((f) => f.toLowerCase().endsWith('.html'));
+    if (root.length > 0) {
+      root.sort((a, b) => (a === 'index.html' ? -1 : b === 'index.html' ? 1 : a.localeCompare(b)));
+      return root.slice(0, MAX_PAGES);
+    }
+    // Framework fallback: a freshly built entry under a common output dir.
+    for (const d of BUILD_OUTPUT_DIRS) {
+      const entry = join(d, 'index.html');
+      if (existsSync(join(projectRoot, entry))) return [entry];
+    }
+    return [];
   } catch {
     return [];
   }
@@ -294,7 +311,10 @@ export async function runVisualGate(
             } catch {
               probes.push({ canvas: false });
             }
-            const shot = join(screenshotDir, `${file.replace(/\.html$/i, '')}-t${i}.png`);
+            // Flatten nested entry paths (dist/index.html) into a single
+            // screenshot-safe basename so no missing subdir defeats the write.
+            const shotBase = file.replace(/\.html$/i, '').replace(/[/\\]+/g, '_');
+            const shot = join(screenshotDir, `${shotBase}-t${i}.png`);
             try {
               await browser.screenshot(shot);
               shots.push(shot);

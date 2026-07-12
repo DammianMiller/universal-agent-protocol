@@ -105,6 +105,15 @@ export interface ReactorFeatures {
   enabled: boolean;
 }
 
+export interface FidelityFeatures {
+  /** `max` raises every verification gate + turns on always-on visual/vision review. */
+  mode: 'standard' | 'max';
+  /** Vision endpoint for aesthetic review (defaults to the inference endpoint under max). */
+  visionEndpoint?: string;
+  /** Vision model id (defaults to 'local' for a single-model llama endpoint). */
+  visionModel?: string;
+}
+
 export interface ProxyFeatures {
   /** Hook-driven, reference-counted proxy autostart (start with the session,
    *  adopt an existing one, stop only when the last client leaves). */
@@ -136,6 +145,7 @@ export interface WizardSelections {
   reactor: ReactorFeatures;
   proxy: ProxyFeatures;
   handsfree: HandsfreeFeatures;
+  fidelity: FidelityFeatures;
 }
 
 /** Conservative defaults used by the non-interactive path and as prompt seeds. */
@@ -172,6 +182,7 @@ export function defaultSelections(overrides: Partial<WizardSelections> = {}): Wi
     reactor: { enabled: true },
     proxy: { autostart: false },
     handsfree: { enabled: false },
+    fidelity: { mode: 'standard' },
     ...overrides,
   };
 }
@@ -210,6 +221,9 @@ export function maxSelections(ctx: PresetContext): WizardSelections {
     reactor: { enabled: true },
     proxy: { autostart: true },
     handsfree: { enabled: true, intensity: local ? 'aggressive' : 'moderate' },
+    // Max fidelity: strongest gates + always-on visual/vision verification. Vision
+    // review uses the local inference endpoint (resolveFidelity falls back to it).
+    fidelity: { mode: 'max' },
   });
 }
 
@@ -402,6 +416,14 @@ export async function applyWizardConfig(
     // ── Reactor per-prompt injection ────────────────────────────────────
     config.reactor = { enabled: selections.reactor.enabled };
 
+    // ── Maximum-fidelity mode (raised gates + always-on visual/vision) ──
+    config.fidelity = {
+      ...(config.fidelity as object ?? {}),
+      mode: selections.fidelity.mode,
+      ...(selections.fidelity.visionEndpoint ? { visionEndpoint: selections.fidelity.visionEndpoint } : {}),
+      ...(selections.fidelity.visionModel ? { visionModel: selections.fidelity.visionModel } : {}),
+    };
+
     config.proxy = { ...(config.proxy as object ?? {}), autostart: selections.proxy.autostart };
 
     if (selections.handsfree.enabled) {
@@ -448,6 +470,15 @@ export function writeProxyEnv(cwd: string, selections: WizardSelections): string
     if (d.enforcement !== 'block') lines.push(`UAP_ENFORCE_DELIVERY=${d.enforcement}`);
     else lines.push('UAP_ENFORCE_DELIVERY=block');
     lines.push(`UAP_DELIVER_LOCAL_MODE=${d.localMode}`);
+
+    // Fidelity + vision (aesthetic screenshot review). Under max, wire the vision
+    // endpoint/model so the blocking review runs against the local model with no
+    // extra export. Explicit selections win; otherwise the resolver falls back to
+    // the inference endpoint at runtime.
+    const fid = selections.fidelity;
+    lines.push(`UAP_FIDELITY=${fid.mode}`);
+    if (fid.visionEndpoint) lines.push(`UAP_VISION_ENDPOINT=${fid.visionEndpoint}`);
+    if (fid.visionModel) lines.push(`UAP_VISION_MODEL=${fid.visionModel}`);
 
     // Anthropic passthrough — keep the proxy in sync with the routing choice so
     // a picked preset works first-time: cloud tiers (planner/reviewer) reach the
