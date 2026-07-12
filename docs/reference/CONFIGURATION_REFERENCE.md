@@ -598,6 +598,30 @@ The serving recipe the proxy applies (mirror of `recipes.recipe`, consumed by th
 
 **Recommendation:** Keep in sync with `recipes.recipe`; `uap setup`/`uap config` write both.
 
+### `realtimeAdapt.enabled`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | boolean |
+| **Default** | `true` |
+
+Real-time flag adaptation (LLM Self-Tuning P4): the reactor emits per-session adjustments from live signals (tool-failure/quality/context/RECON) so the proxy can escalate or converge mid-session. This is the effective master switch — off means no signal is emitted.
+
+**Recommendation:** Leave on. It is conservative (emits only when a live signal breaches a threshold) and is the effective master switch — disabling it turns the whole feature off regardless of the proxy side.
+
+### `PROXY_REALTIME_ADAPT`
+
+| | |
+|---|---|
+| **Where** | `.uap/proxy.env` |
+| **Type** | boolean |
+| **Default** | `true` |
+
+Proxy side of real-time adaptation: whether the serving proxy honors a fresh adaptation signal per request. Auto-on; harmless when no emitter is running (no signal to honor).
+
+**Recommendation:** Leave on. Set `false` only to make the proxy ignore adaptation signals even when the reactor emits them.
+
 ## Dashboard
 
 <a id="dashboard"></a>The live analytics server and its mutation token.
