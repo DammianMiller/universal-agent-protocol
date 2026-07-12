@@ -127,6 +127,24 @@ import { parsePhaseArray, phaseInstruction, planDeliveryPhases, shouldDecompose 
 import { runEpics, type Epic, type EpicRunResult } from '../delivery/epic-controller.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
+import {
+  buildUserPathsNote,
+  createUserValidationRunner,
+  resolveUserValidationMode,
+  synthesizeUserValidationRung,
+} from '../delivery/user-validation.js';
+import { deriveUserPaths, loadUserPaths, mergeUserPaths, USER_PATHS_FILE } from '../delivery/user-paths.js';
+
+/** Raw .uap.json reader usable before the main cfgRawEarly declaration. */
+function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unknown> {
+  return () => {
+    try {
+      return (loadUapConfigRaw(projectRoot) ?? {}) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  };
+}
 import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow, CONTEXT_BUDGET_MARKER } from '../delivery/context-budget.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { extractContract } from '../delivery/contract-extractor.js';
@@ -711,6 +729,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     );
   }
 
+  const cfgRawEarlyForUv = cfgRawEarlyForUvFactory(projectRoot);
   // Baseline-delta gating: a required rung that is ALREADY red cannot be a
   // regression this mission causes, but it makes acceptance unreachable and
   // eats the whole turn budget (two live missions wedged this way). Preflight
@@ -746,6 +765,26 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
   }
 
+
+  // User-path validation: the terminal 'final'-tier rung. The delivered
+  // artifact must pass its critical user journeys through the REAL client
+  // (headless browser / HTTP / built CLI) before DELIVERED. ON BY DEFAULT
+  // (delivery.userValidation: block); UAP_USER_VALIDATION=0 downgrades to
+  // advisory for one run and is self-protect-blocked from persisting.
+  const userValidationMode = resolveUserValidationMode(
+    (cfgRawEarlyForUv()?.delivery as Record<string, unknown> | undefined)?.userValidation
+  );
+  if (userValidationMode !== 'off' && !options.dryRun) {
+    const uvRung = synthesizeUserValidationRung(userValidationMode);
+    if (uvRung && !rungs.some((r) => r.id === uvRung.id)) {
+      rungs.push(uvRung);
+      console.log(
+        chalk.cyan(
+          `👤 user-validation: ${userValidationMode} — critical user paths run through the real client as the final gate`
+        )
+      );
+    }
+  }
 
   if (options.dryRun) {
     const summary = {
@@ -1261,6 +1300,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       maxTier,
       runner: runLadder,
       deployDevRunner: runDeployDevLadder,
+      userValidationRunner: createUserValidationRunner(),
     });
   // Behavioral-completeness feedback: once objective gates pass, the acceptance
   // judge checks the spec's requirements against the produced code and feeds
@@ -1324,9 +1364,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // gates all passed — hand the judge that fact as evidence, so
         // requirements like "make the tests pass" are graded on the gate
         // result instead of speculated about from static code.
-        const runtimeNote = acceptancePrimary
+        const uvNote = buildUserPathsNote(root);
+        const baseNote = acceptancePrimary
           ? visualNote
           : 'Objective project gates (build/test suite) ALL PASSED on this turn — treat test/build-related requirements as objectively verified.';
+        const runtimeNote = [baseNote, uvNote?.note].filter(Boolean).join(' ');
         const r = await runAcceptanceGate({
           spec: acceptanceSpec,
           projectRoot: root,
@@ -1533,6 +1575,21 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(chalk.cyan(`🧩 ${planned.length} phases: ${planned.map((ph) => ph.title).join(' → ')}`));
     } else {
       console.log(chalk.dim('  decompose: no usable multi-phase plan — running as a single mission'));
+    }
+  }
+  // Derive the user-path manifest from the mission when the gate is on and the
+  // repo has none yet (merge-append: user-curated entries are never
+  // overwritten). Fail-soft — a planner miss means the gate reports
+  // "no manifest" instead of blocking on derivation.
+  if (userValidationMode !== 'off' && !options.dryRun && !loadUserPaths(projectRoot)) {
+    const derived = await deriveUserPaths(instruction, verdictExecutor);
+    if (derived && derived.paths.length > 0) {
+      mergeUserPaths(projectRoot, derived);
+      console.log(
+        chalk.cyan(`👤 user-validation: derived ${derived.paths.length} critical user path(s) → ${USER_PATHS_FILE}`)
+      );
+    } else {
+      console.log(chalk.dim('  user-validation: no manifest derived — gate will report NA until one exists'));
     }
   }
   const runState: DeliverRunState = {

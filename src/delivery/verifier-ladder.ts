@@ -28,6 +28,7 @@ export type GateTier =
   | 'runtime'
   | 'integration'
   | 'deploy-dev'
+  | 'final'
   | 'ci'
   | 'deploy-staging'
   | 'deploy-prod';
@@ -38,6 +39,7 @@ export const TIER_ORDER: GateTier[] = [
   'runtime',
   'integration',
   'deploy-dev',
+  'final',
   'ci',
   'deploy-staging',
   'deploy-prod',
@@ -792,6 +794,12 @@ export interface TieredLadderOptions extends LadderOptions {
    * which simply spawns the smoke command without managing a compose stack.
    */
   deployDevRunner?: LadderRunFn;
+  /**
+   * Specialized runner for the terminal `final` tier (user-path validation
+   * against the real client). When absent, `final` rungs fall back to
+   * {@link runner}, which would spawn their command verbatim.
+   */
+  userValidationRunner?: LadderRunFn;
 }
 
 const skippedRung = (rung: GateRung): RungResult => ({
@@ -844,7 +852,11 @@ export async function runTieredLadder(
     const tierRungs = byTier.get(tier);
     if (!tierRungs || tierRungs.length === 0) continue;
 
-    const eligible = TIER_ORDER.indexOf(tier) <= maxIdx;
+    // 'final' is an epilogue tier: always in scope when its rung was
+    // synthesized (config-gated upstream), regardless of the cost ceiling —
+    // it must not drag integration/deploy-dev into scope, and promotion
+    // still guarantees it only runs when every cheaper in-scope tier passed.
+    const eligible = tier === 'final' || TIER_ORDER.indexOf(tier) <= maxIdx;
     if (!eligible) {
       // Above maxTier — verified remotely, never run locally.
       for (const rung of tierRungs) results.push(skippedRung(rung));
@@ -858,7 +870,10 @@ export async function runTieredLadder(
       continue;
     }
 
-    const useRunner = tier === 'deploy-dev' && options.deployDevRunner ? options.deployDevRunner : runner;
+    const useRunner =
+      tier === 'deploy-dev' && options.deployDevRunner ? options.deployDevRunner
+      : tier === 'final' && options.userValidationRunner ? options.userValidationRunner
+      : runner;
     const tierResult = await useRunner(tierRungs, projectRoot, innerOptions);
     results.push(...tierResult.results);
 

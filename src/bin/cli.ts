@@ -665,6 +665,7 @@ program
   .option('--acceptance <specfile>', 'Judge behavioral completeness against a spec file (LLM acceptance gate; --strict to gate on it)')
   .option('--no-visual', 'Skip the visual gate (renders entry pages headlessly, checks blank/static/errors, saves screenshots to .uap/visual)')
   .option('--approve-visual', 'Approve the current render as the visual regression baseline (.uap/visual/baseline) instead of gating on drift')
+  .option('--user-paths', 'Run the user-path validation gate: execute .uap/user-paths.json journeys through the real client (headless browser / HTTP / built CLI)')
   .option('-m, --model <preset>', 'Model preset for the acceptance gate (default: $UAP_DELIVER_MODEL or qwen35-a3b)')
   .option('--endpoint <url>', 'Override the model endpoint for the acceptance gate')
   .option('--json', 'Emit JSON result')
@@ -683,6 +684,7 @@ program
       endpoint: options.endpoint,
       visual: options.visual,
       approveVisual: Boolean(options.approveVisual),
+      userPaths: Boolean(options.userPaths),
     });
   });
 

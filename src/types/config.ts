@@ -420,6 +420,12 @@ export const DeliverySchema = z.object({
   enforcement: z.enum(['block', 'advisory', 'off']).default('block'),
   localMode: z.enum(['advisory', 'deliver', 'block']).default('advisory'),
   runtimeVerify: z.boolean().default(false),
+  // User-path validation gate: the delivered artifact must pass its critical
+  // user journeys through the REAL client (headless browser / HTTP / CLI)
+  // before deliver may claim DELIVERED. ON BY DEFAULT ('block');
+  // UAP_USER_VALIDATION=0 downgrades to advisory for one run (the env var is
+  // self-protect-blocked so the model cannot persist it).
+  userValidation: z.enum(['block', 'advisory', 'off']).default('block'),
 });
 
 // DESIGN.md integration (interrogate/lint + reactor design guidance + token gate).
