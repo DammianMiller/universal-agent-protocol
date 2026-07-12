@@ -158,8 +158,10 @@ export class LlamaCppEmbeddingProvider implements EmbeddingProvider {
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     // nomic-embed-text-v2 task prefix; truncate so one doc stays under the
-    // server's per-request token budget (long docs return 4xx/5xx).
-    const MAX_CHARS = 2000;
+    // embed model's trained context. nomic-embed-text-v2-moe is n_ctx_train=512
+    // (~2.8 chars/token dense) so 2000 chars (~708 tok) 400s 'exceed_context_size'.
+    // Default ~1200 chars (~425 tok) leaves margin; override for larger-ctx models.
+    const MAX_CHARS = Number(process.env.UAP_EMBED_MAX_CHARS) || 1200;
     const SUB_BATCH = 8; // the embed server caps total tokens per request
     const prefixed = texts.map((t) => {
       const p =
