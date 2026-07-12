@@ -86,19 +86,49 @@ export function nativeMemoryTargets(cwd: string): NativeMemoryTarget[] {
   ];
 }
 
-/** Most-important recent memories, mirrored into the bridge block. Fail-soft. */
+/**
+ * Most-important recent memories, mirrored into the bridge block. Fail-soft.
+ *
+ * The short-term store is dominated by low-signal `action` lifecycle logs
+ * (`[session-end]`, `[pre-compact]`, `[session-start]`), all at importance 5, so a
+ * plain `ORDER BY importance` mirror is mostly noise. We instead prefer insight
+ * types (lesson/decision/goal/thought/observation) and drop the lifecycle logs —
+ * falling back to the raw ordering only if that leaves nothing to show, so the
+ * mirror is never emptier than the naive version.
+ */
 export function recentMemoryLines(cwd: string, limit = 8): string[] {
+  type Row = { content: string; type: string; importance: number };
+  const fmt = (r: Row): string =>
+    `  - (${r.type}, i${r.importance}) ${String(r.content).replace(/\s+/g, ' ').slice(0, 140)}`;
   try {
     const db = new Database(join(cwd, 'agents', 'data', 'memory', 'short_term.db'), { readonly: true });
-    const rows = db
+    // Insight types first, lifecycle-log `action` rows excluded; importance/recency within.
+    const curated = db
       .prepare(
-        'SELECT content, type, importance FROM memories ORDER BY importance DESC, id DESC LIMIT ?'
+        `SELECT content, type, importance FROM memories
+         WHERE type != 'action'
+            OR (content NOT LIKE '[session-%' AND content NOT LIKE '[pre-compact]%')
+         ORDER BY
+           CASE type
+             WHEN 'lesson' THEN 0
+             WHEN 'decision' THEN 1
+             WHEN 'goal' THEN 2
+             WHEN 'thought' THEN 3
+             WHEN 'observation' THEN 4
+             ELSE 9
+           END,
+           importance DESC, id DESC
+         LIMIT ?`
       )
-      .all(limit) as Array<{ content: string; type: string; importance: number }>;
+      .all(limit) as Row[];
+    const rows =
+      curated.length > 0
+        ? curated
+        : (db
+            .prepare('SELECT content, type, importance FROM memories ORDER BY importance DESC, id DESC LIMIT ?')
+            .all(limit) as Row[]);
     db.close();
-    return rows.map(
-      (r) => `  - (${r.type}, i${r.importance}) ${String(r.content).replace(/\s+/g, ' ').slice(0, 140)}`
-    );
+    return rows.map(fmt);
   } catch {
     return [];
   }
