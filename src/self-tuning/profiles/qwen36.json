@@ -1,0 +1,22 @@
+{
+  "_comment": "Reference artifact — the runtime source of truth is qwen36.ts (guaranteed present in dist). See docs/guides/SELF_TUNING.md.",
+  "model": "qwen36-a3b",
+  "config": {
+    "recipes.enabled": true,
+    "recipes.recipe": "fusion",
+    "recipes.confidenceThreshold": 0.6,
+    "recipes.fusionN": 3,
+    "recipes.allowSelfJudge": false,
+    "handsfree.enabled": true,
+    "handsfree.intensity": "aggressive",
+    "UAP_HANDSFREE_STAGNATION_LIMIT": 6,
+    "modelConcurrency.slots": 4,
+    "modelConcurrency.adaptive": true,
+    "memory.shortTerm.maxEntries": 80,
+    "memory.patternRag.enabled": true,
+    "delivery.runtimeVerify": true,
+    "PROXY_RECON_CONVERGENCE_THRESHOLD": 30,
+    "PROXY_LOOP_BREAKER": true,
+    "PROXY_STUCK_BREAK": true
+  }
+}

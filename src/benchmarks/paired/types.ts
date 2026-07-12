@@ -151,6 +151,76 @@ export const CONTINUOUS_METRICS = [
 export type ContinuousMetric = (typeof CONTINUOUS_METRICS)[number];
 
 // ============================================================================
+// Quality score — the multi-dimensional quality signal (LLM Self-Tuning P0)
+// ============================================================================
+
+/**
+ * The quality dimensions scored for a single run. Correctness/quality/planning
+ * are judged (an LLM grades spec vs output); efficiency/toolReliability are
+ * derived deterministically from the metric vector. Together they replace the
+ * pass/fail binary with a signal the tuner can optimize toward Opus-level output.
+ * See docs/design/LLM_SELF_TUNING_ANALYSIS.md §3.3.1.
+ */
+export const QUALITY_DIMENSIONS = [
+  'correctness', // behavioral correctness vs the task spec (0-100)
+  'quality', // output quality relative to a reference / best-practice (0-100)
+  'efficiency', // tokens-per-correct-answer, normalized to 0-100 (higher = leaner)
+  'toolReliability', // fraction of tool calls that were well-formed/productive (0-100)
+  'planning', // multi-turn planning coherence (0-100)
+] as const;
+export type QualityDimension = (typeof QUALITY_DIMENSIONS)[number];
+
+/**
+ * Default composite weights (sum to 1). Correctness dominates; quality is the
+ * next lever; efficiency + tool reliability are secondary. Callers may override
+ * per model/task via `compositeQuality`.
+ */
+export const DEFAULT_QUALITY_WEIGHTS: Readonly<Record<QualityDimension, number>> = {
+  correctness: 0.4,
+  quality: 0.3,
+  efficiency: 0.15,
+  toolReliability: 0.15,
+  planning: 0.0,
+};
+
+export const QualityScoreSchema = z.object({
+  correctness: z.number().min(0).max(100),
+  quality: z.number().min(0).max(100),
+  efficiency: z.number().min(0).max(100),
+  toolReliability: z.number().min(0).max(100),
+  planning: z.number().min(0).max(100),
+  /** Weighted composite (0-100); recomputed from the dimensions on write. */
+  composite: z.number().min(0).max(100),
+  /** How this score was produced: 'judge' (LLM), 'heuristic' (metrics-only), or 'hybrid'. */
+  source: z.enum(['judge', 'heuristic', 'hybrid']).default('heuristic'),
+  /** Optional one-line judge rationale (audit trail). */
+  rationale: z.string().optional(),
+});
+
+export type QualityScore = z.infer<typeof QualityScoreSchema>;
+
+/**
+ * Compute the weighted composite (0-100) from the five dimensions. Weights are
+ * renormalized over the dimensions actually supplied so a partial score (e.g.
+ * planning omitted) is not silently deflated.
+ */
+export function compositeQuality(
+  dims: Record<QualityDimension, number>,
+  weights: Partial<Record<QualityDimension, number>> = DEFAULT_QUALITY_WEIGHTS,
+): number {
+  let wsum = 0;
+  let acc = 0;
+  for (const d of QUALITY_DIMENSIONS) {
+    const w = weights[d] ?? 0;
+    if (w <= 0) continue;
+    const v = Number.isFinite(dims[d]) ? Math.max(0, Math.min(100, dims[d])) : 0;
+    acc += w * v;
+    wsum += w;
+  }
+  return wsum > 0 ? acc / wsum : 0;
+}
+
+// ============================================================================
 // Run records
 // ============================================================================
 
@@ -165,6 +235,12 @@ export interface RunRecord {
   adapter: string;
   /** Model identifier the adapter ran against. */
   model: string;
+  /**
+   * Optional multi-dimensional quality score (LLM Self-Tuning P0). Present only
+   * when the run was scored; the paired report surfaces its composite delta
+   * alongside correctness so the tuner has a signal beyond pass/fail.
+   */
+  qualityScore?: QualityScore;
 }
 
 // ============================================================================

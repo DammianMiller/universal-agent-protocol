@@ -44,6 +44,7 @@ const lazy = {
   handsfree: () => import('../cli/handsfree.js').then((m) => m.handsfreeCommand),
   proxy: () => import('../cli/proxy.js').then((m) => m.proxyCommand),
   benchPaired: () => import('../cli/bench.js').then((m) => m.benchPairedCommand),
+  tune: () => import('../cli/self-tuning.js').then((m) => m.tuneCommand),
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
@@ -791,6 +792,40 @@ selfHarness
     const cmd = await lazy.selfHarness();
     await cmd('prune', options);
   });
+
+// LLM Self-Tuning — raise a small model toward Opus by tuning UAP flags with a
+// benchmark-validated, LLM-guided (or GP-BO) closed loop.
+function addTuneOptions(cmd: import('commander').Command): import('commander').Command {
+  return cmd
+    .option('--model <id>', 'Executor model family to tune (default qwen36-a3b)')
+    .option('--suite <dir>', 'Real-gate task suite (default benchmarks/suites/real-gate)')
+    .option('--adapter <name>', 'Agent adapter: mock | opencode | claude | mini | raw | deliver (default mock)')
+    .option('--judge <id>', 'Judge/tuner model id (else recipes.judge.model, else GP-only)')
+    .option('--epochs <n>', 'Paired seeds per (task, arm) (default 5)')
+    .option('--concurrency <n>', 'Max concurrent cells (default 4)')
+    .option('--max-iterations <n>', 'Max tuning-loop iterations (default 6)')
+    .option('--phase <name>', 'Force one search phase: coarse | medium | fine | combinatorial')
+    .option('--iterations <n>', 'Bootstrap/permutation iterations for the paired stats (default 10000)')
+    .option('--seed <n>', 'RNG/statistics seed (default 1)')
+    .option('--apply', 'Commit accepted configs to .uap.json / proxy.env + save the profile (default: dry-run)')
+    .option('--json', 'Emit JSON instead of a human-readable report');
+}
+addTuneOptions(
+  program
+    .command('tune')
+    .description('Self-tune UAP flags to raise a small model toward Opus (propose -> validate -> decide -> learn)'),
+).action(async (options) => {
+  const cmd = await lazy.tune();
+  await cmd(options);
+});
+addTuneOptions(
+  selfHarness
+    .command('tune')
+    .description('Alias of `uap tune`: the LLM/GP flag self-tuning loop'),
+).action(async (options) => {
+  const cmd = await lazy.tune();
+  await cmd(options);
+});
 
 // Open-collider divergent-ideation commands
 const ideate = program

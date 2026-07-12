@@ -11,6 +11,9 @@ ce = importlib.util.module_from_spec(spec)
 sys.modules["confidence_escalation"] = ce
 import tempfile, os as _os2
 _os2.environ["UAP_RECIPE_SIGNAL_DIR"] = tempfile.mkdtemp(prefix="uap-sig-")
+# Isolate the (now auto-on) real-time adaptation dir to an empty temp so no test
+# accidentally reads a stray ~/.cache adaptation signal from the dev machine.
+_os2.environ["UAP_ADAPTATION_SIGNAL_DIR"] = tempfile.mkdtemp(prefix="uap-adapt-empty-")
 spec.loader.exec_module(ce)
 
 
@@ -266,6 +269,80 @@ class JudgeGatingTest(unittest.TestCase):  # #2 stronger non-self judge
              "content": "prove the theorem and analyze why x is even"}]}
         self.assertEqual(ce.select_recipe(b, S(recipe="auto", model="qwen"), False), "confidence")
         self.assertEqual(ce.select_recipe(b, S(recipe="auto", model="opus"), False), "fusion")
+
+
+class AdaptationSignalTest(unittest.TestCase):  # LLM-Self-Tuning real-time adaptor (P4)
+    def setUp(self):
+        import tempfile, os
+        self.d = tempfile.mkdtemp(prefix="uap-adapt-test-")
+        self.empty = tempfile.mkdtemp(prefix="uap-empty-sig-")
+        self._saved = {k: os.environ.get(k) for k in
+                       ("UAP_RECIPE_SIGNAL_DIR", "UAP_ADAPTATION_SIGNAL_DIR", "PROXY_REALTIME_ADAPT")}
+        # Isolate the reactor-signal dir so it never pre-empts our selection, and
+        # point the adaptation dir at this test's dir.
+        os.environ["UAP_RECIPE_SIGNAL_DIR"] = self.empty
+        os.environ["UAP_ADAPTATION_SIGNAL_DIR"] = self.d
+        os.environ.pop("PROXY_REALTIME_ADAPT", None)
+
+    def tearDown(self):
+        import os
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _write(self, name, sig):
+        import json, os
+        with open(os.path.join(self.d, name), "w") as f:
+            json.dump(sig, f)
+
+    def test_load_fresh_stale_missing(self):
+        import time
+        self._write("s1.json", {"ts": time.time(), "escalate": True})
+        self.assertTrue(ce.load_adaptation_signal("s1", signal_dir=self.d)["escalate"])
+        self._write("old.json", {"ts": 1, "escalate": True})
+        self.assertIsNone(ce.load_adaptation_signal("old", signal_dir=self.d, ttl=180.0))
+        self.assertIsNone(ce.load_adaptation_signal("nope", signal_dir=self.d))
+
+    def test_latest_fallback(self):
+        import time
+        self._write("latest.json", {"ts": time.time(), "recipe": "fusion"})
+        self.assertEqual(ce.load_adaptation_signal(signal_dir=self.d)["recipe"], "fusion")
+
+    def test_enabled_by_default_and_opt_out(self):
+        import os
+        self.assertTrue(ce.realtime_adapt_enabled())  # unset -> auto-on
+        os.environ["PROXY_REALTIME_ADAPT"] = "0"
+        self.assertFalse(ce.realtime_adapt_enabled())
+        os.environ["PROXY_REALTIME_ADAPT"] = "true"
+        self.assertTrue(ce.realtime_adapt_enabled())
+
+    def test_auto_on_escalation(self):
+        import time
+        self._write("latest.json", {"ts": time.time(), "escalate": True})
+        # Auto-on (PROXY_REALTIME_ADAPT unset): the fresh signal escalates to fusion.
+        self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="auto"), False), "fusion")
+
+    def test_opt_out_disables_escalation(self):
+        import os, time
+        self._write("latest.json", {"ts": time.time(), "escalate": True})
+        os.environ["PROXY_REALTIME_ADAPT"] = "0"
+        # Disabled: a short prompt stays on the cheaper 'confidence' recipe.
+        self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="auto"), False), "confidence")
+
+    def test_no_signal_no_escalation(self):
+        # Auto-on but no signal present → normal selection (confidence for a short prompt).
+        self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="auto"), False), "confidence")
+
+    def test_no_escalation_without_judge(self):
+        import time
+        self._write("latest.json", {"ts": time.time(), "escalate": True})
+        # judge == primary model → no distinct judge → never escalate to fusion.
+        self.assertNotEqual(
+            ce.select_recipe(body("add a button"), S(recipe="auto", model="qwen"), False),
+            "fusion",
+        )
 
 
 if __name__ == "__main__":

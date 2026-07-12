@@ -239,6 +239,54 @@ def load_reactor_signal(prompt_text, signal_dir=None, ttl=180.0, now=None):
     return None
 
 
+# ---- cross-process: consume the LLM-Self-Tuning real-time adaptor (P4) --------
+# The offline tuner finds a good STATIC config; the real-time adaptor writes a
+# per-session adjustment (escalate / recipe / recon threshold / force-synthesis)
+# from LIVE signals it observes out-of-band (tool-failure rate, per-turn quality,
+# context pressure). The proxy freezes PROXY_* at startup and has no reload
+# endpoint, so — exactly like the recipe signal — this is a file-signal read per
+# request. OPT-IN via PROXY_REALTIME_ADAPT so default behavior is unchanged.
+def _adaptation_signal_dir() -> str:
+    return os.environ.get("UAP_ADAPTATION_SIGNAL_DIR") or os.path.join(
+        os.path.expanduser("~"), ".cache", "uap", "adaptation-signals"
+    )
+
+
+def realtime_adapt_enabled() -> bool:
+    # Auto-on: honor a fresh adaptation signal by default. Opt out with
+    # PROXY_REALTIME_ADAPT=0/false/off. (The emitter is the real master switch —
+    # with it off, no signal exists to honor.)
+    return str(os.environ.get("PROXY_REALTIME_ADAPT", "")).strip().lower() not in (
+        "0",
+        "false",
+        "off",
+        "no",
+    )
+
+
+def load_adaptation_signal(session_id=None, signal_dir=None, ttl=180.0, now=None):
+    """Return the fresh real-time adaptation signal dict, or None. Per-session
+    file first when session_id is given, then a rolling latest.json (single-
+    session common case). Fresh within ttl seconds. Never raises."""
+    d = signal_dir or _adaptation_signal_dir()
+    now = time.time() if now is None else now
+    candidates = []
+    if session_id:
+        safe = "".join(c if (c.isalnum() or c in "_-") else "_" for c in str(session_id)) or "session"
+        candidates.append(os.path.join(d, safe + ".json"))
+    candidates.append(os.path.join(d, "latest.json"))
+    for path in candidates:
+        try:
+            if os.path.exists(path):
+                with open(path) as f:
+                    sig = json.load(f)
+                if now - float(sig.get("ts", 0)) <= ttl:
+                    return sig
+        except Exception:
+            continue
+    return None
+
+
 def select_recipe(anthropic_body: dict, settings: Settings, has_tools: bool) -> str:
     if not settings.enabled or has_tools:
         return "single"
@@ -261,10 +309,18 @@ def select_recipe(anthropic_body: dict, settings: Settings, has_tools: bool) -> 
         complexity = query_complexity(text)
         shape = task_shape(text)
     if settings.judge_available(pm) and (complexity == "complex" or shape == "reasoning"):
-        return "fusion"
-    if settings.judge_available(pm) and len(text) >= settings.auto_fusion_chars:
-        return "fusion"
-    return "confidence"
+        chosen = "fusion"
+    elif settings.judge_available(pm) and len(text) >= settings.auto_fusion_chars:
+        chosen = "fusion"
+    else:
+        chosen = "confidence"
+    # Real-time adaptation (opt-in): a fresh per-session signal may escalate this
+    # turn to the judge (e.g. tool-failure spike or a quality dip observed live).
+    if realtime_adapt_enabled() and settings.judge_available(pm):
+        asig = load_adaptation_signal()
+        if asig and (asig.get("escalate") or asig.get("recipe") == "fusion"):
+            chosen = "fusion"
+    return chosen
 
 
 # ---- #1/#5 confidence signal ----------------------------------------------

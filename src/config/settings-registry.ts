@@ -343,6 +343,16 @@ export const SETTINGS: readonly SettingDef[] = [
     description: 'The serving recipe the proxy applies (mirror of `recipes.recipe`, consumed by the proxy process).',
     recommendation: 'Keep in sync with `recipes.recipe`; `uap setup`/`uap config` write both.',
   },
+  {
+    key: 'realtimeAdapt.enabled', kind: 'json', type: 'boolean', default: true, category: 'proxy',
+    description: 'Real-time flag adaptation (LLM Self-Tuning P4): the reactor emits per-session adjustments from live signals (tool-failure/quality/context/RECON) so the proxy can escalate or converge mid-session. This is the effective master switch — off means no signal is emitted.',
+    recommendation: 'Leave on. It is conservative (emits only when a live signal breaches a threshold) and is the effective master switch — disabling it turns the whole feature off regardless of the proxy side.',
+  },
+  {
+    key: 'PROXY_REALTIME_ADAPT', kind: 'env', type: 'boolean', default: true, category: 'proxy', target: 'proxyEnv',
+    description: 'Proxy side of real-time adaptation: whether the serving proxy honors a fresh adaptation signal per request. Auto-on; harmless when no emitter is running (no signal to honor).',
+    recommendation: 'Leave on. Set `false` only to make the proxy ignore adaptation signals even when the reactor emits them.',
+  },
 
   // ── Dashboard ─────────────────────────────────────────────────────────────
   {

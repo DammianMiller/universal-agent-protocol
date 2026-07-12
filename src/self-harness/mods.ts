@@ -12,6 +12,7 @@
  */
 
 import { UapComponent, UAP_COMPONENTS } from '../benchmarks/paired/types.js';
+import { getSetting } from '../config/settings-registry.js';
 
 export type JsonScalar = string | number | boolean;
 
@@ -130,7 +131,27 @@ export interface MiddlewareMod {
   params: Record<string, JsonScalar>;
 }
 
-export type Mod = EnvMod | ScaffoldMod | MiddlewareMod;
+/**
+ * A change to a first-class UAP setting (a `settings-registry` key: `.uap.json`
+ * json flags OR proxyEnv/shell env flags). This is the LLM-Self-Tuning surface
+ * (recipes.*, modelConcurrency.*, handsfree.*, memory.*, delivery.*, PROXY_*),
+ * widening the Mod DSL beyond the env-knob allow-list. Validated against the
+ * registry's declared type/enum/bounds, so an out-of-range value is rejected at
+ * parse time exactly like an env knob. See docs/design/LLM_SELF_TUNING_ANALYSIS.md.
+ */
+export interface ConfigMod {
+  kind: 'config';
+  /** settings-registry key, e.g. `recipes.confidenceThreshold`. */
+  key: string;
+  /** Prior value (string form, for revert + audit). */
+  from: string;
+  /** Proposed value (string form). */
+  to: string;
+  /** settings-registry category id (for grouping/diffs). */
+  category: string;
+}
+
+export type Mod = EnvMod | ScaffoldMod | MiddlewareMod | ConfigMod;
 
 export interface ValidationOk {
   ok: true;
@@ -192,9 +213,40 @@ export function validateMod(mod: Mod): ValidationResult {
       }
       return { ok: true };
     }
+    case 'config':
+      return validateConfigMod(mod);
     default:
       return { ok: false, reason: `unknown mod kind` };
   }
+}
+
+/** Validate a ConfigMod against its settings-registry declaration. */
+function validateConfigMod(mod: ConfigMod): ValidationResult {
+  const spec = getSetting(mod.key);
+  if (!spec) return { ok: false, reason: `unknown setting: ${mod.key}` };
+  if (spec.secret) return { ok: false, reason: `${mod.key} is a secret and is not tunable` };
+  if (spec.type === 'boolean') {
+    const v = mod.to.toLowerCase();
+    if (!['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'].includes(v)) {
+      return { ok: false, reason: `${mod.key}: "${mod.to}" is not boolean` };
+    }
+    return { ok: true };
+  }
+  if (spec.type === 'enum') {
+    if (!(spec.enumValues ?? []).includes(mod.to)) {
+      return { ok: false, reason: `${mod.key}="${mod.to}" not in {${(spec.enumValues ?? []).join(', ')}}` };
+    }
+    return { ok: true };
+  }
+  if (spec.type === 'number') {
+    const n = Number(mod.to);
+    if (!Number.isFinite(n)) return { ok: false, reason: `${mod.key}: "${mod.to}" is not numeric` };
+    if (spec.int && !Number.isInteger(n)) return { ok: false, reason: `${mod.key}: must be an integer` };
+    if (spec.min != null && n < spec.min) return { ok: false, reason: `${mod.key}=${mod.to} < min ${spec.min}` };
+    if (spec.max != null && n > spec.max) return { ok: false, reason: `${mod.key}=${mod.to} > max ${spec.max}` };
+    return { ok: true };
+  }
+  return { ok: true }; // string
 }
 
 /** One-line, human-readable description of a Mod (for logs and profile diffs). */
@@ -206,6 +258,8 @@ export function describeMod(mod: Mod): string {
       return `scaffold ${mod.component} (${mod.op}, ${mod.text.length} chars)`;
     case 'middleware':
       return `middleware ${mod.id}(${JSON.stringify(mod.params)})`;
+    case 'config':
+      return `config ${mod.key}: ${mod.from} -> ${mod.to}`;
   }
 }
 
@@ -229,5 +283,7 @@ export function invertMod(mod: Mod): Mod {
       };
     case 'middleware':
       return { kind: 'middleware', id: mod.id, params: { ...mod.params, enabled: false } };
+    case 'config':
+      return { kind: 'config', key: mod.key, from: mod.to, to: mod.from, category: mod.category };
   }
 }

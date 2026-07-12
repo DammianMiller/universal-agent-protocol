@@ -165,5 +165,9 @@ function applyAcceptedToProfile(profile: HarnessProfile, mod: Mod): HarnessProfi
         ...profile,
         middleware: { ...profile.middleware, [mod.id]: { ...mod.params } },
       };
+    case 'config':
+      // A settings-registry change lives in .uap.json / proxy.env, not in the
+      // in-memory harness profile — the self-tuning flag-writer applies it.
+      return profile;
   }
 }
