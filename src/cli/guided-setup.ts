@@ -197,6 +197,31 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
       required: false,
     });
   }
+  // Per-policy picker over the real policy universe (the same list `uap policy
+  // select` uses). Opt-in so the wizard stays short; REQUIRED policies always on.
+  let selectedPolicies: string[] | undefined;
+  if (policyEngine) {
+    const { listPolicyChoices } = await import('./policy-select.js');
+    const choices = await listPolicyChoices();
+    const customize = await ui.confirm({
+      message: `Pick which of the ${choices.length} individual policies to enforce? (default: REQUIRED + recommended)`,
+      initialValue: false,
+    });
+    if (customize) {
+      selectedPolicies = await ui.multiselect<string>({
+        message: 'Policies to enforce (space toggles, enter confirms; REQUIRED stay on):',
+        options: choices.map((c) => ({
+          value: c.name,
+          label: `${c.name}${c.protected ? ' (required)' : ''}`,
+          hint: `${c.category} · ${c.level}${c.description ? ` — ${c.description}` : ''}`,
+        })),
+        initialValues: choices
+          .filter((c) => (c.installed && c.enabled) || c.protected || c.level === 'RECOMMENDED')
+          .map((c) => c.name),
+        required: false,
+      });
+    }
+  }
 
   // ── Model ───────────────────────────────────────────────────────────
   const provider = await ui.select<ModelFeatures['provider']>({
@@ -424,6 +449,7 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
       definitionOfDoneIac: pol.includes('definitionOfDoneIac'),
       customPoliciesDir: pol.includes('customPoliciesDir'),
       pay2uPolicies: pol.includes('pay2uPolicies'),
+      ...(selectedPolicies ? { selectedPolicies } : {}),
     },
     model: {
       provider,
@@ -535,6 +561,25 @@ export async function finalizeGuidedSetup(
   // patterns, policy, model/profile, hooks, browser).
   const written = await applyWizardConfig(cwd, selections);
   if (written) ui.note('Wizard configuration written to .uap.json', 'Config');
+
+  // Apply the per-policy selection (init has set up the policy store above).
+  // 'all'/'recommended' resolve to concrete names; an explicit list is applied
+  // verbatim. REQUIRED policies always stay on.
+  if (selections.policy.selectedPolicies) {
+    try {
+      const { listPolicyChoices, applyPolicySelection, recommendedSelection } = await import('./policy-select.js');
+      const sel = selections.policy.selectedPolicies;
+      let names: string[];
+      if (sel === 'all') names = (await listPolicyChoices()).map((c) => c.name);
+      else if (sel === 'recommended') names = recommendedSelection(await listPolicyChoices());
+      else names = sel;
+      const r = await applyPolicySelection(names);
+      const n = r.installed.length + r.enabled.length;
+      if (n > 0) ui.note(`Enforcing ${n} selected polic${n === 1 ? 'y' : 'ies'}${r.disabled.length ? `, disabled ${r.disabled.length}` : ''}.`, 'Policies');
+    } catch {
+      /* policy selection is best-effort — never block setup on it */
+    }
+  }
 
   // Install the pay2u example policy pack when selected in the policy matrix
   // (advisory, no enforcer). Idempotent + fail-soft — never blocks setup.

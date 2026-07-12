@@ -40,7 +40,7 @@ const ENFORCER_DIR = resolvePolicyDir('enforcers');
  * basename with hyphens->underscores), attach it via PolicyToolRegistry.
  * Returns the tool name on success, null if no enforcer present.
  */
-async function autoAttachEnforcer(policyName: string): Promise<string | null> {
+export async function autoAttachEnforcer(policyName: string): Promise<string | null> {
   const toolName = policyName.replace(/-/g, '_');
   const enforcerPath = join(ENFORCER_DIR, `${toolName}.py`);
   if (!existsSync(enforcerPath)) return null;
@@ -122,8 +122,14 @@ export function buildPolicyMatrix(
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Absolute path to a built-in policy schema markdown (or '' if absent). */
+export function builtinPolicyPath(name: string): string {
+  const p = join(POLICY_DIR, `${name}.md`);
+  return existsSync(p) ? p : '';
+}
+
 /** Read built-in policy schema files (excludes UPPERCASE README-style files). */
-function listBuiltinPolicies(): Array<{ name: string; level: string; category: string; stage: string }> {
+export function listBuiltinPolicies(): Array<{ name: string; level: string; category: string; stage: string }> {
   if (!existsSync(POLICY_DIR)) return [];
   return readdirSync(POLICY_DIR)
     .filter((f) => f.endsWith('.md') && f !== f.toUpperCase()) // skip PACK READMEs
@@ -188,6 +194,70 @@ async function matrixCommand(): Promise<void> {
   console.log(chalk.dim('  Change level      : uap policy level <id> REQUIRED|RECOMMENDED|OPTIONAL'));
   console.log(chalk.dim('  Change stage      : uap policy stage <id> pre-exec|post-exec|review|always'));
   console.log(chalk.dim('  IDs are shown by  : uap policy list'));
+}
+
+/**
+ * Select command — choose which policies to enforce. Interactive multiselect by
+ * default (the same picker `uap setup` uses); scriptable via
+ * --all/--recommended/--set/--enable/--disable. REQUIRED policies stay on.
+ */
+async function selectCommand(options: {
+  enable?: string;
+  disable?: string;
+  set?: string;
+  recommended?: boolean;
+  all?: boolean;
+  json?: boolean;
+}): Promise<void> {
+  const { listPolicyChoices, applyPolicySelection, recommendedSelection } = await import('./policy-select.js');
+  const choices = await listPolicyChoices();
+  const split = (s?: string): string[] => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : []);
+  const nonInteractive = Boolean(options.enable || options.disable || options.set || options.recommended || options.all);
+
+  let target: string[];
+  let ui: Awaited<ReturnType<typeof import('./prompt-ui.js').createClackUI>> | null = null;
+
+  if (nonInteractive) {
+    let sel = new Set(choices.filter((c) => c.installed && c.enabled).map((c) => c.name));
+    if (options.all) sel = new Set(choices.map((c) => c.name));
+    else if (options.recommended) sel = new Set(recommendedSelection(choices));
+    else if (options.set) sel = new Set(split(options.set));
+    for (const n of split(options.enable)) sel.add(n);
+    for (const n of split(options.disable)) sel.delete(n);
+    target = [...sel];
+  } else {
+    const { createClackUI } = await import('./prompt-ui.js');
+    ui = await createClackUI();
+    ui.intro('Select the policies to enforce');
+    target = await ui.multiselect<string>({
+      message: 'Space toggles, enter confirms. REQUIRED policies stay on regardless.',
+      options: choices.map((c) => ({
+        value: c.name,
+        label: `${c.name}${c.protected ? chalk.dim(' (required)') : ''}`,
+        hint: `${c.category} · ${c.level}${c.description ? ` — ${c.description}` : ''}`,
+      })),
+      initialValues: choices.filter((c) => (c.installed && c.enabled) || c.protected).map((c) => c.name),
+      required: false,
+    });
+  }
+
+  const result = await applyPolicySelection(target);
+
+  if (options.json) {
+    console.log(JSON.stringify(result));
+    return;
+  }
+  const changed = result.installed.length + result.enabled.length + result.disabled.length;
+  const summary = [
+    result.installed.length ? chalk.green(`installed ${result.installed.length}`) : '',
+    result.enabled.length ? chalk.green(`enabled ${result.enabled.length}`) : '',
+    result.disabled.length ? chalk.yellow(`disabled ${result.disabled.length}`) : '',
+  ].filter(Boolean).join(', ');
+  const body = changed
+    ? `${summary}\n${[...result.installed, ...result.enabled].length ? chalk.green('  on:  ') + [...new Set([...result.installed, ...result.enabled])].join(', ') : ''}${result.disabled.length ? '\n' + chalk.yellow('  off: ') + result.disabled.join(', ') : ''}`
+    : 'No changes — selection already matches enforced policies.';
+  if (ui) ui.outro(body);
+  else console.log(body);
 }
 
 /**
@@ -372,6 +442,17 @@ export function registerPolicyCommands(program: Command): void {
     .command('matrix')
     .description('Show ALL policies (built-in + installed) with settings, and how to toggle/adjust them')
     .action(matrixCommand);
+
+  policy
+    .command('select')
+    .description('Choose which policies to enforce — interactive picker, or --all/--recommended/--set/--enable/--disable')
+    .option('--enable <names>', 'comma-separated policies to add (install+enable)')
+    .option('--disable <names>', 'comma-separated policies to remove (REQUIRED policies stay on)')
+    .option('--set <names>', 'comma-separated EXACT set to enforce (everything else off, except REQUIRED)')
+    .option('--recommended', 'select all REQUIRED + RECOMMENDED policies')
+    .option('--all', 'select every available policy')
+    .option('--json', 'emit JSON result')
+    .action(selectCommand);
 
   policy
     .command('recommend [scenario]')
