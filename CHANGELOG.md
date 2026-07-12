@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.147.1 (2026-07-12)
+
+- fix(policy): expert-review resolves the WORKTREE branch, not the main checkout
+- fix(delivery): protect .uap/user-paths.json from mid-run weakening (gate-gaming vector)
+
+
 ## v1.147.0 (2026-07-12)
 
 - feat(policy): validate-plan-on-change — ALWAYS validate a plan after creating/modifying it
