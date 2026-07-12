@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.146.0 (2026-07-12)
+
+- feat(dashboard): full policy-management panel — view/prompt, duplicate, import/export, drag + AI ordering
+- chore: bump version to 1.145.1 (publish embed MAX_CHARS fix) (#457)
+- fix(memory): cap embed input to the model's trained context (512-token safe) (#453)
+
+
 ## v1.145.0 (2026-07-12)
 
 - chore: bump version to 1.143.0

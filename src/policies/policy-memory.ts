@@ -111,6 +111,86 @@ export class PolicyMemoryManager {
     return { removed, kept: groups.length, groups };
   }
 
+  /** Duplicate a policy under a unique "<name> (copy)" name (new id, active). */
+  async duplicatePolicy(id: string): Promise<string | null> {
+    const src = await this.getPolicy(id);
+    if (!src) return null;
+    const existing = new Set(this.db.getAllPolicyRows().map((r) => String((r as { name?: string }).name)));
+    const baseName = src.name.replace(/ \(copy(?: \d+)?\)$/, '');
+    let name = `${baseName} (copy)`;
+    let n = 2;
+    while (existing.has(name)) name = `${baseName} (copy ${n++})`;
+    const newId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    // Rewrite the H1 title so extractPolicyName stays consistent with the row name.
+    const rawMarkdown = src.rawMarkdown.replace(/^#\s+.+/m, `# ${name}`);
+    this.db.upsertPolicy({
+      ...(src as unknown as Record<string, unknown>),
+      id: newId,
+      name,
+      rawMarkdown,
+      createdAt: now,
+      updatedAt: now,
+      version: 1,
+      isActive: true,
+    });
+    return newId;
+  }
+
+  /** Set a single policy's priority (higher = fires earlier). */
+  async setPolicyPriority(id: string, priority: number): Promise<void> {
+    this.db.updatePolicy({ id }, { priority, updatedAt: new Date().toISOString() });
+  }
+
+  /** Assign descending priorities from an ordered id list (first = highest). */
+  async reorderPolicies(orderedIds: string[], base = 1000, step = 10): Promise<void> {
+    const now = new Date().toISOString();
+    orderedIds.forEach((id, i) => {
+      this.db.updatePolicy({ id }, { priority: Math.max(0, base - i * step), updatedAt: now });
+    });
+  }
+
+  /** Export every policy as a portable bundle (round-trips through importPolicies). */
+  exportPolicies(): {
+    version: number;
+    policies: Array<{ name: string; category: string; level: string; enforcementStage: string; priority: number; isActive: boolean; rawMarkdown: string }>;
+  } {
+    const rows = this.db.getAllPolicyRows() as unknown as Array<Record<string, unknown>>;
+    return {
+      version: 1,
+      policies: rows.map((r) => ({
+        name: String(r.name),
+        category: String(r.category ?? 'custom'),
+        level: String(r.level ?? 'OPTIONAL'),
+        enforcementStage: String(r.enforcementStage ?? 'pre-exec'),
+        priority: Number(r.priority) || 50,
+        isActive: r.isActive === true || r.isActive === 1,
+        rawMarkdown: String(r.rawMarkdown ?? ''),
+      })),
+    };
+  }
+
+  /** Install policies from an exported bundle. Upserts by name (no duplicates);
+   * preserves each entry's priority + active state. Returns what was imported. */
+  async importPolicies(bundle: { policies?: Array<Record<string, unknown>> }): Promise<{ imported: number; names: string[] }> {
+    const list = Array.isArray(bundle?.policies) ? bundle.policies : [];
+    const names: string[] = [];
+    for (const p of list) {
+      const raw = typeof p.rawMarkdown === 'string' ? p.rawMarkdown : '';
+      if (!raw) continue;
+      const id = await this.storeRawPolicy(raw, {
+        category: p.category as never,
+        level: p.level as never,
+        enforcementStage: p.enforcementStage as never,
+        priority: typeof p.priority === 'number' ? p.priority : undefined,
+      });
+      if (typeof p.priority === 'number') this.db.updatePolicy({ id }, { priority: p.priority });
+      if (p.isActive === false) this.db.updatePolicy({ id }, { isActive: false });
+      names.push(this.extractPolicyName(raw));
+    }
+    return { imported: names.length, names };
+  }
+
   private extractPolicyMetadata(markdown: string): {
     category?: string;
     level?: 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL';
@@ -198,6 +278,11 @@ export class PolicyMemoryManager {
   async getAllPolicies(): Promise<Policy[]> {
     const results = this.db.getAllActivePolicies();
     return results.map((r) => PolicySchema.parse(r));
+  }
+
+  /** ALL policies including inactive (dashboard management needs disabled rows). */
+  async getAllPoliciesUnfiltered(): Promise<Policy[]> {
+    return this.db.getAllPolicyRows().map((r) => PolicySchema.parse(r));
   }
 
   async getRequiredPolicies(): Promise<Policy[]> {

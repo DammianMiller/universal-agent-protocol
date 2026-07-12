@@ -324,3 +324,34 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; 
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--fg3); }
+
+
+/* ── Policy management panel ── */
+.pol-hint { color: var(--fg); opacity: .6; font-size: 12px; margin-bottom: 8px; }
+.pol-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.btn-sm { padding: 2px 8px; font-size: 12px; }
+.btn-on { border-color: var(--green); color: var(--green); }
+.btn-off { border-color: var(--red); color: var(--red); }
+.pol-list { display: flex; flex-direction: column; gap: 6px; }
+.pol-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.pol-row.off { opacity: .55; }
+.pol-row.dragging { opacity: .4; outline: 1px dashed var(--cyan); }
+.pol-handle { cursor: grab; color: var(--fg); opacity: .4; font-size: 16px; user-select: none; }
+.pol-main { flex: 1; min-width: 0; }
+.pol-name { font-weight: 600; }
+.pol-desc { font-size: 12px; opacity: .65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pol-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.pol-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); text-transform: lowercase; }
+.pol-badge.lvl-required { border-color: var(--red); color: var(--red); }
+.pol-badge.lvl-recommended { border-color: var(--yellow); color: var(--yellow); }
+.pol-badge.lvl-optional { opacity: .6; }
+.pol-badge.on { border-color: var(--green); color: var(--green); }
+.pol-badge.off { border-color: var(--red); color: var(--red); }
+.pol-badge.prio { border-color: var(--cyan); color: var(--cyan); }
+.pol-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.pol-detail .field { display: block; margin: 8px 0; }
+.pol-select { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; }
+.pol-section-label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .5; margin: 12px 0 4px; }
+.pol-desc-full { font-size: 13px; line-height: 1.5; }
+.pol-prompt { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto; }
+.pol-suggest-list { padding-left: 20px; font-size: 13px; line-height: 1.6; }
