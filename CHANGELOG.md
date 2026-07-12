@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.146.1 (2026-07-12)
+
+- test: playwright-core is a runtime dependency — invert the placement assertion (companion to #460)
+- fix(user-validation): favicon.ico console noise must not fail expect_no_console_errors
+- fix(deps): playwright-core is a RUNTIME dependency — cloakbrowser requires it
+- feat(proxy): vision passthrough — autodetect upstream mmproj and forward images to the model
+
+
 ## v1.146.0 (2026-07-12)
 
 - feat(dashboard): full policy-management panel — view/prompt, duplicate, import/export, drag + AI ordering
