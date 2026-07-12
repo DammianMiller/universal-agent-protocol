@@ -269,30 +269,56 @@ export class PolicyMemoryManager {
     );
   }
 
+  /** Coerce a stored row's `level` to the enum so legacy/hand-edited values
+   * (e.g. "mandatory") don't fail validation. Unknown non-empty levels default
+   * to RECOMMENDED so the policy is kept, not dropped. */
+  private normalizePolicyRow(r: unknown): Record<string, unknown> {
+    const row = { ...(r as Record<string, unknown>) };
+    const lvl = String(row.level ?? '').toUpperCase();
+    if (lvl === 'MANDATORY' || lvl === 'REQUIRED') row.level = 'REQUIRED';
+    else if (lvl === 'OPTIONAL') row.level = 'OPTIONAL';
+    else if (lvl === 'RECOMMENDED') row.level = 'RECOMMENDED';
+    else if (row.level != null && row.level !== '') row.level = 'RECOMMENDED';
+    return row;
+  }
+
+  /** Parse DB rows into Policies, TOLERATING malformed rows: a single bad row
+   * (e.g. an invalid `level`) is skipped instead of throwing out the whole list
+   * — which used to 500 the dashboard's policy panel. */
+  private parsePolicyRows(rows: unknown[]): Policy[] {
+    const out: Policy[] = [];
+    for (const r of rows) {
+      const res = PolicySchema.safeParse(this.normalizePolicyRow(r));
+      if (res.success) out.push(res.data);
+    }
+    return out;
+  }
+
   async getPolicy(id: string): Promise<Policy | null> {
     const result = this.db.findOnePolicy({ id });
     if (!result) return null;
-    return PolicySchema.parse(result);
+    const res = PolicySchema.safeParse(this.normalizePolicyRow(result));
+    return res.success ? res.data : null;
   }
 
   async getAllPolicies(): Promise<Policy[]> {
     const results = this.db.getAllActivePolicies();
-    return results.map((r) => PolicySchema.parse(r));
+    return this.parsePolicyRows(results);
   }
 
   /** ALL policies including inactive (dashboard management needs disabled rows). */
   async getAllPoliciesUnfiltered(): Promise<Policy[]> {
-    return this.db.getAllPolicyRows().map((r) => PolicySchema.parse(r));
+    return this.parsePolicyRows(this.db.getAllPolicyRows());
   }
 
   async getRequiredPolicies(): Promise<Policy[]> {
     const results = this.db.findPolicies({ level: 'REQUIRED', isActive: true });
-    return results.map((r) => PolicySchema.parse(r));
+    return this.parsePolicyRows(results);
   }
 
   async getCategoriesPolicies(category: string): Promise<Policy[]> {
     const results = this.db.findPolicies({ category, isActive: true });
-    return results.map((r) => PolicySchema.parse(r));
+    return this.parsePolicyRows(results);
   }
 
   async togglePolicy(id: string, active: boolean): Promise<void> {
@@ -314,17 +340,17 @@ export class PolicyMemoryManager {
     stage: 'pre-exec' | 'post-exec' | 'review' | 'always'
   ): Promise<Policy[]> {
     const results = this.db.findPolicies({ enforcementStage: stage, isActive: true });
-    return results.map((r) => PolicySchema.parse(r));
+    return this.parsePolicyRows(results);
   }
 
   async searchByTags(tags: string[]): Promise<Policy[]> {
     const results = this.db.getAllActivePolicies();
-    return results
-      .filter((r) => {
+    return this.parsePolicyRows(
+      results.filter((r) => {
         const policyTags = r.tags as string[];
         return policyTags && tags.some((t) => policyTags.includes(t));
       })
-      .map((r) => PolicySchema.parse(r));
+    );
   }
 
   async getRelevantPolicies(context: string, topK: number = 3): Promise<Policy[]> {

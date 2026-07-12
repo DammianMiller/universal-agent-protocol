@@ -1,8 +1,8 @@
 # Changelog
 
-## v1.148.0 (2026-07-12)
+## v1.147.3 (2026-07-12)
 
-- feat(setup): install ALL policies (with their levels) by default in every uap setup
+- fix(dashboard): resilient policy read — one bad row no longer 500s /api/policies
 
 
 ## v1.147.2 (2026-07-12)
