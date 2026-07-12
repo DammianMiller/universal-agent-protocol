@@ -118,6 +118,28 @@ if ! command -v sqlite3 >/dev/null 2>&1; then
   exit 0
 fi
 
+# ─── Compliance execution logging ───────────────────────────────────────────
+# Record one row per tool call into policy_executions so the dashboard's
+# compliance section shows REAL check/block counts. The live enforcement path
+# is this shell hook → Python enforcers, which never touched the table before
+# (only the in-process TS policy manager did), so the dashboard read 0 checks
+# forever. Fail-soft and bounded (prune ~1% of the time), and never on the hot
+# path more than a single INSERT. Opt out with UAP_POLICY_LOG_EXEC=0.
+record_execution() {
+  # $1=allowed(0|1) $2=policyId $3=reason
+  [[ "${UAP_POLICY_LOG_EXEC:-1}" == "0" ]] && return 0
+  local allowed="$1" pid="${2:-gate}" reason="$3"
+  local esc_args esc_reason
+  esc_args="$(printf '%s' "$ARGS" | sed "s/'/''/g")"
+  esc_reason="$(printf '%s' "$reason" | sed "s/'/''/g" | cut -c1-500)"
+  sqlite3 "$DB" "INSERT INTO policy_executions
+    (policyId, toolName, operation, args, result, allowed, reason, executedAt)
+    VALUES ('$pid', '${TOOL//\'/\'\'}', '${TOOL//\'/\'\'}', '$esc_args',
+            '{}', $allowed, '$esc_reason', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+    DELETE FROM policy_executions WHERE id < (SELECT MAX(id)-2000 FROM policy_executions)
+      AND (SELECT COUNT(*) FROM policy_executions) > 2000;" 2>/dev/null || true
+}
+
 # Did the self-protect enforcer actually run and make a decision this call?
 sec_enforcer_ran=0
 
@@ -156,6 +178,7 @@ try: print(json.loads(sys.stdin.read()).get("reason",""))
 except: print("")' 2>/dev/null || echo "")"
       msg="[UAP policy blocked: $pname] $reason"
     fi
+    record_execution 0 "$pid" "$msg"
     echo "$msg" >&2
     exit 2
   fi
@@ -165,4 +188,6 @@ done < <(sqlite3 "$DB" "SELECT p.id, p.name, t.toolName FROM policies p JOIN exe
 # surface is unguarded (self-protect not registered/active). Fail closed.
 [[ "$SEC_SENSITIVE" == "1" && "$sec_enforcer_ran" == "0" ]] && fail_closed "self-protect not registered/active"
 
+# Allowed: every active enforcer passed this operation.
+record_execution 1 "gate" ""
 exit 0
