@@ -6,15 +6,37 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
+import Database from 'better-sqlite3';
 import {
   bridgeMemory,
   bridgeFile,
   buildBridgeBlock,
   nativeMemoryTargets,
+  recentMemoryLines,
   claudeMemoryIndexPath,
   BRIDGE_START,
   BRIDGE_END,
 } from '../src/memory/bridge.js';
+
+/** Build a short_term.db under `<cwd>/agents/data/memory/` seeded with rows. */
+function seedShortTerm(cwd: string, rows: Array<{ type: string; content: string; importance?: number }>): void {
+  const dir = join(cwd, 'agents', 'data', 'memory');
+  mkdirSync(dir, { recursive: true });
+  const db = new Database(join(dir, 'short_term.db'));
+  db.exec(
+    `CREATE TABLE memories (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       timestamp TEXT NOT NULL,
+       type TEXT NOT NULL,
+       content TEXT NOT NULL,
+       project_id TEXT NOT NULL DEFAULT 'default',
+       importance INTEGER NOT NULL DEFAULT 5
+     )`
+  );
+  const ins = db.prepare('INSERT INTO memories (timestamp, type, content, importance) VALUES (?, ?, ?, ?)');
+  for (const r of rows) ins.run('2026-07-12T00:00:00Z', r.type, r.content, r.importance ?? 5);
+  db.close();
+}
 
 const dirs: string[] = [];
 function tmp(): string {
@@ -96,5 +118,51 @@ describe('memory bridge', () => {
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;
     }
+  });
+});
+
+describe('recentMemoryLines curation', () => {
+  it('prefers insight types and drops session-lifecycle action logs', () => {
+    const d = tmp();
+    seedShortTerm(d, [
+      { type: 'action', content: '[session-end] Agent stopping at 2026-07-12. Code changed: false' },
+      { type: 'action', content: '[pre-compact] Context compaction at 2026-07-12' },
+      { type: 'lesson', content: 'Bridge blocks must be idempotent — replace in place, never duplicate' },
+      { type: 'decision', content: 'UAP memory is the canonical cross-agent store' },
+      { type: 'observation', content: 'short_term.db is dominated by action lifecycle logs' },
+    ]);
+    const lines = recentMemoryLines(d, 8);
+    // Lifecycle logs are gone; insight types are surfaced.
+    expect(lines.some((l) => l.includes('[session-end]'))).toBe(false);
+    expect(lines.some((l) => l.includes('[pre-compact]'))).toBe(false);
+    expect(lines.some((l) => l.includes('idempotent'))).toBe(true);
+    // Insight priority order: lesson before decision before observation.
+    expect(lines[0]).toContain('(lesson');
+    expect(lines[1]).toContain('(decision');
+  });
+
+  it('keeps non-lifecycle action rows rather than dropping them wholesale', () => {
+    const d = tmp();
+    seedShortTerm(d, [
+      { type: 'action', content: '[session-end] noise' },
+      { type: 'action', content: 'ran uap deliver and it converged in 25s' },
+    ]);
+    const lines = recentMemoryLines(d, 8);
+    expect(lines.some((l) => l.includes('converged in 25s'))).toBe(true);
+    expect(lines.some((l) => l.includes('[session-end]'))).toBe(false);
+  });
+
+  it('falls back to raw ordering when only lifecycle noise exists (never emptier)', () => {
+    const d = tmp();
+    seedShortTerm(d, [
+      { type: 'action', content: '[session-end] a' },
+      { type: 'action', content: '[pre-compact] b' },
+    ]);
+    // Curated query excludes both, so the fallback must still surface something.
+    expect(recentMemoryLines(d, 8).length).toBe(2);
+  });
+
+  it('returns [] when there is no store (fail-soft)', () => {
+    expect(recentMemoryLines(tmp(), 8)).toEqual([]);
   });
 });

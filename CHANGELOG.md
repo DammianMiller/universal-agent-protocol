@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.138.1 (2026-07-12)
+
+- fix(memory): bridge mirror surfaces insight memories, not lifecycle noise
+
+
 ## v1.138.0 (2026-07-12)
 
 - feat(memory): memory bridge — `uap memory bridge` hijacks each coding agent's native memory/instruction file (Claude Code memory index, AGENTS.md for opencode/codex/factory, GEMINI, Cursor rules, Copilot instructions) to point at UAP's unified cross-agent memory. Idempotent, non-destructive marked block that declares UAP canonical, gives recall/store commands, and mirrors recent memories inline. Auto-runs on `uap init`.
