@@ -8,7 +8,7 @@
 
 import chalk from 'chalk';
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync } from 'fs';
 import { join, resolve } from 'path';
 import { ConvergenceLoop, composeIterationHooks } from '../delivery/convergence-loop.js';
 import type {
@@ -467,6 +467,58 @@ export function applyAutoPlan(options: DeliverOptions, plan: AutoPlan): void {
   if (plan.deployDev && options.deployDev === undefined) options.deployDev = true;
 }
 
+/**
+ * Project-level deliver concurrency lock. Prevents a fan-out where an impatient
+ * caller (e.g. a model that launched `uap deliver` for some work, didn't wait
+ * for the slow run, and relaunched a reworded version) spawns many concurrent
+ * deliver runs for the same project — each decomposing into the same epics and
+ * burning tokens/GPU in parallel. Returns a release() thunk, or null when
+ * another live deliver already holds the lock (the caller then exits cleanly).
+ * Stale locks (dead PID) are reclaimed. Off-switch: UAP_DELIVER_NO_LOCK=1.
+ */
+export function acquireDeliverLock(projectRoot: string): (() => void) | null {
+  if (process.env.UAP_DELIVER_NO_LOCK === '1') return () => {};
+  const dir = join(projectRoot, '.uap');
+  const lockPath = join(dir, 'deliver.lock');
+  const pidAlive = (pid: number): boolean => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  try {
+    mkdirSync(dir, { recursive: true });
+    // Reclaim a stale lock (holder no longer alive).
+    if (existsSync(lockPath)) {
+      const held = Number((readFileSync(lockPath, 'utf8').split('|')[0] || '').trim());
+      if (held && held !== process.pid && pidAlive(held)) return null; // live holder
+      try { rmSync(lockPath); } catch { /* racing reclaim */ }
+    }
+    // Atomic create-exclusive; if we lose the race, another deliver won it.
+    let fd: number;
+    try {
+      fd = openSync(lockPath, 'wx');
+    } catch {
+      return null;
+    }
+    writeSync(fd, `${process.pid}|${new Date().toISOString()}`);
+    closeSync(fd);
+  } catch {
+    // Lock machinery unavailable — fail OPEN (don't block a legitimate run).
+    return () => {};
+  }
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    try {
+      if (existsSync(lockPath)) {
+        const held = Number((readFileSync(lockPath, 'utf8').split('|')[0] || '').trim());
+        if (held === process.pid) rmSync(lockPath);
+      }
+    } catch { /* best-effort */ }
+  };
+  process.once('exit', release);
+  return release;
+}
+
 export async function deliverCommand(instruction: string, options: DeliverOptions): Promise<void> {
   try {
     await runDeliver(instruction, options);
@@ -478,6 +530,31 @@ export async function deliverCommand(instruction: string, options: DeliverOption
 
 async function runDeliver(instruction: string, options: DeliverOptions): Promise<void> {
   const projectRoot = resolve(options.projectRoot ?? process.cwd());
+
+  // Concurrency guard: only one deliver runs per project at a time. A dry-run
+  // plans nothing and a --resume continues the SAME mission, so both skip the
+  // lock; a fresh run that finds a live holder exits cleanly as a duplicate
+  // (this is the backstop against a caller fan-out — see acquireDeliverLock).
+  let releaseLock: (() => void) | null = null;
+  if (!options.dryRun && !options.resume) {
+    releaseLock = acquireDeliverLock(projectRoot);
+    if (releaseLock === null) {
+      let holder = '';
+      try {
+        holder = readFileSync(join(projectRoot, '.uap', 'deliver.lock'), 'utf8').split('|')[0];
+      } catch { /* gone already */ }
+      console.log(
+        chalk.yellow(
+          `↩ deliver already running for this project${holder ? ` (pid ${holder.trim()})` : ''} — ` +
+            `skipping this duplicate launch. Wait for it, or \`uap deliver --resume latest\` to follow it. ` +
+            `(override: UAP_DELIVER_NO_LOCK=1)`
+        )
+      );
+      return;
+    }
+  }
+  // The lock is released via acquireDeliverLock's process-exit handler (the
+  // deliver CLI is a one-shot process), and explicitly on early returns below.
 
   // Durable runs: `--resume <id|latest>` restores an interrupted mission —
   // instruction, phase cursor, and the loop checkpoint — and continues it.
