@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.137.1 (2026-07-12)
+
+- feat(self-tuning): real-time adaptation auto-on with opt-out toggle
+
+
 ## v1.137.0 (2026-07-12)
 
 - feat(self-tuning): LLM-guided self-tuning system (5-phase) to raise small models toward Opus
