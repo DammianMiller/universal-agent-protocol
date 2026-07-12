@@ -1,0 +1,22 @@
+{
+  "_comment": "Reference artifact — the runtime source of truth is opus48.ts. Opus is the quality upper bound the small-model tuner aims toward. See docs/guides/SELF_TUNING.md.",
+  "model": "opus-4.8",
+  "config": {
+    "recipes.enabled": false,
+    "recipes.recipe": "auto",
+    "recipes.confidenceThreshold": 0.5,
+    "recipes.fusionN": 3,
+    "recipes.allowSelfJudge": true,
+    "handsfree.enabled": false,
+    "handsfree.intensity": "normal",
+    "UAP_HANDSFREE_STAGNATION_LIMIT": 8,
+    "modelConcurrency.slots": 4,
+    "modelConcurrency.adaptive": true,
+    "memory.shortTerm.maxEntries": 50,
+    "memory.patternRag.enabled": false,
+    "delivery.runtimeVerify": false,
+    "PROXY_RECON_CONVERGENCE_THRESHOLD": 60,
+    "PROXY_LOOP_BREAKER": true,
+    "PROXY_STUCK_BREAK": true
+  }
+}

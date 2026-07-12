@@ -43,6 +43,8 @@ export function modKey(mod: Mod): string {
       return `scaffold:${mod.component}:${mod.op}:${mod.text}`;
     case 'middleware':
       return `mw:${mod.id}:${JSON.stringify(mod.params)}`;
+    case 'config':
+      return `config:${mod.key}=${mod.to}`;
   }
 }
 

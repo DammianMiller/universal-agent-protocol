@@ -31,6 +31,8 @@ export interface ConditionSummary {
   meanCostUsd: number | null;
   meanLatencyMs: number;
   errorRate: number;
+  /** Mean composite quality (0-100) over runs that carried a quality score, or null. */
+  meanQuality: number | null;
 }
 
 export interface Comparison {
@@ -49,6 +51,14 @@ export interface Comparison {
   metrics: Partial<Record<ContinuousMetric, PairedDeltaResult>>;
   /** Per-metric win/tie/loss (lower-is-better for tokens/cost/turns/latency). */
   metricVerdicts: Partial<Record<ContinuousMetric, Verdict>>;
+  /**
+   * Paired composite-quality delta (treatment - baseline over cells where BOTH
+   * arms carried a quality score), higher-is-better. Present only when quality
+   * scores exist. This is the LLM-Self-Tuning signal the tuner optimizes.
+   */
+  quality?: PairedDeltaResult;
+  /** Win/tie/loss on composite quality (higher-is-better). */
+  qualityVerdict?: Verdict;
 }
 
 export interface AnalysisReport {
@@ -88,6 +98,7 @@ function summarize(label: string, recs: RunRecord[]): ConditionSummary {
     const vals = recs.map((r) => sel(r.metrics)).filter((v): v is number => v != null);
     return vals.length ? mean(vals) : null;
   };
+  const quals = recs.map((r) => r.qualityScore?.composite).filter((v): v is number => v != null);
   return {
     label,
     n: recs.length,
@@ -97,6 +108,7 @@ function summarize(label: string, recs: RunRecord[]): ConditionSummary {
     meanCostUsd: numeric((m) => m.costUsd),
     meanLatencyMs: numeric((m) => m.latencyMs) ?? NaN,
     errorRate: recs.length ? mean(recs.map((r) => (r.metrics.error ? 1 : 0))) : NaN,
+    meanQuality: quals.length ? mean(quals) : null,
   };
 }
 
@@ -134,6 +146,9 @@ export interface AnalyzeOptions extends PairedOptions {
   /** Per-metric ROPE half-widths (same units as the metric). The open-challenge
    *  "deltas <4 TPS are ties" norm is a per-metric margin. */
   metricMargins?: Partial<Record<ContinuousMetric, number>>;
+  /** ROPE half-width (composite-quality points, 0..100) below which a quality
+   *  delta is a tie even if statistically significant. Default 0. */
+  qualityMargin?: number;
 }
 
 export function analyze(output: RunnerOutput, opts: AnalyzeOptions = {}): AnalysisReport {
@@ -178,6 +193,19 @@ export function analyze(output: RunnerOutput, opts: AnalyzeOptions = {}): Analys
       if (deltas.length > 0) metrics[metric] = pairedDelta(deltas, opts);
     }
 
+    // Composite-quality paired delta (higher-is-better), over cells where BOTH
+    // arms carried a quality score. This is the LLM-Self-Tuning quality signal.
+    const qualityDeltas: number[] = [];
+    for (let i = 0; i < base.length; i++) {
+      const bq = base[i].qualityScore?.composite;
+      const tq = treat[i].qualityScore?.composite;
+      if (bq != null && tq != null) qualityDeltas.push(tq - bq);
+    }
+    const quality = qualityDeltas.length > 0 ? pairedDelta(qualityDeltas, opts) : undefined;
+    const qualityVerdict = quality
+      ? verdict(quality, { margin: opts.qualityMargin ?? 0, higherIsBetter: true })
+      : undefined;
+
     // Win/tie/loss under the ROPE norm: correctness is higher-is-better; the
     // continuous metrics (tokens/cost/turns/latency) are lower-is-better.
     const correctnessVerdict = verdict(delta, { margin: opts.ropeMargin ?? 0, higherIsBetter: true });
@@ -204,6 +232,8 @@ export function analyze(output: RunnerOutput, opts: AnalyzeOptions = {}): Analys
       },
       metrics,
       metricVerdicts,
+      quality,
+      qualityVerdict,
     });
   }
 
@@ -268,12 +298,17 @@ export function renderMarkdown(r: AnalysisReport): string {
 
   L.push(`## Per-condition summary`);
   L.push('');
-  L.push(`| Condition | n | Success | Tokens | Turns | Cost $ | Latency ms | Err |`);
-  L.push(`|---|--:|--:|--:|--:|--:|--:|--:|`);
+  const anyQuality = r.perCondition.some((c) => c.meanQuality != null);
+  L.push(
+    `| Condition | n | Success | Tokens | Turns | Cost $ | Latency ms | Err |` +
+      (anyQuality ? ` Quality |` : ``)
+  );
+  L.push(`|---|--:|--:|--:|--:|--:|--:|--:|` + (anyQuality ? `--:|` : ``));
   for (const c of r.perCondition) {
     L.push(
       `| \`${c.label}\` | ${c.n} | ${pct(c.successRate)} | ${fixed(c.meanTokens)} | ` +
-        `${fixed(c.meanTurns, 1)} | ${fixed(c.meanCostUsd, 4)} | ${fixed(c.meanLatencyMs)} | ${pct(c.errorRate)} |`
+        `${fixed(c.meanTurns, 1)} | ${fixed(c.meanCostUsd, 4)} | ${fixed(c.meanLatencyMs)} | ${pct(c.errorRate)} |` +
+        (anyQuality ? ` ${fixed(c.meanQuality, 1)} |` : ``)
     );
   }
   L.push('');
@@ -297,6 +332,14 @@ export function renderMarkdown(r: AnalysisReport): string {
         `net ${m.netGain >= 0 ? '+' : ''}${m.netGain} (p=${m.pValue.toFixed(3)}); ` +
         `both✓ ${m.bothCorrect}, both✗ ${m.bothWrong}`
     );
+    if (cmp.quality) {
+      const q = cmp.quality;
+      L.push('');
+      L.push(
+        `**Quality (composite 0-100):** ${vbadge(cmp.qualityVerdict ?? 'tie')}  ` +
+          `Δ ${q.meanDelta.toFixed(1)}, 95% CI ${ciStr(q.ci, 1)}, p=${q.pValue.toFixed(3)} ${sig(q)}`
+      );
+    }
     L.push('');
     L.push(`| Metric | Δ mean | 95% CI | p | verdict |`);
     L.push(`|---|--:|--:|--:|:-:|`);

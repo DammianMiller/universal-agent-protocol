@@ -268,5 +268,73 @@ class JudgeGatingTest(unittest.TestCase):  # #2 stronger non-self judge
         self.assertEqual(ce.select_recipe(b, S(recipe="auto", model="opus"), False), "fusion")
 
 
+class AdaptationSignalTest(unittest.TestCase):  # LLM-Self-Tuning real-time adaptor (P4)
+    def setUp(self):
+        import tempfile, os
+        self.d = tempfile.mkdtemp(prefix="uap-adapt-test-")
+        # Isolate the reactor-signal dir so it never pre-empts our selection.
+        self.empty = tempfile.mkdtemp(prefix="uap-empty-sig-")
+        self._prev_recipe = os.environ.get("UAP_RECIPE_SIGNAL_DIR")
+        self._prev_adapt = os.environ.get("PROXY_REALTIME_ADAPT")
+        os.environ["UAP_RECIPE_SIGNAL_DIR"] = self.empty
+
+    def tearDown(self):
+        import os
+        if self._prev_recipe is None:
+            os.environ.pop("UAP_RECIPE_SIGNAL_DIR", None)
+        else:
+            os.environ["UAP_RECIPE_SIGNAL_DIR"] = self._prev_recipe
+        if self._prev_adapt is None:
+            os.environ.pop("PROXY_REALTIME_ADAPT", None)
+        else:
+            os.environ["PROXY_REALTIME_ADAPT"] = self._prev_adapt
+
+    def _write(self, name, sig):
+        import json, os
+        with open(os.path.join(self.d, name), "w") as f:
+            json.dump(sig, f)
+
+    def test_load_fresh_stale_missing(self):
+        import time
+        self._write("s1.json", {"ts": time.time(), "escalate": True})
+        self.assertTrue(ce.load_adaptation_signal("s1", signal_dir=self.d)["escalate"])
+        self._write("old.json", {"ts": 1, "escalate": True})
+        self.assertIsNone(ce.load_adaptation_signal("old", signal_dir=self.d, ttl=180.0))
+        self.assertIsNone(ce.load_adaptation_signal("nope", signal_dir=self.d))
+
+    def test_latest_fallback_and_sanitized_id(self):
+        import time
+        self._write("latest.json", {"ts": time.time(), "recipe": "fusion"})
+        self.assertEqual(ce.load_adaptation_signal(signal_dir=self.d)["recipe"], "fusion")
+
+    def test_opt_in_escalation(self):
+        import os, time
+        os.environ["UAP_ADAPTATION_SIGNAL_DIR"] = self.d
+        self._write("latest.json", {"ts": time.time(), "escalate": True})
+        try:
+            # Disabled: a short prompt stays on the cheaper 'confidence' recipe.
+            os.environ["PROXY_REALTIME_ADAPT"] = "0"
+            self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="auto"), False), "confidence")
+            # Enabled: the fresh adaptation signal escalates this turn to fusion.
+            os.environ["PROXY_REALTIME_ADAPT"] = "1"
+            self.assertEqual(ce.select_recipe(body("add a button"), S(recipe="auto"), False), "fusion")
+        finally:
+            os.environ.pop("UAP_ADAPTATION_SIGNAL_DIR", None)
+
+    def test_no_escalation_without_judge(self):
+        import os, time
+        os.environ["UAP_ADAPTATION_SIGNAL_DIR"] = self.d
+        os.environ["PROXY_REALTIME_ADAPT"] = "1"
+        self._write("latest.json", {"ts": time.time(), "escalate": True})
+        try:
+            # judge == primary model → no distinct judge → never escalate to fusion.
+            self.assertNotEqual(
+                ce.select_recipe(body("add a button"), S(recipe="auto", model="qwen"), False),
+                "fusion",
+            )
+        finally:
+            os.environ.pop("UAP_ADAPTATION_SIGNAL_DIR", None)
+
+
 if __name__ == "__main__":
     unittest.main()

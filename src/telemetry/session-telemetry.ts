@@ -100,6 +100,18 @@ interface CostEntry {
   operation: string;
 }
 
+/** A per-turn quality estimate + reliability signal (LLM Self-Tuning P4). */
+export interface TurnQualityEntry {
+  /** Estimated composite quality of this turn (0-100). */
+  quality: number;
+  /** Tool calls this turn that failed / were malformed. */
+  toolFailures: number;
+  /** Tool calls this turn. */
+  toolCalls: number;
+  timestamp: number;
+  note?: string;
+}
+
 interface SessionStats {
   sessionId: string;
   startTime: number;
@@ -122,6 +134,7 @@ interface SessionStats {
   rootTaskIds: string[];
   deploys: Map<string, DeployAction>;
   costs: CostEntry[];
+  turns: TurnQualityEntry[];
   totalCostUsd: number;
   estimatedCostWithoutUap: number;
   maxEntries: number; // LRU eviction limit
@@ -154,6 +167,7 @@ function getStats(): SessionStats {
       rootTaskIds: [],
       deploys: new Map(),
       costs: [],
+      turns: [],
       totalCostUsd: 0,
       estimatedCostWithoutUap: 0,
       maxEntries: 100, // LRU eviction limit
@@ -161,6 +175,38 @@ function getStats(): SessionStats {
     };
   }
   return _stats;
+}
+
+// ─── Per-turn quality (LLM Self-Tuning P4) ───
+
+/** Record a per-turn quality estimate + tool-reliability signal. Capped LRU. */
+export function recordTurnQuality(entry: Omit<TurnQualityEntry, 'timestamp'> & { timestamp?: number }): void {
+  const s = getStats();
+  s.turns.push({
+    quality: entry.quality,
+    toolFailures: entry.toolFailures,
+    toolCalls: entry.toolCalls,
+    timestamp: entry.timestamp ?? Date.now(),
+    note: entry.note,
+  });
+  if (s.turns.length > 200) s.turns.splice(0, s.turns.length - 200);
+}
+
+/**
+ * Aggregate the recent per-turn signals for the real-time adaptor: mean turn
+ * quality and tool-failure rate over the last `window` turns. Returns undefined
+ * fields when no turns are recorded (adaptor treats them as nominal).
+ */
+export function recentTurnSignals(window = 5): { turnQuality?: number; toolFailureRate?: number } {
+  const turns = getStats().turns.slice(-Math.max(1, window));
+  if (turns.length === 0) return {};
+  const turnQuality = turns.reduce((a, t) => a + t.quality, 0) / turns.length;
+  const totalCalls = turns.reduce((a, t) => a + t.toolCalls, 0);
+  const totalFail = turns.reduce((a, t) => a + t.toolFailures, 0);
+  return {
+    turnQuality,
+    toolFailureRate: totalCalls > 0 ? totalFail / totalCalls : undefined,
+  };
 }
 
 // ─── Formatting Helpers ───
