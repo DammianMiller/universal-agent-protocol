@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.148.0 (2026-07-12)
+
+- chore: bump version to 1.148.0
+- chore: bump version to 1.148.0
+- feat(setup): install ALL policies (with their levels) by default in every uap setup
+
+
 ## v1.147.4 (2026-07-12)
 
 - fix(policy-gate): resolve the worktree the op TARGETS, not just the hook's cwd
