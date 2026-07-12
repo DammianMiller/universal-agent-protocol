@@ -49,6 +49,7 @@ const lazy = {
   design: () => import('../cli/design.js').then((m) => m.designCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
   fidelity: () => import('../cli/fidelity.js').then((m) => m.fidelityCommand),
+  plan: () => import('../cli/plan.js').then((m) => m.planCommand),
 };
 
 // Type alias for hooks target (used in action handlers). Mirrors ALL_TARGETS
@@ -697,6 +698,16 @@ program
   .option('--json', 'Emit JSON')
   .action(async (action, options) => {
     const cmd = await lazy.fidelity();
+    await cmd(action, { json: Boolean(options.json) });
+  });
+
+program
+  .command('plan')
+  .description('Record/inspect plan validation (validate-plan-on-change gate): `uap plan validate` after running `validate the plan`')
+  .argument('[action]', 'validate | status (omit to show status)')
+  .option('--json', 'Emit JSON')
+  .action(async (action, options) => {
+    const cmd = await lazy.plan();
     await cmd(action, { json: Boolean(options.json) });
   });
 

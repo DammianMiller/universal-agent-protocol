@@ -100,6 +100,9 @@ const MANDATORY_POLICIES = [
   // Always active: block the model from killing/displacing the inference stack
   // it runs on (llama :8080 / proxy :4000 / embeddings :8081).
   'enforcement-infra-protect',
+  // Always validate a plan after creating/modifying it: a plan-file write is
+  // blocked until `validate the plan` + `uap plan validate` have run recently.
+  'validate-plan-on-change',
 ];
 
 async function installPolicy(policyName: string): Promise<void> {

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.147.0 (2026-07-12)
+
+- feat(policy): validate-plan-on-change — ALWAYS validate a plan after creating/modifying it
+
+
 ## v1.146.1 (2026-07-12)
 
 - test: playwright-core is a runtime dependency — invert the placement assertion (companion to #460)
