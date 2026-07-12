@@ -129,6 +129,38 @@ export const SETTINGS: readonly SettingDef[] = [
     description: 'Master switch for the runtime execution gate in the Stop hook. `0` bypasses it.',
     recommendation: 'Leave on (default). Set `0` only to unblock a session where the runtime gate misfires.',
   },
+  {
+    key: 'fidelity.mode', kind: 'json', type: 'enum', enumValues: ['standard', 'max'],
+    default: 'standard', category: 'verification',
+    description: 'Maximum-fidelity mode. `max` flips every verification default to its strongest: raised verifier floor (runtime+integration), acceptance judge required, blocking vision review, and a fail-CLOSED visual gate — a delivery is accepted only when it builds, runs, looks right, and matches the spec. (`UAP_FIDELITY` overrides at runtime.)',
+    recommendation: '`max` when correctness matters more than speed (UI work, releases, hands-free autonomy). `standard` for fast exploratory iteration.',
+  },
+  {
+    key: 'UAP_FIDELITY', kind: 'env', type: 'enum', enumValues: ['standard', 'max'],
+    default: 'standard', category: 'verification', target: 'shell',
+    description: 'Runtime override of `fidelity.mode`, read from the shell env by verify/deliver and the Python enforcers. Takes precedence over the config value.',
+    recommendation: 'Set inline (`UAP_FIDELITY=max <cmd>`) to force max fidelity for one command without editing config.',
+  },
+  {
+    key: 'fidelity.visionMinScore', kind: 'json', type: 'number', min: 0, max: 10, default: 6, category: 'verification',
+    description: 'Minimum aesthetic score (0–10) the vision judge must give a rendered UI before it passes under `max` fidelity.',
+    recommendation: '6 is a reasonable "looks like a real, polished app" bar. Raise toward 8 for design-critical surfaces; lower to 4 to only catch broken/blank UIs.',
+  },
+  {
+    key: 'fidelity.visualBaselines', kind: 'json', type: 'boolean', default: true, category: 'verification',
+    description: 'Keep approved UI screenshots as regression baselines under `.uap/visual/baseline/` and block on visual drift beyond threshold on later runs.',
+    recommendation: 'Leave on so accepted UIs are pinned against regressions. Disable for throwaway prototypes where every render legitimately differs.',
+  },
+  {
+    key: 'UAP_VISION_ENDPOINT', kind: 'env', type: 'string', default: '', category: 'verification', target: 'proxyEnv',
+    description: 'Base URL of an OpenAI-compatible, image_url-capable endpoint used for aesthetic screenshot review (e.g. http://127.0.0.1:8080/v1). Defaults to the local model when set by setup.',
+    recommendation: 'Point at your local vision-capable model so aesthetic review runs offline with no per-image cost.',
+  },
+  {
+    key: 'UAP_VISION_MODEL', kind: 'env', type: 'string', default: '', category: 'verification', target: 'proxyEnv',
+    description: 'Model id sent to the vision endpoint for aesthetic review (e.g. qwen36-35b-a3b-iq4xs).',
+    recommendation: 'Set by `uap setup` to your local vision model. Required for blocking vision review under `max` fidelity.',
+  },
 
   // ── Model routing ─────────────────────────────────────────────────────────
   {
