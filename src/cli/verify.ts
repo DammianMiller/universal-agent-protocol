@@ -13,6 +13,7 @@ import { detectRungs, runTieredLadder, tierOf, type GateRung, type GateTier, typ
 import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
 import { runVisualGate, discoverEntryPages, type VisualVerdict } from '../delivery/visual-gate.js';
 import { resolveFidelity, type ResolvedFidelity } from '../delivery/fidelity.js';
+import { createUserValidationRunner, synthesizeUserValidationRung } from '../delivery/user-validation.js';
 import { compareVisualBaseline, driftSummary, approveVisualBaseline } from '../delivery/visual-baseline.js';
 import type { LoopExecutor } from '../delivery/convergence-loop.js';
 
@@ -43,6 +44,9 @@ export interface VerifyOptions {
   fidelity?: ResolvedFidelity;
   /** Approve the current run's screenshots as the regression baseline (no gating). */
   approveVisual?: boolean;
+  /** Run the user-path validation gate (.uap/user-paths.json journeys through
+   * the real client). Standalone flag; deliver wires it as the terminal rung. */
+  userPaths?: boolean;
 }
 
 export interface VerifyResult {
@@ -104,8 +108,13 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // Cheap-first floor. Max fidelity promotes past `runtime` into `integration`
   // so integration-tier gates run before "done" (standard stops at runtime).
   const maxTier: GateTier = opts.full ? 'deploy-dev' : fidelity.max ? 'integration' : 'runtime';
+  if (opts.userPaths) {
+    const uvRung = synthesizeUserValidationRung('block');
+    if (uvRung && !rungs.some((r) => r.id === uvRung.id)) rungs = [...rungs, uvRung];
+  }
   const ladder = await runTieredLadder(rungs, dir, {
     maxTier,
+    ...(opts.userPaths ? { userValidationRunner: createUserValidationRunner() } : {}),
     ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
   });
 

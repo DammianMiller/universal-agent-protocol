@@ -174,6 +174,20 @@ export function gatherEvidence(
     }
   }
   walk(root, 0);
+  // User-validation report: agents/ is in SKIP_DIRS so the walk never reaches
+  // it — inject explicitly at prio -2 (beats even spec-referenced files). The
+  // report shows the judge what a REAL USER observed (per-step evidence,
+  // console errors, HTTP statuses), the strongest signal for user-facing
+  // requirements. Trust for the "ALL PASSED" claim is enforced separately via
+  // the runtime note (buildUserPathsNote hash check), not here — as raw
+  // evidence the judge may weigh even an unverified report's step detail.
+  try {
+    const reportAbs = join(root, 'agents', 'data', 'validation', 'latest.json');
+    const st = lstatSync(reportAbs);
+    if (st.isFile() && st.size <= 200_000) files.push({ abs: reportAbs, prio: -2 });
+  } catch {
+    /* no validation report — nothing to inject */
+  }
   // Dedupe (a spec-referenced file can also be found by a walk) keeping the
   // best (lowest) priority per path.
   const best = new Map<string, { abs: string; prio: number }>();

@@ -125,6 +125,16 @@ export const SETTINGS: readonly SettingDef[] = [
     recommendation: 'Enable for any project with a runnable artifact — it catches "declared done but never ran". Safe on empty projects (it skips when nothing is runnable).',
   },
   {
+    key: 'delivery.userValidation', kind: 'json', type: 'string', default: 'block', category: 'verification',
+    description: 'User-path validation gate: deliver runs the .uap/user-paths.json critical journeys through the real client (headless browser / HTTP / built CLI) as the terminal gate rung. block = DELIVERED requires them green; advisory = report only; off = disabled.',
+    recommendation: 'Leave on block — it is the only gate that proves the artifact works for a real user, not just that tests pass.',
+  },
+  {
+    key: 'UAP_USER_VALIDATION', kind: 'env', type: 'boolean', default: true, category: 'verification', target: 'shell',
+    description: 'Runtime downgrade for the user-validation gate: `0` demotes block to advisory for this run only. Persisting `0` is blocked by the self-protect enforcer.',
+    recommendation: 'Leave unset. Use inline `UAP_USER_VALIDATION=0 uap deliver ...` only to unblock a run where the gate itself misfires.',
+  },
+  {
     key: 'UAP_VERIFY_ON_STOP', kind: 'env', type: 'boolean', default: true, category: 'verification', target: 'shell',
     description: 'Master switch for the runtime execution gate in the Stop hook. `0` bypasses it.',
     recommendation: 'Leave on (default). Set `0` only to unblock a session where the runtime gate misfires.',
