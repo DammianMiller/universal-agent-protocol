@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import emit, parse_cli, repo_root, run  # noqa: E402
+from _common import emit, parse_cli, worktree_root, run  # noqa: E402
 
 # Ship verbs are anchored to their tool prefix so that the bare tokens "merge"
 # or "signoff" inside read-only commands (git diff --merge-base, rg merge,
@@ -132,7 +132,11 @@ def main() -> None:
     if not any(p.search(cmd) for p in SHIP_PATTERNS):
         emit(True, "not a ship action")
 
-    root = repo_root()
+    # Resolve against the WORKING TREE the operation runs in (the worktree when a
+    # ship op runs from inside one), NOT the main checkout. repo_root() is pinned
+    # to MAIN_ROOT by the gate, so it always read the main checkout's branch and
+    # demanded a review for the wrong branch on every worktree commit/push.
+    root = worktree_root()
     branch = current_branch(root)
     if branch is None:
         emit(True, "branch not resolvable (detached/non-git) — fail-open")
