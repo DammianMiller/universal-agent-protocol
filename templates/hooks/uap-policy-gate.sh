@@ -120,6 +120,41 @@ print("1" if (hit or bypass) else "0")
 # Operator out-of-band override disables the fail-closed guard too.
 [[ "${UAP_SELF_PROTECT_OFF:-}" == "1" ]] && SEC_SENSITIVE=0
 
+# ── Edit fast-path (A) ───────────────────────────────────────────────────────
+# Test files and TRIVIAL edits (a one-liner, a constant, a typo) are the fast
+# feedback loop; routing each through the full worktree/task/deliver workflow
+# gates costs a ~10+ min deliver cycle on a slow local executor. Allow them
+# directly — BEFORE the workflow-gate loop — so iteration stays fast. This never
+# bypasses SAFETY: a sensitive control-surface path (SEC_SENSITIVE) is excluded,
+# and self/infra-protect gate bash, not these edits. UAP_DELIVER_FASTPATH=off
+# disables; UAP_DELIVER_TRIVIAL_EDIT_CHARS tunes the trivial threshold.
+if [[ "${UAP_DELIVER_FASTPATH:-on}" != "off" && "$SEC_SENSITIVE" != "1" ]]; then
+  case " Edit Write MultiEdit edit write multiedit " in
+    *" $TOOL "*)
+      if printf '%s' "$ARGS" | TRIVIAL="${UAP_DELIVER_TRIVIAL_EDIT_CHARS:-240}" python3 -c '
+import json, os, sys
+try: a = json.loads(sys.stdin.read() or "{}")
+except Exception: sys.exit(1)
+target = (a.get("file_path") or a.get("filePath") or a.get("path") or a.get("target") or a.get("filename") or a.get("file") or "").lower()
+base = target.rsplit("/", 1)[-1]; stem = base.rsplit(".", 1)[0]
+markers = (".test.", ".spec.", "_test.", "test_", "/test/", "/tests/", "/__tests__/", "/spec/", "/specs/")
+is_test = any(m in "/" + target for m in markers) or stem in ("test","tests","spec","specs","conftest") or stem.startswith("test") or stem.endswith("test") or stem.endswith("spec")
+def changed(a):
+    if isinstance(a.get("edits"), list):
+        return sum(len(str(e.get("old_string") or e.get("oldString") or "")) + len(str(e.get("new_string") or e.get("newString") or "")) for e in a["edits"] if isinstance(e, dict))
+    o=a.get("old_string") or a.get("oldString"); n=a.get("new_string") or a.get("newString")
+    return (len(str(o or ""))+len(str(n or ""))) if (o is not None or n is not None) else None
+c = changed(a)
+trivial = c is not None and c <= int(os.environ.get("TRIVIAL","240"))
+sys.exit(0 if (is_test or trivial) else 1)
+' 2>/dev/null; then
+        echo "[UAP policy gate] fast-path: test-file or trivial edit — allowed directly (route substantive source changes through deliver)." >&2
+        exit 0
+      fi
+      ;;
+  esac
+fi
+
 fail_closed() {
   echo "[UAP policy gate] FAIL-CLOSED: this operation touches the enforcement control surface but the self-protect enforcer could not run (${1:-machinery unavailable}). Blocked so a broken/absent gate can't become a bypass. (Operator override: UAP_SELF_PROTECT_OFF=1.)" >&2
   exit 2
