@@ -397,6 +397,33 @@ export function effectiveCandidates(agentic: boolean, candidates?: number): numb
 }
 
 /**
+ * Whether a mission should be decomposed into phases (the precondition for
+ * orchestration). Forced ON by any explicit operator intent — the `--orchestrate`
+ * flag, `--decompose`, OR a persisted `.uap.json` deliver.orchestrate: "on"
+ * (set via `uap orchestrator on`, meaning "orchestrate ALWAYS, not just when I
+ * remember the flag"). Absent explicit intent, falls to the shouldDecompose()
+ * heuristic (unless UAP_DELIVER_DECOMPOSE=0). Exported for tests.
+ *
+ * The cfgOrch clause fixes a real gap: orchestrate:"on" previously only fed
+ * `orchestrateEnabled` (which orchestrates phases that ALREADY exist), but phases
+ * only exist when decomposition runs — so config-on silently did nothing for any
+ * mission the heuristic declined to decompose.
+ */
+export function resolveDecomposeWanted(opts: {
+  orchestrateOption: boolean | undefined;
+  decomposeOption: boolean | undefined;
+  cfgOrch: unknown;
+  envDecompose: string | undefined;
+  heuristic: () => boolean;
+}): boolean {
+  if (opts.orchestrateOption === true) return true;
+  if (opts.cfgOrch === 'on' || opts.cfgOrch === true) return true;
+  if (opts.decomposeOption === true) return true;
+  if (opts.decomposeOption === undefined && opts.envDecompose !== '0' && opts.heuristic()) return true;
+  return false;
+}
+
+/**
  * True when the user steered any aid explicitly — auto mode must then stand
  * down so flags remain the single source of truth for the run. Exported for
  * tests; commander leaves unset booleans undefined, so a present value
@@ -1544,11 +1571,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     cfgEpics !== false && cfgEpics !== 'off';
   const decomposeWanted =
     !needsSelfGate &&
-    (options.orchestrate === true ||
-      options.decompose === true ||
-      (options.decompose === undefined &&
-        process.env.UAP_DELIVER_DECOMPOSE !== '0' &&
-        shouldDecompose(instruction, autoPlan?.complexity)));
+    resolveDecomposeWanted({
+      orchestrateOption: options.orchestrate,
+      decomposeOption: options.decompose,
+      cfgOrch,
+      envDecompose: process.env.UAP_DELIVER_DECOMPOSE,
+      heuristic: () => shouldDecompose(instruction, autoPlan?.complexity),
+    });
   if (!phases && decomposeWanted && !resumeState) {
     console.log(chalk.cyan('🧩 decompose: planning sequential delivery phases…'));
     // ExpertOrchestrator lifecycle chain → phase-shaping hints (fail-soft).
