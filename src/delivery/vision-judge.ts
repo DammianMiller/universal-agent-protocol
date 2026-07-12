@@ -27,6 +27,51 @@ export function visionJudgeConfigured(): boolean {
   return Boolean(process.env.UAP_VISION_MODEL && process.env.UAP_VISION_ENDPOINT);
 }
 
+/**
+ * Auto-configure the vision judge from the ACTIVE local model when it isn't
+ * explicitly configured. The aesthetic review used to report "no vision model"
+ * whenever UAP_VISION_ENDPOINT/MODEL were unset — even though the local model
+ * serving the run (e.g. Qwen3.6 with an mmproj projector) is vision-capable.
+ * Probe candidate local OpenAI-compat endpoints' /props for
+ * modalities.vision === true and, on a hit, set UAP_VISION_ENDPOINT/MODEL so
+ * the judge uses the active model. Fail-soft: any error leaves config unset
+ * (the caller then reports "not configured" exactly as before). Idempotent.
+ */
+export async function autodetectLocalVision(): Promise<boolean> {
+  if (visionJudgeConfigured()) return true;
+  // Candidate OpenAI-compat bases, most-specific first. LLAMA_CPP_BASE is what
+  // the proxy talks to; the rest are conventional local llama-server ports.
+  const bases = [
+    process.env.UAP_INFERENCE_ENDPOINT,
+    process.env.LLAMA_CPP_BASE,
+    'http://127.0.0.1:8080/v1',
+  ].filter((b): b is string => Boolean(b));
+  for (const base of bases) {
+    const root = base.replace(/\/v1\/?$/, '').replace(/\/$/, '');
+    try {
+      const propsRes = await fetch(`${root}/props`, { signal: AbortSignal.timeout(2000) });
+      if (!propsRes.ok) continue;
+      const props = (await propsRes.json()) as { modalities?: { vision?: boolean }; model_path?: string };
+      if (!props?.modalities?.vision) continue;
+      // Derive a model id (llama-server accepts any string; prefer the real one).
+      let model = 'local';
+      try {
+        const modelsRes = await fetch(`${root}/v1/models`, { signal: AbortSignal.timeout(2000) });
+        if (modelsRes.ok) {
+          const m = (await modelsRes.json()) as { models?: { id?: string; name?: string }[]; data?: { id?: string }[] };
+          model = m.models?.[0]?.id || m.models?.[0]?.name || m.data?.[0]?.id || model;
+        }
+      } catch { /* keep 'local' */ }
+      process.env.UAP_VISION_ENDPOINT = `${root}/v1`;
+      process.env.UAP_VISION_MODEL = model;
+      return true;
+    } catch {
+      /* endpoint unreachable — try the next */
+    }
+  }
+  return false;
+}
+
 /** Extract the first JSON object from model output (grammar-free fallback). */
 export function parseVisionVerdict(text: string): VisionVerdict | null {
   const match = text.match(/\{[\s\S]*\}/);
