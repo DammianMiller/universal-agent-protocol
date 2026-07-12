@@ -275,6 +275,49 @@ PROXY_STUCK_TEXT_THRESHOLD = int(os.environ.get("PROXY_STUCK_TEXT_THRESHOLD", "2
 PROXY_STUCK_API_THRESHOLD = int(os.environ.get("PROXY_STUCK_API_THRESHOLD", "3"))
 
 # ---------------------------------------------------------------------------
+# ERROR-LOOP guardrail: the model edits, runs a command, hits the SAME failure,
+# edits again (a DIFFERENT edit), runs, hits the same failure — for many turns.
+# The identical-tool-call loop/cycle detectors never trip because each edit
+# differs; the model looks productive while never addressing the real blocker
+# (observed live: a duplicate function declaration in test.js kept the test from
+# compiling, and the model chased an unrelated error in another file for 35 min).
+# Detect a repeated tool_RESULT error SIGNATURE (normalized: paths/line numbers/
+# digits/hex stripped so it's edit-invariant) and, past the threshold, inject a
+# nudge to STOP editing and re-read the failing file/output end-to-end.
+# PROXY_ERROR_LOOP=off to disable.
+PROXY_ERROR_LOOP = os.environ.get("PROXY_ERROR_LOOP", "on").lower() not in {
+    "0", "off", "false", "no",
+}
+PROXY_ERROR_LOOP_THRESHOLD = int(os.environ.get("PROXY_ERROR_LOOP_THRESHOLD", "3"))
+
+_ERROR_LINE_RE = re.compile(
+    r"^.*(?:Error|Exception|Traceback|FAILED|assert(?:ion)?|SyntaxError|"
+    r"TypeError|ReferenceError|not found|cannot find|undefined|panic|"
+    r"fatal|command not found|exit code [1-9]).*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _error_signature(text: str) -> str:
+    """Edit-invariant signature of the first error line in a tool result.
+
+    Normalizes away paths, line:col numbers, hex, and bare digits so that the
+    SAME underlying failure produces the SAME signature across turns even as the
+    model edits different code around it. Returns "" when no error line is found
+    (a passing result resets the streak)."""
+    if not text:
+        return ""
+    m = _ERROR_LINE_RE.search(text)
+    if not m:
+        return ""
+    line = m.group(0)
+    line = re.sub(r"(/[^\s:]+)+", "<path>", line)          # unix paths
+    line = re.sub(r"\b[0-9a-fA-F]{6,}\b", "<hex>", line)    # hashes/addresses
+    line = re.sub(r"\d+", "#", line)                        # line numbers, counts
+    line = re.sub(r"\s+", " ", line).strip().lower()
+    return line[:200]
+
+# ---------------------------------------------------------------------------
 # DEFERRAL-BREAK guardrail (Fix A): a model can end a turn with plain prose that
 # DEFERS the work instead of doing it -- "I need more exploration cycles to
 # complete the plan", "let me continue exploring", "I'll need a few more passes"
@@ -1358,6 +1401,9 @@ class SessionMonitor:
     catastrophic_ctx_streak: int = 0  # Fix F: consecutive turns raw ctx >= finalize ratio
     unexpected_end_turn_count: int = 0  # end_turn without tool_use in active loop
     self_stuck_streak: int = 0  # consecutive assistant texts self-reporting a loop
+    error_signature_streak: int = 0  # consecutive turns with the SAME tool_result error
+    last_error_signature: str = ""  # normalized signature of that recurring error
+    error_loop_fires: int = 0  # telemetry: error-loop nudges injected
     rate_limited_api_streak: int = 0  # consecutive tool calls hitting a rate-limited API host
     stuck_break_fires: int = 0  # monotonic count of forced stuck-breaks
     deferral_streak: int = 0  # consecutive no-tool turns deferring the work (Fix A)
@@ -1598,6 +1644,24 @@ class SessionMonitor:
                 if name.lower() in {n.lower() for n in _READ_ONLY_TOOL_CLASS} and target:
                     by_tool = self.tool_target_history.setdefault(name, {})
                     by_tool[target] = by_tool.get(target, 0) + 1
+
+    def note_tool_result_error(self, latest_result_text: str) -> None:
+        """Track a repeated tool_result error signature (ERROR-LOOP guardrail).
+
+        Same normalized error as last turn -> increment the streak; a new error
+        or a clean (error-free) result -> reset. Only a SUSTAINED same-failure
+        streak (despite the model's varied edits) trips the nudge."""
+        if not PROXY_ERROR_LOOP:
+            return
+        sig = _error_signature(latest_result_text or "")
+        if sig and sig == self.last_error_signature:
+            self.error_signature_streak += 1
+        elif sig:
+            self.error_signature_streak = 1
+            self.last_error_signature = sig
+        else:
+            self.error_signature_streak = 0
+            self.last_error_signature = ""
 
     def note_assistant_text(self, text: str) -> None:
         """Track the model self-reporting that it is stuck (STUCK-BREAK signal
@@ -4905,6 +4969,46 @@ def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> N
     logger.warning("STUCK-BREAK: forced terminal turn (%s, fires=%d)", reason, monitor.stuck_break_fires)
 
 
+def _maybe_inject_error_loop_break(openai_body: dict, monitor: "SessionMonitor") -> None:
+    """Nudge the model out of a repeated-same-error loop (ERROR-LOOP guardrail).
+
+    When the SAME normalized tool_result error has recurred >= threshold times
+    despite the model's (varied) edits, its edits aren't addressing the real
+    blocker. Inject a directive to STOP editing and re-read the whole failing
+    file/output — the bug is likely somewhere it hasn't looked. Advisory: does
+    NOT release tool_choice (the model should keep acting, just diagnose first)."""
+    if not PROXY_ERROR_LOOP:
+        return
+    if monitor.error_signature_streak < PROXY_ERROR_LOOP_THRESHOLD:
+        return
+    monitor.error_loop_fires += 1
+    directive = (
+        "\n\nSTOP — the SAME failure has now recurred "
+        + str(monitor.error_signature_streak)
+        + " times in a row despite your edits: \""
+        + monitor.last_error_signature[:120]
+        + "\". Your edits are NOT addressing the real cause. Do NOT make another "
+        "edit yet. FIRST re-read the ENTIRE failing file (and the full error "
+        "output) top-to-bottom — the bug is very likely somewhere you have not "
+        "looked (a duplicate declaration, a wrong import, a different file). "
+        "Only after you can name the exact line causing THIS error, fix that."
+    )
+    msgs = openai_body.get("messages")
+    if not isinstance(msgs, list):
+        msgs = []
+    if msgs and msgs[0].get("role") == "system":
+        msgs[0]["content"] = (msgs[0].get("content") or "") + directive
+    else:
+        msgs.insert(0, {"role": "system", "content": directive.strip()})
+    openai_body["messages"] = msgs
+    logger.warning(
+        "ERROR-LOOP: same failure x%d — injected re-read nudge (sig=%r, fires=%d)",
+        monitor.error_signature_streak,
+        monitor.last_error_signature[:80],
+        monitor.error_loop_fires,
+    )
+
+
 def _maybe_inject_deferral_break(openai_body: dict, monitor: "SessionMonitor") -> None:
     """Convert a turn-ending deferral into forward motion (Fix A).
 
@@ -5897,6 +6001,9 @@ def build_openai_request(
 
     _maybe_inject_stuck_break(openai_body, monitor)
 
+    # ERROR-LOOP: same tool_result failure recurring despite varied edits.
+    _maybe_inject_error_loop_break(openai_body, monitor)
+
     # DEFERRAL-BREAK (Fix A): after stuck-break, drive a no-tool deferral turn
     # into a concrete action. Runs last so it can yield to stuck-break.
     _maybe_inject_deferral_break(openai_body, monitor)
@@ -6030,6 +6137,21 @@ def _record_last_assistant_tool_calls(
     with different arguments (e.g. read(file_a) vs read(file_b)) produces
     distinct fingerprints, preventing false cycle/stagnation detection."""
     messages = anthropic_body.get("messages", [])
+    # ERROR-LOOP tracking: feed the monitor the most recent tool_result text so a
+    # recurring same-failure signature can be detected across (varied) edits.
+    _latest_tr = ""
+    for _m in reversed(messages):
+        _c = _m.get("content")
+        if isinstance(_c, list):
+            _parts = [
+                _extract_text(b.get("content", ""))
+                for b in _c
+                if isinstance(b, dict) and b.get("type") == "tool_result"
+            ]
+            if _parts:
+                _latest_tr = "\n".join(p for p in _parts if p)
+                break
+    monitor.note_tool_result_error(_latest_tr)
     tool_fingerprints = []
     tool_targets: dict[str, str] = {}
     assistant_had_text = False  # Fix B: did the last assistant turn emit prose?
