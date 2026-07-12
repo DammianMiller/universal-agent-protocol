@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.148.2 (2026-07-12)
+
+- fix(deliver): .uap.json deliver.orchestrate:"on" now forces orchestration always
+
+
 ## v1.148.1 (2026-07-12)
 
 - fix(policy): self-protect anchors "/policies/" to a path segment, not any substring
