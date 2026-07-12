@@ -51,6 +51,22 @@ local or frontier — runs the build to 100% without stopping. See
 
 ---
 
+## Big builds: decompose → orchestrate → epics → contracts-first
+
+For a mission too large to hold in one context, `deliver` scales down the context each turn actually needs — this is what lets a small-context local model compose a system it could never see all at once.
+
+- **`--decompose`** splits the mission into sequential phases, each converged by its own loop (auto for long, complex instructions; `--no-decompose` forbids it).
+- **`--orchestrate`** runs those phases through the **blackboard orchestrator** with *minimal* per-task context — each task sees only its goal + its direct-dependency outputs. Implies `--decompose`.
+- **`--epics`** runs a massive mission as a sequence of **epics, each a fresh session** — only prior epics' summaries are injected, never their full code — looped until each is accepted (auto for very long missions; `--no-epics` disables).
+
+**Contracts-first** (on by default inside epic/decompose runs; `UAP_DELIVER_CONTRACTS=0` disables): the first epic plans the shared types, interfaces, and registry APIs the rest build against. Once accepted, its files are **locked read-only** so later epics build against frozen signatures and can't drift them. The public surface is *extracted and verified against emitted source* — only names proven present are recorded — which is what makes cross-module composition reliable without holding every module in context.
+
+**Scaffold-then-fill** (on by default in phased runs; `UAP_DELIVER_SCAFFOLD=0` disables): a large phase is split into a **scaffold** phase that emits the compiling skeleton (complete public signatures, wired imports/exports, stub bodies — build/typecheck must pass) and a **fill** phase that implements the logic *without changing any signature*. The skeleton keeps the build green while the details land.
+
+Interrupted a long run? **`--resume <id|latest>`** picks up a durable run from `.uap/deliver-runs` where it left off.
+
+---
+
 ## Auto-optimization
 
 By default every task is **classified by complexity** and the matching convergence aids turn on automatically (`auto-optimizer.ts`). You don't have to tune anything for the common case. To control it explicitly:
@@ -103,41 +119,106 @@ uap deliver "add the orders endpoint" --until-deployed
 
 ---
 
+## Beyond build & test: proving it runs
+
+Green gates prove code *compiles and tests pass* — not that the artifact actually **runs**. `deliver` adds gates for that:
+
+- **Execution gate** — auto-synthesized as a ladder rung whenever a runnable artifact is detected: it actually *runs* the thing (headless browser / vm-dom / child-process) and fails the turn on a runtime error, a blank canvas, or a static frame. Catches "declared done but never ran."
+- **Acceptance judge** (`--acceptance`) — after the objective gates pass, an LLM judges the spec's *behavioral completeness* from the code + runtime evidence and feeds any unmet requirements back so the loop finishes the spec. Pair it with **`--evaluator-model <preset>`** to have a *different* model judge than the one that implemented (separate generator from evaluator — the "barbell" strategy).
+- **Self-gate** — when a project has **no** detectable gates, `deliver` authors a task-specific acceptance gate as a fallback so there is always something to converge against (on by default; `--no-self-gate` disables, `--force-self-gate` authors one even when project gates exist).
+
+## Resilience: baseline-delta, migrations & repair escalation
+
+Long autonomous runs fail in predictable ways; `deliver` has a guard for each:
+
+- **Baseline-delta gating** — the full ladder is run **once at mission start**. Any required gate that is *already red at baseline* (a pre-existing failure the mission didn't cause) is demoted to non-blocking and annotated; only **new** regressions (green→red) block delivery. So a pre-existing broken lint or flaky test can't consume every attempt. On by default (`UAP_DELIVER_BASELINE_DELTA=0` or `.uap.json` `deliver.baselineDelta:false` to disable).
+- **Migration-validation gate** — when a `migrations/` dir with `.sql` files exists, a ladder rung runs the migrations against an **ephemeral throwaway Postgres container** before they can ship broken. Skips cleanly (never fails) when Docker/`sqlx-cli` isn't available.
+- **Repair escalation** — a circuit breaker for the compile-error death spiral: when the compile-error count *grows* across consecutive turns, the loop stops mission work and runs **one narrow "make it compile, change nothing else" pass** — in a fresh focused session, on the `--escalate-model` when configured — then resumes.
+
 ## Options
+
+**Loop & termination**
 
 | Flag | Purpose |
 |---|---|
 | `--max-turns <n>` | Maximum execute→verify iterations before until-delivered extension (default `5`) |
 | `--no-until-delivered` | Disable loop-until-delivered (ON by default: extends past `--max-turns` to the ceiling, stopping on stagnation) |
 | `--ceiling <n>` | Hard turn ceiling for until-delivered (1–50, default `30`) |
+| `--no-lazy` | Skip the lazy bare first attempt (by default one bare turn runs before the convergence aids engage) |
+| `--resume <id>` | Resume an interrupted durable run: a run id or `latest` (`.uap/deliver-runs`) |
+
+**Executor**
+
+| Flag | Purpose |
+|---|---|
+| `--executor <mode>` | Per-turn executor: `blind` (one completion), `agentic` (tool-using read/list/bash/write loop), or `auto` (agentic when there's repo context/gates to inspect) — default `auto` |
+| `--allow-bash` | Permit the agentic executor's `run_bash` tool when NOT under `uap sandbox` (off by default; auto-enabled under sandbox) |
+
+**Models & routing**
+
+| Flag | Purpose |
+|---|---|
 | `-m, --model <preset>` | Model preset (default `$UAP_DELIVER_MODEL` or `qwen35-a3b`) |
+| `--routing <preset>` | Pick the executor per task complexity from a routing preset (e.g. `cost-tiered`, `speed-tiered`); ignored when `--model` is set (`$UAP_DELIVER_ROUTING`) |
 | `--endpoint <url>` | Override the model endpoint (OpenAI-compatible `/v1`) |
-| `--escalate-model <preset>` | Stronger model for escalation (default `$UAP_ESCALATE_MODEL`) |
+| `--escalate-model <preset>` | Stronger model for the escalation/repair ladder (default `$UAP_ESCALATE_MODEL`) |
 | `--temperature <t>` | Sampling temperature (default: execution-profile value) |
+
+**Gates & acceptance**
+
+| Flag | Purpose |
+|---|---|
 | `--gates <ids>` | Gate subset: `build,typecheck,test,lint` |
-| `--tiers <list>` | Explicit local tiers to run, e.g. `fast,integration,deploy-dev` (overrides auto-detection) |
+| `--acceptance` | After objective gates pass, judge spec behavioral completeness (LLM) and feed unmet requirements back |
+| `--evaluator-model <preset>` / `--evaluator-endpoint <url>` | Judge the acceptance gate with a DIFFERENT model than the implementer (generator≠evaluator) |
+| `--no-self-gate` | Disable the self-authored acceptance-gate fallback (on by default when no project gates are detected) |
+| `--force-self-gate` | Author a task-specific acceptance gate even when project gates exist |
+| `--keep-best` | Never regress: snapshot first, roll back if the run ends with a worse required-gate score |
+
+**Tiers & CI/deploy feedback**
+
+| Flag | Purpose |
+|---|---|
+| `--tiers <list>` | Explicit local tiers, e.g. `fast,integration,deploy-dev` (overrides auto-detection) |
 | `--integration` / `--no-integration` | Run the integration tier (on by default when a suite is detected) |
 | `--deploy-dev` / `--no-deploy-dev` | Run a local dev deploy + smoke tier (compose up → smoke → teardown) |
-| `--watch-ci` | After local-green, commit + push the worktree branch and watch CI; re-converge on failure |
+| `--watch-ci` | After local-green, commit + push the worktree branch and watch CI; re-converge on failure (never pushes master/main) |
 | `--until-deployed` | Imply `--watch-ci` and require CI + staging/prod deploy jobs green before exiting 0 |
 | `--ci-passes <n>` | Max CI re-converge passes on failure (1–10, default `2`) |
 | `--ci-timeout <minutes>` | CI watch budget in minutes (1–120, default `20`) |
+
+**Big builds (decompose → orchestrate → epics)**
+
+| Flag | Purpose |
+|---|---|
+| `--decompose` / `--no-decompose` | Split the mission into sequential phases, each converged by its own loop (auto for long complex tasks) |
+| `--orchestrate` / `--no-orchestrate` | Run decomposed tasks through the blackboard orchestrator with MINIMAL per-task context (implies `--decompose`) |
+| `--epics` / `--no-epics` | Run a massive mission as a sequence of fresh-session epics until each is accepted (auto for very long missions) |
+
+**Exploration & quality aids**
+
+| Flag | Purpose |
+|---|---|
 | `--candidates <n>` | Best-of-N exploration: candidates per turn (2–8) |
-| `--critic` | Structured critique of failed turns |
+| `--critic` | Structured critique of failed turns (extra model call per failure) |
 | `--practices` / `--no-semantic` | Inject/record best-practice cards (keyword retrieval with `--no-semantic`) |
-| `--escalate` | Escalation ladder on stagnation |
+| `--escalate` | Escalation ladder on stagnation (widen exploration → critic → stronger model) |
 | `--ideate` / `--ideate-project <name>` | Divergent ideation strategy seeds |
-| `--halo` | Emit HALO spans (analyze with `uap harness analyze`) |
-| `--coordinate` | Register the run with the coordination layer |
-| `--deploy` | On success, queue a commit of applied files into the deploy batcher |
 | `--optimize` | Enable every convergence aid |
-| `--no-auto` | Disable dynamic optimization |
+| `--no-auto` | Disable dynamic optimization (aids are auto-selected by task complexity by default) |
+
+**Integration & run control**
+
+| Flag | Purpose |
+|---|---|
 | `--no-protect-tests` | Allow the model to modify pre-existing test files (protected by default) |
 | `--guidance-file <path>` | Poll a file each turn for live operator guidance |
+| `--halo` | Emit HALO spans (analyze with `uap harness analyze`) |
+| `--coordinate` | Register the run with the coordination layer (announce, heartbeat, overlap detection) |
+| `--deploy` | On success, queue a commit of applied files into the deploy batcher |
 | `--project-root <path>` | Project whose gates define delivery (default: cwd) |
 | `--dry-run` | Show detected gates and plan without calling the model |
 | `--json` | Emit a JSON result |
-| `--keep-best` | Never regress: snapshot the project first, roll back if the run ends with a worse required-gate score |
 
 ### `--keep-best` snapshots
 

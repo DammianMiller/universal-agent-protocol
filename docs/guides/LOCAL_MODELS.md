@@ -162,6 +162,10 @@ The client then talks the Anthropic protocol to the proxy, which forwards
 OpenAI requests to llama.cpp. The proxy supports streaming and tool-call
 translation.
 
+For the full picture — the `uap proxy` lifecycle, the reliability guardrails
+that keep a small model from wedging, security, and serving recipes — see the
+**[Inference Proxy guide](PROXY.md)**.
+
 ## Related
 
 - [Deploy Batching](./DEPLOY_BATCHING.md) — what `uap deliver --deploy` queues.

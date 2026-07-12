@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.137.3 (2026-07-12)
+
+- docs: add Inference Proxy guide + refresh DELIVER.md for v1.13x sub-features
+
+
 ## v1.137.2 (2026-07-12)
 
 - docs: document LLM self-tuning + backfill 13 undocumented CLI commands
