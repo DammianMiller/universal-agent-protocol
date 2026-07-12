@@ -29,8 +29,12 @@ export interface PageDrift {
   name: string;
   /** True when a baseline existed to compare against. */
   hasBaseline: boolean;
-  /** Fraction of grid cells that changed (0–1); 0 when no baseline. */
+  /** Overall drift = max(colour, structural) (0–1); 0 when no baseline. */
   drift: number;
+  /** Colour-grid drift component (0–1). */
+  colorDrift?: number;
+  /** Structural (layout/edge) drift component from the dHash (0–1). */
+  structuralDrift?: number;
   /** True when drift exceeded the threshold. */
   drifted: boolean;
 }
@@ -42,11 +46,20 @@ function visualDir(projectRoot: string): string {
   return join(projectRoot, '.uap', 'visual');
 }
 
+interface DecodedImage {
+  width: number;
+  height: number;
+  channels: number;
+  stride: number;
+  px: Buffer;
+}
+
 /**
- * Decode a PNG into an N×N grid of average [r,g,b]. Returns null for any format
- * we do not handle (never throws). Pure Node (`zlib.inflateSync`).
+ * Decode a PNG to raw RGB(A) pixels. Returns null for any format we do not
+ * handle (never throws). Pure Node (`zlib.inflateSync`). Supports the format
+ * Playwright/Chromium emits: 8-bit, non-interlaced, colour-type 2/6.
  */
-export function pngToGrid(path: string, n = GRID): number[][] | null {
+function decodePng(path: string): DecodedImage | null {
   try {
     const buf = readFileSync(path);
     if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) return null; // PNG magic
@@ -107,36 +120,93 @@ export function pngToGrid(path: string, n = GRID): number[][] | null {
         px[rowStart + x] = val & 0xff;
       }
     }
-
-    // Downsample to an N×N average-colour grid.
-    const grid: number[][] = [];
-    for (let gy = 0; gy < n; gy++) {
-      for (let gx = 0; gx < n; gx++) {
-        const x0 = Math.floor((gx * width) / n);
-        const x1 = Math.max(x0 + 1, Math.floor(((gx + 1) * width) / n));
-        const y0 = Math.floor((gy * height) / n);
-        const y1 = Math.max(y0 + 1, Math.floor(((gy + 1) * height) / n));
-        let r = 0;
-        let g = 0;
-        let bl = 0;
-        let count = 0;
-        for (let y = y0; y < y1; y++) {
-          for (let x = x0; x < x1; x++) {
-            const i = y * stride + x * channels;
-            r += px[i];
-            g += px[i + 1];
-            bl += px[i + 2];
-            count++;
-          }
-        }
-        count = count || 1;
-        grid.push([Math.round(r / count), Math.round(g / count), Math.round(bl / count)]);
-      }
-    }
-    return grid;
+    return { width, height, channels, stride, px };
   } catch {
     return null;
   }
+}
+
+/** Average colour of image cell [x0,x1)×[y0,y1) as [r,g,b]. */
+function cellAvg(img: DecodedImage, x0: number, x1: number, y0: number, y1: number): [number, number, number] {
+  let r = 0;
+  let g = 0;
+  let bl = 0;
+  let count = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = y * img.stride + x * img.channels;
+      r += img.px[i];
+      g += img.px[i + 1];
+      bl += img.px[i + 2];
+      count++;
+    }
+  }
+  count = count || 1;
+  return [Math.round(r / count), Math.round(g / count), Math.round(bl / count)];
+}
+
+/**
+ * Decode a PNG into an N×N grid of average [r,g,b]. Returns null for any format
+ * we do not handle (never throws).
+ */
+export function pngToGrid(path: string, n = GRID): number[][] | null {
+  const img = decodePng(path);
+  if (!img) return null;
+  const grid: number[][] = [];
+  for (let gy = 0; gy < n; gy++) {
+    for (let gx = 0; gx < n; gx++) {
+      const x0 = Math.floor((gx * img.width) / n);
+      const x1 = Math.max(x0 + 1, Math.floor(((gx + 1) * img.width) / n));
+      const y0 = Math.floor((gy * img.height) / n);
+      const y1 = Math.max(y0 + 1, Math.floor(((gy + 1) * img.height) / n));
+      grid.push(cellAvg(img, x0, x1, y0, y1));
+    }
+  }
+  return grid;
+}
+
+/** Structural difference-hash resolution (produces DHASH_N×DHASH_N bits). */
+const DHASH_N = 16;
+
+/**
+ * Perceptual difference-hash (dHash) on luminance: compares each cell to its
+ * right neighbour, yielding a structural bit-map that is invariant to global
+ * brightness/colour shifts but sensitive to LAYOUT and edges — the thing an
+ * average-colour grid is blind to. Returns null for undecodable input.
+ */
+export function pngToDHash(path: string, n = DHASH_N): boolean[] | null {
+  const img = decodePng(path);
+  if (!img) return null;
+  // (n) rows × (n+1) columns of luminance, then compare horizontally.
+  const cols = n + 1;
+  const luma: number[] = [];
+  for (let gy = 0; gy < n; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      const x0 = Math.floor((gx * img.width) / cols);
+      const x1 = Math.max(x0 + 1, Math.floor(((gx + 1) * img.width) / cols));
+      const y0 = Math.floor((gy * img.height) / n);
+      const y1 = Math.max(y0 + 1, Math.floor(((gy + 1) * img.height) / n));
+      const [r, g, b] = cellAvg(img, x0, x1, y0, y1);
+      luma.push(0.299 * r + 0.587 * g + 0.114 * b);
+    }
+  }
+  const bits: boolean[] = [];
+  for (let gy = 0; gy < n; gy++) {
+    for (let gx = 0; gx < n; gx++) {
+      const i = gy * cols + gx;
+      bits.push(luma[i] < luma[i + 1]); // brighter to the right?
+    }
+  }
+  return bits;
+}
+
+/** Fraction of differing bits between two dHashes (0–1). */
+export function hammingDrift(a: boolean[], b: boolean[]): number {
+  const n = Math.min(a.length, b.length);
+  if (n === 0) return 0;
+  let diff = 0;
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) diff++;
+  return diff / n;
 }
 
 /** Fraction of grid cells whose colour distance exceeds the tolerance (0–1). */
@@ -208,8 +278,15 @@ export function compareVisualBaseline(
       out.push({ name, hasBaseline: false, drift: 0, drifted: false });
       continue;
     }
-    const drift = gridDrift(cur, base);
-    out.push({ name, hasBaseline: true, drift, drifted: drift > threshold });
+    const colorDrift = gridDrift(cur, base);
+    // Structural component: dHash captures layout/edge changes that a same-
+    // average-colour render would hide. Overall drift is the STRICTER of the
+    // two, so either a colour shift or a structural change trips the gate.
+    const curHash = pngToDHash(shot);
+    const baseHash = pngToDHash(basePath);
+    const structuralDrift = curHash && baseHash ? hammingDrift(curHash, baseHash) : 0;
+    const drift = Math.max(colorDrift, structuralDrift);
+    out.push({ name, hasBaseline: true, drift, colorDrift, structuralDrift, drifted: drift > threshold });
   }
   return out;
 }

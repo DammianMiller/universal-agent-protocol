@@ -155,10 +155,14 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     if (fidelity.visionEndpoint && !process.env.UAP_VISION_ENDPOINT) process.env.UAP_VISION_ENDPOINT = fidelity.visionEndpoint;
     if (fidelity.visionModel && !process.env.UAP_VISION_MODEL) process.env.UAP_VISION_MODEL = fidelity.visionModel;
     try {
-      const { judgeScreenshots, visionSummary, visionJudgeConfigured } = await import('../delivery/vision-judge.js');
+      const { judgeScreenshots, visionSummary, visionJudgeConfigured, readDesignContext } = await import('../delivery/vision-judge.js');
       if (visionJudgeConfigured()) {
         const shots = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
-        const verdict = await judgeScreenshots(shots, opts.acceptanceSpec ?? 'A polished, working application UI.');
+        const verdict = await judgeScreenshots(
+          shots,
+          opts.acceptanceSpec ?? 'A polished, working application UI.',
+          readDesignContext(dir)
+        );
         const summary = visionSummary(verdict);
         if (summary) visualReport += `\n${summary}`;
         if (fidelity.max && verdict && verdict.score < fidelity.visionMinScore) {

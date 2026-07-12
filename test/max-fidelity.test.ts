@@ -13,9 +13,12 @@ import { resolveFidelity } from '../src/delivery/fidelity.js';
 import {
   pngToGrid,
   gridDrift,
+  pngToDHash,
+  hammingDrift,
   approveVisualBaseline,
   compareVisualBaseline,
 } from '../src/delivery/visual-baseline.js';
+import { readDesignContext } from '../src/delivery/vision-judge.js';
 import { runVerify } from '../src/cli/verify.js';
 
 const dirs: string[] = [];
@@ -60,6 +63,43 @@ function solidPng(path: string, w: number, h: number, rgb: [number, number, numb
     chunk('IEND', Buffer.alloc(0)),
   ]);
   writeFileSync(path, png);
+}
+
+/** Horizontal luminance ramp (dark→light, or reversed) — gives the dHash structure. */
+function gradientPng(path: string, w: number, h: number, reversed = false): void {
+  const stride = w * 3;
+  const raw = Buffer.alloc((stride + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (stride + 1)] = 0;
+    for (let x = 0; x < w; x++) {
+      const t = reversed ? 1 - x / (w - 1) : x / (w - 1);
+      const v = Math.round(20 + t * 215);
+      const o = y * (stride + 1) + 1 + x * 3;
+      raw[o] = v;
+      raw[o + 1] = v;
+      raw[o + 2] = v;
+    }
+  }
+  const u32 = (n: number): Buffer => {
+    const b = Buffer.alloc(4);
+    b.writeUInt32BE(n);
+    return b;
+  };
+  const chunk = (tp: string, d: Buffer): Buffer => Buffer.concat([u32(d.length), Buffer.from(tp), d, Buffer.alloc(4)]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  writeFileSync(
+    path,
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      chunk('IHDR', ihdr),
+      chunk('IDAT', deflateSync(raw)),
+      chunk('IEND', Buffer.alloc(0)),
+    ])
+  );
 }
 
 describe('resolveFidelity', () => {
@@ -129,6 +169,33 @@ describe('visual-baseline', () => {
     expect(gridDrift(a, c)).toBeGreaterThan(0.9);
   });
 
+  it('dHash captures structure: identical → 0, reversed gradient → high', () => {
+    const d = tmp();
+    gradientPng(join(d, 'g.png'), 64, 32, false);
+    gradientPng(join(d, 'g2.png'), 64, 32, false);
+    gradientPng(join(d, 'rev.png'), 64, 32, true);
+    const h1 = pngToDHash(join(d, 'g.png'))!;
+    const h2 = pngToDHash(join(d, 'g2.png'))!;
+    const hr = pngToDHash(join(d, 'rev.png'))!;
+    expect(hammingDrift(h1, h2)).toBe(0);
+    // A left↔right flip inverts every horizontal luminance comparison.
+    expect(hammingDrift(h1, hr)).toBeGreaterThan(0.9);
+  });
+
+  it('approve then compare reports colour + structural components', () => {
+    const d = tmp();
+    const vdir = join(d, '.uap', 'visual');
+    mkdirSync(vdir, { recursive: true });
+    gradientPng(join(vdir, 'index-t0.png'), 48, 32, false);
+    approveVisualBaseline(d);
+    const drifts = compareVisualBaseline(d);
+    const entry = drifts.find((x) => x.name === 'index.png');
+    expect(entry?.hasBaseline).toBe(true);
+    expect(typeof entry?.colorDrift).toBe('number');
+    expect(typeof entry?.structuralDrift).toBe('number');
+    expect(entry?.drifted).toBe(false); // same image → no drift
+  });
+
   it('approve then compare reports no drift; a changed render drifts', () => {
     const d = tmp();
     const vdir = join(d, '.uap', 'visual');
@@ -148,6 +215,26 @@ describe('visual-baseline', () => {
     solidPng(join(vdir, 'index-t1.png'), 40, 40, [20, 40, 200]);
     drifts = compareVisualBaseline(d);
     expect(drifts.some((x) => x.drifted)).toBe(true);
+  });
+});
+
+describe('readDesignContext (DESIGN.md-aware vision)', () => {
+  it('is empty with no design system', () => {
+    expect(readDesignContext(tmp())).toBe('');
+  });
+
+  it('summarises the token allow-list + DESIGN.md intent', () => {
+    const d = tmp();
+    mkdirSync(join(d, '.uap'), { recursive: true });
+    writeFileSync(
+      join(d, '.uap', 'design-tokens.json'),
+      JSON.stringify({ name: 'UAP Console', colors: ['#0d1117', '#58a6ff'], spacing: ['4px', '8px'], fontFamilies: ['SF Mono'] })
+    );
+    writeFileSync(join(d, 'DESIGN.md'), '# UAP Console\n\nCalm, terminal-inspired, high-contrast.\n');
+    const ctx = readDesignContext(d);
+    expect(ctx).toContain('UAP Console');
+    expect(ctx).toContain('#58a6ff'); // palette flows into the review prompt
+    expect(ctx).toContain('terminal-inspired'); // DESIGN.md intent flows in
   });
 });
 
