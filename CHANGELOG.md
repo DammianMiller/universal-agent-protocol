@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.147.2 (2026-07-12)
+
+- chore(policy): remove dead validate-plan-before-build + fix local-build worktree resolution
+
+
 ## v1.147.1 (2026-07-12)
 
 - fix(policy): expert-review resolves the WORKTREE branch, not the main checkout

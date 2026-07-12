@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _common import arg_str, emit, parse_cli, repo_root  # noqa: E402
 
 PLAN_OPS = {"ExitPlanMode", "Plan", "TodoWrite", "plan", "design"}
-# Only match standalone words, not compounds like 'validate-plan-before-build'
+# Only match standalone words, not compounds like 'validate-plan-on-change'
 PLAN_WORD_RE = re.compile(r"(?<![-\w/])(plan the|design the|architect the|propose a plan|roadmap for)", re.I)
 RECENT_SEC = 300
 

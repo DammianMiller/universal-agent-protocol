@@ -41,7 +41,7 @@ export const SCENARIOS: readonly Scenario[] = [
     blurb: 'One person driving a local (llama.cpp/Qwen) model that needs strong guardrails.',
     extra: [
       { slug: 'codebase-read-before-plan', why: 'weaker models must read before proposing' },
-      { slug: 'validate-plan-before-build', why: 'catch a bad plan before it writes code' },
+      { slug: 'validate-plan-on-change', why: 'catch a bad plan before it writes code' },
       { slug: 'mcp-router-first', why: 'keeps the context window lean for a small model' },
       { slug: 'local-build-before-push', why: 'never push code that fails to build locally' },
       { slug: 'ship-loop-gate', why: 'converge to green before shipping' },
@@ -76,7 +76,7 @@ export const SCENARIOS: readonly Scenario[] = [
     title: 'High autonomy / hands-free',
     blurb: 'Long unattended builds where the model must not cut corners.',
     extra: [
-      { slug: 'validate-plan-before-build', why: 'a wrong plan wastes an entire autonomous run' },
+      { slug: 'validate-plan-on-change', why: 'a wrong plan wastes an entire autonomous run' },
       { slug: 'ship-loop-gate', why: 'the run only ends when the work is genuinely done' },
       { slug: 'artifact-hygiene', why: 'unattended runs must not leave debris' },
       { slug: 'doc-live-over-report', why: "grade the real system, not the model's optimism" },
