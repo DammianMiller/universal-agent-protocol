@@ -185,7 +185,12 @@ async function runBrowserPath(path: UserPath, browser: BrowserLike, ctx: RunCont
         steps.push({ step: label, ok, observed: `text="${text.slice(0, 120)}"` });
         failed = !ok;
       } else if (step.expect_no_console_errors !== undefined) {
-        const errs = browser.getErrors().filter((e) => e.kind === 'pageerror' || e.kind === 'console');
+        // favicon.ico 404s are browser-request noise, not app defects — the
+        // exact false-positive UAP's own static server suppresses with a 204.
+        const errs = browser
+          .getErrors()
+          .filter((e) => e.kind === 'pageerror' || e.kind === 'console')
+          .filter((e) => !e.message.includes('favicon.ico'));
         const ok = errs.length === 0;
         steps.push({ step: label, ok, observed: ok ? 'no errors' : errs.map((e) => e.message).join(' | ').slice(0, 300) });
         failed = !ok;
