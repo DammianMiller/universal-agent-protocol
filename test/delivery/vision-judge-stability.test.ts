@@ -40,20 +40,20 @@ describe('judgeScreenshots — score stability', () => {
     return fn;
   };
 
-  it('defaults to a single deterministic call (temperature 0)', async () => {
-    const f = mkFetch([7]);
-    const v = await judgeScreenshots([shot], 'spec', '', f);
-    expect(v?.score).toBe(7);
-    expect((f as any).bodies.length).toBe(1);
-    expect((f as any).bodies[0].temperature).toBe(0);
-  });
-
-  it('with UAP_VISION_SAMPLES=3 takes the MEDIAN of three scores (robust to an outlier)', async () => {
-    process.env.UAP_VISION_SAMPLES = '3';
+  it('defaults to the MEDIAN of three scores (robust to an outlier)', async () => {
     const f = mkFetch([4, 8, 6]); // sorted → 4,6,8 → median 6, ignoring the low outlier
     const v = await judgeScreenshots([shot], 'spec', '', f);
     expect(v?.score).toBe(6);
     expect((f as any).bodies.length).toBe(3);
     expect((f as any).bodies[0].temperature).toBeGreaterThan(0); // samples vary so median is meaningful
+  });
+
+  it('UAP_VISION_SAMPLES=1 opts into a single deterministic call (temperature 0)', async () => {
+    process.env.UAP_VISION_SAMPLES = '1';
+    const f = mkFetch([7]);
+    const v = await judgeScreenshots([shot], 'spec', '', f);
+    expect(v?.score).toBe(7);
+    expect((f as any).bodies.length).toBe(1);
+    expect((f as any).bodies[0].temperature).toBe(0);
   });
 });

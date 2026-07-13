@@ -152,11 +152,11 @@ export async function judgeScreenshots(
     }));
     // Stability: the vision score gates a DONE claim, so run-to-run variance
     // (the same render scoring 3→8) can false-block a good deliverable. Default
-    // to a DETERMINISTIC single call (temperature 0 → reproducible). Operators
-    // who want robustness against a single bad judgment can set UAP_VISION_SAMPLES
-    // >1 to take the MEDIAN of N independent scores (a small temperature makes the
-    // samples vary so the median is meaningful).
-    const samples = Math.max(1, Math.min(9, Number(process.env.UAP_VISION_SAMPLES) || 1));
+    // to the MEDIAN of 3 independent scores (a small temperature makes the samples
+    // vary so the median is meaningful) — robust to a single outlier judgment.
+    // Set UAP_VISION_SAMPLES=1 for a deterministic single call (temperature 0);
+    // higher values trade more latency for more stability.
+    const samples = Math.max(1, Math.min(9, Number(process.env.UAP_VISION_SAMPLES) || 3));
     const temperature = samples > 1 ? 0.4 : 0;
     const body = {
       model,
