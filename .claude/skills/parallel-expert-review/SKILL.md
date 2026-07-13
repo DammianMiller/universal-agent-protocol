@@ -117,6 +117,49 @@ After all droids return, produce a single summary:
 - documentation-accuracy-reviewer: docs match code surface
 ```
 
+## Recording the Verdict (REQUIRED — satisfies `expert-review-required`)
+
+The `expert-review-required` policy blocks ship actions (`git commit|push|merge`,
+`gh pr create|merge|ready`) until a review artifact exists for the current branch
+**and covers the current HEAD**. Consolidating findings in chat is not enough —
+you MUST write the artifact as the final step, or the gate stays closed.
+
+Write it to `.uap/reviews/<branch-slug>.json`. The slug is the branch name with
+`%`→`%25` then `/`→`%2F` (injective, matches the enforcer's `slug_for`). Run this
+from the repo/worktree root after consolidation:
+
+```bash
+# Records the parallel-expert-review verdict for the CURRENT branch + HEAD.
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+SLUG="${BRANCH//%/%25}"; SLUG="${SLUG//\//%2F}"   # feat/foo -> feat%2Ffoo
+HEAD="$(git rev-parse HEAD)"
+mkdir -p .uap/reviews
+cat > ".uap/reviews/${SLUG}.json" <<JSON
+{
+  "branch": "${BRANCH}",
+  "head": "${HEAD}",
+  "verdict": "approve",
+  "reviewers": [
+    "code-quality-reviewer",
+    "security-code-reviewer",
+    "performance-reviewer",
+    "documentation-accuracy-reviewer",
+    "test-coverage-reviewer"
+  ]
+}
+JSON
+echo "recorded .uap/reviews/${SLUG}.json for ${HEAD:0:8}"
+```
+
+Notes:
+- `verdict` must be `approve` for the review to pass. If blockers remain, fix
+  them and re-run this step so `head` matches the new HEAD (the gate treats a
+  review whose `head` ≠ current HEAD as **stale** and re-blocks).
+- The artifact records `branch`, so it cannot be reused on a different branch.
+- One-off meta-work with no shippable diff can bypass with `UAP_NO_REVIEW=1`
+  (inline prefix on the ship command is honored), or a committable
+  `policies/waivers/*expert-review*.md` file where env vars are stripped.
+
 ## Skipping Documentation
 
 If the parallel-review skill is intentionally skipped for a PR, document

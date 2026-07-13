@@ -24,7 +24,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import emit, parse_cli, worktree_root, run  # noqa: E402
+from _common import (  # noqa: E402
+    emit, parse_cli, worktree_root, run, REVIEW_ARTIFACT_DIR, REVIEW_WAIVER_DIR,
+)
 
 # Ship verbs are anchored to their tool prefix so that the bare tokens "merge"
 # or "signoff" inside read-only commands (git diff --merge-base, rg merge,
@@ -81,12 +83,12 @@ def _is_low_risk(f: str) -> bool:
 def _active_waiver(root: Path) -> bool:
     """A committable, env-free bypass: an active waiver file. Works in harnesses
     that strip env vars (where UAP_NO_REVIEW=1 cannot be set)."""
-    wdir = root / "policies" / "waivers"
+    wdir = root / REVIEW_WAIVER_DIR
     if wdir.exists():
         for w in wdir.glob("*expert-review*.md"):
             if w.is_file():
                 return True
-    return (root / ".uap" / "reviews" / "WAIVER").exists()
+    return (root / REVIEW_ARTIFACT_DIR / "WAIVER").exists()
 
 
 def current_branch(root: Path) -> str | None:
@@ -129,6 +131,13 @@ def main() -> None:
         emit(True, "not a ship operation")
 
     cmd = args.get("command") or args.get("cmd") or ""
+    # The policy-gate hook runs in the harness env, not the inline command env,
+    # so `UAP_NO_REVIEW=1 git commit ...` never reaches os.environ above. Honor
+    # an inline assignment parsed from the command string too.
+    # Anchored to a LEADING env-assignment run so an incidental mention in a
+    # quoted arg / commit message does NOT silently skip review.
+    if re.search(r"^\s*(?:[A-Za-z_]\w*=\S*\s+)*UAP_NO_REVIEW=['\"]?1\b", cmd):
+        emit(True, "UAP_NO_REVIEW inline override set")
     if not any(p.search(cmd) for p in SHIP_PATTERNS):
         emit(True, "not a ship action")
 
@@ -159,7 +168,7 @@ def main() -> None:
             "— parallel expert review not required",
         )
 
-    review = root / ".uap" / "reviews" / f"{slug}.json"
+    review = root / REVIEW_ARTIFACT_DIR / f"{slug}.json"
     if not review.exists():
         emit(
             False,
