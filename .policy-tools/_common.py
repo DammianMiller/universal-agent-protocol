@@ -8,6 +8,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Escape-hatch paths for the expert-review gate — shared so enforcement_self_protect
+# (must ALLOW writes here) and expert_review_required (reads/writes here) can never
+# drift out of lockstep and silently re-deadlock the two gates.
+REVIEW_ARTIFACT_DIR = ".uap/reviews"
+REVIEW_WAIVER_DIR = "policies/waivers"
+
 
 def parse_cli() -> tuple[str, dict[str, Any]]:
     p = argparse.ArgumentParser()

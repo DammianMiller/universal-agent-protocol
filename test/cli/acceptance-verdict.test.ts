@@ -149,3 +149,53 @@ describe('resolveEvaluatorPreset (generator≠evaluator)', () => {
     ).toBe('sonnet');
   });
 });
+
+describe('decideGateStrategy — anti-vacuous floor (P0, 2026-07-13)', () => {
+  it('engages the self-gate when every required project gate is already green', () => {
+    const d = decideGateStrategy({
+      hasAcceptance: false,
+      noRealGates: false,
+      forceSelfGate: false,
+      selfGateAllowed: true,
+      baselineAllGreen: true,
+    });
+    expect(d.needsSelfGate).toBe(true);
+    expect(d.acceptancePrimary).toBe(false);
+    expect(d.noGatesError).toBe(false);
+  });
+
+  it('does not engage while a required gate can still fail at baseline', () => {
+    const d = decideGateStrategy({
+      hasAcceptance: false,
+      noRealGates: false,
+      forceSelfGate: false,
+      selfGateAllowed: true,
+      baselineAllGreen: false,
+    });
+    expect(d.needsSelfGate).toBe(false);
+  });
+
+  it('respects --no-self-gate even on a green baseline (real gates exist, so no no-gates error)', () => {
+    const d = decideGateStrategy({
+      hasAcceptance: false,
+      noRealGates: false,
+      forceSelfGate: false,
+      selfGateAllowed: false,
+      baselineAllGreen: true,
+    });
+    expect(d.needsSelfGate).toBe(false);
+    expect(d.noGatesError).toBe(false);
+  });
+
+  it('acceptance-primary still wins on a no-gates repo (the floor is about green gates, not absent ones)', () => {
+    const d = decideGateStrategy({
+      hasAcceptance: true,
+      noRealGates: true,
+      forceSelfGate: false,
+      selfGateAllowed: true,
+      baselineAllGreen: false,
+    });
+    expect(d.acceptancePrimary).toBe(true);
+    expect(d.needsSelfGate).toBe(false);
+  });
+});

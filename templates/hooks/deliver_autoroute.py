@@ -30,11 +30,15 @@ UAP_DIR = ".uap"
 
 
 def _autoroute_enabled() -> bool:
-    # Default ON: a blocked source edit auto-routes into `uap deliver` in the
-    # background instead of dead-ending the agent. Opt out with
-    # UAP_DELIVER_AUTOROUTE=0/off/false/no.
-    v = os.environ.get("UAP_DELIVER_AUTOROUTE", "on").lower()
-    return v not in {"0", "off", "false", "no"}
+    # Default OFF (P0, 2026-07-13): the auto-spawned deliver run carries only a
+    # vacuous "implement the intended change to <file>" hint — the blocked
+    # edit's actual content is not plumbed through yet (plan D1) — so a blind
+    # background model run is spawned per blocked file. Blind fan-out mangles
+    # shared worktrees; the recorded intent + block message let the agent run
+    # `uap deliver` itself with the real spec. Opt IN with
+    # UAP_DELIVER_AUTOROUTE=1/on/true/yes.
+    v = os.environ.get("UAP_DELIVER_AUTOROUTE", "off").lower()
+    return v in {"1", "on", "true", "yes"}
 
 
 def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set) -> dict:
@@ -58,6 +62,11 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
     message = reason
     if spawn:
         message = reason + " [auto-routed to `uap deliver` — running in the background]"
+    elif file_path:
+        message = reason + (
+            " [intent recorded to .uap/pending-deliver.jsonl — apply it yourself by running"
+            " `uap deliver` with the exact intended change as the instruction]"
+        )
     elif autoroute_on and file_path in seen_files:
         message = reason + " [already auto-routed to `uap deliver` for this file — see .uap/autoroute.log / pending-deliver.jsonl]"
     return {"message": message, "route": route, "spawn": spawn,
