@@ -336,3 +336,74 @@ describe('ConvergenceLoop — raiseMaxTurns is always ceiling-capped', () => {
     }
   });
 });
+
+describe('anti-no-op acceptance rail (P0, 2026-07-13)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-noop-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('withholds acceptance at a green baseline — a coding mission is NOT alreadyDelivered', async () => {
+    let acceptanceCalls = 0;
+    let executorCalls = 0;
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 1, rungs: stubRungs() },
+      async () => {
+        executorCalls++;
+        return FILE_BLOCK_OUTPUT;
+      },
+      {
+        ladderRunner: () => ladderResult(1.0, true),
+        acceptanceGate: async () => {
+          acceptanceCalls++;
+          return { passed: true, feedback: '' };
+        },
+      }
+    );
+    const result = await loop.deliver('change something');
+    // The old behavior short-circuited here with alreadyDelivered and zero
+    // executor calls — the 2026-07-13 false-green no-op.
+    expect(result.alreadyDelivered).not.toBe(true);
+    expect(executorCalls).toBeGreaterThan(0);
+    // Turn 1 applied a file, so acceptance is consulted and the run succeeds
+    // on REAL change.
+    expect(result.success).toBe(true);
+    expect(result.turns).toBe(1);
+    expect(acceptanceCalls).toBeGreaterThan(0);
+    expect(result.history[0].filesApplied).toEqual(['src/fix.ts']);
+  });
+
+  it('a run that never changes the tree cannot pass acceptance (fail-closed without git)', async () => {
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 2, rungs: stubRungs(), alwaysVerify: true },
+      async () => 'the model emitted prose and no file blocks',
+      {
+        applier: async () => ({ filesWritten: [], rejected: [] }),
+        ladderRunner: () => ladderResult(1.0, true),
+        acceptanceGate: async () => ({ passed: true, feedback: '' }),
+      }
+    );
+    const result = await loop.deliver('change something');
+    expect(result.success).toBe(false);
+    expect(result.finalFeedback).toMatch(/no-op|has not changed/i);
+  });
+
+  it('requireDiffForAcceptance:false restores the legacy short-circuit (--allow-noop)', async () => {
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, rungs: stubRungs(), requireDiffForAcceptance: false },
+      async () => FILE_BLOCK_OUTPUT,
+      {
+        ladderRunner: () => ladderResult(1.0, true),
+        acceptanceGate: async () => ({ passed: true, feedback: '' }),
+      }
+    );
+    const result = await loop.deliver('anything');
+    expect(result.alreadyDelivered).toBe(true);
+    expect(result.turns).toBe(0);
+  });
+});

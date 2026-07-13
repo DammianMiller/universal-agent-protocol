@@ -15,6 +15,8 @@
  *  - onIteration: per-turn control hook (Phase 5 escalation controllers)
  */
 
+import { execSync } from 'child_process';
+
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
 import { detectRungs, runLadder, tierOf } from './verifier-ladder.js';
 import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
@@ -229,6 +231,18 @@ export interface ConvergenceConfig {
    * applied" optimization permanently scores such turns 0%.
    */
   alwaysVerify?: boolean;
+  /**
+   * Withhold acceptance until the run has actually changed the tree
+   * (default true). An LLM acceptance judge must never be the only thing
+   * standing between a zero-diff run and "delivered" (2026-07-13 incident:
+   * a mission on a gates-green repo "delivered" after writing nothing).
+   * Change detection: files the applier wrote, else a git tree fingerprint
+   * (covers the direct-mutation agentic executor). Fail-closed when neither
+   * signal shows a change; skipped automatically on resume (prior-session
+   * turns may have written) and via --allow-noop for genuinely no-op
+   * missions.
+   */
+  requireDiffForAcceptance?: boolean;
   /**
    * Re-detect gates each turn and merge any that newly become available. Gate
    * detection runs once at t0, so a FROM-SCRATCH build (empty dir) never picks
@@ -516,6 +530,10 @@ export class ConvergenceLoop {
   private readonly applier: Applier;
   private readonly promptBuilder: PromptBuilder;
   private readonly acceptanceGate?: AcceptanceGate;
+  /** Every file the applier has written this run (union across turns). */
+  private appliedFilesTotal = new Set<string>();
+  /** Git tree fingerprint at run start; null when unavailable (non-git). */
+  private runStartTreeFingerprint: string | null = null;
 
   constructor(
     config: ConvergenceConfig,
@@ -536,6 +554,45 @@ export class ConvergenceLoop {
   }
 
   /**
+   * Cheap, stable fingerprint of the working tree: porcelain status (covers
+   * untracked adds/removes) + diff stat (covers content edits). Returns null
+   * outside a git repo or on any git failure.
+   */
+  private fingerprintTree(): string | null {
+    try {
+      const opts = {
+        cwd: this.config.projectRoot,
+        timeout: 10_000,
+        maxBuffer: 8 * 1024 * 1024,
+        // Silence the "not a git repository" stderr noise from probes in
+        // non-git projects (the fail-closed path is expected there).
+        stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
+      };
+      const status = execSync('git status --porcelain=v1 --untracked-files=all', opts).toString();
+      const diff = execSync('git diff HEAD --stat', opts).toString();
+      return `${status}\n---\n${diff}`;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Has this run changed the project tree yet? Applier-written files are
+   * authoritative; the git fingerprint covers direct-mutation executors
+   * (agentic write_file bypasses the applier). FAIL-CLOSED: when neither
+   * signal shows a change — including when git is unavailable — the answer
+   * is false. See requireDiffForAcceptance.
+   */
+  private hasAppliedChanges(): boolean {
+    if (this.appliedFilesTotal.size > 0) return true;
+    if (this.runStartTreeFingerprint !== null) {
+      const now = this.fingerprintTree();
+      if (now !== null) return now !== this.runStartTreeFingerprint;
+    }
+    return false;
+  }
+
+  /**
    * Behavioral-completeness check, run ONCE on a committed verdict (the baseline
    * or a turn's final/winner ladder) — never per explorer candidate. When the
    * objective gates passed but the spec's requirements aren't all met, flip the
@@ -544,8 +601,29 @@ export class ConvergenceLoop {
    * Returns the (possibly-flipped) ladder and the criteria-met fraction so the
    * caller can treat acceptance progress as forward motion for stagnation.
    */
-  private async judgeAcceptance(ladder: LadderResult): Promise<{ ladder: LadderResult; acceptanceMet?: number }> {
+  private async judgeAcceptance(
+    ladder: LadderResult,
+    opts: { atBaseline?: boolean } = {}
+  ): Promise<{ ladder: LadderResult; acceptanceMet?: number }> {
     if (!this.acceptanceGate || !ladder.passed) return { ladder };
+    // Anti-no-op rail (P0, 2026-07-13): acceptance is deterministically
+    // withheld until the run has changed the tree — this also stops the
+    // baseline check from short-circuiting a coding mission as
+    // alreadyDelivered on a gates-green repo. At baseline nothing can have
+    // changed by definition. Skipped on resume (prior-session turns already
+    // wrote; their changes are invisible to this process's fingerprint).
+    const unchanged = opts.atBaseline ? true : !this.hasAppliedChanges();
+    if ((this.config.requireDiffForAcceptance ?? true) && !this.config.resumeFrom && unchanged) {
+      return {
+        ladder: {
+          ...ladder,
+          passed: false,
+          feedback:
+            `${ladder.feedback}\n\nAcceptance withheld: this run has not changed any files yet — a no-op cannot be "delivered". Apply the mission's changes (or re-run with --allow-noop if no change is genuinely required).`.trim(),
+        },
+        acceptanceMet: 0,
+      };
+    }
     let acc: { passed: boolean; feedback: string; score?: number };
     try {
       acc = await this.acceptanceGate(this.config.projectRoot);
@@ -743,7 +821,7 @@ export class ConvergenceLoop {
     // with an incomplete spec still runs turns instead of short-circuiting.
     if (this.config.baselineCheck ?? true) {
       const rawBaseline = await this.ladderRunner(rungs, this.config.projectRoot, this.config.ladderOptions);
-      const baseline = (await this.judgeAcceptance(rawBaseline)).ladder;
+      const baseline = (await this.judgeAcceptance(rawBaseline, { atBaseline: true })).ladder;
       if (baseline.passed) {
         return {
           success: true,
@@ -758,6 +836,11 @@ export class ConvergenceLoop {
         };
       }
     }
+
+    // t0 tree fingerprint for the anti-no-op acceptance rail — taken AFTER
+    // the baseline ladder run so files the gates themselves create on first
+    // run (e.g. snapshots, lockfiles) don't read as mission changes.
+    this.runStartTreeFingerprint = this.fingerprintTree();
 
     // Gate-integrity snapshot, taken AFTER the baseline ladder run so files
     // the gates themselves create on first run (e.g. __snapshots__/*.snap)
@@ -915,6 +998,10 @@ export class ConvergenceLoop {
       const outcome = explorerSettings
         ? await this.runExplorerTurn(instruction, prompt, rungs, explorerSettings, executor, ladderRunner, applyOptions)
         : await this.runSingleTurn(prompt, rungs, executor, ladderRunner, applyOptions);
+
+      // Anti-no-op rail bookkeeping: fold this turn's applier writes into the
+      // run-wide union BEFORE the acceptance judge consults it.
+      for (const f of outcome.filesApplied) this.appliedFilesTotal.add(f);
 
       // Acceptance: judge ONCE on this turn's committed verdict (single-turn
       // result or explorer winner) — not per candidate — flipping it to

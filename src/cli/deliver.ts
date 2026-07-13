@@ -55,10 +55,19 @@ export function decideGateStrategy(opts: {
   noRealGates: boolean;
   forceSelfGate: boolean;
   selfGateAllowed: boolean;
+  /**
+   * Anti-vacuous floor (P0, 2026-07-13): every REQUIRED project gate passed a
+   * pre-run baseline probe. Gates that cannot fail are not a convergence
+   * target — "delivered" must mean "something that was red is now green" —
+   * so a mission self-gate is engaged exactly as if no gates were detected.
+   */
+  baselineAllGreen?: boolean;
 }): { acceptancePrimary: boolean; needsSelfGate: boolean; noGatesError: boolean } {
   const acceptancePrimary = opts.hasAcceptance && opts.noRealGates && !opts.forceSelfGate;
   const needsSelfGate =
-    opts.selfGateAllowed && !acceptancePrimary && (opts.noRealGates || opts.forceSelfGate);
+    opts.selfGateAllowed &&
+    !acceptancePrimary &&
+    (opts.noRealGates || opts.forceSelfGate || opts.baselineAllGreen === true);
   const noGatesError = opts.noRealGates && !needsSelfGate && !acceptancePrimary;
   return { acceptancePrimary, needsSelfGate, noGatesError };
 }
@@ -296,6 +305,9 @@ export interface DeliverOptions {
    * summaries injected), looped with fresh sessions until accepted. Auto for
    * very long complex missions; commander sets false on --no-epics. */
   epics?: boolean;
+  /** `--allow-noop`: permit success without any tree change (disables the
+   * anti-no-op acceptance rail for missions that genuinely require none). */
+  allowNoop?: boolean;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -637,6 +649,18 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(chalk.cyan(`⚙ auto-optimize: ${autoPlan.summary}`));
     }
   }
+  // Verification RAILS are independent of the optimization AIDS (P0,
+  // 2026-07-13): --no-auto / explicit aid flags stand down exploration,
+  // critic and ideation, but must not silently drop the acceptance judge —
+  // without it, a gates-green no-op run reads as delivered. When the
+  // auto-planner did not run, acceptance defaults ON; opt out explicitly
+  // with UAP_DELIVER_ACCEPTANCE=0.
+  if (!autoPlan && options.acceptance === undefined && process.env.UAP_DELIVER_ACCEPTANCE !== '0') {
+    options.acceptance = true;
+    if (!options.dryRun) {
+      console.log(chalk.cyan('⚖ acceptance judge on (verification rail; UAP_DELIVER_ACCEPTANCE=0 to disable)'));
+    }
+  }
 
   // `--optimize` turns on every convergence aid at once. Deploy queueing is
   // deliberately excluded — committing applied files is a side effect the
@@ -846,11 +870,41 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
   }
 
+  // Anti-vacuous floor (P0, 2026-07-13 incident): probe the REQUIRED rungs
+  // once before choosing the convergence target. If everything is already
+  // green, gate-satisfaction cannot measure this mission — a run on a
+  // gates-green repo would false-green as a no-op (observed live: a 6-file
+  // C++ mission "delivered" after writing nothing, because the only detected
+  // gates were unrelated npm web gates). UAP_DELIVER_VACUOUS_FLOOR=0 opts out.
+  let baselineAllGreen = false;
+  if (
+    !noRealGates &&
+    options.forceSelfGate !== true &&
+    selfGateAllowed &&
+    process.env.UAP_DELIVER_VACUOUS_FLOOR !== '0' &&
+    !options.dryRun
+  ) {
+    try {
+      const requiredRungs = rungs.filter((r) => r.required);
+      baselineAllGreen = requiredRungs.length > 0 && runLadder(requiredRungs, projectRoot).passed;
+    } catch {
+      baselineAllGreen = false; // probe is best-effort; never blocks a run
+    }
+    if (baselineAllGreen) {
+      console.log(
+        chalk.cyan(
+          '⚖ anti-vacuous floor: all required project gates are ALREADY green — authoring a mission self-gate so success requires real, verified change'
+        )
+      );
+    }
+  }
+
   const { acceptancePrimary, needsSelfGate, noGatesError } = decideGateStrategy({
     hasAcceptance: Boolean(options.acceptance),
     noRealGates,
     forceSelfGate: options.forceSelfGate === true,
     selfGateAllowed,
+    baselineAllGreen,
   });
   if (noGatesError) {
     fail(
@@ -1220,9 +1274,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
     rungs.push(sg.rung);
     if (sg.vacuous) {
+      // P0 hard-fail: a REQUIRED self-gate that passes on the unsolved repo
+      // re-opens the false-green door — "delivered" would be meaningless.
+      if (process.env.UAP_DELIVER_ALLOW_WEAK_SELF_GATE !== '1') {
+        fail(
+          'The self-gate is REQUIRED for this run (anti-vacuous floor) but stayed vacuous after retries — it passes on the unsolved repo. Add concrete, checkable ACCEPTANCE CRITERIA to the instruction, or set UAP_DELIVER_ALLOW_WEAK_SELF_GATE=1 to accept the risk.'
+        );
+      }
       console.log(
         chalk.yellow(
-          '  ⚠ acceptance gate may be weak (could not force an initially-failing check); running multi-turn anyway.'
+          '  ⚠ acceptance gate may be weak (could not force an initially-failing check); UAP_DELIVER_ALLOW_WEAK_SELF_GATE=1 — running multi-turn anyway.'
         )
       );
     } else {
@@ -1602,6 +1663,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // The agentic executor mutates the repo directly (no-op applier), so
     // gates must run every turn regardless of applier file count.
     alwaysVerify: agentic ? true : undefined,
+    // Anti-no-op acceptance rail (P0): success requires an actual tree
+    // change unless the caller explicitly allows a no-op mission.
+    requireDiffForAcceptance: options.allowNoop === true ? false : undefined,
     // From-scratch builds have no artifact at t0, so the runtime execution gate
     // (and build/test/lint) aren't detectable yet. Re-detect each turn so they
     // engage once the model writes files, rather than relying only on the t0
