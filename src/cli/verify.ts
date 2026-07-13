@@ -328,9 +328,54 @@ async function buildAcceptanceExecutor(modelPreset?: string, endpoint?: string):
   };
 }
 
+/**
+ * Auto-discover an acceptance/requirements spec for a DONE gate that has no
+ * explicit --acceptance file (the completion gate / Stop hook). Priority:
+ *   1. Explicit acceptance-criteria files (.uap/acceptance.md, REQUIREMENTS.md…)
+ *   2. The completion ledger / TodoWrite plan — the agent's own declared plan of
+ *      record for THIS session, so "did you actually finish what you set out to
+ *      do?" is judged even in an interactive run with no deliver mission.
+ * Returns spec text, or null when nothing usable is found (→ acceptance skipped).
+ */
+export function resolveAcceptanceSpecAuto(dir: string): string | null {
+  const read = (rel: string): string | null => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const p = require('path').join(dir, rel);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const t = (require('fs').readFileSync(p, 'utf-8') as string).trim();
+      return t || null;
+    } catch {
+      return null;
+    }
+  };
+  for (const rel of ['.uap/acceptance.md', '.uap/requirements.md', 'ACCEPTANCE.md', 'REQUIREMENTS.md', 'SPEC.md']) {
+    const t = read(rel);
+    if (t) return t;
+  }
+  // The completion ledger is the agent's declared plan of record.
+  const raw = read('.uap/completion-ledger.json') ?? read('.uap/completion_ledger.json');
+  if (raw) {
+    try {
+      const j = JSON.parse(raw);
+      const items: unknown[] = Array.isArray(j) ? j : (j.items ?? j.todos ?? j.entries ?? []);
+      const lines = items
+        .map((i) => (typeof i === 'string' ? i : String((i as Record<string, unknown>)?.text ?? (i as Record<string, unknown>)?.content ?? (i as Record<string, unknown>)?.title ?? (i as Record<string, unknown>)?.task ?? '')))
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (lines.length) {
+        return 'The delivered work must actually satisfy EVERY requirement below (the agent\'s own plan of record):\n' + lines.map((l) => `- ${l}`).join('\n');
+      }
+    } catch {
+      /* unparseable ledger → no auto spec */
+    }
+  }
+  return null;
+}
+
 /** CLI entry: print the report and exit with the gate-derived code. */
 export async function verifyCommand(
-  options: VerifyOptions & { acceptanceFile?: string; model?: string; endpoint?: string }
+  options: VerifyOptions & { acceptanceFile?: string; acceptanceAuto?: boolean; model?: string; endpoint?: string }
 ): Promise<void> {
   // Resolve the acceptance spec (a file path) + model executor lazily so the
   // common `uap verify` path never touches the model layer.
@@ -347,6 +392,21 @@ export async function verifyCommand(
     }
     const executor = await buildAcceptanceExecutor(options.model, options.endpoint);
     opts = { ...options, acceptanceSpec: spec, acceptanceExecutor: executor };
+  } else if (options.acceptanceAuto) {
+    // DONE-gate mode: judge behavioral requirements-completeness against an
+    // auto-discovered spec. Fail OPEN if nothing to judge or no model is
+    // configured — never wedge a DONE claim on missing spec/model, only on a
+    // genuine unmet-requirement verdict (which blocks under max/strict fidelity).
+    const dir = options.dir || process.cwd();
+    const spec = resolveAcceptanceSpecAuto(dir);
+    if (spec) {
+      try {
+        const executor = await buildAcceptanceExecutor(options.model, options.endpoint);
+        opts = { ...options, acceptanceSpec: spec, acceptanceExecutor: executor };
+      } catch {
+        process.stderr.write('uap verify: --acceptance-auto found a spec but no acceptance model is configured — skipping the requirements judge (set UAP_INFERENCE_ENDPOINT/UAP_DELIVER_MODEL).\n');
+      }
+    }
   }
   const result = await runVerify(opts);
   if (options.json) {

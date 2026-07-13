@@ -664,6 +664,7 @@ program
   .option('--gates <ids>', 'Comma-separated rung-id subset (e.g. build,test,execution)')
   .option('--timeout <ms>', 'Per-rung timeout override in milliseconds')
   .option('--acceptance <specfile>', 'Judge behavioral completeness against a spec file (LLM acceptance gate; --strict to gate on it)')
+  .option('--acceptance-auto', 'DONE-gate mode: judge requirements-completeness against an auto-discovered spec (.uap/acceptance.md → REQUIREMENTS.md → the completion-ledger/TodoWrite plan); fails open if no spec/model, blocks under max/strict fidelity')
   .option('--no-visual', 'Skip the visual gate (renders entry pages headlessly, checks blank/static/errors, saves screenshots to .uap/visual)')
   .option('--approve-visual', 'Approve the current render as the visual regression baseline (.uap/visual/baseline) instead of gating on drift')
   .option('--user-paths', 'Run the user-path validation gate: execute .uap/user-paths.json journeys through the real client (headless browser / HTTP / built CLI)')
@@ -682,6 +683,7 @@ program
       json: Boolean(options.json),
       timeoutMs: options.timeout ? Number(options.timeout) : undefined,
       acceptanceFile: options.acceptance,
+      acceptanceAuto: Boolean(options.acceptanceAuto),
       model: options.model,
       endpoint: options.endpoint,
       visual: options.visual,

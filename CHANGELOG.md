@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.148.6 (2026-07-13)
+
+- feat(verify): `--acceptance-auto` — judge requirements-completeness at the DONE gate against an auto-discovered spec, so "all requirements met" is enforced on **every** DONE claim, not just `deliver` runs. Discovery priority: `.uap/acceptance.md` → `.uap/requirements.md` → `ACCEPTANCE.md`/`REQUIREMENTS.md`/`SPEC.md` → the completion ledger / TodoWrite plan (the agent's own plan of record). Wired into the opencode completion gate (full verify on all-todos-complete) and `stop.sh` (all other agents). Fails OPEN when no spec or no model is configured (never wedges a DONE claim on missing config); blocks under `fidelity: max` / `--strict` like the other acceptance-gate paths. Deliberately NOT added to the per-edit periodic path (an LLM judge every N edits would be far too heavy).
+
 ## v1.148.5 (2026-07-13)
 
 - feat(gate): CUMULATIVE trivial-edit fast-path (`fastpath_gate.py`). The fast-path kept iteration quick but was an unbounded escape hatch — a weak model could assemble a whole broken feature out of sub-threshold edits that never routed to deliver or got validated. Now per-file trivial-edit chars/count are tallied in `.uap/fastpath-accum.json`; once a file crosses `UAP_DELIVER_CUMULATIVE_CHARS` (800) or `UAP_DELIVER_CUMULATIVE_EDITS` (6) since it last routed, the next edit routes through deliver and the tally resets — bounding un-validated drift per file. The gate signals `UAP_FASTPATH_ROUTED=1` so `delivery_enforcement.py` skips its own trivial allowance (which otherwise re-approved the edit and defeated the budget).
