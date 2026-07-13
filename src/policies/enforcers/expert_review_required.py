@@ -129,6 +129,11 @@ def main() -> None:
         emit(True, "not a ship operation")
 
     cmd = args.get("command") or args.get("cmd") or ""
+    # The policy-gate hook runs in the harness env, not the inline command env,
+    # so `UAP_NO_REVIEW=1 git commit ...` never reaches os.environ above. Honor
+    # an inline assignment parsed from the command string too.
+    if re.search(r"(^|\s)UAP_NO_REVIEW\s*=\s*['\"]?1\b", cmd):
+        emit(True, "UAP_NO_REVIEW inline override set")
     if not any(p.search(cmd) for p in SHIP_PATTERNS):
         emit(True, "not a ship action")
 

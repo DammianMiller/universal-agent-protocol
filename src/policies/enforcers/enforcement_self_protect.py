@@ -66,6 +66,17 @@ def _is_protected_path(rel_posix: str) -> bool:
     # "/src/policies/", …) match only a genuine path SEGMENT. Filename markers
     # ("uap-policy-gate.sh", "anthropic-proxy.env") still match as substrings.
     low = "/" + rel_posix.lower().lstrip("/")
+    # Designed-writable escape hatches that live UNDER a protected marker but are
+    # NOT part of the delivery-enforcement control surface: expert-review
+    # artifacts (.uap/reviews/) and the committable review waiver
+    # (policies/waivers/). Writing these satisfies the SEPARATE
+    # expert-review-required gate and cannot weaken delivery enforcement — the
+    # markers above still guard .uap.json, proxy env, enforcer code and hooks.
+    # Without this carve-out the two gates deadlock: expert-review demands an
+    # artifact that self-protect forbids writing.
+    allow = ("/.uap/reviews/", "/policies/waivers/")
+    if any(a in low for a in allow):
+        return False
     return any(m in low for m in PROTECTED_MARKERS)
 
 

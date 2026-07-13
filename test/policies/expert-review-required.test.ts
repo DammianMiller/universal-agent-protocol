@@ -111,6 +111,16 @@ describe('expert-review-required enforcer', () => {
     expect(runEnforcer(repo, 'git push', { UAP_NO_REVIEW: '1' })).toBe(0);
   });
 
+  it('honors an inline UAP_NO_REVIEW=1 prefix (the hook strips the env)', () => {
+    // The policy-gate hook runs in the harness env, so an EXPORTED override
+    // never reaches a hook-spawned enforcer; the inline assignment on the ship
+    // command is the only form that can. A non-1 value or look-alike var must
+    // NOT bypass.
+    expect(runEnforcer(repo, 'UAP_NO_REVIEW=1 git push')).toBe(0);
+    expect(runEnforcer(repo, 'UAP_NO_REVIEW=0 git push')).toBe(2);
+    expect(runEnforcer(repo, 'UAP_NO_REVIEWS=1 git push')).toBe(2);
+  });
+
   it('ignores non-ship commands', () => {
     expect(runEnforcer(repo, 'ls -la')).toBe(0);
   });

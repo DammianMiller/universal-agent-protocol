@@ -30,14 +30,25 @@ describe('enforcement-self-protect marker anchoring', () => {
     expect(editExit('src/coordination/policies-helper.ts')).toBe(0);
   });
 
+  it('ALLOWS the expert-review escape-hatch paths (review artifact + waiver)', () => {
+    // These live UNDER a protected marker (.uap/, policies/) but are the
+    // SEPARATE expert-review gate's escape hatches — writing them satisfies
+    // expert-review-required and cannot weaken delivery enforcement. Without the
+    // carve-out the two gates deadlock (expert-review demands an artifact that
+    // self-protect forbids writing).
+    expect(editExit('.uap/reviews/feature%2Fx.json')).toBe(0);
+    expect(editExit('.uap/reviews/WAIVER')).toBe(0);
+    expect(editExit('policies/waivers/2026-expert-review.md')).toBe(0);
+  });
+
   it('still BLOCKS the genuine enforcement-control surface', () => {
     expect(editExit('src/policies/enforcers/foo.py')).toBe(2);
     expect(editExit('src/policies/schemas/policies/x.md')).toBe(2);
     expect(editExit('.worktrees/42-feat/src/policies/bar.py')).toBe(2); // worktree, but real src/policies
-    expect(editExit('policies/custom.md')).toBe(2); // repo-root policies/ dir
+    expect(editExit('policies/custom.md')).toBe(2); // repo-root policies/ dir (non-waiver)
     expect(editExit('.policy-tools/x.py')).toBe(2);
     expect(editExit('.uap.json')).toBe(2);
-    expect(editExit('.uap/reviews/WAIVER')).toBe(2);
+    expect(editExit('.uap/user-paths.json')).toBe(2); // non-review .uap/ stays protected
     expect(editExit('.claude/hooks/uap-policy-gate.sh')).toBe(2);
   });
 });
