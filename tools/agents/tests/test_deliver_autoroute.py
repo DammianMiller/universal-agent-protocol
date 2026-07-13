@@ -69,5 +69,53 @@ class LoggingTest(unittest.TestCase):
             self.assertEqual(rec["file_path"], "/repo/src/foo.ts")
 
 
+class AgentKeySpellingTest(unittest.TestCase):
+    """autoroute must accept EVERY agent's file-path key.
+
+    The enforcer was fixed for this long ago; autoroute was not — so for opencode
+    (which sends `filePath`) file_path was always "", `spawn` was always False, and
+    autoroute was INERT: the gate blocked the edit, logged the intent, told the
+    model to call deliver… and deliver never ran. Observed live: 3 routed intents,
+    0 deliver runs, 0 files changed — work blocked but never delivered. The old
+    tests only ever passed snake_case, which is why this went unnoticed.
+    """
+
+    def test_opencode_filePath_spawns(self):
+        d = mod.decide(BLOCK_OUT, "Write", {"filePath": "/repo/src/foo.ts"}, True, set())
+        self.assertTrue(d["spawn"])
+        self.assertEqual(d["dedup_key"], "/repo/src/foo.ts")
+
+    def test_claude_file_path_still_spawns(self):
+        d = mod.decide(BLOCK_OUT, "Write", {"file_path": "/repo/src/foo.ts"}, True, set())
+        self.assertTrue(d["spawn"])
+
+    def test_other_spellings(self):
+        for key in ("path", "target", "filename", "file"):
+            d = mod.decide(BLOCK_OUT, "Write", {key: "/repo/src/foo.ts"}, True, set())
+            self.assertTrue(d["spawn"], key)
+
+
+class BashRoutedIntentTest(unittest.TestCase):
+    """A BASH-routed source-write carries a `command`, not a path — requiring
+    file_path made that whole class unspawnable (blocked, then silently dropped).
+    The hint is what deliver actually runs, so it is the correct spawn key."""
+
+    def test_bash_intent_spawns_on_hint_alone(self):
+        d = mod.decide(BLOCK_OUT, "Bash", {"command": "cat > src/app.js <<EOF"}, True, set())
+        self.assertTrue(d["spawn"])
+        self.assertEqual(d["file_path"], "")           # genuinely has no path
+        self.assertEqual(d["dedup_key"], d["hint"])    # …so it dedups on the hint
+
+    def test_bash_intent_dedupes_on_hint(self):
+        d1 = mod.decide(BLOCK_OUT, "Bash", {"command": "cat > a.js <<EOF"}, True, set())
+        d2 = mod.decide(BLOCK_OUT, "Bash", {"command": "cat > a.js <<EOF"}, True, {d1["dedup_key"]})
+        self.assertTrue(d1["spawn"])
+        self.assertFalse(d2["spawn"])  # no double-spawn for the same change
+
+    def test_still_never_spawns_without_a_hint(self):
+        d = mod.decide({"reason": "x", "route": "deliver"}, "Bash", {"command": "cat > a.js"}, True, set())
+        self.assertFalse(d["spawn"])
+
+
 if __name__ == "__main__":
     unittest.main()
