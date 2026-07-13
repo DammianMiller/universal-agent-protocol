@@ -211,7 +211,15 @@ if [ "$CODE_CHANGED" = "true" ] && [ "${UAP_VERIFY_ON_STOP:-1}" != "0" ] && comm
     if uap verify --help 2>/dev/null | grep -q 'user-paths-auto'; then
       UV_AUTO="--user-paths-auto"
     fi
-    VERIFY_OUT="$(cd "$PROJECT_DIR" && $TIMEOUT_WRAP uap verify --runtime-only $UV_AUTO --dir "$PROJECT_DIR" 2>&1)"
+    # --acceptance-auto: also judge requirements-completeness against the agent's
+    # plan of record (fails open with no spec/model; blocks under max/strict
+    # fidelity), so a DONE claim from ANY agent — not just deliver — must meet the
+    # declared requirements. Version-skew guarded like UV_AUTO above.
+    ACC_AUTO=""
+    if uap verify --help 2>/dev/null | grep -q 'acceptance-auto'; then
+      ACC_AUTO="--acceptance-auto"
+    fi
+    VERIFY_OUT="$(cd "$PROJECT_DIR" && $TIMEOUT_WRAP uap verify --runtime-only $UV_AUTO $ACC_AUTO --dir "$PROJECT_DIR" 2>&1)"
     VERIFY_RC=$?
   fi
   set -e
