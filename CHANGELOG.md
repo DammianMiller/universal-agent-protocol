@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.148.3 (2026-07-13)
+
+- fix(policy): resolve expert-review-required deadlock — its escape hatches were all unreachable (self-protect locked the review-artifact/waiver paths, the named skill never wrote the artifact, inline UAP_NO_REVIEW never reached the hook-run enforcer, and the advertised `uam worktree pr` was a non-existent binary)
+
 ## v1.148.2 (2026-07-12)
 
 - fix(deliver): .uap.json deliver.orchestrate:"on" now forces orchestration always
