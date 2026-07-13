@@ -729,6 +729,20 @@ PROXY_RECON_HARD_MULTIPLIER = max(1.0, float(
 PROXY_RECON_SESSION_HARD_CAP = int(
     os.environ.get("PROXY_RECON_SESSION_HARD_CAP", "3")
 )
+# Empty-tool-loop breaker: under a forced tool_choice='required' (e.g. the recon
+# guardrail, or the first-turn/active-loop force), a model that has nothing valid
+# to call can return a FULLY-EMPTY response (0 output tokens, no text, no tool
+# call — logged as `finish=tool_use output_tokens=0`). It cannot say "I'm stuck /
+# that file is missing" because the force forbids prose, so it spins: empty ->
+# guardrail re-forces -> empty. That reads as a frozen session (observed live:
+# 16 empties in 10 min on a project whose deliverable dir had been deleted). After
+# this many CONSECUTIVE fully-empty responses, release tool_choice to 'auto' for
+# the next turn and inject a directive telling the model to answer in PLAIN TEXT
+# (state the blocker / ask the user), converting a silent spin into a recoverable
+# ask. 0 disables.
+PROXY_EMPTY_TOOL_LOOP_BREAK = int(
+    os.environ.get("PROXY_EMPTY_TOOL_LOOP_BREAK", "3")
+)
 # Fix F: context death-spiral breaker. When the *raw* (pre-prune) incoming
 # context stays catastrophically over the window for several consecutive turns,
 # releasing tool_choice to 'auto' (Fix B / LOOP BREAKER) is NOT enough — the
@@ -1410,6 +1424,7 @@ class SessionMonitor:
     loop_warnings_emitted: int = 0  # How many loop warnings sent to the model
     no_progress_streak: int = 0  # Forced tool turns without new tool_result
     consecutive_no_write_turns: int = 0  # turns exploring with no write tool (B1)
+    consecutive_empty_tool_turns: int = 0  # fully-empty responses (empty-tool loop breaker)
     recon_hard_fires: int = 0  # Fix E: monotonic count of recon hard-tier firings
     catastrophic_ctx_streak: int = 0  # Fix F: consecutive turns raw ctx >= finalize ratio
     unexpected_end_turn_count: int = 0  # end_turn without tool_use in active loop
@@ -5192,6 +5207,44 @@ def _maybe_inject_mandate_deliver(openai_body: dict, monitor: "SessionMonitor") 
     )
 
 
+def _maybe_break_empty_tool_loop(openai_body: dict, monitor: "SessionMonitor") -> None:
+    """Release a forced tool_choice after repeated FULLY-EMPTY responses.
+
+    When tool_choice is forced ('required') and the model has nothing valid to
+    call, it can return empty (0 tokens, no text, no tool call) — and it cannot
+    say why, because the force forbids prose. That empties-loop is a silent spin
+    (looks like a frozen session). After PROXY_EMPTY_TOOL_LOOP_BREAK consecutive
+    empties, release tool_choice to 'auto' and inject a plain-text directive so
+    the model can state the blocker or ask the user, turning the spin into a
+    recoverable ask. Resets the streak so it fires once per window, not every turn.
+    """
+    if PROXY_EMPTY_TOOL_LOOP_BREAK <= 0:
+        return
+    if monitor.consecutive_empty_tool_turns < PROXY_EMPTY_TOOL_LOOP_BREAK:
+        return
+    n = monitor.consecutive_empty_tool_turns
+    # Release the force so prose is possible this turn.
+    if openai_body.get("tool_choice") == "required":
+        openai_body["tool_choice"] = "auto"
+        openai_body.pop("grammar", None)
+    directive = (
+        f"You have returned {n} empty responses in a row — you are stuck and a tool "
+        "call is being forced, but you cannot produce a valid one. STOP trying to "
+        "call a tool this turn. Reply in PLAIN TEXT: state exactly what is blocking "
+        "you (for example, a file or directory you expected does not exist), and ask "
+        "the user how they want to proceed. Do NOT call any tool this turn."
+    )
+    msgs = openai_body.get("messages", [])
+    msgs.append({"role": "user", "content": directive})
+    openai_body["messages"] = msgs
+    monitor.consecutive_empty_tool_turns = 0  # one-shot per window; don't force-release forever
+    logger.warning(
+        "EMPTY-TOOL LOOP BREAK: %d consecutive empty responses -> released "
+        "tool_choice->auto + plain-text directive so the model can report the blocker",
+        n,
+    )
+
+
 def _maybe_inject_recon_convergence(
     openai_body: dict,
     monitor: "SessionMonitor",
@@ -6021,6 +6074,13 @@ def build_openai_request(
     # DEFERRAL-BREAK (Fix A): after stuck-break, drive a no-tool deferral turn
     # into a concrete action. Runs last so it can yield to stuck-break.
     _maybe_inject_deferral_break(openai_body, monitor)
+
+    # EMPTY-TOOL LOOP BREAK: after repeated FULLY-EMPTY responses under a forced
+    # tool_choice, release the force + inject a plain-text directive so the model
+    # can report the blocker (e.g. a deleted deliverable) instead of spinning.
+    # Runs last among the message/tool_choice guards so its release is final —
+    # the other guards here only ever FORCE, and this is the escape hatch.
+    _maybe_break_empty_tool_loop(openai_body, monitor)
 
     _apply_thinking_grammar(openai_body)
 
@@ -10082,6 +10142,14 @@ async def stream_anthropic_response(
         # DEFERRAL-BREAK signal (Fix A): a no-tool prose turn that defers the
         # work. `tc_names` empty means this turn emitted no tool call.
         monitor.note_deferral_signal(accumulated_text, bool(tc_names))
+        # EMPTY-TOOL-LOOP signal: a fully-empty response — no text, no tool call,
+        # zero output tokens (typically `finish=tool_use` under a forced
+        # tool_choice the model can't satisfy). Streak it so the next request can
+        # release the force and let the model speak. Any non-empty turn resets it.
+        _empty_resp = (output_tokens == 0) and (len(accumulated_text) == 0) and (not tc_names)
+        monitor.consecutive_empty_tool_turns = (
+            monitor.consecutive_empty_tool_turns + 1 if _empty_resp else 0
+        )
     except Exception:
         pass
 
