@@ -23,7 +23,7 @@
  * everything observed is reported either way.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { startStaticServer } from './execution-gate.js';
 
@@ -171,6 +171,12 @@ const BUILD_OUTPUT_DIRS = ['dist', 'build', 'out'];
  * UIs are covered, not silently skipped. The static server serves projectRoot,
  * so a nested entry like `dist/index.html` navigates fine.
  */
+// Directories that never hold a project's own entry page — skip when recursing.
+const ENTRY_SCAN_SKIP = new Set([
+  'node_modules', '.git', 'dist', 'build', 'out', 'coverage', 'agents', 'vendor',
+  'target', '__pycache__', '.next', '.nuxt', '.svelte-kit', '.cache', 'tmp',
+]);
+
 export function discoverEntryPages(projectRoot: string): string[] {
   try {
     const root = readdirSync(projectRoot).filter((f) => f.toLowerCase().endsWith('.html'));
@@ -183,7 +189,38 @@ export function discoverEntryPages(projectRoot: string): string[] {
       const entry = join(d, 'index.html');
       if (existsSync(join(projectRoot, entry))) return [entry];
     }
-    return [];
+    // Subproject fallback: the app often lives in a subdirectory (e.g.
+    // `rubiks-cube/index.html`) with no root package.json — so a root-level
+    // verify would find NO entry page and skip visual/behavioral validation
+    // entirely, letting a broken app pass as "done". Recurse (bounded depth) to
+    // find nested entry pages; the static server serves projectRoot so a
+    // relative `rubiks-cube/index.html` navigates correctly. Prefer index.html,
+    // at most one page per subtree, capped at MAX_PAGES.
+    const found: string[] = [];
+    const walk = (dir: string, rel: string, depth: number): void => {
+      if (depth > 3 || found.length >= MAX_PAGES) return;
+      // Prefer this directory's own index.html, then any .html, before descending.
+      if (rel && existsSync(join(dir, 'index.html'))) {
+        found.push(`${rel}/index.html`);
+        return; // one entry per subtree
+      }
+      let names: string[];
+      try { names = readdirSync(dir); } catch { return; }
+      if (rel) {
+        const anyHtml = names.find((n) => n.toLowerCase().endsWith('.html'));
+        if (anyHtml) { found.push(`${rel}/${anyHtml}`); return; }
+      }
+      for (const name of names) {
+        if (found.length >= MAX_PAGES) break;
+        if (name.startsWith('.') || ENTRY_SCAN_SKIP.has(name)) continue;
+        const abs = join(dir, name);
+        try {
+          if (statSync(abs).isDirectory()) walk(abs, rel ? `${rel}/${name}` : name, depth + 1);
+        } catch { /* transient */ }
+      }
+    };
+    walk(projectRoot, '', 0);
+    return found.slice(0, MAX_PAGES);
   } catch {
     return [];
   }

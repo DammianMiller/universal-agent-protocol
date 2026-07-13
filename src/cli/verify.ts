@@ -238,7 +238,18 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     }
   }
 
-  const report = formatReport(ladder) + visualReport + acceptanceReport;
+  // The header must reflect the OVERALL verdict, not just the objective ladder:
+  // the ladder can pass while the visual/vision/acceptance/baseline gate blocks
+  // (a broken-but-loading UI). Printing "VERIFIED ✓" then problems + exit 1 is
+  // exactly how an agent mis-reads a failure as success and claims done.
+  const blockedBy = [
+    visualBlocks && 'visual/behavioral render',
+    visionBlocks && 'aesthetic score',
+    baselineBlocks && 'visual regression',
+    acceptanceBlocks && 'acceptance criteria',
+  ].filter(Boolean) as string[];
+  const overallPassed = ladder.passed && blockedBy.length === 0;
+  const report = formatReport(ladder, overallPassed, blockedBy) + visualReport + acceptanceReport;
   // Exit-code contract for the Stop hook: 0 = verified, 1 = a REAL gate failure
   // (the code is broken), 3 = INFRA failure (gate timed out / could not spawn /
   // killed by signal). The hook hard-blocks only on 1; 3 fails OPEN so a flaky
@@ -268,7 +279,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   };
 }
 
-function formatReport(ladder: LadderResult): string {
+function formatReport(ladder: LadderResult, overallPassed?: boolean, blockedBy: string[] = []): string {
   const lines: string[] = [];
   for (const r of ladder.results) {
     const mark = r.skipped ? 'SKIP' : r.passed ? 'PASS' : 'FAIL';
@@ -283,9 +294,14 @@ function formatReport(ladder: LadderResult): string {
       );
     }
   }
-  const header = ladder.passed
-    ? `VERIFIED ✓ (${Math.round(ladder.score * 100)}% of gates passed)`
-    : `NOT VERIFIED ✗ (${Math.round(ladder.score * 100)}% of gates passed)`;
+  // Default to the ladder verdict, but let callers force NOT VERIFIED when a
+  // non-ladder gate (visual/vision/acceptance) blocks even though the ladder
+  // passed — so the header never says VERIFIED while the exit code is a failure.
+  const passed = overallPassed ?? ladder.passed;
+  const pct = Math.round(ladder.score * 100);
+  const header = passed
+    ? `VERIFIED ✓ (${pct}% of gates passed)`
+    : `NOT VERIFIED ✗ (${pct}% of gates passed${blockedBy.length ? `; blocked by: ${blockedBy.join(', ')}` : ''})`;
   return `${header}\n${lines.join('\n')}`;
 }
 
