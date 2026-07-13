@@ -22,6 +22,7 @@ files (deliver protects those itself), and tooling dot-dirs.
 """
 from __future__ import annotations
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -35,6 +36,25 @@ SOURCE_EXTS = (
     ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
     ".py", ".go", ".rs", ".java", ".rb", ".php", ".cs", ".swift", ".kt",
     ".c", ".cc", ".cpp", ".h", ".hpp",
+    # WEB deliverables are source too. Omitting these let an ENTIRE class of
+    # deliverable (single-file web apps, static sites, templates) escape the gate:
+    # a 34KB single-file HTML app returned "not source code" -> allowed -> zero
+    # routing, zero deliver, zero validation (observed live). The completion gate's
+    # own code-change detector already counts html/css/vue/svelte as code, so the
+    # two halves of the system disagreed about what "source" means until now.
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".vue", ".svelte", ".astro",
+)
+
+# GUI-browser launchers. A model with no validation tooling in reach tries to
+# "check its work" by opening a browser (observed: 11 xdg-open/firefox/chromium
+# attempts in 40 min, spawning windows on the operator's desktop) — which proves
+# nothing and burns turns. Redirect it to `uap verify`, which renders headlessly
+# and runs the real visual + behavioral gates.
+BROWSER_BINS = (
+    "xdg-open", "firefox", "chromium", "chromium-browser", "google-chrome",
+    "google-chrome-stable", "chrome", "sensible-browser", "x-www-browser",
+    "microsoft-edge", "open",
 )
 
 # NOTE: `.worktrees/` is deliberately NOT exempt here. A real `uap deliver` run
@@ -148,8 +168,79 @@ def _local_mode() -> str:
     return "advisory" if adv not in {"0", "off", "false", "no", ""} else "block"
 
 
+BASH_OPS = {"Bash", "bash", "run_bash", "shell"}
+
+# A bash command that WRITES a source file: `> f.ts`, `>> f.ts`, `tee f.ts`,
+# `sed -i ... f.ts`. Without this, Edit/Write gating is trivially bypassable —
+# `cat > app.js <<EOF` writes source with no deliver run and no validation.
+_EXT_ALT = "|".join(e.lstrip(".") for e in SOURCE_EXTS)
+_BASH_WRITE_RE = re.compile(
+    r"(?:>>?\s*|tee\s+(?:-a\s+)?|sed\s+-i[^\s]*\s+(?:[^|;&]*\s)?)"
+    r"['\"]?([^\s'\"|;&>]+\.(?:" + _EXT_ALT + r"))\b",
+    re.IGNORECASE,
+)
+# A browser LAUNCH (not a lookup: `which firefox` / `command -v chrome` are fine).
+_BROWSER_RE = re.compile(
+    r"(?:^|[;&|]|\&\&|\|\|)\s*(?:nohup\s+)?(" + "|".join(BROWSER_BINS) + r")\b",
+    re.IGNORECASE,
+)
+_LOOKUP_RE = re.compile(r"^\s*(?:which|command\s+-v|type|whereis)\b", re.IGNORECASE)
+
+
+def _handle_bash(args: dict) -> None:
+    """Gate bash so it can't bypass delivery enforcement (source writes) and so a
+    model stops trying to 'verify' by opening a GUI browser."""
+    cmd = str(args.get("command") or args.get("cmd") or args.get("script") or "")
+    if not cmd.strip():
+        emit(True, "bash: empty command")
+        return
+
+    # Browser launch → redirect to the real (headless) validation path. Always
+    # blocked: opening a window proves nothing and cannot gate a DONE claim.
+    if not _LOOKUP_RE.match(cmd) and _BROWSER_RE.search(cmd):
+        emit(
+            False,
+            "BLOCKED: do not open a GUI browser to check your work — it proves nothing "
+            "and cannot validate anything. Run `uap verify` instead: it renders the page "
+            "headlessly and runs the REAL visual + behavioral gates (screenshots land in "
+            ".uap/visual). Use that to see whether the UI actually works.",
+        )
+        return
+
+    # Source write via shell → same rules as an Edit/Write: route through deliver.
+    if os.environ.get("UAP_DELIVER_ACTIVE") == "1":
+        emit(True, "bash: inside a deliver-driven run")
+        return
+    if os.environ.get("UAP_DELIVER_BYPASS") == "1":
+        emit(True, "bash: UAP_DELIVER_BYPASS override set")
+        return
+    m = _BASH_WRITE_RE.search(cmd)
+    if m:
+        target = m.group(1)
+        mode = os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower()
+        if mode == "block" and _is_local_model_session() and _local_mode() == "advisory":
+            mode = "advisory"
+        msg = (
+            f"BLOCKED: do not write source via the shell ('{target}'). Writing files with "
+            "a redirect/heredoc/sed/tee bypasses the delivery gate. To create or change "
+            "code, call the `deliver` tool (or run: uap deliver \"<one-line description>\"). "
+            "Do NOT retry this command."
+        )
+        if mode == "block":
+            emit(False, msg, route="deliver", deliverHint=f"implement the intended change to {target}")
+            return
+        print(f"[delivery-enforcement advisory] {msg}", file=sys.stderr)
+        emit(True, "bash advisory: source-write nudge logged")
+        return
+
+    emit(True, "bash: no source write or browser launch")
+
+
 def main() -> None:
     op, args = parse_cli()
+    if op in BASH_OPS:
+        _handle_bash(args)
+        return
     if op not in EDIT_OPS:
         emit(True, "not a file-edit operation")
         return
