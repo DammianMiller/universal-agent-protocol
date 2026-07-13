@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.148.10 (2026-07-13)
+
+**Every code type is now gated AND tested.** The rule: if it is interpreted, transpiled, or compiled, it is code — it routes through deliver, and it gets a rung that proves it builds and its tests pass.
+
+- fix(delivery-enforcement): `SOURCE_EXTS` expanded from 22 to **108 extensions**, covering C/C++/CUDA/ObjC, Rust, Go, Zig, Nim, .NET (C#/F#/VB/Razor), JVM (Java/Kotlin/Scala/Groovy/Clojure), Python, Ruby, PHP, Perl, Lua, Elixir/Erlang, Haskell, OCaml, Swift, Dart, R, Julia, shell/PowerShell, assembly, Solidity, SQL, protobuf/GraphQL, Terraform/HCL, plus web (HTML/CSS/Vue/Svelte/templates). Pure data/config (`.json`/`.yaml`/`.xml`/`.md`) is deliberately **not** gated — it has no executable "correct function".
+- fix(verifier-ladder): **`detectPolyglotRungs` — build+test rungs for every ecosystem, detected UNCONDITIONALLY.** Go, .NET, C/C++ (CMake+ctest), Maven, Gradle, sbt, Swift, Ruby, PHP, Elixir, Dart, Haskell, Zig, and Python. Previously these sat behind a `rungs.length === 0` fallback, so a Go/C++/.NET/Python component in a repo that *also* had a `package.json` was **never compiled or tested** — it passed **vacuously**, judged only by `npm run build`. (This is the same bug already fixed for Rust, where an 8-phase Rust mission stagnated because every turn was judged by npm alone; it is now generalized to every language.) A rung whose toolchain is absent surfaces as a visible INFRA `spawn-error` (fails open) rather than silently vanishing, so "we could not test your Go code" is never mistaken for a pass.
+
 ## v1.148.9 (2026-07-13)
 
 - fix(delivery-enforcement): **web deliverables are source code.** `SOURCE_EXTS` omitted `.html`/`.css`, so an entire class of deliverable (single-file web apps, static sites, templates) returned `"not source code"` and was allowed — zero routing, zero deliver, zero validation (observed live: a 34KB `rubiks-cube.html` app built completely ungated). Added `.html .htm .css .scss .sass .less .vue .svelte .astro`. This also aligns the enforcer with the completion gate, whose code-change detector already counted html/css/vue/svelte as code — the two halves of the system disagreed about what "source" means.

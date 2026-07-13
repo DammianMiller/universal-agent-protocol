@@ -212,9 +212,16 @@ export function detectRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIM
   // every turn was judged by `npm run build` alone.
   rungs.push(...detectCargoRungs(projectRoot, timeoutMs));
 
-  // Non-npm projects (the common case for polyglot CLI tasks) expose their
-  // checks differently. Detect the real ones so deliver gates on the task's
-  // own verifier instead of a hallucinated self-gate.
+  // EVERY other ecosystem present — Go, .NET, C/C++ (CMake), JVM (Maven/Gradle/
+  // sbt), Swift, Ruby, PHP, Elixir, Dart, Haskell, Zig, Python. Unconditional for
+  // exactly the reason cargo is: these used to sit behind the `rungs.length === 0`
+  // fallback below, so a Go/C++/.NET/Python component in a repo that also had a
+  // package.json was NEVER compiled or tested — it passed vacuously, judged only
+  // by `npm run build`. A polyglot repo must gate on ALL of its languages.
+  rungs.push(...detectPolyglotRungs(projectRoot, timeoutMs));
+
+  // Generic fallbacks (Makefile / bare test script) only when nothing
+  // ecosystem-specific was detected at all.
   if (rungs.length === 0) {
     rungs.push(...detectNonNpmRungs(projectRoot, timeoutMs));
   }
@@ -550,6 +557,131 @@ export function detectMigrationRung(projectRoot: string): GateRung | null {
  * Detect real gates in non-npm projects: a Makefile test/check/build target,
  * a pytest suite, or a conventional shell test script. Ordered cheap→expensive.
  */
+/**
+ * Build + test rungs for EVERY ecosystem present — not just the first one found.
+ *
+ * Called UNCONDITIONALLY (like cargo), because the non-npm detectors used to sit
+ * behind `if (rungs.length === 0)`: a Go / C++ / .NET component living in a repo
+ * that also had a package.json was NEVER compiled or tested — it passed
+ * VACUOUSLY, judged only by `npm run build`. That is the same class of bug that
+ * was already fixed for Rust (an 8-phase Rust mission stagnated because every
+ * turn was judged by npm alone); this generalizes the fix to every language.
+ *
+ * Rule: if it is interpreted, transpiled, or compiled, it gets a rung that proves
+ * it actually builds and its tests pass. A rung whose toolchain is absent surfaces
+ * as a `spawn-error` (INFRA → reported, fails OPEN) rather than silently vanishing,
+ * so "we could not test your Go code" is visible instead of counting as a pass.
+ */
+export function detectPolyglotRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): GateRung[] {
+  const rungs: GateRung[] = [];
+  const has = (p: string): boolean => existsSync(join(projectRoot, p));
+  const hasMatch = (re: RegExp): boolean => {
+    try {
+      return readdirSync(projectRoot).some((f) => re.test(f));
+    } catch {
+      return false;
+    }
+  };
+  // Compiles are slow (cargo/cmake/gradle): give them a real budget.
+  const buildMs = Math.max(timeoutMs, 900_000);
+  const add = (id: string, name: string, command: string, args: string[], required = true): void => {
+    rungs.push({ id, name, command, args, required, timeoutMs: buildMs });
+  };
+
+  // ── Go ────────────────────────────────────────────────────────────────────
+  if (has('go.mod')) {
+    add('go-build', 'Build (go build ./...)', 'go', ['build', './...']);
+    add('go-test', 'Tests (go test ./...)', 'go', ['test', './...']);
+  }
+
+  // ── .NET (C# / F# / VB) ───────────────────────────────────────────────────
+  if (has('global.json') || hasMatch(/\.(sln|csproj|fsproj|vbproj)$/i)) {
+    add('dotnet-build', 'Build (dotnet build)', 'dotnet', ['build', '--nologo']);
+    add('dotnet-test', 'Tests (dotnet test)', 'dotnet', ['test', '--nologo']);
+  }
+
+  // ── C / C++ via CMake (Makefile-only projects fall to detectNonNpmRungs) ───
+  if (has('CMakeLists.txt')) {
+    add('cmake-build', 'Build (cmake --build)', 'bash', [
+      '-lc',
+      'cmake -S . -B build && cmake --build build',
+    ]);
+    // ctest exits 8 ("no tests were found") on a project with no test suite —
+    // that is a vacuous pass, not a failure.
+    rungs.push({
+      id: 'ctest',
+      name: 'Tests (ctest)',
+      command: 'bash',
+      args: ['-lc', 'ctest --test-dir build --output-on-failure'],
+      required: true,
+      timeoutMs: buildMs,
+      passExitCodes: [0, 8],
+    });
+  }
+
+  // ── JVM: Maven / Gradle (Java, Kotlin, Scala, Groovy) ─────────────────────
+  if (has('pom.xml')) add('maven-test', 'Tests (mvn test)', 'mvn', ['-B', 'test']);
+  if (has('build.gradle') || has('build.gradle.kts')) {
+    const gradle = has('gradlew') ? './gradlew' : 'gradle';
+    add('gradle-test', `Tests (${gradle} test)`, gradle, ['test', '--console=plain']);
+  }
+  if (has('build.sbt')) add('sbt-test', 'Tests (sbt test)', 'sbt', ['test']);
+
+  // ── Swift ─────────────────────────────────────────────────────────────────
+  if (has('Package.swift')) {
+    add('swift-build', 'Build (swift build)', 'swift', ['build']);
+    add('swift-test', 'Tests (swift test)', 'swift', ['test']);
+  }
+
+  // ── Ruby / PHP ────────────────────────────────────────────────────────────
+  if (has('Gemfile')) {
+    add('ruby-test', 'Tests (rspec / rake test)', 'bash', [
+      '-lc',
+      'bundle exec rspec 2>/dev/null || bundle exec rake test',
+    ]);
+  }
+  if (has('composer.json')) {
+    add('php-test', 'Tests (phpunit)', 'bash', [
+      '-lc',
+      'composer test 2>/dev/null || vendor/bin/phpunit',
+    ]);
+  }
+
+  // ── BEAM / Dart / Haskell / Zig ───────────────────────────────────────────
+  if (has('mix.exs')) add('mix-test', 'Tests (mix test)', 'mix', ['test']);
+  if (has('pubspec.yaml')) {
+    add('dart-test', 'Tests (flutter/dart test)', 'bash', [
+      '-lc',
+      'flutter test 2>/dev/null || dart test',
+    ]);
+  }
+  if (has('stack.yaml')) add('stack-test', 'Tests (stack test)', 'stack', ['test']);
+  else if (hasMatch(/\.cabal$/)) add('cabal-test', 'Tests (cabal test)', 'cabal', ['test']);
+  if (has('build.zig')) add('zig-test', 'Tests (zig build test)', 'zig', ['build', 'test']);
+
+  // ── Python ────────────────────────────────────────────────────────────────
+  // Also unconditional. pytest previously lived in the `rungs.length === 0`
+  // fallback, so a repo with BOTH a package.json and Python tests ran npm only —
+  // the Python code was never executed. Keyed off a real Python manifest; exit 5
+  // ("no tests collected") is a vacuous pass, not a failure.
+  const pyManifest =
+    has('pyproject.toml') || has('setup.py') || has('setup.cfg') ||
+    has('requirements.txt') || has('Pipfile') || has('tox.ini');
+  if (pyManifest) {
+    rungs.push({
+      id: 'pytest',
+      name: 'Tests (pytest)',
+      command: 'python3',
+      args: ['-m', 'pytest', '-q'],
+      required: true,
+      timeoutMs: buildMs,
+      passExitCodes: [0, 5],
+    });
+  }
+
+  return rungs;
+}
+
 export function detectNonNpmRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): GateRung[] {
   const rungs: GateRung[] = [];
   const has = (p: string): boolean => existsSync(join(projectRoot, p));
