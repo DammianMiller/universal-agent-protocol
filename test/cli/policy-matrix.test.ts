@@ -25,8 +25,8 @@ describe('parsePolicyMeta', () => {
     const md = '# x\n\n**Category**: architecture\n**Level**: REQUIRED\n**Enforcement Stage**: review\n\n## Rule\n';
     expect(parsePolicyMeta(md)).toEqual({ level: 'REQUIRED', category: 'architecture', stage: 'review' });
   });
-  it('falls back to safe defaults when fields are missing', () => {
-    expect(parsePolicyMeta('# nothing here')).toEqual({ level: 'OPTIONAL', category: 'custom', stage: 'pre-exec' });
+  it('falls back to safe defaults when fields are missing (level REQUIRED by default)', () => {
+    expect(parsePolicyMeta('# nothing here')).toEqual({ level: 'REQUIRED', category: 'custom', stage: 'pre-exec' });
   });
 });
 
@@ -71,7 +71,7 @@ describe('pay2u policy pack', () => {
       expect(existsSync(p), `${name}.md must exist`).toBe(true);
       const md = readFileSync(p, 'utf-8');
       const meta = parsePolicyMeta(md);
-      expect(meta.level).toBe('RECOMMENDED'); // advisory pack
+      expect(meta.level).toBe('REQUIRED'); // policies are REQUIRED by default (no advisory tier)
       expect(md).toContain('pay2u'); // tagged
     }
   });

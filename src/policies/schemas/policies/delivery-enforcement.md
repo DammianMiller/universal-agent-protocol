@@ -1,7 +1,7 @@
 # delivery-enforcement
 
 **Category**: safety
-**Level**: RECOMMENDED
+**Level**: REQUIRED
 **Enforcement Stage**: pre-exec
 **Tags**: uap, delivery, deliver, convergence, enforcement
 

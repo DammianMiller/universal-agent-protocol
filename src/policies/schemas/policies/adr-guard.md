@@ -1,7 +1,7 @@
 # adr-guard
 
 **Category**: safety
-**Level**: RECOMMENDED
+**Level**: REQUIRED
 **Enforcement Stage**: pre-exec
 **Tags**: adr, architecture, invariants, write-gate
 

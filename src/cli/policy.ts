@@ -77,7 +77,7 @@ export function parsePolicyMeta(md: string): { level: string; category: string; 
     return m ? m[1].trim() : dflt;
   };
   return {
-    level: grab('Level', 'OPTIONAL'),
+    level: grab('Level', 'REQUIRED'),
     category: grab('Category', 'custom'),
     stage: grab('Enforcement Stage', 'pre-exec'),
   };
@@ -112,7 +112,7 @@ export function buildPolicyMatrix(
       builtin: existing?.builtin ?? false,
       installed: true,
       enabled: p.isActive,
-      level: p.level ?? existing?.level ?? 'OPTIONAL',
+      level: p.level ?? existing?.level ?? 'REQUIRED',
       stage: p.enforcementStage ?? existing?.stage ?? 'pre-exec',
       category: p.category ?? existing?.category ?? 'custom',
       id: p.id,

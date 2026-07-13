@@ -1,7 +1,7 @@
 # pay2u-enforcement-hooks
 
 **Category**: workflow
-**Level**: RECOMMENDED
+**Level**: REQUIRED
 **Enforcement Stage**: pre-exec
 **Tags**: pay2u, hooks, enforcement, example-pack
 

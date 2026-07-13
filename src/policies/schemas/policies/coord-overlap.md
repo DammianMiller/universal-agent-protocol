@@ -1,7 +1,7 @@
 # coord-overlap
 
 **Category**: workflow
-**Level**: RECOMMENDED
+**Level**: REQUIRED
 **Enforcement Stage**: pre-exec
 **Tags**: agents, coordination, parallelism
 
