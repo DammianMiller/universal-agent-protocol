@@ -30,6 +30,35 @@ import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateC
 import { estimateMessagesTokens, CONTEXT_BUDGET_MARKER } from './context-budget.js';
 import { sanitizedEnv } from './sanitized-env.js';
 
+/**
+ * Directories the agent must never read, list, or write: its OWN machinery.
+ *
+ * Observed live: a routed deliver run spent 5 of its 10 tool calls recursing into
+ * `.uap/deliver-runs/<its own run>/state.json`, `.uap/autoroute.log` and the lock
+ * files — half of a tight budget (`--max-turns 5 --ceiling 10`) gone, so it could
+ * never converge on the actual deliverable. One of those calls even errored
+ * (`read_file .uap/deliver-runs` → EISDIR), burning another turn.
+ *
+ * The agent has no business reading the state that describes its own execution:
+ * it is pure distraction, and a confusion risk (it can see its own turn counts and
+ * status). This is the protected-path guard this file's scope note asked for.
+ */
+const AGENT_INTERNAL_DIRS = ['.uap', '.uap-deliver', '.git', 'node_modules'];
+
+/** Reason string when a path is UAP/agent-internal, else null. */
+function agentInternalReason(projectRoot: string, abs: string): string | null {
+  const rel = relative(projectRoot, abs).split('\\').join('/');
+  const top = rel.split('/')[0];
+  if (top && AGENT_INTERNAL_DIRS.includes(top)) {
+    return (
+      `ERROR: '${rel}' is UAP/agent internal state (${top}/) — it is NOT part of the ` +
+      'deliverable and tells you nothing about the task. Do not read, list, or write it. ' +
+      "Work on the project's own source files instead."
+    );
+  }
+  return null;
+}
+
 export interface AgenticExecutorOptions {
   projectRoot: string;
   endpoint: string;
@@ -246,7 +275,7 @@ function restoreProtected(snap: Map<string, string>): string[] {
   return restored;
 }
 
-function runTool(
+export function runTool(
   projectRoot: string,
   name: string,
   args: Record<string, unknown>,
@@ -274,19 +303,28 @@ function runTool(
   try {
     if (name === 'read_file') {
       const abs = safePath(projectRoot, String(args.path));
+      const internal = agentInternalReason(projectRoot, abs);
+      if (internal) return internal;
       if (!existsSync(abs)) return `ERROR: file not found: ${args.path}`;
       return readFileSync(abs, 'utf-8').slice(0, 8000);
     }
     if (name === 'list_dir') {
       const abs = safePath(projectRoot, String(args.path ?? '.'));
+      const internal = agentInternalReason(projectRoot, abs);
+      if (internal) return internal;
       if (!existsSync(abs)) return `ERROR: not found: ${args.path}`;
       return readdirSync(abs)
+        // Also HIDE the internal dirs from any listing (e.g. the project root), so
+        // the agent never even sees `.uap/` and is not tempted to spelunk it.
+        .filter((e) => !AGENT_INTERNAL_DIRS.includes(e))
         .map((e) => (statSync(join(abs, e)).isDirectory() ? `${e}/` : e))
         .join('\n')
         .slice(0, 4000);
     }
     if (name === 'write_file') {
       const abs = safePath(projectRoot, String(args.path));
+      const internal = agentInternalReason(projectRoot, abs);
+      if (internal) return internal;
       if (protectedFiles.has(protectedKey(projectRoot, abs))) {
         return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
       }
