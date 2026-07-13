@@ -150,9 +150,18 @@ export async function judgeScreenshots(
       type: 'image_url',
       image_url: { url: `data:image/png;base64,${readFileSync(p).toString('base64')}` },
     }));
+    // Stability: the vision score gates a DONE claim, so run-to-run variance
+    // (the same render scoring 3→8) can false-block a good deliverable. Default
+    // to the MEDIAN of 3 independent scores (a small temperature makes the samples
+    // vary so the median is meaningful) — robust to a single outlier judgment.
+    // Set UAP_VISION_SAMPLES=1 for a deterministic single call (temperature 0);
+    // higher values trade more latency for more stability.
+    const samples = Math.max(1, Math.min(9, Number(process.env.UAP_VISION_SAMPLES) || 3));
+    const temperature = samples > 1 ? 0.4 : 0;
     const body = {
       model,
       max_tokens: 800,
+      temperature,
       // Disable model "thinking" for this call. A local reasoning model (e.g.
       // Qwen3.6 launched with --reasoning auto) otherwise spends the whole token
       // budget in reasoning_content and returns EMPTY content — the JSON verdict
@@ -183,23 +192,38 @@ export async function judgeScreenshots(
       ],
     };
     const doFetch = fetchImpl ?? fetchModelWithRetry;
-    const res = await doFetch(`${endpoint}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(process.env.UAP_VISION_API_KEY ? { Authorization: `Bearer ${process.env.UAP_VISION_API_KEY}` } : {}),
-      },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
+    const scoreOnce = async (): Promise<VisionVerdict | null> => {
+      const res = await doFetch(`${endpoint}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.UAP_VISION_API_KEY ? { Authorization: `Bearer ${process.env.UAP_VISION_API_KEY}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
+      };
+      const msg = data.choices?.[0]?.message;
+      // Prefer content; fall back to reasoning_content for any model that still
+      // reasons (belt-and-suspenders alongside enable_thinking:false above) — the
+      // verdict JSON may be embedded in the reasoning trace.
+      return parseVisionVerdict(msg?.content || '') ?? parseVisionVerdict(msg?.reasoning_content || '');
     };
-    const msg = data.choices?.[0]?.message;
-    // Prefer content; fall back to reasoning_content for any model that still
-    // reasons (belt-and-suspenders alongside enable_thinking:false above) — the
-    // verdict JSON may be embedded in the reasoning trace.
-    return parseVisionVerdict(msg?.content || '') ?? parseVisionVerdict(msg?.reasoning_content || '');
+
+    if (samples === 1) return await scoreOnce();
+
+    // Median-of-N: robust to a single outlier judgment. Take the median score and
+    // surface the findings from that representative verdict.
+    const verdicts: VisionVerdict[] = [];
+    for (let i = 0; i < samples; i++) {
+      const v = await scoreOnce();
+      if (v) verdicts.push(v);
+    }
+    if (verdicts.length === 0) return null;
+    verdicts.sort((a, b) => a.score - b.score);
+    return verdicts[Math.floor((verdicts.length - 1) / 2)]; // lower-median (conservative)
   } catch {
     return null;
   }
