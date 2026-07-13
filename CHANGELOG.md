@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.148.7 (2026-07-13)
+
+- fix(user-validation): the browser user-path runner now navigates to `path.entry` before running steps. `entry` is a documented manifest field ("the entry file or route") but was silently ignored — a path relying on it sat at about:blank and every assertion failed confusingly (had to repeat a `goto`). Now honored; an explicit leading `goto` still wins (no double-load).
+- fix(vision): stabilize the aesthetic score that gates a DONE claim. The vision call ran at the model's default (non-zero) temperature, so the same render could score 3→8 across runs and false-block a good deliverable. It now runs a DETERMINISTIC single call (`temperature: 0`, reproducible); `UAP_VISION_SAMPLES>1` takes the MEDIAN of N independent scores (small temperature) for robustness against a single bad judgment.
+
 ## v1.148.6 (2026-07-13)
 
 - feat(verify): `--acceptance-auto` — judge requirements-completeness at the DONE gate against an auto-discovered spec, so "all requirements met" is enforced on **every** DONE claim, not just `deliver` runs. Discovery priority: `.uap/acceptance.md` → `.uap/requirements.md` → `ACCEPTANCE.md`/`REQUIREMENTS.md`/`SPEC.md` → the completion ledger / TodoWrite plan (the agent's own plan of record). Wired into the opencode completion gate (full verify on all-todos-complete) and `stop.sh` (all other agents). Fails OPEN when no spec or no model is configured (never wedges a DONE claim on missing config); blocks under `fidelity: max` / `--strict` like the other acceptance-gate paths. Deliberately NOT added to the per-edit periodic path (an LLM judge every N edits would be far too heavy).

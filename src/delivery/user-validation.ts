@@ -146,11 +146,31 @@ interface RunContext {
   timeoutMs: number;
 }
 
-async function runBrowserPath(path: UserPath, browser: BrowserLike, ctx: RunContext): Promise<PathResult> {
+export async function runBrowserPath(path: UserPath, browser: BrowserLike, ctx: RunContext): Promise<PathResult> {
   const steps: StepResult[] = [];
   const screenshots: string[] = [];
   browser.clearErrors();
   let failed = false;
+  // Navigate to the declared `entry` first, so it works as the schema documents
+  // ("Browser paths: entry file or route") — a path that only asserts against the
+  // page should not have to repeat a `goto`. Without this the browser sat at
+  // about:blank and every assertion failed confusingly. Skipped when the first
+  // step is already an explicit `goto` (don't double-load), and when no entry is
+  // declared (a path that navigates entirely via its own goto steps).
+  const firstStepIsGoto = path.steps.length > 0 && path.steps[0].goto !== undefined;
+  if (path.entry && ctx.baseUrl && !firstStepIsGoto) {
+    const rel = path.entry.replace(/^\.?\//, '');
+    const target = /^https?:/.test(path.entry) ? path.entry : `${ctx.baseUrl}/${rel}`;
+    try {
+      const status = await browser.goto(target);
+      const ok = status.startsWith('2') || status.startsWith('3');
+      steps.push({ step: `goto ${path.entry}`, ok, observed: `HTTP ${status}` });
+      failed = !ok;
+    } catch (err) {
+      steps.push({ step: `goto ${path.entry}`, ok: false, observed: `error: ${(err as Error).message}` });
+      failed = true;
+    }
+  }
   for (const [i, step] of path.steps.entries()) {
     if (failed) break;
     const label = stepLabel(step);
