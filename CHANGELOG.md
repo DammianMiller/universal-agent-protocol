@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.148.11 (2026-07-13)
+
+- fix(delivery-enforcement): **tighten `EXEMPT_PREFIXES` — `scripts/` and `docs/` are no longer exempt.** Shell/Python/TS under `scripts/` *executes* — it is code, so it must route through deliver and be tested like any other source. Exempting it left an entire language silently ungated: a model could put its whole implementation in `scripts/` and never be validated. What remains exempt is deliberate and documented: agent/enforcement infrastructure (`.uap/`, `.opencode/`, `.claude/`, `.policy-tools/`, …) because routing the hooks that *run* the gate is a bootstrap deadlock (they are guarded by `enforcement-self-protect` instead); the policy definitions themselves (`src/policies/`, `policies/`) for the same self-reference; and `test/`/`tests/` as the deliberate fast feedback loop (deliver still verifies them via the gate ladder).
+
 ## v1.148.10 (2026-07-13)
 
 **Every code type is now gated AND tested.** The rule: if it is interpreted, transpiled, or compiled, it is code — it routes through deliver, and it gets a rung that proves it builds and its tests pass.

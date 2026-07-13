@@ -89,10 +89,26 @@ BROWSER_BINS = (
 # source straight into it (observed: 24 source files written to
 # .worktrees/001-space-shooter/ with no deliver run). Gating it behind the active
 # flag closes that hole.
+# What stays exempt, and WHY — each is a deliberate carve-out, not an oversight:
+#   * agent/enforcement infrastructure (.claude/ .cursor/ .opencode/ .codex/
+#     .forge/ .omp/ .uap/ .policy-tools/): the hooks, plugins and enforcers that
+#     RUN the gate. Routing them through deliver is a bootstrap deadlock — an
+#     agent repairing a broken hook would need that hook to work. These are
+#     guarded by enforcement-self-protect (which blocks WEAKENING them) instead.
+#   * src/policies/, policies/: the policy definitions themselves — same
+#     self-reference; likewise guarded by self-protect rather than by routing.
+#   * test/, tests/: the deliberate fast feedback loop (deliver still verifies
+#     them via the gate ladder). _is_test_file() covers test files living outside
+#     these dirs.
+#
+# REMOVED 2026-07-13: "scripts/" and "docs/". Shell/Python/etc. under scripts/
+# EXECUTES — it is code, so it must route through deliver and be tested like any
+# other source. Exempting it left an entire language (shell) silently ungated:
+# a model could put its whole implementation in scripts/ and never be validated.
 EXEMPT_PREFIXES = (
     ".claude/", ".cursor/", ".opencode/", ".codex/", ".forge/", ".omp/",
     ".uap/", ".policy-tools/",
-    "src/policies/", "scripts/", "docs/", "policies/", "test/", "tests/",
+    "src/policies/", "policies/", "test/", "tests/",
 )
 
 # Test files are protected by deliver itself; never gate them here. Covers the

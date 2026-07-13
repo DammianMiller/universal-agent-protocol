@@ -66,8 +66,15 @@ class TestDeliveryEnforcementWorktree(unittest.TestCase):
         self.assertFalse(run("src/game.js", self.root))
 
     def test_other_exemptions_intact(self):
+        # Agent/enforcement infra stays exempt (routing the hooks that RUN the
+        # gate is a bootstrap deadlock).
         self.assertTrue(run(".uap/state.js", self.root))
-        self.assertTrue(run("scripts/build.js", self.root))
+        self.assertTrue(run("test/helper.js", self.root))
+
+    def test_scripts_no_longer_exempt(self):
+        # TIGHTENED: scripts/ executes — it is code, so it must route through
+        # deliver and be tested like any other source.
+        self.assertFalse(run("scripts/build.js", self.root))
 
     def test_bypass_override_still_works(self):
         self.assertTrue(
