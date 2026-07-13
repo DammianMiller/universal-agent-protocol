@@ -63,28 +63,37 @@ export UAP_REPO_ROOT="$MAIN_ROOT"
 # actual WORKING TREE, not the (possibly bare) MAIN_ROOT. Expose the current checkout
 # so _common.worktree_root() targets the worktree when an op runs from inside one.
 export UAP_WORKTREE_ROOT="$CHECKOUT_ROOT"
-# Delivery enforcement level. The project's .uap.json `delivery.enforcement` is
-# AUTHORITATIVE (it's the deliberate, reproducible IaC setting) — a stale ambient
-# UAP_ENFORCE_DELIVERY from a long-running client (e.g. an opencode session
-# launched months ago when an env export was still in .bashrc) must NOT silently
-# downgrade a project configured to `block` and let the agent bypass deliver.
-# Precedence: .uap.json delivery.enforcement > ambient env > default block.
-# Per-edit sanctioned bypass (UAP_DELIVER_BYPASS=1) and the in-deliver exemption
-# (UAP_DELIVER_ACTIVE=1) are unaffected — those are handled by the enforcer.
-_cfg_enforce="$(python3 -c '
+# Delivery enforcement posture. Precedence (highest first):
+#   1. .uap.json `delivery.enforcement` — the project's DECLARED posture is
+#      AUTHORITATIVE (deliberate, reproducible IaC), so a stale ambient
+#      UAP_ENFORCE_DELIVERY=advisory (leaked into a launching shell/session env,
+#      e.g. an opencode session started months ago when an env export was still
+#      in .bashrc) can NOT silently downgrade a project configured to `block`
+#      and let the agent bypass deliver. `delivery.localMode` is read the same
+#      authoritative way and selects how a local-model session resolves block
+#      (advisory|deliver|block — see delivery_enforcement.py).
+#   2. ambient UAP_ENFORCE_DELIVERY (operator/CI per-run override) when the
+#      project declares nothing.
+#   3. default: block.
+# Escape hatches always apply and are honored by the enforcer BEFORE mode:
+# UAP_DELIVER_ACTIVE=1 (inside a deliver run) / UAP_DELIVER_BYPASS=1 (sanctioned
+# manual edit) — so config-authoritative block never re-routes deliver's own edits.
+_DLV_CFG="$(python3 -c '
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
-    v = (d.get("delivery") or {}).get("enforcement")
-    print(v if v in ("block", "advisory", "off") else "")
+    d = (json.load(open(sys.argv[1])).get("delivery") or {})
+    e = str(d.get("enforcement", "")).lower()
+    print("%s|%s" % (e if e in ("block", "advisory", "off") else "", str(d.get("localMode", "")).lower()))
 except Exception:
-    print("")
-' "$MAIN_ROOT/.uap.json" 2>/dev/null || true)"
-if [[ -n "$_cfg_enforce" ]]; then
-  export UAP_ENFORCE_DELIVERY="$_cfg_enforce"
+    print("|")
+' "$MAIN_ROOT/.uap.json" 2>/dev/null || echo "|")"
+_DLV_MODE="${_DLV_CFG%%|*}"; _DLV_LOCAL="${_DLV_CFG##*|}"
+if [[ -n "$_DLV_MODE" ]]; then
+  export UAP_ENFORCE_DELIVERY="$_DLV_MODE"          # config-authoritative: overrides stale ambient
 else
   export UAP_ENFORCE_DELIVERY="${UAP_ENFORCE_DELIVERY:-block}"
 fi
+[[ -n "$_DLV_LOCAL" ]] && export UAP_DELIVER_LOCAL_MODE="$_DLV_LOCAL"
 cd "$MAIN_ROOT"
 
 TOOL="$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tool_name") or d.get("tool") or "")' 2>/dev/null || true)"

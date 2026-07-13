@@ -120,6 +120,8 @@ function copyHookScripts(targetHooksDir: string): void {
     // every platform that registers `uap-policy-gate.sh` in its settings points
     // at a script that was never placed → the gate silently no-ops.
     'uap-policy-gate.sh',
+    // consumed by uap-policy-gate.sh to auto-route blocked edits into 'uap deliver'
+    'deliver_autoroute.py',
   ];
   for (const file of hookFiles) {
     const src = join(templateHooksDir, file);
@@ -1202,6 +1204,8 @@ async function installOmpHooks(cwd: string): Promise<void> {
     'coordinate-file.sh',
     'pre-tool-use-bash.sh',
     'uap-policy-gate.sh',
+    // consumed by uap-policy-gate.sh to auto-route blocked edits into 'uap deliver'
+    'deliver_autoroute.py',
     'loop-protection.sh',
   ];
   for (const file of preHookFiles) {
