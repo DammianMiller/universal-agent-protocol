@@ -24,7 +24,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import emit, parse_cli, repo_root  # noqa: E402
+from _common import (  # noqa: E402
+    emit, parse_cli, repo_root, REVIEW_ARTIFACT_DIR, REVIEW_WAIVER_DIR,
+)
 
 EDIT_OPS = {"Edit", "Write", "MultiEdit", "edit", "write", "multiedit"}
 
@@ -74,7 +76,7 @@ def _is_protected_path(rel_posix: str) -> bool:
     # markers above still guard .uap.json, proxy env, enforcer code and hooks.
     # Without this carve-out the two gates deadlock: expert-review demands an
     # artifact that self-protect forbids writing.
-    allow = ("/.uap/reviews/", "/policies/waivers/")
+    allow = ("/" + REVIEW_ARTIFACT_DIR + "/", "/" + REVIEW_WAIVER_DIR + "/")
     if any(a in low for a in allow):
         return False
     return any(m in low for m in PROTECTED_MARKERS)
@@ -90,11 +92,15 @@ def main() -> None:
         target = args.get("file_path") or args.get("path") or args.get("target") or ""
         if not target:
             emit(True, "no file path in args")
+        rp = Path(target).resolve()
         try:
-            rel = str(Path(target).resolve().relative_to(repo_root()))
+            rel = str(rp.relative_to(repo_root()))
         except ValueError:
-            # Out-of-repo writes (e.g. the proxy env in ~/.config) — match by name.
-            rel = target
+            # Out-of-repo writes (e.g. the proxy env in ~/.config) — match by name
+            # against the RESOLVED path, never the raw arg: a raw
+            # ".uap/reviews/../../anthropic-proxy.env" would otherwise smuggle the
+            # allow-list carve-out to reach an out-of-repo control file.
+            rel = str(rp)
         rel_posix = rel.replace(os.sep, "/")
         if _is_protected_path(rel_posix):
             emit(

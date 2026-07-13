@@ -49,6 +49,9 @@ describe('enforcement-self-protect marker anchoring', () => {
     expect(editExit('.policy-tools/x.py')).toBe(2);
     expect(editExit('.uap.json')).toBe(2);
     expect(editExit('.uap/user-paths.json')).toBe(2); // non-review .uap/ stays protected
+    // '..' traversal must not smuggle the review-dir allowlist onto an
+    // out-of-repo control file: this resolves to /etc/.../anthropic-proxy.env.
+    expect(editExit('.uap/reviews/../../../../../../etc/uap/anthropic-proxy.env')).toBe(2);
     expect(editExit('.claude/hooks/uap-policy-gate.sh')).toBe(2);
   });
 });

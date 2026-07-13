@@ -119,6 +119,11 @@ describe('expert-review-required enforcer', () => {
     expect(runEnforcer(repo, 'UAP_NO_REVIEW=1 git push')).toBe(0);
     expect(runEnforcer(repo, 'UAP_NO_REVIEW=0 git push')).toBe(2);
     expect(runEnforcer(repo, 'UAP_NO_REVIEWS=1 git push')).toBe(2);
+    // Anchored to a LEADING assignment: an incidental mention inside a quoted
+    // arg / commit message must NOT bypass review.
+    expect(runEnforcer(repo, 'git commit -m "note: never set UAP_NO_REVIEW=1"')).toBe(2);
+    // But a preceding unrelated env assignment is still a valid leading run.
+    expect(runEnforcer(repo, 'FOO=bar UAP_NO_REVIEW=1 git push')).toBe(0);
   });
 
   it('ignores non-ship commands', () => {
