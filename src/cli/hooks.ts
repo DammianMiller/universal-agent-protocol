@@ -564,7 +564,7 @@ async function installVscodeHooks(cwd: string): Promise<void> {
 
 // --- OpenCode (plugin-based) ---
 
-async function installOpencodeHooks(cwd: string): Promise<void> {
+export async function installOpencodeHooks(cwd: string): Promise<void> {
   console.log(chalk.bold('\n  Installing UAP Hooks for OpenCode\n'));
 
   const pluginDir = join(cwd, '.opencode', 'plugin');
@@ -671,6 +671,36 @@ async function installOpencodeHooks(cwd: string): Promise<void> {
     '        }',
     '      } catch (e) {',
     '        if (e instanceof Error && e.message.indexOf("[UAP policy blocked]") === 0) throw e',
+    '      }',
+    '',
+    '      // COMPLETION GATE: OpenCode cannot hard-block session end, but it CAN',
+    '      // block a tool call — so gate the DONE signal. When the agent marks all',
+    '      // its todos complete, run the full validation gates and REFUSE (throw)',
+    '      // if the delivered outcome does not pass, forcing it to keep fixing',
+    '      // instead of falsely claiming ready. Only blocks on a real gate failure',
+    '      // (verify exit 1); infra/unknown fails OPEN. UAP_VERIFY_ON_STOP=0 opts out.',
+    '      try {',
+    '        if (input.tool === "todowrite" && process.env.UAP_VERIFY_ON_STOP !== "0") {',
+    '          const todos = (output && output.args && output.args.todos) || []',
+    '          const claimsDone = Array.isArray(todos) && todos.length > 0 && todos.every((t) => t && t.status === "completed")',
+    '          if (claimsDone) {',
+    '            const ch = await $`git diff --name-only HEAD`.quiet().nothrow()',
+    '            const un = await $`git ls-files --others --exclude-standard`.quiet().nothrow()',
+    '            const changed = ch.stdout.toString() + un.stdout.toString()',
+    '            if (/\\.(ts|tsx|js|jsx|mjs|cjs|html|css|py|go|rs|vue|svelte)$/m.test(changed)) {',
+    '              const uvHelp = await $`uap verify --help`.quiet().nothrow()',
+    '              const uvAuto = uvHelp.stdout.toString().indexOf("user-paths-auto") >= 0 ? "--user-paths-auto" : ""',
+    '              const res2 = await $`uap verify ${uvAuto}`.quiet().nothrow()',
+    '              if (res2.exitCode === 1) {',
+    '                const msg = (res2.stdout.toString() + res2.stderr.toString()).trim().slice(0, 2500)',
+    '                throw new Error("[UAP not done] Validation FAILED — you are NOT done. The outcome does not pass the gates (testing / visual / behavioral). Do NOT mark these todos complete. Fix the failures below, then let validation re-run:\\n" + msg)',
+    '              }',
+    '            }',
+    '          }',
+    '        }',
+    '      } catch (e) {',
+    '        if (e instanceof Error && e.message.indexOf("[UAP not done]") === 0) throw e',
+    '        /* verify infra / git error → fail OPEN (never wedge on tooling) */',
     '      }',
     '    },',
     '',
