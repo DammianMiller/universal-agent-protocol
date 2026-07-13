@@ -58,7 +58,9 @@ class TestDeliveryEnforcementWorktree(unittest.TestCase):
         )
 
     def test_worktree_nonsource_still_allowed(self):
-        self.assertTrue(run(".worktrees/001-x/css/styles.css", self.root))
+        # NOTE: .css is now SOURCE (web deliverables are gated) — use a genuinely
+        # non-source file to keep this test's intent (non-source is not routed).
+        self.assertTrue(run(".worktrees/001-x/docs/NOTES.md", self.root))
 
     def test_direct_source_still_blocked(self):
         self.assertFalse(run("src/game.js", self.root))

@@ -90,7 +90,9 @@ describe('delivery-enforcement enforcer', () => {
   });
 
   it('ignores non-edit operations', () => {
-    const r = run('src/feature.ts', { UAP_ENFORCE_DELIVERY: 'block' }, 'Bash');
+    // NOTE: Bash is now GATED (source-writes route to deliver; GUI browser
+    // launches are blocked) — use a genuinely non-edit op to keep the intent.
+    const r = run('src/feature.ts', { UAP_ENFORCE_DELIVERY: 'block' }, 'Read');
     expect(r.exit).toBe(0);
     expect(r.reason).toMatch(/not a file-edit/);
   });

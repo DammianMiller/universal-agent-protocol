@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.148.9 (2026-07-13)
+
+- fix(delivery-enforcement): **web deliverables are source code.** `SOURCE_EXTS` omitted `.html`/`.css`, so an entire class of deliverable (single-file web apps, static sites, templates) returned `"not source code"` and was allowed — zero routing, zero deliver, zero validation (observed live: a 34KB `rubiks-cube.html` app built completely ungated). Added `.html .htm .css .scss .sass .less .vue .svelte .astro`. This also aligns the enforcer with the completion gate, whose code-change detector already counted html/css/vue/svelte as code — the two halves of the system disagreed about what "source" means.
+- fix(delivery-enforcement): **gate Bash.** Previously only Edit/Write/MultiEdit were gated, so `cat > app.js <<EOF` bypassed delivery enforcement entirely. Bash commands that write source (`>`/`>>` redirect, heredoc, `tee`, `sed -i`) now block and route through deliver. Escape hatches (`UAP_DELIVER_ACTIVE`, `UAP_DELIVER_BYPASS`) honored; benign shell work is unaffected.
+- feat(delivery-enforcement): **redirect GUI browser launches to `uap verify`.** A model with no validation tooling in reach tries to "check its work" by opening a browser (observed: 11 `xdg-open`/`firefox`/`chromium` attempts in 40 min, spawning windows on the operator's desktop) — which proves nothing and cannot gate a DONE claim. These are now blocked with a directive to run `uap verify`, which renders headlessly and runs the real visual + behavioral gates. Capability probes (`which firefox`) are not blocked.
+
 ## v1.148.8 (2026-07-13)
 
 - change(policies): **all policies are now REQUIRED by default instead of RECOMMENDED.** REQUIRED-level policies are protected (always-on, cannot be disabled by the agent). The 9 policies previously tiered RECOMMENDED (`adr-guard`, `coord-overlap`, `delivery-enforcement`, `local-build-before-push`, `mcp-router-first`, `parallel-reads`, `pay2u-architecture-rules`, `pay2u-enforcement-hooks`, `pay2u-quick-reference`) are now REQUIRED; `enforcement-self-protect` is explicitly REQUIRED; and the parse/merge/selection defaults changed `OPTIONAL → REQUIRED`, so a policy without an explicit `**Level**` is required, not optional. RECOMMENDED remains a valid explicit level for operators who deliberately want an advisory policy — it is simply no longer a default.
