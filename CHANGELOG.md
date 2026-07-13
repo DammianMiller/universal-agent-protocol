@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.148.13 (2026-07-13)
+
+- fix(agentic-executor): **the deliver agent can no longer read, list, or write its own machinery.** Observed live: a routed deliver run spent **5 of its 10 tool calls** recursing into `.uap/deliver-runs/<its own run>/state.json`, `.uap/autoroute.log` and the lock files — half of a tight budget gone, so it could never converge on the actual deliverable (one call even errored, `read_file .uap/deliver-runs` → EISDIR, burning another turn). `read_file`/`list_dir`/`write_file` now refuse `.uap/`, `.uap-deliver/`, `.git/` and `node_modules/`, and those dirs are **hidden from listings entirely** so the agent is never tempted. This is the protected-path guard `agentic-executor.ts`'s own scope note asked for.
+- fix(autoroute): **raise the routed-deliver budget** from `--max-turns 5 --ceiling 10` to `12`/`25`. The old budget was too tight for a routed deliver to BUILD a change and then get it through the gate ladder — especially on a slow local model, where one build+verify cycle eats several turns. Override with `UAP_AUTOROUTE_MAX_TURNS` / `UAP_AUTOROUTE_CEILING`.
+
 ## v1.148.12 (2026-07-13)
 
 - fix(autoroute): **deliver never auto-spawned for opencode — autoroute was inert.** `deliver_autoroute.py` read only snake-case file-path keys (`file_path`/`path`/`target`), so for opencode (which sends **`filePath`**) it always resolved to `""`, and the spawn condition `spawn = ... and file_path and ...` was therefore always `False`. The gate blocked the edit, logged the intent, told the model to call deliver — and deliver **never ran**. Observed live: 3 routed intents, 0 deliver runs, 0 files changed — work blocked but never delivered. The enforcer was fixed for this key long ago; autoroute never was, and its tests only ever passed snake-case, which is why it went unnoticed. Now accepts every agent spelling (`file_path`/`filePath`/`path`/`target`/`filename`/`file`).

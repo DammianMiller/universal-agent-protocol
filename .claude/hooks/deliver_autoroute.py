@@ -130,8 +130,17 @@ def _spawn_deliver(root: Path, hint: str) -> None:
     except Exception:
         log = subprocess.DEVNULL
     try:
+        # Budget: --max-turns 5 / --ceiling 10 was too tight for a routed deliver to
+        # BUILD the change and then get it through the gate ladder — especially on a
+        # slow local model, where a single build+verify cycle eats several turns.
+        # (It was doubly starved while the agent could still spelunk .uap/ internals,
+        # which burned half the budget; that hole is closed separately.) Raised so a
+        # routed change has room to converge. UAP_AUTOROUTE_MAX_TURNS /
+        # UAP_AUTOROUTE_CEILING override.
+        max_turns = os.environ.get("UAP_AUTOROUTE_MAX_TURNS", "12")
+        ceiling = os.environ.get("UAP_AUTOROUTE_CEILING", "25")
         proc = subprocess.Popen(
-            ["uap", "deliver", "--max-turns", "5", "--ceiling", "10", "--", hint],
+            ["uap", "deliver", "--max-turns", max_turns, "--ceiling", ceiling, "--", hint],
             cwd=str(root),
             stdout=log, stderr=log, stdin=subprocess.DEVNULL,
             start_new_session=True,
