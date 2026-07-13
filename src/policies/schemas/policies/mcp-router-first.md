@@ -1,7 +1,7 @@
 # mcp-router-first
 
 **Category**: custom
-**Level**: RECOMMENDED
+**Level**: REQUIRED
 **Enforcement Stage**: pre-exec
 **Tags**: mcp, router, tokens, context
 

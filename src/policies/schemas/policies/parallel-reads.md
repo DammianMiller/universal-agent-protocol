@@ -1,7 +1,7 @@
 # parallel-reads
 
 **Category**: custom
-**Level**: RECOMMENDED
+**Level**: REQUIRED
 **Enforcement Stage**: pre-exec
 **Tags**: performance, parallelism, exploration
 

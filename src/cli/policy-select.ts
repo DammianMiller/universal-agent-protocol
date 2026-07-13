@@ -84,7 +84,7 @@ export async function listPolicyChoices(): Promise<PolicyChoice[]> {
   return builtins
     .map((b) => {
       const inst = byName.get(normPolicyKey(b.name));
-      const level = (inst?.level ?? b.level ?? 'OPTIONAL').toUpperCase();
+      const level = (inst?.level ?? b.level ?? 'REQUIRED').toUpperCase();
       return {
         name: b.name,
         category: inst?.category ?? b.category,

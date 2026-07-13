@@ -1,7 +1,7 @@
 # pay2u-architecture-rules
 
 **Category**: safety
-**Level**: RECOMMENDED
+**Level**: REQUIRED
 **Enforcement Stage**: pre-exec
 **Tags**: pay2u, architecture, adr, invariants, example-pack
 

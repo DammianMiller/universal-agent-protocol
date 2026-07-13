@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.148.8 (2026-07-13)
+
+- change(policies): **all policies are now REQUIRED by default instead of RECOMMENDED.** REQUIRED-level policies are protected (always-on, cannot be disabled by the agent). The 9 policies previously tiered RECOMMENDED (`adr-guard`, `coord-overlap`, `delivery-enforcement`, `local-build-before-push`, `mcp-router-first`, `parallel-reads`, `pay2u-architecture-rules`, `pay2u-enforcement-hooks`, `pay2u-quick-reference`) are now REQUIRED; `enforcement-self-protect` is explicitly REQUIRED; and the parse/merge/selection defaults changed `OPTIONAL → REQUIRED`, so a policy without an explicit `**Level**` is required, not optional. RECOMMENDED remains a valid explicit level for operators who deliberately want an advisory policy — it is simply no longer a default.
+
 ## v1.148.7 (2026-07-13)
 
 - fix(user-validation): the browser user-path runner now navigates to `path.entry` before running steps. `entry` is a documented manifest field ("the entry file or route") but was silently ignored — a path relying on it sat at about:blank and every assertion failed confusingly (had to repeat a `goto`). Now honored; an explicit leading `goto` still wins (no double-load).

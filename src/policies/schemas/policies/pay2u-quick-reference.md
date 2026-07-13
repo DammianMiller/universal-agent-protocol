@@ -1,7 +1,7 @@
 # pay2u-quick-reference
 
 **Category**: custom
-**Level**: RECOMMENDED
+**Level**: REQUIRED
 **Enforcement Stage**: pre-exec
 **Tags**: pay2u, reference, clusters, example-pack
 

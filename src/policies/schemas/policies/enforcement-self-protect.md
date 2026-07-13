@@ -1,5 +1,7 @@
 # Enforcement Self-Protect
 
+**Level**: REQUIRED
+
 The delivery gate exists to route coding through `uap deliver`. A weak local
 model that hits the block tends to try to ESCAPE it rather than comply
 (observed: "set enforcement to advisory", "use UAP_DELIVER_BYPASS=1"). This

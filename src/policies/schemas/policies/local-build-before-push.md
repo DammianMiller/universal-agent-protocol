@@ -1,7 +1,7 @@
 # local-build-before-push
 
 **Category**: quality
-**Level**: RECOMMENDED
+**Level**: REQUIRED
 **Enforcement Stage**: pre-exec
 **Tags**: build, push, ci, docker, compile-gate
 
