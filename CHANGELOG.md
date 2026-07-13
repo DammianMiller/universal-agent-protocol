@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.148.4 (2026-07-13)
+
+- fix(gate): delivery enforcement now honors `.uap.json` `delivery.localMode` (routes local-model sessions THROUGH deliver instead of the enforcer's default advisory downgrade) and the installer deploys the `deliver_autoroute.py` helper the gate depends on (#484). Carries the config-authoritative gate fix to a published release.
+- test: fix `policy-gate-mainroot` fixture (missing `priority` column the gate's policy query ORDER BYs) — this was the sole failing test in CI, blocking every npm publish since v1.148.2; deflake the concurrency exponential-backoff test under full-suite load.
+
 ## v1.148.3 (2026-07-13)
 
 - fix(policy): resolve expert-review-required deadlock — its escape hatches were all unreachable (self-protect locked the review-artifact/waiver paths, the named skill never wrote the artifact, inline UAP_NO_REVIEW never reached the hook-run enforcer, and the advertised `uam worktree pr` was a non-existent binary)
