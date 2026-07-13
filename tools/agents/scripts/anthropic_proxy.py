@@ -812,6 +812,19 @@ PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS = int(
 PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE = float(
     os.environ.get("PROXY_MALFORMED_TOOL_RETRY_TEMPERATURE", "0")
 )
+# Empty-max_tokens recovery (Option 3): a reasoning model can consume the ENTIRE
+# output budget in reasoning_content and emit NO content/tool_calls
+# (finish_reason=length, empty message) — a thinking-runaway. The upstream
+# --reasoning-budget cap is the primary fix; this is the backstop: on detecting
+# such an empty truncation, retry ONCE with thinking disabled so the turn yields
+# a usable answer instead of an empty response the client blindly re-sends
+# (observed: 529 retry cascades). PROXY_EMPTY_MAXTOKENS_RECOVER=off to disable.
+PROXY_EMPTY_MAXTOKENS_RECOVER = os.environ.get(
+    "PROXY_EMPTY_MAXTOKENS_RECOVER", "on"
+).lower() not in {"0", "off", "false", "no"}
+PROXY_EMPTY_MAXTOKENS_RETRY_MAX_TOKENS = int(
+    os.environ.get("PROXY_EMPTY_MAXTOKENS_RETRY_MAX_TOKENS", "4096")
+)
 PROXY_TOOL_TURN_TEMPERATURE = float(
     os.environ.get("PROXY_TOOL_TURN_TEMPERATURE", "0.3")
 )
@@ -1404,6 +1417,7 @@ class SessionMonitor:
     error_signature_streak: int = 0  # consecutive turns with the SAME tool_result error
     last_error_signature: str = ""  # normalized signature of that recurring error
     error_loop_fires: int = 0  # telemetry: error-loop nudges injected
+    empty_maxtokens_recoveries: int = 0  # telemetry: thinking-runaway recoveries
     rate_limited_api_streak: int = 0  # consecutive tool calls hitting a rate-limited API host
     stuck_break_fires: int = 0  # monotonic count of forced stuck-breaks
     deferral_streak: int = 0  # consecutive no-tool turns deferring the work (Fix A)
@@ -8281,6 +8295,71 @@ async def _apply_completion_contract_guardrail(
     return retried
 
 
+def _is_empty_maxtokens_response(openai_resp: dict) -> bool:
+    """A finish_reason=length turn that produced NO content and NO tool calls —
+    the thinking-runaway signature (all budget spent in reasoning_content)."""
+    choices = openai_resp.get("choices") or []
+    if not choices:
+        return False
+    choice = choices[0]
+    if (choice.get("finish_reason") or "").lower() != "length":
+        return False
+    msg = choice.get("message") or {}
+    if msg.get("tool_calls"):
+        return False
+    content = msg.get("content")
+    text = content if isinstance(content, str) else ""
+    return len(text.strip()) == 0
+
+
+async def _apply_empty_maxtokens_recovery(
+    client: httpx.AsyncClient,
+    openai_resp: dict,
+    openai_body: dict,
+    anthropic_body: dict,
+    monitor: SessionMonitor,
+    session_id: str,
+) -> dict:
+    """Option 3 backstop: recover an empty finish=length turn by retrying once
+    with thinking OFF, so a residual reasoning-runaway yields a usable answer
+    instead of an empty response the client blindly re-sends (529 cascade)."""
+    if not PROXY_EMPTY_MAXTOKENS_RECOVER:
+        return openai_resp
+    if not _is_empty_maxtokens_response(openai_resp):
+        return openai_resp
+    retry_body = dict(openai_body)
+    retry_body["enable_thinking"] = False
+    ctk = dict(retry_body.get("chat_template_kwargs") or {})
+    ctk["enable_thinking"] = False
+    retry_body["chat_template_kwargs"] = ctk
+    requested = int(openai_body.get("max_tokens") or PROXY_EMPTY_MAXTOKENS_RETRY_MAX_TOKENS)
+    retry_body["max_tokens"] = min(requested, PROXY_EMPTY_MAXTOKENS_RETRY_MAX_TOKENS)
+    logger.warning(
+        "EMPTY-MAX_TOKENS recovery: thinking-runaway (empty finish=length) for "
+        "session %s — retrying once with thinking OFF (max_tokens=%d)",
+        session_id, retry_body["max_tokens"],
+    )
+    try:
+        retry_resp = await client.post(
+            f"{LLAMA_CPP_BASE}/chat/completions",
+            json=retry_body,
+            headers={"Content-Type": "application/json"},
+        )
+        if retry_resp.status_code != 200:
+            return openai_resp
+        retried = retry_resp.json()
+        if not _is_empty_maxtokens_response(retried):
+            monitor.empty_maxtokens_recoveries += 1
+            logger.info(
+                "EMPTY-MAX_TOKENS recovery succeeded for session %s (recoveries=%d)",
+                session_id, monitor.empty_maxtokens_recoveries,
+            )
+            return retried
+    except Exception as exc:  # noqa: BLE001 — recovery is best-effort
+        logger.warning("EMPTY-MAX_TOKENS recovery errored for session %s: %s", session_id, exc)
+    return openai_resp
+
+
 def _sanitize_assistant_messages_for_retry(messages: list[dict]) -> list[dict]:
     """Strip malformed tool-like text from assistant messages to prevent copy-contamination.
 
@@ -10794,6 +10873,14 @@ async def messages(request: Request):
                 monitor,
                 session_id,
             )
+            openai_resp = await _apply_empty_maxtokens_recovery(
+                client,
+                openai_resp,
+                strict_body,
+                body,
+                monitor,
+                session_id,
+            )
 
             openai_resp, was_degenerate = _detect_and_truncate_degenerate_repetition(openai_resp)
             if was_degenerate:
@@ -11231,6 +11318,14 @@ async def messages(request: Request):
             session_id,
         )
         openai_resp = await _apply_malformed_tool_guardrail(
+            client,
+            openai_resp,
+            openai_body,
+            body,
+            monitor,
+            session_id,
+        )
+        openai_resp = await _apply_empty_maxtokens_recovery(
             client,
             openai_resp,
             openai_body,
