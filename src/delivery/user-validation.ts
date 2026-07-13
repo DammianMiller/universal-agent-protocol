@@ -453,7 +453,14 @@ export async function runUserValidation(
           });
           continue;
         }
-        const base = managed?.baseUrl ?? staticServer?.url ?? null;
+        // startStaticServer's `url` includes its own entry path (…/index.html),
+        // so using it verbatim as the base doubled the path for a `goto`
+        // ("…/index.html/rubiks-cube/index.html" → 404). Use the ORIGIN so
+        // absolute gotos resolve against the served root (matches visual-gate).
+        let base = managed?.baseUrl ?? null;
+        if (!base && staticServer?.url) {
+          try { base = new URL(staticServer.url).origin; } catch { base = staticServer.url; }
+        }
         results.push(await runBrowserPath(path, browser, { projectRoot, baseUrl: base, shotsDir, timeoutMs }));
       } else if (path.client === 'http') {
         if (!managed) {
