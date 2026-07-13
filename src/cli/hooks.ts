@@ -122,6 +122,8 @@ function copyHookScripts(targetHooksDir: string): void {
     'uap-policy-gate.sh',
     // consumed by uap-policy-gate.sh to auto-route blocked edits into 'uap deliver'
     'deliver_autoroute.py',
+    // consumed by uap-policy-gate.sh: cumulative-aware trivial-edit fast-path decider
+    'fastpath_gate.py',
   ];
   for (const file of hookFiles) {
     const src = join(templateHooksDir, file);
@@ -704,6 +706,41 @@ export async function installOpencodeHooks(cwd: string): Promise<void> {
     '        if (e instanceof Error && e.message.indexOf("[UAP not done]") === 0) throw e',
     '        /* verify infra / git error → fail OPEN (never wedge on tooling) */',
     '      }',
+    '',
+    '      // PERIODIC VALIDATION (independent of a clean todowrite-complete): the',
+    '      // completion gate above only fires when ALL todos are marked completed.',
+    '      // A weak local model that stops mid-plan, leaves todos in_progress, or',
+    '      // never calls todowrite would escape validation entirely — and small',
+    '      // edits take the trivial fast-path, so nothing routes to deliver either.',
+    '      // So on a cadence (every N code edits) run verify and hard-inject',
+    '      // [UAP not done] on a real runtime failure, catching a broken build even',
+    '      // with no done signal. --runtime-only returns 1 only on a genuine runtime',
+    '      // failure (never on a fresh/empty state). UAP_VERIFY_EVERY_N_EDITS=0 opts out.',
+    '      try {',
+    '        const nEvery = parseInt(process.env.UAP_VERIFY_EVERY_N_EDITS || "12", 10)',
+    '        const isEdit = ["edit", "write", "multiedit"].includes(String(input.tool).toLowerCase())',
+    '        const fp = String((output && output.args && (output.args.file_path || output.args.filePath || output.args.path)) || "")',
+    '        if (nEvery > 0 && isEdit && process.env.UAP_VERIFY_ON_STOP !== "0" && /\\.(ts|tsx|js|jsx|mjs|cjs|html|css|py|go|rs|vue|svelte)$/.test(fp)) {',
+    '          const rd = await $`cat .uap/verify-cadence 2>/dev/null || echo 0`.quiet().nothrow()',
+    '          let n = parseInt(rd.stdout.toString().trim() || "0", 10); if (!Number.isFinite(n)) n = 0',
+    '          n = n + 1',
+    '          if (n >= nEvery) {',
+    '            await $`mkdir -p .uap && echo 0 > .uap/verify-cadence`.quiet().nothrow()',
+    '            const uvHelp = await $`uap verify --help`.quiet().nothrow()',
+    '            const uvAuto = uvHelp.stdout.toString().indexOf("user-paths-auto") >= 0 ? "--user-paths-auto" : ""',
+    '            const res3 = await $`uap verify --runtime-only ${uvAuto}`.quiet().nothrow()',
+    '            if (res3.exitCode === 1) {',
+    '              const msg = (res3.stdout.toString() + res3.stderr.toString()).trim().slice(0, 2000)',
+    '              throw new Error("[UAP not done] Periodic validation FAILED after " + nEvery + " edits — the current build does not pass the runtime gates. Fix these before continuing (validation re-runs automatically):\\n" + msg)',
+    '            }',
+    '          } else {',
+    '            await $`mkdir -p .uap && echo ${n} > .uap/verify-cadence`.quiet().nothrow()',
+    '          }',
+    '        }',
+    '      } catch (e) {',
+    '        if (e instanceof Error && e.message.indexOf("[UAP not done]") === 0) throw e',
+    '        /* verify infra / io error → fail OPEN */',
+    '      }',
     '    },',
     '',
     '    "experimental.session.compacting": async (_input, output) => {',
@@ -1206,6 +1243,8 @@ async function installOmpHooks(cwd: string): Promise<void> {
     'uap-policy-gate.sh',
     // consumed by uap-policy-gate.sh to auto-route blocked edits into 'uap deliver'
     'deliver_autoroute.py',
+    // consumed by uap-policy-gate.sh: cumulative-aware trivial-edit fast-path decider
+    'fastpath_gate.py',
     'loop-protection.sh',
   ];
   for (const file of preHookFiles) {

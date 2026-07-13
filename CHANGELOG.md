@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.148.5 (2026-07-13)
+
+- feat(gate): CUMULATIVE trivial-edit fast-path (`fastpath_gate.py`). The fast-path kept iteration quick but was an unbounded escape hatch — a weak model could assemble a whole broken feature out of sub-threshold edits that never routed to deliver or got validated. Now per-file trivial-edit chars/count are tallied in `.uap/fastpath-accum.json`; once a file crosses `UAP_DELIVER_CUMULATIVE_CHARS` (800) or `UAP_DELIVER_CUMULATIVE_EDITS` (6) since it last routed, the next edit routes through deliver and the tally resets — bounding un-validated drift per file. The gate signals `UAP_FASTPATH_ROUTED=1` so `delivery_enforcement.py` skips its own trivial allowance (which otherwise re-approved the edit and defeated the budget).
+- feat(opencode): PERIODIC validation independent of a clean `todowrite`-complete. The completion gate only fired when the agent marked ALL todos completed; a weak model that stops mid-plan or never calls todowrite escaped validation. The plugin now runs `uap verify --runtime-only` every `UAP_VERIFY_EVERY_N_EDITS` (12) code edits and hard-injects `[UAP not done]` on a real runtime failure, catching a broken build even with no done signal. `UAP_VERIFY_EVERY_N_EDITS=0` opts out.
+
 ## v1.148.4 (2026-07-13)
 
 - fix(gate): delivery enforcement now honors `.uap.json` `delivery.localMode` (routes local-model sessions THROUGH deliver instead of the enforcer's default advisory downgrade) and the installer deploys the `deliver_autoroute.py` helper the gate depends on (#484). Carries the config-authoritative gate fix to a published release.

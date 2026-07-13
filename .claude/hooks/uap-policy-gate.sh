@@ -140,7 +140,24 @@ print("1" if (hit or bypass) else "0")
 if [[ "${UAP_DELIVER_FASTPATH:-on}" != "off" && "$SEC_SENSITIVE" != "1" ]]; then
   case " Edit Write MultiEdit edit write multiedit " in
     *" $TOOL "*)
-      if printf '%s' "$ARGS" | TRIVIAL="${UAP_DELIVER_TRIVIAL_EDIT_CHARS:-240}" python3 -c '
+      # Prefer the cumulative-aware decider (fastpath_gate.py): it bounds how
+      # much un-routed trivial change can accumulate per file (CUM_CHARS/
+      # CUM_EDITS) so a weak model can't assemble a whole broken feature out of
+      # sub-threshold edits that never route to deliver. Fall back to the inline
+      # per-edit trivial check when the helper isn't deployed.
+      _fp_ok=0
+      if [[ -f "$HOOK_DIR/fastpath_gate.py" ]]; then
+        # `if <pipeline>; then` (not `<pipeline> && x=1`): a route verdict (exit 1)
+        # is a CONDITION here, so `set -e` doesn't abort — it just falls through
+        # to the enforcer loop, which blocks+routes.
+        if printf '%s' "$ARGS" | TRIVIAL="${UAP_DELIVER_TRIVIAL_EDIT_CHARS:-240}" \
+          CUM_CHARS="${UAP_DELIVER_CUMULATIVE_CHARS:-800}" \
+          CUM_EDITS="${UAP_DELIVER_CUMULATIVE_EDITS:-6}" \
+          UAP_MAIN_ROOT="$MAIN_ROOT" \
+          python3 "$HOOK_DIR/fastpath_gate.py" 2>/dev/null; then
+          _fp_ok=1
+        fi
+      elif printf '%s' "$ARGS" | TRIVIAL="${UAP_DELIVER_TRIVIAL_EDIT_CHARS:-240}" python3 -c '
 import json, os, sys
 try: a = json.loads(sys.stdin.read() or "{}")
 except Exception: sys.exit(1)
@@ -157,9 +174,16 @@ c = changed(a)
 trivial = c is not None and c <= int(os.environ.get("TRIVIAL","240"))
 sys.exit(0 if (is_test or trivial) else 1)
 ' 2>/dev/null; then
-        echo "[UAP policy gate] fast-path: test-file or trivial edit — allowed directly (route substantive source changes through deliver)." >&2
+        _fp_ok=1
+      fi
+      if [[ "$_fp_ok" == "1" ]]; then
+        echo "[UAP policy gate] fast-path: test-file or trivial edit (within cumulative budget) — allowed directly (accumulated/substantive source changes route through deliver)." >&2
         exit 0
       fi
+      # The cumulative decider chose to ROUTE this edit (budget crossed, or
+      # non-trivial). Signal the delivery-enforcement enforcer to skip its OWN
+      # trivial allowance so it actually blocks+routes instead of re-approving.
+      export UAP_FASTPATH_ROUTED=1
       ;;
   esac
 fi

@@ -72,6 +72,13 @@ def _is_test_file(rel_posix: str) -> bool:
 # edit is allowed directly (advisory nudge only). UAP_DELIVER_FASTPATH=off
 # disables; UAP_DELIVER_TRIVIAL_EDIT_CHARS tunes the threshold.
 def _fastpath_on() -> bool:
+    # The policy gate's cumulative fast-path (fastpath_gate.py) sets
+    # UAP_FASTPATH_ROUTED=1 when a trivial edit has crossed the per-file
+    # cumulative budget and must route through deliver. Honor it — otherwise the
+    # enforcer's own trivial allowance would independently re-approve the edit
+    # and defeat the budget (death-by-a-thousand-small-edits escape).
+    if os.environ.get("UAP_FASTPATH_ROUTED") == "1":
+        return False
     return os.environ.get("UAP_DELIVER_FASTPATH", "on").lower() not in {"0", "off", "false", "no"}
 
 
