@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.149.0 (2026-07-13)
+
+- fix(deliver): P0 anti-vacuous hardening — no more false-green no-op deliveries
+- fix(delivery-enforcement): tighten EXEMPT_PREFIXES — scripts/ and docs/ are code (1.148.11)
+- feat: every code type is gated AND tested — polyglot rungs + 108 source exts (1.148.10)
+- fix(delivery-enforcement): gate web source + Bash; redirect browser launches to verify (1.148.9)
+- change(policies): all policies REQUIRED by default instead of RECOMMENDED (1.148.8)
+- vision: default UAP_VISION_SAMPLES to 3 (median-on by default per request)
+- fix: honor user-path `entry` navigation + stabilize the vision aesthetic score (1.148.7)
+- proxy: empty-tool-loop breaker — release forced tool_choice after empty responses
+- feat(verify): --acceptance-auto — enforce requirements-completeness at every DONE gate (1.148.6)
+- feat(gate): cumulative trivial-edit fast-path + periodic validation (1.148.5)
+- chore(release): 1.148.4 — unblock publish + carry config-authoritative gate
+- fix(gate): make delivery enforcement honor .uap.json authoritatively + deploy autoroute helper
+- feat(proxy): recover empty-max_tokens thinking-runaways (Option 3 backstop)
+- feat(opencode): completion gate hard-blocks a false 'done'
+- fix(user-validation): serve subproject browser paths from the server ORIGIN
+- fix(verify): validate subproject apps + honest header (fixes false 'done' on broken UIs)
+- chore(review): record parallel-expert-review artifact; drop temp waiver
+- fix(policy): harden expert-review fix per parallel review
+- chore: bump version to 1.148.3
+- fix(policy): resolve expert-review-required deadlock (enforcers A/B + CLI D)
+- fix(policy): make expert-review-required escape hatches reachable (skill+waiver)
+- fix(deliver): stop the executor spinning on run_bash when it's disabled
+- feat(deliver): fast-path test/trivial edits + back off when a deliver is running
+- fix(vision-judge): disable model thinking so the aesthetic verdict is emitted
+- fix(vision-judge): auto-detect the local vision model instead of 'no vision model'
+- fix(deliver): project-level concurrency lock prevents deliver fan-out
+- feat(proxy): ERROR-LOOP guardrail — break the same-failure-different-edit loop
+- feat(llama): vision projector tracks the active model (auto-discover mmproj)
+- fix(policy-gate): .uap.json delivery.enforcement is authoritative over stale ambient env
+- fix(policy-gate): honor policy priority when iterating enforcers
+
+
 ## v1.148.11 (2026-07-13)
 
 - fix(delivery-enforcement): **tighten `EXEMPT_PREFIXES` — `scripts/` and `docs/` are no longer exempt.** Shell/Python/TS under `scripts/` *executes* — it is code, so it must route through deliver and be tested like any other source. Exempting it left an entire language silently ungated: a model could put its whole implementation in `scripts/` and never be validated. What remains exempt is deliberate and documented: agent/enforcement infrastructure (`.uap/`, `.opencode/`, `.claude/`, `.policy-tools/`, …) because routing the hooks that *run* the gate is a bootstrap deadlock (they are guarded by `enforcement-self-protect` instead); the policy definitions themselves (`src/policies/`, `policies/`) for the same self-reference; and `test/`/`tests/` as the deliberate fast feedback loop (deliver still verifies them via the gate ladder).
