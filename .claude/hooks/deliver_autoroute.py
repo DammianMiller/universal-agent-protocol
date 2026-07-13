@@ -12,12 +12,14 @@ the block carries route == "deliver", the helper:
   3. Prints the (possibly annotated) block message on stdout for the hook to
      surface to the agent.
 
-Default (autoroute off): just logs the intent + returns the message unchanged —
-no behavior change. The hook still blocks (exit 2); this only enriches the block.
+Autoroute is ON by default (UAP_DELIVER_AUTOROUTE=0 to disable): the blocked
+intent is logged AND routed. The hook still blocks (exit 2); this only enriches
+the block message and kicks off the sanctioned path in the background.
 """
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -28,8 +30,11 @@ UAP_DIR = ".uap"
 
 
 def _autoroute_enabled() -> bool:
-    v = os.environ.get("UAP_DELIVER_AUTOROUTE", "").lower()
-    return v not in {"", "0", "off", "false", "no"}
+    # Default ON: a blocked source edit auto-routes into `uap deliver` in the
+    # background instead of dead-ending the agent. Opt out with
+    # UAP_DELIVER_AUTOROUTE=0/off/false/no.
+    v = os.environ.get("UAP_DELIVER_AUTOROUTE", "on").lower()
+    return v not in {"0", "off", "false", "no"}
 
 
 def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set) -> dict:
@@ -37,21 +42,41 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
     reason = out.get("reason", "")
     route = out.get("route")
     hint = out.get("deliverHint") or ""
-    file_path = args.get("file_path") or args.get("path") or args.get("target") or ""
+    # Older enforcers emitted a full command line ('uap deliver "..."'); the
+    # hint is the INSTRUCTION — unwrap so the mission text isn't a command.
+    m = re.fullmatch(r'uap deliver "(.+)"', hint.strip())
+    if m:
+        hint = m.group(1)
+    # Accept the file-path key under ANY agent spelling. The enforcer was fixed
+    # for this long ago; autoroute was not — so for opencode (which sends
+    # `filePath`) file_path was always "", `spawn` was always False, and autoroute
+    # was INERT: the gate blocked the edit, logged the intent, told the model to
+    # call deliver… and deliver never ran. Observed live: 3 routed intents, 0
+    # deliver runs, 0 files changed — work blocked but never delivered.
+    file_path = (
+        args.get("file_path") or args.get("filePath") or args.get("path")
+        or args.get("target") or args.get("filename") or args.get("file") or ""
+    )
 
     if route != "deliver":
         return {"message": reason, "route": route, "spawn": False,
-                "file_path": file_path, "hint": hint, "intent": None}
+                "file_path": file_path, "hint": hint, "dedup_key": "", "intent": None}
 
     intent = {"ts": int(time.time()), "tool": tool, "file_path": file_path, "hint": hint}
-    spawn = bool(autoroute_on and hint and file_path and file_path not in seen_files)
+    # Dedup on the file when we have one, else on the hint itself. Requiring a
+    # file_path made an entire class unspawnable: a BASH-routed source-write
+    # (`cat > app.js <<EOF`) carries a `command`, not a path — so those intents
+    # were blocked and then silently dropped. The hint is what deliver actually
+    # runs, so it is the correct spawn key.
+    dedup_key = file_path or hint
+    spawn = bool(autoroute_on and hint and dedup_key and dedup_key not in seen_files)
     message = reason
     if spawn:
         message = reason + " [auto-routed to `uap deliver` — running in the background]"
-    elif autoroute_on and file_path in seen_files:
-        message = reason + " [already auto-routed to `uap deliver` this session — wait for it]"
+    elif autoroute_on and dedup_key and dedup_key in seen_files:
+        message = reason + " [already auto-routed to `uap deliver` for this change — see .uap/autoroute.log / pending-deliver.jsonl]"
     return {"message": message, "route": route, "spawn": spawn,
-            "file_path": file_path, "hint": hint, "intent": intent}
+            "file_path": file_path, "hint": hint, "dedup_key": dedup_key, "intent": intent}
 
 
 def _seen_path(root: Path) -> Path:
@@ -65,16 +90,56 @@ def _load_seen(root: Path) -> set:
         return set()
 
 
-def _spawn_deliver(root: Path, hint: str) -> None:
-    """Spawn `uap deliver "<hint>"` fully detached. Best-effort; never raises."""
-    import subprocess
+LOCK_FILE = "autoroute.lock"
+LOG_FILE = "autoroute.log"
+
+
+def _pid_alive(pid: int) -> bool:
     try:
-        subprocess.Popen(
-            ["uap", "deliver", hint],
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _acquire_slot(root: Path) -> bool:
+    """One in-flight autoroute deliver per repo: a lockfile holding the child
+    pid. Stale locks (dead pid) are reclaimed. Best-effort; failure = no slot."""
+    lock = root / UAP_DIR / LOCK_FILE
+    try:
+        if lock.exists():
+            pid = int(lock.read_text().strip() or "0")
+            if pid and _pid_alive(pid):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _spawn_deliver(root: Path, hint: str) -> None:
+    """Spawn `uap deliver -- "<hint>"` fully detached. Best-effort; never
+    raises. The hint is passed after `--` (a pure operand — no flag smuggling),
+    bounded turn budget, output logged to .uap/autoroute.log for visibility."""
+    import subprocess
+    if hint.startswith("-"):
+        return  # never let a hint be parsed as a flag
+    if not _acquire_slot(root):
+        return  # another autoroute mission is already converging in this repo
+    try:
+        log = (root / UAP_DIR / LOG_FILE).open("a")
+    except Exception:
+        log = subprocess.DEVNULL
+    try:
+        proc = subprocess.Popen(
+            ["uap", "deliver", "--max-turns", "5", "--ceiling", "10", "--", hint],
             cwd=str(root),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            stdout=log, stderr=log, stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
+        try:
+            (root / UAP_DIR / LOCK_FILE).write_text(str(proc.pid))
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -110,8 +175,12 @@ def main() -> None:
 
     if d["spawn"]:
         try:
+            # Dedup on the SAME key `decide` gated on (file when present, else the
+            # hint) — writing file_path here would record "" for a bash-routed
+            # intent and never dedup it.
+            key = d.get("dedup_key") or d["file_path"] or d["hint"]
             with _seen_path(root).open("a") as f:
-                f.write(d["file_path"] + "\n")
+                f.write(key.replace("\n", " ").replace("\r", " ") + "\n")
         except Exception:
             pass
         _spawn_deliver(root, d["hint"])

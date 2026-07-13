@@ -47,21 +47,36 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
     m = re.fullmatch(r'uap deliver "(.+)"', hint.strip())
     if m:
         hint = m.group(1)
-    file_path = args.get("file_path") or args.get("path") or args.get("target") or ""
+    # Accept the file-path key under ANY agent spelling. The enforcer was fixed
+    # for this long ago; autoroute was not — so for opencode (which sends
+    # `filePath`) file_path was always "", `spawn` was always False, and autoroute
+    # was INERT: the gate blocked the edit, logged the intent, told the model to
+    # call deliver… and deliver never ran. Observed live: 3 routed intents, 0
+    # deliver runs, 0 files changed — work blocked but never delivered.
+    file_path = (
+        args.get("file_path") or args.get("filePath") or args.get("path")
+        or args.get("target") or args.get("filename") or args.get("file") or ""
+    )
 
     if route != "deliver":
         return {"message": reason, "route": route, "spawn": False,
-                "file_path": file_path, "hint": hint, "intent": None}
+                "file_path": file_path, "hint": hint, "dedup_key": "", "intent": None}
 
     intent = {"ts": int(time.time()), "tool": tool, "file_path": file_path, "hint": hint}
-    spawn = bool(autoroute_on and hint and file_path and file_path not in seen_files)
+    # Dedup on the file when we have one, else on the hint itself. Requiring a
+    # file_path made an entire class unspawnable: a BASH-routed source-write
+    # (`cat > app.js <<EOF`) carries a `command`, not a path — so those intents
+    # were blocked and then silently dropped. The hint is what deliver actually
+    # runs, so it is the correct spawn key.
+    dedup_key = file_path or hint
+    spawn = bool(autoroute_on and hint and dedup_key and dedup_key not in seen_files)
     message = reason
     if spawn:
         message = reason + " [auto-routed to `uap deliver` — running in the background]"
-    elif autoroute_on and file_path in seen_files:
-        message = reason + " [already auto-routed to `uap deliver` for this file — see .uap/autoroute.log / pending-deliver.jsonl]"
+    elif autoroute_on and dedup_key and dedup_key in seen_files:
+        message = reason + " [already auto-routed to `uap deliver` for this change — see .uap/autoroute.log / pending-deliver.jsonl]"
     return {"message": message, "route": route, "spawn": spawn,
-            "file_path": file_path, "hint": hint, "intent": intent}
+            "file_path": file_path, "hint": hint, "dedup_key": dedup_key, "intent": intent}
 
 
 def _seen_path(root: Path) -> Path:
@@ -160,8 +175,12 @@ def main() -> None:
 
     if d["spawn"]:
         try:
+            # Dedup on the SAME key `decide` gated on (file when present, else the
+            # hint) — writing file_path here would record "" for a bash-routed
+            # intent and never dedup it.
+            key = d.get("dedup_key") or d["file_path"] or d["hint"]
             with _seen_path(root).open("a") as f:
-                f.write(d["file_path"].replace("\n", " ").replace("\r", " ") + "\n")
+                f.write(key.replace("\n", " ").replace("\r", " ") + "\n")
         except Exception:
             pass
         _spawn_deliver(root, d["hint"])

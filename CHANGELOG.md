@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.148.12 (2026-07-13)
+
+- fix(autoroute): **deliver never auto-spawned for opencode — autoroute was inert.** `deliver_autoroute.py` read only snake-case file-path keys (`file_path`/`path`/`target`), so for opencode (which sends **`filePath`**) it always resolved to `""`, and the spawn condition `spawn = ... and file_path and ...` was therefore always `False`. The gate blocked the edit, logged the intent, told the model to call deliver — and deliver **never ran**. Observed live: 3 routed intents, 0 deliver runs, 0 files changed — work blocked but never delivered. The enforcer was fixed for this key long ago; autoroute never was, and its tests only ever passed snake-case, which is why it went unnoticed. Now accepts every agent spelling (`file_path`/`filePath`/`path`/`target`/`filename`/`file`).
+- fix(autoroute): **BASH-routed intents can now spawn.** A bash source-write (`cat > app.js <<EOF`) carries a `command`, not a path — so requiring `file_path` made that entire class unspawnable (blocked, then silently dropped). Spawn now keys on the `deliverHint` (what deliver actually runs), deduping on the file when present and on the hint otherwise.
+
 ## v1.148.11 (2026-07-13)
 
 - fix(delivery-enforcement): **tighten `EXEMPT_PREFIXES` — `scripts/` and `docs/` are no longer exempt.** Shell/Python/TS under `scripts/` *executes* — it is code, so it must route through deliver and be tested like any other source. Exempting it left an entire language silently ungated: a model could put its whole implementation in `scripts/` and never be validated. What remains exempt is deliberate and documented: agent/enforcement infrastructure (`.uap/`, `.opencode/`, `.claude/`, `.policy-tools/`, …) because routing the hooks that *run* the gate is a bootstrap deadlock (they are guarded by `enforcement-self-protect` instead); the policy definitions themselves (`src/policies/`, `policies/`) for the same self-reference; and `test/`/`tests/` as the deliberate fast feedback loop (deliver still verifies them via the gate ladder).
