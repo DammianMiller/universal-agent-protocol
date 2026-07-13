@@ -32,18 +32,43 @@ from _common import emit, parse_cli, repo_root  # noqa: E402
 EDIT_OPS = {"Edit", "Write", "MultiEdit", "edit", "write", "multiedit"}
 
 # Only real implementation code is gated.
+# EVERY code type is gated. The rule: if it is interpreted, transpiled, or
+# compiled — it is code, it must route through deliver, and it must be TESTED to
+# validate correct function. A partial list let whole ecosystems escape: `.html`
+# omitted meant a 34KB single-file web app was "not source code" and shipped
+# ungated (observed live). Pure data/config (.json/.yaml/.toml/.xml/.md) is
+# deliberately NOT here — it has no "correct function" to execute.
 SOURCE_EXTS = (
+    # JS/TS + transpiled web
     ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
-    ".py", ".go", ".rs", ".java", ".rb", ".php", ".cs", ".swift", ".kt",
-    ".c", ".cc", ".cpp", ".h", ".hpp",
-    # WEB deliverables are source too. Omitting these let an ENTIRE class of
-    # deliverable (single-file web apps, static sites, templates) escape the gate:
-    # a 34KB single-file HTML app returned "not source code" -> allowed -> zero
-    # routing, zero deliver, zero validation (observed live). The completion gate's
-    # own code-change detector already counts html/css/vue/svelte as code, so the
-    # two halves of the system disagreed about what "source" means until now.
-    ".html", ".htm", ".css", ".scss", ".sass", ".less",
     ".vue", ".svelte", ".astro",
+    # Web deliverables (render/execute in a browser)
+    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".styl",
+    # Templates (render to output)
+    ".ejs", ".hbs", ".handlebars", ".pug", ".jade", ".twig", ".erb",
+    ".njk", ".liquid", ".mustache",
+    # C / C++ / CUDA / ObjC
+    ".c", ".cc", ".cpp", ".cxx", ".c++", ".h", ".hpp", ".hh", ".hxx", ".h++",
+    ".inl", ".ipp", ".tpp", ".cu", ".cuh", ".m", ".mm",
+    # Rust / Go / Zig / Nim / Crystal / V / D
+    ".rs", ".go", ".zig", ".nim", ".cr", ".d",
+    # .NET
+    ".cs", ".vb", ".fs", ".fsi", ".fsx", ".razor", ".cshtml", ".vbhtml", ".xaml",
+    # JVM
+    ".java", ".kt", ".kts", ".scala", ".sc", ".groovy", ".gradle",
+    ".clj", ".cljs", ".cljc",
+    # Python / Ruby / PHP / Perl / Lua
+    ".py", ".pyi", ".pyx", ".rb", ".rake", ".php", ".pl", ".pm", ".lua",
+    # Functional / BEAM / ML-family
+    ".ex", ".exs", ".erl", ".hrl", ".hs", ".lhs", ".ml", ".mli",
+    # Mobile / other compiled
+    ".swift", ".dart", ".r", ".jl",
+    # Shell / scripting (executes)
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".bat", ".cmd",
+    # Assembly
+    ".asm", ".s",
+    # Contracts / query / schema-as-code / IaC (all execute or provision)
+    ".sol", ".sql", ".proto", ".graphql", ".gql", ".tf", ".hcl",
 )
 
 # GUI-browser launchers. A model with no validation tooling in reach tries to
