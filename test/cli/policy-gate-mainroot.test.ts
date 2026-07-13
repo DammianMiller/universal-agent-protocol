@@ -44,9 +44,10 @@ function makeProject(): string {
 
   const db = join(proj, 'agents', 'data', 'memory', 'policies.db');
   const sql =
-    'CREATE TABLE policies(id TEXT, name TEXT, isActive INT);' +
+    // `priority` column is required: the gate's policy query ORDER BYs it.
+    'CREATE TABLE policies(id TEXT, name TEXT, isActive INT, priority INT);' +
     'CREATE TABLE executable_tools(policyId TEXT, toolName TEXT);' +
-    "INSERT INTO policies VALUES('p1','worktree-required',1);" +
+    "INSERT INTO policies VALUES('p1','worktree-required',1,50);" +
     "INSERT INTO executable_tools VALUES('p1','wt');";
   const r = spawnSync('sqlite3', [db, sql], { encoding: 'utf8' });
   if (r.status !== 0) throw new Error('sqlite3 setup failed: ' + r.stderr);

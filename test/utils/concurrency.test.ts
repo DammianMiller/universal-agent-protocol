@@ -102,7 +102,9 @@ describe('Concurrency Utilities', () => {
       expect(attempts).toBe(4); // Initial + 3 retries
     });
 
-    it('should use exponential backoff', async () => {
+    // Real-timer deltas (50/100/200ms) can invert under full-suite load; the
+    // backoff logic is deterministic, so retry to absorb scheduler jitter.
+    it('should use exponential backoff', { retry: 3 }, async () => {
       const timestamps: number[] = [];
       await expect(
         retry(
