@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.148.27 (2026-07-14)
+
+- fix(deliver): **the zero-test gate was enforced in `uap verify` but NOT in deliver — so a mission could still report "✓ Delivered, all required gates pass" on a crate with no tests at all.** v1.148.25 taught the ladder that a test rung exiting 0 having run ZERO tests is not a pass, and wired it into `uap verify` at max fidelity. But deliver's own convergence loop never passed `requireTestsRan`, and **deliver's ladder is the gate that decides DONE** — so the real door stayed open, and a live mission delivered an untested Rust crate through it. Deliver now resolves the project fidelity and enforces the same rule. Below max fidelity the behaviour is unchanged (reported, not blocking).
+
+
 ## v1.148.25 (2026-07-14)
 
 - fix(verifier-ladder): **Rust tests did not block — a Rust project could deliver with FAILING tests.** `cargo-test` carried a lone, uncommented `required: false`, while every other language's test rung (npm `test`, `pytest`, `ctest`, `go-test`, `dotnet-test`) blocks. Rust is now consistent with the rest. A pre-existing red suite is not punished: baseline-delta gating already demotes rungs that were failing at preflight, so only NEW breakage blocks.
