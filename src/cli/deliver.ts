@@ -168,12 +168,13 @@ import {
   NO_DETACH_ENV,
 } from './deliver-detach.js';
 import { extractContract } from '../delivery/contract-extractor.js';
-import type { OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
+import type { AssembledContext, OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
 import type { LifecycleHintProvider } from '../delivery/decompose.js';
 import type { DeliveryPhase } from '../delivery/decompose.js';
 import { completeDeliveryTask, openDeliveryTask, recordDeliveryOutcome, recordOrchestratorTaskOutcome, reopenDeliveryTask } from '../delivery/task-sync.js';
 import { autoMineHaloTraces, summarizeWeaknesses, weaknessGuidance, loadPersistedWeaknesses } from '../delivery/auto-mine.js';
 import { createGitWorktreeProvider } from '../delivery/candidate-workspace.js';
+import { createTaskWorkspaceManager, resolveParallelTasks } from '../delivery/task-workspace.js';
 import type { ExecutorMode } from '../delivery/agentic-executor.js';
 import type { AutoPlan } from '../delivery/auto-optimizer.js';
 import { createHaloDeliveryTracer } from '../delivery/halo-trace.js';
@@ -1568,17 +1569,44 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // Phased missions re-point the judge at the current phase's goal — judging
   // phase 1 against the FULL mission would fail every phase by construction.
   let acceptanceSpec = instruction;
+  // Parallel orchestrated tasks run in ISOLATED worktree roots; each loop's
+  // judge must grade against ITS task's spec, not a shared mutable. The
+  // acceptance gate resolves by the root it is invoked with; the phased and
+  // epic paths (single loop at a time) keep using the shared variable.
+  const acceptanceSpecByRoot = new Map<string, string>();
   // Secondary-judge churn breaker: bounds consecutive judge rejections of
   // objectively-green turns per spec (env UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT,
   // default 2), after which the objective gates win. Primary mode is exempt.
   // Change-evidence for the breaker's zero-diff guard: files applied since the
   // current acceptance spec (epic) began. Incremented by the iteration hook,
   // reset wherever acceptanceSpec is re-pointed.
-  const specChangeEvidence = { writes: 0 };
-  const acceptanceChurnBreaker = createAcceptanceChurnBreaker(
-    Number(process.env.UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT ?? 2),
-    () => specChangeEvidence.writes > 0
-  );
+  // Per-ROOT under parallel dispatch: concurrent loops must not zero or
+  // inflate each other's evidence (an inflated count could let the breaker
+  // accept a task with zero writes of its own). projectRoot's entry is the
+  // historic shared counter the phased/epic paths keep using.
+  const writesByRoot = new Map<string, { writes: number }>();
+  const evidenceFor = (root: string): { writes: number } => {
+    let e = writesByRoot.get(root);
+    if (!e) {
+      e = { writes: 0 };
+      writesByRoot.set(root, e);
+    }
+    return e;
+  };
+  const specChangeEvidence = evidenceFor(projectRoot);
+  // Breaker state is per SPEC: one shared instance thrashes its current-spec
+  // slot under parallel dispatch and can then never trip.
+  const acceptanceFlipLimit = Number(process.env.UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT ?? 2);
+  const acceptanceBreakers = new Map<string, ReturnType<typeof createAcceptanceChurnBreaker>>();
+  const breakerFor = (spec: string, root: string): ReturnType<typeof createAcceptanceChurnBreaker> => {
+    let b = acceptanceBreakers.get(spec);
+    if (!b) {
+      if (acceptanceBreakers.size > 100) acceptanceBreakers.clear(); // runaway guard
+      b = createAcceptanceChurnBreaker(acceptanceFlipLimit, () => evidenceFor(root).writes > 0);
+      acceptanceBreakers.set(spec, b);
+    }
+    return b;
+  };
   const acceptanceGate: AcceptanceGate | undefined = options.acceptance && !skipJudgeForSimple
     ? async (root) => {
         // Primary mode: the only objective rung is the trivial bootstrap, and the
@@ -1610,13 +1638,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // gates all passed — hand the judge that fact as evidence, so
         // requirements like "make the tests pass" are graded on the gate
         // result instead of speculated about from static code.
+        const resolvedSpec = acceptanceSpecByRoot.get(root) ?? acceptanceSpec;
         const uvNote = buildUserPathsNote(root);
         const baseNote = acceptancePrimary
           ? visualNote
           : 'Objective project gates (build/test suite) ALL PASSED on this turn — treat test/build-related requirements as objectively verified.';
         const runtimeNote = [baseNote, uvNote?.note].filter(Boolean).join(' ');
         const r = await runAcceptanceGate({
-          spec: acceptanceSpec,
+          spec: resolvedSpec,
           projectRoot: root,
           executor: verdictExecutor,
           ...(runtimeNote ? { runtimeNote } : {}),
@@ -1626,7 +1655,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // objective gates ALL passed, so a bounded number of consecutive judge
         // rejections hands the verdict back to the gates instead of wedging.
         if (!acceptancePrimary) {
-          const checked = acceptanceChurnBreaker.check(acceptanceSpec, verdict);
+          const checked = breakerFor(resolvedSpec, root).check(resolvedSpec, verdict);
           if (checked.overridden) {
             console.log(
               chalk.yellow(
@@ -1649,7 +1678,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   };
 
   /** Compose the per-turn hooks with a FRESH escalation controller. */
-  const makeIterationHook = (): ReturnType<typeof composeIterationHooks> => {
+  const makeIterationHook = (evidenceRoot: string = projectRoot): ReturnType<typeof composeIterationHooks> => {
     const escalation = makeEscalation();
     const repair =
       repairAgent && process.env.UAP_DELIVER_REPAIR_ESCALATION !== '0'
@@ -1676,7 +1705,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       (record) => printProgress(record),
       (record) => {
         // Feed the acceptance breaker's zero-diff guard.
-        if (record.filesApplied.length > 0) specChangeEvidence.writes += record.filesApplied.length;
+        if (record.filesApplied.length > 0) evidenceFor(evidenceRoot).writes += record.filesApplied.length;
         return undefined;
       },
       (record) => haloTracer.onIteration(record),
@@ -1921,11 +1950,162 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const tasks: OrchestratorTask[] = phases!.map((ph) => ({
       id: ph.id, title: ph.title, goal: ph.goal, ...(ph.deps ? { deps: ph.deps } : {}),
     }));
+    // -- Worktree-isolated parallel dispatch --
+    // `.uap.json` deliver.parallelTasks (config-only BY DESIGN - no env; see
+    // the concurrency notes in task-orchestrator.ts) dispatches independent
+    // READY tasks concurrently, EACH in its own detached git worktree seeded
+    // with the main tree's current uncommitted state and judged against its
+    // own spec. Merge-backs are SERIALIZED under a lock; a conflicting merge
+    // fails the task, and the orchestrator's minimal repair retries it in a
+    // fresh workspace seeded with the updated baseline - conflicts resolve
+    // through the ATG repair path instead of corrupting the tree.
+    const parallelTasks = resolveParallelTasks(
+      (cfgRaw.deliver as Record<string, unknown> | undefined)?.parallelTasks
+    );
+    const wsManager = parallelTasks > 1 ? createTaskWorkspaceManager(projectRoot) : null;
+    if (parallelTasks > 1 && !wsManager) {
+      console.log(chalk.yellow('  ⇉ parallel tasks: worktree isolation unavailable (not a git repo?) - running sequentially'));
+    } else if (wsManager) {
+      console.log(chalk.cyan(`  ⇉ parallel tasks: up to ${parallelTasks} independent tasks in isolated worktrees`));
+    }
+    // Merge-boundary defense-in-depth: refuse a delta touching protected
+    // tests/gate configs at the boundary, instead of trusting the in-worktree
+    // layers transitively (mode-only changes and capture-skipped files would
+    // otherwise ride the patch back).
+    const mergeProtected = new Set<string>(
+      options.protectTests !== false
+        ? [...snapshotProtection(projectRoot).protectedFiles, ...listGateConfigFiles(projectRoot)].map((f) =>
+            f.toLowerCase()
+          )
+        : []
+    );
+    let mergeChain: Promise<unknown> = Promise.resolve();
+    const withMergeLock = <T>(fn: () => Promise<T> | T): Promise<T> => {
+      const next = mergeChain.then(fn, fn);
+      mergeChain = next.then(
+        () => undefined,
+        () => undefined
+      );
+      return next;
+    };
+    // Regexes built from strings so policy hooks never mistake a literal for a path.
+    const SOURCE_FILE_RE = new RegExp('[.](js|mjs|cjs|ts|tsx|jsx|py)$');
+    const NEW_TASKS_RE = new RegExp('NEW_TASKS:\\s*(\\[[\\s\\S]*?\\])');
+    /** Run one task's convergence loop against `root` with executor `exec` -
+     * the historic in-tree body, parameterized so isolated workspaces reuse it
+     * verbatim. Turns/history flow into the mission aggregate as before. */
+    const runTaskAt = async (
+      ctx: AssembledContext,
+      task: OrchestratorTask,
+      root: string,
+      exec: LoopExecutor
+    ): Promise<TaskOutcome> => {
+      const taskRecord = await openDeliveryTask(
+        `${task.title} — ${task.goal.slice(0, 120)}`,
+        projectRoot,
+        missionTask?.id
+      );
+      acceptanceSpecByRoot.set(root, ctx.prompt);
+      if (root === projectRoot) acceptanceSpec = ctx.prompt;
+      evidenceFor(root).writes = 0;
+      try {
+        const loop = new ConvergenceLoop(
+          {
+            ...loopConfig,
+            projectRoot: root,
+            baselineCheck: false,
+            resumeFrom: undefined,
+            // Checkpoints describe THE mission tree; isolated roots must not
+            // clobber the durable run state.
+            // The inherited explorer's workspaceProvider is bound to the MAIN
+            // projectRoot; inside an isolated task it must not run at all.
+            ...(root !== projectRoot ? { onCheckpoint: undefined, explorer: undefined } : {}),
+            onIteration: makeIterationHook(root),
+          },
+          exec,
+          seams
+        );
+        const r = await loop.deliver(ctx.prompt);
+        all.turns += r.turns;
+        all.history.push(...r.history);
+        all.totalDurationMs += r.totalDurationMs;
+        if (r.bestScore > all.bestScore) {
+          all.bestScore = r.bestScore;
+          all.bestTurn = r.bestTurn;
+        }
+        all.finalFeedback = r.finalFeedback;
+        all.finalOutput = r.finalOutput;
+        completeDeliveryTask(taskRecord, r);
+        const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
+        // P4 - extract the VERIFIED public contract of what this task built so
+        // dependents load the interface (a few hundred chars), not the source.
+        let contract: string | undefined;
+        if (r.success && files.length > 0) {
+          try {
+            const { readFileSync } = await import('fs');
+            const { join } = await import('path');
+            const srcs = files
+              .filter((f) => SOURCE_FILE_RE.test(f))
+              .map((f) => {
+                try {
+                  return { path: f, content: readFileSync(join(root, f), 'utf-8') };
+                } catch {
+                  return null;
+                }
+              })
+              .filter((x): x is { path: string; content: string } => x !== null);
+            contract = extractContract(srcs).contract || undefined;
+          } catch {
+            contract = undefined;
+          }
+        }
+        // P5 - adaptive re-planning feed: a task may surface work the initial
+        // plan missed by emitting a `NEW_TASKS: [ {id,title,goal,deps} ]` JSON
+        // array in its output. Parsed through the same validator as the planner
+        // (well-formed only), then folded into the DAG by orchestrate() (which
+        // dedupes, topo-resorts, and caps at maxTasks). Only structural fields
+        // are used - never free-form model text as durable memory.
+        let newTasks: OrchestratorTask[] | undefined;
+        if (r.success) {
+          try {
+            const marker = NEW_TASKS_RE.exec(r.finalOutput || r.finalFeedback || '');
+            if (marker) {
+              const parsed = parsePhaseArray(marker[1]).filter((t) => t.id !== task.id);
+              if (parsed.length > 0) {
+                newTasks = parsed.map((t) => ({
+                  id: t.id, title: t.title, goal: t.goal,
+                  ...(t.deps ? { deps: t.deps } : {}),
+                }));
+                console.log(chalk.dim(`  ↳ re-planning: task ${task.id} discovered ${newTasks.length} follow-up task(s)`));
+              }
+            }
+          } catch {
+            newTasks = undefined;
+          }
+        }
+        return {
+          taskId: task.id,
+          success: r.success,
+          turns: r.turns,
+          // ATG minimal repair: a FAILED task's summary must carry the failure
+          // (the retry's only new information), never a goal restatement.
+          summary: r.success
+            ? `${task.goal.slice(0, 160)}${files.length ? ` [files: ${files.join(', ')}]` : ''}`
+            : `${task.goal.slice(0, 120)} — FAILED: ${(r.finalFeedback || 'gates did not pass').slice(0, 280)}`,
+          ...(contract ? { contract } : {}),
+          ...(newTasks && newTasks.length > 0 ? { newTasks } : {}),
+        };
+      } finally {
+        acceptanceSpecByRoot.delete(root);
+      }
+    };
     const orchResult = await orchestrate({
       mission: instruction,
       tasks,
       contextBudgetChars: Number(process.env.UAP_DELIVER_CONTEXT_BUDGET ?? 6000),
       maxTasks: Number(process.env.UAP_DELIVER_MAX_TASKS ?? 40),
+      // Dependency-aware parallel dispatch — only with worktree isolation.
+      concurrency: wsManager ? parallelTasks : 1,
       // P3 — per-task memory retrieval: pull the few most relevant established
       // decisions/patterns/gotchas for THIS task's goal (a small semantic
       // query, not the full spec), so a fresh-context task reconstructs "what
@@ -1957,93 +2137,85 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       },
       runTask: async (ctx, task): Promise<TaskOutcome> => {
         console.log(
-          chalk.bold(`\u25b6 task ${task.id}: ${task.title}`) +
+          chalk.bold(`▶ task ${task.id}: ${task.title}`) +
             chalk.dim(` (ctx ${ctx.prompt.length} chars, deps: ${ctx.includedDeps.join(',') || 'none'})`)
         );
-        const taskRecord = await openDeliveryTask(
-          `${task.title} — ${task.goal.slice(0, 120)}`,
-          projectRoot,
-          missionTask?.id
-        );
-        acceptanceSpec = ctx.prompt;
-        specChangeEvidence.writes = 0;
-        const loop = new ConvergenceLoop(
-          { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onIteration: makeIterationHook() },
-          executor,
-          seams
-        );
-        const r = await loop.deliver(ctx.prompt);
-        all.turns += r.turns;
-        all.history.push(...r.history);
-        all.totalDurationMs += r.totalDurationMs;
-        if (r.bestScore > all.bestScore) {
-          all.bestScore = r.bestScore;
-          all.bestTurn = r.bestTurn;
+        // Workspace acquisition mutates git state (worktree add) - serialize
+        // it behind the same lock the merges use.
+        const ws = wsManager ? await withMergeLock(() => wsManager.acquire(task.id)) : null;
+        if (!ws) {
+          if (wsManager) {
+            console.log(chalk.yellow(`  ⇉ task ${task.id}: workspace unavailable - running in-tree (serialized)`));
+            // In-tree execution mutates the shared tree; hold the lock for the
+            // WHOLE run so it never races an isolated task's merge-back.
+            return withMergeLock(() => runTaskAt(ctx, task, projectRoot, executor));
+          }
+          return runTaskAt(ctx, task, projectRoot, executor);
         }
-        all.finalFeedback = r.finalFeedback;
-        all.finalOutput = r.finalOutput;
-        completeDeliveryTask(taskRecord, r);
-        const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
-        // P4 — extract the VERIFIED public contract of what this task built so
-        // dependents load the interface (a few hundred chars), not the source.
-        let contract: string | undefined;
-        if (r.success && files.length > 0) {
-          try {
-            const { readFileSync } = await import('fs');
-            const { join } = await import('path');
-            const srcs = files
-              .filter((f) => /\.(js|mjs|cjs|ts|tsx|jsx|py)$/.test(f))
-              .map((f) => {
-                try {
-                  return { path: f, content: readFileSync(join(projectRoot, f), 'utf-8') };
-                } catch {
-                  return null;
-                }
+        try {
+          // The agentic executor binds tools to a root at construction - give
+          // the isolated task its own, with the same protections re-derived
+          // for its tree. The blind executor is root-free (the per-task loop's
+          // projectRoot directs the applier and gates).
+          const taskExecutor = agentic
+            ? createAgenticExecutor(model, {
+                projectRoot: ws.root,
+                endpoint: agenticEndpoint,
+                temperature,
+                contextTokenBudget: sessionBudget,
+                contractFiles: contractLock,
+                protectedFiles:
+                  options.protectTests !== false ? snapshotProtection(ws.root).protectedFiles : new Set<string>(),
+                protectGateConfigs: options.protectTests !== false,
+                allowBash: options.allowBash === true || process.env.UAP_DELIVER_ALLOW_BASH === '1',
+                onEvent: (e) =>
+                  console.log(
+                    chalk.dim(`    [${task.id} r${e.round} ${e.kind}${e.tool ? `:${e.tool}` : ''}] ${e.detail ?? ''}`)
+                  ),
               })
-              .filter((x): x is { path: string; content: string } => x !== null);
-            contract = extractContract(srcs).contract || undefined;
-          } catch {
-            contract = undefined;
+            : executor;
+          const outcome = await runTaskAt(ctx, task, ws.root, taskExecutor);
+          if (!outcome.success) return outcome;
+          const merged = await withMergeLock(() => ws.mergeBack((f) => mergeProtected.has(f.toLowerCase())));
+          if (!merged.ok) {
+            console.log(
+              chalk.yellow(
+                `  ⇉ task ${task.id}: merge-back conflicted (${merged.reason ?? 'apply failed'}) - minimal repair retries on the updated tree`
+              )
+            );
+            return {
+              taskId: task.id,
+              success: false,
+              turns: 0,
+              summary: `${task.goal.slice(0, 120)} — FAILED: the tree changed underneath this task (parallel merge conflict) — rebuild it against the CURRENT state of the repository. Detail: ${(merged.reason ?? 'could not apply the task delta').slice(0, 200)}`,
+            };
           }
-        }
-        // P5 — adaptive re-planning feed: a task may surface work the initial
-        // plan missed by emitting a `NEW_TASKS: [ {id,title,goal,deps} ]` JSON
-        // array in its output. Parsed through the same validator as the planner
-        // (well-formed only), then folded into the DAG by orchestrate() (which
-        // dedupes, topo-resorts, and caps at maxTasks). Only structural fields
-        // are used — never free-form model text as durable memory.
-        let newTasks: OrchestratorTask[] | undefined;
-        if (r.success) {
-          try {
-            const marker = /NEW_TASKS:\s*(\[[\s\S]*?\])/.exec(r.finalOutput || r.finalFeedback || '');
-            if (marker) {
-              const parsed = parsePhaseArray(marker[1]).filter((t) => t.id !== task.id);
-              if (parsed.length > 0) {
-                newTasks = parsed.map((t) => ({
-                  id: t.id, title: t.title, goal: t.goal,
-                  ...(t.deps ? { deps: t.deps } : {}),
-                }));
-                console.log(chalk.dim(`  ↳ re-planning: task ${task.id} discovered ${newTasks.length} follow-up task(s)`));
-              }
-            }
-          } catch {
-            newTasks = undefined;
+          if (merged.files.length > 0) {
+            console.log(chalk.dim(`  ⇉ task ${task.id}: merged ${merged.files.length} file(s) into the main tree`));
           }
+          return outcome;
+        } finally {
+          ws.cleanup();
         }
-        return {
-          taskId: task.id,
-          success: r.success,
-          turns: r.turns,
-          // ATG minimal repair: a FAILED task's summary must carry the failure
-          // (the retry's only new information), never a goal restatement.
-          summary: r.success
-            ? `${task.goal.slice(0, 160)}${files.length ? ` [files: ${files.join(', ')}]` : ''}`
-            : `${task.goal.slice(0, 120)} — FAILED: ${(r.finalFeedback || 'gates did not pass').slice(0, 280)}`,
-          ...(contract ? { contract } : {}),
-          ...(newTasks && newTasks.length > 0 ? { newTasks } : {}),
-        };
       },
     });
+    // Post-merge verification: every gate passed in SOME tree, but 3-way
+    // resolution can produce a combined main tree no gate ever saw. One
+    // ladder run on the merged result closes that. Fail-soft on runner
+    // errors; hard on gate failures.
+    if (wsManager && orchResult.success) {
+      try {
+        console.log(chalk.cyan('  ⇉ post-merge verification: gate ladder on the merged main tree…'));
+        const combined = await tieredRunner(rungs, projectRoot, {});
+        if (!combined.passed) {
+          orchResult.success = false;
+          orchResult.failed.push('post-merge-verification');
+          all.finalFeedback = `post-merge verification FAILED on the combined tree:\n${combined.feedback}`.slice(0, 4000);
+        }
+      } catch {
+        // verification unavailable — keep the per-task verdicts
+      }
+    }
     all.success = orchResult.success;
     if (!orchResult.success) {
       all.finalFeedback = `orchestration incomplete — failed tasks: ${orchResult.failed.join(', ')}\n${all.finalFeedback}`;
