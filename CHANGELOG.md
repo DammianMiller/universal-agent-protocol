@@ -4,6 +4,8 @@
 
 - fix(agentic-executor): **stop advertising a tool we refuse to run — it was burning three quarters of the turn budget.** `run_bash` was offered in the tool schema unconditionally and then REFUSED at execution time whenever the run was not sandboxed. The model does what the menu says: on a live mission it spent **58 of its 79 tool calls on `run_bash` — every one bounced** — and managed only 21 writes. And it was not probing the sandbox: every attempt was read-only (`cat` ×44, `wc`, `find`, `ls`, `head`); it simply reached for the shell it had been shown. The tool list is now built from what will actually execute, so a disabled `run_bash` never appears. The execution-time containment check stays as the backstop.
 
+- fix(agentic-executor): **stop re-serving reads the agent already has — a 63-minute mission was stuck on phase 0 of 6 re-exploring the same ground.** It made 171 `list_dir` calls, of which 46 were the SAME `src/types`, 45 the same `.`, 37 the same `src`, plus 23 re-reads of one file: roughly 60% of its tool calls were re-derivations of what it already knew, so it never got far enough to finish a phase. The proxy's RECON CONVERGENCE guardrail cannot catch this — it fires on a NO-WRITE streak, and this agent *does* write (39 times), so the streak keeps resetting while it re-lists the same directory for the 46th time. Deliver's own loop now detects an identical read of an **unchanged** path (by mtime) and returns a short steer instead of the payload. A re-read AFTER the agent writes the file always goes through: handing it a stale view of its own edit would be far worse than a wasted call.
+
 
 ## v1.148.19 (2026-07-14)
 

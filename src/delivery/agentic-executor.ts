@@ -293,6 +293,70 @@ function restoreProtected(snap: Map<string, string>): string[] {
   return restored;
 }
 
+/**
+ * Suppress a READ the agent has already done, unchanged.
+ *
+ * A live 63-minute mission sat on phase 0 of 6 because it kept re-exploring the
+ * same ground: 171 list_dir calls of which 46 were the SAME `src/types`, 45 the
+ * same `.`, 37 the same `src`; 23 re-reads of one file. Roughly 60% of its tool
+ * calls were re-derivations of things it already knew, so it never got far
+ * enough to finish a phase.
+ *
+ * The proxy's RECON CONVERGENCE guardrail cannot catch this: it fires on a
+ * NO-WRITE streak, and this agent does write (39 times) — so the streak keeps
+ * resetting while the agent re-lists the same directory for the 46th time.
+ * Deliver's own loop needs its own guard.
+ *
+ * Correctness rule: only suppress when the underlying path is UNCHANGED since we
+ * served it (mtime). A re-read AFTER the agent writes the file is legitimate and
+ * must always go through — otherwise we would hand it a stale view of its own
+ * edit, which is far worse than a wasted call.
+ */
+export interface ReadCache {
+  seen: Map<string, { mtimeMs: number; round: number }>;
+}
+
+export function newReadCache(): ReadCache {
+  return { seen: new Map() };
+}
+
+/** mtime of a path, or null when it does not exist / is unreadable. */
+function mtimeOf(p: string): number | null {
+  try {
+    return statSync(p).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns a terse steer when this exact read was already served and nothing has
+ * changed since; null when the call should run normally.
+ */
+export function repeatReadNote(
+  cache: ReadCache,
+  projectRoot: string,
+  name: string,
+  args: Record<string, unknown>,
+  round: number
+): string | null {
+  if (name !== 'read_file' && name !== 'list_dir') return null;
+  if (typeof args.path !== 'string') return null;
+  const key = `${name}:${args.path}`;
+  const abs = resolve(projectRoot, args.path);
+  const mtime = mtimeOf(abs);
+  const prior = cache.seen.get(key);
+  if (prior && mtime !== null && prior.mtimeMs === mtime) {
+    return (
+      `UNCHANGED since you already ran ${name}(${args.path}) at round ${prior.round}. ` +
+      'The result is identical — re-reading it cannot tell you anything new. ' +
+      'Act on what you already have: make the edit, or call finish.'
+    );
+  }
+  if (mtime !== null) cache.seen.set(key, { mtimeMs: mtime, round });
+  return null;
+}
+
 export function runTool(
   projectRoot: string,
   name: string,
@@ -600,6 +664,8 @@ export function createAgenticExecutor(
     ];
 
     const summaries: string[] = [];
+    // Per-session: what this agent has already read, and at what mtime.
+    const readCache = newReadCache();
     for (let round = 1; round <= maxRounds; round++) {
       // Rail sizing: stop BEFORE sending a request that would outgrow the
       // session's context budget — a clean under-budget stop with a partial
@@ -688,16 +754,20 @@ export function createAgenticExecutor(
           opts.onEvent?.({ round, kind: 'final', tool: 'finish', detail: String(args.summary ?? '') });
           return String(args.summary ?? (summaries.join('; ') || 'done'));
         }
-        const result = runTool(
-          opts.projectRoot,
-          call.function.name,
-          args,
-          bashTimeoutMs,
-          protectedFiles,
-          protectGateConfigs,
-          allowBash,
-          contractFiles
-        );
+        // Don't serve the same unchanged read twice — see repeatReadNote.
+        const repeat = repeatReadNote(readCache, opts.projectRoot, call.function.name, args, round);
+        const result =
+          repeat ??
+          runTool(
+            opts.projectRoot,
+            call.function.name,
+            args,
+            bashTimeoutMs,
+            protectedFiles,
+            protectGateConfigs,
+            allowBash,
+            contractFiles
+          );
         opts.onEvent?.({
           round,
           kind: 'tool',
