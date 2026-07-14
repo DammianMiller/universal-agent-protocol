@@ -50,13 +50,40 @@ export interface SelfGateResult {
   notes: string[];
 }
 
-/** Pull a shell script out of a model response (fenced block preferred). */
+/**
+ * Pull a shell script out of a model response (fenced block preferred).
+ *
+ * The closing fence is OPTIONAL. It used to be mandatory, and that was a live
+ * bug: when the model's response was truncated mid-script there was no closing
+ * ```, the regex did not match, and the whole raw response — opening ```bash
+ * line included — was written out as the gate. bash then hit an unterminated
+ * backtick on line 2 and every single turn failed with `unexpected EOF`, a
+ * phantom failure the model could not see or fix.
+ */
 export function extractScript(modelOutput: string): string {
-  const fence = modelOutput.match(/```(?:bash|sh|shell)?\s*\n([\s\S]*?)```/);
-  const body = (fence ? fence[1] : modelOutput).trim();
+  const closed = modelOutput.match(/```(?:bash|sh|shell)?[^\n]*\n([\s\S]*?)```/);
+  // Truncated response: an opening fence with nothing closing it.
+  const open = modelOutput.match(/```(?:bash|sh|shell)?[^\n]*\n([\s\S]*)$/);
+  const body = (closed?.[1] ?? open?.[1] ?? modelOutput).trim();
   // Guarantee a shebang so `bash <file>` and direct exec both behave.
   if (/^#!/.test(body)) return body;
   return `#!/usr/bin/env bash\n${body}`;
+}
+
+/**
+ * Does this script even PARSE? `bash -n` reads without executing.
+ *
+ * A gate that cannot run is not a gate. Without this check the self-gate could
+ * not tell "the gate correctly failed on the unsolved repo" from "the gate is
+ * broken" — a syntax error exits non-zero, which the loop below read as proof
+ * of a strict gate and happily installed. The mission then failed on that
+ * script forever, for a reason that had nothing to do with the code.
+ */
+export function scriptParses(script: string): { ok: boolean; error?: string } {
+  const r = spawnSync('bash', ['-n'], { input: script, encoding: 'utf-8', timeout: 10_000 });
+  if (r.status === 0) return { ok: true };
+  const error = String(r.stderr || r.stdout || 'script does not parse').trim().split('\n')[0];
+  return { ok: false, error: error.slice(0, 200) };
 }
 
 function buildAuthorPrompt(
@@ -141,6 +168,21 @@ export async function authorAcceptanceGate(opts: SelfGateOptions): Promise<SelfG
     }
 
     const script = extractScript(response);
+
+    // A script that does not PARSE must never be installed. bash exits non-zero
+    // on a syntax error, which the "fails on the unsolved repo" check below
+    // would otherwise accept as proof of a strict gate — wiring in a gate that
+    // fails every turn for a reason the model cannot see. Reject it, hand the
+    // parse error back, and let the next attempt fix it.
+    const parse = scriptParses(script);
+    if (!parse.ok) {
+      notes.push(`attempt ${attempt}: gate script does not parse (${parse.error ?? 'syntax error'}) — regenerating`);
+      priorFeedback =
+        `the script was not valid bash: ${parse.error ?? 'syntax error'}. ` +
+        'Output ONLY the raw script — no markdown code fences, no prose — and make sure it is complete (not cut off).';
+      continue;
+    }
+
     writeFileSync(scriptPath, script, 'utf-8');
     try {
       chmodSync(scriptPath, 0o755);
