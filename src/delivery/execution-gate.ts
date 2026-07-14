@@ -411,6 +411,21 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
     const srcMatch = /\bsrc\s*=\s*["']?([^"'\s>]+)/i.exec(attrs);
     if (srcMatch) {
       const s = srcMatch[1];
+      // A REMOTE script (CDN) is not a file on disk, and the vm harness cannot
+      // fetch it — treating it as a missing file false-fails every page that
+      // loads three.js/React from a CDN, and executing the rest without it would
+      // throw bogus ReferenceErrors for the globals it defines. Hand off to the
+      // real browser + visual gate, which can actually load it.
+      if (/^(?:https?:)?\/\//i.test(s)) {
+        return {
+          passed: true,
+          exitCode: 0,
+          failureReason: 'skipped (page loads remote scripts; needs a real browser)',
+          outputTail: `${entry} loads ${s} from the network — the vm-dom harness cannot fetch it; the visual gate renders this page for real`,
+          durationMs: Date.now() - start,
+          via: 'vm-dom',
+        };
+      }
       const p = join(entryDir, s.replace(/^\//, ''));
       if (!existsSync(p)) {
         return {

@@ -62,7 +62,7 @@ describe('runVerify — a renderable deliverable is never skipped', () => {
     // No package.json, no cargo, nothing to build or test: the old code returned
     // `SKIP: no verifiable gates detected` + exit 0 here.
     writeFileSync(join(dir, 'rubiks-cube.html'), PAGE);
-    const res = await runVerify(dir, { visual: false });
+    const res = await runVerify({ dir, visual: false });
     expect(res.empty).toBeFalsy();
     expect(res.report).not.toMatch(/no verifiable gates detected/);
     // The execution rung is the deliverable's own proof it runs.
@@ -71,7 +71,7 @@ describe('runVerify — a renderable deliverable is never skipped', () => {
 
   it('nothing to look at AND nothing to run → still an honest SKIP (exit 0, unstrict)', async () => {
     writeFileSync(join(dir, 'notes.md'), '# hi');
-    const res = await runVerify(dir, {});
+    const res = await runVerify({ dir });
     expect(res.empty).toBe(true);
     expect(res.exitCode).toBe(0);
     expect(res.report).toMatch(/^SKIP:/);
@@ -79,7 +79,8 @@ describe('runVerify — a renderable deliverable is never skipped', () => {
 
   it('nothing verifiable at MAX fidelity fails CLOSED — "could not check" is not "verified"', async () => {
     writeFileSync(join(dir, 'notes.md'), '# hi');
-    const res = await runVerify(dir, {
+    const res = await runVerify({
+      dir,
       fidelity: { mode: 'max', max: true, visualBaselines: false, visionMinScore: 7, visionEndpoint: '', visionModel: '' } as never,
     });
     expect(res.passed).toBe(false);
@@ -89,8 +90,37 @@ describe('runVerify — a renderable deliverable is never skipped', () => {
 
   it('nothing verifiable under --strict fails closed (unchanged)', async () => {
     writeFileSync(join(dir, 'notes.md'), '# hi');
-    const res = await runVerify(dir, { strict: true });
+    const res = await runVerify({ dir, strict: true });
     expect(res.passed).toBe(false);
     expect(res.exitCode).toBe(1);
+  });
+});
+
+describe('vm-dom harness — a CDN script is not a missing file', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'uap-cdn-')); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('a remote <script src> skip-passes to the browser instead of false-failing', async () => {
+    // The live regression: rubiks-cube.html loads three.js from cdnjs. The harness
+    // resolved src against the filesystem, so the CDN URL read as "does not exist"
+    // and failed a page that renders perfectly (vision judged it 9/10).
+    const { runVmDomHarness } = await import('../../src/delivery/execution-gate.js');
+    writeFileSync(
+      join(dir, 'cube.html'),
+      '<html><body><script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>' +
+        '<script>const s = new THREE.Scene();</script></body></html>'
+    );
+    const res = runVmDomHarness(dir, undefined, undefined, 'cube.html');
+    expect(res.passed).toBe(true);
+    expect(res.failureReason).toMatch(/remote scripts/);
+  });
+
+  it('a genuinely missing LOCAL script still fails', async () => {
+    const { runVmDomHarness } = await import('../../src/delivery/execution-gate.js');
+    writeFileSync(join(dir, 'cube.html'), '<html><body><script src="./app.js"></script></body></html>');
+    const res = runVmDomHarness(dir, undefined, undefined, 'cube.html');
+    expect(res.passed).toBe(false);
+    expect(res.failureReason).toMatch(/script not found/);
   });
 });
