@@ -69,3 +69,29 @@ describe('self-gate: authorAcceptanceGate', () => {
     expect(res.rung).not.toBeNull();
   });
 });
+
+describe('self-gate: bash -n syntax validation (P1 follow-up)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'selfgate-syn-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('rejects a syntactically-broken script instead of accepting its failure as discriminating', async () => {
+    // Attempt 1: unbalanced backtick — bash -n fails (observed live
+    // 2026-07-13: the loop converged against this unsatisfiable gate).
+    // Attempt 2: valid script that fails on the unsolved repo.
+    let call = 0;
+    const executor = async () => {
+      call++;
+      return call === 1
+        ? '```bash\necho `oops\n```'
+        : '```bash\ntest -f solution.txt\n```';
+    };
+    const res = await authorAcceptanceGate({ instruction: 'make solution.txt', projectRoot: dir, executor });
+    expect(res.vacuous).toBe(false);
+    expect(res.attempts).toBe(2);
+    // Upstream phrasing: the parse check reports 'gate script does not parse'.
+    expect(res.notes.join(' ')).toMatch(/does not parse|bash -n/);
+  });
+});

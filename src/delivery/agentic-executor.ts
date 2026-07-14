@@ -232,6 +232,24 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'edit_file',
+      description:
+        'Surgically replace ONE exact occurrence of old_string with new_string in an existing file (path relative to project root). PREFER this over write_file for existing files — no need to re-emit the whole file (large re-emits truncate). old_string must match the CURRENT file content exactly, whitespace included, and exactly once unless occurrence (1-based) is given.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          old_string: { type: 'string' },
+          new_string: { type: 'string' },
+          occurrence: { type: 'number' },
+        },
+        required: ['path', 'old_string', 'new_string'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'finish',
       description: 'Call when the task is complete. Provide a one-line summary of what was done.',
       parameters: {
@@ -400,7 +418,7 @@ export function runTool(
   // would otherwise escape the root or land nowhere (the proxy fixes this for
   // Claude Code; deliver's agentic path bypassed it).
   if (
-    (name === 'read_file' || name === 'list_dir' || name === 'write_file') &&
+    (name === 'read_file' || name === 'list_dir' || name === 'write_file' || name === 'edit_file') &&
     typeof args.path === 'string'
   ) {
     const norm = normalizeToolPath(projectRoot, args.path, { forWrite: name === 'write_file' });
@@ -478,6 +496,54 @@ export function runTool(
       // Feedback only — the write itself always lands. UAP_DELIVER_RUST_WRITE_CHECK=0 disables.
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       return `OK: wrote ${String(args.path)} (${String(args.content ?? '').length} bytes)${pathNote}${rustCheckNote}`;
+    }
+    if (name === 'edit_file') {
+      // P1 (plan D3, 2026-07-13): anchored surgical replace. Whole-file
+      // write_file re-emits are the executor's dominant failure mode on
+      // 1,000+ line files (truncation/mangling observed live 4x); an exact
+      // old/new replacement is deterministic and cheap. Shares write_file's
+      // protection surface (tests/contracts/gate-configs).
+      const abs = safePath(projectRoot, String(args.path));
+      if (protectedFiles.has(protectedKey(projectRoot, abs))) {
+        return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
+      }
+      if (contractFiles.has(protectedKey(projectRoot, abs))) {
+        return `ERROR: ${String(args.path)} is a LOCKED CONTRACT file — build against it, do not modify it.`;
+      }
+      const rel = relative(projectRoot, abs).split(/[\\/]/).join('/');
+      const blocked = protectedWritePathReason(rel, protectGateConfigs);
+      if (blocked) {
+        return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
+      }
+      if (!existsSync(abs)) {
+        return `ERROR: ${String(args.path)} does not exist — use write_file to create new files.`;
+      }
+      const current = readFileSync(abs, 'utf-8');
+      const oldStr = String(args.old_string ?? '');
+      const newStr = String(args.new_string ?? '');
+      if (!oldStr) return 'ERROR: old_string must be non-empty.';
+      const count = current.split(oldStr).length - 1;
+      if (count === 0) {
+        return `ERROR: old_string not found in ${String(args.path)} — re-read the file and match the CURRENT content exactly (whitespace included).`;
+      }
+      const occurrence = args.occurrence == null ? null : Number(args.occurrence);
+      if (count > 1 && occurrence == null) {
+        return `ERROR: old_string matches ${count} times in ${String(args.path)} — add surrounding context or pass occurrence (1-based).`;
+      }
+      let updated: string;
+      if (occurrence == null) {
+        updated = current.replace(oldStr, newStr);
+      } else {
+        if (!Number.isInteger(occurrence) || occurrence < 1 || occurrence > count) {
+          return `ERROR: occurrence ${String(args.occurrence)} out of range (1..${count}).`;
+        }
+        let idx = -1;
+        for (let i = 0; i < occurrence; i++) idx = current.indexOf(oldStr, idx + 1);
+        updated = current.slice(0, idx) + newStr + current.slice(idx + oldStr.length);
+      }
+      writeFileSync(abs, updated, 'utf-8');
+      const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
+      return `OK: edited ${String(args.path)} (1 replacement)${pathNote}${rustCheckNote}`;
     }
     if (name === 'run_bash') {
       // Containment gate (audit X3): run_bash is an uncontained host shell when

@@ -30,11 +30,15 @@ UAP_DIR = ".uap"
 
 
 def _autoroute_enabled() -> bool:
-    # Default ON: a blocked source edit auto-routes into `uap deliver` in the
-    # background instead of dead-ending the agent. Opt out with
-    # UAP_DELIVER_AUTOROUTE=0/off/false/no.
-    v = os.environ.get("UAP_DELIVER_AUTOROUTE", "on").lower()
-    return v not in {"0", "off", "false", "no"}
+    # Default OFF (P0, 2026-07-13): the auto-spawned deliver run carries only a
+    # vacuous "implement the intended change to <file>" hint — the blocked
+    # edit's actual content is not plumbed through yet (plan D1) — so a blind
+    # background model run is spawned per blocked file. Blind fan-out mangles
+    # shared worktrees; the recorded intent + block message let the agent run
+    # `uap deliver` itself with the real spec. Opt IN with
+    # UAP_DELIVER_AUTOROUTE=1/on/true/yes.
+    v = os.environ.get("UAP_DELIVER_AUTOROUTE", "off").lower()
+    return v in {"1", "on", "true", "yes"}
 
 
 def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set) -> dict:
@@ -69,12 +73,31 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
     # were blocked and then silently dropped. The hint is what deliver actually
     # runs, so it is the correct spawn key.
     dedup_key = file_path or hint
+    # P1 (plan D1): persist the blocked edit's actual old/new content (from the
+    # enforcer's editIntent, falling back to the raw tool args) so the intent
+    # is REPLAYABLE via `uap deliver --pending <file>` instead of a blind hint.
+    edit_intent = out.get("editIntent") or {
+        k: v
+        for k, v in (
+            ("old_string", args.get("old_string")),
+            ("new_string", args.get("new_string")),
+            ("content", args.get("content")),
+        )
+        if isinstance(v, str)
+    }
+    if edit_intent:
+        intent["edit"] = edit_intent
     spawn = bool(autoroute_on and hint and dedup_key and dedup_key not in seen_files)
     message = reason
     if spawn:
         message = reason + " [auto-routed to `uap deliver` — running in the background]"
     elif autoroute_on and dedup_key and dedup_key in seen_files:
         message = reason + " [already auto-routed to `uap deliver` for this change — see .uap/autoroute.log / pending-deliver.jsonl]"
+    elif file_path:
+        message = reason + (
+            " [intent recorded to .uap/pending-deliver.jsonl — apply it yourself by running"
+            " `uap deliver` with the exact intended change as the instruction]"
+        )
     return {"message": message, "route": route, "spawn": spawn,
             "file_path": file_path, "hint": hint, "dedup_key": dedup_key, "intent": intent}
 
