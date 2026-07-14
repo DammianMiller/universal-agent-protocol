@@ -116,19 +116,27 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   const acceptanceBlocks = Boolean(acceptance && !acceptance.passed && (opts.strict || fidelity.max));
   const acceptanceReport = acceptance ? `\n${formatAcceptanceReport(acceptance)}` : '';
 
-  if (rungs.length === 0) {
-    // Fail-closed in strict mode: refuse to report "verified" when nothing could
-    // actually be checked. Otherwise it's an honest no-op, not a failure.
-    const gatePassed = !opts.strict;
+  // A RENDERABLE deliverable is verifiable even with zero build/test rungs. This
+  // early-return used to fire on `rungs.length === 0` alone, skipping the visual,
+  // vision and behavioral gates outright and exiting 0 — so a static page with no
+  // package.json (the common single-file web app) sailed through the DONE gate
+  // having been validated by nothing at all, even at fidelity:max. Bail out only
+  // when there is genuinely nothing to look at AND nothing to run.
+  const entryPages = discoverEntryPages(dir);
+  const hasEntryPages = entryPages.length > 0;
+  if (rungs.length === 0 && !hasEntryPages) {
+    // Fail-closed under --strict or max fidelity: "we could not check anything"
+    // must never be reported as "verified". Otherwise it's an honest no-op.
+    const gatePassed = !(opts.strict || fidelity.max);
     const passed = gatePassed && !acceptanceBlocks;
     const msg = opts.runtimeOnly
       ? 'no runnable artifact detected — nothing to execute'
-      : 'no verifiable gates detected (no build/test/runnable artifact)';
+      : 'no verifiable gates detected (no build/test/runnable artifact, no entry page)';
     return {
       passed,
       exitCode: passed ? 0 : 1,
       empty: true,
-      report: `${opts.strict && !gatePassed ? 'UNVERIFIED' : 'SKIP'}: ${msg}${acceptanceReport}`,
+      report: `${!gatePassed ? 'UNVERIFIED' : 'SKIP'}: ${msg}${acceptanceReport}`,
       rungs,
       acceptance,
     };
@@ -153,7 +161,6 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // path — a UI that renders wrong is a real failure regardless of how cheap the
   // caller wanted to be.
   const visualWanted = opts.visual === true || (opts.visual !== false && (!opts.runtimeOnly || fidelity.max));
-  const hasEntryPages = discoverEntryPages(dir).length > 0;
   if (visualWanted && hasEntryPages) {
     visual = await runVisualGate(dir);
   }

@@ -221,8 +221,13 @@ _BASH_WRITE_RE = re.compile(
     re.IGNORECASE,
 )
 # A browser LAUNCH (not a lookup: `which firefox` / `command -v chrome` are fine).
+# Match the browser by BASENAME anywhere a command word can start, so an absolute
+# or relative path reaches it too. Anchoring on "name right after the separator"
+# let `nohup /home/u/.cloakbrowser/chromium-146/chrome file:///x.html &` walk
+# straight through the gate — the invocation the model actually reaches for.
 _BROWSER_RE = re.compile(
-    r"(?:^|[;&|]|\&\&|\|\|)\s*(?:nohup\s+)?(" + "|".join(BROWSER_BINS) + r")\b",
+    r"(?:^|[;&|(]|\|\||&&|\bnohup\b|\bsetsid\b|\bexec\b|\bxargs\b|\benv\b|\bnice\b|\btimeout\b|`|\$\()"
+    r"\s*(?:[\w./~+-]*/)?(" + "|".join(BROWSER_BINS) + r")\b",
     re.IGNORECASE,
 )
 _LOOKUP_RE = re.compile(r"^\s*(?:which|command\s+-v|type|whereis)\b", re.IGNORECASE)
