@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.149.0 (2026-07-14)
+
+- feat(delivery): ATG uplifts — pre-execution plan validation, minimal node repair, dependency-aware parallel dispatch
+
+
 ## v1.148.21 (2026-07-14)
 
 - fix(agentic-executor): **stop advertising a tool we refuse to run — it was burning three quarters of the turn budget.** `run_bash` was offered in the tool schema unconditionally and then REFUSED at execution time whenever the run was not sandboxed. The model does what the menu says: on a live mission it spent **58 of its 79 tool calls on `run_bash` — every one bounced** — and managed only 21 writes. And it was not probing the sandbox: every attempt was read-only (`cat` ×44, `wc`, `find`, `ls`, `head`); it simply reached for the shell it had been shown. The tool list is now built from what will actually execute, so a disabled `run_bash` never appears. The execution-time containment check stays as the backstop.
