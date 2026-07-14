@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.148.26 (2026-07-14)
+
+- fix(agentic-executor): **`read_file` on a directory threw a raw `EISDIR` the model could not act on — so it retried, and the ERROR-LOOP guard fired.** Its intent was never in doubt: it wanted to see what was in there. It now gets the **listing**, plus a note naming `list_dir` for next time. Same principle as removing the phantom `run_bash` from the tool menu and letting the agent read its own acceptance gate: stop punishing the model for a reasonable move the harness handled badly. A wasted turn becomes a useful one. Reading a real file, and a genuinely missing path, are unchanged.
+
+
 ## v1.148.25 (2026-07-14)
 
 - fix(verifier-ladder): **Rust tests did not block — a Rust project could deliver with FAILING tests.** `cargo-test` carried a lone, uncommented `required: false`, while every other language's test rung (npm `test`, `pytest`, `ctest`, `go-test`, `dotnet-test`) blocks. Rust is now consistent with the rest. A pre-existing red suite is not punished: baseline-delta gating already demotes rungs that were failing at preflight, so only NEW breakage blocks.
