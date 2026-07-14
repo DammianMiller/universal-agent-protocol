@@ -45,18 +45,45 @@ import { sanitizedEnv } from './sanitized-env.js';
  */
 const AGENT_INTERNAL_DIRS = ['.uap', '.uap-deliver', '.git', 'node_modules'];
 
-/** Reason string when a path is UAP/agent-internal, else null. */
-function agentInternalReason(projectRoot: string, abs: string): string | null {
+/**
+ * The ONE internal file the agent may READ: its own acceptance gate.
+ *
+ * `.uap-deliver/verify.sh` is not "internal state" in the distracting sense — it
+ * IS the specification the agent is judged against. Blanket-blocking the whole
+ * `.uap-deliver/` directory meant the agent could not see the criteria it had to
+ * satisfy, and it looped trying: 6 refused reads in one live mission, ERROR-LOOP
+ * firing 5 times, while the gate it needed sat one refusal away.
+ *
+ * Reading it is exactly what we want (target the real criteria). WRITING it is
+ * the agent rigging its own gate, and stays blocked — that distinction is the
+ * whole point of this carve-out.
+ */
+const READABLE_GATE = '.uap-deliver/verify.sh';
+
+/**
+ * Reason string when a path is UAP/agent-internal, else null.
+ *
+ * `forWrite` exists so the acceptance gate can be read but never rewritten.
+ */
+function agentInternalReason(projectRoot: string, abs: string, forWrite = false): string | null {
   const rel = relative(projectRoot, abs).split('\\').join('/');
   const top = rel.split('/')[0];
-  if (top && AGENT_INTERNAL_DIRS.includes(top)) {
+  if (!top || !AGENT_INTERNAL_DIRS.includes(top)) return null;
+
+  if (rel === READABLE_GATE) {
+    if (!forWrite) return null; // the spec: readable
     return (
-      `ERROR: '${rel}' is UAP/agent internal state (${top}/) — it is NOT part of the ` +
-      'deliverable and tells you nothing about the task. Do not read, list, or write it. ' +
-      "Work on the project's own source files instead."
+      `ERROR: '${rel}' is the ACCEPTANCE GATE you are judged against — you may read it, ` +
+      'but you must never modify it. Rewriting the gate is not passing it. ' +
+      'Change the implementation so the existing gate passes.'
     );
   }
-  return null;
+
+  return (
+    `ERROR: '${rel}' is UAP/agent internal state (${top}/) — it is NOT part of the ` +
+    'deliverable and tells you nothing about the task. Do not read, list, or write it. ' +
+    "Work on the project's own source files instead."
+  );
 }
 
 export interface AgenticExecutorOptions {
@@ -405,7 +432,7 @@ export function runTool(
     }
     if (name === 'write_file') {
       const abs = safePath(projectRoot, String(args.path));
-      const internal = agentInternalReason(projectRoot, abs);
+      const internal = agentInternalReason(projectRoot, abs, true);
       if (internal) return internal;
       if (protectedFiles.has(protectedKey(projectRoot, abs))) {
         return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
@@ -514,6 +541,22 @@ export function runTool(
  * never fail the write — the model gets the compiler's view immediately and
  * fixes 1-2 errors instead of drowning in hundreds at turn end.
  */
+/**
+ * Is every reported error simply "a module you have not written yet"?
+ *
+ * A multi-file Rust crate CANNOT compile until its module tree is whole: write
+ * `main.rs` with `use mycrate::types::*` and cargo rightly reports an unresolved
+ * import until `types/mod.rs` lands. Those errors are not defects — they are the
+ * scaffold being incomplete, and they resolve themselves as the agent keeps
+ * writing. Exported for tests: classifying this correctly IS the fix.
+ */
+export function isIncompleteScaffold(errLines: string[]): boolean {
+  if (errLines.length === 0) return false;
+  const scaffolding =
+    /E0432|E0433|E0583|E0463|unresolved import|file not found for module|can't find crate|cannot find (module|crate)|failed to resolve/i;
+  return errLines.every((l) => scaffolding.test(l));
+}
+
 function maybeRustWriteCheck(projectRoot: string, rel: string): string {
   if (process.env.UAP_DELIVER_RUST_WRITE_CHECK === '0') return '';
   const isRust = /\.rs$/.test(rel) || /(^|\/)Cargo\.toml$/.test(rel);
@@ -530,9 +573,23 @@ function maybeRustWriteCheck(projectRoot: string, rel: string): string {
     .split('\n')
     .filter((l) => /error(\[|:)/.test(l));
   const shown = errLines.slice(0, 12).join('\n').slice(0, 1500);
+
+  // A directive the agent CANNOT satisfy is worse than none. This used to say
+  // "fix these BEFORE writing anything else" for ANY failure — a deadlock while
+  // scaffolding a crate, because writing the missing module was the only possible
+  // fix. The agent obeyed, retried, and the identical repeated message drove the
+  // proxy's ERROR-LOOP guard to fire 11 times on one live mission.
+  if (isIncompleteScaffold(errLines)) {
+    return (
+      `\n[cargo check: ${errLines.length} unresolved-module error(s) — EXPECTED while the ` +
+      `module tree is incomplete. Do NOT stop to "fix" these: KEEP WRITING the missing ` +
+      `modules until the tree is whole.\n${shown}]`
+    );
+  }
   return (
-    `\n[cargo check now FAILING — fix these BEFORE writing anything else ` +
-    `(${errLines.length} error line(s)):\n${shown}]`
+    `\n[cargo check now FAILING with real errors — fix these before adding new features ` +
+    `(${errLines.length} error line(s)). If an error is a module you have simply not ` +
+    `written yet, write it.\n${shown}]`
   );
 }
 

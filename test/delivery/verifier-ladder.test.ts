@@ -61,7 +61,10 @@ describe('verifier-ladder', () => {
       expect(rungs.map((r) => r.id)).toEqual(['cargo-members', 'cargo-check', 'cargo-test']);
       expect(rungs.find((r) => r.id === 'cargo-check')?.required).toBe(true);
       // A pre-existing red test in a big workspace must not wedge every phase.
-      expect(rungs.find((r) => r.id === 'cargo-test')?.required).toBe(false);
+      // BLOCKING, like every other language's test rung. This used to assert
+      // `false` — pinning the bug: a Rust project could deliver with FAILING
+      // tests while an identical Node/Python/Go one could not.
+      expect(rungs.find((r) => r.id === 'cargo-test')?.required).toBe(true);
     });
 
     it('adds cargo rungs ALONGSIDE npm rungs in a polyglot root, npm first', () => {

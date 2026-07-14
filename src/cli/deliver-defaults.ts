@@ -94,6 +94,47 @@ async function ensurePolicyEnforcer(
 }
 
 /**
+ * Install + enable EVERY built-in policy, with its enforcer attached.
+ *
+ * `uap init` used to seed only two (delivery-enforcement and self-protect), so a
+ * freshly scaffolded — or freshly RESET — project came up with 2 of 34 policies
+ * active. It looked configured while enforcing almost nothing: the infra-protect
+ * policy that stops a model killing llama-server and stealing its port was among
+ * the 32 missing, and that model has done exactly that before.
+ *
+ * Every built-in ships at level REQUIRED, so "installed" is the intended state.
+ * Idempotent: re-running re-attaches enforcer code without duplicating policies.
+ * Individual policies remain togglable afterwards (`uap policy disable <name>`) —
+ * this sets the DEFAULT, it does not take the choice away.
+ */
+export async function ensureAllPolicies(): Promise<{ installed: number; failed: string[] }> {
+  const { listBuiltinPolicies, autoAttachEnforcer } = await import('./policy.js');
+  const memory = getPolicyMemoryManager();
+  const failed: string[] = [];
+  let installed = 0;
+
+  for (const { name } of listBuiltinPolicies()) {
+    try {
+      const mdPath = resolvePackageFile(join('src', 'policies', 'schemas', 'policies', `${name}.md`));
+      if (!mdPath) {
+        failed.push(name);
+        continue;
+      }
+      const existing = (await memory.getAllPolicies()).find((p) => p.name === name);
+      const id = existing ? existing.id : await memory.storeRawPolicy(readFileSync(mdPath, 'utf-8'));
+      await autoAttachEnforcer(name); // no enforcer => advisory policy; still enabled
+      await memory.togglePolicy(id, true);
+      installed++;
+    } catch {
+      // One bad policy must never abort the scaffold — record and carry on.
+      failed.push(name);
+    }
+  }
+  getPolicyGate().invalidateCache();
+  return { installed, failed };
+}
+
+/**
  * Install + enable the delivery-enforcement policy. Idempotent: re-installs the
  * enforcer code and ensures the policy is enabled without creating duplicates.
  */

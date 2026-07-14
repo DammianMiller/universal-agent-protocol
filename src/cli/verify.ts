@@ -147,9 +147,20 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   const maxTier: GateTier = opts.full ? 'deploy-dev' : fidelity.max ? 'integration' : 'runtime';
   const ladder = await runTieredLadder(rungs, dir, {
     maxTier,
+    // At max fidelity, a test rung that ran ZERO tests is not a pass: "there
+    // were no tests" must never be reported as "the tests passed".
+    requireTestsRan: fidelity.max,
     ...(uvMode ? { userValidationRunner: createUserValidationRunner() } : {}),
     ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
   });
+
+  // Even below max fidelity, say so plainly rather than let a green tick imply
+  // the code was tested when nothing ran.
+  const untested = ladder.results.filter((r) => r.zeroTests).map((r) => r.name);
+  const untestedReport =
+    untested.length > 0
+      ? `\n⚠ ${untested.join(', ')} ran ZERO tests — passing because there is nothing to run is not evidence the code works.${fidelity.max ? ' (max fidelity: this BLOCKS)' : ' Write tests.'}`
+      : '';
 
   // Visual gate: the rendered truth. Runs by default whenever the project has
   // entry pages (opts.visual === false disables); fail-open without a browser.
@@ -256,7 +267,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     acceptanceBlocks && 'acceptance criteria',
   ].filter(Boolean) as string[];
   const overallPassed = ladder.passed && blockedBy.length === 0;
-  const report = formatReport(ladder, overallPassed, blockedBy) + visualReport + acceptanceReport;
+  const report = formatReport(ladder, overallPassed, blockedBy) + untestedReport + visualReport + acceptanceReport;
   // Exit-code contract for the Stop hook: 0 = verified, 1 = a REAL gate failure
   // (the code is broken), 3 = INFRA failure (gate timed out / could not spawn /
   // killed by signal). The hook hard-blocks only on 1; 3 fails OPEN so a flaky
