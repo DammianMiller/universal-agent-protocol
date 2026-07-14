@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, chmodSync } from 'fs';
+import { spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -15,6 +16,7 @@ import { initializeCacheFromDb, autoWarmCache } from '../memory/speculative-cach
 import { ServerlessQdrantManager } from '../memory/serverless-qdrant.js';
 import { generateScripts, ensurePythonVenv, findPython } from './patterns.js';
 import { isQdrantReachable } from './memory.js';
+import { preflightProject, isGitRepo } from '../delivery/project-preflight.js';
 import { installSystemdUserServices } from './systemd-services.js';
 import { backupInstructionFiles } from './setup-backup.js';
 import type { AgentContextConfig, Platform } from '../types/index.js';
@@ -222,6 +224,30 @@ export async function initCommand(options: InitOptions): Promise<void> {
     configSpinner.fail('Failed to write configuration');
     console.error(chalk.red(error));
     return;
+  }
+
+  // A scaffolded project that is not a git repo CANNOT deliver: the candidate
+  // workspace is worktree-based, so deliver, epics, orchestration and tasks are
+  // all dead — silently. Initialising a repo here is what makes the scaffold
+  // usable out of the box instead of needing the same hand-fix after every
+  // reset. Then seed the always-on orchestrate/epics posture through the very
+  // same self-heal deliver's preflight uses, so the two can never disagree.
+  const repoSpinner = ora('Ensuring the project can deliver...').start();
+  try {
+    if (!isGitRepo(cwd)) {
+      spawnSync('git', ['init', '-q'], { cwd, stdio: 'ignore' });
+      spawnSync('git', ['add', '-A'], { cwd, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-q', '-m', 'chore: UAP scaffold baseline'], { cwd, stdio: 'ignore' });
+    }
+    const pf = preflightProject(cwd);
+    const notes = [...pf.healed, ...(isGitRepo(cwd) ? [] : ['git init failed — deliver will refuse to run'])];
+    repoSpinner.succeed(
+      notes.length > 0 ? `Project ready to deliver (${notes.join('; ')})` : 'Project ready to deliver'
+    );
+  } catch (error) {
+    // Never let scaffold-hardening abort an otherwise good init; deliver's own
+    // preflight is the backstop and reports the same blocker.
+    repoSpinner.warn(`Could not fully prepare the project for deliver: ${String(error).slice(0, 120)}`);
   }
 
   // Create directory structure (never deletes existing)

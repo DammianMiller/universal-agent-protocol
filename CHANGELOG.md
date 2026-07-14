@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.148.17 (2026-07-14)
+
+- fix(init/deliver): **a fresh scaffold could not deliver, and never said so.** `uap init` did not `git init` the project — and deliver runs every candidate in a **git worktree**, so deliver, epics, orchestration and tasks were ALL dead in a newly-scaffolded repo. The mission simply made no progress; nothing reported why. `uap init` now initialises a repo (+ baseline commit) when the project is not one, and `uap deliver` **preflights** the project and refuses to start with the exact fix command rather than burning a whole turn budget on a mission that cannot land. A `--dry-run` only plans (no worktree), so the requirement correctly does not apply to it.
+- fix(deliver): **the always-on orchestrate/epics posture silently vanished on a scaffold reset.** `deliver.orchestrate` / `deliver.epics` were not seeded by `uap init`, so a fresh `.uap.json` left them unset and nothing forced decomposition. Both `init` and deliver's preflight now **self-heal** an absent key to `"on"` (the intended posture) through one shared implementation, so the two can never drift. An explicit `false`/`"off"` is an operator decision and is never overridden.
+
+
 ## v1.148.16 (2026-07-14)
 
 - fix(verify): **`uap verify` could pass VACUOUSLY — the single worst failure mode in the stack.** The `rungs.length === 0` branch returned exit 0 *before* the visual, vision and behavioral gates ran. A single-file web app has no build/test rungs, so a deliverable with no `package.json` was validated by **nothing at all** — and because the completion gate calls `uap verify` unstrict, it saw exit 0 and let the model claim DONE. On the live deliverable this printed `SKIP: no verifiable gates detected` and exited 0, at `fidelity: max`. Now: if entry pages exist, the render gates **still run**; if there is genuinely nothing to look at *and* nothing to run, it is an honest SKIP — but it fails **CLOSED** under `--strict` or max fidelity, because "we could not check anything" must never be reported as "verified".
