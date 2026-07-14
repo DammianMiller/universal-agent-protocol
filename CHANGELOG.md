@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.149.6 (2026-07-14)
+
+- fix(worktree): **a worktree had NO hooks — a hole straight through every gate.** `git worktree add` materializes only TRACKED files, and the hook scripts are untracked, so a fresh worktree came up with no `.opencode/hooks`: **no gate ran at all**, and an agent working there wrote source **completely ungated** — no routing to deliver, no self-protect, no infra-protect. Observed live: the opencode client was working inside `.worktrees/001-dev-environment-setup` with zero enforcement present, and **nothing was being routed** (no `pending-deliver.jsonl`, no `autoroute.log`) because no hook existed to route it. Every "all work goes through deliver" guarantee was void inside that directory. `uap worktree` now installs the hooks into each new worktree. Only the hook FILES need to travel — the gate already anchors the policy DB and the enforcers to `MAIN_ROOT`, so a worktree inherits the parent's 34 policies automatically once a hook is there to run. If hook installation fails, worktree creation still succeeds but warns **loudly** that work there will be UNGATED.
+
+
 ## v1.150.0 (2026-07-14)
 
 - feat(deliver): P1 — replayable edit intents, anchored edit_file, bash -n self-gates

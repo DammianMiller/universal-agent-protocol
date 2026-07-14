@@ -142,6 +142,29 @@ async function createWorktree(
     spinner.text = `Creating branch ${branchName}...`;
     await git.raw(['worktree', 'add', '-b', branchName, worktreePath, branchBase]);
 
+    // A worktree WITHOUT the hooks is a hole straight through every gate.
+    // `git worktree add` materializes only TRACKED files, and the hook scripts are
+    // untracked — so a fresh worktree has no .opencode/hooks, no gate runs, and an
+    // agent working there writes source completely UNGATED: no routing to deliver,
+    // no self-protect, no infra-protect. Observed live: the client was working in
+    // `.worktrees/001-dev-environment-setup` with zero enforcement, and nothing was
+    // being routed at all.
+    //
+    // Only the hook FILES need copying: the gate already anchors the policy DB and
+    // the enforcers to MAIN_ROOT (see uap-policy-gate.sh), so a worktree inherits
+    // the parent's policies automatically once a hook is actually there to run.
+    spinner.text = 'Installing enforcement hooks into the worktree...';
+    try {
+      const { hooksCommand } = await import('./hooks.js');
+      await hooksCommand('install', { projectDir: worktreePath });
+    } catch (err) {
+      // Never fail worktree creation over this — but say so loudly, because an
+      // unhooked worktree silently bypasses enforcement.
+      spinner.warn(
+        `Worktree created, but hooks could not be installed — work there will be UNGATED: ${String(err).slice(0, 120)}`
+      );
+    }
+
     // Register in DB to prevent race conditions
     const db = getWorktreeDb(cwd);
     db.prepare(
