@@ -705,12 +705,15 @@ program
 
 program
   .command('plan')
-  .description('Record/inspect plan validation (validate-plan-on-change gate): `uap plan validate` after running `validate the plan`')
+  .description('Validate + record plan validation (validate-plan-on-change gate): `uap plan validate [file]` reviews the plan, then stamps')
   .argument('[action]', 'validate | status (omit to show status)')
+  .argument('[file]', 'plan artifact to review (validate only; default: newest plan-like .md)')
   .option('--json', 'Emit JSON')
-  .action(async (action, options) => {
+  .option('--no-review', 'Skip the model review (stamp only)')
+  .option('--force', 'Stamp even when the review verdict is fail (justify in the PR)')
+  .action(async (action, file, options) => {
     const cmd = await lazy.plan();
-    await cmd(action, { json: Boolean(options.json) });
+    await cmd(action, { json: Boolean(options.json), file, review: options.review, force: Boolean(options.force) });
   });
 
 // Paired UAP benchmark — controlled UAP-on vs UAP-off A/B

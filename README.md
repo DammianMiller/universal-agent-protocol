@@ -194,6 +194,15 @@ npm run bench      # benchmark suite
 
 ---
 
+## Acknowledgements
+
+UAP implements ideas from published research and community engineering — the
+Atomic Task Graph paper ([arXiv 2607.01942](https://arxiv.org/abs/2607.01942))
+behind the plan-validation/minimal-repair delivery uplifts, vLLM Semantic
+Router's serving-layer recipes, Anthropic's loop-engineering practices, and
+Google Labs' DESIGN.md, among others. Full credits and the attribution
+convention: [docs/ATTRIBUTION.md](docs/ATTRIBUTION.md).
+
 ## License
 
 MIT © Miller Tech. See [LICENSE](LICENSE).

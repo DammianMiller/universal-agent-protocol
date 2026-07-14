@@ -60,6 +60,15 @@ export {
 } from './decompose.js';
 
 export {
+  validatePhaseGraph,
+  parsePlanVerdict,
+  runPlanThoughtExperiment,
+  reviewPlanText,
+  type PhaseGraphValidation,
+  type PlanReviewVerdict,
+} from './plan-check.js';
+
+export {
   autoMineHaloTraces,
   summarizeWeaknesses,
   isAutoMineEnabled,
