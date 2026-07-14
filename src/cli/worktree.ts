@@ -157,6 +157,12 @@ async function createWorktree(
     try {
       const { hooksCommand } = await import('./hooks.js');
       await hooksCommand('install', { projectDir: worktreePath });
+      // Hooks alone are INERT for opencode: its gate runs from the .opencode
+      // plugin, and the deliver tool is reached through the MCP router config.
+      // Installing the hook scripts without wiring these leaves the files sitting
+      // there doing nothing — which looks fixed and is not.
+      const { wireDeliverMcp } = await import('./deliver-defaults.js');
+      wireDeliverMcp(worktreePath);
     } catch (err) {
       // Never fail worktree creation over this — but say so loudly, because an
       // unhooked worktree silently bypasses enforcement.

@@ -22,6 +22,7 @@ import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { hooksCommand } from '../../src/cli/hooks.js';
+import { wireDeliverMcp } from '../../src/cli/deliver-defaults.js';
 
 const sh = (cmd: string, cwd: string): void => { spawnSync('bash', ['-c', cmd], { cwd, stdio: 'ignore' }); };
 
@@ -53,5 +54,19 @@ describe('a worktree must inherit enforcement', () => {
     // The policy gate — the script that routes every write through deliver.
     expect(existsSync(join(wt, '.opencode', 'hooks', 'uap-policy-gate.sh'))).toBe(true);
     expect(existsSync(join(wt, '.claude', 'hooks', 'uap-policy-gate.sh'))).toBe(true);
+    // ...and the opencode PLUGIN, which is what actually runs that gate. Hooks
+    // without the plugin are inert files: they look installed and enforce nothing.
+    expect(existsSync(join(wt, '.opencode', 'plugin'))).toBe(true);
+  }, 30_000);
+
+  it('wires the deliver tool too — an unwired worktree cannot route to deliver', () => {
+    const wt = join(root, '.worktrees', 'wired');
+    mkdirSync(join(root, '.worktrees'), { recursive: true });
+    sh(`git worktree add -q -b feature/wired ${JSON.stringify(wt)}`, root);
+
+    wireDeliverMcp(wt);
+
+    // The MCP router config is how the agent reaches `uap deliver` at all.
+    expect(existsSync(join(wt, '.mcp.json'))).toBe(true);
   }, 30_000);
 });
