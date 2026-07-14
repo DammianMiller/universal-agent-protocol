@@ -149,6 +149,13 @@ import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWi
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
 import { installRunExitRecorder } from '../delivery/run-exit.js';
+import {
+  shouldDetach,
+  relaunchDetached,
+  isDetachedChild,
+  canHostDetachLog,
+  NO_DETACH_ENV,
+} from './deliver-detach.js';
 import { extractContract } from '../delivery/contract-extractor.js';
 import type { OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
 import type { LifecycleHintProvider } from '../delivery/decompose.js';
@@ -522,6 +529,24 @@ export function acquireDeliverLock(projectRoot: string): (() => void) | null {
 }
 
 export async function deliverCommand(instruction: string, options: DeliverOptions): Promise<void> {
+  // A mission must outlive the tool call that started it. An agent's bash tool
+  // is a short-lived, process-group-killed container; a model that runs
+  // `uap deliver` from it was spawning a long mission inside a short one, and
+  // the mission died wherever it happened to be when the call ended. Re-launch
+  // into our own session first, then mirror the output (see deliver-detach.ts).
+  const projectRootForDetach = resolve(options.projectRoot ?? process.cwd());
+  const decision = shouldDetach({
+    alreadyDetached: isDetachedChild(),
+    noDetach: process.env[NO_DETACH_ENV] === '1',
+    isTTY: Boolean(process.stdout.isTTY),
+    dryRun: Boolean(options.dryRun),
+  });
+  if (decision.detach && canHostDetachLog(projectRootForDetach)) {
+    const stamp = new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15);
+    process.exitCode = await relaunchDetached(projectRootForDetach, stamp);
+    return;
+  }
+
   try {
     await runDeliver(instruction, options);
   } catch (err) {
