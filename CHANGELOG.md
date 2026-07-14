@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.148.25 (2026-07-14)
+
+- fix(verifier-ladder): **Rust tests did not block — a Rust project could deliver with FAILING tests.** `cargo-test` carried a lone, uncommented `required: false`, while every other language's test rung (npm `test`, `pytest`, `ctest`, `go-test`, `dotnet-test`) blocks. Rust is now consistent with the rest. A pre-existing red suite is not punished: baseline-delta gating already demotes rungs that were failing at preflight, so only NEW breakage blocks.
+- fix(verifier-ladder): **"there were no tests" must never read as "the tests passed".** The ladder decides on EXIT CODE alone, so a suite with ZERO tests is indistinguishable from one that passed — `cargo test` on a crate with no tests exits 0. A live mission delivered a Rust crate whose entire test result was `0 passed; 0 failed`: compiled, gated, "delivered", and **never tested at all**. New `testsActuallyRan()` reads the runner's own output (cargo, pytest, go, vitest/jest, dotnet, ctest); a test rung that passed having run zero tests is flagged, reported plainly, and at **max fidelity it BLOCKS**. It returns null for a runner it cannot read — we never block on a guess.
+
+
 ## v1.148.21 (2026-07-14)
 
 - fix(agentic-executor): **stop advertising a tool we refuse to run — it was burning three quarters of the turn budget.** `run_bash` was offered in the tool schema unconditionally and then REFUSED at execution time whenever the run was not sandboxed. The model does what the menu says: on a live mission it spent **58 of its 79 tool calls on `run_bash` — every one bounced** — and managed only 21 writes. And it was not probing the sandbox: every attempt was read-only (`cat` ×44, `wc`, `find`, `ls`, `head`); it simply reached for the shell it had been shown. The tool list is now built from what will actually execute, so a disabled `run_bash` never appears. The execution-time containment check stays as the backstop.

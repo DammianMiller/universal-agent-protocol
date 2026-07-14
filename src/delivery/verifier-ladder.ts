@@ -101,6 +101,12 @@ export interface RungResult {
   durationMs: number;
   /** Tail of combined stdout+stderr, truncated for prompt injection */
   outputTail: string;
+  /**
+   * True when this is a TEST rung that exited 0 having run ZERO tests. Passing
+   * because there is nothing to run is not evidence of anything — see
+   * testsActuallyRan.
+   */
+  zeroTests?: boolean;
 }
 
 export interface LadderResult {
@@ -120,6 +126,11 @@ export interface LadderOptions {
   outputTailChars?: number;
   /** Default per-rung timeout in ms (default 300000) */
   timeoutMs?: number;
+  /**
+   * Fail a test rung that exited 0 having run ZERO tests. Set at max fidelity:
+   * "there were no tests" must never read as "the tests passed".
+   */
+  requireTestsRan?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -501,7 +512,13 @@ export function detectCargoRungs(projectRoot: string, timeoutMs: number = DEFAUL
       name: 'Tests (cargo test --workspace)',
       command: 'cargo',
       args: ['test', '--workspace'],
-      required: false,
+      // BLOCKING, like every other language's test rung (npm `test`, pytest,
+      // ctest, go-test, dotnet-test all default to required). Rust's was the lone
+      // `required: false`, with no comment saying why — so a Rust project could
+      // deliver with FAILING tests while an identical Node one could not. A
+      // pre-existing red suite is not punished: baseline-delta gating demotes
+      // rungs that were already failing at preflight, so only NEW breakage blocks.
+      required: true,
       timeoutMs: cargoTimeoutMs,
       tier: 'fast',
     },
@@ -753,7 +770,12 @@ export function truncateTail(text: string, maxChars: number): string {
 }
 
 /** Run a single rung synchronously in the project root. */
-export function runRung(rung: GateRung, projectRoot: string, tailChars: number = DEFAULT_TAIL_CHARS): RungResult {
+export function runRung(
+  rung: GateRung,
+  projectRoot: string,
+  tailChars: number = DEFAULT_TAIL_CHARS,
+  requireTestsRan = false
+): RungResult {
   const start = Date.now();
   const res = spawnSync(rung.command, rung.args, {
     cwd: projectRoot,
@@ -767,7 +789,19 @@ export function runRung(rung: GateRung, projectRoot: string, tailChars: number =
   const exitCode = res.status;
   // A spawn error / signal leaves status null — never a pass, whatever the
   // rung's passExitCodes say.
-  const passed = exitCode !== null && (rung.passExitCodes ?? [0]).includes(exitCode);
+  let passed = exitCode !== null && (rung.passExitCodes ?? [0]).includes(exitCode);
+
+  // "There were no tests" must never read as "the tests passed". The ladder
+  // otherwise decides on exit code alone, so a suite with ZERO tests is
+  // indistinguishable from one that passed — a live mission delivered a Rust
+  // crate whose entire test result was `0 passed; 0 failed`: compiled, gated,
+  // "delivered", never tested. Only flip a PASS to a fail, and only when the
+  // runner explicitly reported zero (testsActuallyRan returns null when it
+  // cannot tell — we never block on a guess).
+  const combinedForTests = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+  const ran = passed ? testsActuallyRan(rung.id, combinedForTests) : null;
+  const zeroTests = ran === false;
+  if (zeroTests && requireTestsRan) passed = false;
 
   // spawnSync reports timeouts/missing binaries via res.error (+ res.signal),
   // with status null and empty output — without this the model would get a
@@ -801,6 +835,7 @@ export function runRung(rung: GateRung, projectRoot: string, tailChars: number =
     failureReason,
     durationMs,
     outputTail: passed ? '' : truncateTail(combined, tailChars),
+    ...(zeroTests ? { zeroTests: true } : {}),
   };
 }
 
@@ -848,6 +883,71 @@ export function formatFeedback(results: RungResult[], rungs: GateRung[]): string
 }
 
 /** Run the full ladder, honoring fail-fast for required rungs. */
+
+/**
+ * Did this test rung actually RUN any tests?
+ *
+ * The ladder decides purely on exit code, so a suite with NO tests is
+ * indistinguishable from a suite that passed: `cargo test` on a crate with zero
+ * tests exits 0, and the gate calls it verified. A live mission delivered a Rust
+ * crate whose entire test result was `0 passed; 0 failed` — compiled, gated,
+ * "delivered", and never tested at all.
+ *
+ * Passing because there was nothing to run is not evidence of anything.
+ *
+ * Returns false when the runner clearly reports zero tests, true when it clearly
+ * ran some, and null when we cannot tell (an unknown runner — never guess, and
+ * never block on a guess).
+ */
+export function testsActuallyRan(rungId: string, output: string): boolean | null {
+  const out = output.toLowerCase();
+
+  // Rust: every test binary prints `test result: ok. N passed; ...`. A workspace
+  // prints one line per binary, so tests ran iff ANY line reports a non-zero count.
+  if (rungId.startsWith('cargo-test') || rungId === 'cargo-test') {
+    const results = [...out.matchAll(/test result:\s*\w+\.\s*(\d+)\s+passed;\s*(\d+)\s+failed/g)];
+    if (results.length === 0) return null;
+    return results.some((m) => Number(m[1]) + Number(m[2]) > 0);
+  }
+
+  // Python
+  if (rungId.includes('pytest')) {
+    if (/no tests ran|collected 0 items/.test(out)) return false;
+    if (/\d+ (passed|failed)/.test(out)) return true;
+    return null;
+  }
+
+  // Go: `?   pkg  [no test files]` for every package means nothing ran.
+  if (rungId.startsWith('go-test')) {
+    if (/^(ok|---\s*(pass|fail))/m.test(out)) return true;
+    if (/\[no test files\]/.test(out)) return false;
+    return null;
+  }
+
+  // JS/TS (vitest / jest)
+  if (rungId === 'test' || rungId.includes('vitest') || rungId.includes('jest')) {
+    if (/no test files found|no tests found|found 0 test/.test(out)) return false;
+    if (/tests?\s+\d+\s+passed|\d+\s+(passed|failed)/.test(out)) return true;
+    return null;
+  }
+
+  // .NET
+  if (rungId.startsWith('dotnet-test')) {
+    const m = out.match(/passed:\s*(\d+).*?failed:\s*(\d+)/s);
+    if (m) return Number(m[1]) + Number(m[2]) > 0;
+    return null;
+  }
+
+  // CTest
+  if (rungId === 'ctest') {
+    if (/no tests were found/.test(out)) return false;
+    if (/tests passed|\d+ tests? failed/.test(out)) return true;
+    return null;
+  }
+
+  return null; // not a runner we can read — do not guess
+}
+
 export function runLadder(
   rungs: GateRung[],
   projectRoot: string,
@@ -873,7 +973,7 @@ export function runLadder(
       continue;
     }
 
-    const result = runRung(rung, projectRoot, tailChars);
+    const result = runRung(rung, projectRoot, tailChars, options.requireTestsRan ?? false);
     results.push(result);
 
     if (!result.passed && rung.required && failFast) {
@@ -964,6 +1064,9 @@ export async function runTieredLadder(
     failFast: options.failFast,
     outputTailChars: tailChars,
     timeoutMs: options.timeoutMs,
+    // Forwarding this is load-bearing: without it, a zero-test rung is detected
+    // and reported but never actually BLOCKS — the gate still prints VERIFIED.
+    requireTestsRan: options.requireTestsRan,
   };
 
   // Group rungs by tier, preserving insertion order within a tier.
