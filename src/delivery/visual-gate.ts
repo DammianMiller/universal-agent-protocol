@@ -25,6 +25,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
+import { PNG } from 'pngjs';
 import { startStaticServer } from './execution-gate.js';
 
 /** Browser surface the gate needs (satisfied by src/browser WebBrowser). */
@@ -127,9 +128,61 @@ const MAX_DOMINANT_RATIO = 0.98;
 /** rAF pages must move at least this fraction of grid cells across samples. */
 const MIN_MOTION_RATIO = 0.02;
 
+/**
+ * Sample a SCREENSHOT on the same GRID×GRID lattice and 4-bit quantization as the
+ * in-page probe, so the two are directly comparable.
+ *
+ * This is the SOURCE OF TRUTH, because it measures what the compositor actually
+ * painted — regardless of rendering technology.
+ *
+ * The in-page probe cannot: it calls `canvas.getContext('2d')`, but a canvas can
+ * own only ONE context type, so on a WebGL canvas (Three.js, Babylon, PixiJS-WebGL,
+ * raw WebGL) that returns null and the probe reads nothing. Every such app therefore
+ * measured as "0 distinct colors / 100% dominant / 0% motion" and FALSELY failed as
+ * a blank render — while the very screenshots this gate saves showed the app
+ * rendering perfectly (the vision reviewer, reading those same PNGs, scored one 6/10
+ * and described its lighting and stickers). The model was then told to fix a blank
+ * canvas that did not exist, and rebuilt a working renderer over and over.
+ *
+ * Returns null when the PNG can't be decoded, so the caller falls back to the probe.
+ */
+export function sampleScreenshot(
+  path: string
+): { cells: string[]; distinctColors: number; dominantRatio: number } | null {
+  try {
+    const png = PNG.sync.read(readFileSync(path));
+    const { width, height, data } = png;
+    if (!width || !height) return null;
+    const N = GRID;
+    const colors: Record<string, number> = {};
+    const cells: string[] = [];
+    for (let gy = 0; gy < N; gy++) {
+      for (let gx = 0; gx < N; gx++) {
+        const x = Math.floor(((gx + 0.5) * width) / N);
+        const y = Math.floor(((gy + 0.5) * height) / N);
+        const i = (y * width + x) * 4;
+        // Same 4-bit-per-channel quantization as PIXEL_PROBE.
+        const key = `${data[i] >> 4},${data[i + 1] >> 4},${data[i + 2] >> 4}`;
+        colors[key] = (colors[key] ?? 0) + 1;
+        cells.push(key);
+      }
+    }
+    const counts = Object.values(colors);
+    if (cells.length === 0) return null;
+    return {
+      cells,
+      distinctColors: counts.length,
+      dominantRatio: Math.max(...counts) / cells.length,
+    };
+  } catch {
+    return null; // undecodable → caller falls back to the in-page probe
+  }
+}
+
 /** In-page probe: sample the largest canvas on a GRID×GRID grid. Returns JSON.
  * NOTE: a function EXPRESSION (not self-invoked) — WebBrowser.evaluate wraps
- * string scripts as `return (<script>)()`, supplying the invocation itself. */
+ * string scripts as `return (<script>)()`, supplying the invocation itself.
+ * FAST-PATH ONLY — see sampleScreenshot: this cannot read a WebGL canvas. */
 const PIXEL_PROBE = `(function () {
   var canvases = Array.prototype.slice.call(document.querySelectorAll('canvas'));
   if (canvases.length === 0) return JSON.stringify({ canvas: false });
@@ -401,13 +454,29 @@ export async function runVisualGate(
 
       const last = probes[probes.length - 1] ?? { canvas: false };
       const first = probes.find((p) => p.readable);
+
+      // SCREENSHOTS ARE THE SOURCE OF TRUTH — they capture what was actually
+      // painted, for ANY rendering technology (WebGL, 2D canvas, CSS 3D, SVG, DOM).
+      // The in-page canvas probe is kept as a cheap fast-path/fallback, but it is
+      // blind to a WebGL canvas (see sampleScreenshot), which made every Three.js
+      // app falsely fail as "blank". Motion becomes a real frame-to-frame diff of
+      // what was rendered, rather than of pixels the probe could never read.
+      const shotStats = shots
+        .map((s) => sampleScreenshot(s))
+        .filter((s): s is NonNullable<ReturnType<typeof sampleScreenshot>> => s !== null);
+      const shotFirst = shotStats[0];
+      const shotLast = shotStats[shotStats.length - 1];
+
       const base: Omit<PageVisualReport, 'problems'> = {
         file,
         loaded,
         hasCanvas: Boolean(last.canvas),
-        distinctColors: last.distinctColors ?? 0,
-        dominantRatio: last.dominantRatio ?? 1,
-        motionRatio: motionBetween(first?.cells, last.cells),
+        distinctColors: shotLast?.distinctColors ?? last.distinctColors ?? 0,
+        dominantRatio: shotLast?.dominantRatio ?? last.dominantRatio ?? 1,
+        motionRatio:
+          shotFirst && shotLast
+            ? motionBetween(shotFirst.cells, shotLast.cells)
+            : motionBetween(first?.cells, last.cells),
         expectsAnimation,
         runtimeErrors: errors,
         failedRequests,
