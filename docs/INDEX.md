@@ -108,3 +108,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 ## Contributing
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for dev setup, the worktree workflow, completion gates, and PR conventions.
+
+## Attribution
+
+See [ATTRIBUTION.md](ATTRIBUTION.md) for the research papers, community write-ups, and open-source projects whose ideas UAP implements — and the convention for crediting new inspirations.

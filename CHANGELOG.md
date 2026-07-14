@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.149.1 (2026-07-14)
+
+- chore: bump version to 1.149.0
+- feat(delivery): ATG uplifts — pre-execution plan validation, minimal node repair, dependency-aware parallel dispatch
+
+
+## v1.149.0 (2026-07-14)
+
+- feat(delivery): ATG uplifts — pre-execution plan validation, minimal node repair, dependency-aware parallel dispatch
+
 ## v1.148.25 (2026-07-14)
 
 - fix(verifier-ladder): **Rust tests did not block — a Rust project could deliver with FAILING tests.** `cargo-test` carried a lone, uncommented `required: false`, while every other language's test rung (npm `test`, `pytest`, `ctest`, `go-test`, `dotnet-test`) blocks. Rust is now consistent with the rest. A pre-existing red suite is not punished: baseline-delta gating already demotes rungs that were failing at preflight, so only NEW breakage blocks.
@@ -13,13 +23,10 @@
 
 - fix(agentic-executor): **the agent could not read the acceptance gate it was judged against.** `.uap-deliver/verify.sh` is the self-authored acceptance script — it IS the specification the agent must satisfy — but it sat inside `.uap-deliver/`, which the agent-internal path guard blanket-blocked as "internal state". So the agent could not see its own criteria, and it looped trying: **6 refused reads in one live mission, with the proxy's ERROR-LOOP firing 5 times**, while the spec it needed was one refusal away. The gate is now **readable**, and **still unwritable** — reading it means targeting the real criteria; rewriting it would be the agent rigging its own gate, which is not passing it. Every other internal path (`.uap/`, `.git/`, run state) stays blocked exactly as before.
 
-<<<<<<< HEAD
-=======
 ## v1.148.22 (2026-07-14)
 
 - feat(init/preflight): **every enforcement surface is now ON by default — a scaffolded project was only enforcing a fraction of what it appeared to.** Three defaults were silently absent from a fresh (or freshly RESET) project, each downgrading the pipeline while it still *looked* configured: (1) **`fidelity: max` was unset**, so the visual, vision and acceptance gates ran ADVISORY rather than blocking — a deliverable could read as verified while nothing actually gated it; (2) **`delivery: {enforcement: block, localMode: deliver, runtimeVerify: true}` was unset**, so work was not reliably routed through `uap deliver`; (3) **`uap init` seeded only 2 of 34 policies** (delivery-enforcement + self-protect) — the other 32 were merely *available*, including **`enforcement-infra-protect`**, the policy that stops a model killing llama-server and stealing its port (which one has actually done). All three now come up on their own: init installs + enables **every** built-in policy with its enforcer attached, and the preflight self-heal seeds the full config posture — so existing projects heal on their next `deliver`, not just new ones. An EXPLICIT operator value is never overridden: this sets the default, it does not take the choice away (`uap policy disable <name>` still works).
 
->>>>>>> origin/master
 
 ## v1.148.21 (2026-07-14)
 
