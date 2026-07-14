@@ -415,6 +415,22 @@ export function runTool(
       const internal = agentInternalReason(projectRoot, abs);
       if (internal) return internal;
       if (!existsSync(abs)) return `ERROR: file not found: ${args.path}`;
+      // read_file on a DIRECTORY threw a raw `EISDIR: illegal operation on a
+      // directory` — an error the model cannot act on, so it retried and the
+      // proxy's ERROR-LOOP guard fired. But its intent is obvious: it wants to
+      // see what is in there. Serve that intent instead of failing, and name the
+      // right tool for next time. A wasted turn becomes a useful one.
+      if (statSync(abs).isDirectory()) {
+        const entries = readdirSync(abs)
+          .filter((e) => !AGENT_INTERNAL_DIRS.includes(e))
+          .map((e) => (statSync(join(abs, e)).isDirectory() ? `${e}/` : e))
+          .join('\n')
+          .slice(0, 4000);
+        return (
+          `NOTE: '${String(args.path)}' is a DIRECTORY, not a file — use list_dir for it. ` +
+          `Its contents:\n${entries}`
+        );
+      }
       return readFileSync(abs, 'utf-8').slice(0, 8000);
     }
     if (name === 'list_dir') {

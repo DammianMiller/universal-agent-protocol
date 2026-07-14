@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // Unit tests must never contend with live delivery infrastructure
+    // (model-slot lease backpressure) — see test/setup-env.ts.
+    setupFiles: ['test/setup-env.ts'],
     include: ['test/**/*.test.ts'],
     exclude: ['**/.worktrees/**', 'test/benchmarks/**', 'node_modules/**', 'benchmark-results/**'],
     watch: false,
