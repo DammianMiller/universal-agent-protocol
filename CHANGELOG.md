@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.149.1 (2026-07-14)
+
+- chore: bump version to 1.149.0
+- feat(delivery): ATG uplifts — pre-execution plan validation, minimal node repair, dependency-aware parallel dispatch
+
+
 ## v1.149.0 (2026-07-14)
 
 - feat(delivery): ATG uplifts — pre-execution plan validation, minimal node repair, dependency-aware parallel dispatch
