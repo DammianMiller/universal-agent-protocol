@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.148.14 (2026-07-14)
+
+- fix(visual-gate): **report external resources that FAILED to load — the gate was throwing away the one signal that explains a blank render.** The browser has always captured `requestfailed`, but the gate filtered `getErrors()` down to `pageerror` only and discarded the rest. So when a model built an app that loads its framework from a CDN, the headless validation browser (no network) couldn't fetch it, the page rendered blank, and the gate reported *"canvas renders below the visual floor (0 distinct colors < 3 required)"* — sending the model off to rewrite a **renderer that was never the problem**. It rebuilt the same CDN-dependent app three times in one session, because nothing ever told it the dependency simply had not loaded. Failed requests are now reported **first** (the blank canvas is a *consequence*, not the cause), naming the failed URLs and stating the fix: the validation browser has NO NETWORK — **vendor the dependency locally**, do not rewrite the rendering logic.
+
 ## v1.148.13 (2026-07-13)
 
 - fix(agentic-executor): **the deliver agent can no longer read, list, or write its own machinery.** Observed live: a routed deliver run spent **5 of its 10 tool calls** recursing into `.uap/deliver-runs/<its own run>/state.json`, `.uap/autoroute.log` and the lock files — half of a tight budget gone, so it could never converge on the actual deliverable (one call even errored, `read_file .uap/deliver-runs` → EISDIR, burning another turn). `read_file`/`list_dir`/`write_file` now refuse `.uap/`, `.uap-deliver/`, `.git/` and `node_modules/`, and those dirs are **hidden from listings entirely** so the agent is never tempted. This is the protected-path guard `agentic-executor.ts`'s own scope note asked for.

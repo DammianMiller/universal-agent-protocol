@@ -63,6 +63,17 @@ export interface PageVisualReport {
   /** Whether the page source demands animation (requestAnimationFrame). */
   expectsAnimation: boolean;
   runtimeErrors: string[];
+  /**
+   * External resources that FAILED to load (script/style/font/image). Previously
+   * captured by the browser and then thrown away, which made the gate's feedback
+   * actively misleading: a page whose CDN <script> never downloaded renders a
+   * blank canvas, so the model was told "canvas renders below the visual floor
+   * (0 distinct colors)" and went off rewriting its rendering code — three times
+   * in one session it rebuilt the same CDN-dependent app, because nothing ever
+   * told it the dependency simply had not loaded. The validation browser has no
+   * network; the fix is to vendor the dependency, not to touch the renderer.
+   */
+  failedRequests: string[];
   screenshots: string[];
   /** Failures for THIS page (empty = visually sound). */
   problems: string[];
@@ -253,6 +264,21 @@ export function judgePage(
     problems.push('page did not load');
     return problems;
   }
+  // FIRST — before any "blank canvas" verdict. If the page's dependencies never
+  // downloaded, every downstream symptom (no colors, no motion, no canvas) is a
+  // CONSEQUENCE of that, and reporting those first sends the model to rewrite a
+  // renderer that was never the problem. Name the failed URLs and say what to do.
+  if ((report.failedRequests?.length ?? 0) > 0) {
+    const urls = report.failedRequests.slice(0, 3).map((u) => u.slice(0, 160));
+    const more = report.failedRequests.length > 3 ? ` (+${report.failedRequests.length - 3} more)` : '';
+    problems.push(
+      `${report.failedRequests.length} external resource(s) FAILED to load: ${urls.join(', ')}${more}. ` +
+        'The validation browser has NO NETWORK — a CDN <script>/<link> cannot download, so the page renders ' +
+        'blank no matter how correct your code is. Do NOT rewrite the rendering logic: VENDOR the dependency ' +
+        'locally (bundle/copy it into the project and reference it by relative path) or drop it and use ' +
+        'built-in web APIs.'
+    );
+  }
   if (report.runtimeErrors.length > 0) {
     problems.push(`uncaught runtime error(s) during observation: ${report.runtimeErrors[0].slice(0, 200)}`);
   }
@@ -364,10 +390,13 @@ export async function runVisualGate(
         probes = [];
         loaded = false;
       }
-      const errors = browser
-        .getErrors()
-        .filter((e) => e.kind === 'pageerror')
-        .map((e) => e.message);
+      const observed = browser.getErrors();
+      const errors = observed.filter((e) => e.kind === 'pageerror').map((e) => e.message);
+      // Do NOT discard failed requests: when a page loads its framework from a CDN
+      // and the validation browser has no network, this is the ONLY signal that
+      // explains the blank render. Dropping it is what made the gate's feedback
+      // point the model at the wrong file.
+      const failedRequests = observed.filter((e) => e.kind === 'requestfailed').map((e) => e.message);
       await browser.close().catch(() => undefined);
 
       const last = probes[probes.length - 1] ?? { canvas: false };
@@ -381,6 +410,7 @@ export async function runVisualGate(
         motionRatio: motionBetween(first?.cells, last.cells),
         expectsAnimation,
         runtimeErrors: errors,
+        failedRequests,
         screenshots: shots,
       };
       const pageTargets = { ...visualTargets, ...(visualTargets.pages?.[file] ?? {}) };
