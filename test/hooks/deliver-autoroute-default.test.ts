@@ -58,3 +58,29 @@ print(json.dumps(d))
     expect(d.message).toContain('uap deliver');
   });
 });
+
+describe('deliver_autoroute records replayable edit intents (P1, plan D1)', () => {
+  it('the intent carries the blocked edit\'s old/new content', () => {
+    const out = runPy(`${LOAD}
+d = m.decide(
+    {"reason": "BLOCKED", "route": "deliver", "deliverHint": "implement x"},
+    "Edit",
+    {"file_path": "/tmp/proj/src/a.ts", "old_string": "const x = 1;", "new_string": "const x = 2;"},
+    False, set())
+print(json.dumps(d["intent"]))
+`);
+    const intent = JSON.parse(out);
+    expect(intent.edit).toEqual({ old_string: 'const x = 1;', new_string: 'const x = 2;' });
+  });
+
+  it('prefers the enforcer-provided editIntent payload', () => {
+    const out = runPy(`${LOAD}
+d = m.decide(
+    {"reason": "BLOCKED", "route": "deliver", "deliverHint": "implement x",
+     "editIntent": {"content": "whole file"}},
+    "Write", {"file_path": "/tmp/proj/src/b.ts", "content": "raw"}, False, set())
+print(json.dumps(d["intent"]))
+`);
+    expect(JSON.parse(out).edit).toEqual({ content: 'whole file' });
+  });
+});

@@ -58,6 +58,20 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
                 "file_path": file_path, "hint": hint, "intent": None}
 
     intent = {"ts": int(time.time()), "tool": tool, "file_path": file_path, "hint": hint}
+    # P1 (plan D1): persist the blocked edit's actual old/new content (from the
+    # enforcer's editIntent, falling back to the raw tool args) so the intent
+    # is REPLAYABLE via `uap deliver --pending <file>` instead of a blind hint.
+    edit_intent = out.get("editIntent") or {
+        k: v
+        for k, v in (
+            ("old_string", args.get("old_string")),
+            ("new_string", args.get("new_string")),
+            ("content", args.get("content")),
+        )
+        if isinstance(v, str)
+    }
+    if edit_intent:
+        intent["edit"] = edit_intent
     spawn = bool(autoroute_on and hint and file_path and file_path not in seen_files)
     message = reason
     if spawn:

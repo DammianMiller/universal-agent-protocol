@@ -226,3 +226,68 @@ describe('lockContractFiles (contracts-first epics)', () => {
     expect(lockContractFiles(lock, root, ['src/registry.ts'])).toEqual([]);
   });
 });
+
+describe('edit_file tool (P1, plan D3)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agx-edit-'));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src/big.ts'), 'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n');
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  const call = (name: string, args: object, id = 't1') =>
+    ({ content: null, tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
+
+  it('applies an exact-once anchored replacement without re-emitting the file', async () => {
+    mockChatSequence([
+      call('edit_file', { path: 'src/big.ts', old_string: 'export const b = 2;', new_string: 'export const b = 20;' }),
+      call('finish', { summary: 'done' }, 't2'),
+    ]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('bump b');
+    const out = readFileSync(join(dir, 'src/big.ts'), 'utf-8');
+    expect(out).toContain('b = 20');
+    expect(out).toContain('a = 1');
+    expect(out).toContain('c = 3');
+  });
+
+  it('refuses ambiguous or missing anchors with an actionable error', async () => {
+    writeFileSync(join(dir, 'src/big.ts'), 'dup;\ndup;\n');
+    mockChatSequence([
+      call('edit_file', { path: 'src/big.ts', old_string: 'dup;', new_string: 'once;' }),
+      call('finish', { summary: 'done' }, 't2'),
+    ]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('dedupe');
+    // Ambiguous without occurrence -> unchanged.
+    expect(readFileSync(join(dir, 'src/big.ts'), 'utf-8')).toBe('dup;\ndup;\n');
+  });
+
+  it('occurrence selects the nth match', async () => {
+    writeFileSync(join(dir, 'src/big.ts'), 'dup;\ndup;\n');
+    mockChatSequence([
+      call('edit_file', { path: 'src/big.ts', old_string: 'dup;', new_string: 'second;', occurrence: 2 }),
+      call('finish', { summary: 'done' }, 't2'),
+    ]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('replace second');
+    expect(readFileSync(join(dir, 'src/big.ts'), 'utf-8')).toBe('dup;\nsecond;\n');
+  });
+
+  it('refuses protected test files exactly like write_file', async () => {
+    mkdirSync(join(dir, 'test'), { recursive: true });
+    writeFileSync(join(dir, 'test/x.test.ts'), 'expect(1).toBe(1);\n');
+    mockChatSequence([
+      call('edit_file', { path: 'test/x.test.ts', old_string: 'toBe(1)', new_string: 'toBe(2)' }),
+      call('finish', { summary: 'done' }, 't2'),
+    ]);
+    const protectedFiles = new Set([protectedKey(dir, join(dir, 'test/x.test.ts'))]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1', protectedFiles });
+    await exec('cheat the test');
+    expect(readFileSync(join(dir, 'test/x.test.ts'), 'utf-8')).toContain('toBe(1)');
+  });
+});

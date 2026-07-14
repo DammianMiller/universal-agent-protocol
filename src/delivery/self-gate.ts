@@ -149,6 +149,18 @@ export async function authorAcceptanceGate(opts: SelfGateOptions): Promise<SelfG
     }
     producedAny = true;
 
+    // P0 follow-up (2026-07-13, observed live): a script with a bash SYNTAX
+    // error also "fails on the unsolved repo", which the non-vacuity floor
+    // mis-reads as a discriminating gate — the loop then converges against an
+    // UNSATISFIABLE target (an unbalanced backtick cost a full run). Validate
+    // with `bash -n` and regenerate instead of accepting a broken script.
+    const syntax = spawnSync('bash', ['-n', scriptPath], { encoding: 'utf-8', timeout: 10_000 });
+    if (syntax.status !== 0) {
+      notes.push(`attempt ${attempt}: script failed bash -n (syntax error) — regenerating`);
+      priorFeedback = `the script has a bash syntax error: ${String(syntax.stderr || '').slice(0, 200)}`;
+      continue;
+    }
+
     const run = runGate(scriptPath, projectRoot, timeoutMs);
     if (run.spawnError) {
       notes.push(`attempt ${attempt}: gate failed to run (${run.outputTail.slice(0, 80)})`);

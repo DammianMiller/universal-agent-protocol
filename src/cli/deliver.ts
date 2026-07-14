@@ -28,6 +28,7 @@ import { RoutingPresets, resolvePresetModel } from '../models/types.js';
 import type { TaskComplexity } from '../models/types.js';
 import { measureQueryComplexity } from '../utils/query-complexity.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
+import { applyPendingIntents } from '../delivery/pending-intents.js';
 import { runAcceptanceGate, formatAcceptanceReport, createAcceptanceChurnBreaker, type AcceptanceResult } from '../delivery/acceptance-judge.js';
 import { runExecutionGate } from '../delivery/execution-gate.js';
 import { runVisualGate, visualRuntimeNote } from '../delivery/visual-gate.js';
@@ -298,6 +299,9 @@ export interface DeliverOptions {
   /** `--allow-noop`: permit success without any tree change (disables the
    * anti-no-op acceptance rail for missions that genuinely require none). */
   allowNoop?: boolean;
+  /** `--pending [file]`: replay gate-recorded edit intents deterministically,
+   * verify with the required gates, and exit (plan D1). */
+  pending?: string | boolean;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -542,6 +546,31 @@ export async function deliverCommand(instruction: string, options: DeliverOption
 
 async function runDeliver(instruction: string, options: DeliverOptions): Promise<void> {
   const projectRoot = resolve(options.projectRoot ?? process.cwd());
+
+  // P1 (plan D1): --pending replays gate-recorded edit intents exactly, then
+  // verifies with the required gates — the sanctioned path for a blocked
+  // direct edit, with zero model improvisation.
+  if (options.pending !== undefined && options.pending !== false) {
+    const pendingFile = typeof options.pending === 'string' ? options.pending : undefined;
+    const res = applyPendingIntents(projectRoot, pendingFile);
+    for (const a of res.applied) console.log(chalk.green(`  ✓ applied ${a.kind}: ${a.file}`));
+    for (const s of res.skipped) console.log(chalk.yellow(`  ⚠ skipped ${s.file}: ${s.reason}`));
+    if (res.applied.length === 0) {
+      fail(`No pending intents applied${pendingFile ? ` for ${pendingFile}` : ''} (${res.skipped.length} skipped).`);
+    }
+    const rungs = detectRungs(projectRoot).filter((r) => r.required && tierOf(r) === 'fast');
+    if (rungs.length > 0) {
+      console.log(chalk.cyan(`⚖ verifying ${res.applied.length} applied intent(s) against ${rungs.length} required fast gate(s)…`));
+      const ladder = runLadder(rungs, projectRoot);
+      if (!ladder.passed) {
+        fail(`Applied intents but the required gates FAIL:\n${ladder.feedback}`);
+      }
+      console.log(chalk.green('  ✓ gates pass'));
+    } else {
+      console.log(chalk.yellow('  (no required fast gates detected — applied without verification)'));
+    }
+    return;
+  }
 
   // Concurrency guard: only one deliver runs per project at a time. A dry-run
   // plans nothing and a --resume continues the SAME mission, so both skip the
