@@ -95,6 +95,102 @@ describe('planDeliveryPhases', () => {
   });
 });
 
+describe('planDeliveryPhases pre-execution validation (ATG thought experiment)', () => {
+  const PLAN2 = '[{"id":"a","title":"A","goal":"ga"},{"id":"b","title":"B","goal":"gb"}]';
+  const PLAN3 = '[{"id":"a","title":"A","goal":"ga"},{"id":"m","title":"M","goal":"gm"},{"id":"b","title":"B","goal":"gb"}]';
+
+  it('keeps the plan when the thought experiment passes (plan call + one verdict call)', async () => {
+    const prompts: string[] = [];
+    const phases = await planDeliveryPhases('mission', async (pr) => {
+      prompts.push(pr);
+      return prompts.length === 1 ? PLAN2 : '{"verdict":"pass","findings":[]}';
+    });
+    expect(phases.length).toBe(2);
+    expect(prompts.length).toBe(2);
+    expect(prompts[1]).toContain('plan validator'); // second call is the judge
+  });
+
+  it('re-plans ONCE with the findings when the verdict fails', async () => {
+    const prompts: string[] = [];
+    const phases = await planDeliveryPhases('mission', async (pr) => {
+      prompts.push(pr);
+      if (prompts.length === 1) return PLAN2;
+      if (prompts.length === 2) return '{"verdict":"fail","findings":["missing migration phase"]}';
+      return PLAN3; // the re-plan
+    });
+    expect(prompts.length).toBe(3);
+    expect(prompts[2]).toContain('PLAN REVIEW FINDINGS');
+    expect(prompts[2]).toContain('missing migration phase');
+    expect(phases.length).toBe(3); // the repaired plan won
+  });
+
+  it('keeps the ORIGINAL plan when the re-plan is unusable', async () => {
+    const prompts: string[] = [];
+    const phases = await planDeliveryPhases('mission', async (pr) => {
+      prompts.push(pr);
+      if (prompts.length === 1) return PLAN2;
+      if (prompts.length === 2) return '{"verdict":"fail","findings":["x"]}';
+      return 'garbage — no plan here';
+    });
+    expect(phases.length).toBe(2); // original stands
+  });
+
+  it('honors the opts.thoughtExperiment=false kill switch (single call)', async () => {
+    let calls = 0;
+    const phases = await planDeliveryPhases(
+      'mission',
+      async () => {
+        calls++;
+        return PLAN2;
+      },
+      undefined,
+      { thoughtExperiment: false }
+    );
+    expect(phases.length).toBe(2);
+    expect(calls).toBe(1);
+  });
+
+  it('honors UAP_DELIVER_PLAN_CHECK=0 (single call)', async () => {
+    process.env.UAP_DELIVER_PLAN_CHECK = '0';
+    try {
+      let calls = 0;
+      await planDeliveryPhases('mission', async () => {
+        calls++;
+        return PLAN2;
+      });
+      expect(calls).toBe(1);
+    } finally {
+      delete process.env.UAP_DELIVER_PLAN_CHECK;
+    }
+  });
+
+  it('a STRUCTURAL defect (dependency cycle) triggers the re-plan without a judge call', async () => {
+    const CYCLIC = '[{"id":"a","title":"A","goal":"ga","deps":["b"]},{"id":"b","title":"B","goal":"gb","deps":["a"]}]';
+    const prompts: string[] = [];
+    const phases = await planDeliveryPhases('mission', async (pr) => {
+      prompts.push(pr);
+      return prompts.length === 1 ? CYCLIC : PLAN3;
+    });
+    expect(prompts.length).toBe(2); // plan + re-plan; NO thought-experiment call
+    expect(prompts[1]).toContain('PLAN REVIEW FINDINGS');
+    expect(prompts[1]).toContain('cycle');
+    expect(phases.length).toBe(3); // the structurally-clean re-plan won
+  });
+
+  it('a structurally-INVALID re-plan is rejected — the original plan stands', async () => {
+    const CYCLIC = '[{"id":"a","title":"A","goal":"ga","deps":["b"]},{"id":"b","title":"B","goal":"gb","deps":["a"]}]';
+    const prompts: string[] = [];
+    const phases = await planDeliveryPhases('mission', async (pr) => {
+      prompts.push(pr);
+      if (prompts.length === 1) return PLAN2;
+      if (prompts.length === 2) return '{"verdict":"fail","findings":["x"]}';
+      return CYCLIC; // re-plan is itself defective
+    });
+    expect(phases.map((p) => p.id).sort()).toEqual(['a', 'b']);
+    expect(phases.length).toBe(2); // original kept — never return a worse plan
+  });
+});
+
 describe('phaseInstruction', () => {
   it('carries mission context, the phase goal, and prior-phase summaries', () => {
     const phases = [

@@ -1940,7 +1940,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           taskId: task.id,
           success: r.success,
           turns: r.turns,
-          summary: `${task.goal.slice(0, 160)}${files.length ? ` [files: ${files.join(', ')}]` : ''}`,
+          // ATG minimal repair: a FAILED task's summary must carry the failure
+          // (the retry's only new information), never a goal restatement.
+          summary: r.success
+            ? `${task.goal.slice(0, 160)}${files.length ? ` [files: ${files.join(', ')}]` : ''}`
+            : `${task.goal.slice(0, 120)} — FAILED: ${(r.finalFeedback || 'gates did not pass').slice(0, 280)}`,
           ...(contract ? { contract } : {}),
           ...(newTasks && newTasks.length > 0 ? { newTasks } : {}),
         };
@@ -2077,7 +2081,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         const subGoal =
           `${epic.goal}\n\n(The previous attempt did not complete` +
           `${lastFailure ? `: ${lastFailure.slice(0, 300)}` : ''}. Split this into smaller, independently completable phases.)`;
-        const subs = await planDeliveryPhases(subGoal, verdictExecutor, undefined, { sessionTokenBudget: sessionBudget });
+        // Re-plan is already reactive (the failure is in subGoal) - the extra
+        // thought-experiment judge call buys nothing here; skip it.
+        const subs = await planDeliveryPhases(subGoal, verdictExecutor, undefined, { sessionTokenBudget: sessionBudget, thoughtExperiment: false });
         return subs.length >= 2 ? subs.map((s) => ({ id: s.id, title: s.title, goal: s.goal })) : null;
       },
       onEpic: (epic, outcome) => {

@@ -4,6 +4,28 @@
 
 - fix(deliver): **the zero-test gate was enforced in `uap verify` but NOT in deliver — so a mission could still report "✓ Delivered, all required gates pass" on a crate with no tests at all.** v1.148.25 taught the ladder that a test rung exiting 0 having run ZERO tests is not a pass, and wired it into `uap verify` at max fidelity. But deliver's own convergence loop never passed `requireTestsRan`, and **deliver's ladder is the gate that decides DONE** — so the real door stayed open, and a live mission delivered an untested Rust crate through it. Deliver now resolves the project fidelity and enforces the same rule. Below max fidelity the behaviour is unchanged (reported, not blocking).
 
+## v1.149.3 (2026-07-14)
+
+- fix(agentic-executor): **`read_file` on a directory threw a raw `EISDIR` the model could not act on — so it retried, and the ERROR-LOOP guard fired.** Its intent was never in doubt: it wanted to see what was in there. It now gets the **listing**, plus a note naming `list_dir` for next time. Same principle as removing the phantom `run_bash` from the tool menu and letting the agent read its own acceptance gate: stop punishing the model for a reasonable move the harness handled badly. A wasted turn becomes a useful one. Reading a real file, and a genuinely missing path, are unchanged.
+
+## v1.149.2 (2026-07-14)
+
+- fix(test/preflight): deliver no longer poisons its own test gate; config churn ended
+- docs: add ATTRIBUTION.md crediting research + OSS inspirations (ATG paper, vLLM-SR, loop-engineering, DESIGN.md)
+- chore: bump version to 1.149.1
+- chore: bump version to 1.149.0
+- feat(delivery): ATG uplifts — pre-execution plan validation, minimal node repair, dependency-aware parallel dispatch
+
+
+## v1.149.1 (2026-07-14)
+
+- chore: bump version to 1.149.0
+- feat(delivery): ATG uplifts — pre-execution plan validation, minimal node repair, dependency-aware parallel dispatch
+
+
+## v1.149.0 (2026-07-14)
+
+- feat(delivery): ATG uplifts — pre-execution plan validation, minimal node repair, dependency-aware parallel dispatch
 
 ## v1.148.25 (2026-07-14)
 
@@ -18,13 +40,10 @@
 
 - fix(agentic-executor): **the agent could not read the acceptance gate it was judged against.** `.uap-deliver/verify.sh` is the self-authored acceptance script — it IS the specification the agent must satisfy — but it sat inside `.uap-deliver/`, which the agent-internal path guard blanket-blocked as "internal state". So the agent could not see its own criteria, and it looped trying: **6 refused reads in one live mission, with the proxy's ERROR-LOOP firing 5 times**, while the spec it needed was one refusal away. The gate is now **readable**, and **still unwritable** — reading it means targeting the real criteria; rewriting it would be the agent rigging its own gate, which is not passing it. Every other internal path (`.uap/`, `.git/`, run state) stays blocked exactly as before.
 
-<<<<<<< HEAD
-=======
 ## v1.148.22 (2026-07-14)
 
 - feat(init/preflight): **every enforcement surface is now ON by default — a scaffolded project was only enforcing a fraction of what it appeared to.** Three defaults were silently absent from a fresh (or freshly RESET) project, each downgrading the pipeline while it still *looked* configured: (1) **`fidelity: max` was unset**, so the visual, vision and acceptance gates ran ADVISORY rather than blocking — a deliverable could read as verified while nothing actually gated it; (2) **`delivery: {enforcement: block, localMode: deliver, runtimeVerify: true}` was unset**, so work was not reliably routed through `uap deliver`; (3) **`uap init` seeded only 2 of 34 policies** (delivery-enforcement + self-protect) — the other 32 were merely *available*, including **`enforcement-infra-protect`**, the policy that stops a model killing llama-server and stealing its port (which one has actually done). All three now come up on their own: init installs + enables **every** built-in policy with its enforcer attached, and the preflight self-heal seeds the full config posture — so existing projects heal on their next `deliver`, not just new ones. An EXPLICIT operator value is never overridden: this sets the default, it does not take the choice away (`uap policy disable <name>` still works).
 
->>>>>>> origin/master
 
 ## v1.148.21 (2026-07-14)
 
