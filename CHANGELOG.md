@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.150.0 (2026-07-14)
+
+- feat(deliver): P1 — replayable edit intents, anchored edit_file, bash -n self-gates
+- fix(agentic-executor): a repeated read gets a nudge, never a denial (v1.148.28) (#514)
+- fix(deliver): P0 anti-vacuous hardening — no more false-green no-op deliveries
+- fix(deliver): enforce "tests actually ran" in the gate that decides DONE (v1.148.27) (#512)
+
+
 ## v1.149.5 (2026-07-14)
 
 - fix(agentic-executor): **the dedup guard withheld file content and deadlocked the agent — my own regression from v1.148.21.** That guard answered a repeated read of an unchanged file with *"UNCHANGED — act on what you already have"* **instead of the content**. But the model re-reads a file for a REASON: its context was pruned, or the agent session is fresh and it never had the content at all. Denying it the content leaves it unable to proceed — so it asks again. Live result: **76 re-reads of one file, 64 nudges fired, and ZERO writes in 36 minutes.** The guard caught the loop and then guaranteed it. The content is now **always served**, with the nudge prepended — so repetition costs a line, not the mission. Exactly the same failure as the phantom `run_bash`, the unreadable acceptance gate, the "stop writing" order and the raw `EISDIR`: the harness punishing a reasonable move. This one was self-inflicted.
