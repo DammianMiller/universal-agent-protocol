@@ -147,6 +147,7 @@ function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unkn
 }
 import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow, CONTEXT_BUDGET_MARKER } from '../delivery/context-budget.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
+import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
 import { extractContract } from '../delivery/contract-extractor.js';
 import type { OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
 import type { LifecycleHintProvider } from '../delivery/decompose.js';
@@ -530,6 +531,22 @@ export async function deliverCommand(instruction: string, options: DeliverOption
 
 async function runDeliver(instruction: string, options: DeliverOptions): Promise<void> {
   const projectRoot = resolve(options.projectRoot ?? process.cwd());
+
+  // Preflight: refuse to start in a project that structurally cannot deliver
+  // (chiefly: not a git repo — the candidate workspace is worktree-based, so
+  // deliver/epics/orchestration are all dead and the mission would burn its
+  // whole budget making no progress, silently). Also self-heals the always-on
+  // orchestrate/epics posture when a fresh scaffold left it unset.
+  // A --dry-run only plans: it never creates a worktree, so the git requirement
+  // does not apply to it and refusing would be over-strict. It still gets its
+  // config posture healed.
+  const preflight = preflightProject(projectRoot);
+  for (const h of preflight.healed) console.log(chalk.dim(`  preflight: ${h}`));
+  if (!preflight.ok && !options.dryRun) {
+    console.error(chalk.red(formatPreflightFailure(preflight)));
+    process.exitCode = 1;
+    throw new ExitError();
+  }
 
   // Concurrency guard: only one deliver runs per project at a time. A dry-run
   // plans nothing and a --resume continues the SAME mission, so both skip the
