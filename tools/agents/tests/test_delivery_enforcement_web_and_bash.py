@@ -56,6 +56,27 @@ class BashGateTest(unittest.TestCase):
         code, _ = run("Bash", {"command": "nohup firefox /tmp/a.html &"})
         self.assertEqual(code, 2)
 
+    def test_browser_by_ABSOLUTE_PATH_is_blocked(self):
+        # The bypass the model actually found: the old regex wanted the browser
+        # NAME immediately after the separator, so any path to the binary walked
+        # straight through the gate.
+        for cmd in (
+            "nohup /home/u/.cloakbrowser/chromium-146.0.7213.0/chrome file:///tmp/x.html &",
+            "/usr/bin/google-chrome-stable /tmp/a.html",
+            "setsid ./bin/firefox /tmp/a.html",
+            "cd /tmp && /opt/google/chrome/chrome index.html",
+            "(chromium /tmp/a.html)",
+        ):
+            code, out = run("Bash", {"command": cmd})
+            self.assertEqual(code, 2, f"{cmd} must be BLOCKED — got {out}")
+            self.assertIn("uap verify", out)
+
+    def test_browser_substring_is_not_blocked(self):
+        # `open` is a browser bin on macOS; don't let it swallow openssl/opencode.
+        for cmd in ("openssl version", "opencode run --help", "npm run chromedriver:check"):
+            code, out = run("Bash", {"command": cmd})
+            self.assertEqual(code, 0, f"{cmd} must NOT be blocked — got {out}")
+
     def test_browser_LOOKUP_is_not_blocked(self):
         # `which firefox` is a capability probe, not a launch — must not false-block.
         code, _ = run("Bash", {"command": "which firefox chromium 2>/dev/null"})

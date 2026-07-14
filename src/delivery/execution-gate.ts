@@ -102,26 +102,55 @@ export function executionRunnerPath(): string {
   return existsSync(distP) ? distP : p;
 }
 
-/** Find the directory containing an index.html within depth 2 (root + subdirs). */
-export function findWebEntryDir(projectRoot: string): string | null {
+/** Pick the entry page of a directory: index.html wins, else any .html (stable order). */
+function entryPageOf(dir: string): string | null {
+  if (existsSync(join(dir, 'index.html'))) return 'index.html';
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((f) => f.toLowerCase().endsWith('.html'));
+  } catch {
+    return null;
+  }
+  return names.sort()[0] ?? null;
+}
+
+/**
+ * Find the web entry page within depth 2 (root + subdirs).
+ *
+ * ANY .html counts, not just index.html: the visual gate's discoverEntryPages
+ * already accepts e.g. `rubiks-cube.html`, so keying execution off index.html
+ * alone made the two halves disagree about what a deliverable IS. A web app
+ * whose page was named anything else got NO execution rung — and with no
+ * build/test rungs either, the ladder came back empty and `uap verify` skipped
+ * every gate and exited 0.
+ */
+export function findWebEntry(projectRoot: string): { dir: string; entry: string } | null {
   const root = resolve(projectRoot);
-  if (existsSync(join(root, 'index.html'))) return root;
+  const rootEntry = entryPageOf(root);
+  if (rootEntry) return { dir: root, entry: rootEntry };
   let entries: string[];
   try {
     entries = readdirSync(root);
   } catch {
     return null;
   }
-  for (const e of entries) {
+  for (const e of entries.sort()) {
     if (SKIP_DIRS.has(e) || e.startsWith('.')) continue;
     const sub = join(root, e);
     try {
-      if (statSync(sub).isDirectory() && existsSync(join(sub, 'index.html'))) return sub;
+      if (!statSync(sub).isDirectory()) continue;
+      const subEntry = entryPageOf(sub);
+      if (subEntry) return { dir: sub, entry: subEntry };
     } catch {
       /* unreadable — skip */
     }
   }
   return null;
+}
+
+/** Directory containing the web entry page, or null. */
+export function findWebEntryDir(projectRoot: string): string | null {
+  return findWebEntry(projectRoot)?.dir ?? null;
 }
 
 /** Best-effort classification of what kind of artifact lives in the project. */
@@ -166,7 +195,7 @@ const MIME: Record<string, string> = {
   '.wasm': 'application/wasm',
 };
 
-export function startStaticServer(dir: string): Promise<{ url: string; close: () => void }> {
+export function startStaticServer(dir: string, entry = 'index.html'): Promise<{ url: string; close: () => void }> {
   // realpath the root so the symlink guard below compares like-for-like.
   let rootReal: string;
   try {
@@ -242,7 +271,7 @@ export function startStaticServer(dir: string): Promise<{ url: string; close: ()
     server.listen(0, '127.0.0.1', () => {
       const addr = server.address();
       const port = typeof addr === 'object' && addr ? addr.port : 0;
-      res({ url: `http://127.0.0.1:${port}/index.html`, close: () => server.close() });
+      res({ url: `http://127.0.0.1:${port}/${entry.replace(/^\/+/, '')}`, close: () => server.close() });
     });
   });
 }
@@ -252,12 +281,12 @@ export function startStaticServer(dir: string): Promise<{ url: string; close: ()
 // never silently no-ops when a real browser/chromium is unavailable.
 // ---------------------------------------------------------------------------
 
-async function runWeb(entryDir: string, opts: ExecutionGateOptions): Promise<ExecutionResult> {
+async function runWeb(entryDir: string, opts: ExecutionGateOptions, entry = 'index.html'): Promise<ExecutionResult> {
   const start = Date.now();
   const settleMs = opts.settleMs ?? DEFAULT_SETTLE_MS;
   let server: { url: string; close: () => void } | null = null;
   try {
-    server = await startStaticServer(entryDir);
+    server = await startStaticServer(entryDir, entry);
     let browser: BrowserDriver | null = null;
     try {
       browser = opts.browserFactory ? opts.browserFactory() : await loadWebBrowser();
@@ -271,7 +300,7 @@ async function runWeb(entryDir: string, opts: ExecutionGateOptions): Promise<Exe
           /* ignore */
         }
       }
-      return runVmDomHarness(entryDir, start, `browser launch failed: ${String(e).slice(0, 120)}`);
+      return runVmDomHarness(entryDir, start, `browser launch failed: ${String(e).slice(0, 120)}`, entry);
     }
     try {
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -289,7 +318,7 @@ async function runWeb(entryDir: string, opts: ExecutionGateOptions): Promise<Exe
           passed: false,
           exitCode: 1,
           failureReason: `entry did not load (HTTP ${status})`,
-          outputTail: `GET index.html -> ${status}`,
+          outputTail: `GET ${entry} -> ${status}`,
           durationMs,
           via: 'browser',
         };
@@ -350,14 +379,14 @@ async function loadWebBrowser(): Promise<BrowserDriver> {
  * the octopus build had (TDZ/undefined-global/init throw). Only handles classic
  * (non-module) <script src> tags — ES modules return a clean skip.
  */
-export function runVmDomHarness(entryDir: string, startedAt?: number, note?: string): ExecutionResult {
+export function runVmDomHarness(entryDir: string, startedAt?: number, note?: string, entry = 'index.html'): ExecutionResult {
   const start = startedAt ?? Date.now();
-  const indexPath = join(entryDir, 'index.html');
+  const indexPath = join(entryDir, entry);
   let html: string;
   try {
     html = readFileSync(indexPath, 'utf-8');
   } catch {
-    return { passed: false, exitCode: null, failureReason: 'no index.html', outputTail: '', durationMs: Date.now() - start, via: 'none' };
+    return { passed: false, exitCode: null, failureReason: `no ${entry}`, outputTail: '', durationMs: Date.now() - start, via: 'none' };
   }
   // ES-module pages need real module semantics — the vm harness can't run them.
   // Tolerate unquoted attrs (type=module) too.
@@ -382,13 +411,28 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
     const srcMatch = /\bsrc\s*=\s*["']?([^"'\s>]+)/i.exec(attrs);
     if (srcMatch) {
       const s = srcMatch[1];
+      // A REMOTE script (CDN) is not a file on disk, and the vm harness cannot
+      // fetch it — treating it as a missing file false-fails every page that
+      // loads three.js/React from a CDN, and executing the rest without it would
+      // throw bogus ReferenceErrors for the globals it defines. Hand off to the
+      // real browser + visual gate, which can actually load it.
+      if (/^(?:https?:)?\/\//i.test(s)) {
+        return {
+          passed: true,
+          exitCode: 0,
+          failureReason: 'skipped (page loads remote scripts; needs a real browser)',
+          outputTail: `${entry} loads ${s} from the network — the vm-dom harness cannot fetch it; the visual gate renders this page for real`,
+          durationMs: Date.now() - start,
+          via: 'vm-dom',
+        };
+      }
       const p = join(entryDir, s.replace(/^\//, ''));
       if (!existsSync(p)) {
         return {
           passed: false,
           exitCode: 1,
           failureReason: `script not found: ${s}`,
-          outputTail: `index.html references ${s} which does not exist`,
+          outputTail: `${entry} references ${s} which does not exist`,
           durationMs: Date.now() - start,
           via: 'vm-dom',
         };
@@ -729,8 +773,9 @@ export async function runExecutionGate(
 ): Promise<ExecutionResult> {
   const type = detectArtifactType(projectRoot);
   if (type === 'web') {
-    const dir = findWebEntryDir(projectRoot);
-    if (dir) {
+    const web = findWebEntry(projectRoot);
+    if (web) {
+      const { dir, entry } = web;
       // Classic-script apps: the vm-DOM harness is deterministic and reliably
       // catches crash-class bugs (TDZ / undefined globals / init throws). A
       // headless browser's async error capture is wrapper-dependent and has been
@@ -739,12 +784,12 @@ export async function runExecutionGate(
       // browserFactory still exercise the browser path explicitly.
       let isModule = false;
       try {
-        isModule = /<script[^>]+type=["']module["']/i.test(readFileSync(join(dir, 'index.html'), 'utf-8'));
+        isModule = /<script[^>]+type=["']module["']/i.test(readFileSync(join(dir, entry), 'utf-8'));
       } catch {
-        /* missing index.html — runWeb/vm report it */
+        /* missing entry page — runWeb/vm report it */
       }
-      if (opts.browserFactory || isModule) return runWeb(dir, opts);
-      return runVmDomHarness(dir);
+      if (opts.browserFactory || isModule) return runWeb(dir, opts, entry);
+      return runVmDomHarness(dir, undefined, undefined, entry);
     }
   }
   if (type === 'node' || type === 'cli' || type === 'lib') {
