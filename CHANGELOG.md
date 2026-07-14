@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.149.5 (2026-07-14)
+
+- fix(agentic-executor): **the dedup guard withheld file content and deadlocked the agent — my own regression from v1.148.21.** That guard answered a repeated read of an unchanged file with *"UNCHANGED — act on what you already have"* **instead of the content**. But the model re-reads a file for a REASON: its context was pruned, or the agent session is fresh and it never had the content at all. Denying it the content leaves it unable to proceed — so it asks again. Live result: **76 re-reads of one file, 64 nudges fired, and ZERO writes in 36 minutes.** The guard caught the loop and then guaranteed it. The content is now **always served**, with the nudge prepended — so repetition costs a line, not the mission. Exactly the same failure as the phantom `run_bash`, the unreadable acceptance gate, the "stop writing" order and the raw `EISDIR`: the harness punishing a reasonable move. This one was self-inflicted.
+
 ## v1.149.4 (2026-07-14)
 
 - fix(deliver): **the zero-test gate was enforced in `uap verify` but NOT in deliver — so a mission could still report "✓ Delivered, all required gates pass" on a crate with no tests at all.** v1.148.25 taught the ladder that a test rung exiting 0 having run ZERO tests is not a pass, and wired it into `uap verify` at max fidelity. But deliver's own convergence loop never passed `requireTestsRan`, and **deliver's ladder is the gate that decides DONE** — so the real door stayed open, and a live mission delivered an untested Rust crate through it. Deliver now resolves the project fidelity and enforces the same rule. Below max fidelity the behaviour is unchanged (reported, not blocking).
