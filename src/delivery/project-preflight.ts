@@ -62,21 +62,43 @@ export function preflightProject(dir: string): PreflightResult {
   if (existsSync(configPath)) {
     try {
       const cfg = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-      const deliver = (cfg.deliver as Record<string, unknown> | undefined) ?? {};
       let changed = false;
-      // Absent => the intended always-on posture. An explicit false/'off' is an
-      // operator decision and must survive.
-      for (const key of ['orchestrate', 'epics'] as const) {
-        if (deliver[key] === undefined) {
-          deliver[key] = 'on';
-          healed.push(`deliver.${key} was unset — defaulted to "on"`);
+
+      // Every enforcement surface is ON by default. Each of these was previously
+      // unset in a fresh scaffold, and each silently downgraded the pipeline:
+      // without them a rebuilt project looked configured while enforcing almost
+      // nothing. In every case an EXPLICIT value is an operator decision and is
+      // never overridden — we only fill in what is ABSENT.
+      const seed = (
+        section: string,
+        key: string,
+        value: unknown,
+        why: string
+      ): void => {
+        const obj = (cfg[section] as Record<string, unknown> | undefined) ?? {};
+        if (obj[key] === undefined) {
+          obj[key] = value;
+          cfg[section] = obj;
+          healed.push(`${section}.${key} was unset — defaulted to ${JSON.stringify(value)} (${why})`);
           changed = true;
+        } else {
+          cfg[section] = obj;
         }
-      }
-      if (changed) {
-        cfg.deliver = deliver;
-        writeFileSync(configPath, JSON.stringify(cfg, null, 2));
-      }
+      };
+
+      // Decompose + epic-loop every mission, not only when a flag is remembered.
+      seed('deliver', 'orchestrate', 'on', 'orchestrate always');
+      seed('deliver', 'epics', 'on', 'epic loop always');
+      // fidelity:max is what makes the visual, vision and acceptance gates
+      // BLOCKING. Without it they are advisory — the deliverable can look
+      // verified while nothing actually gates it.
+      seed('fidelity', 'mode', 'max', 'visual/vision/acceptance gates BLOCK');
+      // Route all work through deliver, and run the runtime gate.
+      seed('delivery', 'enforcement', 'block', 'all work routes through deliver');
+      seed('delivery', 'localMode', 'deliver', 'local edits route to deliver');
+      seed('delivery', 'runtimeVerify', true, 'runtime gate runs');
+
+      if (changed) writeFileSync(configPath, JSON.stringify(cfg, null, 2));
     } catch {
       // A malformed .uap.json is the config layer's problem to report, not ours;
       // never let preflight throw out of a mission start.
