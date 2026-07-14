@@ -1,6 +1,9 @@
 /**
  * Pre-execution plan validation (the ATG-style "thought experiment").
  *
+ * Adapted from "Atomic Task Graph: A Unified Framework for Agentic Planning
+ * and Execution" (arXiv 2607.01942) — see docs/ATTRIBUTION.md for full credits.
+ *
  * Two layers, both run BEFORE any phase executes:
  *
  *  1. `validatePhaseGraph` — structural: duplicate ids, unknown/self deps,
