@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.148.27 (2026-07-14)
+## v1.149.4 (2026-07-14)
 
 - fix(deliver): **the zero-test gate was enforced in `uap verify` but NOT in deliver — so a mission could still report "✓ Delivered, all required gates pass" on a crate with no tests at all.** v1.148.25 taught the ladder that a test rung exiting 0 having run ZERO tests is not a pass, and wired it into `uap verify` at max fidelity. But deliver's own convergence loop never passed `requireTestsRan`, and **deliver's ladder is the gate that decides DONE** — so the real door stayed open, and a live mission delivered an untested Rust crate through it. Deliver now resolves the project fidelity and enforces the same rule. Below max fidelity the behaviour is unchanged (reported, not blocking).
 
