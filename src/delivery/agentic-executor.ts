@@ -135,6 +135,24 @@ interface ToolCall {
   function: { name: string; arguments: string };
 }
 
+/**
+ * Offer only the tools we will actually RUN.
+ *
+ * run_bash used to be advertised unconditionally and then REFUSED at execution
+ * time whenever it was not sandboxed. The model does what the menu says: on a
+ * live mission it spent 58 of its 79 tool calls on run_bash — every one bounced
+ * — while managing only 21 writes. Nearly three quarters of the turn budget
+ * burned on a tool that was never going to run. Every attempt was read-only
+ * (`cat` ×44, `wc`, `find`, `ls`, `head`), i.e. the model was not probing the
+ * sandbox, it just reached for the shell it had been shown.
+ *
+ * A tool you refuse to execute must not appear in the schema. The execution-time
+ * containment check below stays as the backstop.
+ */
+export function toolsFor(allowBash: boolean): Array<(typeof TOOLS)[number]> {
+  return allowBash ? [...TOOLS] : TOOLS.filter((t) => t.function.name !== 'run_bash');
+}
+
 const TOOLS = [
   {
     type: 'function',
@@ -484,14 +502,15 @@ async function chat(
   endpoint: string,
   model: ModelConfig,
   messages: ChatMessage[],
-  temperature?: number
+  temperature?: number,
+  allowBash = true
 ): Promise<ChatMessage> {
   // Hold a model slot so the agentic tool-loop's calls comply with the slot
   // budget (same work, bounded concurrency). 429/timeout feed backpressure.
-  if (process.env.UAP_MODEL_LEASE === '0') return _chat(endpoint, model, messages, temperature);
+  if (process.env.UAP_MODEL_LEASE === '0') return _chat(endpoint, model, messages, temperature, allowBash);
   return withModelSlot(`agentic:${model.apiModel ?? 'default'}`, async () => {
     try {
-      const m = await _chat(endpoint, model, messages, temperature);
+      const m = await _chat(endpoint, model, messages, temperature, allowBash);
       await recordModelSuccess({}).catch(() => undefined);
       return m;
     } catch (err) {
@@ -505,7 +524,8 @@ async function _chat(
   endpoint: string,
   model: ModelConfig,
   messages: ChatMessage[],
-  temperature?: number
+  temperature?: number,
+  allowBash = true
 ): Promise<ChatMessage> {
   const url = `${endpoint.replace(/\/$/, '')}/chat/completions`;
   const apiKey = model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined;
@@ -518,7 +538,7 @@ async function _chat(
     body: JSON.stringify({
       model: model.apiModel,
       messages,
-      tools: TOOLS,
+      tools: toolsFor(allowBash),
       tool_choice: 'auto',
       ...(temperature !== undefined ? { temperature } : {}),
     }),
@@ -601,7 +621,7 @@ export function createAgenticExecutor(
       }
       let msg: ChatMessage;
       try {
-        msg = await chat(opts.endpoint, model, messages, opts.temperature);
+        msg = await chat(opts.endpoint, model, messages, opts.temperature, allowBash);
       } catch (err) {
         opts.onEvent?.({ round, kind: 'error', detail: String(err).slice(0, 200) });
         return `agentic executor error: ${String(err).slice(0, 200)}`;

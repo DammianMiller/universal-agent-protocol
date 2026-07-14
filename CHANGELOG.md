@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.148.20 (2026-07-14)
+
+- fix(agentic-executor): **stop advertising a tool we refuse to run — it was burning three quarters of the turn budget.** `run_bash` was offered in the tool schema unconditionally and then REFUSED at execution time whenever the run was not sandboxed. The model does what the menu says: on a live mission it spent **58 of its 79 tool calls on `run_bash` — every one bounced** — and managed only 21 writes. And it was not probing the sandbox: every attempt was read-only (`cat` ×44, `wc`, `find`, `ls`, `head`); it simply reached for the shell it had been shown. The tool list is now built from what will actually execute, so a disabled `run_bash` never appears. The execution-time containment check stays as the backstop.
+
+
 ## v1.148.19 (2026-07-14)
 
 - feat(deliver): **a run can now say how it DIED.** Client-spawned deliver runs were vanishing within seconds while the identical binary run from a shell worked fine — and every corpse looked the same (`status: 'running'`, a dead pid, nothing else), so a killed mission was indistinguishable from a working one and there was no way to learn who killed it. Deliver now installs signal handlers and records its own death to `.uap/deliver-exits.log` and onto the run state: **SIGHUP** (the parent tore down our process group), **SIGTERM** (something deliberately killed us), **SIGINT**, or a normal exit code — plus the **ppid**, which names the killer. No record at all against a dead pid means SIGKILL (no handler can run for that). `status` is deliberately left as `running` because that is what `--resume` looks for; the death is recorded *alongside* it, not instead of it. Recording is best-effort and can never take a run down with it.
