@@ -407,3 +407,59 @@ describe('anti-no-op acceptance rail (P0, 2026-07-13)', () => {
     expect(result.turns).toBe(0);
   });
 });
+
+describe('anti-no-op rail: git fingerprint (direct-mutation executor)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-noop-git-'));
+    const { execSync } = require('child_process');
+    execSync('git init -q && git -c user.email=t@t -c user.name=t add -A', { cwd: dir });
+    require('fs').writeFileSync(join(dir, 'seed.txt'), 'seed\n');
+    execSync('git add -A && git -c user.email=t@t -c user.name=t commit -qm seed', { cwd: dir });
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('detects fs-level writes that bypass the applier and lets acceptance pass', async () => {
+    // Simulates the agentic executor: the applier reports zero files, but the
+    // executor mutated the tree directly. The git fingerprint must see it.
+    let acceptanceCalls = 0;
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true },
+      async () => {
+        require('fs').writeFileSync(join(dir, 'src-change.txt'), 'the executor wrote this directly\n');
+        return 'mutated the repo via tools; no file blocks';
+      },
+      {
+        applier: async () => ({ filesWritten: [], rejected: [] }),
+        ladderRunner: () => ladderResult(1.0, true),
+        acceptanceGate: async () => {
+          acceptanceCalls++;
+          return { passed: true, feedback: '' };
+        },
+      }
+    );
+    const result = await loop.deliver('write src-change.txt');
+    expect(result.alreadyDelivered).not.toBe(true);
+    expect(result.success).toBe(true);
+    expect(acceptanceCalls).toBeGreaterThan(0);
+  });
+
+  it('still withholds acceptance in a git repo when NOTHING changed', async () => {
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true },
+      async () => 'prose only, no writes',
+      {
+        applier: async () => ({ filesWritten: [], rejected: [] }),
+        ladderRunner: () => ladderResult(1.0, true),
+        acceptanceGate: async () => ({ passed: true, feedback: '' }),
+      }
+    );
+    const result = await loop.deliver('change something');
+    expect(result.success).toBe(false);
+    expect(result.finalFeedback).toMatch(/no-op|has not changed/i);
+  });
+});
