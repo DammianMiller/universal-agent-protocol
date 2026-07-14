@@ -384,11 +384,25 @@ def main() -> None:
         # auto-route the blocked change INTO `uap deliver` instead of leaving the
         # agent to flail. `route`/`deliverHint` are advisory extra fields; harness
         # adapters that understand them route, others just show `reason`.
+        # P1 (plan D1): carry the blocked edit's ACTUAL content so the harness
+        # can record a replayable intent — a vacuous "implement the intended
+        # change" hint spawns a blind model run that knows nothing (observed
+        # live 2026-07-13). Apply with `uap deliver --pending <file>`.
+        intent_payload = {
+            k: v
+            for k, v in (
+                ("old_string", args.get("old_string")),
+                ("new_string", args.get("new_string")),
+                ("content", args.get("content")),
+            )
+            if isinstance(v, str)
+        }
         emit(
             False,
             msg,
             route="deliver",
             deliverHint=f'implement the intended change to {rel_posix}',
+            editIntent=intent_payload or None,
         )
         return
 

@@ -586,6 +586,8 @@ program
   .option('--gates <ids>', 'Comma-separated gate subset (build,typecheck,test,lint)')
   .option('--no-self-gate', 'Disable the self-authored acceptance gate fallback (on by default when no project gates are detected)')
   .option('--force-self-gate', 'Author a task-specific acceptance gate even when project gates exist')
+  .option('--allow-noop', 'Permit delivery without any tree change (disables the anti-no-op acceptance rail for missions that genuinely require none)')
+  .option('--pending [file]', 'Deterministically apply the edit intents recorded by the delivery gate (.uap/pending-deliver.jsonl) — exact-anchor replay, no model — then run the required gates once and exit')
   .option('--acceptance', 'After objective gates pass, judge spec behavioral completeness (LLM) and feed unmet requirements back so the loop completes the spec')
   .option('--executor <mode>', 'Per-turn executor: blind (one completion), agentic (tool-using read/list/bash/write loop), or auto (agentic when there is repo context/gates to inspect)', 'auto')
   .option('--allow-bash', "Permit the agentic executor's run_bash tool when NOT running under `uap sandbox`. Off by default: an unsandboxed shell is not contained to the workdir. Auto-enabled under `uap sandbox`.")

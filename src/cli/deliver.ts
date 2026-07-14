@@ -28,6 +28,7 @@ import { RoutingPresets, resolvePresetModel } from '../models/types.js';
 import type { TaskComplexity } from '../models/types.js';
 import { measureQueryComplexity } from '../utils/query-complexity.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
+import { applyPendingIntents } from '../delivery/pending-intents.js';
 import { runAcceptanceGate, formatAcceptanceReport, createAcceptanceChurnBreaker, type AcceptanceResult } from '../delivery/acceptance-judge.js';
 import { runExecutionGate } from '../delivery/execution-gate.js';
 import { runVisualGate, visualRuntimeNote } from '../delivery/visual-gate.js';
@@ -55,10 +56,19 @@ export function decideGateStrategy(opts: {
   noRealGates: boolean;
   forceSelfGate: boolean;
   selfGateAllowed: boolean;
+  /**
+   * Anti-vacuous floor (P0, 2026-07-13): every REQUIRED project gate passed a
+   * pre-run baseline probe. Gates that cannot fail are not a convergence
+   * target — "delivered" must mean "something that was red is now green" —
+   * so a mission self-gate is engaged exactly as if no gates were detected.
+   */
+  baselineAllGreen?: boolean;
 }): { acceptancePrimary: boolean; needsSelfGate: boolean; noGatesError: boolean } {
   const acceptancePrimary = opts.hasAcceptance && opts.noRealGates && !opts.forceSelfGate;
   const needsSelfGate =
-    opts.selfGateAllowed && !acceptancePrimary && (opts.noRealGates || opts.forceSelfGate);
+    opts.selfGateAllowed &&
+    !acceptancePrimary &&
+    (opts.noRealGates || opts.forceSelfGate || opts.baselineAllGreen === true);
   const noGatesError = opts.noRealGates && !needsSelfGate && !acceptancePrimary;
   return { acceptancePrimary, needsSelfGate, noGatesError };
 }
@@ -148,6 +158,7 @@ function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unkn
 import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow, CONTEXT_BUDGET_MARKER } from '../delivery/context-budget.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
+import { resolveFidelity } from '../delivery/fidelity.js';
 import { installRunExitRecorder } from '../delivery/run-exit.js';
 import {
   shouldDetach,
@@ -296,6 +307,12 @@ export interface DeliverOptions {
    * summaries injected), looped with fresh sessions until accepted. Auto for
    * very long complex missions; commander sets false on --no-epics. */
   epics?: boolean;
+  /** `--allow-noop`: permit success without any tree change (disables the
+   * anti-no-op acceptance rail for missions that genuinely require none). */
+  allowNoop?: boolean;
+  /** `--pending [file]`: replay gate-recorded edit intents deterministically,
+   * verify with the required gates, and exit (plan D1). */
+  pending?: string | boolean;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -559,6 +576,32 @@ export async function deliverCommand(instruction: string, options: DeliverOption
 async function runDeliver(instruction: string, options: DeliverOptions): Promise<void> {
   const projectRoot = resolve(options.projectRoot ?? process.cwd());
 
+  // P1 (plan D1): --pending replays gate-recorded edit intents exactly, then
+  // verifies with the required gates — the sanctioned path for a blocked
+  // direct edit, with zero model improvisation. Runs BEFORE preflight: it
+  // never creates a worktree, so the git-repo requirement does not apply.
+  if (options.pending !== undefined && options.pending !== false) {
+    const pendingFile = typeof options.pending === 'string' ? options.pending : undefined;
+    const res = applyPendingIntents(projectRoot, pendingFile);
+    for (const a of res.applied) console.log(chalk.green(`  ✓ applied ${a.kind}: ${a.file}`));
+    for (const s of res.skipped) console.log(chalk.yellow(`  ⚠ skipped ${s.file}: ${s.reason}`));
+    if (res.applied.length === 0) {
+      fail(`No pending intents applied${pendingFile ? ` for ${pendingFile}` : ''} (${res.skipped.length} skipped).`);
+    }
+    const rungs = detectRungs(projectRoot).filter((r) => r.required && tierOf(r) === 'fast');
+    if (rungs.length > 0) {
+      console.log(chalk.cyan(`⚖ verifying ${res.applied.length} applied intent(s) against ${rungs.length} required fast gate(s)…`));
+      const ladder = runLadder(rungs, projectRoot);
+      if (!ladder.passed) {
+        fail(`Applied intents but the required gates FAIL:\n${ladder.feedback}`);
+      }
+      console.log(chalk.green('  ✓ gates pass'));
+    } else {
+      console.log(chalk.yellow('  (no required fast gates detected — applied without verification)'));
+    }
+    return;
+  }
+
   // Preflight: refuse to start in a project that structurally cannot deliver
   // (chiefly: not a git repo — the candidate workspace is worktree-based, so
   // deliver/epics/orchestration are all dead and the mission would burn its
@@ -635,6 +678,18 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     applyAutoPlan(options, autoPlan);
     if (!options.dryRun) {
       console.log(chalk.cyan(`⚙ auto-optimize: ${autoPlan.summary}`));
+    }
+  }
+  // Verification RAILS are independent of the optimization AIDS (P0,
+  // 2026-07-13): --no-auto / explicit aid flags stand down exploration,
+  // critic and ideation, but must not silently drop the acceptance judge —
+  // without it, a gates-green no-op run reads as delivered. When the
+  // auto-planner did not run, acceptance defaults ON; opt out explicitly
+  // with UAP_DELIVER_ACCEPTANCE=0.
+  if (!autoPlan && options.acceptance === undefined && process.env.UAP_DELIVER_ACCEPTANCE !== '0') {
+    options.acceptance = true;
+    if (!options.dryRun) {
+      console.log(chalk.cyan('⚖ acceptance judge on (verification rail; UAP_DELIVER_ACCEPTANCE=0 to disable)'));
     }
   }
 
@@ -846,11 +901,41 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
   }
 
+  // Anti-vacuous floor (P0, 2026-07-13 incident): probe the REQUIRED rungs
+  // once before choosing the convergence target. If everything is already
+  // green, gate-satisfaction cannot measure this mission — a run on a
+  // gates-green repo would false-green as a no-op (observed live: a 6-file
+  // C++ mission "delivered" after writing nothing, because the only detected
+  // gates were unrelated npm web gates). UAP_DELIVER_VACUOUS_FLOOR=0 opts out.
+  let baselineAllGreen = false;
+  if (
+    !noRealGates &&
+    options.forceSelfGate !== true &&
+    selfGateAllowed &&
+    process.env.UAP_DELIVER_VACUOUS_FLOOR !== '0' &&
+    !options.dryRun
+  ) {
+    try {
+      const requiredRungs = rungs.filter((r) => r.required);
+      baselineAllGreen = requiredRungs.length > 0 && runLadder(requiredRungs, projectRoot).passed;
+    } catch {
+      baselineAllGreen = false; // probe is best-effort; never blocks a run
+    }
+    if (baselineAllGreen) {
+      console.log(
+        chalk.cyan(
+          '⚖ anti-vacuous floor: all required project gates are ALREADY green — authoring a mission self-gate so success requires real, verified change'
+        )
+      );
+    }
+  }
+
   const { acceptancePrimary, needsSelfGate, noGatesError } = decideGateStrategy({
     hasAcceptance: Boolean(options.acceptance),
     noRealGates,
     forceSelfGate: options.forceSelfGate === true,
     selfGateAllowed,
+    baselineAllGreen,
   });
   if (noGatesError) {
     fail(
@@ -1220,9 +1305,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
     rungs.push(sg.rung);
     if (sg.vacuous) {
+      // P0 hard-fail: a REQUIRED self-gate that passes on the unsolved repo
+      // re-opens the false-green door — "delivered" would be meaningless.
+      if (process.env.UAP_DELIVER_ALLOW_WEAK_SELF_GATE !== '1') {
+        fail(
+          'The self-gate is REQUIRED for this run (anti-vacuous floor) but stayed vacuous after retries — it passes on the unsolved repo. Add concrete, checkable ACCEPTANCE CRITERIA to the instruction, or set UAP_DELIVER_ALLOW_WEAK_SELF_GATE=1 to accept the risk.'
+        );
+      }
       console.log(
         chalk.yellow(
-          '  ⚠ acceptance gate may be weak (could not force an initially-failing check); running multi-turn anyway.'
+          '  ⚠ acceptance gate may be weak (could not force an initially-failing check); UAP_DELIVER_ALLOW_WEAK_SELF_GATE=1 — running multi-turn anyway.'
         )
       );
     } else {
@@ -1442,10 +1534,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // integration / deploy-dev once the prior tier is green. Injected as the
   // ladderRunner seam so the loop's integrity guard composes around the whole
   // tiered run. deploy-dev rungs use the bring-up→smoke→teardown lifecycle.
+  // At max fidelity a test rung that ran ZERO tests is not a pass. `uap verify`
+  // already enforced this, but DELIVER's own loop never did — so a mission could
+  // still declare "delivered, all required gates pass" on a crate with no tests
+  // at all, which is exactly what happened live. The gate that decides DONE is
+  // this one; enforcing it only in verify left the real door open.
+  const deliverFidelity = resolveFidelity(projectRoot);
   const tieredRunner: LadderRunFn = (r, root, opts) =>
     runTieredLadder(r, root, {
       ...opts,
       maxTier,
+      requireTestsRan: deliverFidelity.max,
       runner: runLadder,
       deployDevRunner: runDeployDevLadder,
       userValidationRunner: createUserValidationRunner(),
@@ -1623,6 +1722,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // The agentic executor mutates the repo directly (no-op applier), so
     // gates must run every turn regardless of applier file count.
     alwaysVerify: agentic ? true : undefined,
+    // Anti-no-op acceptance rail (P0): success requires an actual tree
+    // change unless the caller explicitly allows a no-op mission.
+    requireDiffForAcceptance: options.allowNoop === true ? false : undefined,
     // From-scratch builds have no artifact at t0, so the runtime execution gate
     // (and build/test/lint) aren't detectable yet. Re-detect each turn so they
     // engage once the model writes files, rather than relying only on the t0
