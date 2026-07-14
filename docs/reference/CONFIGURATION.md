@@ -87,6 +87,15 @@ Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
 | `UAP_AGENT_ID` | Agent id for MCP execute | `mcp-<pid>` |
 | `UAP_MAX_PARALLEL` | Override max parallel workers | auto |
 | `UAP_PARALLEL` | `false` disables parallelism | enabled |
+
+### `.uap.json` `deliver` section
+
+| Key | What it does | Default |
+|---|---|---|
+| `deliver.orchestrate` | Blackboard orchestration for decomposed missions (`"on"`/`"off"`) | `"on"` (preflight seeds it) |
+| `deliver.epics` | Epic controller outer loop (`"on"`/`"off"`) | `"on"` (preflight seeds it) |
+| `deliver.parallelTasks` | Worktree-isolated parallel dispatch: independent READY orchestrator tasks run concurrently, each convergence loop + its gates in a detached git worktree seeded with the mission's current state; deltas merge back serially, and a merge conflict fails the task into the minimal-repair retry. Clamped to 1–8. **Config-only by design — no env override** (an exported variable must never silently parallelize every run). | `1` (sequential) |
+| `deliver.autoSizeEpics` | Context auto-size for epic sessions (`false`/`"off"` disables) | enabled |
 | `UAP_BENCHMARK_MODE` | `true` enables benchmark template mode | off |
 | `UAP_BENCHMARK_PARALLEL` | Parallel model count in benchmarks | — |
 | `UAP_SNAPSHOT_DIR` | Base dir for `--keep-best` snapshots (absolute path) | `~/.cache/uap/snapshots` |
