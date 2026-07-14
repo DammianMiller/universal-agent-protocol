@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.149.4 (2026-07-14)
+
+- fix(deliver): **the zero-test gate was enforced in `uap verify` but NOT in deliver — so a mission could still report "✓ Delivered, all required gates pass" on a crate with no tests at all.** v1.148.25 taught the ladder that a test rung exiting 0 having run ZERO tests is not a pass, and wired it into `uap verify` at max fidelity. But deliver's own convergence loop never passed `requireTestsRan`, and **deliver's ladder is the gate that decides DONE** — so the real door stayed open, and a live mission delivered an untested Rust crate through it. Deliver now resolves the project fidelity and enforces the same rule. Below max fidelity the behaviour is unchanged (reported, not blocking).
+
 ## v1.149.3 (2026-07-14)
 
 - fix(agentic-executor): **`read_file` on a directory threw a raw `EISDIR` the model could not act on — so it retried, and the ERROR-LOOP guard fired.** Its intent was never in doubt: it wanted to see what was in there. It now gets the **listing**, plus a note naming `list_dir` for next time. Same principle as removing the phantom `run_bash` from the tool menu and letting the agent read its own acceptance gate: stop punishing the model for a reasonable move the harness handled badly. A wasted turn becomes a useful one. Reading a real file, and a genuinely missing path, are unchanged.

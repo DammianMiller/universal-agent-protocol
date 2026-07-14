@@ -148,6 +148,7 @@ function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unkn
 import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow, CONTEXT_BUDGET_MARKER } from '../delivery/context-budget.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
+import { resolveFidelity } from '../delivery/fidelity.js';
 import { installRunExitRecorder } from '../delivery/run-exit.js';
 import {
   shouldDetach,
@@ -1441,10 +1442,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // integration / deploy-dev once the prior tier is green. Injected as the
   // ladderRunner seam so the loop's integrity guard composes around the whole
   // tiered run. deploy-dev rungs use the bring-up→smoke→teardown lifecycle.
+  // At max fidelity a test rung that ran ZERO tests is not a pass. `uap verify`
+  // already enforced this, but DELIVER's own loop never did — so a mission could
+  // still declare "delivered, all required gates pass" on a crate with no tests
+  // at all, which is exactly what happened live. The gate that decides DONE is
+  // this one; enforcing it only in verify left the real door open.
+  const deliverFidelity = resolveFidelity(projectRoot);
   const tieredRunner: LadderRunFn = (r, root, opts) =>
     runTieredLadder(r, root, {
       ...opts,
       maxTier,
+      requireTestsRan: deliverFidelity.max,
       runner: runLadder,
       deployDevRunner: runDeployDevLadder,
       userValidationRunner: createUserValidationRunner(),
