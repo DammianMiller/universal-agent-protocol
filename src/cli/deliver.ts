@@ -148,6 +148,7 @@ function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unkn
 import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow, CONTEXT_BUDGET_MARKER } from '../delivery/context-budget.js';
 import { orchestrate } from '../delivery/task-orchestrator.js';
 import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
+import { installRunExitRecorder } from '../delivery/run-exit.js';
 import { extractContract } from '../delivery/contract-extractor.js';
 import type { OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
 import type { LifecycleHintProvider } from '../delivery/decompose.js';
@@ -1722,6 +1723,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     projectRoot,
     status: 'running',
     pid: process.pid,
+    ppid: process.ppid,
     createdAt: resumeState?.createdAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     checkpoint: resumeState?.checkpoint,
@@ -1730,6 +1732,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     phaseSummaries: [...phaseSummaries],
   };
   saveRunState(runState);
+  // From here on the process records its own death (signal + parent pid). A run
+  // that dies leaves status:'running' behind on purpose — that is what --resume
+  // looks for — but nothing recorded HOW it died, so a mission killed by its
+  // parent was indistinguishable from one still working.
+  const disposeExitRecorder = installRunExitRecorder(projectRoot, runId);
   // Persist loop state after every turn so this run survives interruption.
   loopConfig.onCheckpoint = (cp) => {
     runState.checkpoint = cp;
@@ -2300,6 +2307,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   } finally {
     if (priorDeliverActive === undefined) delete process.env.UAP_DELIVER_ACTIVE;
     else process.env.UAP_DELIVER_ACTIVE = priorDeliverActive;
+    // The loop is over: from here a normal exit is expected, so stop treating a
+    // signal as a mystery death.
+    disposeExitRecorder();
   }
 
   // --keep-best: if deliver left the project worse than it started (by real

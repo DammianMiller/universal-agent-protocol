@@ -36,6 +36,16 @@ export interface DeliverRunState {
   taskId?: string;
   /** OS pid of the deliver process that owns this run (operator cancel target). */
   pid?: number;
+  /** pid of whoever SPAWNED the deliver process — names the killer when a parent tears it down. */
+  ppid?: number;
+  /** How the process ended (signal/code). Absent while genuinely alive; see run-exit.ts. */
+  exit?: {
+    at: string;
+    signal?: string;
+    code?: number;
+    ppid?: number;
+    reason: string;
+  };
 }
 
 export function deliverRunsDir(projectRoot: string): string {
