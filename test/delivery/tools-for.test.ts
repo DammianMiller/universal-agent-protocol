@@ -44,7 +44,12 @@ describe('toolsFor — the menu must match what we will actually execute', () =>
   });
 });
 
-describe('repeatReadNote — do not re-serve a read the agent already has', () => {
+// NOTE: the guard NUDGES, it does not deny. Withholding the content was a
+// deadlock — the model re-reads because its context was pruned or the agent
+// session is fresh, so denying it the content meant it could never proceed
+// (live: 76 re-reads, 64 nudges, ZERO writes). The caller now serves the content
+// with the nudge prepended.
+describe('repeatReadNote — nudge a repeated read (content is still served)', () => {
   let dir: string;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'uap-rr-')); });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -53,8 +58,9 @@ describe('repeatReadNote — do not re-serve a read the agent already has', () =
     writeFileSync(join(dir, 'a.txt'), 'hello');
     const c = newReadCache();
     expect(repeatReadNote(c, dir, 'read_file', { path: 'a.txt' }, 1)).toBeNull(); // first: serve it
-    const note = repeatReadNote(c, dir, 'read_file', { path: 'a.txt' }, 2);       // second: steer
-    expect(note).toMatch(/UNCHANGED/);
+    const note = repeatReadNote(c, dir, 'read_file', { path: 'a.txt' }, 2);       // second: nudge
+    expect(note).toMatch(/unchanged/i);
+    expect(note).toMatch(/content follows anyway/i);
     expect(note).toMatch(/round 1/);
   });
 
@@ -73,7 +79,7 @@ describe('repeatReadNote — do not re-serve a read the agent already has', () =
     mkdirSync(join(dir, 'src'));
     const c = newReadCache();
     expect(repeatReadNote(c, dir, 'list_dir', { path: 'src' }, 1)).toBeNull();
-    expect(repeatReadNote(c, dir, 'list_dir', { path: 'src' }, 2)).toMatch(/UNCHANGED/);
+    expect(repeatReadNote(c, dir, 'list_dir', { path: 'src' }, 2)).toMatch(/unchanged/i);
   });
 
   it('never suppresses a WRITE, or a non-path tool', () => {

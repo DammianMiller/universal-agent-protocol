@@ -375,9 +375,9 @@ export function repeatReadNote(
   const prior = cache.seen.get(key);
   if (prior && mtime !== null && prior.mtimeMs === mtime) {
     return (
-      `UNCHANGED since you already ran ${name}(${args.path}) at round ${prior.round}. ` +
-      'The result is identical — re-reading it cannot tell you anything new. ' +
-      'Act on what you already have: make the edit, or call finish.'
+      `[NOTE: unchanged since you read ${args.path} at round ${prior.round}. ` +
+      'The content follows anyway — but re-reading it tells you nothing new, so act on it: ' +
+      'make the edit, or call finish.]'
     );
   }
   if (mtime !== null) cache.seen.set(key, { mtimeMs: mtime, round });
@@ -811,20 +811,25 @@ export function createAgenticExecutor(
           opts.onEvent?.({ round, kind: 'final', tool: 'finish', detail: String(args.summary ?? '') });
           return String(args.summary ?? (summaries.join('; ') || 'done'));
         }
-        // Don't serve the same unchanged read twice — see repeatReadNote.
+        // A repeated read gets a NUDGE, never a denial — see repeatReadNote.
         const repeat = repeatReadNote(readCache, opts.projectRoot, call.function.name, args, round);
-        const result =
-          repeat ??
-          runTool(
-            opts.projectRoot,
-            call.function.name,
-            args,
-            bashTimeoutMs,
-            protectedFiles,
-            protectGateConfigs,
-            allowBash,
-            contractFiles
-          );
+        const toolResult = runTool(
+          opts.projectRoot,
+          call.function.name,
+          args,
+          bashTimeoutMs,
+          protectedFiles,
+          protectGateConfigs,
+          allowBash,
+          contractFiles
+        );
+        // WITHHOLDING the content was a deadlock. The model re-reads a file for a
+        // reason — its context was pruned, or this is a fresh agent session — so
+        // answering "you already read that" WITHOUT the content leaves it unable
+        // to proceed, and it simply asks again. Live: 76 re-reads of one file,
+        // 64 nudges, ZERO writes in 36 minutes. Serve the content, and prepend
+        // the nudge so repetition still costs it nothing but a line.
+        const result = repeat ? `${repeat}\n\n${toolResult}` : toolResult;
         opts.onEvent?.({
           round,
           kind: 'tool',
