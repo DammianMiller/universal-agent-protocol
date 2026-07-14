@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.150.1 (2026-07-14)
+
+- chore: bump version to 1.150.0
+- feat(delivery): worktree-isolated parallel dispatch — the safe production consumer for ATG concurrency
+
+
+## v1.150.0 (2026-07-14)
+
+- feat(delivery): worktree-isolated parallel dispatch — the safe production consumer for ATG concurrency
+
+
 ## v1.150.0 (2026-07-14)
 
 - feat(deliver): P1 — replayable edit intents, anchored edit_file, bash -n self-gates
