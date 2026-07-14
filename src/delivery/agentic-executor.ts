@@ -541,6 +541,22 @@ export function runTool(
  * never fail the write — the model gets the compiler's view immediately and
  * fixes 1-2 errors instead of drowning in hundreds at turn end.
  */
+/**
+ * Is every reported error simply "a module you have not written yet"?
+ *
+ * A multi-file Rust crate CANNOT compile until its module tree is whole: write
+ * `main.rs` with `use mycrate::types::*` and cargo rightly reports an unresolved
+ * import until `types/mod.rs` lands. Those errors are not defects — they are the
+ * scaffold being incomplete, and they resolve themselves as the agent keeps
+ * writing. Exported for tests: classifying this correctly IS the fix.
+ */
+export function isIncompleteScaffold(errLines: string[]): boolean {
+  if (errLines.length === 0) return false;
+  const scaffolding =
+    /E0432|E0433|E0583|E0463|unresolved import|file not found for module|can't find crate|cannot find (module|crate)|failed to resolve/i;
+  return errLines.every((l) => scaffolding.test(l));
+}
+
 function maybeRustWriteCheck(projectRoot: string, rel: string): string {
   if (process.env.UAP_DELIVER_RUST_WRITE_CHECK === '0') return '';
   const isRust = /\.rs$/.test(rel) || /(^|\/)Cargo\.toml$/.test(rel);
@@ -557,9 +573,23 @@ function maybeRustWriteCheck(projectRoot: string, rel: string): string {
     .split('\n')
     .filter((l) => /error(\[|:)/.test(l));
   const shown = errLines.slice(0, 12).join('\n').slice(0, 1500);
+
+  // A directive the agent CANNOT satisfy is worse than none. This used to say
+  // "fix these BEFORE writing anything else" for ANY failure — a deadlock while
+  // scaffolding a crate, because writing the missing module was the only possible
+  // fix. The agent obeyed, retried, and the identical repeated message drove the
+  // proxy's ERROR-LOOP guard to fire 11 times on one live mission.
+  if (isIncompleteScaffold(errLines)) {
+    return (
+      `\n[cargo check: ${errLines.length} unresolved-module error(s) — EXPECTED while the ` +
+      `module tree is incomplete. Do NOT stop to "fix" these: KEEP WRITING the missing ` +
+      `modules until the tree is whole.\n${shown}]`
+    );
+  }
   return (
-    `\n[cargo check now FAILING — fix these BEFORE writing anything else ` +
-    `(${errLines.length} error line(s)):\n${shown}]`
+    `\n[cargo check now FAILING with real errors — fix these before adding new features ` +
+    `(${errLines.length} error line(s)). If an error is a module you have simply not ` +
+    `written yet, write it.\n${shown}]`
   );
 }
 
