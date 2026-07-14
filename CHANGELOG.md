@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.148.22 (2026-07-14)
+
+- feat(init/preflight): **every enforcement surface is now ON by default — a scaffolded project was only enforcing a fraction of what it appeared to.** Three defaults were silently absent from a fresh (or freshly RESET) project, each downgrading the pipeline while it still *looked* configured: (1) **`fidelity: max` was unset**, so the visual, vision and acceptance gates ran ADVISORY rather than blocking — a deliverable could read as verified while nothing actually gated it; (2) **`delivery: {enforcement: block, localMode: deliver, runtimeVerify: true}` was unset**, so work was not reliably routed through `uap deliver`; (3) **`uap init` seeded only 2 of 34 policies** (delivery-enforcement + self-protect) — the other 32 were merely *available*, including **`enforcement-infra-protect`**, the policy that stops a model killing llama-server and stealing its port (which one has actually done). All three now come up on their own: init installs + enables **every** built-in policy with its enforcer attached, and the preflight self-heal seeds the full config posture — so existing projects heal on their next `deliver`, not just new ones. An EXPLICIT operator value is never overridden: this sets the default, it does not take the choice away (`uap policy disable <name>` still works).
+
+
 ## v1.148.21 (2026-07-14)
 
 - fix(agentic-executor): **stop advertising a tool we refuse to run — it was burning three quarters of the turn budget.** `run_bash` was offered in the tool schema unconditionally and then REFUSED at execution time whenever the run was not sandboxed. The model does what the menu says: on a live mission it spent **58 of its 79 tool calls on `run_bash` — every one bounced** — and managed only 21 writes. And it was not probing the sandbox: every attempt was read-only (`cat` ×44, `wc`, `find`, `ls`, `head`); it simply reached for the shell it had been shown. The tool list is now built from what will actually execute, so a disabled `run_bash` never appears. The execution-time containment check stays as the backstop.
