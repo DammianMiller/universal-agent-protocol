@@ -1,7 +1,5 @@
 # Changelog
 
-## v1.148.20 (2026-07-14)
-
 ## v1.148.21 (2026-07-14)
 
 - fix(agentic-executor): **stop advertising a tool we refuse to run — it was burning three quarters of the turn budget.** `run_bash` was offered in the tool schema unconditionally and then REFUSED at execution time whenever the run was not sandboxed. The model does what the menu says: on a live mission it spent **58 of its 79 tool calls on `run_bash` — every one bounced** — and managed only 21 writes. And it was not probing the sandbox: every attempt was read-only (`cat` ×44, `wc`, `find`, `ls`, `head`); it simply reached for the shell it had been shown. The tool list is now built from what will actually execute, so a disabled `run_bash` never appears. The execution-time containment check stays as the backstop.
@@ -10,6 +8,8 @@
 
 - fix(deliver): **a mission now outlives the tool call that started it — the reason nothing was ever landing.** A coding agent runs shell commands in a bounded tool call: opencode puts each `bash -c …` in its own session and **kills that process group** when the call ends or times out. A model invoking `uap deliver` from its bash tool was therefore spawning a long mission inside a short-lived container, and the mission died wherever it happened to be. Live lifetimes were 531s, 258s, 34s, 0s, 291s — not timeouts, just *whenever the tool call happened to end* — and across an hour of client activity **not one change was ever committed**. (The autoroute hook already spawned with `start_new_session=True` and was immune; only the direct, model-invoked path was exposed.) `uap deliver` now re-launches itself into its **own session** — beyond the reach of a process-group kill — and the foreground wrapper mirrors the mission's output. When the client tears the tool call down, the wrapper dies and **the mission keeps running to completion**, resumable and recorded. An interactive run (stdout is a TTY) is untouched, so a human still gets live output and a working Ctrl-C; `UAP_DELIVER_NO_DETACH=1` forces the old behaviour. The child streams to a **file**, never a pipe held by the wrapper — a pipe whose reader is killed would hand the mission EPIPE and take it down anyway, defeating the whole point.
 
+
+## v1.148.20 (2026-07-14)
 
 ## v1.148.19 (2026-07-14)
 
