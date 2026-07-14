@@ -10,6 +10,7 @@
  */
 
 import type { LoopExecutor } from './convergence-loop.js';
+import { validatePhaseGraph, runPlanThoughtExperiment } from './plan-check.js';
 
 /**
  * Optional provider of delivery-lifecycle routing hints (e.g. the
@@ -160,6 +161,13 @@ export interface PlanPhasesOptions {
    * (compiling skeletons, todo!() bodies) followed by FILL phases.
    */
   scaffoldFirst?: boolean;
+  /**
+   * Pre-execution plan validation (ATG thought experiment): after planning,
+   * one evaluator call mentally executes the phase plan and a failed verdict
+   * triggers ONE re-plan with the findings appended. Defaults to ON;
+   * disable per-run with `false` or globally with UAP_DELIVER_PLAN_CHECK=0.
+   */
+  thoughtExperiment?: boolean;
 }
 
 function buildDecomposePrompt(
@@ -234,9 +242,11 @@ function buildDecomposePrompt(
 }
 
 /**
- * Plan sequential delivery phases via one evaluator-model call. Returns [] on
- * any failure or a degenerate (<2 phase) plan, so callers fall back to the
- * classic single-loop delivery.
+ * Plan sequential delivery phases via one evaluator-model call, then VALIDATE
+ * the plan before anything executes (structural DAG check + ATG thought
+ * experiment, with one re-plan on a failed verdict — see plan-check.ts).
+ * Returns [] on any failure or a degenerate (<2 phase) plan, so callers fall
+ * back to the classic single-loop delivery.
  */
 export async function planDeliveryPhases(
   instruction: string,
@@ -247,10 +257,65 @@ export async function planDeliveryPhases(
   try {
     const raw = await executor(buildDecomposePrompt(instruction, hintProvider, opts));
     const phases = parsePhaseArray(raw);
-    return phases.length >= MIN_PHASES ? phases : [];
+    if (phases.length < MIN_PHASES) return [];
+    return await validateAndRepairPlan(instruction, phases, executor, hintProvider, opts);
   } catch {
     return [];
   }
+}
+
+/**
+ * Pre-execution plan validation: structural issues are logged (never fatal —
+ * decomposition must not wedge), then the evaluator dry-runs the plan; a
+ * failed verdict triggers ONE re-plan with the findings appended to the
+ * planning prompt. Never returns a worse plan than it was given: on any
+ * validator/model trouble, or an unusable re-plan, the original plan stands.
+ */
+async function validateAndRepairPlan(
+  instruction: string,
+  phases: DeliveryPhase[],
+  executor: LoopExecutor,
+  hintProvider?: LifecycleHintProvider,
+  opts?: PlanPhasesOptions
+): Promise<DeliveryPhase[]> {
+  const structural = validatePhaseGraph(phases);
+  for (const msg of structural.warnings) console.log(`  plan-check: ${msg}`);
+
+  // What (if anything) demands a re-plan: structural errors always do (they
+  // are deterministic and free to detect — a cycle under the orchestrator
+  // means its whole subtree gets skipped); otherwise the evaluator's thought
+  // experiment decides, unless disabled.
+  let findings: string[];
+  if (!structural.ok) {
+    for (const msg of structural.errors) console.log(`  plan-check: ${msg}`);
+    findings = structural.errors;
+    console.log('  plan-check: structural validation FAILED — re-planning once');
+  } else {
+    const teWanted = opts?.thoughtExperiment ?? process.env.UAP_DELIVER_PLAN_CHECK !== '0';
+    if (!teWanted) return phases;
+    const verdict = await runPlanThoughtExperiment(instruction, phases, executor);
+    if (verdict.verdict === 'pass') return phases;
+    findings = verdict.findings;
+    console.log(
+      `  plan-check: thought experiment FAILED — re-planning once (${findings.slice(0, 3).join('; ') || 'no findings given'})`
+    );
+  }
+
+  const revised =
+    `${instruction}\n\nPLAN REVIEW FINDINGS (a prior phase plan was rejected for these; the new plan MUST address them):\n` +
+    findings.map((f, i) => `${i + 1}. ${f}`).join('\n');
+  try {
+    const raw = await executor(buildDecomposePrompt(revised, hintProvider, opts));
+    const replanned = parsePhaseArray(raw);
+    if (replanned.length >= MIN_PHASES && validatePhaseGraph(replanned).ok) {
+      console.log(`  plan-check: re-planned into ${replanned.length} phases addressing the findings`);
+      return replanned;
+    }
+  } catch {
+    // fall through to the original plan
+  }
+  console.log('  plan-check: re-plan unusable — keeping the original plan');
+  return phases;
 }
 
 /**

@@ -4,7 +4,7 @@
  * its direct dependencies' outputs, not the whole mission or every prior task.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   orchestrate,
   assembleTaskContext,
@@ -12,6 +12,15 @@ import {
   type OrchestratorTask,
   type TaskOutcome,
 } from '../../src/delivery/task-orchestrator.js';
+
+// Default-dependent tests must not flake when the env knob leaks into the
+// test shell (this repo has had exactly this class of incident before).
+beforeEach(() => {
+  delete process.env.UAP_ORCH_TASK_REPAIRS;
+});
+afterEach(() => {
+  delete process.env.UAP_ORCH_TASK_REPAIRS;
+});
 
 const task = (id: string, deps?: string[], extra: Partial<OrchestratorTask> = {}): OrchestratorTask => ({
   id,
@@ -79,6 +88,7 @@ describe('orchestrate (P1 — blackboard graph execution)', () => {
     const r = await orchestrate({
       mission: 'm',
       tasks: [task('base'), task('mid', ['base']), task('leaf', ['mid'])],
+      maxRepairsPerTask: 0, // isolate the skip semantics from minimal repair
       runTask: async (_ctx, t) => {
         ran.push(t.id);
         return { taskId: t.id, success: t.id !== 'base', summary: `${t.id}`, turns: 1 };
@@ -158,5 +168,234 @@ describe('orchestrate re-planning + design + budget (P3/P5/P6)', () => {
       },
     });
     expect(ran.length).toBeLessThanOrEqual(2);
+  });
+
+  it('P5: a spawned task depending on an already-FAILED task is skipped, not run', async () => {
+    const ran: string[] = [];
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('bad'), task('ok')],
+      maxRepairsPerTask: 0,
+      runTask: async (_c, t) => {
+        ran.push(t.id);
+        return {
+          taskId: t.id, success: t.id !== 'bad', summary: t.id, turns: 1,
+          // ok spawns a follow-up that (incorrectly) builds on the failed task
+          ...(t.id === 'ok' ? { newTasks: [{ id: 'on-bad', title: 'x', goal: 'g', deps: ['bad'] }] } : {}),
+        };
+      },
+    });
+    expect(ran.sort()).toEqual(['bad', 'ok']); // on-bad never ran
+    expect(r.failed).toContain('on-bad');
+  });
+});
+
+describe('orchestrate minimal node repair (ATG)', () => {
+  it('re-executes ONLY the failed node with the failure fed back — dependents then run', async () => {
+    const attempts: string[] = [];
+    let midRetryPrompt = '';
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('base'), task('mid', ['base']), task('leaf', ['mid'])],
+      maxRepairsPerTask: 1,
+      runTask: async (ctx, t) => {
+        attempts.push(t.id);
+        // mid fails on its FIRST attempt only
+        const firstMid = t.id === 'mid' && attempts.filter((a) => a === 'mid').length === 1;
+        if (t.id === 'mid' && !firstMid) midRetryPrompt = ctx.prompt;
+        return { taskId: t.id, success: !firstMid, summary: `${t.id} ${firstMid ? 'broke: missing export' : 'done'}`, turns: 1 };
+      },
+    });
+    expect(attempts).toEqual(['base', 'mid', 'mid', 'leaf']); // only mid re-ran
+    expect(midRetryPrompt).toContain('PREVIOUS ATTEMPT FAILED');
+    expect(midRetryPrompt).toContain('missing export');
+    expect(r.success).toBe(true);
+    expect(r.completed.sort()).toEqual(['base', 'leaf', 'mid']);
+  });
+
+  it('honors maxRepairsPerTask: 0 (fail-fast, no retry)', async () => {
+    const attempts: string[] = [];
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('a')],
+      maxRepairsPerTask: 0,
+      runTask: async (_c, t) => {
+        attempts.push(t.id);
+        return { taskId: t.id, success: false, summary: 'nope', turns: 1 };
+      },
+    });
+    expect(attempts).toEqual(['a']);
+    expect(r.success).toBe(false);
+  });
+
+  it('defaults to exactly ONE retry with no config (the production behavior)', async () => {
+    let attempts = 0;
+    await orchestrate({
+      mission: 'm',
+      tasks: [task('a')],
+      runTask: async () => {
+        attempts++;
+        return { taskId: 'a', success: false, summary: 'always broken', turns: 1 };
+      },
+    });
+    expect(attempts).toBe(2); // first attempt + one default repair
+  });
+
+  it('honors UAP_ORCH_TASK_REPAIRS env, hard-ceilinged at 5', async () => {
+    process.env.UAP_ORCH_TASK_REPAIRS = '0';
+    let attempts = 0;
+    const runTask = async (): Promise<TaskOutcome> => {
+      attempts++;
+      return { taskId: 'a', success: false, summary: 'broken', turns: 1 };
+    };
+    await orchestrate({ mission: 'm', tasks: [task('a')], runTask });
+    expect(attempts).toBe(1); // env 0 = fail-fast
+
+    process.env.UAP_ORCH_TASK_REPAIRS = '99';
+    attempts = 0;
+    await orchestrate({ mission: 'm', tasks: [task('a')], runTask });
+    expect(attempts).toBe(6); // first attempt + ceiling of 5 repairs, not 99
+
+    process.env.UAP_ORCH_TASK_REPAIRS = ''; // empty string = unset, not 0
+    attempts = 0;
+    await orchestrate({ mission: 'm', tasks: [task('a')], runTask });
+    expect(attempts).toBe(2); // fallback default of 1 repair
+  });
+
+  it('a throwing runTask settles as a failed outcome instead of abandoning the graph', async () => {
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('boom'), task('after', ['boom'])],
+      maxRepairsPerTask: 0,
+      runTask: async (_c, t) => {
+        if (t.id === 'boom') throw new Error('executor exploded');
+        return { taskId: t.id, success: true, summary: t.id, turns: 1 };
+      },
+    });
+    expect(r.success).toBe(false);
+    expect(r.failed.sort()).toEqual(['after', 'boom']);
+    const boom = r.outcomes.find((o) => o.taskId === 'boom');
+    expect(boom?.summary).toContain('task execution error: executor exploded');
+  });
+
+  it('repairTask chain replaces the failed node and CREDITS the original id for dependents', async () => {
+    const ran: string[] = [];
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('store'), task('ui', ['store'])],
+      maxRepairsPerTask: 0, // go straight to the re-plan chain
+      repairTask: async (t, failure) => {
+        expect(t.id).toBe('store');
+        expect(failure.summary).toContain('too big');
+        return [
+          { id: 'schema', title: 'schema', goal: 'define the schema' },
+          { id: 'impl', title: 'impl', goal: 'implement the store' },
+        ];
+      },
+      runTask: async (ctx, t) => {
+        ran.push(t.id);
+        if (t.id === 'store') return { taskId: t.id, success: false, summary: 'too big', turns: 1 };
+        return {
+          taskId: t.id, success: true, summary: `${t.id} done`, turns: 1,
+          ...(t.id.endsWith('impl') ? { contract: 'export function put(k,v)' } : {}),
+        };
+      },
+    });
+    // chain ran namespaced under the original id, then the dependent ran
+    expect(ran).toEqual(['store', 'store.r0-schema', 'store.r1-impl', 'ui']);
+    expect(r.success).toBe(true);
+    expect(r.completed).toContain('store'); // original id credited
+    // the dependent saw the chain's final contract under the ORIGINAL dep id
+    const uiOutcome = r.outcomes.find((o) => o.taskId === 'ui');
+    expect(uiOutcome?.success).toBe(true);
+  });
+
+  it('a declined repair (null) still blocks dependents', async () => {
+    const ran: string[] = [];
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('a'), task('b', ['a'])],
+      maxRepairsPerTask: 0,
+      repairTask: async () => null,
+      runTask: async (_c, t) => {
+        ran.push(t.id);
+        return { taskId: t.id, success: false, summary: 'broken', turns: 1 };
+      },
+    });
+    expect(ran).toEqual(['a']);
+    expect(r.failed.sort()).toEqual(['a', 'b']);
+  });
+});
+
+describe('orchestrate dependency-aware parallel dispatch', () => {
+  it('runs independent ready tasks concurrently up to the concurrency cap', async () => {
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((res) => { release = res; });
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('a'), task('b'), task('join', ['a', 'b'])],
+      concurrency: 2,
+      runTask: async (_c, t) => {
+        if (t.id !== 'join') {
+          started.push(t.id);
+          if (started.length === 2) release(); // both independent tasks in flight AT ONCE
+          await gate; // neither finishes until both have started
+        } else {
+          // the dependent only runs after BOTH deps completed
+          expect(started.sort()).toEqual(['a', 'b']);
+        }
+        return { taskId: t.id, success: true, summary: t.id, turns: 1 };
+      },
+    });
+    expect(r.success).toBe(true);
+    expect(r.completed.sort()).toEqual(['a', 'b', 'join']);
+  });
+
+  it('concurrency 1 (default) preserves strict sequential topo order', async () => {
+    const ran: string[] = [];
+    await orchestrate({
+      mission: 'm',
+      tasks: [task('c', ['a', 'b']), task('a'), task('b', ['a'])],
+      runTask: async (_c, t) => {
+        ran.push(t.id);
+        return { taskId: t.id, success: true, summary: t.id, turns: 1 };
+      },
+    });
+    expect(ran).toEqual(['a', 'b', 'c']);
+  });
+
+  it('a failed wave member only blocks ITS dependents — the sibling branch completes', async () => {
+    const ran: string[] = [];
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('a'), task('b'), task('a-child', ['a']), task('b-child', ['b'])],
+      concurrency: 2,
+      maxRepairsPerTask: 0,
+      runTask: async (_c, t) => {
+        ran.push(t.id);
+        return { taskId: t.id, success: t.id !== 'a', summary: t.id, turns: 1 };
+      },
+    });
+    expect(ran.sort()).toEqual(['a', 'b', 'b-child']); // a-child never ran
+    expect(r.failed.sort()).toEqual(['a', 'a-child']);
+    expect(r.completed.sort()).toEqual(['b', 'b-child']);
+  });
+
+  it('an unsatisfiable remainder (dependency cycle) is skipped, never wedged', async () => {
+    const ran: string[] = [];
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('free'), task('x', ['y']), task('y', ['x'])],
+      runTask: async (_c, t) => {
+        ran.push(t.id);
+        return { taskId: t.id, success: true, summary: t.id, turns: 1 };
+      },
+    });
+    expect(ran).toEqual(['free']); // only the acyclic task ran
+    expect(r.success).toBe(false);
+    expect(r.failed.sort()).toEqual(['x', 'y']);
+    const skipped = r.outcomes.find((o) => o.taskId === 'x');
+    expect(skipped?.summary).toContain('unmet dependency');
   });
 });
