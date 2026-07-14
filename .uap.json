@@ -151,5 +151,12 @@
   },
   "reactor": {
     "enabled": true
+  },
+  "deliver": {
+    "orchestrate": "on",
+    "epics": "on"
+  },
+  "fidelity": {
+    "mode": "max"
   }
 }
