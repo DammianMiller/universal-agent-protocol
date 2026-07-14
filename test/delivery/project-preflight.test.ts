@@ -41,22 +41,27 @@ describe('preflightProject — refuse to start where deliver cannot work', () =>
     expect(preflightProject(dir).ok).toBe(true);
   });
 
-  it('SELF-HEALS an unset orchestrate/epics posture to "on"', () => {
+  it('SELF-HEALS an unset posture — every enforcement surface defaults ON', () => {
     gitInit(dir);
     writeFileSync(join(dir, '.uap.json'), JSON.stringify({ version: '1.0.0' }));
     const r = preflightProject(dir);
     expect(r.ok).toBe(true);
-    expect(r.healed).toHaveLength(2);
+    // orchestrate, epics, fidelity.mode, and the three delivery keys.
+    expect(r.healed).toHaveLength(6);
     const cfg = readCfg(dir);
     expect(cfg.deliver.orchestrate).toBe('on');
     expect(cfg.deliver.epics).toBe('on');
+    expect(cfg.fidelity.mode).toBe('max');
+    expect(cfg.delivery.enforcement).toBe('block');
   });
 
   it('never overrides an EXPLICIT off — that is an operator decision', () => {
     gitInit(dir);
     writeFileSync(join(dir, '.uap.json'), JSON.stringify({ deliver: { orchestrate: 'off', epics: false } }));
     const r = preflightProject(dir);
-    expect(r.healed).toHaveLength(0);
+    // The explicit deliver.* keys survive untouched; only the ABSENT sections
+    // (fidelity, delivery) are filled in.
+    expect(r.healed.some((h) => h.startsWith('deliver.'))).toBe(false);
     const cfg = readCfg(dir);
     expect(cfg.deliver.orchestrate).toBe('off');
     expect(cfg.deliver.epics).toBe(false);
@@ -65,7 +70,7 @@ describe('preflightProject — refuse to start where deliver cannot work', () =>
   it('is idempotent — a healed project heals nothing on the next run', () => {
     gitInit(dir);
     writeFileSync(join(dir, '.uap.json'), JSON.stringify({ version: '1.0.0' }));
-    expect(preflightProject(dir).healed).toHaveLength(2);
+    expect(preflightProject(dir).healed).toHaveLength(6);
     expect(preflightProject(dir).healed).toHaveLength(0);
   });
 
@@ -104,5 +109,61 @@ describe('deliver wiring — the blocker applies to real runs, not to planning',
     writeFileSync(join(dir, '.uap.json'), JSON.stringify({ version: '1.0.0' }));
     const r = spawnSync('node', [cli, 'deliver', 'build a thing', '--dry-run'], { cwd: dir, encoding: 'utf-8', timeout: 60_000 });
     expect(`${r.stdout}${r.stderr}`).not.toMatch(/cannot deliver/);
+  });
+});
+
+describe('every enforcement surface is ON by default', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'uap-pfd2-')); spawnSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' }); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const cfg = (): Record<string, any> => JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf-8'));
+
+  it('seeds fidelity:max — without it the visual/vision/acceptance gates are only ADVISORY', () => {
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ version: '1.0.0' }));
+    preflightProject(dir);
+    expect(cfg().fidelity.mode).toBe('max');
+  });
+
+  it('seeds the delivery posture (block / deliver / runtimeVerify)', () => {
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ version: '1.0.0' }));
+    preflightProject(dir);
+    expect(cfg().delivery).toMatchObject({ enforcement: 'block', localMode: 'deliver', runtimeVerify: true });
+  });
+
+  it('seeds orchestrate + epics (unchanged behaviour)', () => {
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ version: '1.0.0' }));
+    preflightProject(dir);
+    expect(cfg().deliver).toMatchObject({ orchestrate: 'on', epics: 'on' });
+  });
+
+  it('NEVER overrides an explicit operator choice — a deliberate downgrade must survive', () => {
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({
+      fidelity: { mode: 'standard' },
+      delivery: { enforcement: 'advisory', localMode: 'off', runtimeVerify: false },
+      deliver: { orchestrate: 'off', epics: false },
+    }));
+    const r = preflightProject(dir);
+    expect(r.healed).toHaveLength(0);
+    const c = cfg();
+    expect(c.fidelity.mode).toBe('standard');
+    expect(c.delivery.enforcement).toBe('advisory');
+    expect(c.delivery.runtimeVerify).toBe(false);
+    expect(c.deliver.orchestrate).toBe('off');
+  });
+
+  it('fills only the ABSENT keys, leaving explicit siblings alone', () => {
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ delivery: { enforcement: 'advisory' } }));
+    preflightProject(dir);
+    const c = cfg();
+    expect(c.delivery.enforcement).toBe('advisory');   // kept
+    expect(c.delivery.localMode).toBe('deliver');      // filled
+    expect(c.fidelity.mode).toBe('max');               // filled
+  });
+
+  it('is idempotent — a fully-seeded project heals nothing on the next run', () => {
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ version: '1.0.0' }));
+    expect(preflightProject(dir).healed.length).toBeGreaterThan(0);
+    expect(preflightProject(dir).healed).toHaveLength(0);
   });
 });
