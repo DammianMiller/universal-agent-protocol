@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.149.3 (2026-07-14)
+
+- fix(agentic-executor): **`read_file` on a directory threw a raw `EISDIR` the model could not act on — so it retried, and the ERROR-LOOP guard fired.** Its intent was never in doubt: it wanted to see what was in there. It now gets the **listing**, plus a note naming `list_dir` for next time. Same principle as removing the phantom `run_bash` from the tool menu and letting the agent read its own acceptance gate: stop punishing the model for a reasonable move the harness handled badly. A wasted turn becomes a useful one. Reading a real file, and a genuinely missing path, are unchanged.
+
 ## v1.149.2 (2026-07-14)
 
 - fix(test/preflight): deliver no longer poisons its own test gate; config churn ended
