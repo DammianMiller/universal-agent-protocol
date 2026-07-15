@@ -133,7 +133,7 @@ import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFil
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
 import { clearStop, isStopRequested, loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
-import { parsePhaseArray, phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
+import { phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { runEpics, type Epic, type EpicRunResult } from '../delivery/epic-controller.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
@@ -156,7 +156,6 @@ function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unkn
   };
 }
 import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow, CONTEXT_BUDGET_MARKER } from '../delivery/context-budget.js';
-import { orchestrate } from '../delivery/task-orchestrator.js';
 import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
 import { resolveFidelity } from '../delivery/fidelity.js';
 import { installRunExitRecorder } from '../delivery/run-exit.js';
@@ -167,14 +166,13 @@ import {
   canHostDetachLog,
   NO_DETACH_ENV,
 } from './deliver-detach.js';
-import { extractContract } from '../delivery/contract-extractor.js';
-import type { AssembledContext, OrchestratorTask, TaskOutcome } from '../delivery/task-orchestrator.js';
 import type { LifecycleHintProvider } from '../delivery/decompose.js';
 import type { DeliveryPhase } from '../delivery/decompose.js';
 import { completeDeliveryTask, openDeliveryTask, recordDeliveryOutcome, recordOrchestratorTaskOutcome, reopenDeliveryTask } from '../delivery/task-sync.js';
 import { autoMineHaloTraces, summarizeWeaknesses, weaknessGuidance, loadPersistedWeaknesses } from '../delivery/auto-mine.js';
 import { createGitWorktreeProvider } from '../delivery/candidate-workspace.js';
 import { createTaskWorkspaceManager, resolveParallelTasks } from '../delivery/task-workspace.js';
+import { runOrchestratedMission as runOrchestratedMissionCore, foldDeliveryResult } from '../delivery/orchestrated-mission.js';
 import type { ExecutorMode } from '../delivery/agentic-executor.js';
 import type { AutoPlan } from '../delivery/auto-optimizer.js';
 import { createHaloDeliveryTracer } from '../delivery/halo-trace.js';
@@ -1942,175 +1940,74 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
    * the per-task executor; a completed task publishes a compact summary its
    * dependents read instead of source.
    */
-  const runOrchestratedMission = async (): Promise<DeliveryResult> => {
-    const all: DeliveryResult = {
-      success: true, alreadyDelivered: false, turns: 0, bestScore: 0, bestTurn: 0,
-      history: [], finalFeedback: '', finalOutput: '', totalDurationMs: 0,
-    };
-    const tasks: OrchestratorTask[] = phases!.map((ph) => ({
-      id: ph.id, title: ph.title, goal: ph.goal, ...(ph.deps ? { deps: ph.deps } : {}),
-    }));
-    // -- Worktree-isolated parallel dispatch --
-    // `.uap.json` deliver.parallelTasks (config-only BY DESIGN - no env; see
-    // the concurrency notes in task-orchestrator.ts) dispatches independent
-    // READY tasks concurrently, EACH in its own detached git worktree seeded
-    // with the main tree's current uncommitted state and judged against its
-    // own spec. Merge-backs are SERIALIZED under a lock; a conflicting merge
-    // fails the task, and the orchestrator's minimal repair retries it in a
-    // fresh workspace seeded with the updated baseline - conflicts resolve
-    // through the ATG repair path instead of corrupting the tree.
-    const parallelTasks = resolveParallelTasks(
-      (cfgRaw.deliver as Record<string, unknown> | undefined)?.parallelTasks
-    );
-    const wsManager = parallelTasks > 1 ? createTaskWorkspaceManager(projectRoot) : null;
-    if (parallelTasks > 1 && !wsManager) {
-      console.log(chalk.yellow('  ⇉ parallel tasks: worktree isolation unavailable (not a git repo?) - running sequentially'));
-    } else if (wsManager) {
-      console.log(chalk.cyan(`  ⇉ parallel tasks: up to ${parallelTasks} independent tasks in isolated worktrees`));
-    }
-    // Merge-boundary defense-in-depth: refuse a delta touching protected
-    // tests/gate configs at the boundary, instead of trusting the in-worktree
-    // layers transitively (mode-only changes and capture-skipped files would
-    // otherwise ride the patch back).
+  /**
+   * Wire deliver's ambient context (loop config, executors, judge state, task
+   * records, gates) into the extracted orchestrated-mission runner
+   * (src/delivery/orchestrated-mission.ts). Shared by the top-level
+   * orchestrated path and the epic controller's inner missions — and, because
+   * the runner is seam-injected, the orchestrate() wiring is finally
+   * unit-testable (the PR #516 inert-concurrency critical could not recur
+   * unobserved).
+   */
+  const buildOrchestratedDeps = (
+    missionText: string,
+    taskPhases: DeliveryPhase[],
+    parallelTasks: number,
+    parentTaskId: string | undefined = missionTask?.id
+  ): Parameters<typeof runOrchestratedMissionCore>[0] => {
     const mergeProtected = new Set<string>(
-      options.protectTests !== false
-        ? [...snapshotProtection(projectRoot).protectedFiles, ...listGateConfigFiles(projectRoot)].map((f) =>
-            f.toLowerCase()
-          )
-        : []
+      [
+        ...(options.protectTests !== false
+          ? [...snapshotProtection(projectRoot).protectedFiles, ...listGateConfigFiles(projectRoot)]
+          : []),
+        // Locked contract files are read-only for later epics; the merge
+        // boundary re-checks them like the other protected surfaces instead
+        // of trusting the in-worktree write_file guard transitively.
+        ...contractLock,
+      ].map((f) => f.toLowerCase())
     );
-    let mergeChain: Promise<unknown> = Promise.resolve();
-    const withMergeLock = <T>(fn: () => Promise<T> | T): Promise<T> => {
-      const next = mergeChain.then(fn, fn);
-      mergeChain = next.then(
-        () => undefined,
-        () => undefined
-      );
-      return next;
-    };
-    // Regexes built from strings so policy hooks never mistake a literal for a path.
-    const SOURCE_FILE_RE = new RegExp('[.](js|mjs|cjs|ts|tsx|jsx|py)$');
-    const NEW_TASKS_RE = new RegExp('NEW_TASKS:\\s*(\\[[\\s\\S]*?\\])');
-    /** Run one task's convergence loop against `root` with executor `exec` -
-     * the historic in-tree body, parameterized so isolated workspaces reuse it
-     * verbatim. Turns/history flow into the mission aggregate as before. */
-    const runTaskAt = async (
-      ctx: AssembledContext,
-      task: OrchestratorTask,
-      root: string,
-      exec: LoopExecutor
-    ): Promise<TaskOutcome> => {
-      const taskRecord = await openDeliveryTask(
-        `${task.title} — ${task.goal.slice(0, 120)}`,
-        projectRoot,
-        missionTask?.id
-      );
-      acceptanceSpecByRoot.set(root, ctx.prompt);
-      if (root === projectRoot) acceptanceSpec = ctx.prompt;
-      evidenceFor(root).writes = 0;
-      try {
-        const loop = new ConvergenceLoop(
-          {
-            ...loopConfig,
-            projectRoot: root,
-            baselineCheck: false,
-            resumeFrom: undefined,
-            // Checkpoints describe THE mission tree; isolated roots must not
-            // clobber the durable run state.
-            // The inherited explorer's workspaceProvider is bound to the MAIN
-            // projectRoot; inside an isolated task it must not run at all.
-            ...(root !== projectRoot ? { onCheckpoint: undefined, explorer: undefined } : {}),
-            onIteration: makeIterationHook(root),
-          },
-          exec,
-          seams
-        );
-        const r = await loop.deliver(ctx.prompt);
-        all.turns += r.turns;
-        all.history.push(...r.history);
-        all.totalDurationMs += r.totalDurationMs;
-        if (r.bestScore > all.bestScore) {
-          all.bestScore = r.bestScore;
-          all.bestTurn = r.bestTurn;
-        }
-        all.finalFeedback = r.finalFeedback;
-        all.finalOutput = r.finalOutput;
-        completeDeliveryTask(taskRecord, r);
-        const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
-        // P4 - extract the VERIFIED public contract of what this task built so
-        // dependents load the interface (a few hundred chars), not the source.
-        let contract: string | undefined;
-        if (r.success && files.length > 0) {
-          try {
-            const { readFileSync } = await import('fs');
-            const { join } = await import('path');
-            const srcs = files
-              .filter((f) => SOURCE_FILE_RE.test(f))
-              .map((f) => {
-                try {
-                  return { path: f, content: readFileSync(join(root, f), 'utf-8') };
-                } catch {
-                  return null;
-                }
-              })
-              .filter((x): x is { path: string; content: string } => x !== null);
-            contract = extractContract(srcs).contract || undefined;
-          } catch {
-            contract = undefined;
-          }
-        }
-        // P5 - adaptive re-planning feed: a task may surface work the initial
-        // plan missed by emitting a `NEW_TASKS: [ {id,title,goal,deps} ]` JSON
-        // array in its output. Parsed through the same validator as the planner
-        // (well-formed only), then folded into the DAG by orchestrate() (which
-        // dedupes, topo-resorts, and caps at maxTasks). Only structural fields
-        // are used - never free-form model text as durable memory.
-        let newTasks: OrchestratorTask[] | undefined;
-        if (r.success) {
-          try {
-            const marker = NEW_TASKS_RE.exec(r.finalOutput || r.finalFeedback || '');
-            if (marker) {
-              const parsed = parsePhaseArray(marker[1]).filter((t) => t.id !== task.id);
-              if (parsed.length > 0) {
-                newTasks = parsed.map((t) => ({
-                  id: t.id, title: t.title, goal: t.goal,
-                  ...(t.deps ? { deps: t.deps } : {}),
-                }));
-                console.log(chalk.dim(`  ↳ re-planning: task ${task.id} discovered ${newTasks.length} follow-up task(s)`));
-              }
-            }
-          } catch {
-            newTasks = undefined;
-          }
-        }
-        return {
-          taskId: task.id,
-          success: r.success,
-          turns: r.turns,
-          // ATG minimal repair: a FAILED task's summary must carry the failure
-          // (the retry's only new information), never a goal restatement.
-          summary: r.success
-            ? `${task.goal.slice(0, 160)}${files.length ? ` [files: ${files.join(', ')}]` : ''}`
-            : `${task.goal.slice(0, 120)} — FAILED: ${(r.finalFeedback || 'gates did not pass').slice(0, 280)}`,
-          ...(contract ? { contract } : {}),
-          ...(newTasks && newTasks.length > 0 ? { newTasks } : {}),
-        };
-      } finally {
-        acceptanceSpecByRoot.delete(root);
-      }
-    };
-    const orchResult = await orchestrate({
-      mission: instruction,
-      tasks,
+    return {
+      instruction: missionText,
+      projectRoot,
+      tasks: taskPhases.map((ph) => ({
+        id: ph.id,
+        title: ph.title,
+        goal: ph.goal,
+        ...(ph.deps ? { deps: ph.deps } : {}),
+      })),
+      parallelTasks,
       contextBudgetChars: Number(process.env.UAP_DELIVER_CONTEXT_BUDGET ?? 6000),
       maxTasks: Number(process.env.UAP_DELIVER_MAX_TASKS ?? 40),
-      // Dependency-aware parallel dispatch — only with worktree isolation.
-      concurrency: wsManager ? parallelTasks : 1,
+      workspaceManager: parallelTasks > 1 ? createTaskWorkspaceManager(projectRoot) : null,
+      note: (line) =>
+        console.log(
+          line.startsWith('▶')
+            ? chalk.bold(line)
+            : line.includes('unavailable') || line.includes('conflicted')
+              ? chalk.yellow(line)
+              : line.includes('parallel tasks:') || line.includes('post-merge verification')
+                ? chalk.cyan(line)
+                : chalk.dim(line)
+        ),
+      beginTaskSpec: (root, spec) => {
+        acceptanceSpecByRoot.set(root, spec);
+        if (root === projectRoot) acceptanceSpec = spec;
+        evidenceFor(root).writes = 0;
+      },
+      endTaskSpec: (root) => {
+        acceptanceSpecByRoot.delete(root);
+        // An in-tree task re-pointed the shared spec; restore the mission-
+        // level spec so a later watch-ci re-converge never judges against a
+        // stale task prompt.
+        if (root === projectRoot) acceptanceSpec = missionText;
+      },
+      openTask: (title) => openDeliveryTask(title, projectRoot, parentTaskId),
+      completeTask: (record, r) => completeDeliveryTask(record, r),
       // P3 — per-task memory retrieval: pull the few most relevant established
       // decisions/patterns/gotchas for THIS task's goal (a small semantic
       // query, not the full spec), so a fresh-context task reconstructs "what
       // am I building and why" from memory. Fail-soft → no design lines.
-      retrieveDesign: async (task): Promise<string[]> => {
+      retrieveDesign: async (task) => {
         try {
           const { retrieveDynamicMemoryContext } = await import('../memory/dynamic-retrieval.js');
           const mem = await retrieveDynamicMemoryContext(task.goal, projectRoot, { maxTokens: 400 });
@@ -2126,101 +2023,76 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       // P3/P4 — durable publish: a completed task's verified contract lands in
       // short-term memory so later tasks (and future fresh sessions) retrieve
       // the interface from memory instead of re-reading source.
-      publish: async (outcome, task): Promise<void> => {
+      publish: async (outcome, task) => {
         if (!outcome.success) return;
-        await recordOrchestratorTaskOutcome(
-          task.id,
-          task.title,
-          outcome.contract ?? outcome.summary,
-          projectRoot
-        );
+        await recordOrchestratorTaskOutcome(task.id, task.title, outcome.contract ?? outcome.summary, projectRoot);
       },
-      runTask: async (ctx, task): Promise<TaskOutcome> => {
-        console.log(
-          chalk.bold(`▶ task ${task.id}: ${task.title}`) +
-            chalk.dim(` (ctx ${ctx.prompt.length} chars, deps: ${ctx.includedDeps.join(',') || 'none'})`)
-        );
-        // Workspace acquisition mutates git state (worktree add) - serialize
-        // it behind the same lock the merges use.
-        const ws = wsManager ? await withMergeLock(() => wsManager.acquire(task.id)) : null;
-        if (!ws) {
-          if (wsManager) {
-            console.log(chalk.yellow(`  ⇉ task ${task.id}: workspace unavailable - running in-tree (serialized)`));
-            // In-tree execution mutates the shared tree; hold the lock for the
-            // WHOLE run so it never races an isolated task's merge-back.
-            return withMergeLock(() => runTaskAt(ctx, task, projectRoot, executor));
-          }
-          return runTaskAt(ctx, task, projectRoot, executor);
-        }
+      isMergeBlocked: (f) => mergeProtected.has(f.toLowerCase()),
+      verifyCombined: () => {
+        // Mirror the loop's redetect-merge: redetection REASSIGNS the loop's
+        // local rungs and never mutates this captured t0 array, so a
+        // from-scratch build's mid-mission gates must be re-merged here or
+        // the combined tree is verified against stale t0 gates only.
+        let combinedRungs = rungs;
         try {
-          // The agentic executor binds tools to a root at construction - give
-          // the isolated task its own, with the same protections re-derived
-          // for its tree. The blind executor is root-free (the per-task loop's
-          // projectRoot directs the applier and gates).
-          const taskExecutor = agentic
+          const detected = detectRungs(projectRoot);
+          const have = new Set(rungs.map((r) => r.id));
+          const allow =
+            loopConfig.redetectFilter ?? ((r: GateRung) => tierOf(r) === 'fast' || tierOf(r) === 'runtime');
+          const added = detected.filter((r) => !have.has(r.id) && allow(r));
+          if (added.length > 0) combinedRungs = [...rungs, ...added];
+        } catch {
+          // detection unavailable - verify against the t0 rungs
+        }
+        return Promise.resolve(tieredRunner(combinedRungs, projectRoot, {}));
+      },
+      runLoop: async ({ root, prompt, taskId, isolated }) => {
+        // The agentic executor binds tools to a root at construction — give
+        // an isolated task its own, with the same protections re-derived for
+        // its tree. The blind executor is root-free (the per-task loop's
+        // projectRoot directs the applier and gates).
+        const exec =
+          isolated && agentic
             ? createAgenticExecutor(model, {
-                projectRoot: ws.root,
+                projectRoot: root,
                 endpoint: agenticEndpoint,
                 temperature,
                 contextTokenBudget: sessionBudget,
                 contractFiles: contractLock,
                 protectedFiles:
-                  options.protectTests !== false ? snapshotProtection(ws.root).protectedFiles : new Set<string>(),
+                  options.protectTests !== false ? snapshotProtection(root).protectedFiles : new Set<string>(),
                 protectGateConfigs: options.protectTests !== false,
                 allowBash: options.allowBash === true || process.env.UAP_DELIVER_ALLOW_BASH === '1',
                 onEvent: (e) =>
                   console.log(
-                    chalk.dim(`    [${task.id} r${e.round} ${e.kind}${e.tool ? `:${e.tool}` : ''}] ${e.detail ?? ''}`)
+                    chalk.dim(`    [${taskId} r${e.round} ${e.kind}${e.tool ? `:${e.tool}` : ''}] ${e.detail ?? ''}`)
                   ),
               })
             : executor;
-          const outcome = await runTaskAt(ctx, task, ws.root, taskExecutor);
-          if (!outcome.success) return outcome;
-          const merged = await withMergeLock(() => ws.mergeBack((f) => mergeProtected.has(f.toLowerCase())));
-          if (!merged.ok) {
-            console.log(
-              chalk.yellow(
-                `  ⇉ task ${task.id}: merge-back conflicted (${merged.reason ?? 'apply failed'}) - minimal repair retries on the updated tree`
-              )
-            );
-            return {
-              taskId: task.id,
-              success: false,
-              turns: 0,
-              summary: `${task.goal.slice(0, 120)} — FAILED: the tree changed underneath this task (parallel merge conflict) — rebuild it against the CURRENT state of the repository. Detail: ${(merged.reason ?? 'could not apply the task delta').slice(0, 200)}`,
-            };
-          }
-          if (merged.files.length > 0) {
-            console.log(chalk.dim(`  ⇉ task ${task.id}: merged ${merged.files.length} file(s) into the main tree`));
-          }
-          return outcome;
-        } finally {
-          ws.cleanup();
-        }
+        const loop = new ConvergenceLoop(
+          {
+            ...loopConfig,
+            projectRoot: root,
+            baselineCheck: false,
+            resumeFrom: undefined,
+            // Checkpoints describe THE mission tree, and the inherited
+            // explorer's workspaceProvider is bound to the MAIN projectRoot —
+            // neither may run inside an isolated task.
+            ...(isolated ? { onCheckpoint: undefined, explorer: undefined } : {}),
+            onIteration: makeIterationHook(root),
+          },
+          exec,
+          seams
+        );
+        return loop.deliver(prompt);
       },
-    });
-    // Post-merge verification: every gate passed in SOME tree, but 3-way
-    // resolution can produce a combined main tree no gate ever saw. One
-    // ladder run on the merged result closes that. Fail-soft on runner
-    // errors; hard on gate failures.
-    if (wsManager && orchResult.success) {
-      try {
-        console.log(chalk.cyan('  ⇉ post-merge verification: gate ladder on the merged main tree…'));
-        const combined = await tieredRunner(rungs, projectRoot, {});
-        if (!combined.passed) {
-          orchResult.success = false;
-          orchResult.failed.push('post-merge-verification');
-          all.finalFeedback = `post-merge verification FAILED on the combined tree:\n${combined.feedback}`.slice(0, 4000);
-        }
-      } catch {
-        // verification unavailable — keep the per-task verdicts
-      }
-    }
-    all.success = orchResult.success;
-    if (!orchResult.success) {
-      all.finalFeedback = `orchestration incomplete — failed tasks: ${orchResult.failed.join(', ')}\n${all.finalFeedback}`;
-    }
-    return all;
+    };
+  };
+  const runOrchestratedMission = async (): Promise<DeliveryResult> => {
+    const parallelTasks = resolveParallelTasks(
+      (cfgRaw.deliver as Record<string, unknown> | undefined)?.parallelTasks
+    );
+    return runOrchestratedMissionCore(buildOrchestratedDeps(instruction, phases!, parallelTasks));
   };
 
   const runPhasedMission = async (): Promise<DeliveryResult> => {
@@ -2300,6 +2172,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       success: true, alreadyDelivered: false, turns: 0, bestScore: 0, bestTurn: 0,
       history: [], finalFeedback: '', finalOutput: '', totalDurationMs: 0,
     };
+    const epicParallelTasks = resolveParallelTasks(
+      (cfgRaw.deliver as Record<string, unknown> | undefined)?.parallelTasks
+    );
     const contractsFirst = process.env.UAP_DELIVER_CONTRACTS !== '0';
     const scaffoldFirst = process.env.UAP_DELIVER_SCAFFOLD !== '0';
     const planned = await planDeliveryPhases(instruction, verdictExecutor, undefined, {
@@ -2395,14 +2270,99 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // prompt carries process instructions ("read X first"), prior-epic
         // summaries, and retry feedback — none verifiable from code, so a
         // small judge rejects objectively-green turns against them forever.
-        acceptanceSpec =
+        const epicSpec =
           `EPIC — ${epic.title}:\n${epic.goal}` +
           (epic.criteria?.length ? `\nAcceptance criteria:\n${epic.criteria.map((c) => `- ${c}`).join('\n')}` : '') +
           (!epic.contracts && contractLock.size > 0 ? `\n(Builds against locked contracts: ${[...contractLock].join(', ')})` : '') +
           (fillsScaffold ? '\n(FILL epic: no todo!()/NotImplementedError/TODO-throw stub markers may remain in the files it implements; signatures must be unchanged.)' : '') +
           (epic.scaffold ? '\n(SCAFFOLD epic: complete compiling signatures with stub bodies are the DELIVERABLE — unimplemented logic is expected and correct here.)' : '');
+        acceptanceSpec = epicSpec;
         specChangeEvidence.writes = 0; // fresh epic — breaker needs fresh diff evidence
         const epicTask = await openDeliveryTask(`${epic.title} \u2014 ${epic.goal.slice(0, 120)}`, projectRoot, missionTask?.id);
+        // Epic-path parallel dispatch (PR #516 follow-up): with
+        // deliver.parallelTasks > 1, an epic whose goal itself decomposes
+        // runs as an orchestrated task DAG — worktree-isolated parallel
+        // dispatch inside the DEFAULT (epics-on) path. Only the PLANNER call
+        // is fail-soft (a miss falls through to the classic single loop); a
+        // runner exception must propagate — swallowing it would silently
+        // restart the epic on a partially-merged tree.
+        if (epicParallelTasks > 1) {
+          // Retry feedback must reach the decomposition (fresh tasks that fix
+          // the failure) — mirroring splitEpic — because the orchestrator's
+          // 300-char mission snippet cannot carry it into every task.
+          const epicPlanGoal =
+            `${epic.title}: ${epic.goal}` +
+            (ctx.lastFailure
+              ? `\n\n(The previous attempt did not complete: ${ctx.lastFailure.slice(0, 300)}. The tasks you produce must FIX this.)`
+              : '');
+          let epicPlan: DeliveryPhase[] = [];
+          try {
+            epicPlan = await planDeliveryPhases(
+              epicPlanGoal,
+              verdictExecutor,
+              undefined,
+              // The mission-level plan already passed validation and each
+              // task converges against real gates — skip the judge call here.
+              { sessionTokenBudget: sessionBudget, thoughtExperiment: false }
+            );
+          } catch {
+            epicPlan = [];
+          }
+          if (epicPlan.length < 2) {
+            console.log(chalk.dim(`  ⇉ epic ${epic.id}: no usable task decomposition — classic single-loop epic`));
+          } else {
+            console.log(
+              chalk.cyan(`  ⇉ epic ${epic.id}: decomposed into ${epicPlan.length} tasks — orchestrated parallel dispatch`)
+            );
+            // The orchestrator's mission snippet carries the HEAD of this
+            // text — lead with the epic essence, then retry + steering.
+            const epicMissionText =
+              `EPIC — ${epic.title}: ${epic.goal}` +
+              (ctx.lastFailure ? `\nPREVIOUS ATTEMPT FEEDBACK (address this): ${ctx.lastFailure}` : '') +
+              `${contractsNote}${scaffoldNote}${priors}`;
+            const r = await runOrchestratedMissionCore(
+              buildOrchestratedDeps(epicMissionText, epicPlan, epicParallelTasks, epicTask?.id)
+            );
+            foldDeliveryResult(all, r);
+            completeDeliveryTask(epicTask, r);
+            const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
+            if (epic.contracts) lastContractEpicFiles = files;
+            // Epic-level acceptance parity: the classic path judges every
+            // green turn against the EPIC spec (criteria, FILL "no stub
+            // markers remain", locked contracts). Green tasks + a green
+            // combined tree still must satisfy it — one judge call.
+            // Fail-soft on judge availability; hard on a completed verdict.
+            if (r.success && options.acceptance && !skipJudgeForSimple) {
+              try {
+                const judged = await runAcceptanceGate({
+                  spec: epicSpec,
+                  projectRoot,
+                  executor: verdictExecutor,
+                  runtimeNote:
+                    'Objective project gates ALL PASSED for every task and on the combined tree — treat build/test requirements as objectively verified.',
+                });
+                const verdict = resolveAcceptanceVerdict(judged, acceptancePrimary);
+                if (!verdict.passed) {
+                  return {
+                    success: false,
+                    turns: r.turns,
+                    summary: `${epic.goal.slice(0, 120)} — tasks green but EPIC acceptance failed: ${(verdict.feedback ?? '').slice(0, 240)}`,
+                  };
+                }
+              } catch {
+                // judge unavailable — the objective verdicts stand
+              }
+            }
+            const budgetHit = !r.success && r.history.some((h) => h.budgetStopped);
+            return {
+              success: r.success,
+              turns: r.turns,
+              summary:
+                `${epic.goal.slice(0, 140)}${files.length ? ` [files: ${files.join(', ')}]` : ''}` +
+                (budgetHit ? ` ${CONTEXT_BUDGET_MARKER} session(s) exceeded the context budget — scope is too large for one session` : ''),
+            };
+          }
+        }
         const loop = new ConvergenceLoop(
           { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onIteration: makeIterationHook() },
           executor,

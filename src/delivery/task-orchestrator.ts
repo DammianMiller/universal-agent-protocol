@@ -120,10 +120,11 @@ export interface OrchestratorConfig {
    * next dispatches — simple and deterministic over maximal utilization).
    * Default 1 = sequential, the historical behavior. DELIBERATELY config-only,
    * no env override: >1 requires a runTask that tolerates concurrent
-   * execution (isolated workspaces / per-task judge state), and the
-   * production deliver runTask is NOT concurrency-safe yet — an env knob
-   * would let one exported variable silently corrupt every deliver run.
-   * Clamped to [1, 16].
+   * execution. deliver's production runTask satisfies that since PR #516
+   * (worktree isolation + per-task judge state via orchestrated-mission.ts);
+   * env stays excluded because parallelism must remain an explicit
+   * per-project decision, not something one exported variable flips for
+   * every run on a machine. Clamped to [1, 16].
    */
   concurrency?: number;
 }

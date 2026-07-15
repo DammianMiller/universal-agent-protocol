@@ -69,6 +69,19 @@ export {
 } from './plan-check.js';
 
 export {
+  runOrchestratedMission,
+  foldDeliveryResult,
+  type OrchestratedMissionDeps,
+} from './orchestrated-mission.js';
+
+export {
+  createTaskWorkspaceManager,
+  resolveParallelTasks,
+  type TaskWorkspace,
+  type TaskWorkspaceManager,
+} from './task-workspace.js';
+
+export {
   autoMineHaloTraces,
   summarizeWeaknesses,
   isAutoMineEnabled,
