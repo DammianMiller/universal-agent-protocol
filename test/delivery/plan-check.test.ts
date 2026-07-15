@@ -113,3 +113,23 @@ describe('reviewPlanText', () => {
     expect(v).toEqual({ verdict: 'pass', findings: [] });
   });
 });
+
+describe('thought-experiment serialization (round-2 follow-up)', () => {
+  it('the judge sees criteria and contracts/scaffold tags', async () => {
+    let prompt = '';
+    await runPlanThoughtExperiment(
+      'mission',
+      [
+        { id: 'c', title: 'Contracts', goal: 'define types', contracts: true },
+        { id: 'k', title: 'Skeleton', goal: 'stub it', scaffold: true, deps: ['c'], criteria: ['compiles with stub bodies'] },
+      ],
+      async (pr) => {
+        prompt = pr;
+        return '{"verdict":"pass","findings":[]}';
+      }
+    );
+    expect(prompt).toContain('[CONTRACTS]');
+    expect(prompt).toContain('[SCAFFOLD]');
+    expect(prompt).toContain('criteria: compiles with stub bodies');
+  });
+});

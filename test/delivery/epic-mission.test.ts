@@ -363,3 +363,73 @@ describe('parallel branch + acceptance parity', () => {
     expect(locks).toEqual([]); // only an ACCEPTED contracts epic locks
   });
 });
+
+describe('PR #519 follow-up behaviors', () => {
+  it('a CONTRACTS epic accepted VIA SPLIT still locks — each piece carries the flag', async () => {
+    const locks: string[][] = [];
+    const r = await runEpicMission(
+      baseDeps({
+        planEpics: async () => [phase('contracts', { contracts: true }), phase('impl', { deps: ['contracts'] })],
+        maxAttemptsPerEpic: 1,
+        splitOnAnyFailure: true,
+        splitDepth: 1,
+        planSplit: async () => [phase('c-piece-1'), phase('c-piece-2')],
+        runEpicLoop: async (scoped) =>
+          scoped.includes('EPIC — contracts')
+            ? ok({ success: false }) // the whole contracts epic fails -> split
+            : ok({
+                success: true,
+                // Discriminate on the EPIC header — piece names also appear in
+                // the second piece's ALREADY BUILT priors.
+                history: [{ filesApplied: [scoped.includes('EPIC — c-piece-2') ? 'src/b.ts' : 'src/a.ts'] } as never],
+              }),
+        lockContracts: (files) => {
+          locks.push(files);
+          return files;
+        },
+      })
+    );
+    expect(r.success).toBe(true);
+    // each accepted contracts PIECE locked its own files (previously: nothing)
+    expect(locks.length).toBeGreaterThanOrEqual(2);
+    expect(locks.flat()).toContain('src/a.ts');
+    expect(locks.flat()).toContain('src/b.ts');
+  });
+
+  it('planner-emitted criteria reach the epic spec judge clause (previously dead)', async () => {
+    const specs: string[] = [];
+    await runEpicMission(
+      baseDeps({
+        planEpics: async () => [
+          { ...phase('a'), criteria: ['clicking Save persists the record'] },
+          phase('b', { deps: ['a'] }),
+        ],
+        setEpicSpec: (spec) => specs.push(spec),
+      })
+    );
+    expect(specs[0]).toContain('Acceptance criteria:');
+    expect(specs[0]).toContain('clicking Save persists the record');
+    expect(specs[1]).not.toContain('Acceptance criteria:');
+  });
+
+  it('a budget-stopped attempt reports the STRUCTURED field to the controller', async () => {
+    const splitCalls: string[] = [];
+    await runEpicMission(
+      baseDeps({
+        planEpics: async () => [phase('big'), phase('other')],
+        maxAttemptsPerEpic: 1,
+        splitDepth: 1,
+        planSplit: async (g) => {
+          splitCalls.push(g);
+          return [phase('p1'), phase('p2')];
+        },
+        runEpicLoop: async (scoped) =>
+          scoped.includes('EPIC — big')
+            ? ok({ success: false, history: [{ filesApplied: [], budgetStopped: true } as never] })
+            : ok(),
+      })
+    );
+    // split fired via the structured signal (splitOnAnyFailure is false here)
+    expect(splitCalls.length).toBe(1);
+  });
+});

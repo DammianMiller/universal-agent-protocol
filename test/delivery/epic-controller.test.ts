@@ -116,3 +116,29 @@ describe('runEpics', () => {
     expect(res.success).toBe(false);
   });
 });
+
+describe('structured budget signal (EpicRunResult.budgetStopped)', () => {
+  it('the split fires on budgetStopped WITHOUT the marker substring in the summary', async () => {
+    const { runEpics } = await import('../../src/delivery/epic-controller.js');
+    const splitGoals: string[] = [];
+    const result = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'big', title: 'Big', goal: 'g' }],
+      maxAttemptsPerEpic: 1,
+      splitDepth: 1,
+      splitEpic: async (epic) => {
+        splitGoals.push(epic.id);
+        return [
+          { id: 'p1', title: 'P1', goal: 'g1' },
+          { id: 'p2', title: 'P2', goal: 'g2' },
+        ];
+      },
+      runEpic: async (epic) =>
+        epic.id === 'big'
+          ? { success: false, summary: 'clean summary, no marker', turns: 1, budgetStopped: true }
+          : { success: true, summary: `${epic.id} done`, turns: 1 },
+    });
+    expect(splitGoals).toEqual(['big']); // structured field triggered the split
+    expect(result.success).toBe(true);
+  });
+});

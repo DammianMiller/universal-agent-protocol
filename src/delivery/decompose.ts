@@ -44,6 +44,14 @@ export interface DeliveryPhase {
    * model cannot do simultaneously at scale.
    */
   scaffold?: boolean;
+  /**
+   * Optional VERIFIABLE acceptance criteria for this phase/epic — the epic
+   * judge grades against them ("Acceptance criteria:" in the epic spec).
+   * The planner is ASKED for at most 3; the parse cap (6 × 200 chars) is
+   * deliberate headroom so a slightly-chatty planner still lands, while a
+   * rambling one can't bloat specs.
+   */
+  criteria?: string[];
 }
 
 const MIN_PHASES = 2;
@@ -106,6 +114,13 @@ export function parsePhaseArray(text: string): DeliveryPhase[] {
       : undefined;
     const contracts = (entry as { contracts?: unknown }).contracts === true;
     const scaffold = (entry as { scaffold?: unknown }).scaffold === true;
+    const rawCriteria = (entry as { criteria?: unknown }).criteria;
+    const criteria = Array.isArray(rawCriteria)
+      ? rawCriteria
+          .filter((c): c is string => typeof c === 'string' && c.trim().length > 0)
+          .map((c) => c.trim().slice(0, 200))
+          .slice(0, 6)
+      : undefined;
     phases.push({
       id: slug,
       title: title.trim().slice(0, 120),
@@ -113,6 +128,7 @@ export function parsePhaseArray(text: string): DeliveryPhase[] {
       ...(deps && deps.length > 0 ? { deps } : {}),
       ...(contracts ? { contracts: true } : {}),
       ...(scaffold ? { scaffold: true } : {}),
+      ...(criteria && criteria.length > 0 ? { criteria } : {}),
     });
     if (phases.length >= maxPhases()) break;
   }
@@ -237,7 +253,7 @@ function buildDecomposePrompt(
     '',
     'Respond with ONLY a JSON array. Each phase may declare deps (ids of',
     'phases it builds on); phases without deps between them are independent:',
-    '[{"id": "<kebab-slug>", "title": "<short name>", "goal": "<what this phase must accomplish>", "deps": ["<id>"], "contracts": false, "scaffold": false}]',
+    '[{"id": "<kebab-slug>", "title": "<short name>", "goal": "<what this phase must accomplish>", "deps": ["<id>"], "contracts": false, "scaffold": false, "criteria": ["<verifiable acceptance criterion (optional, max 3)>"]}]',
   ].join('\n');
 }
 

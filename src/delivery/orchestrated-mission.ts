@@ -117,20 +117,10 @@ async function extractContractFrom(root: string, files: string[]): Promise<strin
   }
 }
 
-/** Fold one loop/mission result into a running aggregate (turns, history,
- * best score, latest feedback/output). Shared by this runner and the epic
- * controller when it embeds an orchestrated mission. */
-export function foldDeliveryResult(target: DeliveryResult, source: DeliveryResult): void {
-  target.turns += source.turns;
-  target.history.push(...source.history);
-  target.totalDurationMs += source.totalDurationMs;
-  if (source.bestScore > target.bestScore) {
-    target.bestScore = source.bestScore;
-    target.bestTurn = source.bestTurn;
-  }
-  target.finalFeedback = source.finalFeedback;
-  target.finalOutput = source.finalOutput;
-}
+// Moved to the shared result util (runners must not import each other for a
+// generic fold); re-exported here so existing importers keep working.
+export { foldDeliveryResult } from './delivery-result.js';
+import { foldDeliveryResult } from './delivery-result.js';
 
 /**
  * Execute a decomposed mission on the blackboard orchestrator, with
