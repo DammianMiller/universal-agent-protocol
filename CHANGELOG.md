@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.152.0 (2026-07-15)
+
+- refactor(delivery): extract runEpicMission behind seams — the default path is now unit-tested
+
+
 ## v1.151.0 (2026-07-15)
 
 - refactor(delivery): extract runOrchestratedMission behind seams; epic-path parallel dispatch; P5 NEW_TASKS deps fix
