@@ -74,6 +74,8 @@ export {
   type OrchestratedMissionDeps,
 } from './orchestrated-mission.js';
 
+export { runEpicMission, type EpicMissionDeps } from './epic-mission.js';
+
 export {
   createTaskWorkspaceManager,
   resolveParallelTasks,

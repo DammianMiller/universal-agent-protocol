@@ -134,7 +134,6 @@ import { createRepairEscalation } from '../delivery/repair-escalation.js';
 import { clearStop, isStopRequested, loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
-import { runEpics, type Epic, type EpicRunResult } from '../delivery/epic-controller.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
 import {
@@ -155,7 +154,7 @@ function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unkn
     }
   };
 }
-import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow, CONTEXT_BUDGET_MARKER } from '../delivery/context-budget.js';
+import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow } from '../delivery/context-budget.js';
 import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
 import { resolveFidelity } from '../delivery/fidelity.js';
 import { installRunExitRecorder } from '../delivery/run-exit.js';
@@ -172,7 +171,8 @@ import { completeDeliveryTask, openDeliveryTask, recordDeliveryOutcome, recordOr
 import { autoMineHaloTraces, summarizeWeaknesses, weaknessGuidance, loadPersistedWeaknesses } from '../delivery/auto-mine.js';
 import { createGitWorktreeProvider } from '../delivery/candidate-workspace.js';
 import { createTaskWorkspaceManager, resolveParallelTasks } from '../delivery/task-workspace.js';
-import { runOrchestratedMission as runOrchestratedMissionCore, foldDeliveryResult } from '../delivery/orchestrated-mission.js';
+import { runOrchestratedMission as runOrchestratedMissionCore } from '../delivery/orchestrated-mission.js';
+import { runEpicMission as runEpicMissionCore } from '../delivery/epic-mission.js';
 import type { ExecutorMode } from '../delivery/agentic-executor.js';
 import type { AutoPlan } from '../delivery/auto-optimizer.js';
 import { createHaloDeliveryTracer } from '../delivery/halo-trace.js';
@@ -2167,235 +2167,101 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
    * per-epic attempt budget is spent. The blackboard orchestrator still runs
    * WITHIN each epic when that epic itself decomposes.
    */
+  /**
+   * Wire deliver's ambient context into the extracted epic-mission runner
+   * (src/delivery/epic-mission.ts) — the DEFAULT delivery path, now driven
+   * through a unit-tested core instead of a 230-line untested closure.
+   */
   const runEpicMission = async (): Promise<DeliveryResult> => {
-    const all: DeliveryResult = {
-      success: true, alreadyDelivered: false, turns: 0, bestScore: 0, bestTurn: 0,
-      history: [], finalFeedback: '', finalOutput: '', totalDurationMs: 0,
-    };
     const epicParallelTasks = resolveParallelTasks(
       (cfgRaw.deliver as Record<string, unknown> | undefined)?.parallelTasks
     );
     const contractsFirst = process.env.UAP_DELIVER_CONTRACTS !== '0';
     const scaffoldFirst = process.env.UAP_DELIVER_SCAFFOLD !== '0';
-    const planned = await planDeliveryPhases(instruction, verdictExecutor, undefined, {
-      sessionTokenBudget: sessionBudget,
-      contractsFirst,
-      scaffoldFirst,
-    });
-    const epics: Epic[] = (planned.length >= 2
-      ? planned
-      : [{ id: 'mission', title: 'Mission', goal: instruction }]
-    ).map((ph) => ({ id: ph.id, title: ph.title, goal: ph.goal, ...(ph.deps ? { deps: ph.deps } : {}), ...(ph.contracts ? { contracts: true } : {}), ...(ph.scaffold ? { scaffold: true } : {}) }));
-    console.log(chalk.cyan(`\u{1f5c2}  epic controller: ${epics.length} epic(s): ${epics.map((e) => e.title).join(' \u2192 ')}`));
-    let lastContractEpicFiles: string[] = [];
-
-    // Hands-free: auto-populate the completion ledger so the whole multi-epic
-    // build has an objective, cross-session definition of done (Option B). The
-    // Stop hook + reactor consult it to keep any model going until 100%.
-    try {
-      initLedger(projectRoot, instruction, epics.map((e) => ({ id: e.id, title: e.title, kind: 'epic' as const, ...(e.deps ? { deps: e.deps } : {}) })));
-    } catch { /* ledger is best-effort */ }
-
-    const epicResult = await runEpics({
-      mission: instruction,
-      epics,
-      maxAttemptsPerEpic: Number(process.env.UAP_DELIVER_EPIC_ATTEMPTS ?? 3), // (#4b) 2→3
-      // (#4c) Recursive split depth: a huge epic that still can't land after a
-      // split is split again, one level shallower, until each piece fits a rail
-      // — instead of failing the whole mission at the first split. Bounded.
-      splitDepth: Math.max(1, Number(process.env.UAP_DELIVER_EPIC_SPLIT_DEPTH ?? 2)),
-      // (#5) Auto-escalation: re-plan a failed epic into smaller pieces and
-      // retry them rather than declaring the mission incomplete. On by default
-      // for the epic path (already gated to complex missions); disable with
-      // UAP_DELIVER_SPLIT_ON_ANY_FAILURE=0 to restore budget-exhaustion-only.
-      splitOnAnyFailure: process.env.UAP_DELIVER_SPLIT_ON_ANY_FAILURE !== '0',
-      // Re-plan a failed epic into sub-epics. Fires on context-budget
-      // exhaustion (rail auto-size) and, under splitOnAnyFailure, on any
-      // exhausted-attempts failure (auto-escalation). Always provided so #5 has
-      // a planner; declines (null) when it can't produce ≥2 pieces.
-      splitEpic: async (epic, lastFailure) => {
-        const budgetHit = (lastFailure ?? '').includes(CONTEXT_BUDGET_MARKER);
-        const reason = budgetHit
-          ? `outgrew its ~${(sessionBudget ?? 0).toLocaleString()}-token session budget`
-          : 'could not be delivered whole after all attempts';
-        console.log(chalk.yellow(`  ✂ epic ${epic.id} ${reason} — re-planning as smaller sub-epics`));
-        const subGoal =
-          `${epic.goal}\n\n(The previous attempt did not complete` +
-          `${lastFailure ? `: ${lastFailure.slice(0, 300)}` : ''}. Split this into smaller, independently completable phases.)`;
-        // Re-plan is already reactive (the failure is in subGoal) - the extra
-        // thought-experiment judge call buys nothing here; skip it.
-        const subs = await planDeliveryPhases(subGoal, verdictExecutor, undefined, { sessionTokenBudget: sessionBudget, thoughtExperiment: false });
-        return subs.length >= 2 ? subs.map((s) => ({ id: s.id, title: s.title, goal: s.goal })) : null;
-      },
-      onEpic: (epic, outcome) => {
-        try { markItem(projectRoot, epic.id, outcome.accepted ? 'done' : 'failed', outcome.accepted ? undefined : outcome.summary); } catch { /* best-effort */ }
-        if (epic.contracts && outcome.accepted && lastContractEpicFiles.length > 0) {
-          const locked = lockContractFiles(contractLock, projectRoot, lastContractEpicFiles);
-          if (locked.length > 0) {
-            console.log(chalk.cyan(`  \u{1f512} contracts locked for later epics: ${locked.join(', ')}`));
-          }
-        }
-        console.log(
-          (outcome.accepted ? chalk.green('  \u2713') : chalk.red('  \u2717')) +
-            chalk.dim(` epic ${epic.id}: ${outcome.accepted ? 'accepted' : 'failed'} after ${outcome.attempts} attempt(s), ${outcome.turns} turn(s)`)
-        );
-      },
-      runEpic: async (epic, ctx): Promise<EpicRunResult> => {
-        const priors = ctx.priorSummaries.length
-          ? `\n\nALREADY BUILT (prior epics \u2014 build on them, do not redo):\n${ctx.priorSummaries.map((sm, i) => `${i + 1}. ${sm}`).join('\n')}`
-          : '';
-        const retry = ctx.lastFailure ? `\n\nPREVIOUS ATTEMPT FEEDBACK (fix this):\n${ctx.lastFailure}` : '';
-        // Contracts-first steering: the contracts epic is told its output IS
-        // the frozen API; later epics are told which files are locked and to
-        // build against them exactly. Locked paths also land in the judge's
-        // spec, so spec-referenced evidence guarantees it SEES the contracts.
-        const contractsNote = epic.contracts
-          ? '\n\nThis is the CONTRACTS epic: define the COMPLETE shared types/interfaces/registry APIs the later epics will build against. They must compile, with minimal stub bodies. After this epic is accepted these files are FROZEN for the rest of the mission — make the signatures right.'
-          : contractLock.size > 0
-            ? `\n\nLOCKED CONTRACTS (read-only — write attempts will be refused): ${[...contractLock].join(', ')}. Build against these exact APIs; make YOUR code match their imports, type names and signatures.`
-            : '';
-        const scaffoldIds = new Set(epics.filter((e) => e.scaffold).map((e) => e.id));
-        const fillsScaffold = !epic.scaffold && (epic.deps ?? []).some((d) => scaffoldIds.has(d));
-        const scaffoldNote = epic.scaffold
-          ? '\n\nThis is a SCAFFOLD epic: create the compiling SKELETON only — complete public signatures, wired imports/exports, and todo!()-style stub bodies (todo!() / raise NotImplementedError / throw new Error("TODO")). Do NOT implement the logic; a later FILL epic does that. The build/check gates must pass.'
-          : fillsScaffold
-            ? '\n\nThis is a FILL epic: the skeleton already exists with correct signatures. IMPLEMENT the stub bodies (todo!()/NotImplementedError/TODO throws) — do NOT change any existing signature, rename anything, or restructure modules. When you finish, no stub markers should remain in the files this epic fills.'
-            : '';
-        const scoped =
-          `OVERALL MISSION (context): ${instruction.slice(0, 300)}\n\n` +
-          `EPIC \u2014 ${epic.title}:\n${epic.goal}${priors}${retry}${contractsNote}${scaffoldNote}\n\n` +
-          'Deliver ONLY this epic. All gates must pass at the end.';
-        console.log(chalk.bold(`\u25b6 epic ${epic.id} (attempt ${ctx.attempt}): ${epic.title}`));
-        // Grade the epic's DELIVERABLE, not the process prompt: the scoped
-        // prompt carries process instructions ("read X first"), prior-epic
-        // summaries, and retry feedback — none verifiable from code, so a
-        // small judge rejects objectively-green turns against them forever.
-        const epicSpec =
-          `EPIC — ${epic.title}:\n${epic.goal}` +
-          (epic.criteria?.length ? `\nAcceptance criteria:\n${epic.criteria.map((c) => `- ${c}`).join('\n')}` : '') +
-          (!epic.contracts && contractLock.size > 0 ? `\n(Builds against locked contracts: ${[...contractLock].join(', ')})` : '') +
-          (fillsScaffold ? '\n(FILL epic: no todo!()/NotImplementedError/TODO-throw stub markers may remain in the files it implements; signatures must be unchanged.)' : '') +
-          (epic.scaffold ? '\n(SCAFFOLD epic: complete compiling signatures with stub bodies are the DELIVERABLE — unimplemented logic is expected and correct here.)' : '');
-        acceptanceSpec = epicSpec;
-        specChangeEvidence.writes = 0; // fresh epic — breaker needs fresh diff evidence
-        const epicTask = await openDeliveryTask(`${epic.title} \u2014 ${epic.goal.slice(0, 120)}`, projectRoot, missionTask?.id);
-        // Epic-path parallel dispatch (PR #516 follow-up): with
-        // deliver.parallelTasks > 1, an epic whose goal itself decomposes
-        // runs as an orchestrated task DAG — worktree-isolated parallel
-        // dispatch inside the DEFAULT (epics-on) path. Only the PLANNER call
-        // is fail-soft (a miss falls through to the classic single loop); a
-        // runner exception must propagate — swallowing it would silently
-        // restart the epic on a partially-merged tree.
-        if (epicParallelTasks > 1) {
-          // Retry feedback must reach the decomposition (fresh tasks that fix
-          // the failure) — mirroring splitEpic — because the orchestrator's
-          // 300-char mission snippet cannot carry it into every task.
-          const epicPlanGoal =
-            `${epic.title}: ${epic.goal}` +
-            (ctx.lastFailure
-              ? `\n\n(The previous attempt did not complete: ${ctx.lastFailure.slice(0, 300)}. The tasks you produce must FIX this.)`
-              : '');
-          let epicPlan: DeliveryPhase[] = [];
-          try {
-            epicPlan = await planDeliveryPhases(
-              epicPlanGoal,
-              verdictExecutor,
-              undefined,
-              // The mission-level plan already passed validation and each
-              // task converges against real gates — skip the judge call here.
-              { sessionTokenBudget: sessionBudget, thoughtExperiment: false }
-            );
-          } catch {
-            epicPlan = [];
-          }
-          if (epicPlan.length < 2) {
-            console.log(chalk.dim(`  ⇉ epic ${epic.id}: no usable task decomposition — classic single-loop epic`));
-          } else {
-            console.log(
-              chalk.cyan(`  ⇉ epic ${epic.id}: decomposed into ${epicPlan.length} tasks — orchestrated parallel dispatch`)
-            );
-            // The orchestrator's mission snippet carries the HEAD of this
-            // text — lead with the epic essence, then retry + steering.
-            const epicMissionText =
-              `EPIC — ${epic.title}: ${epic.goal}` +
-              (ctx.lastFailure ? `\nPREVIOUS ATTEMPT FEEDBACK (address this): ${ctx.lastFailure}` : '') +
-              `${contractsNote}${scaffoldNote}${priors}`;
-            const r = await runOrchestratedMissionCore(
-              buildOrchestratedDeps(epicMissionText, epicPlan, epicParallelTasks, epicTask?.id)
-            );
-            foldDeliveryResult(all, r);
-            completeDeliveryTask(epicTask, r);
-            const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
-            if (epic.contracts) lastContractEpicFiles = files;
-            // Epic-level acceptance parity: the classic path judges every
-            // green turn against the EPIC spec (criteria, FILL "no stub
-            // markers remain", locked contracts). Green tasks + a green
-            // combined tree still must satisfy it — one judge call.
-            // Fail-soft on judge availability; hard on a completed verdict.
-            if (r.success && options.acceptance && !skipJudgeForSimple) {
-              try {
-                const judged = await runAcceptanceGate({
-                  spec: epicSpec,
-                  projectRoot,
-                  executor: verdictExecutor,
-                  runtimeNote:
-                    'Objective project gates ALL PASSED for every task and on the combined tree — treat build/test requirements as objectively verified.',
-                });
-                const verdict = resolveAcceptanceVerdict(judged, acceptancePrimary);
-                if (!verdict.passed) {
-                  return {
-                    success: false,
-                    turns: r.turns,
-                    summary: `${epic.goal.slice(0, 120)} — tasks green but EPIC acceptance failed: ${(verdict.feedback ?? '').slice(0, 240)}`,
-                  };
-                }
-              } catch {
-                // judge unavailable — the objective verdicts stand
-              }
-            }
-            const budgetHit = !r.success && r.history.some((h) => h.budgetStopped);
-            return {
-              success: r.success,
-              turns: r.turns,
-              summary:
-                `${epic.goal.slice(0, 140)}${files.length ? ` [files: ${files.join(', ')}]` : ''}` +
-                (budgetHit ? ` ${CONTEXT_BUDGET_MARKER} session(s) exceeded the context budget — scope is too large for one session` : ''),
-            };
-          }
-        }
+    return runEpicMissionCore({
+      instruction,
+      planEpics: () =>
+        planDeliveryPhases(instruction, verdictExecutor, undefined, {
+          sessionTokenBudget: sessionBudget,
+          contractsFirst,
+          scaffoldFirst,
+        }),
+      // Re-decomposition is already reactive (the failure text is in the
+      // goal) — the extra thought-experiment judge call buys nothing here.
+      planSplit: (subGoal) =>
+        planDeliveryPhases(subGoal, verdictExecutor, undefined, {
+          sessionTokenBudget: sessionBudget,
+          thoughtExperiment: false,
+        }),
+      planEpicTasks: (goal) =>
+        planDeliveryPhases(goal, verdictExecutor, undefined, {
+          sessionTokenBudget: sessionBudget,
+          thoughtExperiment: false,
+        }),
+      epicParallelTasks,
+      runOrchestrated: (missionText, plan, parentTaskId) =>
+        runOrchestratedMissionCore(buildOrchestratedDeps(missionText, plan, epicParallelTasks, parentTaskId)),
+      runEpicLoop: async (scoped) => {
         const loop = new ConvergenceLoop(
           { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onIteration: makeIterationHook() },
           executor,
           seams
         );
-        const r = await loop.deliver(scoped);
-        all.turns += r.turns;
-        all.history.push(...r.history);
-        all.totalDurationMs += r.totalDurationMs;
-        if (r.bestScore > all.bestScore) { all.bestScore = r.bestScore; all.bestTurn = r.bestTurn; }
-        all.finalFeedback = r.finalFeedback;
-        all.finalOutput = r.finalOutput;
-        completeDeliveryTask(epicTask, r);
-        const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
-        if (epic.contracts) lastContractEpicFiles = files;
-        // Rail sizing: surface budget exhaustion to the epic controller — its
-        // split path keys off CONTEXT_BUDGET_MARKER in the failure summary,
-        // and the goal-based summary would otherwise swallow the signal.
-        const budgetHit = !r.success && r.history.some((h) => h.budgetStopped);
-        return {
-          success: r.success,
-          turns: r.turns,
-          summary:
-            `${epic.goal.slice(0, 140)}${files.length ? ` [files: ${files.join(', ')}]` : ''}` +
-            (budgetHit ? ` ${CONTEXT_BUDGET_MARKER} session(s) exceeded the context budget — scope is too large for one session` : ''),
-        };
+        return loop.deliver(scoped);
       },
+      setEpicSpec: (spec) => {
+        acceptanceSpec = spec;
+        specChangeEvidence.writes = 0; // fresh epic — breaker needs fresh diff evidence
+      },
+      judgeEpic:
+        options.acceptance && !skipJudgeForSimple
+          ? async (spec) => {
+              try {
+                const judged = await runAcceptanceGate({
+                  spec,
+                  projectRoot,
+                  executor: verdictExecutor,
+                  runtimeNote:
+                    'Objective project gates ALL PASSED for every task and on the combined tree — treat build/test requirements as objectively verified.',
+                });
+                return resolveAcceptanceVerdict(judged, acceptancePrimary);
+              } catch {
+                return null; // judge unavailable — the objective verdicts stand
+              }
+            }
+          : null,
+      openTask: (title) => openDeliveryTask(title, projectRoot, missionTask?.id),
+      completeTask: (record, r) => completeDeliveryTask(record, r),
+      ledgerInit: (items) =>
+        initLedger(projectRoot, instruction, items.map((i) => ({ ...i, kind: 'epic' as const }))),
+      ledgerMark: (id, status, noteText) => markItem(projectRoot, id, status, noteText),
+      lockedContracts: () => [...contractLock],
+      lockContracts: (files) => lockContractFiles(contractLock, projectRoot, files),
+      maxAttemptsPerEpic: Number(process.env.UAP_DELIVER_EPIC_ATTEMPTS ?? 3), // (#4b) 2→3
+      // (#4c) Recursive split depth: a huge epic that still can't land after
+      // a split is split again, one level shallower — bounded.
+      splitDepth: Math.max(1, Number(process.env.UAP_DELIVER_EPIC_SPLIT_DEPTH ?? 2)),
+      // (#5) Auto-escalation on any exhausted-attempts failure; disable with
+      // UAP_DELIVER_SPLIT_ON_ANY_FAILURE=0 for budget-exhaustion-only.
+      splitOnAnyFailure: process.env.UAP_DELIVER_SPLIT_ON_ANY_FAILURE !== '0',
+      sessionBudget,
+      note: (line) =>
+        console.log(
+          line.startsWith('▶')
+            ? chalk.bold(line)
+            : line.startsWith('  ✗')
+              ? chalk.red(line)
+              : line.startsWith('  ✓')
+                ? chalk.green(line)
+                : line.startsWith('  ✂')
+                  ? chalk.yellow(line)
+                  : line.includes('epic controller:') ||
+                      line.includes('contracts locked') ||
+                      line.includes('orchestrated parallel dispatch')
+                    ? chalk.cyan(line)
+                    : chalk.dim(line)
+        ),
     });
-    all.success = epicResult.success;
-    if (!epicResult.success) {
-      all.finalFeedback = `epic controller incomplete \u2014 failed epic(s): ${epicResult.failed.join(', ')}\n${all.finalFeedback}`;
-    }
-    return all;
   };
 
   // --keep-best (never regress): capture the starting required-gate score and a
