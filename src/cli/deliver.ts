@@ -172,6 +172,7 @@ import { autoMineHaloTraces, summarizeWeaknesses, weaknessGuidance, loadPersiste
 import { createGitWorktreeProvider } from '../delivery/candidate-workspace.js';
 import { createTaskWorkspaceManager, resolveParallelTasks } from '../delivery/task-workspace.js';
 import { runOrchestratedMission as runOrchestratedMissionCore } from '../delivery/orchestrated-mission.js';
+import { runCiReconverge } from '../delivery/ci-reconverge.js';
 import { runEpicMission as runEpicMissionCore } from '../delivery/epic-mission.js';
 import type { ExecutorMode } from '../delivery/agentic-executor.js';
 import type { AutoPlan } from '../delivery/auto-optimizer.js';
@@ -187,7 +188,7 @@ import {
   extractKeywords,
   retrievePracticesSemantic,
 } from '../delivery/practice.js';
-import { detectRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER, demoteBaselineFailures } from '../delivery/verifier-ladder.js';
+import { detectRungs, mergeRedetectedRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER, demoteBaselineFailures } from '../delivery/verifier-ladder.js';
 import type { GateTier, LadderRunFn, GateRung } from '../delivery/verifier-ladder.js';
 import { runDeployDevLadder } from '../delivery/deploy-dev-gate.js';
 import { commitPushAndWatch } from '../delivery/ci-watcher.js';
@@ -1827,7 +1828,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       envDecompose: process.env.UAP_DELIVER_DECOMPOSE,
       heuristic: () => shouldDecompose(instruction, autoPlan?.complexity),
     });
-  if (!phases && decomposeWanted && !resumeState) {
+  // Skipped when the epic path owns the mission: runEpicMission re-plans via
+  // planEpics, so this call would burn an evaluator pass (+ thought
+  // experiment) on a phases array the dispatch never uses. Kept for resume
+  // and the --no-epics paths.
+  if (!phases && decomposeWanted && !resumeState && !epicsEnabled) {
     console.log(chalk.cyan('🧩 decompose: planning sequential delivery phases…'));
     // ExpertOrchestrator lifecycle chain → phase-shaping hints (fail-soft).
     let lifecycleHints: LifecycleHintProvider | undefined;
@@ -2029,18 +2034,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       },
       isMergeBlocked: (f) => mergeProtected.has(f.toLowerCase()),
       verifyCombined: () => {
-        // Mirror the loop's redetect-merge: redetection REASSIGNS the loop's
-        // local rungs and never mutates this captured t0 array, so a
-        // from-scratch build's mid-mission gates must be re-merged here or
+        // Redetection REASSIGNS the loop's local rungs and never mutates this
+        // captured t0 array — re-merge (same pure policy the loop uses) or
         // the combined tree is verified against stale t0 gates only.
         let combinedRungs = rungs;
         try {
-          const detected = detectRungs(projectRoot);
-          const have = new Set(rungs.map((r) => r.id));
-          const allow =
-            loopConfig.redetectFilter ?? ((r: GateRung) => tierOf(r) === 'fast' || tierOf(r) === 'runtime');
-          const added = detected.filter((r) => !have.has(r.id) && allow(r));
-          if (added.length > 0) combinedRungs = [...rungs, ...added];
+          combinedRungs = mergeRedetectedRungs(rungs, detectRungs(projectRoot), loopConfig.redetectFilter);
         } catch {
           // detection unavailable - verify against the t0 rungs
         }
@@ -2335,7 +2334,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       result = result!;
     } else if (epicsEnabled) {
       result = await runEpicMission();
-    } else if (phases && phases.length >= 2 && orchestrateEnabled) {
+    } else if (phases && phases.length >= 2 && orchestrateEnabled && !resumeState) {
+      // A RESUMED phased run must not route here: the orchestrated runner
+      // ignores phaseIndex/resumeCheckpoint and would restart the DAG from
+      // scratch. runPhasedMission below is the only cursor-honoring path.
       result = await runOrchestratedMission();
     } else if (phases && phases.length >= 2) {
       result = await runPhasedMission();
@@ -2346,66 +2348,58 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
 
     // CI watch boundary + re-converge: once local tiers are green, commit/push
-    // the worktree branch and watch the CI run. On CI/deploy failure, feed the
-    // sanitized failure back into a fresh convergence pass (baselineCheck off so
-    // turn 1 always runs the model — local gates already pass). Bounded by
-    // --ci-passes. Skipped when nothing changed (alreadyDelivered).
+    // the worktree branch and watch the CI run — extracted policy, see
+    // src/delivery/ci-reconverge.ts. Skipped when nothing changed.
     if (watchCi && result.success && !result.alreadyDelivered) {
+      // Re-point the judge at the MISSION: epic/phased runners leave
+      // acceptanceSpec on the LAST epic/phase spec, and a re-converge pass
+      // would otherwise be judged against that stale slice.
+      acceptanceSpec = instruction;
+      specChangeEvidence.writes = 0; // evidence resets wherever the spec re-points
       const branch = currentBranch(projectRoot) ?? undefined;
-      let pass = 0;
-      for (;;) {
-        // Prefer the loop's applied-file set; the agentic executor reports none
-        // (it mutates the repo directly), so fall back to an explicit
-        // git-status list rather than letting the watcher do `git add -A`.
-        let files = [...new Set(result.history.flatMap((h) => h.filesApplied ?? []))];
-        if (files.length === 0) files = changedFiles(projectRoot);
-        console.log(
-          chalk.cyan(`☁ watch-ci: committing & pushing ${branch ?? 'current branch'}, watching CI…`)
-        );
-        const watch = await commitPushAndWatch({
-          projectRoot,
-          branch,
-          commitMessage: `feat(delivery): ${instruction.slice(0, 72)}`,
-          files,
-          timeoutMs: ciTimeoutMs,
-          watchEnvironments,
-          onProgress: (m) => console.log(chalk.dim(`    ${m}`)),
-        });
-        if (watch.runUrl) console.log(chalk.dim(`    run: ${watch.runUrl}`));
-
-        if (watch.status === 'green') {
+      result = await runCiReconverge({
+        instruction,
+        initial: result,
+        ciPasses,
+        changedFiles: () => changedFiles(projectRoot),
+        greenDetail: watchEnvironments ? ` (${watchEnvironments.join('/')} deploy verified)` : '',
+        commitAndWatch: async (files) => {
           console.log(
-            chalk.green(
-              `  ✓ CI green${watchEnvironments ? ` (${watchEnvironments.join('/')} deploy verified)` : ''}`
-            )
+            chalk.cyan(`☁ watch-ci: committing & pushing ${branch ?? 'current branch'}, watching CI…`)
           );
-          break;
-        }
-        if (watch.status === 'skipped' || watch.status === 'no-run') {
-          console.log(chalk.yellow(`  ⚠ watch-ci ${watch.status}: ${watch.feedback ?? ''}`));
-          break;
-        }
-
-        // failed | timeout
-        pass++;
-        console.log(chalk.yellow(`  ✗ CI ${watch.status} (re-converge pass ${pass}/${ciPasses})`));
-        if (pass >= ciPasses) {
-          console.log(chalk.red(`  watch-ci: exhausted ${ciPasses} pass(es); CI still not green.`));
-          result = { ...result, success: false, finalFeedback: watch.feedback ?? result.finalFeedback };
-          break;
-        }
-        console.log(chalk.cyan('  ⟲ re-converging against CI feedback…'));
-        const reconvergeLoop = new ConvergenceLoop(
-          { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onCheckpoint: undefined },
-          executor,
-          seams
-        );
-        result = await reconvergeLoop.deliver(`${instruction}\n\n${watch.feedback ?? ''}`);
-        if (!result.success) {
-          console.log(chalk.red('  re-converge did not reach local-green; stopping watch-ci.'));
-          break;
-        }
-      }
+          const watch = await commitPushAndWatch({
+            projectRoot,
+            branch,
+            commitMessage: `feat(delivery): ${instruction.slice(0, 72)}`,
+            files,
+            timeoutMs: ciTimeoutMs,
+            watchEnvironments,
+            onProgress: (m) => console.log(chalk.dim(`    ${m}`)),
+          });
+          if (watch.runUrl) console.log(chalk.dim(`    run: ${watch.runUrl}`));
+          return watch;
+        },
+        reconverge: async (prompt) => {
+          const reconvergeLoop = new ConvergenceLoop(
+            { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onCheckpoint: undefined },
+            executor,
+            seams
+          );
+          return reconvergeLoop.deliver(prompt);
+        },
+        note: (line) =>
+          console.log(
+            line.startsWith('  ✓')
+              ? chalk.green(line)
+              : line.startsWith('  ⚠') || line.startsWith('  ✗')
+                ? chalk.yellow(line)
+                : line.startsWith('  ⟲')
+                  ? chalk.cyan(line)
+                  : line.includes('exhausted') || line.includes('did not reach')
+                    ? chalk.red(line)
+                    : chalk.dim(line)
+          ),
+      });
     }
   } catch (err) {
     // Deregister the run's agent so a config-stage throw (e.g. invalid

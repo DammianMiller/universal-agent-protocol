@@ -76,6 +76,8 @@ export {
 
 export { runEpicMission, type EpicMissionDeps } from './epic-mission.js';
 
+export { runCiReconverge, type CiReconvergeDeps, type CiWatchOutcome } from './ci-reconverge.js';
+
 export {
   createTaskWorkspaceManager,
   resolveParallelTasks,

@@ -1001,6 +1001,26 @@ export function runLadder(
 }
 
 /** A ladder runner: turns a set of rungs into a result. May be async. */
+/**
+ * Redetect-merge policy (pure): fold freshly detected rungs into an existing
+ * set. Default allow-list merges only the cheap always-safe tiers (fast +
+ * runtime) so re-detection never silently escalates to integration or
+ * deploy-dev; callers pass `allow` to enforce their own tier ceiling or
+ * --gates subset. Returns the SAME array when nothing new qualifies. Single
+ * source for the policy shared by the convergence loop's mid-mission
+ * redetection and deliver's post-merge combined-tree verification.
+ */
+export function mergeRedetectedRungs(
+  current: GateRung[],
+  detected: GateRung[],
+  allow?: (r: GateRung) => boolean
+): GateRung[] {
+  const have = new Set(current.map((r) => r.id));
+  const allowed = allow ?? ((r: GateRung) => tierOf(r) === 'fast' || tierOf(r) === 'runtime');
+  const added = detected.filter((r) => !have.has(r.id) && allowed(r));
+  return added.length > 0 ? [...current, ...added] : current;
+}
+
 export type LadderRunFn = (
   rungs: GateRung[],
   projectRoot: string,

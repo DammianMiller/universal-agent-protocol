@@ -232,3 +232,23 @@ describe('configurable phase cap (UAP_DELIVER_MAX_PHASES)', () => {
     expect(parsePhaseArray(mk(25))).toHaveLength(20);
   });
 });
+
+describe('phase acceptance criteria (PR #519 follow-up)', () => {
+  it('parsePhaseArray carries criteria through, filtered and capped', () => {
+    const raw = JSON.stringify([
+      { id: 'a', title: 'A', goal: 'ga', criteria: ['  saves the record  ', 42, '', 'x'.repeat(500)] },
+      { id: 'b', title: 'B', goal: 'gb' },
+    ]);
+    const phases = parsePhaseArray(raw);
+    expect(phases[0].criteria).toEqual(['saves the record', 'x'.repeat(200)]);
+    expect(phases[1].criteria).toBeUndefined();
+  });
+
+  it('caps criteria at six entries', () => {
+    const raw = JSON.stringify([
+      { id: 'a', title: 'A', goal: 'ga', criteria: Array.from({ length: 9 }, (_, i) => `c${i}`) },
+      { id: 'b', title: 'B', goal: 'gb' },
+    ]);
+    expect(parsePhaseArray(raw)[0].criteria).toHaveLength(6);
+  });
+});

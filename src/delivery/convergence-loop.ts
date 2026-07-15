@@ -18,7 +18,7 @@
 import { execSync } from 'child_process';
 
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
-import { detectRungs, runLadder, tierOf } from './verifier-ladder.js';
+import { mergeRedetectedRungs, detectRungs, runLadder } from './verifier-ladder.js';
 import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
 import { applyFileBlocks } from './applier.js';
 import { snapshotProtection } from './spec-imports.js';
@@ -649,13 +649,8 @@ export class ConvergenceLoop {
     } catch {
       return rungs;
     }
-    const have = new Set(rungs.map((r) => r.id));
-    // Default policy: only merge cheap always-safe tiers (fast + runtime) so
-    // re-detection never silently escalates to integration/deploy-dev. A caller
-    // can pass redetectFilter to enforce its own tier ceiling / --gates subset.
-    const allow = this.config.redetectFilter ?? ((r: GateRung) => tierOf(r) === 'fast' || tierOf(r) === 'runtime');
-    const added = detected.filter((r) => !have.has(r.id) && allow(r));
-    return added.length > 0 ? [...rungs, ...added] : rungs;
+    // Single-source policy: see mergeRedetectedRungs in verifier-ladder.ts.
+    return mergeRedetectedRungs(rungs, detected, this.config.redetectFilter);
   }
 
   /** Single-candidate turn: execute → apply → verify. */

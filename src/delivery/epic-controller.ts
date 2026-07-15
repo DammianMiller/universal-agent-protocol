@@ -25,11 +25,9 @@ import type { DeliveryPhase } from './decompose.js';
 import { topoOrder } from './decompose.js';
 import { CONTEXT_BUDGET_MARKER } from './context-budget.js';
 
-/** A top-level epic — the same shape as a phase, one lifecycle level up. */
-export interface Epic extends DeliveryPhase {
-  /** Epic-specific acceptance criteria (optional; used by the judge). */
-  criteria?: string[];
-}
+/** A top-level epic — the same shape as a phase, one lifecycle level up.
+ * (Acceptance `criteria` come from DeliveryPhase — single-source.) */
+export type Epic = DeliveryPhase;
 
 /** What one epic execution attempt returns. */
 export interface EpicRunResult {
@@ -38,6 +36,12 @@ export interface EpicRunResult {
   summary: string;
   /** Turns spent this attempt, for reporting. */
   turns: number;
+  /**
+   * The attempt outgrew its per-session context budget — the STRUCTURED
+   * signal for the rail-sizing split (the CONTEXT_BUDGET_MARKER substring in
+   * `summary` is kept for humans and remains honored for back-compat).
+   */
+  budgetStopped?: boolean;
 }
 
 export interface EpicOutcome {
@@ -156,6 +160,7 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
     let epicTurns = 0;
     let lastSummary = '';
     let lastFailure: string | undefined;
+    let lastBudgetStopped = false;
 
     while (attempts < maxAttempts && !accepted) {
       attempts++;
@@ -166,6 +171,7 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
       });
       epicTurns += result.turns;
       lastSummary = result.summary;
+      lastBudgetStopped = result.budgetStopped === true;
 
       if (result.success) {
         let ok = true;
@@ -194,7 +200,9 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
     // one level shallower until each piece fits a rail. Default depth 1 keeps
     // the conservative one-level behavior.
     const depthRemaining = config.splitDepth ?? 1;
-    const budgetExhausted = (lastFailure ?? '').includes(CONTEXT_BUDGET_MARKER);
+    // Structured signal first; the summary-substring match stays for callers
+    // that predate EpicRunResult.budgetStopped.
+    const budgetExhausted = lastBudgetStopped || (lastFailure ?? '').includes(CONTEXT_BUDGET_MARKER);
     const splitFn = config.splitEpic;
     const shouldSplit =
       !accepted &&

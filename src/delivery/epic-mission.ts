@@ -27,7 +27,7 @@ import { CONTEXT_BUDGET_MARKER } from './context-budget.js';
 import type { DeliveryResult } from './convergence-loop.js';
 import type { DeliveryPhase } from './decompose.js';
 import { runEpics, type Epic, type EpicRunResult } from './epic-controller.js';
-import { foldDeliveryResult } from './orchestrated-mission.js';
+import { foldDeliveryResult } from './delivery-result.js';
 import type { DeliveryTaskHandle } from './task-sync.js';
 
 export interface EpicMissionDeps {
@@ -109,6 +109,9 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
     ...(ph.deps ? { deps: ph.deps } : {}),
     ...(ph.contracts ? { contracts: true } : {}),
     ...(ph.scaffold ? { scaffold: true } : {}),
+    // Planner-emitted acceptance criteria feed the epic spec's judge clause
+    // (previously declared on Epic but never populated — a dead clause).
+    ...(ph.criteria?.length ? { criteria: ph.criteria } : {}),
   }));
   note(`🗂  epic controller: ${epics.length} epic(s): ${epics.map((e) => e.title).join(' → ')}`);
   let lastContractEpicFiles: string[] = [];
@@ -142,7 +145,22 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         `${epic.goal}\n\n(The previous attempt did not complete` +
         `${lastFailure ? `: ${lastFailure.slice(0, 300)}` : ''}. Split this into smaller, independently completable phases.)`;
       const subs = await deps.planSplit(subGoal);
-      return subs.length >= 2 ? subs.map((s) => ({ id: s.id, title: s.title, goal: s.goal })) : null;
+      if (subs.length < 2) return null;
+      // A split CONTRACTS (or SCAFFOLD) epic's pieces are still contracts/
+      // scaffold work: without the flag, an epic accepted VIA SPLIT locked
+      // nothing (or the parent's last FAILED attempt's files). Each accepted
+      // piece now locks its own files through the normal onEpic path.
+      return subs.map((s) => ({
+        id: s.id,
+        title: s.title,
+        goal: s.goal,
+        ...(epic.contracts ? { contracts: true } : {}),
+        ...(epic.scaffold ? { scaffold: true } : {}),
+        // A split piece's judge deserves the same criteria treatment as an
+        // unsplit epic — dropping them here was the flag-propagation bug's
+        // sibling.
+        ...(s.criteria?.length ? { criteria: s.criteria } : {}),
+      }));
     },
     onEpic: (epic, outcome) => {
       try {
@@ -171,7 +189,13 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
       // spec, so spec-referenced evidence guarantees it SEES the contracts.
       const locked = deps.lockedContracts();
       const contractsNote = epic.contracts
-        ? '\n\nThis is the CONTRACTS epic: define the COMPLETE shared types/interfaces/registry APIs the later epics will build against. They must compile, with minimal stub bodies. After this epic is accepted these files are FROZEN for the rest of the mission — make the signatures right.'
+        ? '\n\nThis is the CONTRACTS epic: define the COMPLETE shared types/interfaces/registry APIs the later epics will build against. They must compile, with minimal stub bodies. After this epic is accepted these files are FROZEN for the rest of the mission — make the signatures right.' +
+          // A split contracts epic's later pieces run with the earlier pieces'
+          // files ALREADY locked — without this list they would burn attempts
+          // on refused writes with zero steering.
+          (locked.length > 0
+            ? `\nAlready-locked sibling contract files (read-only — write attempts will be refused): ${locked.join(', ')}. Extend the shared surface in NEW files and build against these exactly.`
+            : '')
         : locked.length > 0
           ? `\n\nLOCKED CONTRACTS (read-only — write attempts will be refused): ${locked.join(', ')}. Build against these exact APIs; make YOUR code match their imports, type names and signatures.`
           : '';
@@ -194,7 +218,7 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
       const epicSpec =
         `EPIC — ${epic.title}:\n${epic.goal}` +
         (epic.criteria?.length ? `\nAcceptance criteria:\n${epic.criteria.map((c) => `- ${c}`).join('\n')}` : '') +
-        (!epic.contracts && locked.length > 0 ? `\n(Builds against locked contracts: ${locked.join(', ')})` : '') +
+        (locked.length > 0 ? `\n(Builds against locked contracts: ${locked.join(', ')})` : '') +
         (fillsScaffold ? '\n(FILL epic: no todo!()/NotImplementedError/TODO-throw stub markers may remain in the files it implements; signatures must be unchanged.)' : '') +
         (epic.scaffold ? '\n(SCAFFOLD epic: complete compiling signatures with stub bodies are the DELIVERABLE — unimplemented logic is expected and correct here.)' : '');
       deps.setEpicSpec(epicSpec);
@@ -213,6 +237,9 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         return {
           success: r.success,
           turns: r.turns,
+          // Structured field for the controller's split trigger; the marker
+          // stays in the summary for humans (and marker-matching callers).
+          ...(budgetHit ? { budgetStopped: true } : {}),
           summary:
             `${epic.goal.slice(0, 140)}${files.length ? ` [files: ${files.join(', ')}]` : ''}` +
             (budgetHit ? ` ${CONTEXT_BUDGET_MARKER} session(s) exceeded the context budget — scope is too large for one session` : ''),

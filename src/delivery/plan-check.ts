@@ -108,10 +108,18 @@ export function parsePlanVerdict(text: string): PlanReviewVerdict {
 
 function describePhases(phases: DeliveryPhase[]): string {
   return phases
-    .map(
-      (p, i) =>
-        `${i + 1}. [${p.id}] ${p.title} — ${p.goal}${p.deps?.length ? ` (deps: ${p.deps.join(', ')})` : ''}`
-    )
+    .map((p, i) => {
+      // The judge is asked about produced artifacts and invented scope — it
+      // must SEE the criteria that define what a phase produces, and the
+      // contracts/scaffold flags that change what "incomplete" means (a
+      // scaffold phase's stub bodies are correct, not a defect).
+      const tags = [p.contracts ? 'CONTRACTS' : null, p.scaffold ? 'SCAFFOLD' : null].filter(Boolean);
+      return (
+        `${i + 1}. [${p.id}]${tags.length ? ` [${tags.join(', ')}]` : ''} ${p.title} — ${p.goal}` +
+        `${p.deps?.length ? ` (deps: ${p.deps.join(', ')})` : ''}` +
+        `${p.criteria?.length ? `\n   criteria: ${p.criteria.join('; ')}` : ''}`
+      );
+    })
     .join('\n');
 }
 
