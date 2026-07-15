@@ -78,6 +78,10 @@ export { runEpicMission, type EpicMissionDeps } from './epic-mission.js';
 
 export { runCiReconverge, type CiReconvergeDeps, type CiWatchOutcome } from './ci-reconverge.js';
 
+export { runPhasedMission, type PhasedMissionDeps } from './phased-mission.js';
+
+export { changedFiles, parsePorcelainZ } from './changed-files.js';
+
 export {
   createTaskWorkspaceManager,
   resolveParallelTasks,

@@ -211,7 +211,7 @@ describe('runEpics — split on context-budget exhaustion', () => {
       runEpic: async (epic) => {
         ran.push(epic.id);
         if (epic.id === 'big') {
-          return { success: false, summary: `${CONTEXT_BUDGET_MARKER} session reached budget`, turns: 2 };
+          return { success: false, summary: `${CONTEXT_BUDGET_MARKER} session reached budget`, turns: 2, budgetStopped: true };
         }
         return ok(`${epic.id} done`);
       },
@@ -226,6 +226,26 @@ describe('runEpics — split on context-budget exhaustion', () => {
     // sub-epic outcomes are surfaced alongside the parent's
     expect(res.outcomes.map((o) => o.epicId)).toEqual(['big.part-1', 'big.part-2', 'big']);
     expect(res.turns).toBe(4); // 2 (failed big) + 1 + 1 (sub-epics), not double-counted
+  });
+
+  it('the deprecated MARKER-only summary no longer triggers a split (v1.153 deprecation executed)', async () => {
+    let splitAsked = false;
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'e', title: 'E', goal: 'g' }],
+      maxAttemptsPerEpic: 1,
+      // marker in the summary but NO structured budgetStopped field
+      runEpic: async () => ({ success: false, summary: `${CONTEXT_BUDGET_MARKER} over budget`, turns: 1 }),
+      splitEpic: async () => {
+        splitAsked = true;
+        return [
+          { id: 'a', title: 'A', goal: 'a' },
+          { id: 'b', title: 'B', goal: 'b' },
+        ];
+      },
+    });
+    expect(splitAsked).toBe(false);
+    expect(res.success).toBe(false);
   });
 
   it('does NOT split on ordinary (non-budget) failures', async () => {
@@ -253,7 +273,7 @@ describe('runEpics — split on context-budget exhaustion', () => {
       mission: 'm',
       epics: [{ id: 'big', title: 'Big', goal: 'g' }],
       maxAttemptsPerEpic: 1,
-      runEpic: async () => ({ success: false, summary: `${CONTEXT_BUDGET_MARKER} over budget`, turns: 1 }),
+      runEpic: async () => ({ success: false, summary: `${CONTEXT_BUDGET_MARKER} over budget`, turns: 1, budgetStopped: true }),
       splitEpic: async () => {
         splitCalls++;
         return [
@@ -274,7 +294,7 @@ describe('runEpics — split on context-budget exhaustion', () => {
       maxAttemptsPerEpic: 1,
       runEpic: async (epic) => {
         ran.push(epic.id);
-        if (epic.id === 'big') return { success: false, summary: `${CONTEXT_BUDGET_MARKER} over`, turns: 1 };
+        if (epic.id === 'big') return { success: false, summary: `${CONTEXT_BUDGET_MARKER} over`, turns: 1, budgetStopped: true };
         // pieces 1 and 2 fail full-project gates (whole not assembled yet);
         // piece 3 completes the assembly and gates go green
         return epic.id.endsWith('p3') ? ok('assembled, gates green') : { success: false, summary: 'gates still red', turns: 1 };
@@ -301,7 +321,7 @@ describe('runEpics — split on context-budget exhaustion', () => {
       maxAttemptsPerEpic: 1,
       runEpic: async (epic, ctx) => {
         priorsSeen[epic.id] = ctx.priorSummaries;
-        if (epic.id === 'big') return { success: false, summary: `${CONTEXT_BUDGET_MARKER} x`, turns: 1 };
+        if (epic.id === 'big') return { success: false, summary: `${CONTEXT_BUDGET_MARKER} x`, turns: 1, budgetStopped: true };
         return ok(`${epic.id} done`);
       },
       splitEpic: async () => [
@@ -350,7 +370,7 @@ describe('runEpics — split on context-budget exhaustion', () => {
       runEpic: async (epic) =>
         /\.[a-z]\.[a-z]$/.test(epic.id)
           ? ok(`${epic.id} done`)
-          : { success: false, summary: `${CONTEXT_BUDGET_MARKER} over`, turns: 1 },
+          : { success: false, summary: `${CONTEXT_BUDGET_MARKER} over`, turns: 1, budgetStopped: true },
       splitEpic: async () => {
         splitCalls++;
         return [

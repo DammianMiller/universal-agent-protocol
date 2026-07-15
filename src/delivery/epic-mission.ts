@@ -135,9 +135,10 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
     // exhaustion (rail auto-size) and, under splitOnAnyFailure, on any
     // exhausted-attempts failure (auto-escalation). Always provided so the
     // escalation has a planner; declines (null) when it can't produce ≥2.
-    splitEpic: async (epic, lastFailure) => {
-      const budgetHit = (lastFailure ?? '').includes(CONTEXT_BUDGET_MARKER);
-      const reason = budgetHit
+    splitEpic: async (epic, lastFailure, splitReason) => {
+      // Structured reason from the controller — no more sniffing the marker
+      // out of the failure text.
+      const reason = splitReason?.budgetStopped
         ? `outgrew its ~${(deps.sessionBudget ?? 0).toLocaleString()}-token session budget`
         : 'could not be delivered whole after all attempts';
       note(`  ✂ epic ${epic.id} ${reason} — re-planning as smaller sub-epics`);
@@ -231,8 +232,8 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
         if (epic.contracts) lastContractEpicFiles = files;
         // Rail sizing: surface budget exhaustion to the epic controller — its
-        // split path keys off CONTEXT_BUDGET_MARKER in the failure summary,
-        // and the goal-based summary would otherwise swallow the signal.
+        // split path keys off the structured budgetStopped field below; the
+        // marker in the summary is human-facing text, not protocol.
         const budgetHit = !r.success && r.history.some((h) => h.budgetStopped);
         return {
           success: r.success,
