@@ -225,6 +225,24 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Race a single browser op against a hard deadline, resolving to `fallback`
+ * if it doesn't settle in time. Individual driver calls (evaluate/screenshot)
+ * can hang forever when a page's GPU work — shaders, particle canvases, WebGL —
+ * never settles; without a per-call cap the sampling loop's between-iteration
+ * budget check never runs, close() is never reached, and headless Chrome leaks
+ * across delivery runs (observed: gates wedged 20+h holding whole Chrome trees).
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const guard = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  return Promise.race([Promise.resolve(p).catch(() => fallback), guard]).finally(() =>
+    clearTimeout(timer),
+  );
+}
+
 /** Common build-output dirs a framework project renders into (served from root). */
 const BUILD_OUTPUT_DIRS = ['dist', 'build', 'out'];
 
@@ -402,28 +420,32 @@ export async function runVisualGate(
       }
 
       const start = Date.now();
+      // Per-call cap so no single hung driver op (a shader/particle/WebGL canvas
+      // can wedge evaluate/screenshot in Chrome's GPU process) can outlive the
+      // page budget or defeat the loop's between-iteration deadline check. Never
+      // exceeds the page budget; 15s ceiling keeps a heavy-but-live page moving.
+      const perCallMs = Math.min(timeoutMs, 15_000);
       const src = safeRead(join(projectRoot, file));
       const expectsAnimation = /requestAnimationFrame/.test(src);
       const shots: string[] = [];
       let loaded = false;
       let probes: ProbeResult[] = [];
+      let errors: string[] = [];
+      let failedRequests: string[] = [];
       try {
         // startStaticServer's url includes its own entry path (/index.html);
         // navigate per page from the ORIGIN.
         const origin = new URL(server.url).origin;
-        const status = await Promise.race([
-          browser.goto(`${origin}/${file}`),
-          delay(timeoutMs).then(() => 'timeout'),
-        ]);
+        const status = await withTimeout(browser.goto(`${origin}/${file}`), timeoutMs, 'timeout');
         loaded = /^2\d\d$/.test(String(status)) || String(status) === '304';
-        await Promise.race([browser.waitForLoadState('load'), delay(5000)]).catch(() => undefined);
+        await withTimeout(browser.waitForLoadState('load'), 5000, undefined);
 
         if (loaded) {
           for (let i = 0; i < samples && Date.now() - start < timeoutMs; i++) {
             if (i > 0) await delay(intervalMs);
+            const raw = await withTimeout(browser.evaluate<string>(PIXEL_PROBE), perCallMs, '');
             try {
-              const raw = await browser.evaluate<string>(PIXEL_PROBE);
-              probes.push(JSON.parse(raw) as ProbeResult);
+              probes.push(raw ? (JSON.parse(raw) as ProbeResult) : { canvas: false });
             } catch {
               probes.push({ canvas: false });
             }
@@ -431,26 +453,37 @@ export async function runVisualGate(
             // screenshot-safe basename so no missing subdir defeats the write.
             const shotBase = file.replace(/\.html$/i, '').replace(/[/\\]+/g, '_');
             const shot = join(screenshotDir, `${shotBase}-t${i}.png`);
-            try {
-              await browser.screenshot(shot);
-              shots.push(shot);
-            } catch {
-              // screenshots are best-effort evidence
-            }
+            const ok = await withTimeout(
+              browser.screenshot(shot).then(() => true),
+              perCallMs,
+              false,
+            );
+            if (ok) shots.push(shot);
           }
         }
       } catch (e) {
         probes = [];
         loaded = false;
+      } finally {
+        // Always tear the browser down — even on the hang path — so headless
+        // Chrome can't leak across delivery runs. A hung close() is itself
+        // capped so it can't re-wedge the gate.
+        try {
+          const observed = browser.getErrors();
+          errors = observed.filter((e) => e.kind === 'pageerror').map((e) => e.message);
+          // Do NOT discard failed requests: when a page loads its framework from a CDN
+          // and the validation browser has no network, this is the ONLY signal that
+          // explains the blank render. Dropping it is what made the gate's feedback
+          // point the model at the wrong file.
+          failedRequests = observed
+            .filter((e) => e.kind === 'requestfailed')
+            .map((e) => e.message);
+        } catch {
+          errors = [];
+          failedRequests = [];
+        }
+        await withTimeout(browser.close(), 5000, undefined).catch(() => undefined);
       }
-      const observed = browser.getErrors();
-      const errors = observed.filter((e) => e.kind === 'pageerror').map((e) => e.message);
-      // Do NOT discard failed requests: when a page loads its framework from a CDN
-      // and the validation browser has no network, this is the ONLY signal that
-      // explains the blank render. Dropping it is what made the gate's feedback
-      // point the model at the wrong file.
-      const failedRequests = observed.filter((e) => e.kind === 'requestfailed').map((e) => e.message);
-      await browser.close().catch(() => undefined);
 
       const last = probes[probes.length - 1] ?? { canvas: false };
       const first = probes.find((p) => p.readable);

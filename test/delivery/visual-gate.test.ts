@@ -137,6 +137,36 @@ describe('runVisualGate (integration with fake browser)', () => {
     expect(verdict.feedback).toContain('skipped');
   });
 
+  it('caps a hung evaluate/screenshot and still tears the browser down', async () => {
+    // Reproduces the leak: a heavy shader/particle/WebGL canvas whose
+    // evaluate/screenshot never settles used to wedge the gate forever and leak
+    // headless Chrome. The per-call timeout must let the gate return AND close()
+    // must still run.
+    writeFileSync(join(dir, 'index.html'), '<canvas></canvas><script>requestAnimationFrame(function(){});</script>');
+    let closed = false;
+    const hangingBrowser = (): VisualBrowserDriver => ({
+      launch: async () => undefined,
+      goto: async () => '200',
+      waitForLoadState: async () => undefined,
+      evaluate: <T,>() => new Promise<T>(() => {}), // never resolves
+      screenshot: async () => new Promise<void>(() => {}), // never resolves
+      getErrors: () => [],
+      close: async () => {
+        closed = true;
+      },
+    });
+    const verdict = await runVisualGate(dir, {
+      browserFactory: hangingBrowser,
+      samples: 2,
+      intervalMs: 1,
+      timeoutMs: 200,
+    });
+    expect(verdict.skipped).toBe(false);
+    expect(closed).toBe(true);
+    // No probe/screenshot ever resolved, so the page reads as unloaded/blank.
+    expect(verdict.pages[0].distinctColors).toBe(0);
+  });
+
   it('discovers entry pages with index.html first', () => {
     writeFileSync(join(dir, 'zeta.html'), 'x');
     writeFileSync(join(dir, 'index.html'), 'x');
