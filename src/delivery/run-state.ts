@@ -30,6 +30,10 @@ export interface DeliverRunState {
   /** Decomposed missions: the phase plan and the index of the phase in flight. */
   phases?: DeliveryPhase[];
   phaseIndex?: number;
+  /** Which runner executed the fresh run. Resume always takes the phased
+   * (cursor-honoring) path; a mismatch here triggers a loud downgrade
+   * warning instead of a silent execution-model switch. */
+  runnerKind?: 'single' | 'phased' | 'orchestrated' | 'epic';
   /** One-line summaries of completed phases (harness-owned, injected into later phases). */
   phaseSummaries?: string[];
   /** Task-DB id opened for this mission, so --resume reuses it instead of duplicating. */
@@ -79,8 +83,16 @@ export function saveRunState(state: DeliverRunState): boolean {
 
 const VALID_STATUSES = new Set<DeliverRunStatus>(['running', 'delivered', 'failed', 'interrupted']);
 const MAX_INSTRUCTION_CHARS = 8000;
-const MAX_PHASES = 5;
+// Must match the planner's hard ceiling (decompose.ts): the old cap of 5
+// silently TRUNCATED bigger persisted plans, so a legally-sized 8-phase
+// mission resumed at phaseIndex 6 skipped the loop entirely and reported
+// success having done nothing.
+const MAX_PHASES = 20;
 const MAX_SUMMARY_CHARS = 300;
+const MAX_CRITERIA = 6;
+const MAX_CRITERION_CHARS = 200;
+const VALID_RUNNER_KINDS = new Set(['single', 'phased', 'orchestrated', 'epic']);
+const PHASE_ID_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
 
 /**
  * Read + SANITIZE a persisted run state. The state file lives inside the
@@ -112,12 +124,63 @@ function readState(projectRoot: string, runId: string): DeliverRunState | null {
       const phases: DeliveryPhase[] = [];
       for (const ph of parsed.phases.slice(0, MAX_PHASES)) {
         if (typeof ph !== 'object' || ph === null) return null;
-        const { id, title, goal } = ph as { id?: unknown; title?: unknown; goal?: unknown };
+        const { id, title, goal, deps, contracts, scaffold, criteria } = ph as {
+          id?: unknown;
+          title?: unknown;
+          goal?: unknown;
+          deps?: unknown;
+          contracts?: unknown;
+          scaffold?: unknown;
+          criteria?: unknown;
+        };
         if (typeof id !== 'string' || typeof title !== 'string' || typeof goal !== 'string') return null;
-        if (!/^[a-z0-9][a-z0-9-]{0,47}$/.test(id)) return null;
-        phases.push({ id, title: title.slice(0, 120), goal: goal.slice(0, 600) });
+        if (!PHASE_ID_RE.test(id)) return null;
+        // Round-trip the planner's structural fields (they used to be silently
+        // stripped, making resume lossy for deps/flags/criteria) — each
+        // re-validated against the same caps the planner parse applies.
+        const cleanDeps = Array.isArray(deps)
+          ? deps.filter((d): d is string => typeof d === 'string' && PHASE_ID_RE.test(d)).slice(0, MAX_PHASES)
+          : undefined;
+        const cleanCriteria = Array.isArray(criteria)
+          ? criteria
+              .filter((c): c is string => typeof c === 'string' && c.trim().length > 0)
+              .map((c) => c.trim().slice(0, MAX_CRITERION_CHARS))
+              .slice(0, MAX_CRITERIA)
+          : undefined;
+        phases.push({
+          id,
+          title: title.slice(0, 120),
+          goal: goal.slice(0, 600),
+          ...(cleanDeps && cleanDeps.length > 0 ? { deps: cleanDeps } : {}),
+          ...(contracts === true ? { contracts: true } : {}),
+          ...(scaffold === true ? { scaffold: true } : {}),
+          ...(cleanCriteria && cleanCriteria.length > 0 ? { criteria: cleanCriteria } : {}),
+        });
       }
       parsed.phases = phases;
+    }
+    if (
+      parsed.runnerKind !== undefined &&
+      (typeof parsed.runnerKind !== 'string' || !VALID_RUNNER_KINDS.has(parsed.runnerKind))
+    ) {
+      delete parsed.runnerKind;
+    }
+    // The resume CURSOR itself is untrusted: an out-of-range phaseIndex makes
+    // the phase loop never run (vacuous success — the same hazard the
+    // MAX_PHASES note above documents), and a negative or fractional one
+    // crashes on phases[index]. Valid iff an integer in [0, phases.length)
+    // (0 only when no phase plan is persisted); anything else is dropped so
+    // the resume restarts from the first phase instead of lying.
+    if (parsed.phaseIndex !== undefined) {
+      const upper = Math.max(parsed.phases?.length ?? 0, 1);
+      if (
+        typeof parsed.phaseIndex !== 'number' ||
+        !Number.isInteger(parsed.phaseIndex) ||
+        parsed.phaseIndex < 0 ||
+        parsed.phaseIndex >= upper
+      ) {
+        delete parsed.phaseIndex;
+      }
     }
     if (parsed.phaseSummaries !== undefined) {
       if (!Array.isArray(parsed.phaseSummaries)) return null;

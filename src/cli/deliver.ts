@@ -133,7 +133,7 @@ import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFil
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
 import { clearStop, isStopRequested, loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
-import { phaseInstruction, planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
+import { planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
 import {
@@ -173,6 +173,8 @@ import { createGitWorktreeProvider } from '../delivery/candidate-workspace.js';
 import { createTaskWorkspaceManager, resolveParallelTasks } from '../delivery/task-workspace.js';
 import { runOrchestratedMission as runOrchestratedMissionCore } from '../delivery/orchestrated-mission.js';
 import { runCiReconverge } from '../delivery/ci-reconverge.js';
+import { runPhasedMission as runPhasedMissionCore } from '../delivery/phased-mission.js';
+import { changedFiles } from '../delivery/changed-files.js';
 import { runEpicMission as runEpicMissionCore } from '../delivery/epic-mission.js';
 import type { ExecutorMode } from '../delivery/agentic-executor.js';
 import type { AutoPlan } from '../delivery/auto-optimizer.js';
@@ -346,27 +348,6 @@ function currentBranch(projectRoot: string): string | null {
  * agentic executor mutates the repo directly and returns an empty file set), so
  * the watcher stages a known list instead of a blanket `git add -A`.
  */
-function changedFiles(projectRoot: string): string[] {
-  try {
-    const r = spawnSync('git', ['status', '--porcelain', '-z'], {
-      cwd: projectRoot,
-      encoding: 'utf-8',
-    });
-    if (r.status !== 0 || !r.stdout) return [];
-    return r.stdout
-      .split('\0')
-      .filter(Boolean)
-      // porcelain lines are "XY <path>"; drop the 3-char status prefix.
-      .map((line) => line.slice(3))
-      .filter(Boolean)
-      // Harness-owned state (run checkpoints, traces, mined weaknesses) must
-      // never ride into the delivery commit on repos that don't ignore .uap/.
-      .filter((f) => !f.startsWith('.uap/') && !f.startsWith('.uap\\'));
-  } catch {
-    return [];
-  }
-}
-
 function fail(message: string): never {
   console.error(chalk.red(message));
   process.exitCode = 2;
@@ -2094,67 +2075,56 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     return runOrchestratedMissionCore(buildOrchestratedDeps(instruction, phases!, parallelTasks));
   };
 
+  /**
+   * Wire deliver's ambient context into the extracted phased runner
+   * (src/delivery/phased-mission.ts) — the cursor-honoring resume path and
+   * the fallback when orchestration is explicitly disabled.
+   */
   const runPhasedMission = async (): Promise<DeliveryResult> => {
-    const all: DeliveryResult = {
-      success: true,
-      alreadyDelivered: false,
-      turns: 0,
-      bestScore: 0,
-      bestTurn: 0,
-      history: [],
-      finalFeedback: '',
-      finalOutput: '',
-      totalDurationMs: 0,
-    };
-    for (; phaseIndex < phases!.length; phaseIndex++) {
-      runState.phaseIndex = phaseIndex;
-      saveRunState(runState);
-      const phase = phases![phaseIndex];
-      console.log(chalk.bold(`▶ phase ${phaseIndex + 1}/${phases!.length}: ${phase.title}`));
-      const phaseTask = await openDeliveryTask(
-        `${phase.title} — ${phase.goal.slice(0, 120)}`,
-        projectRoot,
-        missionTask?.id
-      );
-      const phaseLoop = new ConvergenceLoop(
-        {
-          ...loopConfig,
-          baselineCheck: false,
-          resumeFrom: resumeCheckpoint,
-          onIteration: makeIterationHook(),
-        },
-        resumeCheckpoint ? runExecutor : executor,
-        seams
-      );
-      const resumedTurns = resumeCheckpoint?.history.length ?? 0;
-      resumeCheckpoint = undefined;
-      const phaseText = phaseInstruction(instruction, phases!, phaseIndex, phaseSummaries);
-      // The acceptance judge grades THIS phase's goal, not the whole mission.
-      acceptanceSpec = phaseText;
-      specChangeEvidence.writes = 0;
-      const phaseResult = await phaseLoop.deliver(phaseText);
-      all.turns += phaseResult.turns - resumedTurns;
-      all.history.push(...phaseResult.history);
-      all.totalDurationMs += phaseResult.totalDurationMs;
-      if (phaseResult.bestScore > all.bestScore) {
-        all.bestScore = phaseResult.bestScore;
-        all.bestTurn = phaseResult.bestTurn;
-      }
-      all.finalFeedback = phaseResult.finalFeedback;
-      all.finalOutput = phaseResult.finalOutput;
-      completeDeliveryTask(phaseTask, phaseResult);
-      if (!phaseResult.success) {
-        all.success = false;
-        break;
-      }
-      phaseSummaries.push(
-        `${phase.title}: ${phase.goal.slice(0, 140)} (delivered in ${phaseResult.turns} turn(s))`
-      );
-      runState.phaseSummaries = [...phaseSummaries];
-      runState.checkpoint = undefined; // belongs to the finished phase
-      saveRunState(runState);
-    }
-    return all;
+    const startCheckpoint = resumeCheckpoint;
+    return runPhasedMissionCore({
+      instruction,
+      phases: phases!,
+      startIndex: phaseIndex,
+      initialSummaries: [...phaseSummaries],
+      hasResumeCheckpoint: Boolean(startCheckpoint),
+      resumedTurns: startCheckpoint?.history.length ?? 0,
+      runPhaseLoop: async ({ prompt, resume }) => {
+        const loop = new ConvergenceLoop(
+          {
+            ...loopConfig,
+            baselineCheck: false,
+            resumeFrom: resume ? startCheckpoint : undefined,
+            onIteration: makeIterationHook(),
+          },
+          // The interrupted run may have escalated models; only the RESUMED
+          // loop re-binds the escalated executor (historic behavior).
+          resume && startCheckpoint ? runExecutor : executor,
+          seams
+        );
+        if (resume) resumeCheckpoint = undefined; // consumed by this loop
+        return loop.deliver(prompt);
+      },
+      setPhaseSpec: (spec) => {
+        acceptanceSpec = spec;
+        specChangeEvidence.writes = 0;
+      },
+      openTask: (title) => openDeliveryTask(title, projectRoot, missionTask?.id),
+      completeTask: (record, r) => completeDeliveryTask(record, r),
+      persistCursor: (index) => {
+        phaseIndex = index;
+        runState.phaseIndex = index;
+        saveRunState(runState);
+      },
+      persistCompleted: (summaries) => {
+        phaseSummaries.length = 0;
+        phaseSummaries.push(...summaries);
+        runState.phaseSummaries = [...summaries];
+        runState.checkpoint = undefined; // belongs to the finished phase
+        saveRunState(runState);
+      },
+      note: (line) => console.log(line.startsWith('▶') ? chalk.bold(line) : chalk.dim(line)),
+    });
   };
 
   /**
@@ -2330,18 +2300,49 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         console.log(chalk.dim('  lazy attempt did not pass — engaging the full convergence stack'));
       }
     }
+    // Resume downgrade warning: resumes always take a cursor-honoring
+    // sequential path — phased when a phase plan was persisted, otherwise the
+    // single flat loop — but the ORIGINAL run may have executed as epic or
+    // orchestrated: different prompts, no contract publication, DAG flattened
+    // to linear order. Loud, never silent — and NOT gated on the phases
+    // array, because epic runs never persist one and interrupted epic runs
+    // are the most common resume case.
+    if (resumeState?.runnerKind) {
+      const resumeTarget = phases && phases.length >= 2 ? 'phased' : 'single';
+      if (resumeState.runnerKind !== resumeTarget) {
+        const targetDesc =
+          resumeTarget === 'phased'
+            ? 'sequential phased path (the only cursor-honoring runner)'
+            : 'single-loop path (no phase plan was persisted by the original run)';
+        console.log(
+          chalk.yellow(
+            `  ⚠ resume: the interrupted run executed as '${resumeState.runnerKind}'; resuming on the ${targetDesc} — prompts and per-phase context will differ from the original execution model.`
+          )
+        );
+      }
+    }
     if (lazySolved) {
+      runState.runnerKind = 'single';
+      saveRunState(runState);
       result = result!;
     } else if (epicsEnabled) {
+      runState.runnerKind = 'epic';
+      saveRunState(runState);
       result = await runEpicMission();
     } else if (phases && phases.length >= 2 && orchestrateEnabled && !resumeState) {
       // A RESUMED phased run must not route here: the orchestrated runner
       // ignores phaseIndex/resumeCheckpoint and would restart the DAG from
       // scratch. runPhasedMission below is the only cursor-honoring path.
+      runState.runnerKind = 'orchestrated';
+      saveRunState(runState);
       result = await runOrchestratedMission();
     } else if (phases && phases.length >= 2) {
+      runState.runnerKind = 'phased';
+      saveRunState(runState);
       result = await runPhasedMission();
     } else {
+      runState.runnerKind = 'single';
+      saveRunState(runState);
       if (resumeCheckpoint) loopConfig.resumeFrom = resumeCheckpoint;
       const loop = new ConvergenceLoop(loopConfig, runExecutor, seams);
       result = await loop.deliver(instruction);

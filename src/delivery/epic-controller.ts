@@ -23,7 +23,6 @@
 
 import type { DeliveryPhase } from './decompose.js';
 import { topoOrder } from './decompose.js';
-import { CONTEXT_BUDGET_MARKER } from './context-budget.js';
 
 /** A top-level epic — the same shape as a phase, one lifecycle level up.
  * (Acceptance `criteria` come from DeliveryPhase — single-source.) */
@@ -37,11 +36,19 @@ export interface EpicRunResult {
   /** Turns spent this attempt, for reporting. */
   turns: number;
   /**
-   * The attempt outgrew its per-session context budget — the STRUCTURED
-   * signal for the rail-sizing split (the CONTEXT_BUDGET_MARKER substring in
-   * `summary` is kept for humans and remains honored for back-compat).
+   * The attempt outgrew its per-session context budget — the ONLY signal the
+   * rail-sizing split honors. (The old summary-substring match on the budget
+   * marker was deprecated in v1.153 and removed as promised: the marker in
+   * `summary` is human-facing text, not protocol.)
    */
   budgetStopped?: boolean;
+}
+
+/** Context passed to the split planner about WHY the epic is being split. */
+export interface SplitReason {
+  /** True when the last attempt outgrew its context budget (rail sizing);
+   * false when this is attempts-exhausted auto-escalation. */
+  budgetStopped: boolean;
 }
 
 export interface EpicOutcome {
@@ -97,14 +104,14 @@ export interface EpicControllerConfig {
   onEpic?: (epic: Epic, outcome: EpicOutcome) => void;
   /**
    * Rail sizing (context auto-size): when an epic exhausts its attempts AND
-   * its last failure indicates the session outgrew its context budget (the
-   * executor's CONTEXT_BUDGET_MARKER), this is asked to re-plan the epic as
+   * its run reported the session outgrew its context budget (the structured
+   * EpicRunResult.budgetStopped field), this is asked to re-plan the epic as
    * smaller sub-epics. Returning ≥2 sub-epics runs them immediately, in
    * order, through the same controller (one level deep — sub-epics never
    * split again); the epic counts as accepted iff ALL sub-epics are. Return
    * null/[] to decline. Fail-soft: a throw declines the split.
    */
-  splitEpic?: (epic: Epic, lastFailure?: string) => Promise<Epic[] | null>;
+  splitEpic?: (epic: Epic, lastFailure?: string, reason?: SplitReason) => Promise<Epic[] | null>;
   /**
    * Seed summaries of epics completed BEFORE this controller ran — used by
    * the split recursion so sub-epics still see what earlier epics built.
@@ -200,9 +207,11 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
     // one level shallower until each piece fits a rail. Default depth 1 keeps
     // the conservative one-level behavior.
     const depthRemaining = config.splitDepth ?? 1;
-    // Structured signal first; the summary-substring match stays for callers
-    // that predate EpicRunResult.budgetStopped.
-    const budgetExhausted = lastBudgetStopped || (lastFailure ?? '').includes(CONTEXT_BUDGET_MARKER);
+    // STRUCTURED signal only (the deprecated summary-substring match was
+    // removed as promised in v1.153 — runEpic implementations must set
+    // EpicRunResult.budgetStopped; the marker in summaries is human-facing
+    // text, not protocol).
+    const budgetExhausted = lastBudgetStopped;
     const splitFn = config.splitEpic;
     const shouldSplit =
       !accepted &&
@@ -212,7 +221,7 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
     if (shouldSplit && splitFn) {
       let subs: Epic[] | null = null;
       try {
-        subs = await splitFn(epic, lastFailure);
+        subs = await splitFn(epic, lastFailure, { budgetStopped: budgetExhausted });
       } catch {
         subs = null; // fail-soft: an unplannable split just keeps the failure
       }

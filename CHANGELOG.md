@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.154.0 (2026-07-15)
+
+- feat(delivery): round 3 — phased-mission extraction, runnerKind resume safety, sanitizer hardening, changed-files module, marker deprecation executed
+
+
 ## v1.153.0 (2026-07-15)
 
 - feat(delivery): PR #519 follow-ups — resume routing, structured budget signal, live criteria, watch-ci extraction, single-source redetect-merge

@@ -290,3 +290,89 @@ describe('convergence loop checkpoint + resume', () => {
     expect(checkpoints2[checkpoints2.length - 1].modelEscalated).toBe(true);
   });
 });
+
+describe('round-3 run-state hardening', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-runstate-r3-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function makeState(overrides: Partial<DeliverRunState> = {}): DeliverRunState {
+    return {
+      runId: newRunId(),
+      instruction: 'build the thing',
+      presetId: 'test-model',
+      projectRoot: dir,
+      status: 'running',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      ...overrides,
+    };
+  }
+
+  it('round-trips runnerKind and drops invalid values', () => {
+    const base = makeState({ runnerKind: 'epic' });
+    saveRunState(base);
+    expect(loadRunState(dir, base.runId)?.runnerKind).toBe('epic');
+
+    const bad = makeState({ runnerKind: 'hacked' as never });
+    saveRunState(bad);
+    expect(loadRunState(dir, bad.runId)?.runnerKind).toBeUndefined();
+  });
+
+  it('retains up to 20 phases (planner ceiling) — an 8-phase resume is no longer truncated to 5', () => {
+    const phases = Array.from({ length: 8 }, (_, i) => ({ id: `p-${i}`, title: `P${i}`, goal: `g${i}` }));
+    const st = makeState({ phases, phaseIndex: 6 });
+    saveRunState(st);
+    const loaded = loadRunState(dir, st.runId);
+    expect(loaded?.phases).toHaveLength(8); // cursor 6 is executable again
+  });
+
+  it('round-trips deps/contracts/scaffold/criteria with re-validation', () => {
+    const st = makeState({
+      phases: [
+        { id: 'contracts', title: 'C', goal: 'g', contracts: true, criteria: ['  compiles  ', 'x'.repeat(500)] },
+        { id: 'impl', title: 'I', goal: 'g', deps: ['contracts', '../evil', 'contracts'], scaffold: true },
+      ],
+    });
+    saveRunState(st);
+    const loaded = loadRunState(dir, st.runId)!;
+    expect(loaded.phases?.[0].contracts).toBe(true);
+    expect(loaded.phases?.[0].criteria).toEqual(['compiles', 'x'.repeat(200)]);
+    expect(loaded.phases?.[1].scaffold).toBe(true);
+    expect(loaded.phases?.[1].deps).toEqual(['contracts', 'contracts']); // invalid id filtered
+  });
+
+  it('drops an out-of-range phaseIndex — a planted cursor must not skip the loop into vacuous success', () => {
+    const phases = Array.from({ length: 3 }, (_, i) => ({ id: `p-${i}`, title: `P${i}`, goal: `g${i}` }));
+    const st = makeState({ phases, phaseIndex: 999 });
+    saveRunState(st);
+    expect(loadRunState(dir, st.runId)?.phaseIndex).toBeUndefined();
+
+    const neg = makeState({ phases, phaseIndex: -1 });
+    saveRunState(neg);
+    expect(loadRunState(dir, neg.runId)?.phaseIndex).toBeUndefined();
+
+    const frac = makeState({ phases, phaseIndex: 1.5 });
+    saveRunState(frac);
+    expect(loadRunState(dir, frac.runId)?.phaseIndex).toBeUndefined();
+  });
+
+  it('keeps a valid in-range phaseIndex, and allows only 0 when no phase plan exists', () => {
+    const phases = Array.from({ length: 3 }, (_, i) => ({ id: `p-${i}`, title: `P${i}`, goal: `g${i}` }));
+    const st = makeState({ phases, phaseIndex: 2 });
+    saveRunState(st);
+    expect(loadRunState(dir, st.runId)?.phaseIndex).toBe(2);
+
+    const noPlanOk = makeState({ phaseIndex: 0 });
+    saveRunState(noPlanOk);
+    expect(loadRunState(dir, noPlanOk.runId)?.phaseIndex).toBe(0);
+
+    const noPlanBad = makeState({ phaseIndex: 2 });
+    saveRunState(noPlanBad);
+    expect(loadRunState(dir, noPlanBad.runId)?.phaseIndex).toBeUndefined();
+  });
+});
