@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.153.0 (2026-07-15)
+
+- feat(delivery): PR #519 follow-ups — resume routing, structured budget signal, live criteria, watch-ci extraction, single-source redetect-merge
+
+
 ## v1.152.0 (2026-07-15)
 
 - refactor(delivery): extract runEpicMission behind seams — the default path is now unit-tested
