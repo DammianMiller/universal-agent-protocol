@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   deriveUserPaths,
+  sanitizeCanvasTextAssertions,
   loadUserPaths,
   mergeUserPaths,
   parseManifestFromModel,
@@ -137,5 +138,56 @@ describe('deriveUserPaths: canvas-aware mining prompt', () => {
     // match them, which made auto-mined journeys unsatisfiable by construction.
     expect(captured).toContain('CANVAS-rendered UIs');
     expect(captured).toContain('expect_text can NEVER match');
+  });
+});
+
+describe('sanitizeCanvasTextAssertions', () => {
+  const canvasMission = 'Build a space shooter with vanilla JavaScript and Canvas';
+  const manifest = (steps: object[]): never =>
+    ({ version: 1, paths: [{ id: 'p', rule: 'r', client: 'browser', steps }] }) as never;
+
+  it('strips body/html expect_text on canvas missions but keeps real assertions (miner disobeyed the prompt rule)', () => {
+    const out = sanitizeCanvasTextAssertions(
+      manifest([
+        { goto: '/' },
+        { expect_visible: '#game' },
+        { expect_text: { selector: 'body', contains: 'OCTOPUS INVADERS' } },
+        { expect_no_console_errors: true },
+      ]),
+      canvasMission
+    );
+    const steps = out.paths[0].steps;
+    expect(steps.some((s) => 'expect_text' in s)).toBe(false);
+    expect(steps.some((s) => 'expect_visible' in s)).toBe(true);
+    expect(steps.some((s) => 'expect_no_console_errors' in s)).toBe(true);
+    // Targeted DOM text (a real selector, not the body shell) is preserved.
+    const targeted = sanitizeCanvasTextAssertions(
+      manifest([{ expect_text: { selector: '#score-label', contains: 'Score' } }]),
+      canvasMission
+    );
+    expect(targeted.paths[0].steps.some((s) => 'expect_text' in s)).toBe(true);
+  });
+
+  it('non-canvas missions pass through untouched; a path whose only assert was doomed gets a console-errors check; deriveUserPaths applies it', async () => {
+    const domSteps = [{ goto: '/' }, { expect_text: { selector: 'body', contains: 'Welcome' } }];
+    const untouched = sanitizeCanvasTextAssertions(manifest(domSteps), 'Build a REST API docs site');
+    expect(untouched.paths[0].steps).toEqual(domSteps);
+
+    const onlyDoomed = sanitizeCanvasTextAssertions(manifest(domSteps), canvasMission);
+    expect(onlyDoomed.paths[0].steps.some((s) => 'expect_text' in s)).toBe(false);
+    expect(onlyDoomed.paths[0].steps.some((s) => 'expect_no_console_errors' in s)).toBe(true);
+
+    const mined = await deriveUserPaths(canvasMission, async () =>
+      JSON.stringify({
+        version: 1,
+        paths: [{ id: 'p', rule: 'r', client: 'browser', steps: [
+          { goto: '/' },
+          { expect_visible: '#game' },
+          { expect_text: { selector: 'body', contains: 'TITLE' } },
+        ] }],
+      })
+    );
+    expect(mined).not.toBeNull();
+    expect(mined!.paths[0].steps.some((s) => 'expect_text' in s)).toBe(false);
   });
 });

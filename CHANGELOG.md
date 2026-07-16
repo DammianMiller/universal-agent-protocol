@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.1 (2026-07-16)
+
+- fix(delivery): deterministic canvas-text sanitizer for mined user paths
+
+
 ## v1.161.0 (2026-07-16)
 
 - feat(delivery): resolve all six PR #536 follow-ups — finality seeding, env safety, fail-closed judge, plan gap-closure, config escalation, manifest compat

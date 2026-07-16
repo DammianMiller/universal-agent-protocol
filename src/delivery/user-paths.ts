@@ -225,8 +225,42 @@ export async function deriveUserPaths(
   try {
     const prompt = DERIVE_PROMPT + instruction + (extraContext ? `\n\nCONTEXT:\n${extraContext}` : '');
     const out = await executor(prompt);
-    return parseManifestFromModel(out);
+    const manifest = parseManifestFromModel(out);
+    return manifest ? sanitizeCanvasTextAssertions(manifest, instruction) : manifest;
   } catch {
     return null;
   }
+}
+
+/**
+ * Deterministic backstop for the DERIVE_PROMPT canvas rule: a weak miner
+ * still sometimes emits DOM expect_text assertions against body/html for
+ * canvas-rendered missions (observed live: 1 of 5 mined paths on the
+ * octopus retest, despite the prompt rule) — text drawn on a <canvas> is
+ * never DOM text, so such a step can NEVER pass and makes the final epic's
+ * user-path gate structurally unpassable. For canvas missions, drop
+ * body/html expect_text steps when the path keeps at least one other
+ * expect_* assertion; a path whose ONLY assertion was the doomed text check
+ * gets expect_no_console_errors so it still ends in an expectation.
+ * Prompt-following models are untouched (nothing to strip).
+ */
+export function sanitizeCanvasTextAssertions(
+  manifest: UserPathsManifest,
+  instruction: string
+): UserPathsManifest {
+  if (!/\bcanvas\b|<canvas/i.test(instruction)) return manifest;
+  const SHELL_SELECTORS = new Set(['body', 'html', ':root', '*']);
+  const isShellTextAssert = (s: UserPathStep): boolean => {
+    const et = (s as { expect_text?: { selector?: string } }).expect_text;
+    if (typeof et !== 'object' || et === null) return false;
+    return SHELL_SELECTORS.has((et.selector ?? '').trim().toLowerCase());
+  };
+  const isAssert = (s: UserPathStep): boolean => Object.keys(s).some((k) => k.startsWith('expect_'));
+  const paths = manifest.paths.map((p) => {
+    if (p.client !== 'browser' || !p.steps.some(isShellTextAssert)) return p;
+    const kept = p.steps.filter((s) => !isShellTextAssert(s));
+    if (!kept.some(isAssert)) kept.push({ expect_no_console_errors: true } as UserPathStep);
+    return { ...p, steps: kept };
+  });
+  return { ...manifest, paths };
 }
