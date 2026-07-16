@@ -466,6 +466,22 @@ export function runTool(
     }
     if (name === 'write_file') {
       const abs = safePath(projectRoot, String(args.path));
+      // Truncated-emit guard: a weak model re-emitting a whole large file hits
+      // its output ceiling mid-class and the stump poisons the tree — every
+      // later judge turn then rejects "code cuts off" while the model keeps
+      // reproducing the same truncation (octopus run G, 2026-07-17: ui.js cut
+      // mid-UIManager across 6 attempts). Refuse the obviously-cut write with
+      // corrective feedback steering to edit_file. Heuristic is conservative
+      // (code files only, net-unclosed braces only) — a false negative just
+      // falls back to judge feedback, a false positive costs one retry.
+      const truncated = looksTruncated(String(args.path), String(args.content ?? ''));
+      if (truncated) {
+        return (
+          `ERROR: ${String(args.path)} content looks TRUNCATED (${truncated}). ` +
+          'Your output was likely cut off mid-file. Do NOT re-emit the whole file: ' +
+          'use edit_file to change only the parts that need changing, or write the file in smaller pieces.'
+        );
+      }
       const internal = agentInternalReason(projectRoot, abs, true);
       if (internal) return internal;
       if (protectedFiles.has(protectedKey(projectRoot, abs))) {
@@ -932,6 +948,34 @@ export function createAgenticExecutor(
  * tools, so there is nothing for the convergence loop to materialize. Reports
  * zero filesApplied (the gate measures the real outcome).
  */
+
+/**
+ * Cheap truncation heuristic for code-file writes: strips string/template
+ * literals and comments, then counts net-unclosed braces/brackets/parens. Only
+ * flags NET-POSITIVE imbalance (more opens than closes — the signature of an
+ * output cut mid-block); balanced or over-closed content is never flagged.
+ * Returns a human-readable reason, or null when the content looks whole.
+ */
+export function looksTruncated(path: string, content: string): string | null {
+  if (!/\.(m?[jt]sx?|json|css)$/i.test(path)) return null;
+  if (content.trim().length < 200) return null; // small stubs are legitimate
+  // Strip line/block comments and quoted strings (crude but effective).
+  const stripped = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+  const count = (ch: string): number => stripped.split(ch).length - 1;
+  const braces = count('{') - count('}');
+  const brackets = count('[') - count(']');
+  const parens = count('(') - count(')');
+  if (braces > 0) return `${braces} unclosed {`;
+  if (brackets > 0) return `${brackets} unclosed [`;
+  if (parens > 0) return `${parens} unclosed (`;
+  return null;
+}
+
 export async function noopApplier(): Promise<ApplyResult> {
   // No error: the executor already mutated the repo, so "nothing to apply" is
   // success, not the applyFileBlocks "no file blocks found" failure.
