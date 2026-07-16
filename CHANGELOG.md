@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.7 (2026-07-17)
+
+- fix(delivery): unborn-HEAD repos broke change detection — the underlying no-op-trap root cause
+
+
 ## v1.161.6 (2026-07-17)
 
 - fix(delivery): retry the journey miner once — one flake removed the terminal gate
