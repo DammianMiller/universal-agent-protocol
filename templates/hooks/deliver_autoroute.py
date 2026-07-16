@@ -183,6 +183,29 @@ def _load_seen(root: Path) -> set:
 
 LOCK_FILE = "autoroute.lock"
 LOG_FILE = "autoroute.log"
+COHERENT_LOCK = "coherent-mission.lock"
+
+
+def _coherent_enabled() -> bool:
+    # PHASE 1 (coherent-mission routing): route the WHOLE mission to ONE agentic
+    # `uap deliver --epics` run (contracts -> scaffold -> fill, writes in-band)
+    # instead of landing files one at a time via the per-file replay/model-spawn
+    # side-channel — which produces syntactically-valid but NON-integrating output
+    # (index.html loading 2 of 9 scripts, mismatched module APIs; octopus, 07-16).
+    # Default OFF until epic-run phase-0 convergence is hardened; enable with
+    # UAP_DELIVER_COHERENT_MISSION=1/on/true/yes.
+    v = os.environ.get("UAP_DELIVER_COHERENT_MISSION", "off").lower()
+    return v in {"1", "on", "true", "yes"}
+
+
+def coherent_route(coherent_on: bool, route: str, has_write_intent: bool,
+                   mission: str, inflight: bool) -> str:
+    """Whether to route the whole mission to one coherent epic run. Returns
+    'spawn' (start it), 'wait' (one already in flight — suppress the per-file
+    side-channel), or '' (not applicable; fall through to replay/spawn)."""
+    if not (coherent_on and route == "deliver" and has_write_intent and mission):
+        return ""
+    return "wait" if inflight else "spawn"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -285,6 +308,70 @@ def _spawn_pending_replay(root: Path, file_arg: str) -> None:
         pass
 
 
+def _recover_mission(root: Path) -> str:
+    """Best-available mission text for a coherent epic run: the completion
+    ledger's `mission`, else the newest deliver run's `instruction`. '' if none
+    (then coherent routing is skipped and the per-file paths handle the write)."""
+    try:
+        p = root / UAP_DIR / "completion-ledger.json"
+        if p.exists():
+            m = json.loads(p.read_text()).get("mission")
+            if isinstance(m, str) and m.strip():
+                return m.strip()
+    except Exception:
+        pass
+    try:
+        runs = sorted((root / UAP_DIR / "deliver-runs").glob("run-*"),
+                      key=lambda x: x.stat().st_mtime, reverse=True)
+        for r in runs:
+            try:
+                m = json.loads((r / "state.json").read_text()).get("instruction")
+                if isinstance(m, str) and m.strip():
+                    return m.strip()
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return ""
+
+
+def _coherent_inflight(root: Path) -> bool:
+    """One coherent epic run per repo; a live lock pid means one is building."""
+    lock = root / UAP_DIR / COHERENT_LOCK
+    try:
+        if lock.exists():
+            pid = int(lock.read_text().strip() or "0")
+            return bool(pid and _pid_alive(pid))
+    except Exception:
+        pass
+    return False
+
+
+def _spawn_coherent_epic(root: Path, mission: str) -> None:
+    """Spawn ONE `uap deliver --epics -- "<mission>"` (agentic, in-process) that
+    builds the whole mission COHERENTLY through the phase flow. Detached, one per
+    repo. Best-effort; never raises."""
+    import subprocess
+    if not mission or mission.startswith("-") or _coherent_inflight(root):
+        return
+    try:
+        log = (root / UAP_DIR / LOG_FILE).open("a")
+    except Exception:
+        log = subprocess.DEVNULL
+    try:
+        proc = subprocess.Popen(
+            ["uap", "deliver", "--epics", "--", mission],
+            cwd=str(root), stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            (root / UAP_DIR / COHERENT_LOCK).write_text(str(proc.pid))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tool", default="")
@@ -314,7 +401,22 @@ def main() -> None:
         except Exception:
             pass
 
-    if d["replay"] or d["spawn"]:
+    # PHASE 1 (opt-in): route the whole mission to ONE coherent agentic epic run
+    # instead of the per-file side-channel. When it takes over, the single
+    # `uap deliver --epics` run owns the build, so we do NOT also fire per-file
+    # replay/spawn for this write (that is what produced non-integrating output).
+    coherent = ""
+    message = d["message"]
+    if _coherent_enabled() and d["route"] == "deliver" and d["file_path"]:
+        mission = _recover_mission(root)
+        coherent = coherent_route(True, d["route"], True, mission, _coherent_inflight(root))
+        if coherent == "spawn":
+            _spawn_coherent_epic(root, mission)
+            message = d["message"] + " [routed to a single coherent `uap deliver --epics` run — building the whole mission in-band]"
+        elif coherent == "wait":
+            message = d["message"] + " [a coherent `uap deliver --epics` run is already building this mission — intent recorded, not re-routed]"
+
+    if not coherent and (d["replay"] or d["spawn"]):
         try:
             # Dedup on the SAME key `decide` gated on (file when present, else the
             # hint) — writing file_path here would record "" for a bash-routed
@@ -335,7 +437,7 @@ def main() -> None:
             _spawn_deliver(root, d["hint"])
 
     prefix = ("[UAP policy blocked: " + ns.policy + "] ") if ns.policy else ""
-    sys.stdout.write(prefix + d["message"])
+    sys.stdout.write(prefix + message)
 
 
 if __name__ == "__main__":
