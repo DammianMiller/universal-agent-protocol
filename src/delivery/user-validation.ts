@@ -504,10 +504,22 @@ export async function runUserValidation(
 
   const anyFail = results.some((r) => r.status === 'fail');
   const allSkipped = results.length > 0 && results.every((r) => r.status === 'skipped');
+  // In a decomposed epic mission the whole-mission user journeys can only pass
+  // once the FINAL epic assembles the app — so an EARLY epic failing them is
+  // "not-ready", not a defect. Gating every epic on the finished app makes the
+  // first epic (e.g. structure/CSS) unsatisfiable and freezes phaseIndex at 0
+  // (octopus_invaders_v3, 2026-07-16). When the epic controller marks a
+  // non-final epic (UAP_EPIC_NONFINAL=1), report NA (loud, non-blocking) instead
+  // of FAIL so the epic converges on its own scoped gates; the final epic runs
+  // the journeys for real.
+  const nonFinalEpic = process.env.UAP_EPIC_NONFINAL === '1';
+  const verdict = anyFail ? (nonFinalEpic ? 'na' : 'fail') : allSkipped ? 'na' : 'pass';
   return finish({
     version: 1, manifestHash, results,
-    verdict: anyFail ? 'fail' : allSkipped ? 'na' : 'pass',
-    naReason: allSkipped ? 'all paths skipped (browser unavailable)' : undefined,
+    verdict,
+    naReason: nonFinalEpic && anyFail
+      ? 'non-final epic — whole-mission journeys deferred to the final epic (not-ready, not a defect)'
+      : allSkipped ? 'all paths skipped (browser unavailable)' : undefined,
     browserAvailable: browser !== null,
   });
 }
