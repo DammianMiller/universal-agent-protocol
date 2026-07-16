@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.159.0 (2026-07-16)
+
+- fix(delivery): coherent multi-file builds — the whole fix stack that takes a mission from "files land but don't integrate" to a clean `DELIVERED`:
+  - deterministic `--pending` replay applies gate-blocked Write-tool and `cat > FILE << EOF` heredoc writes to disk (#529, #530)
+  - opt-in coherent-mission routing (`UAP_DELIVER_COHERENT_MISSION`): route a blocked source write's whole mission to one `uap deliver --epics` run instead of the per-file side-channel (#531)
+  - scope whole-mission `user-validation` to the final epic so early epics aren't gated on the finished app (fixes phaseIndex frozen at 0) (#532)
+  - don't fail a trailing epic as a no-op when prior epics already changed the tree — defer to the acceptance judge (fixes the "already delivered" re-split churn) (#533)
+
+
 ## v1.158.0 (2026-07-16)
 
 - feat(delivery): round 7 — orchestrated resume fidelity (completes the resume matrix)
