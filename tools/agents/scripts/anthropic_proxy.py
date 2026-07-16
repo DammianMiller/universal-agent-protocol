@@ -359,6 +359,31 @@ _DEFERRAL_PHRASE_RE = re.compile(
 # turn IS the halt, unlike STUCK-BREAK which waits for a sustained loop.
 PROXY_DEFERRAL_THRESHOLD = int(os.environ.get("PROXY_DEFERRAL_THRESHOLD", "1"))
 
+# ---------------------------------------------------------------------------
+# DOUBLING-DOWN guardrail ("never go full"): the model re-issues the SAME tool
+# call -- identical fingerprint, name + argument hash -- and it keeps FAILING.
+# ERROR-LOOP covers the inverse shape (varied edits, same error signature); the
+# identical-call cycle detector needs 6 repeats regardless of outcome and
+# ignores results entirely. Neither fires on the classic doubling-down run: the
+# same command retried harder while its error text VARIES turn to turn (rate
+# limits, timeouts, flaky tests) -- which is how a session goes all-in on one
+# failing approach (observed live: a rate-limited GitHub API hammered in a
+# loop). After PROXY_DOUBLING_THRESHOLD consecutive failed retries of the SAME
+# call, inject a pivot directive: stop retrying, state a different approach,
+# take it. PROXY_DOUBLING_BREAK=off to disable.
+PROXY_DOUBLING_BREAK = os.environ.get("PROXY_DOUBLING_BREAK", "on").lower() not in {
+    "0", "off", "false", "no",
+}
+PROXY_DOUBLING_THRESHOLD = int(os.environ.get("PROXY_DOUBLING_THRESHOLD", "3"))
+
+# Failure shapes the generic _ERROR_LINE_RE misses but that motivated this
+# guard (raw GitHub rate-limit JSON, plain timeout lines). Scoped to
+# doubling-down ONLY so ERROR-LOOP's signature semantics stay untouched.
+_DOUBLING_FAIL_RE = re.compile(
+    r"rate.?limit|timed?[ -]?out|too many requests|\b429\b|quota exceeded",
+    re.IGNORECASE,
+)
+
 PROXY_TOOL_STATE_MACHINE = os.environ.get(
     "PROXY_TOOL_STATE_MACHINE", "on"
 ).lower() not in {
@@ -1437,6 +1462,10 @@ class SessionMonitor:
     stuck_break_fires: int = 0  # monotonic count of forced stuck-breaks
     deferral_streak: int = 0  # consecutive no-tool turns deferring the work (Fix A)
     deferral_break_fires: int = 0  # monotonic count of forced deferral-breaks (Fix A)
+    doubling_fp: str = ""  # fingerprint of the repeated failing tool call (doubling-down)
+    doubling_streak: int = 0  # consecutive FAILED retries of that same call
+    doubling_break_fires: int = 0  # monotonic count of injected pivot directives
+    last_doubling_obs: str = ""  # msg-count:fingerprint key of the last counted observation
     mandate_deliver_fires: int = 0  # monotonic count of forced deliver-routings (mandate)
     tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
     last_request_msg_count: int = 0  # Message count of the previous request (compaction-boundary detection)
@@ -1747,6 +1776,63 @@ class SessionMonitor:
             return False, ""
         if self.deferral_streak >= PROXY_DEFERRAL_THRESHOLD:
             return True, f"deferral/plan-capitulation x{self.deferral_streak}"
+        return False, ""
+
+    def note_doubling_signal(
+        self,
+        fingerprint: str,
+        latest_result_text: str,
+        msg_count: int = -1,
+        result_error: bool | None = None,
+    ) -> None:
+        """Track the model doubling down on ONE failing action (DOUBLING-DOWN
+        guardrail): the same tool-call fingerprint (name + argument hash)
+        re-issued while its tool_result keeps failing. Any different call, a
+        no-tool turn, or a clean result resets the streak -- only consecutive
+        identical failed retries count, so productive repetition (the same
+        command after a fix, polling that eventually succeeds) is never
+        flagged.
+
+        msg_count dedups re-sent transcripts: a client retry (5xx/stream abort)
+        repeats the same trailing (call, result) pair WITHOUT the conversation
+        growing; observing it twice must not inflate the streak. result_error
+        is the tool_result is_error flag when the client sent one -- it beats
+        the keyword heuristics in both directions."""
+        if not PROXY_DOUBLING_BREAK:
+            self.doubling_streak = 0
+            self.doubling_fp = ""
+            return
+        key = f"{msg_count}:{fingerprint}"
+        if msg_count >= 0 and fingerprint and key == self.last_doubling_obs:
+            return
+        self.last_doubling_obs = key
+        if result_error is not None:
+            failed = result_error
+        else:
+            text = latest_result_text or ""
+            failed = bool(_error_signature(text)) or bool(_DOUBLING_FAIL_RE.search(text))
+        if not fingerprint or not failed:
+            self.doubling_streak = 0
+            self.doubling_fp = fingerprint or ""
+            return
+        if fingerprint == self.doubling_fp:
+            self.doubling_streak += 1
+        else:
+            self.doubling_fp = fingerprint
+            self.doubling_streak = 1
+
+    def reset_doubling(self) -> None:
+        """Fresh act cycle / fresh user text: drop the doubling streak."""
+        self.doubling_fp = ""
+        self.doubling_streak = 0
+        self.last_doubling_obs = ""
+
+    def should_force_doubling_break(self) -> tuple[bool, str]:
+        """True + reason when a doubling-down pivot should be injected."""
+        if not PROXY_DOUBLING_BREAK:
+            return False, ""
+        if self.doubling_streak >= PROXY_DOUBLING_THRESHOLD:
+            return True, f"same failing call retried x{self.doubling_streak}"
         return False, ""
 
     def recon_convergence_pending(self) -> bool:
@@ -4616,6 +4702,7 @@ def _resolve_state_machine_tool_choice(
     latest_user_text = _latest_user_text(anthropic_body).strip()
     if latest_user_text and not last_user_has_tool_result:
         monitor.tool_call_history = []
+        monitor.reset_doubling()
         if n_msgs <= 1:
             monitor.forced_auto_cooldown_turns = 0
             monitor.consecutive_forced_count = 0
@@ -4648,6 +4735,7 @@ def _resolve_state_machine_tool_choice(
     if not active_loop:
         if not has_tool_results:
             monitor.tool_call_history = []
+            monitor.reset_doubling()
             if n_msgs <= 1:
                 monitor.forced_auto_cooldown_turns = 0
                 monitor.consecutive_forced_count = 0
@@ -5035,6 +5123,58 @@ def _maybe_inject_error_loop_break(openai_body: dict, monitor: "SessionMonitor")
         monitor.error_signature_streak,
         monitor.last_error_signature[:80],
         monitor.error_loop_fires,
+    )
+
+
+def _maybe_inject_doubling_break(openai_body: dict, monitor: "SessionMonitor") -> None:
+    """Break a doubling-down run: the SAME tool call has failed N times in a row.
+
+    "Never go full": total commitment to one failing action surrenders the
+    judgment needed to step back out. ERROR-LOOP owns the same-error/varied-edit
+    shape and its diagnose-first nudge takes precedence when both would fire;
+    this guard owns the identical-call shape, where the error text may vary
+    turn to turn (rate limits, timeouts, flaky tests) and so keeps ERROR-LOOP
+    reset while the retries burn turns. Advisory like ERROR-LOOP: it does not
+    touch tool_choice -- the model should keep acting, just not with THAT call."""
+    should, reason = monitor.should_force_doubling_break()
+    if not should:
+        return
+    # STUCK-BREAK (a self-aware loop wanting a prose exit) is more urgent.
+    stuck, _ = monitor.should_force_stuck_break()
+    if stuck:
+        return
+    # Recon-convergence may strip tools / force a terminal summary this turn; a
+    # "take a different action" directive would contradict it.
+    if monitor.recon_convergence_pending():
+        return
+    # ERROR-LOOP fires this same turn on the lockstep case (identical call AND
+    # identical error); stacking a second STOP directive would conflict.
+    if PROXY_ERROR_LOOP and monitor.error_signature_streak >= PROXY_ERROR_LOOP_THRESHOLD:
+        return
+    monitor.doubling_break_fires += 1
+    directive = (
+        "\n\nPIVOT -- you have made the EXACT same tool call and it has failed "
+        + str(monitor.doubling_streak)
+        + " times in a row ("
+        + reason
+        + "). Do not go all-in on one approach: retrying it harder will fail the "
+        "same way. Do NOT issue that call again. State in one sentence a "
+        "DIFFERENT approach -- a different tool, a different target, or a "
+        "smaller step -- and take that action now. If no alternative exists, "
+        "stop and report the blocker in one sentence instead of retrying."
+    )
+    msgs = openai_body.get("messages")
+    if not isinstance(msgs, list):
+        msgs = []
+    if msgs and msgs[0].get("role") == "system":
+        msgs[0]["content"] = (msgs[0].get("content") or "") + directive
+    else:
+        msgs.insert(0, {"role": "system", "content": directive.strip()})
+    openai_body["messages"] = msgs  # reattach in case messages was empty/absent
+    logger.warning(
+        "DOUBLING-BREAK: injected pivot directive (%s, fires=%d)",
+        reason,
+        monitor.doubling_break_fires,
     )
 
 
@@ -6071,6 +6211,10 @@ def build_openai_request(
     # ERROR-LOOP: same tool_result failure recurring despite varied edits.
     _maybe_inject_error_loop_break(openai_body, monitor)
 
+    # DOUBLING-DOWN: the SAME call failing repeatedly (error text may vary).
+    # Yields to stuck-break / recon / error-loop inside the function.
+    _maybe_inject_doubling_break(openai_body, monitor)
+
     # DEFERRAL-BREAK (Fix A): after stuck-break, drive a no-tool deferral turn
     # into a concrete action. Runs last so it can yield to stuck-break.
     _maybe_inject_deferral_break(openai_body, monitor)
@@ -6191,6 +6335,7 @@ def _detect_and_strip_synthetic_continuation(
     monitor.reset_tool_turn_state(reason="finalize_continuation_resume")
     monitor.reset_completion_recovery()
     monitor.tool_call_history = []
+    monitor.reset_doubling()
     logger.info(
         "FINALIZE CONTINUATION: stripped synthetic tool id=%s, "
         "reset state machine for fresh act cycle (continuations=%d/%d)",
@@ -6214,16 +6359,17 @@ def _record_last_assistant_tool_calls(
     # ERROR-LOOP tracking: feed the monitor the most recent tool_result text so a
     # recurring same-failure signature can be detected across (varied) edits.
     _latest_tr = ""
+    _latest_err: bool | None = None
     for _m in reversed(messages):
         _c = _m.get("content")
         if isinstance(_c, list):
-            _parts = [
-                _extract_text(b.get("content", ""))
-                for b in _c
-                if isinstance(b, dict) and b.get("type") == "tool_result"
-            ]
+            _blocks = [b for b in _c if isinstance(b, dict) and b.get("type") == "tool_result"]
+            _parts = [_extract_text(b.get("content", "")) for b in _blocks]
             if _parts:
                 _latest_tr = "\n".join(p for p in _parts if p)
+                _flags = [b.get("is_error") for b in _blocks if isinstance(b.get("is_error"), bool)]
+                if _flags:
+                    _latest_err = any(_flags)
                 break
     monitor.note_tool_result_error(_latest_tr)
     tool_fingerprints = []
@@ -6265,6 +6411,10 @@ def _record_last_assistant_tool_calls(
             tool_targets=tool_targets,
             fingerprint=fingerprint,
         )
+        # DOUBLING-DOWN: pair this turn's call fingerprint with its result.
+        monitor.note_doubling_signal(
+            fingerprint, _latest_tr, msg_count=len(messages), result_error=_latest_err
+        )
         return fingerprint
     # Fix B: no tool call in the last assistant turn. A plain-text turn is still
     # a non-write turn, so advance the recon-convergence streak (previously it
@@ -6272,6 +6422,9 @@ def _record_last_assistant_tool_calls(
     # Guard on real prose so an empty/absent assistant turn never inflates it.
     if assistant_had_text:
         monitor.note_no_tool_turn()
+    monitor.note_doubling_signal(
+        "", _latest_tr, msg_count=len(messages), result_error=_latest_err
+    )
     return ""
 
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.160.0 (2026-07-16)
+
+- chore: bump version to 1.159.0
+- chore: bump version to 1.159.0
+- feat(policy): "never go full" commitment-restraint family — reserve gate, doubling-down breaker, saturation lint
+- fix(delivery): don't fail a trailing epic as a no-op when prior epics changed the tree
+- fix(delivery): scope whole-mission user-validation to the final epic
+- feat(delivery): opt-in coherent-mission routing (one epic run, not per-file)
+- fix(delivery): make bash heredoc writes (`cat > FILE << EOF`) replayable
+- fix(delivery): apply blocked replayable edits via deterministic --pending replay
+- fix(policies): infra-protect blocks broad `pkill -f uap` self-kill
+
+
 ## v1.159.0 (2026-07-16)
 
 - fix(delivery): coherent multi-file builds — the whole fix stack that takes a mission from "files land but don't integrate" to a clean `DELIVERED`:
