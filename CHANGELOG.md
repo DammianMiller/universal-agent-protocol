@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.13 (2026-07-17)
+
+- fix(delivery): visual richness floors defer to the final epic
+
+
 ## v1.161.12 (2026-07-17)
 
 - fix(delivery): separator-insensitive spec-symbol matching for evidence priority
