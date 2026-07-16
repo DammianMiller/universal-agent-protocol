@@ -440,6 +440,75 @@ describe('anti-no-op acceptance rail (P0, 2026-07-13)', () => {
     }
   });
 
+  it('zero-diff + prior-changes + judge THROW fails closed (no verdict, no acceptance)', async () => {
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    try {
+      process.env.UAP_EPIC_PRIOR_CHANGES = '1';
+      const loop = new ConvergenceLoop(
+        { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true },
+        async () => 'no work',
+        {
+          applier: async () => ({ filesWritten: [], rejected: [] }),
+          ladderRunner: () => ladderResult(1.0, true),
+          acceptanceGate: async () => { throw new Error('judge endpoint down'); },
+        }
+      );
+      const result = await loop.deliver('trailing epic, judge unavailable');
+      // The deterministic rail stood down BECAUSE the judge would decide; a
+      // judge failure must not silently accept a zero-diff epic.
+      expect(result.success).toBe(false);
+      expect(result.finalFeedback).toMatch(/judge/i);
+    } finally {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    }
+  });
+
+  it('resume runs stay fail-open on judge THROW (zero diff is expected on resume)', async () => {
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    try {
+      process.env.UAP_EPIC_PRIOR_CHANGES = '1';
+      const loop = new ConvergenceLoop(
+        { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true, resumeFrom: 'run-x' },
+        async () => 'no new work — resumed',
+        {
+          applier: async () => ({ filesWritten: [], rejected: [] }),
+          ladderRunner: () => ladderResult(1.0, true),
+          acceptanceGate: async () => { throw new Error('judge endpoint down'); },
+        }
+      );
+      const result = await loop.deliver('resumed run, judge unavailable');
+      // On resume the deterministic rail never stood down FOR the judge (prior
+      // -session changes are invisible to the fingerprint), so the fail-closed
+      // carve-out must not fire.
+      expect(result.success).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    }
+  });
+
+  it('a judge THROW on a run that DID change files still fails open (general rule intact)', async () => {
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    try {
+      delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      const loop = new ConvergenceLoop(
+        { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true },
+        async () => 'file: something',
+        {
+          applier: async () => ({ filesWritten: ['a.txt'], rejected: [] }),
+          ladderRunner: () => ladderResult(1.0, true),
+          acceptanceGate: async () => { throw new Error('judge endpoint down'); },
+        }
+      );
+      const result = await loop.deliver('real change, judge unavailable');
+      expect(result.success).toBe(true); // fail open — the judge must never block a real delivery
+    } finally {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    }
+  });
+
   it('requireDiffForAcceptance:false restores the legacy short-circuit (--allow-noop)', async () => {
     const loop = new ConvergenceLoop(
       { projectRoot: dir, rungs: stubRungs(), requireDiffForAcceptance: false },

@@ -20,7 +20,7 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 import type { GateRung, LadderResult, LadderRunFn, RungResult } from './verifier-ladder.js';
 import { findWebEntryDir, startStaticServer } from './execution-gate.js';
@@ -144,6 +144,22 @@ interface RunContext {
   baseUrl: string | null;
   shotsDir: string;
   timeoutMs: number;
+  /**
+   * When the static server is rooted at a SUBDIR of the project (the web
+   * entry dir), this is that subdir's project-relative path ('space-shooter').
+   * Hand-curated manifests written against the old project-root docroot may
+   * prefix their gotos with it ('/space-shooter/index.html') — such targets
+   * are normalized by stripping the prefix so both conventions resolve.
+   */
+  webRootPrefix?: string | null;
+}
+
+/** Strip a leading web-root prefix from a root-relative journey path. */
+function stripWebRootPrefix(p: string, prefix: string | null | undefined): string {
+  if (!prefix) return p;
+  const clean = p.replace(/^\/+/, '');
+  if (clean === prefix) return '/';
+  return clean.startsWith(`${prefix}/`) ? `/${clean.slice(prefix.length + 1)}` : p;
 }
 
 export async function runBrowserPath(path: UserPath, browser: BrowserLike, ctx: RunContext): Promise<PathResult> {
@@ -159,7 +175,7 @@ export async function runBrowserPath(path: UserPath, browser: BrowserLike, ctx: 
   // declared (a path that navigates entirely via its own goto steps).
   const firstStepIsGoto = path.steps.length > 0 && path.steps[0].goto !== undefined;
   if (path.entry && ctx.baseUrl && !firstStepIsGoto) {
-    const rel = path.entry.replace(/^\.?\//, '');
+    const rel = stripWebRootPrefix(path.entry, ctx.webRootPrefix).replace(/^\.?\//, '');
     const target = /^https?:/.test(path.entry) ? path.entry : `${ctx.baseUrl}/${rel}`;
     try {
       const status = await browser.goto(target);
@@ -176,7 +192,8 @@ export async function runBrowserPath(path: UserPath, browser: BrowserLike, ctx: 
     const label = stepLabel(step);
     try {
       if (step.goto !== undefined) {
-        const target = /^https?:/.test(step.goto) ? step.goto : `${ctx.baseUrl}${step.goto.startsWith('/') ? '' : '/'}${step.goto}`;
+        const g = /^https?:/.test(step.goto) ? step.goto : stripWebRootPrefix(step.goto, ctx.webRootPrefix);
+        const target = /^https?:/.test(g) ? g : `${ctx.baseUrl}${g.startsWith('/') ? '' : '/'}${g}`;
         const status = await browser.goto(target);
         const ok = status.startsWith('2') || status.startsWith('3');
         steps.push({ step: label, ok, observed: `HTTP ${status}` });
@@ -449,6 +466,7 @@ export async function runUserValidation(
 
   let managed: ManagedServer | null = null;
   let staticServer: { url: string; close: () => void } | null = null;
+  let webRootPrefix: string | null = null;
   let browser: BrowserLike | null = null;
   const results: PathResult[] = [];
 
@@ -466,6 +484,9 @@ export async function runUserValidation(
         // makes the final epic's user-path gate structurally unpassable.
         try {
           const webRoot = findWebEntryDir(projectRoot) ?? projectRoot;
+          if (webRoot !== projectRoot) {
+            webRootPrefix = relative(projectRoot, webRoot).split(sep).join('/');
+          }
           staticServer = await startStaticServer(webRoot);
         } catch { staticServer = null; }
       }
@@ -489,7 +510,7 @@ export async function runUserValidation(
         if (!base && staticServer?.url) {
           try { base = new URL(staticServer.url).origin; } catch { base = staticServer.url; }
         }
-        results.push(await runBrowserPath(path, browser, { projectRoot, baseUrl: base, shotsDir, timeoutMs }));
+        results.push(await runBrowserPath(path, browser, { projectRoot, baseUrl: base, shotsDir, timeoutMs, webRootPrefix }));
       } else if (path.client === 'http') {
         if (!managed) {
           results.push({

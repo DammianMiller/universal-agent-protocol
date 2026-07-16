@@ -306,3 +306,97 @@ describe('runEpics: prior-changes state (anti-no-op rail)', () => {
     expect(flags['second.sub2']).toBe('1');
   });
 });
+
+describe('runEpics: finality seeding (initialNonFinal) + env exception-safety', () => {
+  const saveEnv = () => {
+    const prevNF = process.env.UAP_EPIC_NONFINAL;
+    const prevPC = process.env.UAP_EPIC_PRIOR_CHANGES;
+    delete process.env.UAP_EPIC_NONFINAL;
+    delete process.env.UAP_EPIC_PRIOR_CHANGES;
+    return () => {
+      if (prevNF === undefined) delete process.env.UAP_EPIC_NONFINAL;
+      else process.env.UAP_EPIC_NONFINAL = prevNF;
+      if (prevPC === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prevPC;
+    };
+  };
+
+  it('initialNonFinal marks EVERY epic non-final, including the last', async () => {
+    const restore = saveEnv();
+    const flags: Record<string, string | undefined> = {};
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [
+          { id: 'a', title: 'A', goal: 'g' },
+          { id: 'b', title: 'B', goal: 'g' },
+        ],
+        initialNonFinal: true,
+        runEpic: async (epic) => {
+          flags[epic.id] = process.env.UAP_EPIC_NONFINAL;
+          return ok(`${epic.id} done`);
+        },
+      });
+    } finally {
+      restore();
+    }
+    expect(flags['a']).toBe('1');
+    expect(flags['b']).toBe('1'); // last epic, but the parent is non-final
+  });
+
+  it('split recursion: sub-epics of a NON-final parent are all non-final; final parent keeps its last sub-epic final', async () => {
+    const restore = saveEnv();
+    const flags: Record<string, string | undefined> = {};
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [
+          { id: 'mid', title: 'Mid', goal: 'g' }, // non-final parent — will split
+          { id: 'last', title: 'Last', goal: 'g' }, // final parent — will split
+        ],
+        maxAttemptsPerEpic: 1,
+        splitOnAnyFailure: true,
+        splitEpic: async () => [
+          { id: 's1', title: 'S1', goal: 'g' },
+          { id: 's2', title: 'S2', goal: 'g' },
+        ],
+        runEpic: async (epic) => {
+          flags[epic.id] = process.env.UAP_EPIC_NONFINAL;
+          // both top-level epics fail so both split; sub-epics succeed
+          return epic.id === 'mid' || epic.id === 'last' ? fail('split me') : ok('done');
+        },
+      });
+    } finally {
+      restore();
+    }
+    // Sub-epics of the NON-final parent must ALL be non-final — before the fix
+    // the child run computed finality from its own ordering and ran the
+    // whole-mission gates on 'mid.s2', mid-mission.
+    expect(flags['mid.s1']).toBe('1');
+    expect(flags['mid.s2']).toBe('1');
+    // The FINAL parent's last sub-epic still runs the whole-mission gates.
+    expect(flags['last.s1']).toBe('1');
+    expect(flags['last.s2']).toBe('0');
+  });
+
+  it('a throwing runEpic no longer leaks the epic env flags (try/finally restore)', async () => {
+    const restore = saveEnv();
+    try {
+      process.env.UAP_EPIC_NONFINAL = 'ambient-nf';
+      process.env.UAP_EPIC_PRIOR_CHANGES = 'ambient-pc';
+      await expect(
+        runEpics({
+          mission: 'm',
+          epics: [{ id: 'boom', title: 'Boom', goal: 'g' }],
+          runEpic: async () => {
+            throw new Error('executor crashed');
+          },
+        })
+      ).rejects.toThrow('executor crashed');
+      expect(process.env.UAP_EPIC_NONFINAL).toBe('ambient-nf');
+      expect(process.env.UAP_EPIC_PRIOR_CHANGES).toBe('ambient-pc');
+    } finally {
+      restore();
+    }
+  });
+});

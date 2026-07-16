@@ -5,6 +5,8 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import {
+  appendGapClosurePhase,
+  GAP_CLOSURE_ID,
   parsePhaseArray,
   planDeliveryPhases,
   phaseInstruction,
@@ -124,7 +126,7 @@ describe('planDeliveryPhases pre-execution validation (ATG thought experiment)',
     expect(phases.length).toBe(3); // the repaired plan won
   });
 
-  it('keeps the ORIGINAL plan when the re-plan is unusable', async () => {
+  it('appends the gap-closure phase when the re-plan is unusable (review findings must not be dropped)', async () => {
     const prompts: string[] = [];
     const phases = await planDeliveryPhases('mission', async (pr) => {
       prompts.push(pr);
@@ -132,7 +134,12 @@ describe('planDeliveryPhases pre-execution validation (ATG thought experiment)',
       if (prompts.length === 2) return '{"verdict":"fail","findings":["x"]}';
       return 'garbage — no plan here';
     });
-    expect(phases.length).toBe(2); // original stands
+    // Original phases stand, PLUS a final gap-closure phase carrying the
+    // findings — a reviewed-incomplete set of phases no longer proceeds as-is.
+    expect(phases.length).toBe(3);
+    expect(phases[2].id).toBe('plan-gap-closure');
+    expect(phases[2].goal).toContain('x');
+    expect(phases[2].deps).toEqual(phases.slice(0, 2).map((p) => p.id));
   });
 
   it('honors the opts.thoughtExperiment=false kill switch (single call)', async () => {
@@ -177,7 +184,7 @@ describe('planDeliveryPhases pre-execution validation (ATG thought experiment)',
     expect(phases.length).toBe(3); // the structurally-clean re-plan won
   });
 
-  it('a structurally-INVALID re-plan is rejected — the original plan stands', async () => {
+  it('a structurally-INVALID re-plan is rejected — original phases stand, gap-closure appended', async () => {
     const CYCLIC = '[{"id":"a","title":"A","goal":"ga","deps":["b"]},{"id":"b","title":"B","goal":"gb","deps":["a"]}]';
     const prompts: string[] = [];
     const phases = await planDeliveryPhases('mission', async (pr) => {
@@ -186,8 +193,23 @@ describe('planDeliveryPhases pre-execution validation (ATG thought experiment)',
       if (prompts.length === 2) return '{"verdict":"fail","findings":["x"]}';
       return CYCLIC; // re-plan is itself defective
     });
+    // The defective re-plan is never adopted; the original phases stand and the
+    // review findings ride in a final gap-closure phase instead of vanishing.
+    expect(phases.slice(0, 2).map((p) => p.id).sort()).toEqual(['a', 'b']);
+    expect(phases[2]?.id).toBe('plan-gap-closure');
+  });
+
+  it('a STRUCTURAL failure with an unusable re-plan keeps the original untouched (no gap phase)', async () => {
+    const CYCLIC = '[{"id":"a","title":"A","goal":"ga","deps":["b"]},{"id":"b","title":"B","goal":"gb","deps":["a"]}]';
+    const prompts: string[] = [];
+    const phases = await planDeliveryPhases('mission', async (pr) => {
+      prompts.push(pr);
+      return prompts.length === 1 ? CYCLIC : 'garbage — no plan here';
+    });
+    // A cycle is not closable by an extra phase — structural failures keep the
+    // original so downstream skip-handling stays deterministic.
     expect(phases.map((p) => p.id).sort()).toEqual(['a', 'b']);
-    expect(phases.length).toBe(2); // original kept — never return a worse plan
+    expect(phases.some((p) => p.id === 'plan-gap-closure')).toBe(false);
   });
 });
 
@@ -250,5 +272,29 @@ describe('phase acceptance criteria (PR #519 follow-up)', () => {
       { id: 'b', title: 'B', goal: 'gb' },
     ]);
     expect(parsePhaseArray(raw)[0].criteria).toHaveLength(6);
+  });
+});
+
+describe('appendGapClosurePhase', () => {
+  const base = [
+    { id: 'contracts', title: 'C', goal: 'g' },
+    { id: 'impl', title: 'I', goal: 'g', deps: ['contracts'] },
+  ];
+
+  it('appends a final phase depending on every existing phase, carrying the findings', () => {
+    const out = appendGapClosurePhase(base, ['Missing UI implementation phase', 'Missing README phase']);
+    expect(out).not.toBeNull();
+    const gap = out![out!.length - 1];
+    expect(gap.id).toBe(GAP_CLOSURE_ID);
+    expect(gap.deps).toEqual(['contracts', 'impl']); // topologically last ⇒ final epic ⇒ whole-mission gates run there
+    expect(gap.goal).toContain('Missing UI implementation phase');
+    expect(gap.goal).toContain('Missing README phase');
+    expect(out!.slice(0, -1)).toEqual(base); // existing phases untouched
+  });
+
+  it('returns null on id collision or empty input (never corrupts the graph)', () => {
+    expect(appendGapClosurePhase([], ['x'])).toBeNull();
+    const withGap = appendGapClosurePhase(base, ['x'])!;
+    expect(appendGapClosurePhase(withGap, ['y'])).toBeNull(); // already present
   });
 });
