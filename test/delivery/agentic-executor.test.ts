@@ -318,3 +318,75 @@ describe('looksTruncated (truncated-emit guard)', () => {
     expect(looksTruncated('a.js', 'const x = {')).toBeNull(); // < 200 chars
   });
 });
+
+describe('createAgenticExecutor — read-only-streak write nudge', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agx-nudge-'));
+    writeFileSync(join(dir, 'a.js'), 'const a = 1;\n');
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  const readCall = (n: number) => ({
+    role: 'assistant',
+    content: null,
+    tool_calls: [
+      { id: `c${n}`, type: 'function', function: { name: 'read_file', arguments: '{"path":"a.js"}' } },
+    ],
+  });
+
+  it('injects the write-now order after 5 mutation-free rounds', async () => {
+    const bodies: string[] = [];
+    let i = 0;
+    const responses = [
+      readCall(1), readCall(2), readCall(3), readCall(4), readCall(5), readCall(6),
+      { role: 'assistant', content: 'done reading', tool_calls: [] },
+    ];
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(String((init as RequestInit | undefined)?.body ?? ''));
+      const msg = responses[Math.min(i, responses.length - 1)];
+      i++;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: msg }] }),
+      } as unknown as Response;
+    });
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('close the gaps');
+    // The 6th request (round 6) must carry the injected nudge.
+    const nudged = bodies.findIndex((b) => b.includes('STOP exploring'));
+    expect(nudged).toBeGreaterThanOrEqual(5);
+    expect(nudged).toBeLessThanOrEqual(6);
+  });
+
+  it('a successful write resets the streak — no nudge for productive sessions', async () => {
+    const bodies: string[] = [];
+    let i = 0;
+    const writeCall = {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        { id: 'w1', type: 'function', function: { name: 'write_file', arguments: '{"path":"b.js","content":"const b = 2;"}' } },
+      ],
+    };
+    const responses = [
+      readCall(1), readCall(2), readCall(3), writeCall, readCall(4), readCall(5), readCall(6),
+      { role: 'assistant', content: 'ok', tool_calls: [] },
+    ];
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(String((init as RequestInit | undefined)?.body ?? ''));
+      const msg = responses[Math.min(i, responses.length - 1)];
+      i++;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: msg }] }),
+      } as unknown as Response;
+    });
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('do the work');
+    expect(bodies.some((b) => b.includes('STOP exploring'))).toBe(false);
+  });
+});
