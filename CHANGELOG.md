@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.159.0 (2026-07-16)
+
+- feat(policy): "never go full" commitment-restraint family — reserve gate, doubling-down breaker, saturation lint
+- fix(delivery): scope whole-mission user-validation to the final epic
+- feat(delivery): opt-in coherent-mission routing (one epic run, not per-file)
+- fix(delivery): make bash heredoc writes (`cat > FILE << EOF`) replayable
+- fix(delivery): apply blocked replayable edits via deterministic --pending replay
+- fix(policies): infra-protect blocks broad `pkill -f uap` self-kill
+
+
 ## v1.158.0 (2026-07-16)
 
 - feat(delivery): round 7 — orchestrated resume fidelity (completes the resume matrix)
