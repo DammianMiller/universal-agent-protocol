@@ -29,24 +29,11 @@ import type { TaskComplexity } from '../models/types.js';
 import { measureQueryComplexity } from '../utils/query-complexity.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
 import { applyPendingIntents } from '../delivery/pending-intents.js';
-import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
+import { runAcceptanceGate } from '../delivery/acceptance-judge.js';
+import { buildMissionAcceptanceGate, resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createSpecRegistry } from '../delivery/spec-registry.js';
-import { runExecutionGate } from '../delivery/execution-gate.js';
-import { runVisualGate, visualRuntimeNote } from '../delivery/visual-gate.js';
 import type { AcceptanceGate } from '../delivery/convergence-loop.js';
 
-/**
- * Map an acceptance verdict to a loop gate result, honoring primary vs secondary
- * mode. PURE — unit-tested in isolation from the model call.
- *
- * - Genuine fully-met verdict → pass.
- * - PRIMARY (acceptance is the sole convergence target, no objective project
- *   gates): an inconclusive / no-evidence verdict is NOT "done" — fail so the
- *   loop keeps building (bounded by the ceiling). Prevents a vacuous turn-1
- *   "success" on an empty repo where the judge has nothing to evaluate.
- * - SECONDARY (real objective gates exist): fail OPEN on judge flakiness — a
- *   green objective delivery is never blocked by the judge's nondeterminism.
- */
 /**
  * Decide how deliver establishes its convergence target when (or whether) the
  * project exposes objective gates. PURE — unit-tested. See call site for the
@@ -109,27 +96,9 @@ export function resolveEvaluatorPreset(opts: {
   return wanted;
 }
 
-export function resolveAcceptanceVerdict(
-  r: AcceptanceResult,
-  acceptancePrimary: boolean
-): { passed: boolean; feedback: string; score?: number } {
-  if (r.passed && !r.parseError) return { passed: true, score: r.score, feedback: '' };
-  const gaps = `ACCEPTANCE GAPS — implement these to complete the spec:\n${formatAcceptanceReport(r)}`;
-  if (acceptancePrimary) {
-    if (r.parseError) {
-      // No-evidence / unparseable: not done, and NOT progress. Omit the score —
-      // runAcceptanceGate reports score:1 on its fail-open paths, which would
-      // otherwise saturate the loop's acceptance-progress (bestAcceptance) and
-      // mask real per-criterion gains on later turns.
-      return {
-        passed: false,
-        feedback: `Acceptance inconclusive (${r.parseError}). Keep implementing the spec — ensure the source files exist and are complete.`,
-      };
-    }
-    return { passed: false, score: r.score, feedback: gaps };
-  }
-  return { passed: r.passed, score: r.score, feedback: r.passed ? '' : gaps };
-}
+// Legacy export surface: test/cli/acceptance-verdict.test.ts (and any external
+// consumer) imports the verdict fold from deliver.js — keep the re-export.
+export { resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
 import { clearStop, isStopRequested, loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
@@ -138,7 +107,6 @@ import { planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
 import {
-  buildUserPathsNote,
   createUserValidationRunner,
   resolveUserValidationMode,
   synthesizeUserValidationRung,
@@ -1556,68 +1524,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     sharedRoot: projectRoot,
     flipLimit: Number(process.env.UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT ?? 2),
   });
+  // Judge composition (execution/visual gates in primary mode, per-root
+  // spec resolution, churn breaker in secondary mode) lives in
+  // src/delivery/mission-acceptance.ts; this stays a wiring decision.
   const acceptanceGate: AcceptanceGate | undefined = options.acceptance && !skipJudgeForSimple
-    ? async (root) => {
-        // Primary mode: the only objective rung is the trivial bootstrap, and the
-        // real execution gate joins via redetect only on the NEXT turn (one-turn
-        // lag). So gate the artifact's runtime HERE too — it must actually RUN
-        // before completeness is judged — closing the gap where a 1-turn build
-        // could be declared delivered on the judge alone. Idempotent with the
-        // redetected execution rung on later turns.
-        let visualNote = '';
-        if (acceptancePrimary) {
-          const exec = await runExecutionGate(root);
-          if (!exec.passed) {
-            return {
-              passed: false,
-              feedback: `EXECUTION FAILED — the code must run before it can be accepted:\n${exec.outputTail}`,
-            };
-          }
-          // Visual gate: watch the artifact RUN — blank canvas, static rAF
-          // scene, or runtime errors during observation block acceptance, and
-          // the observation summary becomes judge evidence (a code-evidence
-          // judge cannot see a never-started animation; this can).
-          const visual = await runVisualGate(root);
-          if (!visual.skipped && !visual.passed) {
-            return { passed: false, feedback: visual.feedback };
-          }
-          visualNote = visualRuntimeNote(visual);
-        }
-        // Secondary mode reaches this gate ONLY on turns whose objective
-        // gates all passed — hand the judge that fact as evidence, so
-        // requirements like "make the tests pass" are graded on the gate
-        // result instead of speculated about from static code.
-        const resolvedSpec = specs.resolve(root);
-        const uvNote = buildUserPathsNote(root);
-        const baseNote = acceptancePrimary
-          ? visualNote
-          : 'Objective project gates (build/test suite) ALL PASSED on this turn — treat test/build-related requirements as objectively verified.';
-        const runtimeNote = [baseNote, uvNote?.note].filter(Boolean).join(' ');
-        const r = await runAcceptanceGate({
-          spec: resolvedSpec,
-          projectRoot: root,
-          executor: verdictExecutor,
-          ...(runtimeNote ? { runtimeNote } : {}),
-        });
-        const verdict = resolveAcceptanceVerdict(r, acceptancePrimary);
-        // Secondary mode only: this gate is reached exclusively on turns whose
-        // objective gates ALL passed, so a bounded number of consecutive judge
-        // rejections hands the verdict back to the gates instead of wedging.
-        if (!acceptancePrimary) {
-          const checked = specs.breaker(resolvedSpec, root).check(resolvedSpec, verdict);
-          if (checked.overridden) {
-            console.log(
-              chalk.yellow(
-                '  ⚖ acceptance: judge rejected consecutive objectively-green turns — accepting on gates (raise UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT to let the judge argue longer)'
-              )
-            );
-          }
-          return checked;
-        }
-        return verdict;
-      }
+    ? buildMissionAcceptanceGate({
+        primary: acceptancePrimary,
+        specs,
+        judgeExecutor: verdictExecutor,
+        note: (line) => console.log(chalk.yellow(`  ${line}`)),
+      })
     : undefined;
-
   const seams = {
     ladderRunner: tieredRunner,
     // The agentic executor mutates the repo directly, so nothing remains for
