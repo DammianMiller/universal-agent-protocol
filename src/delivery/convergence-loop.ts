@@ -638,6 +638,28 @@ export class ConvergenceLoop {
     try {
       acc = await this.acceptanceGate(this.config.projectRoot);
     } catch {
+      // Fail open in general — the judge must never block delivery. EXCEPT on
+      // the relaxed zero-diff path (unchanged tree + prior-epic changes): there
+      // the deterministic anti-no-op rail stood down specifically because the
+      // judge would decide, so a judge failure must fail CLOSED or a no-op
+      // gets accepted with no verdict at all (review follow-up of the
+      // initialPriorChanged fix).
+      const railStoodDown =
+        (this.config.requireDiffForAcceptance ?? true) &&
+        !this.config.resumeFrom &&
+        unchanged &&
+        priorEpicChanges;
+      if (railStoodDown) {
+        return {
+          ladder: {
+            ...ladder,
+            passed: false,
+            feedback:
+              `${ladder.feedback}\n\nAcceptance withheld: this epic changed no files and the acceptance judge was unavailable — a zero-diff epic cannot be accepted without a judge verdict. Retry, or apply the epic's changes.`.trim(),
+          },
+          acceptanceMet: 0,
+        };
+      }
       return { ladder }; // fail open — the judge must never block delivery
     }
     if (acc.passed || !acc.feedback) return { ladder, acceptanceMet: acc.score };

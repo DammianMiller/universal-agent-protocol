@@ -141,6 +141,15 @@ export interface EpicControllerConfig {
    * octopus_invaders_v3, 2026-07-16).
    */
   initialPriorChanged?: boolean;
+  /**
+   * Every epic in this controller belongs to a NON-final parent epic — used by
+   * the split recursion so the last sub-epic of a non-final parent does NOT
+   * run whole-mission gates (child finality = parent-is-final AND
+   * child-is-last). Without it the child run computed finality from its own
+   * ordering alone, re-creating the unsatisfiable-gate class on the other
+   * channel (review follow-up of the initialPriorChanged fix).
+   */
+  initialNonFinal?: boolean;
 }
 
 export interface EpicControllerResult {
@@ -216,7 +225,7 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
     // report NA (non-blocking) instead of FAIL; the final epic runs them for
     // real. Epics run sequentially, so a process-global flag is safe here;
     // save/restore keeps the sub-epic recursion (runEpics on `chained`) correct.
-    const isFinalEpic = epic === ordered[ordered.length - 1];
+    const isFinalEpic = config.initialNonFinal === true ? false : epic === ordered[ordered.length - 1];
     const priorNonFinal = process.env.UAP_EPIC_NONFINAL;
     process.env.UAP_EPIC_NONFINAL = isFinalEpic ? '0' : '1';
 
@@ -228,111 +237,121 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
     const priorChangesFlag = process.env.UAP_EPIC_PRIOR_CHANGES;
     process.env.UAP_EPIC_PRIOR_CHANGES = priorEpicChanged ? '1' : '0';
 
-    while (attempts < maxAttempts && !accepted) {
-      attempts++;
-      const result = await config.runEpic(epic, {
-        attempt: attempts,
-        priorSummaries: [...priorSummaries],
-        lastFailure,
-      });
-      epicTurns += result.turns;
-      lastSummary = result.summary;
-      lastBudgetStopped = result.budgetStopped === true;
+    // try/finally: a throwing runEpic/splitEpic must not leak the epic env
+    // flags into the long-lived process (review follow-up — the set/restore
+    // pair was not exception-safe).
+    try {
 
-      if (result.success) {
-        let ok = true;
-        if (config.checkAcceptance) {
-          try {
-            ok = await config.checkAcceptance(epic, result);
-          } catch {
-            ok = false; // fail-soft: unverifiable ⇒ not accepted ⇒ retry
-          }
-        }
-        accepted = ok;
-      }
-
-      if (!accepted) {
-        lastFailure = result.success
-          ? `attempt ${attempts} delivered but did not pass acceptance: ${result.summary}`
-          : `attempt ${attempts} failed to deliver: ${result.summary}`;
-      }
-    }
-
-    // Rail sizing + auto-escalation: an epic that exhausted its attempts is
-    // re-planned as smaller sub-epics and run in place, rather than failing the
-    // whole mission. Fires on context-budget exhaustion always, and on ANY
-    // failure when splitOnAnyFailure is set (#5). Recurses up to `splitDepth`
-    // levels (#4c): sub-epics inherit the prior summaries and may split again
-    // one level shallower until each piece fits a rail. Default depth 1 keeps
-    // the conservative one-level behavior.
-    const depthRemaining = config.splitDepth ?? 1;
-    // STRUCTURED signal only (the deprecated summary-substring match was
-    // removed as promised in v1.153 — runEpic implementations must set
-    // EpicRunResult.budgetStopped; the marker in summaries is human-facing
-    // text, not protocol).
-    const budgetExhausted = lastBudgetStopped;
-    const splitFn = config.splitEpic;
-    const shouldSplit =
-      !accepted &&
-      !!splitFn &&
-      depthRemaining > 0 &&
-      (budgetExhausted || config.splitOnAnyFailure === true);
-    if (shouldSplit && splitFn) {
-      let subs: Epic[] | null = null;
-      try {
-        subs = await splitFn(epic, lastFailure, { budgetStopped: budgetExhausted });
-      } catch {
-        subs = null; // fail-soft: an unplannable split just keeps the failure
-      }
-      if (subs && subs.length >= 2) {
-        // Sub-epics run in planner order (the for-loop is sequential and
-        // topoOrder is stable) but are deliberately NOT dep-chained: a
-        // budget-split piece often fails gates only because the WHOLE isn't
-        // assembled yet, and later pieces — each a fresh session over the
-        // accumulated repo state — can still complete it. Chaining would skip
-        // every remaining piece on the first partial failure. Ids are
-        // namespaced so they can't collide with sibling epics.
-        const chained: Epic[] = subs.map((s) => ({
-          ...s,
-          id: `${epic.id}.${s.id}`.slice(0, 64),
-          deps: [],
-        }));
-        const subResult = await runEpics({
-          ...config,
-          epics: chained,
-          splitDepth: depthRemaining - 1, // recurse one level shallower (#4c); 0 ⇒ no re-split
-          initialPriorSummaries: [...priorSummaries],
-          // Inherit prior-changes state (this epic's own failed attempts may
-          // also have written files — hasAppliedChanges in the child loop still
-          // catches those; this flag covers the accumulated-tree case).
-          initialPriorChanged: priorEpicChanged,
-          // Persisted resume progress stays at EPIC granularity: sub-epic
-          // completions surface as the parent's single summary push above.
-          // The parent-level done set must not leak in either — namespaced
-          // sub-epic ids could never match it, but semantics stay explicit.
-          onProgress: undefined,
-          initialDone: undefined,
+      while (attempts < maxAttempts && !accepted) {
+        attempts++;
+        const result = await config.runEpic(epic, {
+          attempt: attempts,
+          priorSummaries: [...priorSummaries],
+          lastFailure,
         });
-        epicTurns += subResult.turns; // flows into totalTurns below
-        outcomes.push(...subResult.outcomes);
-        // Delivered when every piece passed OR when the FINAL piece passed:
-        // earlier pieces often "fail" only because the whole wasn't assembled
-        // yet — a green final piece means the accumulated state passes the
-        // project gates, i.e. the epic's goal is delivered.
-        const finalPieceGreen =
-          subResult.outcomes.length > 0 && subResult.outcomes[subResult.outcomes.length - 1].accepted;
-        accepted = subResult.success || finalPieceGreen;
-        const splitReason = budgetExhausted ? 'context auto-size' : 'auto-escalation';
-        lastSummary = accepted
-          ? `split into ${chained.length} sub-epics (${splitReason}): ${subResult.outcomes.map((o) => o.summary).join('; ')}`
-          : `split into ${chained.length} sub-epics (${splitReason}); failed: ${subResult.failed.join(', ')}`;
-      }
-    }
+        epicTurns += result.turns;
+        lastSummary = result.summary;
+        lastBudgetStopped = result.budgetStopped === true;
 
-    if (priorNonFinal === undefined) delete process.env.UAP_EPIC_NONFINAL;
-    else process.env.UAP_EPIC_NONFINAL = priorNonFinal;
-    if (priorChangesFlag === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
-    else process.env.UAP_EPIC_PRIOR_CHANGES = priorChangesFlag;
+        if (result.success) {
+          let ok = true;
+          if (config.checkAcceptance) {
+            try {
+              ok = await config.checkAcceptance(epic, result);
+            } catch {
+              ok = false; // fail-soft: unverifiable ⇒ not accepted ⇒ retry
+            }
+          }
+          accepted = ok;
+        }
+
+        if (!accepted) {
+          lastFailure = result.success
+            ? `attempt ${attempts} delivered but did not pass acceptance: ${result.summary}`
+            : `attempt ${attempts} failed to deliver: ${result.summary}`;
+        }
+      }
+
+      // Rail sizing + auto-escalation: an epic that exhausted its attempts is
+      // re-planned as smaller sub-epics and run in place, rather than failing the
+      // whole mission. Fires on context-budget exhaustion always, and on ANY
+      // failure when splitOnAnyFailure is set (#5). Recurses up to `splitDepth`
+      // levels (#4c): sub-epics inherit the prior summaries and may split again
+      // one level shallower until each piece fits a rail. Default depth 1 keeps
+      // the conservative one-level behavior.
+      const depthRemaining = config.splitDepth ?? 1;
+      // STRUCTURED signal only (the deprecated summary-substring match was
+      // removed as promised in v1.153 — runEpic implementations must set
+      // EpicRunResult.budgetStopped; the marker in summaries is human-facing
+      // text, not protocol).
+      const budgetExhausted = lastBudgetStopped;
+      const splitFn = config.splitEpic;
+      const shouldSplit =
+        !accepted &&
+        !!splitFn &&
+        depthRemaining > 0 &&
+        (budgetExhausted || config.splitOnAnyFailure === true);
+      if (shouldSplit && splitFn) {
+        let subs: Epic[] | null = null;
+        try {
+          subs = await splitFn(epic, lastFailure, { budgetStopped: budgetExhausted });
+        } catch {
+          subs = null; // fail-soft: an unplannable split just keeps the failure
+        }
+        if (subs && subs.length >= 2) {
+          // Sub-epics run in planner order (the for-loop is sequential and
+          // topoOrder is stable) but are deliberately NOT dep-chained: a
+          // budget-split piece often fails gates only because the WHOLE isn't
+          // assembled yet, and later pieces — each a fresh session over the
+          // accumulated repo state — can still complete it. Chaining would skip
+          // every remaining piece on the first partial failure. Ids are
+          // namespaced so they can't collide with sibling epics.
+          const chained: Epic[] = subs.map((s) => ({
+            ...s,
+            id: `${epic.id}.${s.id}`.slice(0, 64),
+            deps: [],
+          }));
+          const subResult = await runEpics({
+            ...config,
+            epics: chained,
+            splitDepth: depthRemaining - 1, // recurse one level shallower (#4c); 0 ⇒ no re-split
+            initialPriorSummaries: [...priorSummaries],
+            // Inherit prior-changes state (this epic's own failed attempts may
+            // also have written files — hasAppliedChanges in the child loop still
+            // catches those; this flag covers the accumulated-tree case).
+            initialPriorChanged: priorEpicChanged,
+            // Child finality = parent-is-final AND child-is-last: sub-epics of
+            // a non-final parent must all report non-final or the last one
+            // runs whole-mission gates mid-mission.
+            initialNonFinal: !isFinalEpic,
+            // Persisted resume progress stays at EPIC granularity: sub-epic
+            // completions surface as the parent's single summary push above.
+            // The parent-level done set must not leak in either — namespaced
+            // sub-epic ids could never match it, but semantics stay explicit.
+            onProgress: undefined,
+            initialDone: undefined,
+          });
+          epicTurns += subResult.turns; // flows into totalTurns below
+          outcomes.push(...subResult.outcomes);
+          // Delivered when every piece passed OR when the FINAL piece passed:
+          // earlier pieces often "fail" only because the whole wasn't assembled
+          // yet — a green final piece means the accumulated state passes the
+          // project gates, i.e. the epic's goal is delivered.
+          const finalPieceGreen =
+            subResult.outcomes.length > 0 && subResult.outcomes[subResult.outcomes.length - 1].accepted;
+          accepted = subResult.success || finalPieceGreen;
+          const splitReason = budgetExhausted ? 'context auto-size' : 'auto-escalation';
+          lastSummary = accepted
+            ? `split into ${chained.length} sub-epics (${splitReason}): ${subResult.outcomes.map((o) => o.summary).join('; ')}`
+            : `split into ${chained.length} sub-epics (${splitReason}); failed: ${subResult.failed.join(', ')}`;
+        }
+      }
+    } finally {
+      if (priorNonFinal === undefined) delete process.env.UAP_EPIC_NONFINAL;
+      else process.env.UAP_EPIC_NONFINAL = priorNonFinal;
+      if (priorChangesFlag === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = priorChangesFlag;
+    }
 
     totalTurns += epicTurns;
     const outcome: EpicOutcome = {

@@ -65,3 +65,43 @@ describe('runBrowserPath: entry navigation', () => {
     expect(b.gotos).toEqual(['http://127.0.0.1:5555/a.html']);
   });
 });
+
+describe('runBrowserPath: webRootPrefix normalization (curated-manifest compat)', () => {
+  const pctx = { ...ctx, webRootPrefix: 'space-shooter' };
+
+  it('strips the web-root prefix from subdir-relative gotos and entries', async () => {
+    const b = fakeBrowser();
+    const path: UserPath = {
+      id: 'p', rule: 'r', client: 'browser', entry: '/space-shooter/index.html',
+      steps: [{ expect_visible: '#game' }],
+    };
+    await runBrowserPath(path, b as never, pctx as never);
+    // Old project-root-docroot convention still resolves under the entry-dir docroot.
+    expect(b.gotos[0]).toBe('http://127.0.0.1:5555/index.html');
+
+    const b2 = fakeBrowser();
+    const p2: UserPath = { id: 'p2', rule: 'r', client: 'browser', steps: [{ goto: '/space-shooter/game.html' }] };
+    await runBrowserPath(p2, b2 as never, pctx as never);
+    expect(b2.gotos[0]).toBe('http://127.0.0.1:5555/game.html');
+  });
+
+  it('never touches absolute http(s) gotos/entries even with a prefix set', async () => {
+    const b = fakeBrowser();
+    const path: UserPath = {
+      id: 'p', rule: 'r', client: 'browser', entry: 'https://example.com/space-shooter/x.html',
+      steps: [{ goto: 'http://example.com/space-shooter/y.html' }],
+    };
+    await runBrowserPath(path, b as never, pctx as never);
+    expect(b.gotos).toEqual(['http://example.com/space-shooter/y.html']); // leading goto wins; verbatim
+  });
+
+  it('leaves non-matching and already-normalized paths untouched', async () => {
+    const b = fakeBrowser();
+    const path: UserPath = { id: 'p', rule: 'r', client: 'browser', steps: [{ goto: '/' }, { goto: '/other/space-shooter.html' }] };
+    await runBrowserPath(path, b as never, pctx as never);
+    expect(b.gotos).toEqual([
+      'http://127.0.0.1:5555/',
+      'http://127.0.0.1:5555/other/space-shooter.html',
+    ]);
+  });
+});

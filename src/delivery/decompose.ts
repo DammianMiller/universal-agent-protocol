@@ -302,6 +302,7 @@ async function validateAndRepairPlan(
   // means its whole subtree gets skipped); otherwise the evaluator's thought
   // experiment decides, unless disabled.
   let findings: string[];
+  let fromThoughtExperiment = false;
   if (!structural.ok) {
     for (const msg of structural.errors) console.log(`  plan-check: ${msg}`);
     findings = structural.errors;
@@ -312,6 +313,7 @@ async function validateAndRepairPlan(
     const verdict = await runPlanThoughtExperiment(instruction, phases, executor);
     if (verdict.verdict === 'pass') return phases;
     findings = verdict.findings;
+    fromThoughtExperiment = true;
     console.log(
       `  plan-check: thought experiment FAILED — re-planning once (${findings.slice(0, 3).join('; ') || 'no findings given'})`
     );
@@ -330,8 +332,58 @@ async function validateAndRepairPlan(
   } catch {
     // fall through to the original plan
   }
+  // A phase-plan PROVEN incomplete by the review must not proceed as-is: a
+  // mission whose phases omit whole deliverables is unwinnable no matter how
+  // well each epic runs (octopus_invaders_v3, 2026-07-16 — the 10-phase run
+  // ended at player-scaffold with no player-fill/ui/game phases, plan-check
+  // said so, and the run proceeded anyway). When the re-plan is unusable,
+  // append a deterministic gap-closure phase that carries the review
+  // findings, depends on every existing phase, and therefore runs last —
+  // where the whole-mission gates fire. Structural failures (cycles, bad
+  // deps) are not closable by an extra phase, so those keep the original.
+  if (fromThoughtExperiment && findings.length > 0) {
+    const withGap = appendGapClosurePhase(phases, findings);
+    if (withGap) {
+      console.log(
+        `  plan-check: re-plan unusable — appended '${GAP_CLOSURE_ID}' phase carrying ${findings.length} review finding(s)`
+      );
+      return withGap;
+    }
+  }
   console.log('  plan-check: re-plan unusable — keeping the original plan');
   return phases;
+}
+
+export const GAP_CLOSURE_ID = 'plan-gap-closure';
+
+/**
+ * Append a final phase that closes the review findings: it depends on every
+ * existing phase (topologically last, so it becomes the FINAL epic and the
+ * whole-mission gates run there) and its goal is to deliver everything the
+ * reviewed phases left uncovered. Returns null when the phase cannot be
+ * added safely (id collision, or the augmented graph fails validation).
+ */
+export function appendGapClosurePhase(
+  phases: DeliveryPhase[],
+  findings: string[]
+): DeliveryPhase[] | null {
+  if (phases.length === 0 || phases.some((p) => p.id === GAP_CLOSURE_ID)) return null;
+  const gapList = findings
+    .map((f, i) => `${i + 1}. ${f}`)
+    .join('\n')
+    .slice(0, 2400);
+  const gap: DeliveryPhase = {
+    id: GAP_CLOSURE_ID,
+    title: 'Plan Gap Closure',
+    goal:
+      'Complete the mission: the review found the existing phases leave parts of the mission ' +
+      'undelivered. Close ALL of the following gaps so the FULL mission is satisfied:\n' +
+      gapList,
+    deps: phases.map((p) => p.id),
+    criteria: ['Every gap listed in the goal is delivered and verifiable in the tree'],
+  };
+  const augmented = [...phases, gap];
+  return validatePhaseGraph(augmented).ok ? augmented : null;
 }
 
 /**

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.0 (2026-07-16)
+
+- feat(delivery): resolve all six PR #536 follow-ups — finality seeding, env safety, fail-closed judge, plan gap-closure, config escalation, manifest compat
+
+
 ## v1.160.1 (2026-07-16)
 
 - test: 60s timeout on first src/index.js barrel-import test (load flake)
