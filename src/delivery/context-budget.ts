@@ -198,11 +198,20 @@ export function formatBudgetStop(args: {
 }
 
 /**
- * Decode a session output's budget-stop signal. Substring (not prefix)
- * matching on purpose: executor wrappers may prepend text, and the historic
- * loop behavior this centralizes was substring-based — keeping it identical
- * means zero behavior change at the only consumption seam.
+ * How deep into the output the marker may legitimately appear. The producer
+ * emits it at position 0; executor wrappers may prepend a short preamble.
+ * Anything deeper is an ECHO — a budget-stopped turn's text rides into the
+ * next prompt via previous-output context, and models parrot it — and an
+ * echo must never tag a non-budget turn as budgetStopped.
+ */
+const BUDGET_MARKER_WINDOW_CHARS = 512;
+
+/**
+ * Decode a session output's budget-stop signal: the marker must appear within
+ * the leading window (wrapper-prefix tolerant, echo-proof — see above).
  */
 export function decodeBudgetStop(output: string | null | undefined): boolean {
-  return !!output && output.includes(CONTEXT_BUDGET_MARKER);
+  if (!output) return false;
+  const i = output.indexOf(CONTEXT_BUDGET_MARKER);
+  return i !== -1 && i < BUDGET_MARKER_WINDOW_CHARS;
 }
