@@ -15,7 +15,9 @@
  *  - onIteration: per-turn control hook (Phase 5 escalation controllers)
  */
 
+import { join } from 'node:path';
 import { execSync } from 'child_process';
+import { statSync } from 'fs';
 
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
 import { mergeRedetectedRungs, detectRungs, runLadder } from './verifier-ladder.js';
@@ -579,7 +581,32 @@ export class ConvergenceLoop {
         stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
       };
       const status = execSync('git status --porcelain=v1 --untracked-files=all', opts).toString();
-      const diff = execSync('git diff HEAD --stat', opts).toString();
+      let diff: string;
+      try {
+        diff = execSync('git diff HEAD --stat', opts).toString();
+      } catch {
+        // Unborn HEAD (a repo with no commits yet — the fresh-scaffold case):
+        // `git diff HEAD` fails, and one throw here used to null the WHOLE
+        // fingerprint, making hasAppliedChanges() permanently false for
+        // agentic writes — the anti-no-op rail then withheld acceptance
+        // forever no matter how many files the model wrote (octopus runs
+        // D/F, 2026-07-17). In an unborn repo every file is untracked, so
+        // `?? path` lines never change on content edits — stat the listed
+        // files (size + mtime) to cover edits instead.
+        diff = status
+          .split('\n')
+          .map((line) => line.slice(3).trim())
+          .filter(Boolean)
+          .map((rel) => {
+            try {
+              const st = statSync(join(this.config.projectRoot, rel));
+              return `${rel} ${st.size} ${Math.floor(st.mtimeMs)}`;
+            } catch {
+              return `${rel} gone`;
+            }
+          })
+          .join('\n');
+      }
       return `${status}\n---\n${diff}`;
     } catch {
       return null;

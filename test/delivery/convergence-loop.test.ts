@@ -537,6 +537,38 @@ describe('anti-no-op acceptance rail (P0, 2026-07-13)', () => {
     expect(noopRes.success).toBe(false);
   });
 
+  it('unborn-HEAD repos (no commits) still detect agentic writes via the fingerprint', async () => {
+    const { execSync } = await import('node:child_process');
+    const { writeFileSync: wf, mkdirSync: mk } = await import('node:fs');
+    const gdir = mkdtempSync(join(tmpdir(), 'uap-unborn-'));
+    try {
+      execSync('git init -q', { cwd: gdir }); // .git exists, ZERO commits — git diff HEAD fails here
+      mk(join(gdir, 'space-shooter'), { recursive: true });
+      let acceptanceCalls = 0;
+      const loop = new ConvergenceLoop(
+        { projectRoot: gdir, maxTurns: 2, rungs: stubRungs(), alwaysVerify: true },
+        async () => {
+          // agentic-style direct write: bypasses the applier entirely
+          wf(join(gdir, 'space-shooter', 'config.js'), 'export const X = 1;');
+          return 'wrote via tool, no file blocks';
+        },
+        {
+          applier: async () => ({ filesWritten: [], rejected: [] }),
+          ladderRunner: () => ladderResult(1.0, true),
+          acceptanceGate: async () => { acceptanceCalls++; return { passed: true, feedback: '' }; },
+        }
+      );
+      const result = await loop.deliver('write the config');
+      // Before the fix: git diff HEAD threw → fingerprint null → rail withheld
+      // forever ("has not changed any files yet") despite the real write.
+      expect(result.success).toBe(true);
+      expect(result.changedTree).toBe(true);
+      expect(acceptanceCalls).toBeGreaterThan(0);
+    } finally {
+      rmSync(gdir, { recursive: true, force: true });
+    }
+  });
+
   it('requireDiffForAcceptance:false restores the legacy short-circuit (--allow-noop)', async () => {
     const loop = new ConvergenceLoop(
       { projectRoot: dir, rungs: stubRungs(), requireDiffForAcceptance: false },
