@@ -613,7 +613,17 @@ export class ConvergenceLoop {
     // changed by definition. Skipped on resume (prior-session turns already
     // wrote; their changes are invisible to this process's fingerprint).
     const unchanged = opts.atBaseline ? true : !this.hasAppliedChanges();
-    if ((this.config.requireDiffForAcceptance ?? true) && !this.config.resumeFrom && unchanged) {
+    // A trailing epic in a decomposition legitimately produces zero diff: an
+    // earlier epic already wrote the files its goal names, so THIS loop applies
+    // nothing even though the goal is met. Hard-withholding there fails the epic
+    // as a no-op and the controller re-splits it forever (the "already
+    // delivered" churn; verified 2026-07-16). When the epic controller signals
+    // that prior epics already changed the tree (UAP_EPIC_PRIOR_CHANGES=1) —
+    // the same "prior work exists" case the resumeFrom skip covers across
+    // sessions — don't hard-withhold; fall through to the acceptance judge,
+    // which accepts iff the goal is actually met and rejects a genuine no-op.
+    const priorEpicChanges = process.env.UAP_EPIC_PRIOR_CHANGES === '1';
+    if ((this.config.requireDiffForAcceptance ?? true) && !this.config.resumeFrom && unchanged && !priorEpicChanges) {
       return {
         ladder: {
           ...ladder,
