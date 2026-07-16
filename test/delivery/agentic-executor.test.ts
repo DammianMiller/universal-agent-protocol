@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join, sep } from 'path';
 import {
   lockContractFiles,
+  looksTruncated,
   selectExecutorMode,
   protectedKey,
   noopApplier,
@@ -289,5 +290,31 @@ describe('edit_file tool (P1, plan D3)', () => {
     const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1', protectedFiles });
     await exec('cheat the test');
     expect(readFileSync(join(dir, 'test/x.test.ts'), 'utf-8')).toContain('toBe(1)');
+  });
+});
+
+describe('looksTruncated (truncated-emit guard)', () => {
+  it('flags code cut mid-block, ignores balanced/complete files and non-code', () => {
+    const cut = 'export class UIManager {\n  constructor(ctx) {\n    this.ctx = ctx;\n' + '    this.x = 1;\n'.repeat(20); // never closes
+    expect(looksTruncated('space-shooter/ui.js', cut)).toContain('unclosed {');
+
+    const whole = 'export class UIManager {\n  constructor(ctx) { this.ctx = ctx; }\n}\n' + '// pad\n'.repeat(60);
+    expect(looksTruncated('space-shooter/ui.js', whole)).toBeNull();
+
+    // braces inside strings/comments/templates must not count
+    const tricky = [
+      'const s = "{{{{";',
+      "const t = '{ not a block {';",
+      'const u = `brace { ${1 + 1} still fine`;',
+      '/* { { { */',
+      '// {',
+      'function f() { return s + t + u; }',
+      '// pad'.repeat(40),
+    ].join('\n');
+    expect(looksTruncated('a.ts', tricky)).toBeNull();
+
+    // non-code files and small stubs are never flagged
+    expect(looksTruncated('README.md', '#{ {'.repeat(100))).toBeNull();
+    expect(looksTruncated('a.js', 'const x = {')).toBeNull(); // < 200 chars
   });
 });
