@@ -342,6 +342,24 @@ export async function runSetupSteps(cwd: string, options: SetupOptions): Promise
     const r = await installAllDefaultPolicies(false);
     const n = r.installed.length + r.enabled.length;
     polSpinner.succeed(`Policies armed (${n} installed/enabled; \`uap policy list\` to review)`);
+    // "Never go full" saturation lint on the install-everything path (advisory).
+    try {
+      const { listPolicyChoices, lintSaturation } = await import('./policy-select.js');
+      const { resolveFidelity } = await import('../delivery/fidelity.js');
+      const after = await listPolicyChoices();
+      const on = new Set(after.filter((c) => c.installed && c.enabled).map((c) => c.name));
+      let fidelityMax = false;
+      try {
+        fidelityMax = resolveFidelity(cwd).max;
+      } catch {
+        /* best-effort */
+      }
+      for (const w of lintSaturation(after, on, { fidelityMax })) {
+        console.log(chalk.yellow(`  \u26a0 ${w}`));
+      }
+    } catch {
+      /* advisory only */
+    }
   } catch (err) {
     polSpinner.warn('Policy install failed: ' + err);
   }

@@ -184,3 +184,42 @@ export async function installAllDefaultPolicies(includePay2u = false): Promise<S
   const choices = await listPolicyChoices();
   return applyPolicySelection(defaultSetupPolicies(choices, includePay2u));
 }
+
+/**
+ * Gate-saturation lint ("never go full"): a selection that turns on EVERY gate
+ * holds nothing back, and saturated configurations have deadlocked before --
+ * the remedy for a blocked action was itself blocked (schema-diff-gate's own
+ * fix gated; RECON told to write while the write gate forbade it). Pure and
+ * advisory: returns human-readable warnings, never blocks the selection.
+ */
+export function lintSaturation(
+  choices: PolicyChoice[],
+  effectiveOn: Set<string>,
+  opts: { fidelityMax?: boolean } = {},
+): string[] {
+  const warnings: string[] = [];
+  // effectiveOn is the set of policies that ARE (or will be, post-apply) on.
+  // Protected policies count like any other: a REQUIRED gate that is actually
+  // off breaks saturation — the warning must never claim more than reality.
+  // The pay2u example pack is opt-in demo content; its absence is not
+  // "holding something back".
+  const universe = choices.filter((c) => !c.name.startsWith('pay2u'));
+  const fullySaturated = universe.length > 0 && universe.every((c) => effectiveOn.has(c.name));
+  if (fullySaturated) {
+    const blocking = universe.filter((c) => effectiveOn.has(c.name) && c.level === 'REQUIRED').length;
+    warnings.push(
+      `gate saturation: all ${universe.length} policies are on (${blocking} blocking) -- nothing held back. ` +
+        'Saturated gate sets have deadlocked before (a blocked action whose remedy is also blocked). ' +
+        'Verify each blocking gate keeps an escape hatch (review waivers, backup dirs, operator overrides), ' +
+        'or leave at least one advisory policy advisory.',
+    );
+  }
+  if (fullySaturated && opts.fidelityMax) {
+    warnings.push(
+      'full commitment: fidelity is `max` AND every policy is enforced -- the strongest possible configuration. ' +
+        'Fine when attended; before an unattended/hands-free run, confirm UAP_FIDELITY=standard and the waiver ' +
+        'paths still work so a wedged gate cannot strand the session.',
+    );
+  }
+  return warnings;
+}

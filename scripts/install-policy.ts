@@ -103,6 +103,9 @@ const MANDATORY_POLICIES = [
   // Always validate a plan after creating/modifying it: a plan-file write is
   // blocked until `validate the plan` + `uap plan validate` have run recently.
   'validate-plan-on-change',
+  // All-in moves (destructive git ops, stub overwrites of real source) are
+  // blocked until a reserve (stash/backup) exists -- "never go full".
+  'commitment-reserve',
 ];
 
 async function installPolicy(policyName: string): Promise<void> {

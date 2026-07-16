@@ -209,7 +209,7 @@ async function selectCommand(options: {
   all?: boolean;
   json?: boolean;
 }): Promise<void> {
-  const { listPolicyChoices, applyPolicySelection, recommendedSelection } = await import('./policy-select.js');
+  const { listPolicyChoices, applyPolicySelection, recommendedSelection, lintSaturation } = await import('./policy-select.js');
   const choices = await listPolicyChoices();
   const split = (s?: string): string[] => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : []);
   const nonInteractive = Boolean(options.enable || options.disable || options.set || options.recommended || options.all);
@@ -239,6 +239,24 @@ async function selectCommand(options: {
       initialValues: choices.filter((c) => (c.installed && c.enabled) || c.protected).map((c) => c.name),
       required: false,
     });
+  }
+
+  // "Never go full": warn (never block) when the chosen set saturates every gate.
+  try {
+    let fidelityMax = false;
+    try {
+      const { resolveFidelity } = await import('../delivery/fidelity.js');
+      fidelityMax = resolveFidelity(process.cwd()).max;
+    } catch {
+      /* fidelity resolution is best-effort */
+    }
+    // Post-apply effective set: protected policies are forced on by apply.
+    const effectiveOn = new Set([...target, ...choices.filter((c) => c.protected).map((c) => c.name)]);
+    for (const w of lintSaturation(choices, effectiveOn, { fidelityMax })) {
+      console.log(chalk.yellow(`  \u26a0 ${w}`));
+    }
+  } catch {
+    /* lint is advisory -- never let it break selection */
   }
 
   const result = await applyPolicySelection(target);

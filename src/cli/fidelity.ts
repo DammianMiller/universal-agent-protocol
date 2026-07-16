@@ -28,6 +28,20 @@ export async function fidelityCommand(action: string | undefined, options: Fidel
       if (mode === 'max') {
         console.log('  Max fidelity now gates delivery/verify: raised verifier floor, acceptance required,');
         console.log('  blocking vision review, fail-closed visual gate. (UAP_FIDELITY overrides at runtime.)');
+        // "Never go full" saturation note: max is full commitment on the gate
+        // axis -- name the escape hatches, and warn if the policy axis is
+        // saturated too (advisory only; never blocks).
+        console.log('  Escape hatches that remain: UAP_FIDELITY=standard (runtime), review waivers, operator overrides.');
+        try {
+          const { listPolicyChoices, lintSaturation } = await import('./policy-select.js');
+          const choices = await listPolicyChoices();
+          const on = new Set(choices.filter((c) => c.installed && c.enabled).map((c) => c.name));
+          for (const w of lintSaturation(choices, on, { fidelityMax: true })) {
+            console.log(`  \u26a0 ${w}`);
+          }
+        } catch {
+          /* advisory only */
+        }
       }
     } else {
       console.log(JSON.stringify({ ok: true, mode }));

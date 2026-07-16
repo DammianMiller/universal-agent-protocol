@@ -7,6 +7,7 @@ import {
   planPolicySelection,
   recommendedSelection,
   policyDescription,
+  lintSaturation,
   type PolicyChoice,
 } from '../src/cli/policy-select.js';
 
@@ -79,5 +80,47 @@ describe('policyDescription', () => {
 
   it('returns empty for an unknown policy', () => {
     expect(policyDescription('does-not-exist-xyz')).toBe('');
+  });
+});
+
+describe('lintSaturation ("never go full")', () => {
+  const universe = [
+    choice('req', { level: 'REQUIRED', protected: true, installed: true, enabled: true }),
+    choice('rec-a', { level: 'RECOMMENDED' }),
+    choice('rec-b', { level: 'RECOMMENDED' }),
+    choice('opt', { level: 'OPTIONAL' }),
+    choice('pay2u-example', { level: 'OPTIONAL' }),
+  ];
+  const allOn = new Set(['req', 'rec-a', 'rec-b', 'opt']);
+
+  it('warns when every policy is effectively on (nothing held back)', () => {
+    const w = lintSaturation(universe, allOn);
+    expect(w).toHaveLength(1);
+    expect(w[0]).toMatch(/nothing held back/i);
+  });
+
+  it('ignores the opt-in pay2u example pack when judging saturation', () => {
+    expect(lintSaturation(universe, allOn)).toHaveLength(1); // pay2u off, still saturated
+  });
+
+  it('adds the full-commitment warning when fidelity is max too', () => {
+    const w = lintSaturation(universe, allOn, { fidelityMax: true });
+    expect(w).toHaveLength(2);
+    expect(w[1]).toMatch(/full commitment/i);
+  });
+
+  it('stays silent when a selectable policy is held back', () => {
+    const holdOne = new Set(['req', 'rec-a', 'rec-b']);
+    expect(lintSaturation(universe, holdOne)).toEqual([]);
+    expect(lintSaturation(universe, holdOne, { fidelityMax: true })).toEqual([]);
+  });
+
+  it('stays silent when a REQUIRED gate is actually off (no false "all on" claim)', () => {
+    const reqOff = new Set(['rec-a', 'rec-b', 'opt']); // protected gate not in effect
+    expect(lintSaturation(universe, reqOff, { fidelityMax: true })).toEqual([]);
+  });
+
+  it('stays silent on an empty universe', () => {
+    expect(lintSaturation([], new Set())).toEqual([]);
   });
 });
