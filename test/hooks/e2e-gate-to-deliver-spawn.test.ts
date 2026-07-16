@@ -139,7 +139,10 @@ describe('E2E: agent tool call → gate → enforcer → autoroute → `uap deli
 
     const spawned = waitForSpawn(env.spawnLog);
     expect(spawned).toContain('deliver');      // ...and deliver ACTUALLY ran
-    expect(spawned).toContain('--max-turns');
+    // A Write carries the file content, so the intent is REPLAYABLE: it is
+    // applied DETERMINISTICALLY via `uap deliver --pending <file>` (no model),
+    // not the model-spawn autoroute. This is what actually lands the file.
+    expect(spawned).toContain('--pending');
   });
 
   it('CLAUDE payload (snake_case file_path) also spawns deliver', () => {
@@ -177,7 +180,12 @@ describe('E2E: agent tool call → gate → enforcer → autoroute → `uap deli
       tool_input: { command: 'cat > src/app.js <<EOF\nconsole.log(1)\nEOF' },
     });
     expect(exit).toBe(2);
-    expect(waitForSpawn(env.spawnLog)).toContain('deliver');
+    // A bash source-write carries a command, not recorded file content, so the
+    // intent is NOT replayable — it takes the model-spawn autoroute path (with
+    // a turn budget), not the deterministic `--pending` replay.
+    const spawned = waitForSpawn(env.spawnLog);
+    expect(spawned).toContain('deliver');
+    expect(spawned).toContain('--max-turns');
   });
 
   it('a stale ambient UAP_ENFORCE_DELIVERY=advisory cannot disable routing', () => {
