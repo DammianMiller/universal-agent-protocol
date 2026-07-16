@@ -117,6 +117,31 @@ describe('runUserValidation', () => {
     expect(bad?.steps.find((s) => !s.ok)?.observed).toContain('exit=3');
   });
 
+  it('non-final epic downgrades a whole-mission FAIL to NA (deferred, not a defect)', async () => {
+    // A decomposed epic mission cannot pass whole-mission journeys until the
+    // FINAL epic assembles the app; gating an early epic on the finished app
+    // freezes phaseIndex at 0. UAP_EPIC_NONFINAL=1 (set by the epic controller
+    // for non-final epics) reports NA instead of FAIL so the epic can converge.
+    writeManifest(dir, {
+      version: 1,
+      paths: [
+        { id: 'bad', rule: 'exit surfaces', client: 'cli',
+          steps: [{ run: { argv: [process.execPath, '-e', 'process.exit(3)'] } }, { expect_exit: 0 }] },
+      ],
+    });
+    const prev = process.env.UAP_EPIC_NONFINAL;
+    try {
+      process.env.UAP_EPIC_NONFINAL = '1';
+      const report = await runUserValidation(dir);
+      expect(report.verdict).toBe('na'); // downgraded from fail
+      expect(report.results.find((r) => r.id === 'bad')?.status).toBe('fail'); // the path still records the real failure
+      expect(report.naReason).toContain('non-final epic');
+    } finally {
+      if (prev === undefined) delete process.env.UAP_EPIC_NONFINAL;
+      else process.env.UAP_EPIC_NONFINAL = prev;
+    }
+  });
+
   it('invalid manifest is a FAIL (not silent na)', async () => {
     mkdirSync(join(dir, '.uap'), { recursive: true });
     writeFileSync(join(dir, USER_PATHS_FILE), JSON.stringify({ version: 1, paths: [{ id: 'x' }] }));
