@@ -399,3 +399,83 @@ describe('orchestrate dependency-aware parallel dispatch', () => {
     expect(skipped?.summary).toContain('unmet dependency');
   });
 });
+
+
+describe('orchestrate — task-boundary resume (initialDone + onProgress)', () => {
+  it('initialDone tasks are skipped, dependents unblock AND read the seeded dep summaries', async () => {
+    const ran: string[] = [];
+    let uiPrompt = '';
+    const skips: Array<{ id: string; success: boolean }> = [];
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('api'), task('ui', ['api'])],
+      initialDone: [{ id: 'api', summary: 'api done: exposes GET /health', contract: 'export const routes = [...]' }],
+      runTask: async (ctx, t) => {
+        ran.push(t.id);
+        if (t.id === 'ui') uiPrompt = ctx.prompt;
+        return { taskId: t.id, success: true, summary: `${t.id} done`, turns: 1 };
+      },
+      onTask: (_t, o) => skips.push({ id: o.taskId, success: o.success }),
+    });
+    expect(ran).toEqual(['ui']); // api never re-run
+    // Seeded blackboard feeds the dependent (contract wins over summary).
+    expect(uiPrompt).toContain('export const routes');
+    expect(r.success).toBe(true);
+    expect(r.completed.sort()).toEqual(['api', 'ui']);
+    expect(skips.find((sk) => sk.id === 'api')).toEqual({ id: 'api', success: true }); // skip reported
+  });
+
+  it('onProgress fires with CUMULATIVE outcomes (incl. seeded priors) after each success, never on failure', async () => {
+    const snapshots: Array<Array<{ id: string; summary: string }>> = [];
+    await orchestrate({
+      mission: 'm',
+      tasks: [task('a'), task('bad', ['a']), task('c', ['a'])],
+      maxRepairsPerTask: 0,
+      runTask: async (_ctx, t) => ({ taskId: t.id, success: t.id !== 'bad', summary: `${t.id} done`, turns: 1 }),
+      onProgress: (completed) => snapshots.push(completed.map(({ id, summary }) => ({ id, summary }))),
+    });
+    expect(snapshots.length).toBe(2); // a and c only
+    expect(snapshots[0]).toEqual([{ id: 'a', summary: 'a done' }]);
+    expect(snapshots[1].map((x) => x.id).sort()).toEqual(['a', 'c']);
+  });
+
+  it('a resumed run with EVERY task done completes with zero executions', async () => {
+    let calls = 0;
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('a'), task('b', ['a'])],
+      initialDone: [
+        { id: 'a', summary: 'a done' },
+        { id: 'b', summary: 'b done' },
+      ],
+      runTask: async (_ctx, t) => {
+        calls++;
+        return { taskId: t.id, success: true, summary: `${t.id}`, turns: 1 };
+      },
+    });
+    expect(calls).toBe(0);
+    expect(r.success).toBe(true);
+    expect(r.completed.sort()).toEqual(['a', 'b']);
+  });
+
+  it('onPlanChange fires with P5-discovered fresh tasks (the resume-persisted DAG growth)', async () => {
+    const growths: string[][] = [];
+    const r = await orchestrate({
+      mission: 'm',
+      tasks: [task('scout')],
+      runTask: async (_ctx, t) =>
+        t.id === 'scout'
+          ? {
+              taskId: t.id,
+              success: true,
+              summary: 'found more work',
+              turns: 1,
+              newTasks: [{ id: 'found-1', title: 'F1', goal: 'do it' }],
+            }
+          : { taskId: t.id, success: true, summary: `${t.id} done`, turns: 1 },
+      onPlanChange: (fresh) => growths.push(fresh.map((f) => f.id)),
+    });
+    expect(growths).toEqual([['found-1']]);
+    expect(r.completed.sort()).toEqual(['found-1', 'scout']);
+  });
+});

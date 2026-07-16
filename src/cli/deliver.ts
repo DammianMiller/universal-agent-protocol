@@ -101,7 +101,7 @@ export function resolveEvaluatorPreset(opts: {
 export { resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
-import { clearStop, isStopRequested, loadRunState, newRunId, saveRunState } from '../delivery/run-state.js';
+import { clearStop, isStopRequested, loadRunState, newRunId, saveRunState, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
@@ -1760,6 +1760,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     phases,
     phaseIndex,
     phaseSummaries: [...phaseSummaries],
+    // Resume progress fields must SURVIVE this fresh-literal save — omitting
+    // them erases the interrupted run's accepted-work sets on disk before the
+    // first new success re-persists them; a second interruption in that
+    // window would redo everything into the anti-no-op wedge.
+    ...(resumeState?.completedEpicIds ? { completedEpicIds: resumeState.completedEpicIds } : {}),
+    ...(resumeState?.taskOutcomes ? { taskOutcomes: resumeState.taskOutcomes } : {}),
   };
   saveRunState(runState);
   // From here on the process records its own death (signal + parent pid). A run
@@ -1832,7 +1838,15 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     missionText: string,
     taskPhases: DeliveryPhase[],
     parallelTasks: number,
-    parentTaskId: string | undefined = missionTask?.id
+    parentTaskId: string | undefined = missionTask?.id,
+    // Resume wiring — supplied ONLY by the top-level orchestrated dispatch.
+    // Epic-inner orchestration must never seed or clobber the mission-level
+    // task-outcome resume state (each epic is its own fresh DAG).
+    resume?: {
+      initialDone: Array<{ id: string; summary: string; contract?: string }>;
+      onProgress: (completed: Array<{ id: string; summary: string; contract?: string }>) => void;
+      onPlanChange: (freshTasks: DeliveryPhase[]) => void;
+    }
   ): Parameters<typeof runOrchestratedMissionCore>[0] => {
     const mergeProtected = new Set<string>(
       [
@@ -1868,6 +1882,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
                 ? chalk.cyan(line)
                 : chalk.dim(line)
         ),
+      ...(resume ? { initialDone: resume.initialDone, onProgress: resume.onProgress, onPlanChange: resume.onPlanChange } : {}),
       beginTaskSpec: (root, spec) => specs.begin(root, spec),
       // Task specs are strictly per-root: end() just drops the entry and the
       // root falls back to the shared (mission/phase/epic) spec — a later
@@ -1958,7 +1973,28 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const parallelTasks = resolveParallelTasks(
       (cfgRaw.deliver as Record<string, unknown> | undefined)?.parallelTasks
     );
-    return runOrchestratedMissionCore(buildOrchestratedDeps(instruction, phases!, parallelTasks));
+    return runOrchestratedMissionCore(
+      buildOrchestratedDeps(instruction, phases!, parallelTasks, undefined, {
+        // Deterministic task-boundary resume: accepted tasks (with the
+        // summaries/contracts dependents read) seed the scheduler's done set
+        // and blackboard — completed work is skipped, never redone.
+        initialDone: resumeState?.runnerKind === 'orchestrated' ? (resumeState.taskOutcomes ?? []) : [],
+        onProgress: (completed) => {
+          runState.taskOutcomes = completed;
+          // Any mid-task loop checkpoint belongs to finished work now.
+          runState.checkpoint = undefined;
+          saveRunState(runState);
+        },
+        onPlanChange: (freshTasks) => {
+          // Persist the GROWN DAG (original plan + P5 discoveries) so resume
+          // schedules discovered-but-unfinished work too. Capped at the
+          // sanitizer's ceiling — anything past it would be dropped on
+          // reload anyway.
+          runState.phases = [...(runState.phases ?? []), ...freshTasks].slice(0, MAX_PERSISTED_PHASES);
+          saveRunState(runState);
+        },
+      })
+    );
   };
 
   /**
@@ -2209,7 +2245,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // loudly, never silently: different prompts, no contract publication,
     // DAG flattened to linear order.
     if (resumeState?.runnerKind) {
-      const resumeTarget = epicsEnabled ? 'epic' : phases && phases.length >= 2 ? 'phased' : 'single';
+      const resumeTarget = epicsEnabled
+        ? 'epic'
+        : phases && phases.length >= 2 && orchestrateEnabled && resumeState.runnerKind === 'orchestrated'
+          ? 'orchestrated'
+          : phases && phases.length >= 2
+            ? 'phased'
+            : 'single';
       if (resumeState.runnerKind !== resumeTarget) {
         const targetDesc =
           resumeTarget === 'phased'
@@ -2220,6 +2262,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
             `  ⚠ resume: the interrupted run executed as '${resumeState.runnerKind}'; resuming on the ${targetDesc} — prompts and per-phase context will differ from the original execution model.`
           )
         );
+        // A cross-model checkpoint would replay a FOREIGN prompt scope (a
+        // task- or epic-scoped session) into the downgraded loop — discard.
+        resumeCheckpoint = undefined;
       }
     }
     if (lazySolved) {
@@ -2238,10 +2283,25 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       runState.runnerKind = 'epic';
       saveRunState(runState);
       result = await runEpicMission();
-    } else if (phases && phases.length >= 2 && orchestrateEnabled && !resumeState) {
-      // A RESUMED phased run must not route here: the orchestrated runner
-      // ignores phaseIndex/resumeCheckpoint and would restart the DAG from
-      // scratch. runPhasedMission below is the only cursor-honoring path.
+    } else if (
+      phases &&
+      phases.length >= 2 &&
+      orchestrateEnabled &&
+      (!resumeState || resumeState.runnerKind === 'orchestrated')
+    ) {
+      // Resume routing: ONLY an orchestrated-kind resume may re-enter this
+      // path — it resumes at the task boundary (persisted taskOutcomes seed
+      // the done set + blackboard). A resumed PHASED run must not route
+      // here: the orchestrated runner ignores phaseIndex, and
+      // runPhasedMission below is the only phase-cursor-honoring path.
+      if (resumeState && resumeCheckpoint) {
+        console.log(
+          chalk.dim(
+            '  resume: mid-task loop checkpoint discarded — orchestrated missions resume at the task boundary (completed tasks carry forward via persisted outcomes).'
+          )
+        );
+        resumeCheckpoint = undefined;
+      }
       runState.runnerKind = 'orchestrated';
       saveRunState(runState);
       result = await runOrchestratedMission();
