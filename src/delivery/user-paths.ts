@@ -226,10 +226,30 @@ export async function deriveUserPaths(
     const prompt = DERIVE_PROMPT + instruction + (extraContext ? `\n\nCONTEXT:\n${extraContext}` : '');
     const out = await executor(prompt);
     const manifest = parseManifestFromModel(out);
-    return manifest ? sanitizeCanvasTextAssertions(manifest, instruction) : manifest;
+    if (!manifest) return manifest;
+    return dropRedundantStaticServer(sanitizeCanvasTextAssertions(manifest, instruction));
   } catch {
     return null;
   }
+}
+
+/**
+ * Static-file-server commands mined into `server` are redundant AND harmful:
+ * the runner serves static HTML itself (rooted at the web entry dir), while a
+ * mined "python3 -m http.server ..." serves the PROJECT root on a fixed port
+ * — wrong docroot, port collisions, and (before the spawn hardening) a
+ * process-killing ENOENT. The prompt already says not to emit these; a weak
+ * miner does anyway (run E, 2026-07-17). Real app servers (node dist/api.js,
+ * uvicorn, etc.) are untouched.
+ */
+const STATIC_SERVER_RE = /^\s*(?:python3?\s+-m\s+http\.server|npx\s+(?:serve|http-server)|http-server|serve)\b/;
+export function dropRedundantStaticServer(manifest: UserPathsManifest): UserPathsManifest {
+  const cmd = manifest.server?.command;
+  if (typeof cmd === 'string' && STATIC_SERVER_RE.test(cmd)) {
+    const { server: _dropped, ...rest } = manifest;
+    return rest as UserPathsManifest;
+  }
+  return manifest;
 }
 
 /**

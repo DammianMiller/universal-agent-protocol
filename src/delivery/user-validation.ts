@@ -375,17 +375,35 @@ interface ManagedServer {
 }
 
 async function startManifestServer(srv: UserPathsServer, projectRoot: string): Promise<ManagedServer | null> {
-  const child = spawn(srv.command, srv.args ?? [], {
+  // Mined manifests routinely put the WHOLE command line in `command`
+  // ("python3 -m http.server 3001") — spawning that verbatim ENOENTs on a
+  // binary literally named "python3 -m http.server 3001". When no separate
+  // args were declared, split on whitespace (manifest authors needing shell
+  // quoting can use args[]).
+  const declaredArgs = srv.args ?? [];
+  const parts = declaredArgs.length === 0 ? srv.command.trim().split(/\s+/) : [srv.command];
+  const cmd = parts[0];
+  const args = declaredArgs.length === 0 ? parts.slice(1) : declaredArgs;
+  const child = spawn(cmd, args, {
     cwd: projectRoot,
     env: { ...process.env, ...srv.env },
     stdio: 'ignore',
     detached: false,
   });
+  // A spawn failure (bad binary) fires 'error' asynchronously; without a
+  // listener Node treats it as an UNCAUGHT EXCEPTION and kills the whole
+  // deliver process (run E, 2026-07-17 — the mission died on epic 1's first
+  // gate ladder). Swallow it: exitCode goes non-null and the bring-up loop
+  // below returns null, falling back to the built-in static server.
+  let spawnFailed = false;
+  child.on('error', () => {
+    spawnFailed = true;
+  });
   const baseUrl = `http://127.0.0.1:${srv.port}`;
   const deadline = Date.now() + (srv.readyTimeoutMs ?? 30_000);
   const readyUrl = `${baseUrl}${srv.readyPath ?? '/'}`;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) return null; // died during bring-up
+    if (spawnFailed || child.exitCode !== null) return null; // died during bring-up
     try {
       await fetch(readyUrl, { signal: AbortSignal.timeout(1_000) });
       return { baseUrl, close: () => { try { child.kill(); } catch { /* already gone */ } } };
