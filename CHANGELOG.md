@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.9 (2026-07-17)
+
+- fix(delivery): truncated-emit guard — refuse the cut-off write, steer to edit_file
+
+
 ## v1.161.8 (2026-07-17)
 
 - fix(delivery): deterministic fallback journey — the terminal gate must never silently vanish
