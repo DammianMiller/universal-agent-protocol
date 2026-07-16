@@ -222,15 +222,29 @@ export async function deriveUserPaths(
   executor: ModelExecutor,
   extraContext?: string
 ): Promise<UserPathsManifest | null> {
-  try {
-    const prompt = DERIVE_PROMPT + instruction + (extraContext ? `\n\nCONTEXT:\n${extraContext}` : '');
-    const out = await executor(prompt);
-    const manifest = parseManifestFromModel(out);
-    if (!manifest) return manifest;
-    return dropRedundantStaticServer(sanitizeCanvasTextAssertions(manifest, instruction));
-  } catch {
-    return null;
+  // Same weak-miner flake class as the phase planner (fixed in v1.161.2):
+  // one unparseable sample and the WHOLE mission ran without its terminal
+  // user-path gate ("no manifest derived" — observed twice live, runs D and
+  // F). Retry once and narrate the degradation; still fail-soft to null so
+  // delivery never wedges on the miner.
+  const attempts = 2;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const prompt = DERIVE_PROMPT + instruction + (extraContext ? `\n\nCONTEXT:\n${extraContext}` : '');
+      const out = await executor(prompt);
+      const manifest = parseManifestFromModel(out);
+      if (manifest) {
+        return dropRedundantStaticServer(sanitizeCanvasTextAssertions(manifest, instruction));
+      }
+    } catch {
+      /* fall through to retry/give-up */
+    }
+    console.log(
+      `  user-validation: derive attempt ${attempt} produced no parseable manifest — ` +
+        (attempt < attempts ? 'retrying the miner' : 'giving up (gate reports NA)')
+    );
   }
+  return null;
 }
 
 /**
