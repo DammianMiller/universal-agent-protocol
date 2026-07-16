@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.10 (2026-07-17)
+
+- fix(delivery): evidence-truncation honesty — the judge failed implemented code as missing
+
+
 ## v1.161.9 (2026-07-17)
 
 - fix(delivery): truncated-emit guard — refuse the cut-off write, steer to edit_file
