@@ -405,12 +405,17 @@ describe('budget-stop wire protocol codec', () => {
     expect(none).toContain('Work completed so far: none');
   });
 
-  it('decodeBudgetStop: false on plain output / empty / undefined; true on marker anywhere (substring semantics)', () => {
+  it('decodeBudgetStop: false on plain/empty/undefined; wrapper-prefix tolerant within the window', () => {
     expect(decodeBudgetStop('all tests green, delivered')).toBe(false);
     expect(decodeBudgetStop('')).toBe(false);
     expect(decodeBudgetStop(undefined)).toBe(false);
     expect(decodeBudgetStop(null)).toBe(false);
-    // Substring on purpose: wrappers may prepend text to the session output.
+    // Wrappers may prepend a short preamble — still decodes.
     expect(decodeBudgetStop(`wrapper preamble\n${CONTEXT_BUDGET_MARKER} session reached budget`)).toBe(true);
+  });
+
+  it('decodeBudgetStop: a marker ECHOED deep in the output never tags a non-budget turn', () => {
+    const echo = `${'progress report. '.repeat(64)}the previous turn said ${CONTEXT_BUDGET_MARKER} but this turn completed fine`;
+    expect(decodeBudgetStop(echo)).toBe(false);
   });
 });

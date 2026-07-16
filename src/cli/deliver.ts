@@ -1869,9 +1869,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
                 : chalk.dim(line)
         ),
       beginTaskSpec: (root, spec) => specs.begin(root, spec),
-      // Restore the mission-level spec after an in-tree task so a later
-      // watch-ci re-converge never judges against a stale task prompt.
-      endTaskSpec: (root) => specs.end(root, missionText),
+      // Task specs are strictly per-root: end() just drops the entry and the
+      // root falls back to the shared (mission/phase/epic) spec — a later
+      // watch-ci re-converge never sees a stale task prompt.
+      endTaskSpec: (root) => specs.end(root),
       openTask: (title) => openDeliveryTask(title, projectRoot, parentTaskId),
       completeTask: (record, r) => completeDeliveryTask(record, r),
       // P3 — per-task memory retrieval: pull the few most relevant established

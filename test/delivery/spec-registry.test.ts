@@ -17,17 +17,17 @@ describe('createSpecRegistry', () => {
     r.begin('/wt/task-1', 'TASK ONE');
     expect(r.resolve('/wt/task-1')).toBe('TASK ONE');
     expect(r.resolve('/proj')).toBe('MISSION'); // isolated worktree never re-points shared
-    r.end('/wt/task-1', 'MISSION');
+    r.end('/wt/task-1');
     expect(r.resolve('/wt/task-1')).toBe('MISSION');
   });
 
-  it('an in-tree task (root === sharedRoot) re-points the shared spec and end() restores it', () => {
+  it('an in-tree task NEVER re-points the shared spec — sibling roots see the mission, not its prompt', () => {
     const r = make();
     r.begin('/proj', 'IN-TREE TASK');
-    expect(r.sharedSpec()).toBe('IN-TREE TASK');
-    expect(r.resolve('/other')).toBe('IN-TREE TASK'); // shared fallback follows
-    r.end('/proj', 'MISSION');
-    expect(r.sharedSpec()).toBe('MISSION');
+    expect(r.resolve('/proj')).toBe('IN-TREE TASK'); // its own per-root entry
+    expect(r.sharedSpec()).toBe('MISSION'); // shared untouched
+    expect(r.resolve('/other')).toBe('MISSION'); // concurrent roots never see a sibling task prompt
+    r.end('/proj');
     expect(r.resolve('/proj')).toBe('MISSION');
   });
 
@@ -47,7 +47,7 @@ describe('createSpecRegistry', () => {
     r.begin('/wt/t', 'T');
     expect(r.evidence('/wt/t').writes).toBe(0);
     r.recordWrites('/wt/t', 2);
-    r.end('/wt/t', 'MISSION');
+    r.end('/wt/t');
     expect(r.evidence('/wt/t').writes).toBe(2); // re-converge still sees the writes
   });
 
@@ -96,11 +96,31 @@ describe('createSpecRegistry', () => {
     expect(r.breaker('SAME', '/wt/b').check('SAME', reject).overridden).toBeUndefined();
   });
 
-  it('runaway guard clears the breaker cache past 100 specs without breaking resolution', () => {
-    const r = make();
-    for (let i = 0; i <= 105; i++) r.breaker(`spec-${i}`, '/proj');
-    // No assertion on internals — just that a post-clear breaker still works.
-    const b = r.breaker('after-clear', '/proj');
-    expect(b.check('after-clear', { passed: true, feedback: '' }).passed).toBe(true);
+  it('runaway guard evicts the OLDEST breaker — recent flip counts survive the cap', () => {
+    const r = make({ flipLimit: 2 });
+    r.recordWrites('/proj', 1);
+    const reject = { passed: false, feedback: 'no' };
+    r.breaker('hot-spec', '/proj').check('hot-spec', reject); // flip 1 of 2 recorded
+    for (let i = 0; i < 120; i++) r.breaker(`filler-${i}`, '/proj'); // spill the cap
+    // 'hot-spec' was evicted (it was oldest) — a re-request starts fresh…
+    expect(r.breaker('hot-spec', '/proj').check('hot-spec', reject).overridden).toBeUndefined();
+    // …but a RECENT breaker's state survived: two rejections through the
+    // cached instance trip the limit, proving no wholesale clear happened.
+    r.breaker('recent', '/proj').check('recent', reject);
+    expect(r.breaker('recent', '/proj').check('recent', reject).overridden).toBe(true);
+  });
+
+  it('LRU: an actively-USED old breaker survives the cap; the stale one is evicted', () => {
+    const r = make({ flipLimit: 2 });
+    r.recordWrites('/proj', 1);
+    const reject = { passed: false, feedback: 'no' };
+    r.breaker('stale', '/proj'); // created first, never touched again
+    r.breaker('active', '/proj').check('active', reject); // flip 1 recorded
+    for (let i = 0; i < 97; i++) r.breaker(`filler-${i}`, '/proj'); // cache at cap
+    r.breaker('active', '/proj'); // TOUCH — re-inserted at the tail
+    for (let i = 0; i < 3; i++) r.breaker(`spill-${i}`, '/proj'); // evictions begin
+    // 'active' kept its flip count (one more rejection trips limit 2)…
+    expect(r.breaker('active', '/proj').check('active', reject).overridden).toBe(true);
+    // …because 'stale' (and untouched fillers) were the victims instead.
   });
 });

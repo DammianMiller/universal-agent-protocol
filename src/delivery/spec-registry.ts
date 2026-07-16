@@ -10,7 +10,13 @@
  *   judge must grade against ITS task's spec, not a shared mutable. The gate
  *   resolves by the root it is invoked with; the phased and epic paths
  *   (single loop at a time) keep using the SHARED spec, which defaults to the
- *   mission text.
+ *   mission text. Task specs live ONLY in the per-root map — begin() never
+ *   re-points the shared spec, so a concurrent root resolving the shared
+ *   fallback sees the mission (or current phase/epic) text, never a sibling
+ *   task's prompt. (Historic deliver.ts behavior re-pointed shared for
+ *   in-tree tasks and restored it on end — the restore target inside epics
+ *   was the retry-feedback process prompt, the exact content the epic spec
+ *   deliberately excludes. Dropping the special case removes that hazard.)
  * - Write evidence (files applied since the current spec began) is per ROOT:
  *   concurrent loops must not zero or inflate each other's evidence — an
  *   inflated count could let the churn breaker accept a task with zero writes
@@ -54,17 +60,17 @@ export interface SpecRegistry {
    */
   setShared(spec: string): void;
   /**
-   * Begin a per-root task spec (parallel orchestrated dispatch). An in-tree
-   * task (root === sharedRoot) also re-points the shared spec. Evidence for
-   * the root resets — a fresh spec starts with zero writes.
+   * Begin a per-root task spec (parallel orchestrated dispatch). Evidence for
+   * the root resets — a fresh spec starts with zero writes. The shared spec
+   * is never touched: task specs are strictly per-root.
    */
   begin(root: string, spec: string): void;
   /**
-   * End a per-root task spec. An in-tree task restores the shared spec to
-   * `restoreShared` (the mission text) so a later watch-ci re-converge never
-   * judges against a stale task prompt. Evidence is deliberately NOT reset.
+   * End a per-root task spec: the root falls back to the shared spec again.
+   * Evidence is deliberately NOT reset — a later re-converge pass judges
+   * against the writes the task made.
    */
-  end(root: string, restoreShared: string): void;
+  end(root: string): void;
   /** The (mutable, identity-stable) write-evidence slot for a root. */
   evidence(root: string): WriteEvidence;
   /** Feed the breaker's zero-diff guard: files applied under `root`. */
@@ -73,7 +79,8 @@ export interface SpecRegistry {
   breaker(spec: string, root: string): ReturnType<typeof createAcceptanceChurnBreaker>;
 }
 
-/** Bound on cached per-spec breakers before the runaway guard clears the cache. */
+/** Bound on cached breakers; past it the OLDEST entry is evicted (never a
+ * wholesale clear — that would wipe live flip counts mid-run). */
 const MAX_CACHED_BREAKERS = 100;
 
 export function createSpecRegistry(opts: SpecRegistryOptions): SpecRegistry {
@@ -100,12 +107,10 @@ export function createSpecRegistry(opts: SpecRegistryOptions): SpecRegistry {
     },
     begin: (root, spec) => {
       specByRoot.set(root, spec);
-      if (root === opts.sharedRoot) shared = spec;
       evidence(root).writes = 0;
     },
-    end: (root, restoreShared) => {
+    end: (root) => {
       specByRoot.delete(root);
-      if (root === opts.sharedRoot) shared = restoreShared;
     },
     evidence,
     recordWrites: (root, count) => {
@@ -114,11 +119,21 @@ export function createSpecRegistry(opts: SpecRegistryOptions): SpecRegistry {
     breaker: (spec, root) => {
       const key = `${spec}\u0000${root}`; // NUL-joined: unambiguous pair key
       let b = breakers.get(key);
-      if (!b) {
-        if (breakers.size > MAX_CACHED_BREAKERS) breakers.clear(); // runaway guard
-        b = createAcceptanceChurnBreaker(opts.flipLimit, () => evidence(root).writes > 0);
+      if (b) {
+        // LRU touch: re-insert at the tail so an ACTIVE breaker is never the
+        // eviction victim (Map preserves insertion order).
+        breakers.delete(key);
         breakers.set(key, b);
+        return b;
       }
+      if (breakers.size >= MAX_CACHED_BREAKERS) {
+        // Runaway guard: evict the least-recently-USED entry; active
+        // breakers keep their flip counts.
+        const oldest = breakers.keys().next().value;
+        if (oldest !== undefined) breakers.delete(oldest);
+      }
+      b = createAcceptanceChurnBreaker(opts.flipLimit, () => evidence(root).writes > 0);
+      breakers.set(key, b);
       return b;
     },
   };
