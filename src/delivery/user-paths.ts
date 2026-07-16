@@ -200,6 +200,11 @@ Rules:
 - Cover each CRITICAL user-facing requirement of the mission with at least one path.
 - 2-6 paths total; each 2-8 steps; every path ends with at least one expect_* step.
 - Browser paths for anything with a UI; include expect_no_console_errors.
+- CANVAS-rendered UIs (games/visualizations that draw via <canvas>): text and
+  UI drawn on a canvas is NOT in the DOM, so expect_text can NEVER match it —
+  do not use expect_text for canvas-drawn content (scores, HUDs, titles,
+  menus). Assert expect_visible on the canvas selector plus
+  expect_no_console_errors instead; use expect_text only for real DOM text.
 - Use "server" only when the artifact needs a real server process (APIs); static
   HTML is served automatically.
 - Output ONLY the JSON.

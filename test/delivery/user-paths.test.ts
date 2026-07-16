@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  deriveUserPaths,
   loadUserPaths,
   mergeUserPaths,
   parseManifestFromModel,
@@ -122,5 +123,19 @@ describe('mergeUserPaths / loadUserPaths', () => {
     mkdirSync(join(dir, '.uap'), { recursive: true });
     writeFileSync(join(dir, USER_PATHS_FILE), '{not json');
     expect(loadUserPaths(dir)?.ok).toBe(false);
+  });
+});
+
+describe('deriveUserPaths: canvas-aware mining prompt', () => {
+  it('instructs the miner that canvas-drawn content is not DOM text (no expect_text on canvas UIs)', async () => {
+    let captured = '';
+    await deriveUserPaths('Build a canvas space shooter', async (prompt) => {
+      captured = prompt;
+      return 'not json';
+    });
+    // Canvas games render scores/menus via fillText — DOM expect_text can never
+    // match them, which made auto-mined journeys unsatisfiable by construction.
+    expect(captured).toContain('CANVAS-rendered UIs');
+    expect(captured).toContain('expect_text can NEVER match');
   });
 });

@@ -132,6 +132,15 @@ export interface EpicControllerConfig {
    * the split recursion so sub-epics still see what earlier epics built.
    */
   initialPriorSummaries?: string[];
+  /**
+   * Epics BEFORE this controller already changed the tree — used by the split
+   * recursion so sub-epics inherit the parent run's prior-changes state.
+   * Without it the child run recomputes from its own (empty) outcome list and
+   * clobbers UAP_EPIC_PRIOR_CHANGES back to '0', re-arming the anti-no-op rail
+   * against already-satisfied sub-epics (the re-split churn, one level deeper;
+   * octopus_invaders_v3, 2026-07-16).
+   */
+  initialPriorChanged?: boolean;
 }
 
 export interface EpicControllerResult {
@@ -215,7 +224,7 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
     // signal it so the anti-no-op rail doesn't fail a trailing epic whose goal
     // the accumulated state already satisfies (zero diff = already-done, not a
     // no-op — the acceptance judge still gates it). Prevents the re-split churn.
-    const priorEpicChanged = outcomes.some((o) => o.accepted);
+    const priorEpicChanged = config.initialPriorChanged === true || outcomes.some((o) => o.accepted);
     const priorChangesFlag = process.env.UAP_EPIC_PRIOR_CHANGES;
     process.env.UAP_EPIC_PRIOR_CHANGES = priorEpicChanged ? '1' : '0';
 
@@ -293,6 +302,10 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
           epics: chained,
           splitDepth: depthRemaining - 1, // recurse one level shallower (#4c); 0 ⇒ no re-split
           initialPriorSummaries: [...priorSummaries],
+          // Inherit prior-changes state (this epic's own failed attempts may
+          // also have written files — hasAppliedChanges in the child loop still
+          // catches those; this flag covers the accumulated-tree case).
+          initialPriorChanged: priorEpicChanged,
           // Persisted resume progress stays at EPIC granularity: sub-epic
           // completions surface as the parent's single summary push above.
           // The parent-level done set must not leak in either — namespaced

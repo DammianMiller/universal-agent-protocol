@@ -242,3 +242,67 @@ describe('runEpics — onProgress persistence hook + resume skip', () => {
     expect(snapshots[0].completed).toEqual(['big']);
   });
 });
+
+describe('runEpics: prior-changes state (anti-no-op rail)', () => {
+  const saveFlag = () => {
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    delete process.env.UAP_EPIC_PRIOR_CHANGES;
+    return () => {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    };
+  };
+
+  it('seeds UAP_EPIC_PRIOR_CHANGES from initialPriorChanged so a fresh controller can inherit prior work', async () => {
+    const restore = saveFlag();
+    const seen: Array<string | undefined> = [];
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [{ id: 'a', title: 'A', goal: 'g' }],
+        initialPriorChanged: true,
+        runEpic: async () => {
+          seen.push(process.env.UAP_EPIC_PRIOR_CHANGES);
+          return ok('done');
+        },
+      });
+    } finally {
+      restore();
+    }
+    expect(seen).toEqual(['1']);
+  });
+
+  it('sub-epic recursion inherits the parent prior-changes state instead of clobbering it to 0', async () => {
+    const restore = saveFlag();
+    const flags: Record<string, string | undefined> = {};
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [
+          { id: 'first', title: 'First', goal: 'g' },
+          { id: 'second', title: 'Second', goal: 'g' },
+        ],
+        maxAttemptsPerEpic: 1,
+        splitOnAnyFailure: true,
+        splitEpic: async () => [
+          { id: 'sub1', title: 'Sub 1', goal: 'g' },
+          { id: 'sub2', title: 'Sub 2', goal: 'g' },
+        ],
+        runEpic: async (epic) => {
+          flags[epic.id] = process.env.UAP_EPIC_PRIOR_CHANGES;
+          if (epic.id === 'second') return fail('cannot deliver whole');
+          return ok(`${epic.id} done`);
+        },
+      });
+    } finally {
+      restore();
+    }
+    expect(flags['first']).toBe('0'); // nothing accepted yet
+    expect(flags['second']).toBe('1'); // first epic accepted
+    // The regression: the recursive runEpics call recomputed prior-changes from
+    // its own empty outcome list, so sub-epics of a trailing epic saw '0' and
+    // the anti-no-op rail withheld acceptance on already-satisfied goals.
+    expect(flags['second.sub1']).toBe('1');
+    expect(flags['second.sub2']).toBe('1');
+  });
+});

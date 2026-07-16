@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { join } from 'node:path';
 
 import type { GateRung, LadderResult, LadderRunFn, RungResult } from './verifier-ladder.js';
-import { startStaticServer } from './execution-gate.js';
+import { findWebEntryDir, startStaticServer } from './execution-gate.js';
 import {
   loadUserPaths,
   USER_PATHS_FILE,
@@ -459,7 +459,15 @@ export async function runUserValidation(
     if (needsBrowser) {
       browser = await (opts.browserLoader ?? loadBrowser)();
       if (!managed && !staticServer) {
-        try { staticServer = await startStaticServer(projectRoot); } catch { staticServer = null; }
+        // Serve the directory that actually CONTAINS the web entry (parity with
+        // the execution gate): journeys goto "/" — rooting the server at the
+        // project root 404s every path when index.html lives in a subdir
+        // (space-shooter/index.html; octopus_invaders_v3, 2026-07-16), which
+        // makes the final epic's user-path gate structurally unpassable.
+        try {
+          const webRoot = findWebEntryDir(projectRoot) ?? projectRoot;
+          staticServer = await startStaticServer(webRoot);
+        } catch { staticServer = null; }
       }
     }
 
