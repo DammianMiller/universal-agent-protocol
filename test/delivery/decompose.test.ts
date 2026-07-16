@@ -47,14 +47,14 @@ describe('parsePhaseArray', () => {
     expect(phases[1].goal).toBe('Implement the core logic');
   });
 
-  it('drops malformed entries and dedupes slugs (default cap 8)', () => {
+  it('drops malformed entries and dedupes slugs (within the default cap)', () => {
     const entries = Array.from({ length: 8 }, (_, i) => ({
       id: i < 2 ? 'same' : `p${i}`,
       title: `T${i}`,
       goal: `G${i}`,
     }));
     // 8 entries, first two share the slug 'same' -> 7 unique, all within the
-    // default cap of 8, and the malformed {id:'bad'} entry is dropped.
+    // default cap (10), and the malformed {id:'bad'} entry is dropped.
     const raw = JSON.stringify([{ id: 'bad' }, ...entries]);
     const phases = parsePhaseArray(raw);
     expect(phases.length).toBe(7);
@@ -140,10 +140,43 @@ describe('planDeliveryPhases pre-execution validation (ATG thought experiment)',
       if (prompts.length === 2) return '{"verdict":"fail","findings":["missing migration phase"]}';
       return PLAN3; // the re-plan
     });
-    expect(prompts.length).toBe(3);
+    // plan + verdict + re-plan + re-judge of the re-plan (fail-softs to pass here)
+    expect(prompts.length).toBe(4);
     expect(prompts[2]).toContain('PLAN REVIEW FINDINGS');
     expect(prompts[2]).toContain('missing migration phase');
     expect(phases.length).toBe(3); // the repaired plan won
+  });
+
+  it('cap truncation is loud, the re-plan ceiling rises when cap-bound, and a still-failing re-plan gains the gap phase', async () => {
+    const prevCap = process.env.UAP_DELIVER_MAX_PHASES;
+    process.env.UAP_DELIVER_MAX_PHASES = '3';
+    try {
+      const many = JSON.stringify(
+        Array.from({ length: 6 }, (_, i) => ({ id: `p${i}`, title: `P${i}`, goal: `g${i}` }))
+      );
+      // parser cap: default keeps 3, explicit cap keeps all 6
+      expect(parsePhaseArray(many).length).toBe(3);
+      expect(parsePhaseArray(many, 20).length).toBe(6);
+
+      // full flow: cap-bound plan + failing verdict → re-plan parsed at the
+      // RAISED ceiling (6 = min(3*2, 20)) → re-judge still fails → gap phase
+      const prompts: string[] = [];
+      const phases = await planDeliveryPhases('mission with many deliverables', async (pr) => {
+        prompts.push(pr);
+        if (prompts.length === 1) return many; // cap-bound at 3
+        if (prompts.length === 2) return '{"verdict":"fail","findings":["missing ui phase"]}';
+        if (prompts.length === 3) return many; // re-plan: 6 phases now fit
+        return '{"verdict":"fail","findings":["still missing readme phase"]}'; // re-judge
+      });
+      expect(phases.length).toBe(7); // 6 re-planned + gap-closure
+      expect(phases[phases.length - 1].id).toBe('plan-gap-closure');
+      expect(phases[phases.length - 1].goal).toContain('still missing readme phase');
+      // the re-plan prompt advertised the raised ceiling
+      expect(prompts[2]).toContain('(2-6)');
+    } finally {
+      if (prevCap === undefined) delete process.env.UAP_DELIVER_MAX_PHASES;
+      else process.env.UAP_DELIVER_MAX_PHASES = prevCap;
+    }
   });
 
   it('appends the gap-closure phase when the re-plan is unusable (review findings must not be dropped)', async () => {
