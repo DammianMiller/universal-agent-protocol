@@ -200,6 +200,17 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
     let lastFailure: string | undefined;
     let lastBudgetStopped = false;
 
+    // Whole-mission gates (the user-validation browser journey) can only pass
+    // once the FULL deliverable is assembled — gating an EARLY epic on the
+    // finished app makes it unsatisfiable and freezes phaseIndex at 0
+    // (octopus_invaders_v3, 2026-07-16). Signal non-final epics so those gates
+    // report NA (non-blocking) instead of FAIL; the final epic runs them for
+    // real. Epics run sequentially, so a process-global flag is safe here;
+    // save/restore keeps the sub-epic recursion (runEpics on `chained`) correct.
+    const isFinalEpic = epic === ordered[ordered.length - 1];
+    const priorNonFinal = process.env.UAP_EPIC_NONFINAL;
+    process.env.UAP_EPIC_NONFINAL = isFinalEpic ? '0' : '1';
+
     while (attempts < maxAttempts && !accepted) {
       attempts++;
       const result = await config.runEpic(epic, {
@@ -296,6 +307,9 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
           : `split into ${chained.length} sub-epics (${splitReason}); failed: ${subResult.failed.join(', ')}`;
       }
     }
+
+    if (priorNonFinal === undefined) delete process.env.UAP_EPIC_NONFINAL;
+    else process.env.UAP_EPIC_NONFINAL = priorNonFinal;
 
     totalTurns += epicTurns;
     const outcome: EpicOutcome = {
