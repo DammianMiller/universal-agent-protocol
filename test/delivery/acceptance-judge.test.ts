@@ -235,3 +235,53 @@ describe('gatherEvidence — priority ordering (data files cannot starve source)
     expect(ev).toContain('=== src/main.js ===');
   });
 });
+
+describe('evidence truncation honesty (run H, 2026-07-17)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-evidence-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('marks every budget-cut file with an explicit TRUNCATED marker', () => {
+    writeFileSync(join(dir, 'big.js'), 'const pad = 1;\n'.repeat(500)); // ~7.5K
+    const out = gatherEvidence(dir, 40, 1_000); // budget forces a cut
+    expect(out).toContain('=== big.js ===');
+    expect(out).toContain('[TRUNCATED by evidence budget');
+    expect(out).toContain('CONTINUES beyond this point');
+    // an uncut file carries no marker
+    const outFull = gatherEvidence(dir, 40, 100_000);
+    expect(outFull).not.toContain('[TRUNCATED by evidence budget');
+  });
+
+  it('promotes files whose basename is named in the spec so the deliverable is shown, not starved', () => {
+    // Alphabetically-earlier bulk that would consume the budget first…
+    for (const n of ['aaa', 'bbb', 'ccc']) {
+      writeFileSync(join(dir, `${n}.js`), `// ${n}\n`.repeat(800));
+    }
+    // …and the actual deliverable, alphabetically last.
+    writeFileSync(join(dir, 'player.js'), 'class Player {\n  draw(ctx) { ctx.fillRect(0, 0, 1, 1); }\n}\n' + '// pad\n'.repeat(300));
+    const spec = 'EPIC — Implement the Player draw method: the Player class must render via fillRect.';
+    const out = gatherEvidence(dir, 40, 6_000, spec);
+    // player.js content (not just its 600-char head) must be present: the
+    // draw method sits well past the head in this fixture.
+    expect(out).toContain('draw(ctx)');
+  });
+
+  it('the judge prompt carries the truncated-evidence exception', async () => {
+    writeFileSync(join(dir, 'a.js'), 'const a = 1;\n'.repeat(200));
+    let prompt = '';
+    await runAcceptanceGate({
+      projectRoot: dir,
+      spec: 'a.js exists',
+      executor: async (p2: string) => {
+        prompt = p2;
+        return '{"criteria":[{"requirement":"a.js exists","met":true,"reason":"shown"}]}';
+      },
+    });
+    expect(prompt).toContain('TRUNCATED by');
+    expect(prompt).toContain('ending abruptly');
+  });
+});
