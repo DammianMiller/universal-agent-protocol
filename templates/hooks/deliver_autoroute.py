@@ -33,6 +33,30 @@ from pathlib import Path
 PENDING_LOG = "pending-deliver.jsonl"
 SEEN_FILE = "autoroute-seen"
 UAP_DIR = ".uap"
+BASH_TOOLS = {"bash", "run_bash", "shell", "execute_command"}
+
+# `cat > FILE << DELIM\n...body...\nDELIM` — the heredoc source-write a model
+# reaches for when its Write tool is gated. Captures path + body so the write is
+# REPLAYABLE (applied deterministically) rather than dead-ending. Overwrite form
+# only; append (`>>`) and non-heredoc writers fall through to the model-spawn
+# autoroute. Tolerates a leading env-prefix / `bash -c '...'` wrapper and a
+# quoted or unquoted path/delimiter.
+_BASH_WRITE_RE = re.compile(
+    r"cat\s*>\s*(?P<pq>['\"]?)(?P<path>[^\s'\";|&>]+)(?P=pq)\s*"
+    r"<<-?\s*(?P<dq>['\"]?)(?P<delim>\w+)(?P=dq)\s*\n"
+    r"(?P<body>.*?)\n(?P=delim)\b",
+    re.DOTALL,
+)
+
+
+def _parse_bash_write(command: str):
+    """Recover (path, content) from a heredoc file write, else (None, None)."""
+    if not command or "cat" not in command:
+        return None, None
+    m = _BASH_WRITE_RE.search(command)
+    if not m:
+        return None, None
+    return m.group("path"), m.group("body")
 
 
 def _autoroute_enabled() -> bool:
@@ -68,6 +92,17 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
         args.get("file_path") or args.get("filePath") or args.get("path")
         or args.get("target") or args.get("filename") or args.get("file") or ""
     )
+    # A bash-routed source write carries its path AND content inside the command
+    # (`cat > FILE << EOF`), not as tool args — recover both so the write becomes
+    # REPLAYABLE instead of dead-ending. Without this the model's `cat >` rewrites
+    # are blocked forever (octopus_invaders_v3, 2026-07-16: 35 min of blocked
+    # heredoc rewrites, 0 landed).
+    bash_content = None
+    if not file_path and tool.lower() in BASH_TOOLS:
+        bp, bc = _parse_bash_write(str(args.get("command") or ""))
+        if bp and bc is not None:
+            file_path = bp
+            bash_content = bc
 
     if route != "deliver":
         return {"message": reason, "route": route, "spawn": False, "replay": False,
@@ -92,6 +127,10 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
         )
         if isinstance(v, str)
     }
+    # Recovered heredoc body overwrites the whole file — exactly what the blocked
+    # `cat > FILE` would have done — so record it as a content-intent.
+    if not edit_intent and bash_content is not None:
+        edit_intent = {"content": bash_content}
     if edit_intent:
         intent["edit"] = edit_intent
     # A REPLAYABLE intent (plan D1) carries the blocked edit's exact content, so

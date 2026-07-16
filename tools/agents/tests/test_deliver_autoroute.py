@@ -121,6 +121,44 @@ class BashRoutedIntentTest(unittest.TestCase):
         self.assertFalse(d["spawn"])
 
 
+class BashHeredocReplayTest(unittest.TestCase):
+    """A model whose Write tool is gated reaches for `cat > FILE << EOF ... EOF`.
+    That heredoc carries the path AND body in the command, so autoroute recovers
+    both and the write becomes REPLAYABLE — else the model's `cat >` rewrites are
+    blocked forever (octopus_invaders_v3, 2026-07-16: 35 min, 0 landed)."""
+
+    HEREDOC = 'cat > src/app.js <<EOF\nconsole.log(1)\nEOF'
+
+    def test_parse_bash_write_extracts_path_and_body(self):
+        p, b = mod._parse_bash_write(self.HEREDOC)
+        self.assertEqual(p, 'src/app.js')
+        self.assertEqual(b, 'console.log(1)')
+
+    def test_parse_handles_wrapper_and_quoted_delim(self):
+        cmd = "UAP_DELIVER_BYPASS=1 bash -c 'cat > /a/game.js << \"GAMEJS\"\nX=1\nGAMEJS'"
+        p, b = mod._parse_bash_write(cmd)
+        self.assertEqual(p, '/a/game.js')
+        self.assertEqual(b, 'X=1')
+
+    def test_parse_returns_none_for_non_heredoc(self):
+        self.assertEqual(mod._parse_bash_write('cat > a.js'), (None, None))
+        self.assertEqual(mod._parse_bash_write('echo hi > a.js'), (None, None))
+
+    def test_bash_heredoc_is_replayable(self):
+        d = mod.decide(BLOCK_OUT, "Bash", {"command": self.HEREDOC}, True, set())
+        self.assertTrue(d["replay"])          # recovered content -> deterministic replay
+        self.assertFalse(d["spawn"])
+        self.assertEqual(d["file_path"], 'src/app.js')  # path recovered from the command
+        self.assertEqual(d["intent"]["edit"]["content"], 'console.log(1)')
+
+    def test_bash_without_body_still_model_spawns(self):
+        # No heredoc body to recover -> not replayable -> model-spawn on the hint.
+        d = mod.decide(BLOCK_OUT, "Bash", {"command": "cat > a.js <<EOF"}, True, set())
+        self.assertFalse(d["replay"])
+        self.assertTrue(d["spawn"])
+        self.assertEqual(d["file_path"], "")
+
+
 class ReplayIntentTest(unittest.TestCase):
     """A REPLAYABLE intent (the blocked edit's exact content was recorded) must
     be applied DETERMINISTICALLY via `uap deliver --pending` — not re-routed
