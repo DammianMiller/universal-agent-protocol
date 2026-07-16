@@ -14,7 +14,7 @@
  */
 
 import { lstatSync, readdirSync, readFileSync } from 'fs';
-import { join, relative, dirname } from 'path';
+import { basename, join, relative, dirname } from 'path';
 import type { LoopExecutor } from './convergence-loop.js';
 
 export interface AcceptanceCriterion {
@@ -188,6 +188,24 @@ export function gatherEvidence(
   } catch {
     /* no validation report — nothing to inject */
   }
+  // Symbol-aware priority: sub-epic specs routinely say "the Player class"
+  // without ever writing "player.js" — the literal-path pass above then
+  // leaves the ONE file the epic is about at prio 0, where alphabetical
+  // extension starves it (observed live, run H 2026-07-17: a player epic's
+  // evidence granted player.js only its 600-char head; the judge truthfully
+  // reported the file "ends at the imports" and failed 6 straight attempts
+  // against implemented code). If a source file's basename appears as a word
+  // in the spec, it IS the deliverable — promote it.
+  if (spec) {
+    const specLower = spec.toLowerCase();
+    for (const f of files) {
+      if (f.prio !== 0) continue;
+      const base = basename(f.abs).replace(/\.[^.]+$/, '').toLowerCase();
+      if (base.length >= 3 && new RegExp(`\\b${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(specLower)) {
+        f.prio = -1;
+      }
+    }
+  }
   // Dedupe (a spec-referenced file can also be found by a walk) keeping the
   // best (lowest) priority per path.
   const best = new Map<string, { abs: string; prio: number }>();
@@ -243,7 +261,11 @@ export function gatherEvidence(
     const take = granted.get(f.abs) ?? 0;
     if (content === undefined || take <= 0) continue;
     const rel = relative(root, f.abs);
-    out += `\n=== ${rel} ===\n${content.slice(0, take)}\n`;
+    const marker =
+      take < content.length
+        ? `\n…[TRUNCATED by evidence budget: showing ${take} of ${content.length} chars — this file CONTINUES beyond this point]`
+        : '';
+    out += `\n=== ${rel} ===\n${content.slice(0, take)}${marker}\n`;
   }
   return out.trim();
 }
@@ -257,6 +279,12 @@ function buildPrompt(spec: string, evidence: string, runtimeNote?: string): stri
     'Extract each concrete, verifiable requirement from the spec (ignore vague aesthetic',
     'wishes). For each, decide if the code clearly implements it. Be conservative: if the',
     'code does not show it, mark it not met.',
+    '',
+    'EXCEPTION — truncated evidence: a file whose excerpt ends with "[TRUNCATED by',
+    'evidence budget…]" CONTINUES beyond what is shown. Never describe such a file as',
+    'incomplete, cut off, or "ending abruptly", and never treat content absent AFTER the',
+    'cut as proof it does not exist — judge those requirements from the visible portion',
+    'and any other files that reference the symbol.',
     '',
     '=== SPEC ===',
     spec.slice(0, 6_000),
