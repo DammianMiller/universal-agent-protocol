@@ -821,7 +821,28 @@ export function createAgenticExecutor(
     const summaries: string[] = [];
     // Per-session: what this agent has already read, and at what mtime.
     const readCache = newReadCache();
+    // Read-only-streak nudge: a weak model in a gap-closure/whole-mission epic
+    // can spend EVERY round on read_file/list_dir and end the turn with zero
+    // writes — attempt after attempt (run I live, 2026-07-17: two 5-turn
+    // attempts, 12 rounds each, all reads, while the gate feedback named the
+    // missing files). Reads are never denied (see repeatReadNote), but after
+    // WRITE_NUDGE_AFTER consecutive mutation-free rounds the next round opens
+    // with an explicit order to write.
+    const WRITE_NUDGE_AFTER = 5;
+    let roundsWithoutWrite = 0;
+    let writeNudged = false;
     for (let round = 1; round <= maxRounds; round++) {
+      if (roundsWithoutWrite >= WRITE_NUDGE_AFTER && !writeNudged) {
+        writeNudged = true;
+        messages.push({
+          role: 'user',
+          content:
+            `You have used ${roundsWithoutWrite} consecutive rounds ONLY reading/listing — zero files ` +
+            'written. You already have enough context. STOP exploring. THIS round, CREATE or EDIT the ' +
+            'files the task and gate feedback require (write_file / edit_file), then verify and call finish.',
+        });
+        opts.onEvent?.({ round, kind: 'error', detail: `write-nudge injected after ${roundsWithoutWrite} read-only rounds` });
+      }
       // Rail sizing: stop BEFORE sending a request that would outgrow the
       // session's context budget — a clean under-budget stop with a partial
       // summary beats an overflow/prune that silently loses session state.
@@ -841,6 +862,7 @@ export function createAgenticExecutor(
           });
         }
       }
+      roundsWithoutWrite++;
       let msg: ChatMessage;
       try {
         msg = await chat(opts.endpoint, model, messages, opts.temperature, allowBash);
@@ -922,6 +944,13 @@ export function createAgenticExecutor(
           allowBash,
           contractFiles
         );
+        if (
+          (call.function.name === 'write_file' || call.function.name === 'edit_file' || call.function.name === 'run_bash') &&
+          toolResult.startsWith('OK')
+        ) {
+          roundsWithoutWrite = -1; // reset below by the per-round increment
+          writeNudged = false;
+        }
         // WITHHOLDING the content was a deadlock. The model re-reads a file for a
         // reason — its context was pruned, or this is a fresh agent session — so
         // answering "you already read that" WITHOUT the content leaves it unable
