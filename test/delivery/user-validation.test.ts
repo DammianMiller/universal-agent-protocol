@@ -64,6 +64,45 @@ describe('synthesizeUserValidationRung', () => {
   });
 });
 
+describe('runUserValidation: web entry docroot', () => {
+  it('serves the directory containing the web entry, so goto:/ resolves when index.html lives in a subdir', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-webroot-'));
+    try {
+      mkdirSync(join(dir, 'space-shooter'), { recursive: true });
+      writeFileSync(
+        join(dir, 'space-shooter', 'index.html'),
+        '<!doctype html><html><body><canvas id="game"></canvas></body></html>'
+      );
+      writeManifest(dir, {
+        version: 1,
+        paths: [{ id: 'load', rule: 'game loads', client: 'browser', entry: '/', steps: [{ goto: '/' }] }],
+      });
+      const stubBrowser = {
+        goto: async (url: string) => {
+          const res = await fetch(url);
+          return String(res.status);
+        },
+        getText: async () => '',
+        screenshot: async () => {},
+        getErrors: () => [],
+        clearErrors: () => {},
+        click: async () => {},
+        fill: async () => {},
+        press: async () => {},
+        isVisible: async () => true,
+        close: async () => {},
+      };
+      const report = await runUserValidation(dir, { browserLoader: async () => stubBrowser as never });
+      // Before the fix the static server was rooted at the PROJECT root, so
+      // goto:/ was HTTP 404 and the final epic's gate was structurally unpassable.
+      expect(report.results[0].steps.map((s) => s.observed)).toContain('HTTP 200');
+      expect(report.verdict).toBe('pass');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('runUserValidation', () => {
   let dir: string;
   beforeEach(() => {

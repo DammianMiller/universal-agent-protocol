@@ -303,7 +303,10 @@ describe('T15: DB pool simplified', () => {
 // ── Integration: New exports from index.ts ──
 
 describe('New exports from index.ts', () => {
-  it('should export logger utilities', async () => {
+  // First dynamic import of the src/index.js barrel pays the whole transform
+  // cost; under full-suite CPU load that reproducibly exceeds the default 5s
+  // (subsequent imports hit the module cache). Generous timeout, not a slow test.
+  it('should export logger utilities', { timeout: 60_000 }, async () => {
     const mod = await import('../src/index.js');
     expect(typeof mod.createLogger).toBe('function');
     expect(mod.logger).toBeDefined();

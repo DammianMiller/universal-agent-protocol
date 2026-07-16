@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.160.1 (2026-07-16)
+
+- test: 60s timeout on first src/index.js barrel-import test (load flake)
+- fix(delivery): unblock 100% epic delivery — prior-changes inheritance, web-entry docroot, canvas-aware journeys
+
+
 ## v1.160.0 (2026-07-16)
 
 - chore: bump version to 1.159.0
