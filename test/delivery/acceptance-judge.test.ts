@@ -270,6 +270,19 @@ describe('evidence truncation honesty (run H, 2026-07-17)', () => {
     expect(out).toContain('draw(ctx)');
   });
 
+  it('matches spec symbols across separators: "ScoreManager" promotes score-manager.js', () => {
+    for (const n of ['aaa', 'bbb', 'ccc']) {
+      writeFileSync(join(dir, `${n}.js`), `// ${n}\n`.repeat(800));
+    }
+    writeFileSync(
+      join(dir, 'score-manager.js'),
+      'export class ScoreManager {\n  addPoints(n) { this.score += n; }\n}\n' + '// pad\n'.repeat(300)
+    );
+    const spec = 'EPIC — Implement Score Manager Service: a ScoreManager class tracks points and combos.';
+    const out = gatherEvidence(dir, 40, 6_000, spec);
+    expect(out).toContain('addPoints(n)'); // body shown, not just the 600-char head
+  });
+
   it('the judge prompt carries the truncated-evidence exception', async () => {
     writeFileSync(join(dir, 'a.js'), 'const a = 1;\n'.repeat(200));
     let prompt = '';

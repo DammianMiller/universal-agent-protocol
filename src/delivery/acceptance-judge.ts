@@ -198,10 +198,19 @@ export function gatherEvidence(
   // in the spec, it IS the deliverable — promote it.
   if (spec) {
     const specLower = spec.toLowerCase();
+    // Separator-insensitive too: specs say "ScoreManager" while the file is
+    // score-manager.js — the word-boundary match on the hyphenated basename
+    // never fires and the deliverable starves to its head anyway (run I,
+    // 2026-07-17: judge honestly reported score-manager.js "truncated at 600
+    // characters" and failed the epic against implemented code).
+    const specSquashed = specLower.replace(/[-_\s]/g, '');
     for (const f of files) {
       if (f.prio !== 0) continue;
       const base = basename(f.abs).replace(/\.[^.]+$/, '').toLowerCase();
-      if (base.length >= 3 && new RegExp(`\\b${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(specLower)) {
+      if (base.length < 3) continue;
+      const wordHit = new RegExp(`\\b${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(specLower);
+      const squashedHit = base.replace(/[-_]/g, '').length >= 5 && specSquashed.includes(base.replace(/[-_]/g, ''));
+      if (wordHit || squashedHit) {
         f.prio = -1;
       }
     }

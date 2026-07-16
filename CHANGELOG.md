@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.12 (2026-07-17)
+
+- fix(delivery): separator-insensitive spec-symbol matching for evidence priority
+
+
 ## v1.161.11 (2026-07-17)
 
 - fix(delivery): read-only-streak write nudge — the sweep epic read forever
