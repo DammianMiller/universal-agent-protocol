@@ -112,7 +112,8 @@ import {
   resolveUserValidationMode,
   synthesizeUserValidationRung,
 } from '../delivery/user-validation.js';
-import { deriveUserPaths, loadUserPaths, mergeUserPaths, USER_PATHS_FILE } from '../delivery/user-paths.js';
+import { deriveUserPaths, fallbackWebManifest, loadUserPaths, mergeUserPaths, USER_PATHS_FILE } from '../delivery/user-paths.js';
+import { detectArtifactType } from '../delivery/execution-gate.js';
 
 /** Raw .uap.json reader usable before the main cfgRawEarly declaration. */
 function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unknown> {
@@ -1764,6 +1765,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       mergeUserPaths(projectRoot, derived);
       console.log(
         chalk.cyan(`👤 user-validation: derived ${derived.paths.length} critical user path(s) → ${USER_PATHS_FILE}`)
+      );
+    } else if (detectArtifactType(projectRoot) === 'web' || /\bcanvas\b|<canvas|\bhtml\b/i.test(instruction)) {
+      // The terminal gate must never silently reduce to NA for a web artifact
+      // just because the miner flaked (observed 3 of 5 live runs): install the
+      // deterministic fallback journey — load + (canvas visible) + zero
+      // console errors.
+      const fb = fallbackWebManifest(instruction);
+      mergeUserPaths(projectRoot, fb);
+      console.log(
+        chalk.yellow('👤 user-validation: miner produced no manifest — installed the deterministic fallback journey (load + no console errors)')
       );
     } else {
       console.log(chalk.dim('  user-validation: no manifest derived — gate will report NA until one exists'));
