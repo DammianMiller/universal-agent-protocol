@@ -218,3 +218,31 @@ describe('dropRedundantStaticServer', () => {
     expect(mined!.server).toBeUndefined();
   });
 });
+
+describe('deriveUserPaths: miner retry (same flake class as the phase planner)', () => {
+  const VALID = JSON.stringify({
+    version: 1,
+    paths: [{ id: 'p', rule: 'r', client: 'browser', steps: [{ goto: '/' }, { expect_no_console_errors: true }] }],
+  });
+
+  it('retries once on an unparseable sample and succeeds on the second', async () => {
+    let calls = 0;
+    const mined = await deriveUserPaths('mission', async () => {
+      calls++;
+      return calls === 1 ? 'sorry, prose not JSON' : VALID;
+    });
+    expect(mined).not.toBeNull();
+    expect(mined!.paths.length).toBe(1);
+    expect(calls).toBe(2);
+  });
+
+  it('gives up (null) after exactly two attempts — bounded, never wedges', async () => {
+    let calls = 0;
+    const mined = await deriveUserPaths('mission', async () => {
+      calls++;
+      throw new Error('model down');
+    });
+    expect(mined).toBeNull();
+    expect(calls).toBe(2);
+  });
+});
