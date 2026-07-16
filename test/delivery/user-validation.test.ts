@@ -64,6 +64,63 @@ describe('synthesizeUserValidationRung', () => {
   });
 });
 
+describe('runUserValidation: manifest server hardening', () => {
+  it('a bogus server command fails SOFT to the static server instead of crashing the process', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-srvcrash-'));
+    try {
+      writeFileSync(join(dir, 'index.html'), '<canvas id="game"></canvas>');
+      writeManifest(dir, {
+        version: 1,
+        // whole command line as the binary name + nonexistent binary: the
+        // exact shape that killed run E via an unhandled child 'error'.
+        server: { command: 'definitely-not-a-real-binary-xyz --port 3999', port: 3999, readyTimeoutMs: 2000 },
+        paths: [{ id: 'load', rule: 'loads', client: 'browser', steps: [{ goto: '/' }] }],
+      } as never);
+      const stubBrowser = {
+        goto: async (url: string) => String((await fetch(url)).status),
+        getText: async () => '',
+        screenshot: async () => {},
+        getErrors: () => [],
+        clearErrors: () => {},
+        click: async () => {},
+        fill: async () => {},
+        press: async () => {},
+        isVisible: async () => true,
+        close: async () => {},
+      };
+      const report = await runUserValidation(dir, { browserLoader: async () => stubBrowser as never });
+      // no crash, and the static-server fallback serves the page
+      expect(report.results[0].steps.map((s) => s.observed)).toContain('HTTP 200');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a whitespace command line with no args[] is split so real servers still start', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-srvsplit-'));
+    try {
+      writeFileSync(join(dir, 'ok.txt'), 'ok');
+      writeManifest(dir, {
+        version: 1,
+        // node -e ... : starts an actual HTTP server; proves the split path works end-to-end
+        server: {
+          command: `${process.execPath} -e require('http').createServer((q,r)=>r.end('srv-ok')).listen(39471)`,
+          port: 39471,
+          readyTimeoutMs: 10000,
+        },
+        paths: [{ id: 'ping', rule: 'server answers', client: 'http', steps: [
+          { request: { method: 'GET', path: '/' } },
+          { expect_status: 200 },
+        ] }],
+      } as never);
+      const report = await runUserValidation(dir);
+      expect(report.results[0].status).toBe('pass');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('runUserValidation: web entry docroot', () => {
   it('serves the directory containing the web entry, so goto:/ resolves when index.html lives in a subdir', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'uap-webroot-'));

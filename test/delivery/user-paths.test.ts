@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   deriveUserPaths,
+  dropRedundantStaticServer,
   sanitizeCanvasTextAssertions,
   loadUserPaths,
   mergeUserPaths,
@@ -189,5 +190,31 @@ describe('sanitizeCanvasTextAssertions', () => {
     );
     expect(mined).not.toBeNull();
     expect(mined!.paths[0].steps.some((s) => 'expect_text' in s)).toBe(false);
+  });
+});
+
+describe('dropRedundantStaticServer', () => {
+  const base = { version: 1, paths: [{ id: 'p', rule: 'r', client: 'browser' as const, steps: [{ goto: '/' }] }] };
+
+  it('drops mined static-file-server entries (builtin static serving covers them) but keeps real app servers', () => {
+    for (const cmd of ['python3 -m http.server 3001', 'python -m http.server 8000', 'npx serve .', 'npx http-server -p 3000', 'http-server dist']) {
+      const out = dropRedundantStaticServer({ ...base, server: { command: cmd, port: 3001 } } as never);
+      expect(out.server).toBeUndefined();
+    }
+    const app = dropRedundantStaticServer({ ...base, server: { command: 'node dist/api.js', port: 4000 } } as never);
+    expect(app.server).toBeDefined();
+    expect(dropRedundantStaticServer(base as never).server).toBeUndefined(); // no server → untouched
+  });
+
+  it('applies at derive time so the crash-inducing manifest never lands on disk', async () => {
+    const mined = await deriveUserPaths('Build a canvas game; run with python3 -m http.server 3001', async () =>
+      JSON.stringify({
+        version: 1,
+        server: { command: 'python3 -m http.server 3001', port: 3001 },
+        paths: [{ id: 'p', rule: 'r', client: 'browser', steps: [{ goto: '/' }, { expect_no_console_errors: true }] }],
+      })
+    );
+    expect(mined).not.toBeNull();
+    expect(mined!.server).toBeUndefined();
   });
 });

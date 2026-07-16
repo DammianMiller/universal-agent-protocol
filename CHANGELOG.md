@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.5 (2026-07-17)
+
+- fix(delivery): manifest-server spawn crash — unhandled error killed the whole run
+
+
 ## v1.161.4 (2026-07-16)
 
 - fix(delivery): count prior-ATTEMPT writes for the anti-no-op rail
