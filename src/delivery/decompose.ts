@@ -84,7 +84,7 @@ export function shouldDecompose(instruction: string, complexity?: string): boole
 }
 
 /** Extract the first JSON array of {id,title,goal} objects from model output. */
-export function parsePhaseArray(text: string): DeliveryPhase[] {
+export function parsePhaseArray(text: string, cap: number = maxPhases()): DeliveryPhase[] {
   let parsed: unknown;
   for (const re of [/\[\s*\{[\s\S]*?\}\s*\]/, /\[\s*\{[\s\S]*\}\s*\]/]) {
     const match = text.match(re);
@@ -110,7 +110,7 @@ export function parsePhaseArray(text: string): DeliveryPhase[] {
     seen.add(slug);
     const rawDeps = (entry as { deps?: unknown }).deps;
     const deps = Array.isArray(rawDeps)
-      ? rawDeps.filter((d): d is string => typeof d === 'string').map((d) => d.trim().toLowerCase()).slice(0, maxPhases())
+      ? rawDeps.filter((d): d is string => typeof d === 'string').map((d) => d.trim().toLowerCase()).slice(0, cap)
       : undefined;
     const contracts = (entry as { contracts?: unknown }).contracts === true;
     const scaffold = (entry as { scaffold?: unknown }).scaffold === true;
@@ -130,7 +130,20 @@ export function parsePhaseArray(text: string): DeliveryPhase[] {
       ...(scaffold ? { scaffold: true } : {}),
       ...(criteria && criteria.length > 0 ? { criteria } : {}),
     });
-    if (phases.length >= maxPhases()) break;
+    if (phases.length >= cap) {
+      // SILENT truncation here is how a 14-deliverable mission became a
+      // 10-phase plan that always ended at player-scaffold (octopus,
+      // 2026-07-16): the model DID emit the tail phases; the parser dropped
+      // them and plan-check then chased gaps the cap guaranteed could never
+      // close.
+      const total = (parsed as unknown[]).length; // parsed is an array here (guarded above)
+      if (total > cap) {
+        console.log(
+          `  plan: planner emitted ${total} entries; kept the first ${cap} valid phase(s) (cap) — raise UAP_DELIVER_MAX_PHASES if the mission genuinely needs more`
+        );
+      }
+      break;
+    }
   }
   return topoOrder(phases);
 }
@@ -189,7 +202,8 @@ export interface PlanPhasesOptions {
 function buildDecomposePrompt(
   instruction: string,
   hintProvider?: LifecycleHintProvider,
-  opts?: PlanPhasesOptions
+  opts?: PlanPhasesOptions,
+  cap: number = maxPhases()
 ): string {
   // Lifecycle hints (phases + experts) shape the split. Fail-soft — a
   // throwing provider just omits the hints.
@@ -240,7 +254,7 @@ function buildDecomposePrompt(
 
   return [
     'You are a delivery planner. Split the mission below into SEQUENTIAL phases',
-    `(${MIN_PHASES}-${maxPhases()}), each independently verifiable by the project's build/test`,
+    `(${MIN_PHASES}-${cap}), each independently verifiable by the project's build/test`,
     'gates. Every phase must leave the project in a working state — no phase may',
     'end with intentionally broken builds. Order phases so later ones build on',
     'earlier ones. Do NOT invent scope the mission does not imply.',
@@ -341,10 +355,46 @@ async function validateAndRepairPlan(
   const revised =
     `${instruction}\n\nPLAN REVIEW FINDINGS (a prior phase plan was rejected for these; the new plan MUST address them):\n` +
     findings.map((f, i) => `${i + 1}. ${f}`).join('\n');
+  // Cap-bound escalation: a set of phases sitting exactly AT the ceiling with
+  // missing-phase findings is almost certainly parser-truncated, not
+  // under-planned — re-planning at the same ceiling reproduces the same
+  // truncation forever. Give the re-plan head-room (bounded by the hard
+  // ceiling) so the tail phases can actually land.
+  const capBound = fromThoughtExperiment && phases.length >= maxPhases();
+  const replanCap = capBound
+    ? Math.min(maxPhases() * 2, MAX_PHASES_HARD_CEILING)
+    : maxPhases();
+  if (capBound && replanCap > maxPhases()) {
+    console.log(
+      `  plan-check: cap-bound at ${phases.length} with review findings — raising the re-plan ceiling to ${replanCap}`
+    );
+  }
   try {
-    const raw = await executor(buildDecomposePrompt(revised, hintProvider, opts));
-    const replanned = parsePhaseArray(raw);
+    const raw = await executor(buildDecomposePrompt(revised, hintProvider, opts, replanCap));
+    const replanned = parsePhaseArray(raw, replanCap);
     if (replanned.length >= MIN_PHASES && validatePhaseGraph(replanned).ok) {
+      // The re-plan is adopted on structural validity alone — but the review
+      // findings were BEHAVIORAL. Re-judge it once (one evaluator call): a
+      // re-plan that still misses deliverables otherwise sails through and
+      // the mission is unwinnable again (run C, 2026-07-16: "re-planned into
+      // 10 phases addressing the findings" — it hadn't). If the verdict
+      // still fails, ride the residual findings in a gap-closure phase.
+      if (fromThoughtExperiment) {
+        try {
+          const verdict = await runPlanThoughtExperiment(instruction, replanned, executor);
+          if (verdict.verdict !== 'pass' && verdict.findings.length > 0) {
+            const withGap = appendGapClosurePhase(replanned, verdict.findings);
+            if (withGap) {
+              console.log(
+                `  plan-check: re-plan still incomplete — appended '${GAP_CLOSURE_ID}' phase carrying ${verdict.findings.length} residual finding(s)`
+              );
+              return withGap;
+            }
+          }
+        } catch {
+          // re-judge is best-effort; the structurally-valid re-plan stands
+        }
+      }
       console.log(`  plan-check: re-planned into ${replanned.length} phases addressing the findings`);
       return replanned;
     }

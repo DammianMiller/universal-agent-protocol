@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.3 (2026-07-16)
+
+- fix(delivery): phase-cap truncation — the root cause of every truncated plan
+
+
 ## v1.161.2 (2026-07-16)
 
 - fix(delivery): self-gate path anchoring + planner retry — two live retest findings
