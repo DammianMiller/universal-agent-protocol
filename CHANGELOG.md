@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.4 (2026-07-16)
+
+- fix(delivery): count prior-ATTEMPT writes for the anti-no-op rail
+
+
 ## v1.161.3 (2026-07-16)
 
 - fix(delivery): phase-cap truncation — the root cause of every truncated plan

@@ -400,3 +400,64 @@ describe('runEpics: finality seeding (initialNonFinal) + env exception-safety', 
     }
   });
 });
+
+describe('runEpics: prior-ATTEMPT changes stand the anti-no-op rail down on retries', () => {
+  const saveFlag = () => {
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    delete process.env.UAP_EPIC_PRIOR_CHANGES;
+    return () => {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    };
+  };
+
+  it('a failed first attempt that WROTE files flips the flag for attempt 2 (first epic, no prior epics)', async () => {
+    const restore = saveFlag();
+    const perAttempt: Array<string | undefined> = [];
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [{ id: 'first', title: 'First', goal: 'g' }],
+        maxAttemptsPerEpic: 3,
+        runEpic: async (_epic, ctx) => {
+          perAttempt.push(process.env.UAP_EPIC_PRIOR_CHANGES);
+          // attempt 1 writes but is not accepted; attempt 2 zero-diffs and passes
+          if (ctx.attempt === 1) return { success: false, summary: 'wrote 11 files, judge rejected', turns: 5, changedTree: true };
+          return ok('accepted on retry');
+        },
+      });
+    } finally {
+      restore();
+    }
+    expect(perAttempt[0]).toBe('0'); // truly nothing before attempt 1
+    expect(perAttempt[1]).toBe('1'); // attempt 1's writes count — rail stands down, judge decides
+  });
+
+  it('sub-epics inherit prior-ATTEMPT changes when the parent wrote before splitting', async () => {
+    const restore = saveFlag();
+    const flags: Record<string, string | undefined> = {};
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [{ id: 'solo', title: 'Solo', goal: 'g' }],
+        maxAttemptsPerEpic: 1,
+        splitOnAnyFailure: true,
+        splitEpic: async () => [
+          { id: 's1', title: 'S1', goal: 'g' },
+          { id: 's2', title: 'S2', goal: 'g' },
+        ],
+        runEpic: async (epic) => {
+          flags[epic.id] = process.env.UAP_EPIC_PRIOR_CHANGES;
+          if (epic.id === 'solo') return { success: false, summary: 'wrote then failed', turns: 5, changedTree: true };
+          return ok('done');
+        },
+      });
+    } finally {
+      restore();
+    }
+    expect(flags['solo']).toBe('0');
+    // Before the fix these saw '0' (no ACCEPTED epic) despite the parent's real writes.
+    expect(flags['solo.s1']).toBe('1');
+    expect(flags['solo.s2']).toBe('1');
+  });
+});

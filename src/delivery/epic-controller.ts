@@ -42,6 +42,9 @@ export interface EpicRunResult {
    * `summary` is human-facing text, not protocol.)
    */
   budgetStopped?: boolean;
+  /** The attempt changed the working tree (even if not accepted) — counts as
+   * prior work for the anti-no-op rail on later attempts and sub-epics. */
+  changedTree?: boolean;
 }
 
 /** Context passed to the split planner about WHY the epic is being split. */
@@ -235,6 +238,11 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
     // no-op — the acceptance judge still gates it). Prevents the re-split churn.
     const priorEpicChanged = config.initialPriorChanged === true || outcomes.some((o) => o.accepted);
     const priorChangesFlag = process.env.UAP_EPIC_PRIOR_CHANGES;
+    // A failed attempt's writes live in the NEXT attempt's baseline, so the
+    // retry legitimately zero-diffs over real prior work — count it like
+    // prior-epic work (the judge still gates; this only stands the
+    // deterministic rail down). Re-evaluated per attempt below.
+    let anyAttemptChanged = false;
     process.env.UAP_EPIC_PRIOR_CHANGES = priorEpicChanged ? '1' : '0';
 
     // try/finally: a throwing runEpic/splitEpic must not leak the epic env
@@ -244,11 +252,13 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
 
       while (attempts < maxAttempts && !accepted) {
         attempts++;
+        process.env.UAP_EPIC_PRIOR_CHANGES = priorEpicChanged || anyAttemptChanged ? '1' : '0';
         const result = await config.runEpic(epic, {
           attempt: attempts,
           priorSummaries: [...priorSummaries],
           lastFailure,
         });
+        if (result.changedTree) anyAttemptChanged = true;
         epicTurns += result.turns;
         lastSummary = result.summary;
         lastBudgetStopped = result.budgetStopped === true;
@@ -319,7 +329,7 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
             // Inherit prior-changes state (this epic's own failed attempts may
             // also have written files — hasAppliedChanges in the child loop still
             // catches those; this flag covers the accumulated-tree case).
-            initialPriorChanged: priorEpicChanged,
+            initialPriorChanged: priorEpicChanged || anyAttemptChanged,
             // Child finality = parent-is-final AND child-is-last: sub-epics of
             // a non-final parent must all report non-final or the last one
             // runs whole-mission gates mid-mission.

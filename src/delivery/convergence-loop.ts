@@ -123,6 +123,16 @@ export interface DeliveryResult {
   /** Raw model output from the final turn */
   finalOutput: string;
   totalDurationMs: number;
+  /**
+   * The run changed the working tree (applier bookkeeping OR git
+   * fingerprint — the latter covers agentic write_file, which bypasses the
+   * applier). Lets the epic controller count prior-ATTEMPT work the same as
+   * prior-epic work for the anti-no-op rail: a failed attempt's writes are
+   * in the next attempt's baseline, so the retry legitimately zero-diffs
+   * (octopus run D, 2026-07-16 — contracts attempt 2 was hard-withheld over
+   * files attempt 1 had just written).
+   */
+  changedTree?: boolean;
 }
 
 export interface ExplorerSettings {
@@ -860,6 +870,7 @@ export class ConvergenceLoop {
           finalFeedback: baseline.feedback,
           finalOutput: '',
           totalDurationMs: Date.now() - start,
+          changedTree: false,
         };
       }
     }
@@ -1241,6 +1252,7 @@ export class ConvergenceLoop {
       finalFeedback,
       finalOutput,
       totalDurationMs: Date.now() - start,
+      changedTree: this.hasAppliedChanges(),
     };
   }
 }

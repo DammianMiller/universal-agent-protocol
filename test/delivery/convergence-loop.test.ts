@@ -509,6 +509,34 @@ describe('anti-no-op acceptance rail (P0, 2026-07-13)', () => {
     }
   });
 
+  it('DeliveryResult.changedTree reflects applier writes and stays false on no-op runs', async () => {
+    const wrote = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true },
+      async () => 'file: something',
+      {
+        applier: async () => ({ filesWritten: ['a.txt'], rejected: [] }),
+        ladderRunner: () => ladderResult(1.0, true),
+        acceptanceGate: async () => ({ passed: true, feedback: '' }),
+      }
+    );
+    const wroteRes = await wrote.deliver('write it');
+    expect(wroteRes.changedTree).toBe(true);
+    expect(wroteRes.success).toBe(true);
+
+    const noop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true },
+      async () => 'prose only',
+      {
+        applier: async () => ({ filesWritten: [], rejected: [] }),
+        ladderRunner: () => ladderResult(1.0, true),
+        acceptanceGate: async () => ({ passed: true, feedback: '' }),
+      }
+    );
+    const noopRes = await noop.deliver('nothing to do');
+    expect(noopRes.changedTree).toBe(false); // rail withholds; no writes recorded
+    expect(noopRes.success).toBe(false);
+  });
+
   it('requireDiffForAcceptance:false restores the legacy short-circuit (--allow-noop)', async () => {
     const loop = new ConvergenceLoop(
       { projectRoot: dir, rungs: stubRungs(), requireDiffForAcceptance: false },

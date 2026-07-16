@@ -287,6 +287,8 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
           // Structured field for the controller's split trigger; the marker
           // stays in the summary for humans (and marker-matching callers).
           ...(budgetHit ? { budgetStopped: true } : {}),
+          // Prior-attempt writes must count for the anti-no-op rail on retry.
+          ...(r.changedTree ? { changedTree: true } : {}),
           summary:
             `${epic.goal.slice(0, 140)}${files.length ? ` [files: ${files.join(', ')}]` : ''}` +
             (budgetHit ? ` ${CONTEXT_BUDGET_MARKER} session(s) exceeded the context budget — scope is too large for one session` : ''),
