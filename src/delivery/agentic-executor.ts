@@ -27,7 +27,7 @@ import type { LoopExecutor } from './convergence-loop.js';
 import { fetchModelWithRetry } from '../models/long-fetch.js';
 import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename } from './applier.js';
-import { estimateMessagesTokens, CONTEXT_BUDGET_MARKER } from './context-budget.js';
+import { estimateMessagesTokens, formatBudgetStop } from './context-budget.js';
 import { sanitizedEnv } from './sanitized-env.js';
 
 /**
@@ -817,11 +817,12 @@ export function createAgenticExecutor(
             kind: 'error',
             detail: `context budget reached: ~${est}/${opts.contextTokenBudget} est. tokens`,
           });
-          return (
-            `${CONTEXT_BUDGET_MARKER} session reached ~${est} of ${opts.contextTokenBudget} estimated tokens ` +
-            `after ${round - 1} round(s) — the task is too large for one session and must be split. ` +
-            `Work completed so far: ${summaries.slice(-5).join('; ') || 'none'}`
-          );
+          return formatBudgetStop({
+            estimatedTokens: est,
+            budget: opts.contextTokenBudget,
+            rounds: round - 1,
+            summaries,
+          });
         }
       }
       let msg: ChatMessage;

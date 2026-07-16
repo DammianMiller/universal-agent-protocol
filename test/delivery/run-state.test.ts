@@ -375,4 +375,14 @@ describe('round-3 run-state hardening', () => {
     saveRunState(noPlanBad);
     expect(loadRunState(dir, noPlanBad.runId)?.phaseIndex).toBeUndefined();
   });
+
+  it('round-trips completedEpicIds, filtering junk ids (epic resume skip set)', () => {
+    const st = makeState({
+      runnerKind: 'epic',
+      completedEpicIds: ['auth', 'big.p1', '../evil', 'UPPER', 'x'.repeat(80)],
+    } as never);
+    saveRunState(st);
+    const loaded = loadRunState(dir, st.runId)!;
+    expect(loaded.completedEpicIds).toEqual(['auth', 'big.p1']);
+  });
 });

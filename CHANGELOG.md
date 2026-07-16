@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.155.0 (2026-07-16)
+
+- feat(delivery): round 4 — spec-registry module, budget wire-protocol codec, deterministic epic resume
+
+
 ## v1.154.0 (2026-07-15)
 
 - feat(delivery): round 3 — phased-mission extraction, runnerKind resume safety, sanitizer hardening, changed-files module, marker deprecation executed

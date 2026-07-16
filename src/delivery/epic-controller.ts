@@ -103,6 +103,21 @@ export interface EpicControllerConfig {
   /** Progress hook. */
   onEpic?: (epic: Epic, outcome: EpicOutcome) => void;
   /**
+   * Epic ids already ACCEPTED by an interrupted run: marked done WITHOUT
+   * running (their summaries ride in via initialPriorSummaries), so their
+   * dependents unblock and completed work is never redone on resume.
+   */
+  initialDone?: string[];
+  /**
+   * Called with cumulative resume progress (summary list + accepted-epic id
+   * set) after each ACCEPTED epic — the caller persists it so an interrupted
+   * epic mission can resume at the epic boundary with completed work intact.
+   * Deliberately NOT forwarded into split recursion: sub-epic completions
+   * surface as their parent's single summary, keeping persisted progress at
+   * epic granularity.
+   */
+  onProgress?: (progress: { summaries: string[]; completed: string[] }) => void;
+  /**
    * Rail sizing (context auto-size): when an epic exhausts its attempts AND
    * its run reported the session outgrew its context budget (the structured
    * EpicRunResult.budgetStopped field), this is asked to re-plan the epic as
@@ -139,13 +154,29 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
   const maxAttempts = Math.max(1, config.maxAttemptsPerEpic ?? DEFAULT_MAX_ATTEMPTS);
   const ordered = topoOrder(config.epics as DeliveryPhase[]) as Epic[];
 
-  const done = new Set<string>();
+  const done = new Set<string>(config.initialDone ?? []);
   const failed = new Set<string>();
   const priorSummaries: string[] = [...(config.initialPriorSummaries ?? [])];
   const outcomes: EpicOutcome[] = [];
   let totalTurns = 0;
 
   for (const epic of ordered) {
+    // Resume skip: this epic was accepted by the interrupted run. Its summary
+    // already rides in priorSummaries; report it, unblock dependents (via the
+    // seeded done set), and never redo the work — a redo would produce zero
+    // diff, which the anti-no-op rail correctly refuses to accept.
+    if (done.has(epic.id)) {
+      const outcome: EpicOutcome = {
+        epicId: epic.id,
+        accepted: true,
+        attempts: 0,
+        turns: 0,
+        summary: 'accepted by the interrupted run — skipped on resume',
+      };
+      outcomes.push(outcome);
+      config.onEpic?.(epic, outcome);
+      continue;
+    }
     const deps = epic.deps ?? [];
     const blockedBy = deps.filter((d) => failed.has(d) || !done.has(d));
     if (blockedBy.length > 0) {
@@ -243,6 +274,12 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
           epics: chained,
           splitDepth: depthRemaining - 1, // recurse one level shallower (#4c); 0 ⇒ no re-split
           initialPriorSummaries: [...priorSummaries],
+          // Persisted resume progress stays at EPIC granularity: sub-epic
+          // completions surface as the parent's single summary push above.
+          // The parent-level done set must not leak in either — namespaced
+          // sub-epic ids could never match it, but semantics stay explicit.
+          onProgress: undefined,
+          initialDone: undefined,
         });
         epicTurns += subResult.turns; // flows into totalTurns below
         outcomes.push(...subResult.outcomes);
@@ -272,6 +309,7 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
     if (accepted) {
       done.add(epic.id);
       priorSummaries.push(`${epic.title}: ${lastSummary}`.slice(0, 200));
+      config.onProgress?.({ summaries: [...priorSummaries], completed: [...done] });
     } else {
       failed.add(epic.id);
     }

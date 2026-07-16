@@ -27,7 +27,7 @@ import type { StrategySeed } from './explorer.js';
 import { exploreAndCommit } from './explorer.js';
 import type { Judge } from './judge.js';
 import type { Critic } from './critic.js';
-import { CONTEXT_BUDGET_MARKER } from './context-budget.js';
+import { decodeBudgetStop } from './context-budget.js';
 
 export type LoopExecutor = (prompt: string) => Promise<string>;
 
@@ -1046,7 +1046,7 @@ export class ConvergenceLoop {
         candidates: outcome.candidates,
         judgeRationale: outcome.judgeRationale,
         acceptanceMet,
-        ...(outcome.output?.includes(CONTEXT_BUDGET_MARKER) ? { budgetStopped: true } : {}),
+        ...(decodeBudgetStop(outcome.output) ? { budgetStopped: true } : {}),
         durationMs: Date.now() - turnStart,
       };
       history.push(record);

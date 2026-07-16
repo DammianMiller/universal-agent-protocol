@@ -142,3 +142,103 @@ describe('structured budget signal (EpicRunResult.budgetStopped)', () => {
     expect(result.success).toBe(true);
   });
 });
+
+
+describe('runEpics — onProgress persistence hook + resume skip', () => {
+  it('fires with CUMULATIVE progress (summaries + done ids) after each accepted epic, never on failures', async () => {
+    const snapshots: Array<{ summaries: string[]; completed: string[] }> = [];
+    const res = await runEpics({
+      mission: 'm',
+      epics: [
+        { id: 'a', title: 'A', goal: 'a' },
+        { id: 'bad', title: 'Bad', goal: 'b' },
+        { id: 'c', title: 'C', goal: 'c' },
+      ],
+      maxAttemptsPerEpic: 1,
+      runEpic: async (epic) =>
+        epic.id === 'bad' ? fail('nope') : ok(`${epic.id} done`),
+      onProgress: (progress) => snapshots.push(progress),
+    });
+    expect(res.success).toBe(false);
+    expect(snapshots).toHaveLength(2); // a and c only
+    expect(snapshots[0].completed).toEqual(['a']);
+    expect(snapshots[1].completed).toEqual(['a', 'c']);
+    expect(snapshots[1].summaries[0]).toContain('A: a done');
+    expect(snapshots[1].summaries[1]).toContain('C: c done');
+  });
+
+  it('initialDone epics are SKIPPED (0 attempts, accepted) and unblock their dependents', async () => {
+    const ran: string[] = [];
+    const outcomes: Array<{ epicId: string; accepted: boolean; attempts: number }> = [];
+    const res = await runEpics({
+      mission: 'm',
+      epics: [
+        { id: 'auth', title: 'Auth', goal: 'a' },
+        { id: 'ui', title: 'UI', goal: 'u', deps: ['auth'] },
+      ],
+      initialDone: ['auth'],
+      initialPriorSummaries: ['Auth: login shipped'],
+      runEpic: async (epic, ctx) => {
+        ran.push(epic.id);
+        expect(ctx.priorSummaries).toContain('Auth: login shipped');
+        return ok(`${epic.id} done`);
+      },
+      onEpic: (_e, o) => outcomes.push({ epicId: o.epicId, accepted: o.accepted, attempts: o.attempts }),
+    });
+    expect(res.success).toBe(true);
+    expect(ran).toEqual(['ui']); // auth never re-run
+    expect(outcomes[0]).toEqual({ epicId: 'auth', accepted: true, attempts: 0 });
+    expect(res.completed.sort()).toEqual(['auth', 'ui']);
+  });
+
+  it('a skipped epic emits NO onProgress push (its summary already rode in as a prior)', async () => {
+    const snapshots: Array<{ completed: string[] }> = [];
+    await runEpics({
+      mission: 'm',
+      epics: [{ id: 'done-one', title: 'D', goal: 'd' }],
+      initialDone: ['done-one'],
+      runEpic: async () => ok('never runs'),
+      onProgress: (p) => snapshots.push(p),
+    });
+    expect(snapshots).toHaveLength(0);
+  });
+
+  it('seeds from initialPriorSummaries — a resumed mission persists priors + new completions', async () => {
+    const snapshots: Array<{ summaries: string[] }> = [];
+    await runEpics({
+      mission: 'm',
+      epics: [{ id: 'next', title: 'Next', goal: 'n' }],
+      initialPriorSummaries: ['Done-before: earlier epic'],
+      runEpic: async (epic, ctx) => {
+        expect(ctx.priorSummaries).toContain('Done-before: earlier epic');
+        return ok(`${epic.id} done`);
+      },
+      onProgress: (p) => snapshots.push(p),
+    });
+    expect(snapshots[0].summaries).toEqual(['Done-before: earlier epic', expect.stringContaining('Next:')]);
+  });
+
+  it('is NOT forwarded through split recursion — persisted progress stays at epic granularity', async () => {
+    const snapshots: Array<{ summaries: string[]; completed: string[] }> = [];
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'big', title: 'Big', goal: 'huge' }],
+      maxAttemptsPerEpic: 1,
+      splitDepth: 1,
+      runEpic: async (epic) =>
+        epic.id === 'big'
+          ? { success: false, summary: 'over', turns: 1, budgetStopped: true }
+          : ok(`${epic.id} done`),
+      splitEpic: async () => [
+        { id: 'p1', title: 'P1', goal: 'part 1' },
+        { id: 'p2', title: 'P2', goal: 'part 2' },
+      ],
+      onProgress: (p) => snapshots.push(p),
+    });
+    expect(res.success).toBe(true);
+    // Two sub-epics completed inside the recursion but only the PARENT epic
+    // pushed a persisted snapshot (one call, parent id only).
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].completed).toEqual(['big']);
+  });
+});
