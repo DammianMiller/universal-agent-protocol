@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { extractScript, authorAcceptanceGate } from '../../src/delivery/self-gate.js';
+import { mkdirSync } from 'fs';
+import {
+  extractScript,
+  authorAcceptanceGate,
+  deliverableLayout,
+  detectMisTargetedGate,
+  detectWeakWebProxy,
+} from '../../src/delivery/self-gate.js';
 
 describe('self-gate: extractScript', () => {
   it('pulls the script from a fenced ```bash block and guarantees a shebang', () => {
@@ -67,6 +74,74 @@ describe('self-gate: authorAcceptanceGate', () => {
     expect(res.attempts).toBe(2);
     // A script was still produced, so a (weak) rung is returned rather than null.
     expect(res.rung).not.toBeNull();
+  });
+
+  it('re-authors a MIS-TARGETED gate (root-anchored while the app is in a subdir)', async () => {
+    // The deliverable lives in a subdirectory (the space-shooter failure mode).
+    mkdirSync(join(dir, 'space-shooter'), { recursive: true });
+    writeFileSync(join(dir, 'space-shooter', 'index.html'), '<html></html>');
+    let call = 0;
+    const executor = async () => {
+      call += 1;
+      // 1st: checks a ROOT index.html that does not exist (fails on unsolved, but
+      // mis-targeted — the real entry is space-shooter/index.html).
+      // 2nd: a correctly anchored, non-html check that fails for a real reason.
+      return call === 1
+        ? '```bash\ntest -f index.html\n```'
+        : '```bash\ntest -f space-shooter/js/game.js\n```';
+    };
+    const res = await authorAcceptanceGate({ instruction: 'build space shooter', projectRoot: dir, executor });
+    expect(call).toBe(2);
+    expect(res.attempts).toBe(2);
+    expect(res.vacuous).toBe(false);
+    expect(res.notes.some((n) => /structural/i.test(n))).toBe(true);
+  });
+});
+
+describe('self-gate: subdir-aware helpers', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'selfgate-h-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('deliverableLayout flags a subdirectory entry point', () => {
+    mkdirSync(join(dir, 'space-shooter'), { recursive: true });
+    writeFileSync(join(dir, 'space-shooter', 'index.html'), '<html></html>');
+    const { entries, hint } = deliverableLayout(dir);
+    expect(entries).toContain('space-shooter/index.html');
+    expect(hint).toMatch(/SUBDIRECTORY/);
+  });
+
+  it('detectMisTargetedGate fires when a real entry exists elsewhere', () => {
+    mkdirSync(join(dir, 'space-shooter'), { recursive: true });
+    writeFileSync(join(dir, 'space-shooter', 'index.html'), '<html></html>');
+    const fb = detectMisTargetedGate('grep -q x index.html', dir, ['space-shooter/index.html']);
+    expect(fb).toMatch(/does not exist/);
+    expect(fb).toMatch(/space-shooter\/index\.html/);
+  });
+
+  it('detectMisTargetedGate stays silent when the referenced entry exists', () => {
+    mkdirSync(join(dir, 'space-shooter'), { recursive: true });
+    writeFileSync(join(dir, 'space-shooter', 'index.html'), '<html></html>');
+    expect(
+      detectMisTargetedGate('test -f space-shooter/index.html', dir, ['space-shooter/index.html'])
+    ).toBeNull();
+  });
+
+  it('detectMisTargetedGate stays silent when nothing is built yet (no real entry)', () => {
+    // A gate that references a not-yet-created file must NOT be flagged.
+    expect(detectMisTargetedGate('test -f index.html', dir, [])).toBeNull();
+  });
+
+  it('detectWeakWebProxy flags a text-only grep with no asset existence check', () => {
+    expect(detectWeakWebProxy('grep -q "<script" index.html')).toMatch(/actually exist/);
+  });
+
+  it('detectWeakWebProxy is silent when existence is checked', () => {
+    expect(detectWeakWebProxy('grep -q x index.html && test -f js/game.js')).toBeNull();
   });
 });
 

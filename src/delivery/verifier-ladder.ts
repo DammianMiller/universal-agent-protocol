@@ -1052,6 +1052,17 @@ export interface TieredLadderOptions extends LadderOptions {
    * {@link runner}, which would spawn their command verbatim.
    */
   userValidationRunner?: LadderRunFn;
+  /**
+   * Tiers to run EVEN WHEN a cheaper tier already failed (defeating the
+   * cheap-first short-circuit for these tiers only). Their required results
+   * still gate the verdict — a failed acceptance rung keeps the aggregate FAIL —
+   * but they are always executed so a failing model-authored acceptance gate
+   * cannot hide that the artifact actually runs / passes its user paths. The
+   * execution and user-path gates locate the web entry via subdir-aware
+   * discovery, so a correctly built subdirectory deliverable is still exercised
+   * and reported instead of silently SKIPPED. Default: none (preserve cost).
+   */
+  alwaysRunTiers?: GateTier[];
 }
 
 const skippedRung = (rung: GateRung): RungResult => ({
@@ -1119,8 +1130,13 @@ export async function runTieredLadder(
     }
     inScope.push(...tierRungs);
 
-    if (promotionStopped) {
-      // A cheaper tier failed — don't pay for this tier.
+    // Diagnostic tiers (execution smoke, user-path validation) run even after a
+    // cheaper tier failed: their objective PASS/FAIL is exactly the signal a
+    // mis-targeted acceptance gate would otherwise suppress. They never clear the
+    // verdict — the required-rung aggregation below keeps it FAIL.
+    const alwaysRun = (options.alwaysRunTiers ?? []).includes(tier);
+    if (promotionStopped && !alwaysRun) {
+      // A cheaper tier failed — don't pay for this (non-diagnostic) tier.
       for (const rung of tierRungs) results.push(skippedRung(rung));
       continue;
     }

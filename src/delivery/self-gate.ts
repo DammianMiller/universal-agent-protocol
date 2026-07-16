@@ -24,6 +24,7 @@ import { join } from 'path';
 import type { GateRung } from './verifier-ladder.js';
 import type { LoopExecutor } from './convergence-loop.js';
 import { sanitizedEnv } from './sanitized-env.js';
+import { discoverEntryPages } from './visual-gate.js';
 
 const GATE_DIR = '.uap-deliver';
 const GATE_FILE = 'verify.sh';
@@ -86,10 +87,75 @@ export function scriptParses(script: string): { ok: boolean; error?: string } {
   return { ok: false, error: error.slice(0, 200) };
 }
 
+/**
+ * Where the deliverable's web entry point(s) actually live, for the gate author.
+ * Reuses discoverEntryPages (which recurses into subdirectories) so a gate for a
+ * subproject app — e.g. `space-shooter/index.html` — is anchored at the real
+ * path instead of an assumed root `index.html`. That root-vs-subdir mismatch is
+ * exactly what made a correctly built subdir game fail its acceptance gate
+ * forever ("No JavaScript files found" / scripts checked at the wrong path).
+ */
+export function deliverableLayout(projectRoot: string): { entries: string[]; hint: string } {
+  let entries: string[] = [];
+  try {
+    entries = discoverEntryPages(projectRoot);
+  } catch {
+    entries = [];
+  }
+  if (entries.length === 0) return { entries, hint: '' };
+  const inSubdir = entries.some((e) => e.includes('/'));
+  const list = entries.map((e) => `    ${e}`).join('\n');
+  const hint = inSubdir
+    ? [
+        'DELIVERABLE LAYOUT — the entry point(s) live in a SUBDIRECTORY:',
+        list,
+        'Anchor EVERY path check at these actual paths (cd into that directory, or',
+        'prefix paths with it). Do NOT assume a root-level index.html or that the',
+        'source files sit at the repository root.',
+      ].join('\n')
+    : ['DELIVERABLE LAYOUT — detected entry point(s):', list].join('\n');
+  return { entries, hint };
+}
+
+/**
+ * Detect an acceptance gate anchored at the WRONG location: it checks for an
+ * HTML entry that does not exist while the deliverable's real entry was
+ * discovered elsewhere (e.g. it asserts a root `index.html` but the app lives in
+ * `space-shooter/index.html`). Such a gate fails forever regardless of the work
+ * — indistinguishable from "not done" to the non-vacuity floor — so we force a
+ * re-author with corrective feedback naming the discovered entry.
+ *
+ * Conservative by design: it only fires when a DIFFERENT real entry EXISTS on
+ * disk, so a gate that legitimately references a not-yet-created file (the work
+ * will create it) is never flagged.
+ */
+export function detectMisTargetedGate(
+  script: string,
+  projectRoot: string,
+  entries: string[]
+): string | null {
+  const realEntries = entries.filter((e) => existsSync(join(projectRoot, e)));
+  if (realEntries.length === 0) return null; // nothing built yet — cannot judge
+  const refs = new Set<string>();
+  for (const m of script.matchAll(/["'`\s(]([\w./-]+\.html)\b/g)) refs.add(m[1]);
+  if (refs.size === 0) return null;
+  for (const ref of refs) {
+    if (existsSync(join(projectRoot, ref))) continue; // referenced entry exists — fine
+    if (realEntries.includes(ref)) continue; // is a discovered entry — fine
+    return (
+      `the gate checks "${ref}", which does not exist. The deliverable's entry ` +
+      `point is: ${realEntries.join(', ')}. Anchor the checks there (the app ` +
+      `lives in a subdirectory, not the repository root).`
+    );
+  }
+  return null;
+}
+
 function buildAuthorPrompt(
   instruction: string,
   projectRoot: string,
-  priorFeedback: string | null
+  priorFeedback: string | null,
+  layoutHint: string
 ): string {
   const retry = priorFeedback
     ? `\n\nYour previous script was rejected because: ${priorFeedback}\nWrite a stricter script that genuinely verifies the required outcome.`
@@ -100,15 +166,23 @@ function buildAuthorPrompt(
     `TASK:\n${instruction}`,
     '',
     `PROJECT ROOT: ${projectRoot}`,
+    layoutHint ? `\n${layoutHint}` : '',
     '',
     'Write a self-contained POSIX bash script that:',
     '  - exits 0 ONLY if the task is fully and correctly completed',
     '  - exits non-zero otherwise (print a short reason to stderr)',
     '  - checks concrete, observable evidence: expected files exist, a program',
     '    builds/runs, output matches what the task requires',
+    '  - resolves every path relative to the entry point shown above, not an',
+    '    assumed repository root',
+    '  - for a WEB deliverable, does NOT rely on text-matching alone: a page that',
+    '    references scripts/styles which do not resolve to a real file (a 404 at',
+    '    runtime) is a FAILURE, even though the `<script src=...>` text is present.',
+    '    For each referenced asset, verify the file EXISTS at its resolved path',
+    '    (relative to the HTML file), then — where feasible — that the program',
+    '    actually builds or the page loads without missing resources.',
     '  - uses ONLY the repository and standard tools (no network, no access to',
     '    any hidden test harness)',
-    '  - is runnable from the project root',
     '',
     'CRITICAL: the script must FAIL right now, on the current unsolved repo,',
     'and only PASS once the task has actually been done. Do not write a check',
@@ -117,6 +191,26 @@ function buildAuthorPrompt(
     'Output ONLY the script inside a single ```bash code block.',
     retry,
   ].join('\n');
+}
+
+/**
+ * A gate that only greps HTML text for tags/paths — without confirming the
+ * referenced assets resolve to real files — is a weak proxy: it passes on a
+ * page whose scripts 404. Returns feedback to strengthen such a gate, or null.
+ * Heuristic and conservative (only nudges when it sees grep-on-html with no
+ * existence check of the referenced assets).
+ */
+export function detectWeakWebProxy(script: string): string | null {
+  const grepsHtml = /\bgrep\b[^\n]*\.html\b/.test(script) || /<script[^>]*src=/.test(script);
+  if (!grepsHtml) return null;
+  const checksExistence = /\[\s+-[ef]\s|\btest\s+-[ef]\b|\[\[\s+-[ef]\s/.test(script);
+  if (checksExistence) return null;
+  return (
+    'it matches text in the HTML but never checks that the referenced assets ' +
+    '(scripts/styles) actually exist on disk — a page whose <script src> 404s ' +
+    'would still pass. Add existence checks (test -f) for each referenced asset ' +
+    'at its resolved path.'
+  );
 }
 
 /** Run the candidate gate against the current repo state. */
@@ -154,13 +248,17 @@ export async function authorAcceptanceGate(opts: SelfGateOptions): Promise<SelfG
   const scriptPath = join(gateDir, GATE_FILE);
   if (!existsSync(gateDir)) mkdirSync(gateDir, { recursive: true });
 
+  // Anchor the gate author at the deliverable's real entry point(s) — including
+  // a subdirectory app — so the generated check does not assume the repo root.
+  const { entries, hint: layoutHint } = deliverableLayout(projectRoot);
+
   let priorFeedback: string | null = null;
   let producedAny = false;
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     let response: string;
     try {
-      response = await executor(buildAuthorPrompt(instruction, projectRoot, priorFeedback));
+      response = await executor(buildAuthorPrompt(instruction, projectRoot, priorFeedback, layoutHint));
     } catch (err) {
       notes.push(`attempt ${attempt}: model error authoring gate`);
       priorFeedback = `the authoring call errored (${String(err).slice(0, 80)})`;
@@ -201,6 +299,20 @@ export async function authorAcceptanceGate(opts: SelfGateOptions): Promise<SelfG
       // Vacuous: passes on the unsolved repo. Reject and retry stricter.
       notes.push(`attempt ${attempt}: gate passed on the UNSOLVED repo — too weak, regenerating`);
       priorFeedback = 'it passed on the unsolved repository (it must fail until the work is done)';
+      continue;
+    }
+
+    // A gate that fails on the unsolved repo can still be USELESS if it is
+    // anchored at the wrong path (fails forever regardless of the work) or is a
+    // text-only web proxy (passes on a page whose scripts 404). Re-author on such
+    // structural defects — this is the harness correcting a mis-targeted gate
+    // without ever exposing the protected script to the model — bounded by the
+    // attempt budget so the last attempt is still accepted rather than lost.
+    const structuralIssue =
+      detectMisTargetedGate(script, projectRoot, entries) ?? detectWeakWebProxy(script);
+    if (structuralIssue && attempt < attempts) {
+      notes.push(`attempt ${attempt}: gate rejected (structural) — ${structuralIssue.slice(0, 80)}`);
+      priorFeedback = structuralIssue;
       continue;
     }
 

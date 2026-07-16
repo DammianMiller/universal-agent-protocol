@@ -503,7 +503,18 @@ export function acquireDeliverLock(projectRoot: string): (() => void) | null {
     try {
       fd = openSync(lockPath, 'wx');
     } catch {
-      return null;
+      // Lost the create race, OR a lock reappeared between the reclaim above and
+      // this create. Re-check the holder: a DEAD holder means the winner has
+      // itself exited (or a stale lock raced back in) — reclaim and retry once
+      // instead of spuriously skipping. A LIVE holder is a real concurrent run.
+      try {
+        const held = Number((readFileSync(lockPath, 'utf8').split('|')[0] || '').trim());
+        if (held && held !== process.pid && pidAlive(held)) return null; // live holder — skip
+        rmSync(lockPath);
+        fd = openSync(lockPath, 'wx'); // single retry; if this throws we skip below
+      } catch {
+        return null;
+      }
     }
     writeSync(fd, `${process.pid}|${new Date().toISOString()}`);
     closeSync(fd);
@@ -1520,6 +1531,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // at all, which is exactly what happened live. The gate that decides DONE is
   // this one; enforcing it only in verify left the real door open.
   const deliverFidelity = resolveFidelity(projectRoot);
+  // Diagnostic-on-failure: run the objective execution smoke and user-path
+  // validation EVEN WHEN the (model-authored) acceptance gate fails, so a
+  // correctly built subdirectory deliverable is exercised and reported instead
+  // of silently SKIPPED behind a mis-targeted acceptance script. The verdict is
+  // unchanged — a failed required rung still fails delivery. Off-switch for the
+  // extra per-failing-turn cost: UAP_DELIVER_NO_DIAGNOSTICS_ON_FAIL=1.
+  const alwaysRunTiers: GateTier[] =
+    process.env.UAP_DELIVER_NO_DIAGNOSTICS_ON_FAIL === '1' ? [] : ['runtime', 'final'];
   const tieredRunner: LadderRunFn = (r, root, opts) =>
     runTieredLadder(r, root, {
       ...opts,
@@ -1528,6 +1547,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       runner: runLadder,
       deployDevRunner: runDeployDevLadder,
       userValidationRunner: createUserValidationRunner(),
+      alwaysRunTiers,
     });
   // Behavioral-completeness feedback: once objective gates pass, the acceptance
   // judge checks the spec's requirements against the produced code and feeds

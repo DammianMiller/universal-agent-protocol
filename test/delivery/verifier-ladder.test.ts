@@ -7,11 +7,14 @@ import {
   detectMigrationRung,
   runLadder,
   runRung,
+  runTieredLadder,
   formatFeedback,
   demoteBaselineFailures,
   BASELINE_DEMOTION_NOTE,
   type GateRung,
   type RungResult,
+  type LadderResult,
+  type LadderRunFn,
 } from '../../src/delivery/verifier-ladder.js';
 
 function rung(id: string, command: string, args: string[], required = true): GateRung {
@@ -305,5 +308,59 @@ describe('verifier-ladder', () => {
       expect(feedback).toContain('OPTIONAL');
       expect(feedback).toContain('Do not prioritize it over the task goal');
     });
+  });
+});
+
+describe('runTieredLadder: alwaysRunTiers (diagnostics on failure)', () => {
+  // Mock inner runner: passes every rung except ids in `fail`.
+  const mockRunner = (fail: Set<string>, seen: string[]): LadderRunFn => (rungs): LadderResult => {
+    for (const r of rungs) seen.push(r.id);
+    const results: RungResult[] = rungs.map((r) => ({
+      id: r.id,
+      name: r.name,
+      passed: !fail.has(r.id),
+      skipped: false,
+      exitCode: fail.has(r.id) ? 1 : 0,
+      durationMs: 0,
+      outputTail: '',
+    }));
+    const req = results.filter((_, i) => rungs[i].required);
+    return {
+      passed: req.every((r) => r.passed),
+      score: results.filter((r) => r.passed).length / (results.length || 1),
+      results,
+      feedback: '',
+    };
+  };
+
+  const acceptance: GateRung = { ...rung('acceptance', 'bash', ['-c', 'x']), tier: 'fast' };
+  const execution: GateRung = { ...rung('exec', 'bash', ['-c', 'x']), tier: 'runtime' };
+
+  it('SKIPS a later tier when a cheaper required tier fails (default cheap-first)', async () => {
+    const seen: string[] = [];
+    const res = await runTieredLadder([acceptance, execution], '/tmp', {
+      runner: mockRunner(new Set(['acceptance']), seen),
+      maxTier: 'runtime',
+    });
+    expect(res.passed).toBe(false);
+    expect(seen).toContain('acceptance');
+    expect(seen).not.toContain('exec');
+    expect(res.results.find((r) => r.id === 'exec')?.skipped).toBe(true);
+  });
+
+  it('RUNS the diagnostic tier even after acceptance fails, keeping the verdict FAIL', async () => {
+    const seen: string[] = [];
+    const res = await runTieredLadder([acceptance, execution], '/tmp', {
+      runner: mockRunner(new Set(['acceptance']), seen),
+      maxTier: 'runtime',
+      alwaysRunTiers: ['runtime'],
+    });
+    // Execution ran (not skipped) and objectively passed — the signal a
+    // mis-targeted acceptance gate would otherwise have suppressed.
+    expect(seen).toContain('exec');
+    expect(res.results.find((r) => r.id === 'exec')?.passed).toBe(true);
+    expect(res.results.find((r) => r.id === 'exec')?.skipped).toBeFalsy();
+    // Verdict is still FAIL — acceptance is required and failed.
+    expect(res.passed).toBe(false);
   });
 });
