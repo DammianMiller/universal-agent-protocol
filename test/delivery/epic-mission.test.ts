@@ -433,3 +433,72 @@ describe('PR #519 follow-up behaviors', () => {
     expect(splitCalls.length).toBe(1);
   });
 });
+
+
+describe('epic resume fidelity (plan persistence + priors + done set)', () => {
+  it('a resumed mission feeds prior-epic summaries into the first scoped prompt as ALREADY BUILT', async () => {
+    const scopes: string[] = [];
+    await runEpicMission(
+      baseDeps({
+        planEpics: async () => [phase('next-epic'), phase('final-epic')],
+        initialPriorSummaries: ['auth-epic: login + sessions shipped'],
+        runEpicLoop: async (scoped) => {
+          scopes.push(scoped);
+          return ok();
+        },
+      })
+    );
+    expect(scopes[0]).toContain('ALREADY BUILT');
+    expect(scopes[0]).toContain('auth-epic: login + sessions shipped');
+  });
+
+  it('persistPlan captures the SHAPED plan up front; persistCompleted grows progress per accepted epic', async () => {
+    const plans: string[][] = [];
+    const progress: Array<{ summaries: string[]; completed: string[] }> = [];
+    await runEpicMission(
+      baseDeps({
+        planEpics: async () => [phase('one'), phase('two')],
+        persistPlan: (epics) => plans.push(epics.map((e) => e.id)),
+        persistCompleted: (p) => progress.push(p),
+      })
+    );
+    expect(plans).toEqual([['one', 'two']]); // once, before execution
+    expect(progress).toHaveLength(2);
+    expect(progress[0].completed).toEqual(['one']);
+    expect(progress[1].completed).toEqual(['one', 'two']);
+  });
+
+  it('RESUME: a persisted plan skips replanning entirely and initialDone epics are not re-run', async () => {
+    let planCalls = 0;
+    const ran: string[] = [];
+    const r = await runEpicMission(
+      baseDeps({
+        planEpics: async () => {
+          planCalls++;
+          return [phase('should-not-be-used')];
+        },
+        initialEpics: [phase('done-epic'), phase('todo-epic')],
+        initialDone: ['done-epic'],
+        initialPriorSummaries: ['done-epic: shipped already'],
+        runEpicLoop: async (scoped) => {
+          ran.push(scoped.includes('todo-epic') ? 'todo-epic' : 'other');
+          return ok();
+        },
+      })
+    );
+    expect(planCalls).toBe(0); // deterministic resume — no replanning
+    expect(ran).toEqual(['todo-epic']); // completed epic skipped
+    expect(r.success).toBe(true);
+  });
+
+  it('a persisted SINGLE-epic plan is not re-shaped into the mission fallback (id preserved)', async () => {
+    const plans: string[][] = [];
+    await runEpicMission(
+      baseDeps({
+        initialEpics: [phase('solo-epic')],
+        persistPlan: (epics) => plans.push(epics.map((e) => e.id)),
+      })
+    );
+    expect(plans).toEqual([['solo-epic']]); // NOT swapped for a 'mission' epic
+  });
+});

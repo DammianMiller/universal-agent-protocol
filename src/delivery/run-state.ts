@@ -30,12 +30,17 @@ export interface DeliverRunState {
   /** Decomposed missions: the phase plan and the index of the phase in flight. */
   phases?: DeliveryPhase[];
   phaseIndex?: number;
-  /** Which runner executed the fresh run. Resume always takes the phased
-   * (cursor-honoring) path; a mismatch here triggers a loud downgrade
-   * warning instead of a silent execution-model switch. */
+  /** Which runner executed the fresh run. Epic-kind resumes re-enter the
+   * epic path; everything else takes the phased (cursor-honoring) path, and
+   * a mismatch triggers a loud downgrade warning instead of a silent
+   * execution-model switch. */
   runnerKind?: 'single' | 'phased' | 'orchestrated' | 'epic';
-  /** One-line summaries of completed phases (harness-owned, injected into later phases). */
+  /** One-line summaries of completed phases — or, for epic-kind runs,
+   * completed EPICS (harness-owned, injected into later phases/epics). */
   phaseSummaries?: string[];
+  /** Epic-kind runs: ids of epics ACCEPTED so far. Resume marks these done in
+   * the controller so completed work is skipped, never redone. */
+  completedEpicIds?: string[];
   /** Task-DB id opened for this mission, so --resume reuses it instead of duplicating. */
   taskId?: string;
   /** OS pid of the deliver process that owns this run (operator cancel target). */
@@ -188,6 +193,14 @@ function readState(projectRoot: string, runId: string): DeliverRunState | null {
         .slice(0, MAX_PHASES * 2)
         .filter((x): x is string => typeof x === 'string')
         .map((x) => x.slice(0, MAX_SUMMARY_CHARS));
+    }
+    if (parsed.completedEpicIds !== undefined) {
+      if (!Array.isArray(parsed.completedEpicIds)) return null;
+      // Same id shape the planner emits, plus dots for namespaced split ids
+      // (defensive — split sub-epics are never persisted at top level).
+      parsed.completedEpicIds = parsed.completedEpicIds
+        .slice(0, MAX_PHASES * 2)
+        .filter((x): x is string => typeof x === 'string' && /^[a-z0-9][a-z0-9.-]{0,63}$/.test(x));
     }
     if (parsed.taskId !== undefined && (typeof parsed.taskId !== 'string' || !/^uap-[0-9a-f]{8}$/.test(parsed.taskId))) {
       delete parsed.taskId;

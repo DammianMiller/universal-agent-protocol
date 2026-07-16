@@ -15,6 +15,8 @@ import {
   CONTEXT_BUDGET_MARKER,
   DEFAULT_SESSION_TOKEN_BUDGET,
   SESSION_WORKING_FRACTION,
+  formatBudgetStop,
+  decodeBudgetStop,
 } from '../../src/delivery/context-budget.js';
 import { planDeliveryPhases } from '../../src/delivery/decompose.js';
 import { runEpics, type Epic, type EpicRunResult } from '../../src/delivery/epic-controller.js';
@@ -381,5 +383,34 @@ describe('runEpics — split on context-budget exhaustion', () => {
     });
     expect(splitCalls).toBeGreaterThan(1); // split at level 1 AND again at level 2
     expect(res.success).toBe(true);
+  });
+});
+
+
+describe('budget-stop wire protocol codec', () => {
+  it('formatBudgetStop output round-trips through decodeBudgetStop', () => {
+    const out = formatBudgetStop({ estimatedTokens: 9000, budget: 5734, rounds: 3, summaries: ['built a', 'built b'] });
+    expect(decodeBudgetStop(out)).toBe(true);
+    expect(out.startsWith(CONTEXT_BUDGET_MARKER)).toBe(true);
+    expect(out).toContain('~9000 of 5734');
+    expect(out).toContain('after 3 round(s)');
+    expect(out).toContain('built a; built b');
+  });
+
+  it('formatBudgetStop keeps only the last 5 summaries and handles none', () => {
+    const many = formatBudgetStop({ estimatedTokens: 1, budget: 1, rounds: 1, summaries: ['s1', 's2', 's3', 's4', 's5', 's6', 's7'] });
+    expect(many).not.toContain('s1;');
+    expect(many).toContain('s3; s4; s5; s6; s7');
+    const none = formatBudgetStop({ estimatedTokens: 1, budget: 1, rounds: 0, summaries: [] });
+    expect(none).toContain('Work completed so far: none');
+  });
+
+  it('decodeBudgetStop: false on plain output / empty / undefined; true on marker anywhere (substring semantics)', () => {
+    expect(decodeBudgetStop('all tests green, delivered')).toBe(false);
+    expect(decodeBudgetStop('')).toBe(false);
+    expect(decodeBudgetStop(undefined)).toBe(false);
+    expect(decodeBudgetStop(null)).toBe(false);
+    // Substring on purpose: wrappers may prepend text to the session output.
+    expect(decodeBudgetStop(`wrapper preamble\n${CONTEXT_BUDGET_MARKER} session reached budget`)).toBe(true);
   });
 });

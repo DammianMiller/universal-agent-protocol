@@ -29,7 +29,8 @@ import type { TaskComplexity } from '../models/types.js';
 import { measureQueryComplexity } from '../utils/query-complexity.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
 import { applyPendingIntents } from '../delivery/pending-intents.js';
-import { runAcceptanceGate, formatAcceptanceReport, createAcceptanceChurnBreaker, type AcceptanceResult } from '../delivery/acceptance-judge.js';
+import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
+import { createSpecRegistry } from '../delivery/spec-registry.js';
 import { runExecutionGate } from '../delivery/execution-gate.js';
 import { runVisualGate, visualRuntimeNote } from '../delivery/visual-gate.js';
 import type { AcceptanceGate } from '../delivery/convergence-loop.js';
@@ -1548,45 +1549,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   }
   // Phased missions re-point the judge at the current phase's goal — judging
   // phase 1 against the FULL mission would fail every phase by construction.
-  let acceptanceSpec = instruction;
-  // Parallel orchestrated tasks run in ISOLATED worktree roots; each loop's
-  // judge must grade against ITS task's spec, not a shared mutable. The
-  // acceptance gate resolves by the root it is invoked with; the phased and
-  // epic paths (single loop at a time) keep using the shared variable.
-  const acceptanceSpecByRoot = new Map<string, string>();
-  // Secondary-judge churn breaker: bounds consecutive judge rejections of
-  // objectively-green turns per spec (env UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT,
-  // default 2), after which the objective gates win. Primary mode is exempt.
-  // Change-evidence for the breaker's zero-diff guard: files applied since the
-  // current acceptance spec (epic) began. Incremented by the iteration hook,
-  // reset wherever acceptanceSpec is re-pointed.
-  // Per-ROOT under parallel dispatch: concurrent loops must not zero or
-  // inflate each other's evidence (an inflated count could let the breaker
-  // accept a task with zero writes of its own). projectRoot's entry is the
-  // historic shared counter the phased/epic paths keep using.
-  const writesByRoot = new Map<string, { writes: number }>();
-  const evidenceFor = (root: string): { writes: number } => {
-    let e = writesByRoot.get(root);
-    if (!e) {
-      e = { writes: 0 };
-      writesByRoot.set(root, e);
-    }
-    return e;
-  };
-  const specChangeEvidence = evidenceFor(projectRoot);
-  // Breaker state is per SPEC: one shared instance thrashes its current-spec
-  // slot under parallel dispatch and can then never trip.
-  const acceptanceFlipLimit = Number(process.env.UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT ?? 2);
-  const acceptanceBreakers = new Map<string, ReturnType<typeof createAcceptanceChurnBreaker>>();
-  const breakerFor = (spec: string, root: string): ReturnType<typeof createAcceptanceChurnBreaker> => {
-    let b = acceptanceBreakers.get(spec);
-    if (!b) {
-      if (acceptanceBreakers.size > 100) acceptanceBreakers.clear(); // runaway guard
-      b = createAcceptanceChurnBreaker(acceptanceFlipLimit, () => evidenceFor(root).writes > 0);
-      acceptanceBreakers.set(spec, b);
-    }
-    return b;
-  };
+  // Per-root specs, write evidence, and churn breakers live in the registry
+  // (see src/delivery/spec-registry.ts for the parallel-dispatch semantics).
+  const specs = createSpecRegistry({
+    initialSpec: instruction,
+    sharedRoot: projectRoot,
+    flipLimit: Number(process.env.UAP_DELIVER_ACCEPTANCE_FLIP_LIMIT ?? 2),
+  });
   const acceptanceGate: AcceptanceGate | undefined = options.acceptance && !skipJudgeForSimple
     ? async (root) => {
         // Primary mode: the only objective rung is the trivial bootstrap, and the
@@ -1618,7 +1587,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // gates all passed — hand the judge that fact as evidence, so
         // requirements like "make the tests pass" are graded on the gate
         // result instead of speculated about from static code.
-        const resolvedSpec = acceptanceSpecByRoot.get(root) ?? acceptanceSpec;
+        const resolvedSpec = specs.resolve(root);
         const uvNote = buildUserPathsNote(root);
         const baseNote = acceptancePrimary
           ? visualNote
@@ -1635,7 +1604,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // objective gates ALL passed, so a bounded number of consecutive judge
         // rejections hands the verdict back to the gates instead of wedging.
         if (!acceptancePrimary) {
-          const checked = breakerFor(resolvedSpec, root).check(resolvedSpec, verdict);
+          const checked = specs.breaker(resolvedSpec, root).check(resolvedSpec, verdict);
           if (checked.overridden) {
             console.log(
               chalk.yellow(
@@ -1685,7 +1654,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       (record) => printProgress(record),
       (record) => {
         // Feed the acceptance breaker's zero-diff guard.
-        if (record.filesApplied.length > 0) evidenceFor(evidenceRoot).writes += record.filesApplied.length;
+        specs.recordWrites(evidenceRoot, record.filesApplied.length);
         return undefined;
       },
       (record) => haloTracer.onIteration(record),
@@ -1793,10 +1762,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // single-session context thrash — and a trivial mission simply decomposes to
   // one epic, so the wrapper is cheap. Disable per-run with --no-epics /
   // UAP_DELIVER_EPICS=0 / `.uap.json` deliver.epics false|'off'. Never on
-  // self-gate or resume (those are special single-pass modes).
+  // self-gate. A resume re-enters the epic path ONLY when the interrupted
+  // run was epic-kind: completed epics carry forward as prior summaries and
+  // the mid-epic loop checkpoint is discarded (epics restart at the epic
+  // boundary). Non-epic resumes stay on the cursor-honoring paths below.
   const cfgEpics = (cfgRaw.deliver as Record<string, unknown> | undefined)?.epics;
   const epicsEnabled =
-    !needsSelfGate && !resumeState &&
+    !needsSelfGate &&
+    (!resumeState || resumeState.runnerKind === 'epic') &&
     options.epics !== false &&
     process.env.UAP_DELIVER_EPICS !== '0' &&
     cfgEpics !== false && cfgEpics !== 'off';
@@ -1893,7 +1866,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // a silent de-escalation. Falls back to the normal executor when no
   // stronger model is configured in this environment.
   let runExecutor = executor;
-  if (resumeCheckpoint?.modelEscalated) {
+  // Epic-kind resumes never use runExecutor (fresh epic loops re-escalate on
+  // their own) and discard the checkpoint at the dispatch — a re-bind message
+  // here would falsely claim the escalation carried over.
+  if (resumeCheckpoint?.modelEscalated && !epicsEnabled) {
     if (escalateExecutor && !agentic) {
       // Agentic runs keep their tool-loop executor: the blind escalation
       // executor pairs with the noop applier and would never touch the repo.
@@ -1975,18 +1951,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
                 ? chalk.cyan(line)
                 : chalk.dim(line)
         ),
-      beginTaskSpec: (root, spec) => {
-        acceptanceSpecByRoot.set(root, spec);
-        if (root === projectRoot) acceptanceSpec = spec;
-        evidenceFor(root).writes = 0;
-      },
-      endTaskSpec: (root) => {
-        acceptanceSpecByRoot.delete(root);
-        // An in-tree task re-pointed the shared spec; restore the mission-
-        // level spec so a later watch-ci re-converge never judges against a
-        // stale task prompt.
-        if (root === projectRoot) acceptanceSpec = missionText;
-      },
+      beginTaskSpec: (root, spec) => specs.begin(root, spec),
+      // Restore the mission-level spec after an in-tree task so a later
+      // watch-ci re-converge never judges against a stale task prompt.
+      endTaskSpec: (root) => specs.end(root, missionText),
       openTask: (title) => openDeliveryTask(title, projectRoot, parentTaskId),
       completeTask: (record, r) => completeDeliveryTask(record, r),
       // P3 — per-task memory retrieval: pull the few most relevant established
@@ -2105,10 +2073,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         if (resume) resumeCheckpoint = undefined; // consumed by this loop
         return loop.deliver(prompt);
       },
-      setPhaseSpec: (spec) => {
-        acceptanceSpec = spec;
-        specChangeEvidence.writes = 0;
-      },
+      setPhaseSpec: (spec) => specs.setShared(spec),
       openTask: (title) => openDeliveryTask(title, projectRoot, missionTask?.id),
       completeTask: (record, r) => completeDeliveryTask(record, r),
       persistCursor: (index) => {
@@ -2168,6 +2133,27 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           thoughtExperiment: false,
         }),
       epicParallelTasks,
+      // Deterministic epic-boundary resume: reuse the PERSISTED plan and
+      // accepted-epic set — replanning on resume would mint new epic ids
+      // (resetting the completion ledger's done marks) and draw new
+      // boundaries over already-built work, which the anti-no-op rail then
+      // refuses to accept (a wedge).
+      initialEpics: resumeState?.runnerKind === 'epic' ? resumeState.phases : undefined,
+      initialDone: resumeState?.runnerKind === 'epic' ? (resumeState.completedEpicIds ?? []) : [],
+      initialPriorSummaries:
+        resumeState?.runnerKind === 'epic' ? (resumeState.phaseSummaries ?? []) : [],
+      persistPlan: (plan) => {
+        runState.phases = plan;
+        saveRunState(runState);
+      },
+      persistCompleted: ({ summaries, completed }) => {
+        runState.phaseSummaries = [...summaries];
+        runState.completedEpicIds = [...completed];
+        // The checkpoint belongs to the finished epic (phased-path parity) —
+        // never seed a later loop with a completed epic's session state.
+        runState.checkpoint = undefined;
+        saveRunState(runState);
+      },
       runOrchestrated: (missionText, plan, parentTaskId) =>
         runOrchestratedMissionCore(buildOrchestratedDeps(missionText, plan, epicParallelTasks, parentTaskId)),
       runEpicLoop: async (scoped) => {
@@ -2178,10 +2164,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         );
         return loop.deliver(scoped);
       },
-      setEpicSpec: (spec) => {
-        acceptanceSpec = spec;
-        specChangeEvidence.writes = 0; // fresh epic — breaker needs fresh diff evidence
-      },
+      setEpicSpec: (spec) => specs.setShared(spec), // fresh epic — breaker needs fresh diff evidence
       judgeEpic:
         options.acceptance && !skipJudgeForSimple
           ? async (spec) => {
@@ -2300,15 +2283,15 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         console.log(chalk.dim('  lazy attempt did not pass — engaging the full convergence stack'));
       }
     }
-    // Resume downgrade warning: resumes always take a cursor-honoring
-    // sequential path — phased when a phase plan was persisted, otherwise the
-    // single flat loop — but the ORIGINAL run may have executed as epic or
-    // orchestrated: different prompts, no contract publication, DAG flattened
-    // to linear order. Loud, never silent — and NOT gated on the phases
-    // array, because epic runs never persist one and interrupted epic runs
-    // are the most common resume case.
+    // Resume routing: an epic-kind resume re-enters the epic path (fidelity —
+    // completed epics carry forward as prior summaries). Everything else takes
+    // a cursor-honoring sequential path — phased when a phase plan was
+    // persisted, otherwise the single flat loop. When that CHANGES the
+    // execution model (e.g. an epic run resumed under --no-epics), warn
+    // loudly, never silently: different prompts, no contract publication,
+    // DAG flattened to linear order.
     if (resumeState?.runnerKind) {
-      const resumeTarget = phases && phases.length >= 2 ? 'phased' : 'single';
+      const resumeTarget = epicsEnabled ? 'epic' : phases && phases.length >= 2 ? 'phased' : 'single';
       if (resumeState.runnerKind !== resumeTarget) {
         const targetDesc =
           resumeTarget === 'phased'
@@ -2326,6 +2309,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       saveRunState(runState);
       result = result!;
     } else if (epicsEnabled) {
+      if (resumeState && resumeCheckpoint) {
+        console.log(
+          chalk.dim(
+            '  resume: mid-epic loop checkpoint discarded — epic missions resume at the epic boundary (completed epics carry forward as summaries).'
+          )
+        );
+        resumeCheckpoint = undefined;
+      }
       runState.runnerKind = 'epic';
       saveRunState(runState);
       result = await runEpicMission();
@@ -2355,8 +2346,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       // Re-point the judge at the MISSION: epic/phased runners leave
       // acceptanceSpec on the LAST epic/phase spec, and a re-converge pass
       // would otherwise be judged against that stale slice.
-      acceptanceSpec = instruction;
-      specChangeEvidence.writes = 0; // evidence resets wherever the spec re-points
+      specs.setShared(instruction); // evidence resets wherever the spec re-points
       const branch = currentBranch(projectRoot) ?? undefined;
       result = await runCiReconverge({
         instruction,

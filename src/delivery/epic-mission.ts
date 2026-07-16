@@ -71,6 +71,34 @@ export interface EpicMissionDeps {
   /** Completion-ledger lifecycle (best-effort; caller wraps init/mark). */
   ledgerInit?: (items: Array<{ id: string; title: string; deps?: string[] }>) => void;
   ledgerMark?: (id: string, status: 'done' | 'failed', note?: string) => void;
+  /**
+   * The PERSISTED epic plan from an interrupted run. When provided (and ≥1),
+   * planEpics is skipped entirely: resume must be deterministic — replanning
+   * would mint new epic ids (resetting the completion ledger's done marks)
+   * and draw new boundaries over already-built work, which the anti-no-op
+   * rail then refuses to accept.
+   */
+  initialEpics?: DeliveryPhase[];
+  /**
+   * Ids of epics ACCEPTED by the interrupted run: marked done without running
+   * (their summaries ride in via initialPriorSummaries), so dependents
+   * unblock and completed work is never redone.
+   */
+  initialDone?: string[];
+  /**
+   * Prior-epic summaries carried over from an INTERRUPTED run (resume at the
+   * epic boundary): the remaining epics see them as "already built" context,
+   * exactly like same-run priors.
+   */
+  initialPriorSummaries?: string[];
+  /** Persist the (fallback-shaped) epic plan before execution starts, so an
+   * interruption at ANY point can resume against the same plan. Fail-soft. */
+  persistPlan?: (epics: DeliveryPhase[]) => void;
+  /**
+   * Persist cumulative resume progress after each accepted epic: the summary
+   * list AND the accepted-epic id set. Fail-soft.
+   */
+  persistCompleted?: (progress: { summaries: string[]; completed: string[] }) => void;
   /** Currently locked contract files (read view, refreshed per use). */
   lockedContracts: () => string[];
   /** Lock an accepted contracts epic's files; returns what was newly locked. */
@@ -98,8 +126,13 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
     history: [], finalFeedback: '', finalOutput: '', totalDurationMs: 0,
   };
 
-  const planned = await deps.planEpics();
-  const epics: Epic[] = (planned.length >= 2
+  // Resume determinism: a persisted plan wins over replanning (see the
+  // initialEpics doc above for why). A persisted plan is already
+  // fallback-shaped, so it also bypasses the degenerate-plan fallback —
+  // re-shaping a persisted single-epic plan would swap its id.
+  const persisted = deps.initialEpics && deps.initialEpics.length >= 1 ? deps.initialEpics : undefined;
+  const planned = persisted ?? (await deps.planEpics());
+  const epics: Epic[] = (persisted || planned.length >= 2
     ? planned
     : [{ id: 'mission', title: 'Mission', goal: deps.instruction }]
   ).map((ph) => ({
@@ -114,6 +147,13 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
     ...(ph.criteria?.length ? { criteria: ph.criteria } : {}),
   }));
   note(`🗂  epic controller: ${epics.length} epic(s): ${epics.map((e) => e.title).join(' → ')}`);
+  // Persist the shaped plan BEFORE execution: an interruption at any point
+  // (even mid-first-epic) must resume against these exact epics and ids.
+  try {
+    deps.persistPlan?.(epics);
+  } catch {
+    // resume-state persistence is best-effort
+  }
   let lastContractEpicFiles: string[] = [];
 
   // Hands-free: auto-populate the completion ledger so the whole multi-epic
@@ -131,6 +171,12 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
     maxAttemptsPerEpic: deps.maxAttemptsPerEpic,
     splitDepth: deps.splitDepth,
     splitOnAnyFailure: deps.splitOnAnyFailure,
+    // Resume at the epic boundary: completed epics from an interrupted run
+    // ride in as priors + a done set (skipped, never redone); each accepted
+    // epic persists the updated progress back.
+    initialPriorSummaries: deps.initialPriorSummaries,
+    initialDone: deps.initialDone,
+    onProgress: deps.persistCompleted,
     // Re-decompose a failed epic into sub-epics. Fires on context-budget
     // exhaustion (rail auto-size) and, under splitOnAnyFailure, on any
     // exhausted-attempts failure (auto-escalation). Always provided so the

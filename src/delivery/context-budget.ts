@@ -162,8 +162,47 @@ export function estimateMessagesTokens(
 }
 
 /**
- * Marker embedded in an executor's summary when a session was stopped for
- * hitting its context budget — the epic controller keys its split-and-retry
- * path off this exact token.
+ * Marker embedded in an executor's session output when the session was
+ * stopped for hitting its context budget.
+ *
+ * WIRE PROTOCOL — this module owns both ends of it:
+ * - Producer: `formatBudgetStop()` (used by the agentic executor when the
+ *   estimate crosses the rail budget). The marker leads the output.
+ * - Decoder: `decodeBudgetStop()` (used by the convergence loop to translate
+ *   the session output into the structured `IterationRecord.budgetStopped`
+ *   field). Everything DOWNSTREAM of the loop — epic-mission's settle, the
+ *   epic controller's rail-sizing split — consumes only the structured field
+ *   (marker-substring matching there was removed in v1.154.0).
+ *
+ * The marker string itself stays exported for human-facing summaries and for
+ * out-of-tree executors, but no in-tree consumer may sniff it outside
+ * `decodeBudgetStop`.
  */
 export const CONTEXT_BUDGET_MARKER = '[context-budget]';
+
+/**
+ * Compose the budget-stop session output (marker-led, with a compact tail of
+ * what the session managed to finish so a split re-plan knows where it stood).
+ */
+export function formatBudgetStop(args: {
+  estimatedTokens: number;
+  budget: number;
+  rounds: number;
+  summaries: string[];
+}): string {
+  return (
+    `${CONTEXT_BUDGET_MARKER} session reached ~${args.estimatedTokens} of ${args.budget} estimated tokens ` +
+    `after ${args.rounds} round(s) — the task is too large for one session and must be split. ` +
+    `Work completed so far: ${args.summaries.slice(-5).join('; ') || 'none'}`
+  );
+}
+
+/**
+ * Decode a session output's budget-stop signal. Substring (not prefix)
+ * matching on purpose: executor wrappers may prepend text, and the historic
+ * loop behavior this centralizes was substring-based — keeping it identical
+ * means zero behavior change at the only consumption seam.
+ */
+export function decodeBudgetStop(output: string | null | undefined): boolean {
+  return !!output && output.includes(CONTEXT_BUDGET_MARKER);
+}
