@@ -211,6 +211,14 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
     const priorNonFinal = process.env.UAP_EPIC_NONFINAL;
     process.env.UAP_EPIC_NONFINAL = isFinalEpic ? '0' : '1';
 
+    // If an earlier epic already delivered (and therefore changed the tree),
+    // signal it so the anti-no-op rail doesn't fail a trailing epic whose goal
+    // the accumulated state already satisfies (zero diff = already-done, not a
+    // no-op — the acceptance judge still gates it). Prevents the re-split churn.
+    const priorEpicChanged = outcomes.some((o) => o.accepted);
+    const priorChangesFlag = process.env.UAP_EPIC_PRIOR_CHANGES;
+    process.env.UAP_EPIC_PRIOR_CHANGES = priorEpicChanged ? '1' : '0';
+
     while (attempts < maxAttempts && !accepted) {
       attempts++;
       const result = await config.runEpic(epic, {
@@ -310,6 +318,8 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
 
     if (priorNonFinal === undefined) delete process.env.UAP_EPIC_NONFINAL;
     else process.env.UAP_EPIC_NONFINAL = priorNonFinal;
+    if (priorChangesFlag === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+    else process.env.UAP_EPIC_PRIOR_CHANGES = priorChangesFlag;
 
     totalTurns += epicTurns;
     const outcome: EpicOutcome = {

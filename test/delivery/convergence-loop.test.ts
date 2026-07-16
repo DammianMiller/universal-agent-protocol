@@ -393,6 +393,53 @@ describe('anti-no-op acceptance rail (P0, 2026-07-13)', () => {
     expect(result.finalFeedback).toMatch(/no-op|has not changed/i);
   });
 
+  it('prior-epic changes let a zero-diff trailing epic pass via the judge (no re-split churn)', async () => {
+    // A trailing epic writes nothing because an earlier epic already produced
+    // its files. UAP_EPIC_PRIOR_CHANGES=1 (set by the epic controller) must stop
+    // the rail failing it as a no-op — it defers to the acceptance judge.
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    let acceptanceCalls = 0;
+    try {
+      process.env.UAP_EPIC_PRIOR_CHANGES = '1';
+      const loop = new ConvergenceLoop(
+        { projectRoot: dir, maxTurns: 2, rungs: stubRungs(), alwaysVerify: true },
+        async () => 'no new work — already delivered by an earlier epic',
+        {
+          applier: async () => ({ filesWritten: [], rejected: [] }),
+          ladderRunner: () => ladderResult(1.0, true),
+          acceptanceGate: async () => { acceptanceCalls++; return { passed: true, feedback: '' }; },
+        }
+      );
+      const result = await loop.deliver('trailing epic whose goal is already met');
+      expect(result.success).toBe(true);          // accepted despite zero diff
+      expect(acceptanceCalls).toBeGreaterThan(0); // judge decided, not hard-withheld
+    } finally {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    }
+  });
+
+  it('prior-epic changes still fail a zero-diff epic whose goal is NOT met (judge rejects)', async () => {
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    try {
+      process.env.UAP_EPIC_PRIOR_CHANGES = '1';
+      const loop = new ConvergenceLoop(
+        { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true },
+        async () => 'no work',
+        {
+          applier: async () => ({ filesWritten: [], rejected: [] }),
+          ladderRunner: () => ladderResult(1.0, true),
+          acceptanceGate: async () => ({ passed: false, feedback: 'goal not met' }),
+        }
+      );
+      const result = await loop.deliver('goal not actually met');
+      expect(result.success).toBe(false); // the flag is not a free pass — the judge still gates
+    } finally {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    }
+  });
+
   it('requireDiffForAcceptance:false restores the legacy short-circuit (--allow-noop)', async () => {
     const loop = new ConvergenceLoop(
       { projectRoot: dir, rungs: stubRungs(), requireDiffForAcceptance: false },
