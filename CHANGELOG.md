@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.157.0 (2026-07-16)
+
+- feat(delivery): round 6 — registry simplification + budget-decode echo hardening
+
+
 ## v1.156.0 (2026-07-16)
 
 - refactor(delivery): round 5 — mission-acceptance extraction (the spec registry's consumer twin)
