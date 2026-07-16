@@ -88,6 +88,26 @@ describe('planDeliveryPhases', () => {
     ).toEqual([]);
   });
 
+  it('retries the planner ONCE on an unparseable plan, then falls back loudly', async () => {
+    let calls = 0;
+    const phases = await planDeliveryPhases('big multi-part mission', async () => {
+      calls++;
+      return calls === 1
+        ? 'sorry, here is prose instead of JSON'
+        : '[{"id":"a","title":"A","goal":"ga"},{"id":"b","title":"B","goal":"gb"},{"id":"c","title":"C","goal":"gc"}]';
+    });
+    expect(phases.length).toBeGreaterThanOrEqual(2);
+    expect(calls).toBeGreaterThanOrEqual(2);
+
+    let calls2 = 0;
+    const none = await planDeliveryPhases('mission', async () => {
+      calls2++;
+      return 'still not json';
+    });
+    expect(none).toEqual([]); // degenerate after both attempts
+    expect(calls2).toBe(2); // exactly one retry — bounded
+  });
+
   it('returns the parsed plan when the model produces one', async () => {
     const phases = await planDeliveryPhases(
       'task',

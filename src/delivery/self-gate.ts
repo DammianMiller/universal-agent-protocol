@@ -19,8 +19,8 @@
  */
 
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, readdirSync, writeFileSync, chmodSync } from 'fs';
+import { basename, join } from 'path';
 import type { GateRung } from './verifier-ladder.js';
 import type { LoopExecutor } from './convergence-loop.js';
 import { sanitizedEnv } from './sanitized-env.js';
@@ -86,10 +86,79 @@ export function scriptParses(script: string): { ok: boolean; error?: string } {
   return { ok: false, error: error.slice(0, 200) };
 }
 
+const TREE_SKIP = new Set(['node_modules', '.git', '.uap', '.uap-deliver', '.uap-backups', '.worktrees', 'dist', '.claude', '.codex', '.cursor', '.factory', '.forge', '.opencode', 'agents']);
+const TREE_CAP = 200;
+
+/** Bounded relative file listing (depth-first, skips tool/dep dirs). */
+export function listRepoFiles(projectRoot: string, cap: number = TREE_CAP): string[] {
+  const out: string[] = [];
+  const walk = (rel: string): void => {
+    if (out.length >= cap) return;
+    let entries: import('fs').Dirent[];
+    try {
+      entries = readdirSync(join(projectRoot, rel), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (out.length >= cap) return;
+      if (e.name.startsWith('.')) continue; // dot-dirs at ANY depth (.venv, .next, .cache)
+      if (TREE_SKIP.has(e.name)) continue;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(r);
+      else out.push(r);
+    }
+  };
+  walk('');
+  return out;
+}
+
+/**
+ * Detect file probes anchored at the WRONG path: script tokens that do not
+ * resolve from the project root while a file with the SAME basename exists
+ * elsewhere in the tree. This is how a self-gate goes structurally
+ * unwinnable — observed live (octopus retest, 2026-07-16): the gate probed
+ * bare `audio.js`/`player.js` from the root while the artifacts lived at
+ * `space-shooter/js/*.js`, so every turn reported "file missing" no matter
+ * what the executor wrote, and "fails on the unsolved repo" was trivially
+ * (and meaninglessly) satisfied. A token whose basename exists NOWHERE is
+ * left alone — files the mission has yet to create are legitimate probes.
+ */
+export function findMisanchoredPaths(
+  script: string,
+  projectRoot: string,
+  tree?: string[]
+): Array<{ token: string; actual: string[] }> {
+  const files = tree ?? listRepoFiles(projectRoot);
+  const byBase = new Map<string, string[]>();
+  for (const f of files) {
+    const b = basename(f);
+    byBase.set(b, [...(byBase.get(b) ?? []), f]);
+  }
+  const seen = new Set<string>();
+  const hits: Array<{ token: string; actual: string[] }> = [];
+  for (const m of script.matchAll(/[A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]{1,6}\b/g)) {
+    const token = m[0];
+    if (seen.has(token)) continue;
+    seen.add(token);
+    if (token.startsWith('.uap-deliver/') || token.includes('://')) continue;
+    if (/^[0-9.]+$/.test(token)) continue; // version-ish numerics
+    // Probes into skip-dirs (dist/bundle.js before a build runs) are
+    // legitimate artifact checks the tree can never contain — never flag them.
+    if (TREE_SKIP.has(token.split('/')[0])) continue;
+    if (existsSync(join(projectRoot, token))) continue;
+    const actual = byBase.get(basename(token)) ?? [];
+    // Misanchored iff the same basename exists at some OTHER path.
+    if (actual.length > 0 && !actual.includes(token)) hits.push({ token, actual });
+  }
+  return hits;
+}
+
 function buildAuthorPrompt(
   instruction: string,
   projectRoot: string,
-  priorFeedback: string | null
+  priorFeedback: string | null,
+  tree?: string[]
 ): string {
   const retry = priorFeedback
     ? `\n\nYour previous script was rejected because: ${priorFeedback}\nWrite a stricter script that genuinely verifies the required outcome.`
@@ -100,6 +169,14 @@ function buildAuthorPrompt(
     `TASK:\n${instruction}`,
     '',
     `PROJECT ROOT: ${projectRoot}`,
+    ...(tree && tree.length
+      ? [
+          '',
+          'REPOSITORY FILES (real paths — reference files EXACTLY as listed or as the task names them; never probe bare filenames from the root):',
+          ...tree.slice(0, 60).map((f) => `  ${f}`),
+          ...(tree.length > 60 ? [`  … (${tree.length - 60} more files not listed — they still exist)`] : []),
+        ]
+      : []),
     '',
     'Write a self-contained POSIX bash script that:',
     '  - exits 0 ONLY if the task is fully and correctly completed',
@@ -156,11 +233,12 @@ export async function authorAcceptanceGate(opts: SelfGateOptions): Promise<SelfG
 
   let priorFeedback: string | null = null;
   let producedAny = false;
+  const tree = listRepoFiles(projectRoot);
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     let response: string;
     try {
-      response = await executor(buildAuthorPrompt(instruction, projectRoot, priorFeedback));
+      response = await executor(buildAuthorPrompt(instruction, projectRoot, priorFeedback, tree));
     } catch (err) {
       notes.push(`attempt ${attempt}: model error authoring gate`);
       priorFeedback = `the authoring call errored (${String(err).slice(0, 80)})`;
@@ -181,6 +259,27 @@ export async function authorAcceptanceGate(opts: SelfGateOptions): Promise<SelfG
         `the script was not valid bash: ${parse.error ?? 'syntax error'}. ` +
         'Output ONLY the raw script — no markdown code fences, no prose — and make sure it is complete (not cut off).';
       continue;
+    }
+
+    // Wrong-path probes make the gate structurally unwinnable — reject before
+    // the fails-on-unsolved check, which a mis-anchored gate satisfies for the
+    // wrong reason (everything looks "missing").
+    const misanchored = findMisanchoredPaths(script, projectRoot, tree);
+    if (misanchored.length > 0) {
+      const detail = misanchored
+        .slice(0, 5)
+        .map((h) => `'${h.token}' (repo has: ${h.actual.slice(0, 2).join(', ')})`)
+        .join('; ');
+      if (attempt < attempts) {
+        notes.push(`attempt ${attempt}: gate probes wrong paths (${detail}) — regenerating`);
+        priorFeedback = `the script checks paths that do not exist while the same files live elsewhere in the repo: ${detail}. Use the REAL repository paths.`;
+        continue;
+      }
+      // Final attempt: a persistent detector hit must DEGRADE, not hard-fail
+      // the run with a rung-less "no runnable script" (the script IS
+      // runnable). Install it flagged; the fails-on-unsolved check and the
+      // per-attempt notes carry the wrong-path warning to the operator.
+      notes.push(`attempt ${attempt}: gate still probes suspect paths (${detail}) — installing anyway (degraded)`);
     }
 
     writeFileSync(scriptPath, script, 'utf-8');

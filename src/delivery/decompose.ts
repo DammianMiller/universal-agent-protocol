@@ -270,14 +270,33 @@ export async function planDeliveryPhases(
   hintProvider?: LifecycleHintProvider,
   opts?: PlanPhasesOptions
 ): Promise<DeliveryPhase[]> {
-  try {
-    const raw = await executor(buildDecomposePrompt(instruction, hintProvider, opts));
-    const phases = parsePhaseArray(raw);
-    if (phases.length < MIN_PHASES) return [];
-    return await validateAndRepairPlan(instruction, phases, executor, hintProvider, opts);
-  } catch {
-    return [];
+  // A weak planner intermittently emits unparseable JSON; one silent miss used
+  // to collapse a genuinely multi-part mission into a monolithic single epic
+  // with no trace in the log (octopus retest, 2026-07-16: "1 epic(s): Mission"
+  // for a 7k-char mission). Retry the planning call once, and NARRATE the
+  // degradation when it still fails — silent fallbacks read as decisions.
+  const attempts = 2;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    let phases: DeliveryPhase[] = [];
+    try {
+      const raw = await executor(buildDecomposePrompt(instruction, hintProvider, opts));
+      phases = parsePhaseArray(raw);
+    } catch {
+      phases = [];
+    }
+    if (phases.length >= MIN_PHASES) {
+      try {
+        return await validateAndRepairPlan(instruction, phases, executor, hintProvider, opts);
+      } catch {
+        return phases; // validation is best-effort; the parsed plan stands
+      }
+    }
+    console.log(
+      `  plan: attempt ${attempt} produced ${phases.length} usable phase(s) (need ≥${MIN_PHASES}) — ` +
+        (attempt < attempts ? 'retrying the planner' : 'falling back to single-loop delivery')
+    );
   }
+  return [];
 }
 
 /**

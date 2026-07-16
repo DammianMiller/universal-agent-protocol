@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.2 (2026-07-16)
+
+- fix(delivery): self-gate path anchoring + planner retry — two live retest findings
+
+
 ## v1.161.1 (2026-07-16)
 
 - fix(delivery): deterministic canvas-text sanitizer for mined user paths
