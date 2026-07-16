@@ -180,12 +180,14 @@ describe('E2E: agent tool call → gate → enforcer → autoroute → `uap deli
       tool_input: { command: 'cat > src/app.js <<EOF\nconsole.log(1)\nEOF' },
     });
     expect(exit).toBe(2);
-    // A bash source-write carries a command, not recorded file content, so the
-    // intent is NOT replayable — it takes the model-spawn autoroute path (with
-    // a turn budget), not the deterministic `--pending` replay.
+    // A bash heredoc source-write (`cat > FILE << EOF ... EOF`) carries its path
+    // AND body in the command — autoroute recovers both, so the intent is
+    // REPLAYABLE and applied deterministically via `--pending` (a model reaching
+    // for `cat >` when its Write tool is gated must still land the file).
     const spawned = waitForSpawn(env.spawnLog);
     expect(spawned).toContain('deliver');
-    expect(spawned).toContain('--max-turns');
+    expect(spawned).toContain('--pending');
+    expect(intents(env.proj).at(-1)!.file_path).toContain('app.js'); // path recovered
   });
 
   it('a stale ambient UAP_ENFORCE_DELIVERY=advisory cannot disable routing', () => {
