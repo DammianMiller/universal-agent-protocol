@@ -83,6 +83,7 @@ export { runPhasedMission, type PhasedMissionDeps } from './phased-mission.js';
 export { changedFiles, parsePorcelainZ } from './changed-files.js';
 export { createSpecRegistry, type SpecRegistry, type SpecRegistryOptions, type WriteEvidence } from './spec-registry.js';
 export { CONTEXT_BUDGET_MARKER, formatBudgetStop, decodeBudgetStop } from './context-budget.js';
+export { buildMissionAcceptanceGate, resolveAcceptanceVerdict, type MissionAcceptanceDeps } from './mission-acceptance.js';
 
 export {
   createTaskWorkspaceManager,
