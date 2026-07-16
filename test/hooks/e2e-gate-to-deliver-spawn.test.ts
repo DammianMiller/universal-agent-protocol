@@ -228,6 +228,38 @@ describe('E2E: agent tool call → gate → enforcer → autoroute → `uap deli
     expect(waitForSpawn(env.spawnLog, 700)).toBe(''); // and nothing was spawned
   });
 
+  it('coherent-mission mode routes the WHOLE mission to one `uap deliver --epics` run', () => {
+    // Phase 1: instead of landing files one at a time via the per-file
+    // replay/model-spawn side-channel (valid-but-non-integrating output), route
+    // the whole mission to ONE agentic epic run. Opt-in.
+    env = makeProject();
+    writeFileSync(join(env.proj, '.uap', 'completion-ledger.json'),
+      JSON.stringify({ mission: 'Build a space shooter game' }));
+    const hook = join(env.proj, '.factory', 'hooks', 'uap-policy-gate.sh');
+    const exit = spawnSync('bash', [hook], {
+      input: JSON.stringify({
+        tool_name: 'Write', cwd: env.proj,
+        tool_input: { filePath: join(env.proj, 'src', 'app.ts'), content: BIG },
+      }),
+      cwd: env.proj,
+      env: {
+        ...process.env,
+        PATH: `${env.binDir}:${process.env.PATH}`,
+        UAP_DELIVER_AUTOROUTE: 'on',
+        UAP_DELIVER_COHERENT_MISSION: 'on', // ← Phase 1
+        ANTHROPIC_BASE_URL: '', OPENAI_BASE_URL: '', UAP_INFERENCE_ENDPOINT: '',
+        UAP_DELIVER_ACTIVE: '', UAP_DELIVER_BYPASS: '', UAP_ENFORCE_DELIVERY: '',
+        UAP_DELIVER_LOCAL_MODE: '', UAP_DELIVER_FASTPATH: 'on',
+      } as Record<string, string>,
+      encoding: 'utf8',
+    }).status;
+    expect(exit).toBe(2);
+    const spawned = waitForSpawn(env.spawnLog);
+    expect(spawned).toContain('--epics');                 // one coherent run...
+    expect(spawned).toContain('Build a space shooter game'); // ...for the WHOLE mission
+    expect(spawned).not.toContain('--pending');           // NOT the per-file side-channel
+  });
+
   it('does not spawn twice for the same change (dedup)', () => {
     env = makeProject();
     const payload = {

@@ -192,5 +192,45 @@ class ReplayIntentTest(unittest.TestCase):
         self.assertTrue(d["spawn"])
 
 
+class CoherentMissionRouteTest(unittest.TestCase):
+    """Phase 1: route the whole mission to ONE agentic `uap deliver --epics` run
+    instead of landing files one at a time via the per-file replay/model-spawn
+    side-channel — which produced syntactically-valid but NON-integrating output
+    (octopus_invaders_v3, 2026-07-16). Opt-in: UAP_DELIVER_COHERENT_MISSION."""
+
+    def test_off_by_default(self):
+        self.assertEqual(mod.coherent_route(False, "deliver", True, "build X", False), "")
+
+    def test_spawn_when_on_mission_and_free(self):
+        self.assertEqual(mod.coherent_route(True, "deliver", True, "build X", False), "spawn")
+
+    def test_wait_when_run_already_inflight(self):
+        self.assertEqual(mod.coherent_route(True, "deliver", True, "build X", True), "wait")
+
+    def test_no_route_without_mission(self):
+        self.assertEqual(mod.coherent_route(True, "deliver", True, "", False), "")
+
+    def test_no_route_without_write_intent(self):
+        self.assertEqual(mod.coherent_route(True, "deliver", False, "build X", False), "")
+
+    def test_no_route_for_non_deliver(self):
+        self.assertEqual(mod.coherent_route(True, "worktree", True, "build X", False), "")
+
+    def test_recover_mission_from_ledger(self):
+        import tempfile, os, json as _j
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            os.makedirs(os.path.join(td, ".uap"))
+            _j.dump({"mission": "Build the thing"},
+                    open(os.path.join(td, ".uap", "completion-ledger.json"), "w"))
+            self.assertEqual(mod._recover_mission(Path(td)), "Build the thing")
+
+    def test_recover_mission_empty_when_absent(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(mod._recover_mission(Path(td)), "")
+
+
 if __name__ == "__main__":
     unittest.main()
