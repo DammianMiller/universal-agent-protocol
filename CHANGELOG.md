@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.156.0 (2026-07-16)
+
+- refactor(delivery): round 5 — mission-acceptance extraction (the spec registry's consumer twin)
+
+
 ## v1.155.0 (2026-07-16)
 
 - feat(delivery): round 4 — spec-registry module, budget wire-protocol codec, deterministic epic resume
