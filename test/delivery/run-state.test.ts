@@ -385,4 +385,24 @@ describe('round-3 run-state hardening', () => {
     const loaded = loadRunState(dir, st.runId)!;
     expect(loaded.completedEpicIds).toEqual(['auth', 'big.p1']);
   });
+
+  it('round-trips taskOutcomes (orchestrated resume), filtering junk and clamping text', () => {
+    const st = makeState({
+      runnerKind: 'orchestrated',
+      taskOutcomes: [
+        { id: 'api', summary: 'x'.repeat(600), contract: 'y'.repeat(3000) },
+        { id: 'api.r0-fix~2', summary: 'repair link' },
+        { id: '../evil', summary: 'nope' },
+        { id: 'no-summary' },
+        'garbage',
+      ],
+    } as never);
+    saveRunState(st);
+    const loaded = loadRunState(dir, st.runId)!;
+    expect(loaded.taskOutcomes).toHaveLength(2);
+    expect(loaded.taskOutcomes![0].id).toBe('api');
+    expect(loaded.taskOutcomes![0].summary).toHaveLength(400);
+    expect(loaded.taskOutcomes![0].contract).toHaveLength(2000);
+    expect(loaded.taskOutcomes![1].id).toBe('api.r0-fix~2'); // namespaced repair link
+  });
 });

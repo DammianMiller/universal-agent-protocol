@@ -41,6 +41,9 @@ export interface DeliverRunState {
   /** Epic-kind runs: ids of epics ACCEPTED so far. Resume marks these done in
    * the controller so completed work is skipped, never redone. */
   completedEpicIds?: string[];
+  /** Orchestrated-kind runs: accepted task outcomes (id + the summary/contract
+   * dependents read). Resume seeds the scheduler's done set + blackboard. */
+  taskOutcomes?: Array<{ id: string; summary: string; contract?: string }>;
   /** Task-DB id opened for this mission, so --resume reuses it instead of duplicating. */
   taskId?: string;
   /** OS pid of the deliver process that owns this run (operator cancel target). */
@@ -93,6 +96,8 @@ const MAX_INSTRUCTION_CHARS = 8000;
 // mission resumed at phaseIndex 6 skipped the loop entirely and reported
 // success having done nothing.
 const MAX_PHASES = 20;
+/** Producer-side view of the phases cap: persist no more than this many. */
+export const MAX_PERSISTED_PHASES = MAX_PHASES;
 const MAX_SUMMARY_CHARS = 300;
 const MAX_CRITERIA = 6;
 const MAX_CRITERION_CHARS = 200;
@@ -201,6 +206,26 @@ function readState(projectRoot: string, runId: string): DeliverRunState | null {
       parsed.completedEpicIds = parsed.completedEpicIds
         .slice(0, MAX_PHASES * 2)
         .filter((x): x is string => typeof x === 'string' && /^[a-z0-9][a-z0-9.-]{0,63}$/.test(x));
+    }
+    if (parsed.taskOutcomes !== undefined) {
+      if (!Array.isArray(parsed.taskOutcomes)) return null;
+      // Task ids: planner shape + dots/tildes for namespaced repair-chain
+      // links; summaries/contracts are prompt-bound text — length-clamped.
+      parsed.taskOutcomes = parsed.taskOutcomes
+        .filter(
+          (x): x is { id: string; summary: string; contract?: string } =>
+            typeof x === 'object' &&
+            x !== null &&
+            typeof (x as { id?: unknown }).id === 'string' &&
+            /^[a-z0-9][a-z0-9.~-]{0,63}$/.test((x as { id: string }).id) &&
+            typeof (x as { summary?: unknown }).summary === 'string'
+        )
+        .slice(0, MAX_PHASES * 2)
+        .map((x) => ({
+          id: x.id,
+          summary: x.summary.slice(0, 400),
+          ...(typeof x.contract === 'string' ? { contract: x.contract.slice(0, 2000) } : {}),
+        }));
     }
     if (parsed.taskId !== undefined && (typeof parsed.taskId !== 'string' || !/^uap-[0-9a-f]{8}$/.test(parsed.taskId))) {
       delete parsed.taskId;

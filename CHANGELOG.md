@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.158.0 (2026-07-16)
+
+- feat(delivery): round 7 — orchestrated resume fidelity (completes the resume matrix)
+
+
 ## v1.157.0 (2026-07-16)
 
 - feat(delivery): round 6 — registry simplification + budget-decode echo hardening

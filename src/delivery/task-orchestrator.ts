@@ -93,6 +93,27 @@ export interface OrchestratorConfig {
   /** Progress hook. */
   onTask?: (task: OrchestratorTask, outcome: TaskOutcome) => void;
   /**
+   * Tasks ACCEPTED by an INTERRUPTED run (resume at the task boundary):
+   * seeded into the done set AND the blackboard (dependents read their
+   * summaries/contracts exactly as if they ran this session) — skipped,
+   * never redone.
+   */
+  initialDone?: Array<{ id: string; summary: string; contract?: string }>;
+  /**
+   * Called with the cumulative accepted-task outcomes after each success —
+   * the caller persists them so an interrupted orchestrated mission can
+   * resume at the task boundary. Includes repair-chain link ids (harmless
+   * extra blackboard seeds on resume). Fail-soft.
+   */
+  onProgress?: (completed: Array<{ id: string; summary: string; contract?: string }>) => void;
+  /**
+   * Called with the FRESH tasks whenever adaptive re-planning (P5) grows the
+   * graph — the caller persists them so a resume rebuilds the grown DAG, not
+   * just the original plan (an accepted discovering task never re-emits its
+   * NEW_TASKS, so unpersisted discoveries would silently vanish). Fail-soft.
+   */
+  onPlanChange?: (freshTasks: OrchestratorTask[]) => void;
+  /**
    * Minimal node repair (ATG): extra fresh attempts for a FAILED task before
    * its dependents are blocked. Each repair attempt re-executes ONLY the
    * failed node, with the failure summary fed into its minimal context — the
@@ -276,6 +297,40 @@ export async function orchestrate(config: OrchestratorConfig): Promise<Orchestra
   const outcomes: TaskOutcome[] = [];
   let turns = 0;
 
+  // Resume at the task boundary: accepted tasks from an interrupted run seed
+  // done + blackboard, then leave the pending list with a skip outcome —
+  // dependents unblock with real dep summaries, and finished work is never
+  // redone (a redo would produce zero diff, which the anti-no-op rail
+  // correctly refuses to accept).
+  for (const prior of config.initialDone ?? []) {
+    if (done.has(prior.id)) continue;
+    done.add(prior.id);
+    // Seed `known` too: repair-chain/collision logic checks it, and a seeded
+    // non-plan id (a prior run's repair link) must never be silently reused.
+    known.add(prior.id);
+    blackboard.set(prior.id, {
+      taskId: prior.id,
+      success: true,
+      turns: 0,
+      summary: prior.summary,
+      ...(prior.contract ? { contract: prior.contract } : {}),
+    });
+  }
+  if (done.size > 0) {
+    pending = pending.filter((t) => {
+      if (!done.has(t.id)) return true;
+      const outcome: TaskOutcome = {
+        taskId: t.id,
+        success: true,
+        turns: 0,
+        summary: 'accepted by the interrupted run — skipped on resume',
+      };
+      outcomes.push(outcome);
+      config.onTask?.(t, outcome);
+      return false;
+    });
+  }
+
   const runOne = async (task: OrchestratorTask, lastFailure?: string): Promise<TaskOutcome> => {
     let designLines: string[] = [];
     if (config.retrieveDesign) {
@@ -311,6 +366,17 @@ export async function orchestrate(config: OrchestratorConfig): Promise<Orchestra
   const recordSuccess = async (id: string, task: OrchestratorTask, outcome: TaskOutcome): Promise<void> => {
     done.add(id);
     blackboard.set(id, outcome);
+    try {
+      // Persist cumulative resume progress (id + what dependents need).
+      config.onProgress?.(
+        [...done].map((d) => {
+          const o = blackboard.get(d);
+          return { id: d, summary: o?.summary ?? '', ...(o?.contract ? { contract: o.contract } : {}) };
+        })
+      );
+    } catch {
+      // resume-state persistence is best-effort
+    }
     try {
       await config.publish?.(outcome, task);
     } catch {
@@ -421,6 +487,11 @@ export async function orchestrate(config: OrchestratorConfig): Promise<Orchestra
           const deps = (orig.deps ?? []).filter((d) => known.has(d) && d !== s.id);
           return { ...orig, deps };
         });
+        try {
+          config.onPlanChange?.(fresh);
+        } catch {
+          // resume-state persistence is best-effort
+        }
       }
     } else {
       failed.add(task.id);

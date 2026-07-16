@@ -87,6 +87,13 @@ export interface OrchestratedMissionDeps {
    * root). Return null to skip; only invoked when isolation was active.
    */
   verifyCombined?: () => Promise<{ passed: boolean; feedback: string } | null>;
+  /** Resume at the task boundary: accepted-task outcomes from an
+   * interrupted run (seeded into the scheduler's done set + blackboard). */
+  initialDone?: Array<{ id: string; summary: string; contract?: string }>;
+  /** Persist cumulative accepted-task outcomes after each success. */
+  onProgress?: (completed: Array<{ id: string; summary: string; contract?: string }>) => void;
+  /** Persist P5-discovered tasks so a resume rebuilds the GROWN DAG. */
+  onPlanChange?: (freshTasks: OrchestratorTask[]) => void;
   /** Progress lines (the caller decorates with chalk). */
   note?: (line: string) => void;
   /** Orchestrator caps (caller resolves env/config). */
@@ -238,6 +245,9 @@ export async function runOrchestratedMission(deps: OrchestratedMissionDeps): Pro
     concurrency: wsManager ? deps.parallelTasks : 1,
     ...(deps.retrieveDesign ? { retrieveDesign: deps.retrieveDesign } : {}),
     ...(deps.publish ? { publish: deps.publish } : {}),
+    ...(deps.initialDone ? { initialDone: deps.initialDone } : {}),
+    ...(deps.onProgress ? { onProgress: deps.onProgress } : {}),
+    ...(deps.onPlanChange ? { onPlanChange: deps.onPlanChange } : {}),
     runTask: async (ctx, task): Promise<TaskOutcome> => {
       note(`▶ task ${task.id}: ${task.title} (ctx ${ctx.prompt.length} chars, deps: ${ctx.includedDeps.join(',') || 'none'})`);
       // Workspace acquisition mutates git state (worktree add) - serialize
