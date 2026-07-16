@@ -256,6 +256,36 @@ export async function deriveUserPaths(
  * miner does anyway (run E, 2026-07-17). Real app servers (node dist/api.js,
  * uvicorn, etc.) are untouched.
  */
+/**
+ * Deterministic floor for the terminal user-path gate: when the miner cannot
+ * produce a parseable manifest (a weak model fails this sampling in ~half of
+ * live runs — observed runs D, F, G even WITH the retry), a web artifact
+ * still gets a minimal real-client journey instead of the gate silently
+ * reducing to NA. Loads the entry page headlessly and requires a visible
+ * <canvas> (or body) plus zero console errors — weaker than a mined journey,
+ * infinitely stronger than no journey at all.
+ */
+export function fallbackWebManifest(instruction: string): UserPathsManifest {
+  const canvas = /\bcanvas\b|<canvas/i.test(instruction);
+  return {
+    version: 1,
+    paths: [
+      {
+        id: 'fallback-load',
+        rule: 'Artifact loads in a real browser without console errors (deterministic fallback journey — miner produced no manifest)',
+        client: 'browser',
+        entry: '/',
+        steps: [
+          { goto: '/' },
+          ...(canvas ? [{ expect_visible: 'canvas' } as UserPathStep] : []),
+          { wait_ms: 500 },
+          { expect_no_console_errors: true },
+        ],
+      },
+    ],
+  };
+}
+
 const STATIC_SERVER_RE = /^\s*(?:python3?\s+-m\s+http\.server|npx\s+(?:serve|http-server)|http-server|serve)\b/;
 export function dropRedundantStaticServer(manifest: UserPathsManifest): UserPathsManifest {
   const cmd = manifest.server?.command;

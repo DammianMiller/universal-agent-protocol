@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   deriveUserPaths,
   dropRedundantStaticServer,
+  fallbackWebManifest,
   sanitizeCanvasTextAssertions,
   loadUserPaths,
   mergeUserPaths,
@@ -244,5 +245,21 @@ describe('deriveUserPaths: miner retry (same flake class as the phase planner)',
     });
     expect(mined).toBeNull();
     expect(calls).toBe(2);
+  });
+});
+
+describe('fallbackWebManifest', () => {
+  it('produces a valid minimal browser journey; canvas missions assert canvas visibility', () => {
+    const canvas = fallbackWebManifest('Build a space shooter with vanilla JavaScript and Canvas');
+    expect(validateManifest(canvas).ok).toBe(true);
+    const steps = canvas.paths[0].steps;
+    expect(steps.some((s) => (s as { expect_visible?: string }).expect_visible === 'canvas')).toBe(true);
+    expect(steps.some((s) => 'expect_no_console_errors' in s)).toBe(true);
+    expect(canvas.paths[0].entry).toBe('/');
+
+    const plain = fallbackWebManifest('Build a docs site in HTML');
+    expect(validateManifest(plain).ok).toBe(true);
+    expect(plain.paths[0].steps.some((s) => 'expect_visible' in s)).toBe(false);
+    expect(plain.paths[0].steps.some((s) => 'expect_no_console_errors' in s)).toBe(true);
   });
 });
