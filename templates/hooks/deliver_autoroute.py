@@ -6,10 +6,16 @@ The policy-gate hook pipes a blocked enforcer's JSON output to this helper. When
 the block carries route == "deliver", the helper:
   1. Logs the blocked intent to the project's .uap pending-deliver log (so the
      intent is never lost).
-  2. If UAP_DELIVER_AUTOROUTE is on, spawns `uap deliver "<hint>"` detached in
-     the background (deduped per file so a retrying model does not fan out
+  2. If the intent is REPLAYABLE (plan D1 recorded the blocked edit's exact
+     content) and UAP_DELIVER_PENDING_REPLAY is on (default), spawns
+     `uap deliver --pending <file>` detached — a DETERMINISTIC replay that
+     writes the content to disk (no model) and runs the gates once. This is what
+     actually lands the blocked write; without it the recorded intent is never
+     applied and the model re-emits it forever (0 files change).
+  3. Else, if UAP_DELIVER_AUTOROUTE is on, spawns `uap deliver "<hint>"` detached
+     in the background (deduped per file so a retrying model does not fan out
      dozens of runs), and annotates the message.
-  3. Prints the (possibly annotated) block message on stdout for the hook to
+  4. Prints the (possibly annotated) block message on stdout for the hook to
      surface to the agent.
 
 Autoroute is ON by default (UAP_DELIVER_AUTOROUTE=0 to disable): the blocked
@@ -41,7 +47,8 @@ def _autoroute_enabled() -> bool:
     return v in {"1", "on", "true", "yes"}
 
 
-def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set) -> dict:
+def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set,
+           replay_on: bool = True) -> dict:
     """Pure decision: what message to show, whether to spawn, and the intent."""
     reason = out.get("reason", "")
     route = out.get("route")
@@ -63,7 +70,7 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
     )
 
     if route != "deliver":
-        return {"message": reason, "route": route, "spawn": False,
+        return {"message": reason, "route": route, "spawn": False, "replay": False,
                 "file_path": file_path, "hint": hint, "dedup_key": "", "intent": None}
 
     intent = {"ts": int(time.time()), "tool": tool, "file_path": file_path, "hint": hint}
@@ -87,18 +94,40 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
     }
     if edit_intent:
         intent["edit"] = edit_intent
-    spawn = bool(autoroute_on and hint and dedup_key and dedup_key not in seen_files)
+    # A REPLAYABLE intent (plan D1) carries the blocked edit's exact content, so
+    # it can be applied to disk DETERMINISTICALLY via `uap deliver --pending`
+    # (writeFileSync of the captured content — no model, no blind fan-out). This
+    # is what actually LANDS the blocked write. Without it the intent is recorded
+    # but never applied: the model re-emits the same write forever, the gate
+    # re-blocks it every time, and 0 files change (observed 2026-07-16,
+    # octopus_invaders_v3 — every deliver run frozen at phase 0 with an empty
+    # project). Prefer replay over the model-spawn autoroute whenever available.
+    replayable = bool(
+        file_path
+        and edit_intent
+        and (isinstance(edit_intent.get("content"), str)
+             or isinstance(edit_intent.get("old_string"), str))
+    )
+    # Deduped like a spawn (per change), so a retrying model does not re-run
+    # `uap deliver --pending` for an identical edit — the lock only guards
+    # CONCURRENT runs, the seen-set guards repeats. `replay_on` lets an operator
+    # fall back to the model-spawn autoroute (UAP_DELIVER_PENDING_REPLAY=off).
+    unseen = bool(dedup_key and dedup_key not in seen_files)
+    replay = bool(replayable and replay_on and unseen)
+    spawn = bool(autoroute_on and not replay and hint and unseen)
     message = reason
-    if spawn:
+    if replay:
+        message = reason + " [intent recorded to .uap/pending-deliver.jsonl — auto-applying to disk via deterministic `uap deliver --pending` replay]"
+    elif spawn:
         message = reason + " [auto-routed to `uap deliver` — running in the background]"
-    elif autoroute_on and dedup_key and dedup_key in seen_files:
-        message = reason + " [already auto-routed to `uap deliver` for this change — see .uap/autoroute.log / pending-deliver.jsonl]"
+    elif dedup_key and dedup_key in seen_files and (replayable or autoroute_on):
+        message = reason + " [already auto-routed/applied for this change — see .uap/autoroute.log / pending-deliver.jsonl]"
     elif file_path:
         message = reason + (
             " [intent recorded to .uap/pending-deliver.jsonl — apply it yourself by running"
             " `uap deliver` with the exact intended change as the instruction]"
         )
-    return {"message": message, "route": route, "spawn": spawn,
+    return {"message": message, "route": route, "spawn": spawn, "replay": replay,
             "file_path": file_path, "hint": hint, "dedup_key": dedup_key, "intent": intent}
 
 
@@ -176,6 +205,47 @@ def _spawn_deliver(root: Path, hint: str) -> None:
         pass
 
 
+def _replay_enabled() -> bool:
+    # Deterministic pending-intent replay is safe — it writes the recorded
+    # content to disk and runs the gate ladder once, with no model and no blind
+    # background fan-out (the exact hazard that keeps model autoroute OFF by
+    # default). ON by default; UAP_DELIVER_PENDING_REPLAY=0/off/false to disable.
+    v = os.environ.get("UAP_DELIVER_PENDING_REPLAY", "on").lower()
+    return v in {"1", "on", "true", "yes"}
+
+
+def _spawn_pending_replay(root: Path, file_arg: str) -> None:
+    """Spawn `uap deliver --pending <file>` detached: DETERMINISTICALLY replay
+    the recorded edit intent(s) for this file to disk (writeFileSync of the
+    captured content — no model), then run the required gates once. This is the
+    plan-D1 path that actually lands the blocked write. Serialized behind the
+    same one-in-flight lock as _spawn_deliver so concurrent blocked writes do
+    not pile up runs; the model's retry of any still-unwritten file re-triggers
+    a replay once the lock frees. Best-effort; never raises."""
+    import subprocess
+    if not file_arg or file_arg.startswith("-"):
+        return  # need a path, and never let one be parsed as a flag
+    if not _acquire_slot(root):
+        return  # a replay/deliver is already converging in this repo
+    try:
+        log = (root / UAP_DIR / LOG_FILE).open("a")
+    except Exception:
+        log = subprocess.DEVNULL
+    try:
+        proc = subprocess.Popen(
+            ["uap", "deliver", "--pending", file_arg],
+            cwd=str(root),
+            stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            (root / UAP_DIR / LOCK_FILE).write_text(str(proc.pid))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tool", default="")
@@ -194,7 +264,7 @@ def main() -> None:
         args = {}
 
     root = Path(ns.root)
-    d = decide(out, ns.tool, args, _autoroute_enabled(), _load_seen(root))
+    d = decide(out, ns.tool, args, _autoroute_enabled(), _load_seen(root), _replay_enabled())
 
     if d["intent"] is not None:
         try:
@@ -205,17 +275,25 @@ def main() -> None:
         except Exception:
             pass
 
-    if d["spawn"]:
+    if d["replay"] or d["spawn"]:
         try:
             # Dedup on the SAME key `decide` gated on (file when present, else the
             # hint) — writing file_path here would record "" for a bash-routed
-            # intent and never dedup it.
+            # intent and never dedup it. Both paths (deterministic replay and the
+            # model-spawn autoroute) mark the change seen so a retry does not
+            # double-run.
             key = d.get("dedup_key") or d["file_path"] or d["hint"]
             with _seen_path(root).open("a") as f:
                 f.write(key.replace("\n", " ").replace("\r", " ") + "\n")
         except Exception:
             pass
-        _spawn_deliver(root, d["hint"])
+        if d["replay"]:
+            # Deterministic path: the blocked write's content is recorded, so
+            # replay it to disk exactly (no model). This is what makes the block
+            # productive instead of an infinite record-and-re-block loop.
+            _spawn_pending_replay(root, d["file_path"])
+        else:
+            _spawn_deliver(root, d["hint"])
 
     prefix = ("[UAP policy blocked: " + ns.policy + "] ") if ns.policy else ""
     sys.stdout.write(prefix + d["message"])

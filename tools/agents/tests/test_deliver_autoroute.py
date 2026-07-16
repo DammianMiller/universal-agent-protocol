@@ -30,9 +30,13 @@ class DecideTest(unittest.TestCase):
     def test_deliver_route_logs_intent_no_spawn_when_off(self):
         d = mod.decide(BLOCK_OUT, "Write", ARGS, False, set())
         self.assertFalse(d["spawn"])
+        self.assertFalse(d["replay"])  # no recorded content -> not replayable
         self.assertIsNotNone(d["intent"])
         self.assertEqual(d["intent"]["file_path"], "/repo/src/foo.ts")
-        self.assertEqual(d["message"], BLOCK_OUT["reason"])  # unchanged
+        # autoroute off + no recorded content: message is annotated to tell the
+        # agent to run deliver itself; the block reason is preserved as prefix.
+        self.assertTrue(d["message"].startswith(BLOCK_OUT["reason"]))
+        self.assertIn("apply it yourself", d["message"])
 
     def test_deliver_route_spawns_when_on_and_unseen(self):
         d = mod.decide(BLOCK_OUT, "Write", ARGS, True, set())
@@ -115,6 +119,39 @@ class BashRoutedIntentTest(unittest.TestCase):
     def test_still_never_spawns_without_a_hint(self):
         d = mod.decide({"reason": "x", "route": "deliver"}, "Bash", {"command": "cat > a.js"}, True, set())
         self.assertFalse(d["spawn"])
+
+
+class ReplayIntentTest(unittest.TestCase):
+    """A REPLAYABLE intent (the blocked edit's exact content was recorded) must
+    be applied DETERMINISTICALLY via `uap deliver --pending` — not re-routed
+    through a fresh model deliver that just re-blocks. Without this the blocked
+    write is recorded but never lands: the model re-emits it forever and 0 files
+    change (octopus_invaders_v3, 2026-07-16 — every run frozen at phase 0)."""
+
+    REPLAY_ARGS = {"file_path": "/repo/src/foo.ts", "content": "const X = 1;\n"}
+
+    def test_content_intent_is_replayable_not_model_spawn(self):
+        d = mod.decide(BLOCK_OUT, "Write", self.REPLAY_ARGS, True, set())
+        self.assertTrue(d["replay"])
+        self.assertFalse(d["spawn"])  # deterministic replay, not a model run
+        self.assertIn("--pending", d["message"])
+        self.assertEqual(d["intent"]["edit"]["content"], "const X = 1;\n")
+
+    def test_replay_not_gated_on_autoroute(self):
+        d = mod.decide(BLOCK_OUT, "Write", self.REPLAY_ARGS, False, set())
+        self.assertTrue(d["replay"])  # safe deterministic path runs even when autoroute is off
+        self.assertFalse(d["spawn"])
+
+    def test_enforcer_editIntent_old_new_is_replayable(self):
+        out = dict(BLOCK_OUT); out["editIntent"] = {"old_string": "a", "new_string": "b"}
+        d = mod.decide(out, "Edit", {"file_path": "/repo/src/foo.ts"}, True, set())
+        self.assertTrue(d["replay"])
+        self.assertFalse(d["spawn"])
+
+    def test_non_replayable_still_model_spawns(self):
+        d = mod.decide(BLOCK_OUT, "Write", ARGS, True, set())  # no content recorded
+        self.assertFalse(d["replay"])
+        self.assertTrue(d["spawn"])
 
 
 if __name__ == "__main__":
