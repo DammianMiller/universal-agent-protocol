@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.8 (2026-07-17)
+
+- fix(delivery): deterministic fallback journey — the terminal gate must never silently vanish
+
+
 ## v1.161.7 (2026-07-17)
 
 - fix(delivery): unborn-HEAD repos broke change detection — the underlying no-op-trap root cause
