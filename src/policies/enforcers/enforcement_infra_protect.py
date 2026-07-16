@@ -7,11 +7,25 @@ proxy), `kill $(lsof -t -i:8080)` (killed llama-server), and then
 `python3 -m http.server 8080` (stole the inference port, putting llama-server
 into a systemd bind-failure crash loop and 529-ing its own session).
 
+Observed again (2026-07-16, octopus_invaders_v3): a deliver cleanup loop ran
+`pkill -9 -f "uap"` — a BROAD -f pattern that never names llama-server, yet
+matched it anyway because the server's own argv carries the token via
+`--slot-save-path ~/.cache/uap/llama-slots`. That killed llama-server 5x in
+4 minutes (systemd restart counter 3->6) until the model narrowed the pattern.
+Rule 6 closes that gap: any -f/--full kill whose pattern is a substring of the
+inference stack's argv (uap/llama/qwen/mmproj/nomic/anthropic) is refused.
+Note the stack that a bare interpreter can hit is the PROXY only (python3);
+llama-server and embeddings are native binaries, so `node.*` globs are inert
+against infra and are left to loop-protection, not this enforcer.
+
 Scope (Bash/bash/run_bash commands only):
   - pkill/killall with a bare-interpreter pattern (matches EVERY python/node).
   - kill/pkill/killall aimed at llama-server / anthropic_proxy / nomic by name.
   - kill-by-port or fuser -k on the infra ports (8080 llama, 4000 proxy,
     8081 embeddings).
+  - broad `-f`/`--full` kill whose pattern is a substring of the stack's argv
+    (uap/llama/qwen/mmproj/nomic/anthropic) or a glob over the python
+    interpreter that runs the proxy.
   - systemctl stop/restart/kill/disable of the inference services.
   - Starting a server that BINDS an infra port (http.server 8080 etc.) —
     this is how the port got stolen even with kills blocked (the model
@@ -53,6 +67,25 @@ RULES = (
     re.compile(
         r"\b(serve|live-server|http-server|vite|webpack-dev-server|next\s+dev|python3?\s+-m\s+flask\s+run)"
         r"\b[^|;&\n]*(--port[= ]|-p[= ]?|:)" + INFRA_PORTS + r"\b"
+    ),
+    # 6) Broad kill by FULL-cmdline match (-f/--full/-e) whose pattern is a
+    #    substring of the inference stack's own argv. The stack carries these
+    #    tokens (e.g. --slot-save-path ~/.cache/uap/llama-slots, model 'qwen',
+    #    'mmproj', anthropic_proxy). `pkill -9 -f uap` killed llama-server 5x on
+    #    2026-07-16 via the 'uap' in its slot path — this is NOT a specific
+    #    pattern even though it never names the server.
+    re.compile(
+        r"\b(pkill|kill|killall)\b[^|;&\n]*"
+        r"(\s-(?:-full|[A-Za-z0-9]*f)\b|\s-e\b)"
+        r"[^|;&\n]*\b(uap|llama|anthropic|nomic|mmproj|qwen[0-9.]*|llama-slots|slots?[_-]?save)\b"
+    ),
+    # 7) Same, but a GLOB/regex over the python interpreter that runs the proxy
+    #    (`python3 .../anthropic_proxy.py`): `pkill -f "python.*"` sweeps it even
+    #    without an explicit infra token. Bare `pkill -f python3` -> rule 1.
+    re.compile(
+        r"\b(pkill|kill|killall)\b[^|;&\n]*"
+        r"(\s-(?:-full|[A-Za-z0-9]*f)\b)"
+        r"[^|;&\n]*[\"']?python[0-9.]*[.*\[\]\\]"
     ),
 )
 
