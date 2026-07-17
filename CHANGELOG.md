@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.15 (2026-07-17)
+
+- fix(delivery): mission-file floor — the split can no longer omit named deliverables
+
+
 ## v1.161.14 (2026-07-17)
 
 - fix(delivery): the split planner now sees the accumulated code shape
