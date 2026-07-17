@@ -26,6 +26,8 @@
 import { CONTEXT_BUDGET_MARKER } from './context-budget.js';
 import type { DeliveryResult } from './convergence-loop.js';
 import type { DeliveryPhase } from './decompose.js';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { runEpics, type Epic, type EpicRunResult } from './epic-controller.js';
 import { foldDeliveryResult } from './delivery-result.js';
 import type { DeliveryTaskHandle } from './task-sync.js';
@@ -65,6 +67,8 @@ export interface EpicMissionDeps {
    * verdicts stand. Pass null to disable entirely (acceptance off).
    */
   judgeEpic: ((spec: string) => Promise<{ passed: boolean; feedback?: string } | null>) | null;
+  /** Project root for split-planner code-shape context (optional). */
+  projectRoot?: string;
   /** Delivery-task records (fail-soft; both optional). */
   openTask?: (title: string) => Promise<DeliveryTaskHandle | null>;
   completeTask?: (record: DeliveryTaskHandle | null, result: DeliveryResult) => void;
@@ -119,6 +123,60 @@ export interface EpicMissionDeps {
  * parallel dispatch), retried with failure feedback and recursively split
  * when it cannot land whole.
  */
+/**
+ * Cheap surface summary of the modules a goal is about: exported symbols and
+ * window-assignments from source files whose (separator-squashed) basename
+ * appears in the goal text. Fed to the SPLIT planner so sub-epic criteria
+ * extend the code that already exists — without it the planner invented
+ * fresh shapes ("a UI class with renderHealthBar(health, maxHealth, ...)")
+ * against an accumulated function-module ui.js, and the judge then enforced
+ * impossible criteria piece after piece (run K, 2026-07-17: the UI family
+ * burned 128 turns against a class that was never going to exist).
+ */
+export function moduleSurface(projectRoot: string, goal: string, maxLines = 40): string {
+  const squash = (t: string): string => t.toLowerCase().replace(/[-_\s]/g, '');
+  const goalSquashed = squash(goal);
+  const lines: string[] = [];
+  const scan = (dir: string, depth: number): void => {
+    if (depth > 2 || lines.length >= maxLines) return;
+    let entries;
+    try {
+      entries = readdirSync(join(projectRoot, dir), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (lines.length >= maxLines) return;
+      if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'dist') continue;
+      const rel = dir ? `${dir}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        scan(rel, depth + 1);
+        continue;
+      }
+      if (!/\.(m?[jt]sx?)$/.test(e.name)) continue;
+      const base = squash(e.name.replace(/\.[^.]+$/, ''));
+      if (base.length < 2 || !goalSquashed.includes(base)) continue;
+      let content: string;
+      try {
+        content = readFileSync(join(projectRoot, rel), 'utf-8');
+      } catch {
+        continue;
+      }
+      const sigRe = new RegExp('^\\s*(export\\s+(async\\s+)?(function|class|const|let)|window\\.[A-Za-z_$][\\w$]*\\s*=|module\\.exports)');
+      const sigs = content
+        .split('\n')
+        .filter((l) => sigRe.test(l))
+        .slice(0, 15)
+        .map((l) => l.trim().slice(0, 120));
+      if (sigs.length > 0) {
+        lines.push(`--- ${rel} ---`, ...sigs);
+      }
+    }
+  };
+  scan('', 0);
+  return lines.slice(0, maxLines).join('\n');
+}
+
 export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryResult> {
   const note = deps.note ?? ((): void => undefined);
   const all: DeliveryResult = {
@@ -188,9 +246,13 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         ? `outgrew its ~${(deps.sessionBudget ?? 0).toLocaleString()}-token session budget`
         : 'could not be delivered whole after all attempts';
       note(`  ✂ epic ${epic.id} ${reason} — re-planning as smaller sub-epics`);
+      const surface = deps.projectRoot ? moduleSurface(deps.projectRoot, epic.goal) : '';
       const subGoal =
         `${epic.goal}\n\n(The previous attempt did not complete` +
-        `${lastFailure ? `: ${lastFailure.slice(0, 300)}` : ''}. Split this into smaller, independently completable phases.)`;
+        `${lastFailure ? `: ${lastFailure.slice(0, 300)}` : ''}. Split this into smaller, independently completable phases.)` +
+        (surface
+          ? `\n\nCURRENT CODE SHAPE — these modules ALREADY EXIST with the exported structures below. Phases and acceptance criteria MUST extend these exact structures (same export style, same names); NEVER demand converting functions to classes, renaming exports, or inventing new class hierarchies:\n${surface}`
+          : '');
       const subs = await deps.planSplit(subGoal);
       if (subs.length < 2) return null;
       // A split CONTRACTS (or SCAFFOLD) epic's pieces are still contracts/

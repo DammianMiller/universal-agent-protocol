@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { runEpicMission, type EpicMissionDeps } from '../../src/delivery/epic-mission.js';
+import { moduleSurface, runEpicMission, type EpicMissionDeps } from '../../src/delivery/epic-mission.js';
 import type { DeliveryResult } from '../../src/delivery/convergence-loop.js';
 import type { DeliveryPhase } from '../../src/delivery/decompose.js';
 import { CONTEXT_BUDGET_MARKER } from '../../src/delivery/context-budget.js';
@@ -500,5 +500,34 @@ describe('epic resume fidelity (plan persistence + priors + done set)', () => {
       })
     );
     expect(plans).toEqual([['solo-epic']]); // NOT swapped for a 'mission' epic
+  });
+});
+
+describe('moduleSurface (split planner sees the accumulated code shape)', () => {
+  it('extracts export signatures of goal-named modules; unrelated files and non-matching goals are silent', async () => {
+    const { mkdtempSync: mkd, writeFileSync: wf, rmSync: rmr, mkdirSync: mkdir2 } = await import('node:fs');
+    const { tmpdir: tmp } = await import('node:os');
+    const { join: j } = await import('node:path');
+    const dir = mkd(j(tmp(), 'uap-surface-'));
+    try {
+      mkdir2(j(dir, 'space-shooter'), { recursive: true });
+      wf(
+        j(dir, 'space-shooter', 'ui.js'),
+        'export function initHUD(opts = {}) {}\nexport function updateHUD(p, c) {}\nconst internal = 1;\nexport const MONOSPACE_FONTS = {};\n'
+      );
+      wf(j(dir, 'space-shooter', 'audio.js'), 'export function boom() {}\n');
+      const surface = moduleSurface(dir, 'Implement HUD and Game Screens in the UI module');
+      // goal names "UI" → ui.js surface extracted
+      expect(surface).toContain('--- space-shooter/ui.js ---');
+      expect(surface).toContain('export function initHUD');
+      expect(surface).toContain('export const MONOSPACE_FONTS');
+      expect(surface).not.toContain('const internal');
+      // audio.js is not named by the goal → absent
+      expect(surface).not.toContain('audio.js');
+      // a goal about nothing on disk → empty
+      expect(moduleSurface(dir, 'Write the README documentation')).toBe('');
+    } finally {
+      rmr(dir, { recursive: true, force: true });
+    }
   });
 });
