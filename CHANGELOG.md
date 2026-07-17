@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.14 (2026-07-17)
+
+- fix(delivery): the split planner now sees the accumulated code shape
+
+
 ## v1.161.13 (2026-07-17)
 
 - fix(delivery): visual richness floors defer to the final epic

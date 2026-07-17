@@ -2102,6 +2102,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const scaffoldFirst = process.env.UAP_DELIVER_SCAFFOLD !== '0';
     return runEpicMissionCore({
       instruction,
+      projectRoot,
       planEpics: () =>
         planDeliveryPhases(instruction, verdictExecutor, undefined, {
           sessionTokenBudget: sessionBudget,
