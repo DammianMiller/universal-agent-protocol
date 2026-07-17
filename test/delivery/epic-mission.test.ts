@@ -561,3 +561,39 @@ describe('missingMissionFiles (run L: the split omitted index.html and the final
     }
   });
 });
+
+describe('split sub-goal: visual-floor failures get a directed canvas phase (run M, 2026-07-18)', () => {
+  it('maps the visual finding to an explicit draw-on-load phase directive', async () => {
+    const captured: string[] = [];
+    await runEpicMission({
+      instruction: 'canvas game',
+      planEpics: async () => [],
+      planSplit: async (g: string) => {
+        captured.push(g);
+        return [];
+      },
+      planEpicTasks: async () => [],
+      epicParallelTasks: 1,
+      runOrchestrated: async () => { throw new Error('unused'); },
+      runEpicLoop: async () => ({
+        success: false,
+        alreadyDelivered: false,
+        turns: 1,
+        bestScore: 0,
+        bestTurn: 0,
+        history: [],
+        finalFeedback: 'canvas renders below the visual floor (1 distinct colors < 3 required)',
+        finalOutput: '',
+        totalDurationMs: 1,
+      }),
+      setEpicSpec: () => {},
+      judgeEpic: null,
+      splitOnAnyFailure: true,
+      lockedContracts: () => [],
+      persistPlan: () => {},
+    } as never);
+    const withDirective = captured.find((g) => g.includes('THE FAILING GATE IS THE VISUAL FLOOR'));
+    expect(withDirective).toBeDefined();
+    expect(withDirective).toContain('ON THE CANVAS immediately on page load');
+  });
+});

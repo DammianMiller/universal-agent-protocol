@@ -291,9 +291,20 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
       note(`  ✂ epic ${epic.id} ${reason} — re-planning as smaller sub-epics`);
       const surface = deps.projectRoot ? moduleSurface(deps.projectRoot, epic.goal) : '';
       const missingFiles = deps.projectRoot ? missingMissionFiles(deps.projectRoot, deps.instruction) : [];
+      // Directed gate mapping: run M (2026-07-18) ended with EVERY gate green
+      // except the visual floor — the game worked but idled a blank canvas at
+      // load — yet the split spent its pieces on audio interfaces and
+      // collision specs because the 300-char failure slice buried the visual
+      // finding and nothing translated "1 distinct color" into a buildable
+      // phase. When the visual floor is the failing signal, say exactly what
+      // phase to plan.
+      const visualDirective = /visual floor|VISUAL\/BEHAVIORAL/i.test(lastFailure ?? '')
+        ? '\n\nTHE FAILING GATE IS THE VISUAL FLOOR: the page canvas renders too few distinct colors at load. Plan a DEDICATED phase that draws the mission-specified start/menu content ON THE CANVAS immediately on page load (title text, colored sprite/preview art, animated elements) so the rendered canvas shows 3+ distinct colors and visible motion BEFORE any user interaction.'
+        : '';
       const subGoal =
         `${epic.goal}\n\n(The previous attempt did not complete` +
-        `${lastFailure ? `: ${lastFailure.slice(0, 300)}` : ''}. Split this into smaller, independently completable phases.)` +
+        `${lastFailure ? `: ${lastFailure.slice(0, 600)}` : ''}. Split this into smaller, independently completable phases.)` +
+        visualDirective +
         (surface
           ? `\n\nCURRENT CODE SHAPE — these modules ALREADY EXIST with the exported structures below. Phases and acceptance criteria MUST extend these exact structures (same export style, same names); NEVER demand converting functions to classes, renaming exports, or inventing new class hierarchies:\n${surface}`
           : '') +
@@ -400,7 +411,13 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
           ...(r.changedTree ? { changedTree: true } : {}),
           summary:
             `${epic.goal.slice(0, 140)}${files.length ? ` [files: ${files.join(', ')}]` : ''}` +
-            (budgetHit ? ` ${CONTEXT_BUDGET_MARKER} session(s) exceeded the context budget — scope is too large for one session` : ''),
+            (budgetHit ? ` ${CONTEXT_BUDGET_MARKER} session(s) exceeded the context budget — scope is too large for one session` : '') +
+            // A failed epic's summary must carry WHY it failed: lastFailure
+            // (and therefore the split planner's context) is built from this
+            // summary, and without the gate feedback the re-planner worked
+            // blind — run M split its final epic into audio/collision pieces
+            // while the only red gate was the visual floor.
+            (!r.success && r.finalFeedback ? ` — failing feedback: ${r.finalFeedback.replace(/\s+/g, ' ').slice(0, 400)}` : ''),
         };
       };
 
