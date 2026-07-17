@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.16 (2026-07-18)
+
+- fix(delivery): failed epics tell the split planner WHY — plus a visual-floor directive
+
+
 ## v1.161.15 (2026-07-17)
 
 - fix(delivery): mission-file floor — the split can no longer omit named deliverables
