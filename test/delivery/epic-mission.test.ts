@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { moduleSurface, runEpicMission, type EpicMissionDeps } from '../../src/delivery/epic-mission.js';
+import { missingMissionFiles, moduleSurface, runEpicMission, type EpicMissionDeps } from '../../src/delivery/epic-mission.js';
 import type { DeliveryResult } from '../../src/delivery/convergence-loop.js';
 import type { DeliveryPhase } from '../../src/delivery/decompose.js';
 import { CONTEXT_BUDGET_MARKER } from '../../src/delivery/context-budget.js';
@@ -526,6 +526,36 @@ describe('moduleSurface (split planner sees the accumulated code shape)', () => 
       expect(surface).not.toContain('audio.js');
       // a goal about nothing on disk → empty
       expect(moduleSurface(dir, 'Write the README documentation')).toBe('');
+    } finally {
+      rmr(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('missingMissionFiles (run L: the split omitted index.html and the finale 404ed)', () => {
+  it('lists mission-named files absent from the tree; existing basenames anywhere count as present', async () => {
+    const { mkdtempSync: mkd, writeFileSync: wf, rmSync: rmr, mkdirSync: mkdir2 } = await import('node:fs');
+    const { tmpdir: tmp } = await import('node:os');
+    const { join: j } = await import('node:path');
+    const dir = mkd(j(tmp(), 'uap-missing-'));
+    try {
+      mkdir2(j(dir, 'space-shooter'), { recursive: true });
+      wf(j(dir, 'space-shooter', 'player.js'), 'export const p = 1;');
+      const mission = [
+        'Rewrite ALL files in space-shooter/ with:',
+        '## player.js — the ship',
+        '## index.html — canvas element, link to css/style.css',
+        '## README.md — how to run',
+      ].join('\n');
+      const missing = missingMissionFiles(dir, mission);
+      expect(missing).toContain('index.html');
+      expect(missing).toContain('css/style.css');
+      expect(missing).toContain('README.md');
+      expect(missing.join(' ')).not.toContain('player.js'); // exists (basename match)
+      // once created, they drop off
+      wf(j(dir, 'space-shooter', 'index.html'), '<canvas></canvas>');
+      const after = missingMissionFiles(dir, mission);
+      expect(after).not.toContain('index.html');
     } finally {
       rmr(dir, { recursive: true, force: true });
     }

@@ -177,6 +177,49 @@ export function moduleSurface(projectRoot: string, goal: string, maxLines = 40):
   return lines.slice(0, maxLines).join('\n');
 }
 
+/**
+ * Mission-named files that do not exist anywhere in the (shallow) tree yet.
+ * Run L (2026-07-17) failed at the FINAL gate with goto:/ 404 because the
+ * integration split wired all 11 JS modules and never created index.html /
+ * css/style.css / README.md — files the mission names EXPLICITLY. The split
+ * planner gets this list as hard deliverables so an entry-file phase can
+ * never be omitted again. Bare filenames count as existing when any file
+ * with that basename exists (missions rarely repeat full paths).
+ */
+export function missingMissionFiles(projectRoot: string, mission: string): string[] {
+  const tokens = new Set<string>();
+  for (const m of mission.matchAll(/[\w.@-]+(?:\/[\w.@-]+)+/g)) {
+    const t = m[0].replace(/[.,;:)]+$/, '');
+    if (!t.includes('//') && !t.startsWith('http')) tokens.add(t);
+  }
+  for (const m of mission.matchAll(/\b[\w-]+\.(?:html|css|md|js|mjs|cjs|ts|tsx|json|py|rs|go)\b/g)) {
+    tokens.add(m[0]);
+  }
+  const existingBases = new Set<string>();
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 3) return;
+    let entries;
+    try {
+      entries = readdirSync(join(projectRoot, dir), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'dist') continue;
+      if (e.isDirectory()) walk(dir ? `${dir}/${e.name}` : e.name, depth + 1);
+      else existingBases.add(e.name.toLowerCase());
+    }
+  };
+  walk('', 0);
+  const missing: string[] = [];
+  for (const t of tokens) {
+    const base = (t.split('/').pop() ?? t).toLowerCase();
+    if (!base.includes('.')) continue; // directories are not deliverable files
+    if (!existingBases.has(base)) missing.push(t);
+  }
+  return [...new Set(missing)].sort();
+}
+
 export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryResult> {
   const note = deps.note ?? ((): void => undefined);
   const all: DeliveryResult = {
@@ -247,11 +290,15 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         : 'could not be delivered whole after all attempts';
       note(`  ✂ epic ${epic.id} ${reason} — re-planning as smaller sub-epics`);
       const surface = deps.projectRoot ? moduleSurface(deps.projectRoot, epic.goal) : '';
+      const missingFiles = deps.projectRoot ? missingMissionFiles(deps.projectRoot, deps.instruction) : [];
       const subGoal =
         `${epic.goal}\n\n(The previous attempt did not complete` +
         `${lastFailure ? `: ${lastFailure.slice(0, 300)}` : ''}. Split this into smaller, independently completable phases.)` +
         (surface
           ? `\n\nCURRENT CODE SHAPE — these modules ALREADY EXIST with the exported structures below. Phases and acceptance criteria MUST extend these exact structures (same export style, same names); NEVER demand converting functions to classes, renaming exports, or inventing new class hierarchies:\n${surface}`
+          : '') +
+        (missingFiles.length > 0
+          ? `\n\nMISSION-NAMED FILES NOT YET ON DISK — hard deliverables the final gates will load; the split MUST include a dedicated phase that CREATES each of these: ${missingFiles.join(', ')}`
           : '');
       const subs = await deps.planSplit(subGoal);
       if (subs.length < 2) return null;
