@@ -12,6 +12,7 @@ import {
   phaseInstruction,
   shouldDecompose,
 } from '../../src/delivery/decompose.js';
+import { parsePhaseArrayWithMeta } from '../../src/delivery/decompose.js';
 
 describe('parsePhaseArray', () => {
   it('carries the contracts flag through (and drops non-true values)', () => {
@@ -349,5 +350,33 @@ describe('appendGapClosurePhase', () => {
     expect(appendGapClosurePhase([], ['x'])).toBeNull();
     const withGap = appendGapClosurePhase(base, ['x'])!;
     expect(appendGapClosurePhase(withGap, ['y'])).toBeNull(); // already present
+  });
+});
+
+describe('cap-truncation recovery (run Z, 2026-07-19: 21 emitted, 10 kept, plan-check passed it)', () => {
+  const phaseJson = (n: number) =>
+    JSON.stringify(
+      Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, title: `Phase ${i + 1}`, goal: `do part ${i + 1}` }))
+    );
+
+  it('parsePhaseArrayWithMeta reports the emitted count past the cap', () => {
+    const { phases, emitted } = parsePhaseArrayWithMeta(phaseJson(21), 10);
+    expect(phases).toHaveLength(10);
+    expect(emitted).toBe(21);
+  });
+
+  it('planDeliveryPhases recovers the truncated tail by re-parsing at the hard ceiling — no second model call', async () => {
+    let calls = 0;
+    const executor = async (prompt: string) => {
+      calls++;
+      if (prompt.includes('THOUGHT EXPERIMENT') || prompt.includes('thought experiment')) {
+        return JSON.stringify({ verdict: 'pass', findings: [] });
+      }
+      return phaseJson(21);
+    };
+    const phases = await planDeliveryPhases('a 21-part mission', executor, undefined, { thoughtExperiment: true });
+    expect(phases.length).toBe(20); // hard ceiling, not 10
+    expect(phases[19].id).toBe('p20');
+    expect(calls).toBeLessThanOrEqual(2); // plan + thought experiment; no re-plan call
   });
 });
