@@ -84,7 +84,27 @@ export function shouldDecompose(instruction: string, complexity?: string): boole
 }
 
 /** Extract the first JSON array of {id,title,goal} objects from model output. */
+/**
+ * parsePhaseArray + how many entries the planner actually emitted. When
+ * emitted > phases.length the plan was CAP-TRUNCATED: the tail phases exist
+ * in the raw text and can be recovered by re-parsing at a higher cap — no
+ * new model call. Run Z (octopus variant, 2026-07-19): the planner emitted
+ * 21 scaffold/fill phases, the cap kept 10 (ending at player-scaffold, no
+ * UI/engine/HTML), and the plan-check thought experiment PASSED the
+ * truncated plan — the loud log alone changed nothing.
+ */
+export function parsePhaseArrayWithMeta(
+  text: string,
+  cap: number = maxPhases()
+): { phases: DeliveryPhase[]; emitted: number } {
+  return parsePhaseArrayInner(text, cap);
+}
+
 export function parsePhaseArray(text: string, cap: number = maxPhases()): DeliveryPhase[] {
+  return parsePhaseArrayInner(text, cap).phases;
+}
+
+function parsePhaseArrayInner(text: string, cap: number): { phases: DeliveryPhase[]; emitted: number } {
   let parsed: unknown;
   for (const re of [/\[\s*\{[\s\S]*?\}\s*\]/, /\[\s*\{[\s\S]*\}\s*\]/]) {
     const match = text.match(re);
@@ -96,7 +116,7 @@ export function parsePhaseArray(text: string, cap: number = maxPhases()): Delive
       parsed = undefined;
     }
   }
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) return { phases: [], emitted: 0 };
 
   const seen = new Set<string>();
   const phases: DeliveryPhase[] = [];
@@ -145,7 +165,7 @@ export function parsePhaseArray(text: string, cap: number = maxPhases()): Delive
       break;
     }
   }
-  return topoOrder(phases);
+  return { phases: topoOrder(phases), emitted: (parsed as unknown[]).length };
 }
 
 /**
@@ -294,7 +314,27 @@ export async function planDeliveryPhases(
     let phases: DeliveryPhase[] = [];
     try {
       const raw = await executor(buildDecomposePrompt(instruction, hintProvider, opts));
-      phases = parsePhaseArray(raw);
+      const first = parsePhaseArrayWithMeta(raw);
+      phases = first.phases;
+      // Cap-truncation recovery: the planner emitting MORE entries than the
+      // cap IS the evidence the mission needs more phases — the tail is
+      // already in `raw`, so re-parse at a raised cap (bounded by the hard
+      // ceiling) instead of hoping the thought experiment notices the holes
+      // (run Z, 2026-07-19: it didn't — a 21-phase plan shipped as 10 with
+      // no UI/engine/HTML phases and plan-check passed it).
+      if (first.emitted > phases.length && phases.length >= maxPhases()) {
+        const raised = Math.min(first.emitted, MAX_PHASES_HARD_CEILING);
+        if (raised > phases.length) {
+          const reparsed = parsePhaseArrayWithMeta(raw, raised);
+          if (reparsed.phases.length > phases.length) {
+            console.log(
+              `  plan: cap-truncation recovery — re-parsed the SAME planner output at cap ${raised} ` +
+                `(${reparsed.phases.length} phases kept${first.emitted > raised ? `; ${first.emitted - raised} beyond the hard ceiling still dropped` : ''})`
+            );
+            phases = reparsed.phases;
+          }
+        }
+      }
     } catch {
       phases = [];
     }
