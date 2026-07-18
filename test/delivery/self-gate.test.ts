@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { extractScript, authorAcceptanceGate, findMisanchoredPaths, listRepoFiles } from '../../src/delivery/self-gate.js';
+import { extractScript, authorAcceptanceGate, findMisanchoredPaths, listRepoFiles, usesScriptDirAnchor } from '../../src/delivery/self-gate.js';
 
 describe('self-gate: extractScript', () => {
   it('pulls the script from a fenced ```bash block and guarantees a shebang', () => {
@@ -148,5 +148,40 @@ describe('self-gate: path anchoring (wrong-path probes make gates unwinnable)', 
     expect(res.notes.some((n) => n.includes('wrong paths'))).toBe(true);
     expect(prompts[1]).toContain('space-shooter/js/audio.js');
     expect(prompts[0]).toContain('REPOSITORY FILES');
+  });
+});
+
+describe('self-gate: script-dir anchor rejection (octopus variant run, 2026-07-18)', () => {
+  it('detects dirname-$0 and BASH_SOURCE anchors; plain relative scripts pass', () => {
+    expect(usesScriptDirAnchor('ROOT="$(cd "$(dirname "$0")" && pwd)"\ntest -f "$ROOT/a.js"')).toBe(true);
+    expect(usesScriptDirAnchor('HERE="${BASH_SOURCE[0]%/*}"')).toBe(true);
+    expect(usesScriptDirAnchor('test -f space-shooter/index.html || exit 1')).toBe(false);
+  });
+
+  it('authoring rejects an anchored gate with corrective feedback, then accepts the relative rewrite', async () => {
+    const { mkdtempSync: mkd, writeFileSync: wf, rmSync: rmr } = await import('node:fs');
+    const { tmpdir: tmp } = await import('node:os');
+    const { join: j } = await import('node:path');
+    const dir = mkd(j(tmp(), 'selfgate-anchor2-'));
+    try {
+      wf(j(dir, 'thing.js'), 'export const t = 1;');
+      const prompts: string[] = [];
+      const executor = async (prompt: string) => {
+        prompts.push(prompt);
+        if (prompts.length === 1) {
+          return '```bash\nROOT="$(cd "$(dirname "$0")" && pwd)"\ntest -f "$ROOT/thing.js" || { echo miss >&2; exit 1; }\n```';
+        }
+        return '```bash\ngrep -q NEVER_HERE thing.js || { echo unsolved >&2; exit 1; }\n```';
+      };
+      const res = await authorAcceptanceGate({ instruction: 'finish thing.js', projectRoot: dir, executor });
+      expect(res.vacuous).toBe(false);
+      expect(res.attempts).toBe(2);
+      expect(res.notes.some((n) => n.includes('anchors paths to its own directory'))).toBe(true);
+      expect(prompts[1]).toContain('CWD = project root');
+      // the prompt itself now carries the rule up front
+      expect(prompts[0]).toContain('NEVER anchor to the script location');
+    } finally {
+      rmr(dir, { recursive: true, force: true });
+    }
   });
 });
