@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.22 (2026-07-19)
+
+- fix(delivery): criterion-aware evidence slices for the acceptance judge
+
+
 ## v1.161.21 (2026-07-18)
 
 - fix(delivery): per-script vm units + duplicate-declaration detection

@@ -9,6 +9,7 @@ import {
   createAcceptanceChurnBreaker,
   formatAcceptanceReport,
 } from '../../src/delivery/acceptance-judge.js';
+import { specKeywords } from '../../src/delivery/acceptance-judge.js';
 
 const SPEC = 'Build a counter: increment() returns count+1, and reset() sets it to 0.';
 
@@ -296,5 +297,50 @@ describe('evidence truncation honesty (run H, 2026-07-17)', () => {
     });
     expect(prompt).toContain('TRUNCATED by');
     expect(prompt).toContain('ending abruptly');
+  });
+});
+
+describe('criterion-aware evidence slices (run Y missile blindness, 2026-07-19)', () => {
+  it('specKeywords mines content words and drops stopwords', () => {
+    const kws = specKeywords('Missiles must spawn when the user presses the missile key and update every frame');
+    expect(kws).toContain('missiles');
+    expect(kws).toContain('spawn');
+    expect(kws).not.toContain('must');
+    expect(kws).not.toContain('when');
+  });
+
+  it('surfaces keyword regions from beyond the truncation cutoff', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'slices-'));
+    try {
+      const filler = Array.from({ length: 200 }, (_, i) => `const pad${i} = ${i}; // padding line`).join('\n');
+      writeFileSync(
+        join(dir, 'player.js'),
+        filler + '\nfunction fireMissile() {\n  const missile = new Missile(x, y);\n  projectiles.push(missile);\n}\n'
+      );
+      const spec = 'The player fires a missile: a Missile is created and pushed for update each frame (player.js)';
+      const evidence = gatherEvidence(dir, 10, 1500, spec);
+      expect(evidence).toContain('TRUNCATED by evidence budget');
+      expect(evidence).toContain('RELEVANT SLICES');
+      expect(evidence).toContain('projectiles.push(missile)');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('emits no slices section without a spec', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'slices2-'));
+    try {
+      writeFileSync(join(dir, 'a.js'), 'const a = 1;\n'.repeat(300));
+      const evidence = gatherEvidence(dir, 10, 800);
+      expect(evidence).not.toContain('RELEVANT SLICES');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
