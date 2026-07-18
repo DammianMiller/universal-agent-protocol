@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.161.20 (2026-07-18)
+
+- fix(hooks): deliver_autoroute dedups per change (file#sha1(edit)), not per file
+- fix(delivery): --pending replay is replay-once — consume applied intents, guard insertion re-application
+
+
 ## v1.161.19 (2026-07-18)
 
 - fix(delivery): defer missing-script smoke failures on non-final epics
