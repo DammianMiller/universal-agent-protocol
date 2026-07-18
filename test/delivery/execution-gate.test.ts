@@ -360,3 +360,43 @@ describe('synthesizeExecutionRung + detectRungs wiring', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe('vm-dom missing-script deferral on non-final epics (run W, 2026-07-18)', () => {
+  it('defers a missing script reference when UAP_EPIC_NONFINAL=1, naming the file', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'vmdom-nf-'));
+    const prev = process.env.UAP_EPIC_NONFINAL;
+    try {
+      writeFileSync(join(dir, 'index.html'), '<canvas></canvas><script src="game.js"></script>');
+      process.env.UAP_EPIC_NONFINAL = '1';
+      const res = runVmDomHarness(dir);
+      expect(res.passed).toBe(true);
+      expect(res.outputTail).toContain('non-final epic');
+      expect(res.outputTail).toContain('game.js');
+    } finally {
+      if (prev === undefined) delete process.env.UAP_EPIC_NONFINAL;
+      else process.env.UAP_EPIC_NONFINAL = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still hard-fails the missing script on the final epic (flag unset)', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'vmdom-final-'));
+    const prev = process.env.UAP_EPIC_NONFINAL;
+    try {
+      delete process.env.UAP_EPIC_NONFINAL;
+      writeFileSync(join(dir, 'index.html'), '<canvas></canvas><script src="game.js"></script>');
+      const res = runVmDomHarness(dir);
+      expect(res.passed).toBe(false);
+      expect(res.failureReason).toContain('script not found: game.js');
+    } finally {
+      if (prev !== undefined) process.env.UAP_EPIC_NONFINAL = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
