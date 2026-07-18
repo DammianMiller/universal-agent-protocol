@@ -154,6 +154,20 @@ export function findMisanchoredPaths(
   return hits;
 }
 
+/**
+ * Scripts that anchor paths to their OWN directory are structurally
+ * unwinnable: the gate lives in .uap-deliver/, so ROOT="$(dirname "$0")"
+ * resolves every check under .uap-deliver/<artifact>/... — always missing,
+ * and the fails-on-unsolved floor is trivially satisfied for the wrong
+ * reason. Observed live (octopus variant run, 2026-07-18): a correct-looking
+ * gate failed every turn on `cat .uap-deliver/space-shooter/index.html`.
+ * The path TOKENS were valid relative paths, so the mis-anchor token check
+ * cannot catch this shape — the runtime anchor is the defect.
+ */
+export function usesScriptDirAnchor(script: string): boolean {
+  return /dirname\s+"?\$\{?0\}?"?|\$\{?BASH_SOURCE/.test(script);
+}
+
 function buildAuthorPrompt(
   instruction: string,
   projectRoot: string,
@@ -185,7 +199,10 @@ function buildAuthorPrompt(
     '    builds/runs, output matches what the task requires',
     '  - uses ONLY the repository and standard tools (no network, no access to',
     '    any hidden test harness)',
-    '  - is runnable from the project root',
+    '  - is runnable from the project root: it EXECUTES with CWD = project root,',
+    '    so use plain RELATIVE paths. NEVER anchor to the script location',
+    '    (no ROOT="$(dirname "$0")", no BASH_SOURCE) — the script is stored',
+    '    OUTSIDE the artifact tree and such anchors make every check miss.',
     '',
     'CRITICAL: the script must FAIL right now, on the current unsolved repo,',
     'and only PASS once the task has actually been done. Do not write a check',
@@ -252,6 +269,13 @@ export async function authorAcceptanceGate(opts: SelfGateOptions): Promise<SelfG
     // would otherwise accept as proof of a strict gate — wiring in a gate that
     // fails every turn for a reason the model cannot see. Reject it, hand the
     // parse error back, and let the next attempt fix it.
+    if (usesScriptDirAnchor(script)) {
+      notes.push(`attempt ${attempt}: gate anchors paths to its own directory (dirname $0/BASH_SOURCE) — regenerating`);
+      priorFeedback =
+        'the script anchored file paths to its own directory (dirname "$0" / BASH_SOURCE). It is stored OUTSIDE ' +
+        'the artifact tree, so every check misses. It runs with CWD = project root — use plain relative paths.';
+      continue;
+    }
     const parse = scriptParses(script);
     if (!parse.ok) {
       notes.push(`attempt ${attempt}: gate script does not parse (${parse.error ?? 'syntax error'}) — regenerating`);
