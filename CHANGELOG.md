@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.18 (2026-07-18)
+
+- fix(delivery): name the files behind anonymous 404s in user-path feedback
+
+
 ## v1.161.17 (2026-07-18)
 
 - fix(delivery): reject self-gates that anchor paths to their own directory
