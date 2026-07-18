@@ -400,3 +400,61 @@ describe('vm-dom missing-script deferral on non-final epics (run W, 2026-07-18)'
     }
   });
 });
+
+describe('vm-dom per-script units (run X black screen, 2026-07-18)', () => {
+  it('hard-fails duplicate top-level class declarations across scripts, naming both files', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'vmdom-dup-'));
+    try {
+      writeFileSync(join(dir, 'enemy.js'), 'class Enemy { constructor() { this.hp = 1; } }');
+      writeFileSync(join(dir, 'enemies.js'), 'class Enemy { constructor() { this.hp = 2; } }');
+      writeFileSync(
+        join(dir, 'index.html'),
+        '<canvas></canvas><script src="enemy.js"></script><script src="enemies.js"></script>'
+      );
+      const res = runVmDomHarness(dir);
+      expect(res.passed).toBe(false);
+      expect(res.outputTail).toContain("'Enemy' declared in enemy.js AND enemies.js");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('hard-fails a malformed script naming the file (no more cross-realm inconclusive)', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'vmdom-syn-'));
+    try {
+      writeFileSync(join(dir, 'ok.js'), 'const fine = 1;');
+      writeFileSync(join(dir, 'broken.js'), 'class Broken { constructor( { }');
+      writeFileSync(
+        join(dir, 'index.html'),
+        '<canvas></canvas><script src="ok.js"></script><script src="broken.js"></script>'
+      );
+      const res = runVmDomHarness(dir);
+      expect(res.passed).toBe(false);
+      expect(res.failureReason).toContain('broken.js');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still passes a clean multi-script page', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'vmdom-ok-'));
+    try {
+      writeFileSync(join(dir, 'a.js'), 'class A { go() { return 1; } }');
+      writeFileSync(join(dir, 'b.js'), 'const a = new A(); a.go();');
+      writeFileSync(join(dir, 'index.html'), '<canvas></canvas><script src="a.js"></script><script src="b.js"></script>');
+      const res = runVmDomHarness(dir);
+      expect(res.passed).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

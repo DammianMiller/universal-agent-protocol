@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.21 (2026-07-18)
+
+- fix(delivery): per-script vm units + duplicate-declaration detection
+
+
 ## v1.161.20 (2026-07-18)
 
 - fix(hooks): deliver_autoroute dedups per change (file#sha1(edit)), not per file
