@@ -428,6 +428,23 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
       }
       const p = join(entryDir, s.replace(/^\//, ''));
       if (!existsSync(p)) {
+        // Parity with the visual + user-path gates (run W, octopus variant,
+        // 2026-07-18): when the plan scaffolds index.html EARLY, its script
+        // tags reference files that LATER epics deliver — hard-failing the
+        // smoke on the missing file makes every early epic unsatisfiable and
+        // burns its whole attempt budget (3 attempts x 5 turns on epic 1).
+        // On a non-final epic the missing reference is "not-ready", not a
+        // defect; the FINAL epic runs with the flag unset and enforces it.
+        if (process.env.UAP_EPIC_NONFINAL === '1') {
+          return {
+            passed: true,
+            exitCode: 0,
+            failureReason: `deferred: script not found: ${s} (non-final epic)`,
+            outputTail: `NA: non-final epic — ${entry} references ${s} which does not exist YET; a later epic must create it (the final epic enforces this for real)`,
+            durationMs: Date.now() - start,
+            via: 'vm-dom',
+          };
+        }
         return {
           passed: false,
           exitCode: 1,

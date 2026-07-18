@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.19 (2026-07-18)
+
+- fix(delivery): defer missing-script smoke failures on non-final epics
+
+
 ## v1.161.18 (2026-07-18)
 
 - fix(delivery): name the files behind anonymous 404s in user-path feedback
