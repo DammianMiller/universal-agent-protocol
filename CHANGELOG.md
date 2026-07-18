@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.23 (2026-07-19)
+
+- fix(delivery): converge against the fidelity-max vision bar in-loop
+
+
 ## v1.161.22 (2026-07-19)
 
 - fix(delivery): criterion-aware evidence slices for the acceptance judge
