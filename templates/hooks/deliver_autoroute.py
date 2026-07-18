@@ -23,6 +23,7 @@ intent is logged AND routed. The hook still blocks (exit 2); this only enriches
 the block message and kicks off the sanctioned path in the background.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -109,12 +110,6 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
                 "file_path": file_path, "hint": hint, "dedup_key": "", "intent": None}
 
     intent = {"ts": int(time.time()), "tool": tool, "file_path": file_path, "hint": hint}
-    # Dedup on the file when we have one, else on the hint itself. Requiring a
-    # file_path made an entire class unspawnable: a BASH-routed source-write
-    # (`cat > app.js <<EOF`) carries a `command`, not a path — so those intents
-    # were blocked and then silently dropped. The hint is what deliver actually
-    # runs, so it is the correct spawn key.
-    dedup_key = file_path or hint
     # P1 (plan D1): persist the blocked edit's actual old/new content (from the
     # enforcer's editIntent, falling back to the raw tool args) so the intent
     # is REPLAYABLE via `uap deliver --pending <file>` instead of a blind hint.
@@ -133,6 +128,19 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
         edit_intent = {"content": bash_content}
     if edit_intent:
         intent["edit"] = edit_intent
+    # Dedup PER CHANGE, not per file: base is the file when we have one, else
+    # the hint (a BASH-routed source-write carries a `command`, not a path, and
+    # requiring a path made that class unspawnable). When the edit's content is
+    # recorded, suffix a hash of it — a bare file-path key marked the FILE seen
+    # forever, so every LATER (different) blocked edit to the same file was
+    # silently swallowed: never recorded as replayable, never applied (observed
+    # 2026-07-18). Identical retries of the same edit still dedup exactly.
+    dedup_key = file_path or hint
+    if edit_intent:
+        change_hash = hashlib.sha1(
+            json.dumps(edit_intent, sort_keys=True).encode("utf-8", "replace")
+        ).hexdigest()[:12]
+        dedup_key = f"{dedup_key}#{change_hash}"
     # A REPLAYABLE intent (plan D1) carries the blocked edit's exact content, so
     # it can be applied to disk DETERMINISTICALLY via `uap deliver --pending`
     # (writeFileSync of the captured content — no model, no blind fan-out). This

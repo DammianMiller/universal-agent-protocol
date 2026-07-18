@@ -32,6 +32,36 @@ function autorouteEnabled(envVal?: string): boolean {
   return JSON.parse(runPy(`${LOAD}\nprint(json.dumps(m._autoroute_enabled()))`, envVal));
 }
 
+describe('deliver_autoroute dedup key (per change, not per file)', () => {
+  it('distinct edits to one file get distinct keys; identical retries match; seen suppresses only the same edit', () => {
+    const out = runPy(`${LOAD}
+out = {"reason": "BLOCKED", "route": "deliver", "deliverHint": "implement x"}
+args1 = {"file_path": "/tmp/proj/src/a.ts", "old_string": "const x = 1;", "new_string": "const x = 2;"}
+args2 = {"file_path": "/tmp/proj/src/a.ts", "old_string": "const y = 1;", "new_string": "const y = 2;"}
+d1 = m.decide(out, "Edit", args1, False, set())
+d1b = m.decide(out, "Edit", args1, False, set())
+d2 = m.decide(out, "Edit", args2, False, set())
+same_seen = m.decide(out, "Edit", args1, False, {d1["dedup_key"]})
+diff_seen = m.decide(out, "Edit", args2, False, {d1["dedup_key"]})
+print(json.dumps({
+    "k1": d1["dedup_key"], "k1b": d1b["dedup_key"], "k2": d2["dedup_key"],
+    "firstReplay": d1["replay"],
+    "sameSeenReplay": same_seen["replay"],
+    "diffSeenReplay": diff_seen["replay"],
+}))
+`);
+    const r = JSON.parse(out);
+    expect(r.k1).toBe(r.k1b);
+    expect(r.k1).not.toBe(r.k2);
+    expect(r.k1).toContain('/tmp/proj/src/a.ts#');
+    expect(r.firstReplay).toBe(true);
+    // The exact edit already routed once: swallowed. A DIFFERENT edit to the
+    // same file must still replay (pre-fix it was silently dropped forever).
+    expect(r.sameSeenReplay).toBe(false);
+    expect(r.diffSeenReplay).toBe(true);
+  });
+});
+
 describe('deliver_autoroute default posture', () => {
   it('defaults OFF — blind background spawns are opt-in', () => {
     expect(autorouteEnabled()).toBe(false);
