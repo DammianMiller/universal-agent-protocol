@@ -148,3 +148,54 @@ describe('buildMissionAcceptanceGate', () => {
     expect(verdict.score).toBeUndefined(); // never saturate bestAcceptance on fail-open
   });
 });
+
+describe('fidelity-max vision convergence (run Y delivered-vs-verify divergence, 2026-07-19)', () => {
+  const stubVisual = async () =>
+    ({
+      skipped: false,
+      passed: true,
+      feedback: '',
+      pages: [
+        {
+          file: 'index.html', loaded: true, hasCanvas: true, distinctColors: 3,
+          dominantRatio: 0.9, motionRatio: 0, expectsAnimation: false,
+          runtimeErrors: [], failedRequests: [], screenshots: ['/tmp/shot-a.png', '/tmp/shot-b.png'],
+          problems: [],
+        },
+      ],
+    }) as never;
+
+  it('fails acceptance with the vision findings when the review is below threshold', async () => {
+    const gate = buildMissionAcceptanceGate({
+      primary: true,
+      specs: createSpecRegistry({ initialSpec: 'a space shooter with a visible start screen', sharedRoot: '/tmp/x' }),
+      judgeExecutor: async () => {
+        throw new Error('judge must not run when vision blocks');
+      },
+      executionGate: (async () => ({ passed: true, exitCode: 0, outputTail: '', durationMs: 1, via: 'vm-dom' })) as never,
+      visualGate: stubVisual,
+      visionReview: async (_root, _spec, shots) => {
+        expect(shots).toEqual(['/tmp/shot-b.png']);
+        return 'VISION REVIEW FAILED — the rendered UI scores 2/10 (max-fidelity threshold 6).\n- empty bordered canvas';
+      },
+    });
+    const r = await gate('/tmp/x');
+    expect(r.passed).toBe(false);
+    expect(r.feedback).toContain('VISION REVIEW FAILED');
+    expect(r.feedback).toContain('empty bordered canvas');
+  });
+
+  it('proceeds to the acceptance judge when the vision review passes (null)', async () => {
+    const gate = buildMissionAcceptanceGate({
+      primary: true,
+      specs: createSpecRegistry({ initialSpec: 'spec', sharedRoot: '/tmp/x' }),
+      judgeExecutor: async () => JSON.stringify({ passed: true, requirements: [] }),
+      executionGate: (async () => ({ passed: true, exitCode: 0, outputTail: '', durationMs: 1, via: 'vm-dom' })) as never,
+      visualGate: stubVisual,
+      visionReview: async () => null,
+      judge: (async () => ({ passed: true, feedback: '', score: 1 })) as never,
+    });
+    const r = await gate('/tmp/x');
+    expect(r.passed).toBe(true);
+  });
+});
