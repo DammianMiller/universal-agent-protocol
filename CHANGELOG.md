@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.24 (2026-07-19)
+
+- fix(delivery): recover cap-truncated plans by re-parsing the planner's own output
+
+
 ## v1.161.23 (2026-07-19)
 
 - fix(delivery): converge against the fidelity-max vision bar in-loop
