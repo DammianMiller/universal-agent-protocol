@@ -29,6 +29,8 @@ import type { DeliveryPhase } from './decompose.js';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { runEpics, type Epic, type EpicRunResult } from './epic-controller.js';
+export { missingMissionFiles } from './mission-files.js';
+import { missingMissionFiles } from './mission-files.js';
 import { foldDeliveryResult } from './delivery-result.js';
 import type { DeliveryTaskHandle } from './task-sync.js';
 
@@ -186,39 +188,6 @@ export function moduleSurface(projectRoot: string, goal: string, maxLines = 40):
  * never be omitted again. Bare filenames count as existing when any file
  * with that basename exists (missions rarely repeat full paths).
  */
-export function missingMissionFiles(projectRoot: string, mission: string): string[] {
-  const tokens = new Set<string>();
-  for (const m of mission.matchAll(/[\w.@-]+(?:\/[\w.@-]+)+/g)) {
-    const t = m[0].replace(/[.,;:)]+$/, '');
-    if (!t.includes('//') && !t.startsWith('http')) tokens.add(t);
-  }
-  for (const m of mission.matchAll(/\b[\w-]+\.(?:html|css|md|js|mjs|cjs|ts|tsx|json|py|rs|go)\b/g)) {
-    tokens.add(m[0]);
-  }
-  const existingBases = new Set<string>();
-  const walk = (dir: string, depth: number): void => {
-    if (depth > 3) return;
-    let entries;
-    try {
-      entries = readdirSync(join(projectRoot, dir), { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'dist') continue;
-      if (e.isDirectory()) walk(dir ? `${dir}/${e.name}` : e.name, depth + 1);
-      else existingBases.add(e.name.toLowerCase());
-    }
-  };
-  walk('', 0);
-  const missing: string[] = [];
-  for (const t of tokens) {
-    const base = (t.split('/').pop() ?? t).toLowerCase();
-    if (!base.includes('.')) continue; // directories are not deliverable files
-    if (!existingBases.has(base)) missing.push(t);
-  }
-  return [...new Set(missing)].sort();
-}
 
 export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryResult> {
   const note = deps.note ?? ((): void => undefined);

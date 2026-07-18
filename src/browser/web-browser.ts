@@ -51,6 +51,18 @@ export class WebBrowser {
    * temporal-dead-zone ReferenceError that static checks never see). Best-effort:
    * if the underlying page has no event emitter, capture silently degrades.
    */
+  /**
+   * Chrome's "Failed to load resource: ... 404" console error omits the URL
+   * from its text — the URL rides in the message's location. Without it the
+   * feedback is unactionable (run V, octopus variant, 2026-07-18: two full
+   * attempts lost to an anonymous 404). Appends the location URL when the
+   * text doesn't already carry it.
+   */
+  static formatConsoleError(text: string, url?: string): string {
+    if (!url || text.includes(url)) return text;
+    return `${text} (resource: ${url})`;
+  }
+
   private attachErrorCapture(): void {
     const page = this.page;
     if (!page || typeof page.on !== 'function') return;
@@ -59,10 +71,14 @@ export class WebBrowser {
         const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
         this.errors.push({ kind: 'pageerror', message: msg });
       });
-      page.on('console', (msg: { type?: () => string; text?: () => string }) => {
+      page.on('console', (msg: { type?: () => string; text?: () => string; location?: () => { url?: string } }) => {
         try {
           if (typeof msg.type === 'function' && msg.type() === 'error') {
-            this.errors.push({ kind: 'console', message: msg.text ? msg.text() : '' });
+            let loc: string | undefined;
+            try {
+              loc = typeof msg.location === 'function' ? msg.location()?.url : undefined;
+            } catch { loc = undefined; }
+            this.errors.push({ kind: 'console', message: WebBrowser.formatConsoleError(msg.text ? msg.text() : '', loc) });
           }
         } catch {
           /* malformed console event — ignore */

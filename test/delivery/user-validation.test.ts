@@ -15,6 +15,7 @@ import {
   USER_VALIDATION_RUNG_ID,
   VALIDATION_REPORT_FILE,
 } from '../../src/delivery/user-validation.js';
+import { findMissingHtmlResources } from '../../src/delivery/user-validation.js';
 import { USER_PATHS_FILE, type UserPathsManifest } from '../../src/delivery/user-paths.js';
 import { runTieredLadder, type GateRung } from '../../src/delivery/verifier-ladder.js';
 
@@ -400,5 +401,48 @@ describe('final tier + createUserValidationRunner in the ladder', () => {
     expect(result.passed).toBe(true);
     const uv = result.results.find((r) => r.id === USER_VALIDATION_RUNG_ID);
     expect(uv?.skipped).toBe(true);
+  });
+});
+
+describe('resource-integrity pre-check (run V octopus variant, 2026-07-18: anonymous 404s)', () => {
+  it('names local script/stylesheet refs that do not exist on disk; ignores externals', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'resint-'));
+    try {
+      writeFileSync(join(dir, 'config.js'), 'window.CONFIG = {};');
+      writeFileSync(
+        join(dir, 'index.html'),
+        [
+          '<link rel="stylesheet" href="styles.css">',
+          '<link rel="icon" href="data:image/png;base64,x">',
+          '<script src="config.js"></script>',
+          '<script src="main.js?v=2"></script>',
+          '<script src="https://cdn.example.com/lib.js"></script>',
+          '<a href="#top">top</a>',
+        ].join('\n')
+      );
+      const broken = findMissingHtmlResources(dir);
+      expect(broken).toHaveLength(1);
+      expect(broken[0].html).toBe('index.html');
+      expect(broken[0].missing).toEqual(['main.js', 'styles.css']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports nothing when every referenced file exists', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'resint2-'));
+    try {
+      writeFileSync(join(dir, 'app.js'), 'void 0;');
+      writeFileSync(join(dir, 'index.html'), '<script src="./app.js"></script>');
+      expect(findMissingHtmlResources(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

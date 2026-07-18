@@ -58,3 +58,18 @@ describe('WebBrowser', () => {
     expect(typeof result).toBe('number');
   });
 });
+
+describe('WebBrowser.formatConsoleError (anonymous-404 fix, 2026-07-18)', () => {
+  it('appends the resource URL when the text omits it', () => {
+    const out = WebBrowser.formatConsoleError(
+      'Failed to load resource: the server responded with a status of 404 (Not Found)',
+      'http://127.0.0.1:8123/styles.css'
+    );
+    expect(out).toContain('(resource: http://127.0.0.1:8123/styles.css)');
+  });
+
+  it('leaves the text alone when the URL is absent or already present', () => {
+    expect(WebBrowser.formatConsoleError('boom', undefined)).toBe('boom');
+    expect(WebBrowser.formatConsoleError('404 at http://x/y.js', 'http://x/y.js')).toBe('404 at http://x/y.js');
+  });
+});

@@ -25,6 +25,7 @@ import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
 import { applyFileBlocks } from './applier.js';
 import { snapshotProtection } from './spec-imports.js';
 import { captureIntegrity, verifyAndRestore, integrityViolationFeedback } from './integrity.js';
+import { appendMissingFilesNote } from './mission-files.js';
 import type { StrategySeed } from './explorer.js';
 import { exploreAndCommit } from './explorer.js';
 import type { Judge } from './judge.js';
@@ -1224,7 +1225,7 @@ export class ConvergenceLoop {
           : truncateHead(outcome.output, previousOutputChars),
         feedback: outcome.executorError
           ? `Model call failed: ${outcome.executorError}`
-          : outcome.ladder?.feedback,
+          : appendMissingFilesNote(outcome.ladder?.feedback, this.config.projectRoot, instruction),
         applyError: outcome.applyError,
         previousFiles: outcome.filesApplied.length > 0 ? outcome.filesApplied : undefined,
         critique,
