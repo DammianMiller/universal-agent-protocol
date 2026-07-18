@@ -423,6 +423,44 @@ export interface RunUserValidationOptions {
   browserLoader?: () => Promise<BrowserLike | null>;
 }
 
+/**
+ * Local resources referenced by the web root's HTML that do not exist on
+ * disk. Run V (octopus variant, 2026-07-18): index.html referenced styles.css
+ * and main.js the model never wrote; every journey failed on
+ * "Failed to load resource ... 404" WITHOUT the URL, and the executor burned
+ * two full attempts re-reading files that were individually fine. This names
+ * the missing files deterministically before any browser launches.
+ */
+export function findMissingHtmlResources(webRoot: string): { html: string; missing: string[] }[] {
+  const out: { html: string; missing: string[] }[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(webRoot).filter((f) => f.toLowerCase().endsWith('.html')).slice(0, 8);
+  } catch {
+    return out;
+  }
+  for (const html of entries) {
+    let text: string;
+    try {
+      text = readFileSync(join(webRoot, html), 'utf8');
+    } catch {
+      continue;
+    }
+    const missing = new Set<string>();
+    for (const m of text.matchAll(/(?:src|href)\s*=\s*(?:"([^"]+)"|'([^']+)')/gi)) {
+      const raw = (m[1] ?? m[2] ?? '').trim();
+      if (!raw || /^(?:https?:)?\/\//i.test(raw)) continue;
+      if (/^(?:data:|mailto:|javascript:|tel:|#)/i.test(raw)) continue;
+      if (raw.includes('{') || raw.includes('$')) continue; // template placeholder
+      const clean = raw.split(/[?#]/)[0].replace(/^\.?\//, '');
+      if (!clean || clean.endsWith('/')) continue;
+      if (!existsSync(join(webRoot, clean))) missing.add(clean);
+    }
+    if (missing.size > 0) out.push({ html, missing: [...missing].sort() });
+  }
+  return out;
+}
+
 export async function runUserValidation(
   projectRoot: string,
   opts: RunUserValidationOptions = {}
@@ -508,6 +546,29 @@ export async function runUserValidation(
           staticServer = await startStaticServer(webRoot);
         } catch { staticServer = null; }
       }
+    }
+
+    // Deterministic resource-integrity pre-check: a missing script/stylesheet
+    // fails journeys with an anonymous 404 — name the files up front so the
+    // executor's next turn is a fix, not an investigation.
+    if (needsBrowser) {
+      try {
+        const integrityRoot = findWebEntryDir(projectRoot) ?? projectRoot;
+        for (const broken of findMissingHtmlResources(integrityRoot)) {
+          results.push({
+            id: `resource-integrity-${broken.html}`,
+            rule: 'every local script/stylesheet referenced by the HTML must exist on disk',
+            client: 'cli',
+            status: 'fail',
+            steps: [{
+              step: `check ${broken.html}`,
+              ok: false,
+              observed: `MISSING local resources referenced by ${broken.html}: ${broken.missing.join(', ')} — each reference 404s in the browser. Create these files (or fix the references).`,
+            }],
+            screenshots: [],
+          });
+        }
+      } catch { /* pre-check is best-effort; journeys still run */ }
     }
 
     for (const path of manifest.paths) {
