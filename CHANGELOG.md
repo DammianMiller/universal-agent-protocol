@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.161.17 (2026-07-18)
+
+- fix(delivery): reject self-gates that anchor paths to their own directory
+
+
 ## v1.161.16 (2026-07-18)
 
 - fix(delivery): failed epics tell the split planner WHY — plus a visual-floor directive
