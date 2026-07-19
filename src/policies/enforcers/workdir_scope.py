@@ -69,6 +69,7 @@ def _allowed_roots() -> list[Path]:
         "~/.cache/uap",
         "~/.config/uap",
         "~/.claude/projects",
+        "~/.claude/plans",
     ):
         add(_expand(p))
     for p in os.environ.get("UAP_WORKDIR_ALLOW", "").split(":"):
