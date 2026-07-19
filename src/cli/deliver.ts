@@ -8,7 +8,7 @@
 
 import chalk from 'chalk';
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync, renameSync } from 'fs';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync, renameSync, readdirSync, statSync } from 'fs';
 import { join, resolve, relative } from 'path';
 import { ConvergenceLoop, composeIterationHooks } from '../delivery/convergence-loop.js';
 import type {
@@ -2329,6 +2329,36 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           } catch { /* a locked path that vanished — skip it */ }
         }
         return parts.length > 0 ? parts.join('\n\n') : null;
+      },
+      // P1 contract-lint source: a bounded walk of the project's delivered
+      // source (js/ts family), skipping tooling dirs. Fed to the structural
+      // lint so `new Singleton()` mismatches are caught at the epic boundary.
+      readSourceFiles: () => {
+        const out: Array<{ path: string; content: string }> = [];
+        const SKIP = new Set(['node_modules', '.git', '.uap', '.uap-backups', 'dist', 'build', '.worktrees', 'coverage', 'vendor', 'third_party']);
+        const EXT = /\.(js|mjs|cjs|jsx|ts|tsx)$/;
+        const MAX_FILES = 120;
+        const MAX_BYTES = 200_000;
+        const walk = (dir: string, depth: number): void => {
+          if (out.length >= MAX_FILES || depth > 8) return;
+          let entries: import('fs').Dirent[];
+          try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+          for (const e of entries) {
+            if (out.length >= MAX_FILES) return;
+            if (SKIP.has(e.name)) continue;
+            const abs = join(dir, e.name);
+            // Skip ALL dot-directories (.next/.nuxt/.svelte-kit/.output/.cache/…) —
+            // they hold compiled/vendored JS that would seed false positives.
+            if (e.isDirectory()) { if (!e.name.startsWith('.')) walk(abs, depth + 1); continue; }
+            if (!EXT.test(e.name)) continue;
+            try {
+              if (statSync(abs).size > MAX_BYTES) continue;
+              out.push({ path: relative(projectRoot, abs).split('\\').join('/'), content: readFileSync(abs, 'utf8') });
+            } catch { /* unreadable — skip */ }
+          }
+        };
+        walk(projectRoot, 0);
+        return out;
       },
       maxAttemptsPerEpic: Number(process.env.UAP_DELIVER_EPIC_ATTEMPTS ?? 3), // (#4b) 2→3
       // (#4c) Recursive split depth: a huge epic that still can't land after

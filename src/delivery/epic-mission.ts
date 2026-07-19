@@ -29,6 +29,7 @@ import type { DeliveryPhase } from './decompose.js';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { runEpics, type Epic, type EpicRunResult } from './epic-controller.js';
+import { lintSourceContracts } from './contract-lint.js';
 export { missingMissionFiles } from './mission-files.js';
 import { missingMissionFiles } from './mission-files.js';
 import { foldDeliveryResult } from './delivery-result.js';
@@ -115,6 +116,14 @@ export interface EpicMissionDeps {
    * re-inventing a divergent CONFIG shape / module API. Null when none locked.
    */
   readContractFiles?: () => string | null;
+  /**
+   * P1 contract-lint (production wiring): read the delivered source files
+   * ({path, content}) so the epic controller can run the STRUCTURAL contract
+   * lint after each epic — catching a `new X()` on a module that exposes X as a
+   * singleton (the octopus Audio/Background crash-at-boot class) before the final
+   * whole-mission gate. Omit to leave the lint gate off.
+   */
+  readSourceFiles?: () => Array<{ path: string; content: string }>;
   /** Lock an accepted contracts epic's files; returns what was newly locked. */
   lockContracts: (files: string[]) => string[];
   /** Epic-controller tuning (caller resolves env). */
@@ -233,6 +242,9 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
     // resume-state persistence is best-effort
   }
   let lastContractEpicFiles: string[] = [];
+  // Files the MOST RECENT epic changed — the contract-lint only flags `new`-sites
+  // in these, so a mismatch is blamed on the epic that wrote it, not a downstream one.
+  let lastEpicChangedFiles: string[] = [];
 
   // Hands-free: auto-populate the completion ledger so the whole multi-epic
   // build has an objective, cross-session definition of done (Option B). The
@@ -257,6 +269,12 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
     onProgress: deps.persistCompleted,
     // P1: carry the locked contract files' CONTENTS verbatim into every epic.
     ...(deps.readContractFiles ? { readContract: deps.readContractFiles } : {}),
+    // P1 contract-lint (production): after an epic is accepted, fail it if the
+    // assembled source has a structural contract mismatch (e.g. `new Singleton()`)
+    // so it re-runs against the contract instead of surfacing only at the final gate.
+    ...(deps.readSourceFiles
+      ? { contractLint: () => lintSourceContracts(deps.readSourceFiles!(), new Set(lastEpicChangedFiles)) }
+      : {}),
     // Re-decompose a failed epic into sub-epics. Fires on context-budget
     // exhaustion (rail auto-size) and, under splitOnAnyFailure, on any
     // exhausted-attempts failure (auto-escalation). Always provided so the
@@ -382,6 +400,7 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         foldDeliveryResult(all, r);
         deps.completeTask?.(epicTask, r);
         const files = [...new Set(r.history.flatMap((h) => h.filesApplied ?? []))];
+        lastEpicChangedFiles = files;
         if (epic.contracts) lastContractEpicFiles = files;
         // Rail sizing: surface budget exhaustion to the epic controller — its
         // split path keys off the structured budgetStopped field below; the

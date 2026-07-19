@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.163.0 (2026-07-19)
+
+- feat(deliver): wire the P1 contract-lint gate to production (structural divergence catcher)
+
+
 ## v1.162.1 (2026-07-19)
 
 - fix(deliver): #2 wedge handling done safely — per-tool-call heartbeat + cooperative watchdog
