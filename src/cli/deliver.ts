@@ -101,7 +101,7 @@ export function resolveEvaluatorPreset(opts: {
 export { resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
-import { clearStop, isStopRequested, loadRunState, newRunId, saveRunState, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
+import { clearStop, isStopRequested, requestStop, loadRunState, newRunId, saveRunState, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
@@ -1315,6 +1315,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     ? createAgenticExecutor(model, {
         projectRoot,
         endpoint: agenticEndpoint,
+        onToolProgress: () => updateDeliverHeartbeat(projectRoot), // #2a per-tool-call heartbeat
         temperature,
         contextTokenBudget: sessionBudget,
         contractFiles: contractLock,
@@ -1340,6 +1341,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     ? createAgenticExecutor(repairModel, {
         projectRoot,
         endpoint: agenticEndpoint,
+        onToolProgress: () => updateDeliverHeartbeat(projectRoot), // #2a per-tool-call heartbeat
         temperature: 0.2,
         contextTokenBudget: sessionBudget,
         contractFiles: contractLock,
@@ -1773,6 +1775,35 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   };
   // ---- Durable run + optional mission decomposition (fable-style) ----
   const runId = resumeState?.runId ?? newRunId();
+  // #2b: safe cooperative wedge watchdog. If this run stops making tool progress
+  // (heartbeat goes stale past the wedge timeout — #2a stamps it per tool call),
+  // request a COOPERATIVE stop rather than process.exit: the convergence loop's
+  // shouldStop picks it up at the next turn boundary and unwinds through the
+  // normal finally (snapshot/worktree/lock cleanup all run). This lets a
+  // genuinely-wedged run free its lock and exit instead of lingering as an idle
+  // zombie, WITHOUT the abrupt-teardown resource leak the earlier process.exit
+  // watchdog risked. Off-switch rides the existing UAP_DELIVER_NO_LOCK=1.
+  let wedgeWatchdog: ReturnType<typeof setInterval> | null = null;
+  if (!options.dryRun && process.env.UAP_DELIVER_NO_LOCK !== '1') {
+    // Fresh baseline at arm time so the watchdog never fires on a run that just
+    // started but hasn't stamped yet — critically on --resume (which does NOT
+    // acquire the lock, so acquireDeliverLock's stamp never ran and the on-disk
+    // heartbeat still holds the PRIOR interrupted run's timestamp).
+    updateDeliverHeartbeat(projectRoot);
+    const wedgeS = wedgeTimeoutS();
+    wedgeWatchdog = setInterval(() => {
+      if (isDeliverHolderWedged(projectRoot) && !isStopRequested(projectRoot, runId)) {
+        console.error(
+          chalk.yellow(
+            `⏱ wedge watchdog: no tool progress for ${wedgeS}s — requesting a clean stop so the lock is released.`
+          )
+        );
+        requestStop(projectRoot, runId);
+      }
+    }, Math.min(30_000, Math.max(1000, wedgeS * 1000)));
+    wedgeWatchdog.unref();
+    process.once('exit', () => { if (wedgeWatchdog) clearInterval(wedgeWatchdog); });
+  }
   let phases: DeliveryPhase[] | undefined = resumeState?.phases;
   let phaseIndex = resumeState?.phaseIndex ?? 0;
   const phaseSummaries: string[] = [...(resumeState?.phaseSummaries ?? [])];
@@ -2067,6 +2098,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
             ? createAgenticExecutor(model, {
                 projectRoot: root,
                 endpoint: agenticEndpoint,
+                // #2a per-tool-call heartbeat. Stamp projectRoot (NOT the
+                // per-task `root`): the deliver heartbeat is a project-global
+                // wedge signal the watchdog + lock reclaim read at projectRoot;
+                // stamping `root` here would leave projectRoot's advancing only
+                // per-turn, re-opening the false-wedge window for isolated tasks.
+                onToolProgress: () => updateDeliverHeartbeat(projectRoot),
                 temperature,
                 contextTokenBudget: sessionBudget,
                 contractFiles: contractLock,
@@ -2554,6 +2591,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // The loop is over: from here a normal exit is expected, so stop treating a
     // signal as a mystery death.
     disposeExitRecorder();
+    // Stop the wedge watchdog on the normal completion path too (not only on
+    // process exit) — avoids a stray requestStop on a finished runId and, for
+    // repeated in-process callers, interval/listener accumulation.
+    if (wedgeWatchdog) { clearInterval(wedgeWatchdog); wedgeWatchdog = null; }
   }
 
   // --keep-best: if deliver left the project worse than it started (by real

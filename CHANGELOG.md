@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.162.1 (2026-07-19)
+
+- fix(deliver): #2 wedge handling done safely — per-tool-call heartbeat + cooperative watchdog
+
+
 ## v1.162.0 (2026-07-19)
 
 - chore: bump version to 1.161.0

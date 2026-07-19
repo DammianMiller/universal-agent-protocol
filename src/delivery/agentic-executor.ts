@@ -120,6 +120,15 @@ export interface AgenticExecutorOptions {
   /** Optional sink for a structured trace of what the agent did. */
   onEvent?: (event: AgenticEvent) => void;
   /**
+   * Called after EVERY tool execution (read/list/write/edit/bash) — a
+   * fine-grained progress signal. Wired to the deliver heartbeat so a long,
+   * legitimately-working turn keeps the heartbeat fresh; without it the
+   * heartbeat only advanced between turns, so a slow turn writing many files
+   * looked increasingly "wedged" to the lock's wedge-reclaim (P0 review + live
+   * observation, 2026-07-19).
+   */
+  onToolProgress?: () => void;
+  /**
    * Allow the `run_bash` tool to execute (default false). run_bash is the model
    * running an UNCONTAINED host shell when not sandboxed — `cwd` is not a
    * boundary, so it can read ~/.ssh, curl secrets out, or write outside the
@@ -976,6 +985,9 @@ export function createAgenticExecutor(
           allowBash,
           contractFiles
         );
+        // #2a: per-tool-call progress — refresh the deliver heartbeat now, not
+        // just at turn end, so wedge-detection tracks real intra-turn activity.
+        opts.onToolProgress?.();
         if (
           (call.function.name === 'write_file' || call.function.name === 'edit_file' || call.function.name === 'run_bash') &&
           toolResult.startsWith('OK')
