@@ -376,6 +376,24 @@ PROXY_DOUBLING_BREAK = os.environ.get("PROXY_DOUBLING_BREAK", "on").lower() not 
 }
 PROXY_DOUBLING_THRESHOLD = int(os.environ.get("PROXY_DOUBLING_THRESHOLD", "3"))
 
+# SLEEP-POLL BREAK: a local model waiting on a blocking tool (e.g. `deliver`,
+# which runs to completion and RETURNS its result) or a background job by
+# issuing `sleep N && <check>` bash turns burns a full model round-trip per
+# poll and buys nothing (observed live: `sleep 15/30/60/120 && ps|grep deliver`
+# while an epic build ran in a child process). After PROXY_SLEEP_POLL_THRESHOLD
+# consecutive leading-`sleep` bash turns, inject a soft directive to stop
+# sleep-polling and take the next real step. Purely additive (never forces or
+# releases tool_choice). PROXY_SLEEP_POLL_BREAK=off to disable.
+PROXY_SLEEP_POLL_BREAK = os.environ.get("PROXY_SLEEP_POLL_BREAK", "on").lower() not in {
+    "0", "off", "false", "no",
+}
+PROXY_SLEEP_POLL_THRESHOLD = int(os.environ.get("PROXY_SLEEP_POLL_THRESHOLD", "3"))
+# A bash command that OPENS with a wait: `sleep 30`, `sleep 5 && ls`, ` sleep 120`.
+# Anchored at the start so a legitimate one-off `sleep` buried mid-pipeline is not
+# mistaken for a poll; the target text is the command (truncated to 80 chars) that
+# record_tool_calls already extracts.
+_SLEEP_POLL_RE = re.compile(r"\s*sleep\s+\d", re.IGNORECASE)
+
 # Failure shapes the generic _ERROR_LINE_RE misses but that motivated this
 # guard (raw GitHub rate-limit JSON, plain timeout lines). Scoped to
 # doubling-down ONLY so ERROR-LOOP's signature semantics stay untouched.
@@ -1466,6 +1484,8 @@ class SessionMonitor:
     doubling_streak: int = 0  # consecutive FAILED retries of that same call
     doubling_break_fires: int = 0  # monotonic count of injected pivot directives
     last_doubling_obs: str = ""  # msg-count:fingerprint key of the last counted observation
+    sleep_poll_streak: int = 0  # consecutive leading-`sleep` bash turns (manual polling)
+    sleep_poll_break_fires: int = 0  # monotonic count of injected anti-poll directives
     mandate_deliver_fires: int = 0  # monotonic count of forced deliver-routings (mandate)
     tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
     last_request_msg_count: int = 0  # Message count of the previous request (compaction-boundary detection)
@@ -1703,6 +1723,23 @@ class SessionMonitor:
                     by_tool = self.tool_target_history.setdefault(name, {})
                     by_tool[target] = by_tool.get(target, 0) + 1
 
+        # SLEEP-POLL detection: a turn whose bash command OPENS with `sleep N` is
+        # the model manually waiting (usually polling a blocking tool that already
+        # returns its result, or a background job). Count consecutive such turns;
+        # any write tool, or any tool turn that is NOT a leading-sleep bash, resets
+        # the streak — so only sustained polling trips the nudge (like doubling).
+        if PROXY_SLEEP_POLL_BREAK:
+            is_sleep_poll = bool(tool_targets) and any(
+                isinstance(t, str) and _SLEEP_POLL_RE.match(t)
+                for t in tool_targets.values()
+            )
+            if any((n or "").lower() in _WRITE_TOOL_CLASS for n in (tool_names or [])):
+                self.sleep_poll_streak = 0
+            elif is_sleep_poll:
+                self.sleep_poll_streak += 1
+            else:
+                self.sleep_poll_streak = 0
+
     def note_tool_result_error(self, latest_result_text: str) -> None:
         """Track a repeated tool_result error signature (ERROR-LOOP guardrail).
 
@@ -1753,6 +1790,14 @@ class SessionMonitor:
             return True, f"self-reported stuck x{self.self_stuck_streak}"
         if self.rate_limited_api_streak >= PROXY_STUCK_API_THRESHOLD:
             return True, f"rate-limited-API retries x{self.rate_limited_api_streak}"
+        return False, ""
+
+    def should_force_sleep_poll_break(self) -> tuple[bool, str]:
+        """True + reason when the model has been sleep-polling long enough to nudge."""
+        if not PROXY_SLEEP_POLL_BREAK:
+            return False, ""
+        if self.sleep_poll_streak >= PROXY_SLEEP_POLL_THRESHOLD:
+            return True, f"sleep-poll x{self.sleep_poll_streak}"
         return False, ""
 
     def note_deferral_signal(self, text: str, had_tool_call: bool) -> None:
@@ -5232,6 +5277,51 @@ def _maybe_inject_deferral_break(openai_body: dict, monitor: "SessionMonitor") -
     )
 
 
+def _maybe_inject_sleep_poll_break(openai_body: dict, monitor: "SessionMonitor") -> None:
+    """Steer a model off manual sleep-polling (SLEEP-POLL BREAK).
+
+    The model spent consecutive turns on `sleep N && <check>` to WAIT -- usually
+    polling a blocking tool (e.g. `deliver`) that already runs to completion and
+    RETURNS its result, or a background job it could check once. Each poll is a
+    full model round-trip that buys nothing (observed live during an epic build:
+    `sleep 15/30/60/120 && ps|grep deliver`). Inject a soft directive telling it
+    to stop sleeping and either await the blocking tool or take the next real
+    step. Purely ADDITIVE: never forces or releases tool_choice (the model may
+    legitimately need one more check), so it composes with every other guard.
+    """
+    should, reason = monitor.should_force_sleep_poll_break()
+    if not should:
+        return
+    # Yield to the urgent terminal guards so directives never contradict: recon
+    # may strip tools / force a summary, and stuck-break wants a prose exit.
+    if monitor.recon_convergence_pending():
+        return
+    stuck, _ = monitor.should_force_stuck_break()
+    if stuck:
+        return
+    monitor.sleep_poll_break_fires += 1
+    directive = (
+        "\n\nSTOP SLEEP-POLLING (" + reason + "). You are burning turns on "
+        "`sleep N && ...` to wait. Blocking tools (e.g. `deliver`) already run to "
+        "completion and RETURN their result -- you never need to poll them. If a "
+        "background job is running, check its status ONCE without `sleep`; "
+        "otherwise take the next real build/verify step now."
+    )
+    msgs = openai_body.get("messages")
+    if not isinstance(msgs, list):
+        msgs = []
+    if msgs and msgs[0].get("role") == "system":
+        msgs[0]["content"] = (msgs[0].get("content") or "") + directive
+    else:
+        msgs.insert(0, {"role": "system", "content": directive.strip()})
+    openai_body["messages"] = msgs  # reattach in case messages was empty/absent
+    logger.warning(
+        "SLEEP-POLL BREAK: injected anti-poll directive (%s, fires=%d)",
+        reason,
+        monitor.sleep_poll_break_fires,
+    )
+
+
 # MANDATE-DELIVER guardrail: delivery-enforcement blocks a direct source edit and
 # tells the model to "call the `deliver` tool", but the enforcer's route:deliver
 # signal is only honored by harnesses that understand it -- weak local models see
@@ -6218,6 +6308,12 @@ def build_openai_request(
     # DEFERRAL-BREAK (Fix A): after stuck-break, drive a no-tool deferral turn
     # into a concrete action. Runs last so it can yield to stuck-break.
     _maybe_inject_deferral_break(openai_body, monitor)
+
+    # SLEEP-POLL BREAK: steer the model off manual `sleep N && check` waiting on a
+    # blocking tool / background job. Soft + additive (no tool_choice change), and
+    # yields to recon/stuck internally, so it runs after the forcing guards and
+    # never fights their directives.
+    _maybe_inject_sleep_poll_break(openai_body, monitor)
 
     # EMPTY-TOOL LOOP BREAK: after repeated FULLY-EMPTY responses under a forced
     # tool_choice, release the force + inject a plain-text directive so the model

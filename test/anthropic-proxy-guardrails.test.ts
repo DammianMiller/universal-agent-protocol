@@ -73,3 +73,42 @@ describe('stuck-break guardrail (self-aware loop + rate-limited API)', () => {
   });
 });
 
+describe('sleep-poll break guardrail', () => {
+  it('detects and nudges sustained `sleep N && check` polling of blocking tools', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    // env-tunable, on by default, with a consecutive-turn threshold
+    expect(contents).toContain('PROXY_SLEEP_POLL_BREAK');
+    expect(contents).toContain('PROXY_SLEEP_POLL_THRESHOLD');
+    // leading-sleep detector + streak state + should_force + injector
+    expect(contents).toContain('_SLEEP_POLL_RE');
+    expect(contents).toContain('sleep_poll_streak');
+    expect(contents).toContain('should_force_sleep_poll_break');
+    expect(contents).toContain('_maybe_inject_sleep_poll_break');
+    // the directive tells the model blocking tools already return their result
+    expect(contents).toContain('STOP SLEEP-POLLING');
+    // the ANCHORED detector actually drives the counter (not dead code): a
+    // command must OPEN with `sleep N` (.match, not .search) to count
+    expect(contents).toContain('_SLEEP_POLL_RE.match');
+    expect(contents).toContain('self.sleep_poll_streak += 1');
+    // "only SUSTAINED polling trips it": the streak MUST reset (a write or any
+    // non-leading-sleep tool turn) or the nudge would fire forever once tripped
+    expect(contents).toContain('self.sleep_poll_streak = 0');
+  });
+
+  it('is additive — the injector never changes tool_choice (unlike the forcing guards)', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    const start = contents.indexOf('def _maybe_inject_sleep_poll_break');
+    const end = contents.indexOf('\ndef ', start + 1);
+    expect(start).toBeGreaterThan(-1);
+    const body = contents.slice(start, end === -1 ? undefined : end);
+    // no tool_choice MUTATION inside the sleep-poll injector body (the docstring
+    // may mention the word; what matters is it never assigns openai_body's choice)
+    expect(body).not.toContain('openai_body["tool_choice"]');
+    // it yields to the urgent terminal guards
+    expect(body).toContain('recon_convergence_pending');
+    expect(body).toContain('should_force_stuck_break');
+    // and it is wired into the injection pipeline
+    expect(contents).toContain('_maybe_inject_sleep_poll_break(openai_body, monitor)');
+  });
+});
+
