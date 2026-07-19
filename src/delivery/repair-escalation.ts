@@ -21,6 +21,25 @@
 import type { IterationRecord, IterationDirective, LoopExecutor } from './convergence-loop.js';
 
 /**
+ * Single source for the stronger-model id used by repair + escalation:
+ * explicit flag > $UAP_ESCALATE_MODEL > `.uap.json` deliver.escalateModel.
+ * The config rung makes escalation reproducible IaC state instead of a
+ * per-shell env var (follow-up of the 2026-07-16 stuck-epic incident, where
+ * the run had no escalation rescue because the env var wasn't set).
+ */
+export function resolveEscalateModelId(
+  explicit: string | undefined,
+  env: NodeJS.ProcessEnv,
+  cfgRaw: Record<string, unknown> | null | undefined
+): string | undefined {
+  if (explicit) return explicit;
+  if (env.UAP_ESCALATE_MODEL) return env.UAP_ESCALATE_MODEL;
+  const deliver = cfgRaw?.deliver as Record<string, unknown> | undefined;
+  const fromCfg = deliver?.escalateModel;
+  return typeof fromCfg === 'string' && fromCfg.trim() !== '' ? fromCfg : undefined;
+}
+
+/**
  * Deterministic compile-error count from gate output. Prefers the compiler's
  * own total (cargo's "due to N previous errors"), else counts distinct error
  * lines (cargo `error[E...]`, tsc `error TS...`, generic `error:` lines).

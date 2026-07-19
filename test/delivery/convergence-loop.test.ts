@@ -440,6 +440,135 @@ describe('anti-no-op acceptance rail (P0, 2026-07-13)', () => {
     }
   });
 
+  it('zero-diff + prior-changes + judge THROW fails closed (no verdict, no acceptance)', async () => {
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    try {
+      process.env.UAP_EPIC_PRIOR_CHANGES = '1';
+      const loop = new ConvergenceLoop(
+        { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true },
+        async () => 'no work',
+        {
+          applier: async () => ({ filesWritten: [], rejected: [] }),
+          ladderRunner: () => ladderResult(1.0, true),
+          acceptanceGate: async () => { throw new Error('judge endpoint down'); },
+        }
+      );
+      const result = await loop.deliver('trailing epic, judge unavailable');
+      // The deterministic rail stood down BECAUSE the judge would decide; a
+      // judge failure must not silently accept a zero-diff epic.
+      expect(result.success).toBe(false);
+      expect(result.finalFeedback).toMatch(/judge/i);
+    } finally {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    }
+  });
+
+  it('resume runs stay fail-open on judge THROW (zero diff is expected on resume)', async () => {
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    try {
+      process.env.UAP_EPIC_PRIOR_CHANGES = '1';
+      const loop = new ConvergenceLoop(
+        { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true, resumeFrom: 'run-x' },
+        async () => 'no new work — resumed',
+        {
+          applier: async () => ({ filesWritten: [], rejected: [] }),
+          ladderRunner: () => ladderResult(1.0, true),
+          acceptanceGate: async () => { throw new Error('judge endpoint down'); },
+        }
+      );
+      const result = await loop.deliver('resumed run, judge unavailable');
+      // On resume the deterministic rail never stood down FOR the judge (prior
+      // -session changes are invisible to the fingerprint), so the fail-closed
+      // carve-out must not fire.
+      expect(result.success).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    }
+  });
+
+  it('a judge THROW on a run that DID change files still fails open (general rule intact)', async () => {
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    try {
+      delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      const loop = new ConvergenceLoop(
+        { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true },
+        async () => 'file: something',
+        {
+          applier: async () => ({ filesWritten: ['a.txt'], rejected: [] }),
+          ladderRunner: () => ladderResult(1.0, true),
+          acceptanceGate: async () => { throw new Error('judge endpoint down'); },
+        }
+      );
+      const result = await loop.deliver('real change, judge unavailable');
+      expect(result.success).toBe(true); // fail open — the judge must never block a real delivery
+    } finally {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    }
+  });
+
+  it('DeliveryResult.changedTree reflects applier writes and stays false on no-op runs', async () => {
+    const wrote = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true },
+      async () => 'file: something',
+      {
+        applier: async () => ({ filesWritten: ['a.txt'], rejected: [] }),
+        ladderRunner: () => ladderResult(1.0, true),
+        acceptanceGate: async () => ({ passed: true, feedback: '' }),
+      }
+    );
+    const wroteRes = await wrote.deliver('write it');
+    expect(wroteRes.changedTree).toBe(true);
+    expect(wroteRes.success).toBe(true);
+
+    const noop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), alwaysVerify: true },
+      async () => 'prose only',
+      {
+        applier: async () => ({ filesWritten: [], rejected: [] }),
+        ladderRunner: () => ladderResult(1.0, true),
+        acceptanceGate: async () => ({ passed: true, feedback: '' }),
+      }
+    );
+    const noopRes = await noop.deliver('nothing to do');
+    expect(noopRes.changedTree).toBe(false); // rail withholds; no writes recorded
+    expect(noopRes.success).toBe(false);
+  });
+
+  it('unborn-HEAD repos (no commits) still detect agentic writes via the fingerprint', async () => {
+    const { execSync } = await import('node:child_process');
+    const { writeFileSync: wf, mkdirSync: mk } = await import('node:fs');
+    const gdir = mkdtempSync(join(tmpdir(), 'uap-unborn-'));
+    try {
+      execSync('git init -q', { cwd: gdir }); // .git exists, ZERO commits — git diff HEAD fails here
+      mk(join(gdir, 'space-shooter'), { recursive: true });
+      let acceptanceCalls = 0;
+      const loop = new ConvergenceLoop(
+        { projectRoot: gdir, maxTurns: 2, rungs: stubRungs(), alwaysVerify: true },
+        async () => {
+          // agentic-style direct write: bypasses the applier entirely
+          wf(join(gdir, 'space-shooter', 'config.js'), 'export const X = 1;');
+          return 'wrote via tool, no file blocks';
+        },
+        {
+          applier: async () => ({ filesWritten: [], rejected: [] }),
+          ladderRunner: () => ladderResult(1.0, true),
+          acceptanceGate: async () => { acceptanceCalls++; return { passed: true, feedback: '' }; },
+        }
+      );
+      const result = await loop.deliver('write the config');
+      // Before the fix: git diff HEAD threw → fingerprint null → rail withheld
+      // forever ("has not changed any files yet") despite the real write.
+      expect(result.success).toBe(true);
+      expect(result.changedTree).toBe(true);
+      expect(acceptanceCalls).toBeGreaterThan(0);
+    } finally {
+      rmSync(gdir, { recursive: true, force: true });
+    }
+  });
+
   it('requireDiffForAcceptance:false restores the legacy short-circuit (--allow-noop)', async () => {
     const loop = new ConvergenceLoop(
       { projectRoot: dir, rungs: stubRungs(), requireDiffForAcceptance: false },

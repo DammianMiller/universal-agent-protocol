@@ -15,7 +15,9 @@
  *  - onIteration: per-turn control hook (Phase 5 escalation controllers)
  */
 
+import { join } from 'node:path';
 import { execSync } from 'child_process';
+import { statSync } from 'fs';
 
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
 import { mergeRedetectedRungs, detectRungs, runLadder } from './verifier-ladder.js';
@@ -23,6 +25,7 @@ import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
 import { applyFileBlocks } from './applier.js';
 import { snapshotProtection } from './spec-imports.js';
 import { captureIntegrity, verifyAndRestore, integrityViolationFeedback } from './integrity.js';
+import { appendMissingFilesNote } from './mission-files.js';
 import type { StrategySeed } from './explorer.js';
 import { exploreAndCommit } from './explorer.js';
 import type { Judge } from './judge.js';
@@ -123,6 +126,16 @@ export interface DeliveryResult {
   /** Raw model output from the final turn */
   finalOutput: string;
   totalDurationMs: number;
+  /**
+   * The run changed the working tree (applier bookkeeping OR git
+   * fingerprint — the latter covers agentic write_file, which bypasses the
+   * applier). Lets the epic controller count prior-ATTEMPT work the same as
+   * prior-epic work for the anti-no-op rail: a failed attempt's writes are
+   * in the next attempt's baseline, so the retry legitimately zero-diffs
+   * (octopus run D, 2026-07-16 — contracts attempt 2 was hard-withheld over
+   * files attempt 1 had just written).
+   */
+  changedTree?: boolean;
 }
 
 export interface ExplorerSettings {
@@ -569,7 +582,32 @@ export class ConvergenceLoop {
         stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
       };
       const status = execSync('git status --porcelain=v1 --untracked-files=all', opts).toString();
-      const diff = execSync('git diff HEAD --stat', opts).toString();
+      let diff: string;
+      try {
+        diff = execSync('git diff HEAD --stat', opts).toString();
+      } catch {
+        // Unborn HEAD (a repo with no commits yet — the fresh-scaffold case):
+        // `git diff HEAD` fails, and one throw here used to null the WHOLE
+        // fingerprint, making hasAppliedChanges() permanently false for
+        // agentic writes — the anti-no-op rail then withheld acceptance
+        // forever no matter how many files the model wrote (octopus runs
+        // D/F, 2026-07-17). In an unborn repo every file is untracked, so
+        // `?? path` lines never change on content edits — stat the listed
+        // files (size + mtime) to cover edits instead.
+        diff = status
+          .split('\n')
+          .map((line) => line.slice(3).trim())
+          .filter(Boolean)
+          .map((rel) => {
+            try {
+              const st = statSync(join(this.config.projectRoot, rel));
+              return `${rel} ${st.size} ${Math.floor(st.mtimeMs)}`;
+            } catch {
+              return `${rel} gone`;
+            }
+          })
+          .join('\n');
+      }
       return `${status}\n---\n${diff}`;
     } catch {
       return null;
@@ -638,6 +676,28 @@ export class ConvergenceLoop {
     try {
       acc = await this.acceptanceGate(this.config.projectRoot);
     } catch {
+      // Fail open in general — the judge must never block delivery. EXCEPT on
+      // the relaxed zero-diff path (unchanged tree + prior-epic changes): there
+      // the deterministic anti-no-op rail stood down specifically because the
+      // judge would decide, so a judge failure must fail CLOSED or a no-op
+      // gets accepted with no verdict at all (review follow-up of the
+      // initialPriorChanged fix).
+      const railStoodDown =
+        (this.config.requireDiffForAcceptance ?? true) &&
+        !this.config.resumeFrom &&
+        unchanged &&
+        priorEpicChanges;
+      if (railStoodDown) {
+        return {
+          ladder: {
+            ...ladder,
+            passed: false,
+            feedback:
+              `${ladder.feedback}\n\nAcceptance withheld: this epic changed no files and the acceptance judge was unavailable — a zero-diff epic cannot be accepted without a judge verdict. Retry, or apply the epic's changes.`.trim(),
+          },
+          acceptanceMet: 0,
+        };
+      }
       return { ladder }; // fail open — the judge must never block delivery
     }
     if (acc.passed || !acc.feedback) return { ladder, acceptanceMet: acc.score };
@@ -838,6 +898,7 @@ export class ConvergenceLoop {
           finalFeedback: baseline.feedback,
           finalOutput: '',
           totalDurationMs: Date.now() - start,
+          changedTree: false,
         };
       }
     }
@@ -1164,7 +1225,7 @@ export class ConvergenceLoop {
           : truncateHead(outcome.output, previousOutputChars),
         feedback: outcome.executorError
           ? `Model call failed: ${outcome.executorError}`
-          : outcome.ladder?.feedback,
+          : appendMissingFilesNote(outcome.ladder?.feedback, this.config.projectRoot, instruction),
         applyError: outcome.applyError,
         previousFiles: outcome.filesApplied.length > 0 ? outcome.filesApplied : undefined,
         critique,
@@ -1219,6 +1280,7 @@ export class ConvergenceLoop {
       finalFeedback,
       finalOutput,
       totalDurationMs: Date.now() - start,
+      changedTree: this.hasAppliedChanges(),
     };
   }
 }

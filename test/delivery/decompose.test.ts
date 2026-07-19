@@ -5,11 +5,14 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import {
+  appendGapClosurePhase,
+  GAP_CLOSURE_ID,
   parsePhaseArray,
   planDeliveryPhases,
   phaseInstruction,
   shouldDecompose,
 } from '../../src/delivery/decompose.js';
+import { parsePhaseArrayWithMeta } from '../../src/delivery/decompose.js';
 
 describe('parsePhaseArray', () => {
   it('carries the contracts flag through (and drops non-true values)', () => {
@@ -45,14 +48,14 @@ describe('parsePhaseArray', () => {
     expect(phases[1].goal).toBe('Implement the core logic');
   });
 
-  it('drops malformed entries and dedupes slugs (default cap 8)', () => {
+  it('drops malformed entries and dedupes slugs (within the default cap)', () => {
     const entries = Array.from({ length: 8 }, (_, i) => ({
       id: i < 2 ? 'same' : `p${i}`,
       title: `T${i}`,
       goal: `G${i}`,
     }));
     // 8 entries, first two share the slug 'same' -> 7 unique, all within the
-    // default cap of 8, and the malformed {id:'bad'} entry is dropped.
+    // default cap (10), and the malformed {id:'bad'} entry is dropped.
     const raw = JSON.stringify([{ id: 'bad' }, ...entries]);
     const phases = parsePhaseArray(raw);
     expect(phases.length).toBe(7);
@@ -84,6 +87,26 @@ describe('planDeliveryPhases', () => {
     expect(
       await planDeliveryPhases('task', async () => '[{"id":"only","title":"One","goal":"g"}]')
     ).toEqual([]);
+  });
+
+  it('retries the planner ONCE on an unparseable plan, then falls back loudly', async () => {
+    let calls = 0;
+    const phases = await planDeliveryPhases('big multi-part mission', async () => {
+      calls++;
+      return calls === 1
+        ? 'sorry, here is prose instead of JSON'
+        : '[{"id":"a","title":"A","goal":"ga"},{"id":"b","title":"B","goal":"gb"},{"id":"c","title":"C","goal":"gc"}]';
+    });
+    expect(phases.length).toBeGreaterThanOrEqual(2);
+    expect(calls).toBeGreaterThanOrEqual(2);
+
+    let calls2 = 0;
+    const none = await planDeliveryPhases('mission', async () => {
+      calls2++;
+      return 'still not json';
+    });
+    expect(none).toEqual([]); // degenerate after both attempts
+    expect(calls2).toBe(2); // exactly one retry — bounded
   });
 
   it('returns the parsed plan when the model produces one', async () => {
@@ -118,13 +141,46 @@ describe('planDeliveryPhases pre-execution validation (ATG thought experiment)',
       if (prompts.length === 2) return '{"verdict":"fail","findings":["missing migration phase"]}';
       return PLAN3; // the re-plan
     });
-    expect(prompts.length).toBe(3);
+    // plan + verdict + re-plan + re-judge of the re-plan (fail-softs to pass here)
+    expect(prompts.length).toBe(4);
     expect(prompts[2]).toContain('PLAN REVIEW FINDINGS');
     expect(prompts[2]).toContain('missing migration phase');
     expect(phases.length).toBe(3); // the repaired plan won
   });
 
-  it('keeps the ORIGINAL plan when the re-plan is unusable', async () => {
+  it('cap truncation is loud, the re-plan ceiling rises when cap-bound, and a still-failing re-plan gains the gap phase', async () => {
+    const prevCap = process.env.UAP_DELIVER_MAX_PHASES;
+    process.env.UAP_DELIVER_MAX_PHASES = '3';
+    try {
+      const many = JSON.stringify(
+        Array.from({ length: 6 }, (_, i) => ({ id: `p${i}`, title: `P${i}`, goal: `g${i}` }))
+      );
+      // parser cap: default keeps 3, explicit cap keeps all 6
+      expect(parsePhaseArray(many).length).toBe(3);
+      expect(parsePhaseArray(many, 20).length).toBe(6);
+
+      // full flow: cap-bound plan + failing verdict → re-plan parsed at the
+      // RAISED ceiling (6 = min(3*2, 20)) → re-judge still fails → gap phase
+      const prompts: string[] = [];
+      const phases = await planDeliveryPhases('mission with many deliverables', async (pr) => {
+        prompts.push(pr);
+        if (prompts.length === 1) return many; // cap-bound at 3
+        if (prompts.length === 2) return '{"verdict":"fail","findings":["missing ui phase"]}';
+        if (prompts.length === 3) return many; // re-plan: 6 phases now fit
+        return '{"verdict":"fail","findings":["still missing readme phase"]}'; // re-judge
+      });
+      expect(phases.length).toBe(7); // 6 re-planned + gap-closure
+      expect(phases[phases.length - 1].id).toBe('plan-gap-closure');
+      expect(phases[phases.length - 1].goal).toContain('still missing readme phase');
+      // the re-plan prompt advertised the raised ceiling
+      expect(prompts[2]).toContain('(2-6)');
+    } finally {
+      if (prevCap === undefined) delete process.env.UAP_DELIVER_MAX_PHASES;
+      else process.env.UAP_DELIVER_MAX_PHASES = prevCap;
+    }
+  });
+
+  it('appends the gap-closure phase when the re-plan is unusable (review findings must not be dropped)', async () => {
     const prompts: string[] = [];
     const phases = await planDeliveryPhases('mission', async (pr) => {
       prompts.push(pr);
@@ -132,7 +188,12 @@ describe('planDeliveryPhases pre-execution validation (ATG thought experiment)',
       if (prompts.length === 2) return '{"verdict":"fail","findings":["x"]}';
       return 'garbage — no plan here';
     });
-    expect(phases.length).toBe(2); // original stands
+    // Original phases stand, PLUS a final gap-closure phase carrying the
+    // findings — a reviewed-incomplete set of phases no longer proceeds as-is.
+    expect(phases.length).toBe(3);
+    expect(phases[2].id).toBe('plan-gap-closure');
+    expect(phases[2].goal).toContain('x');
+    expect(phases[2].deps).toEqual(phases.slice(0, 2).map((p) => p.id));
   });
 
   it('honors the opts.thoughtExperiment=false kill switch (single call)', async () => {
@@ -177,7 +238,7 @@ describe('planDeliveryPhases pre-execution validation (ATG thought experiment)',
     expect(phases.length).toBe(3); // the structurally-clean re-plan won
   });
 
-  it('a structurally-INVALID re-plan is rejected — the original plan stands', async () => {
+  it('a structurally-INVALID re-plan is rejected — original phases stand, gap-closure appended', async () => {
     const CYCLIC = '[{"id":"a","title":"A","goal":"ga","deps":["b"]},{"id":"b","title":"B","goal":"gb","deps":["a"]}]';
     const prompts: string[] = [];
     const phases = await planDeliveryPhases('mission', async (pr) => {
@@ -186,8 +247,23 @@ describe('planDeliveryPhases pre-execution validation (ATG thought experiment)',
       if (prompts.length === 2) return '{"verdict":"fail","findings":["x"]}';
       return CYCLIC; // re-plan is itself defective
     });
+    // The defective re-plan is never adopted; the original phases stand and the
+    // review findings ride in a final gap-closure phase instead of vanishing.
+    expect(phases.slice(0, 2).map((p) => p.id).sort()).toEqual(['a', 'b']);
+    expect(phases[2]?.id).toBe('plan-gap-closure');
+  });
+
+  it('a STRUCTURAL failure with an unusable re-plan keeps the original untouched (no gap phase)', async () => {
+    const CYCLIC = '[{"id":"a","title":"A","goal":"ga","deps":["b"]},{"id":"b","title":"B","goal":"gb","deps":["a"]}]';
+    const prompts: string[] = [];
+    const phases = await planDeliveryPhases('mission', async (pr) => {
+      prompts.push(pr);
+      return prompts.length === 1 ? CYCLIC : 'garbage — no plan here';
+    });
+    // A cycle is not closable by an extra phase — structural failures keep the
+    // original so downstream skip-handling stays deterministic.
     expect(phases.map((p) => p.id).sort()).toEqual(['a', 'b']);
-    expect(phases.length).toBe(2); // original kept — never return a worse plan
+    expect(phases.some((p) => p.id === 'plan-gap-closure')).toBe(false);
   });
 });
 
@@ -250,5 +326,57 @@ describe('phase acceptance criteria (PR #519 follow-up)', () => {
       { id: 'b', title: 'B', goal: 'gb' },
     ]);
     expect(parsePhaseArray(raw)[0].criteria).toHaveLength(6);
+  });
+});
+
+describe('appendGapClosurePhase', () => {
+  const base = [
+    { id: 'contracts', title: 'C', goal: 'g' },
+    { id: 'impl', title: 'I', goal: 'g', deps: ['contracts'] },
+  ];
+
+  it('appends a final phase depending on every existing phase, carrying the findings', () => {
+    const out = appendGapClosurePhase(base, ['Missing UI implementation phase', 'Missing README phase']);
+    expect(out).not.toBeNull();
+    const gap = out![out!.length - 1];
+    expect(gap.id).toBe(GAP_CLOSURE_ID);
+    expect(gap.deps).toEqual(['contracts', 'impl']); // topologically last ⇒ final epic ⇒ whole-mission gates run there
+    expect(gap.goal).toContain('Missing UI implementation phase');
+    expect(gap.goal).toContain('Missing README phase');
+    expect(out!.slice(0, -1)).toEqual(base); // existing phases untouched
+  });
+
+  it('returns null on id collision or empty input (never corrupts the graph)', () => {
+    expect(appendGapClosurePhase([], ['x'])).toBeNull();
+    const withGap = appendGapClosurePhase(base, ['x'])!;
+    expect(appendGapClosurePhase(withGap, ['y'])).toBeNull(); // already present
+  });
+});
+
+describe('cap-truncation recovery (run Z, 2026-07-19: 21 emitted, 10 kept, plan-check passed it)', () => {
+  const phaseJson = (n: number) =>
+    JSON.stringify(
+      Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, title: `Phase ${i + 1}`, goal: `do part ${i + 1}` }))
+    );
+
+  it('parsePhaseArrayWithMeta reports the emitted count past the cap', () => {
+    const { phases, emitted } = parsePhaseArrayWithMeta(phaseJson(21), 10);
+    expect(phases).toHaveLength(10);
+    expect(emitted).toBe(21);
+  });
+
+  it('planDeliveryPhases recovers the truncated tail by re-parsing at the hard ceiling — no second model call', async () => {
+    let calls = 0;
+    const executor = async (prompt: string) => {
+      calls++;
+      if (prompt.includes('THOUGHT EXPERIMENT') || prompt.includes('thought experiment')) {
+        return JSON.stringify({ verdict: 'pass', findings: [] });
+      }
+      return phaseJson(21);
+    };
+    const phases = await planDeliveryPhases('a 21-part mission', executor, undefined, { thoughtExperiment: true });
+    expect(phases.length).toBe(20); // hard ceiling, not 10
+    expect(phases[19].id).toBe('p20');
+    expect(calls).toBeLessThanOrEqual(2); // plan + thought experiment; no re-plan call
   });
 });

@@ -14,7 +14,7 @@
  */
 
 import { lstatSync, readdirSync, readFileSync } from 'fs';
-import { join, relative, dirname } from 'path';
+import { basename, join, relative, dirname } from 'path';
 import type { LoopExecutor } from './convergence-loop.js';
 
 export interface AcceptanceCriterion {
@@ -95,6 +95,80 @@ function specReferencedPaths(spec: string): string[] {
 }
 
 /** Bounded walk gathering source-file evidence (path-labelled, truncated). */
+const SPEC_STOPWORDS = new Set([
+  'the', 'and', 'with', 'that', 'this', 'from', 'must', 'should', 'when', 'have', 'has',
+  'are', 'not', 'for', 'its', 'each', 'can', 'will', 'use', 'uses', 'using', 'all', 'any',
+  'into', 'than', 'then', 'else', 'only', 'been', 'was', 'were', 'their', 'there', 'which',
+  'while', 'shall', 'does', 'other', 'after', 'before', 'over', 'under', 'more', 'less',
+  'least', 'most', 'some', 'such', 'very', 'them', 'they', 'your', 'you', 'file', 'files',
+  'code', 'spec', 'requirement', 'requirements', 'implement', 'implemented', 'correct',
+  'implementation', 'correctly', 'ensure', 'specified', 'specify', 'via', 'per', 'both',
+  'same', 'also', 'see', 'shown', 'show', 'page', 'user', 'class', 'function', 'method',
+  'const', 'true', 'false', 'null', 'return', 'value', 'values', 'object', 'array',
+]);
+
+/** Content keywords mined from a spec, most-frequent first. Exported for tests. */
+export function specKeywords(spec: string, cap = 24): string[] {
+  const counts = new Map<string, number>();
+  for (const m of spec.matchAll(/[A-Za-z_][A-Za-z0-9_]{3,}/g)) {
+    const w = m[0].toLowerCase();
+    if (SPEC_STOPWORDS.has(w)) continue;
+    counts.set(w, (counts.get(w) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, cap).map(([w]) => w);
+}
+
+/**
+ * Keyword-matched regions from the UNSHOWN remainder of a truncated file.
+ * Run Y (octopus variant, 2026-07-19): missile spawning existed at
+ * player.js:241 but the evidence head ended long before it — the judge
+ * (correctly fail-closed on truncation) reported "not visible" and MISSed
+ * three requirements against implemented code, burning two split pieces of
+ * 3 attempts x ~15 turns each. Slices show the judge the exact regions its
+ * requirements name.
+ */
+function keywordSlices(
+  content: string,
+  shownChars: number,
+  keywords: string[],
+  maxRegions = 3,
+  ctxLines = 2
+): Array<{ startLine: number; text: string; matched: string }> {
+  if (keywords.length === 0 || shownChars >= content.length) return [];
+  const lines = content.split('\n');
+  // First line index fully or partially beyond the shown prefix.
+  let offset = 0;
+  let firstHidden = 0;
+  for (let i = 0; i < lines.length; i++) {
+    offset += lines[i].length + 1;
+    if (offset > shownChars) {
+      firstHidden = i;
+      break;
+    }
+  }
+  const lower = keywords.map((k) => k.toLowerCase());
+  const regions: Array<{ from: number; to: number; matched: string }> = [];
+  for (let i = firstHidden; i < lines.length; i++) {
+    const ll = lines[i].toLowerCase();
+    const hit = lower.find((k) => ll.includes(k));
+    if (hit === undefined) continue;
+    const from = Math.max(firstHidden, i - ctxLines);
+    const to = Math.min(lines.length - 1, i + ctxLines + 1);
+    const last = regions[regions.length - 1];
+    if (last && from <= last.to + 1) {
+      last.to = to;
+    } else {
+      if (regions.length >= maxRegions) break;
+      regions.push({ from, to, matched: hit });
+    }
+  }
+  return regions.map((r) => ({
+    startLine: r.from + 1,
+    text: lines.slice(r.from, r.to + 1).join('\n'),
+    matched: r.matched,
+  }));
+}
+
 export function gatherEvidence(
   projectRoot: string,
   maxFiles = DEFAULT_MAX_FILES,
@@ -188,6 +262,33 @@ export function gatherEvidence(
   } catch {
     /* no validation report — nothing to inject */
   }
+  // Symbol-aware priority: sub-epic specs routinely say "the Player class"
+  // without ever writing "player.js" — the literal-path pass above then
+  // leaves the ONE file the epic is about at prio 0, where alphabetical
+  // extension starves it (observed live, run H 2026-07-17: a player epic's
+  // evidence granted player.js only its 600-char head; the judge truthfully
+  // reported the file "ends at the imports" and failed 6 straight attempts
+  // against implemented code). If a source file's basename appears as a word
+  // in the spec, it IS the deliverable — promote it.
+  if (spec) {
+    const specLower = spec.toLowerCase();
+    // Separator-insensitive too: specs say "ScoreManager" while the file is
+    // score-manager.js — the word-boundary match on the hyphenated basename
+    // never fires and the deliverable starves to its head anyway (run I,
+    // 2026-07-17: judge honestly reported score-manager.js "truncated at 600
+    // characters" and failed the epic against implemented code).
+    const specSquashed = specLower.replace(/[-_\s]/g, '');
+    for (const f of files) {
+      if (f.prio !== 0) continue;
+      const base = basename(f.abs).replace(/\.[^.]+$/, '').toLowerCase();
+      if (base.length < 3) continue;
+      const wordHit = new RegExp(`\\b${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(specLower);
+      const squashedHit = base.replace(/[-_]/g, '').length >= 5 && specSquashed.includes(base.replace(/[-_]/g, ''));
+      if (wordHit || squashedHit) {
+        f.prio = -1;
+      }
+    }
+  }
   // Dedupe (a spec-referenced file can also be found by a walk) keeping the
   // best (lowest) priority per path.
   const best = new Map<string, { abs: string; prio: number }>();
@@ -243,7 +344,36 @@ export function gatherEvidence(
     const take = granted.get(f.abs) ?? 0;
     if (content === undefined || take <= 0) continue;
     const rel = relative(root, f.abs);
-    out += `\n=== ${rel} ===\n${content.slice(0, take)}\n`;
+    const marker =
+      take < content.length
+        ? `\n…[TRUNCATED by evidence budget: showing ${take} of ${content.length} chars — this file CONTINUES beyond this point]`
+        : '';
+    out += `\n=== ${rel} ===\n${content.slice(0, take)}${marker}\n`;
+  }
+  // Criterion-aware slices: keyword-matched regions from beyond each
+  // truncated file's cutoff, in a bounded overdraft (<=15% of maxChars) so
+  // the main-budget behavior above stays byte-identical. Without these, the
+  // judge fail-closes on exactly the code its requirements name (run Y,
+  // 2026-07-19: missile spawning at player.js:241, invisible past the head).
+  if (spec) {
+    const keywords = specKeywords(spec);
+    let sliceBudget = Math.floor(maxChars * 0.15);
+    let sliceOut = '';
+    for (const f of chosen) {
+      if (sliceBudget <= 0) break;
+      const content = contents.get(f.abs);
+      const take = granted.get(f.abs) ?? 0;
+      if (content === undefined || take <= 0 || take >= content.length) continue;
+      for (const slice of keywordSlices(content, take, keywords)) {
+        const block = `\n--- ${relative(root, f.abs)} @ line ${slice.startLine} (matched: ${slice.matched}) ---\n${slice.text}\n`;
+        if (block.length > sliceBudget) break;
+        sliceOut += block;
+        sliceBudget -= block.length;
+      }
+    }
+    if (sliceOut) {
+      out += `\n=== RELEVANT SLICES — regions from BEYOND the truncation point of the files above, matched to the spec's own terms. These are part of the same files; use them before judging anything "not visible". ===\n${sliceOut}`;
+    }
   }
   return out.trim();
 }
@@ -257,6 +387,12 @@ function buildPrompt(spec: string, evidence: string, runtimeNote?: string): stri
     'Extract each concrete, verifiable requirement from the spec (ignore vague aesthetic',
     'wishes). For each, decide if the code clearly implements it. Be conservative: if the',
     'code does not show it, mark it not met.',
+    '',
+    'EXCEPTION — truncated evidence: a file whose excerpt ends with "[TRUNCATED by',
+    'evidence budget…]" CONTINUES beyond what is shown. Never describe such a file as',
+    'incomplete, cut off, or "ending abruptly", and never treat content absent AFTER the',
+    'cut as proof it does not exist — judge those requirements from the visible portion',
+    'and any other files that reference the symbol.',
     '',
     '=== SPEC ===',
     spec.slice(0, 6_000),

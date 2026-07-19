@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { runEpicMission, type EpicMissionDeps } from '../../src/delivery/epic-mission.js';
+import { missingMissionFiles, moduleSurface, runEpicMission, type EpicMissionDeps } from '../../src/delivery/epic-mission.js';
 import type { DeliveryResult } from '../../src/delivery/convergence-loop.js';
 import type { DeliveryPhase } from '../../src/delivery/decompose.js';
 import { CONTEXT_BUDGET_MARKER } from '../../src/delivery/context-budget.js';
@@ -521,5 +521,100 @@ describe('epic resume fidelity (plan persistence + priors + done set)', () => {
       })
     );
     expect(plans).toEqual([['solo-epic']]); // NOT swapped for a 'mission' epic
+  });
+});
+
+describe('moduleSurface (split planner sees the accumulated code shape)', () => {
+  it('extracts export signatures of goal-named modules; unrelated files and non-matching goals are silent', async () => {
+    const { mkdtempSync: mkd, writeFileSync: wf, rmSync: rmr, mkdirSync: mkdir2 } = await import('node:fs');
+    const { tmpdir: tmp } = await import('node:os');
+    const { join: j } = await import('node:path');
+    const dir = mkd(j(tmp(), 'uap-surface-'));
+    try {
+      mkdir2(j(dir, 'space-shooter'), { recursive: true });
+      wf(
+        j(dir, 'space-shooter', 'ui.js'),
+        'export function initHUD(opts = {}) {}\nexport function updateHUD(p, c) {}\nconst internal = 1;\nexport const MONOSPACE_FONTS = {};\n'
+      );
+      wf(j(dir, 'space-shooter', 'audio.js'), 'export function boom() {}\n');
+      const surface = moduleSurface(dir, 'Implement HUD and Game Screens in the UI module');
+      // goal names "UI" → ui.js surface extracted
+      expect(surface).toContain('--- space-shooter/ui.js ---');
+      expect(surface).toContain('export function initHUD');
+      expect(surface).toContain('export const MONOSPACE_FONTS');
+      expect(surface).not.toContain('const internal');
+      // audio.js is not named by the goal → absent
+      expect(surface).not.toContain('audio.js');
+      // a goal about nothing on disk → empty
+      expect(moduleSurface(dir, 'Write the README documentation')).toBe('');
+    } finally {
+      rmr(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('missingMissionFiles (run L: the split omitted index.html and the finale 404ed)', () => {
+  it('lists mission-named files absent from the tree; existing basenames anywhere count as present', async () => {
+    const { mkdtempSync: mkd, writeFileSync: wf, rmSync: rmr, mkdirSync: mkdir2 } = await import('node:fs');
+    const { tmpdir: tmp } = await import('node:os');
+    const { join: j } = await import('node:path');
+    const dir = mkd(j(tmp(), 'uap-missing-'));
+    try {
+      mkdir2(j(dir, 'space-shooter'), { recursive: true });
+      wf(j(dir, 'space-shooter', 'player.js'), 'export const p = 1;');
+      const mission = [
+        'Rewrite ALL files in space-shooter/ with:',
+        '## player.js — the ship',
+        '## index.html — canvas element, link to css/style.css',
+        '## README.md — how to run',
+      ].join('\n');
+      const missing = missingMissionFiles(dir, mission);
+      expect(missing).toContain('index.html');
+      expect(missing).toContain('css/style.css');
+      expect(missing).toContain('README.md');
+      expect(missing.join(' ')).not.toContain('player.js'); // exists (basename match)
+      // once created, they drop off
+      wf(j(dir, 'space-shooter', 'index.html'), '<canvas></canvas>');
+      const after = missingMissionFiles(dir, mission);
+      expect(after).not.toContain('index.html');
+    } finally {
+      rmr(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('split sub-goal: visual-floor failures get a directed canvas phase (run M, 2026-07-18)', () => {
+  it('maps the visual finding to an explicit draw-on-load phase directive', async () => {
+    const captured: string[] = [];
+    await runEpicMission({
+      instruction: 'canvas game',
+      planEpics: async () => [],
+      planSplit: async (g: string) => {
+        captured.push(g);
+        return [];
+      },
+      planEpicTasks: async () => [],
+      epicParallelTasks: 1,
+      runOrchestrated: async () => { throw new Error('unused'); },
+      runEpicLoop: async () => ({
+        success: false,
+        alreadyDelivered: false,
+        turns: 1,
+        bestScore: 0,
+        bestTurn: 0,
+        history: [],
+        finalFeedback: 'canvas renders below the visual floor (1 distinct colors < 3 required)',
+        finalOutput: '',
+        totalDurationMs: 1,
+      }),
+      setEpicSpec: () => {},
+      judgeEpic: null,
+      splitOnAnyFailure: true,
+      lockedContracts: () => [],
+      persistPlan: () => {},
+    } as never);
+    const withDirective = captured.find((g) => g.includes('THE FAILING GATE IS THE VISUAL FLOOR'));
+    expect(withDirective).toBeDefined();
+    expect(withDirective).toContain('ON THE CANVAS immediately on page load');
   });
 });

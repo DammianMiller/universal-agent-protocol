@@ -144,3 +144,39 @@ describe('runVisualGate (integration with fake browser)', () => {
     expect(discoverEntryPages(dir)).toEqual(['index.html', 'alpha.html', 'zeta.html']);
   });
 });
+
+describe('visual gate: non-final epics downgrade richness failures to advisory (run J, 2026-07-17)', () => {
+  const saveFlag = () => {
+    const prev = process.env.UAP_EPIC_NONFINAL;
+    return () => {
+      if (prev === undefined) delete process.env.UAP_EPIC_NONFINAL;
+      else process.env.UAP_EPIC_NONFINAL = prev;
+    };
+  };
+
+  it('a blank-canvas scaffold passes advisory on a non-final epic but fails on the final epic', async () => {
+    const restore = saveFlag();
+    const dir = mkdtempSync(join(tmpdir(), 'uap-vis-nf-'));
+    try {
+      // Static page with a canvas nothing draws on: 1 distinct color.
+      writeFileSync(
+        join(dir, 'index.html'),
+        '<!doctype html><html><body style="margin:0"><canvas id="game" width="64" height="64"></canvas></body></html>'
+      );
+      process.env.UAP_EPIC_NONFINAL = '1';
+      const nonFinal = await runVisualGate(dir);
+      if (!nonFinal.skipped) {
+        expect(nonFinal.passed).toBe(true);
+        expect(nonFinal.feedback).toContain('NA: non-final epic');
+      }
+      process.env.UAP_EPIC_NONFINAL = '0';
+      const final = await runVisualGate(dir);
+      if (!final.skipped) {
+        expect(final.passed).toBe(false); // final epic judges the floor for real
+      }
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});

@@ -25,6 +25,7 @@ import {
 } from './acceptance-judge.js';
 import { runExecutionGate } from './execution-gate.js';
 import { runVisualGate, visualRuntimeNote } from './visual-gate.js';
+import { resolveFidelity } from './fidelity.js';
 import { buildUserPathsNote } from './user-validation.js';
 import type { SpecRegistry } from './spec-registry.js';
 
@@ -72,8 +73,49 @@ export interface MissionAcceptanceDeps {
   /** Test seams — default to the real gates. */
   executionGate?: typeof runExecutionGate;
   visualGate?: typeof runVisualGate;
+  visionReview?: typeof visionAcceptanceFeedback;
   judge?: typeof runAcceptanceGate;
   userPathsNote?: typeof buildUserPathsNote;
+}
+
+/**
+ * Fidelity-max aesthetic convergence. Run Y (octopus variant, 2026-07-19)
+ * reached STATUS delivered while `uap verify` rejected the artifact at
+ * vision 2/10 — an empty bordered canvas. Deliver ran the deterministic
+ * visual floors but never the vision review that fidelity-max verify blocks
+ * on, so the loop converged against a lower bar than the release gate
+ * (Generator≠Evaluator). Mirrors verify's wiring: env-bridge the configured
+ * endpoint, autodetect a local vision model, judge the visual gate's
+ * screenshots, and return actionable feedback when the score is below the
+ * threshold. Fail-open on any error and when no vision model exists (same
+ * as verify); deferred on non-final epics (their UI is not assembled yet).
+ */
+export async function visionAcceptanceFeedback(
+  root: string,
+  spec: string,
+  screenshots: string[]
+): Promise<string | null> {
+  try {
+    if (process.env.UAP_EPIC_NONFINAL === '1') return null;
+    if (screenshots.length === 0) return null;
+    const fidelity = resolveFidelity(root);
+    if (!fidelity.max) return null;
+    if (fidelity.visionEndpoint && !process.env.UAP_VISION_ENDPOINT) process.env.UAP_VISION_ENDPOINT = fidelity.visionEndpoint;
+    if (fidelity.visionModel && !process.env.UAP_VISION_MODEL) process.env.UAP_VISION_MODEL = fidelity.visionModel;
+    const vj = await import('./vision-judge.js');
+    if (!vj.visionJudgeConfigured()) await vj.autodetectLocalVision();
+    if (!vj.visionJudgeConfigured()) return null;
+    const verdict = await vj.judgeScreenshots(screenshots, spec, vj.readDesignContext(root));
+    if (!verdict || verdict.score >= fidelity.visionMinScore) return null;
+    return (
+      `VISION REVIEW FAILED — the rendered UI scores ${verdict.score}/10 (max-fidelity threshold ${fidelity.visionMinScore}). ` +
+      'The page runs, but what it SHOWS is not acceptable:\n' +
+      verdict.findings.map((f) => `- ${f}`).join('\n') +
+      "\nFix the RENDERED OUTPUT (draw the mission's visible content: title, menu, sprites, HUD) — not just the code paths."
+    );
+  } catch {
+    return null;
+  }
 }
 
 /** Build the per-turn acceptance gate the convergence loop calls with a root. */
@@ -106,6 +148,16 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
         return { passed: false, feedback: visual.feedback };
       }
       visualNote = visualRuntimeNote(visual);
+      // Fidelity-max: the loop must converge against the SAME aesthetic bar
+      // verify enforces, or "delivered" and "verified" diverge (run Y).
+      if (!visual.skipped) {
+        const visionReview = deps.visionReview ?? visionAcceptanceFeedback;
+        const shots = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
+        const visionFail = await visionReview(root, deps.specs.resolve(root), shots);
+        if (visionFail) {
+          return { passed: false, feedback: visionFail };
+        }
+      }
     }
     const resolvedSpec = deps.specs.resolve(root);
     const uvNote = userPathsNote(root);

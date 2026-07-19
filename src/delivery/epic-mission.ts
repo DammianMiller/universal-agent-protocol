@@ -26,7 +26,11 @@
 import { CONTEXT_BUDGET_MARKER } from './context-budget.js';
 import type { DeliveryResult } from './convergence-loop.js';
 import type { DeliveryPhase } from './decompose.js';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { runEpics, type Epic, type EpicRunResult } from './epic-controller.js';
+export { missingMissionFiles } from './mission-files.js';
+import { missingMissionFiles } from './mission-files.js';
 import { foldDeliveryResult } from './delivery-result.js';
 import type { DeliveryTaskHandle } from './task-sync.js';
 
@@ -65,6 +69,8 @@ export interface EpicMissionDeps {
    * verdicts stand. Pass null to disable entirely (acceptance off).
    */
   judgeEpic: ((spec: string) => Promise<{ passed: boolean; feedback?: string } | null>) | null;
+  /** Project root for split-planner code-shape context (optional). */
+  projectRoot?: string;
   /** Delivery-task records (fail-soft; both optional). */
   openTask?: (title: string) => Promise<DeliveryTaskHandle | null>;
   completeTask?: (record: DeliveryTaskHandle | null, result: DeliveryResult) => void;
@@ -127,6 +133,70 @@ export interface EpicMissionDeps {
  * parallel dispatch), retried with failure feedback and recursively split
  * when it cannot land whole.
  */
+/**
+ * Cheap surface summary of the modules a goal is about: exported symbols and
+ * window-assignments from source files whose (separator-squashed) basename
+ * appears in the goal text. Fed to the SPLIT planner so sub-epic criteria
+ * extend the code that already exists — without it the planner invented
+ * fresh shapes ("a UI class with renderHealthBar(health, maxHealth, ...)")
+ * against an accumulated function-module ui.js, and the judge then enforced
+ * impossible criteria piece after piece (run K, 2026-07-17: the UI family
+ * burned 128 turns against a class that was never going to exist).
+ */
+export function moduleSurface(projectRoot: string, goal: string, maxLines = 40): string {
+  const squash = (t: string): string => t.toLowerCase().replace(/[-_\s]/g, '');
+  const goalSquashed = squash(goal);
+  const lines: string[] = [];
+  const scan = (dir: string, depth: number): void => {
+    if (depth > 2 || lines.length >= maxLines) return;
+    let entries;
+    try {
+      entries = readdirSync(join(projectRoot, dir), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (lines.length >= maxLines) return;
+      if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'dist') continue;
+      const rel = dir ? `${dir}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        scan(rel, depth + 1);
+        continue;
+      }
+      if (!/\.(m?[jt]sx?)$/.test(e.name)) continue;
+      const base = squash(e.name.replace(/\.[^.]+$/, ''));
+      if (base.length < 2 || !goalSquashed.includes(base)) continue;
+      let content: string;
+      try {
+        content = readFileSync(join(projectRoot, rel), 'utf-8');
+      } catch {
+        continue;
+      }
+      const sigRe = new RegExp('^\\s*(export\\s+(async\\s+)?(function|class|const|let)|window\\.[A-Za-z_$][\\w$]*\\s*=|module\\.exports)');
+      const sigs = content
+        .split('\n')
+        .filter((l) => sigRe.test(l))
+        .slice(0, 15)
+        .map((l) => l.trim().slice(0, 120));
+      if (sigs.length > 0) {
+        lines.push(`--- ${rel} ---`, ...sigs);
+      }
+    }
+  };
+  scan('', 0);
+  return lines.slice(0, maxLines).join('\n');
+}
+
+/**
+ * Mission-named files that do not exist anywhere in the (shallow) tree yet.
+ * Run L (2026-07-17) failed at the FINAL gate with goto:/ 404 because the
+ * integration split wired all 11 JS modules and never created index.html /
+ * css/style.css / README.md — files the mission names EXPLICITLY. The split
+ * planner gets this list as hard deliverables so an entry-file phase can
+ * never be omitted again. Bare filenames count as existing when any file
+ * with that basename exists (missions rarely repeat full paths).
+ */
+
 export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryResult> {
   const note = deps.note ?? ((): void => undefined);
   const all: DeliveryResult = {
@@ -198,9 +268,28 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         ? `outgrew its ~${(deps.sessionBudget ?? 0).toLocaleString()}-token session budget`
         : 'could not be delivered whole after all attempts';
       note(`  ✂ epic ${epic.id} ${reason} — re-planning as smaller sub-epics`);
+      const surface = deps.projectRoot ? moduleSurface(deps.projectRoot, epic.goal) : '';
+      const missingFiles = deps.projectRoot ? missingMissionFiles(deps.projectRoot, deps.instruction) : [];
+      // Directed gate mapping: run M (2026-07-18) ended with EVERY gate green
+      // except the visual floor — the game worked but idled a blank canvas at
+      // load — yet the split spent its pieces on audio interfaces and
+      // collision specs because the 300-char failure slice buried the visual
+      // finding and nothing translated "1 distinct color" into a buildable
+      // phase. When the visual floor is the failing signal, say exactly what
+      // phase to plan.
+      const visualDirective = /visual floor|VISUAL\/BEHAVIORAL/i.test(lastFailure ?? '')
+        ? '\n\nTHE FAILING GATE IS THE VISUAL FLOOR: the page canvas renders too few distinct colors at load. Plan a DEDICATED phase that draws the mission-specified start/menu content ON THE CANVAS immediately on page load (title text, colored sprite/preview art, animated elements) so the rendered canvas shows 3+ distinct colors and visible motion BEFORE any user interaction.'
+        : '';
       const subGoal =
         `${epic.goal}\n\n(The previous attempt did not complete` +
-        `${lastFailure ? `: ${lastFailure.slice(0, 300)}` : ''}. Split this into smaller, independently completable phases.)`;
+        `${lastFailure ? `: ${lastFailure.slice(0, 600)}` : ''}. Split this into smaller, independently completable phases.)` +
+        visualDirective +
+        (surface
+          ? `\n\nCURRENT CODE SHAPE — these modules ALREADY EXIST with the exported structures below. Phases and acceptance criteria MUST extend these exact structures (same export style, same names); NEVER demand converting functions to classes, renaming exports, or inventing new class hierarchies:\n${surface}`
+          : '') +
+        (missingFiles.length > 0
+          ? `\n\nMISSION-NAMED FILES NOT YET ON DISK — hard deliverables the final gates will load; the split MUST include a dedicated phase that CREATES each of these: ${missingFiles.join(', ')}`
+          : '');
       const subs = await deps.planSplit(subGoal);
       if (subs.length < 2) return null;
       // A split CONTRACTS (or SCAFFOLD) epic's pieces are still contracts/
@@ -304,9 +393,17 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
           // Structured field for the controller's split trigger; the marker
           // stays in the summary for humans (and marker-matching callers).
           ...(budgetHit ? { budgetStopped: true } : {}),
+          // Prior-attempt writes must count for the anti-no-op rail on retry.
+          ...(r.changedTree ? { changedTree: true } : {}),
           summary:
             `${epic.goal.slice(0, 140)}${files.length ? ` [files: ${files.join(', ')}]` : ''}` +
-            (budgetHit ? ` ${CONTEXT_BUDGET_MARKER} session(s) exceeded the context budget — scope is too large for one session` : ''),
+            (budgetHit ? ` ${CONTEXT_BUDGET_MARKER} session(s) exceeded the context budget — scope is too large for one session` : '') +
+            // A failed epic's summary must carry WHY it failed: lastFailure
+            // (and therefore the split planner's context) is built from this
+            // summary, and without the gate feedback the re-planner worked
+            // blind — run M split its final epic into audio/collision pieces
+            // while the only red gate was the visual floor.
+            (!r.success && r.finalFeedback ? ` — failing feedback: ${r.finalFeedback.replace(/\s+/g, ' ').slice(0, 400)}` : ''),
         };
       };
 

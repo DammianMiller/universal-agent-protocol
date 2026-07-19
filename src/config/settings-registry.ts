@@ -107,6 +107,11 @@ export const SETTINGS: readonly SettingDef[] = [
     recommendation: '`deliver` when a local model does the writing (routes it through the verified loop); `advisory` for exploratory work.',
   },
   {
+    key: 'deliver.escalateModel', kind: 'json', type: 'string', default: null, category: 'delivery',
+    description: 'Stronger model id for deliver escalation ladders: repair passes, the phase-5 escalation tier, and the evaluator fallback. Same role as $UAP_ESCALATE_MODEL but persisted in .uap.json (reproducible).',
+    recommendation: 'Point at your strongest available preset/model (e.g. an Opus cloud id) when the executor is a local model — stuck epics then escalate instead of re-splitting into the same wall.',
+  },
+  {
     key: 'UAP_ENFORCE_DELIVERY', kind: 'env', type: 'enum', enumValues: ['block', 'advisory', 'off'],
     default: 'block', category: 'delivery', target: 'shell',
     description: 'Runtime override of the delivery gate read by the hooks/enforcers from the shell env. Takes precedence over `delivery.enforcement`.',

@@ -106,12 +106,14 @@ import type { DeliverRunState } from '../delivery/run-state.js';
 import { planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
+import { resolveEscalateModelId } from '../delivery/repair-escalation.js';
 import {
   createUserValidationRunner,
   resolveUserValidationMode,
   synthesizeUserValidationRung,
 } from '../delivery/user-validation.js';
-import { deriveUserPaths, loadUserPaths, mergeUserPaths, USER_PATHS_FILE } from '../delivery/user-paths.js';
+import { deriveUserPaths, fallbackWebManifest, loadUserPaths, mergeUserPaths, USER_PATHS_FILE } from '../delivery/user-paths.js';
+import { detectArtifactType } from '../delivery/execution-gate.js';
 
 /** Raw .uap.json reader usable before the main cfgRawEarly declaration. */
 function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unknown> {
@@ -1062,7 +1064,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       critic: Boolean(options.critic),
       practices: Boolean(options.practices),
       escalate: Boolean(options.escalate),
-      escalateModel: options.escalate ? (options.escalateModel ?? process.env.UAP_ESCALATE_MODEL ?? null) : null,
+      escalateModel: options.escalate
+        ? (resolveEscalateModelId(
+            options.escalateModel,
+            process.env,
+            (() => { try { return loadUapConfigRaw(projectRoot) ?? {}; } catch { return {}; } })()
+          ) ?? null)
+        : null,
       auto: autoPlan ? autoPlan.summary : null,
       tierRouting: tierRoute ? `${tierRoute.preset} \u2192 ${tierRoute.tier} \u2192 ${tierRoute.model}` : null,
       ideate: Boolean(options.ideate || options.ideateProject),
@@ -1175,13 +1183,15 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // as the evaluator when no dedicated evaluator is set — a sharp judge is the
   // cheapest place to spend the strong model (barbell strategy), and it keeps
   // generator≠evaluator ON by default wherever a second model exists at all.
+  const cfgEscalateModel = resolveEscalateModelId(
+    options.escalateModel,
+    process.env,
+    (() => { try { return loadUapConfigRaw(projectRoot) ?? {}; } catch { return {}; } })()
+  );
   let evaluatorPresetId = resolveEvaluatorPreset({
     evaluatorModel: options.evaluatorModel,
     generatorPreset: presetId,
-    envEvaluator:
-      process.env.UAP_DELIVER_EVALUATOR_MODEL ??
-      options.escalateModel ??
-      process.env.UAP_ESCALATE_MODEL,
+    envEvaluator: process.env.UAP_DELIVER_EVALUATOR_MODEL ?? cfgEscalateModel,
   });
   // The escalation-env fallback must FAIL SOFT: a stale UAP_ESCALATE_MODEL
   // must not break every run — only an explicit --evaluator-model may fail hard.
@@ -1275,8 +1285,22 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // fresh focused session — on the stronger model when configured, else the
   // same model (narrow scope + fresh context is most of the win). Default on
   // for the agentic executor; UAP_DELIVER_REPAIR_ESCALATION=0 disables.
-  const repairModelId = options.escalateModel ?? process.env.UAP_ESCALATE_MODEL;
-  const repairModel = repairModelId ? resolveModel(repairModelId, undefined) : model;
+  // Fail SOFT on an unknown configured escalate model (mirrors the evaluator
+  // fallback): a stale .uap.json deliver.escalateModel is persisted state and
+  // must degrade to the base model with a warning, not kill every run.
+  const resolveEscalateOrWarn = (id: string | undefined, role: string) => {
+    if (!id) return undefined;
+    try {
+      return resolveModel(id, undefined);
+    } catch {
+      console.log(
+        chalk.yellow(`⚠ ${role}: escalate model '${id}' is not a known preset — continuing without it`)
+      );
+      return undefined;
+    }
+  };
+  const repairModelId = cfgEscalateModel;
+  const repairModel = resolveEscalateOrWarn(repairModelId, 'repair-escalation') ?? model;
 
   // Contracts-first epics: files an ACCEPTED contracts epic touched are locked
   // read-only for later epics. Mutable by reference — the epic controller
@@ -1365,16 +1389,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
 
   // Phase 5: escalation ladder. Cheap strategies first (widen exploration →
   // enable critic) then, if a stronger model is configured, switch to it.
-  const escalateModelId = options.escalateModel ?? process.env.UAP_ESCALATE_MODEL;
+  const escalateModelId = cfgEscalateModel;
   let escalateExecutor: LoopExecutor | undefined;
   let escalateModelName: string | undefined;
-  if (options.escalate && escalateModelId) {
-    const strong = resolveModel(escalateModelId, undefined);
-    escalateModelName = strong.name;
-    escalateExecutor = async (prompt) => (await client.complete(strong, prompt, { temperature })).content;
+  const strongModel = options.escalate ? resolveEscalateOrWarn(escalateModelId, 'escalation') : undefined;
+  if (strongModel) {
+    escalateModelName = strongModel.name;
+    escalateExecutor = async (prompt) => (await client.complete(strongModel, prompt, { temperature })).content;
   } else if (options.escalate) {
     console.log(
-      chalk.dim('  escalation: no stronger model configured ($UAP_ESCALATE_MODEL) — cheap tiers only')
+      chalk.dim('  escalation: no stronger model configured ($UAP_ESCALATE_MODEL or .uap.json deliver.escalateModel) — cheap tiers only')
     );
   }
 
@@ -1838,6 +1862,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(
         chalk.cyan(`👤 user-validation: derived ${derived.paths.length} critical user path(s) → ${USER_PATHS_FILE}`)
       );
+    } else if (detectArtifactType(projectRoot) === 'web' || /\bcanvas\b|<canvas|\bhtml\b/i.test(instruction)) {
+      // The terminal gate must never silently reduce to NA for a web artifact
+      // just because the miner flaked (observed 3 of 5 live runs): install the
+      // deterministic fallback journey — load + (canvas visible) + zero
+      // console errors.
+      const fb = fallbackWebManifest(instruction);
+      mergeUserPaths(projectRoot, fb);
+      console.log(
+        chalk.yellow('👤 user-validation: miner produced no manifest — installed the deterministic fallback journey (load + no console errors)')
+      );
     } else {
       console.log(chalk.dim('  user-validation: no manifest derived — gate will report NA until one exists'));
     }
@@ -1897,7 +1931,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     } else if (!escalateExecutor) {
       console.log(
         chalk.yellow(
-          '⚠ resume: the interrupted run had escalated to a stronger model, but none is configured here (--escalate-model / UAP_ESCALATE_MODEL) — continuing on the base model'
+          '⚠ resume: the interrupted run had escalated to a stronger model, but none is configured here (--escalate-model / UAP_ESCALATE_MODEL / .uap.json deliver.escalateModel) — continuing on the base model'
         )
       );
     }
@@ -2164,6 +2198,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const scaffoldFirst = process.env.UAP_DELIVER_SCAFFOLD !== '0';
     return runEpicMissionCore({
       instruction,
+      projectRoot,
       planEpics: () =>
         planDeliveryPhases(instruction, verdictExecutor, undefined, {
           sessionTokenBudget: sessionBudget,

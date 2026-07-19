@@ -15,6 +15,7 @@ import {
   USER_VALIDATION_RUNG_ID,
   VALIDATION_REPORT_FILE,
 } from '../../src/delivery/user-validation.js';
+import { findMissingHtmlResources } from '../../src/delivery/user-validation.js';
 import { USER_PATHS_FILE, type UserPathsManifest } from '../../src/delivery/user-paths.js';
 import { runTieredLadder, type GateRung } from '../../src/delivery/verifier-ladder.js';
 
@@ -61,6 +62,102 @@ describe('synthesizeUserValidationRung', () => {
     expect(synthesizeUserValidationRung('block')?.required).toBe(true);
     expect(synthesizeUserValidationRung('advisory')?.required).toBe(false);
     expect(synthesizeUserValidationRung('block')?.tier).toBe('final');
+  });
+});
+
+describe('runUserValidation: manifest server hardening', () => {
+  it('a bogus server command fails SOFT to the static server instead of crashing the process', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-srvcrash-'));
+    try {
+      writeFileSync(join(dir, 'index.html'), '<canvas id="game"></canvas>');
+      writeManifest(dir, {
+        version: 1,
+        // whole command line as the binary name + nonexistent binary: the
+        // exact shape that killed run E via an unhandled child 'error'.
+        server: { command: 'definitely-not-a-real-binary-xyz --port 3999', port: 3999, readyTimeoutMs: 2000 },
+        paths: [{ id: 'load', rule: 'loads', client: 'browser', steps: [{ goto: '/' }] }],
+      } as never);
+      const stubBrowser = {
+        goto: async (url: string) => String((await fetch(url)).status),
+        getText: async () => '',
+        screenshot: async () => {},
+        getErrors: () => [],
+        clearErrors: () => {},
+        click: async () => {},
+        fill: async () => {},
+        press: async () => {},
+        isVisible: async () => true,
+        close: async () => {},
+      };
+      const report = await runUserValidation(dir, { browserLoader: async () => stubBrowser as never });
+      // no crash, and the static-server fallback serves the page
+      expect(report.results[0].steps.map((s) => s.observed)).toContain('HTTP 200');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a whitespace command line with no args[] is split so real servers still start', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-srvsplit-'));
+    try {
+      writeFileSync(join(dir, 'ok.txt'), 'ok');
+      writeManifest(dir, {
+        version: 1,
+        // node -e ... : starts an actual HTTP server; proves the split path works end-to-end
+        server: {
+          command: `${process.execPath} -e require('http').createServer((q,r)=>r.end('srv-ok')).listen(39471)`,
+          port: 39471,
+          readyTimeoutMs: 10000,
+        },
+        paths: [{ id: 'ping', rule: 'server answers', client: 'http', steps: [
+          { request: { method: 'GET', path: '/' } },
+          { expect_status: 200 },
+        ] }],
+      } as never);
+      const report = await runUserValidation(dir);
+      expect(report.results[0].status).toBe('pass');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('runUserValidation: web entry docroot', () => {
+  it('serves the directory containing the web entry, so goto:/ resolves when index.html lives in a subdir', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-webroot-'));
+    try {
+      mkdirSync(join(dir, 'space-shooter'), { recursive: true });
+      writeFileSync(
+        join(dir, 'space-shooter', 'index.html'),
+        '<!doctype html><html><body><canvas id="game"></canvas></body></html>'
+      );
+      writeManifest(dir, {
+        version: 1,
+        paths: [{ id: 'load', rule: 'game loads', client: 'browser', entry: '/', steps: [{ goto: '/' }] }],
+      });
+      const stubBrowser = {
+        goto: async (url: string) => {
+          const res = await fetch(url);
+          return String(res.status);
+        },
+        getText: async () => '',
+        screenshot: async () => {},
+        getErrors: () => [],
+        clearErrors: () => {},
+        click: async () => {},
+        fill: async () => {},
+        press: async () => {},
+        isVisible: async () => true,
+        close: async () => {},
+      };
+      const report = await runUserValidation(dir, { browserLoader: async () => stubBrowser as never });
+      // Before the fix the static server was rooted at the PROJECT root, so
+      // goto:/ was HTTP 404 and the final epic's gate was structurally unpassable.
+      expect(report.results[0].steps.map((s) => s.observed)).toContain('HTTP 200');
+      expect(report.verdict).toBe('pass');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -304,5 +401,48 @@ describe('final tier + createUserValidationRunner in the ladder', () => {
     expect(result.passed).toBe(true);
     const uv = result.results.find((r) => r.id === USER_VALIDATION_RUNG_ID);
     expect(uv?.skipped).toBe(true);
+  });
+});
+
+describe('resource-integrity pre-check (run V octopus variant, 2026-07-18: anonymous 404s)', () => {
+  it('names local script/stylesheet refs that do not exist on disk; ignores externals', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'resint-'));
+    try {
+      writeFileSync(join(dir, 'config.js'), 'window.CONFIG = {};');
+      writeFileSync(
+        join(dir, 'index.html'),
+        [
+          '<link rel="stylesheet" href="styles.css">',
+          '<link rel="icon" href="data:image/png;base64,x">',
+          '<script src="config.js"></script>',
+          '<script src="main.js?v=2"></script>',
+          '<script src="https://cdn.example.com/lib.js"></script>',
+          '<a href="#top">top</a>',
+        ].join('\n')
+      );
+      const broken = findMissingHtmlResources(dir);
+      expect(broken).toHaveLength(1);
+      expect(broken[0].html).toBe('index.html');
+      expect(broken[0].missing).toEqual(['main.js', 'styles.css']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports nothing when every referenced file exists', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'resint2-'));
+    try {
+      writeFileSync(join(dir, 'app.js'), 'void 0;');
+      writeFileSync(join(dir, 'index.html'), '<script src="./app.js"></script>');
+      expect(findMissingHtmlResources(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -478,6 +478,22 @@ export function runTool(
     }
     if (name === 'write_file') {
       const abs = safePath(projectRoot, String(args.path));
+      // Truncated-emit guard: a weak model re-emitting a whole large file hits
+      // its output ceiling mid-class and the stump poisons the tree — every
+      // later judge turn then rejects "code cuts off" while the model keeps
+      // reproducing the same truncation (octopus run G, 2026-07-17: ui.js cut
+      // mid-UIManager across 6 attempts). Refuse the obviously-cut write with
+      // corrective feedback steering to edit_file. Heuristic is conservative
+      // (code files only, net-unclosed braces only) — a false negative just
+      // falls back to judge feedback, a false positive costs one retry.
+      const truncated = looksTruncated(String(args.path), String(args.content ?? ''));
+      if (truncated) {
+        return (
+          `ERROR: ${String(args.path)} content looks TRUNCATED (${truncated}). ` +
+          'Your output was likely cut off mid-file. Do NOT re-emit the whole file: ' +
+          'use edit_file to change only the parts that need changing, or write the file in smaller pieces.'
+        );
+      }
       const internal = agentInternalReason(projectRoot, abs, true);
       if (internal) return internal;
       if (protectedFiles.has(protectedKey(projectRoot, abs))) {
@@ -837,7 +853,28 @@ export function createAgenticExecutor(
     const summaries: string[] = [];
     // Per-session: what this agent has already read, and at what mtime.
     const readCache = newReadCache();
+    // Read-only-streak nudge: a weak model in a gap-closure/whole-mission epic
+    // can spend EVERY round on read_file/list_dir and end the turn with zero
+    // writes — attempt after attempt (run I live, 2026-07-17: two 5-turn
+    // attempts, 12 rounds each, all reads, while the gate feedback named the
+    // missing files). Reads are never denied (see repeatReadNote), but after
+    // WRITE_NUDGE_AFTER consecutive mutation-free rounds the next round opens
+    // with an explicit order to write.
+    const WRITE_NUDGE_AFTER = 5;
+    let roundsWithoutWrite = 0;
+    let writeNudged = false;
     for (let round = 1; round <= maxRounds; round++) {
+      if (roundsWithoutWrite >= WRITE_NUDGE_AFTER && !writeNudged) {
+        writeNudged = true;
+        messages.push({
+          role: 'user',
+          content:
+            `You have used ${roundsWithoutWrite} consecutive rounds ONLY reading/listing — zero files ` +
+            'written. You already have enough context. STOP exploring. THIS round, CREATE or EDIT the ' +
+            'files the task and gate feedback require (write_file / edit_file), then verify and call finish.',
+        });
+        opts.onEvent?.({ round, kind: 'error', detail: `write-nudge injected after ${roundsWithoutWrite} read-only rounds` });
+      }
       // Rail sizing: stop BEFORE sending a request that would outgrow the
       // session's context budget — a clean under-budget stop with a partial
       // summary beats an overflow/prune that silently loses session state.
@@ -857,6 +894,7 @@ export function createAgenticExecutor(
           });
         }
       }
+      roundsWithoutWrite++;
       let msg: ChatMessage;
       try {
         msg = await chat(opts.endpoint, model, messages, opts.temperature, allowBash);
@@ -938,6 +976,13 @@ export function createAgenticExecutor(
           allowBash,
           contractFiles
         );
+        if (
+          (call.function.name === 'write_file' || call.function.name === 'edit_file' || call.function.name === 'run_bash') &&
+          toolResult.startsWith('OK')
+        ) {
+          roundsWithoutWrite = -1; // reset below by the per-round increment
+          writeNudged = false;
+        }
         // WITHHOLDING the content was a deadlock. The model re-reads a file for a
         // reason — its context was pruned, or this is a fresh agent session — so
         // answering "you already read that" WITHOUT the content leaves it unable
@@ -964,6 +1009,34 @@ export function createAgenticExecutor(
  * tools, so there is nothing for the convergence loop to materialize. Reports
  * zero filesApplied (the gate measures the real outcome).
  */
+
+/**
+ * Cheap truncation heuristic for code-file writes: strips string/template
+ * literals and comments, then counts net-unclosed braces/brackets/parens. Only
+ * flags NET-POSITIVE imbalance (more opens than closes — the signature of an
+ * output cut mid-block); balanced or over-closed content is never flagged.
+ * Returns a human-readable reason, or null when the content looks whole.
+ */
+export function looksTruncated(path: string, content: string): string | null {
+  if (!/\.(m?[jt]sx?|json|css)$/i.test(path)) return null;
+  if (content.trim().length < 200) return null; // small stubs are legitimate
+  // Strip line/block comments and quoted strings (crude but effective).
+  const stripped = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+  const count = (ch: string): number => stripped.split(ch).length - 1;
+  const braces = count('{') - count('}');
+  const brackets = count('[') - count(']');
+  const parens = count('(') - count(')');
+  if (braces > 0) return `${braces} unclosed {`;
+  if (brackets > 0) return `${brackets} unclosed [`;
+  if (parens > 0) return `${parens} unclosed (`;
+  return null;
+}
+
 export async function noopApplier(): Promise<ApplyResult> {
   // No error: the executor already mutated the repo, so "nothing to apply" is
   // success, not the applyFileBlocks "no file blocks found" failure.

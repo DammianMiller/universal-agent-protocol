@@ -4,6 +4,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  deriveUserPaths,
+  dropRedundantStaticServer,
+  fallbackWebManifest,
+  sanitizeCanvasTextAssertions,
   loadUserPaths,
   mergeUserPaths,
   parseManifestFromModel,
@@ -122,5 +126,140 @@ describe('mergeUserPaths / loadUserPaths', () => {
     mkdirSync(join(dir, '.uap'), { recursive: true });
     writeFileSync(join(dir, USER_PATHS_FILE), '{not json');
     expect(loadUserPaths(dir)?.ok).toBe(false);
+  });
+});
+
+describe('deriveUserPaths: canvas-aware mining prompt', () => {
+  it('instructs the miner that canvas-drawn content is not DOM text (no expect_text on canvas UIs)', async () => {
+    let captured = '';
+    await deriveUserPaths('Build a canvas space shooter', async (prompt) => {
+      captured = prompt;
+      return 'not json';
+    });
+    // Canvas games render scores/menus via fillText — DOM expect_text can never
+    // match them, which made auto-mined journeys unsatisfiable by construction.
+    expect(captured).toContain('CANVAS-rendered UIs');
+    expect(captured).toContain('expect_text can NEVER match');
+  });
+});
+
+describe('sanitizeCanvasTextAssertions', () => {
+  const canvasMission = 'Build a space shooter with vanilla JavaScript and Canvas';
+  const manifest = (steps: object[]): never =>
+    ({ version: 1, paths: [{ id: 'p', rule: 'r', client: 'browser', steps }] }) as never;
+
+  it('strips body/html expect_text on canvas missions but keeps real assertions (miner disobeyed the prompt rule)', () => {
+    const out = sanitizeCanvasTextAssertions(
+      manifest([
+        { goto: '/' },
+        { expect_visible: '#game' },
+        { expect_text: { selector: 'body', contains: 'OCTOPUS INVADERS' } },
+        { expect_no_console_errors: true },
+      ]),
+      canvasMission
+    );
+    const steps = out.paths[0].steps;
+    expect(steps.some((s) => 'expect_text' in s)).toBe(false);
+    expect(steps.some((s) => 'expect_visible' in s)).toBe(true);
+    expect(steps.some((s) => 'expect_no_console_errors' in s)).toBe(true);
+    // Targeted DOM text (a real selector, not the body shell) is preserved.
+    const targeted = sanitizeCanvasTextAssertions(
+      manifest([{ expect_text: { selector: '#score-label', contains: 'Score' } }]),
+      canvasMission
+    );
+    expect(targeted.paths[0].steps.some((s) => 'expect_text' in s)).toBe(true);
+  });
+
+  it('non-canvas missions pass through untouched; a path whose only assert was doomed gets a console-errors check; deriveUserPaths applies it', async () => {
+    const domSteps = [{ goto: '/' }, { expect_text: { selector: 'body', contains: 'Welcome' } }];
+    const untouched = sanitizeCanvasTextAssertions(manifest(domSteps), 'Build a REST API docs site');
+    expect(untouched.paths[0].steps).toEqual(domSteps);
+
+    const onlyDoomed = sanitizeCanvasTextAssertions(manifest(domSteps), canvasMission);
+    expect(onlyDoomed.paths[0].steps.some((s) => 'expect_text' in s)).toBe(false);
+    expect(onlyDoomed.paths[0].steps.some((s) => 'expect_no_console_errors' in s)).toBe(true);
+
+    const mined = await deriveUserPaths(canvasMission, async () =>
+      JSON.stringify({
+        version: 1,
+        paths: [{ id: 'p', rule: 'r', client: 'browser', steps: [
+          { goto: '/' },
+          { expect_visible: '#game' },
+          { expect_text: { selector: 'body', contains: 'TITLE' } },
+        ] }],
+      })
+    );
+    expect(mined).not.toBeNull();
+    expect(mined!.paths[0].steps.some((s) => 'expect_text' in s)).toBe(false);
+  });
+});
+
+describe('dropRedundantStaticServer', () => {
+  const base = { version: 1, paths: [{ id: 'p', rule: 'r', client: 'browser' as const, steps: [{ goto: '/' }] }] };
+
+  it('drops mined static-file-server entries (builtin static serving covers them) but keeps real app servers', () => {
+    for (const cmd of ['python3 -m http.server 3001', 'python -m http.server 8000', 'npx serve .', 'npx http-server -p 3000', 'http-server dist']) {
+      const out = dropRedundantStaticServer({ ...base, server: { command: cmd, port: 3001 } } as never);
+      expect(out.server).toBeUndefined();
+    }
+    const app = dropRedundantStaticServer({ ...base, server: { command: 'node dist/api.js', port: 4000 } } as never);
+    expect(app.server).toBeDefined();
+    expect(dropRedundantStaticServer(base as never).server).toBeUndefined(); // no server → untouched
+  });
+
+  it('applies at derive time so the crash-inducing manifest never lands on disk', async () => {
+    const mined = await deriveUserPaths('Build a canvas game; run with python3 -m http.server 3001', async () =>
+      JSON.stringify({
+        version: 1,
+        server: { command: 'python3 -m http.server 3001', port: 3001 },
+        paths: [{ id: 'p', rule: 'r', client: 'browser', steps: [{ goto: '/' }, { expect_no_console_errors: true }] }],
+      })
+    );
+    expect(mined).not.toBeNull();
+    expect(mined!.server).toBeUndefined();
+  });
+});
+
+describe('deriveUserPaths: miner retry (same flake class as the phase planner)', () => {
+  const VALID = JSON.stringify({
+    version: 1,
+    paths: [{ id: 'p', rule: 'r', client: 'browser', steps: [{ goto: '/' }, { expect_no_console_errors: true }] }],
+  });
+
+  it('retries once on an unparseable sample and succeeds on the second', async () => {
+    let calls = 0;
+    const mined = await deriveUserPaths('mission', async () => {
+      calls++;
+      return calls === 1 ? 'sorry, prose not JSON' : VALID;
+    });
+    expect(mined).not.toBeNull();
+    expect(mined!.paths.length).toBe(1);
+    expect(calls).toBe(2);
+  });
+
+  it('gives up (null) after exactly two attempts — bounded, never wedges', async () => {
+    let calls = 0;
+    const mined = await deriveUserPaths('mission', async () => {
+      calls++;
+      throw new Error('model down');
+    });
+    expect(mined).toBeNull();
+    expect(calls).toBe(2);
+  });
+});
+
+describe('fallbackWebManifest', () => {
+  it('produces a valid minimal browser journey; canvas missions assert canvas visibility', () => {
+    const canvas = fallbackWebManifest('Build a space shooter with vanilla JavaScript and Canvas');
+    expect(validateManifest(canvas).ok).toBe(true);
+    const steps = canvas.paths[0].steps;
+    expect(steps.some((s) => (s as { expect_visible?: string }).expect_visible === 'canvas')).toBe(true);
+    expect(steps.some((s) => 'expect_no_console_errors' in s)).toBe(true);
+    expect(canvas.paths[0].entry).toBe('/');
+
+    const plain = fallbackWebManifest('Build a docs site in HTML');
+    expect(validateManifest(plain).ok).toBe(true);
+    expect(plain.paths[0].steps.some((s) => 'expect_visible' in s)).toBe(false);
+    expect(plain.paths[0].steps.some((s) => 'expect_no_console_errors' in s)).toBe(true);
   });
 });

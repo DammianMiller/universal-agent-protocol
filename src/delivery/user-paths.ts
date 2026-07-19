@@ -200,6 +200,11 @@ Rules:
 - Cover each CRITICAL user-facing requirement of the mission with at least one path.
 - 2-6 paths total; each 2-8 steps; every path ends with at least one expect_* step.
 - Browser paths for anything with a UI; include expect_no_console_errors.
+- CANVAS-rendered UIs (games/visualizations that draw via <canvas>): text and
+  UI drawn on a canvas is NOT in the DOM, so expect_text can NEVER match it —
+  do not use expect_text for canvas-drawn content (scores, HUDs, titles,
+  menus). Assert expect_visible on the canvas selector plus
+  expect_no_console_errors instead; use expect_text only for real DOM text.
 - Use "server" only when the artifact needs a real server process (APIs); static
   HTML is served automatically.
 - Output ONLY the JSON.
@@ -217,11 +222,109 @@ export async function deriveUserPaths(
   executor: ModelExecutor,
   extraContext?: string
 ): Promise<UserPathsManifest | null> {
-  try {
-    const prompt = DERIVE_PROMPT + instruction + (extraContext ? `\n\nCONTEXT:\n${extraContext}` : '');
-    const out = await executor(prompt);
-    return parseManifestFromModel(out);
-  } catch {
-    return null;
+  // Same weak-miner flake class as the phase planner (fixed in v1.161.2):
+  // one unparseable sample and the WHOLE mission ran without its terminal
+  // user-path gate ("no manifest derived" — observed twice live, runs D and
+  // F). Retry once and narrate the degradation; still fail-soft to null so
+  // delivery never wedges on the miner.
+  const attempts = 2;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const prompt = DERIVE_PROMPT + instruction + (extraContext ? `\n\nCONTEXT:\n${extraContext}` : '');
+      const out = await executor(prompt);
+      const manifest = parseManifestFromModel(out);
+      if (manifest) {
+        return dropRedundantStaticServer(sanitizeCanvasTextAssertions(manifest, instruction));
+      }
+    } catch {
+      /* fall through to retry/give-up */
+    }
+    console.log(
+      `  user-validation: derive attempt ${attempt} produced no parseable manifest — ` +
+        (attempt < attempts ? 'retrying the miner' : 'giving up (gate reports NA)')
+    );
   }
+  return null;
+}
+
+/**
+ * Static-file-server commands mined into `server` are redundant AND harmful:
+ * the runner serves static HTML itself (rooted at the web entry dir), while a
+ * mined "python3 -m http.server ..." serves the PROJECT root on a fixed port
+ * — wrong docroot, port collisions, and (before the spawn hardening) a
+ * process-killing ENOENT. The prompt already says not to emit these; a weak
+ * miner does anyway (run E, 2026-07-17). Real app servers (node dist/api.js,
+ * uvicorn, etc.) are untouched.
+ */
+/**
+ * Deterministic floor for the terminal user-path gate: when the miner cannot
+ * produce a parseable manifest (a weak model fails this sampling in ~half of
+ * live runs — observed runs D, F, G even WITH the retry), a web artifact
+ * still gets a minimal real-client journey instead of the gate silently
+ * reducing to NA. Loads the entry page headlessly and requires a visible
+ * <canvas> (or body) plus zero console errors — weaker than a mined journey,
+ * infinitely stronger than no journey at all.
+ */
+export function fallbackWebManifest(instruction: string): UserPathsManifest {
+  const canvas = /\bcanvas\b|<canvas/i.test(instruction);
+  return {
+    version: 1,
+    paths: [
+      {
+        id: 'fallback-load',
+        rule: 'Artifact loads in a real browser without console errors (deterministic fallback journey — miner produced no manifest)',
+        client: 'browser',
+        entry: '/',
+        steps: [
+          { goto: '/' },
+          ...(canvas ? [{ expect_visible: 'canvas' } as UserPathStep] : []),
+          { wait_ms: 500 },
+          { expect_no_console_errors: true },
+        ],
+      },
+    ],
+  };
+}
+
+const STATIC_SERVER_RE = /^\s*(?:python3?\s+-m\s+http\.server|npx\s+(?:serve|http-server)|http-server|serve)\b/;
+export function dropRedundantStaticServer(manifest: UserPathsManifest): UserPathsManifest {
+  const cmd = manifest.server?.command;
+  if (typeof cmd === 'string' && STATIC_SERVER_RE.test(cmd)) {
+    const { server: _dropped, ...rest } = manifest;
+    return rest as UserPathsManifest;
+  }
+  return manifest;
+}
+
+/**
+ * Deterministic backstop for the DERIVE_PROMPT canvas rule: a weak miner
+ * still sometimes emits DOM expect_text assertions against body/html for
+ * canvas-rendered missions (observed live: 1 of 5 mined paths on the
+ * octopus retest, despite the prompt rule) — text drawn on a <canvas> is
+ * never DOM text, so such a step can NEVER pass and makes the final epic's
+ * user-path gate structurally unpassable. For canvas missions, drop
+ * body/html expect_text steps when the path keeps at least one other
+ * expect_* assertion; a path whose ONLY assertion was the doomed text check
+ * gets expect_no_console_errors so it still ends in an expectation.
+ * Prompt-following models are untouched (nothing to strip).
+ */
+export function sanitizeCanvasTextAssertions(
+  manifest: UserPathsManifest,
+  instruction: string
+): UserPathsManifest {
+  if (!/\bcanvas\b|<canvas/i.test(instruction)) return manifest;
+  const SHELL_SELECTORS = new Set(['body', 'html', ':root', '*']);
+  const isShellTextAssert = (s: UserPathStep): boolean => {
+    const et = (s as { expect_text?: { selector?: string } }).expect_text;
+    if (typeof et !== 'object' || et === null) return false;
+    return SHELL_SELECTORS.has((et.selector ?? '').trim().toLowerCase());
+  };
+  const isAssert = (s: UserPathStep): boolean => Object.keys(s).some((k) => k.startsWith('expect_'));
+  const paths = manifest.paths.map((p) => {
+    if (p.client !== 'browser' || !p.steps.some(isShellTextAssert)) return p;
+    const kept = p.steps.filter((s) => !isShellTextAssert(s));
+    if (!kept.some(isAssert)) kept.push({ expect_no_console_errors: true } as UserPathStep);
+    return { ...p, steps: kept };
+  });
+  return { ...manifest, paths };
 }

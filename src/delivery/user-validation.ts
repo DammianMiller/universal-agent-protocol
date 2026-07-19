@@ -20,10 +20,10 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 import type { GateRung, LadderResult, LadderRunFn, RungResult } from './verifier-ladder.js';
-import { startStaticServer } from './execution-gate.js';
+import { findWebEntryDir, startStaticServer } from './execution-gate.js';
 import {
   loadUserPaths,
   USER_PATHS_FILE,
@@ -144,6 +144,22 @@ interface RunContext {
   baseUrl: string | null;
   shotsDir: string;
   timeoutMs: number;
+  /**
+   * When the static server is rooted at a SUBDIR of the project (the web
+   * entry dir), this is that subdir's project-relative path ('space-shooter').
+   * Hand-curated manifests written against the old project-root docroot may
+   * prefix their gotos with it ('/space-shooter/index.html') — such targets
+   * are normalized by stripping the prefix so both conventions resolve.
+   */
+  webRootPrefix?: string | null;
+}
+
+/** Strip a leading web-root prefix from a root-relative journey path. */
+function stripWebRootPrefix(p: string, prefix: string | null | undefined): string {
+  if (!prefix) return p;
+  const clean = p.replace(/^\/+/, '');
+  if (clean === prefix) return '/';
+  return clean.startsWith(`${prefix}/`) ? `/${clean.slice(prefix.length + 1)}` : p;
 }
 
 export async function runBrowserPath(path: UserPath, browser: BrowserLike, ctx: RunContext): Promise<PathResult> {
@@ -159,7 +175,7 @@ export async function runBrowserPath(path: UserPath, browser: BrowserLike, ctx: 
   // declared (a path that navigates entirely via its own goto steps).
   const firstStepIsGoto = path.steps.length > 0 && path.steps[0].goto !== undefined;
   if (path.entry && ctx.baseUrl && !firstStepIsGoto) {
-    const rel = path.entry.replace(/^\.?\//, '');
+    const rel = stripWebRootPrefix(path.entry, ctx.webRootPrefix).replace(/^\.?\//, '');
     const target = /^https?:/.test(path.entry) ? path.entry : `${ctx.baseUrl}/${rel}`;
     try {
       const status = await browser.goto(target);
@@ -176,7 +192,8 @@ export async function runBrowserPath(path: UserPath, browser: BrowserLike, ctx: 
     const label = stepLabel(step);
     try {
       if (step.goto !== undefined) {
-        const target = /^https?:/.test(step.goto) ? step.goto : `${ctx.baseUrl}${step.goto.startsWith('/') ? '' : '/'}${step.goto}`;
+        const g = /^https?:/.test(step.goto) ? step.goto : stripWebRootPrefix(step.goto, ctx.webRootPrefix);
+        const target = /^https?:/.test(g) ? g : `${ctx.baseUrl}${g.startsWith('/') ? '' : '/'}${g}`;
         const status = await browser.goto(target);
         const ok = status.startsWith('2') || status.startsWith('3');
         steps.push({ step: label, ok, observed: `HTTP ${status}` });
@@ -358,17 +375,35 @@ interface ManagedServer {
 }
 
 async function startManifestServer(srv: UserPathsServer, projectRoot: string): Promise<ManagedServer | null> {
-  const child = spawn(srv.command, srv.args ?? [], {
+  // Mined manifests routinely put the WHOLE command line in `command`
+  // ("python3 -m http.server 3001") — spawning that verbatim ENOENTs on a
+  // binary literally named "python3 -m http.server 3001". When no separate
+  // args were declared, split on whitespace (manifest authors needing shell
+  // quoting can use args[]).
+  const declaredArgs = srv.args ?? [];
+  const parts = declaredArgs.length === 0 ? srv.command.trim().split(/\s+/) : [srv.command];
+  const cmd = parts[0];
+  const args = declaredArgs.length === 0 ? parts.slice(1) : declaredArgs;
+  const child = spawn(cmd, args, {
     cwd: projectRoot,
     env: { ...process.env, ...srv.env },
     stdio: 'ignore',
     detached: false,
   });
+  // A spawn failure (bad binary) fires 'error' asynchronously; without a
+  // listener Node treats it as an UNCAUGHT EXCEPTION and kills the whole
+  // deliver process (run E, 2026-07-17 — the mission died on epic 1's first
+  // gate ladder). Swallow it: exitCode goes non-null and the bring-up loop
+  // below returns null, falling back to the built-in static server.
+  let spawnFailed = false;
+  child.on('error', () => {
+    spawnFailed = true;
+  });
   const baseUrl = `http://127.0.0.1:${srv.port}`;
   const deadline = Date.now() + (srv.readyTimeoutMs ?? 30_000);
   const readyUrl = `${baseUrl}${srv.readyPath ?? '/'}`;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) return null; // died during bring-up
+    if (spawnFailed || child.exitCode !== null) return null; // died during bring-up
     try {
       await fetch(readyUrl, { signal: AbortSignal.timeout(1_000) });
       return { baseUrl, close: () => { try { child.kill(); } catch { /* already gone */ } } };
@@ -386,6 +421,44 @@ export interface RunUserValidationOptions {
   timeoutMs?: number;
   /** Test seam: replace the browser loader. */
   browserLoader?: () => Promise<BrowserLike | null>;
+}
+
+/**
+ * Local resources referenced by the web root's HTML that do not exist on
+ * disk. Run V (octopus variant, 2026-07-18): index.html referenced styles.css
+ * and main.js the model never wrote; every journey failed on
+ * "Failed to load resource ... 404" WITHOUT the URL, and the executor burned
+ * two full attempts re-reading files that were individually fine. This names
+ * the missing files deterministically before any browser launches.
+ */
+export function findMissingHtmlResources(webRoot: string): { html: string; missing: string[] }[] {
+  const out: { html: string; missing: string[] }[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(webRoot).filter((f) => f.toLowerCase().endsWith('.html')).slice(0, 8);
+  } catch {
+    return out;
+  }
+  for (const html of entries) {
+    let text: string;
+    try {
+      text = readFileSync(join(webRoot, html), 'utf8');
+    } catch {
+      continue;
+    }
+    const missing = new Set<string>();
+    for (const m of text.matchAll(/(?:src|href)\s*=\s*(?:"([^"]+)"|'([^']+)')/gi)) {
+      const raw = (m[1] ?? m[2] ?? '').trim();
+      if (!raw || /^(?:https?:)?\/\//i.test(raw)) continue;
+      if (/^(?:data:|mailto:|javascript:|tel:|#)/i.test(raw)) continue;
+      if (raw.includes('{') || raw.includes('$')) continue; // template placeholder
+      const clean = raw.split(/[?#]/)[0].replace(/^\.?\//, '');
+      if (!clean || clean.endsWith('/')) continue;
+      if (!existsSync(join(webRoot, clean))) missing.add(clean);
+    }
+    if (missing.size > 0) out.push({ html, missing: [...missing].sort() });
+  }
+  return out;
 }
 
 export async function runUserValidation(
@@ -449,6 +522,7 @@ export async function runUserValidation(
 
   let managed: ManagedServer | null = null;
   let staticServer: { url: string; close: () => void } | null = null;
+  let webRootPrefix: string | null = null;
   let browser: BrowserLike | null = null;
   const results: PathResult[] = [];
 
@@ -459,8 +533,42 @@ export async function runUserValidation(
     if (needsBrowser) {
       browser = await (opts.browserLoader ?? loadBrowser)();
       if (!managed && !staticServer) {
-        try { staticServer = await startStaticServer(projectRoot); } catch { staticServer = null; }
+        // Serve the directory that actually CONTAINS the web entry (parity with
+        // the execution gate): journeys goto "/" — rooting the server at the
+        // project root 404s every path when index.html lives in a subdir
+        // (space-shooter/index.html; octopus_invaders_v3, 2026-07-16), which
+        // makes the final epic's user-path gate structurally unpassable.
+        try {
+          const webRoot = findWebEntryDir(projectRoot) ?? projectRoot;
+          if (webRoot !== projectRoot) {
+            webRootPrefix = relative(projectRoot, webRoot).split(sep).join('/');
+          }
+          staticServer = await startStaticServer(webRoot);
+        } catch { staticServer = null; }
       }
+    }
+
+    // Deterministic resource-integrity pre-check: a missing script/stylesheet
+    // fails journeys with an anonymous 404 — name the files up front so the
+    // executor's next turn is a fix, not an investigation.
+    if (needsBrowser) {
+      try {
+        const integrityRoot = findWebEntryDir(projectRoot) ?? projectRoot;
+        for (const broken of findMissingHtmlResources(integrityRoot)) {
+          results.push({
+            id: `resource-integrity-${broken.html}`,
+            rule: 'every local script/stylesheet referenced by the HTML must exist on disk',
+            client: 'cli',
+            status: 'fail',
+            steps: [{
+              step: `check ${broken.html}`,
+              ok: false,
+              observed: `MISSING local resources referenced by ${broken.html}: ${broken.missing.join(', ')} — each reference 404s in the browser. Create these files (or fix the references).`,
+            }],
+            screenshots: [],
+          });
+        }
+      } catch { /* pre-check is best-effort; journeys still run */ }
     }
 
     for (const path of manifest.paths) {
@@ -481,7 +589,7 @@ export async function runUserValidation(
         if (!base && staticServer?.url) {
           try { base = new URL(staticServer.url).origin; } catch { base = staticServer.url; }
         }
-        results.push(await runBrowserPath(path, browser, { projectRoot, baseUrl: base, shotsDir, timeoutMs }));
+        results.push(await runBrowserPath(path, browser, { projectRoot, baseUrl: base, shotsDir, timeoutMs, webRootPrefix }));
       } else if (path.client === 'http') {
         if (!managed) {
           results.push({

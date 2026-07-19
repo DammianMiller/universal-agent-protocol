@@ -1,11 +1,135 @@
 # Changelog
 
-## v1.161.0 (2026-07-19)
+## v1.161.24 (2026-07-19)
 
-- chore(test): raise timeout on the src/index.js barrel-import test
-- fix(deliver): P3 anti-gutting guard — refuse write_file that guts a real file
-- feat(deliver): P1 contract-first — carry the shared contract VERBATIM into every epic
-- fix(deliver): P0 reliability — autoroute single-flight + lock wedge-reclaim
+- fix(delivery): recover cap-truncated plans by re-parsing the planner's own output
+
+
+## v1.161.23 (2026-07-19)
+
+- fix(delivery): converge against the fidelity-max vision bar in-loop
+
+
+## v1.161.22 (2026-07-19)
+
+- fix(delivery): criterion-aware evidence slices for the acceptance judge
+
+
+## v1.161.21 (2026-07-18)
+
+- fix(delivery): per-script vm units + duplicate-declaration detection
+
+
+## v1.161.20 (2026-07-18)
+
+- fix(hooks): deliver_autoroute dedups per change (file#sha1(edit)), not per file
+- fix(delivery): --pending replay is replay-once — consume applied intents, guard insertion re-application
+
+
+## v1.161.19 (2026-07-18)
+
+- fix(delivery): defer missing-script smoke failures on non-final epics
+
+
+## v1.161.18 (2026-07-18)
+
+- fix(delivery): name the files behind anonymous 404s in user-path feedback
+
+
+## v1.161.17 (2026-07-18)
+
+- fix(delivery): reject self-gates that anchor paths to their own directory
+
+
+## v1.161.16 (2026-07-18)
+
+- fix(delivery): failed epics tell the split planner WHY — plus a visual-floor directive
+
+
+## v1.161.15 (2026-07-17)
+
+- fix(delivery): mission-file floor — the split can no longer omit named deliverables
+
+
+## v1.161.14 (2026-07-17)
+
+- fix(delivery): the split planner now sees the accumulated code shape
+
+
+## v1.161.13 (2026-07-17)
+
+- fix(delivery): visual richness floors defer to the final epic
+
+
+## v1.161.12 (2026-07-17)
+
+- fix(delivery): separator-insensitive spec-symbol matching for evidence priority
+
+
+## v1.161.11 (2026-07-17)
+
+- fix(delivery): read-only-streak write nudge — the sweep epic read forever
+
+
+## v1.161.10 (2026-07-17)
+
+- fix(delivery): evidence-truncation honesty — the judge failed implemented code as missing
+
+
+## v1.161.9 (2026-07-17)
+
+- fix(delivery): truncated-emit guard — refuse the cut-off write, steer to edit_file
+
+
+## v1.161.8 (2026-07-17)
+
+- fix(delivery): deterministic fallback journey — the terminal gate must never silently vanish
+
+
+## v1.161.7 (2026-07-17)
+
+- fix(delivery): unborn-HEAD repos broke change detection — the underlying no-op-trap root cause
+
+
+## v1.161.6 (2026-07-17)
+
+- fix(delivery): retry the journey miner once — one flake removed the terminal gate
+
+
+## v1.161.5 (2026-07-17)
+
+- fix(delivery): manifest-server spawn crash — unhandled error killed the whole run
+
+
+## v1.161.4 (2026-07-16)
+
+- fix(delivery): count prior-ATTEMPT writes for the anti-no-op rail
+
+
+## v1.161.3 (2026-07-16)
+
+- fix(delivery): phase-cap truncation — the root cause of every truncated plan
+
+
+## v1.161.2 (2026-07-16)
+
+- fix(delivery): self-gate path anchoring + planner retry — two live retest findings
+
+
+## v1.161.1 (2026-07-16)
+
+- fix(delivery): deterministic canvas-text sanitizer for mined user paths
+
+
+## v1.161.0 (2026-07-16)
+
+- feat(delivery): resolve all six PR #536 follow-ups — finality seeding, env safety, fail-closed judge, plan gap-closure, config escalation, manifest compat
+
+
+## v1.160.1 (2026-07-16)
+
+- test: 60s timeout on first src/index.js barrel-import test (load flake)
+- fix(delivery): unblock 100% epic delivery — prior-changes inheritance, web-entry docroot, canvas-aware journeys
 
 
 ## v1.160.0 (2026-07-16)

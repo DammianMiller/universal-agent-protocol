@@ -403,8 +403,7 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
   // Build the bundle from external <script src> (in order) AND inline <script>
   // bodies, mirroring how the browser concatenates classic scripts into one
   // shared global lexical scope. Missing src files are a real (broken) reference.
-  let bundle = '';
-  let scriptCount = 0;
+  const units: { name: string; code: string }[] = [];
   const scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
   for (const m of html.matchAll(scriptRe)) {
     const attrs = m[1] ?? '';
@@ -428,6 +427,23 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
       }
       const p = join(entryDir, s.replace(/^\//, ''));
       if (!existsSync(p)) {
+        // Parity with the visual + user-path gates (run W, octopus variant,
+        // 2026-07-18): when the plan scaffolds index.html EARLY, its script
+        // tags reference files that LATER epics deliver — hard-failing the
+        // smoke on the missing file makes every early epic unsatisfiable and
+        // burns its whole attempt budget (3 attempts x 5 turns on epic 1).
+        // On a non-final epic the missing reference is "not-ready", not a
+        // defect; the FINAL epic runs with the flag unset and enforces it.
+        if (process.env.UAP_EPIC_NONFINAL === '1') {
+          return {
+            passed: true,
+            exitCode: 0,
+            failureReason: `deferred: script not found: ${s} (non-final epic)`,
+            outputTail: `NA: non-final epic — ${entry} references ${s} which does not exist YET; a later epic must create it (the final epic enforces this for real)`,
+            durationMs: Date.now() - start,
+            via: 'vm-dom',
+          };
+        }
         return {
           passed: false,
           exitCode: 1,
@@ -437,22 +453,83 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
           via: 'vm-dom',
         };
       }
-      bundle += `\n//=== ${s} ===\n${readFileSync(p, 'utf-8')}\n`;
-      scriptCount++;
+      units.push({ name: s, code: readFileSync(p, 'utf-8') });
     } else if (m[2] && m[2].trim()) {
-      bundle += `\n//=== inline ===\n${m[2]}\n`;
-      scriptCount++;
+      units.push({ name: `inline#${units.length}`, code: m[2] });
     }
   }
-  if (scriptCount === 0) {
+  if (units.length === 0) {
     return { passed: true, exitCode: 0, outputTail: 'no scripts to execute', durationMs: Date.now() - start, via: 'vm-dom' };
   }
-  const srcs = { length: scriptCount };
+  const srcs = { length: units.length };
+
+  // Duplicate top-level lexical declarations across DIFFERENT scripts are a
+  // guaranteed browser SyntaxError (classic scripts share one global lexical
+  // environment): run X (octopus variant, 2026-07-18) shipped BOTH module
+  // generations (enemy.js + enemies.js declaring class Enemy) and the page
+  // black-screened while the concatenated-bundle harness called it
+  // "inconclusive". Deterministic pre-pass so the failure names both files.
+  // var/function redeclaration is LEGAL in browsers — only class/const/let.
+  // Column-0 only: indented declarations are (almost always) block-scoped and
+  // legal to repeat across files — matching them false-positives on every
+  // `  const result = ...` helper (live false hit: utils.js vs entity-registry.js).
+  const declRe = /^(?:class|const|let)\s+([A-Za-z_$][\w$]*)/gm;
+  const declaredIn = new Map<string, string[]>();
+  for (const u of units) {
+    const seenHere = new Set<string>();
+    for (const dm of u.code.matchAll(declRe)) {
+      const name = dm[1];
+      if (seenHere.has(name)) continue;
+      seenHere.add(name);
+      const files = declaredIn.get(name) ?? [];
+      files.push(u.name);
+      declaredIn.set(name, files);
+    }
+  }
+  const collisions = [...declaredIn.entries()].filter(([, files]) => files.length > 1);
+  if (collisions.length > 0) {
+    const detail = collisions
+      .slice(0, 6)
+      .map(([name, files]) => `'${name}' declared in ${files.join(' AND ')}`)
+      .join('; ');
+    return {
+      passed: false,
+      exitCode: 1,
+      failureReason: `duplicate top-level declaration: ${collisions[0][0]}`,
+      outputTail: `${entry} loads scripts that redeclare the same identifier — a guaranteed SyntaxError in the browser (page will not boot): ${detail}. Remove or unwire the superseded script(s).`,
+      durationMs: Date.now() - start,
+      via: 'vm-dom',
+    };
+  }
 
   const sandbox = buildDomSandbox();
   try {
     vm.createContext(sandbox);
-    vm.runInContext(bundle, sandbox, { filename: 'bundle.js', timeout: 8000 });
+    // Execute each script as its own unit (browser semantics: separate
+    // compilation units sharing one global scope). A unit-level syntax error
+    // is realm-crossed (vm-context errors fail `instanceof SyntaxError` in the
+    // host realm — the hole that let run X's duplicate-class page through as
+    // "inconclusive"), so classify by constructor name and hard-fail naming
+    // the file. Non-syntax unit errors fall through to the shared classifier.
+    for (const u of units) {
+      try {
+        vm.runInContext(u.code, sandbox, { filename: u.name, timeout: 8000 });
+      } catch (ue) {
+        const ctor = (ue as Error | undefined)?.constructor?.name;
+        if (ue instanceof SyntaxError || ctor === 'SyntaxError') {
+          const umsg = ue instanceof Error ? ue.message : String(ue);
+          return {
+            passed: false,
+            exitCode: 1,
+            failureReason: `syntax error in ${u.name}`,
+            outputTail: `${u.name}: SyntaxError: ${umsg.slice(0, 300)} — the browser hits this same error and the page will not boot.`,
+            durationMs: Date.now() - start,
+            via: 'vm-dom',
+          };
+        }
+        throw ue;
+      }
+    }
     // Drive a few frames + a start interaction to exercise the playing path.
     const tick = (n: number): void => {
       let t = 0;
@@ -500,7 +577,7 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
       };
     }
     const isTDZ = /before initialization/.test(msg);
-    const isSyntax = e instanceof SyntaxError;
+    const isSyntax = e instanceof SyntaxError || (e as Error | undefined)?.constructor?.name === 'SyntaxError';
     const isAppUndefined = undefName !== undefined; // a lowercase/camelCase own symbol
     if (isTDZ || isSyntax || isAppUndefined) {
       return {

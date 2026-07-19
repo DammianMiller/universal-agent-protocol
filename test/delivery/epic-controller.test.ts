@@ -243,6 +243,225 @@ describe('runEpics — onProgress persistence hook + resume skip', () => {
   });
 });
 
+describe('runEpics: prior-changes state (anti-no-op rail)', () => {
+  const saveFlag = () => {
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    delete process.env.UAP_EPIC_PRIOR_CHANGES;
+    return () => {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    };
+  };
+
+  it('seeds UAP_EPIC_PRIOR_CHANGES from initialPriorChanged so a fresh controller can inherit prior work', async () => {
+    const restore = saveFlag();
+    const seen: Array<string | undefined> = [];
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [{ id: 'a', title: 'A', goal: 'g' }],
+        initialPriorChanged: true,
+        runEpic: async () => {
+          seen.push(process.env.UAP_EPIC_PRIOR_CHANGES);
+          return ok('done');
+        },
+      });
+    } finally {
+      restore();
+    }
+    expect(seen).toEqual(['1']);
+  });
+
+  it('sub-epic recursion inherits the parent prior-changes state instead of clobbering it to 0', async () => {
+    const restore = saveFlag();
+    const flags: Record<string, string | undefined> = {};
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [
+          { id: 'first', title: 'First', goal: 'g' },
+          { id: 'second', title: 'Second', goal: 'g' },
+        ],
+        maxAttemptsPerEpic: 1,
+        splitOnAnyFailure: true,
+        splitEpic: async () => [
+          { id: 'sub1', title: 'Sub 1', goal: 'g' },
+          { id: 'sub2', title: 'Sub 2', goal: 'g' },
+        ],
+        runEpic: async (epic) => {
+          flags[epic.id] = process.env.UAP_EPIC_PRIOR_CHANGES;
+          if (epic.id === 'second') return fail('cannot deliver whole');
+          return ok(`${epic.id} done`);
+        },
+      });
+    } finally {
+      restore();
+    }
+    expect(flags['first']).toBe('0'); // nothing accepted yet
+    expect(flags['second']).toBe('1'); // first epic accepted
+    // The regression: the recursive runEpics call recomputed prior-changes from
+    // its own empty outcome list, so sub-epics of a trailing epic saw '0' and
+    // the anti-no-op rail withheld acceptance on already-satisfied goals.
+    expect(flags['second.sub1']).toBe('1');
+    expect(flags['second.sub2']).toBe('1');
+  });
+});
+
+describe('runEpics: finality seeding (initialNonFinal) + env exception-safety', () => {
+  const saveEnv = () => {
+    const prevNF = process.env.UAP_EPIC_NONFINAL;
+    const prevPC = process.env.UAP_EPIC_PRIOR_CHANGES;
+    delete process.env.UAP_EPIC_NONFINAL;
+    delete process.env.UAP_EPIC_PRIOR_CHANGES;
+    return () => {
+      if (prevNF === undefined) delete process.env.UAP_EPIC_NONFINAL;
+      else process.env.UAP_EPIC_NONFINAL = prevNF;
+      if (prevPC === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prevPC;
+    };
+  };
+
+  it('initialNonFinal marks EVERY epic non-final, including the last', async () => {
+    const restore = saveEnv();
+    const flags: Record<string, string | undefined> = {};
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [
+          { id: 'a', title: 'A', goal: 'g' },
+          { id: 'b', title: 'B', goal: 'g' },
+        ],
+        initialNonFinal: true,
+        runEpic: async (epic) => {
+          flags[epic.id] = process.env.UAP_EPIC_NONFINAL;
+          return ok(`${epic.id} done`);
+        },
+      });
+    } finally {
+      restore();
+    }
+    expect(flags['a']).toBe('1');
+    expect(flags['b']).toBe('1'); // last epic, but the parent is non-final
+  });
+
+  it('split recursion: sub-epics of a NON-final parent are all non-final; final parent keeps its last sub-epic final', async () => {
+    const restore = saveEnv();
+    const flags: Record<string, string | undefined> = {};
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [
+          { id: 'mid', title: 'Mid', goal: 'g' }, // non-final parent — will split
+          { id: 'last', title: 'Last', goal: 'g' }, // final parent — will split
+        ],
+        maxAttemptsPerEpic: 1,
+        splitOnAnyFailure: true,
+        splitEpic: async () => [
+          { id: 's1', title: 'S1', goal: 'g' },
+          { id: 's2', title: 'S2', goal: 'g' },
+        ],
+        runEpic: async (epic) => {
+          flags[epic.id] = process.env.UAP_EPIC_NONFINAL;
+          // both top-level epics fail so both split; sub-epics succeed
+          return epic.id === 'mid' || epic.id === 'last' ? fail('split me') : ok('done');
+        },
+      });
+    } finally {
+      restore();
+    }
+    // Sub-epics of the NON-final parent must ALL be non-final — before the fix
+    // the child run computed finality from its own ordering and ran the
+    // whole-mission gates on 'mid.s2', mid-mission.
+    expect(flags['mid.s1']).toBe('1');
+    expect(flags['mid.s2']).toBe('1');
+    // The FINAL parent's last sub-epic still runs the whole-mission gates.
+    expect(flags['last.s1']).toBe('1');
+    expect(flags['last.s2']).toBe('0');
+  });
+
+  it('a throwing runEpic no longer leaks the epic env flags (try/finally restore)', async () => {
+    const restore = saveEnv();
+    try {
+      process.env.UAP_EPIC_NONFINAL = 'ambient-nf';
+      process.env.UAP_EPIC_PRIOR_CHANGES = 'ambient-pc';
+      await expect(
+        runEpics({
+          mission: 'm',
+          epics: [{ id: 'boom', title: 'Boom', goal: 'g' }],
+          runEpic: async () => {
+            throw new Error('executor crashed');
+          },
+        })
+      ).rejects.toThrow('executor crashed');
+      expect(process.env.UAP_EPIC_NONFINAL).toBe('ambient-nf');
+      expect(process.env.UAP_EPIC_PRIOR_CHANGES).toBe('ambient-pc');
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe('runEpics: prior-ATTEMPT changes stand the anti-no-op rail down on retries', () => {
+  const saveFlag = () => {
+    const prev = process.env.UAP_EPIC_PRIOR_CHANGES;
+    delete process.env.UAP_EPIC_PRIOR_CHANGES;
+    return () => {
+      if (prev === undefined) delete process.env.UAP_EPIC_PRIOR_CHANGES;
+      else process.env.UAP_EPIC_PRIOR_CHANGES = prev;
+    };
+  };
+
+  it('a failed first attempt that WROTE files flips the flag for attempt 2 (first epic, no prior epics)', async () => {
+    const restore = saveFlag();
+    const perAttempt: Array<string | undefined> = [];
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [{ id: 'first', title: 'First', goal: 'g' }],
+        maxAttemptsPerEpic: 3,
+        runEpic: async (_epic, ctx) => {
+          perAttempt.push(process.env.UAP_EPIC_PRIOR_CHANGES);
+          // attempt 1 writes but is not accepted; attempt 2 zero-diffs and passes
+          if (ctx.attempt === 1) return { success: false, summary: 'wrote 11 files, judge rejected', turns: 5, changedTree: true };
+          return ok('accepted on retry');
+        },
+      });
+    } finally {
+      restore();
+    }
+    expect(perAttempt[0]).toBe('0'); // truly nothing before attempt 1
+    expect(perAttempt[1]).toBe('1'); // attempt 1's writes count — rail stands down, judge decides
+  });
+
+  it('sub-epics inherit prior-ATTEMPT changes when the parent wrote before splitting', async () => {
+    const restore = saveFlag();
+    const flags: Record<string, string | undefined> = {};
+    try {
+      await runEpics({
+        mission: 'm',
+        epics: [{ id: 'solo', title: 'Solo', goal: 'g' }],
+        maxAttemptsPerEpic: 1,
+        splitOnAnyFailure: true,
+        splitEpic: async () => [
+          { id: 's1', title: 'S1', goal: 'g' },
+          { id: 's2', title: 'S2', goal: 'g' },
+        ],
+        runEpic: async (epic) => {
+          flags[epic.id] = process.env.UAP_EPIC_PRIOR_CHANGES;
+          if (epic.id === 'solo') return { success: false, summary: 'wrote then failed', turns: 5, changedTree: true };
+          return ok('done');
+        },
+      });
+    } finally {
+      restore();
+    }
+    expect(flags['solo']).toBe('0');
+    // Before the fix these saw '0' (no ACCEPTED epic) despite the parent's real writes.
+    expect(flags['solo.s1']).toBe('1');
+    expect(flags['solo.s2']).toBe('1');
+  });
+});
+
 describe('runEpics — P1 contract carry + lint', () => {
   const okr = (s: string): EpicRunResult => ({ success: true, summary: s, turns: 1 });
 
@@ -271,9 +490,9 @@ describe('runEpics — P1 contract carry + lint', () => {
       runEpic: async (_e, ctx) => { attempt++; failures.push(ctx.lastFailure); return okr(`attempt ${attempt}`); },
       contractLint: () => (attempt === 1 ? ['references undefined CONFIG.foo'] : []),
     });
-    expect(attempt).toBe(2);                       // retried after the lint violation
-    expect(res.completed).toContain('a');          // clean re-run accepted
-    expect(failures[1]).toMatch(/contract violations/); // violation fed into the retry
+    expect(attempt).toBe(2);
+    expect(res.completed).toContain('a');
+    expect(failures[1]).toMatch(/contract violations/);
   });
 
   it('no readContract/contractLint => contract undefined, behavior unchanged', async () => {
@@ -295,6 +514,6 @@ describe('runEpics — P1 contract carry + lint', () => {
       runEpic: async () => okr('done'),
       contractLint: () => { throw new Error('linter broke'); },
     });
-    expect(res.completed).toContain('a'); // broken linter never blocks a real delivery
+    expect(res.completed).toContain('a');
   });
 });

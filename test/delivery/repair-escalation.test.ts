@@ -87,3 +87,23 @@ describe('createRepairEscalation', () => {
     expect(ctl.onIteration(rec(3, errs(25))).switchExecutor).toBeUndefined(); // no prior nonzero → no growth streak
   });
 });
+
+describe('resolveEscalateModelId', () => {
+  it('precedence: explicit flag > $UAP_ESCALATE_MODEL > .uap.json deliver.escalateModel', async () => {
+    const { resolveEscalateModelId } = await import('../../src/delivery/repair-escalation.js');
+    const cfg = { deliver: { escalateModel: 'cfg-model' } };
+    expect(resolveEscalateModelId('flag-model', { UAP_ESCALATE_MODEL: 'env-model' } as NodeJS.ProcessEnv, cfg)).toBe('flag-model');
+    expect(resolveEscalateModelId(undefined, { UAP_ESCALATE_MODEL: 'env-model' } as NodeJS.ProcessEnv, cfg)).toBe('env-model');
+    expect(resolveEscalateModelId(undefined, {} as NodeJS.ProcessEnv, cfg)).toBe('cfg-model');
+    expect(resolveEscalateModelId(undefined, {} as NodeJS.ProcessEnv, {})).toBeUndefined();
+  });
+
+  it('ignores blank/non-string config values and is registered as a setting', async () => {
+    const { resolveEscalateModelId } = await import('../../src/delivery/repair-escalation.js');
+    expect(resolveEscalateModelId(undefined, {} as NodeJS.ProcessEnv, { deliver: { escalateModel: '  ' } })).toBeUndefined();
+    expect(resolveEscalateModelId(undefined, {} as NodeJS.ProcessEnv, { deliver: { escalateModel: 42 } })).toBeUndefined();
+    expect(resolveEscalateModelId(undefined, {} as NodeJS.ProcessEnv, null)).toBeUndefined();
+    const { SETTINGS } = await import('../../src/config/settings-registry.js');
+    expect(SETTINGS.some((d) => d.key === 'deliver.escalateModel')).toBe(true);
+  });
+});
