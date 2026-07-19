@@ -871,18 +871,34 @@ export function createAgenticExecutor(
     // with an explicit order to write.
     const WRITE_NUDGE_AFTER = 5;
     let roundsWithoutWrite = 0;
-    let writeNudged = false;
+    // Re-arm + escalate: a one-time nudge was ignored by a stubborn model that
+    // then burned the ENTIRE remaining budget on reads (octopus run,
+    // 2026-07-19: read the game deps to the 12-round cap, never wrote game.js).
+    // Re-fire every WRITE_NUDGE_AFTER read-only rounds and harden the wording on
+    // repeat, so a model that keeps reading is pushed to write before the budget
+    // is gone. Both reset on any successful write (see below).
+    let lastWriteNudgeRound = 0;
+    let writeNudgeCount = 0;
     for (let round = 1; round <= maxRounds; round++) {
-      if (roundsWithoutWrite >= WRITE_NUDGE_AFTER && !writeNudged) {
-        writeNudged = true;
+      const dueForWriteNudge =
+        roundsWithoutWrite >= WRITE_NUDGE_AFTER &&
+        round - lastWriteNudgeRound >= WRITE_NUDGE_AFTER;
+      if (dueForWriteNudge) {
+        lastWriteNudgeRound = round;
+        writeNudgeCount++;
         messages.push({
           role: 'user',
           content:
-            `You have used ${roundsWithoutWrite} consecutive rounds ONLY reading/listing — zero files ` +
-            'written. You already have enough context. STOP exploring. THIS round, CREATE or EDIT the ' +
-            'files the task and gate feedback require (write_file / edit_file), then verify and call finish.',
+            writeNudgeCount >= 2
+              ? `STILL zero files written after ${roundsWithoutWrite} read-only rounds AND a prior warning. ` +
+                'You are about to waste the entire round budget. Do NOT read or list anything else. THIS ' +
+                'round, call write_file/edit_file for the specific file(s) the task and gate feedback name ' +
+                'as missing, then verify and call finish. Reading again is a failure.'
+              : `You have used ${roundsWithoutWrite} consecutive rounds ONLY reading/listing — zero files ` +
+                'written. You already have enough context. STOP exploring. THIS round, CREATE or EDIT the ' +
+                'files the task and gate feedback require (write_file / edit_file), then verify and call finish.',
         });
-        opts.onEvent?.({ round, kind: 'error', detail: `write-nudge injected after ${roundsWithoutWrite} read-only rounds` });
+        opts.onEvent?.({ round, kind: 'error', detail: `write-nudge #${writeNudgeCount} injected after ${roundsWithoutWrite} read-only rounds` });
       }
       // Rail sizing: stop BEFORE sending a request that would outgrow the
       // session's context budget — a clean under-budget stop with a partial
@@ -993,7 +1009,10 @@ export function createAgenticExecutor(
           toolResult.startsWith('OK')
         ) {
           roundsWithoutWrite = -1; // reset below by the per-round increment
-          writeNudged = false;
+          // Re-arm the escalating write-nudge: real progress was made, so a
+          // fresh read streak (if one follows) starts its nudge cycle clean.
+          lastWriteNudgeRound = 0;
+          writeNudgeCount = 0;
         }
         // WITHHOLDING the content was a deadlock. The model re-reads a file for a
         // reason — its context was pruned, or this is a fresh agent session — so

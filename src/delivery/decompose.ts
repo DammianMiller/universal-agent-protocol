@@ -219,7 +219,7 @@ export interface PlanPhasesOptions {
   thoughtExperiment?: boolean;
 }
 
-function buildDecomposePrompt(
+export function buildDecomposePrompt(
   instruction: string,
   hintProvider?: LifecycleHintProvider,
   opts?: PlanPhasesOptions,
@@ -278,6 +278,17 @@ function buildDecomposePrompt(
     'gates. Every phase must leave the project in a working state — no phase may',
     'end with intentionally broken builds. Order phases so later ones build on',
     'earlier ones. Do NOT invent scope the mission does not imply.',
+    '',
+    'FILE OWNERSHIP — CRITICAL: every concrete file the mission requires must be',
+    'CREATED by EXACTLY ONE phase. Never let two phases CREATE the same file. (A',
+    "SCAFFOLD phase creating a file and its paired FILL phase later EDITING that",
+    'same file is expected — that is one owner across the pair, not two creators.)',
+    'A CONTRACTS or types phase owns ONLY the shared type/interface file(s) it',
+    "declares — it must NOT list another module's file as a criterion; the later",
+    "scaffold/fill phase for that module then OWNS that module's file.",
+    'For every file named in the mission, exactly one phase must create it — a',
+    'file no phase creates is never delivered (the gates and acceptance judge',
+    "check the mission's file layout, so an unowned file fails the run).",
     budgetHint,
     contractsHint,
     scaffoldHint,
