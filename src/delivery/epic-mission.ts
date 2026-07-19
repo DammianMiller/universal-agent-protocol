@@ -107,6 +107,14 @@ export interface EpicMissionDeps {
   persistCompleted?: (progress: { summaries: string[]; completed: string[] }) => void;
   /** Currently locked contract files (read view, refreshed per use). */
   lockedContracts: () => string[];
+  /**
+   * P1: read the CONTENTS of the currently-locked contract files, concatenated,
+   * for verbatim injection into every later epic's prompt. The existing
+   * mechanism only names the locked paths and relies on the model to read them;
+   * injecting the actual signatures is what stops fresh-context epics from
+   * re-inventing a divergent CONFIG shape / module API. Null when none locked.
+   */
+  readContractFiles?: () => string | null;
   /** Lock an accepted contracts epic's files; returns what was newly locked. */
   lockContracts: (files: string[]) => string[];
   /** Epic-controller tuning (caller resolves env). */
@@ -247,6 +255,8 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
     initialPriorSummaries: deps.initialPriorSummaries,
     initialDone: deps.initialDone,
     onProgress: deps.persistCompleted,
+    // P1: carry the locked contract files' CONTENTS verbatim into every epic.
+    ...(deps.readContractFiles ? { readContract: deps.readContractFiles } : {}),
     // Re-decompose a failed epic into sub-epics. Fires on context-budget
     // exhaustion (rail auto-size) and, under splitOnAnyFailure, on any
     // exhausted-attempts failure (auto-escalation). Always provided so the
@@ -342,9 +352,16 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         : fillsScaffold
           ? '\n\nThis is a FILL epic: the skeleton already exists with correct signatures. IMPLEMENT the stub bodies (todo!()/NotImplementedError/TODO throws) — do NOT change any existing signature, rename anything, or restructure modules. When you finish, no stub markers should remain in the files this epic fills.'
           : '';
+      // P1: inject the locked contracts VERBATIM (signatures, CONFIG shape) so a
+      // fresh-context epic builds against the EXACT shared surface rather than
+      // re-inventing a divergent one. Skipped for the contracts epic itself
+      // (it is authoring them) and capped so the prompt stays bounded.
+      const contractBody = !epic.contracts && ctx.contract
+        ? `\n\nSHARED CONTRACT — the locked contract files, VERBATIM. Build against these EXACT names, shapes and signatures; do NOT invent different ones:\n${ctx.contract.slice(0, 6000)}`
+        : '';
       const scoped =
         `OVERALL MISSION (context): ${deps.instruction.slice(0, 300)}\n\n` +
-        `EPIC — ${epic.title}:\n${epic.goal}${priors}${retry}${contractsNote}${scaffoldNote}\n\n` +
+        `EPIC — ${epic.title}:\n${epic.goal}${priors}${retry}${contractsNote}${scaffoldNote}${contractBody}\n\n` +
         'Deliver ONLY this epic. All gates must pass at the end.';
       note(`▶ epic ${epic.id} (attempt ${ctx.attempt}): ${epic.title}`);
       // Grade the epic's DELIVERABLE, not the process prompt: the scoped

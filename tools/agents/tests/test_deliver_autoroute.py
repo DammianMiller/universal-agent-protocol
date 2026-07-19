@@ -232,5 +232,58 @@ class CoherentMissionRouteTest(unittest.TestCase):
             self.assertEqual(mod._recover_mission(Path(td)), "")
 
 
+class DeliverSingleFlightTest(unittest.TestCase):
+    """P0: autoroute must NOT spawn a duplicate when a live deliver is inflight."""
+
+    def _root(self) -> Path:
+        d = tempfile.mkdtemp()
+        (Path(d) / ".uap").mkdir(parents=True, exist_ok=True)
+        return Path(d)
+
+    def test_no_lock_is_not_inflight(self):
+        self.assertFalse(mod._deliver_inflight(self._root()))
+
+    def test_live_lock_fresh_heartbeat_is_inflight(self):
+        import time
+        r = self._root()
+        (r / ".uap" / "deliver.lock").write_text(f"{os.getppid()}|now")  # live foreign pid
+        (r / ".uap" / "deliver.heartbeat").write_text(str(int(time.time())))
+        self.assertTrue(mod._deliver_inflight(r))
+
+    def test_live_lock_missing_heartbeat_is_inflight(self):
+        # Documented branch: a live holder with NO heartbeat yet (just starting
+        # up) counts as inflight so a duplicate is not spawned during startup.
+        r = self._root()
+        (r / ".uap" / "deliver.lock").write_text(f"{os.getppid()}|now")  # no heartbeat file
+        self.assertTrue(mod._deliver_inflight(r))
+
+    def test_live_lock_corrupt_heartbeat_is_inflight(self):
+        # A non-integer heartbeat is unreadable -> fall through to live-PID = inflight.
+        r = self._root()
+        (r / ".uap" / "deliver.lock").write_text(f"{os.getppid()}|now")
+        (r / ".uap" / "deliver.heartbeat").write_text("not-a-number")
+        self.assertTrue(mod._deliver_inflight(r))
+
+    def test_live_lock_stale_heartbeat_is_not_inflight(self):
+        import time
+        r = self._root()
+        (r / ".uap" / "deliver.lock").write_text(f"{os.getppid()}|now")
+        (r / ".uap" / "deliver.heartbeat").write_text(str(int(time.time()) - 700))  # wedged
+        self.assertFalse(mod._deliver_inflight(r))
+
+    def test_dead_pid_lock_is_not_inflight(self):
+        r = self._root()
+        (r / ".uap" / "deliver.lock").write_text("2147483646|old")  # not a live pid
+        self.assertFalse(mod._deliver_inflight(r))
+
+    def test_decide_suppresses_spawn_when_inflight(self):
+        # replay_on=False forces the model-spawn path; inflight must still block it.
+        spawned = mod.decide(BLOCK_OUT, "Write", ARGS, True, set(), False, False)
+        self.assertTrue(spawned["spawn"])
+        held = mod.decide(BLOCK_OUT, "Write", ARGS, True, set(), False, True)
+        self.assertFalse(held["spawn"])
+        self.assertIn("already in progress", held["message"])
+
+
 if __name__ == "__main__":
     unittest.main()

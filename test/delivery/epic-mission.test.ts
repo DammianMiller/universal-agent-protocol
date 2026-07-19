@@ -112,6 +112,27 @@ describe('scoped prompt + epic spec composition', () => {
     expect(scopes.get('impl')).toContain('src/types.ts');
   });
 
+  it('P1: injects the locked contract CONTENTS verbatim into later epics, not the contracts epic', async () => {
+    const scopes = new Map<string, string>();
+    await runEpicMission(
+      baseDeps({
+        planEpics: async () => [phase('contracts', { contracts: true }), phase('impl', { deps: ['contracts'] })],
+        // The seam that reads the locked contract files' contents (case-correct).
+        readContractFiles: () => 'const CONFIG = { player: { width: 32 } }; class Audio {}',
+        runEpicLoop: async (scoped) => {
+          const id = scoped.includes('CONTRACTS epic') ? 'contracts' : 'impl';
+          scopes.set(id, scoped);
+          return ok({ history: [{ filesApplied: ['src/Config.ts'] } as never] });
+        },
+      })
+    );
+    // The impl epic receives the contract body VERBATIM in its prompt...
+    expect(scopes.get('impl')).toContain('SHARED CONTRACT');
+    expect(scopes.get('impl')).toContain('player: { width: 32 }');
+    // ...but the contracts epic (which AUTHORS them) does not get the injection.
+    expect(scopes.get('contracts')).not.toContain('SHARED CONTRACT');
+  });
+
   it('SCAFFOLD and FILL epics get their steering notes and spec clauses', async () => {
     const specs: string[] = [];
     const scopes: string[] = [];

@@ -8,8 +8,8 @@
 
 import chalk from 'chalk';
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync } from 'fs';
-import { join, resolve } from 'path';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync, renameSync } from 'fs';
+import { join, resolve, relative } from 'path';
 import { ConvergenceLoop, composeIterationHooks } from '../delivery/convergence-loop.js';
 import type {
   LoopExecutor,
@@ -445,6 +445,77 @@ export function applyAutoPlan(options: DeliverOptions, plan: AutoPlan): void {
   if (plan.deployDev && options.deployDev === undefined) options.deployDev = true;
 }
 
+// ─── Deliver wedge detection (P0 reliability) ────────────────────────────────
+// A deliver can wedge (alive PID, but stuck making no progress — e.g. a
+// plan-check re-plan loop or a hung upstream). The lock alone can't tell a
+// healthy long run from a wedged one, so the running deliver stamps a heartbeat
+// on every iteration and the lock path reclaims a holder whose heartbeat has
+// gone stale. Language-agnostic contract: `.uap/deliver.heartbeat` = one integer
+// (unix epoch seconds), rewritten each turn; also read by deliver_autoroute.py.
+
+/**
+ * Default wedge timeout (seconds). Override with UAP_DELIVER_WEDGE_TIMEOUT.
+ * Deliberately generous (30 min): the heartbeat only advances between
+ * convergence iterations, and one turn on a slow local model (generation + the
+ * full gate ladder) can legitimately take many minutes. The timeout must sit
+ * comfortably above the worst-case single-turn latency so a healthy-but-slow
+ * run is never mistaken for a wedged one and reclaimed out from under itself.
+ */
+export const DEFAULT_WEDGE_TIMEOUT_S = 1800;
+
+/** Resolve the wedge timeout in seconds (env override, else the default). */
+export function wedgeTimeoutS(): number {
+  const raw = process.env.UAP_DELIVER_WEDGE_TIMEOUT;
+  const n = raw !== undefined ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_WEDGE_TIMEOUT_S;
+}
+
+/**
+ * Stamp the current epoch-seconds into `.uap/deliver.heartbeat`, ATOMICALLY
+ * (write a temp file then rename over the target). A plain truncate-in-place
+ * write leaves the file momentarily empty, and a concurrent reader would parse
+ * `""` as 0 (epoch 1970) and wrongly conclude the holder is wedged. Best-effort.
+ */
+export function updateDeliverHeartbeat(projectRoot: string): void {
+  try {
+    const dir = join(projectRoot, '.uap');
+    mkdirSync(dir, { recursive: true });
+    const hbPath = join(dir, 'deliver.heartbeat');
+    const tmp = `${hbPath}.${process.pid}.tmp`;
+    const fd = openSync(tmp, 'w');
+    writeSync(fd, String(Math.floor(Date.now() / 1000)));
+    closeSync(fd);
+    renameSync(tmp, hbPath);
+  } catch { /* non-fatal — lock path falls back to PID-liveness only */ }
+}
+
+/**
+ * Read the heartbeat epoch-seconds, or null if absent/unreadable/non-positive.
+ * Rejecting non-positive values guards against a torn read (empty file parses
+ * to 0) being treated as a real 1970 timestamp.
+ */
+export function readDeliverHeartbeat(projectRoot: string): number | null {
+  try {
+    const v = Number(readFileSync(join(projectRoot, '.uap', 'deliver.heartbeat'), 'utf8').trim());
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch { return null; }
+}
+
+/**
+ * True when the lock holder is alive but WEDGED — its heartbeat is older than
+ * the wedge timeout. A MISSING heartbeat is not wedged (the holder may be
+ * starting up), so this returns false in that case and the caller keeps
+ * deferring to PID-liveness.
+ */
+export function isDeliverHolderWedged(
+  projectRoot: string,
+  nowS: number = Math.floor(Date.now() / 1000),
+): boolean {
+  const hb = readDeliverHeartbeat(projectRoot);
+  if (hb === null) return false;
+  return nowS - hb > wedgeTimeoutS();
+}
+
 /**
  * Project-level deliver concurrency lock. Prevents a fan-out where an impatient
  * caller (e.g. a model that launched `uap deliver` for some work, didn't wait
@@ -466,7 +537,8 @@ export function acquireDeliverLock(projectRoot: string): (() => void) | null {
     // Reclaim a stale lock (holder no longer alive).
     if (existsSync(lockPath)) {
       const held = Number((readFileSync(lockPath, 'utf8').split('|')[0] || '').trim());
-      if (held && held !== process.pid && pidAlive(held)) return null; // live holder
+      // Defer only to a live holder that is NOT wedged; reclaim a stuck one.
+      if (held && held !== process.pid && pidAlive(held) && !isDeliverHolderWedged(projectRoot)) return null;
       try { rmSync(lockPath); } catch { /* racing reclaim */ }
     }
     // Atomic create-exclusive; if we lose the race, another deliver won it.
@@ -478,6 +550,10 @@ export function acquireDeliverLock(projectRoot: string): (() => void) | null {
     }
     writeSync(fd, `${process.pid}|${new Date().toISOString()}`);
     closeSync(fd);
+    // Stamp a fresh heartbeat immediately so this brand-new holder is never
+    // classified as wedged in the window before its first iteration (and so a
+    // reclaim overwrites the previous holder's stale heartbeat).
+    updateDeliverHeartbeat(projectRoot);
   } catch {
     // Lock machinery unavailable — fail OPEN (don't block a legitimate run).
     return () => {};
@@ -579,7 +655,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     if (releaseLock === null) {
       let holder = '';
       try {
-        holder = readFileSync(join(projectRoot, '.uap', 'deliver.lock'), 'utf8').split('|')[0];
+        holder = stripControl(readFileSync(join(projectRoot, '.uap', 'deliver.lock'), 'utf8').split('|')[0]);
       } catch { /* gone already */ }
       console.log(
         chalk.yellow(
@@ -593,6 +669,15 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   }
   // The lock is released via acquireDeliverLock's process-exit handler (the
   // deliver CLI is a one-shot process), and explicitly on early returns below.
+
+  // ── Wedge handling (P0 reliability) ─────────────────────────────────────
+  // A stuck deliver (e.g. a plan-check re-plan loop) no longer blocks future
+  // runs: the heartbeat is refreshed on every iteration (see the loop hook
+  // below) and acquireDeliverLock PASSIVELY reclaims a holder whose heartbeat
+  // has gone stale past the wedge timeout. We deliberately do NOT self-abort via
+  // process.exit here — an abrupt teardown skips snapshot/worktree disposal
+  // (re-opening the known tmpfs-leak class), and a merely-slow turn must never
+  // kill a healthy run. Passive reclaim frees the lock without either hazard.
 
   // Durable runs: `--resume <id|latest>` restores an interrupted mission —
   // instruction, phase cursor, and the loop checkpoint — and continues it.
@@ -1221,6 +1306,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // read-only for later epics. Mutable by reference — the epic controller
   // grows it between epics; the executor reads it live on every tool call.
   const contractLock = new Set<string>();
+  // ORIGINAL-cased locked contract paths (contractLock stores lowercased match
+  // keys, which are NOT valid FS paths on a case-sensitive filesystem — reading
+  // those back would silently drop PascalCase files like Config.ts). P1 reads
+  // these for verbatim injection.
+  const contractPaths: string[] = [];
   const executor: LoopExecutor = agentic
     ? createAgenticExecutor(model, {
         projectRoot,
@@ -1593,6 +1683,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         : undefined;
     return composeIterationHooks(
       (record) => printProgress(record),
+      (_record) => {
+        // P0 wedge watchdog: each iteration is real progress — refresh the
+        // heartbeat so the watchdog + lock wedge-reclaim only fire on a true stall.
+        updateDeliverHeartbeat(projectRoot);
+        return undefined;
+      },
       (record) => {
         // Feed the acceptance breaker's zero-diff guard.
         specs.recordWrites(evidenceRoot, record.filesApplied.length);
@@ -2177,7 +2273,26 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         initLedger(projectRoot, instruction, items.map((i) => ({ ...i, kind: 'epic' as const }))),
       ledgerMark: (id, status, noteText) => markItem(projectRoot, id, status, noteText),
       lockedContracts: () => [...contractLock],
-      lockContracts: (files) => lockContractFiles(contractLock, projectRoot, files),
+      lockContracts: (files) => {
+        const locked = lockContractFiles(contractLock, projectRoot, files);
+        for (const p of locked) if (!contractPaths.includes(p)) contractPaths.push(p);
+        return locked;
+      },
+      // P1: concatenate the locked contract files' CONTENTS (original-cased
+      // paths) for verbatim injection into later epics (build against the EXACT
+      // shared surface). Reads are contained to the project root.
+      readContractFiles: () => {
+        if (contractPaths.length === 0) return null;
+        const parts: string[] = [];
+        for (const rel of contractPaths) {
+          const abs = resolve(projectRoot, rel);
+          if (relative(projectRoot, abs).startsWith('..')) continue; // never read outside the project
+          try {
+            parts.push(`// ===== ${rel} =====\n${readFileSync(abs, 'utf8')}`);
+          } catch { /* a locked path that vanished — skip it */ }
+        }
+        return parts.length > 0 ? parts.join('\n\n') : null;
+      },
       maxAttemptsPerEpic: Number(process.env.UAP_DELIVER_EPIC_ATTEMPTS ?? 3), // (#4b) 2→3
       // (#4c) Recursive split depth: a huge epic that still can't land after
       // a split is split again, one level shallower — bounded.
@@ -2256,7 +2371,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           redetectRungs: true,
           redetectFilter: loopConfig.redetectFilter,
           protectTests: options.protectTests,
-          onIteration: (record) => printProgress(record),
+          onIteration: (record) => { updateDeliverHeartbeat(projectRoot); printProgress(record); },
         },
         executor,
         seams

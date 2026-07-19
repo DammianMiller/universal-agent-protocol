@@ -461,3 +461,59 @@ describe('runEpics: prior-ATTEMPT changes stand the anti-no-op rail down on retr
     expect(flags['solo.s2']).toBe('1');
   });
 });
+
+describe('runEpics — P1 contract carry + lint', () => {
+  const okr = (s: string): EpicRunResult => ({ success: true, summary: s, turns: 1 });
+
+  it('injects the shared contract VERBATIM into every epic run', async () => {
+    const seen: Array<string | undefined> = [];
+    const CONTRACT = 'CONFIG.player.width:number; class Audio { play(): void }';
+    await runEpics({
+      mission: 'm',
+      epics: [
+        { id: 'a', title: 'A', goal: 'a' },
+        { id: 'b', title: 'B', goal: 'b', deps: ['a'] },
+      ],
+      readContract: () => CONTRACT,
+      runEpic: async (_e, ctx) => { seen.push(ctx.contract); return okr('done'); },
+    });
+    expect(seen).toEqual([CONTRACT, CONTRACT]); // verbatim, not a summary, to every epic
+  });
+
+  it('contract-lint violations fail the epic and are fed back; a clean re-run is accepted', async () => {
+    let attempt = 0;
+    const failures: Array<string | undefined> = [];
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'a', title: 'A', goal: 'a' }],
+      readContract: () => 'CONTRACT',
+      runEpic: async (_e, ctx) => { attempt++; failures.push(ctx.lastFailure); return okr(`attempt ${attempt}`); },
+      contractLint: () => (attempt === 1 ? ['references undefined CONFIG.foo'] : []),
+    });
+    expect(attempt).toBe(2);
+    expect(res.completed).toContain('a');
+    expect(failures[1]).toMatch(/contract violations/);
+  });
+
+  it('no readContract/contractLint => contract undefined, behavior unchanged', async () => {
+    const seen: Array<string | undefined> = [];
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'a', title: 'A', goal: 'a' }],
+      runEpic: async (_e, ctx) => { seen.push(ctx.contract); return okr('done'); },
+    });
+    expect(seen).toEqual([undefined]);
+    expect(res.completed).toContain('a');
+  });
+
+  it('a throwing contractLint is fail-soft (does not block acceptance)', async () => {
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'a', title: 'A', goal: 'a' }],
+      readContract: () => 'CONTRACT',
+      runEpic: async () => okr('done'),
+      contractLint: () => { throw new Error('linter broke'); },
+    });
+    expect(res.completed).toContain('a');
+  });
+});

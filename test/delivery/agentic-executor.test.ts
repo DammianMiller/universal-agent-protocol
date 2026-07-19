@@ -9,6 +9,7 @@ import {
   protectedKey,
   noopApplier,
   createAgenticExecutor,
+  isSuspectedGutting,
 } from '../../src/delivery/agentic-executor.js';
 
 /** Build a fake /chat/completions response body. */
@@ -290,6 +291,55 @@ describe('edit_file tool (P1, plan D3)', () => {
     const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1', protectedFiles });
     await exec('cheat the test');
     expect(readFileSync(join(dir, 'test/x.test.ts'), 'utf-8')).toContain('toBe(1)');
+  });
+
+  it('P3: refuses a write_file that GUTS a large file, leaving it intact', async () => {
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    const big = 'export const x = 1;\n'.repeat(200); // ~4000 bytes
+    writeFileSync(join(dir, 'src/big.ts'), big);
+    mockChatSequence([
+      call('write_file', { path: 'src/big.ts', content: '// stub\n' }), // guts it to ~8 bytes
+      call('finish', { summary: 'done' }, 't2'),
+    ]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('rewrite big');
+    expect(readFileSync(join(dir, 'src/big.ts'), 'utf-8')).toBe(big); // unchanged — gutting refused
+  });
+
+  it('P3: UAP_DELIVER_ALLOW_GUTTING=1 permits the deliberate shrinking write', async () => {
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src/big.ts'), 'export const x = 1;\n'.repeat(200));
+    process.env.UAP_DELIVER_ALLOW_GUTTING = '1';
+    try {
+      mockChatSequence([
+        call('write_file', { path: 'src/big.ts', content: '// intentional full rewrite\n' }),
+        call('finish', { summary: 'done' }, 't2'),
+      ]);
+      const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+      await exec('rewrite big');
+      expect(readFileSync(join(dir, 'src/big.ts'), 'utf-8')).toBe('// intentional full rewrite\n');
+    } finally {
+      delete process.env.UAP_DELIVER_ALLOW_GUTTING;
+    }
+  });
+});
+
+describe('isSuspectedGutting (P3 anti-gutting)', () => {
+  it('flags gutting a substantial file to under 35% of its size', () => {
+    // The real incident: deliver.ts ~120000 bytes -> ~20000 (17%).
+    expect(isSuspectedGutting(120000, 20000)).toBe(true);
+    expect(isSuspectedGutting(2000, 400)).toBe(true); // 20%
+  });
+  it('allows minor shrinks and edits of a large file', () => {
+    expect(isSuspectedGutting(2000, 1900)).toBe(false); // 95%
+    expect(isSuspectedGutting(2000, 800)).toBe(false);  // 40% — above the 35% floor
+  });
+  it('never guards a small file (legitimate rewrites are common)', () => {
+    expect(isSuspectedGutting(500, 10)).toBe(false);   // below the 1500-byte floor
+    expect(isSuspectedGutting(1499, 0)).toBe(false);
+  });
+  it('a brand-new file (prevLen 0) is never gutting', () => {
+    expect(isSuspectedGutting(0, 5000)).toBe(false);
   });
 });
 

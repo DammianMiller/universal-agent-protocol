@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { acquireDeliverLock } from '../../src/cli/deliver.js';
+import { acquireDeliverLock, isDeliverHolderWedged, wedgeTimeoutS, updateDeliverHeartbeat, readDeliverHeartbeat } from '../../src/cli/deliver.js';
 
 describe('acquireDeliverLock', () => {
   let dir: string;
@@ -59,5 +59,71 @@ describe('acquireDeliverLock', () => {
     // holder "finishes": clear the lock -> a fresh acquire succeeds
     rmSync(join(dir, '.uap', 'deliver.lock'));
     expect(acquireDeliverLock(dir)).toBeTypeOf('function');
+  });
+});
+
+describe('deliver wedge reclaim (P0 reliability)', () => {
+  let dir: string;
+  const heartbeatAgo = (secondsAgo: number) => {
+    mkdirSync(join(dir, '.uap'), { recursive: true });
+    writeFileSync(join(dir, '.uap', 'deliver.heartbeat'), String(Math.floor(Date.now() / 1000) - secondsAgo));
+  };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-deliver-wedge-'));
+    delete process.env.UAP_DELIVER_NO_LOCK;
+    delete process.env.UAP_DELIVER_WEDGE_TIMEOUT;
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.UAP_DELIVER_WEDGE_TIMEOUT;
+  });
+
+  it('wedgeTimeoutS honors UAP_DELIVER_WEDGE_TIMEOUT, else defaults to 1800', () => {
+    expect(wedgeTimeoutS()).toBe(1800);
+    process.env.UAP_DELIVER_WEDGE_TIMEOUT = '30';
+    expect(wedgeTimeoutS()).toBe(30);
+    process.env.UAP_DELIVER_WEDGE_TIMEOUT = 'not-a-number';
+    expect(wedgeTimeoutS()).toBe(1800); // invalid -> default
+  });
+
+  it('updateDeliverHeartbeat round-trips through readDeliverHeartbeat, fresh => not wedged', () => {
+    updateDeliverHeartbeat(dir); // the REAL writer (atomic temp+rename)
+    const hb = readDeliverHeartbeat(dir);
+    expect(hb).not.toBeNull();
+    expect(hb as number).toBeGreaterThan(0);
+    expect(Math.abs((hb as number) - Math.floor(Date.now() / 1000))).toBeLessThan(3);
+    expect(isDeliverHolderWedged(dir)).toBe(false); // just stamped
+  });
+
+  it('readDeliverHeartbeat rejects an empty/torn file as null (not epoch 0)', () => {
+    mkdirSync(join(dir, '.uap'), { recursive: true });
+    writeFileSync(join(dir, '.uap', 'deliver.heartbeat'), '');
+    expect(readDeliverHeartbeat(dir)).toBeNull();
+    expect(isDeliverHolderWedged(dir)).toBe(false); // torn read must NOT read as wedged
+  });
+
+  it('isDeliverHolderWedged: stale heartbeat -> true, fresh -> false, missing -> false', () => {
+    expect(isDeliverHolderWedged(dir)).toBe(false); // no heartbeat yet
+    heartbeatAgo(2000); // older than the 600s default
+    expect(isDeliverHolderWedged(dir)).toBe(true);
+    heartbeatAgo(5); // fresh
+    expect(isDeliverHolderWedged(dir)).toBe(false);
+  });
+
+  it('RECLAIMS a live holder whose heartbeat is STALE (the wedge case)', () => {
+    mkdirSync(join(dir, '.uap'), { recursive: true });
+    writeFileSync(join(dir, '.uap', 'deliver.lock'), `${process.ppid}|now`); // live foreign holder
+    heartbeatAgo(2000); // but wedged
+    const release = acquireDeliverLock(dir);
+    expect(release).toBeTypeOf('function'); // reclaimed despite a live pid
+    expect(readFileSync(join(dir, '.uap', 'deliver.lock'), 'utf8').split('|')[0]).toBe(String(process.pid));
+    release!();
+  });
+
+  it('still DEFERS to a live holder with a FRESH heartbeat (no false reclaim)', () => {
+    mkdirSync(join(dir, '.uap'), { recursive: true });
+    writeFileSync(join(dir, '.uap', 'deliver.lock'), `${process.ppid}|now`);
+    heartbeatAgo(5); // healthy
+    expect(acquireDeliverLock(dir)).toBeNull();
   });
 });

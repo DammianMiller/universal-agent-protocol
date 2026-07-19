@@ -311,7 +311,7 @@ describe('New exports from index.ts', () => {
     expect(typeof mod.createLogger).toBe('function');
     expect(mod.logger).toBeDefined();
     expect(typeof mod.setLogLevel).toBe('function');
-  });
+  }, 20000); // first import of the src/index.js barrel can exceed the 5s default under full-suite load
 
   it('should export autoStartConsolidation', async () => {
     const mod = await import('../src/index.js');

@@ -303,6 +303,18 @@ export function protectedKey(projectRoot: string, abs: string): string {
   return relative(projectRoot, abs).split(/[\\/]/).join('/').toLowerCase();
 }
 
+/**
+ * P3 anti-gutting predicate. A weak model re-emitting a large existing file
+ * often truncates it, replacing real implementation with a stub (observed live:
+ * deliver.ts collapsed 2560 → 453 lines in one write_file). Flag a write that
+ * shrinks a SUBSTANTIAL existing file (≥1500 bytes) to under 35% of its size —
+ * the gutting signature — so the caller can refuse it and steer to edit_file.
+ * Small files are never guarded (legitimate rewrites are common there). PURE.
+ */
+export function isSuspectedGutting(prevLen: number, newLen: number): boolean {
+  return prevLen >= 1500 && newLen < prevLen * 0.35;
+}
+
 /** Snapshot current contents of protected files that exist. */
 function snapshotProtected(
   projectRoot: string,
@@ -501,6 +513,26 @@ export function runTool(
       const blocked = protectedWritePathReason(rel, protectGateConfigs);
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
+      }
+      // P3 anti-gutting: refuse a write that GUTS an existing substantial file
+      // into a stub (observed live: deliver.ts collapsed 2560 → 453 lines in one
+      // write, silently destroying the implementation). Steer to edit_file for a
+      // surgical change. Override for a real large deletion: UAP_DELIVER_ALLOW_GUTTING=1.
+      if (existsSync(abs) && process.env.UAP_DELIVER_ALLOW_GUTTING !== '1') {
+        try {
+          const prevLen = statSync(abs).size; // bytes, no full read
+          const newLen = Buffer.byteLength(String(args.content ?? ''), 'utf-8');
+          if (isSuspectedGutting(prevLen, newLen)) {
+            return (
+              `ERROR: refusing to write ${String(args.path)} — it would shrink an existing ` +
+              `${prevLen}-byte file to ${newLen} bytes (${Math.round((newLen / prevLen) * 100)}%), the ` +
+              `signature of accidentally GUTTING a real file into a stub. To change PART of this file, ` +
+              `use edit_file (surgical replace) — that is almost certainly what you want. Re-sending this ` +
+              `same content will be refused again. ONLY if you deliberately intend to replace the ENTIRE ` +
+              `file with this much smaller version, set UAP_DELIVER_ALLOW_GUTTING=1.`
+            );
+          }
+        } catch { /* unreadable prev — allow the write */ }
       }
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, String(args.content ?? ''), 'utf-8');

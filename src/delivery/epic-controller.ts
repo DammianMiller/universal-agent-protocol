@@ -74,7 +74,7 @@ export interface EpicControllerConfig {
    */
   runEpic: (
     epic: Epic,
-    ctx: { attempt: number; priorSummaries: string[]; lastFailure?: string }
+    ctx: { attempt: number; priorSummaries: string[]; lastFailure?: string; contract?: string }
   ) => Promise<EpicRunResult>;
   /**
    * Confirm an epic actually meets its acceptance criteria (gate/judge). When
@@ -82,6 +82,21 @@ export interface EpicControllerConfig {
    * treated as "not accepted" so the controller retries rather than wedging.
    */
   checkAcceptance?: (epic: Epic, result: EpicRunResult) => boolean | Promise<boolean>;
+  /**
+   * P1 contract-first: return the frozen shared contract (module APIs, the
+   * CONFIG shape, event names, the verify contract) that ALL epics must conform
+   * to — VERBATIM, not a lossy summary. Injected into every epic's ctx.contract
+   * so fresh-context epics agree on ONE contract instead of each re-inventing it
+   * (the octopus CONFIG/`Audio` divergence). Null until it exists. Fail-soft.
+   */
+  readContract?: () => string | null;
+  /**
+   * P1 contract-lint: after an epic delivers AND passes acceptance, verify its
+   * output CONFORMS to the shared contract. A NON-EMPTY violations list fails
+   * the epic so it re-runs with the violations fed back — catching divergence at
+   * the epic boundary. Fail-soft: a throw is treated as no violations.
+   */
+  contractLint?: (epic: Epic, result: EpicRunResult, contract: string) => string[] | Promise<string[]>;
   /** Max fresh-session attempts per epic before it is declared failed. Default 3. */
   maxAttemptsPerEpic?: number;
   /**
@@ -253,10 +268,20 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
       while (attempts < maxAttempts && !accepted) {
         attempts++;
         process.env.UAP_EPIC_PRIOR_CHANGES = priorEpicChanged || anyAttemptChanged ? '1' : '0';
+        // P1: carry the frozen shared contract VERBATIM into the fresh session so
+        // this epic conforms to the same module APIs / CONFIG shape as the others.
+        // Fail-soft like every other injected seam.
+        let contract: string | undefined;
+        try {
+          contract = config.readContract?.() ?? undefined;
+        } catch {
+          contract = undefined;
+        }
         const result = await config.runEpic(epic, {
           attempt: attempts,
           priorSummaries: [...priorSummaries],
           lastFailure,
+          contract,
         });
         if (result.changedTree) anyAttemptChanged = true;
         epicTurns += result.turns;
@@ -270,6 +295,20 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
               ok = await config.checkAcceptance(epic, result);
             } catch {
               ok = false; // fail-soft: unverifiable ⇒ not accepted ⇒ retry
+            }
+          }
+          // P1 contract-lint: even an accepted epic must CONFORM to the shared
+          // contract, or the assembled whole won't integrate. Violations fail
+          // the epic so it re-runs against the contract.
+          if (ok && contract && config.contractLint) {
+            try {
+              const violations = await config.contractLint(epic, result, contract);
+              if (violations.length > 0) {
+                ok = false;
+                result.summary += ` [contract violations: ${violations.slice(0, 5).join('; ')}]`;
+              }
+            } catch {
+              /* fail-soft: a broken linter never blocks a real delivery */
             }
           }
           accepted = ok;
