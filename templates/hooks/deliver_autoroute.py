@@ -23,6 +23,7 @@ intent is logged AND routed. The hook still blocks (exit 2); this only enriches
 the block message and kicks off the sanctioned path in the background.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -72,8 +73,12 @@ def _autoroute_enabled() -> bool:
 
 
 def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set,
-           replay_on: bool = True) -> dict:
-    """Pure decision: what message to show, whether to spawn, and the intent."""
+           replay_on: bool = True, deliver_inflight: bool = False) -> dict:
+    """Pure decision: what message to show, whether to spawn, and the intent.
+
+    P0 single-flight: when `deliver_inflight` is true (a live, non-wedged
+    `uap deliver` already holds the project lock), never spawn a duplicate —
+    the intent is still recorded so the running mission can pick it up."""
     reason = out.get("reason", "")
     route = out.get("route")
     hint = out.get("deliverHint") or ""
@@ -109,12 +114,6 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
                 "file_path": file_path, "hint": hint, "dedup_key": "", "intent": None}
 
     intent = {"ts": int(time.time()), "tool": tool, "file_path": file_path, "hint": hint}
-    # Dedup on the file when we have one, else on the hint itself. Requiring a
-    # file_path made an entire class unspawnable: a BASH-routed source-write
-    # (`cat > app.js <<EOF`) carries a `command`, not a path — so those intents
-    # were blocked and then silently dropped. The hint is what deliver actually
-    # runs, so it is the correct spawn key.
-    dedup_key = file_path or hint
     # P1 (plan D1): persist the blocked edit's actual old/new content (from the
     # enforcer's editIntent, falling back to the raw tool args) so the intent
     # is REPLAYABLE via `uap deliver --pending <file>` instead of a blind hint.
@@ -133,6 +132,19 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
         edit_intent = {"content": bash_content}
     if edit_intent:
         intent["edit"] = edit_intent
+    # Dedup PER CHANGE, not per file: base is the file when we have one, else
+    # the hint (a BASH-routed source-write carries a `command`, not a path, and
+    # requiring a path made that class unspawnable). When the edit's content is
+    # recorded, suffix a hash of it — a bare file-path key marked the FILE seen
+    # forever, so every LATER (different) blocked edit to the same file was
+    # silently swallowed: never recorded as replayable, never applied (observed
+    # 2026-07-18). Identical retries of the same edit still dedup exactly.
+    dedup_key = file_path or hint
+    if edit_intent:
+        change_hash = hashlib.sha1(
+            json.dumps(edit_intent, sort_keys=True).encode("utf-8", "replace")
+        ).hexdigest()[:12]
+        dedup_key = f"{dedup_key}#{change_hash}"
     # A REPLAYABLE intent (plan D1) carries the blocked edit's exact content, so
     # it can be applied to disk DETERMINISTICALLY via `uap deliver --pending`
     # (writeFileSync of the captured content — no model, no blind fan-out). This
@@ -153,12 +165,16 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
     # fall back to the model-spawn autoroute (UAP_DELIVER_PENDING_REPLAY=off).
     unseen = bool(dedup_key and dedup_key not in seen_files)
     replay = bool(replayable and replay_on and unseen)
-    spawn = bool(autoroute_on and not replay and hint and unseen)
+    # P0 single-flight: a live, non-wedged deliver already owns this project —
+    # do NOT spawn another (the pile-up of stuck duplicate runs came from here).
+    spawn = bool(autoroute_on and not replay and hint and unseen and not deliver_inflight)
     message = reason
     if replay:
         message = reason + " [intent recorded to .uap/pending-deliver.jsonl — auto-applying to disk via deterministic `uap deliver --pending` replay]"
     elif spawn:
         message = reason + " [auto-routed to `uap deliver` — running in the background]"
+    elif deliver_inflight and hint and unseen:
+        message = reason + " [a `uap deliver` run is already in progress for this project — NOT spawning a duplicate; intent recorded to .uap/pending-deliver.jsonl for it to pick up]"
     elif dedup_key and dedup_key in seen_files and (replayable or autoroute_on):
         message = reason + " [already auto-routed/applied for this change — see .uap/autoroute.log / pending-deliver.jsonl]"
     elif file_path:
@@ -214,6 +230,40 @@ def _pid_alive(pid: int) -> bool:
         return True
     except Exception:
         return False
+
+
+def _deliver_wedge_timeout() -> int:
+    raw = os.environ.get("UAP_DELIVER_WEDGE_TIMEOUT")
+    try:
+        if raw is not None:
+            v = int(float(raw))
+            if v > 0:
+                return v
+    except Exception:
+        pass
+    return 600
+
+
+def _deliver_inflight(root: Path) -> bool:
+    """True when a `uap deliver` run already holds the project lock and is NOT
+    wedged (P0 single-flight). Shared contract with src/cli/deliver.ts:
+    `.uap/deliver.lock` first field = holder PID; `.uap/deliver.heartbeat` =
+    unix-epoch seconds refreshed each turn. A live holder with a fresh (or
+    missing/starting) heartbeat is inflight; a live holder whose heartbeat is
+    older than the wedge timeout is treated as dead so autoroute may proceed."""
+    try:
+        pid = int((root / UAP_DIR / "deliver.lock").read_text().split("|")[0].strip())
+    except Exception:
+        return False
+    if not _pid_alive(pid):
+        return False
+    try:
+        hb = int((root / UAP_DIR / "deliver.heartbeat").read_text().strip())
+        if (int(time.time()) - hb) > _deliver_wedge_timeout():
+            return False  # wedged holder — not really inflight
+    except Exception:
+        pass  # no/unreadable heartbeat -> a live PID counts as inflight
+    return True
 
 
 def _acquire_slot(root: Path) -> bool:
@@ -390,7 +440,8 @@ def main() -> None:
         args = {}
 
     root = Path(ns.root)
-    d = decide(out, ns.tool, args, _autoroute_enabled(), _load_seen(root), _replay_enabled())
+    d = decide(out, ns.tool, args, _autoroute_enabled(), _load_seen(root), _replay_enabled(),
+               _deliver_inflight(root))
 
     if d["intent"] is not None:
         try:
