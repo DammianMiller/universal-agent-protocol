@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.161.0 (2026-07-19)
+
+- chore(test): raise timeout on the src/index.js barrel-import test
+- fix(deliver): P3 anti-gutting guard — refuse write_file that guts a real file
+- feat(deliver): P1 contract-first — carry the shared contract VERBATIM into every epic
+- fix(deliver): P0 reliability — autoroute single-flight + lock wedge-reclaim
+
+
 ## v1.160.0 (2026-07-16)
 
 - chore: bump version to 1.159.0
