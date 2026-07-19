@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.162.0 (2026-07-19)
+
+- chore: bump version to 1.161.0
+- chore(test): raise timeout on the src/index.js barrel-import test
+- fix(deliver): P3 anti-gutting guard — refuse write_file that guts a real file
+- feat(deliver): P1 contract-first — carry the shared contract VERBATIM into every epic
+- fix(deliver): P0 reliability — autoroute single-flight + lock wedge-reclaim
+
+
 ## v1.161.24 (2026-07-19)
 
 - fix(delivery): recover cap-truncated plans by re-parsing the planner's own output
