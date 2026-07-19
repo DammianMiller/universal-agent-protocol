@@ -232,6 +232,20 @@ _BROWSER_RE = re.compile(
 )
 _LOOKUP_RE = re.compile(r"^\s*(?:which|command\s+-v|type|whereis)\b", re.IGNORECASE)
 
+# Quote-masking: the launch and source-write detectors run token-wise over the
+# command, but a word INSIDE a quoted argument is NOT a command token -- a grep
+# pattern, a curl User-Agent string ("... Chrome/120 ..."), or a VCS commit-log
+# message that mentions a source path (or contains a stray redirect operator) are
+# all just text. Scanning them produced false blocks on innocent commands. Blank
+# quoted spans (length-preserving) before matching so only REAL, unquoted
+# launches/redirects are seen; genuine writes and launches live outside quotes
+# and are still caught.
+_QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def _mask_quotes(cmd: str) -> str:
+    return _QUOTED_RE.sub(lambda m: " " * len(m.group(0)), cmd)
+
 
 def _handle_bash(args: dict) -> None:
     """Gate bash so it can't bypass delivery enforcement (source writes) and so a
@@ -241,9 +255,13 @@ def _handle_bash(args: dict) -> None:
         emit(True, "bash: empty command")
         return
 
+    # Match the launch / source-write gates against a quote-masked view so tokens
+    # inside a quoted argument are not misread as real command tokens.
+    scan = _mask_quotes(cmd)
+
     # Browser launch → redirect to the real (headless) validation path. Always
     # blocked: opening a window proves nothing and cannot gate a DONE claim.
-    if not _LOOKUP_RE.match(cmd) and _BROWSER_RE.search(cmd):
+    if not _LOOKUP_RE.match(cmd) and _BROWSER_RE.search(scan):
         emit(
             False,
             "BLOCKED: do not open a GUI browser to check your work — it proves nothing "
@@ -260,7 +278,7 @@ def _handle_bash(args: dict) -> None:
     if os.environ.get("UAP_DELIVER_BYPASS") == "1":
         emit(True, "bash: UAP_DELIVER_BYPASS override set")
         return
-    m = _BASH_WRITE_RE.search(cmd)
+    m = _BASH_WRITE_RE.search(scan)
     if m:
         target = m.group(1)
         mode = os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower()

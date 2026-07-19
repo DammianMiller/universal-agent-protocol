@@ -10,9 +10,17 @@ enforcer blocks exactly those persistence paths.
 
 Scope:
   - Edit/Write/MultiEdit to the enforcement control surface (policy md/enforcers,
-    .policy-tools/, .uap.json, proxy env, the policy-gate hook scripts).
+    .policy-tools/, .uap.json, proxy env, the policy-gate hook scripts, and the
+    policy DATABASE agents/data/memory/policies.db).
   - Bash commands that set/export UAP_DELIVER_BYPASS or relax UAP_ENFORCE_DELIVERY,
-    write those to a file, or delete/chmod a policy enforcer.
+    write those to a file, delete/chmod a policy enforcer, or mutate the policy
+    database directly (`sqlite3 … policies.db "UPDATE/DELETE/INSERT…"`).
+
+The sanctioned COMPLIANCE artifact dir (.uap/reviews/) and the review waiver dir
+(policies/waivers/) are explicitly ALLOWED — other gates DEMAND agents write
+there, so blocking them would deadlock the two gates. Only the real control
+surface (enforcer code, policy DB, proxy env, hook scripts, bypass flags) is
+protected. Reads are never blocked.
 
 There is intentionally NO model-reachable bypass: honoring UAP_DELIVER_BYPASS here
 would reopen the hole (the model would just set it). Operator override is
@@ -42,6 +50,11 @@ PROTECTED_MARKERS = (
     "uap-policy-gate.sh",
     "uap-reactor-prompt.sh",
     "pre-tool-use",
+    # The policy DATABASE itself — the enforcers are looked up from here
+    # (isActive rows, executable_tools). A direct write to it (or a flip of a
+    # policy row) disables the gate just as surely as editing an enforcer, so it
+    # is the real bypass surface and must be protected.
+    "policies.db",
 )
 
 # Bash patterns that persist a bypass or relax enforcement.
@@ -53,12 +66,27 @@ BYPASS_PATTERNS = (
     re.compile(r"UAP_WORKDIR_SCOPE_OFF\s*=\s*['\"]?1", re.I),
     re.compile(r"UAP_USER_VALIDATION\s*=\s*['\"]?0", re.I),
 )
-# Destructive ops against the enforcer/policy surface.
+# Destructive ops against the enforcer/policy surface (including the policy DB).
 DESTRUCTIVE = re.compile(
     r"\b(rm|unlink|shred|truncate|mv|chmod)\b[^\n|;&]*"
-    r"(\.policy-tools|src/policies|/policies/|anthropic-proxy\.env)",
+    r"(\.policy-tools|src/policies|/policies/|anthropic-proxy\.env|policies\.db)",
     re.I,
 )
+# Direct MUTATION of the policy database via sqlite3 bypasses the enforcers
+# entirely (flip isActive, delete a policy row, rewrite executable_tools). Match
+# order-independently: sqlite3 present, policies.db present, and a WRITE verb
+# present. SELECT / .dump / .schema (reads) carry no write verb and stay allowed.
+_SQLITE_BIN_RE = re.compile(r"\bsqlite3\b", re.I)
+_POLICY_DB_RE = re.compile(r"policies\.db", re.I)
+_SQL_WRITE_VERB_RE = re.compile(r"\b(update|delete|insert|replace|drop|alter|create|attach|vacuum)\b", re.I)
+# Quote-masking: a bypass/DB token that appears only INSIDE a quoted argument
+# (e.g. a `uap memory store "...text..."`, a grep pattern, a commit message) is
+# TEXT, not a command token. Blank quoted spans (length-preserving) before the
+# db-mutation / destructive scans so only a REAL invocation is matched. Env
+# bypass-flag assignments are normally unquoted, so those keep scanning raw.
+_SP_QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+def _mask_quotes(cmd: str) -> str:
+    return _SP_QUOTED_RE.sub(lambda m: " " * len(m.group(0)), cmd)
 
 OVERRIDE = os.environ.get("UAP_SELF_PROTECT_OFF") == "1"
 
@@ -66,16 +94,17 @@ OVERRIDE = os.environ.get("UAP_SELF_PROTECT_OFF") == "1"
 def _is_protected_path(rel_posix: str) -> bool:
     # Ensure a leading separator so slash-anchored markers ("/policies/",
     # "/src/policies/", …) match only a genuine path SEGMENT. Filename markers
-    # ("uap-policy-gate.sh", "anthropic-proxy.env") still match as substrings.
+    # ("uap-policy-gate.sh", "anthropic-proxy.env", "policies.db") still match as
+    # substrings.
     low = "/" + rel_posix.lower().lstrip("/")
     # Designed-writable escape hatches that live UNDER a protected marker but are
     # NOT part of the delivery-enforcement control surface: expert-review
     # artifacts (.uap/reviews/) and the committable review waiver
     # (policies/waivers/). Writing these satisfies the SEPARATE
     # expert-review-required gate and cannot weaken delivery enforcement — the
-    # markers above still guard .uap.json, proxy env, enforcer code and hooks.
-    # Without this carve-out the two gates deadlock: expert-review demands an
-    # artifact that self-protect forbids writing.
+    # markers above still guard .uap.json, proxy env, enforcer code, the policy
+    # DB and hooks. Without this carve-out the two gates deadlock: expert-review
+    # demands an artifact that self-protect forbids writing.
     allow = ("/" + REVIEW_ARTIFACT_DIR + "/", "/" + REVIEW_WAIVER_DIR + "/")
     if any(a in low for a in allow):
         return False
@@ -123,11 +152,26 @@ def main() -> None:
                     "`deliver` tool instead of disabling the gate. "
                     "(Operator-only override: UAP_SELF_PROTECT_OFF=1.)",
                 )
-        if DESTRUCTIVE.search(cmd):
+        # Mask quotes ONLY to detect the real sqlite3 BINARY (an unquoted command
+        # token) — a quoted "sqlite3" inside memory text / a message is not a real
+        # invocation. But the DB name and the SQL WRITE VERB are legitimately
+        # QUOTED in a real command (`sqlite3 db "UPDATE ..."`), so match those
+        # against the RAW command or a genuine write would slip through.
+        _scan = _mask_quotes(cmd)
+        if _SQLITE_BIN_RE.search(_scan) and _POLICY_DB_RE.search(cmd) and _SQL_WRITE_VERB_RE.search(cmd):
             emit(
                 False,
-                "BLOCKED: modifying/removing the policy enforcers or proxy env is "
-                "not allowed for the agent.",
+                "BLOCKED: directly mutating the policy database (policies.db) with "
+                "sqlite3 is not allowed for the agent — flipping a policy row or "
+                "rewriting executable_tools disables the enforcers just like editing "
+                "them. Reads (SELECT/.dump/.schema) are fine. "
+                "(Operator-only override: UAP_SELF_PROTECT_OFF=1.)",
+            )
+        if DESTRUCTIVE.search(_scan):
+            emit(
+                False,
+                "BLOCKED: modifying/removing the policy enforcers, the policy "
+                "database, or the proxy env is not allowed for the agent.",
             )
         emit(True, "no enforcement-tampering in command")
 

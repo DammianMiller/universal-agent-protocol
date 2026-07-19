@@ -63,13 +63,34 @@ HIGH_RISK_PATH_RE = re.compile(
 
 
 def _changed_files(root: Path) -> list[str] | None:
-    """Files changed vs the upstream base, or None if no base is resolvable
-    (detached / no upstream — the caller then falls back to requiring review)."""
+    """Files changed for the current work, or None if nothing is resolvable
+    (detached / non-git — the caller then falls back to requiring review).
+
+    Catch-22 fix: at `git commit` time NOTHING is merged to the base yet, so
+    `git diff <base>...HEAD` is EMPTY and the low-risk/size exemption could never
+    be reached — a trivial frontend commit was still blocked for a review. The
+    risk actually lives in the INDEX (staged) and the working tree at commit
+    time, so union the committed-vs-base diff with the staged and unstaged
+    changes. Any of the three resolving is enough to make a judgement.
+    """
+    files: set[str] = set()
+    resolved = False
+    # Committed changes ahead of the upstream base (covers push / PR after the
+    # work is already committed).
     for base in ("origin/master", "origin/main", "master", "main"):
         rc, out, _ = run(["git", "diff", "--name-only", f"{base}...HEAD"], cwd=root, timeout=10)
         if rc == 0:
-            return [ln.strip() for ln in out.splitlines() if ln.strip()]
-    return None
+            files.update(ln.strip() for ln in out.splitlines() if ln.strip())
+            resolved = True
+            break
+    # Staged (index) and unstaged (working tree) changes — the change set that
+    # exists AT COMMIT TIME before anything reaches the base.
+    for diff in (["git", "diff", "--cached", "--name-only"], ["git", "diff", "--name-only"]):
+        rc, out, _ = run(diff, cwd=root, timeout=10)
+        if rc == 0:
+            files.update(ln.strip() for ln in out.splitlines() if ln.strip())
+            resolved = True
+    return sorted(files) if resolved else None
 
 
 def _is_low_risk(f: str) -> bool:
@@ -124,7 +145,7 @@ def main() -> None:
     op, args = parse_cli()
 
     if os.environ.get("UAP_NO_REVIEW") == "1":
-        emit(True, "UAP_NO_REVIEW override set")
+        emit(True, "UAP_NO_REVIEW override set (operator bypass)")
 
     op_l = op.lower()
     if op_l != "bash":
@@ -137,7 +158,7 @@ def main() -> None:
     # Anchored to a LEADING env-assignment run so an incidental mention in a
     # quoted arg / commit message does NOT silently skip review.
     if re.search(r"^\s*(?:[A-Za-z_]\w*=\S*\s+)*UAP_NO_REVIEW=['\"]?1\b", cmd):
-        emit(True, "UAP_NO_REVIEW inline override set")
+        emit(True, "UAP_NO_REVIEW inline override set (operator bypass)")
     if not any(p.search(cmd) for p in SHIP_PATTERNS):
         emit(True, "not a ship action")
 
@@ -155,11 +176,13 @@ def main() -> None:
     if _active_waiver(root):
         emit(True, "expert-review waived (policies/waivers/*expert-review*.md or .uap/reviews/WAIVER)")
 
-    # Risk-scope: if the diff vs upstream touches ONLY low-risk surfaces
-    # (frontend/styles, docs, config, tests, assets) — no infra/IaC, CI, schemas,
-    # migrations, or policy code — the change ships without a parallel review.
-    # When the base diff is not resolvable (None) we do NOT skip: we can't prove
-    # the change is low-risk, so the review requirement below still applies.
+    # Risk-scope: if the diff (committed + STAGED + unstaged) touches ONLY
+    # low-risk surfaces (frontend/styles, docs, config, tests, assets) — no
+    # infra/IaC, CI, schemas, migrations, or policy code — the change ships
+    # without a parallel review. Staged/unstaged are included so this exemption
+    # is reachable at COMMIT time (before anything reaches the base). When the
+    # change set is not resolvable (None) we do NOT skip: we can't prove the
+    # change is low-risk, so the review requirement below still applies.
     changed = _changed_files(root)
     if changed and all(_is_low_risk(f) for f in changed):
         emit(
