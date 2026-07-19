@@ -73,6 +73,29 @@ describe('stuck-break guardrail (self-aware loop + rate-limited API)', () => {
   });
 });
 
+describe('shared-secret auth — loopback exemption', () => {
+  it('exempts loopback clients so enabling PROXY_AUTH_TOKEN does not 401 local UAP clients', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    // env toggle (default on) + loopback host set
+    expect(contents).toContain('PROXY_AUTH_TRUST_LOOPBACK');
+    expect(contents).toContain('_LOOPBACK_HOSTS');
+    expect(contents).toContain('127.0.0.1');
+    expect(contents).toContain('::1');
+    // the auth gate is skipped for a trusted-local client
+    expect(contents).toContain('_trusted_local');
+    expect(contents).toContain('and not _trusted_local');
+  });
+
+  it('still requires the token for remote requests (gate only skipped for loopback)', () => {
+    const contents = readFileSync(proxyPath, 'utf-8');
+    // _trusted_local is gated on BOTH the toggle AND the client being loopback,
+    // so a remote host never gets the exemption
+    expect(contents).toMatch(/_trusted_local\s*=\s*_PROXY_AUTH_TRUST_LOOPBACK and _client_host in _LOOPBACK_HOSTS/);
+    // constant-time compare still present for the remote path
+    expect(contents).toContain('compare_digest');
+  });
+});
+
 describe('sleep-poll break guardrail', () => {
   it('detects and nudges sustained `sleep N && check` polling of blocking tools', () => {
     const contents = readFileSync(proxyPath, 'utf-8');

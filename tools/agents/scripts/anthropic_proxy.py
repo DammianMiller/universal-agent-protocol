@@ -3621,6 +3621,22 @@ async def _pool_timeout_handler(request: Request, exc: httpx.PoolTimeout):
 # LAN health check or an SDK model-list probe works without the token.
 _PROXY_AUTH_OPEN_PATHS = frozenset({"/health", "/", "/v1/models"})
 
+# Loopback (127.0.0.1/::1) shares the host's existing trust boundary — any local
+# process could already reach the port — so by default it is EXEMPT from the
+# shared secret even when the token is set for a 0.0.0.0 (LAN-exposed) posture.
+# This keeps local UAP clients (the deliver executor, the dashboard, /v1/context
+# probes — all of which route through the proxy) working after PROXY_AUTH_TOKEN
+# is enabled for remote access, while REMOTE requests still require the token.
+# Set PROXY_AUTH_TRUST_LOOPBACK=off to require the token from local clients too.
+_PROXY_AUTH_TRUST_LOOPBACK = os.environ.get("PROXY_AUTH_TRUST_LOOPBACK", "on").lower() not in {
+    "0", "off", "false", "no",
+}
+# Peer IPs that count as loopback. request.client.host is the numeric TCP peer
+# (never a hostname), so a literal "localhost" would be dead — include the
+# IPv4-mapped-IPv6 form instead, which a genuine local client can present on a
+# dual-stack (::) bind.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+
 
 @app.middleware("http")
 async def _shared_secret_auth(request: Request, call_next):
@@ -3628,11 +3644,20 @@ async def _shared_secret_auth(request: Request, call_next):
 
     No-op when the token is unset (the default; safe only because the default
     bind is loopback). When set — the intended posture for a shared LAN service
-    (PROXY_HOST=0.0.0.0) — a request must present the token as
+    (PROXY_HOST=0.0.0.0) — a REMOTE request must present the token as
     `Authorization: Bearer <token>` or `X-Uap-Proxy-Token: <token>`; otherwise
-    401. Uses a constant-time compare to avoid a timing oracle.
+    401. Uses a constant-time compare to avoid a timing oracle. Loopback clients
+    are exempt by default (PROXY_AUTH_TRUST_LOOPBACK) so enabling the token for
+    remote access does not 401 the host's own UAP clients.
     """
-    if PROXY_AUTH_TOKEN and request.url.path not in _PROXY_AUTH_OPEN_PATHS and request.method != "OPTIONS":
+    _client_host = (request.client.host if request.client else "") or ""
+    _trusted_local = _PROXY_AUTH_TRUST_LOOPBACK and _client_host in _LOOPBACK_HOSTS
+    if (
+        PROXY_AUTH_TOKEN
+        and not _trusted_local
+        and request.url.path not in _PROXY_AUTH_OPEN_PATHS
+        and request.method != "OPTIONS"
+    ):
         provided = request.headers.get("x-uap-proxy-token", "")
         if not provided:
             auth = request.headers.get("authorization", "")
@@ -12161,4 +12186,10 @@ if __name__ == "__main__":
         host=PROXY_HOST,
         port=PROXY_PORT,
         log_level=PROXY_LOG_LEVEL.lower(),
+        # This is a DIRECT listener with no legitimate front proxy. Disable
+        # proxy-header handling so `request.client.host` is always the real TCP
+        # peer and can never be rewritten from a client-supplied X-Forwarded-For
+        # — the loopback auth exemption (_shared_secret_auth) must not be
+        # subvertible via a spoofed header (CWE-348/CWE-290).
+        proxy_headers=False,
     )
