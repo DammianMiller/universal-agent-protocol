@@ -9,7 +9,7 @@
 import chalk from 'chalk';
 import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync, renameSync } from 'fs';
-import { join, resolve } from 'path';
+import { join, resolve, relative } from 'path';
 import { ConvergenceLoop, composeIterationHooks } from '../delivery/convergence-loop.js';
 import type {
   LoopExecutor,
@@ -1282,6 +1282,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // read-only for later epics. Mutable by reference — the epic controller
   // grows it between epics; the executor reads it live on every tool call.
   const contractLock = new Set<string>();
+  // ORIGINAL-cased locked contract paths (contractLock stores lowercased match
+  // keys, which are NOT valid FS paths on a case-sensitive filesystem — reading
+  // those back would silently drop PascalCase files like Config.ts). P1 reads
+  // these for verbatim injection.
+  const contractPaths: string[] = [];
   const executor: LoopExecutor = agentic
     ? createAgenticExecutor(model, {
         projectRoot,
@@ -2233,7 +2238,26 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         initLedger(projectRoot, instruction, items.map((i) => ({ ...i, kind: 'epic' as const }))),
       ledgerMark: (id, status, noteText) => markItem(projectRoot, id, status, noteText),
       lockedContracts: () => [...contractLock],
-      lockContracts: (files) => lockContractFiles(contractLock, projectRoot, files),
+      lockContracts: (files) => {
+        const locked = lockContractFiles(contractLock, projectRoot, files);
+        for (const p of locked) if (!contractPaths.includes(p)) contractPaths.push(p);
+        return locked;
+      },
+      // P1: concatenate the locked contract files' CONTENTS (original-cased
+      // paths) for verbatim injection into later epics (build against the EXACT
+      // shared surface). Reads are contained to the project root.
+      readContractFiles: () => {
+        if (contractPaths.length === 0) return null;
+        const parts: string[] = [];
+        for (const rel of contractPaths) {
+          const abs = resolve(projectRoot, rel);
+          if (relative(projectRoot, abs).startsWith('..')) continue; // never read outside the project
+          try {
+            parts.push(`// ===== ${rel} =====\n${readFileSync(abs, 'utf8')}`);
+          } catch { /* a locked path that vanished — skip it */ }
+        }
+        return parts.length > 0 ? parts.join('\n\n') : null;
+      },
       maxAttemptsPerEpic: Number(process.env.UAP_DELIVER_EPIC_ATTEMPTS ?? 3), // (#4b) 2→3
       // (#4c) Recursive split depth: a huge epic that still can't land after
       // a split is split again, one level shallower — bounded.

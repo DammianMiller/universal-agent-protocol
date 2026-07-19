@@ -242,3 +242,59 @@ describe('runEpics — onProgress persistence hook + resume skip', () => {
     expect(snapshots[0].completed).toEqual(['big']);
   });
 });
+
+describe('runEpics — P1 contract carry + lint', () => {
+  const okr = (s: string): EpicRunResult => ({ success: true, summary: s, turns: 1 });
+
+  it('injects the shared contract VERBATIM into every epic run', async () => {
+    const seen: Array<string | undefined> = [];
+    const CONTRACT = 'CONFIG.player.width:number; class Audio { play(): void }';
+    await runEpics({
+      mission: 'm',
+      epics: [
+        { id: 'a', title: 'A', goal: 'a' },
+        { id: 'b', title: 'B', goal: 'b', deps: ['a'] },
+      ],
+      readContract: () => CONTRACT,
+      runEpic: async (_e, ctx) => { seen.push(ctx.contract); return okr('done'); },
+    });
+    expect(seen).toEqual([CONTRACT, CONTRACT]); // verbatim, not a summary, to every epic
+  });
+
+  it('contract-lint violations fail the epic and are fed back; a clean re-run is accepted', async () => {
+    let attempt = 0;
+    const failures: Array<string | undefined> = [];
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'a', title: 'A', goal: 'a' }],
+      readContract: () => 'CONTRACT',
+      runEpic: async (_e, ctx) => { attempt++; failures.push(ctx.lastFailure); return okr(`attempt ${attempt}`); },
+      contractLint: () => (attempt === 1 ? ['references undefined CONFIG.foo'] : []),
+    });
+    expect(attempt).toBe(2);                       // retried after the lint violation
+    expect(res.completed).toContain('a');          // clean re-run accepted
+    expect(failures[1]).toMatch(/contract violations/); // violation fed into the retry
+  });
+
+  it('no readContract/contractLint => contract undefined, behavior unchanged', async () => {
+    const seen: Array<string | undefined> = [];
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'a', title: 'A', goal: 'a' }],
+      runEpic: async (_e, ctx) => { seen.push(ctx.contract); return okr('done'); },
+    });
+    expect(seen).toEqual([undefined]);
+    expect(res.completed).toContain('a');
+  });
+
+  it('a throwing contractLint is fail-soft (does not block acceptance)', async () => {
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'a', title: 'A', goal: 'a' }],
+      readContract: () => 'CONTRACT',
+      runEpic: async () => okr('done'),
+      contractLint: () => { throw new Error('linter broke'); },
+    });
+    expect(res.completed).toContain('a'); // broken linter never blocks a real delivery
+  });
+});
