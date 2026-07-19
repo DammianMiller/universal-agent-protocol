@@ -322,6 +322,39 @@ describe('edit_file tool (P1, plan D3)', () => {
       delete process.env.UAP_DELIVER_ALLOW_GUTTING;
     }
   });
+
+  it('#2a: fires onToolProgress after EACH tool execution (per-tool-call heartbeat)', async () => {
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    let progress = 0;
+    mockChatSequence([
+      call('list_dir', { path: '.' }),
+      call('write_file', { path: 'src/a.ts', content: 'export const a = 1;\n' }),
+      call('finish', { summary: 'done' }, 't3'),
+    ]);
+    const exec = createAgenticExecutor(MODEL, {
+      projectRoot: dir,
+      endpoint: 'http://localhost:9/v1',
+      onToolProgress: () => { progress++; },
+    });
+    await exec('do stuff');
+    // one callback per real tool call (list_dir + write_file) — NOT just once at
+    // turn end, so a long working turn keeps the heartbeat fresh.
+    expect(progress).toBeGreaterThanOrEqual(2);
+  });
+
+  it('#2a: does NOT stamp onToolProgress when a turn makes no tool calls', async () => {
+    let progress = 0;
+    // A finish-only turn (no read/write/bash) — the wedge signal must stay
+    // untouched so a genuinely no-tool-progress run can still be detected.
+    mockChatSequence([{ content: 'Nothing to do; the repo already satisfies the spec.' }]);
+    const exec = createAgenticExecutor(MODEL, {
+      projectRoot: dir,
+      endpoint: 'http://localhost:9/v1',
+      onToolProgress: () => { progress++; },
+    });
+    await exec('noop');
+    expect(progress).toBe(0);
+  });
 });
 
 describe('isSuspectedGutting (P3 anti-gutting)', () => {
