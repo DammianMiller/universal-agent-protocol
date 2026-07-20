@@ -180,3 +180,62 @@ describe('visual gate: non-final epics downgrade richness failures to advisory (
     }
   }, 60_000);
 });
+
+describe('visual gate: the browser is always closed (leak regression, 2026-07-20)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-visual-leak-'));
+    writeFileSync(join(dir, 'index.html'), '<canvas></canvas><script>requestAnimationFrame(function(){});</script>');
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * A live 4h deliver run leaked 11 headless Chromium instances (~33 GB RSS) and
+   * kept a SIGTERM'd process alive, because `browser` was scoped INSIDE the page
+   * loop: a throw after launch skipped the close, hit the outer catch, and
+   * returned `skipped: true` — silently disabling the gate while leaking.
+   */
+  it('closes the browser when getErrors() throws mid-iteration', async () => {
+    let closed = 0;
+    const exploding = (): VisualBrowserDriver => ({
+      launch: async () => undefined,
+      goto: async () => '200',
+      waitForLoadState: async () => undefined,
+      evaluate: async <T,>() => probe([], 1, 1) as unknown as T,
+      screenshot: async (path: string) => writeFileSync(path, 'png'),
+      getErrors: () => {
+        throw new Error('browser crashed');
+      },
+      close: async () => {
+        closed++;
+      },
+    });
+
+    const verdict = await runVisualGate(dir, { browserFactory: exploding, samples: 1, intervalMs: 1 });
+
+    // The gate still degrades gracefully...
+    expect(verdict.skipped).toBe(true);
+    // ...but it must NOT leak the browser process while doing so.
+    expect(closed).toBe(1);
+  });
+
+  it('closes the browser exactly once on the normal path', async () => {
+    let closed = 0;
+    const counting = (): VisualBrowserDriver => ({
+      launch: async () => undefined,
+      goto: async () => '200',
+      waitForLoadState: async () => undefined,
+      evaluate: async <T,>() => probe(Array.from({ length: 16 }, (_, i) => `c${i}`), 10, 0.4) as unknown as T,
+      screenshot: async (path: string) => writeFileSync(path, 'png'),
+      getErrors: () => [],
+      close: async () => {
+        closed++;
+      },
+    });
+
+    await runVisualGate(dir, { browserFactory: counting, samples: 1, intervalMs: 1 });
+    expect(closed).toBe(1);
+  });
+});

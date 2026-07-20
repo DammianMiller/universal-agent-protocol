@@ -180,10 +180,25 @@ export class WebBrowser {
   }
 
   async close(): Promise<void> {
-    if (this.context) {
-      await this.context!['close']();
-    } else if (this.browser) {
-      await this.browser!['close']();
+    // Close BOTH handles. The non-persistent launch() path sets `context` AND
+    // `browser` (see launch(): it creates the browser, then newContext() off
+    // it), so the previous `else if` closed only the context and left the
+    // Chromium PROCESS alive. Closing a BrowserContext does not terminate the
+    // browser. That is why callers with a correct `finally { close() }` — the
+    // execution gate has always had one — still leaked: every gate pass left a
+    // live Chromium behind (observed: 89 processes / ~33 GB RSS, and the leaked
+    // children held a SIGTERM'd deliver process alive for 2h).
+    // Each close is independently guarded so a failure to close the context
+    // cannot prevent the process itself from being reaped.
+    try {
+      if (this.context) await this.context!['close']();
+    } catch {
+      /* context may already be gone; the process still must be reaped below */
+    }
+    try {
+      if (this.browser) await this.browser!['close']();
+    } catch {
+      /* already exited */
     }
     this.browser = null;
     this.context = null;

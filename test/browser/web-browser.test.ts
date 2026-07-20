@@ -73,3 +73,56 @@ describe('WebBrowser.formatConsoleError (anonymous-404 fix, 2026-07-18)', () => 
     expect(WebBrowser.formatConsoleError('404 at http://x/y.js', 'http://x/y.js')).toBe('404 at http://x/y.js');
   });
 });
+
+describe('WebBrowser.close() reaps the browser PROCESS (leak regression, 2026-07-20)', () => {
+  /**
+   * The non-persistent launch() path sets BOTH `browser` and `context`
+   * (browser -> newContext() -> newPage()). close() used `else if`, so it
+   * closed the context and never the browser — and closing a BrowserContext
+   * does not terminate the Chromium process.
+   *
+   * This is why callers with a correct `finally { close() }` still leaked:
+   * a live 4h deliver run accumulated 89 chrome processes / ~33 GB RSS, and
+   * the orphans held a SIGTERM'd process alive for 2h.
+   */
+  it('closes the context AND the browser, not just the context', async () => {
+    const wb = new WebBrowser();
+    let ctxClosed = 0;
+    let procClosed = 0;
+    // Mirror the state launch() leaves behind on the non-persistent path.
+    (wb as unknown as Record<string, unknown>).context = {
+      close: async () => {
+        ctxClosed++;
+      },
+    };
+    (wb as unknown as Record<string, unknown>).browser = {
+      close: async () => {
+        procClosed++;
+      },
+    };
+
+    await wb.close();
+
+    expect(ctxClosed).toBe(1);
+    // Pre-fix this was 0 — the leaked Chromium process.
+    expect(procClosed).toBe(1);
+  });
+
+  it('still reaps the process when closing the context throws', async () => {
+    const wb = new WebBrowser();
+    let procClosed = 0;
+    (wb as unknown as Record<string, unknown>).context = {
+      close: async () => {
+        throw new Error('context already gone');
+      },
+    };
+    (wb as unknown as Record<string, unknown>).browser = {
+      close: async () => {
+        procClosed++;
+      },
+    };
+
+    await expect(wb.close()).resolves.toBeUndefined();
+    expect(procClosed).toBe(1);
+  });
+});

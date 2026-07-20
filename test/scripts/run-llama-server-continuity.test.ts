@@ -22,6 +22,13 @@ function runScript(env: Record<string, string>): string {
       ...env,
     },
     encoding: 'utf-8',
+    // Discard stderr. LLAMA_MODEL is the dummy '/etc/hostname', which has no
+    // companion projector, so the script correctly logs "vision: no mmproj
+    // projector found for hostname — serving text-only" on every one of these
+    // runs. Inheriting that printed seven alarming vision-is-broken lines into
+    // the suite output and sent a reader hunting a production fault that does
+    // not exist. These tests assert on stdout (the assembled argv) only.
+    stdio: ['ignore', 'pipe', 'ignore'],
   });
 }
 

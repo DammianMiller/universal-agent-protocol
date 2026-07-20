@@ -133,3 +133,83 @@ describe('thought-experiment serialization (round-2 follow-up)', () => {
     expect(prompt).toContain('criteria: compiles with stub bodies');
   });
 });
+
+describe('validatePhaseGraph — module-system coherence (octopus run, 2026-07-20)', () => {
+  /** The exact plan shape that pinned a live run at 0.33 for 4 turns / 2h20m. */
+  const contradictoryPlan = (): DeliveryPhase[] => [
+    {
+      id: 'contracts',
+      title: 'Define Shared Contracts',
+      goal: 'Create js/contracts.js defining shared types and constants.',
+      criteria: ['js/contracts.js exists and exports shared constants/interfaces.'],
+    },
+    {
+      id: 'config-module',
+      title: 'Implement Config Module',
+      goal: 'Create js/config.js exporting game configuration constants.',
+      deps: ['contracts'],
+      criteria: ['js/config.js imports from js/contracts.js.'],
+    },
+    {
+      id: 'index-html',
+      title: 'Create Index HTML',
+      goal: 'Create index.html with script imports in order: config, game.',
+      deps: ['config-module'],
+      criteria: ['index.html exists and contains correct script tags.'],
+    },
+  ];
+
+  it('warns on a plan that requires exports AND loads the files as classic scripts', () => {
+    const v = validatePhaseGraph(contradictoryPlan());
+    const msg = v.warnings.join('\n');
+    expect(msg).toMatch(/module-system contradiction/i);
+    // Must name BOTH sides so the planner knows what to reconcile.
+    expect(msg).toContain("'contracts'");
+    expect(msg).toContain("'index-html'");
+    // Deliberately a WARNING: a hard error makes decompose's
+    // appendGapClosurePhase() return null and silently drop the gap-closure
+    // phase, so a heuristic false positive would cost a real safety phase.
+    expect(v.ok).toBe(true);
+    expect(v.errors).toEqual([]);
+  });
+
+  it('stays quiet once the script tags declare type="module"', () => {
+    const phases = contradictoryPlan();
+    phases[2].criteria = ['index.html exists and its script tags use type="module".'];
+    expect(validatePhaseGraph(phases).warnings).toEqual([]);
+  });
+
+  it('stays quiet when a bundler is in play (not a contradiction)', () => {
+    const phases = contradictoryPlan();
+    phases[2].goal = 'Create index.html loading the vite bundler output.';
+    expect(validatePhaseGraph(phases).warnings).toEqual([]);
+  });
+
+  it('is NOT disabled by "vitest" appearing in a plan (regex alternation precedence)', () => {
+    // `/\bbundler|vite|parcel\b/` anchors only the first and last alternatives,
+    // so bare `vite` matched inside "vitest" — and almost every plan in this
+    // repo mentions vitest, which silently disabled the whole check.
+    const phases = contradictoryPlan();
+    phases[2].goal = 'Create index.html and add vitest coverage for the script tags.';
+    expect(validatePhaseGraph(phases).warnings.join('\n')).toMatch(/module-system contradiction/i);
+  });
+
+  it('does not fire on the ordinary English verb "export"', () => {
+    // "export" in its product sense must not pair with an unrelated mention of
+    // script tags to flag a plan that has nothing to do with module systems.
+    const v = validatePhaseGraph([
+      { id: 'a', title: 'a', goal: 'Add a CSV export button to the scoreboard.' },
+      { id: 'b', title: 'b', goal: 'Wire the script tags in index.html.' },
+    ]);
+    expect(v.warnings).toEqual([]);
+    expect(v.ok).toBe(true);
+  });
+
+  it('does not fire on a plan that never mentions script loading', () => {
+    const v = validatePhaseGraph([
+      { id: 'a', title: 'a', goal: 'Create lib.js that exports a helper.', criteria: ['exports a helper'] },
+    ]);
+    expect(v.ok).toBe(true);
+    expect(v.warnings).toEqual([]);
+  });
+});

@@ -377,12 +377,19 @@ export async function runVisualGate(
   }
 
   let server: { url: string; close: () => void } | null = null;
+  // Hoisted OUT of the loop so the outer `finally` can reap a browser leaked by
+  // any throw in the loop body. It used to be loop-scoped, so a mid-iteration
+  // throw (e.g. getErrors() on a crashed browser) skipped the close, hit the
+  // outer catch, and returned `skipped: true` — silently disabling the gate
+  // while leaking a headless Chromium every pass. Observed in the wild: 11
+  // leaked instances / ~33 GB RSS across a single 4h deliver run.
+  let browser: VisualBrowserDriver | null = null;
   const pages: PageVisualReport[] = [];
   try {
     server = await startStaticServer(projectRoot);
 
     for (const file of files) {
-      let browser: VisualBrowserDriver | null = null;
+      browser = null;
       try {
         browser = options.browserFactory ? options.browserFactory() : await loadRealBrowser();
         await browser.launch({ headless: true });
@@ -451,6 +458,9 @@ export async function runVisualGate(
       // point the model at the wrong file.
       const failedRequests = observed.filter((e) => e.kind === 'requestfailed').map((e) => e.message);
       await browser.close().catch(() => undefined);
+      // Null it only AFTER a successful close so the outer `finally` reaps this
+      // instance if anything above threw before we got here.
+      browser = null;
 
       const last = probes[probes.length - 1] ?? { canvas: false };
       const first = probes.find((p) => p.readable);
@@ -495,6 +505,11 @@ export async function runVisualGate(
     };
   } finally {
     server?.close();
+    // Reaps a browser leaked by any throw between launch and the per-iteration
+    // close above. Without this the process keeps a live Chromium (and its
+    // renderer tree) attached, which is what kept a SIGTERM'd deliver run alive
+    // for hours: the leaked children held the event loop open.
+    await browser?.close().catch(() => undefined);
   }
 
   const failing = pages.filter((p) => p.problems.length > 0);

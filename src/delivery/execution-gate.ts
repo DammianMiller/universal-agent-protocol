@@ -518,6 +518,33 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
         const ctor = (ue as Error | undefined)?.constructor?.name;
         if (ue instanceof SyntaxError || ctor === 'SyntaxError') {
           const umsg = ue instanceof Error ? ue.message : String(ue);
+          // ESM syntax in a file the entry loads as a CLASSIC script is a
+          // module-system mismatch, NOT a defect in the file — the file is valid
+          // ES module source. Naming the file sends the model to "fix" correct
+          // code. Observed live: a 4-turn / 2h20m stall where every turn re-read
+          // contracts.js, found valid ESM, changed nothing, and burned its round
+          // budget, because the gate kept saying "syntax error in contracts.js"
+          // while the real defect was the missing type="module" in index.html.
+          const esmInClassic =
+            /Unexpected token 'export'|Cannot use import statement outside a module/.test(umsg);
+          if (esmInClassic) {
+            return {
+              passed: false,
+              exitCode: 1,
+              failureReason: `module-system mismatch: ${u.name} is an ES module but ${entry} loads it as a classic script`,
+              outputTail:
+                `${u.name}: SyntaxError: ${umsg.slice(0, 200)}\n` +
+                `${u.name} uses ES module syntax (import/export), but ${entry} loads it with a plain ` +
+                `<script src="..."> tag, which the browser parses as a classic script — the page will not boot.\n` +
+                `THE DEFECT IS IN THE WIRING, NOT IN ${u.name} — do not rewrite ${u.name} to chase this error. ` +
+                `Pick ONE of these and apply it consistently to EVERY script ${entry} loads:\n` +
+                `  1. Classic scripts — remove the top-level import/export statements and let the files share globals.\n` +
+                `  2. ES modules — add type="module" to the <script> tags in ${entry} ` +
+                `(note: this needs a real headless browser; the vm-dom harness only runs classic scripts).`,
+              durationMs: Date.now() - start,
+              via: 'vm-dom',
+            };
+          }
           return {
             passed: false,
             exitCode: 1,
