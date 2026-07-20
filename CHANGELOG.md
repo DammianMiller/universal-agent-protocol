@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.163.1 (2026-07-20)
+
+- fix(delivery): reap leaked browsers, blame the right file, break stuck loops
+
+
 ## v1.163.0 (2026-07-19)
 
 - feat(deliver): wire the P1 contract-lint gate to production (structural divergence catcher)
