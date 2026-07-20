@@ -237,12 +237,16 @@ export function buildDecomposePrompt(
     lifecycleHint = '';
   }
 
-  // Rail sizing: each phase runs in ONE fresh agent session with a hard
-  // context ceiling, so the planner must scope phases to fit it.
+  // Rail sizing: each phase runs in ONE fresh agent session with a hard context
+  // ceiling. Bias toward FEWER, LARGER phases that pack related work up to a
+  // safe fraction of the budget — every extra phase is a fresh-session + gate
+  // overhead and another integration seam — while still never overflowing the
+  // ceiling (which silently loses session state mid-phase).
   const budgetHint = opts?.sessionTokenBudget
     ? [
         '',
-        `CONTEXT LIMIT: each phase is delivered by an autonomous agent in ONE fresh session with a hard context budget of ~${opts.sessionTokenBudget} tokens (roughly ${opts.sessionTokenBudget * 4} characters — the phase prompt, every file the agent reads, all tool output, and its own edits ALL count against it). Scope every phase so it completes comfortably within that budget: prefer MORE, SMALLER phases over fewer large ones, and never bundle broad multi-file refactors into a single phase.`,
+        `CONTEXT BUDGET: each phase is delivered by an autonomous agent in ONE fresh session with a hard context budget of ~${opts.sessionTokenBudget} tokens (~${opts.sessionTokenBudget * 4} characters — the phase prompt, every file the agent reads, all tool output, and its own edits ALL count against it).`,
+        'PREFER FEWER, LARGER PHASES: pack closely-related work into ONE phase up to roughly 40% of that budget, rather than one file per phase. A cluster of small, tightly-coupled sibling files (e.g. several few-hundred-line view/render modules with NO shared type surface) SHOULD be delivered together in a single phase. More phases means more fresh-session overhead, more gate cycles, and more integration seams — so consolidate wherever the combined work (the phase\'s own files PLUS the context it must read to write them) comfortably fits under ~40% of the budget, leaving headroom for tool output and retries. Only split when a phase would otherwise approach the budget, or when parts are genuinely independent AND large. Never bundle work that would overflow the ceiling — and still emit at least 2 phases so decomposition is not skipped. (This does NOT override CONTRACTS FIRST: shared types/interfaces still get their own isolated first phase, never folded in with their consumers.)',
       ].join('\n')
     : '';
 
@@ -289,6 +293,16 @@ export function buildDecomposePrompt(
     'For every file named in the mission, exactly one phase must create it — a',
     'file no phase creates is never delivered (the gates and acceptance judge',
     "check the mission's file layout, so an unowned file fails the run).",
+    '',
+    'DEPENDENCY ORDERING — CRITICAL: if a phase\'s file IMPORTS, links (<script',
+    'src> / <link href>), requires, or otherwise references a file that ANOTHER',
+    'phase creates, that phase MUST list the other phase in its "deps" so the',
+    'referenced file already exists when it runs. In particular an entry-point /',
+    'index / HTML phase that links scripts and stylesheets MUST depend on every',
+    'phase that creates those linked files (e.g. an index.html that links',
+    'css/styles.css and js/*.js depends on the css phase AND every js-module',
+    'phase). A reference to a not-yet-created file is a broken build and fails',
+    'the phase gate.',
     budgetHint,
     contractsHint,
     scaffoldHint,
