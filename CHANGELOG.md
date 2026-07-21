@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.163.3 (2026-07-21)
+
+- test: fix the two flakes that intermittently failed the full-suite bump gate
+- fix(visual-gate): drive a start interaction so games are judged on gameplay, not their menu
+
+
 ## v1.163.2 (2026-07-21)
 
 - fix(deliver): force a write when the agentic read-loop ignores the soft nudge
