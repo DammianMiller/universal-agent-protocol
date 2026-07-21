@@ -386,6 +386,13 @@ export interface LoopCheckpoint {
   bestSoFar: number;
   bestAcceptance: number;
   stagnantTurns: number;
+  /** No-progress circuit-breaker state, persisted so a run that is interrupted
+   *  and resumed cannot reset its stall detection every boundary and spin
+   *  indefinitely across process restarts (the hands-free resume loop). Both
+   *  default to their fresh values (0 / -1) when absent, so an old checkpoint
+   *  resumes safely. */
+  noProgressStreak?: number;
+  bestScoreSeen?: number;
   /** Escalation state applied mid-run, so a resumed run is NOT silently
    *  de-escalated: exploration width + seeds and the critic are restored by
    *  the loop; a model switch cannot serialize, so `modelEscalated` is a
@@ -563,6 +570,13 @@ export class ConvergenceLoop {
   private appliedFilesTotal = new Set<string>();
   /** Git tree fingerprint at run start; null when unavailable (non-git). */
   private runStartTreeFingerprint: string | null = null;
+  /** Per-turn memo of the tree fingerprint. `fingerprintTree` shells out to
+   *  `git status`+`diff` (blocking execSync); a single turn used to call it up
+   *  to 3× (acceptance rail, breaker, end-of-turn changedTree) on identical
+   *  post-write state. Set on first use, cleared at each turn boundary
+   *  (`invalidateTurnFingerprint`) so a new turn's writes are always re-read.
+   *  `undefined` = not yet computed this turn. */
+  private turnFingerprint: string | null | undefined = undefined;
 
   constructor(
     config: ConvergenceConfig,
@@ -586,6 +600,18 @@ export class ConvergenceLoop {
    * Cheap, stable fingerprint of the working tree: porcelain status (covers
    * untracked adds/removes) + diff stat (covers content edits). Returns null
    * outside a git repo or on any git failure.
+   *
+   * LIMITATION (by design): if the project TRACKS a build artifact that a gate
+   * rebuilds every run (a committed dist/bundle, a lockfile the test step
+   * rewrites), `git diff HEAD --stat` reports it as changed on every turn, so
+   * the no-progress breaker sees the tree "move" and never fires. Untracked gate
+   * output is already safe (`.uap/` is filtered; other untracked status lines
+   * are name-only, not content). We do NOT filter the tracked diff by a guessed
+   * artifact list — that would risk hiding a REAL mission edit and silently
+   * accepting a no-op. The reliable remedy is project `.gitignore` hygiene:
+   * don't commit generated artifacts. The breaker degrades safely here (it fails
+   * to abort a stuck run early; maxTurns still bounds it) rather than dangerously
+   * (it never false-aborts a productive run).
    */
   private fingerprintTree(): string | null {
     try {
@@ -641,6 +667,27 @@ export class ConvergenceLoop {
     }
   }
 
+  /** Turn-memoized `fingerprintTree`. The memo captures the post-EXECUTOR-write
+   *  state and is shared by the acceptance rail and the breaker within one turn.
+   *  INVARIANT (upheld by the caller, enforced by `invalidateTurnFingerprint` at
+   *  every turn boundary): no MISSION write happens between the first cached read
+   *  and the turn boundary. Gate-produced artifacts from a re-verify are
+   *  intentionally NOT re-read here — they are excluded from the change signal by
+   *  design (see the tracked-artifact limitation on `fingerprintTree`). If you
+   *  ever add a within-turn mission-write phase AFTER a cached read, call
+   *  `invalidateTurnFingerprint()` before the next read or it will see stale state. */
+  private fingerprintTreeCached(): string | null {
+    if (this.turnFingerprint === undefined) this.turnFingerprint = this.fingerprintTree();
+    return this.turnFingerprint;
+  }
+
+  /** Drop the per-turn fingerprint memo so the next read re-runs git. Called at
+   *  each turn boundary and around the pre-loop baseline so those reads never
+   *  see a stale value. */
+  private invalidateTurnFingerprint(): void {
+    this.turnFingerprint = undefined;
+  }
+
   /**
    * Has this run changed the project tree yet? Applier-written files are
    * authoritative; the git fingerprint covers direct-mutation executors
@@ -651,7 +698,7 @@ export class ConvergenceLoop {
   private hasAppliedChanges(): boolean {
     if (this.appliedFilesTotal.size > 0) return true;
     if (this.runStartTreeFingerprint !== null) {
-      const now = this.fingerprintTree();
+      const now = this.fingerprintTreeCached();
       if (now !== null) return now !== this.runStartTreeFingerprint;
     }
     return false;
@@ -1041,6 +1088,17 @@ export class ConvergenceLoop {
       bestSoFar = resume.bestSoFar ?? -1;
       bestAcceptance = resume.bestAcceptance ?? -1;
       stagnantTurns = resume.stagnantTurns ?? 0;
+      // Restore the no-progress breaker counters so a resumed run keeps its
+      // stall detection instead of restarting it. Clamped to sane ranges — the
+      // run-state file is untrusted (repo content can plant values).
+      noProgressStreak = Math.max(0, Math.min(resume.noProgressStreak ?? 0, NO_APPLY_ABORT_LIMIT));
+      // Scores live in [0,1] (-1 is the "unset" sentinel). Guard against a
+      // planted NaN/Infinity/out-of-range value from the untrusted run-state
+      // file: an unbounded bestScoreSeen would make `record.score > bestScoreSeen`
+      // permanently false and silently disable the breaker's scoreMoved reset.
+      bestScoreSeen = Number.isFinite(resume.bestScoreSeen)
+        ? Math.max(-1, Math.min(resume.bestScoreSeen as number, 1))
+        : -1;
       startTurn = resume.turn + 1;
       // Restore mid-run escalation state so resume is not a silent downgrade.
       if (typeof resume.candidates === 'number' && resume.candidates >= 2) {
@@ -1064,6 +1122,9 @@ export class ConvergenceLoop {
 
     for (let turn = startTurn; turn <= maxTurns; turn++) {
       const turnStart = Date.now();
+      // New turn: the executor is about to (re)write, so any memoized tree
+      // fingerprint from the previous turn is stale.
+      this.invalidateTurnFingerprint();
 
       // Cooperative cancel (dashboard/operator): stop BEFORE any model work this
       // turn. Fail-open — a broken predicate must never wedge the loop.
@@ -1258,11 +1319,18 @@ export class ConvergenceLoop {
       // `filesApplied` is ALWAYS empty there (see the `changedTree` doc above).
       // Using it alone would abort productive agentic runs after two flat-score
       // turns. The git fingerprint is the signal that survives both executors.
-      const treeNow = this.fingerprintTree();
+      const treeNow = this.fingerprintTreeCached();
       const treeMoved = treeNow !== null && treeNow !== lastTurnFingerprint;
       if (treeNow !== null) lastTurnFingerprint = treeNow;
       // Fail OPEN when the fingerprint is unavailable (non-git project, git
-      // failure): never abort a run we cannot prove is idle.
+      // failure): never abort a run we cannot prove is idle. COVERAGE GAP (rare,
+      // documented not fixed): a NON-git project therefore never trips the
+      // breaker. We could use `filesApplied.length === 0` as the idle signal for
+      // the blind/real-applier executor there (filesApplied is authoritative for
+      // it), but not for the agentic executor (empty by construction), and the
+      // loop can't cleanly tell them apart from here. Non-git deliver targets are
+      // rare — the worktree gate requires a git repo — so this stays fail-open
+      // rather than risk aborting a productive agentic run.
       const provablyIdle = treeNow !== null && !treeMoved && outcome.filesApplied.length === 0;
       const scoreMoved = record.score > bestScoreSeen;
       if (scoreMoved) bestScoreSeen = record.score;
@@ -1337,6 +1405,8 @@ export class ConvergenceLoop {
             bestSoFar,
             bestAcceptance,
             stagnantTurns,
+            noProgressStreak,
+            bestScoreSeen,
             candidates: explorerSettings?.candidates,
             seeds: explorerSettings?.seeds,
             criticEnabled: Boolean(critic),
@@ -1372,6 +1442,10 @@ export class ConvergenceLoop {
     if (stallReason) {
       finalFeedback = finalFeedback ? `⛔ ${stallReason}\n\n${finalFeedback}` : `⛔ ${stallReason}`;
     }
+
+    // The final changedTree must reflect the TRUE end state (a turn may have
+    // broken out before its verification set the memo), so read git fresh.
+    this.invalidateTurnFingerprint();
 
     return {
       success,

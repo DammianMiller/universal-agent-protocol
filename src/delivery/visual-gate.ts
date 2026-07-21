@@ -226,7 +226,14 @@ const PIXEL_PROBE = `(function () {
  * handlers simply ignores every event, so this is safe for non-game pages too.
  * Returns a short status string (never throws).
  */
-const START_INTERACTION = `(function () {
+// Split into POINTER-first and KEYS. The click is fired first because it is the
+// most common "click to start" control AND the safest synthetic event (untrusted
+// clicks run no default action, and the canvas/body target has no activation
+// behaviour). Only if the click did NOT start the game do we fall back to keys —
+// this avoids the failure mode where a game starts on click and then treats the
+// following synthetic `Space` as PAUSE (or a second shot), landing on a
+// paused/near-blank frame and re-introducing a false floor failure.
+const START_POINTER = `(function () {
   try {
     var cx = Math.floor((window.innerWidth || 800) / 2);
     var cy = Math.floor((window.innerHeight || 600) / 2);
@@ -238,6 +245,12 @@ const START_INTERACTION = `(function () {
         try { t.dispatchEvent(new MouseEvent(type, mouseOpts)); } catch (e) {}
       });
     });
+    return 'ok';
+  } catch (e) { return 'err:' + (e && e.message); }
+})`;
+
+const START_KEYS = `(function () {
+  try {
     var keys = [
       { key: ' ', code: 'Space', keyCode: 32 },
       { key: 'Enter', code: 'Enter', keyCode: 13 },
@@ -266,6 +279,18 @@ const START_INTERACTION = `(function () {
     return 'ok';
   } catch (e) { return 'err:' + (e && e.message); }
 })`;
+
+/** True when a probe payload shows the canvas has left a blank/menu-ish state —
+ * used to decide whether the pointer click already started the game (so we can
+ * skip the risky keyboard fallback). */
+function probeLooksStarted(raw: string): boolean {
+  try {
+    const p = JSON.parse(raw) as ProbeResult;
+    return Boolean(p.readable) && (p.distinctColors ?? 0) >= MIN_DISTINCT_COLORS && (p.dominantRatio ?? 1) < MAX_DOMINANT_RATIO;
+  } catch {
+    return false;
+  }
+}
 
 interface ProbeResult {
   canvas: boolean;
@@ -473,6 +498,11 @@ export async function runVisualGate(
       // that may have a start screen to drive past".
       const hasCanvas = /<canvas[\s/>]/i.test(src);
       const shots: string[] = [];
+      // The pre-interaction (menu) screenshot, kept as EVIDENCE for the vision
+      // reviewer but NOT fed into the floor/motion stats — the floor is judged on
+      // the playing frames. Without this, a game whose menu is broken but whose
+      // play state renders would pass with the menu never visible to the reviewer.
+      let menuShot: string | null = null;
       let loaded = false;
       let probes: ProbeResult[] = [];
       try {
@@ -493,13 +523,34 @@ export async function runVisualGate(
         // also satisfies the user-gesture requirement that gates a game's
         // AudioContext.resume(). Then let a few frames render.
         if (loaded && hasCanvas) {
+          // First, keep one screenshot of the menu as reviewer evidence.
           try {
-            // Timeout-guard the evaluate: a start handler that opens a modal
-            // dialog would otherwise block forever. WebBrowser now auto-dismisses
-            // dialogs, but the race is a belt-and-braces bound so a hung handler
-            // can never wedge the run (matching the goto guard above).
-            await Promise.race([browser.evaluate<string>(START_INTERACTION), delay(Math.min(timeoutMs, 5000))]);
+            const menuPath = join(screenshotDir, `${file.replace(/\.html$/i, '').replace(/[/\\]+/g, '_')}-menu.png`);
+            await browser.screenshot(menuPath);
+            menuShot = menuPath;
+          } catch {
+            // evidence is best-effort
+          }
+          // Timeout-guard every evaluate: a start handler that opens a modal
+          // dialog would otherwise block forever. WebBrowser auto-dismisses
+          // dialogs, but the race is a belt-and-braces bound (matching goto).
+          try {
+            // Click first — the common, safe start control.
+            await Promise.race([browser.evaluate<string>(START_POINTER), delay(Math.min(timeoutMs, 5000))]);
             await delay(Math.min(intervalMs, 600));
+            // Only fall back to keys if the click did NOT start the game. Firing
+            // Space at an already-started game can pause it (a near-blank frame).
+            let started = false;
+            try {
+              const raw = await Promise.race([browser.evaluate<string>(PIXEL_PROBE), delay(Math.min(timeoutMs, 5000)).then(() => '')]);
+              started = typeof raw === 'string' && raw.length > 0 && probeLooksStarted(raw);
+            } catch {
+              started = false;
+            }
+            if (!started) {
+              await Promise.race([browser.evaluate<string>(START_KEYS), delay(Math.min(timeoutMs, 5000))]);
+              await delay(Math.min(intervalMs, 600));
+            }
           } catch {
             // Best-effort — a page that rejects synthetic events just stays on
             // whatever it rendered; the sampler reports that honestly.
@@ -571,7 +622,10 @@ export async function runVisualGate(
         expectsAnimation,
         runtimeErrors: errors,
         failedRequests,
-        screenshots: shots,
+        // Evidence for the vision reviewer: the menu frame first (if captured),
+        // then the playing frames. The floor/motion stats above are computed
+        // from `shots` (playing) ONLY, so this evidence does not sway the verdict.
+        screenshots: menuShot ? [menuShot, ...shots] : shots,
       };
       const pageTargets = { ...visualTargets, ...(visualTargets.pages?.[file] ?? {}) };
       pages.push({ ...base, problems: judgePage(base, pageTargets) });

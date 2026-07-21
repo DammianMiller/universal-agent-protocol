@@ -180,8 +180,26 @@ function describePhases(phases: DeliveryPhase[]): string {
 export async function runPlanThoughtExperiment(
   mission: string,
   phases: DeliveryPhase[],
-  executor: LoopExecutor
+  executor: LoopExecutor,
+  // `hints` are rendered verbatim into the judge prompt with no sanitization —
+  // they MUST be internally generated (e.g. validatePhaseGraph warnings built
+  // from slugified phase ids), never raw model/user output.
+  hints: string[] = []
 ): Promise<PlanReviewVerdict> {
+  // Structural coherence WARNINGS (e.g. the ESM-vs-classic-script heuristic) are
+  // fed in as adjudicated HINTS rather than hard blocks: the heuristic is
+  // pattern-matched and can false-positive, so the LLM decides whether each is a
+  // real execution-breaking defect. This gives the heuristic teeth (it steers
+  // the judge's attention) without the blocking hazard of treating it as an error.
+  const hintBlock =
+    hints.length > 0
+      ? [
+          '',
+          'AUTOMATED COHERENCE HINTS (a cheap static check flagged these — treat as',
+          'leads to verify, NOT as verdicts; confirm or dismiss each on the merits):',
+          ...hints.map((h, i) => `  ${i + 1}. ${h}`),
+        ]
+      : [];
   const prompt = [
     'You are a plan validator. Mentally EXECUTE the phase plan below, in its',
     'dependency order, before anything real runs. You did not author this plan;',
@@ -191,6 +209,7 @@ export async function runPlanThoughtExperiment(
     '',
     'PHASE PLAN:',
     describePhases(phases),
+    ...hintBlock,
     '',
     'Check ONLY for defects that would make execution fail or deliver the wrong thing:',
     '- a phase that needs an artifact/decision no earlier phase (per its deps) produces',

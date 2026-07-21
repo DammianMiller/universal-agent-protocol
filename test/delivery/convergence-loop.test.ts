@@ -790,3 +790,114 @@ describe('no-progress circuit-breaker (octopus stall, 2026-07-20)', () => {
     expect(result.stallReason).toBeUndefined();
   });
 });
+
+describe('no-progress breaker: state persists across resume (follow-up D4)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-resume-'));
+    execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: dir, stdio: 'ignore' });
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const stuckLoop = (onCheckpoint?: (c: unknown) => void, resumeFrom?: unknown) =>
+    new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 10,
+        maxTurnsCeiling: 10,
+        rungs: stubRungs(),
+        baselineCheck: false,
+        alwaysVerify: true,
+        ...(onCheckpoint ? { onCheckpoint: onCheckpoint as never } : {}),
+        ...(resumeFrom ? { resumeFrom: resumeFrom as never } : {}),
+      },
+      async () => 're-reading, nothing to change',
+      { applier: async () => ({ filesWritten: [], rejected: [] }), ladderRunner: () => ladderResult(0.33, false) }
+    );
+
+  it('emits noProgressStreak and bestScoreSeen in the checkpoint', async () => {
+    const checkpoints: Array<Record<string, unknown>> = [];
+    await stuckLoop((c) => checkpoints.push(c as Record<string, unknown>)).deliver('x');
+    expect(checkpoints.length).toBeGreaterThan(0);
+    const last = checkpoints[checkpoints.length - 1];
+    expect(last).toHaveProperty('noProgressStreak');
+    expect(last).toHaveProperty('bestScoreSeen');
+    expect(typeof last.noProgressStreak).toBe('number');
+  });
+
+  it('a resumed run restores the streak instead of restarting stall detection', async () => {
+    // Resume as if the prior session was already one idle turn into the streak.
+    // With NO_APPLY_ABORT_LIMIT=3, restoring noProgressStreak=2 means the resumed
+    // run aborts after a SINGLE fresh idle turn rather than three.
+    const resumeFrom = {
+      turn: 1,
+      history: [{ turn: 1, passed: false, score: 0.33, gateResults: [], filesApplied: [], durationMs: 1 }],
+      prevContext: {},
+      bestSoFar: 0.33,
+      bestAcceptance: -1,
+      stagnantTurns: 2,
+      noProgressStreak: 2,
+      bestScoreSeen: 0.33,
+    };
+    let executorCalls = 0;
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 10, maxTurnsCeiling: 10, rungs: stubRungs(), baselineCheck: false, alwaysVerify: true, resumeFrom: resumeFrom as never },
+      async () => { executorCalls++; return 'still stuck'; },
+      { applier: async () => ({ filesWritten: [], rejected: [] }), ladderRunner: () => ladderResult(0.33, false) }
+    );
+    const result = await loop.deliver('resume the stuck run');
+    expect(result.stallReason).toMatch(/stuck/i);
+    // Restored streak (2) + 1 fresh idle turn = abort; NOT 3 fresh turns.
+    expect(executorCalls).toBe(1);
+  });
+
+  it('sanitizes a planted non-finite bestScoreSeen from an untrusted resume state', async () => {
+    // Unsanitized, bestScoreSeen=Infinity makes `score > bestScoreSeen` forever
+    // false, so scoreMoved never resets the streak and the restored streak (2) +
+    // one idle turn FALSE-ABORTS at turn 1. Sanitizing Infinity → -1 lets the
+    // first real score (0.33 > -1) register as progress and reset the streak, so
+    // the run does NOT abort on turn 1. calls>1 proves the value was neutralized.
+    const resumeFrom = {
+      turn: 1,
+      history: [{ turn: 1, passed: false, score: 0.33, gateResults: [], filesApplied: [], durationMs: 1 }],
+      prevContext: {},
+      bestSoFar: 0.33,
+      bestAcceptance: -1,
+      stagnantTurns: 0,
+      noProgressStreak: 2,
+      bestScoreSeen: Number.POSITIVE_INFINITY, // planted
+    };
+    let calls = 0;
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 4, maxTurnsCeiling: 4, rungs: stubRungs(), baselineCheck: false, alwaysVerify: true, resumeFrom: resumeFrom as never },
+      async () => { calls++; return 'still stuck'; },
+      { applier: async () => ({ filesWritten: [], rejected: [] }), ladderRunner: () => ladderResult(0.33, false) }
+    );
+    await loop.deliver('resume');
+    expect(calls).toBeGreaterThan(1);
+  });
+
+  it('clamps a planted out-of-range noProgressStreak from an untrusted resume state', async () => {
+    const resumeFrom = {
+      turn: 1,
+      history: [{ turn: 1, passed: false, score: 0, gateResults: [], filesApplied: [], durationMs: 1 }],
+      prevContext: {},
+      bestSoFar: 0,
+      bestAcceptance: -1,
+      stagnantTurns: 0,
+      noProgressStreak: 999, // planted
+      bestScoreSeen: -1,
+    };
+    // Must not throw or instantly abort in a way that skips real work — the
+    // clamp bounds it to NO_APPLY_ABORT_LIMIT. A productive first turn resets it.
+    let calls = 0;
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 2, rungs: stubRungs(), baselineCheck: false, resumeFrom: resumeFrom as never },
+      async () => { calls++; return '```file:src/x.ts\nexport const x = 1;\n```'; },
+      { ladderRunner: () => ladderResult(1, true) }
+    );
+    const result = await loop.deliver('resume');
+    expect(calls).toBeGreaterThanOrEqual(1);
+    expect(result.success).toBe(true);
+  });
+});
