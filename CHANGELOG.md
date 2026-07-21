@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.163.2 (2026-07-21)
+
+- fix(deliver): force a write when the agentic read-loop ignores the soft nudge
+
+
 ## v1.163.1 (2026-07-20)
 
 - fix(delivery): reap leaked browsers, blame the right file, break stuck loops
