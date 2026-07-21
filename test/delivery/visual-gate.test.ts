@@ -13,6 +13,7 @@ import {
   motionBetween,
   discoverEntryPages,
   visualRuntimeNote,
+  driveStartInteraction,
   type VisualBrowserDriver,
 } from '../../src/delivery/visual-gate.js';
 
@@ -413,5 +414,70 @@ describe('visual gate: the browser is always closed (leak regression, 2026-07-20
 
     await runVisualGate(dir, { browserFactory: counting, samples: 1, intervalMs: 1 });
     expect(closed).toBe(1);
+  });
+});
+
+describe('driveStartInteraction (extracted — click-vs-keys in isolation)', () => {
+  /** Minimal evaluate-only stub: records the scripts it was handed and answers
+   *  the post-click probe with a "started" or "still blank" payload. */
+  function evalStub(startedAfterClick: boolean) {
+    const seen: string[] = [];
+    const started = probe(Array.from({ length: 16 }, (_, i) => `c${i}`), 10, 0.4);
+    const blank = probe(Array(16).fill('0,0,0'), 1, 1.0);
+    return {
+      seen,
+      browser: {
+        evaluate: async <T,>(script?: unknown) => {
+          const s = String(script ?? '');
+          seen.push(s);
+          if (isStartInteraction(s)) return 'ok' as unknown as T;
+          return (startedAfterClick ? started : blank) as unknown as T;
+        },
+      } as Pick<VisualBrowserDriver, 'evaluate'>,
+    };
+  }
+
+  it('skips the keyboard fallback when the click started the game', async () => {
+    const { browser, seen } = evalStub(true);
+    const r = await driveStartInteraction(browser, { timeoutMs: 1000, settleMs: 1 });
+    expect(r.pointerFired).toBe(true);
+    expect(r.startedAfterPointer).toBe(true);
+    expect(r.keysFired).toBe(false);
+    expect(seen.some((s) => isKeysInteraction(s))).toBe(false);
+  });
+
+  it('fires the keyboard fallback when the click left the canvas blank', async () => {
+    const { browser, seen } = evalStub(false);
+    const r = await driveStartInteraction(browser, { timeoutMs: 1000, settleMs: 1 });
+    expect(r.pointerFired).toBe(true);
+    expect(r.startedAfterPointer).toBe(false);
+    expect(r.keysFired).toBe(true);
+    expect(seen.some((s) => isKeysInteraction(s))).toBe(true);
+  });
+
+  it('never throws when the page rejects synthetic events', async () => {
+    const browser = {
+      evaluate: async () => {
+        throw new Error('evaluate blew up');
+      },
+    } as unknown as Pick<VisualBrowserDriver, 'evaluate'>;
+    const r = await driveStartInteraction(browser, { timeoutMs: 50, settleMs: 1 });
+    expect(r.pointerFired).toBe(false); // threw before the pointer could land
+    expect(r.keysFired).toBe(false);
+  });
+
+  it('treats a probe failure as not-started and still tries the keys', async () => {
+    let calls = 0;
+    const browser = {
+      evaluate: async <T,>(script?: unknown) => {
+        calls++;
+        if (isStartInteraction(String(script ?? ''))) return 'ok' as unknown as T;
+        throw new Error('probe failed');
+      },
+    } as unknown as Pick<VisualBrowserDriver, 'evaluate'>;
+    const r = await driveStartInteraction(browser, { timeoutMs: 50, settleMs: 1 });
+    expect(r.startedAfterPointer).toBe(false);
+    expect(r.keysFired).toBe(true);
+    expect(calls).toBeGreaterThanOrEqual(3); // pointer, probe, keys
   });
 });

@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   validatePhaseGraph,
+  checkModuleCoherence,
   parsePlanVerdict,
   runPlanThoughtExperiment,
   reviewPlanText,
@@ -236,5 +237,29 @@ describe('validatePhaseGraph — module-system coherence (octopus run, 2026-07-2
     ]);
     expect(v.ok).toBe(true);
     expect(v.warnings).toEqual([]);
+  });
+});
+
+describe('checkModuleCoherence (extracted semantic layer)', () => {
+  const contradictory = [
+    { id: 'contracts', title: 'c', goal: 'Create js/contracts.js which exports shared constants.' },
+    { id: 'index-html', title: 'i', goal: 'Create index.html with script tags for js/contracts.js.' },
+  ];
+
+  it('returns the contradiction as a WARNING string, usable on its own', () => {
+    const w = checkModuleCoherence(contradictory);
+    expect(w.length).toBe(1);
+    expect(w[0]).toMatch(/module-system contradiction/i);
+  });
+
+  it('returns [] for a coherent plan', () => {
+    expect(checkModuleCoherence([{ id: 'a', title: 'a', goal: 'Add a CSV export button.' }])).toEqual([]);
+  });
+
+  it('validatePhaseGraph composes it — same warning, ok stays true', () => {
+    const v = validatePhaseGraph(contradictory);
+    expect(v.ok).toBe(true);
+    expect(v.errors).toEqual([]);
+    expect(v.warnings).toEqual(checkModuleCoherence(contradictory));
   });
 });

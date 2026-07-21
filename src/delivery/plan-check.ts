@@ -7,7 +7,13 @@
  * Two layers, both run BEFORE any phase executes:
  *
  *  1. `validatePhaseGraph` — structural: duplicate ids, unknown/self deps,
- *     dependency cycles, empty goals. Pure, no model.
+ *     dependency cycles, empty goals. Pure, no model. It also COMPOSES the
+ *     semantic layer below via the warnings channel.
+ *  1b. `checkModuleCoherence` — semantic (warnings only): plan-level
+ *     contradictions no implementation could satisfy, e.g. one phase requiring
+ *     `export` from a file another phase loads as a classic script. Kept
+ *     separate from the DAG checks so sibling rules can grow without turning
+ *     the structural validator into a grab-bag.
  *  2. `runPlanThoughtExperiment` — one evaluator call that mentally executes
  *     the decomposition ("will these phases, in this dependency order, deliver
  *     the mission?") and returns a pass/fail verdict with findings. The judge
@@ -77,6 +83,28 @@ export function validatePhaseGraph(phases: DeliveryPhase[]): PhaseGraphValidatio
       break;
     }
   }
+  // Semantic coherence lives in its own checker; the warnings channel is the
+  // composition seam (see checkModuleCoherence).
+  warnings.push(...checkModuleCoherence(phases));
+
+  return { ok: errors.length === 0, errors, warnings };
+}
+
+/**
+ * SEMANTIC coherence over a phase plan — distinct from the STRUCTURAL DAG
+ * checks above, which is why it lives in its own function rather than riding
+ * along inside `validatePhaseGraph`. It returns WARNINGS only (never errors):
+ * a hard error would set ok:false, which makes decompose's
+ * appendGapClosurePhase() return null and SILENTLY DROP the gap-closure
+ * phase — trading a heuristic false positive for the loss of a real safety
+ * phase. The authoritative catch is the execution gate, which names the
+ * loader when it observes the mismatch for real; these warnings are also fed
+ * to the thought-experiment judge as adjudicated hints.
+ *
+ * Add sibling coherence rules (packaging, crate boundaries, ...) here.
+ */
+export function checkModuleCoherence(phases: DeliveryPhase[]): string[] {
+  const out: string[] = [];
   // Module-system coherence. A plan that asks one phase to `export` from a file
   // and another to load that file with a plain <script src> tag is not merely
   // awkward — it is UNSATISFIABLE: the browser parses classic scripts, so the
@@ -114,7 +142,7 @@ export function validatePhaseGraph(phases: DeliveryPhase[]): PhaseGraphValidatio
       // a real safety phase. This heuristic is not precise enough to earn that.
       // The authoritative catch is the execution gate, which now names the
       // loader when it observes the mismatch for real.
-      warnings.push(
+      out.push(
         `possible module-system contradiction: phase(s) ${esmPhases.map((p) => `'${p.id}'`).join(', ')} appear to ` +
           `require ES module syntax (import/export), while phase(s) ${classicPhases.map((p) => `'${p.id}'`).join(', ')} ` +
           `load scripts with classic <script src> tags and no type="module". If those refer to the same files the ` +
@@ -124,8 +152,7 @@ export function validatePhaseGraph(phases: DeliveryPhase[]): PhaseGraphValidatio
       );
     }
   }
-
-  return { ok: errors.length === 0, errors, warnings };
+  return out;
 }
 
 export interface PlanReviewVerdict {

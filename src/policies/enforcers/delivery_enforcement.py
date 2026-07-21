@@ -280,11 +280,9 @@ def _shell_surface(cmd: str) -> str:
     whitespace for the trailing lookahead. Returning "" here would silently stop
     blocking every quoted-argument launch — there are tests pinning this.
 
-    KNOWN GAP (pre-existing, not introduced here): a launch inside a quoted
-    interpreter payload — `bash -c "firefox url"`, `sh -c 'xdg-open x'` — is not
-    detected. The OLD matcher missed these too (the `"` before the bin was never
-    a separator), so this is not a regression; closing it needs a separate
-    interpreter-aware pass that does not re-fire on `python -c "...open('f')"`."""
+    A launch inside a quoted SHELL payload (`bash -c "firefox url"`) is invisible
+    here by construction — that is what `_shell_payload_launch` below exists to
+    catch, as a separate, narrower pass."""
     if len(cmd) > _SURFACE_MAX or ("'" not in cmd and '"' not in cmd and "<<" not in cmd):
         return cmd
     def blank(m: "re.Match[str]") -> str:
@@ -298,6 +296,56 @@ def _shell_surface(cmd: str) -> str:
     return _QUOTE_SPAN_RE.sub(blank_spans, _HEREDOC_RE.sub(blank, cmd))
 
 
+# The quoted payload of a SHELL interpreter is itself shell, so a launch inside
+# it is a real launch — `bash -c "firefox url"`, `ssh box "chromium x"`. Only
+# shell interpreters are listed: python/node/ruby/perl are deliberately ABSENT
+# because their -c/-e payload is NOT shell, and excluding them is precisely what
+# keeps `python -c "...json.load(open('f'))..."` from re-firing the false
+# positive this matcher was fixed for. (A python payload nested inside a bash
+# payload is still safe: the inner text is scanned as shell, where `open(` is a
+# function call and fails the launch lookahead.)
+#
+# The interpreter must sit at a real COMMAND POSITION (same prologue as
+# `_BROWSER_RE`). Matching it anywhere in the string made the enforcer block its
+# own documentation: `git commit -m "stop bash -c 'firefox url' bypassing"`,
+# `echo "bash -c chromium ..." >> notes.md`, a README heredoc showing the
+# invocation — all DATA, all previously blocked with no escape hatch, because
+# this branch runs before the DELIVER_ACTIVE/BYPASS checks.
+#
+# `-[a-zA-Z]*c` (not `-c`) so combined flags count: `bash -lc "..."` is the
+# canonical login-shell form several agent harnesses emit, and `sh -xc` is
+# common. Requiring whitespace right after the interpreter NAME keeps `ssh` from
+# matching `ssh-keygen -C "firefox comment"`.
+_CMD_POS = (
+    r"(?:^|[;&|(\n]|\|\||&&|\bnohup\b|\bsetsid\b|\bexec\b|\bxargs\b|\benv\b|\bnice\b|\btimeout\b|`|\$\()"
+    r"\s*(?:\w+=[^\s]*\s+)*(?:[\w./~+-]*/)?"
+)
+_SHELL_PAYLOAD_RE = re.compile(
+    _CMD_POS + r"(?:bash|sh|zsh|dash|ksh)\s[^;&|\n]*?-[a-zA-Z]*c\s*(['\"])(.*?)\1"
+    r"|" + _CMD_POS + r"eval\s+(['\"])(.*?)\3"
+    r"|" + _CMD_POS + r"ssh\s[^;&|\n]*?\s(['\"])(.*?)\5",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _shell_payload_launch(cmd: str) -> bool:
+    """True when a quoted SHELL-interpreter payload contains a browser launch.
+
+    Heredoc bodies are blanked first: a body is DATA being written to a file (a
+    README showing `bash -c "chromium …"`), never a command position. Quotes are
+    KEPT so genuine payloads remain scannable."""
+    if len(cmd) > _SURFACE_MAX:
+        return False
+    scan = cmd
+    if "<<" in cmd:
+        scan = _HEREDOC_RE.sub(lambda m: " " * (m.end() - m.start()), cmd)
+    for m in _SHELL_PAYLOAD_RE.finditer(scan):
+        payload = m.group(2) or m.group(4) or m.group(6) or ""
+        if payload and _BROWSER_RE.search(payload):
+            return True
+    return False
+
+
 def _handle_bash(args: dict) -> None:
     """Gate bash so it can't bypass delivery enforcement (source writes) and so a
     model stops trying to 'verify' by opening a GUI browser."""
@@ -308,7 +356,9 @@ def _handle_bash(args: dict) -> None:
 
     # Browser launch → redirect to the real (headless) validation path. Always
     # blocked: opening a window proves nothing and cannot gate a DONE claim.
-    if not _LOOKUP_RE.match(cmd) and _BROWSER_RE.search(_shell_surface(cmd)):
+    if not _LOOKUP_RE.match(cmd) and (
+        _BROWSER_RE.search(_shell_surface(cmd)) or _shell_payload_launch(cmd)
+    ):
         emit(
             False,
             "BLOCKED: do not open a GUI browser to check your work — it proves nothing "

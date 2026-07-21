@@ -570,13 +570,6 @@ export class ConvergenceLoop {
   private appliedFilesTotal = new Set<string>();
   /** Git tree fingerprint at run start; null when unavailable (non-git). */
   private runStartTreeFingerprint: string | null = null;
-  /** Per-turn memo of the tree fingerprint. `fingerprintTree` shells out to
-   *  `git status`+`diff` (blocking execSync); a single turn used to call it up
-   *  to 3× (acceptance rail, breaker, end-of-turn changedTree) on identical
-   *  post-write state. Set on first use, cleared at each turn boundary
-   *  (`invalidateTurnFingerprint`) so a new turn's writes are always re-read.
-   *  `undefined` = not yet computed this turn. */
-  private turnFingerprint: string | null | undefined = undefined;
 
   constructor(
     config: ConvergenceConfig,
@@ -667,26 +660,6 @@ export class ConvergenceLoop {
     }
   }
 
-  /** Turn-memoized `fingerprintTree`. The memo captures the post-EXECUTOR-write
-   *  state and is shared by the acceptance rail and the breaker within one turn.
-   *  INVARIANT (upheld by the caller, enforced by `invalidateTurnFingerprint` at
-   *  every turn boundary): no MISSION write happens between the first cached read
-   *  and the turn boundary. Gate-produced artifacts from a re-verify are
-   *  intentionally NOT re-read here — they are excluded from the change signal by
-   *  design (see the tracked-artifact limitation on `fingerprintTree`). If you
-   *  ever add a within-turn mission-write phase AFTER a cached read, call
-   *  `invalidateTurnFingerprint()` before the next read or it will see stale state. */
-  private fingerprintTreeCached(): string | null {
-    if (this.turnFingerprint === undefined) this.turnFingerprint = this.fingerprintTree();
-    return this.turnFingerprint;
-  }
-
-  /** Drop the per-turn fingerprint memo so the next read re-runs git. Called at
-   *  each turn boundary and around the pre-loop baseline so those reads never
-   *  see a stale value. */
-  private invalidateTurnFingerprint(): void {
-    this.turnFingerprint = undefined;
-  }
 
   /**
    * Has this run changed the project tree yet? Applier-written files are
@@ -695,10 +668,14 @@ export class ConvergenceLoop {
    * signal shows a change — including when git is unavailable — the answer
    * is false. See requireDiffForAcceptance.
    */
-  private hasAppliedChanges(): boolean {
+  private hasAppliedChanges(treeFp?: string | null): boolean {
     if (this.appliedFilesTotal.size > 0) return true;
     if (this.runStartTreeFingerprint !== null) {
-      const now = this.fingerprintTreeCached();
+      // `treeFp` is the caller's already-computed fingerprint for THIS turn
+      // (see the `turnFp` const in the turn loop). Passing it makes the sharing
+      // explicit and local; omitting it reads git fresh. `null` is a real value
+      // (git unavailable), so only `undefined` means "not supplied".
+      const now = treeFp !== undefined ? treeFp : this.fingerprintTree();
       if (now !== null) return now !== this.runStartTreeFingerprint;
     }
     return false;
@@ -715,7 +692,7 @@ export class ConvergenceLoop {
    */
   private async judgeAcceptance(
     ladder: LadderResult,
-    opts: { atBaseline?: boolean } = {}
+    opts: { atBaseline?: boolean; treeFp?: string | null } = {}
   ): Promise<{ ladder: LadderResult; acceptanceMet?: number }> {
     if (!this.acceptanceGate || !ladder.passed) return { ladder };
     // Anti-no-op rail (P0, 2026-07-13): acceptance is deterministically
@@ -724,7 +701,7 @@ export class ConvergenceLoop {
     // alreadyDelivered on a gates-green repo. At baseline nothing can have
     // changed by definition. Skipped on resume (prior-session turns already
     // wrote; their changes are invisible to this process's fingerprint).
-    const unchanged = opts.atBaseline ? true : !this.hasAppliedChanges();
+    const unchanged = opts.atBaseline ? true : !this.hasAppliedChanges(opts.treeFp);
     // A trailing epic in a decomposition legitimately produces zero diff: an
     // earlier epic already wrote the files its goal names, so THIS loop applies
     // nothing even though the goal is met. Hard-withholding there fails the epic
@@ -1122,9 +1099,6 @@ export class ConvergenceLoop {
 
     for (let turn = startTurn; turn <= maxTurns; turn++) {
       const turnStart = Date.now();
-      // New turn: the executor is about to (re)write, so any memoized tree
-      // fingerprint from the previous turn is stale.
-      this.invalidateTurnFingerprint();
 
       // Cooperative cancel (dashboard/operator): stop BEFORE any model work this
       // turn. Fail-open — a broken predicate must never wedge the loop.
@@ -1173,12 +1147,31 @@ export class ConvergenceLoop {
       // run-wide union BEFORE the acceptance judge consults it.
       for (const f of outcome.filesApplied) this.appliedFilesTotal.add(f);
 
+      // ONE git read per turn, taken here — after the executor has written and
+      // before the first consumer — and threaded explicitly to everything in
+      // this turn that needs it (the acceptance rail below, the breaker further
+      // down). `fingerprintTree` shells out to `git status`+`diff` via blocking
+      // execSync; a turn used to pay that up to 3× on identical post-write
+      // state. Being a turn-LOCAL const rather than instance state, it cannot go
+      // stale across turns and needs no manual invalidation — the scope IS the
+      // invariant, which is why this replaced an instance-field memo.
+      //
+      // This snapshot is taken BEFORE the re-verify below, which can rebuild
+      // TRACKED gate artifacts that `fingerprintTree` does report as changes
+      // (only `.uap/` is filtered — see its doc). So the breaker's turn-N
+      // snapshot excludes those artifacts while turn N+1's includes them, which
+      // can read as "tree moved" and reset the no-progress streak once. That
+      // fails OPEN (a stuck run takes one more turn to abort; a productive run
+      // is never falsely aborted) and only on a turn where re-detection actually
+      // added rungs — at most about once per run, since `rungs` only grows.
+      const turnFp = this.fingerprintTree();
+
       // Acceptance: judge ONCE on this turn's committed verdict (single-turn
       // result or explorer winner) — not per candidate — flipping it to
       // not-passed with gap feedback when the spec isn't fully implemented.
       let acceptanceMet: number | undefined;
       if (outcome.ladder) {
-        const judged = await this.judgeAcceptance(outcome.ladder);
+        const judged = await this.judgeAcceptance(outcome.ladder, { treeFp: turnFp });
         outcome.ladder = judged.ladder;
         acceptanceMet = judged.acceptanceMet;
       }
@@ -1197,7 +1190,7 @@ export class ConvergenceLoop {
         if (merged.length > rungs.length) {
           rungs = merged;
           let reladder = await ladderRunner(rungs, this.config.projectRoot, this.config.ladderOptions);
-          const rejudged = await this.judgeAcceptance(reladder);
+          const rejudged = await this.judgeAcceptance(reladder, { treeFp: turnFp });
           reladder = rejudged.ladder;
           acceptanceMet = rejudged.acceptanceMet ?? acceptanceMet;
           outcome.ladder = reladder;
@@ -1319,7 +1312,7 @@ export class ConvergenceLoop {
       // `filesApplied` is ALWAYS empty there (see the `changedTree` doc above).
       // Using it alone would abort productive agentic runs after two flat-score
       // turns. The git fingerprint is the signal that survives both executors.
-      const treeNow = this.fingerprintTreeCached();
+      const treeNow = turnFp;
       const treeMoved = treeNow !== null && treeNow !== lastTurnFingerprint;
       if (treeNow !== null) lastTurnFingerprint = treeNow;
       // Fail OPEN when the fingerprint is unavailable (non-git project, git
@@ -1443,9 +1436,9 @@ export class ConvergenceLoop {
       finalFeedback = finalFeedback ? `⛔ ${stallReason}\n\n${finalFeedback}` : `⛔ ${stallReason}`;
     }
 
-    // The final changedTree must reflect the TRUE end state (a turn may have
-    // broken out before its verification set the memo), so read git fresh.
-    this.invalidateTurnFingerprint();
+    // `changedTree` below calls hasAppliedChanges() with NO treeFp, so it reads
+    // git fresh — the final value must reflect the true end state, not any
+    // per-turn value (a turn may have broken out before its verification ran).
 
     return {
       success,
