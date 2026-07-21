@@ -28,18 +28,25 @@ describe('T1: recordTaskFeedback in TaskCoordinator', () => {
     expect(source).toContain('recordTaskFeedback({');
   });
 
-  it('recordTaskFeedback should be callable', async () => {
-    const { recordTaskFeedback } = await import('../src/memory/dynamic-retrieval.js');
-    expect(typeof recordTaskFeedback).toBe('function');
-    // Should not throw when called with valid args
-    expect(() =>
-      recordTaskFeedback({
-        instruction: 'test task',
-        success: true,
-        durationMs: 1000,
-      })
-    ).not.toThrow();
-  });
+  it(
+    'recordTaskFeedback should be callable',
+    async () => {
+      const { recordTaskFeedback } = await import('../src/memory/dynamic-retrieval.js');
+      expect(typeof recordTaskFeedback).toBe('function');
+      // Should not throw when called with valid args
+      expect(() =>
+        recordTaskFeedback({
+          instruction: 'test task',
+          success: true,
+          durationMs: 1000,
+        })
+      ).not.toThrow();
+    },
+    // A cold `await import()` of this heavy module (pulls in the embeddings/DB
+    // stack) can exceed the 5s default when the full suite runs it under CPU
+    // pressure — a load artifact, not a real hang. Give it realistic headroom.
+    20000
+  );
 });
 
 // ── T2: Semantic cache in decideContextLevel ──
