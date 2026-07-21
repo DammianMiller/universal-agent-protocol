@@ -292,6 +292,56 @@ function probeLooksStarted(raw: string): boolean {
   }
 }
 
+/** What `driveStartInteraction` actually did — returned so the branch can be
+ *  asserted directly instead of only inferred from a whole-gate verdict. */
+export interface StartInteractionResult {
+  pointerFired: boolean;
+  /** The canvas looked non-blank after the click, so the keys were skipped. */
+  startedAfterPointer: boolean;
+  keysFired: boolean;
+}
+
+/**
+ * Drive a game past its start screen: click FIRST, probe, and fall back to the
+ * keyboard ONLY if the click did not start it (firing Space at an already-
+ * started game can PAUSE it, landing on a near-blank frame).
+ *
+ * Every evaluate is timeout-raced: a start handler that opens a modal dialog
+ * would otherwise block forever. WebBrowser auto-dismisses dialogs, but the race
+ * is a belt-and-braces bound (matching the goto guard).
+ *
+ * Extracted from `runVisualGate` so the click-vs-keys decision is unit-testable
+ * on its own, without standing up the whole gate. Never throws — a page that
+ * ignores synthetic events simply stays on whatever it rendered, and the sampler
+ * reports that honestly.
+ */
+export async function driveStartInteraction(
+  browser: Pick<VisualBrowserDriver, 'evaluate'>,
+  opts: { timeoutMs: number; settleMs: number }
+): Promise<StartInteractionResult> {
+  const result: StartInteractionResult = { pointerFired: false, startedAfterPointer: false, keysFired: false };
+  const cap = Math.min(opts.timeoutMs, 5000);
+  try {
+    await Promise.race([browser.evaluate<string>(START_POINTER), delay(cap)]);
+    result.pointerFired = true;
+    await delay(opts.settleMs);
+    try {
+      const raw = await Promise.race([browser.evaluate<string>(PIXEL_PROBE), delay(cap).then(() => '')]);
+      result.startedAfterPointer = typeof raw === 'string' && raw.length > 0 && probeLooksStarted(raw);
+    } catch {
+      result.startedAfterPointer = false;
+    }
+    if (!result.startedAfterPointer) {
+      await Promise.race([browser.evaluate<string>(START_KEYS), delay(cap)]);
+      result.keysFired = true;
+      await delay(opts.settleMs);
+    }
+  } catch {
+    // Best-effort by design; report how far we got.
+  }
+  return result;
+}
+
 interface ProbeResult {
   canvas: boolean;
   readable?: boolean;
@@ -531,30 +581,7 @@ export async function runVisualGate(
           } catch {
             // evidence is best-effort
           }
-          // Timeout-guard every evaluate: a start handler that opens a modal
-          // dialog would otherwise block forever. WebBrowser auto-dismisses
-          // dialogs, but the race is a belt-and-braces bound (matching goto).
-          try {
-            // Click first — the common, safe start control.
-            await Promise.race([browser.evaluate<string>(START_POINTER), delay(Math.min(timeoutMs, 5000))]);
-            await delay(Math.min(intervalMs, 600));
-            // Only fall back to keys if the click did NOT start the game. Firing
-            // Space at an already-started game can pause it (a near-blank frame).
-            let started = false;
-            try {
-              const raw = await Promise.race([browser.evaluate<string>(PIXEL_PROBE), delay(Math.min(timeoutMs, 5000)).then(() => '')]);
-              started = typeof raw === 'string' && raw.length > 0 && probeLooksStarted(raw);
-            } catch {
-              started = false;
-            }
-            if (!started) {
-              await Promise.race([browser.evaluate<string>(START_KEYS), delay(Math.min(timeoutMs, 5000))]);
-              await delay(Math.min(intervalMs, 600));
-            }
-          } catch {
-            // Best-effort — a page that rejects synthetic events just stays on
-            // whatever it rendered; the sampler reports that honestly.
-          }
+          await driveStartInteraction(browser, { timeoutMs, settleMs: Math.min(intervalMs, 600) });
         }
 
         if (loaded) {

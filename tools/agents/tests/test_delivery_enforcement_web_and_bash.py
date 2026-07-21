@@ -153,6 +153,57 @@ class BashGateTest(unittest.TestCase):
         code, out = run("Bash", {"command": cmd})
         self.assertEqual(code, 2, f"escaped-quote span must not hide the launch — got {out}")
 
+    def test_launch_inside_a_shell_interpreter_payload_is_blocked(self):
+        # A quoted SHELL payload is itself shell, so a launch inside it is real.
+        # This gap predated the surface-stripper (the '"' before the bin was
+        # never a separator) and is now closed by the interpreter pass.
+        for cmd in (
+            'bash -c "firefox http://x"',
+            "sh -c 'xdg-open /tmp/x.html'",
+            'eval "firefox /tmp/a.html"',
+            'bash -c "cd /tmp; firefox a.html"',
+            'ssh box "pkill x; chromium /tmp/a.html"',
+            "zsh -c 'google-chrome /tmp/a.html'",
+        ):
+            code, out = run("Bash", {"command": cmd})
+            self.assertEqual(code, 2, f"{cmd!r} must be BLOCKED — got {out}")
+
+    def test_interpreter_mentioned_as_DATA_is_not_a_launch(self):
+        # The interpreter must sit at a real COMMAND POSITION. Matching it
+        # anywhere made the enforcer block its own documentation — a commit
+        # message or README describing the invocation — with NO escape hatch,
+        # because the browser branch runs before the DELIVER_ACTIVE/BYPASS checks.
+        for cmd in (
+            'git commit -m "fix: stop bash -c \'firefox url\' bypassing the gate"',
+            'echo "Blocked: bash -c chromium now fails" >> notes.md',
+            "cat > docs/DEBUG.md <<'EOF'\nRun: bash -c \"chromium http://localhost:3000\"\nEOF",
+            'ssh-keygen -C "firefox comment"',  # ssh-keygen is not ssh
+        ):
+            code, out = run("Bash", {"command": cmd})
+            self.assertEqual(code, 0, f"{cmd!r} must NOT be blocked — got {out}")
+
+    def test_combined_interpreter_flags_are_blocked(self):
+        # `bash -lc` is the canonical login-shell form several agent harnesses
+        # emit; `-c` alone missed it entirely.
+        for cmd in ('bash -lc "firefox http://localhost:8080"', "sh -xc 'xdg-open /tmp/a.html'"):
+            code, out = run("Bash", {"command": cmd})
+            self.assertEqual(code, 2, f"{cmd!r} must be BLOCKED — got {out}")
+
+    def test_non_shell_interpreter_payloads_do_not_re_fire(self):
+        # python/node payloads are NOT shell — excluding them is exactly what
+        # keeps the `open()` builtin false positive from coming back. The last
+        # case nests a python payload inside a bash payload.
+        for cmd in (
+            'python3 -c "import json; d=json.load(open(\'.uap/x.json\'))"',
+            "python3 -c \"open(p, 'w').write(s)\"",
+            "node -e \"const f = open('a.txt'); void f;\"",
+            'bash -c "npm test && echo done"',
+            "sh -c 'ls -la'",
+            'bash -c "python3 -c \\"json.load(open(1))\\""',
+        ):
+            code, out = run("Bash", {"command": cmd})
+            self.assertEqual(code, 0, f"{cmd!r} must NOT be blocked — got {out}")
+
     def test_open_function_call_is_not_a_browser_launch(self):
         # `open(` is a function call (Python/JS), never a browser launch; a real
         # `open <url>` launch has a space + argument, not a paren.

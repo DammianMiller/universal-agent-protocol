@@ -901,3 +901,59 @@ describe('no-progress breaker: state persists across resume (follow-up D4)', () 
     expect(result.success).toBe(true);
   });
 });
+
+describe('turn-local tree fingerprint (D5 refactor pins)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-fp-'));
+    execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: dir, stdio: 'ignore' });
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('acceptance stays FAIL-CLOSED when git is unavailable (treeFp null, not a re-read)', async () => {
+    // Non-git project → fingerprintTree() returns null. `null` is a REAL value
+    // and must NOT be mistaken for "not supplied" (which would trigger a fresh
+    // read); with no applier writes the anti-no-op rail must still withhold.
+    const nonGit = mkdtempSync(join(tmpdir(), 'uap-nogit-'));
+    try {
+      let judged = 0;
+      const loop = new ConvergenceLoop(
+        {
+          projectRoot: nonGit,
+          maxTurns: 1,
+          rungs: stubRungs(),
+          baselineCheck: false,
+          alwaysVerify: true,
+          requireDiffForAcceptance: true,
+        },
+        async () => 'agent says it is done, but wrote nothing',
+        {
+          applier: async () => ({ filesWritten: [], rejected: [] }),
+          ladderRunner: () => ladderResult(1, true),
+          acceptanceGate: async () => {
+            judged++;
+            return { met: 1, total: 1, unmet: [] } as never;
+          },
+        }
+      );
+      const result = await loop.deliver('do the work');
+      // The rail withheld: the acceptance judge was never consulted for a run
+      // that changed nothing.
+      expect(judged).toBe(0);
+      expect(result.success).toBe(false);
+    } finally {
+      rmSync(nonGit, { recursive: true, force: true });
+    }
+  });
+
+  it('a turn that really writes is still accepted (the shared fingerprint sees the write)', async () => {
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 2, rungs: stubRungs(), baselineCheck: false },
+      async () => '```file:src/app.ts\nexport const a = 1;\n```',
+      { ladderRunner: () => ladderResult(1, true) }
+    );
+    const result = await loop.deliver('write it');
+    expect(result.success).toBe(true);
+    expect(result.changedTree).toBe(true);
+  });
+});
