@@ -67,6 +67,19 @@ export class WebBrowser {
     const page = this.page;
     if (!page || typeof page.on !== 'function') return;
     try {
+      // Auto-dismiss modal dialogs. A validation browser has no human to click
+      // "OK", and an open alert()/confirm()/prompt() blocks EVERY subsequent
+      // command (evaluate, screenshot, goto) — the whole gate wedges. This is a
+      // real risk now that the visual gate synthetically fires the page's own
+      // click/keydown handlers to drive a game past its start screen: a game
+      // that pops a "Ready?" confirm() on start would otherwise hang the run.
+      page.on('dialog', (dialog: { dismiss?: () => Promise<unknown> }) => {
+        try {
+          void dialog.dismiss?.();
+        } catch {
+          /* best-effort — if dismiss throws, the per-call timeouts still bound us */
+        }
+      });
       page.on('pageerror', (err: unknown) => {
         const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
         this.errors.push({ kind: 'pageerror', message: msg });
