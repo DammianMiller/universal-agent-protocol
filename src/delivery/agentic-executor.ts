@@ -189,6 +189,24 @@ export function toolsFor(allowBash: boolean): Array<(typeof TOOLS)[number]> {
   return allowBash ? [...TOOLS] : TOOLS.filter((t) => t.function.name !== 'run_bash');
 }
 
+/** Pure read/inspect tools — the ones a stuck model loops on. Stripped in a
+ * forced-write round so it can only mutate or finish. run_bash is NOT here: it
+ * can legitimately WRITE files (codegen/scaffold), and when --allow-bash is on
+ * a session may be making real progress through it, so it is kept under force
+ * (guarded by allowBash in writeOnlyTools). */
+const READ_ONLY_TOOL_NAMES = new Set(['read_file', 'list_dir']);
+
+/** Mutating + terminating tools (plus run_bash when allowed). Offered with
+ * tool_choice:'required' for a SINGLE forced round once a weak local model has
+ * ignored the soft write-nudge and kept reading — removing the read tools makes
+ * another read impossible, so the model must write_file/edit_file (or run_bash,
+ * or finish). The very next round restores reads (see the alternation in the
+ * loop) so a model whose correct move needs current file content — e.g. a
+ * surgical edit_file — is never trapped for more than one round. */
+export function writeOnlyTools(allowBash: boolean): Array<(typeof TOOLS)[number]> {
+  return toolsFor(allowBash).filter((t) => !READ_ONLY_TOOL_NAMES.has(t.function.name));
+}
+
 const TOOLS = [
   {
     type: 'function',
@@ -763,14 +781,15 @@ async function chat(
   model: ModelConfig,
   messages: ChatMessage[],
   temperature?: number,
-  allowBash = true
+  allowBash = true,
+  forceWrite = false
 ): Promise<ChatMessage> {
   // Hold a model slot so the agentic tool-loop's calls comply with the slot
   // budget (same work, bounded concurrency). 429/timeout feed backpressure.
-  if (process.env.UAP_MODEL_LEASE === '0') return _chat(endpoint, model, messages, temperature, allowBash);
+  if (process.env.UAP_MODEL_LEASE === '0') return _chat(endpoint, model, messages, temperature, allowBash, forceWrite);
   return withModelSlot(`agentic:${model.apiModel ?? 'default'}`, async () => {
     try {
-      const m = await _chat(endpoint, model, messages, temperature, allowBash);
+      const m = await _chat(endpoint, model, messages, temperature, allowBash, forceWrite);
       await recordModelSuccess({}).catch(() => undefined);
       return m;
     } catch (err) {
@@ -785,7 +804,8 @@ async function _chat(
   model: ModelConfig,
   messages: ChatMessage[],
   temperature?: number,
-  allowBash = true
+  allowBash = true,
+  forceWrite = false
 ): Promise<ChatMessage> {
   const url = `${endpoint.replace(/\/$/, '')}/chat/completions`;
   const apiKey = model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined;
@@ -797,9 +817,12 @@ async function _chat(
     headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
     body: JSON.stringify({
       model: model.apiModel,
+      // Forced-write round: offer ONLY mutating/terminating tools and require a
+      // call, so a model that has looped on reads cannot read again — it must
+      // write_file/edit_file or finish. Otherwise the normal auto-choice set.
+      tools: forceWrite ? writeOnlyTools(allowBash) : toolsFor(allowBash),
+      tool_choice: forceWrite ? 'required' : 'auto',
       messages,
-      tools: toolsFor(allowBash),
-      tool_choice: 'auto',
       ...(temperature !== undefined ? { temperature } : {}),
     }),
   });
@@ -870,8 +893,23 @@ export function createAgenticExecutor(
     // WRITE_NUDGE_AFTER consecutive mutation-free rounds the next round opens
     // with an explicit order to write.
     const WRITE_NUDGE_AFTER = 5;
+    // After the soft nudge is IGNORED for this many further read-only rounds,
+    // stop asking and force it: the next request offers only write/edit/finish
+    // with tool_choice:'required'. A weak local model (qwen35-a3b live,
+    // 2026-07-21: 5 turns, 3 nudges, ZERO writes) treats the nudge as just more
+    // prose and keeps reading; removing the read tools is the only reliable
+    // lever. Kept just above WRITE_NUDGE_AFTER so the model gets one soft chance
+    // to self-correct before the hard rail engages.
+    const FORCE_WRITE_AFTER = WRITE_NUDGE_AFTER + 1;
     let roundsWithoutWrite = 0;
     let writeNudged = false;
+    // Force NON-consecutively: at most one forced round, then always a normal
+    // round before forcing again. The recovery round restores the read tools so
+    // a model whose correct next move is a surgical edit_file (which needs to
+    // see current file content to build a valid match, and which write_file
+    // can't replace under the anti-gutting guard) can re-read and recover
+    // instead of being trapped read-less until the budget burns.
+    let lastRoundForced = false;
     for (let round = 1; round <= maxRounds; round++) {
       if (roundsWithoutWrite >= WRITE_NUDGE_AFTER && !writeNudged) {
         writeNudged = true;
@@ -883,6 +921,18 @@ export function createAgenticExecutor(
             'files the task and gate feedback require (write_file / edit_file), then verify and call finish.',
         });
         opts.onEvent?.({ round, kind: 'error', detail: `write-nudge injected after ${roundsWithoutWrite} read-only rounds` });
+      }
+      // Hard rail: the soft nudge was ignored. Force a mutating/terminating
+      // call — but never twice in a row, so the next round always restores the
+      // read tools (see lastRoundForced) and the model can recover.
+      const forceWrite: boolean = roundsWithoutWrite >= FORCE_WRITE_AFTER && !lastRoundForced;
+      lastRoundForced = forceWrite;
+      if (forceWrite) {
+        opts.onEvent?.({
+          round,
+          kind: 'error',
+          detail: `forced-write round: read tools stripped after ${roundsWithoutWrite} read-only rounds`,
+        });
       }
       // Rail sizing: stop BEFORE sending a request that would outgrow the
       // session's context budget — a clean under-budget stop with a partial
@@ -906,7 +956,7 @@ export function createAgenticExecutor(
       roundsWithoutWrite++;
       let msg: ChatMessage;
       try {
-        msg = await chat(opts.endpoint, model, messages, opts.temperature, allowBash);
+        msg = await chat(opts.endpoint, model, messages, opts.temperature, allowBash, forceWrite);
       } catch (err) {
         opts.onEvent?.({ round, kind: 'error', detail: String(err).slice(0, 200) });
         return `agentic executor error: ${String(err).slice(0, 200)}`;
@@ -988,10 +1038,15 @@ export function createAgenticExecutor(
         // #2a: per-tool-call progress — refresh the deliver heartbeat now, not
         // just at turn end, so wedge-detection tracks real intra-turn activity.
         opts.onToolProgress?.();
-        if (
-          (call.function.name === 'write_file' || call.function.name === 'edit_file' || call.function.name === 'run_bash') &&
-          toolResult.startsWith('OK')
-        ) {
+        // A productive mutation resets the streak. write_file/edit_file return
+        // 'OK: ...'; run_bash returns 'exit=<code> ...' and so NEVER matched
+        // startsWith('OK') — a latent bug that was harmless when the streak only
+        // drove a soft nudge, but not once it strips run_bash under force: an
+        // --allow-bash session writing files through the shell would have been
+        // forced and had its bash taken away. Reset on a clean bash exit too.
+        const isWrite = call.function.name === 'write_file' || call.function.name === 'edit_file';
+        const isBash = call.function.name === 'run_bash';
+        if ((isWrite && toolResult.startsWith('OK')) || (isBash && /(^|\s)exit=0(\s|$)/.test(toolResult))) {
           roundsWithoutWrite = -1; // reset below by the per-round increment
           writeNudged = false;
         }

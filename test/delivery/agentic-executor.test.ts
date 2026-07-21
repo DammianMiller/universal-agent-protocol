@@ -472,4 +472,120 @@ describe('createAgenticExecutor — read-only-streak write nudge', () => {
     await exec('do the work');
     expect(bodies.some((b) => b.includes('STOP exploring'))).toBe(false);
   });
+
+  it('forces a write when the soft nudge is ignored: read tools stripped, tool_choice required', async () => {
+    // The live failure (qwen35-a3b, 2026-07-21): the model treated the soft
+    // nudge as more prose and kept reading. After the nudge (round 6) is
+    // ignored, round 7 must strip the read tools and require a call.
+    const bodies: string[] = [];
+    let i = 0;
+    const responses = [
+      readCall(1), readCall(2), readCall(3), readCall(4), readCall(5), readCall(6),
+      readCall(7), readCall(8),
+      { role: 'assistant', content: 'stopped', tool_calls: [] },
+    ];
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(String((init as RequestInit | undefined)?.body ?? ''));
+      const msg = responses[Math.min(i, responses.length - 1)];
+      i++;
+      return { ok: true, json: async () => ({ choices: [{ message: msg }] }) } as unknown as Response;
+    });
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('close the gaps');
+
+    // Rounds 1-6 offer read_file with tool_choice auto (the model can explore).
+    const round6 = JSON.parse(bodies[5]);
+    expect(round6.tool_choice).toBe('auto');
+    expect(round6.tools.some((t: { function: { name: string } }) => t.function.name === 'read_file')).toBe(true);
+
+    // Round 7 (post-nudge) is the forced-write round.
+    const round7 = JSON.parse(bodies[6]);
+    expect(round7.tool_choice).toBe('required');
+    const names7 = round7.tools.map((t: { function: { name: string } }) => t.function.name);
+    expect(names7).not.toContain('read_file');
+    expect(names7).not.toContain('list_dir');
+    expect(names7).toContain('write_file');
+    expect(names7).toContain('edit_file');
+    expect(names7).toContain('finish');
+  });
+
+  it('forces NON-consecutively: the round after a forced round restores read tools', async () => {
+    // A model whose correct move is a surgical edit_file needs to re-read to
+    // build a valid match. If forcing were sticky it would be trapped read-less
+    // until the budget burned. The round after any forced round must be normal.
+    const bodies: string[] = [];
+    let i = 0;
+    const responses = [
+      readCall(1), readCall(2), readCall(3), readCall(4), readCall(5), readCall(6),
+      readCall(7), readCall(8), readCall(9),
+      { role: 'assistant', content: 'stopped', tool_calls: [] },
+    ];
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(String((init as RequestInit | undefined)?.body ?? ''));
+      const msg = responses[Math.min(i, responses.length - 1)];
+      i++;
+      return { ok: true, json: async () => ({ choices: [{ message: msg }] }) } as unknown as Response;
+    });
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('close the gaps');
+    // Round 7 forced, round 8 restored (auto), round 9 forced again.
+    expect(JSON.parse(bodies[6]).tool_choice).toBe('required'); // round 7
+    expect(JSON.parse(bodies[7]).tool_choice).toBe('auto'); // round 8 — recovery
+    expect(JSON.parse(bodies[7]).tools.some((t: { function: { name: string } }) => t.function.name === 'read_file')).toBe(
+      true
+    );
+    expect(JSON.parse(bodies[8]).tool_choice).toBe('required'); // round 9
+  });
+
+  it('a clean run_bash (exit=0) resets the streak — never forces a bash-productive session', async () => {
+    const bodies: string[] = [];
+    let i = 0;
+    const bashOk = {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{ id: 'b1', type: 'function', function: { name: 'run_bash', arguments: '{"command":"echo built"}' } }],
+    };
+    // Bash writes files every few rounds; the streak must never reach the force
+    // threshold, and run_bash must never be stripped.
+    const responses = [
+      readCall(1), readCall(2), bashOk, readCall(3), readCall(4), bashOk, readCall(5),
+      { role: 'assistant', content: 'ok', tool_calls: [] },
+    ];
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(String((init as RequestInit | undefined)?.body ?? ''));
+      const msg = responses[Math.min(i, responses.length - 1)];
+      i++;
+      return { ok: true, json: async () => ({ choices: [{ message: msg }] }) } as unknown as Response;
+    });
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1', allowBash: true });
+    await exec('build via bash');
+    expect(bodies.every((b) => JSON.parse(b).tool_choice === 'auto')).toBe(true);
+  });
+
+  it('never forces a write on a productive session (streak reset keeps read tools)', async () => {
+    const bodies: string[] = [];
+    let i = 0;
+    const writeCall = {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        { id: 'w1', type: 'function', function: { name: 'write_file', arguments: '{"path":"b.js","content":"const b=2;"}' } },
+      ],
+    };
+    // A write every few rounds keeps roundsWithoutWrite below the threshold.
+    const responses = [
+      readCall(1), readCall(2), writeCall, readCall(3), readCall(4), writeCall, readCall(5),
+      { role: 'assistant', content: 'ok', tool_calls: [] },
+    ];
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(String((init as RequestInit | undefined)?.body ?? ''));
+      const msg = responses[Math.min(i, responses.length - 1)];
+      i++;
+      return { ok: true, json: async () => ({ choices: [{ message: msg }] }) } as unknown as Response;
+    });
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('do the work');
+    // No request should ever have been forced.
+    expect(bodies.every((b) => JSON.parse(b).tool_choice === 'auto')).toBe(true);
+  });
 });
