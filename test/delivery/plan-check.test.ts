@@ -92,6 +92,31 @@ describe('runPlanThoughtExperiment', () => {
     });
     expect(v).toEqual({ verdict: 'pass', findings: [] });
   });
+
+  it('passes structural warnings to the judge as adjudicated hints (follow-up: coherence teeth)', async () => {
+    let prompt = '';
+    await runPlanThoughtExperiment(
+      'm',
+      phases,
+      async (pr) => {
+        prompt = pr;
+        return '{"verdict":"pass","findings":[]}';
+      },
+      ['possible module-system contradiction: exports vs classic <script src>']
+    );
+    // The hint reaches the judge, framed as a lead to verify — not a verdict.
+    expect(prompt).toContain('module-system contradiction');
+    expect(prompt).toMatch(/HINTS|treat as/i);
+  });
+
+  it('omits the hints block entirely when there are no warnings', async () => {
+    let prompt = '';
+    await runPlanThoughtExperiment('m', phases, async (pr) => {
+      prompt = pr;
+      return '{"verdict":"pass","findings":[]}';
+    });
+    expect(prompt).not.toMatch(/COHERENCE HINTS/);
+  });
 });
 
 describe('reviewPlanText', () => {

@@ -383,7 +383,9 @@ async function validateAndRepairPlan(
   } else {
     const teWanted = opts?.thoughtExperiment ?? process.env.UAP_DELIVER_PLAN_CHECK !== '0';
     if (!teWanted) return phases;
-    const verdict = await runPlanThoughtExperiment(instruction, phases, executor);
+    // Hand the structural warnings to the judge as adjudicated hints — otherwise
+    // they were logged and dropped (the coherence heuristic had no consumer).
+    const verdict = await runPlanThoughtExperiment(instruction, phases, executor, structural.warnings);
     if (verdict.verdict === 'pass') return phases;
     findings = verdict.findings;
     fromThoughtExperiment = true;
@@ -421,7 +423,12 @@ async function validateAndRepairPlan(
       // still fails, ride the residual findings in a gap-closure phase.
       if (fromThoughtExperiment) {
         try {
-          const verdict = await runPlanThoughtExperiment(instruction, replanned, executor);
+          const verdict = await runPlanThoughtExperiment(
+            instruction,
+            replanned,
+            executor,
+            validatePhaseGraph(replanned).warnings
+          );
           if (verdict.verdict !== 'pass' && verdict.findings.length > 0) {
             const withGap = appendGapClosurePhase(replanned, verdict.findings);
             if (withGap) {

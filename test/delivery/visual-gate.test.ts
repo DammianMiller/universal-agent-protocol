@@ -30,6 +30,14 @@ function probe(cells: string[], distinct: number, dominant: number): string {
 function isStartInteraction(script: unknown): boolean {
   return typeof script === 'string' && /dispatchEvent|KeyboardEvent/.test(script);
 }
+/** The pointer (click) half of the interaction. */
+function isPointerInteraction(script: unknown): boolean {
+  return typeof script === 'string' && /MouseEvent|pointerdown/.test(script);
+}
+/** The keyboard fallback half of the interaction. */
+function isKeysInteraction(script: unknown): boolean {
+  return typeof script === 'string' && /KeyboardEvent/.test(script);
+}
 
 /** Scripted fake browser: returns queued probe payloads per evaluate call.
  * The start-interaction evaluate() is answered with 'ok' and does NOT consume a
@@ -42,8 +50,12 @@ function fakeBrowser(probes: string[], errors: Array<{ kind: string; message: st
       launch: async () => undefined,
       goto: async () => '200',
       waitForLoadState: async () => undefined,
+      // CYCLE the probe frames (an animating game returns a fresh frame each
+      // probe), so consecutive samples differ regardless of how many probes the
+      // gate fires — including the "did the click start it?" check between the
+      // pointer and keyboard fallback.
       evaluate: async <T,>(script?: unknown) =>
-        (isStartInteraction(script) ? 'ok' : probes[Math.min(i++, probes.length - 1)]) as unknown as T,
+        (isStartInteraction(script) ? 'ok' : probes[i++ % probes.length]) as unknown as T,
       screenshot: async (path: string) => writeFileSync(path, 'png'),
       getErrors: () => errors,
       close: async () => undefined,
@@ -117,7 +129,8 @@ describe('runVisualGate (integration with fake browser)', () => {
     expect(verdict.skipped).toBe(false);
     expect(verdict.passed).toBe(true);
     expect(verdict.pages[0].motionRatio).toBe(0.5);
-    expect(verdict.pages[0].screenshots.length).toBe(2);
+    // Menu evidence frame + 2 sampled playing frames.
+    expect(verdict.pages[0].screenshots.length).toBe(3);
     expect(existsSync(verdict.pages[0].screenshots[0])).toBe(true);
     expect(visualRuntimeNote(verdict)).toContain('renders+animates OK');
   });
@@ -143,7 +156,11 @@ describe('runVisualGate (integration with fake browser)', () => {
             interacted = true;
             return 'ok' as unknown as T;
           }
-          return (started ? playingProbes[Math.min(i++, playingProbes.length - 1)] : menuProbe) as unknown as T;
+          // An animating game returns a fresh frame each probe — CYCLE the
+          // playing frames (not clamp) so consecutive samples always differ.
+          // Robust to the extra "did the click start it?" probe the gate now
+          // fires between the pointer and keyboard fallback.
+          return (started ? playingProbes[i++ % playingProbes.length] : menuProbe) as unknown as T;
         },
         screenshot: async (path: string) => writeFileSync(path, 'png'),
         getErrors: () => [],
@@ -198,6 +215,78 @@ describe('runVisualGate (integration with fake browser)', () => {
     const factory = fakeGameBrowser(menu, [probe(blackCells, 1, 1.0), probe(blackCells, 1, 1.0)]);
     const verdict = await runVisualGate(dir, { browserFactory: factory, samples: 2, intervalMs: 1 });
     expect(verdict.passed).toBe(false);
+  });
+
+  /**
+   * A fake that records which interaction halves fired and only "starts" the
+   * game on the chosen trigger ('click' | 'keys'), so we can prove the
+   * click-first / keys-only-if-still-blank flow (follow-up: Space=pause).
+   */
+  function fakeTriggerBrowser(startOn: 'click' | 'keys', playing: string[], blank: string) {
+    const fired = { pointer: false, keys: false };
+    let started = false;
+    let p = 0;
+    const factory = () => ({
+      launch: async () => undefined,
+      goto: async () => '200',
+      waitForLoadState: async () => undefined,
+      evaluate: async <T,>(script?: unknown) => {
+        if (isPointerInteraction(script)) {
+          fired.pointer = true;
+          if (startOn === 'click') started = true;
+          return 'ok' as unknown as T;
+        }
+        if (isKeysInteraction(script)) {
+          fired.keys = true;
+          if (startOn === 'keys') started = true;
+          return 'ok' as unknown as T;
+        }
+        // Animating game: cycle playing frames so consecutive samples differ.
+        return (started ? playing[p++ % playing.length] : blank) as unknown as T;
+      },
+      screenshot: async (path: string) => writeFileSync(path, 'png'),
+      getErrors: () => [],
+      close: async () => undefined,
+    });
+    (factory as unknown as { fired: typeof fired }).fired = fired;
+    return factory;
+  }
+
+  it('skips the keyboard fallback when the click already started the game (Space=pause guard)', async () => {
+    writeFileSync(join(dir, 'index.html'), '<canvas></canvas><script>requestAnimationFrame(function(){});</script>');
+    const cells = Array.from({ length: 16 }, (_, i) => `c${i}`);
+    const cellsB = Array.from({ length: 16 }, (_, i) => (i < 8 ? `c${i}` : `x${i}`));
+    const factory = fakeTriggerBrowser('click', [probe(cells, 10, 0.4), probe(cellsB, 10, 0.4)], probe(Array(16).fill('0,0,0'), 1, 1.0));
+    await runVisualGate(dir, { browserFactory: factory, samples: 2, intervalMs: 1 });
+    const fired = (factory as unknown as { fired: { pointer: boolean; keys: boolean } }).fired;
+    expect(fired.pointer).toBe(true);
+    expect(fired.keys).toBe(false); // click started it → never risk Space=pause
+  });
+
+  it('falls back to keys when the click did NOT start the game', async () => {
+    writeFileSync(join(dir, 'index.html'), '<canvas></canvas><script>requestAnimationFrame(function(){});</script>');
+    const cells = Array.from({ length: 16 }, (_, i) => `c${i}`);
+    const cellsB = Array.from({ length: 16 }, (_, i) => (i < 8 ? `c${i}` : `x${i}`));
+    const factory = fakeTriggerBrowser('keys', [probe(cells, 10, 0.4), probe(cellsB, 10, 0.4)], probe(Array(16).fill('0,0,0'), 1, 1.0));
+    const verdict = await runVisualGate(dir, { browserFactory: factory, samples: 2, intervalMs: 1 });
+    const fired = (factory as unknown as { fired: { pointer: boolean; keys: boolean } }).fired;
+    expect(fired.pointer).toBe(true);
+    expect(fired.keys).toBe(true); // click didn't start it → keyboard fallback fires
+    expect(verdict.passed).toBe(true); // keys started the game → judged on playing state
+  });
+
+  it('captures a menu screenshot as evidence, separate from the floor-judged frames', async () => {
+    writeFileSync(join(dir, 'index.html'), '<canvas></canvas><script>requestAnimationFrame(function(){});</script>');
+    const blackCells = Array.from({ length: 16 }, () => '0,0,0');
+    const cellsA = Array.from({ length: 16 }, (_, i) => `c${i}`);
+    const cellsB = Array.from({ length: 16 }, (_, i) => (i < 8 ? `c${i}` : `x${i}`));
+    const factory = fakeGameBrowser(probe(blackCells, 1, 1.0), [probe(cellsA, 10, 0.4), probe(cellsB, 10, 0.4)]);
+    const verdict = await runVisualGate(dir, { browserFactory: factory, samples: 2, intervalMs: 1 });
+    // menu evidence + 2 playing samples; the menu frame is FIRST in the evidence.
+    expect(verdict.pages[0].screenshots.length).toBe(3);
+    expect(verdict.pages[0].screenshots[0]).toMatch(/-menu\.png$/);
+    // The near-black menu did NOT drag the verdict down — floor is judged on play.
+    expect(verdict.passed).toBe(true);
   });
 
   it('fails a static rAF scene with actionable feedback', async () => {
