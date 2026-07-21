@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.163.6 (2026-07-22)
+
+- refactor(delivery): deliver the deferred follow-ups from #570/#571
+
+
 ## v1.163.5 (2026-07-21)
 
 - fix(policy): stop the browser matcher false-blocking ordinary read-only work
