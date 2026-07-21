@@ -26,7 +26,15 @@ function probe(cells: string[], distinct: number, dominant: number): string {
   });
 }
 
-/** Scripted fake browser: returns queued probe payloads per evaluate call. */
+/** Is this evaluate() call the start-interaction driver (not a pixel probe)? */
+function isStartInteraction(script: unknown): boolean {
+  return typeof script === 'string' && /dispatchEvent|KeyboardEvent/.test(script);
+}
+
+/** Scripted fake browser: returns queued probe payloads per evaluate call.
+ * The start-interaction evaluate() is answered with 'ok' and does NOT consume a
+ * probe — mirroring the real browser, where interaction and pixel-probe are
+ * distinct calls. */
 function fakeBrowser(probes: string[], errors: Array<{ kind: string; message: string }> = []): () => VisualBrowserDriver {
   return () => {
     let i = 0;
@@ -34,7 +42,8 @@ function fakeBrowser(probes: string[], errors: Array<{ kind: string; message: st
       launch: async () => undefined,
       goto: async () => '200',
       waitForLoadState: async () => undefined,
-      evaluate: async <T,>() => probes[Math.min(i++, probes.length - 1)] as unknown as T,
+      evaluate: async <T,>(script?: unknown) =>
+        (isStartInteraction(script) ? 'ok' : probes[Math.min(i++, probes.length - 1)]) as unknown as T,
       screenshot: async (path: string) => writeFileSync(path, 'png'),
       getErrors: () => errors,
       close: async () => undefined,
@@ -113,6 +122,84 @@ describe('runVisualGate (integration with fake browser)', () => {
     expect(visualRuntimeNote(verdict)).toContain('renders+animates OK');
   });
 
+  /**
+   * A game whose canvas is near-black on the MENU but colourful+animating once
+   * you press start. Before the start-interaction driver, the gate only ever
+   * saw the menu and false-failed it as a blank render (octopus_invaders_v3,
+   * 2026-07-21: execution PASS, vision 8/10, floor FAIL on a dark title screen).
+   */
+  function fakeGameBrowser(menuProbe: string, playingProbes: string[]): () => VisualBrowserDriver {
+    let started = false;
+    let interacted = false;
+    const factory = () => {
+      let i = 0;
+      return {
+        launch: async () => undefined,
+        goto: async () => '200',
+        waitForLoadState: async () => undefined,
+        evaluate: async <T,>(script?: unknown) => {
+          if (isStartInteraction(script)) {
+            started = true;
+            interacted = true;
+            return 'ok' as unknown as T;
+          }
+          return (started ? playingProbes[Math.min(i++, playingProbes.length - 1)] : menuProbe) as unknown as T;
+        },
+        screenshot: async (path: string) => writeFileSync(path, 'png'),
+        getErrors: () => [],
+        close: async () => undefined,
+      };
+    };
+    (factory as unknown as { wasDriven: () => boolean }).wasDriven = () => interacted;
+    return factory;
+  }
+
+  it('drives a start interaction so a menu→playing game passes on its PLAYING state', async () => {
+    writeFileSync(join(dir, 'index.html'), '<canvas></canvas><script>requestAnimationFrame(function(){});</script>');
+    const blackCells = Array.from({ length: 16 }, () => '0,0,0');
+    const menu = probe(blackCells, 1, 1.0); // near-black title screen — would false-fail
+    const cellsA = Array.from({ length: 16 }, (_, i) => `c${i}`);
+    const cellsB = Array.from({ length: 16 }, (_, i) => (i < 8 ? `c${i}` : `x${i}`));
+    const factory = fakeGameBrowser(menu, [probe(cellsA, 10, 0.4), probe(cellsB, 10, 0.4)]);
+    const verdict = await runVisualGate(dir, { browserFactory: factory, samples: 2, intervalMs: 1 });
+    expect((factory as unknown as { wasDriven: () => boolean }).wasDriven()).toBe(true);
+    expect(verdict.skipped).toBe(false);
+    expect(verdict.passed).toBe(true);
+  });
+
+  it('does NOT drive interaction on a canvas-less DOM page', async () => {
+    // No <canvas> → not an interactive scene with a start screen to leave.
+    writeFileSync(join(dir, 'index.html'), '<div id="app">static content</div>');
+    const cells = Array.from({ length: 16 }, (_, i) => `c${i}`);
+    const factory = fakeGameBrowser(probe(cells, 10, 0.4), [probe(cells, 10, 0.4)]);
+    await runVisualGate(dir, { browserFactory: factory, samples: 2, intervalMs: 1 });
+    expect((factory as unknown as { wasDriven: () => boolean }).wasDriven()).toBe(false);
+  });
+
+  it('DOES drive interaction for a bundled game (canvas in HTML, rAF only in the bundle)', async () => {
+    // The entry HTML has a <canvas> and loads an external bundle; requestAnimation-
+    // Frame lives in the bundle, not the HTML. Gating on canvas (not rAF-in-HTML)
+    // is what lets the fix reach bundled/minified games.
+    writeFileSync(join(dir, 'index.html'), '<canvas id="game"></canvas><script src="bundle.js"></script>');
+    const blackCells = Array.from({ length: 16 }, () => '0,0,0');
+    const cellsA = Array.from({ length: 16 }, (_, i) => `c${i}`);
+    const cellsB = Array.from({ length: 16 }, (_, i) => (i < 8 ? `c${i}` : `x${i}`));
+    const factory = fakeGameBrowser(probe(blackCells, 1, 1.0), [probe(cellsA, 10, 0.4), probe(cellsB, 10, 0.4)]);
+    const verdict = await runVisualGate(dir, { browserFactory: factory, samples: 2, intervalMs: 1 });
+    expect((factory as unknown as { wasDriven: () => boolean }).wasDriven()).toBe(true);
+    expect(verdict.passed).toBe(true);
+  });
+
+  it('a genuinely blank game (blank even after start) still fails — the fix does not mask real bugs', async () => {
+    writeFileSync(join(dir, 'index.html'), '<canvas></canvas><script>requestAnimationFrame(function(){});</script>');
+    const blackCells = Array.from({ length: 16 }, () => '0,0,0');
+    const menu = probe(blackCells, 1, 1.0);
+    // Playing state is ALSO black — a real broken render.
+    const factory = fakeGameBrowser(menu, [probe(blackCells, 1, 1.0), probe(blackCells, 1, 1.0)]);
+    const verdict = await runVisualGate(dir, { browserFactory: factory, samples: 2, intervalMs: 1 });
+    expect(verdict.passed).toBe(false);
+  });
+
   it('fails a static rAF scene with actionable feedback', async () => {
     writeFileSync(join(dir, 'scene.html'), '<canvas></canvas><script>requestAnimationFrame(tick)</script>');
     const cells = Array.from({ length: 16 }, (_, i) => `c${i}`);
@@ -179,4 +266,63 @@ describe('visual gate: non-final epics downgrade richness failures to advisory (
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+});
+
+describe('visual gate: the browser is always closed (leak regression, 2026-07-20)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-visual-leak-'));
+    writeFileSync(join(dir, 'index.html'), '<canvas></canvas><script>requestAnimationFrame(function(){});</script>');
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * A live 4h deliver run leaked 11 headless Chromium instances (~33 GB RSS) and
+   * kept a SIGTERM'd process alive, because `browser` was scoped INSIDE the page
+   * loop: a throw after launch skipped the close, hit the outer catch, and
+   * returned `skipped: true` — silently disabling the gate while leaking.
+   */
+  it('closes the browser when getErrors() throws mid-iteration', async () => {
+    let closed = 0;
+    const exploding = (): VisualBrowserDriver => ({
+      launch: async () => undefined,
+      goto: async () => '200',
+      waitForLoadState: async () => undefined,
+      evaluate: async <T,>() => probe([], 1, 1) as unknown as T,
+      screenshot: async (path: string) => writeFileSync(path, 'png'),
+      getErrors: () => {
+        throw new Error('browser crashed');
+      },
+      close: async () => {
+        closed++;
+      },
+    });
+
+    const verdict = await runVisualGate(dir, { browserFactory: exploding, samples: 1, intervalMs: 1 });
+
+    // The gate still degrades gracefully...
+    expect(verdict.skipped).toBe(true);
+    // ...but it must NOT leak the browser process while doing so.
+    expect(closed).toBe(1);
+  });
+
+  it('closes the browser exactly once on the normal path', async () => {
+    let closed = 0;
+    const counting = (): VisualBrowserDriver => ({
+      launch: async () => undefined,
+      goto: async () => '200',
+      waitForLoadState: async () => undefined,
+      evaluate: async <T,>() => probe(Array.from({ length: 16 }, (_, i) => `c${i}`), 10, 0.4) as unknown as T,
+      screenshot: async (path: string) => writeFileSync(path, 'png'),
+      getErrors: () => [],
+      close: async () => {
+        closed++;
+      },
+    });
+
+    await runVisualGate(dir, { browserFactory: counting, samples: 1, intervalMs: 1 });
+    expect(closed).toBe(1);
+  });
 });

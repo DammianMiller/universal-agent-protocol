@@ -11,6 +11,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { initCommand, type InitOptions } from '../../src/cli/init.js';
 import type { AgentContextConfig } from '../../src/types/index.js';
+import { analyzeProject } from '../../src/analyzers/index.js';
+import { generateClaudeMd } from '../../src/generators/claude-md.js';
+import { mergeClaudeMd } from '../../src/utils/merge-claude-md.js';
+import { isQdrantReachable } from '../../src/cli/memory.js';
 
 // Mock console output
 const mockConsoleLog = vi.fn();
@@ -93,6 +97,25 @@ describe('initCommand', () => {
     vi.clearAllMocks();
     mockConsoleLog.mockClear();
     mockConsoleError.mockClear();
+    // Re-arm the module-factory mocks EVERY test. The afterEach below calls
+    // vi.restoreAllMocks(), which wipes the implementations of the vi.fn()s
+    // declared inside the vi.mock factories (restore treats them as spies and
+    // clears mockResolvedValue). In isolation the wipe happened to land
+    // harmlessly, but under full-suite worker scheduling the last test
+    // ('pipeline-only') ran with analyzeProject() returning undefined and threw
+    // `Cannot read properties of undefined (reading 'projectName')`. Re-setting
+    // the return values here makes each test independent of prior restore state.
+    vi.mocked(analyzeProject).mockResolvedValue({
+      projectName: 'test-project',
+      description: 'Test project',
+      defaultBranch: 'main',
+      languages: ['typescript'],
+      frameworks: [],
+      databases: [],
+    } as Awaited<ReturnType<typeof analyzeProject>>);
+    vi.mocked(generateClaudeMd).mockResolvedValue('# Test CLAUDE.md');
+    vi.mocked(mergeClaudeMd).mockImplementation((existing: string, _new: string) => existing || _new);
+    vi.mocked(isQdrantReachable).mockResolvedValue(true);
     testDir = mkdtempSync(join(tmpdir(), 'uap-init-'));
   });
 

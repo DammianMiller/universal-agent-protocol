@@ -458,3 +458,47 @@ describe('vm-dom per-script units (run X black screen, 2026-07-18)', () => {
     }
   });
 });
+
+describe('vm-dom: ESM loaded as a classic script blames the LOADER, not the file', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-esm-classic-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Regression for the octopus stall (2026-07-20): contracts.js was valid ES
+   * module source, but index.html loaded it with a plain <script src> tag. The
+   * gate reported "syntax error in js/contracts.js", so every turn re-read a
+   * file that was already correct and wrote nothing — 4 turns, 2h20m, 0 progress.
+   */
+  it('names index.html and the module-system mismatch, not the exporting file', () => {
+    writeWebGame(dir, 'const A = 1;\nexport default A;\n');
+    const r = runVmDomHarness(dir);
+
+    expect(r.passed).toBe(false);
+    expect(r.failureReason).toMatch(/module-system mismatch/i);
+    // The loader must be named — that is where the defect actually lives.
+    expect(r.failureReason).toContain('index.html');
+    // And the model must be told NOT to chase the error into the valid file.
+    expect(r.outputTail).toMatch(/THE DEFECT IS IN THE WIRING/);
+    expect(r.outputTail).toMatch(/type="module"/);
+  });
+
+  it('detects the import form of the same mismatch', () => {
+    writeWebGame(dir, "import { x } from './other.js';\nconsole.log(x);\n");
+    const r = runVmDomHarness(dir);
+    expect(r.passed).toBe(false);
+    expect(r.failureReason).toMatch(/module-system mismatch/i);
+  });
+
+  it('still blames the file for a genuine syntax error (unchanged behaviour)', () => {
+    writeWebGame(dir, 'function broken( {\n');
+    const r = runVmDomHarness(dir);
+    expect(r.passed).toBe(false);
+    expect(r.failureReason).toMatch(/syntax error in/i);
+    expect(r.failureReason).not.toMatch(/module-system mismatch/i);
+  });
+});

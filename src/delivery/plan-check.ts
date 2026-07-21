@@ -77,6 +77,54 @@ export function validatePhaseGraph(phases: DeliveryPhase[]): PhaseGraphValidatio
       break;
     }
   }
+  // Module-system coherence. A plan that asks one phase to `export` from a file
+  // and another to load that file with a plain <script src> tag is not merely
+  // awkward — it is UNSATISFIABLE: the browser parses classic scripts, so the
+  // export is a SyntaxError and the page cannot boot, yet removing the export
+  // violates the first phase's criteria. No edit satisfies both, so the
+  // convergence loop can only spin. Observed live (octopus run, 2026-07-20):
+  // 4 turns / 2h20m at a pinned 0.33 score, zero files written, because every
+  // turn was asked to fix a file that was already correct.
+  const phaseText = (p: DeliveryPhase): string => `${p.goal} ${(p.criteria ?? []).join(' ')}`;
+  const allText = phases.map(phaseText).join(' ');
+  // A bundler legitimately consumes ESM and emits classic scripts, so the two
+  // signals stop being contradictory the moment one is in play. NOTE the
+  // non-capturing group: `/\bbundler|vite|parcel\b/` would anchor only the
+  // first and last alternatives, so bare `vite` would match inside "vitest"
+  // (which nearly every plan in a vitest repo mentions) and silently disable
+  // this whole check.
+  const bundled = /\b(?:bundler|webpack|vite|rollup|esbuild|parcel)\b/i.test(allText);
+  const declaresModuleType = /type\s*=\s*["']?module/i.test(allText);
+  if (!bundled && !declaresModuleType) {
+    // Both sides must reference an actual script FILE. Without that anchor
+    // `\bexports?\b` matches the ordinary English verb ("export the report to
+    // CSV") and pairs with any phase that says "script tags", flagging plans
+    // that have nothing to do with module systems.
+    const mentionsScriptFile = (t: string): boolean => /\.(?:m?js|jsx|ts|tsx)\b/i.test(t);
+    const esmPhases = phases.filter(
+      (p) =>
+        mentionsScriptFile(phaseText(p)) &&
+        /\bexports?\b|\bimports?\s+from\b|\bimportable\b|\bES\s*modules?\b/i.test(phaseText(p)),
+    );
+    const classicPhases = phases.filter((p) => /<script\s+src|\bscript\s+(?:tags?|imports?)\b/i.test(phaseText(p)));
+    if (esmPhases.length > 0 && classicPhases.length > 0) {
+      // WARNING, not error. A hard error here sets ok:false, which makes
+      // decompose's appendGapClosurePhase() return null and SILENTLY DROP the
+      // gap-closure phase — trading a heuristic false positive for the loss of
+      // a real safety phase. This heuristic is not precise enough to earn that.
+      // The authoritative catch is the execution gate, which now names the
+      // loader when it observes the mismatch for real.
+      warnings.push(
+        `possible module-system contradiction: phase(s) ${esmPhases.map((p) => `'${p.id}'`).join(', ')} appear to ` +
+          `require ES module syntax (import/export), while phase(s) ${classicPhases.map((p) => `'${p.id}'`).join(', ')} ` +
+          `load scripts with classic <script src> tags and no type="module". If those refer to the same files the ` +
+          `browser will throw a SyntaxError and the page will not boot, yet removing the exports violates the first ` +
+          `phase — no implementation satisfies both. Either drop the import/export requirement, or specify ` +
+          `type="module" script tags.`,
+      );
+    }
+  }
+
   return { ok: errors.length === 0, errors, warnings };
 }
 

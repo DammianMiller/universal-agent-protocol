@@ -136,6 +136,13 @@ export interface DeliveryResult {
    * files attempt 1 had just written).
    */
   changedTree?: boolean;
+  /**
+   * Set when the loop aborted early because it was provably stuck rather than
+   * merely slow: consecutive turns that both failed to improve the gate score
+   * AND wrote nothing to the tree. Distinguishes "ran out of turns while making
+   * progress" (retry may help) from "spinning" (retrying the same way cannot).
+   */
+  stallReason?: string;
 }
 
 export interface ExplorerSettings {
@@ -393,6 +400,15 @@ const DEFAULT_MAX_TURNS = 5;
 const DEFAULT_MAX_TURNS_CEILING = 50;
 /** Consecutive non-improving turns after which untilDelivered stops extending. */
 const STAGNATION_LIMIT = 4;
+/**
+ * Consecutive turns that both made no gate progress AND left the working tree
+ * byte-identical, after which the loop aborts outright. Lower than
+ * STAGNATION_LIMIT because a turn that changes nothing carries strictly less
+ * information than one that does: once the executor is reading in circles,
+ * further turns are pure waste. Turns the executor never completed (transient
+ * API failures) are excluded — they are missing data, not evidence of a stall.
+ */
+const NO_APPLY_ABORT_LIMIT = 3;
 const DEFAULT_PREVIOUS_OUTPUT_CHARS = 3_000;
 
 const OUTPUT_CONTRACT = [
@@ -581,7 +597,18 @@ export class ConvergenceLoop {
         // non-git projects (the fail-closed path is expected there).
         stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
       };
-      const status = execSync('git status --porcelain=v1 --untracked-files=all', opts).toString();
+      const statusRaw = execSync('git status --porcelain=v1 --untracked-files=all', opts).toString();
+      // Drop harness-owned bookkeeping. `.uap/` is OUR state, never mission
+      // output: run-state rewrites state.json (fresh `updatedAt`) at every
+      // checkpoint and the visual gate rewrites screenshots on every ladder
+      // run. Counting those as "the tree moved" makes the fingerprint change
+      // on every single turn, which silently disables the no-progress breaker
+      // in exactly the fresh-scaffold repos it was written for.
+      const isHarnessOwned = (rel: string): boolean => /(^|\/)\.uap\//.test(rel);
+      const status = statusRaw
+        .split('\n')
+        .filter((line) => line.trim() && !isHarnessOwned(line.slice(3).trim()))
+        .join('\n');
       let diff: string;
       try {
         diff = execSync('git diff HEAD --stat', opts).toString();
@@ -873,6 +900,19 @@ export class ConvergenceLoop {
     let bestSoFar = -1;
     let bestAcceptance = -1;
     let stagnantTurns = 0;
+    // Consecutive turns that both left the tree byte-identical AND failed to
+    // improve the best gate score. A flat score alone can still be real work (a
+    // turn that rewrites a file without moving the needle), so the tree
+    // fingerprint is what separates "working but not yet passing" from "reading
+    // in circles". Observed live: 4 turns / 2h20m of pure re-reading, because
+    // the gate feedback named a file that was not the defect.
+    let noProgressStreak = 0;
+    // Seeded AFTER the baseline ladder run (see below) for the same reason
+    // runStartTreeFingerprint is: files the gates themselves create on first
+    // run must not read as turn-1 movement.
+    let lastTurnFingerprint: string | null = null;
+    let bestScoreSeen = -1;
+    let stallReason: string | undefined;
     let executor = this.executor;
     let explorerSettings = this.config.explorer;
     let critic = this.config.critic;
@@ -907,6 +947,9 @@ export class ConvergenceLoop {
     // the baseline ladder run so files the gates themselves create on first
     // run (e.g. snapshots, lockfiles) don't read as mission changes.
     this.runStartTreeFingerprint = this.fingerprintTree();
+    // Same baseline for the no-progress breaker, so turn 1 is compared against
+    // a post-baseline tree rather than a pre-baseline one.
+    lastTurnFingerprint = this.runStartTreeFingerprint;
 
     // Gate-integrity snapshot, taken AFTER the baseline ladder run so files
     // the gates themselves create on first run (e.g. __snapshots__/*.snap)
@@ -1201,6 +1244,50 @@ export class ConvergenceLoop {
         }
       }
 
+      // Circuit-breaker: consecutive turns that made no gate progress AND left
+      // the tree untouched. Every remaining turn would re-run the same executor
+      // against the same tree and the same feedback, so it can only reproduce
+      // the same result — burning wall-clock and tokens.
+      //
+      // Deliberately does NOT key off `stagnantTurns`: that counter is only
+      // maintained inside the `untilDelivered` branch above, so borrowing it
+      // would make this breaker silently inert on a default bounded run.
+      //
+      // Deliberately does NOT key off `filesApplied` alone: the agentic
+      // executor writes through its own tools and installs a no-op applier, so
+      // `filesApplied` is ALWAYS empty there (see the `changedTree` doc above).
+      // Using it alone would abort productive agentic runs after two flat-score
+      // turns. The git fingerprint is the signal that survives both executors.
+      const treeNow = this.fingerprintTree();
+      const treeMoved = treeNow !== null && treeNow !== lastTurnFingerprint;
+      if (treeNow !== null) lastTurnFingerprint = treeNow;
+      // Fail OPEN when the fingerprint is unavailable (non-git project, git
+      // failure): never abort a run we cannot prove is idle.
+      const provablyIdle = treeNow !== null && !treeMoved && outcome.filesApplied.length === 0;
+      const scoreMoved = record.score > bestScoreSeen;
+      if (scoreMoved) bestScoreSeen = record.score;
+      // A turn the executor never completed (transient 429, proxy 5xx, restarted
+      // backend) produces no ladder verdict and no writes. That is missing
+      // information, not proof of a stuck loop — three flaky turns must not kill
+      // an otherwise healthy run.
+      const inconclusive = Boolean(outcome.executorError) || !outcome.ladder;
+      // An escalation directive applied above (model switch, critic, reseed)
+      // changes the configuration the NEXT turn runs under, and the escalation
+      // ladder exists precisely to break stagnation. Aborting now would kill the
+      // repair pass before it ever executes, so give the new configuration a
+      // turn to prove itself.
+      const escalated = Boolean(directive.switchExecutor || directive.enableCritic || directive.regenerateSeeds);
+      if (inconclusive || scoreMoved || !provablyIdle || escalated) noProgressStreak = 0;
+      else noProgressStreak++;
+      if (noProgressStreak >= NO_APPLY_ABORT_LIMIT) {
+        stallReason =
+          `stuck: ${noProgressStreak} consecutive turns left the working tree unchanged and made no gate ` +
+          `progress. The loop is spinning, not converging — the gate feedback is likely naming a file that ` +
+          `is not the defect, or stating a requirement that no edit can satisfy. Re-running as-is will ` +
+          `reproduce this result.`;
+        break;
+      }
+
       // Phase 3: structured critique of the failed turn (fail-soft). Skipped
       // on the last turn — prevContext is never consumed, so it would waste
       // a model call.
@@ -1270,6 +1357,22 @@ export class ConvergenceLoop {
       }
     }
 
+    // Surface the stall through finalFeedback as well as the dedicated field.
+    // finalFeedback is what actually reaches the operator's terminal, the epic
+    // summary, the split planner and the recorded task outcome; a consumer that
+    // only reads it would otherwise see an early abort as indistinguishable
+    // from ordinary budget exhaustion — which defeats the point of detecting it.
+    // PREPEND, do not append. The epic summary truncates this to 400 chars
+    // (`epic-mission.ts`: `finalFeedback...slice(0, 400)`) before handing it to
+    // the split planner as `lastFailure`. Gate feedback with output tails
+    // routinely exceeds that, so an appended marker is sliced off exactly where
+    // it is needed most. Prepending also matches the house pattern for
+    // "why this failed" banners and puts the diagnosis above the gate wall in
+    // the operator's terminal.
+    if (stallReason) {
+      finalFeedback = finalFeedback ? `⛔ ${stallReason}\n\n${finalFeedback}` : `⛔ ${stallReason}`;
+    }
+
     return {
       success,
       alreadyDelivered: false,
@@ -1281,6 +1384,7 @@ export class ConvergenceLoop {
       finalOutput,
       totalDurationMs: Date.now() - start,
       changedTree: this.hasAppliedChanges(),
+      stallReason,
     };
   }
 }

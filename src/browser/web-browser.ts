@@ -67,6 +67,19 @@ export class WebBrowser {
     const page = this.page;
     if (!page || typeof page.on !== 'function') return;
     try {
+      // Auto-dismiss modal dialogs. A validation browser has no human to click
+      // "OK", and an open alert()/confirm()/prompt() blocks EVERY subsequent
+      // command (evaluate, screenshot, goto) — the whole gate wedges. This is a
+      // real risk now that the visual gate synthetically fires the page's own
+      // click/keydown handlers to drive a game past its start screen: a game
+      // that pops a "Ready?" confirm() on start would otherwise hang the run.
+      page.on('dialog', (dialog: { dismiss?: () => Promise<unknown> }) => {
+        try {
+          void dialog.dismiss?.();
+        } catch {
+          /* best-effort — if dismiss throws, the per-call timeouts still bound us */
+        }
+      });
       page.on('pageerror', (err: unknown) => {
         const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
         this.errors.push({ kind: 'pageerror', message: msg });
@@ -180,10 +193,25 @@ export class WebBrowser {
   }
 
   async close(): Promise<void> {
-    if (this.context) {
-      await this.context!['close']();
-    } else if (this.browser) {
-      await this.browser!['close']();
+    // Close BOTH handles. The non-persistent launch() path sets `context` AND
+    // `browser` (see launch(): it creates the browser, then newContext() off
+    // it), so the previous `else if` closed only the context and left the
+    // Chromium PROCESS alive. Closing a BrowserContext does not terminate the
+    // browser. That is why callers with a correct `finally { close() }` — the
+    // execution gate has always had one — still leaked: every gate pass left a
+    // live Chromium behind (observed: 89 processes / ~33 GB RSS, and the leaked
+    // children held a SIGTERM'd deliver process alive for 2h).
+    // Each close is independently guarded so a failure to close the context
+    // cannot prevent the process itself from being reaped.
+    try {
+      if (this.context) await this.context!['close']();
+    } catch {
+      /* context may already be gone; the process still must be reaped below */
+    }
+    try {
+      if (this.browser) await this.browser!['close']();
+    } catch {
+      /* already exited */
     }
     this.browser = null;
     this.context = null;

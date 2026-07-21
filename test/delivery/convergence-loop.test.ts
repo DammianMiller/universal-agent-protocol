@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync } from 'fs';
+import { execSync } from 'child_process';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ConvergenceLoop } from '../../src/delivery/convergence-loop.js';
@@ -637,5 +638,155 @@ describe('anti-no-op rail: git fingerprint (direct-mutation executor)', () => {
     const result = await loop.deliver('change something');
     expect(result.success).toBe(false);
     expect(result.finalFeedback).toMatch(/no-op|has not changed/i);
+  });
+});
+
+describe('no-progress circuit-breaker (octopus stall, 2026-07-20)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-stall-'));
+    // The breaker proves idleness via a git fingerprint and deliberately fails
+    // OPEN when that is unavailable — it must never abort a run it cannot prove
+    // is idle. Real delivery targets are git repos (the worktree gate requires
+    // one), so the fixture must be one too or these tests are vacuous.
+    execSync('git init -q && git config user.email t@t && git config user.name t', {
+      cwd: dir,
+      stdio: 'ignore',
+    });
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * A live run spent 4 turns / 2h20m re-reading a file the gate had misnamed,
+   * never writing anything, and still ground on to its turn budget.
+   */
+  it('aborts early when consecutive turns leave the tree unchanged and the score flat', async () => {
+    let executorCalls = 0;
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 10,
+        maxTurnsCeiling: 10,
+        rungs: stubRungs(),
+        baselineCheck: false,
+        alwaysVerify: true,
+      },
+      async () => {
+        executorCalls++;
+        return 'I re-read js/contracts.js; it looks correct to me.';
+      },
+      {
+        applier: async () => ({ filesWritten: [], rejected: [] }),
+        ladderRunner: () => ladderResult(0.33, false, 'syntax error in js/contracts.js'),
+      }
+    );
+    const result = await loop.deliver('fix the boot error');
+
+    expect(result.success).toBe(false);
+    expect(result.stallReason).toMatch(/stuck/i);
+    // Aborted well before the 10-turn budget.
+    expect(executorCalls).toBeLessThan(10);
+    expect(result.turns).toBeLessThan(10);
+    // The stall must also reach consumers that only read finalFeedback.
+    expect(result.finalFeedback).toMatch(/stuck/i);
+  });
+
+  /**
+   * Guards the inverse failure: the agentic executor installs a no-op applier,
+   * so filesApplied is ALWAYS empty there. Keying the breaker off filesApplied
+   * alone would abort productive runs after two flat-score turns.
+   */
+  it('does NOT abort a run whose executor is writing files via a flat score', async () => {
+    let executorCalls = 0;
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 4,
+        maxTurnsCeiling: 4,
+        rungs: stubRungs(),
+        baselineCheck: false,
+      },
+      async () => {
+        executorCalls++;
+        // Distinct content each turn: the tree genuinely moves.
+        return `\`\`\`file:src/fix${executorCalls}.ts\nexport const n = ${executorCalls};\n\`\`\``;
+      },
+      { ladderRunner: () => ladderResult(0.5, false) }
+    );
+    const result = await loop.deliver('keep working');
+
+    expect(result.stallReason).toBeUndefined();
+    expect(executorCalls).toBe(4);
+  });
+
+  /**
+   * The harness writes to `.uap/` on every turn — run-state rewrites
+   * state.json with a fresh `updatedAt` at each checkpoint, and the visual gate
+   * rewrites screenshots on every ladder run. In an unborn-HEAD repo (fresh
+   * scaffold, no commit — the octopus shape) the fingerprint falls back to
+   * stat'ing untracked files, so that churn made the tree look like it moved
+   * every turn and silently re-disabled the breaker. `.uap/` is harness-owned
+   * bookkeeping, never mission output, and must not count as progress.
+   */
+  it('still aborts when only harness-owned .uap/ files churn between turns', async () => {
+    let executorCalls = 0;
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 10,
+        maxTurnsCeiling: 10,
+        rungs: stubRungs(),
+        baselineCheck: false,
+        alwaysVerify: true,
+      },
+      async () => {
+        executorCalls++;
+        // Simulate saveRunState + screenshot rewrites: harness state changes
+        // every turn while the mission tree stays untouched.
+        mkdirSync(join(dir, '.uap', 'visual'), { recursive: true });
+        writeFileSync(join(dir, '.uap', 'state.json'), JSON.stringify({ updatedAt: `t${executorCalls}` }));
+        writeFileSync(join(dir, '.uap', 'visual', `shot-${executorCalls}.png`), `png-${executorCalls}`);
+        return 'still reading; nothing to change.';
+      },
+      {
+        applier: async () => ({ filesWritten: [], rejected: [] }),
+        ladderRunner: () => ladderResult(0.33, false),
+      }
+    );
+    const result = await loop.deliver('fix it');
+
+    expect(result.stallReason).toMatch(/stuck/i);
+    expect(executorCalls).toBeLessThan(10);
+  });
+
+  /** Transient API failures are missing data, not proof of a stuck loop. */
+  it('does not count turns the executor never completed', async () => {
+    let executorCalls = 0;
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 4,
+        maxTurnsCeiling: 4,
+        rungs: stubRungs(),
+        baselineCheck: false,
+        alwaysVerify: true,
+      },
+      async () => {
+        executorCalls++;
+        throw new Error('429 rate limited');
+      },
+      {
+        applier: async () => ({ filesWritten: [], rejected: [] }),
+        ladderRunner: () => ladderResult(0.33, false),
+      }
+    );
+    const result = await loop.deliver('flaky backend');
+
+    // All four turns attempted — a flaky backend must not be misreported as
+    // "the loop is spinning" and killed after three failures.
+    expect(executorCalls).toBe(4);
+    expect(result.stallReason).toBeUndefined();
   });
 });

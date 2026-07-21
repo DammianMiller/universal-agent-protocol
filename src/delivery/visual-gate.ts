@@ -213,6 +213,60 @@ const PIXEL_PROBE = `(function () {
   });
 })`;
 
+/**
+ * Drive a "press to start" interaction so a game leaves its MENU and enters the
+ * PLAYING state before we sample pixels. Without this, a game whose start screen
+ * is legitimately near-black (title + "click to start") measures as a blank
+ * render (few distinct colors, ~99% dominant) and false-fails the visual floor —
+ * even when the execution gate passes and the vision reviewer scores it well
+ * (octopus_invaders_v3, 2026-07-21: execution PASS, vision 8/10, floor FAIL on a
+ * dark title screen). We can't know the game's specific start control, so fire
+ * the common ones (pointer/click at viewport centre, Space/Enter/ArrowUp) at both
+ * the canvas and the document. Defensive throughout — a page with no such
+ * handlers simply ignores every event, so this is safe for non-game pages too.
+ * Returns a short status string (never throws).
+ */
+const START_INTERACTION = `(function () {
+  try {
+    var cx = Math.floor((window.innerWidth || 800) / 2);
+    var cy = Math.floor((window.innerHeight || 600) / 2);
+    var canvas = document.querySelector('canvas');
+    var targets = canvas ? [canvas, document.body, document] : [document.body, document];
+    var mouseOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
+    ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'mousemove'].forEach(function (type) {
+      targets.forEach(function (t) {
+        try { t.dispatchEvent(new MouseEvent(type, mouseOpts)); } catch (e) {}
+      });
+    });
+    var keys = [
+      { key: ' ', code: 'Space', keyCode: 32 },
+      { key: 'Enter', code: 'Enter', keyCode: 13 },
+      { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
+    ];
+    keys.forEach(function (k) {
+      var opts = { bubbles: true, cancelable: true, key: k.key, code: k.code };
+      ['keydown', 'keyup'].forEach(function (type) {
+        [window, document, document.body].forEach(function (t) {
+          try {
+            if (!t) return;
+            var ev = new KeyboardEvent(type, opts);
+            // KeyboardEventInit ignores keyCode/which, but a lot of hand-written
+            // game code still branches on them (e.g. e.keyCode === 32) — so pin
+            // them onto the event after construction or the keyboard path is a
+            // no-op for those games.
+            try {
+              Object.defineProperty(ev, 'keyCode', { get: function () { return k.keyCode; } });
+              Object.defineProperty(ev, 'which', { get: function () { return k.keyCode; } });
+            } catch (e2) {}
+            t.dispatchEvent(ev);
+          } catch (e) {}
+        });
+      });
+    });
+    return 'ok';
+  } catch (e) { return 'err:' + (e && e.message); }
+})`;
+
 interface ProbeResult {
   canvas: boolean;
   readable?: boolean;
@@ -377,12 +431,19 @@ export async function runVisualGate(
   }
 
   let server: { url: string; close: () => void } | null = null;
+  // Hoisted OUT of the loop so the outer `finally` can reap a browser leaked by
+  // any throw in the loop body. It used to be loop-scoped, so a mid-iteration
+  // throw (e.g. getErrors() on a crashed browser) skipped the close, hit the
+  // outer catch, and returned `skipped: true` — silently disabling the gate
+  // while leaking a headless Chromium every pass. Observed in the wild: 11
+  // leaked instances / ~33 GB RSS across a single 4h deliver run.
+  let browser: VisualBrowserDriver | null = null;
   const pages: PageVisualReport[] = [];
   try {
     server = await startStaticServer(projectRoot);
 
     for (const file of files) {
-      let browser: VisualBrowserDriver | null = null;
+      browser = null;
       try {
         browser = options.browserFactory ? options.browserFactory() : await loadRealBrowser();
         await browser.launch({ headless: true });
@@ -404,6 +465,13 @@ export async function runVisualGate(
       const start = Date.now();
       const src = safeRead(join(projectRoot, file));
       const expectsAnimation = /requestAnimationFrame/.test(src);
+      // Gate the start-interaction on CANVAS presence, not on rAF-in-HTML: a
+      // bundled/minified game (Vite/webpack) keeps requestAnimationFrame in its
+      // external bundle, so the entry HTML never matches — but the <canvas> tag
+      // is in the HTML regardless. Canvas is also exactly what this gate samples,
+      // so "has a canvas" is the right signal for "this is an interactive scene
+      // that may have a start screen to drive past".
+      const hasCanvas = /<canvas[\s/>]/i.test(src);
       const shots: string[] = [];
       let loaded = false;
       let probes: ProbeResult[] = [];
@@ -417,6 +485,26 @@ export async function runVisualGate(
         ]);
         loaded = /^2\d\d$/.test(String(status)) || String(status) === '304';
         await Promise.race([browser.waitForLoadState('load'), delay(5000)]).catch(() => undefined);
+
+        // Drive a start interaction so a game leaves its (often near-black) menu
+        // and renders the PLAYING state before we sample — otherwise the dark
+        // title screen false-fails the visual floor. Only for canvas apps (the
+        // start-screen signature); static/DOM pages are left untouched. The click
+        // also satisfies the user-gesture requirement that gates a game's
+        // AudioContext.resume(). Then let a few frames render.
+        if (loaded && hasCanvas) {
+          try {
+            // Timeout-guard the evaluate: a start handler that opens a modal
+            // dialog would otherwise block forever. WebBrowser now auto-dismisses
+            // dialogs, but the race is a belt-and-braces bound so a hung handler
+            // can never wedge the run (matching the goto guard above).
+            await Promise.race([browser.evaluate<string>(START_INTERACTION), delay(Math.min(timeoutMs, 5000))]);
+            await delay(Math.min(intervalMs, 600));
+          } catch {
+            // Best-effort — a page that rejects synthetic events just stays on
+            // whatever it rendered; the sampler reports that honestly.
+          }
+        }
 
         if (loaded) {
           for (let i = 0; i < samples && Date.now() - start < timeoutMs; i++) {
@@ -451,6 +539,9 @@ export async function runVisualGate(
       // point the model at the wrong file.
       const failedRequests = observed.filter((e) => e.kind === 'requestfailed').map((e) => e.message);
       await browser.close().catch(() => undefined);
+      // Null it only AFTER a successful close so the outer `finally` reaps this
+      // instance if anything above threw before we got here.
+      browser = null;
 
       const last = probes[probes.length - 1] ?? { canvas: false };
       const first = probes.find((p) => p.readable);
@@ -495,6 +586,11 @@ export async function runVisualGate(
     };
   } finally {
     server?.close();
+    // Reaps a browser leaked by any throw between launch and the per-iteration
+    // close above. Without this the process keeps a live Chromium (and its
+    // renderer tree) attached, which is what kept a SIGTERM'd deliver run alive
+    // for hours: the leaked children held the event loop open.
+    await browser?.close().catch(() => undefined);
   }
 
   const failing = pages.filter((p) => p.problems.length > 0);
