@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.163.4 (2026-07-21)
+
+- fix(deliver+visual-gate): deliver the documented review follow-ups
+
+
 ## v1.163.3 (2026-07-21)
 
 - test: fix the two flakes that intermittently failed the full-suite bump gate
