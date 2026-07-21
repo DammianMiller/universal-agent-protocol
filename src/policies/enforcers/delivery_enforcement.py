@@ -225,12 +225,77 @@ _BASH_WRITE_RE = re.compile(
 # or relative path reaches it too. Anchoring on "name right after the separator"
 # let `nohup /home/u/.cloakbrowser/chromium-146/chrome file:///x.html &` walk
 # straight through the gate — the invocation the model actually reaches for.
+#
+# The trailing lookahead requires the bin to be a real COMMAND: followed by
+# whitespace-then-an-argument (a URL/file/flag), or a terminator (`firefox &`),
+# or end of input. Without it, `open` — a browser bin on macOS — also matched
+# Python's `open()` BUILTIN: `json.load(open('f'))` read as "subshell-paren +
+# open browser" and hard-blocked read-only diagnostics. A launch always has a
+# space before its argument; `open(` is a function call, so it no longer matches.
+# `\n` is a command separator too: without it `^` only anchored at offset 0, so a
+# launch on the SECOND-or-later line of a multi-line command was invisible —
+# `cd app\npython3 -m http.server &\nfirefox http://localhost:8080` walked
+# through. Agents emit multi-line bash constantly, so this was a live bypass.
+# `(?:\w+=[^\s]*\s+)*` skips leading env assignments: the path group rejects `=`
+# and `:`, so `DISPLAY=:0 firefox /tmp/a.html` — the canonical incantation for
+# putting a window on the operator's desktop, i.e. exactly what this gate exists
+# to stop — was also walking through.
 _BROWSER_RE = re.compile(
-    r"(?:^|[;&|(]|\|\||&&|\bnohup\b|\bsetsid\b|\bexec\b|\bxargs\b|\benv\b|\bnice\b|\btimeout\b|`|\$\()"
-    r"\s*(?:[\w./~+-]*/)?(" + "|".join(BROWSER_BINS) + r")\b",
+    r"(?:^|[;&|(\n]|\|\||&&|\bnohup\b|\bsetsid\b|\bexec\b|\bxargs\b|\benv\b|\bnice\b|\btimeout\b|`|\$\()"
+    r"\s*(?:\w+=[^\s]*\s+)*(?:[\w./~+-]*/)?(" + "|".join(BROWSER_BINS) + r")(?=\s+[^\s(]|\s*[;&|]|\s*$)",
     re.IGNORECASE,
 )
-_LOOKUP_RE = re.compile(r"^\s*(?:which|command\s+-v|type|whereis)\b", re.IGNORECASE)
+# A lookup is only exempt when the command is EXCLUSIVELY a lookup. Matching on
+# PREFIX alone disabled the whole browser scan for the natural probe-then-launch
+# sequence `which firefox && firefox /tmp/a.html` — the most likely real bypass
+# in this file, and one an agent reaches for without trying to evade anything.
+_LOOKUP_RE = re.compile(r"^\s*(?:which|command\s+-v|type|whereis)\b[^;&|\n]*$", re.IGNORECASE)
+
+# Quoted spans and heredoc bodies — blanked before the browser scan so a browser
+# NAME that is really a grep PATTERN, an interpreter payload
+# (`python -c "...open(...)"`), echoed text, or a heredoc body is not misread as
+# a LAUNCH. This was the other half of the false-positive class: a diagnostic
+# like `grep -n "GUI browser\|open.*browser" f.py` matched `|open` as "pipe into
+# the open browser". Only the shell SURFACE can express a launch.
+# The leading `\\.` alternative CONSUMES a backslash-escaped character before it
+# can open a span. A naive `'[^']*'` pairs the two ESCAPED apostrophes in
+# `echo it\'s done ; firefox a.html ; echo that\'s all`, blanking straight across
+# the launch and hiding it — reachable by accident, not just by an evader. The
+# escape token is returned unchanged by the substitution (only real quoted spans
+# are blanked); ordering matters, so keep `\\.` first.
+_QUOTE_SPAN_RE = re.compile(r"\\.|'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\"", re.DOTALL)
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1.*?^[ \t]*\2[ \t]*$", re.DOTALL | re.MULTILINE)
+# Above this size, skip surface-stripping and scan raw: `_HEREDOC_RE`'s lazy
+# `.*?` under DOTALL is O(n) per `<<TAG` with no terminator, so a pathological
+# ~100KB command could stall the hook. Scanning raw fails toward BLOCKING.
+_SURFACE_MAX = 65536
+
+
+def _shell_surface(cmd: str) -> str:
+    """`cmd` with quoted spans and heredoc bodies replaced by spaces, so the
+    browser matcher sees only real shell command words.
+
+    Length-preserving ON PURPOSE (blanks, never deletes): `firefox "$URL"` must
+    still read as a launch, and it only does because the blanked argument leaves
+    whitespace for the trailing lookahead. Returning "" here would silently stop
+    blocking every quoted-argument launch — there are tests pinning this.
+
+    KNOWN GAP (pre-existing, not introduced here): a launch inside a quoted
+    interpreter payload — `bash -c "firefox url"`, `sh -c 'xdg-open x'` — is not
+    detected. The OLD matcher missed these too (the `"` before the bin was never
+    a separator), so this is not a regression; closing it needs a separate
+    interpreter-aware pass that does not re-fire on `python -c "...open('f')"`."""
+    if len(cmd) > _SURFACE_MAX or ("'" not in cmd and '"' not in cmd and "<<" not in cmd):
+        return cmd
+    def blank(m: "re.Match[str]") -> str:
+        return " " * (m.end() - m.start())
+
+    def blank_spans(m: "re.Match[str]") -> str:
+        # Escape tokens (`\'`) pass through untouched — blanking them is
+        # unnecessary and they must not be treated as quote spans.
+        return m.group(0) if m.group(0).startswith("\\") else blank(m)
+
+    return _QUOTE_SPAN_RE.sub(blank_spans, _HEREDOC_RE.sub(blank, cmd))
 
 
 def _handle_bash(args: dict) -> None:
@@ -243,7 +308,7 @@ def _handle_bash(args: dict) -> None:
 
     # Browser launch → redirect to the real (headless) validation path. Always
     # blocked: opening a window proves nothing and cannot gate a DONE claim.
-    if not _LOOKUP_RE.match(cmd) and _BROWSER_RE.search(cmd):
+    if not _LOOKUP_RE.match(cmd) and _BROWSER_RE.search(_shell_surface(cmd)):
         emit(
             False,
             "BLOCKED: do not open a GUI browser to check your work — it proves nothing "
