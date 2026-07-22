@@ -229,8 +229,58 @@ function runGate(
   if (r.error) {
     return { exitCode: null, spawnError: true, outputTail: String(r.error.message).slice(-500) };
   }
-  const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(-500);
+  // Keep BOTH ends. A tool-usage error (see detectBrokenGate) is printed by the
+  // FIRST failing command, which in a long gate scrolls far out of a tail-only
+  // window — the broken-gate check would then never see the evidence it needs.
+  const raw = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+  const out = raw.length > 1000 ? `${raw.slice(0, 500)}\n[...]\n${raw.slice(-500)}` : raw;
   return { exitCode: r.status, spawnError: false, outputTail: out };
+}
+
+/**
+ * Signals that the gate script is BROKEN rather than merely unsatisfied.
+ *
+ * A gate exits non-zero for two very different reasons: the assertion it makes
+ * is not yet true (exactly what we want — it MUST fail until the work is done),
+ * or the gate itself is malformed and could never pass no matter what the model
+ * writes. `scriptParses` (bash -n) catches scripts that do not parse; it cannot
+ * catch a script that parses fine and then misuses its tools at runtime.
+ *
+ * Live case (octopus_invaders_v3, 2026-07-22): the model authored
+ * `grep -q 'background\.initStars\('`. In a POSIX basic regex `\(` is
+ * group-open, so grep aborted with "Unmatched ( or \(" and the check reported
+ * FAIL against code that was correct. "Fails on the unsolved repo" was
+ * trivially satisfied, so the gate was accepted, then frozen by the
+ * anti-gutting guard. The deliver spent 4 turns / ~35 min at 0% correctly
+ * diagnosing verify.sh as broken and being blocked every time it tried to
+ * repair it. It was right, and it had no legal move.
+ *
+ * Only patterns that are UNAMBIGUOUSLY an authoring bug belong here. Notably
+ * absent: "command not found" and "No such file or directory" — a gate may
+ * legitimately invoke a binary the deliverable has not built yet, and that is a
+ * real "work not done" failure. Treating those as broken would regenerate good
+ * gates and reintroduce vacuity, which is the worse failure.
+ */
+const BROKEN_GATE_SIGNALS: ReadonlyArray<{ re: RegExp; what: string }> = [
+  { re: /\b(?:grep|egrep|fgrep):[^\n]*Unmatched\s*[[(\\]/i, what: 'malformed grep pattern (unmatched bracket or group)' },
+  { re: /\b(?:grep|egrep|fgrep):[^\n]*invalid regular expression/i, what: 'invalid grep regular expression' },
+  { re: /\b(?:grep|egrep|fgrep):[^\n]*trailing backslash/i, what: 'grep pattern ends in a trailing backslash' },
+  { re: /\b(?:grep|egrep|fgrep):[^\n]*(?:unrecognized|invalid) option/i, what: 'invalid grep option' },
+  { re: /\bsed:[^\n]*-e expression/i, what: 'malformed sed expression' },
+  { re: /\bawk:[^\n]*syntax error/i, what: 'malformed awk program' },
+  { re: /syntax error near unexpected token/i, what: 'shell syntax error raised at runtime' },
+  { re: /\b(?:unary operator expected|integer expression expected)\b/i, what: 'misused test/[ ] comparison' },
+];
+
+/**
+ * Return a description of why the gate is structurally broken, or null when its
+ * non-zero exit is a legitimate "the work is not done yet".
+ */
+export function detectBrokenGate(output: string): string | null {
+  for (const sig of BROKEN_GATE_SIGNALS) {
+    if (sig.re.test(output)) return sig.what;
+  }
+  return null;
 }
 
 /**
@@ -324,6 +374,20 @@ export async function authorAcceptanceGate(opts: SelfGateOptions): Promise<SelfG
       // Vacuous: passes on the unsolved repo. Reject and retry stricter.
       notes.push(`attempt ${attempt}: gate passed on the UNSOLVED repo — too weak, regenerating`);
       priorFeedback = 'it passed on the unsolved repository (it must fail until the work is done)';
+      continue;
+    }
+
+    // Non-zero is NOT sufficient. A gate whose own tooling errored also exits
+    // non-zero, and accepting it wires in a gate that can never pass — then the
+    // anti-gutting guard freezes it and the deliver has no legal move.
+    const broken = detectBrokenGate(run.outputTail);
+    if (broken) {
+      notes.push(`attempt ${attempt}: gate is BROKEN, not strict (${broken}) — regenerating`);
+      priorFeedback =
+        `the script ran but its OWN tooling errored: ${broken}. It did not test the repository, ` +
+        'so it can never pass. Check quoting and escaping — in a POSIX basic regex `\\(` means ' +
+        'group-open, so use a plain `(` to match a literal parenthesis (or use grep -F / grep -E). ' +
+        'Verify each command runs cleanly before relying on its exit status.';
       continue;
     }
 
