@@ -245,7 +245,52 @@ const START_POINTER = `(function () {
         try { t.dispatchEvent(new MouseEvent(type, mouseOpts)); } catch (e) {}
       });
     });
-    return 'ok';
+    // A DOM start CONTROL needs a click on the ELEMENT ITSELF. Dispatching at
+    // the canvas/body above cannot reach it: events bubble UP, not down, so a
+    // <button>Start Game</button> never sees them and the game stays on its
+    // title screen forever — the gate then judges the MENU and reports 0% motion
+    // (octopus_invaders_v3, 2026-07-22: "OCTOPUS INVADERS" + an unstyled Start
+    // button, aesthetic 2/10, because gameplay was never reached).
+    // Deliberately narrow: real buttons, or elements whose own text says
+    // start/play/begin. Anchors are EXCLUDED — clicking one can navigate away
+    // and destroy the very page we are about to sample.
+    var startRe = /^\\s*(start|play|begin|new game|start game|play game)\\b/i;
+    var cands = Array.prototype.slice.call(
+      document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]')
+    );
+    Array.prototype.forEach.call(document.querySelectorAll('div, span, p, h1, h2, h3'), function (el) {
+      try {
+        // Own text only (no descendants) so a whole container isn't matched.
+        var own = '';
+        for (var i = 0; i < el.childNodes.length; i++) {
+          if (el.childNodes[i].nodeType === 3) own += el.childNodes[i].nodeValue;
+        }
+        if (startRe.test(own)) cands.push(el);
+      } catch (e) {}
+    });
+    var clicked = 0;
+    cands.forEach(function (el) {
+      try {
+        var r = el.getBoundingClientRect();
+        if (!r || r.width <= 0 || r.height <= 0) return; // not visible
+        var label = (el.value || el.textContent || '').slice(0, 40);
+        // A bare <button> with no text is still a plausible start control; a
+        // TEXT element must actually say start/play/begin.
+        var isButton = /^(button|input)$/i.test(el.tagName) || el.getAttribute('role') === 'button';
+        if (!isButton && !startRe.test(label)) return;
+        var o = {
+          bubbles: true, cancelable: true, view: window,
+          clientX: Math.floor(r.left + r.width / 2), clientY: Math.floor(r.top + r.height / 2),
+        };
+        ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(function (type) {
+          try { el.dispatchEvent(new MouseEvent(type, o)); } catch (e) {}
+        });
+        // native click() also runs an inline onclick= handler
+        try { if (typeof el.click === 'function') el.click(); } catch (e) {}
+        clicked++;
+      } catch (e) {}
+    });
+    return 'ok:' + clicked;
   } catch (e) { return 'err:' + (e && e.message); }
 })`;
 
