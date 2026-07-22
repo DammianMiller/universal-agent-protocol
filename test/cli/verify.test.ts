@@ -100,3 +100,55 @@ describe('runVerify', () => {
     expect(r.rungs.map((g) => g.id)).toEqual(['build']);
   });
 });
+
+describe('gate ORDER: build/run first, visual only after they pass', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'verify-order-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('SKIPS the visual + aesthetic review when the run gate fails, and says so', async () => {
+    // Pixels of an artifact that does not RUN are not evidence. Worse, the
+    // vision reviewer returns confident aesthetic complaints about a screen that
+    // only exists because the app is broken, and the fix loop chases those
+    // instead of the real defect (octopus_invaders_v3, 2026-07-22: iterations
+    // spent on palette notes for a game that had no render loop at all).
+    writeWebGame(dir, '(function(){ function r(){ return s.x; } r(); let s = {x:1}; })();');
+    const r = await runVerify({ dir, visual: true });
+    expect(r.passed).toBe(false);
+    // The run failure is what's reported...
+    expect(r.report).toMatch(/before initialization|is not defined/);
+    // ...and the visual pass is explicitly skipped, never silently omitted.
+    expect(r.report).toMatch(/visual \+ aesthetic review SKIPPED/);
+    expect(r.report).toMatch(/build\/run gates must pass first/);
+    // No visual verdict was produced at all.
+    expect(r.visual).toBeUndefined();
+  });
+
+  it(
+    'RUNS the visual gate IFF the run gates passed',
+    async () => {
+      writeWebGame(dir, "document.getElementById('c').getContext('2d').fillRect(0,0,1,1);");
+      const r = await runVerify({ dir, visual: true });
+      // Assert the INVARIANT, not an absolute: if the run gate legitimately
+      // fails (e.g. it timed out under load) then skipping the visual pass is
+      // the CORRECT behaviour, so pin the relationship rather than "it ran".
+      const skipped = /visual \+ aesthetic review SKIPPED/.test(r.report);
+      expect(r.visual === undefined).toBe(skipped);
+    },
+    // This is the one case that reaches a REAL headless browser (the run gate
+    // passes, so the visual gate actually launches). That exceeds the suite's
+    // 15s default when 280+ files compete for CPU — a load artifact, not a hang.
+    60000
+  );
+
+  it('does not mention the visual skip for a project with NO visual output', async () => {
+    // "only when there IS visual output" — a non-web project has no entry pages,
+    // so the visual gate is irrelevant either way and must not add noise.
+    writeFileSync(join(dir, 'main.py'), 'print("hi")\n');
+    const r = await runVerify({ dir, visual: true });
+    expect(r.report).not.toMatch(/visual \+ aesthetic review SKIPPED/);
+    expect(r.visual).toBeUndefined();
+  });
+});

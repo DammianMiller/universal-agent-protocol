@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.163.8 (2026-07-22)
+
+- fix(verify): build/run gates first — visual + aesthetic only after they pass
+
+
+## v1.163.7 (2026-07-22)
+
+- fix(visual-gate): click real DOM start controls, not just the canvas
+
+
 ## v1.163.6 (2026-07-22)
 
 - refactor(delivery): deliver the deferred follow-ups from #570/#571
