@@ -58,3 +58,44 @@ describe('the acceptance gate is readable, never writable', () => {
     expect(call(dir, 'write_file', { path: 'app.js', content: 'x' })).toMatch(/^OK/);
   });
 });
+
+/**
+ * Same bug, second file: the user-validation gate's own failure text says
+ * "the manifest is .uap/user-paths.json" and the guard then refused to let the
+ * agent read it — so it could not know WHICH selectors the journeys assert.
+ * Live cost (octopus_invaders_v3, 2026-07-22): a deliver churned 2h44m flat at
+ * 50% of gates, rewriting one file repeatedly while guessing the contract.
+ */
+describe('the user-path manifest is readable, never writable', () => {
+  let dir: string;
+  const MANIFEST = JSON.stringify({
+    version: 1,
+    paths: [{ id: 'start', steps: [{ expect_visible: '#hud' }] }],
+  });
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-paths-'));
+    mkdirSync(join(dir, '.uap'), { recursive: true });
+    writeFileSync(join(dir, '.uap', 'user-paths.json'), MANIFEST);
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('READS the manifest — the agent can see which selectors the journeys assert', () => {
+    const out = call(dir, 'read_file', { path: '.uap/user-paths.json' });
+    expect(out).toContain('#hud');
+    expect(out).not.toMatch(/^ERROR/);
+  });
+
+  it('REFUSES to rewrite the manifest — editing the contract is not satisfying it', () => {
+    const out = call(dir, 'write_file', { path: '.uap/user-paths.json', content: '{"paths":[]}' });
+    expect(out).toMatch(/^ERROR/);
+    expect(out).toMatch(/never modify it|Rewriting the gate/);
+    expect(readFileSync(join(dir, '.uap', 'user-paths.json'), 'utf-8')).toContain('#hud');
+  });
+
+  it('still blocks the REST of .uap/ — only the contract is carved out', () => {
+    writeFileSync(join(dir, '.uap', 'deliver.lock'), '123|x');
+    const out = call(dir, 'read_file', { path: '.uap/deliver.lock' });
+    expect(out).toMatch(/^ERROR/);
+    expect(out).toMatch(/internal state/);
+  });
+});

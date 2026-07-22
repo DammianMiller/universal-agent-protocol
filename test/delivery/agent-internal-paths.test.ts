@@ -44,9 +44,19 @@ describe('agentic executor: UAP/agent-internal paths are off-limits', () => {
     expect(out).not.toContain('running'); // the content never reaches the model
   });
 
-  it('read_file refuses .uap logs and manifests', () => {
+  it('read_file refuses .uap logs and run state', () => {
     expect(call(root, 'read_file', { path: '.uap/autoroute.log' })).toMatch(/internal state/i);
-    expect(call(root, 'read_file', { path: '.uap/user-paths.json' })).toMatch(/internal state/i);
+    expect(call(root, 'read_file', { path: '.uap/deliver.lock' })).toMatch(/internal state/i);
+  });
+
+  it('but ALLOWS .uap/user-paths.json — it is the CONTRACT, not internal state', () => {
+    // The user-validation gate's failure text points the agent at this file
+    // ("the manifest is .uap/user-paths.json"). Refusing the read left it
+    // guessing which selectors the journeys assert — a deliver churned 2h44m
+    // flat at 50% of gates because of exactly this. See gate-readable.test.ts.
+    const out = call(root, 'read_file', { path: '.uap/user-paths.json' });
+    expect(out).not.toMatch(/internal state/i);
+    expect(out).toContain('paths');
   });
 
   it('list_dir refuses .uap/ (the EISDIR turn-waster)', () => {
