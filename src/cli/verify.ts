@@ -172,13 +172,31 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // path — a UI that renders wrong is a real failure regardless of how cheap the
   // caller wanted to be.
   const visualWanted = opts.visual === true || (opts.visual !== false && (!opts.runtimeOnly || fidelity.max));
-  if (visualWanted && hasEntryPages) {
+  // ORDER MATTERS: build/run/test FIRST, rendered truth only after they pass.
+  // Pixels of an artifact that does not compile or does not run are not evidence
+  // of anything, and grading them is actively HARMFUL: the vision reviewer
+  // returns confident, specific aesthetic complaints (palette, typography,
+  // spacing) about a screen that only exists because the app is broken, and the
+  // fix loop then chases those instead of the real defect. Observed live
+  // (octopus_invaders_v3, 2026-07-22): several iterations spent on palette
+  // notes for a game that had NO render loop at all. It also wastes a headless
+  // browser pass plus a vision-model call on every failing turn.
+  const ladderGreen = ladder.passed;
+  const visualSkippedForLadder = visualWanted && hasEntryPages && !ladderGreen;
+  if (visualWanted && hasEntryPages && ladderGreen) {
     visual = await runVisualGate(dir);
   }
   // Standard: a no-browser SKIP fails open. Max: fail CLOSED — a project with
   // entry pages that could not be visually observed is NOT verified.
   const visualBlocks = Boolean(visual && !visual.passed && (fidelity.max || !visual.skipped));
   let visualReport = visual ? `\n${visual.feedback}` : '';
+  // Say plainly that rendering was NOT checked — silence here would read as
+  // "the visuals are fine" on exactly the runs where nothing was observed.
+  if (visualSkippedForLadder) {
+    visualReport +=
+      '\nvisual + aesthetic review SKIPPED — the build/run gates must pass first. ' +
+      'Fix the failing gate above; rendering is only judged once the artifact compiles and runs.';
+  }
 
   // Visual regression baselines. --approve-visual pins the current look; otherwise
   // (when baselines are enabled and the gate actually rendered) compare against the

@@ -481,3 +481,40 @@ describe('driveStartInteraction (extracted — click-vs-keys in isolation)', () 
     expect(calls).toBeGreaterThanOrEqual(3); // pointer, probe, keys
   });
 });
+
+describe('start interaction clicks real DOM start CONTROLS (2026-07-22)', () => {
+  /** Capture the scripts the gate evaluates so the capability can be asserted
+   *  without a real DOM (the end-to-end proof is the headless A/B run). */
+  function capture() {
+    const scripts: string[] = [];
+    return {
+      scripts,
+      browser: {
+        evaluate: async <T,>(script?: unknown) => {
+          scripts.push(String(script ?? ''));
+          return (isStartInteraction(script) ? 'ok' : probe(Array(16).fill('0,0,0'), 1, 1.0)) as unknown as T;
+        },
+      } as Pick<VisualBrowserDriver, 'evaluate'>,
+    };
+  }
+
+  it('the pointer script targets buttons and start-labelled elements, and calls native click()', async () => {
+    const { browser, scripts } = capture();
+    await driveStartInteraction(browser, { timeoutMs: 500, settleMs: 1 });
+    const pointer = scripts.find((s) => isPointerInteraction(s)) ?? '';
+    // Events dispatched at the canvas/body can never reach a <button> (bubbling
+    // goes UP), so the control itself must be targeted, and native click() is
+    // what runs an inline onclick= handler.
+    expect(pointer).toMatch(/querySelectorAll\(\s*'button/);
+    expect(pointer).toMatch(/role="button"/);
+    expect(pointer).toMatch(/\.click\(\)/);
+    expect(pointer).toMatch(/start\|play\|begin/);
+  });
+
+  it('does NOT target anchors — clicking one could navigate away from the page under test', async () => {
+    const { browser, scripts } = capture();
+    await driveStartInteraction(browser, { timeoutMs: 500, settleMs: 1 });
+    const pointer = scripts.find((s) => isPointerInteraction(s)) ?? '';
+    expect(pointer).not.toMatch(/querySelectorAll\([^)]*\ba\b[^)]*\)/);
+  });
+});
