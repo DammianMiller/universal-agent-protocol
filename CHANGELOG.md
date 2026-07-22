@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.163.10 (2026-07-22)
+
+- fix(self-gate): reject a BROKEN gate, not just a vacuous one
+
+
 ## v1.163.9 (2026-07-22)
 
 - fix(deliver): let the agent READ .uap/user-paths.json — it is a spec, not internal state
