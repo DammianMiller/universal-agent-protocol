@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.163.9 (2026-07-22)
+
+- fix(deliver): let the agent READ .uap/user-paths.json — it is a spec, not internal state
+
+
 ## v1.163.8 (2026-07-22)
 
 - fix(verify): build/run gates first — visual + aesthetic only after they pass

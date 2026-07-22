@@ -46,19 +46,27 @@ import { sanitizedEnv } from './sanitized-env.js';
 const AGENT_INTERNAL_DIRS = ['.uap', '.uap-deliver', '.git', 'node_modules'];
 
 /**
- * The ONE internal file the agent may READ: its own acceptance gate.
+ * The internal files the agent may READ: the SPECIFICATIONS it is judged against.
  *
- * `.uap-deliver/verify.sh` is not "internal state" in the distracting sense — it
- * IS the specification the agent is judged against. Blanket-blocking the whole
- * `.uap-deliver/` directory meant the agent could not see the criteria it had to
- * satisfy, and it looped trying: 6 refused reads in one live mission, ERROR-LOOP
- * firing 5 times, while the gate it needed sat one refusal away.
+ * These are not "internal state" in the distracting sense — they ARE the criteria.
+ * Blanket-blocking their directories meant the agent could not see what it had to
+ * satisfy, and it looped trying:
  *
- * Reading it is exactly what we want (target the real criteria). WRITING it is
- * the agent rigging its own gate, and stays blocked — that distinction is the
- * whole point of this carve-out.
+ *  - `.uap-deliver/verify.sh` — the acceptance gate. 6 refused reads in one live
+ *    mission, ERROR-LOOP firing 5 times, while the gate sat one refusal away.
+ *  - `.uap/user-paths.json` — the user-path journey manifest. The user-validation
+ *    gate's own failure text says "the manifest is .uap/user-paths.json", and the
+ *    guard then refused to let the agent read it, so it could not know WHICH
+ *    selectors the journeys assert. Live cost (octopus_invaders_v3, 2026-07-22):
+ *    a deliver churned 2h44m flat at 50% of gates, rewriting one file over and
+ *    over while guessing the contract. Pointing an agent at a file and then
+ *    hiding it is a harness bug, not a model failure.
+ *
+ * Reading these is exactly what we want (target the real criteria). WRITING them
+ * is the agent rigging its own gate, and stays blocked — that distinction is the
+ * whole point of the carve-out.
  */
-const READABLE_GATE = '.uap-deliver/verify.sh';
+const READABLE_SPECS = new Set(['.uap-deliver/verify.sh', '.uap/user-paths.json']);
 
 /**
  * Reason string when a path is UAP/agent-internal, else null.
@@ -70,10 +78,10 @@ function agentInternalReason(projectRoot: string, abs: string, forWrite = false)
   const top = rel.split('/')[0];
   if (!top || !AGENT_INTERNAL_DIRS.includes(top)) return null;
 
-  if (rel === READABLE_GATE) {
+  if (READABLE_SPECS.has(rel)) {
     if (!forWrite) return null; // the spec: readable
     return (
-      `ERROR: '${rel}' is the ACCEPTANCE GATE you are judged against — you may read it, ` +
+      `ERROR: '${rel}' is a SPECIFICATION you are judged against — you may read it, ` +
       'but you must never modify it. Rewriting the gate is not passing it. ' +
       'Change the implementation so the existing gate passes.'
     );
