@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.163.11 (2026-07-23)
+
+- fix(deliver): --keep-best keeps the BEST turn; thickening honors ACCEPTANCE=0
+
+
 ## v1.163.10 (2026-07-22)
 
 - fix(self-gate): reject a BROKEN gate, not just a vacuous one
