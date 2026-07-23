@@ -1,0 +1,52 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: uap-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    restart: unless-stopped
+
+  # Embedding server — HuggingFace Text-Embeddings-Inference (TEI).
+  # Drop-in replacement for the previous llama.cpp `llama-server --embeddings`
+  # instance on :8081 (formerly the systemd unit nomic-embeddings.service, now
+  # stopped + disabled). Serves nomic-embed-text-v2-moe (768-dim, mean pooling)
+  # over the OpenAI-compatible POST /v1/embeddings + GET /health contract that
+  # every UAP client depends on (UAP_EMBEDDING_ENDPOINT). CPU-only so the RTX
+  # 3090 stays fully available to the Qwen LLM on :8080.
+  #
+  # Weights: TEI needs the safetensors (NOT the .gguf quant). Provision them
+  # into ./tei_data before first start with scripts/fetch-embedding-weights.sh
+  # (TEI will also self-download from HF on first start if the cache is empty
+  # and the host has network access). `user: 1000:1000` keeps the cache owned
+  # by the host user, not root.
+  #
+  # Reboot persistence: `restart: unless-stopped` survives reboot only if the
+  # container runtime is enabled at boot (`systemctl enable --now docker`).
+  tei-embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    container_name: uap-tei-embeddings
+    user: "1000:1000"
+    ports:
+      - "8081:80"
+    volumes:
+      - ./tei_data:/data
+    command:
+      - --model-id
+      - nomic-ai/nomic-embed-text-v2-moe
+      - --pooling
+      - mean
+      - --auto-truncate
+      - --max-client-batch-size
+      - "32"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped

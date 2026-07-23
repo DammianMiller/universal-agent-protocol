@@ -108,54 +108,34 @@
     },
 
     "embedding_server": {
-      "description": "Instance 2: Embedding model (nomic-embed-text-v2-moe) — port 8081. SoTA multilingual MoE embedding model: 475M total / 305M active params, 768 dims, 100+ languages, MIRACL 65.8.",
+      "description": "Instance 2: Embedding model (nomic-embed-text-v2-moe) — port 8081. SoTA multilingual MoE embedding model: 475M total / 305M active params, 768 dims, 100+ languages, MIRACL 65.8. Served by HuggingFace Text-Embeddings-Inference (TEI); managed as IaC in agents/docker-compose.yml (service: tei-embeddings).",
       "model": "nomic-embed-text-v2-moe",
-      "model_url": "https://huggingface.co/nomic-ai/nomic-embed-text-v2-moe-GGUF",
-      "recommended_quant": "Q4_K_M",
-      "quant_options": [
-        { "quant": "Q4_K_M", "size_mb": 328, "quality": "good, recommended for most use cases" },
-        { "quant": "Q5_K_M", "size_mb": 354, "quality": "high quality" },
-        { "quant": "Q6_K", "size_mb": 379, "quality": "very high quality, near perfect" },
-        { "quant": "Q8_0", "size_mb": 488, "quality": "extremely high, generally unneeded" },
-        { "quant": "F16", "size_mb": 913, "quality": "full precision, max quality" }
-      ],
-      "download_command": "huggingface-cli download nomic-ai/nomic-embed-text-v2-moe-GGUF nomic-embed-text-v2-moe.Q4_K_M.gguf --local-dir /path/to/models/",
+      "server": "text-embeddings-inference",
+      "server_image": "ghcr.io/huggingface/text-embeddings-inference:cpu-1.9",
+      "compose_service": "tei-embeddings",
+      "model_url": "https://huggingface.co/nomic-ai/nomic-embed-text-v2-moe",
+      "weights_format": "safetensors",
+      "_weights_note": "TEI loads safetensors (NOT gguf). The CPU image is ONNX-first but nomic-v2-moe ships no ONNX export, so TEI loads it via the Candle backend ('Starting NomicBert model on Cpu'). Candle caps the internal inference batch at 4 (forces max_batch_requests=4); UAP's client sub-batches of 8 are accepted and micro-batched.",
+      "download_command": "bash scripts/fetch-embedding-weights.sh  (or let TEI self-download from HF on first start if agents/tei_data is empty and the host is online)",
 
-      "command_gpu": "llama-server --model /path/to/nomic-embed-text-v2-moe.Q4_K_M.gguf --port 8081 --host 0.0.0.0 --embeddings --pooling mean --ctx-size 512 --gpu-layers 99 --batch-size 2048 --ubatch-size 512 --threads 4",
-      "command_cpu": "llama-server --model /path/to/nomic-embed-text-v2-moe.Q4_K_M.gguf --port 8081 --host 0.0.0.0 --embeddings --pooling mean --ctx-size 512 --gpu-layers 0 --batch-size 2048 --threads 8",
+      "bring_up": "docker compose -f agents/docker-compose.yml up -d tei-embeddings",
+      "command": "text-embeddings-router --model-id nomic-ai/nomic-embed-text-v2-moe --pooling mean --auto-truncate --max-client-batch-size 32 --port 80 --hostname 0.0.0.0",
 
-      "flags_gpu": [
-        "--model /path/to/nomic-embed-text-v2-moe.Q4_K_M.gguf",
-        "--port 8081",
-        "--host 0.0.0.0",
-        "--embeddings",
-        "--pooling mean",
-        "--ctx-size 512",
-        "--gpu-layers 99",
-        "--batch-size 2048",
-        "--ubatch-size 512",
-        "--threads 4"
-      ],
-      "flags_cpu": [
-        "--model /path/to/nomic-embed-text-v2-moe.Q4_K_M.gguf",
-        "--port 8081",
-        "--host 0.0.0.0",
-        "--embeddings",
-        "--pooling mean",
-        "--ctx-size 512",
-        "--gpu-layers 0",
-        "--batch-size 2048",
-        "--threads 8"
-      ],
-      "vram_estimate_gpu": "~380MB (328MB model + ~50MB KV cache)",
-      "vram_estimate_cpu": "0 (runs entirely on CPU RAM, ~400MB)",
+      "fallback_llama_cpp": {
+        "_comment": "Previous backend, kept as a rollback path. Same model/port/contract; relaunching this restores :8081 if TEI is stopped. Stored Q8_0/Q4 GGUF vectors are cosine ~0.999 compatible with TEI fp16, so no re-embed is required to switch either direction.",
+        "model_url_gguf": "https://huggingface.co/nomic-ai/nomic-embed-text-v2-moe-GGUF",
+        "command_cpu": "llama-server --model /path/to/nomic-embed-text-v2-moe.Q8_0.gguf --port 8081 --host 0.0.0.0 --embeddings --pooling mean --ctx-size 8192 --n-gpu-layers 0 --batch-size 2048 --ubatch-size 2048 --threads 8",
+        "command_gpu": "llama-server --model /path/to/nomic-embed-text-v2-moe.Q4_K_M.gguf --port 8081 --host 0.0.0.0 --embeddings --pooling mean --ctx-size 512 --gpu-layers 99 --batch-size 2048 --ubatch-size 512 --threads 4"
+      },
+      "vram_estimate_gpu": "0 (TEI runs CPU-only; RTX 3090 stays reserved for the Qwen LLM on :8080)",
+      "ram_estimate_cpu": "~2GB resident (nomic-v2-moe fp32 safetensors, 305M active params)",
       "task_prefixes": {
         "search_query": "search_query: ",
         "search_document": "search_document: ",
         "_comment": "nomic-embed-text-v2 requires task prefixes. Queries use search_query:, documents use search_document:. The UAP embedding provider handles this automatically."
       },
       "env_var": "UAP_EMBEDDING_ENDPOINT=http://192.168.1.165:8081",
-      "_comment": "Set UAP_EMBEDDING_ENDPOINT env var to override the default endpoint. The embedding provider auto-detects dimensions from the model response."
+      "_comment": "Set UAP_EMBEDDING_ENDPOINT env var to override the default endpoint. The embedding provider auto-detects dimensions from the model response. Contract is server-agnostic: GET /health + POST /v1/embeddings (no model field) -> {data:[{embedding,index}]}, 768 dims."
     },
 
     "dual_model_vram_budget": {
