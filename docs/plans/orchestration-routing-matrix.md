@@ -306,3 +306,165 @@ coordination substrate already exists (memory `always_on_file_coordination`). Th
 Record `(tier, phase, model, rung, outcome, cost, latency)` per turn (you already have
 `successRateFor` and `uap tune`). This lets the matrix self-tune and the classifier's ambiguous
 band shrink over time — the "network of loops that check each other" applied to the router itself.
+
+---
+
+# Part II — The Self-Optimizing System Around the Model
+
+Second input: **@0xNoryxx thread (2026-07-18)** — DSPy / STORM / MIPRO / GEPA / Claude Code / MCP.
+Thesis: *competitive advantage is no longer the model, but the system around it* — pipeline,
+optimization, reflection, tools, real-world connection. Its five principles: (1) model is a
+component; (2) each step has a separate role; (3) **verification is mandatory and objective — the
+model cannot verify itself**; (4) the system optimizes itself in the process; (5) it is connected
+to the real world.
+
+Part I made the *shape/routing* adaptive. Part II makes the *instructions and verification*
+self-optimizing and objective. They share two concepts (the `reflect` phase and a distinct
+evaluator model), so Part II is designed to slot into Part I's routing matrix, not replace it.
+
+## 11. Mapping the six systems onto UAP (grounded)
+
+| Thread system | Principle | UAP reality | Gap |
+|---|---|---|---|
+| **DSPy compiler** | self-optimization | ✅ `uap tune` full closed loop (`self-tuning/run.ts:79`): GP-BO (`search-reducer.ts`) + LLM-tuner (`llm-tuner.ts:225`) → metric `compositeQuality` (`benchmarks/paired/types.ts:207`), held-out guard, cross-model priors | optimizes **flags, not prompts** |
+| **MIPRO** | instructions are a variable | ❌ prompts are static: `defaultPromptBuilder`/`OUTPUT_CONTRACT`/`AUTONOMY_CONTRACT` (`convergence-loop.ts:499/421/440`), `systemContent` (`agentic-executor.ts:873`) | nothing optimizes instructions |
+| **GEPA** | reflect→improve→retry | ⚠️ Structured Critic (`critic.ts:98`) is a real separate reflection model w/ gate-personas, but emits a **fix-list** for the next turn | not an *approach/instruction rewrite*; no Pareto archive |
+| **STORM** | role-separated steps | ✅ = Part I plan/execute/review phases | — |
+| **Claude Code** | model is a component | ✅ AGENTS.md/CLAUDE.md loaded (`memory/bridge.ts:66`, `dynamic-retrieval.ts:962`), skills, spec/goal, gates | — (UAP is the production shape) |
+| **MCP** | real-world connection | ✅ `mcp__uap-router__*` (`mcp-router/server.ts` — discover/execute/deliver/react) | — |
+
+**Takeaway:** UAP already implements the two hardest pieces (a working self-optimizing compiler,
+and the production Claude-Code pattern). The additions are narrow: point the existing optimizer at
+prompts, upgrade tactical reflection to strategic, and close the self-verification boundary.
+
+## 12. Diagnosis — three gaps
+
+1. **The compiler optimizes flags, not instructions.** `uap tune` is a near-textbook MIPRO loop
+   (propose→validate→accept over a metric, GP + LLM proposer, held-out guard, transfer priors) —
+   but its search space is `TUNABLE_FLAGS` (`self-tuning/flags.ts:140`), i.e. settings-registry
+   booleans/enums, never prompt text.
+
+2. **Reflection is tactical, not strategic.** `critic.ts` analyzes *why a turn failed* through a
+   gate-specific persona and returns `Critique { fixList, focusGate }` (`critic.ts:24`), injected
+   as "REPAIR PLAN" (`convergence-loop.ts:516`). It never rewrites the *approach* or the
+   *instruction*, and §2's `PromptBuilder` seam is disconnected from §3's reflection output.
+
+3. **Self-verification boundary is open by default.** Acceptance judge **fails OPEN**
+   (`acceptance-judge.ts:455`: `passed:true` on no-evidence/throw/unparseable/no-criteria).
+   Generator≠Evaluator is a setting (`recipes.allowSelfJudge` default false) that **defaults to the
+   generator when no evaluator model is set** (`deliver.ts:1229`) — so single-model deliver has the
+   generator authoring `verify.sh` *and* being graded by it. Mitigations exist (anti-vacuity floor
+   `self-gate.ts:373`, `requireDiffForAcceptance` `convergence-loop.ts:265`, sole-gate fail-closed
+   `mission-acceptance.ts:52`) but the structural boundary Principle 3 names is real.
+
+## 13. Feature A — MIPRO instruction optimization (extend `uap tune` to prompts)
+
+**Idea:** make the delivery/orchestration *instructions* an optimized variable, compiled by the
+optimizer that already exists. Highest leverage, lowest risk — the metric, validator, GP-BO, and
+transfer priors are already built and battle-tested; we only widen the search space.
+
+**Design:**
+- Introduce **`TUNABLE_PROMPTS`** parallel to `TUNABLE_FLAGS` (`self-tuning/flags.ts:140`): each
+  entry is a named prompt fragment (`OUTPUT_CONTRACT`, `AUTONOMY_CONTRACT`, `systemContent`,
+  per-gate critic persona) with a small set of candidate variants + a `dependsOn` graph (same
+  pruning as flags via `isFlagActive`).
+- Make `defaultPromptBuilder` (`convergence-loop.ts:499`) read the active variant from the
+  `TuningProfile` instead of the hard-coded constants. `PromptBuilder`/`PromptContext` are already
+  the swap seam.
+- The proposer (`llm-tuner.ts:225` `proposeTuning`, `TuningProposal.changes: FlagChange[]`) widens
+  to also propose prompt-variant selections (and, at a higher tier, MIPRO-style *generated* variant
+  text scored by the same `compositeQuality`). GP-BO treats variant choice as a categorical
+  dimension — no engine change.
+- Metric + harness reused verbatim: `compositeQuality` (`benchmarks/paired/types.ts:207`),
+  `buildPairedTuningValidator` (`paired-validator.ts:85`).
+
+**Result:** the same model produces better output because the instructions were *compiled*, not
+hand-written — DSPy's core claim, realized through UAP's existing compiler.
+
+**Seam:** `TUNABLE_FLAGS`/`FlagConfig` (`flags.ts`), `PromptBuilder` (`convergence-loop.ts:499`),
+`TuningProposal` (`llm-tuner.ts`).
+
+## 14. Feature B — GEPA reflect phase (join reflection to prompt-gen; slots into Part I)
+
+**Idea:** upgrade the Structured Critic from "fix-list for next turn" to GEPA's "reflect on the
+failed reasoning → mutate the *approach/instruction* → retry", with a Pareto archive of reflected
+candidates. This *is* the `reflect` phase of the Part I routing matrix (its own model chain).
+
+**Design:**
+- Extend `Critic` (`critic.ts:31`) with an optional `approachRewrite` output: a natural-language
+  critique of *why the strategy* (not just the code) failed + a rewritten instruction/approach.
+- Add `IterationDirective.mutateInstruction?: (prev: PromptContext) => PromptContext`
+  (`convergence-loop.ts:162`) — the loop applies it before the next `PromptBuilder` call, closing
+  the §3→§2 gap. This is the missing wire between reflection and prompt generation.
+- Trigger: on stagnation (reuse `escalation.ts:119`) run a **reflect turn** *before* model
+  escalation — cheaper and often sufficient (change the approach, not the model).
+- **Pareto archive** (GEPA core): keep the best-K reflected `(instruction, score)` candidates
+  across turns; reseed from the archive instead of always mutating the latest — avoids collapsing
+  to a local optimum (the same anti-Goodhart insight as Part I §4.4).
+- **Routing-matrix integration:** `reflect` becomes a first-class phase in `PhaseModels`
+  (Part I §4.2): `PhaseModels { plan?, execute?, review?, reflect?, fallback? }`. Its escalation
+  chain is resolved by the same `resolvePhaseChain`. Reflect defaults to a *strong, distinct* model
+  (reflection is where model quality pays off most).
+
+**Seam:** `Critic` (`critic.ts:31`), `IterationDirective` (`convergence-loop.ts:162`),
+`defaultEscalationLadder` reflect tier (`escalation.ts:76`), `PhaseModels` (Part I §4.2).
+
+## 15. Feature C — Verification hardening (Principle 3: the model cannot verify itself)
+
+**Idea:** make objective, non-self verification the default, not an opt-in — the thread's single
+strongest principle and the one place UAP has a real hole.
+
+**Design:**
+- **Require a distinct evaluator.** In the routing matrix, the `review`/`judge` phase model MUST
+  differ from the `execute` model at the active rung (Part I already proposes this for review;
+  extend to the acceptance judge). `deliver.ts:1229` stops defaulting `judgeExecutor` to the
+  generator; when only one model is available, fall to a *cheaper distinct* model
+  (e.g. `haiku-4.5`) for judging rather than the generator itself.
+- **Fail-closed when the judge is the only gate** — already done for primary mode
+  (`mission-acceptance.ts:52`); make it the documented, tested invariant and extend the
+  churn-breaker (`acceptance-judge.ts:521`) to flag (not silently pass) repeated parse failures.
+- **Keep self-gate, harden provenance.** The model may still *author* `verify.sh` (`self-gate.ts`)
+  — the anti-vacuity floor makes that safe — but the *grading* of it, and the acceptance judgment,
+  run on a distinct model. Author≠Grader as a hard rule.
+- Emit a one-line **verification-provenance banner** per delivery: which model executed, which
+  distinct model judged, whether any gate ran fail-open. Observability for Principle 3.
+
+**Seam:** `resolveEvaluatorPreset`/`judgeExecutor` (`deliver.ts:1239-1265`), `AcceptanceGate`
+(`convergence-loop.ts:555`), `MissionAcceptanceDeps.judgeExecutor` (`mission-acceptance.ts:69`).
+
+## 16. How Part II composes with Part I
+
+- **`reflect` becomes a matrix phase.** `PhaseModels` gains `reflect?` alongside
+  plan/execute/review/fallback; escalation resolves it via the same `resolvePhaseChain`.
+- **One Generator≠Evaluator rule** now spans review (Part I §4.4), acceptance judge (Part II §15),
+  and reflect (§14) — all required distinct from execute at the active rung.
+- **The optimizer tunes the matrix too.** Feature A's `TUNABLE_PROMPTS` and Part I's tier/phase
+  model choices are both search dimensions for `uap tune` — the router self-optimizes (Part I §10
+  telemetry hook becomes the training signal for both).
+- **Effort dial gates reflection.** Trivial/low tiers skip the reflect phase (overhead control);
+  high/critical enable reflect + Pareto archive.
+
+## 17. Rollout additions (extends Part I §8)
+
+6. **Verification hardening (Feature C)** — smallest, a correctness fix, ship first. Distinct judge
+   default + fail-closed-when-sole-gate invariant + provenance banner.
+7. **GEPA reflect phase (Feature B)** — `Critic.approachRewrite` + `mutateInstruction` +
+   `reflect` matrix phase; Pareto archive as a follow-up.
+8. **MIPRO prompt-optimization (Feature A)** — `TUNABLE_PROMPTS` + `PromptBuilder` reads profile;
+   variant-selection first, generated-variant text second.
+
+## 18. Risks & open questions (Part II)
+
+- **Prompt-optimization overfitting.** Optimizing instructions against the paired suite may overfit
+  to it. Mitigation: held-out task split (already in `decideTuning`) + cross-model priors as a
+  regularizer; cap variant churn per profile version.
+- **Reflect cost vs escalate cost.** A reflect turn on a strong model may cost as much as
+  escalation. Mitigation: reflect only at stagnation, before escalation; measure win-rate and let
+  `uap tune` decide the order.
+- **Distinct-judge availability offline.** Single-local-model setups can't always field a distinct
+  cloud judge; falling to a cheaper *local* distinct model (or heuristic-only gates) must degrade
+  gracefully — document the offline contract (ref memory `routing_passthrough_local_only`).
+- **Prompt variants as an attack surface.** Optimizer-generated instruction text must pass the same
+  secret-scan / protected-path review as code; never let the optimizer weaken a gate's own prompt.
+- **Static-string provenance.** Some constants (`OUTPUT_CONTRACT`) encode hard safety rules; mark
+  those `frozen` (non-tunable) so optimization can't erode them.
