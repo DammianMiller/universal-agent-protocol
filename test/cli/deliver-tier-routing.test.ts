@@ -21,10 +21,21 @@ describe('resolveTierModel', () => {
     expect(r!.model).toBe('qwen36-a3b');
   });
 
-  it('routes a hard multi-part task to the escalated tier model', () => {
+  it('escalates a security-sensitive task to the critical tier (auth keyword)', () => {
+    // S2: the unified classifier preserves `critical` — an auth/security task
+    // now escalates past `high` (the old COMPLEXITY_TO_TIER bridge dropped it).
     const r = resolveTierModel(
       'cost-tiered',
       'implement a distributed rate limiter with redis, refactor the auth middleware, and add integration tests across services'
+    );
+    expect(r!.tier).toBe('critical');
+    expect(r!.model).toBe('opus-4.8'); // cost-tiered: critical → opus-4.8
+  });
+
+  it('routes a hard non-security multi-part task to the high tier model', () => {
+    const r = resolveTierModel(
+      'cost-tiered',
+      'implement a distributed rate limiter with redis and add integration tests across many services and rendering modules'
     );
     expect(r!.tier).toBe('high');
     expect(r!.model).toBe('opus-4.8');

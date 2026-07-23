@@ -30,7 +30,7 @@ import { DEFAULT_STRATEGY_SEEDS } from '../delivery/explorer.js';
 import { planAutoOptimization } from '../delivery/auto-optimizer.js';
 import { RoutingPresets, resolvePresetModel } from '../models/types.js';
 import type { TaskComplexity } from '../models/types.js';
-import { measureQueryComplexity } from '../utils/query-complexity.js';
+import { classifyComplexity, tierToRouting } from '../models/complexity.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
 import { applyPendingIntents } from '../delivery/pending-intents.js';
 import { runAcceptanceGate } from '../delivery/acceptance-judge.js';
@@ -371,21 +371,14 @@ function fail(message: string): never {
 
 class ExitError extends Error {}
 
-/** Deliver's 3-level complexity (simple/moderate/complex) → the routing tier
- * scale (low/medium/high/critical). Deliver's classifier never emits
- * 'critical' — that tier is reserved for keyword-driven escalation. */
-const COMPLEXITY_TO_TIER: Record<string, TaskComplexity> = {
-  simple: 'low',
-  moderate: 'medium',
-  complex: 'high',
-};
-
 /**
  * Complexity-tier routing (P: per-task model selection). Returns the model id
  * to execute this task on, or null to leave the caller's default untouched.
- * PURE — unit-tested. Precedence is enforced by the caller: an explicit
- * --model always wins; this only fires when routing is requested and no model
- * was pinned.
+ * PURE — unit-tested. Uses the unified complexity classifier (src/models/
+ * complexity.ts) so `critical` is preserved end-to-end — the old
+ * COMPLEXITY_TO_TIER bridge silently dropped it. Precedence is enforced by the
+ * caller: an explicit --model always wins; this only fires when routing is
+ * requested and no model was pinned.
  */
 export function resolveTierModel(
   routingId: string | undefined,
@@ -395,8 +388,7 @@ export function resolveTierModel(
   if (!id) return null;
   const preset = RoutingPresets[id];
   if (!preset) return null;
-  const complexity = measureQueryComplexity(instruction, { moderate: 1, complex: 2 });
-  const tier = COMPLEXITY_TO_TIER[complexity] ?? 'medium';
+  const tier = tierToRouting(classifyComplexity({ instruction }).tier);
   return { model: resolvePresetModel(preset, { complexity: tier, role: 'executor' }), tier, preset: id };
 }
 
