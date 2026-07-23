@@ -37,6 +37,7 @@ coverage/
 # Qdrant data
 qdrant_data/
 agents/qdrant_data/
+agents/tei_data/
 
 # Python virtual environments
 agents/.venv/
