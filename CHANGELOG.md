@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.163.12 (2026-07-23)
+
+- fix(test): D10 accepts the canonical agents/docker-compose.yml (qdrant + TEI)
+- feat(embeddings): migrate :8081 embedding server from llama.cpp to TEI
+
+
 ## v1.163.11 (2026-07-23)
 
 - fix(deliver): --keep-best keeps the BEST turn; thickening honors ACCEPTANCE=0
