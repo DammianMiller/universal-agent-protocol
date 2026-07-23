@@ -96,6 +96,46 @@ export function resolveEvaluatorPreset(opts: {
   return wanted;
 }
 
+/**
+ * P6 gate thickening. A thin visible gate set (≤1 required rung) is a weak
+ * convergence target, so deliver enables the acceptance judge to thicken it.
+ * PURE — unit-tested. Returns true to turn the judge ON for thickening.
+ *
+ * `acceptanceDisabled` (UAP_DELIVER_ACCEPTANCE=0) is an explicit operator "no
+ * judge" and MUST win: thickening previously ignored it and silently re-enabled
+ * the judge, so an operator who disabled it to stop the loop overshooting
+ * objective-green kept overshooting anyway (octopus, 2026-07-23).
+ */
+export function decideThickenWithAcceptance(opts: {
+  noRealGates: boolean;
+  requiredRungCount: number;
+  thickenDisabled: boolean;
+  acceptanceDisabled: boolean;
+  acceptanceAlreadyDecided: boolean;
+}): boolean {
+  if (opts.acceptanceAlreadyDecided) return false; // --acceptance / --no-... already set it
+  if (opts.noRealGates) return false;
+  if (opts.thickenDisabled) return false; // UAP_DELIVER_THICKEN=0
+  if (opts.acceptanceDisabled) return false; // UAP_DELIVER_ACCEPTANCE=0 — explicit opt-out wins
+  return opts.requiredRungCount <= 1;
+}
+
+/**
+ * --keep-best best-intermediate scoring. Score a turn on the fast-tier gates it
+ * already ran (from its IterationRecord gateResults), matching the metric the
+ * baseline snapshot used, WITHOUT re-running any gate. Returns null when no
+ * fast-tier gate ran this turn (not scoreable → do not advance the snapshot).
+ * PURE — unit-tested.
+ */
+export function bestKeepFastScore(
+  gateResults: Array<{ id: string; passed: boolean }>,
+  fastRungIds: Set<string>
+): number | null {
+  const fast = gateResults.filter((r) => fastRungIds.has(r.id));
+  if (fast.length === 0) return null;
+  return fast.filter((r) => r.passed).length / fast.length;
+}
+
 // Legacy export surface: test/cli/acceptance-verdict.test.ts (and any external
 // consumer) imports the verdict fold from deliver.js — keep the re-export.
 export { resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
@@ -924,11 +964,19 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // gate-green converged to gate-satisfying-but-wrong code, +2/-3 on the
   // thin-gate task). When the visible gate set is thin, enable the acceptance
   // judge so the spec itself thickens the target. UAP_DELIVER_THICKEN=0 opts out.
-  const thinGates =
-    !noRealGates &&
-    process.env.UAP_DELIVER_THICKEN !== '0' &&
-    rungs.filter((r) => r.required).length <= 1;
-  if (thinGates && options.acceptance === undefined) {
+  // UAP_DELIVER_ACCEPTANCE=0 is an explicit "no acceptance judge" and MUST win
+  // here too: thickening silently re-enabling the judge is exactly what let an
+  // operator who set ACCEPTANCE=0 (to stop the loop overshooting objective-green)
+  // keep overshooting — the disable was quietly overridden (octopus, 2026-07-23).
+  if (
+    decideThickenWithAcceptance({
+      noRealGates,
+      requiredRungCount: rungs.filter((r) => r.required).length,
+      thickenDisabled: process.env.UAP_DELIVER_THICKEN === '0',
+      acceptanceDisabled: process.env.UAP_DELIVER_ACCEPTANCE === '0',
+      acceptanceAlreadyDecided: options.acceptance !== undefined,
+    })
+  ) {
     options.acceptance = true;
     if (!options.dryRun) {
       console.log(
@@ -1660,6 +1708,33 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   };
 
   /** Compose the per-turn hooks with a FRESH escalation controller. */
+  // --keep-best best-intermediate tracking. The convergence loop applies each
+  // turn in place, so a run that PEAKS mid-way (e.g. 100% of gates) then
+  // regresses would, under a plain end-vs-start comparison, roll back to the
+  // START and discard the peak (octopus, 2026-07-23: a run hit 100% at turn 1,
+  // regressed by turn 2, and the win was lost). This hook snapshots the tree
+  // whenever a turn sets a new best fast-tier score and advances the rollback
+  // target (regressSnapshot/baselineGateScore) to it, so the end-of-run
+  // "restore if worse than baseline" logic restores the BEST turn, not the start.
+  // Armed only when --keep-best took a baseline snapshot (see the keep-best block).
+  let keepBestArmed = false;
+  let bestFastRungIds = new Set<string>();
+  const captureBestKeep = (record: IterationRecord, root: string): void => {
+    if (!keepBestArmed || root !== projectRoot) return;
+    // Score this turn on the SAME fast-tier metric as the baseline, reading the
+    // gates the loop already ran this turn — no extra gate execution.
+    const fastScore = bestKeepFastScore(record.gateResults, bestFastRungIds);
+    if (fastScore === null || fastScore <= baselineGateScore) return; // not a new best
+    const snap = snapshotTree(projectRoot);
+    if (!snap.ok) return; // size-cap / failure: keep the previous best
+    if (regressSnapshot) disposeSnapshot(regressSnapshot);
+    regressSnapshot = snap.path;
+    baselineGateScore = fastScore;
+    if (!options.dryRun) {
+      console.log(chalk.dim(`  no-regress: new best fast-gate score ${fastScore.toFixed(2)} — snapshot advanced`));
+    }
+  };
+
   const makeIterationHook = (evidenceRoot: string = projectRoot): ReturnType<typeof composeIterationHooks> => {
     const escalation = makeEscalation();
     const repair =
@@ -1697,6 +1772,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         return undefined;
       },
       (record) => haloTracer.onIteration(record),
+      (record) => {
+        // --keep-best: advance the rollback snapshot to this turn if it is a
+        // new best (see captureBestKeep). Fail-soft — never steer the loop.
+        captureBestKeep(record, evidenceRoot);
+        return undefined;
+      },
       repair ? (record) => repair.onIteration(record) : undefined,
       coordinator ? (record) => coordinator.onIteration(record) : undefined,
       escalation ? (record) => escalation.onIteration(record) : undefined
@@ -2403,6 +2484,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const snapResult = snapshotTree(projectRoot);
     if (snapResult.ok) {
       regressSnapshot = snapResult.path;
+      // Arm best-intermediate tracking: the baseline is the initial best, and
+      // captureBestKeep advances regressSnapshot/baselineGateScore to any
+      // higher-scoring turn (disposing the superseded snapshot).
+      bestFastRungIds = new Set(fastRungs.map((r) => r.id));
+      keepBestArmed = true;
       console.log(chalk.dim(`  no-regress: baseline gate score ${baselineGateScore.toFixed(2)} (snapshot taken)`));
     } else {
       const label = snapResult.reason === 'size-cap' ? 'snapshot skipped' : 'snapshot failed';
@@ -2636,7 +2722,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         restoreTree(projectRoot, regressSnapshot);
         console.log(
           chalk.yellow(
-            `  ↩ no-regress: reverted (end gate score ${endScore.toFixed(2)} < baseline ${baselineGateScore.toFixed(2)})`
+            `  ↩ no-regress: reverted to best (end gate score ${endScore.toFixed(2)} < best ${baselineGateScore.toFixed(2)})`
           )
         );
         disposeSnapshot(regressSnapshot);
@@ -2651,7 +2737,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       }
     } else {
       console.log(
-        chalk.dim(`  no-regress: kept (end gate score ${endScore.toFixed(2)} ≥ baseline ${baselineGateScore.toFixed(2)})`)
+        chalk.dim(`  no-regress: kept (end gate score ${endScore.toFixed(2)} ≥ best ${baselineGateScore.toFixed(2)})`)
       );
       disposeSnapshot(regressSnapshot);
     }
