@@ -18,6 +18,10 @@ import type {
   ConvergenceConfig,
 } from '../delivery/convergence-loop.js';
 import { createModelJudge } from '../delivery/judge.js';
+import {
+  resolveJudgePlan,
+  formatVerificationProvenance,
+} from '../delivery/verification-provenance.js';
 import { createModelCritic } from '../delivery/critic.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import type { StrategySeed } from '../delivery/explorer.js';
@@ -1251,6 +1255,27 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   }
   let evaluatorExecutor: LoopExecutor = blindExecutor;
   let verdictExecutor: LoopExecutor = jsonBlindExecutor;
+  // Verification provenance (S1 — Principle 3: "the model cannot verify itself").
+  // Deliver must never let the generator be the SOLE grader of its own output.
+  const allowSelfJudge =
+    process.env.UAP_DELIVER_ALLOW_SELF_JUDGE === '1' ||
+    (() => {
+      try {
+        const c = loadUapConfigRaw(projectRoot) as { recipes?: { allowSelfJudge?: boolean } } | null;
+        return c?.recipes?.allowSelfJudge === true;
+      } catch {
+        return false;
+      }
+    })();
+  const judgePlan = resolveJudgePlan({
+    evaluatorPresetId,
+    generatorId: model.id,
+    generatorProvider: ModelPresets[presetId as keyof typeof ModelPresets]?.provider,
+    allowSelfJudge,
+    hasPreset: (id) => Boolean(ModelPresets[id as keyof typeof ModelPresets]),
+  });
+  const judgeModelId = judgePlan.judgeModelId;
+  const judgeDistinct = judgePlan.distinct;
   if (evaluatorPresetId) {
     const evalModel = resolveModel(evaluatorPresetId, options.evaluatorEndpoint);
     const evalClient = new OpenAICompatClient();
@@ -1266,6 +1291,26 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     if (!options.dryRun) {
       console.log(chalk.cyan(`⚖ generator≠evaluator: gen=${model.id} eval=${evalModel.id}`));
     }
+  } else if (judgePlan.reason === 'auto-distinct-judge') {
+    // No evaluator configured + cloud generator → judge with a cheap DISTINCT
+    // cloud model so the generator never grades its own output alone.
+    const jModel = resolveModel(judgeModelId);
+    const jClient = new OpenAICompatClient();
+    evaluatorExecutor = async (prompt) =>
+      (await jClient.complete(jModel, prompt, { temperature: 0 })).content;
+    verdictExecutor = async (prompt) =>
+      (await jClient.complete(jModel, prompt, { temperature: 0, jsonResponse: true })).content;
+    if (!options.dryRun) {
+      console.log(
+        chalk.cyan(`⚖ generator≠evaluator (auto distinct judge): gen=${model.id} judge=${jModel.id}`)
+      );
+    }
+  } else if (!judgeDistinct && !allowSelfJudge && !options.dryRun) {
+    console.log(
+      chalk.yellow(
+        `⚠ verify: no distinct judge reachable (gen=${model.id} local/offline) — generator grades its own output`
+      )
+    );
   }
 
   // Dynamic executor selection. The blind executor is one completion per turn
@@ -2820,6 +2865,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     });
   } catch {
     // Memory recording is best-effort
+  }
+
+  // Verification provenance banner (S1) — makes the judge boundary observable.
+  if (!options.json && !options.dryRun) {
+    const line = formatVerificationProvenance({
+      executorModel: model.id,
+      judgeModel: judgeModelId,
+      distinct: judgeDistinct,
+    });
+    console.log(judgeDistinct ? chalk.dim(line) : chalk.yellow(line));
   }
 
   if (options.json) {
