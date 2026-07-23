@@ -337,12 +337,27 @@ describe('Phase 4: New Capabilities', () => {
     });
   });
 
-  describe('D10: Duplicate docker-compose removed', () => {
-    it('agents/docker-compose.yml should NOT exist', () => {
-      expect(existsSync('agents/docker-compose.yml')).toBe(false);
+  // D10 was written when agents/docker-compose.yml was a stray DUPLICATE to be
+  // removed in favour of tools/agents/docker-compose.qdrant.yml. The TEI
+  // embedding migration (#577, 2026-07-23) deliberately reintroduced
+  // agents/docker-compose.yml as the CANONICAL agents compose — it now defines
+  // both the qdrant service AND the TEI embedding server on :8081 — so the old
+  // "should NOT exist" assertion is stale and was silently reddening master
+  // (the version-bump test gate blocked every PR). Assert the current intended
+  // state instead: the canonical compose exists and carries the expected services.
+  describe('D10: canonical agents docker-compose (qdrant + TEI embeddings)', () => {
+    it('agents/docker-compose.yml exists (canonical qdrant + TEI compose)', () => {
+      expect(existsSync('agents/docker-compose.yml')).toBe(true);
     });
 
-    it('tools/agents/docker-compose.qdrant.yml should still exist', () => {
+    it('agents/docker-compose.yml defines the qdrant and TEI embedding services', () => {
+      const compose = readFileSync('agents/docker-compose.yml', 'utf-8');
+      expect(compose).toMatch(/qdrant/i);
+      // the migration's whole point: an embedding server on :8081 (TEI)
+      expect(compose).toMatch(/8081|embed/i);
+    });
+
+    it('tools/agents/docker-compose.qdrant.yml still exists', () => {
       expect(existsSync('tools/agents/docker-compose.qdrant.yml')).toBe(true);
     });
   });
