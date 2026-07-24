@@ -176,6 +176,13 @@ export interface IterationDirective {
    * seeds re-diversify exploration instead of retrying the same failed strategies.
    */
   regenerateSeeds?: boolean;
+  /**
+   * GEPA reflect (S6): replace the instruction fed to the next PromptBuilder
+   * with a reflected rewrite of the approach (distinct from switchExecutor,
+   * which changes the MODEL — this changes the APPROACH). Applied before the
+   * next turn's prompt is built.
+   */
+  mutateInstruction?: string;
   /** Human-readable reason, surfaced in logs and the iteration record */
   note?: string;
 }
