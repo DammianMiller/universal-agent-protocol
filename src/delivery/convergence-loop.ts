@@ -19,6 +19,10 @@ import { join } from 'node:path';
 import { execSync } from 'child_process';
 import { statSync } from 'fs';
 
+import {
+  bindFrozenFragments,
+  resolveBoundVariant,
+} from '../self-tuning/prompt-variants.js';
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
 import { mergeRedetectedRungs, detectRungs, runLadder } from './verifier-ladder.js';
 import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
@@ -68,6 +72,14 @@ export interface PromptContext {
   guidance?: string;
   /** Include the autonomy policy in the prompt (default true; false opts out). */
   autonomous?: boolean;
+  /**
+   * MIPRO (S8/3a): tuner-selected prompt-fragment variants (fragmentId→variantId,
+   * from promptSelectionFromConfig). When absent the prompt is IDENTICAL to the
+   * hand-authored default; when present, non-frozen fragments (e.g. executor.tone)
+   * use the optimized variant. Frozen fragments (output/autonomy contracts) are
+   * always bound to the real constants regardless of any selection.
+   */
+  promptSelection?: Record<string, string>;
 }
 
 export type PromptBuilder = (context: PromptContext) => string;
@@ -521,11 +533,25 @@ function practiceSection(practices?: string[]): string[] {
 
 /** Default prompt strategy: lean contract + structured retry context. */
 export const defaultPromptBuilder: PromptBuilder = (ctx) => {
+  // 3a: source the FROZEN output contract through the binding so it is always the
+  // real OUTPUT_CONTRACT (never the optimizer's __BIND_FROM__ placeholder). This
+  // is a strict no-op by default (bound to the same constant); a tuner selection
+  // only affects NON-frozen fragments like executor.tone.
+  const frozen = bindFrozenFragments({
+    outputContract: OUTPUT_CONTRACT,
+    autonomyGuardrails: AUTONOMY_CONTRACT,
+  });
+  const outputContract = resolveBoundVariant('output.contract', ctx.promptSelection, frozen);
+  // Opt-in tunable executor tone: only added when the tuner explicitly selected it.
+  const toneSection = ctx.promptSelection?.['executor.tone']
+    ? ['', resolveBoundVariant('executor.tone', ctx.promptSelection, frozen)]
+    : [];
+
   if (ctx.turn === 1) {
-    return [OUTPUT_CONTRACT, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`].join('\n');
+    return [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`].join('\n');
   }
 
-  const sections = [OUTPUT_CONTRACT, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ''];
+  const sections = [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ''];
   sections.push(`PREVIOUS ATTEMPT (turn ${ctx.turn - 1}):`);
 
   if (ctx.previousFiles && ctx.previousFiles.length > 0) {
