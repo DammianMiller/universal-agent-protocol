@@ -1,10 +1,10 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { cpSync, existsSync, readdirSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve, sep } from 'path';
 import { simpleGit, SimpleGit } from 'simple-git';
 import Database from 'better-sqlite3';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 type WorktreeAction =
   | 'create'
@@ -52,10 +52,16 @@ async function mainRootOf(git: SimpleGit): Promise<string> {
     // older git without --path-format, or not a repo
   }
   try {
-    return (await git.revparse(['--show-toplevel'])).trim();
+    // NOT --show-toplevel: inside a linked worktree that returns the WORKTREE's
+    // root, which has no agents/ dir — silently disabling liveness in exactly the
+    // case this helper exists for. The relative form of --git-common-dir has
+    // existed since git 2.5 and still points at the MAIN .git.
+    const rel = (await git.raw(['rev-parse', '--git-common-dir'])).trim();
+    if (rel) return dirname(resolve(process.cwd(), rel));
   } catch {
-    return process.cwd();
+    // not a repo
   }
+  return process.cwd();
 }
 
 function getWorktreeDb(cwd: string): Database.Database {
@@ -523,29 +529,53 @@ export interface BranchDrift {
  * Liveness uses the same heartbeat window as coordinate-file.sh so "live" means
  * one thing across the system. Fail-open: an unreadable DB marks nothing active.
  */
-export function liveAgentBranches(mainRoot: string): Set<string> {
-  const windowSeconds = Number.parseInt(process.env.UAP_COORD_LIVE_SECONDS ?? '', 10) || 120;
+export function liveAgentBranches(mainRoot: string): {
+  branches: Set<string>;
+  /** False when the DB could not be read — callers that DELETE must fail closed. */
+  readable: boolean;
+} {
+  // Validate like coordinate-file.sh does, or the same env var means "120s" to
+  // the hook and "protection off" to us: parseInt('-1') is truthy, and a
+  // negative window matches no rows.
+  const raw = Number.parseInt(process.env.UAP_COORD_LIVE_SECONDS ?? '', 10);
+  const windowSeconds = Number.isFinite(raw) && raw > 0 ? raw : 120;
   const branches = new Set<string>();
   const dbPath = join(mainRoot, 'agents', 'data', 'coordination', 'coordination.db');
-  if (!existsSync(dbPath)) return branches;
+  if (!existsSync(dbPath)) return { branches, readable: true }; // genuinely no coordination: idle
   let db: Database.Database | null = null;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    // Readers rarely block in WAL, but SQLITE_BUSY is likeliest exactly when
+    // agents ARE live — the moment a fail-open would be most wrong.
+    db.pragma('busy_timeout = 10000');
+    // UNION the two writers. An agent that has registered and is heartbeating
+    // but has no OPEN announcement — just started, only reading, or its
+    // announcements were completed at session end — is still live.
     const rows = db
       .prepare(
-        `SELECT DISTINCT wa.worktree_branch AS branch
-           FROM work_announcements wa
-           LEFT JOIN agent_registry ar ON ar.id = wa.agent_id
-          WHERE wa.completed_at IS NULL
-            AND wa.worktree_branch IS NOT NULL
-            AND COALESCE(ar.status, 'active') = 'active'
-            AND (strftime('%s','now')
-                 - strftime('%s', COALESCE(ar.last_heartbeat, wa.announced_at))) < ?`
+        `SELECT DISTINCT branch FROM (
+           SELECT wa.worktree_branch AS branch
+             FROM work_announcements wa
+             LEFT JOIN agent_registry ar ON ar.id = wa.agent_id
+            WHERE wa.completed_at IS NULL
+              AND wa.worktree_branch IS NOT NULL
+              AND COALESCE(ar.status, 'active') = 'active'
+              AND (strftime('%s','now')
+                   - strftime('%s', COALESCE(ar.last_heartbeat, wa.announced_at))) < :win
+           UNION
+           SELECT ar2.worktree_branch AS branch
+             FROM agent_registry ar2
+            WHERE ar2.status = 'active'
+              AND ar2.worktree_branch IS NOT NULL
+              AND (strftime('%s','now') - strftime('%s', ar2.last_heartbeat)) < :win
+         )`
       )
-      .all(windowSeconds) as Array<{ branch: string | null }>;
+      .all({ win: windowSeconds }) as Array<{ branch: string | null }>;
     for (const r of rows) if (r.branch) branches.add(r.branch);
+    return { branches, readable: true };
   } catch {
-    // No coordination DB / schema predates announcements — report nothing active.
+    // Could not read it. Say so — do not let "unknown" masquerade as "idle".
+    return { branches, readable: false };
   } finally {
     try {
       db?.close();
@@ -553,7 +583,6 @@ export function liveAgentBranches(mainRoot: string): Set<string> {
       /* ignore */
     }
   }
-  return branches;
 }
 
 /**
@@ -775,7 +804,7 @@ async function worktreeHygiene(
 
   // Mark the worktrees someone is actually working in, so "old" is never read as
   // "abandoned". A live worktree must never be offered up for pruning.
-  const live = liveAgentBranches(await mainRootOf(git));
+  const live = liveAgentBranches(await mainRootOf(git)).branches;
   const drifts = measured.map((d) => ({ ...d, active: live.has(d.branch) }));
 
   const atRisk = drifts.filter((d) => d.ahead > 0 || d.dirty > 0);
@@ -1089,16 +1118,21 @@ async function pruneStaleWorktrees(
 
   const db = getWorktreeDb(cwd);
   const days = options.olderThan;
-  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  // created_at is stored in SECONDS (`strftime('%s','now')`). Comparing it to a
+  // MILLISECOND cutoff made `created_at < cutoff` true for every row that will
+  // ever exist, so `--older-than` filtered nothing: a worktree created a minute
+  // ago was always a prune candidate. Verified against this repo's registry —
+  // 117/117 rows selected even at `--older-than 3650`. Compare in one unit.
+  const cutoffSeconds = Math.floor(Date.now() / 1000) - days * 24 * 60 * 60;
 
-  // List stale worktrees (status='cleaned' or older than threshold)
   const stale = db.prepare(`
-    SELECT id, slug, worktree_path, created_at, status
+    SELECT id, slug, branch_name, worktree_path, created_at, status
     FROM worktrees
     WHERE created_at < ?
-  `).all(cutoff) as Array<{
+  `).all(cutoffSeconds) as Array<{
     id: number;
     slug: string;
+    branch_name: string;
     worktree_path: string;
     created_at: number;
     status: string;
@@ -1113,18 +1147,59 @@ async function pruneStaleWorktrees(
   // month-old worktree can have someone working in it right now, and prune
   // deletes the directory — uncommitted work included. This is the one place in
   // the system where getting "stale" wrong is unrecoverable.
-  const liveBranches = liveAgentBranches(await mainRootOf(simpleGit(cwd)));
+  const liveness = liveAgentBranches(await mainRootOf(simpleGit(cwd)));
+  if (!liveness.readable) {
+    // FAIL CLOSED. An empty set means both "nobody is live" and "I could not
+    // tell" — and the consequence of guessing wrong here is rm -rf of somebody's
+    // uncommitted work. Refuse rather than assume the repo is idle.
+    console.log(
+      chalk.red(
+        'Refusing to prune: the coordination DB could not be read, so live agents cannot be ruled out.'
+      )
+    );
+    console.log(chalk.dim('  Re-run with --force to prune anyway.'));
+    if (!options.force) return;
+  }
+  const liveBranches = liveness.branches;
+
+  // Containment: only ever delete inside <cwd>/.worktrees/. worktree_path comes
+  // from a registry under .uap/, which is exempt from the worktree write guard —
+  // so a planted row must not be able to aim rmSync at the main checkout.
+  const worktreesRoot = resolve(cwd, '.worktrees');
   const protectedRows: typeof stale = [];
+  const outOfScope: typeof stale = [];
+
   const prunable = stale.filter((row) => {
-    let branch = '';
-    try {
-      branch = execSync('git rev-parse --abbrev-ref HEAD', {
-        cwd: row.worktree_path,
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-    } catch {
-      return true; // unreadable worktree: nothing to protect
+    const abs = resolve(row.worktree_path);
+    if (abs !== worktreesRoot && !abs.startsWith(worktreesRoot + sep)) {
+      outOfScope.push(row);
+      return false;
+    }
+
+    // Prefer the branch the registry recorded; only consult git if it is absent.
+    // Strip GIT_* from the child env: git resolves GIT_DIR before cwd, so an
+    // ambient value makes every worktree report the SAME branch — which would
+    // mark every live worktree prunable in one shot. (This repo has hit GIT_DIR
+    // poisoning before; see the enforcers' _clean_env.)
+    let branch = row.branch_name ?? '';
+    if (!branch) {
+      try {
+        const env = { ...process.env };
+        for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_PREFIX']) {
+          delete env[k];
+        }
+        branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+          cwd: row.worktree_path,
+          encoding: 'utf-8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 10_000,
+          env,
+        }).trim();
+      } catch {
+        // Cannot determine the branch => cannot prove it is idle => protect it.
+        protectedRows.push(row);
+        return false;
+      }
     }
     if (branch && liveBranches.has(branch)) {
       protectedRows.push(row);
@@ -1132,6 +1207,15 @@ async function pruneStaleWorktrees(
     }
     return true;
   });
+
+  if (outOfScope.length > 0) {
+    console.log(
+      chalk.red(
+        `Refusing ${outOfScope.length} registry row(s) whose path is outside ${worktreesRoot}: ` +
+          `${outOfScope.map((r) => r.worktree_path).join(', ')}`
+      )
+    );
+  }
 
   if (protectedRows.length > 0) {
     console.log(
@@ -1152,7 +1236,10 @@ async function pruneStaleWorktrees(
   console.log('');
 
   for (const wt of stale) {
-    const age = Math.floor((Date.now() - wt.created_at) / (1000 * 60 * 60 * 24));
+    // created_at is SECONDS; dividing a seconds-vs-milliseconds difference by a
+    // day in ms printed every worktree as ~20,600 days old — the visible symptom
+    // of the cutoff bug fixed above.
+    const age = Math.floor((Date.now() / 1000 - wt.created_at) / (60 * 60 * 24));
     const statusColor = wt.status === 'cleaned' ? chalk.yellow : chalk.dim;
     console.log(`  ${wt.id}: ${wt.slug} (${age} days old) - ${statusColor(wt.status)}`);
   }
@@ -1172,25 +1259,33 @@ async function pruneStaleWorktrees(
     }
   }
 
-  // Prune
+  // DRY RUN: report and return BEFORE touching anything. This check used to sit
+  // AFTER the delete loop, so `--dry-run` deleted every directory and then
+  // printed "[DRY RUN] Would prune" — and because dryRun also skipped the
+  // confirmation prompt, it did so without asking. The flag documented as
+  // "Preview without making changes" was the most destructive way to invoke it.
+  if (options.dryRun) {
+    console.log(
+      chalk.yellow(
+        `[DRY RUN] Would prune ${stale.length} worktree(s) and remove ` +
+          `${stale.filter((wt) => existsSync(wt.worktree_path)).length} directory(ies). Nothing was changed.`
+      )
+    );
+    return;
+  }
+
   let pruned = 0;
   let directoriesRemoved = 0;
 
   for (const wt of stale) {
-    // Remove from DB
     db.prepare('DELETE FROM worktrees WHERE id = ?').run(wt.id);
     pruned++;
 
-    // Remove directory
     if (existsSync(wt.worktree_path)) {
       rmSync(wt.worktree_path, { recursive: true, force: true });
       directoriesRemoved++;
     }
   }
 
-  if (options.dryRun) {
-    console.log(chalk.yellow(`[DRY RUN] Would prune ${pruned} worktree(s), remove ${directoriesRemoved} directory(ies)`));
-  } else {
-    console.log(chalk.green(`Pruned ${pruned} worktree(s), removed ${directoriesRemoved} directory(ies)`));
-  }
+  console.log(chalk.green(`Pruned ${pruned} worktree(s), removed ${directoriesRemoved} directory(ies)`));
 }

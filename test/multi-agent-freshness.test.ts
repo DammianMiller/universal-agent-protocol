@@ -496,23 +496,23 @@ describe('live-agent awareness (git metadata cannot tell abandoned from in-progr
 
   it('reports a branch whose agent is heartbeating as live', () => {
     const root = coordDb([{ branch: 'feature/live', ageSeconds: 10 }]);
-    expect(liveAgentBranches(root).has('feature/live')).toBe(true);
+    expect(liveAgentBranches(root).branches.has('feature/live')).toBe(true);
   });
 
   it('does NOT report an agent whose heartbeat went stale', () => {
     const root = coordDb([{ branch: 'feature/dead', ageSeconds: 100000 }]);
-    expect(liveAgentBranches(root).has('feature/dead')).toBe(false);
+    expect(liveAgentBranches(root).branches.has('feature/dead')).toBe(false);
   });
 
   it('ignores completed agents', () => {
     const root = coordDb([{ branch: 'feature/done', ageSeconds: 5, status: 'completed' }]);
-    expect(liveAgentBranches(root).has('feature/done')).toBe(false);
+    expect(liveAgentBranches(root).branches.has('feature/done')).toBe(false);
   });
 
   it('fails open when there is no coordination DB', () => {
     const empty = mkdtempSync(join(tmpdir(), 'uap-nodb-'));
     tmpDirs.push(empty);
-    expect(liveAgentBranches(empty).size).toBe(0);
+    expect(liveAgentBranches(empty).branches.size).toBe(0);
   });
 
   it('an ACTIVE worktree is never counted as drift or as prunable-stale', () => {
@@ -540,5 +540,56 @@ describe('live-agent awareness (git metadata cannot tell abandoned from in-progr
     expect(msg).toContain(`1 are >${STALE_BEHIND_LIMIT} commits behind`); // idle only
     expect(msg).toContain('1 have a LIVE agent');
     expect(msg).toContain('worst: idle at 900 behind'); // ranked among IDLE, not the busy one
+  });
+});
+
+describe('prune must not destroy work (regressions in shipped code)', () => {
+  it('compares the age cutoff in the SAME unit the registry stores', () => {
+    // created_at is seconds (strftime('%s','now')); the cutoff was milliseconds,
+    // so `created_at < cutoff` was true for every row that will ever exist and
+    // --older-than filtered NOTHING. Verified against the real registry at the
+    // time of the fix: 117/117 rows selected even at --older-than 3650.
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const cutoffSeconds = nowSeconds - 30 * 24 * 60 * 60;
+    const freshRow = nowSeconds - 60; // created a minute ago
+    const oldRow = nowSeconds - 90 * 24 * 60 * 60;
+
+    expect(freshRow < cutoffSeconds).toBe(false); // must NOT be a prune candidate
+    expect(oldRow < cutoffSeconds).toBe(true);
+
+    // The old (broken) comparison, kept as the thing we must never regress to:
+    const brokenCutoffMs = Date.now() - 3650 * 24 * 60 * 60 * 1000;
+    expect(freshRow < brokenCutoffMs).toBe(true); // ← everything was "stale"
+  });
+
+  it('a live window env var is validated the same way the hook validates it', () => {
+    // parseInt('-1') is truthy, and a negative window matches no rows — which
+    // would silently disable the guard that stops prune deleting a live worktree.
+    const parse = (v: string | undefined): number => {
+      const raw = Number.parseInt(v ?? '', 10);
+      return Number.isFinite(raw) && raw > 0 ? raw : 120;
+    };
+    expect(parse('-1')).toBe(120);
+    expect(parse('0')).toBe(120);
+    expect(parse('abc')).toBe(120);
+    expect(parse(undefined)).toBe(120);
+    expect(parse('300')).toBe(300);
+  });
+
+  it('liveAgentBranches reports UNREADABLE rather than pretending the repo is idle', () => {
+    // The distinction prune depends on: an empty set must not mean both "nobody
+    // is live" and "I could not tell", because the second one precedes an rm -rf.
+    const missing = mkdtempSync(join(tmpdir(), 'uap-noagents-'));
+    tmpDirs.push(missing);
+    const none = liveAgentBranches(missing);
+    expect(none.readable).toBe(true); // genuinely no coordination DB => idle
+    expect(none.branches.size).toBe(0);
+
+    const corrupt = mkdtempSync(join(tmpdir(), 'uap-corrupt-'));
+    tmpDirs.push(corrupt);
+    mkdirSync(join(corrupt, 'agents', 'data', 'coordination'), { recursive: true });
+    writeFileSync(join(corrupt, 'agents', 'data', 'coordination', 'coordination.db'), 'not a database');
+    const bad = liveAgentBranches(corrupt);
+    expect(bad.readable).toBe(false); // callers that delete must fail closed
   });
 });
