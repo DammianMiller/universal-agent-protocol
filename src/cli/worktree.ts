@@ -6,7 +6,16 @@ import { simpleGit, SimpleGit } from 'simple-git';
 import Database from 'better-sqlite3';
 import { execSync } from 'child_process';
 
-type WorktreeAction = 'create' | 'list' | 'pr' | 'finish' | 'cleanup' | 'ensure' | 'prune';
+type WorktreeAction =
+  | 'create'
+  | 'list'
+  | 'pr'
+  | 'finish'
+  | 'cleanup'
+  | 'ensure'
+  | 'prune'
+  | 'sync'
+  | 'hygiene';
 
 interface WorktreeOptions {
   slug?: string;
@@ -18,6 +27,12 @@ interface WorktreeOptions {
   olderThan?: number;
   force?: boolean;
   dryRun?: boolean;
+  /** create: skip the fetch of the base remote (offline / air-gapped). */
+  noFetch?: boolean;
+  /** hygiene: emit a single-line advisory instead of the full table. */
+  brief?: boolean;
+  /** sync/hygiene: operate on every worktree, not just the current one. */
+  all?: boolean;
 }
 
 let worktreeDb: Database.Database | null = null;
@@ -81,7 +96,13 @@ export async function worktreeCommand(
 
   switch (action) {
     case 'create':
-      await createWorktree(cwd, git, options.slug!, options.from);
+      await createWorktree(cwd, git, options.slug!, options.from, options.noFetch);
+      break;
+    case 'sync':
+      await syncWorktree(cwd, git, { id: options.id, all: options.all });
+      break;
+    case 'hygiene':
+      await worktreeHygiene(cwd, git, { brief: options.brief });
       break;
     case 'list':
       await listWorktrees(cwd, git);
@@ -112,7 +133,8 @@ async function createWorktree(
   cwd: string,
   git: SimpleGit,
   slug: string,
-  baseBranch?: string
+  baseBranch?: string,
+  noFetch?: boolean
 ): Promise<void> {
   const spinner = ora('Creating worktree...').start();
 
@@ -124,11 +146,21 @@ async function createWorktree(
     const branchName = `feature/${worktreeName}`;
     const worktreePath = join(cwd, '.worktrees', worktreeName);
 
-    // Get current branch (base)
+    // FRESH-BASE GATE. A worktree used to be cut from whatever the main checkout
+    // happened to have at HEAD — so if local master was stale (or the operator was
+    // parked on some unrelated branch), the agent started N commits behind and every
+    // file it touched was at risk of silently reverting work that had already landed.
+    // Observed live: a worktree created while local master was 1 behind origin was
+    // born stale, and the oldest worktrees in this repo drifted to 1241 commits behind.
+    // Base on the REMOTE tip by default; --from still wins for deliberate stacking.
     spinner.text = 'Resolving base branch...';
-    const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
-    let branchBase = currentBranch.trim();
+    let branchBase: string;
     if (baseBranch) {
+      // Explicit base: fetch it first so `--from origin/x` (and a local ref that
+      // tracks it) resolves to the current remote tip rather than a stale copy.
+      if (!noFetch) {
+        await fetchQuietly(git, baseBranch);
+      }
       try {
         await git.revparse([baseBranch]);
         branchBase = baseBranch;
@@ -136,6 +168,8 @@ async function createWorktree(
         spinner.fail(`Base branch not found: ${baseBranch}`);
         process.exit(1);
       }
+    } else {
+      branchBase = await resolveFreshBase(git, { noFetch, spinner });
     }
 
     // Create worktree with new branch
@@ -182,7 +216,8 @@ async function createWorktree(
 
     spinner.succeed(`Created worktree: ${worktreeName}`);
     console.log(chalk.dim(`  Branch: ${branchName}`));
-    console.log(chalk.dim(`  Path: ${worktreePath}`));
+    console.log(chalk.dim(`  Base:   ${branchBase}`));
+    console.log(chalk.dim(`  Path:   ${worktreePath}`));
     console.log('');
     console.log(chalk.bold('Next steps:'));
     console.log(`  cd .worktrees/${worktreeName}`);
@@ -342,8 +377,9 @@ function ensurePrNumber(worktreePath: string): string {
 }
 
 async function syncBranchWithMaster(worktreeGit: SimpleGit, branch: string): Promise<void> {
-  await worktreeGit.fetch(['origin', 'master']);
-  const behindRaw = await worktreeGit.raw(['rev-list', '--count', `${branch}..origin/master`]);
+  const base = await resolveIntegrationRef(worktreeGit);
+  await fetchQuietly(worktreeGit, base.replace(/^origin\//, ''));
+  const behindRaw = await worktreeGit.raw(['rev-list', '--count', `${branch}..${base}`]);
   const behind = parseRevListCount(behindRaw);
 
   if (behind === 0) {
@@ -351,11 +387,308 @@ async function syncBranchWithMaster(worktreeGit: SimpleGit, branch: string): Pro
   }
 
   try {
-    await worktreeGit.raw(['merge', '--no-edit', 'origin/master']);
+    await worktreeGit.raw(['merge', '--no-edit', base]);
   } catch {
     throw new Error(
-      'Worktree branch is behind origin/master and automatic sync failed. Resolve merge conflicts in the worktree, then rerun the command.'
+      `Worktree branch is behind ${base} and automatic sync failed. Resolve merge conflicts in the worktree, then rerun the command.`
     );
+  }
+}
+
+/** Best-effort fetch — never fails the caller (offline, no remote, auth prompt). */
+async function fetchQuietly(git: SimpleGit, ref?: string): Promise<boolean> {
+  try {
+    await git.fetch(ref ? ['origin', ref] : ['origin']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Name of the repo's integration branch, without the remote prefix.
+ * Prefers origin/HEAD (what the remote itself calls default), then the usual
+ * suspects, then the current local branch. Hard-coding "master" broke every
+ * main-branch repo that installed UAP.
+ */
+export async function resolveDefaultBranch(git: SimpleGit): Promise<string> {
+  try {
+    const head = await git.raw(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+    const name = head.trim().replace('refs/remotes/origin/', '');
+    if (name) return name;
+  } catch {
+    // origin/HEAD not set (common on clones made with --single-branch) — fall through.
+  }
+  for (const candidate of ['master', 'main']) {
+    try {
+      await git.revparse([`refs/remotes/origin/${candidate}`]);
+      return candidate;
+    } catch {
+      // not present — try the next one
+    }
+  }
+  try {
+    return (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+  } catch {
+    return 'master';
+  }
+}
+
+/** Fully-qualified ref to integrate against: `origin/<default>` when the remote has it. */
+export async function resolveIntegrationRef(git: SimpleGit): Promise<string> {
+  const branch = await resolveDefaultBranch(git);
+  try {
+    await git.revparse([`refs/remotes/origin/${branch}`]);
+    return `origin/${branch}`;
+  } catch {
+    return branch;
+  }
+}
+
+/**
+ * The ref a new worktree should be cut from: the freshly-fetched remote tip.
+ * Falls back to the local branch when there is no reachable remote, so this
+ * still works offline and in never-pushed repos.
+ */
+async function resolveFreshBase(
+  git: SimpleGit,
+  opts: { noFetch?: boolean; spinner?: { text: string } } = {}
+): Promise<string> {
+  const defaultBranch = await resolveDefaultBranch(git);
+  if (!opts.noFetch) {
+    if (opts.spinner) opts.spinner.text = `Fetching origin/${defaultBranch}...`;
+    await fetchQuietly(git, defaultBranch);
+  }
+  try {
+    await git.revparse([`refs/remotes/origin/${defaultBranch}`]);
+    return `origin/${defaultBranch}`;
+  } catch {
+    // No remote-tracking ref (offline first-run, local-only repo): use the local
+    // branch if it exists, else whatever HEAD is. Never fail worktree creation.
+  }
+  try {
+    await git.revparse([defaultBranch]);
+    return defaultBranch;
+  } catch {
+    return 'HEAD';
+  }
+}
+
+export interface BranchDrift {
+  name: string;
+  path: string;
+  branch: string;
+  /** Commits on the integration ref that this branch does not have. */
+  behind: number;
+  /** Commits on this branch not yet on the integration ref (unmerged work). */
+  ahead: number;
+  /** Count of uncommitted (staged + unstaged + untracked) entries. */
+  dirty: number;
+}
+
+/** Measure one worktree's drift against the integration ref. Never throws. */
+export async function measureDrift(
+  worktreePath: string,
+  integrationRef: string
+): Promise<BranchDrift | null> {
+  try {
+    const wtGit = simpleGit(worktreePath);
+    const branch = (await wtGit.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    const behind = parseRevListCount(
+      await wtGit.raw(['rev-list', '--count', `HEAD..${integrationRef}`])
+    );
+    const ahead = parseRevListCount(
+      await wtGit.raw(['rev-list', '--count', `${integrationRef}..HEAD`])
+    );
+    const status = await wtGit.status();
+    const dirty =
+      status.staged.length +
+      status.modified.length +
+      status.not_added.length +
+      status.deleted.length;
+    const name = worktreePath.split('.worktrees/')[1] || worktreePath;
+    return { name, path: worktreePath, branch, behind, ahead, dirty };
+  } catch {
+    return null;
+  }
+}
+
+/** All linked worktree paths under .worktrees/. */
+async function listWorktreePaths(git: SimpleGit): Promise<string[]> {
+  try {
+    const raw = await git.raw(['worktree', 'list', '--porcelain']);
+    return raw
+      .split('\n')
+      .filter((l) => l.startsWith('worktree '))
+      .map((l) => l.replace('worktree ', '').trim())
+      .filter((p) => p.includes('.worktrees'));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * `uap worktree sync` — pull the integration branch into a worktree MID-FLIGHT.
+ * The old flow only synced at `finish`, which is the most expensive possible
+ * moment to discover a conflict. This makes re-basing cheap and routine.
+ */
+async function syncWorktree(
+  cwd: string,
+  git: SimpleGit,
+  opts: { id?: string; all?: boolean } = {}
+): Promise<void> {
+  const integrationRef = await resolveIntegrationRef(git);
+  const spinner = ora(`Syncing with ${integrationRef}...`).start();
+
+  let targets: string[];
+  if (opts.all) {
+    targets = await listWorktreePaths(git);
+  } else if (opts.id) {
+    const found = findWorktreeById(cwd, opts.id);
+    if (!found) {
+      spinner.fail(`Worktree with ID ${opts.id} not found`);
+      return;
+    }
+    targets = [found];
+  } else {
+    // Default: the worktree we are standing in.
+    targets = [cwd];
+  }
+
+  await fetchQuietly(git, integrationRef.replace(/^origin\//, ''));
+  spinner.stop();
+
+  let synced = 0;
+  let conflicted = 0;
+  let already = 0;
+
+  for (const target of targets) {
+    const drift = await measureDrift(target, integrationRef);
+    if (!drift) continue;
+    if (drift.behind === 0) {
+      already++;
+      continue;
+    }
+    const wtGit = simpleGit(target);
+    try {
+      await wtGit.raw(['merge', '--no-edit', integrationRef]);
+      synced++;
+      console.log(
+        chalk.green(`  ✔ ${drift.name}: merged ${drift.behind} commit(s) from ${integrationRef}`)
+      );
+    } catch {
+      conflicted++;
+      console.log(
+        chalk.red(
+          `  ✖ ${drift.name}: CONFLICT merging ${integrationRef} ` +
+            `(${drift.behind} behind). Resolve in ${target}, then commit.`
+        )
+      );
+    }
+  }
+
+  console.log('');
+  console.log(
+    chalk.bold(
+      `Sync: ${synced} updated, ${already} already current, ${conflicted} need manual resolution`
+    )
+  );
+  if (conflicted > 0) {
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * `uap worktree hygiene` — surface drift and at-risk work across ALL worktrees.
+ * Silent accumulation is how work gets lost: a branch nobody re-synced for a
+ * thousand commits will either conflict violently or be quietly abandoned.
+ */
+async function worktreeHygiene(
+  _cwd: string,
+  git: SimpleGit,
+  opts: { brief?: boolean } = {}
+): Promise<void> {
+  const integrationRef = await resolveIntegrationRef(git);
+  const paths = await listWorktreePaths(git);
+  const drifts: BranchDrift[] = [];
+
+  for (const p of paths) {
+    const d = await measureDrift(p, integrationRef);
+    if (d) drifts.push(d);
+  }
+
+  const atRisk = drifts.filter((d) => d.ahead > 0 || d.dirty > 0);
+  const summary = summarizeHygiene(drifts, integrationRef);
+
+  if (opts.brief) {
+    if (summary) console.log(summary);
+    return;
+  }
+
+  console.log(chalk.bold(`\n🧹 Worktree hygiene (vs ${integrationRef})\n`));
+  if (drifts.length === 0) {
+    console.log(chalk.dim('No linked worktrees.'));
+    return;
+  }
+
+  drifts.sort((a, b) => b.behind - a.behind);
+  console.log('| Worktree | Behind | Ahead | Dirty | Status |');
+  console.log('|----------|--------|-------|-------|--------|');
+  for (const d of drifts) {
+    const status =
+      d.ahead > 0 || d.dirty > 0
+        ? chalk.yellow('UNMERGED WORK')
+        : d.behind > 200
+          ? chalk.red('STALE — safe to prune')
+          : chalk.dim('clean');
+    console.log(`| ${d.name} | ${d.behind} | ${d.ahead} | ${d.dirty} | ${status} |`);
+  }
+
+  console.log('');
+  if (summary) console.log(summary);
+  if (atRisk.length > 0) {
+    console.log(
+      chalk.dim('  Reconcile with: uap worktree sync --id <id>   then   uap worktree pr <id>')
+    );
+    console.log(chalk.dim('  Abandon with:  uap worktree cleanup <id>'));
+  }
+  console.log(chalk.dim('  Bulk prune merged//stale worktrees: uap worktree prune --older-than 30'));
+  console.log('');
+}
+
+/**
+ * One-line advisory for session-start. Returns '' when nothing needs attention,
+ * so the caller can stay silent on a healthy repo.
+ */
+export function summarizeHygiene(drifts: BranchDrift[], integrationRef: string): string {
+  if (drifts.length === 0) return '';
+  const atRisk = drifts.filter((d) => d.ahead > 0 || d.dirty > 0);
+  const stale = drifts.filter((d) => d.behind > 200);
+  if (atRisk.length === 0 && stale.length === 0) return '';
+
+  const worst = drifts.reduce((a, b) => (b.behind > a.behind ? b : a));
+  const parts: string[] = [];
+  if (atRisk.length > 0) {
+    parts.push(`${atRisk.length} worktree(s) hold unmerged or uncommitted work`);
+  }
+  if (stale.length > 0) {
+    parts.push(`${stale.length} are >200 commits behind ${integrationRef}`);
+  }
+  return (
+    `⚠️  Worktree drift: ${parts.join('; ')} ` +
+    `(worst: ${worst.name} at ${worst.behind} behind). Run \`uap worktree hygiene\`.`
+  );
+}
+
+/** Resolve a worktree directory from its numeric ID. */
+function findWorktreeById(cwd: string, id: string): string | null {
+  try {
+    const worktreesDir = join(cwd, '.worktrees');
+    const entries = readdirSync(worktreesDir);
+    const match = entries.find((e) => e.startsWith(`${id.padStart(3, '0')}-`));
+    return match ? join(worktreesDir, match) : null;
+  } catch {
+    return null;
   }
 }
 

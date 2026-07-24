@@ -50,6 +50,21 @@ if [ -f "$COORD_DB" ]; then
            OR (strftime('%s','now') - strftime('%s', last_heartbeat)) >= $STALE_SECS
       );
   " 2>/dev/null || true
+
+  # Release THIS agent's own holds immediately. The stale sweep above only frees
+  # an agent once its heartbeat has been dead for STALE_SECS — so a session that
+  # ended cleanly seconds after an edit kept its files locked against every peer
+  # for the full window, and peers saw a "live agent" that had already exited.
+  # We know our own id, so there is no reason to wait for it to look dead.
+  if [ -n "${UAP_AGENT_ID:-}" ]; then
+    ME_Q=$(printf '%s' "$UAP_AGENT_ID" | sed "s/'/''/g")
+    sqlite3 "$COORD_DB" "
+      UPDATE work_announcements SET completed_at = '$TIMESTAMP'
+      WHERE completed_at IS NULL AND agent_id = '$ME_Q';
+      UPDATE agent_registry SET status = 'completed'
+      WHERE id = '$ME_Q';
+    " 2>/dev/null || true
+  fi
 fi
 
 # Clean up backup files older than 7 days (retention policy)
@@ -58,9 +73,10 @@ if [ -d "$BACKUP_DIR" ]; then
   find "$BACKUP_DIR" -maxdepth 1 -mindepth 1 -type d -mtime +7 -exec rm -rf {} \; 2>/dev/null || true
 fi
 
-# Session-scoped proxy release: stop the proxy ONLY if THIS session started it
-# and no other client remains (adopted/externally-managed proxies are never
-# killed; other active clients keep it alive). Fail-open; never blocks exit.
+# Session-scoped proxy + dashboard release: stop them ONLY if THIS session
+# started them and no other client remains (adopted/externally-managed services
+# are never killed; other active clients keep them alive). Fail-open; never
+# blocks exit.
 if command -v uap >/dev/null 2>&1; then
   _uap_pc="${CLAUDE_SESSION_ID:-${FACTORY_SESSION_ID:-${CURSOR_SESSION_ID:-${UAP_SESSION_ID:-ppid-$PPID}}}}"
   ( cd "$PROJECT_DIR" 2>/dev/null && timeout 20 uap proxy release --if-enabled --quiet --client "$_uap_pc" --client-pid "$PPID" ) >/dev/null 2>&1 || true

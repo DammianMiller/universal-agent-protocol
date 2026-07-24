@@ -11,7 +11,9 @@
 # different worktrees collides (that IS the future merge conflict).
 #
 # Exit 0 = allow (no conflict, or only a stale/self-healed announcement → warn).
-# Exit 2 = BLOCK: another LIVE agent (heartbeat < THRESHOLD) holds this file.
+# Exit 2 = BLOCK: another LIVE agent (heartbeat < THRESHOLD) holds this file, OR
+#          the file has MOVED on the integration branch since this branch's
+#          merge-base (editing it now would silently revert landed work).
 #
 # Always fails OPEN: any missing dependency or DB error allows the edit. This
 # hook must never break editing because coordination is unavailable.
@@ -27,10 +29,95 @@ ABS="${6:-}"
 # Seconds since another agent's last heartbeat for it to count as "live".
 THRESHOLD="${UAP_COORD_LIVE_SECONDS:-120}"
 
-# Fail open on any missing prerequisite.
+# ---------------------------------------------------------------------------
+# Merge-base drift check (sequential-overwrite protection).
+#
+# The live-lock below only covers CONCURRENT edits — two agents holding the same
+# file at the same moment. The far more common loss is SEQUENTIAL: agent A landed
+# a change to foo.ts an hour ago; agent B's worktree was cut before that and never
+# re-synced, so B edits a stale copy and its merge quietly reverts A's work.
+#
+# So: if THIS exact file changed on the integration branch since our merge-base,
+# block until the agent syncs. Scoped to the single file being edited, so a stale
+# worktree touching untouched files keeps working — no blanket freeze.
+#
+#   UAP_COORD_DRIFT=block|warn|off   (default block)
+#   UAP_COORD_FETCH_SECONDS=<n>      throttle for the background fetch (default 600)
+# ---------------------------------------------------------------------------
+DRIFT_MODE="${UAP_COORD_DRIFT:-block}"
+FETCH_THROTTLE="${UAP_COORD_FETCH_SECONDS:-600}"
+
+[ -n "$ME" ] && [ -n "$REL" ] || exit 0
+
+# Resolve the integration ref (origin/HEAD → origin/master → origin/main).
+integration_ref() {
+  local d="$1" r
+  r=$(git -C "$d" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) && {
+    printf '%s' "${r#refs/remotes/}"; return 0; }
+  for c in master main; do
+    git -C "$d" rev-parse --verify --quiet "refs/remotes/origin/$c" >/dev/null 2>&1 && {
+      printf 'origin/%s' "$c"; return 0; }
+  done
+  return 1
+}
+
+check_drift() {
+  [ "$DRIFT_MODE" = "off" ] && return 0
+  command -v git >/dev/null 2>&1 || return 0
+  [ -n "$ABS" ] || return 0
+
+  local dir; dir=$(dirname "$ABS")
+  [ -d "$dir" ] || return 0
+  git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+  local ref; ref=$(integration_ref "$dir") || return 0
+
+  # Throttled fetch: an edit-time network call on EVERY keystroke-scale edit would
+  # be intolerable, so refresh at most once per FETCH_THROTTLE seconds. Between
+  # refreshes we compare against the last known remote tip — still catches the
+  # overwhelming majority of drift, and `uap worktree sync` refreshes on demand.
+  local common; common=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 0
+  case "$common" in /*) ;; *) common="$dir/$common" ;; esac
+  local stamp="$common/.uap-drift-fetch"
+  local now; now=$(date +%s)
+  local last=0
+  [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ $((now - last)) -ge "$FETCH_THROTTLE" ]; then
+    printf '%s' "$now" > "$stamp" 2>/dev/null || true
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 10 git -C "$dir" fetch -q origin "${ref#origin/}" >/dev/null 2>&1 || true
+    else
+      git -C "$dir" fetch -q origin "${ref#origin/}" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  local mb; mb=$(git -C "$dir" merge-base HEAD "$ref" 2>/dev/null) || return 0
+  [ -n "$mb" ] || return 0
+
+  # Did this specific path change on the integration branch since we branched?
+  local moved; moved=$(git -C "$dir" diff --name-only "$mb" "$ref" -- "$REL" 2>/dev/null)
+  [ -n "$moved" ] || return 0
+
+  local n; n=$(git -C "$dir" rev-list --count "$mb..$ref" 2>/dev/null || echo '?')
+
+  if [ "$DRIFT_MODE" = "warn" ]; then
+    echo "COORDINATION WARNING: ${REL} changed on ${ref} since your branch point (${n} commits behind). Run 'uap worktree sync' before editing or your merge may revert landed work." >&2
+    return 0
+  fi
+
+  echo "{\"decision\":\"block\",\"reason\":\"STALE FILE: ${REL} has changed on ${ref} since your branch point (you are ${n} commits behind). Editing this copy risks silently reverting work that already landed. Run 'uap worktree sync' first, then re-apply your change on top. Override: UAP_COORD_DRIFT=warn.\"}" >&2
+  return 2
+}
+
+# 0) Sequential-drift check FIRST. It depends only on git, never on the
+#    coordination DB — a missing/unwritable DB must not silently disable
+#    overwrite protection (it did: the DB prerequisite used to exit 0 above it).
+check_drift || exit 2
+
+# The announcement half needs sqlite3 and a real DB file; fail open without them.
 command -v sqlite3 >/dev/null 2>&1 || exit 0
 [ -n "$DB" ] && [ -f "$DB" ] || exit 0
-[ -n "$ME" ] && [ -n "$REL" ] || exit 0
 
 # SQL-escape single quotes.
 q() { printf '%s' "${1:-}" | sed "s/'/''/g"; }

@@ -1,0 +1,332 @@
+/**
+ * Multi-agent freshness & collision prevention.
+ *
+ * Parallel agents lose each other's work in two distinct ways, and before this
+ * work only one of them was covered anywhere:
+ *
+ *   CONCURRENT — two agents in the same file at the same moment. Caught by the
+ *     live-agent lock in coordinate-file.sh. Already handled.
+ *   SEQUENTIAL — agent A lands a change; agent B's branch predates it and was
+ *     never re-synced, so B edits a stale copy and its merge silently reverts A.
+ *     Nothing caught this. Measured on this repo: 151 worktrees, worst 1241
+ *     commits behind origin/master, 23 holding unmerged commits.
+ *
+ * These tests cover the sequential half end-to-end (real git repos, real hook
+ * invocations) plus the ordering/ownership logic that keeps PRs from colliding.
+ */
+import { describe, it, expect, afterAll } from 'vitest';
+import { spawnSync } from 'child_process';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+import {
+  matchGlob,
+  ownersFor,
+  lanesForPaths,
+  assessConflict,
+  selectDisjoint,
+  loadOwnershipMap,
+  type OwnershipMap,
+} from '../src/coordination/ownership.js';
+import { orderQueue, impactedBy, overlappingFiles, type PullRequest } from '../src/cli/merge-queue.js';
+import { parseRevListCount, summarizeHygiene, type BranchDrift } from '../src/cli/worktree.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const HOOK = join(__dirname, '../templates/hooks/coordinate-file.sh');
+
+const tmpDirs: string[] = [];
+afterAll(() => tmpDirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+function git(cwd: string, ...args: string[]): string {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf-8' });
+  if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+  return (r.stdout ?? '').trim();
+}
+
+/**
+ * A bare "remote" plus a clone, with `foo.ts` and `bar.ts` on the default branch.
+ * Real git — the drift check reads merge-base and remote refs, so a mock would
+ * only prove the mock works.
+ */
+function newRepo(): { work: string } {
+  const base = mkdtempSync(join(tmpdir(), 'uap-fresh-'));
+  tmpDirs.push(base);
+  const remote = join(base, 'remote');
+  const work = join(base, 'work');
+  mkdirSync(remote, { recursive: true });
+
+  git(remote, 'init', '-q', '--bare');
+  git(base, 'clone', '-q', remote, 'work');
+  git(work, 'config', 'user.email', 'test@example.com');
+  git(work, 'config', 'user.name', 'test');
+  writeFileSync(join(work, 'foo.ts'), 'v1\n');
+  writeFileSync(join(work, 'bar.ts'), 'v1\n');
+  git(work, 'add', '-A');
+  git(work, 'commit', '-qm', 'init');
+  git(work, 'branch', '-M', 'master');
+  git(work, 'push', '-qu', 'origin', 'master');
+  return { work };
+}
+
+/** Run the coordination hook the way pre-tool-use-edit-write.sh does. */
+function runHook(
+  work: string,
+  relPath: string,
+  env: Record<string, string> = {}
+): { status: number; stderr: string } {
+  const r = spawnSync(
+    'bash',
+    [HOOK, '/nonexistent.db', 'agentB', 'nameB', 'feature/agent-b', relPath, join(work, relPath)],
+    { cwd: work, encoding: 'utf-8', env: { ...process.env, ...env } }
+  );
+  return { status: r.status ?? 0, stderr: r.stderr ?? '' };
+}
+
+describe('sequential drift detection (coordinate-file.sh)', () => {
+  it('blocks editing a file that changed upstream since the branch point', () => {
+    const { work } = newRepo();
+    git(work, 'checkout', '-qb', 'feature/agent-b');
+    // Agent A lands a change to foo.ts while B is on its own branch.
+    git(work, 'checkout', '-q', 'master');
+    writeFileSync(join(work, 'foo.ts'), 'v2-from-agent-A\n');
+    git(work, 'commit', '-qam', 'A changes foo');
+    git(work, 'push', '-q', 'origin', 'master');
+    git(work, 'checkout', '-q', 'feature/agent-b');
+    git(work, 'fetch', '-q', 'origin', 'master');
+
+    const { status, stderr } = runHook(work, 'foo.ts');
+
+    expect(status).toBe(2);
+    expect(stderr).toContain('STALE FILE');
+    expect(stderr).toContain('foo.ts');
+    // The remedy must be actionable, not just a complaint.
+    expect(stderr).toContain('uap worktree sync');
+  });
+
+  it('allows editing a file that did NOT move upstream', () => {
+    const { work } = newRepo();
+    git(work, 'checkout', '-qb', 'feature/agent-b');
+    git(work, 'checkout', '-q', 'master');
+    writeFileSync(join(work, 'foo.ts'), 'v2\n');
+    git(work, 'commit', '-qam', 'A changes foo only');
+    git(work, 'push', '-q', 'origin', 'master');
+    git(work, 'checkout', '-q', 'feature/agent-b');
+    git(work, 'fetch', '-q', 'origin', 'master');
+
+    // bar.ts is untouched upstream — a stale branch must not be frozen wholesale.
+    expect(runHook(work, 'bar.ts').status).toBe(0);
+  });
+
+  it('degrades to a warning under UAP_COORD_DRIFT=warn and is silent when off', () => {
+    const { work } = newRepo();
+    git(work, 'checkout', '-qb', 'feature/agent-b');
+    git(work, 'checkout', '-q', 'master');
+    writeFileSync(join(work, 'foo.ts'), 'v2\n');
+    git(work, 'commit', '-qam', 'A changes foo');
+    git(work, 'push', '-q', 'origin', 'master');
+    git(work, 'checkout', '-q', 'feature/agent-b');
+    git(work, 'fetch', '-q', 'origin', 'master');
+
+    const warned = runHook(work, 'foo.ts', { UAP_COORD_DRIFT: 'warn' });
+    expect(warned.status).toBe(0);
+    expect(warned.stderr).toContain('COORDINATION WARNING');
+
+    const off = runHook(work, 'foo.ts', { UAP_COORD_DRIFT: 'off' });
+    expect(off.status).toBe(0);
+    expect(off.stderr).not.toContain('STALE FILE');
+  });
+
+  it('fails open outside a git repo', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-nogit-'));
+    tmpDirs.push(dir);
+    writeFileSync(join(dir, 'foo.ts'), 'x\n');
+    expect(runHook(dir, 'foo.ts').status).toBe(0);
+  });
+
+  it('still guards drift when the coordination DB is absent', () => {
+    // Regression: the DB prerequisite used to `exit 0` ABOVE the drift check, so
+    // a missing/unwritable coordination DB silently disabled overwrite protection
+    // entirely. Drift depends only on git and must survive that.
+    const { work } = newRepo();
+    git(work, 'checkout', '-qb', 'feature/agent-b');
+    git(work, 'checkout', '-q', 'master');
+    writeFileSync(join(work, 'foo.ts'), 'v2\n');
+    git(work, 'commit', '-qam', 'A changes foo');
+    git(work, 'push', '-q', 'origin', 'master');
+    git(work, 'checkout', '-q', 'feature/agent-b');
+    git(work, 'fetch', '-q', 'origin', 'master');
+
+    // '/nonexistent.db' is passed by runHook — no DB exists at all.
+    expect(runHook(work, 'foo.ts').status).toBe(2);
+  });
+});
+
+describe('ownership lanes', () => {
+  const map: OwnershipMap = {
+    lanes: {
+      cli: ['src/cli/**', 'src/bin/**'],
+      delivery: ['src/delivery/**'],
+      policy: ['src/policies/**', 'policies/**'],
+    },
+  };
+
+  it('matches globs by segment depth', () => {
+    expect(matchGlob('src/cli/**', 'src/cli/worktree.ts')).toBe(true);
+    expect(matchGlob('src/cli/**', 'src/cli/nested/deep/file.ts')).toBe(true);
+    expect(matchGlob('src/cli/**', 'src/delivery/run.ts')).toBe(false);
+    // A single star must not cross a separator.
+    expect(matchGlob('src/*.ts', 'src/index.ts')).toBe(true);
+    expect(matchGlob('src/*.ts', 'src/cli/index.ts')).toBe(false);
+    expect(matchGlob('test/deliver-?.test.ts', 'test/deliver-1.test.ts')).toBe(true);
+    // Regex metacharacters in a pattern are literals, not operators.
+    expect(matchGlob('src/a+b.ts', 'src/aaab.ts')).toBe(false);
+    expect(matchGlob('src/a+b.ts', 'src/a+b.ts')).toBe(true);
+  });
+
+  it('resolves paths to lanes and ignores unmapped paths', () => {
+    expect(ownersFor('src/cli/worktree.ts', map)).toEqual(['cli']);
+    expect(ownersFor('README.md', map)).toEqual([]);
+    expect(lanesForPaths(['src/cli/a.ts', 'src/delivery/b.ts'], map)).toEqual(['cli', 'delivery']);
+  });
+
+  it('flags shared files and shared lanes separately', () => {
+    const sameFile = assessConflict(['src/cli/a.ts'], ['src/cli/a.ts'], map);
+    expect(sameFile.conflicts).toBe(true);
+    expect(sameFile.sharedFiles).toEqual(['src/cli/a.ts']);
+
+    // Different files, same module — the semantic conflict file-overlap misses.
+    const sameLane = assessConflict(['src/cli/a.ts'], ['src/bin/b.ts'], map);
+    expect(sameLane.conflicts).toBe(true);
+    expect(sameLane.sharedFiles).toEqual([]);
+    expect(sameLane.sharedLanes).toEqual(['cli']);
+
+    expect(assessConflict(['src/cli/a.ts'], ['src/delivery/b.ts'], map).conflicts).toBe(false);
+  });
+
+  it('selects a disjoint batch and respects already-held lanes', () => {
+    const items = [
+      { id: 'a', paths: ['src/cli/x.ts'] },
+      { id: 'b', paths: ['src/cli/y.ts'] }, // same lane as a -> excluded
+      { id: 'c', paths: ['src/delivery/z.ts'] },
+      { id: 'd', paths: ['README.md'] }, // unmapped -> always selectable
+    ];
+    const picked = selectDisjoint(items, (i) => i.paths, map).map((r) => r.item.id);
+    expect(picked).toEqual(['a', 'c', 'd']);
+
+    const withHeld = selectDisjoint(items, (i) => i.paths, map, ['cli']).map((r) => r.item.id);
+    expect(withHeld).toEqual(['c', 'd']);
+  });
+
+  it('treats a missing or malformed ownership file as no lanes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-own-'));
+    tmpDirs.push(dir);
+    expect(loadOwnershipMap(dir).lanes).toEqual({});
+
+    mkdirSync(join(dir, '.uap'), { recursive: true });
+    writeFileSync(join(dir, '.uap/ownership.json'), '{ not json');
+    expect(loadOwnershipMap(dir).lanes).toEqual({});
+
+    writeFileSync(
+      join(dir, '.uap/ownership.json'),
+      JSON.stringify({ lanes: { good: ['src/**'], bad: 'not-an-array', empty: [] } })
+    );
+    expect(loadOwnershipMap(dir).lanes).toEqual({ good: ['src/**'] });
+  });
+});
+
+describe('merge queue ordering', () => {
+  const pr = (over: Partial<PullRequest> & { number: number }): PullRequest => ({
+    title: `PR ${over.number}`,
+    headRefName: `feature/${over.number}`,
+    isDraft: false,
+    updatedAt: '2026-01-01T00:00:00Z',
+    labels: [],
+    files: [],
+    ...over,
+  });
+
+  it('lands fixes before features and docs last', () => {
+    const ordered = orderQueue([
+      pr({ number: 1, headRefName: 'docs/readme', files: ['a.md'] }),
+      pr({ number: 2, headRefName: 'feature/thing', files: ['b.ts'] }),
+      pr({ number: 3, headRefName: 'fix/crash', files: ['c.ts'] }),
+    ]).map((p) => p.number);
+    expect(ordered).toEqual([3, 2, 1]);
+  });
+
+  it('prefers smaller diffs, then older branches, within a priority band', () => {
+    const ordered = orderQueue([
+      pr({ number: 1, files: ['a.ts', 'b.ts', 'c.ts'], updatedAt: '2026-01-01T00:00:00Z' }),
+      pr({ number: 2, files: ['d.ts'], updatedAt: '2026-02-01T00:00:00Z' }),
+      pr({ number: 3, files: ['e.ts'], updatedAt: '2026-01-01T00:00:00Z' }),
+    ]).map((p) => p.number);
+    expect(ordered).toEqual([3, 2, 1]);
+  });
+
+  it('treats P0/critical labels as top priority regardless of branch name', () => {
+    const ordered = orderQueue([
+      pr({ number: 1, headRefName: 'fix/small', files: ['a.ts'] }),
+      pr({ number: 2, headRefName: 'feature/big', labels: ['P0'], files: ['b.ts', 'c.ts'] }),
+    ]).map((p) => p.number);
+    expect(ordered).toEqual([2, 1]);
+  });
+
+  it('detects which PRs a merge invalidates, by file and by lane', () => {
+    const landed = pr({ number: 1, files: ['src/cli/a.ts'] });
+    const sharesFile = pr({ number: 2, files: ['src/cli/a.ts'] });
+    const sharesLane = pr({ number: 3, files: ['src/bin/b.ts'] });
+    const unrelated = pr({ number: 4, files: ['docs/readme.md'] });
+
+    expect(overlappingFiles(landed, sharesFile)).toEqual(['src/cli/a.ts']);
+
+    // Without a lane map, only the file overlap is visible.
+    expect(impactedBy(landed, [sharesFile, sharesLane, unrelated]).map((p) => p.number)).toEqual([2]);
+
+    // With lanes, the same-module PR is caught too.
+    const map: OwnershipMap = { lanes: { cli: ['src/cli/**', 'src/bin/**'] } };
+    expect(
+      impactedBy(landed, [sharesFile, sharesLane, unrelated], map).map((p) => p.number)
+    ).toEqual([2, 3]);
+  });
+});
+
+describe('worktree hygiene reporting', () => {
+  const drift = (over: Partial<BranchDrift>): BranchDrift => ({
+    name: 'wt',
+    path: '/tmp/wt',
+    branch: 'feature/x',
+    behind: 0,
+    ahead: 0,
+    dirty: 0,
+    ...over,
+  });
+
+  it('parses rev-list counts and rejects garbage', () => {
+    expect(parseRevListCount('42\n')).toBe(42);
+    expect(parseRevListCount('')).toBe(0);
+    expect(parseRevListCount('not-a-number')).toBe(0);
+    expect(parseRevListCount('-5')).toBe(0);
+  });
+
+  it('stays silent on a healthy repo', () => {
+    expect(summarizeHygiene([], 'origin/master')).toBe('');
+    expect(summarizeHygiene([drift({ behind: 3 })], 'origin/master')).toBe('');
+  });
+
+  it('reports unmerged work and stale branches with the worst offender', () => {
+    const msg = summarizeHygiene(
+      [
+        drift({ name: 'a', ahead: 2 }),
+        drift({ name: 'b', dirty: 4 }),
+        drift({ name: 'c', behind: 1241 }),
+        drift({ name: 'd', behind: 1 }),
+      ],
+      'origin/master'
+    );
+    expect(msg).toContain('2 worktree(s) hold unmerged or uncommitted work');
+    expect(msg).toContain('1 are >200 commits behind origin/master');
+    expect(msg).toContain('worst: c at 1241 behind');
+  });
+});
