@@ -29,7 +29,6 @@ describe('resolvePhaseChain — legacy string tiers', () => {
 describe('resolvePhaseChain — PhaseModels tiers (adaptive-tiered)', () => {
   it('returns the full escalation chain for a defined phase', () => {
     expect(resolvePhaseChain(adaptive, { complexity: 'high', phase: 'execute' })).toEqual([
-      'qwen36-a3b',
       'sonnet-5',
       'opus-4.8',
     ]);
@@ -55,7 +54,6 @@ describe('resolvePhaseChain — PhaseModels tiers (adaptive-tiered)', () => {
     const c = resolvePhaseChain(adaptive, { complexity: 'high', phase: 'execute' });
     c.push('mutated');
     expect(resolvePhaseChain(adaptive, { complexity: 'high', phase: 'execute' })).toEqual([
-      'qwen36-a3b',
       'sonnet-5',
       'opus-4.8',
     ]);
@@ -68,7 +66,7 @@ describe('resolvePresetModel — primary == chain[0], back-compat', () => {
     expect(resolvePresetModel(legacy, { complexity: 'low' })).toBe('qwen36-a3b');
   });
   it('PhaseModels tier returns the primary of the requested phase chain', () => {
-    expect(resolvePresetModel(adaptive, { complexity: 'high', phase: 'execute' })).toBe('qwen36-a3b');
+    expect(resolvePresetModel(adaptive, { complexity: 'high', phase: 'execute' })).toBe('sonnet-5');
     expect(resolvePresetModel(adaptive, { complexity: 'high', phase: 'review' })).toBe('sonnet-5');
   });
   it('primary equals the first element of the chain', () => {
@@ -86,12 +84,12 @@ describe('tiersToRoutingMatrix — both tier forms', () => {
       critical: 'opus-4.8',
     });
   });
-  it('PhaseModels tiers contribute their execute primary', () => {
+  it('PhaseModels tiers contribute their execute primary (monotonic, no inversion)', () => {
     const m = tiersToRoutingMatrix(adaptive);
     expect(m).toEqual({
       low: 'qwen36-a3b',
       medium: 'sonnet-5',
-      high: 'qwen36-a3b',
+      high: 'sonnet-5',
       critical: 'sonnet-5',
     });
   });

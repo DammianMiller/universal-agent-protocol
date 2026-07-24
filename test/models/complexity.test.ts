@@ -6,11 +6,27 @@ describe('classifyComplexity', () => {
     for (const t of [
       'add authentication middleware to the API',
       'rotate the database credential and secret',
-      'run a schema migration on the users table',
+      'rotate the jwt and re-encrypt the credential store',
+      'fix the sql injection and add csrf protection',
+      'refactor the auth flow',
     ]) {
       const s = classifyComplexity({ instruction: t });
       expect(s.tier).toBe('critical');
     }
+  });
+
+  it('does NOT over-escalate generic token/schema/migration work (review C2)', () => {
+    for (const t of [
+      'add token counting to the proxy',
+      'update the schema documentation',
+      'bump the migration note in the changelog',
+    ]) {
+      expect(classifyComplexity({ instruction: t }).tier).not.toBe('critical');
+    }
+    // but "author" must not be mistaken for auth
+    expect(classifyComplexity({ instruction: 'update the author byline in the footer' }).tier).not.toBe(
+      'critical'
+    );
   });
 
   it('honors explicit riskFlags as critical', () => {

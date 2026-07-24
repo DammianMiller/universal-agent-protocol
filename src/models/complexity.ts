@@ -26,9 +26,14 @@ export interface ComplexitySignal {
   source: 'heuristic' | 'model';
 }
 
-// Risk keywords force `critical` — the tier the old bridge could never emit.
+// Security/risk keywords force `critical` — the tier the old bridge could never
+// emit. Scoped to genuinely security-relevant terms: `\bauth\b` matches "auth"
+// but not "author"; generic words (token/schema/migration) are deliberately
+// EXCLUDED — they are noise in a token-optimization/schema-diff codebase and
+// would over-escalate benign work (review C2). `authoriz\w*`/`authenticat\w*`
+// cover authorize/authentication without matching "author".
 const CRITICAL_KW =
-  /\b(security|auth(?:entication|oriz\w*)?|credential|secret|token|encryption|payment|compliance|migration|schema|breaking\s+change)\b/i;
+  /(\bsecurity\b|\bauth\b|authenticat\w*|authoriz\w*|\bauthn\b|\bauthz\b|\boauth\b|\bcredential\w*|\bsecret\w*|\bpassword\w*|\bjwt\b|\bcsrf\b|\bxss\b|\binjection\b|\bsanitiz\w*|\bprivileg\w*|\bpermission\w*|\brbac\b|\bvulnerabilit\w*|\bcve\b|\bexploit\w*|\bencrypt\w*|\bdecrypt\w*|\bpayment\w*|\bcertificate\w*|\btls\b|\bssl\b|\bcors\b|\bssrf\b|\bdeserializ\w*|\bgdpr\b|\bhipaa\b|\bpci\b|breaking\s+change)/i;
 
 // Trivial keywords + short + single-file → the near-zero-overhead floor.
 const TRIVIAL_KW =
@@ -56,9 +61,11 @@ export function classifyComplexity(input: {
   const files = input.affectedFiles?.length ?? 0;
   const reasons: string[] = [];
 
-  if ((input.riskFlags && input.riskFlags.length > 0) || CRITICAL_KW.test(text)) {
-    if (input.riskFlags && input.riskFlags.length > 0) reasons.push(`riskFlags=[${input.riskFlags.join(',')}]`);
-    if (CRITICAL_KW.test(text)) reasons.push('critical keyword');
+  const hasRiskFlags = (input.riskFlags?.length ?? 0) > 0;
+  const hasCriticalKw = CRITICAL_KW.test(text);
+  if (hasRiskFlags || hasCriticalKw) {
+    if (hasRiskFlags) reasons.push(`riskFlags=[${input.riskFlags!.join(',')}]`);
+    if (hasCriticalKw) reasons.push('critical keyword');
     return { tier: 'critical', score: SCORE.critical, reasons, source: 'heuristic' };
   }
 

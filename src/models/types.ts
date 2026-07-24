@@ -379,7 +379,10 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
       },
       high: {
         plan: ['sonnet-5', 'opus-4.8'],
-        execute: ['qwen36-a3b', 'sonnet-5', 'opus-4.8'],
+        // execute primary is sonnet (not local qwen): hard work should not START
+        // on the weakest model, and it keeps the flattened matrix monotonic
+        // (medium→sonnet, high→sonnet) rather than inverting to qwen (review C3).
+        execute: ['sonnet-5', 'opus-4.8'],
         review: ['sonnet-5', 'opus-4.8'],
         reflect: ['opus-4.8'],
         fallback: ['opus-4.8'],

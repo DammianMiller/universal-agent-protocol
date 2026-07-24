@@ -41,7 +41,10 @@ export function resolveJudgePlan(opts: {
   altJudgeId?: string;
   hasPreset: (id: string) => boolean;
 }): JudgePlan {
-  if (opts.evaluatorPresetId) {
+  // A configured evaluator only counts as distinct if it is actually a
+  // DIFFERENT model than the generator (CWE-345: don't assert distinctness we
+  // haven't verified). If it collides, fall through to the auto/offline logic.
+  if (opts.evaluatorPresetId && opts.evaluatorPresetId !== opts.generatorId) {
     return { judgeModelId: opts.evaluatorPresetId, distinct: true, reason: 'configured-evaluator' };
   }
   if (opts.allowSelfJudge) {
