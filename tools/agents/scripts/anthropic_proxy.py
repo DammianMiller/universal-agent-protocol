@@ -3584,8 +3584,9 @@ async def _shared_secret_auth(request: Request, call_next):
     No-op when the token is unset (the default; safe only because the default
     bind is loopback). When set — the intended posture for a shared LAN service
     (PROXY_HOST=0.0.0.0) — a request must present the token as
-    `Authorization: Bearer <token>` or `X-Uap-Proxy-Token: <token>`; otherwise
-    401. Uses a constant-time compare to avoid a timing oracle.
+    `Authorization: Bearer <token>`, `X-Uap-Proxy-Token: <token>`, or
+    `X-Api-Key: <token>`; otherwise 401. Uses a constant-time compare to avoid a
+    timing oracle.
     """
     if PROXY_AUTH_TOKEN and request.url.path not in _PROXY_AUTH_OPEN_PATHS and request.method != "OPTIONS":
         provided = request.headers.get("x-uap-proxy-token", "")
@@ -3593,6 +3594,13 @@ async def _shared_secret_auth(request: Request, call_next):
             auth = request.headers.get("authorization", "")
             if auth.lower().startswith("bearer "):
                 provided = auth[7:].strip()
+        if not provided:
+            # This proxy emulates the Anthropic Messages API, whose SDK clients
+            # (opencode's @ai-sdk/anthropic, claude-code, factory, …) send their
+            # credential in the x-api-key header rather than Authorization/
+            # X-Uap-Proxy-Token. Accept it as an equivalent token source so any
+            # Anthropic-native client can authenticate without custom headers.
+            provided = request.headers.get("x-api-key", "").strip()
         import hmac as _hmac
 
         if not (provided and _hmac.compare_digest(provided, PROXY_AUTH_TOKEN)):
@@ -3602,7 +3610,7 @@ async def _shared_secret_auth(request: Request, call_next):
                         "type": "error",
                         "error": {
                             "type": "authentication_error",
-                            "message": "missing or invalid proxy token (set X-Uap-Proxy-Token or Authorization: Bearer)",
+                            "message": "missing or invalid proxy token (set X-Uap-Proxy-Token, Authorization: Bearer, or X-Api-Key)",
                         },
                     }
                 ),
