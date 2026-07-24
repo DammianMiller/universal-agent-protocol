@@ -53,14 +53,23 @@ export function runtimeDir(): string {
   return join(base, 'uap-proxy');
 }
 
+/**
+ * Services whose lifecycle `uap proxy` manages. The operational dashboard rides
+ * along with the proxy — same registry, same refcount, same ownership rules —
+ * so an agent session gets monitoring without a second command to run.
+ */
+export type ServiceName = 'proxy' | 'dash';
+
 function clientsDir(rt: string): string {
   return join(rt, 'clients');
 }
-function ownerPath(rt: string): string {
-  return join(rt, 'owner.json');
+/** 'proxy' keeps the historical filenames so markers written by an older uap
+ *  are still honoured across an upgrade; new services are suffixed. */
+function ownerPath(rt: string, service: ServiceName = 'proxy'): string {
+  return join(rt, service === 'proxy' ? 'owner.json' : `owner-${service}.json`);
 }
-function lockPath(rt: string): string {
-  return join(rt, 'start.lock');
+function lockPath(rt: string, service: ServiceName = 'proxy'): string {
+  return join(rt, service === 'proxy' ? 'start.lock' : `start-${service}.lock`);
 }
 
 /** How the proxy we own was launched — only 'process' is ever auto-stopped. */
@@ -174,8 +183,8 @@ export function listClients(rt: string, opts: { prune?: boolean } = {}): ClientR
   return out;
 }
 
-export function readOwner(rt: string): OwnerRecord | null {
-  const p = ownerPath(rt);
+export function readOwner(rt: string, service: ServiceName = 'proxy'): OwnerRecord | null {
+  const p = ownerPath(rt, service);
   if (!existsSync(p)) return null;
   try {
     const rec = JSON.parse(readFileSync(p, 'utf8')) as OwnerRecord;
@@ -186,14 +195,14 @@ export function readOwner(rt: string): OwnerRecord | null {
   return null;
 }
 
-export function writeOwner(rt: string, rec: OwnerRecord): void {
+export function writeOwner(rt: string, rec: OwnerRecord, service: ServiceName = 'proxy'): void {
   mkdirSync(rt, { recursive: true, mode: DIR_MODE });
-  atomicWrite(ownerPath(rt), JSON.stringify(rec));
+  atomicWrite(ownerPath(rt, service), JSON.stringify(rec));
 }
 
-export function clearOwner(rt: string): void {
+export function clearOwner(rt: string, service: ServiceName = 'proxy'): void {
   try {
-    rmSync(ownerPath(rt), { force: true });
+    rmSync(ownerPath(rt, service), { force: true });
   } catch {
     /* best-effort */
   }
@@ -205,9 +214,13 @@ export function clearOwner(rt: string): void {
 // ---------------------------------------------------------------------------
 const LOCK_STALE_MS = 30_000;
 
-export async function acquireStartLock(rt: string, timeoutMs = 5000): Promise<boolean> {
+export async function acquireStartLock(
+  rt: string,
+  timeoutMs = 5000,
+  service: ServiceName = 'proxy'
+): Promise<boolean> {
   mkdirSync(rt, { recursive: true, mode: DIR_MODE });
-  const p = lockPath(rt);
+  const p = lockPath(rt, service);
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
@@ -230,9 +243,9 @@ export async function acquireStartLock(rt: string, timeoutMs = 5000): Promise<bo
   }
 }
 
-export function releaseStartLock(rt: string): void {
+export function releaseStartLock(rt: string, service: ServiceName = 'proxy'): void {
   try {
-    rmSync(lockPath(rt), { recursive: true, force: true });
+    rmSync(lockPath(rt, service), { recursive: true, force: true });
   } catch {
     /* best-effort */
   }
@@ -259,71 +272,181 @@ export interface LifecycleDeps {
   stopProxy: (owner: OwnerRecord) => Promise<void>;
   /** ISO timestamp (injectable for deterministic tests). */
   now: () => string;
+
+  // --- Co-located dashboard (optional). Present only when the caller wants the
+  // monitoring UI to ride along with the proxy; all three must be supplied for
+  // the dashboard to be managed at all. ---
+  /** True when the dashboard answers a health probe on `port`. */
+  probeDashHealth?: (port: number) => Promise<boolean>;
+  /** Start the dashboard server; same adopt/own contract as `startProxy`. */
+  startDashboard?: (port: number) => Promise<StartResult>;
+  /** Stop a dashboard WE own. */
+  stopDashboard?: (owner: OwnerRecord) => Promise<void>;
 }
 
 export type EnsureAction = 'reused' | 'started' | 'start-failed';
-export interface EnsureResult {
+export interface ServiceEnsureResult {
   action: EnsureAction;
   port: number;
   owner: OwnerRecord | null;
+}
+export interface EnsureResult extends ServiceEnsureResult {
   clients: number;
+  /** Present only when a dashboard was requested AND adapters were supplied. */
+  dashboard?: ServiceEnsureResult;
+}
+
+/** Ride-along dashboard request passed to `ensureProxy`. */
+export interface DashboardEnsureOptions {
+  enabled: boolean;
+  port: number;
+}
+export interface EnsureOptions {
+  dashboard?: DashboardEnsureOptions;
 }
 
 /**
- * Ensure a proxy is available for this client.
- *  - already healthy -> ADOPT (reuse); register client; claim no ownership.
- *  - not healthy -> take the start lock, re-probe, then start. Claim ownership
- *    ONLY if the adapter returns a stoppable owner (a process we spawned).
+ * Start-or-adopt one service under its own owner marker + start lock.
+ *  - already healthy -> ADOPT (reuse); claim no ownership.
+ *  - not healthy -> take the lock, re-probe, start. Claim ownership ONLY if the
+ *    adapter returns a stoppable owner (a process we spawned).
+ * Never throws: a failed start returns 'start-failed'.
+ */
+export async function ensureService(
+  rt: string,
+  service: ServiceName,
+  port: number,
+  probe: (port: number) => Promise<boolean>,
+  start: (port: number) => Promise<StartResult>
+): Promise<ServiceEnsureResult> {
+  // A throwing adapter must not escape: these run on the SessionStart hook path,
+  // where an exception would abort the whole ensure (including the OTHER
+  // service) instead of degrading to "running without it".
+  const safeProbe = async (p: number): Promise<boolean> => {
+    try {
+      return await probe(p);
+    } catch {
+      return false;
+    }
+  };
+
+  if (await safeProbe(port)) {
+    return { action: 'reused', port, owner: readOwner(rt, service) };
+  }
+
+  const locked = await acquireStartLock(rt, 5000, service);
+  try {
+    // Another session may have started it while we waited for the lock.
+    if (await safeProbe(port)) {
+      return { action: 'reused', port, owner: readOwner(rt, service) };
+    }
+    let res: StartResult;
+    try {
+      res = await start(port);
+    } catch {
+      return { action: 'start-failed', port, owner: null };
+    }
+    if (!res.healthy) return { action: 'start-failed', port, owner: null };
+    // Own ONLY a process we spawned + confirmed. systemd/adopted -> owner null.
+    if (res.owner) writeOwner(rt, res.owner, service);
+    return { action: 'started', port, owner: res.owner };
+  } finally {
+    if (locked) releaseStartLock(rt, service);
+  }
+}
+
+/**
+ * Ensure a proxy — and, when requested, the operational dashboard — is
+ * available for this client. Both follow the same start-or-adopt contract
+ * (see `ensureService`).
+ *
+ * The dashboard is deliberately ensured even when the proxy failed to start:
+ * monitoring is what the operator needs MOST when the proxy is unhealthy, and
+ * the two are separate processes with no runtime dependency between them.
+ *
+ * The two are ensured CONCURRENTLY — they take different locks and write
+ * different owner markers, and serializing them would stack two health waits
+ * (up to 15s + 10s) inside a SessionStart hook that is killed at 30s. A hook
+ * killed mid-wait leaves a spawned service with no owner marker, which nothing
+ * would ever reap.
+ *
  * Fail-open: a failed start returns 'start-failed' and never throws.
  */
 export async function ensureProxy(
   rt: string,
   client: ClientRecord,
   port: number,
-  deps: LifecycleDeps
+  deps: LifecycleDeps,
+  opts: EnsureOptions = {}
 ): Promise<EnsureResult> {
   listClients(rt); // prune dead clients first
   registerClient(rt, client);
 
-  if (await deps.probeHealth(port)) {
-    return { action: 'reused', port, owner: readOwner(rt), clients: listClients(rt).length };
-  }
+  const dash = opts.dashboard;
+  const wantDash = Boolean(dash?.enabled && deps.probeDashHealth && deps.startDashboard);
 
-  const locked = await acquireStartLock(rt);
-  try {
-    // Another session may have started it while we waited for the lock.
-    if (await deps.probeHealth(port)) {
-      return { action: 'reused', port, owner: readOwner(rt), clients: listClients(rt).length };
-    }
-    const res = await deps.startProxy(port);
-    if (!res.healthy) {
-      return { action: 'start-failed', port, owner: null, clients: listClients(rt).length };
-    }
-    // Own ONLY a process we spawned + confirmed. systemd/adopted -> owner null.
-    if (res.owner) writeOwner(rt, res.owner);
-    return { action: 'started', port, owner: res.owner, clients: listClients(rt).length };
-  } finally {
-    if (locked) releaseStartLock(rt);
-  }
+  const [proxy, dashboard] = await Promise.all([
+    ensureService(rt, 'proxy', port, deps.probeHealth, deps.startProxy),
+    wantDash
+      ? ensureService(rt, 'dash', dash!.port, deps.probeDashHealth!, deps.startDashboard!)
+      : Promise.resolve(undefined),
+  ]);
+
+  return { ...proxy, clients: listClients(rt).length, dashboard };
 }
 
 export type ReleaseAction =
   | 'stopped'
+  /** We own it and were the last client, but the stop adapter failed. The owner
+   *  marker is kept so a later release retries rather than orphaning it. */
+  | 'stop-failed'
   | 'left-other-clients'
   | 'left-adopted'
   | 'not-running';
 export interface ReleaseResult {
   action: ReleaseAction;
   remainingClients: number;
+  /** Present only when dashboard adapters were supplied. */
+  dashboard?: { action: ReleaseAction };
 }
 
 /**
- * Release this client. Stop the proxy ONLY when:
+ * Stop one service iff we own it AND this was the last client. Shared by the
+ * proxy and the ride-along dashboard so both obey identical teardown rules.
+ */
+async function releaseService(
+  rt: string,
+  service: ServiceName,
+  isLastClient: boolean,
+  stop: (owner: OwnerRecord) => Promise<void>
+): Promise<ReleaseAction> {
+  const owner = readOwner(rt, service);
+  if (!owner) return 'left-adopted';
+  if (!isLastClient) return 'left-other-clients';
+  try {
+    await stop(owner);
+  } catch {
+    // A stop that throws must not abort the caller: this client has ALREADY
+    // been deregistered, so an escaping error would leave the OTHER service
+    // permanently un-releasable (no future release can be "the last client").
+    // The owner marker is kept on purpose so a later release can retry the kill.
+    return 'stop-failed';
+  }
+  clearOwner(rt, service);
+  return 'stopped';
+}
+
+/**
+ * Release this client. Stop a service ONLY when:
  *   - we own it (a process WE spawned — owner marker present), AND
  *   - no other client remains after removing this one.
  * Otherwise leave it running:
  *   - 'left-other-clients' — another agent session is still using it.
  *   - 'left-adopted'       — we never owned it (pre-existing / systemd / external).
+ *
+ * The dashboard is evaluated independently of the proxy: we may own the
+ * dashboard while the proxy is systemd-managed (or vice versa), and each is
+ * torn down strictly on its own ownership.
  */
 export async function releaseProxy(
   rt: string,
@@ -332,21 +455,18 @@ export async function releaseProxy(
 ): Promise<ReleaseResult> {
   deregisterClient(rt, clientId);
   const remaining = listClients(rt); // prunes dead clients too
-  const owner = readOwner(rt);
+  const isLast = remaining.length === 0;
 
-  if (!owner) {
-    return { action: 'left-adopted', remainingClients: remaining.length };
-  }
-  if (remaining.length > 0) {
-    return { action: 'left-other-clients', remainingClients: remaining.length };
-  }
-  // We own it and we are the last client — shut it down with the agent.
-  try {
-    await deps.stopProxy(owner);
-  } finally {
-    clearOwner(rt);
-  }
-  return { action: 'stopped', remainingClients: 0 };
+  // Proxy FIRST: it is the service the session actually depends on, and
+  // releaseService swallows adapter failures so neither can block the other.
+  const action = await releaseService(rt, 'proxy', isLast, deps.stopProxy);
+
+  const stopDash = deps.stopDashboard;
+  const dashboard = stopDash
+    ? { action: await releaseService(rt, 'dash', isLast, stopDash) }
+    : undefined;
+
+  return { action, remainingClients: remaining.length, dashboard };
 }
 
 /**

@@ -125,13 +125,24 @@ truth (`protectedWritePathReason`, `applier.ts:164`):
    the LAN — bind `127.0.0.1` or add a shared-secret header for real LAN protection.
    Recommended code fix: remove the `or ANTHROPIC_API_KEY` passthrough fallback
    (`anthropic_proxy.py:9214`).
-3. **The dashboard (:3847) mutation routes were unauthenticated — FIXED (v1.127.0).**
+3. **The dashboard (:3847) mutation routes were unauthenticated — FIXED (v1.127.0),
+   token-exfiltration hole closed when the dashboard became always-on.**
    `POST /api/policy/:id/{toggle,stage,level}` disable+persist security controls and had
    no auth + `Access-Control-Allow-Origin: *` — a single request (LAN, or cross-site via
-   CORS `*`) disabled enforcement, undoing Finding 1's fix. **Fixed:** mutations now
-   require an unguessable per-session token (`X-Uap-Dashboard-Token`, printed to the
-   operator console; same-origin UI gets it via server-side injection). Read routes stay
-   open. Default bind remains `localhost`.
+   CORS `*`) disabled enforcement, undoing Finding 1's fix. **Fixed (v1.127.0):**
+   mutations require an unguessable per-session token (`X-Uap-Dashboard-Token`;
+   same-origin UI gets it via server-side injection). Read routes stay open. Default
+   bind remains `localhost`.
+   **Follow-up:** the v1.127.0 note claimed CORS blocked a cross-origin read of the
+   token-bearing page. It did not — the wildcard `Access-Control-Allow-Origin` was set
+   on *every* response before routing, so any page the operator visited could read `/`,
+   scrape the token, and drive every mutation route (including `POST
+   /api/deliver/launch`). Now that the dashboard rides along with `uap proxy` and is up
+   for the whole session, that was closed: the token-bearing page (`/`, `/index.html`)
+   is served **without** CORS headers, WebSocket upgrades require a same-origin `Origin`
+   (WS is exempt from SOP/CORS and was leaking full snapshots), and a ride-along
+   dashboard does not echo the token into its log file. `GET /health` is intentionally
+   unauthenticated and returns only `{ok, service, port, root}`.
 4. **Hook enforcement does not survive `--dangerously-skip-permissions`.** Known and
    documented (CHANGELOG v1.63.0): exit-2 denials are ignored in that mode. The bwrap
    sandbox is the designed compensating control — the workdir boundary is only real
