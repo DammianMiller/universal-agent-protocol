@@ -65,7 +65,7 @@ it and calls `_strip_sandbox_unreachable_tools` (`anthropic_proxy.py:4393`), rem
 tool whose name starts with a prefix in `PROXY_SANDBOX_UNREACHABLE_PREFIXES` (default
 `mcp__claude-in-chrome__`). The model never sees the unreachable browser tools and falls
 back to `WebFetch` / local reads instead. (This is the "strip unreachable browser MCP tools
-from sandboxed sessions" change from v1.63.0.)
+from sandboxed sessions" behavior.)
 
 ## Escape hatches (operator-only)
 

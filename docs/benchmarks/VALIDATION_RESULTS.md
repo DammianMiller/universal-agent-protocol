@@ -1,7 +1,5 @@
 # UAP Benchmark Validation Results
 
-> Generated: 2026-03-13 19:40:02
-> UAP Version: 4.6.0
 > Methodology: Terminal-Bench 2.0 representative tasks (12 tasks across 8 categories)
 
 ## Overview

@@ -1,6 +1,6 @@
 # Memory System
 
-> UAP v1.93.1
+> UAP v1.163
 
 > **🏭 Where this fits:** INTAKE + FEEDBACK — the front and back doors of the [delivery pipeline](./DELIVERY_PIPELINE.md). At intake, a fresh agent forgets everything the last session learned and re-hallucinates scope; at feedback, nobody records the lesson, so the same mistake ships again next week. **What it delivers:** a persistent, searchable memory that hands each new agent the relevant past learnings on the way in, and captures durable lessons on the way out — so your team of agents gets smarter every run instead of starting from zero.
 
@@ -199,7 +199,7 @@ uap memory correct <search> [options]
 ```bash
 uap memory correct "uses pgvector" \
   --correction "uses Qdrant for semantic recall" \
-  --reason "migrated in v1.26"
+  --reason "superseded by newer approach"
 ```
 
 ### Maintain
