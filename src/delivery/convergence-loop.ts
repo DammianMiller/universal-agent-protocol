@@ -1061,6 +1061,10 @@ export class ConvergenceLoop {
     let finalOutput = '';
     let finalFeedback = '';
     let prevContext: Omit<PromptContext, 'instruction' | 'turn'> = { practices, protectedFiles: protectedList };
+    // GEPA reflect (S6): the live instruction fed to the PromptBuilder. A reflect
+    // directive (IterationDirective.mutateInstruction) rewrites the APPROACH here
+    // for the next turn, distinct from switchExecutor which swaps the MODEL.
+    let activeInstruction = instruction;
 
     // Resume: restore prior history/context/counters and continue where the
     // interrupted run left off, with a fresh `maxTurns` budget on top.
@@ -1139,7 +1143,7 @@ export class ConvergenceLoop {
       }
 
       const prompt = this.promptBuilder({
-        instruction,
+        instruction: activeInstruction,
         turn,
         ...prevContext,
         guidance,
@@ -1241,6 +1245,11 @@ export class ConvergenceLoop {
       if (directive.switchExecutor) {
         executor = directive.switchExecutor;
         modelEscalated = true;
+      }
+      // GEPA reflect (S6): a reflect directive rewrites the APPROACH for the next
+      // turn's prompt (distinct from switchExecutor, which swaps the model).
+      if (directive.mutateInstruction && directive.mutateInstruction.trim() !== '') {
+        activeInstruction = directive.mutateInstruction;
       }
       if (typeof directive.setCandidates === 'number') {
         explorerSettings = { ...(explorerSettings ?? {}), candidates: directive.setCandidates };
