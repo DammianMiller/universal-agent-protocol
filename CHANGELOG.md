@@ -5,6 +5,11 @@
 - feat(proxy): run the operational dashboard as part of the uap proxy
 
 
+## v1.163.13 (2026-07-23)
+
+- fix(visual-gate): dismiss intro overlays so the judge grades the app, not the veil
+
+
 ## v1.163.12 (2026-07-23)
 
 - fix(test): D10 accepts the canonical agents/docker-compose.yml (qdrant + TEI)

@@ -14,6 +14,7 @@ import {
   discoverEntryPages,
   visualRuntimeNote,
   driveStartInteraction,
+  START_POINTER,
   type VisualBrowserDriver,
 } from '../../src/delivery/visual-gate.js';
 
@@ -516,5 +517,48 @@ describe('start interaction clicks real DOM start CONTROLS (2026-07-22)', () => 
     await driveStartInteraction(browser, { timeoutMs: 500, settleMs: 1 });
     const pointer = scripts.find((s) => isPointerInteraction(s)) ?? '';
     expect(pointer).not.toMatch(/querySelectorAll\([^)]*\ba\b[^)]*\)/);
+  });
+});
+
+describe('START_POINTER dismisses intro overlays so the judge grades the app, not the veil (2026-07-23)', () => {
+  /** Extract and compile the ACTUAL start-text regex the gate ships, so the
+   *  test exercises the real pattern rather than a copy. */
+  function shippedStartRe(): RegExp {
+    const m = START_POINTER.match(/var startRe = \/(.+?)\/i;/);
+    if (!m) throw new Error('startRe not found in START_POINTER');
+    // In the TS template string a literal `\b` is written `\\b`; unescape it.
+    return new RegExp(m[1].replace(/\\\\/g, '\\'), 'i');
+  }
+
+  it('matches intro prompts ANYWHERE — the anchored ^start… missed "CLICK TO START"', () => {
+    const re = shippedStartRe();
+    expect(re.test('CLICK TO START')).toBe(true); // the exact octopus prompt
+    expect(re.test('Press to play')).toBe(true);
+    expect(re.test('Tap to begin')).toBe(true);
+    expect(re.test('PRESS TO CONTINUE')).toBe(true);
+    expect(re.test('Play')).toBe(true);
+  });
+
+  it('does NOT fire on "restart" or unrelated copy (word boundaries guard false hits)', () => {
+    const re = shippedStartRe();
+    expect(re.test('please restart later')).toBe(false);
+    expect(re.test('Displaying results')).toBe(false);
+    expect(re.test('Loading…')).toBe(false);
+  });
+
+  it('detects a full-screen clickable overlay by geometry + cursor (text not required)', () => {
+    // The octopus veil: a dark full-screen #start-screen whose "CLICK TO START"
+    // prompt lives in a CHILD, so the veil element itself has no start text —
+    // it is identified by covering the viewport AND inviting a click.
+    expect(START_POINTER).toMatch(/cursor !== 'pointer'/); // must invite a click
+    expect(START_POINTER).toMatch(/vw \* 0\.6/); // covers >= 60% width
+    expect(START_POINTER).toMatch(/vh \* 0\.6/); // covers >= 60% height
+    // and the overlay is actually clicked (isOverlay path skips the text check)
+    expect(START_POINTER).toMatch(/overlays\.forEach\(function \(el\) \{ clickEl\(el, true\); \}\)/);
+  });
+
+  it('still never targets anchors, and excludes the canvas/body/html from overlays', () => {
+    expect(START_POINTER).not.toMatch(/querySelectorAll\([^)]*\ba\b[^)]*\)/);
+    expect(START_POINTER).toMatch(/tagName === 'CANVAS' \|\| el\.tagName === 'BODY' \|\| el\.tagName === 'HTML'/);
   });
 });

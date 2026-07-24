@@ -233,7 +233,7 @@ const PIXEL_PROBE = `(function () {
 // this avoids the failure mode where a game starts on click and then treats the
 // following synthetic `Space` as PAUSE (or a second shot), landing on a
 // paused/near-blank frame and re-introducing a false floor failure.
-const START_POINTER = `(function () {
+export const START_POINTER = `(function () {
   try {
     var cx = Math.floor((window.innerWidth || 800) / 2);
     var cy = Math.floor((window.innerHeight || 600) / 2);
@@ -251,14 +251,23 @@ const START_POINTER = `(function () {
     // title screen forever — the gate then judges the MENU and reports 0% motion
     // (octopus_invaders_v3, 2026-07-22: "OCTOPUS INVADERS" + an unstyled Start
     // button, aesthetic 2/10, because gameplay was never reached).
-    // Deliberately narrow: real buttons, or elements whose own text says
-    // start/play/begin. Anchors are EXCLUDED — clicking one can navigate away
-    // and destroy the very page we are about to sample.
-    var startRe = /^\\s*(start|play|begin|new game|start game|play game)\\b/i;
+    // Deliberately narrow: real buttons, elements whose own text reads like an
+    // intro prompt, or a full-screen clickable overlay. Anchors are EXCLUDED —
+    // clicking one can navigate away and destroy the very page we are sampling.
+    //
+    // The text match is UNANCHORED (word-boundary): the anchored ^start… form
+    // missed "CLICK TO START" / "Press to play" / "Tap to begin", so the gate
+    // graded the dimmed MENU behind the overlay and the vision judge reported
+    // false off-palette/greyscale complaints about a scene that only looked dim
+    // because a dark start veil was still composited over it (octopus, 2026-07-23:
+    // colours were exact #ffffff/#44aaff on the canvas, but rgba(0,0,0,0.82) menu
+    // veil made the judge see grey — score jumped 4.0->9.0 once the gate got past it).
+    var startRe = /\\b(start|play|begin|continue)\\b/i;
     var cands = Array.prototype.slice.call(
       document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]')
     );
-    Array.prototype.forEach.call(document.querySelectorAll('div, span, p, h1, h2, h3'), function (el) {
+    var overlays = [];
+    Array.prototype.forEach.call(document.querySelectorAll('div, span, p, h1, h2, h3, section'), function (el) {
       try {
         // Own text only (no descendants) so a whole container isn't matched.
         var own = '';
@@ -268,16 +277,36 @@ const START_POINTER = `(function () {
         if (startRe.test(own)) cands.push(el);
       } catch (e) {}
     });
+    // Full-screen clickable overlay: an element that covers most of the viewport
+    // and invites a click (cursor:pointer) is almost always an intro/start gate
+    // sitting ON TOP of the app. Clicking it dismisses the veil so the judge
+    // grades the real content. Text is NOT required (a bare "CLICK TO START"
+    // screen may keep its prompt in a child element).
+    var vw = window.innerWidth || 800, vh = window.innerHeight || 600;
+    Array.prototype.forEach.call(document.querySelectorAll('div, section, [id], [class]'), function (el) {
+      try {
+        if (el.tagName === 'CANVAS' || el.tagName === 'BODY' || el.tagName === 'HTML') return;
+        var cs = window.getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.pointerEvents === 'none') return;
+        if (cs.cursor !== 'pointer') return; // must invite a click
+        var r = el.getBoundingClientRect();
+        if (!r) return;
+        // covers >= 60% of the viewport in each axis (a true full-screen veil)
+        if (r.width >= vw * 0.6 && r.height >= vh * 0.6) overlays.push(el);
+      } catch (e) {}
+    });
     var clicked = 0;
-    cands.forEach(function (el) {
+    var clickEl = function (el, isOverlay) {
       try {
         var r = el.getBoundingClientRect();
         if (!r || r.width <= 0 || r.height <= 0) return; // not visible
-        var label = (el.value || el.textContent || '').slice(0, 40);
-        // A bare <button> with no text is still a plausible start control; a
-        // TEXT element must actually say start/play/begin.
-        var isButton = /^(button|input)$/i.test(el.tagName) || el.getAttribute('role') === 'button';
-        if (!isButton && !startRe.test(label)) return;
+        if (!isOverlay) {
+          var label = (el.value || el.textContent || '').slice(0, 40);
+          // A bare <button> with no text is still a plausible start control; a
+          // TEXT element must read like an intro prompt.
+          var isButton = /^(button|input)$/i.test(el.tagName) || el.getAttribute('role') === 'button';
+          if (!isButton && !startRe.test(label)) return;
+        }
         var o = {
           bubbles: true, cancelable: true, view: window,
           clientX: Math.floor(r.left + r.width / 2), clientY: Math.floor(r.top + r.height / 2),
@@ -289,7 +318,9 @@ const START_POINTER = `(function () {
         try { if (typeof el.click === 'function') el.click(); } catch (e) {}
         clicked++;
       } catch (e) {}
-    });
+    };
+    cands.forEach(function (el) { clickEl(el, false); });
+    overlays.forEach(function (el) { clickEl(el, true); });
     return 'ok:' + clicked;
   } catch (e) { return 'err:' + (e && e.message); }
 })`;

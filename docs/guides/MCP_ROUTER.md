@@ -1,6 +1,6 @@
 # MCP Router
 
-> UAP v1.93.1
+> UAP v1.163
 
 > **🏭 Where this fits:** CROSS-CUTTING — keeping the context window lean at every station of the [delivery pipeline](./DELIVERY_PIPELINE.md). In a normal agentic workflow every tool call dumps its full result into context, so mostly-irrelevant output crowds out the details your agent actually needs. **What it delivers:** a proxy that compresses tool output before it reaches the model — up to 98% fewer tokens on large results — so the agent keeps room for real work and you spend less per session.
 

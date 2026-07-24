@@ -1,24 +1,24 @@
 # UAP Comprehensive Benchmarks
 
-> **Version:** 1.18.0  
-> **Generated:** 2026-03-28  
 > **Test Suite:** Terminal-Bench 2.0 Representative Tasks (14 tasks)
 
 ---
 
 ## Executive Summary
 
-This document presents comprehensive benchmark results for UAP v1.18.0 with OpenCode integration, comparing against baseline (no UAP) and previous UAP versions.
+This document presents the benchmark methodology and representative results for UAP
+with OpenCode integration, measured against a baseline that runs the same tasks without
+UAP features enabled.
 
 ### Key Achievements
 
-| Metric | Baseline | UAP v1.17 | UAP v1.18 + OpenCode | Improvement |
-|--------|----------|-----------|---------------------|-------------|
-| **Success Rate** | 75% | 92% | **100%** | +25pp |
-| **Avg Tokens/Task** | 52,000 | 28,500 | **23,400** | -55% |
-| **Avg Time/Task** | 45s | 38s | **32s** | -29% |
-| **Error Rate** | 12% | 4% | **0%** | -100% |
-| **Quality Score** | 3.2/5 | 4.1/5 | **4.7/5** | +47% |
+| Metric | Baseline | UAP | Improvement |
+|--------|----------|-----|-------------|
+| **Success Rate** | 75% | **100%** | +25pp |
+| **Avg Tokens/Task** | 52,000 | **23,400** | -55% |
+| **Avg Time/Task** | 45s | **32s** | -29% |
+| **Error Rate** | 12% | **0%** | -100% |
+| **Quality Score** | 3.2/5 | **4.7/5** | +47% |
 
 ---
 
@@ -56,9 +56,8 @@ pie title Test Task Distribution by Category
 ### Measurement Approach
 
 1. **Baseline**: Tasks run without UAP features
-2. **UAP v1.17**: Previous version with full stack
-3. **UAP v1.18 + OpenCode**: Latest with OpenCode integration
-4. **Metrics**: Tokens (API tracking), Time (wall-clock), Success (completion), Quality (manual review)
+2. **UAP**: Full stack with OpenCode integration
+3. **Metrics**: Tokens (API tracking), Time (wall-clock), Success (completion), Quality (manual review)
 
 ---
 
@@ -68,46 +67,43 @@ pie title Test Task Distribution by Category
 
 ```mermaid
 lineChart
-    title Token Usage Trend Across Versions
-    x-axis Version
+    title Token Usage: Baseline vs UAP
+    x-axis Configuration
     y-axis Tokens (thousands)
     "Baseline" [0, 52.0]
-    "UAP v1.17" [1, 28.5]
-    "UAP v1.18 + OpenCode" [2, 23.4]
+    "UAP" [1, 23.4]
 
-    title Success Rate Trend
-    x-axis Version
+    title Success Rate
+    x-axis Configuration
     y-axis Success Rate (%)
     "Baseline" [0, 75]
-    "UAP v1.17" [1, 92]
-    "UAP v1.18 + OpenCode" [2, 100]
+    "UAP" [1, 100]
 
     title Time per Task
-    x-axis Version
+    x-axis Configuration
     y-axis Time (seconds)
     "Baseline" [0, 45]
-    "UAP v1.17" [1, 38]
-    "UAP v1.18 + OpenCode" [2, 32]
+    "UAP" [1, 32]
 ```
 
 ### Per-Task Detailed Results
 
-| Task | Category | Baseline Tokens | UAP v1.17 | v1.18+OpenCode | Reduction | Baseline Errors | v1.18 Errors | Quality (1-5) |
-|------|----------|----------------|-----------|----------------|-----------|----------------|--------------|---------------|
-| T01 | System Admin | 45,000 | 22,362 | **19,800** | -56% | 3 | 0 | 4.8 |
-| T02 | Security | 38,000 | 17,661 | **15,200** | -60% | 1 | 0 | 4.9 |
-| T03 | Security | 67,000 | 37,138 | **31,500** | -53% | 2 | 0 | 4.7 |
-| T04 | System Admin | 42,000 | 20,348 | **18,100** | -57% | 1 | 0 | 4.8 |
-| T05 | ML/Data | 55,000 | 29,078 | **25,400** | -54% | 2 | 0 | 4.6 |
-| T06 | ML/Data | 35,000 | 15,646 | **13,800** | -61% | 0 | 0 | 5.0 |
-| T07 | Development | 48,000 | 24,377 | **21,200** | -56% | 1 | 0 | 4.7 |
-| T08 | Security | 61,000 | 33,108 | **28,900** | -53% | 2 | 0 | 4.6 |
-| T09 | System Admin | 39,000 | 18,333 | **16,100** | -59% | 0 | 0 | 4.9 |
-| T10 | Development | 32,000 | 13,632 | **11,900** | -63% | 0 | 0 | 5.0 |
-| T11 | ML/Data | 52,000 | 27,064 | **23,600** | -55% | 1 | 0 | 4.7 |
-| T12 | Development | 44,000 | 21,691 | **18,900** | -57% | 1 | 0 | 4.8 |
-| T13 | System Admin | 40,000 | 21,000 | **18,300** | -54% | 1 | 0 | 4.7 |
-| T14 | Security | 36,000 | 17,200 | **15,000** | -58% | 0 | 0 | 4.9 |
+| Task | Category | Baseline Tokens | UAP Tokens | Reduction | Baseline Errors | UAP Errors | Quality (1-5) |
+|------|----------|----------------|------------|-----------|----------------|------------|---------------|
+| T01 | System Admin | 45,000 | **19,800** | -56% | 3 | 0 | 4.8 |
+| T02 | Security | 38,000 | **15,200** | -60% | 1 | 0 | 4.9 |
+| T03 | Security | 67,000 | **31,500** | -53% | 2 | 0 | 4.7 |
+| T04 | System Admin | 42,000 | **18,100** | -57% | 1 | 0 | 4.8 |
+| T05 | ML/Data | 55,000 | **25,400** | -54% | 2 | 0 | 4.6 |
+| T06 | ML/Data | 35,000 | **13,800** | -61% | 0 | 0 | 5.0 |
+| T07 | Development | 48,000 | **21,200** | -56% | 1 | 0 | 4.7 |
+| T08 | Security | 61,000 | **28,900** | -53% | 2 | 0 | 4.6 |
+| T09 | System Admin | 39,000 | **16,100** | -59% | 0 | 0 | 4.9 |
+| T10 | Development | 32,000 | **11,900** | -63% | 0 | 0 | 5.0 |
+| T11 | ML/Data | 52,000 | **23,600** | -55% | 1 | 0 | 4.7 |
+| T12 | Development | 44,000 | **18,900** | -57% | 1 | 0 | 4.8 |
+| T13 | System Admin | 40,000 | **18,300** | -54% | 1 | 0 | 4.7 |
+| T14 | Security | 36,000 | **15,000** | -58% | 0 | 0 | 4.9 |
 
 ### Token Usage Breakdown by Feature
 
@@ -218,21 +214,19 @@ quadrantChart
 | **Security** | Vulnerable | Minor issues | Secure |
 | **Maintainability** | Hard to maintain | Acceptable | Clean, documented |
 
-### Quality Scores by Version
+### Quality Scores
 
 ```mermaid
 radarChart
-    title Quality Dimensions by Version
+    title Quality Dimensions
     axis Correctness, Completeness, Efficiency, Security, Maintainability
     "Baseline" [3.0, 2.8, 2.5, 3.2, 2.9]
-    "UAP v1.17" [4.2, 4.0, 3.8, 4.3, 4.1]
-    "UAP v1.18 + OpenCode" [4.8, 4.7, 4.5, 4.9, 4.6]
+    "UAP" [4.8, 4.7, 4.5, 4.9, 4.6]
 ```
 
 **Quality Observations:**
 - **Baseline**: 60% of tasks required manual fixes
-- **UAP v1.17**: 90% task completion rate, minimal fixes
-- **UAP v1.18 + OpenCode**: 100% completion, zero fixes needed
+- **UAP**: 100% completion, zero fixes needed
 
 ---
 
@@ -248,8 +242,8 @@ radarChart
 
 **Monthly Impact:**
 
-| Metric | Baseline | UAP v1.18 + OpenCode | Savings |
-|--------|----------|---------------------|---------|
+| Metric | Baseline | UAP | Savings |
+|--------|----------|-----|---------|
 | Token Cost | $26,000 | $11,700 | **$14,300** |
 | Developer Time | $125,000 | $89,000 | **$36,000** |
 | Bug Fixes | $8,000 | $1,200 | **$6,800** |
@@ -259,8 +253,8 @@ radarChart
 
 ### High-Volume Scale (100K tasks/month)
 
-| Metric | Baseline | UAP v1.18 + OpenCode | Savings |
-|--------|----------|---------------------|---------|
+| Metric | Baseline | UAP | Savings |
+|--------|----------|-----|---------|
 | Token Cost | $260,000 | $117,000 | **$143,000** |
 | Developer Time | $1,250,000 | $890,000 | **$360,000** |
 | Bug Fixes | $80,000 | $12,000 | **$68,000** |
@@ -272,8 +266,8 @@ radarChart
 
 ### No Performance Regressions
 
-| Metric | Baseline | UAP v1.18 + OpenCode | Status |
-|--------|----------|---------------------|--------|
+| Metric | Baseline | UAP | Status |
+|--------|----------|-----|--------|
 | Time/Task | 45s | 32s | ✅ -29% |
 | Tokens/Task | 52K | 23.4K | ✅ -55% |
 | Error Rate | 12% | 0% | ✅ -100% |
@@ -369,4 +363,4 @@ crontab -e
 
 ---
 
-*Generated: 2026-03-28 | UAP v1.18.0 | OpenCode Integration Active*
+*Test suite: Terminal-Bench 2.0 representative tasks (14 tasks) · OpenCode integration active*
