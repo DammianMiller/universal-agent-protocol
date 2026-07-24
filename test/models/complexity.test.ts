@@ -67,6 +67,24 @@ describe('classifyComplexity', () => {
   });
 });
 
+describe('high-complexity engineering keywords (Q2 fold from router)', () => {
+  it('routes architecture/refactor/distributed work to high', () => {
+    for (const t of [
+      'design new microservice architecture',
+      'refactor the rendering pipeline',
+      'build a distributed consensus algorithm',
+      'optimize performance of the scheduler',
+    ]) {
+      expect(classifyComplexity({ instruction: t }).tier).toBe('high');
+    }
+  });
+
+  it('security still outranks high (critical wins)', () => {
+    // "refactor the auth architecture" hits both HIGH_KW and CRITICAL_KW → critical
+    expect(classifyComplexity({ instruction: 'refactor the auth architecture' }).tier).toBe('critical');
+  });
+});
+
 describe('tierToRouting', () => {
   it('folds trivial into low and passes the rest through', () => {
     expect(tierToRouting('trivial')).toBe('low');

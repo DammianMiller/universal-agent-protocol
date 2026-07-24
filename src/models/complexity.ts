@@ -35,6 +35,12 @@ export interface ComplexitySignal {
 const CRITICAL_KW =
   /(\bsecurity\b|\bauth\b|authenticat\w*|authoriz\w*|\bauthn\b|\bauthz\b|\boauth\b|\bcredential\w*|\bsecret\w*|\bpassword\w*|\bjwt\b|\bcsrf\b|\bxss\b|\binjection\b|\bsanitiz\w*|\bprivileg\w*|\bpermission\w*|\brbac\b|\bvulnerabilit\w*|\bcve\b|\bexploit\w*|\bencrypt\w*|\bdecrypt\w*|\bpayment\w*|\bcertificate\w*|\btls\b|\bssl\b|\bcors\b|\bssrf\b|\bdeserializ\w*|\bgdpr\b|\bhipaa\b|\bpci\b|breaking\s+change)/i;
 
+// High-complexity engineering signals (folded in from router.ts COMPLEXITY_KEYWORDS
+// so the unified classifier preserves the router's `high` intent — Q2). These are
+// architecture/systems-level terms, not security (which is `critical` above).
+const HIGH_KW =
+  /(architect\w*|refactor\w*|\bdistributed\b|concurren\w*|microservice\w*|algorithm\w*|optimiz\w*|\bperformance\b|scalab\w*|multi-?step|redesign\w*|\bconsensus\b)/i;
+
 // Trivial keywords + short + single-file → the near-zero-overhead floor.
 const TRIVIAL_KW =
   /\b(typo|rename|comment|whitespace|lint|formatting|format|bump\s+version|one[-\s]?liner|doc\s*typo)\b/i;
@@ -72,6 +78,11 @@ export function classifyComplexity(input: {
   if (TRIVIAL_KW.test(text) && text.length < 200 && files <= 1) {
     reasons.push('trivial keyword, short, ≤1 file');
     return { tier: 'trivial', score: SCORE.trivial, reasons, source: 'heuristic' };
+  }
+
+  if (HIGH_KW.test(text)) {
+    reasons.push('high-complexity keyword');
+    return { tier: 'high', score: SCORE.high, reasons, source: 'heuristic' };
   }
 
   const q = measureQueryComplexity(text, { moderate: 1, complex: 2 });
