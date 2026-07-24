@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.170.1 (2026-07-24)
+
+- fix(proxy): accept x-api-key as a shared-secret token source
+
+
 ## v1.170.0 (2026-07-24)
 
 - fix(deliver): surface the real gate, bound the ladder cost, cap the contract
