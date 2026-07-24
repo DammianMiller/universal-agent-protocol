@@ -178,6 +178,128 @@ export function parseManifestFromModel(text: string): UserPathsManifest | null {
   return null;
 }
 
+/** Selectors that trivially always exist — never listed as a build requirement. */
+const SHELL_CONTRACT_SELECTORS = new Set(['body', 'html', ':root', '*']);
+
+/** A string the headless client can address as a CSS selector (id/class/attr/tag). */
+function isAddressableSelector(s: unknown): boolean {
+  if (typeof s !== 'string') return false;
+  const t = s.trim();
+  if (!t) return false;
+  return /^[#.[]/.test(t) || /^[a-zA-Z][\w-]*$/.test(t);
+}
+
+function collectContractSelector(sel: string | undefined, sink: Set<string>): void {
+  if (isAddressableSelector(sel)) sink.add((sel as string).trim());
+}
+
+/**
+ * A step's `click`/target may be a bare selector string OR an object with a
+ * `selector` (e.g. canvas coordinate clicks: {selector,x,y}). The declared type
+ * says string, but the runner and real manifests use both — extract robustly.
+ */
+function selectorOf(v: unknown): string | undefined {
+  if (typeof v === 'string') return v;
+  if (v && typeof v === 'object') {
+    const sel = (v as { selector?: unknown }).selector;
+    if (typeof sel === 'string') return sel;
+  }
+  return undefined;
+}
+
+/** One human-readable line per step; '' for steps not worth stating (pure waits). */
+function describeContractStep(step: UserPathStep, sink: Set<string>): string {
+  if (step.goto !== undefined) return `load ${step.goto || '/'}`;
+  if (step.click !== undefined) {
+    const sel = selectorOf(step.click);
+    collectContractSelector(sel, sink);
+    const c = step.click as unknown;
+    const coord =
+      c && typeof c === 'object'
+        ? ` at (${String((c as { x?: unknown }).x ?? '?')},${String((c as { y?: unknown }).y ?? '?')})`
+        : '';
+    return `click ${sel ?? String(step.click)}${coord}`;
+  }
+  if (step.fill) {
+    collectContractSelector(step.fill.selector, sink);
+    return `type "${step.fill.value}" into ${step.fill.selector}`;
+  }
+  if (step.press) return `press ${step.press}`;
+  if (step.expect_visible !== undefined) {
+    collectContractSelector(step.expect_visible, sink);
+    return `${step.expect_visible} must be visible`;
+  }
+  if (step.expect_text) {
+    collectContractSelector(step.expect_text.selector, sink);
+    const c = step.expect_text.contains;
+    return `${step.expect_text.selector} must ${c ? `contain "${c}"` : 'have text'}`;
+  }
+  if (step.expect_no_console_errors) return 'no console errors';
+  if (step.request) return `${step.request.method} ${step.request.path}`;
+  if (step.expect_status !== undefined) return `response status ${step.expect_status}`;
+  if (step.expect_json_contains) return `response JSON contains ${JSON.stringify(step.expect_json_contains)}`;
+  if (step.expect_body_matches) return `response body matches /${step.expect_body_matches}/`;
+  if (step.run) return `run ${step.run.argv.join(' ')}`;
+  if (step.expect_exit !== undefined) return `exit code ${step.expect_exit}`;
+  if (step.expect_stdout_matches) return `stdout matches /${step.expect_stdout_matches}/`;
+  if (step.expect_stderr_matches) return `stderr matches /${step.expect_stderr_matches}/`;
+  return '';
+}
+
+/**
+ * Render the derived user-path manifest as an ACCEPTANCE CONTRACT for the
+ * implementer — the concrete journeys + selectors the real-client validator
+ * will drive. Injected into the executor's prompt every turn (convergence-loop
+ * PromptContext.acceptanceContract) so the model builds a COMPLETE, drivable
+ * artifact from turn 1 instead of discovering the contract only through gate
+ * failures a weak model cannot act on. Generic across web/http/cli missions.
+ *
+ * The canvas→DOM bridge line is the completeness rail this exists for: an
+ * automated client can only see/click DOM nodes, so a canvas-only UI (a common
+ * small-model output for games/visualizations) must ALSO expose the referenced
+ * selectors as real DOM elements. A transparent overlay preserves the visual
+ * composite the aesthetic judge grades. Returns '' when there is nothing to
+ * assert (no manifest / no steps) so callers can inject unconditionally.
+ */
+export function renderAcceptanceContract(manifest: UserPathsManifest | null | undefined): string {
+  if (!manifest || !Array.isArray(manifest.paths) || manifest.paths.length === 0) return '';
+  const selectors = new Set<string>();
+  const journeyLines: string[] = [];
+  let hasBrowser = false;
+  for (const path of manifest.paths) {
+    if (!path || !Array.isArray(path.steps) || path.steps.length === 0) continue;
+    if (path.client === 'browser') hasBrowser = true;
+    const rule = (path.rule ?? path.id ?? '').trim();
+    journeyLines.push(`- Journey "${path.id}" (${path.client})${rule ? `: ${rule}` : ''}`);
+    for (const step of path.steps) {
+      const desc = describeContractStep(step, selectors);
+      if (desc) journeyLines.push(`    • ${desc}`);
+    }
+  }
+  if (journeyLines.length === 0) return '';
+  const out: string[] = [
+    'ACCEPTANCE CONTRACT — the delivered artifact is exercised by an automated real-client',
+    'validator (headless browser / HTTP client / built CLI) on the journeys below. Build so',
+    'EVERY step passes; a step the validator cannot perform fails delivery.',
+    '',
+    ...journeyLines,
+  ];
+  const required = [...selectors].filter((s) => !SHELL_CONTRACT_SELECTORS.has(s.toLowerCase()));
+  if (hasBrowser && required.length > 0) {
+    out.push('');
+    out.push(
+      `REQUIRED DOM SELECTORS (each MUST exist in the rendered page and be visible/clickable as used above): ${required.join(', ')}.`
+    );
+    out.push(
+      'If your UI draws controls or text on a <canvas>, ALSO expose these selectors as real DOM ' +
+        'elements layered over the canvas (position:absolute/fixed; background:transparent so the canvas ' +
+        'shows through and the visuals are not dimmed). An automated client cannot see or click ' +
+        'canvas-drawn pixels — a canvas-only build cannot be validated and will fail this gate.'
+    );
+  }
+  return out.join('\n');
+}
+
 export type ModelExecutor = (prompt: string) => Promise<string>;
 
 const DERIVE_PROMPT = `You are deriving USER-VALIDATION paths for a delivered software artifact.

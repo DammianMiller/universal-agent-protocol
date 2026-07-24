@@ -68,6 +68,15 @@ export interface PromptContext {
   guidance?: string;
   /** Include the autonomy policy in the prompt (default true; false opts out). */
   autonomous?: boolean;
+  /**
+   * Acceptance contract derived up front from the user-path manifest — the
+   * concrete journeys + DOM selectors the real-client validator will drive.
+   * Injected every turn so the model builds a COMPLETE, drivable artifact from
+   * turn 1 rather than discovering the contract only via gate failures. Carried
+   * forward like `practices` (not per-turn transient). See
+   * user-paths.renderAcceptanceContract.
+   */
+  acceptanceContract?: string;
 }
 
 export type PromptBuilder = (context: PromptContext) => string;
@@ -329,6 +338,13 @@ export interface ConvergenceConfig {
    */
   autonomous?: boolean;
   /**
+   * Acceptance contract (user-path journeys + required selectors), derived up
+   * front by the CLI from the manifest and injected into every executor prompt
+   * so the model builds a complete, validator-drivable artifact. Optional and
+   * carried forward unchanged each turn.
+   */
+  acceptanceContract?: string;
+  /**
    * Persist until delivered (full autonomy): keep iterating past `maxTurns`
    * until every required gate passes, the `maxTurnsCeiling` is reached, or
    * progress stalls (no score improvement for several consecutive turns).
@@ -495,13 +511,24 @@ function practiceSection(practices?: string[]): string[] {
   return lines;
 }
 
+/**
+ * Render the acceptance contract (the up-front user-path journeys + required
+ * selectors) as a high-priority prompt section. Placed next to the TASK so the
+ * model treats the validator's journeys as build requirements — the generic
+ * completeness rail that closes the author→implement loop.
+ */
+function contractSection(acceptanceContract?: string): string[] {
+  if (!acceptanceContract || !acceptanceContract.trim()) return [];
+  return ['', acceptanceContract.trim()];
+}
+
 /** Default prompt strategy: lean contract + structured retry context. */
 export const defaultPromptBuilder: PromptBuilder = (ctx) => {
   if (ctx.turn === 1) {
-    return [OUTPUT_CONTRACT, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`].join('\n');
+    return [OUTPUT_CONTRACT, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract)].join('\n');
   }
 
-  const sections = [OUTPUT_CONTRACT, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ''];
+  const sections = [OUTPUT_CONTRACT, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ''];
   sections.push(`PREVIOUS ATTEMPT (turn ${ctx.turn - 1}):`);
 
   if (ctx.previousFiles && ctx.previousFiles.length > 0) {
@@ -1137,6 +1164,7 @@ export class ConvergenceLoop {
         ...prevContext,
         guidance,
         autonomous: this.config.autonomous,
+        acceptanceContract: this.config.acceptanceContract,
       });
 
       const outcome = explorerSettings

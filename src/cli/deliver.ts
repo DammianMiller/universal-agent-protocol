@@ -152,7 +152,7 @@ import {
   resolveUserValidationMode,
   synthesizeUserValidationRung,
 } from '../delivery/user-validation.js';
-import { deriveUserPaths, fallbackWebManifest, loadUserPaths, mergeUserPaths, USER_PATHS_FILE } from '../delivery/user-paths.js';
+import { deriveUserPaths, fallbackWebManifest, loadUserPaths, mergeUserPaths, renderAcceptanceContract, USER_PATHS_FILE } from '../delivery/user-paths.js';
 import { detectArtifactType } from '../delivery/execution-gate.js';
 
 /** Raw .uap.json reader usable before the main cfgRawEarly declaration. */
@@ -1988,6 +1988,28 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(chalk.dim('  user-validation: no manifest derived — gate will report NA until one exists'));
     }
   }
+  // Surface the acceptance contract (the user-path journeys + required selectors)
+  // to the executor on EVERY turn. The manifest is authored up front but was
+  // otherwise invisible to the implementer, so a weak model built artifacts that
+  // the real-client gate could not drive (e.g. a canvas-only UI with no DOM
+  // handles) and then could not self-correct from the gate's selector-not-found
+  // feedback. Injecting the contract closes the author→implement loop: the model
+  // builds a complete, drivable artifact from turn 1. Fail-soft — an aid, never a
+  // blocker.
+  if (userValidationMode !== 'off') {
+    try {
+      const loaded = loadUserPaths(projectRoot);
+      const contract = renderAcceptanceContract(loaded?.manifest ?? null);
+      if (contract) {
+        loopConfig.acceptanceContract = contract;
+        console.log(
+          chalk.dim('  user-validation: acceptance contract (journeys + required selectors) injected into the executor prompt')
+        );
+      }
+    } catch {
+      /* contract injection is a best-effort completeness aid */
+    }
+  }
   const runState: DeliverRunState = {
     runId,
     instruction,
@@ -2524,6 +2546,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           redetectRungs: true,
           redetectFilter: loopConfig.redetectFilter,
           protectTests: options.protectTests,
+          // The acceptance contract is a REQUIREMENT spec, not a convergence aid:
+          // carry it into the bare turn so a one-shot build already exposes the
+          // journeys/selectors the gate will drive (otherwise the lazy turn builds
+          // blind, e.g. a canvas-only UI with no DOM handles, and only later turns
+          // — which do get the contract — can recover it).
+          acceptanceContract: loopConfig.acceptanceContract,
           onIteration: (record) => { updateDeliverHeartbeat(projectRoot); printProgress(record); },
         },
         executor,
