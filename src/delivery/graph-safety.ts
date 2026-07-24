@@ -98,6 +98,12 @@ export function layerFanIn<T>(items: readonly T[], batchSize = 30): T[][] {
  * (fed by the coordination DB's predicted writes). Pure — returns new phase
  * objects with a merged `deps`; input order defines the serialization chain.
  * This is the S7 fix wired at the DeliveryPhase layer.
+ *
+ * PRECONDITION: `phases` must be in an order consistent with their existing
+ * `deps` (topologically ordered, as planDeliveryPhases emits). Synthetic edges
+ * run earlier→later by input order; passing a phase before one it already
+ * depends on could combine with the pre-existing dep to form a cycle. Callers
+ * that don't guarantee topological input order should cycle-check the result.
  */
 export function augmentPhasesWithWriteEdges<T extends { id: string; deps?: string[] }>(
   phases: readonly T[],

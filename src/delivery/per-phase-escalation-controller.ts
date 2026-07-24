@@ -46,12 +46,20 @@ export function createPerPhaseEscalationController(
   let bestScore = -1;
   let stagnant = 0;
   let rung = 0; // 0 = the primary model already running; escalate from rung 1
+  let ceilingReached = false;
 
   return {
     rung: () => rung,
     onIteration: (record: IterationRecord): IterationDirective => {
       if (record.passed) return {};
       if (!phaseMayEscalate('execute', cfg.scope)) return {};
+      // Don't let infra flakiness (an executor error / never-verified turn,
+      // both score 0) count toward stagnation and walk the ladder to the
+      // ceiling — mirror the loop's own `inconclusive` guard.
+      if (record.executorError || record.gateResults.length === 0) return {};
+      // Once at the capability ceiling there is nothing stronger to switch to;
+      // stop re-binding the same model every stagnation window.
+      if (ceilingReached) return {};
 
       if (record.score > bestScore + epsilon) {
         bestScore = record.score;
@@ -72,6 +80,7 @@ export function createPerPhaseEscalationController(
         phase: 'execute',
         rung,
       });
+      if (step.exhausted) ceilingReached = true;
       cfg.onEscalate?.({ rung, model: step.model, policy: step.policy });
       return {
         switchExecutor: cfg.bindExecutor(step.model),

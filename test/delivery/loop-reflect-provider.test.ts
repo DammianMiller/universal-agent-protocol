@@ -55,6 +55,36 @@ describe('ConvergenceLoop — reflectProvider (async GEPA reflect turn)', () => 
     expect(seen.slice(1).every((s) => s === 'REFLECTED(ORIGINAL)')).toBe(true);
   });
 
+  it('mutateInstruction WINS over reflect when a directive carries both', async () => {
+    const seen: string[] = [];
+    let reflectCalls = 0;
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 3,
+        rungs: stubRungs(),
+        baselineCheck: false,
+        onIteration: (rec) =>
+          rec.turn === 1 ? { requestReflect: true, mutateInstruction: 'SYNC WINS' } : undefined,
+        reflectProvider: async () => {
+          reflectCalls++;
+          return 'ASYNC LOSES';
+        },
+      },
+      async () => FILE_BLOCK_OUTPUT,
+      {
+        ladderRunner: () => ladderResult(false),
+        promptBuilder: (ctx) => {
+          seen.push(ctx.instruction);
+          return ctx.instruction;
+        },
+      }
+    );
+    await loop.deliver('ORIGINAL');
+    expect(reflectCalls).toBe(0); // reflect skipped because mutate was present
+    expect(seen.slice(1).every((s) => s === 'SYNC WINS')).toBe(true);
+  });
+
   it('is fail-soft: an undefined/throwing provider keeps the instruction', async () => {
     const seen: string[] = [];
     const loop = new ConvergenceLoop(

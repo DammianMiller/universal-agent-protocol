@@ -6,7 +6,14 @@ import type { IterationRecord } from '../../src/delivery/convergence-loop.js';
 const adaptive = RoutingPresets['adaptive-tiered'];
 
 function rec(turn: number, score: number, passed = false): IterationRecord {
-  return { turn, passed, score, gateResults: [], filesApplied: [] };
+  // a VERIFIED-but-failing turn populates gateResults (an inconclusive turn does not)
+  return {
+    turn,
+    passed,
+    score,
+    gateResults: [{ id: 'g', name: 'g', passed, skipped: false, exitCode: passed ? 0 : 1, durationMs: 1, outputTail: '' }],
+    filesApplied: ['f.ts'],
+  };
 }
 
 function makeController(scope: Parameters<typeof createPerPhaseEscalationController>[0]['scope'] = 'all') {
@@ -56,6 +63,24 @@ describe('createPerPhaseEscalationController', () => {
     ctrl.onIteration(rec(3, 0.6)); // stagnant 1
     expect(ctrl.rung()).toBe(0); // not yet at stagnationTurns=2 after the reset
     expect(escalations.length).toBe(0);
+  });
+
+  it('does not count infra-flaky turns (executor error / no gates) toward stagnation', () => {
+    const { ctrl, escalations } = makeController();
+    // two executor-error turns must NOT trigger escalation
+    ctrl.onIteration({ turn: 1, passed: false, score: 0, gateResults: [], filesApplied: [], executorError: '429' });
+    ctrl.onIteration({ turn: 2, passed: false, score: 0, gateResults: [], filesApplied: [], executorError: '503' });
+    expect(ctrl.rung()).toBe(0);
+    expect(escalations.length).toBe(0);
+  });
+
+  it('stops re-emitting switches once the capability ceiling is reached', () => {
+    const { ctrl, escalations } = makeController();
+    // drive well past the chain length (2) to reach + exceed the ceiling
+    for (let t = 1; t <= 12; t++) ctrl.onIteration(rec(t, 0.5));
+    // chain len 2 → rung 1 (fixed), rung 2 (capability, ceiling) → then stops
+    expect(escalations.length).toBe(2);
+    expect(escalations[1].policy).toBe('capability');
   });
 
   it('does not escalate execute when the effort scope forbids it', () => {

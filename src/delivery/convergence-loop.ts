@@ -1299,9 +1299,9 @@ export class ConvergenceLoop {
       }
       // GEPA reflect (S6): a requested reflect turn rewrites the APPROACH for
       // subsequent turns. Fail-soft — an empty/undefined/throwing provider keeps
-      // the current instruction. A synchronous mutateInstruction (below) still
-      // wins if both are present.
-      if (directive.requestReflect && this.config.reflectProvider) {
+      // the current instruction. A synchronous mutateInstruction (applied above)
+      // WINS if both are present, so skip the async reflect when one is set.
+      if (directive.requestReflect && !directive.mutateInstruction && this.config.reflectProvider) {
         try {
           const rewrite = await this.config.reflectProvider(
             activeInstruction,
@@ -1387,7 +1387,13 @@ export class ConvergenceLoop {
       // ladder exists precisely to break stagnation. Aborting now would kill the
       // repair pass before it ever executes, so give the new configuration a
       // turn to prove itself.
-      const escalated = Boolean(directive.switchExecutor || directive.enableCritic || directive.regenerateSeeds);
+      const escalated = Boolean(
+        directive.switchExecutor ||
+          directive.enableCritic ||
+          directive.regenerateSeeds ||
+          directive.requestReflect ||
+          directive.mutateInstruction
+      );
       if (inconclusive || scoreMoved || !provablyIdle || escalated) noProgressStreak = 0;
       else noProgressStreak++;
       if (noProgressStreak >= NO_APPLY_ABORT_LIMIT) {
