@@ -17,6 +17,7 @@
  */
 
 import { resolvePhaseChain, type RoutingPreset, type Phase, type TaskComplexity } from '../models/types.js';
+import type { EscalationScope } from '../coordination/effort-profile.js';
 
 export type EscalationPolicy = 'fixed' | 'capability';
 
@@ -64,10 +65,7 @@ export function resolveEscalation(opts: {
  * always allowed; `plan` only under plan+/all scopes; `review`/`reflect` only
  * under `all`/`all+fallback`; `fallback` only under `all+fallback`.
  */
-export function phaseMayEscalate(
-  phase: Phase,
-  scope: 'fallback' | 'execute' | 'plan+execute' | 'all' | 'all+fallback'
-): boolean {
+export function phaseMayEscalate(phase: Phase, scope: EscalationScope): boolean {
   switch (phase) {
     case 'execute':
       return scope !== 'fallback';

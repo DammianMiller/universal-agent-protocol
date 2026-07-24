@@ -55,23 +55,26 @@ export const TUNABLE_PROMPTS: Record<string, TunablePrompt> = {
       { id: 'rootcause', text: 'Identify the ROOT cause first, then the minimal fix for each failing gate.' },
     ],
   },
+  // FROZEN fragments carry a NON-AUTHORITATIVE placeholder, NOT the real
+  // contract text. The wiring PR MUST bind these to the canonical constants in
+  // convergence-loop.ts (OUTPUT_CONTRACT / AUTONOMY_CONTRACT) — the applier
+  // parses the real ```file:path``` format, so shipping divergent text here
+  // would be a delivery-critical regression. They exist only to keep these
+  // fragments OUT of the optimizer's search space (see tunablePromptSpace).
   'output.contract': {
     id: 'output.contract',
-    description: 'The file-emission output contract — hard rule, FROZEN.',
+    description: 'File-emission output contract — hard rule, FROZEN. Bind from convergence-loop OUTPUT_CONTRACT.',
     frozen: true,
     variants: [
-      {
-        id: 'canonical',
-        text: 'Emit each changed file as a fenced block with its path. Never truncate a file.',
-      },
+      { id: 'canonical', text: '__BIND_FROM__ convergence-loop.OUTPUT_CONTRACT (never optimized)' },
     ],
   },
   'autonomy.guardrails': {
     id: 'autonomy.guardrails',
-    description: 'Autonomy/safety guardrails — hard rule, FROZEN.',
+    description: 'Autonomy/safety guardrails — hard rule, FROZEN. Bind from convergence-loop AUTONOMY_CONTRACT.',
     frozen: true,
     variants: [
-      { id: 'canonical', text: 'Do not delete tests or gates. Do not weaken acceptance criteria.' },
+      { id: 'canonical', text: '__BIND_FROM__ convergence-loop.AUTONOMY_CONTRACT (never optimized)' },
     ],
   },
 };

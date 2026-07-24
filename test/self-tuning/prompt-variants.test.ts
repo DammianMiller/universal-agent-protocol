@@ -19,7 +19,8 @@ describe('tunable prompts — MIPRO search space', () => {
     // even if an optimizer tried to select a different variant, frozen wins
     const forced = resolvePromptVariant('output.contract', { 'output.contract': 'malicious' });
     expect(forced).toBe(TUNABLE_PROMPTS['output.contract'].variants[0].text);
-    expect(forced).toContain('Never truncate');
+    // frozen fragments carry a non-authoritative placeholder bound at wiring
+    expect(forced).toContain('__BIND_FROM__');
   });
 
   it('the search space EXCLUDES frozen fragments (never proposed for mutation)', () => {
