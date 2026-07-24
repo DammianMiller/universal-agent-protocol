@@ -36,6 +36,20 @@ describe('router selectModel — Q4 canonical preset path', () => {
     expect(high.reasoning).toContain('routingMatrix'); // legacy path
   });
 
+  it('does NOT engage the canonical branch for a TIER-LESS preset (keeps role escalation)', () => {
+    const config: MultiModelConfig = {
+      enabled: true,
+      models: ['fable-5', 'qwen36-a3b', 'opus-4.8'],
+      roles: { planner: 'fable-5', executor: 'qwen36-a3b', reviewer: 'opus-4.8', fallback: 'qwen36-a3b' },
+      routingStrategy: 'balanced',
+      routingPreset: 'fable-local-opus', // tier-less — no per-complexity tiers
+    };
+    const router = createRouter(config);
+    const high = router.selectModel('high', 'coding', []);
+    // canonical per-phase branch must be SKIPPED (would have pinned executor for all tiers)
+    expect(high.reasoning).not.toContain('canonical per-phase');
+  });
+
   it('ignores an unknown routingPreset and falls through to the matrix/strategy', () => {
     const config: MultiModelConfig = {
       enabled: true,

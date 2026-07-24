@@ -291,7 +291,12 @@ export class ModelRouter {
     // execute-primary the matrix records.
     if (this.config.routingPreset) {
       const preset = RoutingPresets[this.config.routingPreset];
-      if (preset) {
+      // Only engage the canonical per-phase path for presets that actually carry
+      // per-complexity `tiers`. A tier-less preset (e.g. fable-local-opus) has no
+      // complexity routing, so resolvePhaseChain would return the executor role
+      // for EVERY tier — dropping the strategy's role escalation of hard tasks.
+      // Those fall through to the routingMatrix/strategy logic unchanged.
+      if (preset && preset.tiers) {
         const modelId = resolvePhaseChain(preset, { complexity, phase: 'execute' })[0];
         const model = this.models.get(modelId) || ModelPresets[modelId as keyof typeof ModelPresets];
         if (model) {

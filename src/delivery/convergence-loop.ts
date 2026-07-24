@@ -399,6 +399,13 @@ export interface ConvergenceConfig {
    * undefined/empty/throw keeps the current instruction.
    */
   reflectProvider?: (instruction: string, feedback?: string) => Promise<string | undefined>;
+  /**
+   * MIPRO (S8/3a): tuner-selected prompt-fragment variants (fragmentId→variantId,
+   * from promptSelectionFromConfig). Threaded into every PromptContext so
+   * defaultPromptBuilder can apply the optimized non-frozen fragments. Absent =
+   * the hand-authored default prompt (byte-identical).
+   */
+  promptSelection?: Record<string, string>;
 }
 
 /**
@@ -1191,6 +1198,7 @@ export class ConvergenceLoop {
         ...prevContext,
         guidance,
         autonomous: this.config.autonomous,
+        promptSelection: this.config.promptSelection,
       });
 
       const outcome = explorerSettings

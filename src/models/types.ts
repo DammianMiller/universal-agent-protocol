@@ -596,7 +596,10 @@ export const MultiModelConfigSchema = z.object({
     })
     .optional(),
 
-  // Custom routing matrix override
+  // Custom routing matrix (per-complexity model). NOTE: this is a FALLBACK —
+  // when `routingPreset` is set and resolvable, the router selects from the
+  // canonical per-phase source (resolvePhaseChain) and this matrix is ignored
+  // for selection (it is retained for legacy configs and display).
   routingMatrix: z
     .record(
       z.enum(['low', 'medium', 'high', 'critical']),
