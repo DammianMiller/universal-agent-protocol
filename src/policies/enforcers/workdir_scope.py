@@ -29,6 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import emit, parse_cli, repo_root, worktree_root  # noqa: E402
+from _common import strip_heredoc_bodies  # noqa: E402
 
 # Tools that create/modify a file at an explicit path argument.
 PATH_WRITE_OPS = {
@@ -119,6 +120,11 @@ def _scan_bash(cmd: str, roots: list[Path]) -> str:
     create/move verbs and output redirections, and ignores read sources."""
     if not cmd:
         return ""
+    # A heredoc body is stdin data for the program being run (a Python script,
+    # a commit message), not a sequence of shell commands. Scanning it split on
+    # newlines flags any path-shaped string inside it. Bodies that could be
+    # executed are left in place by the helper.
+    cmd = strip_heredoc_bodies(cmd)
     try:
         tokens = shlex.split(cmd, comments=True)
     except ValueError:
