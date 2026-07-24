@@ -165,6 +165,21 @@ export class WebBrowser {
     return await page.evaluate(func);
   }
 
+  /**
+   * Register a script that runs in every page BEFORE its own scripts — used to
+   * instrument the page (e.g. count requestAnimationFrame calls) so the
+   * execution gate can tell a live render loop from a frozen one. Must be called
+   * before goto. No-op if the underlying engine lacks addInitScript.
+   */
+  async addInitScript(script: string): Promise<void> {
+    if (!this.page) throw new Error('Browser not initialized');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ctx: any = this.context ?? this.page;
+    if (typeof ctx.addInitScript === 'function') {
+      await ctx.addInitScript(script);
+    }
+  }
+
   async waitForLoadState(
     state: 'load' | 'domcontentloaded' | 'networkidle' = 'load'
   ): Promise<void> {
