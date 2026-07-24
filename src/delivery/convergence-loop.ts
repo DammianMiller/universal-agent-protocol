@@ -651,7 +651,19 @@ interface TurnOutcome {
  * the loop stays decoupled from the acceptance-judge module. The implementation
  * is expected to fail open internally (a judgment must not wedge delivery).
  */
-export type AcceptanceGate = (projectRoot: string) => Promise<{
+/**
+ * @param ctx.ladderPassed state of the objective ladder for THIS turn. Before
+ *   `runAcceptanceDespiteLadder` existed the gate only ever ran on a green
+ *   ladder, so implementations could safely assume it. They no longer can: a
+ *   gate that tells its judge "objective gates ALL PASSED" without checking
+ *   would be asserting the opposite of the truth on a red turn, and any
+ *   consecutive-rejection breaker would be counting red turns it was never
+ *   meant to count. Undefined means "not supplied" — treat as unknown, not green.
+ */
+export type AcceptanceGate = (
+  projectRoot: string,
+  ctx?: { ladderPassed: boolean }
+) => Promise<{
   passed: boolean;
   feedback: string;
   /** Fraction of spec criteria met (0..1); lets the loop see acceptance progress. */
@@ -825,7 +837,7 @@ export class ConvergenceLoop {
     }
     let acc: { passed: boolean; feedback: string; score?: number };
     try {
-      acc = await this.acceptanceGate(this.config.projectRoot);
+      acc = await this.acceptanceGate(this.config.projectRoot, { ladderPassed: ladder.passed });
     } catch {
       // Fail open in general — the judge must never block delivery. EXCEPT on
       // the relaxed zero-diff path (unchanged tree + prior-epic changes): there

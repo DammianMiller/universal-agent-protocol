@@ -27,7 +27,23 @@ interface ChatCompletionResponse {
 const DEFAULT_TIMEOUT_MS = modelHttpTimeoutMs();
 
 const LOOPBACK_RE = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?)$/i;
-const PRIVATE_HOST_RE = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
+// MUST be a full IPv4 literal, not a prefix. The old pattern was unanchored and
+// shape-free, so any DNS name beginning with those digits — `10.evil.com`,
+// `192.168.attacker.net` — was classified as private and the local-only
+// credential rule waved it through to a public host in cleartext. RFC 1123
+// permits labels to start with digits, so this is registerable, not theoretical.
+const IPV4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+function isPrivateIpv4(hostname: string): boolean {
+  const m = IPV4_RE.exec(hostname);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if ([a, b, Number(m[3]), Number(m[4])].some((n) => n > 255)) return false;
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
 
 /**
  * Is this endpoint on the local machine or a private network?
@@ -39,7 +55,37 @@ const PRIVATE_HOST_RE = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
  * the regexes is how the two drift apart and one of them starts leaking.
  */
 export function isLocalEndpoint(url: URL): boolean {
-  return LOOPBACK_RE.test(url.hostname) || PRIVATE_HOST_RE.test(url.hostname);
+  return LOOPBACK_RE.test(url.hostname) || isPrivateIpv4(url.hostname);
+}
+
+/**
+ * The credential to send, or undefined.
+ *
+ * PROXY_AUTH_TOKEN is a secret for ONE local process — the anthropic proxy. There
+ * is no arrangement in which handing it to a third party is correct, so it is
+ * scoped to local endpoints by construction rather than merely being refused over
+ * cleartext: an operator pointing UAP at a hosted OpenAI-compatible provider over
+ * https would otherwise have shipped their proxy token (and with it, use of their
+ * Anthropic passthrough) to that vendor in a header the vendor logs.
+ *
+ * An explicitly-named provider key keeps the older, looser rule — it belongs to
+ * the endpoint it is being sent to — but still may not travel in cleartext.
+ */
+export function resolveRequestCredential(
+  model: { apiKeyEnvVar?: string },
+  url: URL
+): string | undefined {
+  const explicit = model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined;
+  if (explicit) {
+    if (url.protocol !== 'https:' && !isLocalEndpoint(url)) {
+      throw new Error(
+        `Refusing to send ${model.apiKeyEnvVar} over ${url.protocol}// to non-local host ${url.hostname} — use https.`
+      );
+    }
+    return explicit;
+  }
+  // The local-proxy fallback: local endpoints only, regardless of scheme.
+  return isLocalEndpoint(url) ? process.env.PROXY_AUTH_TOKEN || undefined : undefined;
 }
 
 import {
@@ -94,20 +140,13 @@ export class OpenAICompatClient implements ModelClient {
     options?: { maxTokens?: number; timeout?: number; temperature?: number; jsonResponse?: boolean }
   ): Promise<{ content: string; tokensUsed: { input: number; output: number }; latencyMs: number }> {
     const endpoint = (model.endpoint ?? this.defaultEndpoint).replace(/\/$/, '');
-    // Local anthropic-proxy token gate (PROXY_AUTH_TOKEN, PR #590): a preset with
-    // no apiKeyEnvVar (the local qwen presets) must still authenticate to a
-    // token-gated proxy. The non-local-host guard below still blocks leaking it.
-    const apiKey =
-      (model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined) || process.env.PROXY_AUTH_TOKEN || undefined;
     const timeout = options?.timeout ?? this.timeoutMs;
 
     const url = new URL(`${endpoint}/chat/completions`);
-    // Never send a credential in cleartext beyond the local network.
-    if (apiKey && url.protocol !== 'https:' && !isLocalEndpoint(url)) {
-      throw new Error(
-        `Refusing to send ${model.apiKeyEnvVar ?? 'the local proxy token'} over ${url.protocol}// to non-local host ${url.hostname} — use https.`
-      );
-    }
+    // One shared rule for what may be sent where (throws on a cleartext leak of
+    // an explicit provider key; silently withholds the local proxy token from any
+    // non-local endpoint).
+    const apiKey = resolveRequestCredential(model, url);
 
     const start = Date.now();
     const controller = new AbortController();

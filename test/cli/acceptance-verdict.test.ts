@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveAcceptanceVerdict, decideGateStrategy, shouldSkipAcceptanceJudge, resolveEvaluatorPreset } from '../../src/cli/deliver.js';
+import { resolveAcceptanceVerdict, decideGateStrategy, shouldSkipAcceptanceJudge, resolveEvaluatorPreset, selfGateFailureIsFatal } from '../../src/cli/deliver.js';
 import type { AcceptanceResult } from '../../src/delivery/acceptance-judge.js';
 
 function result(over: Partial<AcceptanceResult>): AcceptanceResult {
@@ -197,5 +197,30 @@ describe('decideGateStrategy — anti-vacuous floor (P0, 2026-07-13)', () => {
     });
     expect(d.acceptancePrimary).toBe(true);
     expect(d.needsSelfGate).toBe(false);
+  });
+});
+
+describe('selfGateFailureIsFatal (no run without a convergence target)', () => {
+  it('is fatal when acceptance is off — nothing else would judge the run', () => {
+    expect(selfGateFailureIsFatal({ acceptanceEnabled: false, judgeSkipped: false })).toBe(true);
+  });
+
+  it('is NOT fatal when a judge will actually run', () => {
+    expect(selfGateFailureIsFatal({ acceptanceEnabled: true, judgeSkipped: false })).toBe(false);
+  });
+
+  it('is fatal when acceptance is ON but the judge is SKIPPED for a simple task', () => {
+    // The trap: `--acceptance` being set does not mean a gate object gets built.
+    // shouldSkipAcceptanceJudge suppresses it for simple tasks, so the run would
+    // proceed with no self-gate rung AND no judge — and a repo whose gates were
+    // already green is then "delivered" having written nothing.
+    expect(selfGateFailureIsFatal({ acceptanceEnabled: true, judgeSkipped: true })).toBe(true);
+  });
+
+  it('max fidelity is not a substitute (it is not an input at all)', () => {
+    // The vision review lives INSIDE the acceptance gate; if that gate was never
+    // built there is nothing for it to block. It also fails open on five separate
+    // conditions, so it can never be treated as a standing blocker.
+    expect(selfGateFailureIsFatal({ acceptanceEnabled: false, judgeSkipped: true })).toBe(true);
   });
 });

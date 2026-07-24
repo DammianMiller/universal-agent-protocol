@@ -126,7 +126,10 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
   const userPathsNote = deps.userPathsNote ?? buildUserPathsNote;
   // eslint-disable-next-line no-console
   const note = deps.note ?? ((line: string): void => console.log(line));
-  return async (root) => {
+  return async (root, gateCtx) => {
+    // Explicit `=== false` — an undefined ctx means the caller did not tell us,
+    // which must not be read as "the ladder was green".
+    const ladderRed = gateCtx?.ladderPassed === false;
     // Primary mode: the only objective rung is the trivial bootstrap, and the
     // real execution gate joins via redetect only on the NEXT turn (one-turn
     // lag). So gate the artifact's runtime HERE too — idempotent with the
@@ -185,10 +188,22 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
     }
     const resolvedSpec = deps.specs.resolve(root);
     const uvNote = userPathsNote(root);
+    // The secondary-mode note asserts the objective gates passed. That was safe
+    // while acceptance only ever ran on a green ladder; under
+    // runAcceptanceDespiteLadder it would instruct the judge to treat FAILING
+    // build/test requirements as objectively verified — a direct route to
+    // accepting criteria the gates are actively rejecting.
     const baseNote = deps.primary
       ? visualNote
-      : 'Objective project gates (build/test suite) ALL PASSED on this turn — treat test/build-related requirements as objectively verified.';
-    const runtimeNote = [baseNote, uvNote?.note].filter(Boolean).join(' ');
+      : ladderRed
+        ? 'Objective project gates are currently FAILING on this turn — do NOT treat build/test-related requirements as verified. Judge only what the evidence supports.'
+        : 'Objective project gates (build/test suite) ALL PASSED on this turn — treat test/build-related requirements as objectively verified.';
+    // The visual observation is real evidence in BOTH modes; discarding it in
+    // secondary mode meant paying for a headless browser pass and then throwing
+    // the result away.
+    const runtimeNote = [baseNote, deps.primary ? '' : visualNote, uvNote?.note]
+      .filter(Boolean)
+      .join(' ');
     const r = await judge({
       spec: resolvedSpec,
       projectRoot: root,
@@ -198,7 +213,15 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
     const verdict = resolveAcceptanceVerdict(r, deps.primary);
     // Secondary mode only: bounded consecutive judge rejections of
     // objectively-green turns hand the verdict back to the gates.
-    if (!deps.primary) {
+    //
+    // `ladderRed` is load-bearing. The breaker's contract is "the gates say yes,
+    // the judge keeps saying no — trust the gates", and it only resets its counter
+    // on a PASSING verdict. Feed it red turns (as runAcceptanceDespiteLadder now
+    // can) and the count climbs on turns where the gates are saying no too; once
+    // it trips it never resets, so every later turn is force-accepted — including
+    // the turn the ladder finally goes green, delivering with the judge still
+    // holding that the spec is unmet. Red turns are simply not its business.
+    if (!deps.primary && !ladderRed) {
       const checked = deps.specs.breaker(resolvedSpec, root).check(resolvedSpec, verdict);
       if (checked.overridden) {
         note(

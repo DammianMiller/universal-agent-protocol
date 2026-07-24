@@ -69,8 +69,100 @@ export interface BrowserDriver {
   goto(url: string): Promise<string>;
   waitForLoadState(state?: 'load' | 'domcontentloaded' | 'networkidle'): Promise<void>;
   getErrors(): Array<{ kind: string; message: string }>;
+  /** Optional: run a function in the page and return its result (WebBrowser has it). */
+  evaluate?<T>(script: string | ((arg: unknown) => unknown)): Promise<T>;
+  /** Optional: register a script to run before every page's own scripts (pre-load instrumentation). */
+  addInitScript?(script: string): Promise<void>;
   close(): Promise<void>;
 }
+
+/** Result of the in-page canvas-render probe. */
+interface CanvasRenderProbe {
+  hasCanvas: boolean;
+  nonUniformPixels?: number;
+  /** rAF call count sampled across the load window (loop alive on load?). */
+  rafLoad0?: number;
+  rafLoad1?: number;
+  /** rAF call count sampled across a window AFTER the primary interaction
+   *  (start/click) — catches a loop that freezes when the app is actually used. */
+  rafPostClick0?: number;
+  rafPostClick1?: number;
+  note?: string;
+}
+
+/**
+ * Pre-load instrumentation (addInitScript): wrap requestAnimationFrame with a
+ * counter BEFORE the page's own scripts run, so the gate can tell a LIVE render
+ * loop (counter keeps climbing) from a DEAD/FROZEN one (climbed, then stopped)
+ * from a legitimately STATIC page (never climbed). Fail-soft in the page.
+ */
+const RAF_INSTRUMENT = `(() => { try {
+  var n = 0; var orig = window.requestAnimationFrame;
+  if (typeof orig === 'function') {
+    window.requestAnimationFrame = function(cb){ n++; return orig.call(window, cb); };
+    Object.defineProperty(window, '__uapRafCount', { configurable: true, get: function(){ return n; } });
+  }
+} catch (e) {} })()`;
+
+/**
+ * FUNCTIONAL check for a <canvas> app: it must actually RENDER and, if it drives
+ * an animation loop, that loop must stay ALIVE. Two crash-classes the load-only
+ * and DOM gates both miss (the page still loads, DOM chrome still works):
+ *
+ *  1. BLANK canvas — draws nothing (0 non-uniform pixels). Dead render loop that
+ *     never produced a frame, or an undefined draw method.
+ *  2. FROZEN canvas — the requestAnimationFrame loop ran a few frames then DIED
+ *     (an uncaught error in the frame callback, an interface mismatch mid-update).
+ *     The first frame is on screen, so it is NOT blank — but the game never
+ *     plays: the ship never moves, waves never spawn. Observed live
+ *     (octopus_invaders, 2026-07-24): execution smoke + user-path both green,
+ *     vision even graded the frozen first frame, while the ship sat static and no
+ *     enemy ever appeared. Load/DOM/pixel checks all pass on a frozen game.
+ *
+ * The rAF counter (installed by RAF_INSTRUMENT) distinguishes frozen (count was
+ * > 0 then stopped) from a legitimately static page (count stayed 0) — so a
+ * non-animated visualization is never false-failed.
+ */
+const CANVAS_RENDER_PROBE = `() => new Promise((resolve) => {
+  var c = document.querySelector('canvas');
+  var raf = function(){ return (typeof window.__uapRafCount === 'number') ? window.__uapRafCount : -1; };
+  var nonUniform = function(){
+    if (!c) return -1;
+    try {
+      var ctx = c.getContext && c.getContext('2d');
+      if (!ctx || !c.width || !c.height) return -1;
+      var d = ctx.getImageData(0, 0, c.width, c.height).data;
+      var r0 = d[0], g0 = d[1], b0 = d[2], nu = 0;
+      for (var i = 0; i < d.length; i += 4) { if (d[i] !== r0 || d[i+1] !== g0 || d[i+2] !== b0) { nu++; if (nu > 64) break; } }
+      return nu;
+    } catch (e) { return -1; }
+  };
+  var rafLoad0 = raf();
+  setTimeout(function () {
+    var rafLoad1 = raf();
+    var nu = nonUniform();
+    // Exercise the PRIMARY interaction so a loop that freezes on start is caught:
+    // click a start/play control if present, and (for canvas games) the canvas.
+    try {
+      var btn = document.querySelector('#start-btn,#start,#play,#begin,button[id*=start],button[id*=play],[class*=start] button');
+      if (!btn) {
+        var btns = Array.prototype.slice.call(document.querySelectorAll('button,[role=button]'));
+        btn = btns.filter(function(b){ return /\\b(start|play|begin|new game|continue)\\b/i.test(b.textContent || ''); })[0] || null;
+      }
+      if (btn && btn.click) btn.click();
+      if (c) {
+        var cx = (c.width || 300) / 2, cy = (c.height || 300) / 2;
+        c.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: cx, clientY: cy }));
+        c.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: cx, clientY: cy }));
+        c.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx - 40, clientY: cy - 40 }));
+      }
+    } catch (e) {}
+    var rafPostClick0 = raf();
+    setTimeout(function () {
+      resolve({ hasCanvas: !!c, nonUniformPixels: nu, rafLoad0: rafLoad0, rafLoad1: rafLoad1, rafPostClick0: rafPostClick0, rafPostClick1: raf() });
+    }, 700);
+  }, 500);
+})`;
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_SETTLE_MS = 1_500;
@@ -281,6 +373,96 @@ export function startStaticServer(dir: string, entry = 'index.html'): Promise<{ 
 // never silently no-ops when a real browser/chromium is unavailable.
 // ---------------------------------------------------------------------------
 
+/**
+ * Run the in-page canvas render-loop-liveness probe and return a FAILURE result
+ * when the canvas is blank or its animation loop is dead/frozen (including a
+ * freeze on the primary interaction), else null (healthy, or the driver lacks
+ * evaluate). Best-effort — a probe error never flips a genuine pass to a fail.
+ */
+async function checkCanvasLiveness(browser: BrowserDriver, start: number): Promise<ExecutionResult | null> {
+  if (typeof browser.evaluate !== 'function') return null;
+  let probe: CanvasRenderProbe;
+  try {
+    probe = (await browser.evaluate<CanvasRenderProbe>(CANVAS_RENDER_PROBE)) ?? { hasCanvas: false };
+  } catch {
+    return null;
+  }
+  if (!probe.hasCanvas) return null;
+  const l0 = probe.rafLoad0 ?? -1;
+  const l1 = probe.rafLoad1 ?? -1;
+  const p0 = probe.rafPostClick0 ?? -1;
+  const p1 = probe.rafPostClick1 ?? -1;
+  const loopAlive = l1 > l0; // rAF count climbed → an animation loop is running
+  // Blank ONLY counts as a failure when a loop is actively running but paints
+  // nothing (a live loop that draws nothing). A blank canvas with NO loop is a
+  // legitimately static / draw-on-demand / minimal app and is left alone (avoids
+  // false-failing trivial fixtures and static canvases).
+  const blank = loopAlive && typeof probe.nonUniformPixels === 'number' && probe.nonUniformPixels === 0;
+  // Freezes on interaction: the loop WAS continuously animating (l1>l0), then
+  // after the primary click it STOPPED — the game renders a menu but dies the
+  // moment you start it (octopus_invaders, 2026-07-24: menu rAF 93->135, stuck at
+  // 123 after Start; execution + user-path + vision all passed the frozen game).
+  // Both signals require an ACTIVE loop, so a static / one-shot-draw / minimal
+  // canvas is never false-failed (a one-shot rAF draw has l1===l0, not > ).
+  const animatedThenFroze = loopAlive && p0 > 0 && p1 === p0;
+  if (!(blank || animatedThenFroze)) return null;
+  const reason = animatedThenFroze
+    ? 'the <canvas> render loop FREEZES on the primary interaction (the game does not play)'
+    : 'the <canvas> render loop runs but paints NOTHING (blank)';
+  const detail = animatedThenFroze
+    ? 'The page loads and the scene animates, BUT the requestAnimationFrame loop DIES the moment the ' +
+      `primary control (Start/Play) is used — 0 new frames after the click (count stuck at ${p0}). The app ` +
+      'does not actually PLAY: the ship never moves, nothing spawns, no time-based logic advances. This is ' +
+      'an uncaught error thrown in the frame callback once gameplay starts (almost always an interface ' +
+      'mismatch calling an undefined method in the update/draw path that only runs in the "playing" state). ' +
+      'Fix the loop so it keeps running through and after Start — a game that freezes on start is NOT a ' +
+      'working deliverable. This must pass BEFORE any aesthetic/vision judgement.'
+    : 'The requestAnimationFrame loop is running but the <canvas> painted NO content (0 non-uniform pixels) ' +
+      '— the draw path produces nothing visible (an undefined draw method / a no-op renderer). The app runs ' +
+      'but shows nothing; fix the render before any aesthetic judgement.';
+  return { passed: false, exitCode: 1, failureReason: reason, outputTail: detail, durationMs: Date.now() - start, via: 'browser' };
+}
+
+/**
+ * Canvas render-loop-liveness check in a REAL browser, for a classic-<script>
+ * canvas app that ALREADY passed vm-dom crash detection. vm-dom cannot drive
+ * requestAnimationFrame, so it passes a frozen game; this launches a headless
+ * browser purely to run the liveness probe. Returns a FAILURE result when the
+ * loop is dead/frozen/blank, else null (healthy OR no browser available →
+ * fail-open, the caller keeps the vm-dom pass).
+ */
+async function runCanvasLivenessCheck(
+  entryDir: string,
+  opts: ExecutionGateOptions,
+  entry: string
+): Promise<ExecutionResult | null> {
+  const start = Date.now();
+  let server: { url: string; close: () => void } | null = null;
+  let browser: BrowserDriver | null = null;
+  try {
+    server = await startStaticServer(entryDir, entry);
+    try {
+      browser = opts.browserFactory ? opts.browserFactory() : await loadWebBrowser();
+      await browser.launch({ headless: true });
+    } catch {
+      return null; // no browser — fail-open (vm-dom verdict stands)
+    }
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    if (typeof browser.addInitScript === 'function') {
+      await browser.addInitScript(RAF_INSTRUMENT).catch(() => undefined);
+    }
+    await withTimeout(browser.goto(server.url), timeoutMs, 'goto').catch(() => undefined);
+    await Promise.race([browser.waitForLoadState('load'), delay(timeoutMs)]).catch(() => undefined);
+    await delay(opts.settleMs ?? DEFAULT_SETTLE_MS);
+    return await checkCanvasLiveness(browser, start);
+  } catch {
+    return null; // any error → fail-open
+  } finally {
+    if (browser) await browser.close().catch(() => undefined);
+    server?.close();
+  }
+}
+
 async function runWeb(entryDir: string, opts: ExecutionGateOptions, entry = 'index.html'): Promise<ExecutionResult> {
   const start = Date.now();
   const settleMs = opts.settleMs ?? DEFAULT_SETTLE_MS;
@@ -304,6 +486,12 @@ async function runWeb(entryDir: string, opts: ExecutionGateOptions, entry = 'ind
     }
     try {
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      // Instrument requestAnimationFrame BEFORE the page loads so a frozen render
+      // loop is detectable after load. Best-effort — engines without addInitScript
+      // simply skip the frozen-loop half of the canvas check.
+      if (typeof browser.addInitScript === 'function') {
+        await browser.addInitScript(RAF_INSTRUMENT).catch(() => undefined);
+      }
       // Wall-clock guard so a hung goto/load never wedges a direct caller (the
       // spawned-runner path also has the rung-level spawn timeout as a backstop).
       const status = await withTimeout(browser.goto(server.url), timeoutMs, 'goto');
@@ -339,6 +527,13 @@ async function runWeb(entryDir: string, opts: ExecutionGateOptions, entry = 'ind
           via: 'browser',
         };
       }
+      // Canvas-render functional check: a canvas that draws NOTHING is a dead
+      // render loop (crash-class), even with no uncaught pageerror surfaced in
+      // the settle window. Only runs when the driver supports evaluate and the
+      // page has a canvas; a completely uniform canvas fails. Fail-soft: any
+      // probe error leaves the load/error verdict untouched.
+      const livenessFail = await checkCanvasLiveness(browser, start);
+      if (livenessFail) return livenessFail;
       return {
         passed: true,
         exitCode: 0,
@@ -887,13 +1082,26 @@ export async function runExecutionGate(
       // for ES-module apps the vm harness cannot execute. Tests that inject a
       // browserFactory still exercise the browser path explicitly.
       let isModule = false;
+      let hasCanvas = false;
       try {
-        isModule = /<script[^>]+type=["']module["']/i.test(readFileSync(join(dir, entry), 'utf-8'));
+        const html = readFileSync(join(dir, entry), 'utf-8');
+        isModule = /<script[^>]+type=["']module["']/i.test(html);
+        hasCanvas = /<canvas\b/i.test(html);
       } catch {
         /* missing entry page — runWeb/vm report it */
       }
       if (opts.browserFactory || isModule) return runWeb(dir, opts, entry);
-      return runVmDomHarness(dir, undefined, undefined, entry);
+      // Classic scripts → vm-dom for deterministic JS-crash detection (no browser
+      // needed). BUT vm-dom cannot drive requestAnimationFrame, so it passes a
+      // <canvas> game whose render loop never runs or FREEZES on Start (the
+      // "renders a menu but never actually plays" class — octopus_invaders,
+      // 2026-07-24). For a canvas app, after vm-dom's crash check passes, ALSO run
+      // the render-loop-liveness probe in a REAL browser; fail-open (unchanged
+      // vm-dom verdict) when no browser is available.
+      const vm = await runVmDomHarness(dir, undefined, undefined, entry);
+      if (!vm.passed || !hasCanvas) return vm;
+      const liveness = await runCanvasLivenessCheck(dir, opts, entry);
+      return liveness ?? vm;
     }
   }
   if (type === 'node' || type === 'cli' || type === 'lib') {
