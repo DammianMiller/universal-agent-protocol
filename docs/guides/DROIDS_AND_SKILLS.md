@@ -156,7 +156,7 @@ A skill is a reusable workflow. Skills live in directories under
 [`.factory/skills/`](../../.factory/skills/), each containing a `SKILL.md` file
 with frontmatter (`name`, `version`, `compatibility`) and the workflow body.
 
-UAP ships **36 skills** in `.factory/skills/`, including:
+UAP ships **37 skills** in `.factory/skills/`, including:
 
 - **Coordination & workflow** — `uap-coordination`, `uap-tasks`,
   `uap-worktree`, `worktree-workflow`, `parallel-expert-review`, `batch-review`
@@ -168,6 +168,7 @@ UAP ships **36 skills** in `.factory/skills/`, including:
   `llama-cpp-worker`, `infra-worker`, `service-config`
 - **Iteration & benchmarking** — `near-miss`, `near-miss-iteration`,
   `adversarial`, `terminal-bench`, `terminal-bench-strategies`
+- **Product & demos** — `record-walkthroughs`, `design-system`
 - **Hooks** — `hooks-session-start`, `hooks-pre-compact`, `scripts-tool-router`
 
 ### `uap skill` CLI
