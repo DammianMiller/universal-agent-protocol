@@ -85,14 +85,18 @@ export class OpenAICompatClient implements ModelClient {
     options?: { maxTokens?: number; timeout?: number; temperature?: number; jsonResponse?: boolean }
   ): Promise<{ content: string; tokensUsed: { input: number; output: number }; latencyMs: number }> {
     const endpoint = (model.endpoint ?? this.defaultEndpoint).replace(/\/$/, '');
-    const apiKey = model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined;
+    // Local anthropic-proxy token gate (PROXY_AUTH_TOKEN, PR #590): a preset with
+    // no apiKeyEnvVar (the local qwen presets) must still authenticate to a
+    // token-gated proxy. The non-local-host guard below still blocks leaking it.
+    const apiKey =
+      (model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined) || process.env.PROXY_AUTH_TOKEN || undefined;
     const timeout = options?.timeout ?? this.timeoutMs;
 
     const url = new URL(`${endpoint}/chat/completions`);
     // Never send a credential in cleartext beyond the local network.
     if (apiKey && url.protocol !== 'https:' && !isLocalEndpoint(url)) {
       throw new Error(
-        `Refusing to send ${model.apiKeyEnvVar} over ${url.protocol}// to non-local host ${url.hostname} — use https.`
+        `Refusing to send ${model.apiKeyEnvVar ?? 'the local proxy token'} over ${url.protocol}// to non-local host ${url.hostname} — use https.`
       );
     }
 

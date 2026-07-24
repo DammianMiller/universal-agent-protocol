@@ -131,31 +131,55 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
     // real execution gate joins via redetect only on the NEXT turn (one-turn
     // lag). So gate the artifact's runtime HERE too — idempotent with the
     // redetected execution rung on later turns.
+    //
+    // SECONDARY mode (objective gates exist) under MAX FIDELITY also runs the
+    // vision review here. It used to run only in primary mode, so a run whose
+    // only red rung was a synthetic anti-vacuous self-gate never reached vision:
+    // the ladder stayed red, the aesthetic review was skipped, and the model
+    // stalled with no visual feedback while fidelity-max verify still BLOCKED
+    // delivery on that same vision score (Generator≠Evaluator). Ordering is
+    // preserved: the review runs only once the deliverable is OPERATIONAL
+    // (execution passes) and BEHAVING as specified (user paths not failing) —
+    // never grade pixels of an app that does not run or misbehaves.
+    const fidelity = resolveFidelity(root);
     let visualNote = '';
-    if (deps.primary) {
+    if (deps.primary || fidelity.max) {
       const exec = await executionGate(root);
       if (!exec.passed) {
+        // Operational gate: a build that does not run cannot be accepted, in
+        // either mode. (In secondary mode this gate only runs on a red ladder
+        // under runAcceptanceDespiteLadder; returning here avoids judging /
+        // grading a broken build.)
         return {
           passed: false,
           feedback: `EXECUTION FAILED — the code must run before it can be accepted:\n${exec.outputTail}`,
         };
-      }
-      // Visual gate: watch the artifact RUN — the observation summary becomes
-      // judge evidence (a code-evidence judge cannot see a never-started
-      // animation; this can).
-      const visual = await visualGate(root);
-      if (!visual.skipped && !visual.passed) {
-        return { passed: false, feedback: visual.feedback };
-      }
-      visualNote = visualRuntimeNote(visual);
-      // Fidelity-max: the loop must converge against the SAME aesthetic bar
-      // verify enforces, or "delivered" and "verified" diverge (run Y).
-      if (!visual.skipped) {
-        const visionReview = deps.visionReview ?? visionAcceptanceFeedback;
-        const shots = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
-        const visionFail = await visionReview(root, deps.specs.resolve(root), shots);
-        if (visionFail) {
-          return { passed: false, feedback: visionFail };
+      } else {
+        // Behavioral gate: do not grade how it LOOKS while user paths FAIL —
+        // fix the broken UX first (the required ordering).
+        const uv = userPathsNote(root);
+        const behavioralFailing = Boolean(uv?.trusted && /User-path validation FAILED/.test(uv.note));
+        if (!behavioralFailing) {
+          // Visual gate: watch the artifact RUN — the observation summary becomes
+          // judge evidence (a code-evidence judge cannot see a never-started
+          // animation; this can).
+          const visual = await visualGate(root);
+          if (!visual.skipped && !visual.passed && deps.primary) {
+            return { passed: false, feedback: visual.feedback };
+          }
+          visualNote = visualRuntimeNote(visual);
+          // Fidelity-max: the loop must converge against the SAME aesthetic bar
+          // verify enforces, or "delivered" and "verified" diverge (run Y).
+          // Runs in primary mode (always, as before) and in secondary mode under
+          // max fidelity (the new path that breaks the self-gate catch-22).
+          if (!visual.skipped && (deps.primary || fidelity.max)) {
+            const visionReview = deps.visionReview ?? visionAcceptanceFeedback;
+            const shots = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
+            const visionFail = await visionReview(root, deps.specs.resolve(root), shots);
+            if (visionFail) {
+              return { passed: false, feedback: visionFail };
+            }
+          }
         }
       }
     }

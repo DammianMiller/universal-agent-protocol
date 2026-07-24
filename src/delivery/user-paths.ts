@@ -301,6 +301,15 @@ export function renderAcceptanceContract(manifest: UserPathsManifest | null | un
         'expects an element to be visible, the click handler MUST make that element visible (e.g. toggle ' +
         'style.display / a CSS class). Build the transition — do not just place a hidden element on the page.'
     );
+    if (selectors.has('canvas') || required.some((s) => /canvas/i.test(s))) {
+      out.push(
+        'VISUAL QUALITY (a rendered <canvas> is graded aesthetically): the FIRST screen a user sees — the ' +
+          'menu/start/idle state — must already show a rich scene. Start your render loop from load and DRAW ' +
+          'the background and key visuals (starfield/parallax, title art, sprite/preview) in EVERY state, not ' +
+          'only during active play; a blank/dark canvas on the first screen scores near zero. Use the vibrant ' +
+          'on-theme palette and keep any full-screen DOM overlay background transparent so the canvas shows through.'
+      );
+    }
   }
   return out.join('\n');
 }

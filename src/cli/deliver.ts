@@ -1414,10 +1414,25 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const sg = await authorAcceptanceGate({ instruction, projectRoot, executor: evaluatorExecutor });
     for (const note of sg.notes) console.log(chalk.dim(`    ${note}`));
     if (!sg.rung) {
-      fail('Could not author an acceptance gate (model produced no runnable script).');
-    }
-    rungs.push(sg.rung);
-    if (sg.vacuous) {
+      // A max-fidelity run already has a REAL blocking gate independent of the
+      // self-gate: the vision aesthetic review (mission-acceptance) fails delivery
+      // until the UI scores >= threshold. When the objective gates are already
+      // green and only vision is red (e.g. iterating a working build's visuals), a
+      // failed self-gate is NOT fatal — fall through and let the acceptance + vision
+      // judge be the convergence target. Hard-fail only when there is genuinely no
+      // other target (no acceptance judge AND not max fidelity).
+      const visionWillBlock = resolveFidelity(projectRoot).max;
+      if (!options.acceptance && !visionWillBlock) {
+        fail('Could not author an acceptance gate (model produced no runnable script).');
+      }
+      console.log(
+        chalk.yellow(
+          '  ⚠ self-gate authoring failed — the acceptance / vision judge is the convergence target for this run.'
+        )
+      );
+    } else {
+      rungs.push(sg.rung);
+      if (sg.vacuous) {
       // P0 hard-fail: a REQUIRED self-gate that passes on the unsolved repo
       // re-opens the false-green door — "delivered" would be meaningless.
       if (process.env.UAP_DELIVER_ALLOW_WEAK_SELF_GATE !== '1') {
@@ -1434,6 +1449,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(
         chalk.green('  ✓ acceptance gate authored — fails on the unsolved repo, a real convergence target.')
       );
+      }
     }
   }
 
@@ -2042,6 +2058,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     runState.checkpoint = cp;
     saveRunState(runState);
   };
+  // Under max fidelity the vision aesthetic review is a BLOCKING release gate;
+  // let the acceptance gate run (and feed vision findings) even when the ladder
+  // is red on a synthetic anti-vacuous self-gate, so the model gets aesthetic
+  // feedback instead of stalling. The gate re-checks operational + behavioral
+  // itself before grading (mission-acceptance), preserving the required ordering.
+  loopConfig.runAcceptanceDespiteLadder = deliverFidelity.max;
   // Cooperative cancel from the dashboard: the loop polls this each turn.
   loopConfig.shouldStop = () => isStopRequested(projectRoot, runId);
   clearStop(projectRoot, runId);

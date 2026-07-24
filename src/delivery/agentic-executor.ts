@@ -860,7 +860,9 @@ async function _chat(
   forceWrite = false
 ): Promise<ChatMessage> {
   const url = `${endpoint.replace(/\/$/, '')}/chat/completions`;
-  const apiKey = model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined;
+  // Fall back to the local anthropic-proxy token (PROXY_AUTH_TOKEN, PR #590) so a
+  // local preset with no apiKeyEnvVar still authenticates to a token-gated proxy.
+  const apiKey = (model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined) || process.env.PROXY_AUTH_TOKEN || undefined;
   // Long headers/body timeouts + transient-failure retry: a local model
   // prefilling a big tool-loop prompt exceeds global fetch's 300s headers
   // timeout, which killed whole turns as `TypeError: fetch failed`.

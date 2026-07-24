@@ -185,6 +185,60 @@ describe('fidelity-max vision convergence (run Y delivered-vs-verify divergence,
     expect(r.feedback).toContain('empty bordered canvas');
   });
 
+  it('runs the vision review in SECONDARY mode under max fidelity (breaks the self-gate catch-22)', async () => {
+    const prev = process.env.UAP_FIDELITY;
+    process.env.UAP_FIDELITY = 'max';
+    try {
+      let visionRan = false;
+      const gate = buildMissionAcceptanceGate({
+        primary: false, // objective gates exist (e.g. a red anti-vacuous self-gate)
+        specs: createSpecRegistry({ initialSpec: 'a space shooter', sharedRoot: '/tmp/x' }),
+        judgeExecutor: async () => {
+          throw new Error('judge must not run when vision blocks');
+        },
+        executionGate: (async () => ({ passed: true, exitCode: 0, outputTail: '', durationMs: 1, via: 'vm-dom' })) as never,
+        visualGate: stubVisual,
+        userPathsNote: () => ({ note: 'User-path validation ALL PASSED (2 real-client journeys)', trusted: true }),
+        visionReview: async () => {
+          visionRan = true;
+          return 'VISION REVIEW FAILED — the rendered UI scores 3/10 (max-fidelity threshold 6).\n- off-palette planets';
+        },
+      });
+      const r = await gate('/tmp/x');
+      expect(visionRan).toBe(true);
+      expect(r.passed).toBe(false);
+      expect(r.feedback).toContain('VISION REVIEW FAILED');
+    } finally {
+      if (prev === undefined) delete process.env.UAP_FIDELITY;
+      else process.env.UAP_FIDELITY = prev;
+    }
+  });
+
+  it('does NOT grade aesthetics in secondary mode while user paths are FAILING (ordering)', async () => {
+    const prev = process.env.UAP_FIDELITY;
+    process.env.UAP_FIDELITY = 'max';
+    try {
+      let visionRan = false;
+      const gate = buildMissionAcceptanceGate({
+        primary: false,
+        specs: createSpecRegistry({ initialSpec: 'a space shooter', sharedRoot: '/tmp/x' }),
+        judgeExecutor: async () => ({ passed: false, verdict: 'reject', feedback: 'judge' }) as never,
+        executionGate: (async () => ({ passed: true, exitCode: 0, outputTail: '', durationMs: 1, via: 'vm-dom' })) as never,
+        visualGate: stubVisual,
+        userPathsNote: () => ({ note: 'User-path validation FAILED: start (click) — the artifact does not work', trusted: true }),
+        visionReview: async () => {
+          visionRan = true;
+          return 'VISION REVIEW FAILED';
+        },
+      });
+      await gate('/tmp/x');
+      expect(visionRan).toBe(false); // behavioral gate must pass before visual
+    } finally {
+      if (prev === undefined) delete process.env.UAP_FIDELITY;
+      else process.env.UAP_FIDELITY = prev;
+    }
+  });
+
   it('proceeds to the acceptance judge when the vision review passes (null)', async () => {
     const gate = buildMissionAcceptanceGate({
       primary: true,

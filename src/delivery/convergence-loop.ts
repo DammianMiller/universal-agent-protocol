@@ -338,6 +338,17 @@ export interface ConvergenceConfig {
    */
   autonomous?: boolean;
   /**
+   * Run the acceptance gate even when the verifier ladder is RED. Off by default
+   * (a broken build should not be judged). Set under max fidelity so the vision
+   * aesthetic review — a BLOCKING release gate — still runs and feeds findings
+   * when the ONLY red rung is a synthetic anti-vacuous self-gate: otherwise the
+   * self-gate starves the vision loop and the model stalls with no visual
+   * feedback while verify blocks delivery on that same score (Generator≠Evaluator).
+   * Safe because the mission-acceptance gate re-checks operational (execution) and
+   * behavioral (user-paths) itself before grading pixels.
+   */
+  runAcceptanceDespiteLadder?: boolean;
+  /**
    * Acceptance contract (user-path journeys + required selectors), derived up
    * front by the CLI from the manifest and injected into every executor prompt
    * so the model builds a complete, validator-drivable artifact. Optional and
@@ -721,7 +732,8 @@ export class ConvergenceLoop {
     ladder: LadderResult,
     opts: { atBaseline?: boolean; treeFp?: string | null } = {}
   ): Promise<{ ladder: LadderResult; acceptanceMet?: number }> {
-    if (!this.acceptanceGate || !ladder.passed) return { ladder };
+    if (!this.acceptanceGate) return { ladder };
+    if (!ladder.passed && !this.config.runAcceptanceDespiteLadder) return { ladder };
     // Anti-no-op rail (P0, 2026-07-13): acceptance is deterministically
     // withheld until the run has changed the tree — this also stops the
     // baseline check from short-circuiting a coding mission as

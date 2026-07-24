@@ -46,6 +46,9 @@ describe('renderAcceptanceContract', () => {
     // the canvas-only escape hatch that closes the gap for a small model
     expect(contract).toMatch(/canvas-only build cannot be validated/i);
     expect(contract).toMatch(/background:transparent/i);
+    // proactive visual-quality guidance (draw the attract scene from load)
+    expect(contract).toMatch(/VISUAL QUALITY/);
+    expect(contract).toMatch(/EVERY state/);
   });
 
   it('never lists shell selectors (body/html) as a requirement', () => {
