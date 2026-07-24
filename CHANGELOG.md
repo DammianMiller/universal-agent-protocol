@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.170.0 (2026-07-24)
+
+- fix(deliver): surface the real gate, bound the ladder cost, cap the contract
+
+
 ## v1.169.0 (2026-07-24)
 
 - chore: bump version to 1.168.0

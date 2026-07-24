@@ -203,3 +203,206 @@ describe('blocksPromotion — intra-tier fail-fast must not starve either', () =
     expect(r.results.find((x) => x.id === 'test')?.skipped).toBe(true);
   });
 });
+
+describe('cost ceiling — a red non-blocking rung must not buy a compose cycle every turn', () => {
+  const synthetic = (): GateRung => ({
+    id: 'acceptance',
+    name: 'acceptance',
+    command: 'true',
+    args: [],
+    required: true,
+    timeoutMs: 1000,
+    blocksPromotion: false,
+  });
+
+  it('defers the infrastructure tiers while a non-blocking rung is red', async () => {
+    // The self-gate is raised when the project's own gates are green and is
+    // REQUIRED to stay red until the mission is done. Without a ceiling, every
+    // turn of a long run pays for `docker compose up/down` and an ephemeral
+    // postgres — for a verdict that cannot change while the self-gate is red.
+    const calls: string[][] = [];
+    await runTieredLadder(
+      [synthetic(), rung('execution', 'runtime'), rung('itest', 'integration'), rung('compose', 'deploy-dev')],
+      '/tmp',
+      { runner: fakeRunner(new Set(['execution', 'itest', 'compose']), calls) }
+    );
+    const ran = calls.flat();
+    expect(ran).toContain('execution'); // cheap, and the signal we unblocked for
+    expect(ran).not.toContain('itest');
+    expect(ran).not.toContain('compose');
+  });
+
+  it('still runs the user-path tier — deferring it would re-starve what we unstarved', async () => {
+    const calls: string[][] = [];
+    await runTieredLadder([synthetic(), rung('user-paths', 'final')], '/tmp', {
+      runner: fakeRunner(new Set(['user-paths']), calls),
+    });
+    expect(calls.flat()).toContain('user-paths');
+  });
+
+  it('runs the infrastructure tiers normally when nothing non-blocking is red', async () => {
+    const calls: string[][] = [];
+    await runTieredLadder([rung('build'), rung('itest', 'integration')], '/tmp', {
+      runner: fakeRunner(new Set(['build', 'itest']), calls),
+    });
+    expect(calls.flat()).toContain('itest');
+  });
+
+  it('honours UAP_LADDER_NO_COST_CEILING=1', async () => {
+    const prev = process.env.UAP_LADDER_NO_COST_CEILING;
+    process.env.UAP_LADDER_NO_COST_CEILING = '1';
+    try {
+      const calls: string[][] = [];
+      await runTieredLadder([synthetic(), rung('itest', 'integration')], '/tmp', {
+        runner: fakeRunner(new Set(['itest']), calls),
+      });
+      expect(calls.flat()).toContain('itest');
+    } finally {
+      if (prev === undefined) delete process.env.UAP_LADDER_NO_COST_CEILING;
+      else process.env.UAP_LADDER_NO_COST_CEILING = prev;
+    }
+  });
+});
+
+describe('formatFeedback — the real gate gets the detail block, not the self-gate', () => {
+  it('prefers a promotion-BLOCKING failure over the synthetic one', async () => {
+    const { formatFeedback } = await import('../../src/delivery/verifier-ladder.js');
+    const rungs: GateRung[] = [
+      { id: 'acceptance', name: 'Acceptance check', command: 'true', args: [], required: true, timeoutMs: 1, blocksPromotion: false },
+      { id: 'build', name: 'Build', command: 'true', args: [], required: true, timeoutMs: 1 },
+    ];
+    // Results arrive in TIER_ORDER, so the fast-tier self-gate is FIRST — which
+    // is exactly how it used to win the single detail slot.
+    const results = [
+      { id: 'acceptance', name: 'Acceptance check', passed: false, skipped: false, exitCode: 1, durationMs: 1, outputTail: 'spec not yet satisfied' },
+      { id: 'build', name: 'Build', passed: false, skipped: false, exitCode: 1, durationMs: 1, outputTail: "TS2304: Cannot find name 'foo'" },
+    ];
+    const fb = formatFeedback(results, rungs);
+    expect(fb).toContain('Fix this gate first — Build output:');
+    expect(fb).toContain("TS2304: Cannot find name 'foo'");
+    expect(fb).not.toContain('spec not yet satisfied');
+    // The self-gate is still reported as failing in the summary list.
+    expect(fb).toContain('- Acceptance check: FAIL');
+  });
+
+  it('falls back to the synthetic rung when it is the ONLY failure', async () => {
+    const { formatFeedback } = await import('../../src/delivery/verifier-ladder.js');
+    const rungs: GateRung[] = [
+      { id: 'acceptance', name: 'Acceptance check', command: 'true', args: [], required: true, timeoutMs: 1, blocksPromotion: false },
+    ];
+    const results = [
+      { id: 'acceptance', name: 'Acceptance check', passed: false, skipped: false, exitCode: 1, durationMs: 1, outputTail: 'spec not yet satisfied' },
+    ];
+    const fb = formatFeedback(results, rungs);
+    expect(fb).toContain('spec not yet satisfied');
+  });
+});
+
+describe('cost ceiling — verdict-neutral, and it releases', () => {
+  const synthetic = (): GateRung => ({
+    id: 'acceptance', name: 'acceptance', command: 'true', args: [],
+    required: true, timeoutMs: 1000, blocksPromotion: false,
+  });
+
+  it('ANTI-DEADLOCK: once the self-gate goes green the infra tiers run and the ladder can PASS', async () => {
+    // The question the ceiling has to answer: can a project with integration /
+    // deploy-dev rungs still ever deliver? The flag is function-local and set only
+    // by a rung that FAILED, so a green self-gate leaves it false for the whole
+    // call and the deferred tiers execute normally.
+    const calls: string[][] = [];
+    const r = await runTieredLadder(
+      [synthetic(), rung('itest', 'integration'), rung('compose', 'deploy-dev')],
+      '/tmp',
+      { runner: fakeRunner(new Set(['acceptance', 'itest', 'compose']), calls) }
+    );
+    expect(calls.flat()).toContain('itest');
+    expect(calls.flat()).toContain('compose');
+    expect(r.passed).toBe(true);
+  });
+
+  it('the ceiling changes COST, never the verdict', async () => {
+    // Pin the invariant that makes the deferral safe: nonBlockingFailed can only
+    // be set by a required, in-scope rung that failed — which already forces
+    // passed=false. So on/off must agree.
+    const rungs = () => [synthetic(), rung('itest', 'integration')];
+    const withCeiling = await runTieredLadder(rungs(), '/tmp', {
+      runner: fakeRunner(new Set(['itest']), []),
+    });
+    const prev = process.env.UAP_LADDER_NO_COST_CEILING;
+    process.env.UAP_LADDER_NO_COST_CEILING = '1';
+    try {
+      const without = await runTieredLadder(rungs(), '/tmp', {
+        runner: fakeRunner(new Set(['itest']), []),
+      });
+      expect(withCeiling.passed).toBe(without.passed);
+      expect(withCeiling.passed).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.UAP_LADDER_NO_COST_CEILING;
+      else process.env.UAP_LADDER_NO_COST_CEILING = prev;
+    }
+  });
+
+  it('does not apply retroactively when the non-blocking rung is in a LATER tier', async () => {
+    const calls: string[][] = [];
+    const late: GateRung = {
+      id: 'late', name: 'late', command: 'true', args: [],
+      required: true, timeoutMs: 1000, tier: 'final', blocksPromotion: false,
+    };
+    await runTieredLadder([rung('itest', 'integration'), late], '/tmp', {
+      runner: fakeRunner(new Set(['itest']), calls),
+    });
+    expect(calls.flat()).toContain('itest'); // already paid for before the flag could be set
+  });
+});
+
+describe('formatFeedback — a tailless required failure is never called OPTIONAL', () => {
+  it('shows the non-blocking tail rather than nothing when the blocking rung is silent', async () => {
+    const { formatFeedback } = await import('../../src/delivery/verifier-ladder.js');
+    const rungs: GateRung[] = [
+      { id: 'acceptance', name: 'Acceptance check', command: 'true', args: [], required: true, timeoutMs: 1, blocksPromotion: false },
+      { id: 'script', name: 'Script gate', command: 'true', args: [], required: true, timeoutMs: 1 },
+    ];
+    const results = [
+      { id: 'acceptance', name: 'Acceptance check', passed: false, skipped: false, exitCode: 1, durationMs: 1, outputTail: 'spec not yet satisfied' },
+      { id: 'script', name: 'Script gate', passed: false, skipped: false, exitCode: 1, durationMs: 1, outputTail: '' },
+    ];
+    const fb = formatFeedback(results, rungs);
+    // Preferring the tailless blocking rung would have printed NO detail at all.
+    expect(fb).toContain('spec not yet satisfied');
+    expect(fb).not.toContain('is OPTIONAL');
+  });
+
+  it('names a silent REQUIRED failure instead of mislabelling it optional', async () => {
+    const { formatFeedback } = await import('../../src/delivery/verifier-ladder.js');
+    const rungs: GateRung[] = [
+      { id: 'script', name: 'Script gate', command: 'true', args: [], required: true, timeoutMs: 1 },
+    ];
+    const results = [
+      { id: 'script', name: 'Script gate', passed: false, skipped: false, exitCode: 3, durationMs: 1, outputTail: '' },
+    ];
+    const fb = formatFeedback(results, rungs);
+    expect(fb).toContain('failed with no output (exit 3)');
+    expect(fb).not.toContain('is OPTIONAL');
+  });
+});
+
+describe('deferred rungs are reported honestly', () => {
+  it('labels a cost-deferred rung DEFERRED, not "earlier gate failed"', async () => {
+    const { formatFeedback } = await import('../../src/delivery/verifier-ladder.js');
+    const calls: string[][] = [];
+    const synthetic: GateRung = {
+      id: 'acceptance', name: 'acceptance', command: 'true', args: [],
+      required: true, timeoutMs: 1000, blocksPromotion: false,
+    };
+    const rungs = [synthetic, rung('itest', 'integration')];
+    const r = await runTieredLadder(rungs, '/tmp', { runner: fakeRunner(new Set(['itest']), calls) });
+
+    const deferred = r.results.find((x) => x.id === 'itest');
+    expect(deferred?.skipped).toBe(true);
+    expect(deferred?.skipReason).toBe('deferred-cost');
+    // No gate failed in the blocking sense — saying one did sends the model hunting.
+    const fb = formatFeedback(r.results, rungs);
+    expect(fb).toContain('DEFERRED');
+    expect(fb).not.toMatch(/itest.*earlier gate failed/);
+  });
+});
