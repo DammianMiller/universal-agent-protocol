@@ -126,7 +126,7 @@ uap setup [options]
 | `--no-self-update` | Skip the automatic UAP CLI version check / self-update (also `UAP_NO_SELF_UPDATE=1`) |
 | `--systemd-services` | Scaffold user systemd services for llama.cpp + anthropic proxy |
 | `-d, --project-dir <path>` | Target project directory (defaults to cwd) |
-| `-i, --interactive` | Run the guided wizard (now the default; kept for back-compat) |
+| `-i, --interactive` | Run the guided wizard (the default) |
 
 The guided wizard (default) prompts for harnesses, memory tiers, coordination,
 patterns, policies, model provider/profile, hooks, and browser — with smart

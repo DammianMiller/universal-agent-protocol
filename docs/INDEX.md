@@ -1,6 +1,6 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.137.1) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.163) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line.
 
 > **Reviewing the system?** The reverse-engineered, code-verified reference set lives in
 > [`documentation/`](../documentation/architecture.md): architecture, flows, permissions

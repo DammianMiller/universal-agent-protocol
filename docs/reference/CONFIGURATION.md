@@ -1,6 +1,6 @@
 # Configuration Reference
 
-> Universal Agent Protocol (UAP) v1.93.1
+> Universal Agent Protocol (UAP) v1.163
 
 > **🏭 Where this fits:** Cross-cutting — the settings that tune every station.
 > **What it delivers:** the dials that decide how your [delivery pipeline](../guides/DELIVERY_PIPELINE.md)

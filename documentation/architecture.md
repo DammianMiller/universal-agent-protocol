@@ -8,8 +8,7 @@ memory injection, policy enforcement, verification gates, and tool-output compre
 **What UAP is (implementation):** a TypeScript/Node CLI (`uap`, `src/bin/cli.ts`, ~40
 top-level commands) plus a Python FastAPI model proxy, wired into harnesses via shell
 hooks, four SQLite databases, an optional Docker Qdrant vector store, and a bubblewrap
-kernel sandbox. Version at time of writing: **1.124.1** (several older docs still say
-1.93.1).
+kernel sandbox. Version: **v1.163**.
 
 ## Stack
 
@@ -103,11 +102,8 @@ local tool. Identity boundaries are process/trust-tier based (see `permissions.m
   active delivery enforcer exempts the policy directories — see `permissions.md` §Findings.
 - Of 50 active policy rows, only **17 enforce at runtime**; the rest are markdown-keyword
   (Plane B) advisories that never see native Edit/Write/Bash.
-- The agentic executor's header still calls itself an unprotected "capability spike";
-  the protections have since been implemented (protected paths, snapshot-restore,
-  context budget). The explorer module doc likewise calls worktree-isolated parallel
-  verification "planned" although it is implemented (`candidate-workspace.ts`).
-- Older docs (README, docs/INDEX, OVERVIEW) carry stale version/coverage numbers.
+- The agentic executor enforces protected paths, snapshot-restore, and a context budget.
+  Worktree-isolated parallel verification is implemented in `candidate-workspace.ts`.
 
 ## Conditional capabilities
 
