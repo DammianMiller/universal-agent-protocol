@@ -86,19 +86,34 @@ never turns every edit into a network round-trip.
 | `UAP_COORD_DRIFT=off` | disable |
 | `UAP_COORD_FETCH_SECONDS` | fetch throttle (default 600) |
 
-### 4. Blocked from drifting too far — NOT YET INSTALLED
+An in-progress merge, rebase, cherry-pick or revert is exempt — the files you must
+edit to resolve a conflict are by definition the ones that moved upstream.
 
-> **Status: not shipped in this release.** The `branch-freshness` enforcer is
-> written but lives outside the repo, because the `enforcement-self-protect`
-> policy (correctly) forbids agents from writing into `src/policies/`. It needs an
-> operator to install it with `UAP_SELF_PROTECT_OFF=1`. Until then there is **no
-> commit-count ceiling** — a branch 1242 commits behind can still edit any file
-> that has not itself moved upstream. Layer 3 above is what is actually enforcing
-> today.
+### 4. Blocked from drifting too far
 
-Once installed it warns at 50 commits behind and blocks at 200 — the backstop for
-a branch whose whole model of the codebase has gone stale. Tunable with
-`UAP_FRESHNESS_WARN` / `UAP_FRESHNESS_BLOCK`, disabled with `UAP_NO_FRESHNESS=1`.
+The `branch-freshness` enforcer (`src/policies/enforcers/branch_freshness.py`)
+warns at 50 commits behind and blocks at 200 — the backstop for a branch whose
+whole model of the codebase has gone stale, where the eventual merge is a rewrite
+rather than a merge. Where layer 3 is file-precise, this is branch-coarse.
+
+```
+branch-freshness: this worktree is 1242 commits behind origin/master (limit 200).
+Edits here are being written against a codebase that has moved on, and the merge
+will be a rewrite rather than a merge. Run `uap worktree sync` first.
+```
+
+| Variable | Effect |
+|---|---|
+| `UAP_FRESHNESS_WARN` | advisory threshold (default 50) |
+| `UAP_FRESHNESS_BLOCK` | blocking threshold (default 200) |
+| `UAP_NO_FRESHNESS=1` | disable |
+
+Only worktree edits are in scope; the main checkout is governed by
+`worktree-required`. Fails open on a repo with no remote. It is part of the
+`team` policy scenario — `uap policy select` to enable it.
+
+The same 200-commit figure drives the `STALE — safe to prune` marker in
+`uap worktree hygiene`, which is a report, not a gate.
 
 The 200-commit figure also drives the `STALE — safe to prune` marker in
 `uap worktree hygiene`, which is a report, not a gate.
