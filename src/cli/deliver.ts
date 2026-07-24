@@ -28,7 +28,7 @@ import type { StrategySeed } from '../delivery/explorer.js';
 import { generateStrategySeeds, seedsFromIdeas } from '../delivery/ideation.js';
 import { DEFAULT_STRATEGY_SEEDS } from '../delivery/explorer.js';
 import { planAutoOptimization } from '../delivery/auto-optimizer.js';
-import { RoutingPresets, resolvePresetModel } from '../models/types.js';
+import { RoutingPresets, resolvePresetModel, resolvePhaseChain } from '../models/types.js';
 import type { TaskComplexity } from '../models/types.js';
 import { classifyComplexity, tierToRouting } from '../models/complexity.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
@@ -1259,11 +1259,25 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         return false;
       }
     })();
+  // Q3: when a routing preset is active, prefer ITS review-phase model as the
+  // distinct judge (compose S1 verification with the S3 per-phase matrix) instead
+  // of the hardcoded haiku default — the preset's designated reviewer IS the
+  // Generator≠Evaluator choice. resolveJudgePlan still swaps to the alt judge if
+  // this collides with the generator, and only uses it on the auto-distinct path.
+  const routingIdForJudge = options.routing ?? process.env.UAP_DELIVER_ROUTING;
+  const presetForJudge = routingIdForJudge ? RoutingPresets[routingIdForJudge] : undefined;
+  const reviewJudgeId = presetForJudge
+    ? resolvePhaseChain(presetForJudge, {
+        complexity: tierToRouting(classifyComplexity({ instruction }).tier),
+        phase: 'review',
+      })[0]
+    : undefined;
   const judgePlan = resolveJudgePlan({
     evaluatorPresetId,
     generatorId: model.id,
     generatorProvider: ModelPresets[presetId as keyof typeof ModelPresets]?.provider,
     allowSelfJudge,
+    distinctJudgeId: reviewJudgeId,
     hasPreset: (id) => Boolean(ModelPresets[id as keyof typeof ModelPresets]),
   });
   const judgeModelId = judgePlan.judgeModelId;

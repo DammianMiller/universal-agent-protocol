@@ -74,6 +74,34 @@ describe('resolveJudgePlan', () => {
     expect(p.judgeModelId).toBe('qwen36-a3b');
   });
 
+  it('Q3: uses a preset-supplied distinctJudgeId (review-chain model) as the judge', () => {
+    const p = resolveJudgePlan({
+      evaluatorPresetId: null,
+      generatorId: 'qwen36-a3b',
+      generatorProvider: 'anthropic', // cloud path so the distinct judge is selected
+      allowSelfJudge: false,
+      distinctJudgeId: 'sonnet-5', // e.g. adaptive-tiered's review-phase model
+      hasPreset,
+    });
+    expect(p.distinct).toBe(true);
+    expect(p.reason).toBe('auto-distinct-judge');
+    expect(p.judgeModelId).toBe('sonnet-5');
+  });
+
+  it('Q3: swaps to altJudgeId when the review model collides with the generator', () => {
+    const p = resolveJudgePlan({
+      evaluatorPresetId: null,
+      generatorId: 'sonnet-5',
+      generatorProvider: 'anthropic',
+      allowSelfJudge: false,
+      distinctJudgeId: 'sonnet-5', // collides with the generator
+      altJudgeId: 'opus-4.8',
+      hasPreset,
+    });
+    expect(p.judgeModelId).toBe('opus-4.8'); // fell to the alt
+    expect(p.judgeModelId).not.toBe('sonnet-5');
+  });
+
   it('does not auto-select a judge preset that is unavailable', () => {
     const p = resolveJudgePlan({
       evaluatorPresetId: null,

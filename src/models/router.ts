@@ -19,6 +19,7 @@ import {
   DEFAULT_ROUTING_RULES,
   ModelRole,
 } from './types.js';
+import { classifyComplexity, tierToRouting } from './complexity.js';
 import { createLogger } from '../utils/logger.js';
 import { AdaptiveCache } from '../utils/adaptive-cache.js';
 
@@ -202,17 +203,18 @@ export class ModelRouter {
     const lowerTask = taskDescription.toLowerCase();
     const words = lowerTask.split(/\s+/);
 
-    // Detect complexity
-    let complexity: TaskComplexity = 'medium';
+    // Detect complexity. Q2: the keyword scan is retained only for the
+    // confidence signal / matched-keywords; the AUTHORITATIVE tier comes from
+    // the unified classifier so router.classifyTask and deliver's tier lookups
+    // agree (trivial folds to low for the 4-level routing scale).
     let maxComplexityScore = 0;
-
-    for (const [level, keywords] of Object.entries(COMPLEXITY_KEYWORDS)) {
+    for (const keywords of Object.values(COMPLEXITY_KEYWORDS)) {
       const score = keywords.filter((kw) => lowerTask.includes(kw)).length;
-      if (score > maxComplexityScore) {
-        maxComplexityScore = score;
-        complexity = level as TaskComplexity;
-      }
+      if (score > maxComplexityScore) maxComplexityScore = score;
     }
+    const complexity: TaskComplexity = tierToRouting(
+      classifyComplexity({ instruction: taskDescription }).tier
+    );
 
     // Detect task type
     let taskType: TaskClassificationResult['taskType'] = 'coding';
