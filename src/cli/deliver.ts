@@ -31,6 +31,7 @@ import { planAutoOptimization } from '../delivery/auto-optimizer.js';
 import { RoutingPresets, resolvePresetModel, resolvePhaseChain } from '../models/types.js';
 import type { TaskComplexity } from '../models/types.js';
 import { classifyComplexity, tierToRouting } from '../models/complexity.js';
+import { promptSelectionFromConfig } from '../self-tuning/prompt-variants.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
 import { applyPendingIntents } from '../delivery/pending-intents.js';
 import { runAcceptanceGate } from '../delivery/acceptance-judge.js';
@@ -1854,6 +1855,15 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     projectRoot,
     maxTurns,
     rungs,
+    // MIPRO (S8/3a): feed any tuner-selected prompt-fragment variants from
+    // .uap.json to the prompt builder. Empty/absent → the byte-identical default.
+    promptSelection: (() => {
+      try {
+        return promptSelectionFromConfig((loadUapConfigRaw(projectRoot) ?? {}) as Record<string, unknown>);
+      } catch {
+        return undefined;
+      }
+    })(),
     // The agentic executor mutates the repo directly (no-op applier), so
     // gates must run every turn regardless of applier file count.
     alwaysVerify: agentic ? true : undefined,

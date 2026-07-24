@@ -596,7 +596,10 @@ export const MultiModelConfigSchema = z.object({
     })
     .optional(),
 
-  // Custom routing matrix override
+  // Custom routing matrix (per-complexity model). NOTE: this is a FALLBACK —
+  // when `routingPreset` is set and resolvable, the router selects from the
+  // canonical per-phase source (resolvePhaseChain) and this matrix is ignored
+  // for selection (it is retained for legacy configs and display).
   routingMatrix: z
     .record(
       z.enum(['low', 'medium', 'high', 'critical']),
@@ -616,6 +619,11 @@ export const MultiModelConfigSchema = z.object({
       'adaptive', // Learn from task results
     ])
     .default('balanced'),
+  // Q4: the source RoutingPreset id. When set and resolvable, the router selects
+  // models from the CANONICAL per-phase source (resolvePhaseChain) rather than
+  // the flattened routingMatrix — which is demoted to a fallback for configs that
+  // predate this field. Persisted by `uap model routing use`.
+  routingPreset: z.string().optional(),
 
   // Planner-specific settings
   plannerSettings: z
