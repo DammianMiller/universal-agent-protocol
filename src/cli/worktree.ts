@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { cpSync, existsSync, readdirSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { simpleGit, SimpleGit } from 'simple-git';
 import Database from 'better-sqlite3';
 import { execSync } from 'child_process';
@@ -35,7 +35,28 @@ interface WorktreeOptions {
   all?: boolean;
 }
 
+/** Commits behind the integration ref at which a worktree reads as abandoned. */
+export const STALE_BEHIND_LIMIT = 200;
+
 let worktreeDb: Database.Database | null = null;
+
+/**
+ * The MAIN checkout — where .worktrees/ and the shared coordination DB live.
+ * git-common-dir resolves it even when called from inside a linked worktree.
+ */
+async function mainRootOf(git: SimpleGit): Promise<string> {
+  try {
+    const common = (await git.raw(['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim();
+    if (common) return dirname(common);
+  } catch {
+    // older git without --path-format, or not a repo
+  }
+  try {
+    return (await git.revparse(['--show-toplevel'])).trim();
+  } catch {
+    return process.cwd();
+  }
+}
 
 function getWorktreeDb(cwd: string): Database.Database {
   if (worktreeDb) return worktreeDb;
@@ -486,6 +507,53 @@ export interface BranchDrift {
   ahead: number;
   /** Count of uncommitted (staged + unstaged + untracked) entries. */
   dirty: number;
+  /** A live agent is announcing work on this branch right now. */
+  active?: boolean;
+}
+
+/**
+ * Branches a LIVE agent is currently announcing work on.
+ *
+ * Git metadata alone cannot tell "abandoned" from "someone is working here this
+ * second": both look like an old branch with uncommitted files. That ambiguity is
+ * not academic — a worktree in this repo was read as abandoned WIP and merged
+ * forward while its owning agent was mid-session, because the drift report only
+ * ever consulted git. The coordination DB knows the difference; join against it.
+ *
+ * Liveness uses the same heartbeat window as coordinate-file.sh so "live" means
+ * one thing across the system. Fail-open: an unreadable DB marks nothing active.
+ */
+export function liveAgentBranches(mainRoot: string): Set<string> {
+  const windowSeconds = Number.parseInt(process.env.UAP_COORD_LIVE_SECONDS ?? '', 10) || 120;
+  const branches = new Set<string>();
+  const dbPath = join(mainRoot, 'agents', 'data', 'coordination', 'coordination.db');
+  if (!existsSync(dbPath)) return branches;
+  let db: Database.Database | null = null;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT wa.worktree_branch AS branch
+           FROM work_announcements wa
+           LEFT JOIN agent_registry ar ON ar.id = wa.agent_id
+          WHERE wa.completed_at IS NULL
+            AND wa.worktree_branch IS NOT NULL
+            AND COALESCE(ar.status, 'active') = 'active'
+            AND (strftime('%s','now')
+                 - strftime('%s', COALESCE(ar.last_heartbeat, wa.announced_at))) < ?`
+      )
+      .all(windowSeconds) as Array<{ branch: string | null }>;
+    for (const r of rows) if (r.branch) branches.add(r.branch);
+  } catch {
+    // No coordination DB / schema predates announcements — report nothing active.
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  return branches;
 }
 
 /**
@@ -699,11 +767,16 @@ async function worktreeHygiene(
   const cheap = await mapLimit(refs, 8, (r) =>
     measureDrift(r.path, integrationRef, r.branch, false)
   );
-  const drifts = await mapLimit(
+  const measured = await mapLimit(
     cheap.filter((d): d is BranchDrift => d !== null),
     8,
     async (d) => (d.ahead > 0 ? ((await measureDrift(d.path, integrationRef, d.branch, true)) ?? d) : d)
   );
+
+  // Mark the worktrees someone is actually working in, so "old" is never read as
+  // "abandoned". A live worktree must never be offered up for pruning.
+  const live = liveAgentBranches(await mainRootOf(git));
+  const drifts = measured.map((d) => ({ ...d, active: live.has(d.branch) }));
 
   const atRisk = drifts.filter((d) => d.ahead > 0 || d.dirty > 0);
   const summary = summarizeHygiene(drifts, integrationRef);
@@ -723,10 +796,13 @@ async function worktreeHygiene(
   console.log('| Worktree | Behind | Ahead | Dirty | Status |');
   console.log('|----------|--------|-------|-------|--------|');
   for (const d of drifts) {
-    const status =
-      d.ahead > 0 || d.dirty > 0
+    // ACTIVE outranks every other label: an old, drifted, dirty worktree with a
+    // live agent in it is not stale work, it is work in progress.
+    const status = d.active
+      ? chalk.cyan('ACTIVE — agent working here')
+      : d.ahead > 0 || d.dirty > 0
         ? chalk.yellow('UNMERGED WORK')
-        : d.behind > 200
+        : d.behind > STALE_BEHIND_LIMIT
           ? chalk.red('STALE — safe to prune')
           : chalk.dim('clean');
     console.log(`| ${d.name} | ${d.behind} | ${d.ahead} | ${d.dirty} | ${status} |`);
@@ -750,18 +826,29 @@ async function worktreeHygiene(
  */
 export function summarizeHygiene(drifts: BranchDrift[], integrationRef: string): string {
   if (drifts.length === 0) return '';
-  const atRisk = drifts.filter((d) => d.ahead > 0 || d.dirty > 0);
-  const stale = drifts.filter((d) => d.behind > 200);
-  if (atRisk.length === 0 && stale.length === 0) return '';
+  // Active worktrees are excluded from BOTH risk counts: they are neither
+  // abandoned nor at risk, they are being worked on. Counting them as drift is
+  // how a live worktree gets mistaken for salvage.
+  const idle = drifts.filter((d) => !d.active);
+  const active = drifts.filter((d) => d.active);
+  const atRisk = idle.filter((d) => d.ahead > 0 || d.dirty > 0);
+  const stale = idle.filter((d) => d.behind > STALE_BEHIND_LIMIT);
+  if (atRisk.length === 0 && stale.length === 0 && active.length === 0) return '';
 
-  const worst = drifts.reduce((a, b) => (b.behind > a.behind ? b : a));
   const parts: string[] = [];
   if (atRisk.length > 0) {
     parts.push(`${atRisk.length} worktree(s) hold unmerged or uncommitted work`);
   }
   if (stale.length > 0) {
-    parts.push(`${stale.length} are >200 commits behind ${integrationRef}`);
+    parts.push(`${stale.length} are >${STALE_BEHIND_LIMIT} commits behind ${integrationRef}`);
   }
+  if (active.length > 0) {
+    parts.push(`${active.length} have a LIVE agent working in them (do not reclaim)`);
+  }
+  if (parts.length === 0) return '';
+
+  const ranked = idle.length > 0 ? idle : drifts;
+  const worst = ranked.reduce((a, b) => (b.behind > a.behind ? b : a));
   return (
     `⚠️  Worktree drift: ${parts.join('; ')} ` +
     `(worst: ${worst.name} at ${worst.behind} behind). Run \`uap worktree hygiene\`.`
@@ -1021,6 +1108,45 @@ async function pruneStaleWorktrees(
     console.log(chalk.green(`No worktrees older than ${days} days found`));
     return;
   }
+
+  // NEVER reclaim a worktree an agent is live in. Age is not abandonment: a
+  // month-old worktree can have someone working in it right now, and prune
+  // deletes the directory — uncommitted work included. This is the one place in
+  // the system where getting "stale" wrong is unrecoverable.
+  const liveBranches = liveAgentBranches(await mainRootOf(simpleGit(cwd)));
+  const protectedRows: typeof stale = [];
+  const prunable = stale.filter((row) => {
+    let branch = '';
+    try {
+      branch = execSync('git rev-parse --abbrev-ref HEAD', {
+        cwd: row.worktree_path,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    } catch {
+      return true; // unreadable worktree: nothing to protect
+    }
+    if (branch && liveBranches.has(branch)) {
+      protectedRows.push(row);
+      return false;
+    }
+    return true;
+  });
+
+  if (protectedRows.length > 0) {
+    console.log(
+      chalk.cyan(
+        `Skipping ${protectedRows.length} worktree(s) with a LIVE agent working in them: ` +
+          `${protectedRows.map((r) => r.slug).join(', ')}`
+      )
+    );
+  }
+  if (prunable.length === 0) {
+    console.log(chalk.green('Nothing prunable — every candidate has a live agent in it.'));
+    return;
+  }
+  stale.length = 0;
+  stale.push(...prunable);
 
   console.log(chalk.bold(`Found ${stale.length} stale worktree(s) older than ${days} days:`));
   console.log('');

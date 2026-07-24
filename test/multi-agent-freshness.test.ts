@@ -37,7 +37,13 @@ import {
   checksVerdict,
   type PullRequest,
 } from '../src/cli/merge-queue.js';
-import { parseRevListCount, summarizeHygiene, type BranchDrift } from '../src/cli/worktree.js';
+import {
+  parseRevListCount,
+  summarizeHygiene,
+  liveAgentBranches,
+  STALE_BEHIND_LIMIT,
+  type BranchDrift,
+} from '../src/cli/worktree.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(__dirname, '../templates/hooks/coordinate-file.sh');
@@ -445,5 +451,94 @@ describe('worktree hygiene reporting', () => {
     expect(msg).toContain('2 worktree(s) hold unmerged or uncommitted work');
     expect(msg).toContain('1 are >200 commits behind origin/master');
     expect(msg).toContain('worst: c at 1241 behind');
+  });
+});
+
+describe('live-agent awareness (git metadata cannot tell abandoned from in-progress)', () => {
+  const drift = (over: Partial<BranchDrift>): BranchDrift => ({
+    name: 'wt',
+    path: '/tmp/wt',
+    branch: 'feature/x',
+    behind: 0,
+    ahead: 0,
+    dirty: 0,
+    ...over,
+  });
+
+  function coordDb(rows: Array<{ branch: string; ageSeconds: number; status?: string }>): string {
+    const root = mkdtempSync(join(tmpdir(), 'uap-live-'));
+    tmpDirs.push(root);
+    const dir = join(root, 'agents', 'data', 'coordination');
+    mkdirSync(dir, { recursive: true });
+    const db = join(dir, 'coordination.db');
+    const sql = [
+      `CREATE TABLE agent_registry (id TEXT PRIMARY KEY, name TEXT, session_id TEXT, status TEXT,
+         current_task TEXT, worktree_branch TEXT, started_at TEXT, last_heartbeat TEXT, capabilities TEXT);`,
+      `CREATE TABLE work_announcements (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT, agent_name TEXT,
+         worktree_branch TEXT, intent_type TEXT, resource TEXT, description TEXT, files_affected TEXT,
+         estimated_completion TEXT, announced_at TEXT, completed_at TEXT);`,
+    ];
+    rows.forEach((r, i) => {
+      const id = `agent-${i}`;
+      sql.push(
+        `INSERT INTO agent_registry (id,name,session_id,status,started_at,last_heartbeat)
+         VALUES ('${id}','a','${id}','${r.status ?? 'active'}', datetime('now'), datetime('now','-${r.ageSeconds} seconds'));`
+      );
+      sql.push(
+        `INSERT INTO work_announcements (agent_id,agent_name,worktree_branch,intent_type,resource,announced_at)
+         VALUES ('${id}','a','${r.branch}','editing','src/a.ts', datetime('now','-${r.ageSeconds} seconds'));`
+      );
+    });
+    const res = spawnSync('sqlite3', [db, sql.join('\n')], { encoding: 'utf-8' });
+    if (res.status !== 0) throw new Error(`sqlite3 failed: ${res.stderr}`);
+    return root;
+  }
+
+  it('reports a branch whose agent is heartbeating as live', () => {
+    const root = coordDb([{ branch: 'feature/live', ageSeconds: 10 }]);
+    expect(liveAgentBranches(root).has('feature/live')).toBe(true);
+  });
+
+  it('does NOT report an agent whose heartbeat went stale', () => {
+    const root = coordDb([{ branch: 'feature/dead', ageSeconds: 100000 }]);
+    expect(liveAgentBranches(root).has('feature/dead')).toBe(false);
+  });
+
+  it('ignores completed agents', () => {
+    const root = coordDb([{ branch: 'feature/done', ageSeconds: 5, status: 'completed' }]);
+    expect(liveAgentBranches(root).has('feature/done')).toBe(false);
+  });
+
+  it('fails open when there is no coordination DB', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'uap-nodb-'));
+    tmpDirs.push(empty);
+    expect(liveAgentBranches(empty).size).toBe(0);
+  });
+
+  it('an ACTIVE worktree is never counted as drift or as prunable-stale', () => {
+    // The failure this exists to prevent: an old, drifted, dirty worktree with a
+    // live agent in it reads as abandoned salvage on git metadata alone. It is not.
+    const active = summarizeHygiene(
+      [drift({ name: 'busy', behind: 1242, ahead: 3, dirty: 8, active: true })],
+      'origin/master'
+    );
+    expect(active).toContain('LIVE agent');
+    expect(active).not.toContain('hold unmerged or uncommitted work');
+    expect(active).not.toContain('commits behind');
+  });
+
+  it('still reports genuinely idle drift alongside active worktrees', () => {
+    const msg = summarizeHygiene(
+      [
+        drift({ name: 'busy', behind: 1242, ahead: 2, active: true }),
+        drift({ name: 'idle', behind: 900 }),
+        drift({ name: 'orphan', ahead: 4 }),
+      ],
+      'origin/master'
+    );
+    expect(msg).toContain('1 worktree(s) hold unmerged or uncommitted work'); // orphan only
+    expect(msg).toContain(`1 are >${STALE_BEHIND_LIMIT} commits behind`); // idle only
+    expect(msg).toContain('1 have a LIVE agent');
+    expect(msg).toContain('worst: idle at 900 behind'); // ranked among IDLE, not the busy one
   });
 });
