@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.169.0 (2026-07-24)
+
+- chore: bump version to 1.168.0
+- fix(worktree): prune could delete every worktree, including on --dry-run
+- chore: bump version to 1.167.0
+- fix(worktree): never mistake a LIVE worktree for abandoned work
+- feat(execution-gate): catch a canvas app whose render loop never runs or FREEZES on start
+- chore: bump version to 1.166.0
+- feat(policy): install branch-freshness gate + rewrite coord-overlap
+- chore: bump version to 1.165.1
+- fix(coordination): address parallel expert review — drift check was inert
+- chore: bump version to 1.165.0
+- feat(coordination): keep parallel agents fresh and collision-free
+
+
 ## v1.168.0 (2026-07-24)
 
 - fix(worktree): prune could delete every worktree, including on --dry-run
@@ -21,6 +36,20 @@
 - feat(skills): record-walkthroughs — automated product walkthrough videos (#591)
 - chore: bump version to 1.164.0
 - feat(proxy): run the operational dashboard as part of the uap proxy
+## v1.166.0 (2026-07-24)
+
+- fix(ladder): the starvation fix was half a fix — intra-tier fail-fast too
+- fix(ladder): a synthetic self-gate must not starve the real gates behind it
+- fix(deliver): close the false-green and judge-evidence holes a review found
+- chore: bump version to 1.165.0
+- fix(security): never send the local proxy token off-machine
+- feat(deliver): break the self-gate/vision catch-22 under max fidelity
+- fix(policies): iac gate must look the PR up in the repo being merged (#592)
+- feat(skills): record-walkthroughs — automated product walkthrough videos (#591)
+- feat(deliver): small-model resilience — achievable journeys, per-write syntax check, actionable vision feedback, full-gate keep-best
+- chore: bump version to 1.164.0
+- feat(proxy): run the operational dashboard as part of the uap proxy
+- feat(deliver): inject the up-front user-path acceptance contract into the executor
 - docs: rewrite documentation to pure current-state (no change-over-time)
 - fix(deliver): address deep-rewire review findings (tier-guard + tuner wiring)
 - feat(models): Q4-full route selectModel through the canonical per-phase source

@@ -113,3 +113,93 @@ describe('runTieredLadder', () => {
     expect(deployCalls).toEqual([['smoke']]);
   });
 });
+
+describe('blocksPromotion — a synthetic rung must not starve the real gates', () => {
+  it('a failing NON-blocking rung still runs later tiers', async () => {
+    // The self-gate is model-authored and untiered, so it lands in `fast`. While
+    // red it used to stop promotion, starving the execution gate (runtime) and
+    // the user-path validator (final) at the same time — and that is the STEADY
+    // STATE for a mature repo, because needsSelfGate is raised precisely when the
+    // project's own gates are all green.
+    const calls: string[][] = [];
+    const synthetic: GateRung = {
+      id: 'acceptance',
+      name: 'acceptance',
+      command: 'true',
+      args: [],
+      required: true,
+      timeoutMs: 1000,
+      blocksPromotion: false,
+    };
+    const result = await runTieredLadder(
+      [synthetic, rung('execution', 'runtime'), rung('user-paths', 'final')],
+      '/tmp',
+      { runner: fakeRunner(new Set(['execution', 'user-paths']), calls) }
+    );
+
+    // Every tier ran despite the red synthetic rung.
+    expect(calls.flat()).toContain('execution');
+    expect(calls.flat()).toContain('user-paths');
+    // …and it still fails the ladder: not promotion-blocking is not a free pass.
+    expect(result.passed).toBe(false);
+    expect(result.results.find((r) => r.id === 'execution')?.passed).toBe(true);
+  });
+
+  it('a failing BLOCKING rung still stops promotion (default unchanged)', async () => {
+    const calls: string[][] = [];
+    const result = await runTieredLadder(
+      [rung('build'), rung('execution', 'runtime')],
+      '/tmp',
+      { runner: fakeRunner(new Set(['execution']), calls) }
+    );
+    expect(calls.flat()).not.toContain('execution');
+    expect(result.passed).toBe(false);
+  });
+
+  it('an OPTIONAL non-blocking rung does not stop promotion either', async () => {
+    const calls: string[][] = [];
+    await runTieredLadder([rung('lint', 'fast', false), rung('execution', 'runtime')], '/tmp', {
+      runner: fakeRunner(new Set(['execution']), calls),
+    });
+    expect(calls.flat()).toContain('execution');
+  });
+});
+
+describe('blocksPromotion — intra-tier fail-fast must not starve either', () => {
+  it('a red synthetic rung does not skip the rungs ordered AFTER it in its own tier', async () => {
+    // The from-scratch shape: detectRungs finds nothing, so the self-gate is
+    // pushed first; turn 1 writes package.json and redetect APPENDS build/test
+    // after it. A red self-gate used to mark both `skipped` every single turn.
+    const { runLadder } = await import('../../src/delivery/verifier-ladder.js');
+    const synthetic: GateRung = {
+      id: 'acceptance',
+      name: 'acceptance',
+      command: 'false',
+      args: [],
+      required: true,
+      timeoutMs: 5000,
+      blocksPromotion: false,
+    };
+    const real: GateRung = {
+      id: 'build',
+      name: 'build',
+      command: 'true',
+      args: [],
+      required: true,
+      timeoutMs: 5000,
+    };
+    const r = await runLadder([synthetic, real], process.cwd());
+    const build = r.results.find((x) => x.id === 'build');
+    expect(build?.skipped).toBe(false);
+    expect(build?.passed).toBe(true);
+    expect(r.passed).toBe(false); // the synthetic rung still fails the ladder
+  });
+
+  it('a red ORDINARY rung still fail-fasts the rest of its tier', async () => {
+    const { runLadder } = await import('../../src/delivery/verifier-ladder.js');
+    const first: GateRung = { id: 'build', name: 'build', command: 'false', args: [], required: true, timeoutMs: 5000 };
+    const second: GateRung = { id: 'test', name: 'test', command: 'true', args: [], required: true, timeoutMs: 5000 };
+    const r = await runLadder([first, second], process.cwd());
+    expect(r.results.find((x) => x.id === 'test')?.skipped).toBe(true);
+  });
+});
