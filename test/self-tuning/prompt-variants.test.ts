@@ -4,6 +4,8 @@ import {
   isFrozen,
   resolvePromptVariant,
   tunablePromptSpace,
+  promptDimensions,
+  promptSelectionFromConfig,
 } from '../../src/self-tuning/prompt-variants.js';
 
 describe('tunable prompts — MIPRO search space', () => {
@@ -48,5 +50,30 @@ describe('tunable prompts — MIPRO search space', () => {
   it('an unknown fragment resolves to empty string (no crash)', () => {
     expect(resolvePromptVariant('does.not.exist')).toBe('');
     expect(isFrozen('does.not.exist')).toBe(false);
+  });
+});
+
+describe('tuner prompt-dimension adapter', () => {
+  it('emits one namespaced enum dimension per non-frozen fragment', () => {
+    const dims = promptDimensions();
+    const keys = dims.map((d) => d.key);
+    expect(keys).toContain('prompt.executor.tone');
+    expect(keys).toContain('prompt.critic.lead');
+    expect(keys).not.toContain('prompt.output.contract'); // frozen excluded
+    const tone = dims.find((d) => d.fragmentId === 'executor.tone')!;
+    expect(tone.values).toEqual(['default', 'terse', 'stepwise']);
+    expect(tone.default).toBe('default');
+  });
+
+  it('round-trips a tuner config into a fragment selection that reaches the PromptBuilder', () => {
+    const config = { 'prompt.executor.tone': 'terse', 'unrelated.flag': true };
+    const sel = promptSelectionFromConfig(config);
+    expect(sel).toEqual({ 'executor.tone': 'terse' });
+    expect(resolvePromptVariant('executor.tone', sel)).toContain('No commentary');
+  });
+
+  it('ignores invalid variant ids in the tuner config', () => {
+    const sel = promptSelectionFromConfig({ 'prompt.executor.tone': 'nonexistent' });
+    expect(sel['executor.tone']).toBeUndefined();
   });
 });

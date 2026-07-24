@@ -112,3 +112,40 @@ export function tunablePromptSpace(): Array<{ fragmentId: string; variantIds: st
     .filter((f) => !f.frozen)
     .map((f) => ({ fragmentId: f.id, variantIds: f.variants.map((v) => v.id) }));
 }
+
+/** A synthetic enum tuning dimension for one non-frozen prompt fragment — the
+ * adapter shape the GP-BO / LLM tuner consumes (key + enum values + default),
+ * outside the settings-registry-derived TUNABLE_FLAGS catalog. */
+export interface PromptDimension {
+  /** Tuner flag key, namespaced: `prompt.<fragmentId>`. */
+  key: string;
+  fragmentId: string;
+  /** Enum domain = the fragment's selectable variant ids. */
+  values: string[];
+  /** Default value = the canonical (index 0) variant id. */
+  default: string;
+}
+
+/** One enum dimension per NON-frozen fragment (frozen ones are never proposed). */
+export function promptDimensions(): PromptDimension[] {
+  return tunablePromptSpace().map((s) => ({
+    key: `prompt.${s.fragmentId}`,
+    fragmentId: s.fragmentId,
+    values: s.variantIds,
+    default: s.variantIds[0],
+  }));
+}
+
+/**
+ * Extract a `fragmentId → variantId` selection from a tuner config, reading only
+ * the `prompt.*` keys and ignoring unknown/invalid variant ids. The result feeds
+ * resolvePromptVariant, so the optimizer's choices reach the PromptBuilder. Pure.
+ */
+export function promptSelectionFromConfig(config: Record<string, unknown>): Record<string, string> {
+  const sel: Record<string, string> = {};
+  for (const dim of promptDimensions()) {
+    const v = config[dim.key];
+    if (typeof v === 'string' && dim.values.includes(v)) sel[dim.fragmentId] = v;
+  }
+  return sel;
+}
