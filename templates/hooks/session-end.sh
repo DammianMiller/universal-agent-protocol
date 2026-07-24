@@ -58,4 +58,13 @@ if [ -d "$BACKUP_DIR" ]; then
   find "$BACKUP_DIR" -maxdepth 1 -mindepth 1 -type d -mtime +7 -exec rm -rf {} \; 2>/dev/null || true
 fi
 
+# Session-scoped proxy + dashboard release: stop them ONLY if THIS session
+# started them and no other client remains (adopted/externally-managed services
+# are never killed; other active clients keep them alive). Fail-open; never
+# blocks exit.
+if command -v uap >/dev/null 2>&1; then
+  _uap_pc="${CLAUDE_SESSION_ID:-${FACTORY_SESSION_ID:-${CURSOR_SESSION_ID:-${UAP_SESSION_ID:-ppid-$PPID}}}}"
+  ( cd "$PROJECT_DIR" 2>/dev/null && timeout 20 uap proxy release --if-enabled --quiet --client "$_uap_pc" --client-pid "$PPID" ) >/dev/null 2>&1 || true
+fi
+
 exit 0

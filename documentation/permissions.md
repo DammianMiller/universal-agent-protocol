@@ -129,10 +129,19 @@ Each control below is a live guarantee of the current system.
 
 3. **Dashboard mutation auth.** `POST /api/policy/:id/{toggle,stage,level}` — the routes
    that disable and persist security controls — require an unguessable per-session token
-   (`X-Uap-Dashboard-Token`, printed to the operator console; the same-origin UI receives
-   it via server-side injection). Read routes stay open. The default bind is `localhost`.
-   Token-gating the mutations keeps the self-protect enforcer from being disabled over the
-   network (LAN or cross-site).
+   (`X-Uap-Dashboard-Token`; the same-origin UI receives it via server-side injection).
+   Read routes stay open. The default bind is `localhost`.
+   The token is only as good as its confinement, so three things hold it in place. The
+   page carrying the token (`/`, `/index.html`) is served with **no** CORS headers, so a
+   foreign origin cannot read it — API reads keep `Access-Control-Allow-Origin: *`, but
+   they carry no credential. WebSocket upgrades require a same-origin `Origin` (WS is
+   exempt from both SOP and CORS, and the snapshot stream would otherwise be readable by
+   any page); clients that send no `Origin` — CLI, curl — still connect. A dashboard
+   started as a ride-along of `uap proxy` does not echo the token to stdout, because its
+   stdout is an append-only log file. `GET /health` is deliberately unauthenticated and
+   returns only `{ok, service, port, root}`. Together these keep the self-protect
+   enforcer from being disabled over the network (LAN or cross-site), including for the
+   whole session the ride-along dashboard is up.
 
 4. **Hook enforcement vs `--dangerously-skip-permissions`.** In that mode the harness
    ignores hook exit-2 denials, so the Plane A gate does not fire. The bwrap sandbox is the

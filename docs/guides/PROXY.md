@@ -51,16 +51,17 @@ the last session leaves — but it **never** kills a proxy that systemd manages 
 that other sessions are still using.
 
 ```
-uap proxy [ensure | release | status | start | stop | restart | enable | disable]
+uap proxy [ensure | release | status | start | stop | restart | enable | disable | dashboard [on|off]]
 ```
 
 | Subcommand | What it does |
 |---|---|
-| `ensure` | Start the proxy if none is running, or **adopt** a running one; register this session as a client |
-| `release` | Deregister this session; stop the proxy **only if** we spawned it as a plain process and no other client remains |
-| `status` | Report whether it's running, how (systemd vs spawned), the port, and client count (`--json` for machine-readable) |
+| `ensure` | Start the proxy if none is running, or **adopt** a running one; register this session as a client; start-or-adopt the dashboard |
+| `release` | Deregister this session; stop the proxy (and dashboard) **only if** we spawned it as a plain process and no other client remains |
+| `status` | Report whether the proxy and dashboard are running, how (systemd vs spawned), ports, URL, and client count (`--json` for machine-readable) |
 | `start` / `stop` / `restart` | Explicit control (e.g. `restart` after changing `PROXY_*` in `.uap/proxy.env`) |
 | `enable` / `disable` | Toggle `.uap.json` `proxy.autostart` so hooks auto-start it (or not) |
+| `dashboard [on\|off]` | Show or toggle the ride-along dashboard (`.uap.json` `proxy.dashboard`) |
 
 | Flag | Purpose |
 |---|---|
@@ -68,7 +69,49 @@ uap proxy [ensure | release | status | start | stop | restart | enable | disable
 | `--client-pid <n>` | Long-lived agent pid for liveness (hooks pass `$PPID`) |
 | `--port <n>` | Proxy port (default `4000` / `$PROXY_PORT`) |
 | `--if-enabled` | No-op unless `.uap.json` `proxy.autostart` is `true` (hook-safe) |
+| `--no-dashboard` | Don't *start* the ride-along dashboard on this `ensure`/`start` (teardown still reaps a dashboard we own) |
 | `--quiet` / `--json` | Suppress output (hooks) / machine-readable status |
+
+### Ride-along dashboard
+
+**The operational dashboard starts with the proxy** — no second command. `ensure`
+and `start` also start-or-adopt `uap dashboard serve` (default
+<http://localhost:3847>), concurrently with the proxy so session start isn't
+serialized behind two health waits. Teardown follows ownership: a dashboard **we**
+spawned stops when the last client leaves (`release`) or immediately on an
+explicit `stop`; one you started yourself is adopted and **never** stopped. If a
+foreign process holds the port, UAP declines to spawn (fast, no stall) and tells
+you to run `uap dash serve` manually.
+
+| Setting | Where | Default |
+|---|---|---|
+| enabled | `.uap.json` `proxy.dashboard` (bool or `{enabled, port, host}`) / `UAP_PROXY_DASHBOARD=0\|1` | on |
+| port | `proxy.dashboard.port` / `UAP_DASH_PORT` | `3847` |
+| host | `proxy.dashboard.host` / `UAP_DASH_HOST` | `localhost` |
+| startup wait | `UAP_DASH_HEALTH_WAIT_MS` | `10000` |
+
+Env wins over config. These govern the **ride-along** only — `uap dash serve`
+still takes its own `--port`/`--host`.
+
+**Identification.** Liveness is `GET /health`, which returns
+`{"ok":true,"service":"uap-dashboard","port":…,"root":"<project dir>"}`. UAP adopts
+a dashboard only when that marker is present *and* `root` matches the current
+project — a dashboard is per-project (every panel reads its own working
+directory), even though the proxy client registry is per-user. A dashboard from an
+older UAP has no `/health`; it is recognised by its `UAP Dashboard` page title and
+adopted as-is, since it cannot state which project it serves.
+
+```bash
+uap proxy dashboard          # is it on, and where?
+uap proxy dashboard off      # opt this project out
+uap proxy start --no-dashboard
+```
+
+**Security note.** Because the dashboard is now up for the whole session rather
+than only while you run it by hand, the page carrying the policy-mutation token is
+served same-origin only, WebSocket upgrades require a same-origin `Origin`, and the
+token is not echoed into the ride-along log. Binding beyond loopback
+(`UAP_DASH_HOST`) is reported with a warning — set `UAP_DASHBOARD_TOKEN` if you do.
 
 **How it's managed.** When available, the proxy runs as the systemd unit
 `uap-anthropic-proxy.service`, reading its environment from

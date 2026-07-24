@@ -122,6 +122,10 @@ export interface ProxyFeatures {
   /** Hook-driven, reference-counted proxy autostart (start with the session,
    *  adopt an existing one, stop only when the last client leaves). */
   autostart: boolean;
+  /** Ride-along operational dashboard: `uap proxy ensure` also starts (or
+   *  adopts) `uap dashboard serve`, so monitoring needs no second command.
+   *  Undefined = leave whatever `.uap.json` already says (default ON). */
+  dashboard?: boolean;
 }
 
 export interface HandsfreeFeatures {
@@ -223,7 +227,7 @@ export function maxSelections(ctx: PresetContext): WizardSelections {
     collaboration: { mode: 'always' },
     design: { enabled: true, tokenGate: true },
     reactor: { enabled: true },
-    proxy: { autostart: true },
+    proxy: { autostart: true, dashboard: true },
     handsfree: { enabled: true, intensity: local ? 'aggressive' : 'moderate' },
     // Max fidelity: strongest gates + always-on visual/vision verification. Vision
     // review uses the local inference endpoint (resolveFidelity falls back to it).
@@ -248,7 +252,9 @@ export function minSelections(ctx: PresetContext): WizardSelections {
     collaboration: { mode: 'off' },
     design: { enabled: false, tokenGate: false },
     reactor: { enabled: false },
-    proxy: { autostart: false },
+    // Lean by design: no ride-along dashboard until asked for it
+    // (`uap proxy dashboard on` / `uap dash serve`).
+    proxy: { autostart: false, dashboard: false },
     handsfree: { enabled: false },
   });
 }
@@ -428,7 +434,16 @@ export async function applyWizardConfig(
       ...(selections.fidelity.visionModel ? { visionModel: selections.fidelity.visionModel } : {}),
     };
 
-    config.proxy = { ...(config.proxy as object ?? {}), autostart: selections.proxy.autostart };
+    config.proxy = {
+      ...(config.proxy as object ?? {}),
+      autostart: selections.proxy.autostart,
+      // Written whenever the caller expressed a choice. Persisting only `false`
+      // would make the setting one-way: a project already carrying
+      // `dashboard: false` could never be switched back on by re-running setup.
+      ...(selections.proxy.dashboard === undefined
+        ? {}
+        : { dashboard: selections.proxy.dashboard }),
+    };
 
     if (selections.handsfree.enabled) {
       config.handsfree = {

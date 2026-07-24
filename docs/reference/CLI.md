@@ -534,7 +534,18 @@ Anthropic-compatible gateway in front of a local llama.cpp/Qwen). Hooks
 session leaves — but it never kills a proxy that systemd manages or that other
 sessions still use.
 
-`uap proxy [ensure | release | status | start | stop | restart | enable | disable]`
+`uap proxy [ensure | release | status | start | stop | restart | enable | disable | dashboard [on|off]]`
+
+The **operational dashboard rides along**: `ensure`/`start` also start-or-adopt
+`uap dashboard serve` (default <http://localhost:3847>), so monitoring never needs
+a second command. `release` stops it when the last client leaves; `stop` shuts it
+down immediately (ownership only — it does not consult the client count). A
+dashboard you started yourself, or one serving a different project, is never
+touched. Opt out per project with `uap proxy dashboard off`, per `ensure`/`start`
+with `--no-dashboard`, or globally with `UAP_PROXY_DASHBOARD=0`.
+Ports/hosts: `UAP_DASH_PORT` (3847), `UAP_DASH_HOST` (localhost),
+`UAP_DASH_HEALTH_WAIT_MS` (10000) — these govern the ride-along, not
+`uap dash serve`.
 
 | Flag | Purpose |
 |------|---------|
@@ -542,11 +553,13 @@ sessions still use.
 | `--client-pid <n>` | Long-lived agent pid for liveness (hooks pass `$PPID`) |
 | `--port <n>` | Proxy port (default 4000 / `$PROXY_PORT`) |
 | `--if-enabled` | No-op unless `.uap.json` `proxy.autostart` is true (hook-safe) |
+| `--no-dashboard` | Don't start the ride-along dashboard on this `ensure`/`start` |
 | `--quiet` / `--json` | Suppress output (hooks) / machine-readable status |
 
 ```bash
-uap proxy status --json
+uap proxy status --json    # includes a `dashboard` block (port, url, healthy, owner)
 uap proxy restart          # e.g. after changing PROXY_* in .uap/proxy.env
+uap proxy dashboard off    # opt out of the ride-along dashboard
 ```
 
 The proxy binds `127.0.0.1` by default; see the proxy `PROXY_*` settings in the

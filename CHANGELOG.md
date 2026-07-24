@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.164.0 (2026-07-24)
+
+- feat(proxy): run the operational dashboard as part of the uap proxy
+
+
 ## v1.163.13 (2026-07-23)
 
 - fix(visual-gate): dismiss intro overlays so the judge grades the app, not the veil

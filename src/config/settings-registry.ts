@@ -412,6 +412,31 @@ export const SETTINGS: readonly SettingDef[] = [
     description: 'Dashboard data refresh interval in milliseconds (floor 250).',
     recommendation: '2000 is fine; lower for a more live feel at higher CPU cost.',
   },
+  {
+    key: 'proxy.dashboard', kind: 'json', type: 'boolean', default: true, category: 'dashboard',
+    description: 'Ride-along dashboard: `uap proxy ensure|start` also starts (or adopts) `uap dashboard serve`, and release/stop tears it down under the same ownership rules — so a session gets monitoring without running a second command. Only takes effect where the proxy itself runs (hooks gate on proxy.autostart).',
+    recommendation: 'Leave on. Turn off if you prefer to run `uap dash serve` yourself, or the port is spoken for.',
+  },
+  {
+    key: 'UAP_PROXY_DASHBOARD', kind: 'env', type: 'boolean', default: true, category: 'dashboard', target: 'shell',
+    description: 'Force the ride-along dashboard on (1/on/true) or off (0/off/false). Wins over .uap.json proxy.dashboard.',
+    recommendation: 'Use for one-off overrides; prefer `uap proxy dashboard on|off` for a durable project setting.',
+  },
+  {
+    key: 'UAP_DASH_PORT', kind: 'env', type: 'number', default: 3847, category: 'dashboard', target: 'shell',
+    description: 'Port the ride-along dashboard binds and is probed on (1-65535). Does not change `uap dash serve --port`.',
+    recommendation: 'Change only on a port clash; keep it consistent across sessions so adoption works.',
+  },
+  {
+    key: 'UAP_DASH_HOST', kind: 'env', type: 'string', default: 'localhost', category: 'dashboard', target: 'shell',
+    description: 'Interface the ride-along dashboard binds. `0.0.0.0` exposes it beyond this machine.',
+    recommendation: 'Keep localhost. Bind wider only behind a trusted network, and set UAP_DASHBOARD_TOKEN when you do.',
+  },
+  {
+    key: 'UAP_DASH_HEALTH_WAIT_MS', kind: 'env', type: 'number', default: 10000, category: 'dashboard', target: 'shell',
+    description: 'How long `uap proxy ensure` waits for the ride-along dashboard to serve before giving up.',
+    recommendation: 'Lower it if session start feels slow on a cold dashboard; the proxy is unaffected either way.',
+  },
 
   // ── Token & time optimization ─────────────────────────────────────────────
   {
