@@ -18,6 +18,10 @@ import type {
   ConvergenceConfig,
 } from '../delivery/convergence-loop.js';
 import { createModelJudge } from '../delivery/judge.js';
+import {
+  resolveJudgePlan,
+  formatVerificationProvenance,
+} from '../delivery/verification-provenance.js';
 import { createModelCritic } from '../delivery/critic.js';
 import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import type { StrategySeed } from '../delivery/explorer.js';
@@ -26,7 +30,7 @@ import { DEFAULT_STRATEGY_SEEDS } from '../delivery/explorer.js';
 import { planAutoOptimization } from '../delivery/auto-optimizer.js';
 import { RoutingPresets, resolvePresetModel } from '../models/types.js';
 import type { TaskComplexity } from '../models/types.js';
-import { measureQueryComplexity } from '../utils/query-complexity.js';
+import { classifyComplexity, tierToRouting } from '../models/complexity.js';
 import { authorAcceptanceGate } from '../delivery/self-gate.js';
 import { applyPendingIntents } from '../delivery/pending-intents.js';
 import { runAcceptanceGate } from '../delivery/acceptance-judge.js';
@@ -367,21 +371,14 @@ function fail(message: string): never {
 
 class ExitError extends Error {}
 
-/** Deliver's 3-level complexity (simple/moderate/complex) → the routing tier
- * scale (low/medium/high/critical). Deliver's classifier never emits
- * 'critical' — that tier is reserved for keyword-driven escalation. */
-const COMPLEXITY_TO_TIER: Record<string, TaskComplexity> = {
-  simple: 'low',
-  moderate: 'medium',
-  complex: 'high',
-};
-
 /**
  * Complexity-tier routing (P: per-task model selection). Returns the model id
  * to execute this task on, or null to leave the caller's default untouched.
- * PURE — unit-tested. Precedence is enforced by the caller: an explicit
- * --model always wins; this only fires when routing is requested and no model
- * was pinned.
+ * PURE — unit-tested. Uses the unified complexity classifier (src/models/
+ * complexity.ts) so `critical` is preserved end-to-end — the old
+ * COMPLEXITY_TO_TIER bridge silently dropped it. Precedence is enforced by the
+ * caller: an explicit --model always wins; this only fires when routing is
+ * requested and no model was pinned.
  */
 export function resolveTierModel(
   routingId: string | undefined,
@@ -391,8 +388,7 @@ export function resolveTierModel(
   if (!id) return null;
   const preset = RoutingPresets[id];
   if (!preset) return null;
-  const complexity = measureQueryComplexity(instruction, { moderate: 1, complex: 2 });
-  const tier = COMPLEXITY_TO_TIER[complexity] ?? 'medium';
+  const tier = tierToRouting(classifyComplexity({ instruction }).tier);
   return { model: resolvePresetModel(preset, { complexity: tier, role: 'executor' }), tier, preset: id };
 }
 
@@ -1251,8 +1247,38 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   }
   let evaluatorExecutor: LoopExecutor = blindExecutor;
   let verdictExecutor: LoopExecutor = jsonBlindExecutor;
-  if (evaluatorPresetId) {
-    const evalModel = resolveModel(evaluatorPresetId, options.evaluatorEndpoint);
+  // Verification provenance (S1 — Principle 3: "the model cannot verify itself").
+  // Deliver must never let the generator be the SOLE grader of its own output.
+  const allowSelfJudge =
+    process.env.UAP_DELIVER_ALLOW_SELF_JUDGE === '1' ||
+    (() => {
+      try {
+        const c = loadUapConfigRaw(projectRoot) as { recipes?: { allowSelfJudge?: boolean } } | null;
+        return c?.recipes?.allowSelfJudge === true;
+      } catch {
+        return false;
+      }
+    })();
+  const judgePlan = resolveJudgePlan({
+    evaluatorPresetId,
+    generatorId: model.id,
+    generatorProvider: ModelPresets[presetId as keyof typeof ModelPresets]?.provider,
+    allowSelfJudge,
+    hasPreset: (id) => Boolean(ModelPresets[id as keyof typeof ModelPresets]),
+  });
+  const judgeModelId = judgePlan.judgeModelId;
+  const judgeDistinct = judgePlan.distinct;
+  // Acceptance-scoped executors: they author the self-gate (verify.sh) and run
+  // the acceptance JUDGE. They default to the generator and are the ONLY channels
+  // the auto-distinct judge redirects — PLANNING (planDeliveryPhases /
+  // deriveUserPaths on verdictExecutor) stays on the generator to avoid a
+  // planning-quality regression (review C1).
+  let gateAuthorExecutor: LoopExecutor = evaluatorExecutor;
+  let acceptanceJudgeExecutor: LoopExecutor = verdictExecutor;
+  if (judgePlan.reason === 'configured-evaluator') {
+    // A distinct configured evaluator drives the evaluation channel AND planning
+    // (pre-existing barbell behavior): reassign the globals.
+    const evalModel = resolveModel(judgeModelId, options.evaluatorEndpoint);
     const evalClient = new OpenAICompatClient();
     evaluatorExecutor = async (prompt) => {
       // Evaluators judge cool + deterministic; they do not brainstorm.
@@ -1263,9 +1289,35 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       const r = await evalClient.complete(evalModel, prompt, { temperature: 0, jsonResponse: true });
       return r.content;
     };
+    gateAuthorExecutor = evaluatorExecutor;
+    acceptanceJudgeExecutor = verdictExecutor;
     if (!options.dryRun) {
       console.log(chalk.cyan(`⚖ generator≠evaluator: gen=${model.id} eval=${evalModel.id}`));
     }
+  } else if (judgePlan.reason === 'auto-distinct-judge') {
+    // No evaluator configured + cloud generator → run the acceptance JUDGE and
+    // self-gate author on a cheap DISTINCT cloud model, WITHOUT hijacking the
+    // planning executors (C1). The generator still plans; it no longer grades
+    // itself.
+    const jModel = resolveModel(judgeModelId);
+    const jClient = new OpenAICompatClient();
+    gateAuthorExecutor = async (prompt) =>
+      (await jClient.complete(jModel, prompt, { temperature: 0 })).content;
+    acceptanceJudgeExecutor = async (prompt) =>
+      (await jClient.complete(jModel, prompt, { temperature: 0, jsonResponse: true })).content;
+    if (!options.dryRun) {
+      console.log(
+        chalk.cyan(
+          `⚖ generator≠evaluator (auto distinct acceptance judge): gen=${model.id} judge=${jModel.id}`
+        )
+      );
+    }
+  } else if (!judgeDistinct && !allowSelfJudge && !options.dryRun) {
+    console.log(
+      chalk.yellow(
+        `⚠ verify: no distinct judge reachable (gen=${model.id} local/offline) — generator grades its own output`
+      )
+    );
   }
 
   // Dynamic executor selection. The blind executor is one completion per turn
@@ -1411,7 +1463,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     console.log(chalk.cyan('⚖ self-gate: authoring a task-specific acceptance check…'));
     // Author the gate with the blind executor — it is a single-shot script
     // write, not a task to solve agentically.
-    const sg = await authorAcceptanceGate({ instruction, projectRoot, executor: evaluatorExecutor });
+    const sg = await authorAcceptanceGate({ instruction, projectRoot, executor: gateAuthorExecutor });
     for (const note of sg.notes) console.log(chalk.dim(`    ${note}`));
     if (!sg.rung) {
       fail('Could not author an acceptance gate (model produced no runnable script).');
@@ -1695,7 +1747,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     ? buildMissionAcceptanceGate({
         primary: acceptancePrimary,
         specs,
-        judgeExecutor: verdictExecutor,
+        judgeExecutor: acceptanceJudgeExecutor,
         note: (line) => console.log(chalk.yellow(`  ${line}`)),
       })
     : undefined;
@@ -2820,6 +2872,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     });
   } catch {
     // Memory recording is best-effort
+  }
+
+  // Verification provenance banner (S1) — makes the judge boundary observable.
+  if (!options.json && !options.dryRun) {
+    const line = formatVerificationProvenance({
+      executorModel: model.id,
+      judgeModel: judgeModelId,
+      distinct: judgeDistinct,
+    });
+    console.log(judgeDistinct ? chalk.dim(line) : chalk.yellow(line));
   }
 
   if (options.json) {
