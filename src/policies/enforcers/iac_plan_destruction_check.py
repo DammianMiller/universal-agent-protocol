@@ -26,7 +26,14 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import emit, parse_cli, arg_str, repo_root, run  # noqa: E402
+from _common import (  # noqa: E402
+    emit,
+    parse_cli,
+    arg_str,
+    repo_root,
+    run,
+    scannable_command,
+)
 
 ACK = Path(os.environ.get("UAP_STATE_DIR", ".uap")) / "iac_plan_reviewed.json"
 ACK_TTL = 2 * 60 * 60  # 2 hours
@@ -117,9 +124,13 @@ def main() -> None:
     if op not in ("Bash", "bash"):
         emit(True, "not a bash op")
     raw_cmd = args.get("command") or ""
-    # Markers are matched case-insensitively, but repo_selector() needs the
-    # original case of an owner/name argument — so keep both forms.
-    cmd = raw_cmd.lower()
+    # Markers are matched against the COMMAND text only — scannable_command()
+    # drops quoted prose and heredoc bodies, so a call that merely mentions a
+    # merge (e.g. `uap memory store "...gh pr merge..."`) is not treated as
+    # one. Text handed to a shell is left intact, so `sh -c "terraform apply"`
+    # still trips the gate. repo_selector() gets the raw command because it
+    # needs the original case of an owner/name argument.
+    cmd = scannable_command(raw_cmd).lower()
 
     is_tf_apply = any(m in cmd for m in APPLY_MARKERS)
     is_wf_apply = any(m in cmd for m in WORKFLOW_APPLY) and "iac-terraform" in cmd and "apply" in cmd
