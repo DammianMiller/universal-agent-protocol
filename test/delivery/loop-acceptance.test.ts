@@ -133,3 +133,102 @@ describe('ConvergenceLoop — acceptance gate integration', () => {
     expect(result.turns).toBe(1);
   });
 });
+
+describe('runAcceptanceDespiteLadder (max-fidelity vision convergence)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'uap-acc-red-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('is OFF by default — a red ladder never reaches the judge', async () => {
+    // The inverse of the test below. Pinning the default explicitly matters
+    // because the whole flag is one boolean controlling a run mode.
+    let accCalls = 0;
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 2, rungs: stubRungs(), baselineCheck: false },
+      async () => FILE_BLOCK_OUTPUT,
+      {
+        ladderRunner: () => ladderResult(0.5, false),
+        acceptanceGate: async () => {
+          accCalls++;
+          return { passed: true, feedback: '' };
+        },
+      }
+    );
+    await loop.deliver('x');
+    expect(accCalls).toBe(0);
+  });
+
+  it('ON: judges acceptance even while objective gates FAIL, and surfaces its feedback', async () => {
+    let accCalls = 0;
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 1,
+        rungs: stubRungs(),
+        baselineCheck: false,
+        runAcceptanceDespiteLadder: true,
+      },
+      async () => FILE_BLOCK_OUTPUT,
+      {
+        ladderRunner: () => ladderResult(0.5, false),
+        acceptanceGate: async () => {
+          accCalls++;
+          return { passed: false, feedback: 'VISION REVIEW FAILED — the rendered UI scores 3/10' };
+        },
+      }
+    );
+    const r = await loop.deliver('x');
+    expect(accCalls).toBeGreaterThan(0);
+    // Acceptance feedback is merged into the ladder feedback the operator/model
+    // actually sees (IterationRecord carries no feedback field of its own).
+    expect(r.finalFeedback).toContain('VISION REVIEW FAILED');
+  });
+
+  it('ON: a PASSING acceptance can never turn a red ladder into a delivery', async () => {
+    // The safety invariant. "The judge said yes, so pass" is the refactor someone
+    // reaches for once the flag's purpose is "let acceptance decide" — and it
+    // would be a false-green delivery on failing objective gates.
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 1,
+        rungs: stubRungs(),
+        baselineCheck: false,
+        runAcceptanceDespiteLadder: true,
+      },
+      async () => FILE_BLOCK_OUTPUT,
+      {
+        ladderRunner: () => ladderResult(0.5, false),
+        acceptanceGate: async () => ({ passed: true, feedback: '' }),
+      }
+    );
+    const r = await loop.deliver('x');
+    expect(r.success).toBe(false);
+    expect(r.history[0].passed).toBe(false);
+  });
+
+  it('tells the gate whether the ladder passed, so it cannot claim gates are green on a red turn', async () => {
+    const seen: Array<boolean | undefined> = [];
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 1,
+        rungs: stubRungs(),
+        baselineCheck: false,
+        runAcceptanceDespiteLadder: true,
+      },
+      async () => FILE_BLOCK_OUTPUT,
+      {
+        ladderRunner: () => ladderResult(0.5, false),
+        acceptanceGate: async (_root, ctx) => {
+          seen.push(ctx?.ladderPassed);
+          return { passed: false, feedback: 'nope' };
+        },
+      }
+    );
+    await loop.deliver('x');
+    expect(seen).toContain(false);
+  });
+});

@@ -126,45 +126,84 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
   const userPathsNote = deps.userPathsNote ?? buildUserPathsNote;
   // eslint-disable-next-line no-console
   const note = deps.note ?? ((line: string): void => console.log(line));
-  return async (root) => {
+  return async (root, gateCtx) => {
+    // Explicit `=== false` — an undefined ctx means the caller did not tell us,
+    // which must not be read as "the ladder was green".
+    const ladderRed = gateCtx?.ladderPassed === false;
     // Primary mode: the only objective rung is the trivial bootstrap, and the
     // real execution gate joins via redetect only on the NEXT turn (one-turn
     // lag). So gate the artifact's runtime HERE too — idempotent with the
     // redetected execution rung on later turns.
+    //
+    // SECONDARY mode (objective gates exist) under MAX FIDELITY also runs the
+    // vision review here. It used to run only in primary mode, so a run whose
+    // only red rung was a synthetic anti-vacuous self-gate never reached vision:
+    // the ladder stayed red, the aesthetic review was skipped, and the model
+    // stalled with no visual feedback while fidelity-max verify still BLOCKED
+    // delivery on that same vision score (Generator≠Evaluator). Ordering is
+    // preserved: the review runs only once the deliverable is OPERATIONAL
+    // (execution passes) and BEHAVING as specified (user paths not failing) —
+    // never grade pixels of an app that does not run or misbehaves.
+    const fidelity = resolveFidelity(root);
     let visualNote = '';
-    if (deps.primary) {
+    if (deps.primary || fidelity.max) {
       const exec = await executionGate(root);
       if (!exec.passed) {
+        // Operational gate: a build that does not run cannot be accepted, in
+        // either mode. (In secondary mode this gate only runs on a red ladder
+        // under runAcceptanceDespiteLadder; returning here avoids judging /
+        // grading a broken build.)
         return {
           passed: false,
           feedback: `EXECUTION FAILED — the code must run before it can be accepted:\n${exec.outputTail}`,
         };
-      }
-      // Visual gate: watch the artifact RUN — the observation summary becomes
-      // judge evidence (a code-evidence judge cannot see a never-started
-      // animation; this can).
-      const visual = await visualGate(root);
-      if (!visual.skipped && !visual.passed) {
-        return { passed: false, feedback: visual.feedback };
-      }
-      visualNote = visualRuntimeNote(visual);
-      // Fidelity-max: the loop must converge against the SAME aesthetic bar
-      // verify enforces, or "delivered" and "verified" diverge (run Y).
-      if (!visual.skipped) {
-        const visionReview = deps.visionReview ?? visionAcceptanceFeedback;
-        const shots = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
-        const visionFail = await visionReview(root, deps.specs.resolve(root), shots);
-        if (visionFail) {
-          return { passed: false, feedback: visionFail };
+      } else {
+        // Behavioral gate: do not grade how it LOOKS while user paths FAIL —
+        // fix the broken UX first (the required ordering).
+        const uv = userPathsNote(root);
+        const behavioralFailing = Boolean(uv?.trusted && /User-path validation FAILED/.test(uv.note));
+        if (!behavioralFailing) {
+          // Visual gate: watch the artifact RUN — the observation summary becomes
+          // judge evidence (a code-evidence judge cannot see a never-started
+          // animation; this can).
+          const visual = await visualGate(root);
+          if (!visual.skipped && !visual.passed && deps.primary) {
+            return { passed: false, feedback: visual.feedback };
+          }
+          visualNote = visualRuntimeNote(visual);
+          // Fidelity-max: the loop must converge against the SAME aesthetic bar
+          // verify enforces, or "delivered" and "verified" diverge (run Y).
+          // Runs in primary mode (always, as before) and in secondary mode under
+          // max fidelity (the new path that breaks the self-gate catch-22).
+          if (!visual.skipped && (deps.primary || fidelity.max)) {
+            const visionReview = deps.visionReview ?? visionAcceptanceFeedback;
+            const shots = visual.pages.flatMap((pg) => pg.screenshots.slice(-1));
+            const visionFail = await visionReview(root, deps.specs.resolve(root), shots);
+            if (visionFail) {
+              return { passed: false, feedback: visionFail };
+            }
+          }
         }
       }
     }
     const resolvedSpec = deps.specs.resolve(root);
     const uvNote = userPathsNote(root);
+    // The secondary-mode note asserts the objective gates passed. That was safe
+    // while acceptance only ever ran on a green ladder; under
+    // runAcceptanceDespiteLadder it would instruct the judge to treat FAILING
+    // build/test requirements as objectively verified — a direct route to
+    // accepting criteria the gates are actively rejecting.
     const baseNote = deps.primary
       ? visualNote
-      : 'Objective project gates (build/test suite) ALL PASSED on this turn — treat test/build-related requirements as objectively verified.';
-    const runtimeNote = [baseNote, uvNote?.note].filter(Boolean).join(' ');
+      : ladderRed
+        ? 'Objective project gates are currently FAILING on this turn — do NOT treat build/test-related requirements as verified. Judge only what the evidence supports.'
+        : 'Objective project gates (build/test suite) ALL PASSED on this turn — treat test/build-related requirements as objectively verified.';
+    // The visual observation is real evidence in BOTH modes; discarding it in
+    // secondary mode meant paying for a headless browser pass and then throwing
+    // the result away.
+    const runtimeNote = [baseNote, deps.primary ? '' : visualNote, uvNote?.note]
+      .filter(Boolean)
+      .join(' ');
     const r = await judge({
       spec: resolvedSpec,
       projectRoot: root,
@@ -174,7 +213,15 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
     const verdict = resolveAcceptanceVerdict(r, deps.primary);
     // Secondary mode only: bounded consecutive judge rejections of
     // objectively-green turns hand the verdict back to the gates.
-    if (!deps.primary) {
+    //
+    // `ladderRed` is load-bearing. The breaker's contract is "the gates say yes,
+    // the judge keeps saying no — trust the gates", and it only resets its counter
+    // on a PASSING verdict. Feed it red turns (as runAcceptanceDespiteLadder now
+    // can) and the count climbs on turns where the gates are saying no too; once
+    // it trips it never resets, so every later turn is force-accepted — including
+    // the turn the ladder finally goes green, delivering with the judge still
+    // holding that the spec is unmet. Red turns are simply not its business.
+    if (!deps.primary && !ladderRed) {
       const checked = deps.specs.breaker(resolvedSpec, root).check(resolvedSpec, verdict);
       if (checked.overridden) {
         note(

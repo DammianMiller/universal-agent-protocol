@@ -589,3 +589,111 @@ describe('createAgenticExecutor — read-only-streak write nudge', () => {
     expect(bodies.every((b) => JSON.parse(b).tool_choice === 'auto')).toBe(true);
   });
 });
+
+describe('PROXY_AUTH_TOKEN never leaks off-machine', () => {
+  let dir: string;
+  let prevToken: string | undefined;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agx-tok-'));
+    prevToken = process.env.PROXY_AUTH_TOKEN;
+    process.env.PROXY_AUTH_TOKEN = 'proxy-secret-do-not-leak';
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (prevToken === undefined) delete process.env.PROXY_AUTH_TOKEN;
+    else process.env.PROXY_AUTH_TOKEN = prevToken;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('sends the token to a LOOPBACK endpoint', async () => {
+    const spy = mockChatSequence([{ tool_calls: [{ function: { name: 'finish', arguments: '{}' } }] }]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('noop');
+    const headers = (spy.mock.calls[0][1] as { headers: Record<string, string> }).headers;
+    expect(headers.Authorization).toBe('Bearer proxy-secret-do-not-leak');
+  });
+
+  it('withholds it from a keyless plaintext remote (no throw, no header)', async () => {
+    // Regression: this path attached Authorization with no local-endpoint guard,
+    // while its sibling in openai-compat-client.ts refused. Once PROXY_AUTH_TOKEN
+    // became a fallback, a preset aimed at a remote endpoint would have shipped
+    // the local proxy secret in cleartext.
+    const spy = mockChatSequence([{ tool_calls: [{ function: { name: 'finish', arguments: '{}' } }] }]);
+    const remote = { id: 'm', apiModel: 'm', endpoint: 'http://api.example.com/v1' } as never;
+    const exec = createAgenticExecutor(remote, { projectRoot: dir, endpoint: 'http://api.example.com/v1' });
+    // The executor traps turn errors into its summary rather than rejecting, so
+    // assert on the surfaced reason — the refusal must reach the caller either way.
+    // With the token now scoped to LOCAL endpoints, a keyless plaintext remote no
+    // longer throws — it simply carries no credential. That is the property worth
+    // asserting: the request may proceed, the secret may not travel.
+    await exec('noop');
+    expect(spy).toHaveBeenCalled();
+    const headers = (spy.mock.calls[0][1] as { headers?: Record<string, string> })?.headers ?? {};
+    expect(headers.Authorization).toBeUndefined();
+  });
+
+  it('WITHHOLDS it from a remote https host — the token belongs to one local process', async () => {
+    // An earlier version of this test asserted the opposite. Refusing only
+    // *cleartext* still handed the proxy token to any hosted provider over TLS,
+    // and that token grants use of the operator's proxy — including its Anthropic
+    // passthrough, i.e. their spend. There is no correct third-party recipient,
+    // so the fallback is scoped to local endpoints instead of merely encrypted ones.
+    const spy = mockChatSequence([{ tool_calls: [{ function: { name: 'finish', arguments: '{}' } }] }]);
+    const remote = { id: 'm', apiModel: 'm', endpoint: 'https://api.example.com/v1' } as never;
+    const exec = createAgenticExecutor(remote, { projectRoot: dir, endpoint: 'https://api.example.com/v1' });
+    await exec('noop');
+    const headers = (spy.mock.calls[0][1] as { headers: Record<string, string> }).headers;
+    expect(headers.Authorization).toBeUndefined();
+  });
+
+  it('sends it to a PRIVATE-NETWORK host (the LAN-proxy deployment)', async () => {
+    const spy = mockChatSequence([{ tool_calls: [{ function: { name: 'finish', arguments: '{}' } }] }]);
+    const lan = { id: 'm', apiModel: 'm', endpoint: 'http://192.168.1.165:4000/v1' } as never;
+    const exec = createAgenticExecutor(lan, { projectRoot: dir, endpoint: 'http://192.168.1.165:4000/v1' });
+    await exec('noop');
+    const headers = (spy.mock.calls[0][1] as { headers: Record<string, string> }).headers;
+    expect(headers.Authorization).toBe('Bearer proxy-secret-do-not-leak');
+  });
+
+  it('is not fooled by a hostname that merely STARTS with a private range', async () => {
+    // `10.evil.com` is a registerable DNS name — RFC 1123 allows a leading digit.
+    // The old unanchored prefix regex classified it as private and would have sent
+    // the token in cleartext to a public host.
+    const spy = mockChatSequence([{ tool_calls: [{ function: { name: 'finish', arguments: '{}' } }] }]);
+    const spoof = { id: 'm', apiModel: 'm', endpoint: 'http://10.evil.com/v1' } as never;
+    const exec = createAgenticExecutor(spoof, { projectRoot: dir, endpoint: 'http://10.evil.com/v1' });
+    await exec('noop');
+    const headers = (spy.mock.calls[0][1] as { headers?: Record<string, string> }).headers ?? {};
+    expect(headers.Authorization).toBeUndefined();
+  });
+
+  it('still reaches a keyless plaintext remote WITHOUT a token (no spurious throw)', async () => {
+    delete process.env.PROXY_AUTH_TOKEN;
+    const spy = mockChatSequence([{ tool_calls: [{ function: { name: 'finish', arguments: '{}' } }] }]);
+    const remote = { id: 'm', apiModel: 'm', endpoint: 'http://api.example.com/v1' } as never;
+    const exec = createAgenticExecutor(remote, { projectRoot: dir, endpoint: 'http://api.example.com/v1' });
+    await exec('noop');
+    expect(spy).toHaveBeenCalled();
+    const headers = (spy.mock.calls[0][1] as { headers?: Record<string, string> }).headers ?? {};
+    expect(headers.Authorization).toBeUndefined();
+  });
+
+  it('REFUSES an explicit provider key over plaintext to a remote host', async () => {
+    process.env.UAP_TEST_PROVIDER_KEY = 'sk-provider';
+    try {
+      const spy = mockChatSequence([{ tool_calls: [{ function: { name: 'finish', arguments: '{}' } }] }]);
+      const remote = {
+        id: 'm',
+        apiModel: 'm',
+        endpoint: 'http://api.example.com/v1',
+        apiKeyEnvVar: 'UAP_TEST_PROVIDER_KEY',
+      } as never;
+      const exec = createAgenticExecutor(remote, { projectRoot: dir, endpoint: 'http://api.example.com/v1' });
+      const summary = await exec('noop');
+      expect(JSON.stringify(summary)).toMatch(/Refusing to send UAP_TEST_PROVIDER_KEY/);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.UAP_TEST_PROVIDER_KEY;
+    }
+  });
+});

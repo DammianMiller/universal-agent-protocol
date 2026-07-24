@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.165.0 (2026-07-24)
+
+- fix(security): never send the local proxy token off-machine
+- feat(deliver): break the self-gate/vision catch-22 under max fidelity
+- fix(policies): iac gate must look the PR up in the repo being merged (#592)
+- feat(skills): record-walkthroughs — automated product walkthrough videos (#591)
+- feat(deliver): small-model resilience — achievable journeys, per-write syntax check, actionable vision feedback, full-gate keep-best
+- chore: bump version to 1.164.0
+- feat(proxy): run the operational dashboard as part of the uap proxy
+- feat(deliver): inject the up-front user-path acceptance contract into the executor
+- docs: rewrite documentation to pure current-state (no change-over-time)
+- fix(deliver): address deep-rewire review findings (tier-guard + tuner wiring)
+- feat(models): Q4-full route selectModel through the canonical per-phase source
+- feat(deliver): 3a wire MIPRO fragments into defaultPromptBuilder (no-op default)
+- feat(models): Q4 canonical per-phase selector + 3a frozen-fragment binding
+- feat(models): Q2 route router.classifyTask through the unified classifier
+- feat(deliver): Q3 judge derives from the preset review chain
+- fix(deliver): address integration-batch review findings
+- feat(self-tuning): tuner prompt-dimension adapter (S8 -> optimizer)
+- feat(deliver): S7 write-conflict edges wired at the DeliveryPhase layer
+- feat(deliver): reflectProvider seam — the async GEPA reflect turn
+- feat(deliver): per-phase escalation controller (S5 -> loop, execute phase)
+- feat(deliver): wire GEPA reflect (mutateInstruction) into the convergence loop
+- fix(deliver): address S4-S8 review findings (frozen-fragment trap, scope dedupe)
+- feat(self-tuning): S8 MIPRO tunable prompts (with frozen safety fragments)
+- feat(deliver): S7 graph-engineering safety (false-independence, silent-node, fan-in)
+- feat(deliver): S6 GEPA reflect phase (Pareto archive + approach rewrite)
+- feat(deliver): S5 per-phase escalation (hybrid policy)
+- feat(coordination): S4 effort-dial orchestration profiles
+- fix(deliver): address S1-S3 parallel-review findings
+- feat(models): S3 per-phase x per-tier routing matrix
+- feat(models): S2 unified complexity classifier (preserves critical)
+- feat(deliver): S1 verification hardening — distinct judge, provenance banner
+
+
 ## v1.164.0 (2026-07-24)
 
 - feat(proxy): run the operational dashboard as part of the uap proxy

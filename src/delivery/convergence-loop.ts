@@ -73,6 +73,15 @@ export interface PromptContext {
   /** Include the autonomy policy in the prompt (default true; false opts out). */
   autonomous?: boolean;
   /**
+   * Acceptance contract derived up front from the user-path manifest — the
+   * concrete journeys + DOM selectors the real-client validator will drive.
+   * Injected every turn so the model builds a COMPLETE, drivable artifact from
+   * turn 1 rather than discovering the contract only via gate failures. Carried
+   * forward like `practices` (not per-turn transient). See
+   * user-paths.renderAcceptanceContract.
+   */
+  acceptanceContract?: string;
+  /**
    * MIPRO (S8/3a): tuner-selected prompt-fragment variants (fragmentId→variantId,
    * from promptSelectionFromConfig). When absent the prompt is IDENTICAL to the
    * hand-authored default; when present, non-frozen fragments (e.g. executor.tone)
@@ -357,6 +366,24 @@ export interface ConvergenceConfig {
    */
   autonomous?: boolean;
   /**
+   * Run the acceptance gate even when the verifier ladder is RED. Off by default
+   * (a broken build should not be judged). Set under max fidelity so the vision
+   * aesthetic review — a BLOCKING release gate — still runs and feeds findings
+   * when the ONLY red rung is a synthetic anti-vacuous self-gate: otherwise the
+   * self-gate starves the vision loop and the model stalls with no visual
+   * feedback while verify blocks delivery on that same score (Generator≠Evaluator).
+   * Safe because the mission-acceptance gate re-checks operational (execution) and
+   * behavioral (user-paths) itself before grading pixels.
+   */
+  runAcceptanceDespiteLadder?: boolean;
+  /**
+   * Acceptance contract (user-path journeys + required selectors), derived up
+   * front by the CLI from the manifest and injected into every executor prompt
+   * so the model builds a complete, validator-drivable artifact. Optional and
+   * carried forward unchanged each turn.
+   */
+  acceptanceContract?: string;
+  /**
    * Persist until delivered (full autonomy): keep iterating past `maxTurns`
    * until every required gate passes, the `maxTurnsCeiling` is reached, or
    * progress stalls (no score improvement for several consecutive turns).
@@ -538,6 +565,17 @@ function practiceSection(practices?: string[]): string[] {
   return lines;
 }
 
+/**
+ * Render the acceptance contract (the up-front user-path journeys + required
+ * selectors) as a high-priority prompt section. Placed next to the TASK so the
+ * model treats the validator's journeys as build requirements — the generic
+ * completeness rail that closes the author→implement loop.
+ */
+function contractSection(acceptanceContract?: string): string[] {
+  if (!acceptanceContract || !acceptanceContract.trim()) return [];
+  return ['', acceptanceContract.trim()];
+}
+
 /** Default prompt strategy: lean contract + structured retry context. */
 export const defaultPromptBuilder: PromptBuilder = (ctx) => {
   // 3a: source the FROZEN output contract through the binding so it is always the
@@ -555,10 +593,14 @@ export const defaultPromptBuilder: PromptBuilder = (ctx) => {
     : [];
 
   if (ctx.turn === 1) {
-    return [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`].join('\n');
+    // Merge note: master's MIPRO work made the output contract a resolved
+    // variable and added the tuner-selected tone section; 580 appends the
+    // up-front acceptance contract. Both apply — the contract goes last so the
+    // concrete journeys sit closest to the task.
+    return [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract)].join('\n');
   }
 
-  const sections = [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ''];
+  const sections = [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ''];
   sections.push(`PREVIOUS ATTEMPT (turn ${ctx.turn - 1}):`);
 
   if (ctx.previousFiles && ctx.previousFiles.length > 0) {
@@ -609,7 +651,19 @@ interface TurnOutcome {
  * the loop stays decoupled from the acceptance-judge module. The implementation
  * is expected to fail open internally (a judgment must not wedge delivery).
  */
-export type AcceptanceGate = (projectRoot: string) => Promise<{
+/**
+ * @param ctx.ladderPassed state of the objective ladder for THIS turn. Before
+ *   `runAcceptanceDespiteLadder` existed the gate only ever ran on a green
+ *   ladder, so implementations could safely assume it. They no longer can: a
+ *   gate that tells its judge "objective gates ALL PASSED" without checking
+ *   would be asserting the opposite of the truth on a red turn, and any
+ *   consecutive-rejection breaker would be counting red turns it was never
+ *   meant to count. Undefined means "not supplied" — treat as unknown, not green.
+ */
+export type AcceptanceGate = (
+  projectRoot: string,
+  ctx?: { ladderPassed: boolean }
+) => Promise<{
   passed: boolean;
   feedback: string;
   /** Fraction of spec criteria met (0..1); lets the loop see acceptance progress. */
@@ -751,7 +805,8 @@ export class ConvergenceLoop {
     ladder: LadderResult,
     opts: { atBaseline?: boolean; treeFp?: string | null } = {}
   ): Promise<{ ladder: LadderResult; acceptanceMet?: number }> {
-    if (!this.acceptanceGate || !ladder.passed) return { ladder };
+    if (!this.acceptanceGate) return { ladder };
+    if (!ladder.passed && !this.config.runAcceptanceDespiteLadder) return { ladder };
     // Anti-no-op rail (P0, 2026-07-13): acceptance is deterministically
     // withheld until the run has changed the tree — this also stops the
     // baseline check from short-circuiting a coding mission as
@@ -782,7 +837,7 @@ export class ConvergenceLoop {
     }
     let acc: { passed: boolean; feedback: string; score?: number };
     try {
-      acc = await this.acceptanceGate(this.config.projectRoot);
+      acc = await this.acceptanceGate(this.config.projectRoot, { ladderPassed: ladder.passed });
     } catch {
       // Fail open in general — the judge must never block delivery. EXCEPT on
       // the relaxed zero-diff path (unchanged tree + prior-epic changes): there
@@ -1198,6 +1253,7 @@ export class ConvergenceLoop {
         ...prevContext,
         guidance,
         autonomous: this.config.autonomous,
+        acceptanceContract: this.config.acceptanceContract,
         promptSelection: this.config.promptSelection,
       });
 

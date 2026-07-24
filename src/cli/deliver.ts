@@ -85,6 +85,40 @@ export function shouldSkipAcceptanceJudge(opts: {
 }
 
 /**
+ * When the model fails to author a self-gate, is that fatal?
+ *
+ * Only if the run would then have NO convergence target at all. Getting this
+ * wrong in the permissive direction re-opens the false-green door the
+ * anti-vacuous floor exists to close: with no self-gate rung and no acceptance
+ * judge, a repo whose gates were already green is "delivered" having written
+ * nothing.
+ *
+ * Two traps this predicate exists to avoid, both of which `!options.acceptance`
+ * alone walks straight into:
+ *
+ *  - `--acceptance` is on but the judge is SKIPPED for a simple task
+ *    (shouldSkipAcceptanceJudge), so no gate object is ever built.
+ *  - max fidelity is treated as a standing blocker. It is not: the vision review
+ *    lives INSIDE the acceptance gate, so if that gate was never built there is
+ *    nothing to block, and visionAcceptanceFeedback additionally fails open on
+ *    five separate conditions (no vision model, no screenshots, non-final epic,
+ *    any thrown error, fidelity not max).
+ *
+ * So the only thing that makes a missing self-gate survivable is a judge that
+ * will actually run — plus at least one real rung to converge against.
+ */
+export function selfGateFailureIsFatal(opts: {
+  acceptanceEnabled: boolean;
+  judgeSkipped: boolean;
+}): boolean {
+  // A judge that will actually run is the only substitute. Surviving rungs do not
+  // rescue this: needsSelfGate is raised precisely when the objective gates are
+  // all GREEN (no convergence pressure) or absent entirely (the loop throws), so
+  // in both cases a missing self-gate with no judge leaves nothing to satisfy.
+  return !(opts.acceptanceEnabled && !opts.judgeSkipped);
+}
+
+/**
  * Generator≠Evaluator: resolve which model should AUTHOR + JUDGE the acceptance
  * gate. Returns the evaluator preset id when it must differ from the generator
  * (so the generator never grades its own work), or null to use the generator
@@ -157,7 +191,7 @@ import {
   resolveUserValidationMode,
   synthesizeUserValidationRung,
 } from '../delivery/user-validation.js';
-import { deriveUserPaths, fallbackWebManifest, loadUserPaths, mergeUserPaths, USER_PATHS_FILE } from '../delivery/user-paths.js';
+import { deriveUserPaths, fallbackWebManifest, loadUserPaths, mergeUserPaths, renderAcceptanceContract, USER_PATHS_FILE } from '../delivery/user-paths.js';
 import { detectArtifactType } from '../delivery/execution-gate.js';
 
 /** Raw .uap.json reader usable before the main cfgRawEarly declaration. */
@@ -1481,10 +1515,31 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const sg = await authorAcceptanceGate({ instruction, projectRoot, executor: gateAuthorExecutor });
     for (const note of sg.notes) console.log(chalk.dim(`    ${note}`));
     if (!sg.rung) {
-      fail('Could not author an acceptance gate (model produced no runnable script).');
-    }
-    rungs.push(sg.rung);
-    if (sg.vacuous) {
+      // A failed self-gate is survivable only when a real acceptance judge will
+      // run and become the convergence target. See selfGateFailureIsFatal — in
+      // particular, max fidelity is NOT a substitute: the vision review lives
+      // inside the acceptance gate, so when that gate is never built there is
+      // nothing for it to block.
+      if (
+        selfGateFailureIsFatal({
+          acceptanceEnabled: Boolean(options.acceptance),
+          judgeSkipped: shouldSkipAcceptanceJudge({
+            acceptanceEnabled: Boolean(options.acceptance),
+            complexity: autoPlan?.complexity,
+            acceptancePrimary,
+          }),
+        })
+      ) {
+        fail('Could not author an acceptance gate (model produced no runnable script).');
+      }
+      console.log(
+        chalk.yellow(
+          '  ⚠ self-gate authoring failed — the acceptance judge is the convergence target for this run.'
+        )
+      );
+    } else {
+      rungs.push(sg.rung);
+      if (sg.vacuous) {
       // P0 hard-fail: a REQUIRED self-gate that passes on the unsolved repo
       // re-opens the false-green door — "delivered" would be meaningless.
       if (process.env.UAP_DELIVER_ALLOW_WEAK_SELF_GATE !== '1') {
@@ -1501,6 +1556,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(
         chalk.green('  ✓ acceptance gate authored — fails on the unsolved repo, a real convergence target.')
       );
+      }
     }
   }
 
@@ -2064,6 +2120,28 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(chalk.dim('  user-validation: no manifest derived — gate will report NA until one exists'));
     }
   }
+  // Surface the acceptance contract (the user-path journeys + required selectors)
+  // to the executor on EVERY turn. The manifest is authored up front but was
+  // otherwise invisible to the implementer, so a weak model built artifacts that
+  // the real-client gate could not drive (e.g. a canvas-only UI with no DOM
+  // handles) and then could not self-correct from the gate's selector-not-found
+  // feedback. Injecting the contract closes the author→implement loop: the model
+  // builds a complete, drivable artifact from turn 1. Fail-soft — an aid, never a
+  // blocker.
+  if (userValidationMode !== 'off') {
+    try {
+      const loaded = loadUserPaths(projectRoot);
+      const contract = renderAcceptanceContract(loaded?.manifest ?? null);
+      if (contract) {
+        loopConfig.acceptanceContract = contract;
+        console.log(
+          chalk.dim('  user-validation: acceptance contract (journeys + required selectors) injected into the executor prompt')
+        );
+      }
+    } catch {
+      /* contract injection is a best-effort completeness aid */
+    }
+  }
   const runState: DeliverRunState = {
     runId,
     instruction,
@@ -2096,6 +2174,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     runState.checkpoint = cp;
     saveRunState(runState);
   };
+  // Under max fidelity the vision aesthetic review is a BLOCKING release gate;
+  // let the acceptance gate run (and feed vision findings) even when the ladder
+  // is red on a synthetic anti-vacuous self-gate, so the model gets aesthetic
+  // feedback instead of stalling. The gate re-checks operational + behavioral
+  // itself before grading (mission-acceptance), preserving the required ordering.
+  loopConfig.runAcceptanceDespiteLadder = deliverFidelity.max;
   // Cooperative cancel from the dashboard: the loop polls this each turn.
   loopConfig.shouldStop = () => isStopRequested(projectRoot, runId);
   clearStop(projectRoot, runId);
@@ -2551,7 +2635,18 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // Regression scoring uses only the fast tier — a cheap, synchronous, always-
   // run signal. Integration/deploy-dev gates may not run at baseline (promotion
   // is cheap-first), so they are not a trustworthy regression comparison.
-  const fastRungs = rungs.filter((r) => tierOf(r) === 'fast');
+  // keep-best scores the DETERMINISTIC objective gates — build/test/lint (fast) PLUS
+  // the execution smoke (runtime) and user-path (final) gates — not just the fast tier.
+  // On a project whose only meaningful gates are runtime/final (e.g. a vanilla-JS web
+  // app with no build step) the fast subset is trivially 1.00 every turn, so
+  // best-intermediate never advanced and a 100%-functional turn that later regressed
+  // was DISCARDED (octopus, 2026-07-24: the lazy turn hit 100% of gates, the
+  // vision-chasing turns then rewrote game.js and broke the HUD wiring, and the win was
+  // lost — the harness kept the regressed end state). Exclude the LLM judge rungs
+  // (bootstrap/acceptance): non-deterministic, they would make the rollback target flap.
+  const KEEP_BEST_TIERS = new Set<GateTier>(['fast', 'runtime', 'integration', 'final']);
+  const KEEP_BEST_EXCLUDE_IDS = new Set(['bootstrap', 'acceptance']);
+  const fastRungs = rungs.filter((r) => KEEP_BEST_TIERS.has(tierOf(r)) && !KEEP_BEST_EXCLUDE_IDS.has(r.id));
   const keepBest = Boolean(options.keepBest) && fastRungs.length > 0 && !needsSelfGate;
   let regressSnapshot: string | null = null;
   let baselineGateScore = 0;
@@ -2600,6 +2695,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           redetectRungs: true,
           redetectFilter: loopConfig.redetectFilter,
           protectTests: options.protectTests,
+          // The acceptance contract is a REQUIREMENT spec, not a convergence aid:
+          // carry it into the bare turn so a one-shot build already exposes the
+          // journeys/selectors the gate will drive (otherwise the lazy turn builds
+          // blind, e.g. a canvas-only UI with no DOM handles, and only later turns
+          // — which do get the contract — can recover it).
+          acceptanceContract: loopConfig.acceptanceContract,
           onIteration: (record) => { updateDeliverHeartbeat(projectRoot); printProgress(record); },
         },
         executor,
