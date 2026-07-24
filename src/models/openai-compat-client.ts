@@ -29,7 +29,16 @@ const DEFAULT_TIMEOUT_MS = modelHttpTimeoutMs();
 const LOOPBACK_RE = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?)$/i;
 const PRIVATE_HOST_RE = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
 
-function isLocalEndpoint(url: URL): boolean {
+/**
+ * Is this endpoint on the local machine or a private network?
+ *
+ * Exported so every credential-bearing caller shares ONE definition. The
+ * PROXY_AUTH_TOKEN fallback means a request can now carry a secret even when the
+ * model preset declares no apiKeyEnvVar, so any code path that attaches an
+ * Authorization header has to make the same local-only judgement — duplicating
+ * the regexes is how the two drift apart and one of them starts leaking.
+ */
+export function isLocalEndpoint(url: URL): boolean {
   return LOOPBACK_RE.test(url.hostname) || PRIVATE_HOST_RE.test(url.hostname);
 }
 

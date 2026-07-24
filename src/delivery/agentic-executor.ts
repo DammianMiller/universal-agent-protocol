@@ -25,6 +25,7 @@ import { join, dirname, resolve, relative, isAbsolute } from 'path';
 import type { ModelConfig } from '../models/types.js';
 import type { LoopExecutor } from './convergence-loop.js';
 import { fetchModelWithRetry } from '../models/long-fetch.js';
+import { isLocalEndpoint } from '../models/openai-compat-client.js';
 import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename } from './applier.js';
 import { estimateMessagesTokens, formatBudgetStop } from './context-budget.js';
@@ -862,7 +863,32 @@ async function _chat(
   const url = `${endpoint.replace(/\/$/, '')}/chat/completions`;
   // Fall back to the local anthropic-proxy token (PROXY_AUTH_TOKEN, PR #590) so a
   // local preset with no apiKeyEnvVar still authenticates to a token-gated proxy.
-  const apiKey = (model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined) || process.env.PROXY_AUTH_TOKEN || undefined;
+  //
+  // But NEVER off-machine: this path had no local-endpoint guard at all, while its
+  // sibling in openai-compat-client.ts refuses to send a credential in cleartext
+  // beyond the local network. With the PROXY_AUTH_TOKEN fallback that asymmetry
+  // became a leak — a preset pointed at a remote/cloud endpoint would have shipped
+  // the local proxy secret over plain HTTP. Same rule, one shared definition.
+  const rawKey =
+    (model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined) ||
+    process.env.PROXY_AUTH_TOKEN ||
+    undefined;
+  let apiKey = rawKey;
+  if (rawKey) {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'https:' && !isLocalEndpoint(parsed)) {
+        throw new Error(
+          `Refusing to send ${model.apiKeyEnvVar ?? 'the local proxy token'} over ` +
+            `${parsed.protocol}// to non-local host ${parsed.hostname} — use https.`
+        );
+      }
+    } catch (err) {
+      // A malformed endpoint is not a reason to send the credential anyway.
+      if (err instanceof Error && err.message.startsWith('Refusing to send')) throw err;
+      apiKey = undefined;
+    }
+  }
   // Long headers/body timeouts + transient-failure retry: a local model
   // prefilling a big tool-loop prompt exceeds global fetch's 300s headers
   // timeout, which killed whole turns as `TypeError: fetch failed`.

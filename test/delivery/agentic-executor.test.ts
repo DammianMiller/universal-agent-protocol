@@ -589,3 +589,55 @@ describe('createAgenticExecutor — read-only-streak write nudge', () => {
     expect(bodies.every((b) => JSON.parse(b).tool_choice === 'auto')).toBe(true);
   });
 });
+
+describe('PROXY_AUTH_TOKEN never leaks off-machine', () => {
+  let dir: string;
+  let prevToken: string | undefined;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agx-tok-'));
+    prevToken = process.env.PROXY_AUTH_TOKEN;
+    process.env.PROXY_AUTH_TOKEN = 'proxy-secret-do-not-leak';
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (prevToken === undefined) delete process.env.PROXY_AUTH_TOKEN;
+    else process.env.PROXY_AUTH_TOKEN = prevToken;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('sends the token to a LOOPBACK endpoint', async () => {
+    const spy = mockChatSequence([{ tool_calls: [{ function: { name: 'finish', arguments: '{}' } }] }]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('noop');
+    const headers = (spy.mock.calls[0][1] as { headers: Record<string, string> }).headers;
+    expect(headers.Authorization).toBe('Bearer proxy-secret-do-not-leak');
+  });
+
+  it('REFUSES to send it to a remote host over plaintext http', async () => {
+    // Regression: this path attached Authorization with no local-endpoint guard,
+    // while its sibling in openai-compat-client.ts refused. Once PROXY_AUTH_TOKEN
+    // became a fallback, a preset aimed at a remote endpoint would have shipped
+    // the local proxy secret in cleartext.
+    const spy = mockChatSequence([{ tool_calls: [{ function: { name: 'finish', arguments: '{}' } }] }]);
+    const remote = { id: 'm', apiModel: 'm', endpoint: 'http://api.example.com/v1' } as never;
+    const exec = createAgenticExecutor(remote, { projectRoot: dir, endpoint: 'http://api.example.com/v1' });
+    // The executor traps turn errors into its summary rather than rejecting, so
+    // assert on the surfaced reason — the refusal must reach the caller either way.
+    const summary = await exec('noop');
+    expect(JSON.stringify(summary)).toMatch(/Refusing to send/);
+    // And it must not have been sent even once.
+    for (const call of spy.mock.calls) {
+      const headers = (call[1] as { headers?: Record<string, string> })?.headers ?? {};
+      expect(headers.Authorization).toBeUndefined();
+    }
+  });
+
+  it('allows a remote host over https', async () => {
+    const spy = mockChatSequence([{ tool_calls: [{ function: { name: 'finish', arguments: '{}' } }] }]);
+    const remote = { id: 'm', apiModel: 'm', endpoint: 'https://api.example.com/v1' } as never;
+    const exec = createAgenticExecutor(remote, { projectRoot: dir, endpoint: 'https://api.example.com/v1' });
+    await exec('noop');
+    const headers = (spy.mock.calls[0][1] as { headers: Record<string, string> }).headers;
+    expect(headers.Authorization).toBe('Bearer proxy-secret-do-not-leak');
+  });
+});
