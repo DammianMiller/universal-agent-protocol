@@ -161,8 +161,9 @@ PROXY_PORT = int(os.environ.get("PROXY_PORT", "4000"))
 # PROXY_AUTH_TOKEN so the exposure is credential-gated.
 PROXY_HOST = os.environ.get("PROXY_HOST", "127.0.0.1")
 # Optional shared secret. When set, every request to a model route must present
-# it as `Authorization: Bearer <token>` or `X-Uap-Proxy-Token: <token>`. Unset
-# (default) = no check, which is safe only because the default bind is loopback.
+# it as `Authorization: Bearer <token>`, `X-Uap-Proxy-Token: <token>`, or
+# `X-Api-Key: <token>`. Unset (default) = no check, which is safe only because
+# the default bind is loopback.
 # The health probe stays open so liveness checks don't need the secret.
 PROXY_AUTH_TOKEN = os.environ.get("PROXY_AUTH_TOKEN", "").strip()
 PROXY_LOG_LEVEL = os.environ.get("PROXY_LOG_LEVEL", "INFO").upper()
