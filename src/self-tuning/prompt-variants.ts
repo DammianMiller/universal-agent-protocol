@@ -126,6 +126,41 @@ export interface PromptDimension {
   default: string;
 }
 
+/**
+ * Bind the FROZEN fragments to their real canonical contract text (3a). The
+ * frozen fragments ship a `__BIND_FROM__` placeholder to keep them out of the
+ * optimizer; the prompt-builder wiring MUST pass the real convergence-loop
+ * OUTPUT_CONTRACT / AUTONOMY_CONTRACT here so the emitted prompt uses the actual
+ * file-emission contract the applier depends on (arch review's highest concern).
+ * Pure — returns a fragmentId→text binding map.
+ */
+export function bindFrozenFragments(contracts: {
+  outputContract: string;
+  autonomyGuardrails: string;
+}): Record<string, string> {
+  return {
+    'output.contract': contracts.outputContract,
+    'autonomy.guardrails': contracts.autonomyGuardrails,
+  };
+}
+
+/**
+ * Resolve a fragment's text, preferring a FROZEN binding when one is supplied.
+ * Frozen fragments resolve to their bound canonical contract (from
+ * bindFrozenFragments); non-frozen fragments resolve to the optimizer-selected
+ * variant. This is the single entry point the prompt-builder should call. Pure.
+ */
+export function resolveBoundVariant(
+  fragmentId: string,
+  selection: Record<string, string> = {},
+  bindings: Record<string, string> = {}
+): string {
+  if (isFrozen(fragmentId) && typeof bindings[fragmentId] === 'string') {
+    return bindings[fragmentId];
+  }
+  return resolvePromptVariant(fragmentId, selection);
+}
+
 /** One enum dimension per NON-frozen fragment (frozen ones are never proposed). */
 export function promptDimensions(): PromptDimension[] {
   return tunablePromptSpace().map((s) => ({
