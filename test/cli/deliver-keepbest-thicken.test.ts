@@ -65,9 +65,23 @@ describe('bestKeepFastScore — score a turn on the fast-tier gates it already r
     expect(bestKeepFastScore(res, fastIds)).toBe(1);
   });
 
-  it('returns null when NO fast-tier gate ran (not scoreable → do not advance)', () => {
+  it('returns null when NO scored gate ran (not scoreable → do not advance)', () => {
     expect(bestKeepFastScore([r('user-validation', true)], fastIds)).toBeNull();
     expect(bestKeepFastScore([], fastIds)).toBeNull();
+  });
+
+  it('scores execution + user-path when the keep-best set spans the objective gates', () => {
+    // Production now populates the set from the deterministic objective gates
+    // (fast + runtime execution + final user-path), so a project whose only real
+    // gates are runtime/final is scoreable. A fully-functional turn (both pass)
+    // must strictly outscore one that regressed the HUD wiring (user-path fails)
+    // — the exact octopus case where the 100%-functional lazy turn was discarded.
+    const objIds = new Set(['execution', 'user-validation']);
+    const functional = bestKeepFastScore([r('execution', true), r('user-validation', true)], objIds)!;
+    const regressed = bestKeepFastScore([r('execution', true), r('user-validation', false)], objIds)!;
+    expect(functional).toBe(1);
+    expect(regressed).toBe(0.5);
+    expect(functional).toBeGreaterThan(regressed);
   });
 
   it('a peak turn outscores a later regressed turn — the advance/keep signal', () => {

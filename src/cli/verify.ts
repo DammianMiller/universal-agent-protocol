@@ -22,6 +22,50 @@ import {
 import { loadUapConfigRaw } from '../utils/config-loader.js';
 import { compareVisualBaseline, driftSummary, approveVisualBaseline } from '../delivery/visual-baseline.js';
 import type { LoopExecutor } from '../delivery/convergence-loop.js';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join as joinPath } from 'node:path';
+
+/**
+ * Does the project render via <canvas>? Used to append canvas-specific aesthetic
+ * guidance when the vision gate fails. Bounded shallow scan of .html/.js source
+ * for `<canvas` or a 2D/WebGL context grab. Fail-soft: any error → false.
+ */
+export function projectUsesCanvas(dir: string): boolean {
+  const SKIP = new Set(['node_modules', '.git', '.uap', 'dist', 'build', '.worktrees']);
+  let filesRead = 0;
+  const scan = (d: string, depth: number): boolean => {
+    if (depth > 3 || filesRead > 80) return false;
+    let entries: string[];
+    try {
+      entries = readdirSync(d);
+    } catch {
+      return false;
+    }
+    for (const e of entries) {
+      if (SKIP.has(e)) continue;
+      const p = joinPath(d, e);
+      let st;
+      try {
+        st = statSync(p);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) {
+        if (scan(p, depth + 1)) return true;
+      } else if (/\.(html?|js|mjs|cjs|jsx|ts|tsx)$/.test(e) && st.size < 512_000) {
+        filesRead++;
+        try {
+          const txt = readFileSync(p, 'utf-8');
+          if (/<canvas\b/i.test(txt) || /\.getContext\s*\(\s*['"](2d|webgl2?)['"]/i.test(txt)) return true;
+        } catch {
+          /* unreadable — skip */
+        }
+      }
+    }
+    return false;
+  };
+  return scan(dir, 0);
+}
 
 export interface VerifyOptions {
   /** Project directory to verify (default: cwd). */
@@ -242,6 +286,19 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
         if (fidelity.max && verdict && verdict.score < fidelity.visionMinScore) {
           visionBlocks = true;
           visualReport += `\n✗ max fidelity: aesthetic score ${verdict.score}/10 is below the ${fidelity.visionMinScore} threshold.`;
+          // Canvas apps score low most often because the render loop is gated on an
+          // active/'playing' state, so the FIRST screen the judge grades (menu/attract)
+          // shows a blank <canvas>. Append the concrete, general fix so a weak model
+          // gets an action, not just a score. (Board finding: draw the scene in every
+          // state; keep any full-screen overlay transparent so it does not dim the canvas.)
+          if (projectUsesCanvas(dir)) {
+            visualReport +=
+              '\nThe judge grades the FIRST screen a user sees. For a <canvas> app, run the render loop ' +
+              'from load and DRAW THE SCENE (background, key sprites/preview) in EVERY state — including the ' +
+              'menu/start/attract state — not only during active play; a blank canvas on the first screen is ' +
+              'the most common cause of a low score. Keep any full-screen DOM overlay background transparent ' +
+              'so the canvas shows through and is not dimmed, and use the vibrant on-theme palette.';
+          }
         }
       } else if (fidelity.max) {
         visualReport += '\n⚠ max fidelity: no vision model available — aesthetic review skipped. No local vision-capable model was detected (llama-server /props modalities.vision) and UAP_VISION_ENDPOINT/MODEL is unset. Launch the model with an --mmproj projector, or set UAP_VISION_ENDPOINT/MODEL (uap setup).';

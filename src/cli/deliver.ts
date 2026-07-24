@@ -2497,7 +2497,18 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // Regression scoring uses only the fast tier — a cheap, synchronous, always-
   // run signal. Integration/deploy-dev gates may not run at baseline (promotion
   // is cheap-first), so they are not a trustworthy regression comparison.
-  const fastRungs = rungs.filter((r) => tierOf(r) === 'fast');
+  // keep-best scores the DETERMINISTIC objective gates — build/test/lint (fast) PLUS
+  // the execution smoke (runtime) and user-path (final) gates — not just the fast tier.
+  // On a project whose only meaningful gates are runtime/final (e.g. a vanilla-JS web
+  // app with no build step) the fast subset is trivially 1.00 every turn, so
+  // best-intermediate never advanced and a 100%-functional turn that later regressed
+  // was DISCARDED (octopus, 2026-07-24: the lazy turn hit 100% of gates, the
+  // vision-chasing turns then rewrote game.js and broke the HUD wiring, and the win was
+  // lost — the harness kept the regressed end state). Exclude the LLM judge rungs
+  // (bootstrap/acceptance): non-deterministic, they would make the rollback target flap.
+  const KEEP_BEST_TIERS = new Set<GateTier>(['fast', 'runtime', 'integration', 'final']);
+  const KEEP_BEST_EXCLUDE_IDS = new Set(['bootstrap', 'acceptance']);
+  const fastRungs = rungs.filter((r) => KEEP_BEST_TIERS.has(tierOf(r)) && !KEEP_BEST_EXCLUDE_IDS.has(r.id));
   const keepBest = Boolean(options.keepBest) && fastRungs.length > 0 && !needsSelfGate;
   let regressSnapshot: string | null = null;
   let baselineGateScore = 0;

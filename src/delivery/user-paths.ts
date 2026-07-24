@@ -296,6 +296,11 @@ export function renderAcceptanceContract(manifest: UserPathsManifest | null | un
         'shows through and the visuals are not dimmed). An automated client cannot see or click ' +
         'canvas-drawn pixels — a canvas-only build cannot be validated and will fail this gate.'
     );
+    out.push(
+      'STATE TRANSITIONS are part of the contract: when a journey clicks a control and a LATER step ' +
+        'expects an element to be visible, the click handler MUST make that element visible (e.g. toggle ' +
+        'style.display / a CSS class). Build the transition — do not just place a hidden element on the page.'
+    );
   }
   return out.join('\n');
 }
@@ -322,17 +327,79 @@ Rules:
 - Cover each CRITICAL user-facing requirement of the mission with at least one path.
 - 2-6 paths total; each 2-8 steps; every path ends with at least one expect_* step.
 - Browser paths for anything with a UI; include expect_no_console_errors.
-- CANVAS-rendered UIs (games/visualizations that draw via <canvas>): text and
-  UI drawn on a canvas is NOT in the DOM, so expect_text can NEVER match it —
-  do not use expect_text for canvas-drawn content (scores, HUDs, titles,
-  menus). Assert expect_visible on the canvas selector plus
-  expect_no_console_errors instead; use expect_text only for real DOM text.
+- REACHABILITY (critical): the validator runs ONLY the literal steps you write and
+  cannot play skillfully or wait for the app to progress on its own. Every assertion
+  MUST be reachable by the exact steps that precede it. Do NOT assert a state that
+  requires gameplay/simulation progress — a specific score or level value, a boss or
+  later wave appearing, an enemy being destroyed, or the player losing / a game-over
+  screen. Scripted clicks cannot deterministically reach these, so such a path can
+  NEVER pass and DEADLOCKS delivery. For dynamic values assert PRESENCE/VISIBILITY
+  (expect_visible), never a specific number (no expect_text "5"/"10"/"100" on a
+  score/level/HUD element). Prefer asserting: the app loads; static start-screen
+  content is visible; clicking a start/begin control transitions to the running
+  state and REVEALS the expected controls/HUD; the canvas renders; no console errors.
+- CANVAS-rendered UIs (games/visualizations that draw via <canvas>): a DOM client
+  can only see the <canvas> element and genuine top-level DOM chrome — never the
+  things PAINTED on the canvas. So for a canvas app:
+  * expect_visible ONLY the canvas plus top-level DOM chrome you can be certain
+    exists (a start/menu control, a HUD/score CONTAINER, a game-over overlay).
+  * NEVER assert individual game entities as DOM — enemies, bullets, particles,
+    the player ship, sprites. They are canvas pixels, not DOM nodes; a '.enemy',
+    '.particle', or '#player-ship' selector can NEVER be visible and DEADLOCKS the
+    gate. (Class selectors like '.foo' are almost always such entities — avoid them.)
+  * text painted on a canvas is NOT in the DOM, so expect_text can NEVER match it —
+    do not use expect_text for canvas-drawn content (scores, HUDs, titles, menus);
+    use expect_text only for real DOM text. Keep it to 2-3 short paths: load; the
+    start transition (click the start control → HUD/running chrome appears); and
+    no console errors.
 - Use "server" only when the artifact needs a real server process (APIs); static
   HTML is served automatically.
 - Output ONLY the JSON.
 
 MISSION:
 `;
+
+/**
+ * Deterministic backstop for the canvas REACHABILITY rule (expect_visible half —
+ * sanitizeCanvasTextAssertions only handles expect_text). A weak miner asserts
+ * individual canvas-drawn entities as DOM nodes (observed live on the octopus
+ * retest: `.enemy-rect`, `.particle`, `#player-ship`). Those are painted on the
+ * <canvas>, never in the DOM, so the step can NEVER pass and DEADLOCKS the gate.
+ * For canvas missions, drop steps whose target is a CLASS selector (`.foo`) —
+ * per-entity collections are always classes and a canvas app has no DOM class
+ * entities. Id/tag chrome (#start, #hud, #game-over, canvas) is kept; a path left
+ * with no assertion gets an expect_no_console_errors floor. Non-canvas missions
+ * and http/cli paths are untouched.
+ */
+export function sanitizeCanvasEntityAssertions(
+  manifest: UserPathsManifest,
+  instruction: string
+): UserPathsManifest {
+  if (!/\bcanvas\b|<canvas/i.test(instruction)) return manifest;
+  const targetSelector = (s: UserPathStep): string | undefined => {
+    if (typeof (s as { expect_visible?: unknown }).expect_visible === 'string') {
+      return (s as { expect_visible: string }).expect_visible;
+    }
+    const et = (s as { expect_text?: { selector?: string } }).expect_text;
+    if (et && typeof et === 'object') return et.selector;
+    const click = (s as { click?: unknown }).click;
+    if (typeof click === 'string') return click;
+    if (click && typeof click === 'object') return (click as { selector?: string }).selector;
+    return undefined;
+  };
+  const isClassEntity = (s: UserPathStep): boolean => {
+    const sel = (targetSelector(s) ?? '').trim();
+    return sel.startsWith('.');
+  };
+  const isAssert = (s: UserPathStep): boolean => Object.keys(s).some((k) => k.startsWith('expect_'));
+  const paths = manifest.paths.map((p) => {
+    if (p.client !== 'browser' || !p.steps.some(isClassEntity)) return p;
+    const kept = p.steps.filter((s) => !isClassEntity(s));
+    if (!kept.some(isAssert)) kept.push({ expect_no_console_errors: true } as UserPathStep);
+    return { ...p, steps: kept };
+  });
+  return { ...manifest, paths };
+}
 
 /**
  * One evaluator-model call that proposes user paths for a mission. Fail-soft:
@@ -356,7 +423,12 @@ export async function deriveUserPaths(
       const out = await executor(prompt);
       const manifest = parseManifestFromModel(out);
       if (manifest) {
-        return dropRedundantStaticServer(sanitizeCanvasTextAssertions(manifest, instruction));
+        return dropRedundantStaticServer(
+          sanitizeCanvasEntityAssertions(
+            sanitizeUnreachableGameStateAssertions(sanitizeCanvasTextAssertions(manifest, instruction)),
+            instruction
+          )
+        );
       }
     } catch {
       /* fall through to retry/give-up */
@@ -447,6 +519,49 @@ export function sanitizeCanvasTextAssertions(
     const kept = p.steps.filter((s) => !isShellTextAssert(s));
     if (!kept.some(isAssert)) kept.push({ expect_no_console_errors: true } as UserPathStep);
     return { ...p, steps: kept };
+  });
+  return { ...manifest, paths };
+}
+
+/**
+ * Deterministic backstop for the REACHABILITY rule: a weak miner still emits
+ * assertions a mechanical click-validator can NEVER satisfy — a specific score
+ * or level number that requires actually playing (observed live on the octopus
+ * retest: `expect_text {#hud-level:"5"}`, `{#hud-score:"10"}`, `{#hud-score:"100"}`).
+ * Such a step cannot pass by scripted input, so it DEADLOCKS the user-path gate
+ * (the loop spins 3 turns unchanged and gives up). Loosen each numeric-outcome
+ * `expect_text` on a browser path to an `expect_visible` on the same selector —
+ * the element's PRESENCE is scripted-reachable, its exact game-state value is not.
+ * Word-bearing text ("OCTOPUS INVADERS", "Score", "GAME OVER") is untouched.
+ * Browser paths only; http/cli numeric bodies are legitimate and left alone.
+ */
+export function sanitizeUnreachableGameStateAssertions(manifest: UserPathsManifest): UserPathsManifest {
+  const NUMERIC_ONLY = /^[^0-9]*\d[\d\s.,%x×/-]*$/; // "5", "100", "10%", "3 / 5" — a value, not a word
+  const loosen = (s: UserPathStep): UserPathStep => {
+    const et = (s as { expect_text?: { selector?: string; contains?: string } }).expect_text;
+    if (et && typeof et === 'object' && typeof et.contains === 'string' && NUMERIC_ONLY.test(et.contains.trim())) {
+      const sel = (et.selector ?? '').trim();
+      if (sel) return { expect_visible: sel } as UserPathStep;
+    }
+    return s;
+  };
+  const paths = manifest.paths.map((p) => {
+    if (p.client !== 'browser') return p;
+    // De-dup consecutive identical expect_visible that loosening may introduce.
+    const rewritten = p.steps.map(loosen);
+    const deduped: UserPathStep[] = [];
+    for (const s of rewritten) {
+      const prev = deduped[deduped.length - 1];
+      if (
+        prev &&
+        typeof (s as { expect_visible?: string }).expect_visible === 'string' &&
+        (prev as { expect_visible?: string }).expect_visible === (s as { expect_visible?: string }).expect_visible
+      ) {
+        continue;
+      }
+      deduped.push(s);
+    }
+    return { ...p, steps: deduped };
   });
   return { ...manifest, paths };
 }
