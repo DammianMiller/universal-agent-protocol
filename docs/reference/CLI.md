@@ -250,8 +250,10 @@ worktree under `.worktrees/NNN-<slug>/`.
 
 | Subcommand | Key flags | Purpose |
 |------------|-----------|---------|
-| `create <slug>` | `-f, --from <branch>`, `-d, --description` | Create a new worktree for a feature |
+| `create <slug>` | `-f, --from <branch>`, `--no-fetch`, `-d, --description` | Create a worktree, based on the fetched `origin/<default>` |
 | `list` | — | List all worktrees |
+| `sync` | `-i, --id <id>`, `-a, --all` | Merge the integration branch into a worktree (mid-flight re-base) |
+| `hygiene` | `-b, --brief` | Report drift, unmerged work, and stale worktrees |
 | `pr <id>` | `--draft` | Create a PR from a worktree |
 | `finish <id>` | — | Sync, merge PR, and auto-cleanup the worktree |
 | `cleanup <id>` | — | Remove a worktree and delete its branch |
@@ -261,8 +263,29 @@ worktree under `.worktrees/NNN-<slug>/`.
 ```bash
 uap worktree ensure --strict
 uap worktree create add-user-auth
+uap worktree sync                     # re-base this worktree mid-flight
+uap worktree hygiene                  # drift + unmerged work across all worktrees
 uap worktree finish 042
 uap worktree prune --older-than 14 --dry-run
+```
+
+---
+
+## `merge`
+
+Serialized landing of concurrent agent PRs. See
+[Parallel Agents](../guides/PARALLEL_AGENTS.md).
+
+| Subcommand | Key flags | Purpose |
+|------------|-----------|---------|
+| `queue` | `-y, --yes`, `-n, --dry-run`, `-l, --limit <n>` (10), `--force` | Land PRs one at a time, re-syncing every PR each merge invalidates |
+
+Without `--yes` the command only prints its plan — merging is irreversible and
+unattended. `--force` lands PRs whose checks are not green.
+
+```bash
+uap merge queue                 # plan only
+uap merge queue --yes --limit 3
 ```
 
 ---

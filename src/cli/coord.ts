@@ -3,12 +3,14 @@ import ora from 'ora';
 import { CoordinationService } from '../coordination/service.js';
 import { DeployBatcher } from '../coordination/deploy-batcher.js';
 import type { WorkOverlap, BoardKind, FindingStatus, StagedStatus } from '../types/coordination.js';
+import { loadOwnershipMap, lanesForPaths, OWNERSHIP_FILE } from '../coordination/ownership.js';
 import { statusBadge, divider, keyValue, horizontalBarChart, bulletList } from './visualize.js';
 
 type CoordAction =
   | 'status' | 'flush' | 'cleanup' | 'check' | 'resolve'
   | 'post' | 'board' | 'dead-end' | 'finding' | 'flag'
-  | 'stage' | 'claim' | 'complete' | 'collaboration' | 'slots';
+  | 'stage' | 'claim' | 'complete' | 'collaboration' | 'slots'
+  | 'ownership';
 
 interface CoordOptions {
   verbose?: boolean;
@@ -40,10 +42,82 @@ function resolveAgentId(options: CoordOptions): string {
   return options.agent || process.env.UAP_AGENT_ID || process.env.UAP_AGENT || 'cli';
 }
 
+/**
+ * `uap coord ownership [paths...]` — show the lane map, or the lanes a set of
+ * paths falls into and which of those lanes live agents already hold.
+ */
+async function ownershipCmd(options: CoordOptions): Promise<void> {
+  const root = process.cwd();
+  const map = loadOwnershipMap(root);
+  const laneNames = Object.keys(map.lanes);
+
+  const paths = (options.text || '')
+    .split(/[\s,]+/)
+    .filter(Boolean);
+
+  if (laneNames.length === 0) {
+    console.log(chalk.yellow(`No lane map at ${OWNERSHIP_FILE}.`));
+    console.log(
+      chalk.dim(
+        'Define lanes to let the scheduler hand concurrent agents disjoint areas:\n' +
+          '  { "lanes": { "cli": ["src/cli/**"], "delivery": ["src/delivery/**"] } }'
+      )
+    );
+    return;
+  }
+
+  if (paths.length === 0) {
+    console.log(chalk.bold(`\n🛣  Ownership lanes (${OWNERSHIP_FILE})\n`));
+    for (const [lane, globs] of Object.entries(map.lanes)) {
+      console.log(`  ${chalk.cyan(lane)}`);
+      for (const g of globs) console.log(chalk.dim(`      ${g}`));
+    }
+    console.log('');
+    return;
+  }
+
+  const lanes = lanesForPaths(paths, map);
+  console.log(chalk.bold(`\n🛣  Lanes for ${paths.length} path(s)\n`));
+  if (lanes.length === 0) {
+    console.log(chalk.dim('  (unmapped — unconstrained, no lane conflict possible)'));
+    console.log('');
+    return;
+  }
+
+  // Cross-reference the lanes against what live agents are actually holding.
+  const service = new CoordinationService();
+  let heldLanes: string[] = [];
+  try {
+    const active = service.getActiveWork();
+    const me = resolveAgentId(options);
+    heldLanes = lanesForPaths(
+      active.filter((w) => w.agentId !== me).map((w) => w.resource),
+      map
+    );
+  } catch {
+    // Coordination DB unavailable — still report the static lane mapping.
+  }
+
+  for (const lane of lanes) {
+    const held = heldLanes.includes(lane);
+    console.log(`  ${chalk.cyan(lane)} ${held ? chalk.red('← HELD by another agent') : chalk.green('free')}`);
+  }
+  console.log('');
+  if (lanes.some((l) => heldLanes.includes(l))) {
+    console.log(
+      chalk.yellow('Another agent is working this lane — pick different work or coordinate first.')
+    );
+    process.exitCode = 1;
+  }
+}
+
 export async function coordCommand(action: CoordAction, options: CoordOptions = {}): Promise<void> {
   switch (action) {
     case 'status':
       await showStatus(options);
+      break;
+    case 'ownership':
+      await ownershipCmd(options);
       break;
     case 'flush':
       await flushDeploys(options);

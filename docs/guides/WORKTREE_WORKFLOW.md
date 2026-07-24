@@ -43,7 +43,9 @@ uap worktree finish <id>       # 4. land: sync, push, merge the PR, then clean u
 1. **Create** — `create` allocates the next numeric ID from a registry,
    builds the branch name `feature/NNN-<slug>`, and runs
    `git worktree add -b <branch> .worktrees/NNN-<slug> <base>`. The base branch
-   defaults to your current branch (override with `--from`). The new worktree is
+   defaults to the freshly-fetched `origin/<default>` — not your current branch —
+   so a worktree is never born stale (override with `--from`, skip the fetch with
+   `--no-fetch`). See [Parallel Agents](PARALLEL_AGENTS.md). The new worktree is
    recorded in a SQLite registry at `.uap/worktree_registry.db` so concurrent
    `create` calls never race on the same ID.
 2. **Work** — `cd` into the worktree and make changes. Everything stays on the
@@ -104,7 +106,8 @@ Create a new worktree and feature branch for `<slug>`.
 
 | Flag | Description |
 |------|-------------|
-| `-f, --from <branch>` | Base branch (defaults to the current branch) |
+| `-f, --from <branch>` | Base branch (defaults to the fetched `origin/<default>`) |
+| `--no-fetch` | Skip the base fetch (offline; accepts a possibly stale base) |
 | `-d, --description <description>` | Optional worktree description |
 
 ```bash
