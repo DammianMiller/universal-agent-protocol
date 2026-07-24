@@ -449,10 +449,12 @@ export function resolvePhaseChain(
 }
 
 /**
- * Materialize a preset's complexity tiers into the router's routingMatrix
- * (single-model-per-tier form). String tiers pass through; PhaseModels tiers
- * contribute their EXECUTE primary (backward-compatible single-model matrix).
- * Tiers absent from the preset are omitted. Exported + pure.
+ * LEGACY COMPATIBILITY SHIM (Q4). Materialize a preset's complexity tiers into
+ * router.ts's single-model routingMatrix. String tiers pass through; PhaseModels
+ * tiers contribute their EXECUTE primary (losing the per-phase chain). This is
+ * DERIVED from the canonical per-phase source (resolvePhaseChain /
+ * selectPhaseModel); new code should select through those, not this flat matrix.
+ * Retained so router.ts's existing routingMatrix path keeps working. Pure.
  */
 export function tiersToRoutingMatrix(
   preset: RoutingPreset
@@ -484,6 +486,22 @@ export function resolvePresetModel(
   const resolvedPhase: Phase = phase ?? ROLE_TO_PHASE[role];
   const chain = resolvePhaseChain(preset, { complexity, phase: resolvedPhase });
   return chain[0] ?? preset.roles[role];
+}
+
+/**
+ * CANONICAL per-phase model selector (Q4). `resolvePhaseChain` is the single
+ * source of truth for "which model does this (tier, phase) get"; this returns
+ * its primary. New code should route model selection through this (or
+ * `resolvePhaseChain` for the full escalation chain), NOT through the flattened
+ * `tiersToRoutingMatrix` — that matrix is a LEGACY COMPATIBILITY SHIM for
+ * router.ts's single-model routingMatrix and loses the per-phase chain. The flat
+ * matrix is derived FROM this canonical source, never the other way round.
+ */
+export function selectPhaseModel(
+  preset: RoutingPreset,
+  opts: { complexity?: TaskComplexity; phase: Phase }
+): string {
+  return resolvePhaseChain(preset, opts)[0] ?? preset.roles.executor;
 }
 
 /**

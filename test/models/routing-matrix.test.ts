@@ -4,6 +4,7 @@ import {
   resolvePhaseChain,
   resolvePresetModel,
   tiersToRoutingMatrix,
+  selectPhaseModel,
   type RoutingPreset,
 } from '../../src/models/types.js';
 
@@ -96,5 +97,18 @@ describe('tiersToRoutingMatrix — both tier forms', () => {
   it('a preset without tiers yields undefined', () => {
     const noTiers: RoutingPreset = { ...RoutingPresets['fable-local-opus'] };
     expect(tiersToRoutingMatrix(noTiers)).toBeUndefined();
+  });
+});
+
+describe('selectPhaseModel — Q4 canonical selector', () => {
+  it('returns the primary of the phase chain (= resolvePhaseChain[0])', () => {
+    expect(selectPhaseModel(adaptive, { complexity: 'high', phase: 'execute' })).toBe(
+      resolvePhaseChain(adaptive, { complexity: 'high', phase: 'execute' })[0]
+    );
+    expect(selectPhaseModel(adaptive, { complexity: 'high', phase: 'review' })).toBe('sonnet-5');
+  });
+  it('falls back to the executor role when a phase resolves empty', () => {
+    // legacy string tier, plan phase → role model (planner), never empty
+    expect(selectPhaseModel(legacy, { complexity: 'high', phase: 'plan' })).toBe(legacy.roles.planner);
   });
 });
