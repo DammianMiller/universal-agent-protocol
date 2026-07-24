@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.169.0 (2026-07-24)
+
+- chore: bump version to 1.168.0
+- fix(worktree): prune could delete every worktree, including on --dry-run
+- chore: bump version to 1.167.0
+- fix(worktree): never mistake a LIVE worktree for abandoned work
+- feat(execution-gate): catch a canvas app whose render loop never runs or FREEZES on start
+- chore: bump version to 1.166.0
+- feat(policy): install branch-freshness gate + rewrite coord-overlap
+- chore: bump version to 1.165.1
+- fix(coordination): address parallel expert review — drift check was inert
+- chore: bump version to 1.165.0
+- feat(coordination): keep parallel agents fresh and collision-free
+
+
 ## v1.168.0 (2026-07-24)
 
 - fix(worktree): prune could delete every worktree, including on --dry-run
