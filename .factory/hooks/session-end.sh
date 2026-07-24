@@ -8,6 +8,25 @@ set -euo pipefail
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
 
+# Our own agent id, derived the SAME way the edit hook derives it
+# (pre-tool-use-edit-write.sh: claude-<session_id> from the harness payload).
+# UAP_AGENT_ID is exported by session-start.sh, but that is a different process —
+# it never reaches this hook, so relying on it silently disabled the self-release
+# below and left this session's files locked against peers for the full stale window.
+_SE_INPUT=""
+if [ ! -t 0 ]; then
+  _SE_INPUT=$(cat 2>/dev/null || true)
+fi
+_SE_SESSION=""
+if [ -n "$_SE_INPUT" ] && command -v jq >/dev/null 2>&1; then
+  _SE_SESSION=$(printf '%s' "$_SE_INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)
+fi
+if [ -n "$_SE_SESSION" ]; then
+  SELF_AGENT_ID="claude-${_SE_SESSION}"
+else
+  SELF_AGENT_ID="${UAP_AGENT_ID:-${CLAUDE_SESSION_ID:+claude-$CLAUDE_SESSION_ID}}"
+fi
+
 # Coordination DB is SHARED across all worktrees (see session-start.sh).
 _GCD="$(git -C "$PROJECT_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
 case "$_GCD" in
@@ -56,8 +75,8 @@ if [ -f "$COORD_DB" ]; then
   # ended cleanly seconds after an edit kept its files locked against every peer
   # for the full window, and peers saw a "live agent" that had already exited.
   # We know our own id, so there is no reason to wait for it to look dead.
-  if [ -n "${UAP_AGENT_ID:-}" ]; then
-    ME_Q=$(printf '%s' "$UAP_AGENT_ID" | sed "s/'/''/g")
+  if [ -n "${SELF_AGENT_ID:-}" ]; then
+    ME_Q=$(printf '%s' "$SELF_AGENT_ID" | sed "s/'/''/g")
     sqlite3 "$COORD_DB" "
       UPDATE work_announcements SET completed_at = '$TIMESTAMP'
       WHERE completed_at IS NULL AND agent_id = '$ME_Q';

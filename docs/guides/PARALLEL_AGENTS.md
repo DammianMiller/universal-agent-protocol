@@ -14,10 +14,14 @@ expensive one.
 | **Who notices** | Git, loudly, at merge time | Nobody. B's merge silently reverts A's work, or a model "resolves" the conflict by keeping its own version |
 | **Covered by** | Live-agent lock in `coordinate-file.sh` | Everything on this page |
 
-Before this system existed, this repo had **151 worktrees; the worst was 1241
-commits behind `origin/master`; 23 held unmerged commits and 15 had uncommitted
-files.** A worktree created during that audit was born 1 commit behind, because
-creation read local `HEAD` and never fetched.
+This repo currently has **151 worktrees; the worst is ~1242 commits behind
+`origin/master`; 24 hold unmerged commits and 15 have uncommitted files.** A
+worktree created during the audit that produced this system was born 1 commit
+behind, because creation read local `HEAD` and never fetched.
+
+Those numbers are the *starting* state, not a solved problem — the layers below
+stop it getting worse and make it visible. Reconciling the existing backlog is a
+`uap worktree hygiene` / `uap worktree prune` job.
 
 ## The layers
 
@@ -35,16 +39,26 @@ uap worktree create my-feature --from x     # explicit base still wins
 uap worktree create my-feature --no-fetch   # offline; accepts a possibly stale base
 ```
 
-The default branch is resolved from `origin/HEAD`, then `master`, then `main` —
-never hard-coded.
+The default branch is resolved from `origin/HEAD`, then `origin/master`, then
+`origin/main`, then the current local branch, with a final literal `master`
+fallback if even that fails.
+
+> If your integration branch is neither `master` nor `main` and `origin/HEAD` is
+> unset (common on `--single-branch` clones), resolution falls through to *the
+> branch you are standing on*. Set it once — `git remote set-head origin -a` — or
+> pass `--from` explicitly.
 
 ### 2. Fresh while you work
 
 ```bash
-uap worktree sync              # merge the integration branch into this worktree
-uap worktree sync --id 117     # a specific worktree
+uap worktree sync              # run from INSIDE a worktree — syncs the cwd
+uap worktree sync --id 117     # a specific worktree, from anywhere
 uap worktree sync --all        # every worktree
 ```
+
+With no flags it operates on the current directory and does not verify that it is
+a worktree — run it from the main checkout and it merges into whatever branch that
+checkout is on. Worktrees with uncommitted changes are skipped, not merged.
 
 Previously the only sync happened at `uap worktree finish` — the most expensive
 possible moment to discover a conflict. Sync early and often instead.
@@ -72,12 +86,22 @@ never turns every edit into a network round-trip.
 | `UAP_COORD_DRIFT=off` | disable |
 | `UAP_COORD_FETCH_SECONDS` | fetch throttle (default 600) |
 
-### 4. Blocked from drifting too far
+### 4. Blocked from drifting too far — NOT YET INSTALLED
 
-The `branch-freshness` enforcer warns at 50 commits behind and blocks at 200 —
-the backstop for a branch whose whole model of the codebase has gone stale.
-Tune with `UAP_FRESHNESS_WARN` / `UAP_FRESHNESS_BLOCK`, disable with
-`UAP_NO_FRESHNESS=1`.
+> **Status: not shipped in this release.** The `branch-freshness` enforcer is
+> written but lives outside the repo, because the `enforcement-self-protect`
+> policy (correctly) forbids agents from writing into `src/policies/`. It needs an
+> operator to install it with `UAP_SELF_PROTECT_OFF=1`. Until then there is **no
+> commit-count ceiling** — a branch 1242 commits behind can still edit any file
+> that has not itself moved upstream. Layer 3 above is what is actually enforcing
+> today.
+
+Once installed it warns at 50 commits behind and blocks at 200 — the backstop for
+a branch whose whole model of the codebase has gone stale. Tunable with
+`UAP_FRESHNESS_WARN` / `UAP_FRESHNESS_BLOCK`, disabled with `UAP_NO_FRESHNESS=1`.
+
+The 200-commit figure also drives the `STALE — safe to prune` marker in
+`uap worktree hygiene`, which is a report, not a gate.
 
 ### 5. Serialized landing
 
@@ -86,20 +110,40 @@ hypothetical: PR #577 landed a legitimate infra file while a stale test assertin
 its absence lived on master, turning CI red and blocking every version bump.
 
 ```bash
-uap merge queue --dry-run    # show the landing order and what each merge invalidates
-uap merge queue              # land one at a time, re-syncing impacted PRs after each
+uap merge queue              # prints the plan only — never merges without --yes
+uap merge queue --yes        # land one at a time, re-syncing impacted PRs after each
+uap merge queue --yes --limit 3
 ```
 
-Order is fixes → features → docs, then smaller diffs, then oldest. After each
-merge, every PR that touches the same files **or the same ownership lane** is
-re-synced onto the new base before the next merge.
+Merging is irreversible and unattended, so **`--yes` is required**; the bare
+command is a plan. At most 10 PRs per run by default (`--limit`). `--force` lands
+PRs whose checks are not green — the CI safety this page argues for, deliberately
+switched off.
+
+Priority bands, highest first:
+
+| Band | Matches |
+|---|---|
+| 0 | labels containing `p0`, `critical`, `hotfix`, `security` |
+| 1 | labels containing `bug`, `fix`, `p1`; or branch `fix/…`, `hotfix/…` |
+| 2 | everything else |
+| 3 | branch `chore/…`, `docs/…` |
+
+Note the docs/chore band matches on **branch name**, not title — a PR titled
+`docs: …` on `feature/x` sorts into band 2. Ties break on smaller diff first, then
+least-recently-updated. After each merge, every PR that touches the same files
+**or the same ownership lane** is re-synced onto the new base before the next
+merge. PRs whose checks are still running are skipped rather than waited on, so a
+second run is often needed to drain the queue.
 
 ### 6. Prevention: ownership lanes
 
-The layers above react to collisions. Lanes stop them being possible: partition
-the tree, and hand concurrent agents work from different lanes.
+The layers above react to collisions. Lanes make them avoidable: partition the
+tree so concurrent agents can be pointed at different areas.
 
-`.uap/ownership.json`:
+`.uap-ownership.json` in the repo root — **tracked on purpose**, since a lane map
+that cannot be committed cannot be shared between agents, clones or CI. An
+untracked `.uap/ownership.json` overrides it for per-machine tweaks.
 
 ```json
 {
@@ -117,9 +161,14 @@ uap coord ownership src/cli/worktree.ts      # which lane, and is it held?
 ```
 
 Unmapped paths belong to no lane and are never blocked, so a partial map degrades
-to previous behavior rather than freezing work. Lanes also feed the merge queue,
-where they catch the semantic conflict that file-overlap misses entirely: two PRs
+to previous behavior rather than freezing work. Lanes feed the merge queue, where
+they catch the semantic conflict that file-overlap misses entirely: two PRs
 editing *different* files in the same module.
+
+> Lanes are currently **advisory plus merge-queue input**. The scheduling
+> primitive that would hand agents disjoint lanes automatically
+> (`selectDisjoint`) is exported and tested but has no production caller yet — no
+> scheduler consumes it. Today you consult lanes; nothing assigns by them.
 
 ### 7. Hygiene
 

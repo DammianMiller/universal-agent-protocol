@@ -20,7 +20,15 @@ export interface QueueOptions {
   limit?: number;
   /** Land PRs even when their checks are not green (never the default). */
   force?: boolean;
+  /** Required to actually merge. Without it the queue only prints its plan. */
+  yes?: boolean;
 }
+
+/**
+ * Landing is irreversible and unattended, so the default must not merge.
+ * `uap merge queue` with no flags prints the plan; `--yes` commits to it.
+ */
+export const DEFAULT_QUEUE_LIMIT = 10;
 
 export interface PullRequest {
   number: number;
@@ -35,7 +43,14 @@ export interface PullRequest {
 /** Run `gh` and return stdout. Throws with a readable message on failure. */
 function gh(args: string[], cwd?: string): string {
   try {
-    return execFileSync('gh', args, { cwd, encoding: 'utf-8' }).trim();
+    // maxBuffer: `pr list --json files` over 100 PRs blows the 1 MB default and
+    // surfaces as a bare "gh failed". timeout: an auth prompt otherwise hangs forever.
+    return execFileSync('gh', args, {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 120_000,
+      maxBuffer: 32 * 1024 * 1024,
+    }).trim();
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
     throw new Error(`gh ${args.join(' ')} failed: ${e.stderr || e.message || 'unknown error'}`);
@@ -121,13 +136,32 @@ export function impactedBy(
   return remaining.filter((p) => assessConflict(landed.files, p.files, lanes).conflicts);
 }
 
-function checksArePassing(prNumber: number, cwd?: string): boolean {
+export type ChecksVerdict = 'green' | 'red' | 'pending' | 'none';
+
+/**
+ * Classify `gh pr checks` output. Collapsing everything non-zero into "red" was
+ * wrong in two ways that both stop the queue dead: a repo with NO CI (exit 8)
+ * could never land anything, and a PR whose checks are still running after the
+ * previous merge's re-sync got reported as failing rather than waited on.
+ */
+export function checksVerdict(exitCode: number, output: string): ChecksVerdict {
+  if (exitCode === 0) return 'green';
+  if (exitCode === 8) return 'none';
+  if (/\b(pending|in_progress|queued|waiting|expected)\b/i.test(output)) return 'pending';
+  return 'red';
+}
+
+function inspectChecks(prNumber: number, cwd?: string): ChecksVerdict {
   try {
-    // Non-zero exit means "not all green"; treat any failure as not-passing.
-    gh(['pr', 'checks', String(prNumber)], cwd);
-    return true;
-  } catch {
-    return false;
+    const out = execFileSync('gh', ['pr', 'checks', String(prNumber)], {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 60_000,
+    });
+    return checksVerdict(0, out);
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string; stderr?: string };
+    return checksVerdict(e.status ?? 1, `${e.stdout ?? ''}${e.stderr ?? ''}`);
   }
 }
 
@@ -168,7 +202,9 @@ export async function mergeQueueCommand(options: QueueOptions = {}): Promise<voi
 
   const ownership = loadOwnershipMap(cwd);
   const ordered = orderQueue(eligible);
-  const limit = options.limit ?? ordered.length;
+  const limit = Number.isFinite(options.limit) && (options.limit ?? 0) > 0
+    ? (options.limit as number)
+    : DEFAULT_QUEUE_LIMIT;
   const plan = ordered.slice(0, limit);
 
   console.log(chalk.bold(`\n🚦 Merge queue — ${plan.length} PR(s)\n`));
@@ -183,8 +219,21 @@ export async function mergeQueueCommand(options: QueueOptions = {}): Promise<voi
   }
   console.log('');
 
-  if (options.dryRun) {
-    console.log(chalk.dim('Dry run — nothing merged. Re-run without --dry-run to land.'));
+  if (ordered.length > plan.length) {
+    console.log(
+      chalk.dim(`  … ${ordered.length - plan.length} more open PR(s) not in this batch (--limit ${limit}).`)
+    );
+    console.log('');
+  }
+
+  if (options.dryRun || !options.yes) {
+    console.log(
+      chalk.dim(
+        options.dryRun
+          ? 'Dry run — nothing merged.'
+          : 'Plan only — nothing merged. Re-run with --yes to land these.'
+      )
+    );
     return;
   }
 
@@ -194,10 +243,15 @@ export async function mergeQueueCommand(options: QueueOptions = {}): Promise<voi
   for (const [i, pr] of plan.entries()) {
     const remaining = plan.slice(i + 1);
 
-    if (!options.force && !checksArePassing(pr.number, cwd)) {
-      console.log(chalk.yellow(`  ⏭  #${pr.number} skipped — checks not green`));
-      skipped.push(`#${pr.number} (red checks)`);
-      continue;
+    if (!options.force) {
+      const verdict = inspectChecks(pr.number, cwd);
+      if (verdict === 'red' || verdict === 'pending') {
+        const why = verdict === 'pending' ? 'checks still running' : 'checks failing';
+        console.log(chalk.yellow(`  ⏭  #${pr.number} skipped — ${why}`));
+        skipped.push(`#${pr.number} (${why})`);
+        continue;
+      }
+      // 'none' (repo has no CI) and 'green' both proceed.
     }
 
     try {

@@ -10,7 +10,7 @@
  * concurrent agents work from DIFFERENT lanes in the first place. Two agents that
  * never touch the same lane cannot produce the conflict at all.
  *
- * Config lives at `.uap/ownership.json`:
+ * Config lives at `.uap-ownership.json` in the repo root:
  *
  *   {
  *     "lanes": {
@@ -19,6 +19,11 @@
  *       "policy":   ["src/policies/**", "policies/**"]
  *     }
  *   }
+ *
+ * That path is deliberately OUTSIDE `.uap/`, which is gitignored. A lane map that
+ * cannot be committed cannot be shared between agents, clones, worktrees or CI —
+ * which is every situation this feature exists for. A local, uncommitted
+ * `.uap/ownership.json` still wins when present, for per-machine overrides.
  *
  * Unmapped paths belong to no lane and are never blocked — an incomplete map
  * degrades to today's behavior instead of freezing work.
@@ -31,7 +36,10 @@ export interface OwnershipMap {
   lanes: Record<string, string[]>;
 }
 
-export const OWNERSHIP_FILE = '.uap/ownership.json';
+/** Tracked, shared across clones and worktrees. The one to document. */
+export const OWNERSHIP_FILE = '.uap-ownership.json';
+/** Untracked per-machine override, checked first when it exists. */
+export const OWNERSHIP_LOCAL_FILE = '.uap/ownership.json';
 
 /**
  * Minimal glob matcher: `**` (any depth, may be empty), `*` (within a segment),
@@ -75,9 +83,14 @@ export function matchGlob(pattern: string, path: string): boolean {
   }
 }
 
-/** Load the ownership map; returns empty lanes when absent or malformed. */
+/**
+ * Load the ownership map; returns empty lanes when absent or malformed.
+ * A local `.uap/ownership.json` overrides the tracked `.uap-ownership.json`.
+ */
 export function loadOwnershipMap(root: string): OwnershipMap {
-  const file = join(root, OWNERSHIP_FILE);
+  const local = join(root, OWNERSHIP_LOCAL_FILE);
+  const shared = join(root, OWNERSHIP_FILE);
+  const file = existsSync(local) ? local : shared;
   if (!existsSync(file)) {
     return { lanes: {} };
   }

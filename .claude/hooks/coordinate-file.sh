@@ -47,6 +47,23 @@ THRESHOLD="${UAP_COORD_LIVE_SECONDS:-120}"
 DRIFT_MODE="${UAP_COORD_DRIFT:-block}"
 FETCH_THROTTLE="${UAP_COORD_FETCH_SECONDS:-600}"
 
+# Validate every numeric knob before it reaches SQL or arithmetic. THRESHOLD is
+# interpolated into the liveness SQL below; a non-numeric value there produced a
+# silent SQL error, which fails the query open and disables the lock entirely.
+case "$THRESHOLD" in ''|*[!0-9]*) THRESHOLD=120 ;; esac
+case "$FETCH_THROTTLE" in ''|*[!0-9]*) FETCH_THROTTLE=600 ;; esac
+
+# Bound the git calls in check_drift. Only the fetch was bounded before, so a
+# slow merge-base/diff on a huge repo or a stalled network FS could hang the
+# agent's Edit tool with no diagnostic. macOS has no `timeout` by default.
+if command -v timeout >/dev/null 2>&1; then
+  DRIFT_TIMEOUT="timeout -k 1 10"
+elif command -v gtimeout >/dev/null 2>&1; then
+  DRIFT_TIMEOUT="gtimeout -k 1 10"
+else
+  DRIFT_TIMEOUT=""
+fi
+
 [ -n "$ME" ] && [ -n "$REL" ] || exit 0
 
 # Resolve the integration ref (origin/HEAD → origin/master → origin/main).
@@ -66,47 +83,93 @@ check_drift() {
   command -v git >/dev/null 2>&1 || return 0
   [ -n "$ABS" ] || return 0
 
-  local dir; dir=$(dirname "$ABS")
+  local dir; dir="${ABS%/*}"
   [ -d "$dir" ] || return 0
-  git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
 
-  local ref; ref=$(integration_ref "$dir") || return 0
+  # Anchor EVERY git call to the working tree that actually contains the file.
+  # Running them from the file's own directory was a latent no-op: git resolves a
+  # pathspec against the process prefix, so `-C <wt>/src/cli ... -- src/cli/x.ts`
+  # looked for <wt>/src/cli/src/cli/x.ts and matched nothing. Drift then "passed"
+  # for every file below the repo root — i.e. all real source — silently and
+  # fail-open. It only appeared to work for files sitting at the root, which is
+  # exactly what the first round of tests used.
+  local top; top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 0
+  [ -n "$top" ] || return 0
+
+  # Never fight an in-progress merge/rebase: the conflict markers the agent has to
+  # edit are, by definition, in files that moved upstream. Blocking there deadlocks
+  # the very resolution `uap worktree sync` just asked for.
+  local gitdir; gitdir=$(git -C "$top" rev-parse --absolute-git-dir 2>/dev/null) || return 0
+  for marker in MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+    [ -e "$gitdir/$marker" ] && return 0
+  done
+  [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ] && return 0
+
+  # Path relative to THIS working tree, derived here rather than trusting the
+  # caller's REL — which is relative to the agent's cwd and is wrong whenever the
+  # agent stands in the main checkout while editing into a worktree.
+  local rel="${ABS#"$top"/}"
+  [ "$rel" != "$ABS" ] || return 0
+
+  local ref; ref=$(integration_ref "$top") || return 0
 
   # Throttled fetch: an edit-time network call on EVERY keystroke-scale edit would
   # be intolerable, so refresh at most once per FETCH_THROTTLE seconds. Between
   # refreshes we compare against the last known remote tip — still catches the
   # overwhelming majority of drift, and `uap worktree sync` refreshes on demand.
-  local common; common=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 0
-  case "$common" in /*) ;; *) common="$dir/$common" ;; esac
-  local stamp="$common/.uap-drift-fetch"
-  local now; now=$(date +%s)
-  local last=0
-  [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
-  case "$last" in ''|*[!0-9]*) last=0 ;; esac
-  if [ $((now - last)) -ge "$FETCH_THROTTLE" ]; then
-    printf '%s' "$now" > "$stamp" 2>/dev/null || true
-    if command -v timeout >/dev/null 2>&1; then
-      timeout 10 git -C "$dir" fetch -q origin "${ref#origin/}" >/dev/null 2>&1 || true
-    else
-      git -C "$dir" fetch -q origin "${ref#origin/}" >/dev/null 2>&1 || true
+  local common; common=$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+    || common=$(git -C "$top" rev-parse --git-common-dir 2>/dev/null) || return 0
+  case "$common" in /*) ;; *) common="$top/$common" ;; esac
+  # If the stamp dir is not real, DISABLE the fetch rather than the throttle —
+  # otherwise a bad path silently means "fetch on every single edit".
+  if [ -d "$common" ]; then
+    local stamp="$common/.uap-drift-fetch"
+    local now; now=$(date +%s)
+    local last=0
+    [ -f "$stamp" ] && read -r last < "$stamp" 2>/dev/null
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    # A future-dated stamp (clock skew, or a stray write) would otherwise wedge
+    # fetching off indefinitely.
+    [ "$last" -gt "$now" ] 2>/dev/null && last=0
+    # mkdir is atomic on POSIX and NFS: with many agents sharing one common dir,
+    # a read-compare-write throttle lets every agent in the window fetch at once.
+    if [ $((now - last)) -ge "$FETCH_THROTTLE" ] && mkdir "$stamp.lock" 2>/dev/null; then
+      printf '%s' "$now" > "$stamp.tmp.$$" 2>/dev/null &&
+        mv -f "$stamp.tmp.$$" "$stamp" 2>/dev/null || true
+      # Detached: nothing in THIS edit depends on the fetch landing — we compare
+      # against the last known tip either way. Redirections are load-bearing; a
+      # background job holding the hook's stdout makes the harness wait on it.
+      (
+        GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -oBatchMode=yes -oConnectTimeout=5' \
+          $DRIFT_TIMEOUT git -C "$top" fetch -q origin "${ref#origin/}" >/dev/null 2>&1
+        rmdir "$stamp.lock" 2>/dev/null
+      ) </dev/null >/dev/null 2>&1 &
+    fi
+    # Reap a lock orphaned by a killed agent (older than 10 min).
+    if [ -d "$stamp.lock" ]; then
+      local lockage; lockage=$(find "$stamp.lock" -maxdepth 0 -mmin +10 2>/dev/null || true)
+      [ -n "$lockage" ] && rmdir "$stamp.lock" 2>/dev/null
     fi
   fi
 
-  local mb; mb=$(git -C "$dir" merge-base HEAD "$ref" 2>/dev/null) || return 0
+  local mb; mb=$($DRIFT_TIMEOUT git -C "$top" merge-base HEAD "$ref" 2>/dev/null) || return 0
   [ -n "$mb" ] || return 0
 
   # Did this specific path change on the integration branch since we branched?
-  local moved; moved=$(git -C "$dir" diff --name-only "$mb" "$ref" -- "$REL" 2>/dev/null)
+  # diff-tree (plumbing) skips the work-tree setup and index read that `git diff`
+  # performs, and ":(top)" pins the pathspec to the repo root regardless of cwd.
+  local moved; moved=$($DRIFT_TIMEOUT git -C "$top" diff-tree -r --name-only --no-renames \
+    "$mb" "$ref" -- ":(top)$rel" 2>/dev/null)
   [ -n "$moved" ] || return 0
 
-  local n; n=$(git -C "$dir" rev-list --count "$mb..$ref" 2>/dev/null || echo '?')
+  local n; n=$($DRIFT_TIMEOUT git -C "$top" rev-list --count "$mb..$ref" 2>/dev/null || echo '?')
 
   if [ "$DRIFT_MODE" = "warn" ]; then
-    echo "COORDINATION WARNING: ${REL} changed on ${ref} since your branch point (${n} commits behind). Run 'uap worktree sync' before editing or your merge may revert landed work." >&2
+    echo "COORDINATION WARNING: ${rel} changed on ${ref} since your branch point (${n} commits behind). Run 'uap worktree sync' before editing or your merge may revert landed work." >&2
     return 0
   fi
 
-  echo "{\"decision\":\"block\",\"reason\":\"STALE FILE: ${REL} has changed on ${ref} since your branch point (you are ${n} commits behind). Editing this copy risks silently reverting work that already landed. Run 'uap worktree sync' first, then re-apply your change on top. Override: UAP_COORD_DRIFT=warn.\"}" >&2
+  echo "{\"decision\":\"block\",\"reason\":\"STALE FILE: ${rel} has changed on ${ref} since your branch point (you are ${n} commits behind). Editing this copy risks silently reverting work that already landed. Run 'uap worktree sync' first, then re-apply your change on top. Override: UAP_COORD_DRIFT=warn.\"}" >&2
   return 2
 }
 

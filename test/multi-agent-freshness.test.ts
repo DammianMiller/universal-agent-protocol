@@ -16,7 +16,7 @@
  */
 import { describe, it, expect, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -30,7 +30,13 @@ import {
   loadOwnershipMap,
   type OwnershipMap,
 } from '../src/coordination/ownership.js';
-import { orderQueue, impactedBy, overlappingFiles, type PullRequest } from '../src/cli/merge-queue.js';
+import {
+  orderQueue,
+  impactedBy,
+  overlappingFiles,
+  checksVerdict,
+  type PullRequest,
+} from '../src/cli/merge-queue.js';
 import { parseRevListCount, summarizeHygiene, type BranchDrift } from '../src/cli/worktree.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -63,6 +69,11 @@ function newRepo(): { work: string } {
   git(work, 'config', 'user.name', 'test');
   writeFileSync(join(work, 'foo.ts'), 'v1\n');
   writeFileSync(join(work, 'bar.ts'), 'v1\n');
+  // Nested files matter: a pathspec bug made the drift check a silent no-op for
+  // everything below the repo root, and root-only fixtures hid it completely.
+  mkdirSync(join(work, 'src/cli'), { recursive: true });
+  writeFileSync(join(work, 'src/cli/deep.ts'), 'v1\n');
+  writeFileSync(join(work, 'src/cli/other.ts'), 'v1\n');
   git(work, 'add', '-A');
   git(work, 'commit', '-qm', 'init');
   git(work, 'branch', '-M', 'master');
@@ -136,6 +147,89 @@ describe('sequential drift detection (coordinate-file.sh)', () => {
     const off = runHook(work, 'foo.ts', { UAP_COORD_DRIFT: 'off' });
     expect(off.status).toBe(0);
     expect(off.stderr).not.toContain('STALE FILE');
+  });
+
+  it('blocks a NESTED file that changed upstream (pathspec regression)', () => {
+    // REGRESSION: git resolves a pathspec against the process prefix. Running the
+    // check from the FILE's directory with a root-relative path meant git looked
+    // for src/cli/src/cli/deep.ts, matched nothing, and allowed the edit. Every
+    // real source file was unprotected, silently, while root-level fixtures passed.
+    const { work } = newRepo();
+    git(work, 'checkout', '-qb', 'feature/agent-b');
+    git(work, 'checkout', '-q', 'master');
+    writeFileSync(join(work, 'src/cli/deep.ts'), 'v2-from-agent-A\n');
+    git(work, 'commit', '-qam', 'A changes deep');
+    git(work, 'push', '-q', 'origin', 'master');
+    git(work, 'checkout', '-q', 'feature/agent-b');
+    git(work, 'fetch', '-q', 'origin', 'master');
+
+    const { status, stderr } = runHook(work, 'src/cli/deep.ts');
+    expect(status).toBe(2);
+    expect(stderr).toContain('src/cli/deep.ts');
+
+    // A sibling in the same directory that did NOT move must still pass.
+    expect(runHook(work, 'src/cli/other.ts').status).toBe(0);
+  });
+
+  it('does not block while a merge is in progress', () => {
+    // `uap worktree sync` hitting a conflict leaves MERGE_HEAD set. The files the
+    // agent must now edit are exactly the ones that moved upstream, so blocking
+    // there deadlocks the resolution the sync just asked for.
+    const { work } = newRepo();
+    git(work, 'checkout', '-qb', 'feature/agent-b');
+    writeFileSync(join(work, 'src/cli/deep.ts'), 'v2-from-B\n');
+    git(work, 'commit', '-qam', 'B changes deep');
+    git(work, 'checkout', '-q', 'master');
+    writeFileSync(join(work, 'src/cli/deep.ts'), 'v2-from-A\n');
+    git(work, 'commit', '-qam', 'A changes deep');
+    git(work, 'push', '-q', 'origin', 'master');
+    git(work, 'checkout', '-q', 'feature/agent-b');
+    git(work, 'fetch', '-q', 'origin', 'master');
+
+    // Conflicting merge — left in progress on purpose.
+    spawnSync('git', ['merge', '--no-edit', 'origin/master'], { cwd: work, encoding: 'utf-8' });
+    expect(existsSync(join(work, '.git/MERGE_HEAD'))).toBe(true);
+
+    expect(runHook(work, 'src/cli/deep.ts').status).toBe(0);
+  });
+
+  it('keeps the fetch stamp in the shared git dir for a nested file', () => {
+    // If the stamp path is wrong the write fails silently, the throttle always
+    // reads 0, and a network fetch runs on EVERY edit. Invisible, and on the
+    // hottest path in the system.
+    const { work } = newRepo();
+    git(work, 'checkout', '-qb', 'feature/agent-b');
+    runHook(work, 'src/cli/other.ts');
+    expect(existsSync(join(work, '.git/.uap-drift-fetch'))).toBe(true);
+  });
+
+  it('tolerates a corrupt or future-dated fetch stamp', () => {
+    const { work } = newRepo();
+    git(work, 'checkout', '-qb', 'feature/agent-b');
+    writeFileSync(join(work, '.git/.uap-drift-fetch'), 'garbage');
+    expect(runHook(work, 'src/cli/other.ts').status).toBe(0);
+    writeFileSync(join(work, '.git/.uap-drift-fetch'), String(2 ** 40));
+    expect(runHook(work, 'src/cli/other.ts').status).toBe(0);
+  });
+
+  it('fails open in a repo with no remote at all', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-noremote-'));
+    tmpDirs.push(dir);
+    git(dir, 'init', '-q');
+    git(dir, 'config', 'user.email', 'test@example.com');
+    git(dir, 'config', 'user.name', 'test');
+    writeFileSync(join(dir, 'foo.ts'), 'v1\n');
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-qm', 'init');
+    expect(runHook(dir, 'foo.ts').status).toBe(0);
+  });
+
+  it('ignores a non-numeric throttle instead of erroring', () => {
+    const { work } = newRepo();
+    git(work, 'checkout', '-qb', 'feature/agent-b');
+    const r = runHook(work, 'src/cli/other.ts', { UAP_COORD_FETCH_SECONDS: 'not-a-number' });
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toContain('integer expression expected');
   });
 
   it('fails open outside a git repo', () => {
@@ -224,15 +318,27 @@ describe('ownership lanes', () => {
     tmpDirs.push(dir);
     expect(loadOwnershipMap(dir).lanes).toEqual({});
 
-    mkdirSync(join(dir, '.uap'), { recursive: true });
-    writeFileSync(join(dir, '.uap/ownership.json'), '{ not json');
+    writeFileSync(join(dir, '.uap-ownership.json'), '{ not json');
     expect(loadOwnershipMap(dir).lanes).toEqual({});
 
     writeFileSync(
-      join(dir, '.uap/ownership.json'),
+      join(dir, '.uap-ownership.json'),
       JSON.stringify({ lanes: { good: ['src/**'], bad: 'not-an-array', empty: [] } })
     );
     expect(loadOwnershipMap(dir).lanes).toEqual({ good: ['src/**'] });
+  });
+
+  it('reads the TRACKED map, with the local one as an override', () => {
+    // .uap/ is gitignored, so a lane map living only there can never be shared
+    // between agents, clones or CI — the exact situation lanes exist for.
+    const dir = mkdtempSync(join(tmpdir(), 'uap-own2-'));
+    tmpDirs.push(dir);
+    writeFileSync(join(dir, '.uap-ownership.json'), JSON.stringify({ lanes: { shared: ['a/**'] } }));
+    expect(loadOwnershipMap(dir).lanes).toEqual({ shared: ['a/**'] });
+
+    mkdirSync(join(dir, '.uap'), { recursive: true });
+    writeFileSync(join(dir, '.uap/ownership.json'), JSON.stringify({ lanes: { local: ['b/**'] } }));
+    expect(loadOwnershipMap(dir).lanes).toEqual({ local: ['b/**'] });
   });
 });
 
@@ -271,6 +377,17 @@ describe('merge queue ordering', () => {
       pr({ number: 2, headRefName: 'feature/big', labels: ['P0'], files: ['b.ts', 'c.ts'] }),
     ]).map((p) => p.number);
     expect(ordered).toEqual([2, 1]);
+  });
+
+  it('classifies check states instead of collapsing them to red', () => {
+    // Collapsing every non-zero exit into "failing" stopped the queue dead twice
+    // over: a repo with no CI could never land anything, and PRs whose checks were
+    // still running after the previous merge's re-sync were reported as broken.
+    expect(checksVerdict(0, 'all good')).toBe('green');
+    expect(checksVerdict(8, '')).toBe('none');
+    expect(checksVerdict(1, 'build\tpending\thttps://…')).toBe('pending');
+    expect(checksVerdict(1, 'lint\tin_progress\t…')).toBe('pending');
+    expect(checksVerdict(1, 'test\tfail\t…')).toBe('red');
   });
 
   it('detects which PRs a merge invalidates, by file and by lane', () => {

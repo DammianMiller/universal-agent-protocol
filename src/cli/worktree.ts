@@ -158,8 +158,10 @@ async function createWorktree(
     if (baseBranch) {
       // Explicit base: fetch it first so `--from origin/x` (and a local ref that
       // tracks it) resolves to the current remote tip rather than a stale copy.
+      // Strip the remote prefix — `git fetch origin origin/x` is not a valid
+      // refspec, so it failed silently and left the stale local ref in place.
       if (!noFetch) {
-        await fetchQuietly(git, baseBranch);
+        await fetchQuietly(git, baseBranch.replace(/^origin\//, ''));
       }
       try {
         await git.revparse([baseBranch]);
@@ -486,45 +488,105 @@ export interface BranchDrift {
   dirty: number;
 }
 
-/** Measure one worktree's drift against the integration ref. Never throws. */
+/**
+ * Measure one worktree's drift against the integration ref. Never throws.
+ *
+ * Kept to ONE git process on the common path. The first version spent four
+ * (`rev-parse`, two `rev-list`, `status`) which, across this repo's 152
+ * worktrees, ran ~600 sequential git invocations — comfortably past the 15s
+ * budget the session banner allows, so the advisory was always killed before it
+ * printed while still costing the full 15 seconds.
+ *
+ * @param branch pre-resolved from `git worktree list --porcelain`, which already
+ *   reports it — re-asking per worktree was a free process we were paying for.
+ * @param withDirty `git status` is by far the most expensive call (it stats the
+ *   whole tree). Only worth it for worktrees that already look interesting.
+ */
 export async function measureDrift(
   worktreePath: string,
-  integrationRef: string
+  integrationRef: string,
+  branch?: string,
+  withDirty = true
 ): Promise<BranchDrift | null> {
   try {
     const wtGit = simpleGit(worktreePath);
-    const branch = (await wtGit.revparse(['--abbrev-ref', 'HEAD'])).trim();
-    const behind = parseRevListCount(
-      await wtGit.raw(['rev-list', '--count', `HEAD..${integrationRef}`])
-    );
-    const ahead = parseRevListCount(
-      await wtGit.raw(['rev-list', '--count', `${integrationRef}..HEAD`])
-    );
-    const status = await wtGit.status();
-    const dirty =
-      status.staged.length +
-      status.modified.length +
-      status.not_added.length +
-      status.deleted.length;
+    const resolved = branch ?? (await wtGit.revparse(['--abbrev-ref', 'HEAD'])).trim();
+
+    // One symmetric-difference call replaces two rev-lists. Note the THREE dots:
+    // `--left-right --count a...b` emits "<behind>\t<ahead>" relative to the merge base.
+    const raw = await wtGit.raw([
+      'rev-list',
+      '--left-right',
+      '--count',
+      `${integrationRef}...HEAD`,
+    ]);
+    const [behindRaw, aheadRaw] = raw.trim().split(/\s+/);
+    const behind = parseRevListCount(behindRaw ?? '0');
+    const ahead = parseRevListCount(aheadRaw ?? '0');
+
+    let dirty = 0;
+    if (withDirty) {
+      const status = await wtGit.status();
+      // status.files is the authoritative entry list; summing the category arrays
+      // double-counts, because a staged-and-modified file appears in both.
+      dirty = status.files.length;
+    }
+
     const name = worktreePath.split('.worktrees/')[1] || worktreePath;
-    return { name, path: worktreePath, branch, behind, ahead, dirty };
+    return { name, path: worktreePath, branch: resolved, behind, ahead, dirty };
   } catch {
     return null;
   }
 }
 
-/** All linked worktree paths under .worktrees/. */
-async function listWorktreePaths(git: SimpleGit): Promise<string[]> {
+/** A linked worktree and the branch git already told us it is on. */
+interface WorktreeRef {
+  path: string;
+  branch: string;
+}
+
+/** All linked worktrees under .worktrees/, with their branches. */
+async function listWorktreeRefs(git: SimpleGit): Promise<WorktreeRef[]> {
   try {
     const raw = await git.raw(['worktree', 'list', '--porcelain']);
-    return raw
-      .split('\n')
-      .filter((l) => l.startsWith('worktree '))
-      .map((l) => l.replace('worktree ', '').trim())
-      .filter((p) => p.includes('.worktrees'));
+    const refs: WorktreeRef[] = [];
+    let current: string | null = null;
+    for (const line of raw.split('\n')) {
+      if (line.startsWith('worktree ')) {
+        current = line.replace('worktree ', '').trim();
+      } else if (line.startsWith('branch ') && current) {
+        if (current.includes('.worktrees')) {
+          refs.push({ path: current, branch: line.replace('branch refs/heads/', '').trim() });
+        }
+        current = null;
+      }
+    }
+    return refs;
   } catch {
     return [];
   }
+}
+
+/**
+ * Run an async mapper over items with bounded concurrency.
+ * Unbounded would spawn 152×N git processes at once and thrash the machine;
+ * sequential leaves the CPU idle while each git process does IO.
+ */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
 
 /**
@@ -542,7 +604,7 @@ async function syncWorktree(
 
   let targets: string[];
   if (opts.all) {
-    targets = await listWorktreePaths(git);
+    targets = (await listWorktreeRefs(git)).map((r) => r.path);
   } else if (opts.id) {
     const found = findWorktreeById(cwd, opts.id);
     if (!found) {
@@ -561,15 +623,32 @@ async function syncWorktree(
   let synced = 0;
   let conflicted = 0;
   let already = 0;
+  let skipped = 0;
 
-  for (const target of targets) {
-    const drift = await measureDrift(target, integrationRef);
+  // Probe concurrently, then merge serially: merges mutate working trees and
+  // their output should stay readable and attributable.
+  const drifts = await mapLimit(targets, 8, (t) => measureDrift(t, integrationRef));
+
+  for (const drift of drifts) {
     if (!drift) continue;
     if (drift.behind === 0) {
       already++;
       continue;
     }
-    const wtGit = simpleGit(target);
+    // Merging into a dirty tree aborts with "local changes would be overwritten",
+    // which the old code reported as a CONFLICT — misleading, and with --all it
+    // would say that about every dirty worktree in the repo.
+    if (drift.dirty > 0) {
+      skipped++;
+      console.log(
+        chalk.yellow(
+          `  ⏭  ${drift.name}: ${drift.dirty} uncommitted change(s) — commit or stash first ` +
+            `(${drift.behind} behind)`
+        )
+      );
+      continue;
+    }
+    const wtGit = simpleGit(drift.path);
     try {
       await wtGit.raw(['merge', '--no-edit', integrationRef]);
       synced++;
@@ -581,7 +660,7 @@ async function syncWorktree(
       console.log(
         chalk.red(
           `  ✖ ${drift.name}: CONFLICT merging ${integrationRef} ` +
-            `(${drift.behind} behind). Resolve in ${target}, then commit.`
+            `(${drift.behind} behind). Resolve in ${drift.path}, then commit.`
         )
       );
     }
@@ -590,7 +669,8 @@ async function syncWorktree(
   console.log('');
   console.log(
     chalk.bold(
-      `Sync: ${synced} updated, ${already} already current, ${conflicted} need manual resolution`
+      `Sync: ${synced} updated, ${already} already current, ` +
+        `${skipped} skipped (dirty), ${conflicted} need manual resolution`
     )
   );
   if (conflicted > 0) {
@@ -609,13 +689,21 @@ async function worktreeHygiene(
   opts: { brief?: boolean } = {}
 ): Promise<void> {
   const integrationRef = await resolveIntegrationRef(git);
-  const paths = await listWorktreePaths(git);
-  const drifts: BranchDrift[] = [];
+  // Refresh the remote tip first: measuring against a stale origin/master
+  // under-reports drift, which is precisely what this report exists to catch.
+  await fetchQuietly(git, integrationRef.replace(/^origin\//, ''));
+  const refs = await listWorktreeRefs(git);
 
-  for (const p of paths) {
-    const d = await measureDrift(p, integrationRef);
-    if (d) drifts.push(d);
-  }
+  // Two passes so `git status` — the expensive call — runs only where it can
+  // change the verdict. Everything else needs one git process per worktree.
+  const cheap = await mapLimit(refs, 8, (r) =>
+    measureDrift(r.path, integrationRef, r.branch, false)
+  );
+  const drifts = await mapLimit(
+    cheap.filter((d): d is BranchDrift => d !== null),
+    8,
+    async (d) => (d.ahead > 0 ? ((await measureDrift(d.path, integrationRef, d.branch, true)) ?? d) : d)
+  );
 
   const atRisk = drifts.filter((d) => d.ahead > 0 || d.dirty > 0);
   const summary = summarizeHygiene(drifts, integrationRef);

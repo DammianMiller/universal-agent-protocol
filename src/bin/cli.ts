@@ -419,13 +419,21 @@ program
   .addCommand(
     new Command('queue')
       .description('Land open PRs one at a time, re-syncing impacted PRs after each merge')
-      .option('-n, --dry-run', 'Show the landing order without merging')
-      .option('-l, --limit <n>', 'Only land the first N PRs')
+      .option('-n, --dry-run', 'Show the landing order without merging (default behaviour)')
+      .option('-y, --yes', 'Actually merge — without this the queue only prints its plan')
+      .option('-l, --limit <n>', 'Land at most N PRs (default 10)')
       .option('--force', 'Land even when checks are not green')
       .action(async (options) => {
+        const parsedLimit = options.limit ? Number.parseInt(options.limit, 10) : undefined;
+        if (options.limit && !Number.isFinite(parsedLimit)) {
+          console.error(`Invalid --limit: ${options.limit}`);
+          process.exitCode = 1;
+          return;
+        }
         (await lazy.mergeQueue())({
           dryRun: options.dryRun ?? false,
-          limit: options.limit ? parseInt(options.limit, 10) : undefined,
+          yes: options.yes ?? false,
+          limit: parsedLimit,
           force: options.force ?? false,
         });
       })
