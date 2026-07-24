@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.168.0 (2026-07-24)
+
+- fix(worktree): prune could delete every worktree, including on --dry-run
+
+
 ## v1.167.0 (2026-07-24)
 
 - fix(worktree): never mistake a LIVE worktree for abandoned work
