@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.167.0 (2026-07-24)
+
+- fix(worktree): never mistake a LIVE worktree for abandoned work
+
+
 ## v1.166.0 (2026-07-24)
 
 - feat(policy): install branch-freshness gate + rewrite coord-overlap
