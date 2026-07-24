@@ -80,6 +80,22 @@ export interface GateRung {
    * written marked tests yet.
    */
   passExitCodes?: number[];
+  /**
+   * Does a failure of this rung stop promotion to later tiers? Default true.
+   *
+   * Set false for a SYNTHETIC rung — one UAP injected rather than one the
+   * project declares. The model-authored acceptance self-gate is the case this
+   * exists for: it has no tier, so it lands in `fast`, and while it is red the
+   * ladder never promotes to `runtime` or `final`. That starved the execution
+   * gate, the user-path validator AND the vision review all at once, and it is
+   * the steady state for a mature repo (`needsSelfGate` is raised when the
+   * project's own gates are all GREEN).
+   *
+   * A non-promotion-blocking rung still counts toward the aggregate verdict —
+   * it cannot be passed by ignoring it. It just stops one synthetic check from
+   * hiding every real one behind it.
+   */
+  blocksPromotion?: boolean;
 }
 
 /** Effective tier for a rung — absent tier means the original `fast` band. */
@@ -1132,7 +1148,17 @@ export async function runTieredLadder(
     const tierResult = await useRunner(tierRungs, projectRoot, innerOptions);
     results.push(...tierResult.results);
 
-    if (!tierResult.passed) promotionStopped = true;
+    // Promotion stops only if a rung that BLOCKS promotion failed. A synthetic
+    // rung (blocksPromotion: false) still fails the ladder — it just does not
+    // hide the real gates in later tiers behind it.
+    if (!tierResult.passed) {
+      const blockingFailed = tierResult.results.some((r) => {
+        if (r.passed || r.skipped) return false;
+        const rung = tierRungs.find((g) => g.id === r.id);
+        return (rung?.blocksPromotion ?? true) && (rung?.required ?? true);
+      });
+      if (blockingFailed) promotionStopped = true;
+    }
   }
 
   // Aggregate — only in-scope rungs gate delivery (remote tiers are skipped).

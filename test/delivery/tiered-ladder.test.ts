@@ -113,3 +113,54 @@ describe('runTieredLadder', () => {
     expect(deployCalls).toEqual([['smoke']]);
   });
 });
+
+describe('blocksPromotion — a synthetic rung must not starve the real gates', () => {
+  it('a failing NON-blocking rung still runs later tiers', async () => {
+    // The self-gate is model-authored and untiered, so it lands in `fast`. While
+    // red it used to stop promotion, starving the execution gate (runtime) and
+    // the user-path validator (final) at the same time — and that is the STEADY
+    // STATE for a mature repo, because needsSelfGate is raised precisely when the
+    // project's own gates are all green.
+    const calls: string[][] = [];
+    const synthetic: GateRung = {
+      id: 'acceptance',
+      name: 'acceptance',
+      command: 'true',
+      args: [],
+      required: true,
+      timeoutMs: 1000,
+      blocksPromotion: false,
+    };
+    const result = await runTieredLadder(
+      [synthetic, rung('execution', 'runtime'), rung('user-paths', 'final')],
+      '/tmp',
+      { runner: fakeRunner(new Set(['execution', 'user-paths']), calls) }
+    );
+
+    // Every tier ran despite the red synthetic rung.
+    expect(calls.flat()).toContain('execution');
+    expect(calls.flat()).toContain('user-paths');
+    // …and it still fails the ladder: not promotion-blocking is not a free pass.
+    expect(result.passed).toBe(false);
+    expect(result.results.find((r) => r.id === 'execution')?.passed).toBe(true);
+  });
+
+  it('a failing BLOCKING rung still stops promotion (default unchanged)', async () => {
+    const calls: string[][] = [];
+    const result = await runTieredLadder(
+      [rung('build'), rung('execution', 'runtime')],
+      '/tmp',
+      { runner: fakeRunner(new Set(['execution']), calls) }
+    );
+    expect(calls.flat()).not.toContain('execution');
+    expect(result.passed).toBe(false);
+  });
+
+  it('an OPTIONAL non-blocking rung does not stop promotion either', async () => {
+    const calls: string[][] = [];
+    await runTieredLadder([rung('lint', 'fast', false), rung('execution', 'runtime')], '/tmp', {
+      runner: fakeRunner(new Set(['execution']), calls),
+    });
+    expect(calls.flat()).toContain('execution');
+  });
+});

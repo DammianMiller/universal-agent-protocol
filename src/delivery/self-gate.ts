@@ -421,5 +421,11 @@ function buildRung(scriptPath: string, timeoutMs: number): GateRung {
     args: [scriptPath],
     required: true,
     timeoutMs,
+    // Synthetic rung: UAP authored it, the project did not declare it. It has no
+    // tier, so it runs in `fast` — and while red it used to stop promotion to
+    // `runtime` and `final`, starving the execution gate, the user-path validator
+    // and the vision review simultaneously. It still gates delivery (required),
+    // it just no longer hides every real gate behind one model-written script.
+    blocksPromotion: false,
   };
 }
