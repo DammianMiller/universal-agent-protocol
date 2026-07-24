@@ -95,6 +95,10 @@ fast → integration → deploy-dev → │ commit │ → ci → deploy-staging
 
 Because promotion is cheap-first, a turn that fails the build never pays for integration or deploy — the expensive tiers run only once the cheap ones pass.
 
+**Synthetic rungs don't stop promotion.** The self-gate is authored by the model and lands in `fast`, and it is *supposed* to stay red until the mission is done. If it stopped promotion, the execution gate, the user-path validator and the vision review would all be starved for the whole run — which is the steady state on a mature repo, since the self-gate is raised precisely when the project's own gates are green. So it is marked non-promotion-blocking: it still fails the ladder (it cannot be passed by ignoring it), it just no longer hides every real gate behind one script.
+
+While a synthetic rung is red, the **infrastructure** tiers (`integration`, `deploy-dev`) are *deferred* rather than run every turn — a compose cycle and an ephemeral Postgres per turn buys a verdict that cannot change until the self-gate goes green. They are reported as `DEFERRED`, not as failures, and they run normally on the turn the self-gate passes. `runtime` and `final` are never deferred: they carry the "does it execute" and "does it behave" signals the unblocking exists to deliver. Set `UAP_LADDER_NO_COST_CEILING=1` to run the full ladder every turn regardless.
+
 ### CI / deploy feedback loop
 
 The `ci`, `deploy-staging`, and `deploy-prod` tiers are **never run locally** — they are verified by CI after commit. With `--watch-ci`, once the local tiers are green `deliver`:

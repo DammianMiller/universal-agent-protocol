@@ -208,8 +208,31 @@ function selectorOf(v: unknown): string | undefined {
 }
 
 /** One human-readable line per step; '' for steps not worth stating (pure waits). */
+/**
+ * Clamp a value interpolated from the manifest into the prompt.
+ *
+ * The contract is injected into EVERY turn's prompt, and every field here comes
+ * from `.uap/user-paths.json` — a repo file whose user-curated entries are
+ * deliberately never overwritten. Unclamped, one long `fill.value` or
+ * `expect_text.contains` is re-sent on every turn for the life of the run, and a
+ * multi-line value can forge structure inside a section the model reads as
+ * instructions. Newlines collapse, length is bounded, and the truncation is
+ * visible rather than silent.
+ */
+export function clampContractValue(value: unknown, max = CONTRACT_FIELD_MAX): string {
+  const s = String(value ?? '').replace(/[\r\n\t\u2028\u2029]+/g, ' ').trim();
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+/** Per-field cap for values interpolated into the acceptance contract. */
+export const CONTRACT_FIELD_MAX = 200;
+/** Cap for the whole rendered contract — it is re-sent every turn. */
+export const CONTRACT_TOTAL_MAX = 8000;
+/** Headroom reserved for the truncation notes so the cap is never exceeded. */
+const NOTE_ALLOWANCE = 260;
+
 function describeContractStep(step: UserPathStep, sink: Set<string>): string {
-  if (step.goto !== undefined) return `load ${step.goto || '/'}`;
+  if (step.goto !== undefined) return `load ${clampContractValue(step.goto) || '/'}`;
   if (step.click !== undefined) {
     const sel = selectorOf(step.click);
     collectContractSelector(sel, sink);
@@ -218,31 +241,31 @@ function describeContractStep(step: UserPathStep, sink: Set<string>): string {
       c && typeof c === 'object'
         ? ` at (${String((c as { x?: unknown }).x ?? '?')},${String((c as { y?: unknown }).y ?? '?')})`
         : '';
-    return `click ${sel ?? String(step.click)}${coord}`;
+    return `click ${clampContractValue(sel ?? String(step.click))}${coord}`;
   }
   if (step.fill) {
     collectContractSelector(step.fill.selector, sink);
-    return `type "${step.fill.value}" into ${step.fill.selector}`;
+    return `type "${clampContractValue(step.fill.value)}" into ${clampContractValue(step.fill.selector)}`;
   }
-  if (step.press) return `press ${step.press}`;
+  if (step.press) return `press ${clampContractValue(step.press)}`;
   if (step.expect_visible !== undefined) {
     collectContractSelector(step.expect_visible, sink);
-    return `${step.expect_visible} must be visible`;
+    return `${clampContractValue(step.expect_visible)} must be visible`;
   }
   if (step.expect_text) {
     collectContractSelector(step.expect_text.selector, sink);
     const c = step.expect_text.contains;
-    return `${step.expect_text.selector} must ${c ? `contain "${c}"` : 'have text'}`;
+    return `${clampContractValue(step.expect_text.selector)} must ${c ? `contain "${clampContractValue(c)}"` : 'have text'}`;
   }
   if (step.expect_no_console_errors) return 'no console errors';
-  if (step.request) return `${step.request.method} ${step.request.path}`;
-  if (step.expect_status !== undefined) return `response status ${step.expect_status}`;
-  if (step.expect_json_contains) return `response JSON contains ${JSON.stringify(step.expect_json_contains)}`;
-  if (step.expect_body_matches) return `response body matches /${step.expect_body_matches}/`;
-  if (step.run) return `run ${step.run.argv.join(' ')}`;
-  if (step.expect_exit !== undefined) return `exit code ${step.expect_exit}`;
-  if (step.expect_stdout_matches) return `stdout matches /${step.expect_stdout_matches}/`;
-  if (step.expect_stderr_matches) return `stderr matches /${step.expect_stderr_matches}/`;
+  if (step.request) return `${clampContractValue(step.request.method)} ${clampContractValue(step.request.path)}`;
+  if (step.expect_status !== undefined) return `response status ${clampContractValue(step.expect_status)}`;
+  if (step.expect_json_contains) return `response JSON contains ${clampContractValue(JSON.stringify(step.expect_json_contains))}`;
+  if (step.expect_body_matches) return `response body matches /${clampContractValue(step.expect_body_matches)}/`;
+  if (step.run) return `run ${clampContractValue((step.run.argv ?? []).join(' '))}`;
+  if (step.expect_exit !== undefined) return `exit code ${clampContractValue(step.expect_exit)}`;
+  if (step.expect_stdout_matches) return `stdout matches /${clampContractValue(step.expect_stdout_matches)}/`;
+  if (step.expect_stderr_matches) return `stderr matches /${clampContractValue(step.expect_stderr_matches)}/`;
   return '';
 }
 
@@ -269,27 +292,34 @@ export function renderAcceptanceContract(manifest: UserPathsManifest | null | un
   for (const path of manifest.paths) {
     if (!path || !Array.isArray(path.steps) || path.steps.length === 0) continue;
     if (path.client === 'browser') hasBrowser = true;
-    const rule = (path.rule ?? path.id ?? '').trim();
-    journeyLines.push(`- Journey "${path.id}" (${path.client})${rule ? `: ${rule}` : ''}`);
+    const rule = clampContractValue(path.rule ?? path.id ?? '');
+    journeyLines.push(
+      `- Journey "${clampContractValue(path.id)}" (${clampContractValue(path.client)})${rule ? `: ${rule}` : ''}`
+    );
     for (const step of path.steps) {
       const desc = describeContractStep(step, selectors);
       if (desc) journeyLines.push(`    • ${desc}`);
     }
   }
   if (journeyLines.length === 0) return '';
-  const out: string[] = [
+  const header = [
     'ACCEPTANCE CONTRACT — the delivered artifact is exercised by an automated real-client',
     'validator (headless browser / HTTP client / built CLI) on the journeys below. Build so',
     'EVERY step passes; a step the validator cannot perform fails delivery.',
     '',
-    ...journeyLines,
   ];
+  const out: string[] = [];
   const required = [...selectors].filter((s) => !SHELL_CONTRACT_SELECTORS.has(s.toLowerCase()));
+  // The selector list scales with the manifest exactly like the journey list —
+  // one selector per step. Treating it as fixed overhead let it consume the whole
+  // budget and evict every journey line, leaving a contract that is all
+  // requirements and no journeys (and still over the cap).
+  const selectorLine = (list: string[], omitted: number): string =>
+    `REQUIRED DOM SELECTORS (each MUST exist in the rendered page and be visible/clickable as used above): ${list.join(', ')}.` +
+    (omitted > 0 ? ` (+${omitted} more — see ${USER_PATHS_FILE})` : '');
   if (hasBrowser && required.length > 0) {
     out.push('');
-    out.push(
-      `REQUIRED DOM SELECTORS (each MUST exist in the rendered page and be visible/clickable as used above): ${required.join(', ')}.`
-    );
+    out.push(selectorLine(required, 0));
     out.push(
       'If your UI draws controls or text on a <canvas>, ALSO expose these selectors as real DOM ' +
         'elements layered over the canvas (position:absolute/fixed; background:transparent so the canvas ' +
@@ -311,7 +341,71 @@ export function renderAcceptanceContract(manifest: UserPathsManifest | null | un
       );
     }
   }
-  return out.join('\n');
+  // Whole-contract cap. Per-field clamping bounds any single VALUE; this bounds
+  // the whole thing, because the text is re-sent on EVERY turn and competes with
+  // the task itself for the context budget.
+  //
+  // TWO sections scale with the manifest — the journey list and the selector list
+  // — so both are truncated, and the fixed rails (header, canvas/state-transition
+  // guidance) are the only things treated as always-kept. Journeys are truncated
+  // by GROUP: dropping a "- Journey" header while keeping its indented bullets
+  // would silently re-parent those steps under the previous journey, which is a
+  // wrong contract rather than a shorter one.
+  const rails = out.filter((l) => !l.startsWith('REQUIRED DOM SELECTORS'));
+  const fixed = [...header, ...rails].join('\n').length + NOTE_ALLOWANCE;
+  const full = [...header, ...journeyLines, ...out].join('\n');
+  if (full.length <= CONTRACT_TOTAL_MAX) return full;
+
+  // Split the remaining budget: journeys first (they are the contract), selectors
+  // second (they are derivable from the journeys the model can still see).
+  let budget = Math.max(0, CONTRACT_TOTAL_MAX - fixed);
+  const journeyBudget = Math.floor(budget * 0.7);
+
+  const groups: string[][] = [];
+  for (const line of journeyLines) {
+    if (line.startsWith('- Journey') || groups.length === 0) groups.push([line]);
+    else groups[groups.length - 1].push(line);
+  }
+  const kept: string[] = [];
+  let droppedGroups = 0;
+  let spent = 0;
+  for (const g of groups) {
+    const cost = g.join('\n').length + 1;
+    if (spent + cost > journeyBudget) {
+      droppedGroups++;
+      continue;
+    }
+    spent += cost;
+    kept.push(...g);
+  }
+  budget -= spent;
+
+  // Charge the selector LINE's own boilerplate (the long prefix and the
+  // "+N more" suffix), not just the selectors — otherwise the line overshoots by
+  // its own framing and the advertised cap is missed by ~100 chars.
+  const selectorFraming = selectorLine([], required.length).length;
+  const keptSelectors: string[] = [];
+  let selectorBudget = Math.max(0, budget - selectorFraming);
+  for (const sel of required) {
+    if (sel.length + 2 > selectorBudget) break;
+    selectorBudget -= sel.length + 2;
+    keptSelectors.push(sel);
+  }
+  const omittedSelectors = required.length - keptSelectors.length;
+
+  const note =
+    droppedGroups > 0
+      ? [
+          `    … ${droppedGroups} further journey(s) omitted to bound the prompt. The validator still ` +
+            `runs ALL of them — read ${USER_PATHS_FILE} for the complete contract.`,
+        ]
+      : [];
+  const tail = out.map((l) =>
+    l.startsWith('REQUIRED DOM SELECTORS') && keptSelectors.length > 0
+      ? selectorLine(keptSelectors, omittedSelectors)
+      : l
+  );
+  return [...header, ...kept, ...note, ...tail].join('\n');
 }
 
 export type ModelExecutor = (prompt: string) => Promise<string>;

@@ -34,6 +34,23 @@ export type GateTier =
   | 'deploy-prod';
 
 /** Cheap → expensive promotion order. */
+/**
+ * Tiers deferred while a non-promotion-blocking rung is red: the ones that stand
+ * up real infrastructure per run — docker compose up/down, an ephemeral postgres,
+ * migrations. See the cost ceiling in runTieredLadder.
+ *
+ * `runtime` and `final` are deliberately NOT here, even though `final` drives a
+ * headless browser. They carry the two signals unblocking promotion existed to
+ * deliver — does the artifact EXECUTE, and does it BEHAVE on the user journeys —
+ * and deferring them would re-starve exactly what `blocksPromotion` unstarved,
+ * just for a different reason. The complaint this ceiling answers was a compose
+ * cycle every turn, not a browser run.
+ */
+export const COSTLY_TIERS: ReadonlySet<GateTier> = new Set<GateTier>([
+  'integration',
+  'deploy-dev',
+]);
+
 export const TIER_ORDER: GateTier[] = [
   'fast',
   'runtime',
@@ -123,6 +140,12 @@ export interface RungResult {
    * testsActuallyRan.
    */
   zeroTests?: boolean;
+  /**
+   * Why a skipped rung was skipped. 'deferred-cost' means the cost ceiling held
+   * it back while a non-blocking rung is red — no gate FAILED, so reporting it as
+   * "earlier gate failed" would point the model at a problem that does not exist.
+   */
+  skipReason?: 'earlier-failure' | 'deferred-cost';
 }
 
 export interface LadderResult {
@@ -864,20 +887,56 @@ export function formatFeedback(results: RungResult[], rungs: GateRung[]): string
   const requiredIds = new Set(rungs.filter((r) => r.required).map((r) => r.id));
   const lines: string[] = ['Gate results:'];
   for (const r of results) {
-    const status = r.skipped ? 'SKIPPED (earlier gate failed)' : r.passed ? 'PASS' : 'FAIL';
+    const status = r.skipped
+      ? r.skipReason === 'deferred-cost'
+        ? 'DEFERRED (cheap gates first — will run once they pass)'
+        : 'SKIPPED (earlier gate failed)'
+      : r.passed
+        ? 'PASS'
+        : 'FAIL';
     const optional = requiredIds.has(r.id) ? '' : ' (optional)';
     lines.push(`- ${r.name}${optional}: ${status}`);
   }
 
-  const firstRequiredFailure = results.find(
-    (r) => !r.passed && !r.skipped && requiredIds.has(r.id)
+  // Which failure gets the one detail block matters. Results arrive in TIER_ORDER,
+  // so the fast-tier synthetic self-gate always won the slot — and once
+  // blocksPromotion let the runtime/final gates actually RUN behind a red
+  // self-gate, they ran and their output was still never shown. The model was
+  // told "fix this gate first" about a model-authored acceptance script that is
+  // SUPPOSED to stay red until the mission is done, while the real build/execution
+  // failure sat one line above with no tail.
+  //
+  // So prefer a failure that blocks promotion — a real, objective gate the model
+  // can actually act on this turn. Fall back to the synthetic one when that is all
+  // there is, since then it genuinely is the only thing to work toward.
+  const blockingIds = new Set(
+    rungs.filter((r) => r.required && r.blocksPromotion !== false).map((r) => r.id)
   );
+  const failedRequired = results.filter((r) => !r.passed && !r.skipped && requiredIds.has(r.id));
+  const firstRequiredFailure =
+    failedRequired.find((r) => blockingIds.has(r.id) && r.outputTail) ??
+    // Never drop the only diagnostic we have: preferring a TAILLESS blocking rung
+    // over a non-blocking one that actually has output would print no failure
+    // detail at all — strictly worse than before this preference existed.
+    failedRequired.find((r) => r.outputTail) ??
+    failedRequired.find((r) => blockingIds.has(r.id)) ??
+    failedRequired[0];
   if (firstRequiredFailure && firstRequiredFailure.outputTail) {
     lines.push('');
     lines.push(`Fix this gate first — ${firstRequiredFailure.name} output:`);
     lines.push('```');
     lines.push(firstRequiredFailure.outputTail);
     lines.push('```');
+  } else if (firstRequiredFailure) {
+    // A REQUIRED gate failed but produced no output (a script that exits non-zero
+    // silently). Say exactly that — the branch below would otherwise tell the
+    // model this blocking gate is "OPTIONAL … do not prioritize it", which is the
+    // opposite of true and the inverse of the bait that branch exists to prevent.
+    lines.push('');
+    lines.push(
+      `Fix this gate first — ${firstRequiredFailure.name} failed with no output ` +
+        `(exit ${firstRequiredFailure.exitCode}). Run it yourself to see why.`
+    );
   } else {
     // Optional-only failures must NOT carry the "fix this first" imperative or
     // the failure tail: on an otherwise-green baseline the tail baits the model
@@ -885,7 +944,11 @@ export function formatFeedback(results: RungResult[], rungs: GateRung[]): string
     // goal (observed live 2026-07-10: 13/13 writes against an optional lint
     // rung whose eslint plugin crash the agent could never fix, zero writes
     // toward the epic goal).
-    const firstOptionalFailure = results.find((r) => !r.passed && !r.skipped);
+    // Scoped to genuinely optional rungs — `firstRequiredFailure` being unset is
+    // now the only way to reach here, so this can no longer mislabel a required one.
+    const firstOptionalFailure = results.find(
+      (r) => !r.passed && !r.skipped && !requiredIds.has(r.id)
+    );
     if (firstOptionalFailure) {
       lines.push('');
       lines.push(
@@ -1076,7 +1139,7 @@ export interface TieredLadderOptions extends LadderOptions {
   userValidationRunner?: LadderRunFn;
 }
 
-const skippedRung = (rung: GateRung): RungResult => ({
+const skippedRung = (rung: GateRung, reason?: RungResult['skipReason']): RungResult => ({
   id: rung.id,
   name: rung.name,
   passed: false,
@@ -1084,6 +1147,7 @@ const skippedRung = (rung: GateRung): RungResult => ({
   exitCode: null,
   durationMs: 0,
   outputTail: '',
+  ...(reason ? { skipReason: reason } : {}),
 });
 
 /**
@@ -1124,15 +1188,19 @@ export async function runTieredLadder(
   // Rungs that were eligible to run (tier <= maxTier); only these gate delivery.
   const inScope: GateRung[] = [];
   let promotionStopped = false;
+  /** A rung failed that is required but deliberately does not stop promotion. */
+  let nonBlockingFailed = false;
 
   for (const tier of TIER_ORDER) {
     const tierRungs = byTier.get(tier);
     if (!tierRungs || tierRungs.length === 0) continue;
 
     // 'final' is an epilogue tier: always in scope when its rung was
-    // synthesized (config-gated upstream), regardless of the cost ceiling —
-    // it must not drag integration/deploy-dev into scope, and promotion
-    // still guarantees it only runs when every cheaper in-scope tier passed.
+    // synthesized (config-gated upstream), regardless of the maxTier ceiling —
+    // it must not drag integration/deploy-dev into scope. It runs when no
+    // PROMOTION-BLOCKING rung has failed; the cost ceiling can leave
+    // integration/deploy-dev deferred-not-passed while final still runs, which
+    // is intended (it carries the behavioural signal, they carry infrastructure).
     const eligible = tier === 'final' || TIER_ORDER.indexOf(tier) <= maxIdx;
     if (!eligible) {
       // Above maxTier — verified remotely, never run locally.
@@ -1147,6 +1215,28 @@ export async function runTieredLadder(
       continue;
     }
 
+    // COST CEILING while a non-blocking rung is red.
+    //
+    // blocksPromotion exists so a red synthetic self-gate stops starving the real
+    // gates. But "don't starve" should not mean "pay for everything, every turn":
+    // the self-gate is raised precisely when the project's own gates are green and
+    // is REQUIRED to stay red until the mission is done, so without a ceiling every
+    // turn of a long run would bring a docker-compose stack up and down
+    // (integration/deploy-dev) and drive a headless browser + vision model (final).
+    //
+    // runtime is the tier that carries the feedback the unblocking was for — does
+    // the artifact actually execute — and it is cheap. So while a non-blocking rung
+    // is red, run up to runtime and defer the expensive tiers until the ladder is
+    // otherwise clean. Escape hatch for anyone who wants the full ladder anyway.
+    if (
+      nonBlockingFailed &&
+      COSTLY_TIERS.has(tier) &&
+      process.env.UAP_LADDER_NO_COST_CEILING !== '1'
+    ) {
+      for (const rung of tierRungs) results.push(skippedRung(rung, 'deferred-cost'));
+      continue;
+    }
+
     const useRunner =
       tier === 'deploy-dev' && options.deployDevRunner ? options.deployDevRunner
       : tier === 'final' && options.userValidationRunner ? options.userValidationRunner
@@ -1158,11 +1248,15 @@ export async function runTieredLadder(
     // rung (blocksPromotion: false) still fails the ladder — it just does not
     // hide the real gates in later tiers behind it.
     if (!tierResult.passed) {
-      const blockingFailed = tierResult.results.some((r) => {
-        if (r.passed || r.skipped) return false;
+      let blockingFailed = false;
+      for (const r of tierResult.results) {
+        if (r.passed || r.skipped) continue;
         const rung = tierRungs.find((g) => g.id === r.id);
-        return (rung?.blocksPromotion ?? true) && (rung?.required ?? true);
-      });
+        const required = rung?.required ?? true;
+        if (!required) continue;
+        if (rung?.blocksPromotion === false) nonBlockingFailed = true;
+        else blockingFailed = true;
+      }
       if (blockingFailed) promotionStopped = true;
     }
   }
