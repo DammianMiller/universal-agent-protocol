@@ -601,6 +601,9 @@ async function routingUseCommand(
     roles: { ...preset.roles },
     routingStrategy:
       (preset.routingStrategy as MultiModelConfig['routingStrategy']) || 'balanced',
+    // Q4: persist the preset id so the router selects from the canonical
+    // per-phase source (resolvePhaseChain); routingMatrix stays as the fallback.
+    routingPreset: preset.id,
     ...(routingMatrix ? { routingMatrix: routingMatrix as MultiModelConfig['routingMatrix'] } : {}),
   };
   console.log(chalk.bold(`\nRouting option: ${preset.name}`));
