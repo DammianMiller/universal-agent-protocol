@@ -54,6 +54,10 @@ export const SCENARIOS: readonly Scenario[] = [
     blurb: 'Multiple people or agents working the same repo concurrently.',
     extra: [
       { slug: 'coord-overlap', why: 'blocks two agents editing the same file at once' },
+      {
+        slug: 'branch-freshness',
+        why: 'stops a stale branch silently reverting work that already landed',
+      },
       { slug: 'expert-review-required', why: 'non-trivial changes get a review pass' },
       { slug: 'schema-diff-gate', why: 'surfaces API/schema contract changes for review' },
       { slug: 'session-memory-write', why: 'learnings are captured so peers compound them' },

@@ -8,6 +8,25 @@ set -euo pipefail
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${FACTORY_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-.}}}"
 DB_PATH="${PROJECT_DIR}/agents/data/memory/short_term.db"
 
+# Our own agent id, derived the SAME way the edit hook derives it
+# (pre-tool-use-edit-write.sh: claude-<session_id> from the harness payload).
+# UAP_AGENT_ID is exported by session-start.sh, but that is a different process —
+# it never reaches this hook, so relying on it silently disabled the self-release
+# below and left this session's files locked against peers for the full stale window.
+_SE_INPUT=""
+if [ ! -t 0 ]; then
+  _SE_INPUT=$(cat 2>/dev/null || true)
+fi
+_SE_SESSION=""
+if [ -n "$_SE_INPUT" ] && command -v jq >/dev/null 2>&1; then
+  _SE_SESSION=$(printf '%s' "$_SE_INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)
+fi
+if [ -n "$_SE_SESSION" ]; then
+  SELF_AGENT_ID="claude-${_SE_SESSION}"
+else
+  SELF_AGENT_ID="${UAP_AGENT_ID:-${CLAUDE_SESSION_ID:+claude-$CLAUDE_SESSION_ID}}"
+fi
+
 # Coordination DB is SHARED across all worktrees (see session-start.sh).
 _GCD="$(git -C "$PROJECT_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
 case "$_GCD" in
@@ -50,6 +69,21 @@ if [ -f "$COORD_DB" ]; then
            OR (strftime('%s','now') - strftime('%s', last_heartbeat)) >= $STALE_SECS
       );
   " 2>/dev/null || true
+
+  # Release THIS agent's own holds immediately. The stale sweep above only frees
+  # an agent once its heartbeat has been dead for STALE_SECS — so a session that
+  # ended cleanly seconds after an edit kept its files locked against every peer
+  # for the full window, and peers saw a "live agent" that had already exited.
+  # We know our own id, so there is no reason to wait for it to look dead.
+  if [ -n "${SELF_AGENT_ID:-}" ]; then
+    ME_Q=$(printf '%s' "$SELF_AGENT_ID" | sed "s/'/''/g")
+    sqlite3 "$COORD_DB" "
+      UPDATE work_announcements SET completed_at = '$TIMESTAMP'
+      WHERE completed_at IS NULL AND agent_id = '$ME_Q';
+      UPDATE agent_registry SET status = 'completed'
+      WHERE id = '$ME_Q';
+    " 2>/dev/null || true
+  fi
 fi
 
 # Clean up backup files older than 7 days (retention policy)
@@ -58,9 +92,10 @@ if [ -d "$BACKUP_DIR" ]; then
   find "$BACKUP_DIR" -maxdepth 1 -mindepth 1 -type d -mtime +7 -exec rm -rf {} \; 2>/dev/null || true
 fi
 
-# Session-scoped proxy release: stop the proxy ONLY if THIS session started it
-# and no other client remains (adopted/externally-managed proxies are never
-# killed; other active clients keep it alive). Fail-open; never blocks exit.
+# Session-scoped proxy + dashboard release: stop them ONLY if THIS session
+# started them and no other client remains (adopted/externally-managed services
+# are never killed; other active clients keep them alive). Fail-open; never
+# blocks exit.
 if command -v uap >/dev/null 2>&1; then
   _uap_pc="${CLAUDE_SESSION_ID:-${FACTORY_SESSION_ID:-${CURSOR_SESSION_ID:-${UAP_SESSION_ID:-ppid-$PPID}}}}"
   ( cd "$PROJECT_DIR" 2>/dev/null && timeout 20 uap proxy release --if-enabled --quiet --client "$_uap_pc" --client-pid "$PPID" ) >/dev/null 2>&1 || true

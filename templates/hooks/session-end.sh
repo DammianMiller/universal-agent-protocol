@@ -50,6 +50,21 @@ if [ -f "$COORD_DB" ]; then
            OR (strftime('%s','now') - strftime('%s', last_heartbeat)) >= $STALE_SECS
       );
   " 2>/dev/null || true
+
+  # Release THIS agent's own holds immediately. The stale sweep above only frees
+  # an agent once its heartbeat has been dead for STALE_SECS — so a session that
+  # ended cleanly seconds after an edit kept its files locked against every peer
+  # for the full window, and peers saw a "live agent" that had already exited.
+  # We know our own id, so there is no reason to wait for it to look dead.
+  if [ -n "${UAP_AGENT_ID:-}" ]; then
+    ME_Q=$(printf '%s' "$UAP_AGENT_ID" | sed "s/'/''/g")
+    sqlite3 "$COORD_DB" "
+      UPDATE work_announcements SET completed_at = '$TIMESTAMP'
+      WHERE completed_at IS NULL AND agent_id = '$ME_Q';
+      UPDATE agent_registry SET status = 'completed'
+      WHERE id = '$ME_Q';
+    " 2>/dev/null || true
+  fi
 fi
 
 # Clean up backup files older than 7 days (retention policy)

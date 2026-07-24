@@ -14,6 +14,7 @@ const lazy = {
   generate: () => import('../cli/generate.js').then((m) => m.generateCommand),
   memory: () => import('../cli/memory.js').then((m) => m.memoryCommand),
   worktree: () => import('../cli/worktree.js').then((m) => m.worktreeCommand),
+  mergeQueue: () => import('../cli/merge-queue.js').then((m) => m.mergeQueueCommand),
   sync: () => import('../cli/sync.js').then((m) => m.syncCommand),
   droids: () => import('../cli/droids.js').then((m) => m.droidsCommand),
   coord: () => import('../cli/coord.js').then((m) => m.coordCommand),
@@ -334,10 +335,12 @@ program
     new Command('create')
       .description('Create a new worktree for a feature')
       .argument('<slug>', 'Feature slug (e.g., add-user-auth)')
-      .option('-f, --from <branch>', 'Base branch (defaults to current)')
+      .option('-f, --from <branch>', 'Base branch (defaults to the fetched origin/<default>)')
       .option('-d, --description <description>', 'Optional worktree description')
+      .option('--no-fetch', 'Skip fetching the base branch (offline)')
       .action(async (slug, options) => {
-        (await lazy.worktree())('create', { slug, ...options });
+        // commander maps `--no-fetch` to options.fetch === false
+        (await lazy.worktree())('create', { slug, ...options, noFetch: options.fetch === false });
       })
   )
   .addCommand(
@@ -379,6 +382,23 @@ program
       })
   )
   .addCommand(
+    new Command('sync')
+      .description('Merge the latest integration branch into a worktree (mid-flight re-base)')
+      .option('-i, --id <id>', 'Worktree ID (defaults to the current directory)')
+      .option('-a, --all', 'Sync every worktree')
+      .action(async (options) => {
+        (await lazy.worktree())('sync', { id: options.id, all: options.all ?? false });
+      })
+  )
+  .addCommand(
+    new Command('hygiene')
+      .description('Report drift, unmerged work, and stale worktrees')
+      .option('-b, --brief', 'One-line advisory (for session banners)')
+      .action(async (options) => {
+        (await lazy.worktree())('hygiene', { brief: options.brief ?? false });
+      })
+  )
+  .addCommand(
     new Command('prune')
       .description('Prune stale worktrees older than specified days')
       .option('-o, --older-than <days>', 'Only prune worktrees older than N days', '30')
@@ -389,6 +409,32 @@ program
           olderThan: parseInt(options.olderThan, 10),
           force: options.force ?? false,
           dryRun: options.dryRun ?? false,
+        });
+      })
+  );
+
+program
+  .command('merge')
+  .description('Serialized landing of concurrent agent PRs')
+  .addCommand(
+    new Command('queue')
+      .description('Land open PRs one at a time, re-syncing impacted PRs after each merge')
+      .option('-n, --dry-run', 'Show the landing order without merging (default behaviour)')
+      .option('-y, --yes', 'Actually merge — without this the queue only prints its plan')
+      .option('-l, --limit <n>', 'Land at most N PRs (default 10)')
+      .option('--force', 'Land even when checks are not green')
+      .action(async (options) => {
+        const parsedLimit = options.limit ? Number.parseInt(options.limit, 10) : undefined;
+        if (options.limit && !Number.isFinite(parsedLimit)) {
+          console.error(`Invalid --limit: ${options.limit}`);
+          process.exitCode = 1;
+          return;
+        }
+        (await lazy.mergeQueue())({
+          dryRun: options.dryRun ?? false,
+          yes: options.yes ?? false,
+          limit: parsedLimit,
+          force: options.force ?? false,
         });
       })
   );
@@ -1046,6 +1092,14 @@ program
       .option('--json', 'Emit JSON')
       .action(async (options) => {
         (await lazy.coord())('slots', options);
+      })
+  )
+  .addCommand(
+    new Command('ownership')
+      .description('Show path-ownership lanes, or which lanes given paths fall into')
+      .argument('[paths...]', 'Paths to resolve to lanes')
+      .action(async (paths: string[]) => {
+        (await lazy.coord())('ownership', { text: (paths || []).join(' ') });
       })
   );
 

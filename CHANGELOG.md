@@ -1,5 +1,92 @@
 # Changelog
 
+## v1.168.0 (2026-07-24)
+
+- fix(worktree): prune could delete every worktree, including on --dry-run
+
+
+## v1.167.0 (2026-07-24)
+
+- fix(worktree): never mistake a LIVE worktree for abandoned work
+
+
+## v1.166.0 (2026-07-24)
+
+- feat(policy): install branch-freshness gate + rewrite coord-overlap
+- chore: bump version to 1.165.1
+- fix(coordination): address parallel expert review — drift check was inert
+- chore: bump version to 1.165.0
+- feat(coordination): keep parallel agents fresh and collision-free
+- fix(policies): iac gate must look the PR up in the repo being merged (#592)
+- feat(skills): record-walkthroughs — automated product walkthrough videos (#591)
+- chore: bump version to 1.164.0
+- feat(proxy): run the operational dashboard as part of the uap proxy
+- docs: rewrite documentation to pure current-state (no change-over-time)
+- fix(deliver): address deep-rewire review findings (tier-guard + tuner wiring)
+- feat(models): Q4-full route selectModel through the canonical per-phase source
+- feat(deliver): 3a wire MIPRO fragments into defaultPromptBuilder (no-op default)
+- feat(models): Q4 canonical per-phase selector + 3a frozen-fragment binding
+- feat(models): Q2 route router.classifyTask through the unified classifier
+- feat(deliver): Q3 judge derives from the preset review chain
+- fix(deliver): address integration-batch review findings
+- feat(self-tuning): tuner prompt-dimension adapter (S8 -> optimizer)
+- feat(deliver): S7 write-conflict edges wired at the DeliveryPhase layer
+- feat(deliver): reflectProvider seam — the async GEPA reflect turn
+- feat(deliver): per-phase escalation controller (S5 -> loop, execute phase)
+- feat(deliver): wire GEPA reflect (mutateInstruction) into the convergence loop
+- fix(deliver): address S4-S8 review findings (frozen-fragment trap, scope dedupe)
+- feat(self-tuning): S8 MIPRO tunable prompts (with frozen safety fragments)
+- feat(deliver): S7 graph-engineering safety (false-independence, silent-node, fan-in)
+- feat(deliver): S6 GEPA reflect phase (Pareto archive + approach rewrite)
+- feat(deliver): S5 per-phase escalation (hybrid policy)
+- feat(coordination): S4 effort-dial orchestration profiles
+- fix(deliver): address S1-S3 parallel-review findings
+- feat(models): S3 per-phase x per-tier routing matrix
+- feat(models): S2 unified complexity classifier (preserves critical)
+- feat(deliver): S1 verification hardening — distinct judge, provenance banner
+
+
+## v1.165.1 (2026-07-24)
+
+- fix(coordination): address parallel expert review — drift check was inert
+- chore: bump version to 1.165.0
+- feat(coordination): keep parallel agents fresh and collision-free
+- fix(policies): iac gate must look the PR up in the repo being merged (#592)
+- feat(skills): record-walkthroughs — automated product walkthrough videos (#591)
+- chore: bump version to 1.164.0
+- feat(proxy): run the operational dashboard as part of the uap proxy
+- docs: rewrite documentation to pure current-state (no change-over-time)
+- fix(deliver): address deep-rewire review findings (tier-guard + tuner wiring)
+- feat(models): Q4-full route selectModel through the canonical per-phase source
+- feat(deliver): 3a wire MIPRO fragments into defaultPromptBuilder (no-op default)
+- feat(models): Q4 canonical per-phase selector + 3a frozen-fragment binding
+- feat(models): Q2 route router.classifyTask through the unified classifier
+- feat(deliver): Q3 judge derives from the preset review chain
+- fix(deliver): address integration-batch review findings
+- feat(self-tuning): tuner prompt-dimension adapter (S8 -> optimizer)
+- feat(deliver): S7 write-conflict edges wired at the DeliveryPhase layer
+- feat(deliver): reflectProvider seam — the async GEPA reflect turn
+- feat(deliver): per-phase escalation controller (S5 -> loop, execute phase)
+- feat(deliver): wire GEPA reflect (mutateInstruction) into the convergence loop
+- fix(deliver): address S4-S8 review findings (frozen-fragment trap, scope dedupe)
+- feat(self-tuning): S8 MIPRO tunable prompts (with frozen safety fragments)
+- feat(deliver): S7 graph-engineering safety (false-independence, silent-node, fan-in)
+- feat(deliver): S6 GEPA reflect phase (Pareto archive + approach rewrite)
+- feat(deliver): S5 per-phase escalation (hybrid policy)
+- feat(coordination): S4 effort-dial orchestration profiles
+- fix(deliver): address S1-S3 parallel-review findings
+- feat(models): S3 per-phase x per-tier routing matrix
+- feat(models): S2 unified complexity classifier (preserves critical)
+- feat(deliver): S1 verification hardening — distinct judge, provenance banner
+
+
+## v1.165.0 (2026-07-24)
+
+- feat(coordination): keep parallel agents fresh and collision-free
+- fix(policies): iac gate must look the PR up in the repo being merged (#592)
+- feat(skills): record-walkthroughs — automated product walkthrough videos (#591)
+- chore: bump version to 1.164.0
+- feat(proxy): run the operational dashboard as part of the uap proxy
 ## v1.165.0 (2026-07-24)
 
 - fix(security): never send the local proxy token off-machine

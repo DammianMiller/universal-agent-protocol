@@ -64,6 +64,7 @@ Each enforcer guards a specific station of the pipeline. The enforcers in
 | `worktree_required` | Edit/Write/MultiEdit must target a `.worktrees/` path |
 | `task_required` | A UAP task must be `in_progress` before mutating work |
 | `coord_overlap` | Checks for in-flight agent path reservations (parallel-agent overlap) |
+| `branch_freshness` | Worktree edits blocked once the branch drifts too far from the integration branch (warn 50, block 200) |
 | `delivery_enforcement` | Route substantive coding through `uap deliver` |
 
 ### Plan discipline

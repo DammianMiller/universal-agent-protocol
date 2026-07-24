@@ -22,7 +22,7 @@ UAP is organized like a delivery line. If you know which part of the pipeline yo
 | **Isolation** — a bench per job | Editing `main`, clobbering files | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) |
 | **Build** — make the thing | Plausible-but-wrong code, stubs, empty output | [`uap deliver`](guides/DELIVER.md) · [Local Models](guides/LOCAL_MODELS.md) · [Inference Proxy](guides/PROXY.md) |
 | **QC / verify** — prove it runs | "Done" on code that never ran | [`uap deliver`](guides/DELIVER.md) · [Policies](guides/POLICIES.md) |
-| **Coordination** — many workers, one floor | Parallel agents colliding | [Coordination](guides/COORDINATION.md) · [Deploy Batching](guides/DEPLOY_BATCHING.md) |
+| **Coordination** — many workers, one floor | Parallel agents colliding, stale branches overwriting landed work | [Parallel Agents](guides/PARALLEL_AGENTS.md) · [Coordination](guides/COORDINATION.md) · [Deploy Batching](guides/DEPLOY_BATCHING.md) |
 | **Shipping** — out the door safely | Regressions, red CI, skipped bumps | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) · [Policies](guides/POLICIES.md) |
 | **Feedback** — the floor learns | The same mistake every session | [Memory](guides/MEMORY.md) · [Self-Harness](design/SELF_HARNESS.md) · [Self-Tuning](guides/SELF_TUNING.md) |
 | *Cross-cutting* — the whole line | Ignored rules, bloated context | [Policies](guides/POLICIES.md) · [MCP Router](guides/MCP_ROUTER.md) |
@@ -59,6 +59,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [Droids & Skills](guides/DROIDS_AND_SKILLS.md) | 38 expert droids, 36 skills, the expert router |
 | [Deploy Batching](guides/DEPLOY_BATCHING.md) | Conflict-free batched git/deploy actions |
 | [Coordination](guides/COORDINATION.md) | Multi-agent overlap detection |
+| [**Parallel Agents**](guides/PARALLEL_AGENTS.md) | Many agents, one codebase: fresh bases, drift blocking, `uap worktree sync`, the merge queue, ownership lanes ⭐ |
 | [Local Models](guides/LOCAL_MODELS.md) | Running agents against local llama.cpp / Qwen models |
 | [Inference Proxy](guides/PROXY.md) | The Anthropic↔local gateway: `uap proxy` lifecycle, reliability guardrails, security, serving recipes |
 | [Qwen3.6 on llama.cpp by VRAM](guides/QWEN36_LLAMACPP.md) | Tiered 8/12/16/24/32 GB setup; how `uap deliver` uplifts small local models |
