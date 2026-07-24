@@ -25,6 +25,7 @@ import { join, dirname, resolve, relative, isAbsolute } from 'path';
 import type { ModelConfig } from '../models/types.js';
 import type { LoopExecutor } from './convergence-loop.js';
 import { fetchModelWithRetry } from '../models/long-fetch.js';
+import { resolveRequestCredential } from '../models/openai-compat-client.js';
 import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename } from './applier.js';
 import { estimateMessagesTokens, formatBudgetStop } from './context-budget.js';
@@ -578,7 +579,8 @@ export function runTool(
       // `cargo check` is ~2s and stops the spiral at the first bad write.
       // Feedback only — the write itself always lands. UAP_DELIVER_RUST_WRITE_CHECK=0 disables.
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
-      return `OK: wrote ${String(args.path)} (${String(args.content ?? '').length} bytes)${pathNote}${rustCheckNote}`;
+      const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
+      return `OK: wrote ${String(args.path)} (${String(args.content ?? '').length} bytes)${pathNote}${rustCheckNote}${jsCheckNote}`;
     }
     if (name === 'edit_file') {
       // P1 (plan D3, 2026-07-13): anchored surgical replace. Whole-file
@@ -626,7 +628,8 @@ export function runTool(
       }
       writeFileSync(abs, updated, 'utf-8');
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
-      return `OK: edited ${String(args.path)} (1 replacement)${pathNote}${rustCheckNote}`;
+      const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
+      return `OK: edited ${String(args.path)} (1 replacement)${pathNote}${rustCheckNote}${jsCheckNote}`;
     }
     if (name === 'run_bash') {
       // Containment gate (audit X3): run_bash is an uncontained host shell when
@@ -758,6 +761,48 @@ function maybeRustWriteCheck(projectRoot: string, rel: string): string {
   );
 }
 
+/**
+ * Per-write syntax check for plain JavaScript. A weak local model intermittently
+ * emits a CORRUPTED write/edit — observed live on the octopus retest, an edit
+ * boundary mangled `const level` into `}st level`, a SyntaxError that only the
+ * end-of-turn execution gate caught, by which point the model had moved on and
+ * its edit_file repairs kept missing the (now-shifted) anchors. The run spun and
+ * ended on the broken file. Catching it the INSTANT it is written — while the
+ * agent still has the file fresh — lets it fix the exact line in its next call.
+ *
+ * `node --check` is dependency-free (node is already running) and parses .js/.cjs/
+ * .mjs exactly like the vm-dom execution gate. TS/JSX need a transform node can't
+ * do, so they are left to the turn-end gate (esbuild/tsc are dev-only deps).
+ * Feedback only — the write always lands. UAP_DELIVER_JS_WRITE_CHECK=0 disables.
+ */
+export function maybeJsSyntaxCheck(projectRoot: string, rel: string): string {
+  if (process.env.UAP_DELIVER_JS_WRITE_CHECK === '0') return '';
+  if (!/\.(js|cjs|mjs)$/.test(rel)) return '';
+  const abs = join(projectRoot, rel);
+  if (!existsSync(abs)) return '';
+  let r;
+  try {
+    r = spawnSync(process.execPath, ['--check', abs], {
+      timeout: 10_000,
+      encoding: 'utf-8',
+      env: sanitizedEnv(),
+    });
+  } catch {
+    return ''; // check itself failed to run — fail-soft, never block a write
+  }
+  if (r.error || r.status === null || r.status === 0) return '';
+  const msg = `${r.stderr ?? ''}`
+    .split('\n')
+    .find((l) => /SyntaxError|Error:/.test(l)) ?? `${r.stderr ?? ''}`.split('\n')[0] ?? '';
+  const loc = `${r.stderr ?? ''}`.split('\n').find((l) => new RegExp(`${rel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\d+`).test(l));
+  const detail = [loc, msg.trim()].filter(Boolean).join('\n').slice(0, 600);
+  return (
+    `\n⚠ SYNTAX ERROR — this write left ${rel} unparseable; it will NOT run and every ` +
+    `user path fails until it is fixed. Correct it in your NEXT tool call (re-read ${rel} ` +
+    `around the error, then edit the exact spot) before writing anything else:\n${detail}`
+  );
+}
+
 /** Does the project hold any file worth inspecting (beyond scaffolding)? */
 function projectHasInspectableContent(projectRoot: string): boolean {
   const ignore = new Set(['package.json', 'node_modules', '.git', '.uap', '.uap-deliver']);
@@ -816,7 +861,19 @@ async function _chat(
   forceWrite = false
 ): Promise<ChatMessage> {
   const url = `${endpoint.replace(/\/$/, '')}/chat/completions`;
-  const apiKey = model.apiKeyEnvVar ? process.env[model.apiKeyEnvVar] : undefined;
+  // This path had NO endpoint check at all while its sibling in
+  // openai-compat-client.ts refused cleartext credentials to non-local hosts. Once
+  // PROXY_AUTH_TOKEN became a fallback, that asymmetry was a leak. Both now share
+  // resolveRequestCredential, which scopes the proxy token to local endpoints
+  // outright — https to a third party is not an acceptable destination for a
+  // secret that belongs to one process on this machine.
+  let apiKey: string | undefined;
+  try {
+    apiKey = resolveRequestCredential(model, new URL(url));
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('Refusing to send')) throw err;
+    apiKey = undefined; // malformed endpoint: withhold, never send blind
+  }
   // Long headers/body timeouts + transient-failure retry: a local model
   // prefilling a big tool-loop prompt exceeds global fetch's 300s headers
   // timeout, which killed whole turns as `TypeError: fetch failed`.

@@ -752,6 +752,25 @@ export function createUserValidationRunner(runOpts: RunUserValidationOptions = {
     const detail = report.results
       .map((r) => `${r.status.toUpperCase()} ${r.id}: ${r.rule}${r.status === 'fail' ? ` — ${r.steps.find((s) => !s.ok)?.step ?? ''} → ${r.steps.find((s) => !s.ok)?.observed ?? ''}` : ''}`)
       .join('\n');
+    // The dominant weak-model user-path failure: an element the journey clicks
+    // toward never becomes visible because the click/keypress handler was not
+    // wired to REVEAL it (observed repeatedly: click #start-btn → #hud-score "NOT
+    // visible"). A bare Playwright timeout is not actionable enough for a small
+    // model; name the fix — build the state transition, not just a hidden element.
+    const missingTransition = failedPaths.some((r) => {
+      const firstFail = r.steps.findIndex((s) => !s.ok);
+      if (firstFail < 0) return false;
+      const failedObserved = r.steps[firstFail].observed ?? '';
+      const priorInteraction = r.steps
+        .slice(0, firstFail)
+        .some((s) => /\b(clicked|pressed|filled)\b/i.test(s.observed ?? ''));
+      return /not visible/i.test(failedObserved) && priorInteraction;
+    });
+    const transitionHint = missingTransition
+      ? '\nHINT: an element is expected visible only AFTER a click/keypress but never appeared — the handler ' +
+        'for that interaction MUST reveal it (set style.display, toggle a CSS class, or add it to the DOM). Build ' +
+        'the state transition; do not just place a hidden element on the page.'
+      : '';
     const result: RungResult = {
       id: rung.id,
       name: rung.name,
@@ -770,7 +789,7 @@ export function createUserValidationRunner(runOpts: RunUserValidationOptions = {
         detail +
         (passed
           ? ''
-          : `\nThe artifact does not work for a real user on these journeys. Fix the artifact so they pass; the manifest is ${USER_PATHS_FILE}.`),
+          : `\nThe artifact does not work for a real user on these journeys. Fix the artifact so they pass; the manifest is ${USER_PATHS_FILE}.${transitionHint}`),
     };
     return {
       passed: passed || !rung.required,

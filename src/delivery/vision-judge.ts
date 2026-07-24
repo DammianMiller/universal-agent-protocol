@@ -181,8 +181,15 @@ export async function judgeScreenshots(
                 (designContext
                   ? '(c) ADHERENCE TO THE DESIGN SYSTEM below — penalize off-palette colours, off-scale spacing, wrong fonts, and anything that violates the stated design intent. '
                   : '') +
+                'Each finding must be a CONCRETE IMPLEMENTATION FIX a developer can act on — name the ' +
+                'element/region and what to change — not a vague quality complaint like "looks generic". ' +
+                'If a large region (especially a <canvas>) is blank or a near-uniform flat colour, say so ' +
+                'explicitly: the app most likely does not RENDER its scene in the state shown — the fix is to ' +
+                'run the render loop from load and draw the background/sprites in THIS state, not only during ' +
+                'active interaction. If the scene looks uniformly dark/dim, check for a semi-opaque overlay ' +
+                'dimming the view and recommend making it transparent. ' +
                 'Respond with ONLY JSON: ' +
-                '{"score": <0-10>, "findings": ["<specific, actionable issue>", ...]}\n\nSPEC:\n' +
+                '{"score": <0-10>, "findings": ["<specific, actionable fix>", ...]}\n\nSPEC:\n' +
                 spec.slice(0, 4000) +
                 (designContext ? `\n\nDESIGN SYSTEM (score adherence to this):\n${designContext.slice(0, 2500)}` : ''),
             },

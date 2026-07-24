@@ -185,6 +185,60 @@ describe('fidelity-max vision convergence (run Y delivered-vs-verify divergence,
     expect(r.feedback).toContain('empty bordered canvas');
   });
 
+  it('runs the vision review in SECONDARY mode under max fidelity (breaks the self-gate catch-22)', async () => {
+    const prev = process.env.UAP_FIDELITY;
+    process.env.UAP_FIDELITY = 'max';
+    try {
+      let visionRan = false;
+      const gate = buildMissionAcceptanceGate({
+        primary: false, // objective gates exist (e.g. a red anti-vacuous self-gate)
+        specs: createSpecRegistry({ initialSpec: 'a space shooter', sharedRoot: '/tmp/x' }),
+        judgeExecutor: async () => {
+          throw new Error('judge must not run when vision blocks');
+        },
+        executionGate: (async () => ({ passed: true, exitCode: 0, outputTail: '', durationMs: 1, via: 'vm-dom' })) as never,
+        visualGate: stubVisual,
+        userPathsNote: () => ({ note: 'User-path validation ALL PASSED (2 real-client journeys)', trusted: true }),
+        visionReview: async () => {
+          visionRan = true;
+          return 'VISION REVIEW FAILED — the rendered UI scores 3/10 (max-fidelity threshold 6).\n- off-palette planets';
+        },
+      });
+      const r = await gate('/tmp/x');
+      expect(visionRan).toBe(true);
+      expect(r.passed).toBe(false);
+      expect(r.feedback).toContain('VISION REVIEW FAILED');
+    } finally {
+      if (prev === undefined) delete process.env.UAP_FIDELITY;
+      else process.env.UAP_FIDELITY = prev;
+    }
+  });
+
+  it('does NOT grade aesthetics in secondary mode while user paths are FAILING (ordering)', async () => {
+    const prev = process.env.UAP_FIDELITY;
+    process.env.UAP_FIDELITY = 'max';
+    try {
+      let visionRan = false;
+      const gate = buildMissionAcceptanceGate({
+        primary: false,
+        specs: createSpecRegistry({ initialSpec: 'a space shooter', sharedRoot: '/tmp/x' }),
+        judgeExecutor: async () => ({ passed: false, verdict: 'reject', feedback: 'judge' }) as never,
+        executionGate: (async () => ({ passed: true, exitCode: 0, outputTail: '', durationMs: 1, via: 'vm-dom' })) as never,
+        visualGate: stubVisual,
+        userPathsNote: () => ({ note: 'User-path validation FAILED: start (click) — the artifact does not work', trusted: true }),
+        visionReview: async () => {
+          visionRan = true;
+          return 'VISION REVIEW FAILED';
+        },
+      });
+      await gate('/tmp/x');
+      expect(visionRan).toBe(false); // behavioral gate must pass before visual
+    } finally {
+      if (prev === undefined) delete process.env.UAP_FIDELITY;
+      else process.env.UAP_FIDELITY = prev;
+    }
+  });
+
   it('proceeds to the acceptance judge when the vision review passes (null)', async () => {
     const gate = buildMissionAcceptanceGate({
       primary: true,
@@ -197,5 +251,81 @@ describe('fidelity-max vision convergence (run Y delivered-vs-verify divergence,
     });
     const r = await gate('/tmp/x');
     expect(r.passed).toBe(true);
+  });
+});
+
+describe('red-ladder acceptance (runAcceptanceDespiteLadder safety)', () => {
+  const specs = () => createSpecRegistry({ initialSpec: 'a space shooter', sharedRoot: '/tmp/x' });
+
+  it('does NOT tell the judge the gates passed when the ladder is RED', async () => {
+    // The secondary-mode note used to assert "Objective project gates ALL PASSED"
+    // unconditionally. Once acceptance can run on a red ladder that is a lie, and
+    // it instructs the judge to treat FAILING build/test requirements as verified.
+    let seenNote = '';
+    const gate = buildMissionAcceptanceGate({
+      primary: false,
+      specs: specs(),
+      judgeExecutor: (async () => '') as never,
+      judge: (async (args: { runtimeNote?: string }) => {
+        seenNote = args.runtimeNote ?? '';
+        return { passed: false, verdict: 'reject', feedback: 'nope', score: 0, criteria: [] };
+      }) as never,
+      userPathsNote: () => null,
+    });
+    await gate('/tmp/x', { ladderPassed: false });
+    expect(seenNote).toMatch(/FAILING/);
+    expect(seenNote).not.toMatch(/ALL PASSED/);
+  });
+
+  it('still reports gates green when the ladder passed', async () => {
+    let seenNote = '';
+    const gate = buildMissionAcceptanceGate({
+      primary: false,
+      specs: specs(),
+      judgeExecutor: (async () => '') as never,
+      judge: (async (args: { runtimeNote?: string }) => {
+        seenNote = args.runtimeNote ?? '';
+        return { passed: true, verdict: 'accept', feedback: '', score: 1, criteria: [] };
+      }) as never,
+      userPathsNote: () => null,
+    });
+    await gate('/tmp/x', { ladderPassed: true });
+    expect(seenNote).toMatch(/ALL PASSED/);
+  });
+
+  it('does not feed RED turns to the churn breaker', async () => {
+    // The breaker means "gates say yes, judge keeps saying no — trust the gates".
+    // Counting red turns poisons it: it only resets on a PASSING verdict, so once
+    // tripped it force-accepts every later turn, including the one where the
+    // ladder finally goes green — delivering with the judge still rejecting.
+    let breakerCalls = 0;
+    const reg = specs();
+    const realBreaker = reg.breaker.bind(reg);
+    const spied = {
+      ...reg,
+      breaker: (spec: string, root: string) => {
+        const b = realBreaker(spec, root);
+        return {
+          check: (s: string, v: { passed: boolean; feedback: string }) => {
+            breakerCalls++;
+            return b.check(s, v);
+          },
+        };
+      },
+    } as never;
+
+    const gate = buildMissionAcceptanceGate({
+      primary: false,
+      specs: spied,
+      judgeExecutor: (async () => '') as never,
+      judge: (async () => ({ passed: false, verdict: 'reject', feedback: 'nope', score: 0, criteria: [] })) as never,
+      userPathsNote: () => null,
+    });
+
+    await gate('/tmp/x', { ladderPassed: false });
+    expect(breakerCalls).toBe(0); // red turn: not the breaker's business
+
+    await gate('/tmp/x', { ladderPassed: true });
+    expect(breakerCalls).toBe(1); // green turn: counted as before
   });
 });
