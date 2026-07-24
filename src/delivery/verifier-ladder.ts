@@ -992,7 +992,13 @@ export function runLadder(
     const result = runRung(rung, projectRoot, tailChars, options.requireTestsRan ?? false);
     results.push(result);
 
-    if (!result.passed && rung.required && failFast) {
+    // Same rule as cross-tier promotion: a synthetic rung fails the ladder but
+    // does not hide the rungs ordered after it. Without this the fix was half a
+    // fix — the self-gate is pushed into `fast` and redetected build/typecheck/
+    // test rungs are APPENDED after it, so on a from-scratch mission (the
+    // classic self-gate trigger) a red self-gate marked every real gate
+    // `skipped` on every turn, inside the tier, no matter what promotion did.
+    if (!result.passed && rung.required && rung.blocksPromotion !== false && failFast) {
       stop = true;
     }
   }

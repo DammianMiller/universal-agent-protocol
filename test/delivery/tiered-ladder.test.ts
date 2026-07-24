@@ -164,3 +164,42 @@ describe('blocksPromotion — a synthetic rung must not starve the real gates', 
     expect(calls.flat()).toContain('execution');
   });
 });
+
+describe('blocksPromotion — intra-tier fail-fast must not starve either', () => {
+  it('a red synthetic rung does not skip the rungs ordered AFTER it in its own tier', async () => {
+    // The from-scratch shape: detectRungs finds nothing, so the self-gate is
+    // pushed first; turn 1 writes package.json and redetect APPENDS build/test
+    // after it. A red self-gate used to mark both `skipped` every single turn.
+    const { runLadder } = await import('../../src/delivery/verifier-ladder.js');
+    const synthetic: GateRung = {
+      id: 'acceptance',
+      name: 'acceptance',
+      command: 'false',
+      args: [],
+      required: true,
+      timeoutMs: 5000,
+      blocksPromotion: false,
+    };
+    const real: GateRung = {
+      id: 'build',
+      name: 'build',
+      command: 'true',
+      args: [],
+      required: true,
+      timeoutMs: 5000,
+    };
+    const r = await runLadder([synthetic, real], process.cwd());
+    const build = r.results.find((x) => x.id === 'build');
+    expect(build?.skipped).toBe(false);
+    expect(build?.passed).toBe(true);
+    expect(r.passed).toBe(false); // the synthetic rung still fails the ladder
+  });
+
+  it('a red ORDINARY rung still fail-fasts the rest of its tier', async () => {
+    const { runLadder } = await import('../../src/delivery/verifier-ladder.js');
+    const first: GateRung = { id: 'build', name: 'build', command: 'false', args: [], required: true, timeoutMs: 5000 };
+    const second: GateRung = { id: 'test', name: 'test', command: 'true', args: [], required: true, timeoutMs: 5000 };
+    const r = await runLadder([first, second], process.cwd());
+    expect(r.results.find((x) => x.id === 'test')?.skipped).toBe(true);
+  });
+});
