@@ -11,6 +11,8 @@
 
 import type { LoopExecutor } from './convergence-loop.js';
 import { validatePhaseGraph, runPlanThoughtExperiment } from './plan-check.js';
+import { profileForTier } from '../coordination/effort-profile.js';
+import type { Tier } from '../models/complexity.js';
 
 /**
  * Optional provider of delivery-lifecycle routing hints (e.g. the
@@ -81,6 +83,17 @@ const AUTO_DECOMPOSE_MIN_CHARS = 200;
  */
 export function shouldDecompose(instruction: string, complexity?: string): boolean {
   return complexity === 'complex' && instruction.trim().length >= AUTO_DECOMPOSE_MIN_CHARS;
+}
+
+/**
+ * Effort-dial decompose gate (S4): decompose only for tiers whose effort profile
+ * allows it (high/critical), and only for epic-length instructions. This is the
+ * tier-native companion to shouldDecompose — deliver derives the tier from the
+ * unified classifier and calls this so trivial/low/medium work never pays the
+ * decomposition-planning overhead.
+ */
+export function shouldDecomposeForTier(tier: Tier, instruction: string): boolean {
+  return profileForTier(tier).decompose && instruction.trim().length >= AUTO_DECOMPOSE_MIN_CHARS;
 }
 
 /** Extract the first JSON array of {id,title,goal} objects from model output. */

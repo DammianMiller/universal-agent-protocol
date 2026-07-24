@@ -601,6 +601,9 @@ async function routingUseCommand(
     roles: { ...preset.roles },
     routingStrategy:
       (preset.routingStrategy as MultiModelConfig['routingStrategy']) || 'balanced',
+    // Q4: persist the preset id so the router selects from the canonical
+    // per-phase source (resolvePhaseChain); routingMatrix stays as the fallback.
+    routingPreset: preset.id,
     ...(routingMatrix ? { routingMatrix: routingMatrix as MultiModelConfig['routingMatrix'] } : {}),
   };
   console.log(chalk.bold(`\nRouting option: ${preset.name}`));
@@ -718,12 +721,19 @@ function routingToggleCommand(state: 'on' | 'off' | 'status'): void {
             `review=${chalk.yellow(roles.reviewer)} fallback=${chalk.red(roles.fallback)}`
         );
       }
+      const preset = (mm as { routingPreset?: string }).routingPreset;
+      if (preset) {
+        console.log(
+          `  ${chalk.dim('canonical preset:')} ${chalk.magenta(preset)} ` +
+            chalk.dim('(drives selection via per-phase chains; matrix below is a fallback)')
+        );
+      }
       const matrix = mm.routingMatrix as Record<string, unknown> | undefined;
       if (matrix) {
         const tiers = ['low', 'medium', 'high', 'critical']
           .map((t) => `${t}=${typeof matrix[t] === 'string' ? matrix[t] : '·'}`)
           .join(' ');
-        console.log(`  ${chalk.dim('complexity tiers:')} ${chalk.cyan(tiers)}`);
+        console.log(`  ${chalk.dim('complexity tiers' + (preset ? ' (fallback)' : '') + ':')} ${chalk.cyan(tiers)}`);
       }
       console.log(`  strategy: ${mm.routingStrategy ?? 'balanced'}`);
     } else {

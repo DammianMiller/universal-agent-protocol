@@ -138,16 +138,17 @@ program
   });
 
 program
-  .command('proxy [subcommand]')
-  .description('Reference-counted, session-scoped proxy lifecycle: ensure | release | status | start | stop | restart | enable | disable')
+  .command('proxy [subcommand] [value]')
+  .description('Reference-counted, session-scoped proxy + dashboard lifecycle: ensure | release | status | start | stop | restart | enable | disable | dashboard [on|off]')
   .option('--client <id>', 'Client/session id (defaults to session env or parent pid)')
   .option('--client-pid <n>', 'Long-lived agent pid for liveness (hooks pass $PPID)')
   .option('--port <n>', 'Proxy port (default 4000 / $PROXY_PORT)')
   .option('--quiet', 'Suppress output (used by hooks)')
   .option('--if-enabled', 'No-op unless .uap.json proxy.autostart is true (hook-safe)')
   .option('--json', 'Machine-readable status output')
-  .action(async (subcommand, options) => {
-    await (await lazy.proxy())(subcommand, options);
+  .option('--no-dashboard', 'Do not start the ride-along dashboard for this invocation')
+  .action(async (subcommand, value, options) => {
+    await (await lazy.proxy())(subcommand, { ...options, value });
   });
 
 program

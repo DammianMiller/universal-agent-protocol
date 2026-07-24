@@ -420,6 +420,17 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     initialValue: Boolean(localModel),
   });
 
+  // ── Ride-along dashboard ────────────────────────────────────────────
+  // Only worth asking when the proxy actually autostarts: the hooks pass
+  // `--if-enabled`, so with autostart off nothing rides along either way.
+  const proxyDashboard = proxyAutostart
+    ? await ui.confirm({
+        message:
+          'Start the operational dashboard with the proxy? (http://localhost:3847 — monitor UAP without running `uap dash serve` yourself)',
+        initialValue: true,
+      })
+    : undefined;
+
   const selections: WizardSelections = defaultSelections({
     platforms: platform,
     memory: {
@@ -484,7 +495,7 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
     collaboration: { mode: collabMode },
     design: { enabled: designOn, tokenGate: designTokenGate },
     reactor: { enabled: reactorOn },
-    proxy: { autostart: proxyAutostart },
+    proxy: { autostart: proxyAutostart, dashboard: proxyDashboard },
     fidelity: { mode: maxFidelity ? 'max' : 'standard' },
   });
 
@@ -537,6 +548,9 @@ export async function finalizeGuidedSetup(
       `recipes=${recipesOn ? recipeMode : 'off'} · deliver=${deliverEnforcement} · ` +
       `handsfree=${selections.handsfree.enabled ? (selections.handsfree.intensity ?? 'on') : 'off'} · ` +
       `proxy-autostart=${selections.proxy.autostart ? 'on' : 'off'} · ` +
+      (selections.proxy.dashboard === undefined
+        ? ''
+        : `proxy-dashboard=${selections.proxy.dashboard ? 'on' : 'off'} · `) +
       `auto-approve-tools=${selections.hooks.autoApproveTools ? 'ON' : 'off'} · ` +
       `cloakbrowser=${cloakBrowser ? 'on' : 'off'}?`,
     initialValue: true,

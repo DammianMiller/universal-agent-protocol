@@ -19,6 +19,10 @@ import { join } from 'node:path';
 import { execSync } from 'child_process';
 import { statSync } from 'fs';
 
+import {
+  bindFrozenFragments,
+  resolveBoundVariant,
+} from '../self-tuning/prompt-variants.js';
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
 import { mergeRedetectedRungs, detectRungs, runLadder } from './verifier-ladder.js';
 import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
@@ -77,6 +81,14 @@ export interface PromptContext {
    * user-paths.renderAcceptanceContract.
    */
   acceptanceContract?: string;
+  /**
+   * MIPRO (S8/3a): tuner-selected prompt-fragment variants (fragmentId→variantId,
+   * from promptSelectionFromConfig). When absent the prompt is IDENTICAL to the
+   * hand-authored default; when present, non-frozen fragments (e.g. executor.tone)
+   * use the optimized variant. Frozen fragments (output/autonomy contracts) are
+   * always bound to the real constants regardless of any selection.
+   */
+  promptSelection?: Record<string, string>;
 }
 
 export type PromptBuilder = (context: PromptContext) => string;
@@ -185,6 +197,20 @@ export interface IterationDirective {
    * seeds re-diversify exploration instead of retrying the same failed strategies.
    */
   regenerateSeeds?: boolean;
+  /**
+   * GEPA reflect (S6): replace the instruction fed to the next PromptBuilder
+   * with a reflected rewrite of the approach (distinct from switchExecutor,
+   * which changes the MODEL — this changes the APPROACH). Applied before the
+   * next turn's prompt is built.
+   */
+  mutateInstruction?: string;
+  /**
+   * GEPA reflect (S6): request the async reflect turn (ConvergenceConfig.
+   * reflectProvider) — the loop awaits a rewritten approach and applies it as
+   * the next instruction. Distinct from mutateInstruction, which supplies the
+   * rewrite synchronously; requestReflect asks the loop to GENERATE one.
+   */
+  requestReflect?: boolean;
   /** Human-readable reason, surfaced in logs and the iteration record */
   note?: string;
 }
@@ -217,6 +243,8 @@ export function composeIterationHooks(
       if (directive.stop) merged.stop = true;
       if (directive.enableCritic) merged.enableCritic = true;
       if (directive.regenerateSeeds) merged.regenerateSeeds = true;
+      if (directive.requestReflect) merged.requestReflect = true;
+      if (directive.mutateInstruction) merged.mutateInstruction = directive.mutateInstruction;
       if (directive.switchExecutor) merged.switchExecutor = directive.switchExecutor;
       if (typeof directive.setCandidates === 'number') merged.setCandidates = directive.setCandidates;
       if (
@@ -390,6 +418,21 @@ export interface ConvergenceConfig {
    * fresh seeds steer AWAY from the failing region of solution space.
    */
   seedGenerator?: (instruction: string, feedback?: string) => Promise<StrategySeed[]>;
+  /**
+   * GEPA reflect (S6): the async reflect TURN. When a directive requests reflect
+   * (IterationDirective.requestReflect), the loop awaits this with the current
+   * instruction + latest gate feedback; a returned non-empty string becomes the
+   * rewritten APPROACH for subsequent turns (via activeInstruction). Fail-soft —
+   * undefined/empty/throw keeps the current instruction.
+   */
+  reflectProvider?: (instruction: string, feedback?: string) => Promise<string | undefined>;
+  /**
+   * MIPRO (S8/3a): tuner-selected prompt-fragment variants (fragmentId→variantId,
+   * from promptSelectionFromConfig). Threaded into every PromptContext so
+   * defaultPromptBuilder can apply the optimized non-frozen fragments. Absent =
+   * the hand-authored default prompt (byte-identical).
+   */
+  promptSelection?: Record<string, string>;
 }
 
 /**
@@ -535,11 +578,29 @@ function contractSection(acceptanceContract?: string): string[] {
 
 /** Default prompt strategy: lean contract + structured retry context. */
 export const defaultPromptBuilder: PromptBuilder = (ctx) => {
+  // 3a: source the FROZEN output contract through the binding so it is always the
+  // real OUTPUT_CONTRACT (never the optimizer's __BIND_FROM__ placeholder). This
+  // is a strict no-op by default (bound to the same constant); a tuner selection
+  // only affects NON-frozen fragments like executor.tone.
+  const frozen = bindFrozenFragments({
+    outputContract: OUTPUT_CONTRACT,
+    autonomyGuardrails: AUTONOMY_CONTRACT,
+  });
+  const outputContract = resolveBoundVariant('output.contract', ctx.promptSelection, frozen);
+  // Opt-in tunable executor tone: only added when the tuner explicitly selected it.
+  const toneSection = ctx.promptSelection?.['executor.tone']
+    ? ['', resolveBoundVariant('executor.tone', ctx.promptSelection, frozen)]
+    : [];
+
   if (ctx.turn === 1) {
-    return [OUTPUT_CONTRACT, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract)].join('\n');
+    // Merge note: master's MIPRO work made the output contract a resolved
+    // variable and added the tuner-selected tone section; 580 appends the
+    // up-front acceptance contract. Both apply — the contract goes last so the
+    // concrete journeys sit closest to the task.
+    return [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract)].join('\n');
   }
 
-  const sections = [OUTPUT_CONTRACT, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ''];
+  const sections = [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ''];
   sections.push(`PREVIOUS ATTEMPT (turn ${ctx.turn - 1}):`);
 
   if (ctx.previousFiles && ctx.previousFiles.length > 0) {
@@ -1093,6 +1154,10 @@ export class ConvergenceLoop {
     let finalOutput = '';
     let finalFeedback = '';
     let prevContext: Omit<PromptContext, 'instruction' | 'turn'> = { practices, protectedFiles: protectedList };
+    // GEPA reflect (S6): the live instruction fed to the PromptBuilder. A reflect
+    // directive (IterationDirective.mutateInstruction) rewrites the APPROACH here
+    // for the next turn, distinct from switchExecutor which swaps the MODEL.
+    let activeInstruction = instruction;
 
     // Resume: restore prior history/context/counters and continue where the
     // interrupted run left off, with a fresh `maxTurns` budget on top.
@@ -1171,12 +1236,13 @@ export class ConvergenceLoop {
       }
 
       const prompt = this.promptBuilder({
-        instruction,
+        instruction: activeInstruction,
         turn,
         ...prevContext,
         guidance,
         autonomous: this.config.autonomous,
         acceptanceContract: this.config.acceptanceContract,
+        promptSelection: this.config.promptSelection,
       });
 
       const outcome = explorerSettings
@@ -1275,6 +1341,11 @@ export class ConvergenceLoop {
         executor = directive.switchExecutor;
         modelEscalated = true;
       }
+      // GEPA reflect (S6): a reflect directive rewrites the APPROACH for the next
+      // turn's prompt (distinct from switchExecutor, which swaps the model).
+      if (directive.mutateInstruction && directive.mutateInstruction.trim() !== '') {
+        activeInstruction = directive.mutateInstruction;
+      }
       if (typeof directive.setCandidates === 'number') {
         explorerSettings = { ...(explorerSettings ?? {}), candidates: directive.setCandidates };
       }
@@ -1302,6 +1373,23 @@ export class ConvergenceLoop {
           }
         } catch {
           // keep current seeds
+        }
+      }
+      // GEPA reflect (S6): a requested reflect turn rewrites the APPROACH for
+      // subsequent turns. Fail-soft — an empty/undefined/throwing provider keeps
+      // the current instruction. A synchronous mutateInstruction (applied above)
+      // WINS if both are present, so skip the async reflect when one is set.
+      if (directive.requestReflect && !directive.mutateInstruction && this.config.reflectProvider) {
+        try {
+          const rewrite = await this.config.reflectProvider(
+            activeInstruction,
+            outcome.ladder?.feedback ?? outcome.applyError
+          );
+          if (typeof rewrite === 'string' && rewrite.trim() !== '') {
+            activeInstruction = rewrite;
+          }
+        } catch {
+          // keep the current instruction
         }
       }
       if (typeof directive.raiseMaxTurns === 'number' && directive.raiseMaxTurns > maxTurns) {
@@ -1377,7 +1465,13 @@ export class ConvergenceLoop {
       // ladder exists precisely to break stagnation. Aborting now would kill the
       // repair pass before it ever executes, so give the new configuration a
       // turn to prove itself.
-      const escalated = Boolean(directive.switchExecutor || directive.enableCritic || directive.regenerateSeeds);
+      const escalated = Boolean(
+        directive.switchExecutor ||
+          directive.enableCritic ||
+          directive.regenerateSeeds ||
+          directive.requestReflect ||
+          directive.mutateInstruction
+      );
       if (inconclusive || scoreMoved || !provablyIdle || escalated) noProgressStreak = 0;
       else noProgressStreak++;
       if (noProgressStreak >= NO_APPLY_ABORT_LIMIT) {

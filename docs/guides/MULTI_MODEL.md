@@ -1,6 +1,6 @@
 # Multi-Model Routing
 
-> Applies to UAP **v1.93.1**
+> Applies to UAP **v1.163**
 
 > **🏭 Where this fits:** PREP/ROUTING — this is the station where a normal
 > agentic workflow sends *everything* to one model: paying premium-model rates

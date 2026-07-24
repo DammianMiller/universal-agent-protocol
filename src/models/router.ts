@@ -18,7 +18,10 @@ import {
   RoutingRule,
   DEFAULT_ROUTING_RULES,
   ModelRole,
+  RoutingPresets,
+  resolvePhaseChain,
 } from './types.js';
+import { classifyComplexity, tierToRouting } from './complexity.js';
 import { createLogger } from '../utils/logger.js';
 import { AdaptiveCache } from '../utils/adaptive-cache.js';
 
@@ -202,17 +205,18 @@ export class ModelRouter {
     const lowerTask = taskDescription.toLowerCase();
     const words = lowerTask.split(/\s+/);
 
-    // Detect complexity
-    let complexity: TaskComplexity = 'medium';
+    // Detect complexity. Q2: the keyword scan is retained only for the
+    // confidence signal / matched-keywords; the AUTHORITATIVE tier comes from
+    // the unified classifier so router.classifyTask and deliver's tier lookups
+    // agree (trivial folds to low for the 4-level routing scale).
     let maxComplexityScore = 0;
-
-    for (const [level, keywords] of Object.entries(COMPLEXITY_KEYWORDS)) {
+    for (const keywords of Object.values(COMPLEXITY_KEYWORDS)) {
       const score = keywords.filter((kw) => lowerTask.includes(kw)).length;
-      if (score > maxComplexityScore) {
-        maxComplexityScore = score;
-        complexity = level as TaskComplexity;
-      }
+      if (score > maxComplexityScore) maxComplexityScore = score;
     }
+    const complexity: TaskComplexity = tierToRouting(
+      classifyComplexity({ instruction: taskDescription }).tier
+    );
 
     // Detect task type
     let taskType: TaskClassificationResult['taskType'] = 'coding';
@@ -280,9 +284,37 @@ export class ModelRouter {
   selectModel(complexity: TaskComplexity, taskType: string, keywords: string[]): ModelSelection {
     const strategy = this.config.routingStrategy || 'balanced';
 
-    // Check routingMatrix override first - user-specified per-complexity model
-    // assignments. Two accepted forms: a single model id string (new, tier
-    // routing) or the legacy { planner, executor } pair.
+    // Q4: when a routing PRESET is persisted, resolve from the CANONICAL
+    // per-phase source (resolvePhaseChain) — the flat routingMatrix below is the
+    // fallback for configs that predate `routingPreset`. This keeps the preset's
+    // full per-phase intent authoritative at runtime rather than the flattened
+    // execute-primary the matrix records.
+    if (this.config.routingPreset) {
+      const preset = RoutingPresets[this.config.routingPreset];
+      // Only engage the canonical per-phase path for presets that actually carry
+      // per-complexity `tiers`. A tier-less preset (e.g. fable-local-opus) has no
+      // complexity routing, so resolvePhaseChain would return the executor role
+      // for EVERY tier — dropping the strategy's role escalation of hard tasks.
+      // Those fall through to the routingMatrix/strategy logic unchanged.
+      if (preset && preset.tiers) {
+        const modelId = resolvePhaseChain(preset, { complexity, phase: 'execute' })[0];
+        const model = this.models.get(modelId) || ModelPresets[modelId as keyof typeof ModelPresets];
+        if (model) {
+          return {
+            model,
+            fallback: undefined,
+            role: 'executor',
+            reasoning: `routingPreset '${preset.id}' (canonical per-phase, tier '${complexity}'): ${model.name}`,
+            estimatedCost: this.estimateCost(model, 10000, 5000),
+          };
+        }
+      }
+    }
+
+    // Check routingMatrix override next - user-specified per-complexity model
+    // assignments (LEGACY flat form; the preset path above supersedes it). Two
+    // accepted forms: a single model id string (tier routing) or the legacy
+    // { planner, executor } pair.
     if (this.config.routingMatrix?.[complexity]) {
       const matrixEntry = this.config.routingMatrix[complexity];
       const isHigh = complexity === 'critical' || complexity === 'high';

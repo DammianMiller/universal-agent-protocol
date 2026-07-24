@@ -50,6 +50,28 @@ def branch_touches_iac() -> bool:
     return rc == 0 and "infra/terraform/" in out
 
 
+def repo_selector(cmd: str) -> list[str]:
+    """The `--repo` args to reuse when looking up the PR, mirroring whatever
+    repo the merge command itself targets.
+
+    `gh pr merge <N> --repo owner/name` merges in THAT repo, but a bare
+    `gh pr view <N>` resolves against the local checkout. Without mirroring the
+    selector, a cross-repo merge looks the number up in the wrong repo; that
+    miss then falls back to branch_touches_iac(), which scans a local tree with
+    nothing to do with the PR — so an unrelated untracked infra/terraform tf
+    file in the current checkout blocks a merge that touches no infrastructure
+    at all. Observed blocking every cross-repo merge from pay2u.
+    """
+    m = re.search(r"(?:--repo|-R)[=\s]+([\w.-]+/[\w.-]+)", cmd)
+    if m:
+        return ["--repo", m.group(1)]
+    # A `gh api` merge call carries owner/name in its path instead of a flag.
+    m = re.search(r"repos/([\w.-]+/[\w.-]+)/pulls/\d+/merge", cmd)
+    if m:
+        return ["--repo", m.group(1)]
+    return []
+
+
 def merge_touches_iac(cmd: str) -> bool:
     """Decide whether a `gh pr merge`/`gh api .../merge` command touches IaC by
     inspecting the FILES OF THE PR BEING MERGED — not the local working tree.
@@ -61,13 +83,16 @@ def merge_touches_iac(cmd: str) -> bool:
     own file list instead, and only fall back to the local check when no PR
     number can be parsed or the lookup fails.
     """
-    m = re.search(r"gh\s+pr\s+merge\s+(\d+)", cmd) or re.search(r"/pulls/(\d+)/merge", cmd)
+    m = re.search(r"gh\s+pr\s+merge\s+(\d+)", cmd, re.I) or re.search(
+        r"/pulls/(\d+)/merge", cmd
+    )
     if not m:
         # e.g. `gh pr merge` on the current branch with no number — use local diff.
         return branch_touches_iac()
     pr = m.group(1)
     rc, out, _ = run(
-        ["gh", "pr", "view", pr, "--json", "files", "-q", ".files[].path"], timeout=20
+        ["gh", "pr", "view", pr, *repo_selector(cmd), "--json", "files", "-q", ".files[].path"],
+        timeout=20,
     )
     if rc != 0:
         # Lookup failed (offline / auth) — fail safe by keeping the gate on.
@@ -91,7 +116,10 @@ def main() -> None:
     op, args = parse_cli()
     if op not in ("Bash", "bash"):
         emit(True, "not a bash op")
-    cmd = (args.get("command") or "").lower()
+    raw_cmd = args.get("command") or ""
+    # Markers are matched case-insensitively, but repo_selector() needs the
+    # original case of an owner/name argument — so keep both forms.
+    cmd = raw_cmd.lower()
 
     is_tf_apply = any(m in cmd for m in APPLY_MARKERS)
     is_wf_apply = any(m in cmd for m in WORKFLOW_APPLY) and "iac-terraform" in cmd and "apply" in cmd
@@ -104,7 +132,7 @@ def main() -> None:
     # Merges/pushes only gated when IaC is actually touched. For `gh pr merge`
     # inspect the PR's own files; for local pushes use the working-tree diff.
     if (is_merge or is_push_main) and not (is_tf_apply or is_wf_apply):
-        touches = merge_touches_iac(cmd) if is_merge else branch_touches_iac()
+        touches = merge_touches_iac(raw_cmd) if is_merge else branch_touches_iac()
         if not touches:
             emit(True, "merge/push does not touch infra/terraform")
 

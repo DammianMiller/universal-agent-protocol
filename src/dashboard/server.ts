@@ -246,13 +246,24 @@ export function startDashboardServer(
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url || '/';
 
-    // CORS headers. Reads stay open (localhost dashboard, read-only data), but
-    // mutations are gated by the token header below — the token, not the origin,
-    // is the real defense (a foreign origin can neither read the token nor,
-    // therefore, forge the header).
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Uap-Dashboard-Token');
+    // CORS. API reads stay open (localhost dashboard, read-only data); mutations
+    // are gated by the token header below.
+    //
+    // The served PAGE is deliberately excluded: it carries the mutation token
+    // inline, and a wildcard `Access-Control-Allow-Origin` on it let ANY page
+    // the operator visited read the HTML, scrape the token, and then drive every
+    // mutation route (policy toggles, `deliver` launches). The old comment here
+    // claimed CORS blocked that read — it did not, because the wildcard was set
+    // on every response before routing. Now the token-bearing page is same-origin
+    // only, which is what the token control always assumed (CWE-942/CWE-352).
+    // Since the dashboard now rides along with `uap proxy` and is up for the
+    // whole session, that window is no longer momentary.
+    const isTokenBearingPage = url === '/' || url === '/index.html';
+    if (!isTokenBearingPage) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Uap-Dashboard-Token');
+    }
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -261,6 +272,21 @@ export function startDashboardServer(
     }
 
     try {
+      // Liveness probe. Deliberately cheap — no DB reads, no snapshot build —
+      // because `uap proxy ensure` polls it while waiting for a co-located
+      // dashboard to come up, and that poll sits in the SessionStart hook path.
+      // `root` is what makes adoption safe: the dashboard serves ONE project
+      // (every panel reads `cwd`), while the proxy's client registry is
+      // per-user. Without it a session in project B would adopt project A's
+      // dashboard and print its URL as B's.
+      if (url === '/health' || url === '/api/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({ ok: true, service: 'uap-dashboard', port: boundPort, root: cwd })
+        );
+        return;
+      }
+
       // API: Get dashboard data
       if (url === '/api/dashboard') {
         const data = await getDashboardData();
@@ -585,8 +611,30 @@ export function startDashboardServer(
     }
   });
 
-  // WebSocket server for real-time updates
-  const wss = new WebSocketServer({ server });
+  // WebSocket server for real-time updates.
+  //
+  // WebSockets are exempt from the same-origin policy AND from CORS, so without
+  // an Origin check any page the operator visits could open ws://localhost:3847
+  // and receive the full dashboard snapshot every tick — tasks, agents, model
+  // usage and cost (CWE-1385). Browsers always send Origin on an upgrade;
+  // non-browser clients (the CLI, tests, curl) send none, so requiring "no
+  // Origin, or an Origin naming this server" costs nothing and closes the
+  // cross-origin read. Always-on ride-along makes this worth enforcing.
+  const originAllowed = (origin: string | undefined): boolean => {
+    if (!origin) return true; // non-browser client
+    try {
+      const { hostname, port: originPort } = new URL(origin);
+      const loopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+      const sameHost = loopback || hostname === host;
+      return sameHost && (originPort === '' || Number(originPort) === boundPort);
+    } catch {
+      return false;
+    }
+  };
+  const wss = new WebSocketServer({
+    server,
+    verifyClient: ({ origin }: { origin?: string }) => originAllowed(origin),
+  });
 
   const pushInterval = setInterval(async () => {
     if (wss.clients.size === 0 && sseClients.size === 0) return;
@@ -645,8 +693,18 @@ export function startDashboardServer(
     // other client must send it as `X-Uap-Dashboard-Token`. Override with
     // UAP_DASHBOARD_TOKEN. Without it, an unauthenticated caller cannot disable
     // enforcement (security audit D1).
+    //
+    // NOT echoed when the proxy started us as a ride-along: our stdout is an
+    // append-only log file, so printing would persist a live credential to disk
+    // (0644 under a 0700 dir, never rotated — CWE-532) where nothing reads it
+    // anyway. The UI still gets the token same-origin; automation should set
+    // UAP_DASHBOARD_TOKEN explicitly.
     if (!process.env.UAP_DASHBOARD_TOKEN) {
-      console.log(`  policy-mutation token: ${mutationToken}`);
+      if (process.env.UAP_DASH_RIDE_ALONG === '1') {
+        console.log('  policy-mutation token: generated (not logged — the UI receives it same-origin)');
+      } else {
+        console.log(`  policy-mutation token: ${mutationToken}`);
+      }
     }
 
     // DB-layer health: a missing native binding makes every panel silently
