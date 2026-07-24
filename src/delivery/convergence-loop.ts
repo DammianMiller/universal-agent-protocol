@@ -183,6 +183,13 @@ export interface IterationDirective {
    * next turn's prompt is built.
    */
   mutateInstruction?: string;
+  /**
+   * GEPA reflect (S6): request the async reflect turn (ConvergenceConfig.
+   * reflectProvider) — the loop awaits a rewritten approach and applies it as
+   * the next instruction. Distinct from mutateInstruction, which supplies the
+   * rewrite synchronously; requestReflect asks the loop to GENERATE one.
+   */
+  requestReflect?: boolean;
   /** Human-readable reason, surfaced in logs and the iteration record */
   note?: string;
 }
@@ -215,6 +222,8 @@ export function composeIterationHooks(
       if (directive.stop) merged.stop = true;
       if (directive.enableCritic) merged.enableCritic = true;
       if (directive.regenerateSeeds) merged.regenerateSeeds = true;
+      if (directive.requestReflect) merged.requestReflect = true;
+      if (directive.mutateInstruction) merged.mutateInstruction = directive.mutateInstruction;
       if (directive.switchExecutor) merged.switchExecutor = directive.switchExecutor;
       if (typeof directive.setCandidates === 'number') merged.setCandidates = directive.setCandidates;
       if (
@@ -370,6 +379,14 @@ export interface ConvergenceConfig {
    * fresh seeds steer AWAY from the failing region of solution space.
    */
   seedGenerator?: (instruction: string, feedback?: string) => Promise<StrategySeed[]>;
+  /**
+   * GEPA reflect (S6): the async reflect TURN. When a directive requests reflect
+   * (IterationDirective.requestReflect), the loop awaits this with the current
+   * instruction + latest gate feedback; a returned non-empty string becomes the
+   * rewritten APPROACH for subsequent turns (via activeInstruction). Fail-soft —
+   * undefined/empty/throw keeps the current instruction.
+   */
+  reflectProvider?: (instruction: string, feedback?: string) => Promise<string | undefined>;
 }
 
 /**
@@ -1280,6 +1297,23 @@ export class ConvergenceLoop {
           // keep current seeds
         }
       }
+      // GEPA reflect (S6): a requested reflect turn rewrites the APPROACH for
+      // subsequent turns. Fail-soft — an empty/undefined/throwing provider keeps
+      // the current instruction. A synchronous mutateInstruction (applied above)
+      // WINS if both are present, so skip the async reflect when one is set.
+      if (directive.requestReflect && !directive.mutateInstruction && this.config.reflectProvider) {
+        try {
+          const rewrite = await this.config.reflectProvider(
+            activeInstruction,
+            outcome.ladder?.feedback ?? outcome.applyError
+          );
+          if (typeof rewrite === 'string' && rewrite.trim() !== '') {
+            activeInstruction = rewrite;
+          }
+        } catch {
+          // keep the current instruction
+        }
+      }
       if (typeof directive.raiseMaxTurns === 'number' && directive.raiseMaxTurns > maxTurns) {
         // The ceiling is ALWAYS a hard cap on escalation raises — with or
         // without untilDelivered — so an operator's explicit --max-turns
@@ -1353,7 +1387,13 @@ export class ConvergenceLoop {
       // ladder exists precisely to break stagnation. Aborting now would kill the
       // repair pass before it ever executes, so give the new configuration a
       // turn to prove itself.
-      const escalated = Boolean(directive.switchExecutor || directive.enableCritic || directive.regenerateSeeds);
+      const escalated = Boolean(
+        directive.switchExecutor ||
+          directive.enableCritic ||
+          directive.regenerateSeeds ||
+          directive.requestReflect ||
+          directive.mutateInstruction
+      );
       if (inconclusive || scoreMoved || !provablyIdle || escalated) noProgressStreak = 0;
       else noProgressStreak++;
       if (noProgressStreak >= NO_APPLY_ABORT_LIMIT) {

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { syntheticEdges, reconcileFanIn, layerFanIn } from '../../src/delivery/graph-safety.js';
+import {
+  syntheticEdges,
+  reconcileFanIn,
+  layerFanIn,
+  augmentPhasesWithWriteEdges,
+} from '../../src/delivery/graph-safety.js';
 
 describe('syntheticEdges — false-independence serialization', () => {
   it('adds an edge between two nodes writing the same file (zero data dep)', () => {
@@ -48,6 +53,35 @@ describe('reconcileFanIn — silent-node-failure guard', () => {
     const r = reconcileFanIn(['a', 'b'], ['b', 'a']);
     expect(r.complete).toBe(true);
     expect(r.missing).toEqual([]);
+  });
+});
+
+describe('augmentPhasesWithWriteEdges — S7 wired at the DeliveryPhase layer', () => {
+  const writes: Record<string, string[]> = { a: ['src/x.ts'], b: ['src/x.ts'], c: ['src/y.ts'] };
+  const predict = (p: { id: string }) => writes[p.id] ?? [];
+
+  it('adds a serialization dep between phases writing the same file', () => {
+    const phases = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    const out = augmentPhasesWithWriteEdges(phases, predict);
+    const b = out.find((p) => p.id === 'b')!;
+    expect(b.deps).toContain('a'); // b writes src/x.ts after a → serialized
+    const c = out.find((p) => p.id === 'c')!;
+    expect(c.deps).toEqual([]); // disjoint file → independent
+  });
+
+  it('preserves and merges existing data-dependency deps', () => {
+    const phases = [{ id: 'a' }, { id: 'b', deps: ['z'] }];
+    const out = augmentPhasesWithWriteEdges(phases, predict);
+    const b = out.find((p) => p.id === 'b')!;
+    expect(b.deps).toContain('z'); // original data dep kept
+    expect(b.deps).toContain('a'); // + synthetic write edge
+  });
+
+  it('does not duplicate a dep that is both a data dep and a write edge', () => {
+    const phases = [{ id: 'a' }, { id: 'b', deps: ['a'] }];
+    const out = augmentPhasesWithWriteEdges(phases, predict);
+    const b = out.find((p) => p.id === 'b')!;
+    expect(b.deps.filter((d) => d === 'a').length).toBe(1);
   });
 });
 

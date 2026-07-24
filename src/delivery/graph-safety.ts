@@ -90,3 +90,36 @@ export function layerFanIn<T>(items: readonly T[], batchSize = 30): T[][] {
   }
   return batches;
 }
+
+/**
+ * Augment DAG phases with false-independence serialization edges: phases
+ * predicted to write the SAME file get their `deps` extended so the scheduler
+ * serializes them, even with zero data dependency. `predictWrites` is injected
+ * (fed by the coordination DB's predicted writes). Pure — returns new phase
+ * objects with a merged `deps`; input order defines the serialization chain.
+ * This is the S7 fix wired at the DeliveryPhase layer.
+ *
+ * PRECONDITION: `phases` must be in an order consistent with their existing
+ * `deps` (topologically ordered, as planDeliveryPhases emits). Synthetic edges
+ * run earlier→later by input order; passing a phase before one it already
+ * depends on could combine with the pre-existing dep to form a cycle. Callers
+ * that don't guarantee topological input order should cycle-check the result.
+ */
+export function augmentPhasesWithWriteEdges<T extends { id: string; deps?: string[] }>(
+  phases: readonly T[],
+  predictWrites: (phase: T) => string[]
+): Array<T & { deps: string[] }> {
+  const nodes: GraphNode[] = phases.map((p) => ({ id: p.id, writes: predictWrites(p) }));
+  const edges = syntheticEdges(nodes);
+  const extra = new Map<string, Set<string>>();
+  for (const e of edges) {
+    const set = extra.get(e.to) ?? new Set<string>();
+    set.add(e.from);
+    extra.set(e.to, set);
+  }
+  return phases.map((p) => {
+    const merged = new Set(p.deps ?? []);
+    for (const from of extra.get(p.id) ?? []) merged.add(from);
+    return { ...p, deps: [...merged] };
+  });
+}
