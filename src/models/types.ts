@@ -216,6 +216,25 @@ export type ModelPresetId = keyof typeof ModelPresets;
  * against Anthropic and work with a Claude Max plan via the proxy's OAuth
  * passthrough; local roles run free on llama.cpp.
  */
+/** An ordered escalation chain of model ids: index 0 is the primary; later
+ * entries are the models to escalate to on failure (consumed in S5). */
+export type ModelChain = string[];
+
+/** A lifecycle phase a task turn runs in. `reflect` is used by the GEPA reflect
+ * phase (S6); `fallback` is the last-resort model. */
+export type Phase = 'plan' | 'execute' | 'review' | 'reflect' | 'fallback';
+
+/** Per-phase model chains for one complexity tier. A phase omitted from an
+ * explicit PhaseModels tier is *skippable* (see `resolvePhaseChain` allowSkip),
+ * which is how trivial/low tiers get near-zero overhead (S4). */
+export interface PhaseModels {
+  plan?: ModelChain;
+  execute?: ModelChain;
+  review?: ModelChain;
+  reflect?: ModelChain;
+  fallback?: ModelChain;
+}
+
 export interface RoutingPreset {
   id: string;
   name: string;
@@ -230,7 +249,7 @@ export interface RoutingPreset {
    * map stays coherent. Consumed by `uap model routing use`, which materializes
    * it into the router's routingMatrix.
    */
-  tiers?: Partial<Record<TaskComplexity, string>>;
+  tiers?: Partial<Record<TaskComplexity, string | PhaseModels>>;
   models: string[];
   routingStrategy?: string;
 }
@@ -334,6 +353,48 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
     models: ['sonnet-5', 'opus-4.8', 'qwen36-a3b'],
     routingStrategy: 'balanced',
   },
+  'adaptive-tiered': {
+    id: 'adaptive-tiered',
+    name: 'Adaptive per-phase (complexity × plan/execute/review escalation)',
+    description:
+      'Per-phase model chains that escalate on failure. Low-tier work skips ' +
+      'plan+review for near-zero overhead; high/critical add planning, a distinct ' +
+      'reviewer, a reflect model, and per-phase escalation. Execute local→cloud, ' +
+      'fall back to Opus. Requires the per-phase resolvers (resolvePhaseChain).',
+    roles: {
+      planner: 'sonnet-5',
+      executor: 'qwen36-a3b',
+      reviewer: 'sonnet-5',
+      fallback: 'opus-4.8',
+    },
+    tiers: {
+      // trivial folds to low for routing; low omits plan+review → they are
+      // skipped (overhead control), execute escalates local→cloud.
+      low: { execute: ['qwen36-a3b', 'sonnet-5'], fallback: ['sonnet-5'] },
+      medium: {
+        plan: ['sonnet-5'],
+        execute: ['sonnet-5', 'opus-4.8'],
+        review: ['sonnet-5'],
+        fallback: ['opus-4.8'],
+      },
+      high: {
+        plan: ['sonnet-5', 'opus-4.8'],
+        execute: ['qwen36-a3b', 'sonnet-5', 'opus-4.8'],
+        review: ['sonnet-5', 'opus-4.8'],
+        reflect: ['opus-4.8'],
+        fallback: ['opus-4.8'],
+      },
+      critical: {
+        plan: ['opus-4.8'],
+        execute: ['sonnet-5', 'opus-4.8'],
+        review: ['opus-4.8'],
+        reflect: ['opus-4.8'],
+        fallback: ['opus-4.8'],
+      },
+    },
+    models: ['fable-5', 'qwen36-a3b', 'haiku-4.5', 'sonnet-5', 'opus-4.8'],
+    routingStrategy: 'adaptive',
+  },
 };
 
 /**
@@ -342,29 +403,84 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
  * the router falls back to the executor role for them — coherent by default.
  * Exported + pure for testing and for `uap model routing use`.
  */
+/** Map a lifecycle phase to the closest lifecycle role (role-model fallback). */
+const PHASE_TO_ROLE: Record<Phase, keyof RoutingPreset['roles']> = {
+  plan: 'planner',
+  execute: 'executor',
+  review: 'reviewer',
+  reflect: 'reviewer',
+  fallback: 'fallback',
+};
+
+/** Map a lifecycle role to its phase (for role→phase resolution). */
+const ROLE_TO_PHASE: Record<keyof RoutingPreset['roles'], Phase> = {
+  planner: 'plan',
+  executor: 'execute',
+  reviewer: 'review',
+  fallback: 'fallback',
+};
+
+/**
+ * Resolve the ordered model chain for a (complexity, phase) pair. PURE.
+ * - string tier  → it IS the execute model: `execute`→[string], other phases →
+ *   the role-model (single-element chain), preserving legacy behavior.
+ * - PhaseModels  → the phase's chain, or (when the phase is omitted) the
+ *   role-model fallback — unless `allowSkip`, which returns [] so callers can
+ *   treat the phase as skipped (S4 effort dial).
+ * - no tier      → the role-model (single-element chain).
+ */
+export function resolvePhaseChain(
+  preset: RoutingPreset,
+  opts: { complexity?: TaskComplexity; phase: Phase; allowSkip?: boolean }
+): ModelChain {
+  const { complexity, phase, allowSkip } = opts;
+  const roleModel = preset.roles[PHASE_TO_ROLE[phase]];
+  const tier = complexity ? preset.tiers?.[complexity] : undefined;
+  if (tier === undefined) return [roleModel];
+  if (typeof tier === 'string') {
+    return phase === 'execute' ? [tier] : [roleModel];
+  }
+  const chain = tier[phase];
+  if (chain && chain.length > 0) return [...chain];
+  return allowSkip ? [] : [roleModel];
+}
+
+/**
+ * Materialize a preset's complexity tiers into the router's routingMatrix
+ * (single-model-per-tier form). String tiers pass through; PhaseModels tiers
+ * contribute their EXECUTE primary (backward-compatible single-model matrix).
+ * Tiers absent from the preset are omitted. Exported + pure.
+ */
 export function tiersToRoutingMatrix(
   preset: RoutingPreset
 ): Record<string, string> | undefined {
   if (!preset.tiers) return undefined;
   const matrix: Record<string, string> = {};
-  for (const [complexity, modelId] of Object.entries(preset.tiers)) {
-    if (modelId) matrix[complexity] = modelId;
+  for (const [complexity, value] of Object.entries(preset.tiers)) {
+    if (!value) continue;
+    if (typeof value === 'string') {
+      matrix[complexity] = value;
+    } else if (value.execute && value.execute.length > 0) {
+      matrix[complexity] = value.execute[0];
+    }
   }
   return Object.keys(matrix).length > 0 ? matrix : undefined;
 }
 
 /**
- * Resolve the model for a (complexity, role) pair against a preset: the
- * complexity tier wins for the execution path; otherwise the role model.
- * Pure — the single source of truth for "which model does this task get".
+ * Resolve the single model for a (complexity, role/phase) pair against a
+ * preset. Returns the primary of the resolved phase chain. Pure — the source
+ * of truth for "which model does this task get". Back-compat: `{complexity,
+ * role:'executor'}` on a string tier returns that tier model, exactly as before.
  */
 export function resolvePresetModel(
   preset: RoutingPreset,
-  opts: { complexity?: TaskComplexity; role?: keyof RoutingPreset['roles'] }
+  opts: { complexity?: TaskComplexity; role?: keyof RoutingPreset['roles']; phase?: Phase }
 ): string {
-  const { complexity, role = 'executor' } = opts;
-  if (complexity && preset.tiers?.[complexity]) return preset.tiers[complexity] as string;
-  return preset.roles[role];
+  const { complexity, role = 'executor', phase } = opts;
+  const resolvedPhase: Phase = phase ?? ROLE_TO_PHASE[role];
+  const chain = resolvePhaseChain(preset, { complexity, phase: resolvedPhase });
+  return chain[0] ?? preset.roles[role];
 }
 
 /**
