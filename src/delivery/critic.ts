@@ -10,6 +10,7 @@
 
 import type { LoopExecutor } from './convergence-loop.js';
 import type { IterationRecord } from './convergence-loop.js';
+import type { ApproachRewrite } from './reflect.js';
 
 export interface CritiqueInput {
   instruction: string;
@@ -26,6 +27,12 @@ export interface Critique {
   fixList: string[];
   /** Gate the critique focuses on (first failing required gate) */
   focusGate?: string;
+  /**
+   * GEPA reflect (S6): an optional strategic rewrite of the APPROACH (not just
+   * a per-turn fix-list) — why the approach failed + a rewritten instruction.
+   * Consumed via IterationDirective.mutateInstruction.
+   */
+  approachRewrite?: ApproachRewrite;
 }
 
 export type Critic = (input: CritiqueInput) => Promise<Critique>;
