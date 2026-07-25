@@ -16,6 +16,7 @@ import {
   validateManifest,
 } from '../src/delivery/interaction/manifest.js';
 import {
+  isCollectionSize,
   judgeWatchdog,
   parseWatchdogSample,
   watchdogSampleScript,
@@ -55,6 +56,7 @@ const manifest = (over: Partial<InteractionManifest> = {}): InteractionManifest 
 class StubDriver implements InteractionDriver {
   started = false;
   stopped = 0;
+  resets = 0;
   steps: Step[] = [];
   constructor(
     private values: Record<string, unknown> = { ok: true },
@@ -66,6 +68,9 @@ class StubDriver implements InteractionDriver {
   }
   didLaunch(): boolean {
     return this.opts.didLaunch ?? false;
+  }
+  async reset(): Promise<void> {
+    this.resets++;
   }
   async runStep(s: Step): Promise<void> {
     this.steps.push(s);
@@ -223,6 +228,38 @@ describe('watchdog transport', () => {
     expect(Number.isNaN(sample?.values['p.x'] as number)).toBe(true);
   });
 
+  it('only calls a COLLECTION unbounded, never an ordinary counter', () => {
+    // A score is supposed to climb; flagging it reports a leak in a working
+    // game (observed live: score 0 -> 38060 reported as unbounded growth).
+    expect(isCollectionSize('Particles.particles.length')).toBe(true);
+    expect(isCollectionSize('cache.size')).toBe(true);
+    expect(isCollectionSize('Player.player.score')).toBe(false);
+    const r = judgeWatchdog([
+      { ticks: 1, errors: [], values: { 'Player.player.score': 0 }, segment: 0 },
+      { ticks: 2, errors: [], values: { 'Player.player.score': 38060 }, segment: 0 },
+    ]);
+    expect(r.unboundedGrowth).toEqual([]);
+  });
+
+  it('finds NaN in ANY sample, not only the last', () => {
+    // Per-probe reloads wipe a corrupted field, so judging only the final
+    // sample silently narrows the check to "did the LAST probe produce NaN".
+    const r = judgeWatchdog([
+      { ticks: 1, errors: [], values: { 'p.x': 1 }, segment: 0 },
+      { ticks: 2, errors: [], values: { 'p.x': Number.NaN }, segment: 0 },
+      { ticks: 3, errors: [], values: { 'p.x': 5 }, segment: 1 },
+    ]);
+    expect(r.nanFields).toEqual(['p.x']);
+  });
+
+  it('does not compare growth across a reset boundary', () => {
+    const r = judgeWatchdog([
+      { ticks: 1, errors: [], values: { 'list.length': 1 }, segment: 0 },
+      { ticks: 2, errors: [], values: { 'list.length': 9000 }, segment: 1 },
+    ]);
+    expect(r.unboundedGrowth).toEqual([]);
+  });
+
   it('will not declare a dead loop from a single sample', () => {
     // One sample makes prev === last, so the delta is 0 by construction and any
     // artifact that ever ticked would be called dead.
@@ -334,6 +371,78 @@ describe('runInteractionGate orchestration', () => {
     });
     expect(v.skipped).toBe(true);
     expect(v.skipReason).toContain('factory blew up');
+  });
+
+  it('resets between probes but not before the first', async () => {
+    // Shared page state makes results order-dependent: a probe that ends the
+    // game leaves the next one asserting against a game-over screen, and its
+    // failure gets reported as a defect in whatever that probe was testing.
+    const driver = new StubDriver();
+    const two = manifest({
+      probes: [
+        {
+          id: 'A',
+          requirementIds: ['R1'],
+          mode: 'core',
+          description: 'first',
+          steps: [{ do: 'wait', ms: 1 }],
+          asserts: [{ expect: 'truthy', expr: 'ok' }],
+        },
+        {
+          id: 'B',
+          requirementIds: ['R1'],
+          mode: 'core',
+          description: 'second',
+          steps: [{ do: 'wait', ms: 1 }],
+          asserts: [{ expect: 'truthy', expr: 'ok' }],
+        },
+      ],
+    });
+    await runInteractionGate(webProject(), { manifest: two, driverFactory: () => driver });
+    expect(driver.resets).toBe(1);
+  });
+
+  it('says so in the report when a probe ran without a clean reset', async () => {
+    // Silence would read exactly like a properly isolated run while every later
+    // probe inherited the previous one's state.
+    class NoReset extends StubDriver {
+      reset = undefined as unknown as () => Promise<void>;
+    }
+    const two = manifest({
+      probes: [
+        { id: 'A', requirementIds: ['R1'], mode: 'core', description: 'first',
+          steps: [{ do: 'wait', ms: 1 }], asserts: [{ expect: 'truthy', expr: 'ok' }] },
+        { id: 'B', requirementIds: ['R1'], mode: 'core', description: 'second',
+          steps: [{ do: 'wait', ms: 1 }], asserts: [{ expect: 'truthy', expr: 'ok' }] },
+      ],
+    });
+    const v = await runInteractionGate(webProject(), {
+      manifest: two,
+      driverFactory: () => new NoReset(),
+    });
+    expect(v.feedback).toContain('WITHOUT a clean reset');
+  });
+
+  it('does not credit coverage to a probe skipped for budget', async () => {
+    const two = manifest({
+      requirements: [
+        { id: 'R1', text: 'first thing' },
+        { id: 'R2', text: 'second thing' },
+      ],
+      probes: [
+        { id: 'A', requirementIds: ['R1'], mode: 'core', description: 'first',
+          steps: [{ do: 'wait', ms: 1 }], asserts: [{ expect: 'truthy', expr: 'ok' }] },
+        { id: 'B', requirementIds: ['R2'], mode: 'core', description: 'second',
+          steps: [{ do: 'wait', ms: 1 }], asserts: [{ expect: 'truthy', expr: 'ok' }] },
+      ],
+    });
+    const v = await runInteractionGate(webProject(), {
+      manifest: two,
+      driverFactory: () => new StubDriver(),
+      budgetMs: -1,
+    });
+    // Everything was skipped, so nothing is covered — not 2/2.
+    expect(v.coverage.covered).toBe(0);
   });
 
   it('summarises tersely for the verify report', async () => {

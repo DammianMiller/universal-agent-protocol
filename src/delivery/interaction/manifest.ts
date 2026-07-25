@@ -223,9 +223,18 @@ export function saveManifest(projectRoot: string, manifest: InteractionManifest)
  * requirements are present and active" from a claim into a check: an unmapped
  * requirement is a coverage gap, and under max fidelity a gap blocks DONE.
  */
-export function coverageOf(manifest: InteractionManifest): CoverageLedger {
+export function coverageOf(
+  manifest: InteractionManifest,
+  /**
+   * The probes that will ACTUALLY run this invocation. Counting the whole
+   * manifest reports a requirement as covered when its only probe belongs to a
+   * mode that was not run — "covered" would mean "has a probe somewhere",
+   * not "was verified".
+   */
+  ranProbes?: Probe[]
+): CoverageLedger {
   const covered = new Set<string>();
-  for (const p of manifest.probes) {
+  for (const p of ranProbes ?? manifest.probes) {
     // Accelerated probes reach their path by INJECTING state, so they are not
     // evidence that a user can get there. Counting them as coverage would let
     // "every requirement is covered" mean "every requirement has a probe that

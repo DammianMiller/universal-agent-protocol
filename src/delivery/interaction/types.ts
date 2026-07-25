@@ -44,6 +44,17 @@ export type Step =
   | { do: 'down' }
   | { do: 'up' }
   | { do: 'click'; x?: number; y?: number; selector?: string }
+  /**
+   * Move the pointer to a position DERIVED from the artifact's own state —
+   * `expr` yields `{x, y}` or a number x, and must be read-only like any other
+   * observation.
+   *
+   * Without this a probe can only send fixed coordinates, which cannot play a
+   * game that requires aiming: a blind sweep failed to reach level 2 in 73s of
+   * firing while aimed fire cleared it in 18s, and the gate reported that as a
+   * progression defect in a working game.
+   */
+  | { do: 'aimAt'; expr: string; y?: number }
   | { do: 'key'; key: string }
   /** Read-only expression evaluated in the artifact; result is recorded. */
   | { do: 'eval'; expr: string }

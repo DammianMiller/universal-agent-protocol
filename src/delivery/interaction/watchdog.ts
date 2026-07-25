@@ -101,6 +101,12 @@ export interface WatchdogSample {
   ticks: number;
   errors: string[];
   values: Record<string, number | null>;
+  /**
+   * Which uninterrupted run of the artifact this sample belongs to. Per-probe
+   * page reloads restart every counter, so growth may only be compared inside
+   * one segment — across a reload the endpoints do not bracket a continuous run.
+   */
+  segment?: number;
 }
 
 export function parseWatchdogSample(raw: unknown): WatchdogSample | null {
@@ -120,6 +126,11 @@ export function parseWatchdogSample(raw: unknown): WatchdogSample | null {
   } catch {
     return null;
   }
+}
+
+/** Does this expression observe the SIZE of a collection (vs a counter)? */
+export function isCollectionSize(expr: string): boolean {
+  return /\.(length|size)\s*$/.test(expr) || /\.(length|size)\b/.test(expr);
 }
 
 export interface WatchdogOptions {
@@ -162,26 +173,54 @@ export function judgeWatchdog(
   // is a claim about change over time and needs two points to make.
   const loopAlive = samples.length < 2 || !everTicked || ticksObserved >= minTicks;
 
-  const nanFields: string[] = [];
-  const unboundedGrowth: string[] = [];
-  if (first && last) {
-    for (const key of Object.keys(last.values)) {
-      const end = last.values[key];
-      if (typeof end === 'number' && Number.isNaN(end)) {
-        nanFields.push(key);
-        continue;
-      }
-      const start = first.values[key];
+  // NaN over EVERY sample, not just the last. Judging only the final sample
+  // meant a field corrupted during any earlier probe was wiped by the next
+  // page reload and never seen — the check silently became "did the LAST probe
+  // produce NaN".
+  const nanSet = new Set<string>();
+  for (const s of samples) {
+    for (const [key, v] of Object.entries(s.values)) {
+      if (typeof v === 'number' && Number.isNaN(v)) nanSet.add(key);
+    }
+  }
+  const nanFields = [...nanSet];
+
+  // Growth compared only WITHIN a contiguous segment: across a reload the
+  // start and end points belong to different runs of the artifact, so the
+  // comparison is meaningless (and a real leak measured over one short probe
+  // never crosses the floor).
+  const growth = new Map<string, string>();
+  const bySegment = new Map<number, WatchdogSample[]>();
+  for (const s of samples) {
+    const seg = s.segment ?? 0;
+    if (!bySegment.has(seg)) bySegment.set(seg, []);
+    (bySegment.get(seg) as WatchdogSample[]).push(s);
+  }
+  for (const group of bySegment.values()) {
+    const a = group[0];
+    const b = group[group.length - 1];
+    if (!a || !b || a === b) continue;
+    for (const key of Object.keys(b.values)) {
+      // Growth means "a COLLECTION grew without bound". An ordinary counter —
+      // a score, a frame number, elapsed time — is supposed to climb, and
+      // flagging it reports a leak in a working game (observed: score 0 →
+      // 38 060 reported as unbounded growth). Only size-like observations
+      // qualify; every watched value is still checked for NaN.
+      if (!isCollectionSize(key)) continue;
+      const start = a.values[key];
+      const end = b.values[key];
       if (
         typeof start === 'number' &&
         typeof end === 'number' &&
+        !Number.isNaN(end) &&
         end > growthFloor &&
         end > Math.max(1, start) * growthFactor
       ) {
-        unboundedGrowth.push(`${key}: ${start} → ${end}`);
+        growth.set(key, `${key}: ${start} → ${end}`);
       }
     }
   }
+  const unboundedGrowth = [...growth.values()];
 
   return { errors, loopAlive, ticksObserved, nanFields, unboundedGrowth };
 }

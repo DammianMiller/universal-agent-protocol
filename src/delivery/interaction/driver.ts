@@ -25,6 +25,16 @@ export interface ReadResult {
 export interface InteractionDriver {
   /** Launch and reach the artifact's initial state. */
   start(): Promise<void>;
+  /**
+   * Return the artifact to its initial state before the next probe.
+   *
+   * Without this every probe inherits the previous probe's state, so results
+   * are order-dependent and a later probe reports failures caused by an
+   * earlier one — e.g. 'colliding costs health' failing because a previous
+   * probe already ended the game. Optional: a driver that cannot reset simply
+   * runs probes in sequence, which is the old behaviour.
+   */
+  reset?(): Promise<void>;
   /** Execute one input step. Unknown step kinds must be ignored, not thrown. */
   runStep(step: Step): Promise<void>;
   /** Evaluate an observation expression in the artifact's own context. */

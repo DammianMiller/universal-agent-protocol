@@ -83,6 +83,43 @@ export class WebInteractionDriver implements InteractionDriver {
     this.pointer = { x: Math.round(size.width / 2), y: Math.round(size.height / 2) };
   }
 
+  /**
+   * Reload the entry page. Init scripts are registered on the CONTEXT, so the
+   * watchdog re-installs automatically on the fresh document.
+   */
+  async reset(): Promise<void> {
+    const b = this.browser;
+    if (!b || !this.server) throw new Error('cannot reset: driver not started');
+    // Release a button a previous probe left held: Playwright's mouse state is
+    // browser-level and survives navigation, so a probe ending on `down`
+    // otherwise keeps firing into the next one.
+    try {
+      await b.mouseUp();
+    } catch {
+      /* nothing was held */
+    }
+    await b.goto(this.server.url);
+    await b.waitForLoadState('load');
+    // Persisted storage survives a reload, so a save-state or "seen the
+    // tutorial" flag would carry the previous probe's writes across — exactly
+    // the leak the reload is meant to close.
+    try {
+      await b.evaluate(
+        '(function(){try{localStorage.clear();sessionStorage.clear();}catch(e){}return true;})'
+      );
+    } catch {
+      /* storage may be unavailable (file://, blocked) */
+    }
+    const size = await b.viewportSize();
+    const cx = Math.round(size.width / 2);
+    const cy = Math.round(size.height / 2);
+    this.pointer = { x: cx, y: cy };
+    // Move the REAL cursor too — otherwise the driver believes the pointer is
+    // centred while it sits wherever the last probe left it, and coordinate-free
+    // `down`/`up` fire at the wrong place.
+    await b.mouseMove(cx, cy);
+  }
+
   /** True once the browser is up — distinguishes infra failure from load failure. */
   didLaunch(): boolean {
     return this.launched;
@@ -143,6 +180,27 @@ export class WebInteractionDriver implements InteractionDriver {
           await b.mouseClick(this.pointer.x, this.pointer.y);
         }
         return;
+      case 'aimAt': {
+        // Read-only: the same evaluation path as any observation, so the
+        // mutation guard covers it.
+        const at = await this.read(step.expr);
+        let x: number | undefined;
+        let y: number | undefined;
+        if (typeof at === 'number') x = at;
+        else if (at && typeof at === 'object') {
+          const o = at as { x?: unknown; y?: unknown };
+          if (typeof o.x === 'number') x = o.x;
+          if (typeof o.y === 'number') y = o.y;
+        }
+        // An expression that resolves to nothing (no target on screen) leaves
+        // the pointer where it is rather than throwing — "nothing to aim at"
+        // is a normal moment in play, not a probe failure.
+        if (typeof x !== 'number' || !Number.isFinite(x)) return;
+        const ty = typeof step.y === 'number' ? step.y : (y ?? this.pointer.y);
+        this.pointer = { x, y: ty };
+        await b.mouseMove(x, ty);
+        return;
+      }
       case 'key':
         await b.press(step.key);
         return;

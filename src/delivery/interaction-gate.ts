@@ -113,7 +113,8 @@ async function runGate(
 
   const modes = options.modes ?? (['core'] as ProbeMode[]);
   const probes = manifest.probes.filter((p) => modes.includes(p.mode));
-  const coverage = coverageOf(manifest);
+  // Coverage over the probes that will RUN, not the whole manifest.
+  const coverage = coverageOf(manifest, probes);
   if (probes.length === 0) {
     return skippedVerdict(`manifest has no probes for mode(s) ${modes.join(', ')}`, coverage);
   }
@@ -155,6 +156,9 @@ async function runGate(
   const results: ProbeResult[] = [];
   const samples: WatchdogSample[] = [];
   const watchExprs = manifest.watch ?? [];
+  let ranAny = false;
+  let segment = 0;
+  const resetProblems: string[] = [];
 
   try {
     try {
@@ -181,7 +185,7 @@ async function runGate(
     }
 
     const first = await sampleWatchdog(driver, watchExprs);
-    if (first) samples.push(first);
+    if (first) samples.push({ ...first, segment });
 
     for (const probe of probes) {
       if (Date.now() - startedAt > budgetMs) {
@@ -199,6 +203,23 @@ async function runGate(
         });
         continue;
       }
+      // Fresh page per probe: shared state makes results order-dependent and
+      // reports one probe's damage as the next probe's defect.
+      if (ranAny) {
+        if (driver.reset) {
+          try {
+            await driver.reset();
+            segment++;
+          } catch (e) {
+            // Silence here would read exactly like a properly isolated run,
+            // while every later probe inherits the previous probe's state.
+            resetProblems.push(`before ${probe.id}: ${String(e).slice(0, 120)}`);
+          }
+        } else {
+          resetProblems.push(`before ${probe.id}: this driver cannot reset between probes`);
+        }
+      }
+      ranAny = true;
       const evPath = evidencePathFor(evidence, probe.id);
       results.push(
         await runProbe(driver, probe, {
@@ -208,14 +229,14 @@ async function runGate(
         })
       );
       const s = await sampleWatchdog(driver, watchExprs);
-      if (s) samples.push(s);
+      if (s) samples.push({ ...s, segment });
     }
 
     // A final short window so "is the loop still ticking NOW" is answered by
     // fresh frames rather than a cumulative count from earlier in the run.
     await delay(600);
     const last = await sampleWatchdog(driver, watchExprs);
-    if (last) samples.push(last);
+    if (last) samples.push({ ...last, segment });
 
     let driverErrors: string[] = [];
     try {
@@ -224,9 +245,22 @@ async function runGate(
       /* an unreadable error channel must not abort the verdict */
     }
     const watchdog = samples.length > 0 ? judgeWatchdog(samples, driverErrors) : undefined;
-    const verdict = judgeInteraction(manifest, results, coverage, watchdog, {
+    // Coverage from the probes that actually RAN — a probe skipped for budget
+    // exhaustion must not mark its requirement covered.
+    const ranIds = new Set(results.filter((r) => !r.skipped).map((r) => r.probeId));
+    const ranCoverage = coverageOf(
+      manifest,
+      probes.filter((p) => ranIds.has(p.id))
+    );
+    const verdict = judgeInteraction(manifest, results, ranCoverage, watchdog, {
       ...(options.strictCoverage ? { strictCoverage: true } : {}),
     });
+    if (resetProblems.length > 0) {
+      verdict.feedback +=
+        `\n⚠ ${resetProblems.length} probe(s) ran WITHOUT a clean reset, so they inherited the ` +
+        `previous probe's state and their results may be order-dependent:\n  ` +
+        resetProblems.slice(0, 5).join('\n  ');
+    }
     if (options.specText && manifestIsStale(manifest, options.specText)) {
       verdict.feedback +=
         `\n⚠ these probes were mined from DIFFERENT requirements than the current ones — ` +
