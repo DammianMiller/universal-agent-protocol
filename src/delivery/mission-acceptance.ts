@@ -25,6 +25,8 @@ import {
 } from './acceptance-judge.js';
 import { runExecutionGate } from './execution-gate.js';
 import { runVisualGate, visualRuntimeNote } from './visual-gate.js';
+import { runInteractionGate } from './interaction-gate.js';
+import type { ProbeMode } from './interaction/types.js';
 import { resolveFidelity } from './fidelity.js';
 import { buildUserPathsNote } from './user-validation.js';
 import type { SpecRegistry } from './spec-registry.js';
@@ -73,6 +75,7 @@ export interface MissionAcceptanceDeps {
   /** Test seams — default to the real gates. */
   executionGate?: typeof runExecutionGate;
   visualGate?: typeof runVisualGate;
+  interactionGate?: typeof runInteractionGate;
   visionReview?: typeof visionAcceptanceFeedback;
   judge?: typeof runAcceptanceGate;
   userPathsNote?: typeof buildUserPathsNote;
@@ -122,6 +125,7 @@ export async function visionAcceptanceFeedback(
 export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): AcceptanceGate {
   const executionGate = deps.executionGate ?? runExecutionGate;
   const visualGate = deps.visualGate ?? runVisualGate;
+  const interactionGate = deps.interactionGate ?? runInteractionGate;
   const judge = deps.judge ?? runAcceptanceGate;
   const userPathsNote = deps.userPathsNote ?? buildUserPathsNote;
   // eslint-disable-next-line no-console
@@ -162,6 +166,21 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
         // fix the broken UX first (the required ordering).
         const uv = userPathsNote(root);
         const behavioralFailing = Boolean(uv?.trusted && /User-path validation FAILED/.test(uv.note));
+        // Interaction gate: the loop must converge against the SAME behavioural
+        // bar `uap verify` enforces. Running it only on the verify side would
+        // recreate the Generator≠Evaluator divergence this file already records
+        // (run Y): the loop converges happily, then the release gate rejects the
+        // result with feedback the loop never saw and cannot act on.
+        if (!behavioralFailing) {
+          const interaction = await interactionGate(root, {
+            ...(fidelity.max
+              ? { modes: ['core', 'accelerated', 'soak'] as ProbeMode[], strictCoverage: true }
+              : {}),
+          });
+          if (!interaction.skipped && !interaction.passed && (deps.primary || fidelity.max)) {
+            return { passed: false, feedback: interaction.feedback };
+          }
+        }
         if (!behavioralFailing) {
           // Visual gate: watch the artifact RUN — the observation summary becomes
           // judge evidence (a code-evidence judge cannot see a never-started

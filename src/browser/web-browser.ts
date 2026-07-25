@@ -202,6 +202,42 @@ export class WebBrowser {
     await this.page!['keyboard']['press'](key);
   }
 
+  /**
+   * Coordinate-level pointer control. `click(selector)` cannot drive a <canvas>
+   * app at all — there is no element to target inside the canvas, and a game's
+   * aiming, firing and dragging all live in pointer position. The interaction
+   * gate needs to put the pointer at an arbitrary point and hold the button, so
+   * these expose the raw mouse rather than the locator API.
+   */
+  async mouseMove(x: number, y: number): Promise<void> {
+    if (!this.page) throw new Error('Browser not initialized');
+    await this.page!['mouse']['move'](x, y);
+  }
+
+  async mouseDown(): Promise<void> {
+    if (!this.page) throw new Error('Browser not initialized');
+    await this.page!['mouse']['down']();
+  }
+
+  async mouseUp(): Promise<void> {
+    if (!this.page) throw new Error('Browser not initialized');
+    await this.page!['mouse']['up']();
+  }
+
+  /** Click at a point (not a selector) — move, press, release. */
+  async mouseClick(x: number, y: number): Promise<void> {
+    if (!this.page) throw new Error('Browser not initialized');
+    await this.page!['mouse']['click'](x, y);
+  }
+
+  /** Viewport size, so probes can express positions relative to the window. */
+  async viewportSize(): Promise<{ width: number; height: number }> {
+    if (!this.page) throw new Error('Browser not initialized');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const size = (this.page as any).viewportSize?.();
+    return size && typeof size.width === 'number' ? size : { width: 1280, height: 720 };
+  }
+
   async isVisible(selector: string): Promise<boolean> {
     if (!this.page) throw new Error('Browser not initialized');
     return await this.page!['locator'](selector)['isVisible']();

@@ -12,6 +12,8 @@
 import { detectRungs, runTieredLadder, tierOf, type GateRung, type GateTier, type LadderResult } from '../delivery/verifier-ladder.js';
 import { runAcceptanceGate, formatAcceptanceReport, type AcceptanceResult } from '../delivery/acceptance-judge.js';
 import { runVisualGate, discoverEntryPages, type VisualVerdict } from '../delivery/visual-gate.js';
+import { runInteractionGate, interactionSummary } from '../delivery/interaction-gate.js';
+import type { InteractionVerdict, ProbeMode } from '../delivery/interaction/types.js';
 import { resolveFidelity, type ResolvedFidelity } from '../delivery/fidelity.js';
 import {
   checkUserValidationFreshness,
@@ -102,6 +104,8 @@ export interface VerifyOptions {
    * and the last report is missing/stale/failed for the CURRENT tree. A
    * fresh-pass report (code unchanged since validation) skips the cost. */
   userPathsAuto?: boolean;
+  /** Run the interaction gate (default: on when a manifest exists). */
+  interaction?: boolean;
 }
 
 export interface VerifyResult {
@@ -114,6 +118,9 @@ export interface VerifyResult {
   rungs: GateRung[];
   acceptance?: AcceptanceResult;
   visual?: VisualVerdict;
+  interaction?: InteractionVerdict;
+  /** Which gates blocked, for machine consumers of the JSON output. */
+  blockedBy?: string[];
 }
 
 /** Core verify logic — pure-ish (no process.exit), so it is unit-testable. */
@@ -226,8 +233,57 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // notes for a game that had NO render loop at all. It also wastes a headless
   // browser pass plus a vision-model call on every failing turn.
   const ladderGreen = ladder.passed;
-  const visualSkippedForLadder = visualWanted && hasEntryPages && !ladderGreen;
-  if (visualWanted && hasEntryPages && ladderGreen) {
+
+  // ── Interaction gate ──────────────────────────────────────────────────────
+  // Between "it runs" and "it looks right": does it DO what it promised, under
+  // real input? Runs only once the ladder is green (driving a build that does
+  // not compile proves nothing) and BEFORE the visual/vision pass, because a
+  // vision judge grades a frame and a frozen frame is indistinguishable from a
+  // working one — a broken build can collect a passing aesthetic score, and the
+  // fix loop then chases palette notes instead of the defect. Observed live
+  // (octopus_invaders_v3, 2026-07-25): visual gate `passed: true` on a build
+  // whose render loop died three seconds in.
+  let interaction: InteractionVerdict | undefined;
+  // Excluded from --runtime-only for the same reason as the visual gate: that is
+  // the Stop hook's CHEAP path, run under a 120s kill, and driving a real
+  // browser through a probe suite is not cheap. Without this exclusion, merely
+  // having a manifest turns every session-end check into a browser run that the
+  // outer timeout kills mid-probe — skipping the teardown that reaps Chromium.
+  const interactionWanted =
+    opts.interaction !== false && (!opts.runtimeOnly || fidelity.max);
+  if (ladderGreen && interactionWanted && hasEntryPages) {
+    // Max fidelity runs every mode — including the soak probes that prove the
+    // artifact survives sustained use, which is where "playable for many levels"
+    // is actually decided.
+    interaction = await runInteractionGate(dir, {
+      ...(fidelity.max
+        ? { modes: ['core', 'accelerated', 'soak'] as ProbeMode[], strictCoverage: true }
+        : {}),
+      // Keep the whole gate inside the Stop hook's budget when max fidelity
+      // forces it onto the runtime-only path.
+      ...(opts.runtimeOnly ? { budgetMs: 60_000, probeTimeoutMs: 20_000 } : {}),
+    });
+  }
+  // Standard: a missing manifest / unavailable driver fails OPEN (advisory).
+  // Max: an artifact whose promised behaviour was never exercised is NOT
+  // verified, so the skip fails CLOSED.
+  //
+  // Tested on `skipped` DIRECTLY rather than on `!passed`: skipped verdicts
+  // carry passed:true, so the obvious `!passed && (max || !skipped)` spelling
+  // makes the max-fidelity clause unreachable and the gate silently fails open
+  // at exactly the fidelity where it is meant to be strictest.
+  const interactionBlocks = Boolean(
+    interaction && (interaction.skipped ? fidelity.max : !interaction.passed)
+  );
+  const interactionReport = interaction
+    ? `\n${interaction.passed && !interaction.skipped ? interactionSummary(interaction) : interaction.feedback}`
+    : '';
+
+  // A build that does not behave gets no aesthetic review: grading the pixels of
+  // a game that cannot be played sends the next turn after the wrong defect.
+  const interactionGreen = !interaction || interaction.passed || interaction.skipped;
+  const visualSkippedForLadder = visualWanted && hasEntryPages && (!ladderGreen || !interactionGreen);
+  if (visualWanted && hasEntryPages && ladderGreen && interactionGreen) {
     visual = await runVisualGate(dir);
   }
   // Standard: a no-browser SKIP fails open. Max: fail CLOSED — a project with
@@ -237,9 +293,15 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // Say plainly that rendering was NOT checked — silence here would read as
   // "the visuals are fine" on exactly the runs where nothing was observed.
   if (visualSkippedForLadder) {
-    visualReport +=
-      '\nvisual + aesthetic review SKIPPED — the build/run gates must pass first. ' +
-      'Fix the failing gate above; rendering is only judged once the artifact compiles and runs.';
+    // Name the ACTUAL cause. Telling an agent "the build/run gates must pass
+    // first" when the build compiled and ran fine, and it was the BEHAVIOUR that
+    // failed, points it at the wrong gate — the misdirected-feedback failure
+    // this whole subsystem exists to prevent.
+    visualReport += ladderGreen
+      ? '\nvisual + aesthetic review SKIPPED — the artifact does not yet behave as promised. ' +
+        'Fix the interaction failures above; how it looks is only judged once it works.'
+      : '\nvisual + aesthetic review SKIPPED — the build/run gates must pass first. ' +
+        'Fix the failing gate above; rendering is only judged once the artifact compiles and runs.';
   }
 
   // Visual regression baselines. --approve-visual pins the current look; otherwise
@@ -336,13 +398,19 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // (a broken-but-loading UI). Printing "VERIFIED ✓" then problems + exit 1 is
   // exactly how an agent mis-reads a failure as success and claims done.
   const blockedBy = [
+    interactionBlocks && 'promised behaviour under real input',
     visualBlocks && 'visual/behavioral render',
     visionBlocks && 'aesthetic score',
     baselineBlocks && 'visual regression',
     acceptanceBlocks && 'acceptance criteria',
   ].filter(Boolean) as string[];
   const overallPassed = ladder.passed && blockedBy.length === 0;
-  const report = formatReport(ladder, overallPassed, blockedBy) + untestedReport + visualReport + acceptanceReport;
+  const report =
+    formatReport(ladder, overallPassed, blockedBy) +
+    untestedReport +
+    interactionReport +
+    visualReport +
+    acceptanceReport;
   // Exit-code contract for the Stop hook: 0 = verified, 1 = a REAL gate failure
   // (the code is broken), 3 = INFRA failure (gate timed out / could not spawn /
   // killed by signal). The hook hard-blocks only on 1; 3 fails OPEN so a flaky
@@ -360,8 +428,17 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // visionBlocks (max fidelity, low aesthetic score) and baselineBlocks (visual
   // regression drift) gate the same way.
   if ((visualBlocks || visionBlocks || baselineBlocks) && exitCode === 0) exitCode = 1;
+  // A behavioural failure is a REAL failure — the artifact ran and did not do
+  // what it promised — so it gates like broken code rather than failing open.
+  if (interactionBlocks && exitCode === 0) exitCode = 1;
   return {
-    passed: ladder.passed && !acceptanceBlocks && !visualBlocks && !visionBlocks && !baselineBlocks,
+    passed:
+      ladder.passed &&
+      !acceptanceBlocks &&
+      !interactionBlocks &&
+      !visualBlocks &&
+      !visionBlocks &&
+      !baselineBlocks,
     exitCode,
     empty: false,
     report,
@@ -369,6 +446,8 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     rungs,
     acceptance,
     visual,
+    interaction,
+    blockedBy,
   };
 }
 
@@ -511,6 +590,11 @@ export async function verifyCommand(
           score: result.ladder?.score ?? null,
           results: result.ladder?.results ?? [],
           acceptance: result.acceptance ?? null,
+          // Without these a CI consumer sees `passed: false` and has nothing
+          // machine-readable saying which gate blocked or why.
+          interaction: result.interaction ?? null,
+          visual: result.visual ?? null,
+          blockedBy: result.blockedBy ?? [],
         },
         null,
         2
