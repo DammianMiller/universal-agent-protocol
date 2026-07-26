@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.172.0 (2026-07-26)
+
+- fix(vision): corroborate findings, and demote the aesthetic judge to advisory
+- fix(interaction): isolate probes, add aimAt, and stop three false verdicts
+
+
 ## v1.171.0 (2026-07-26)
 
 - feat(verify): interaction gate — prove promised behaviour under real input
