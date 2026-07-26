@@ -184,6 +184,46 @@ export interface RunProbeOptions {
 /** Marks a probe that blew its wall-clock bound rather than failing on merit. */
 export const PROBE_TIMEOUT_MARKER = 'probe exceeded its time budget';
 
+/** How many times each distinct error message has been seen so far. */
+export function countByMessage(errors: string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const e of errors) counts.set(e, (counts.get(e) ?? 0) + 1);
+  return counts;
+}
+
+/**
+ * Errors that are NEW since `before`, counting repeats.
+ *
+ * An error seen 3 times before and 5 times now contributes 2 occurrences —
+ * string-membership filtering would report none at all.
+ */
+export const MAX_ERROR_REPEATS = 5;
+
+export function newErrorsSince(
+  driver: Pick<InteractionDriver, 'errors'>,
+  before: Map<string, number>
+): string[] {
+  const current = driver.errors();
+  const now = countByMessage(current);
+  const total = (m: Map<string, number>): number => [...m.values()].reduce((a, b) => a + b, 0);
+  // The buffer SHRANK — something cleared it mid-probe. Every count is then
+  // below its baseline and `count - seen` goes negative, so a real error would
+  // be reported as "not new". Fall back to reporting what is actually there.
+  const cleared = total(now) < total(before);
+  const out: string[] = [];
+  for (const [msg, count] of now) {
+    const seen = cleared ? 0 : (before.get(msg) ?? 0);
+    // A per-frame error over a 20s soak yields ~1200 identical strings; the
+    // count is what attribution needs, not N copies of the message.
+    const fresh = Math.min(count - seen, MAX_ERROR_REPEATS);
+    for (let i = 0; i < fresh; i++) out.push(msg);
+    if (count - seen > MAX_ERROR_REPEATS) {
+      out.push(`${msg} (x${count - seen} occurrences)`);
+    }
+  }
+  return out;
+}
+
 class ProbeTimeout extends Error {}
 
 /**
@@ -246,7 +286,12 @@ export async function runProbe(
     };
   }
 
-  const errorsBefore = new Set(driver.errors());
+  // Attribute errors by COUNT, not by string membership. A deterministic error
+  // that fires every frame (or re-fires after each per-probe page reload) is
+  // identical to the first occurrence, so a Set-based filter attributed it only
+  // to the probe that saw it first and every later probe's `noErrors` assertion
+  // passed against a page that had just thrown.
+  const errorsBefore = countByMessage(driver.errors());
   const baselines = new Map<number, unknown>();
   const assertions: AssertionResult[] = [];
 
@@ -271,20 +316,57 @@ export async function runProbe(
       budget
     );
 
-    // Honour each time-based assertion's observation window even when the input
-    // finished sooner.
-    const longestWindow = probe.asserts.reduce(
-      (max, a) => (needsBaseline(a) ? Math.max(max, a.overMs) : max),
-      0
+    // Each time-based assertion is read at ITS OWN deadline, shortest first.
+    //
+    // Reading them all at the longest window meant a `changes overMs: 1000`
+    // assertion sharing a probe with `increases overMs: 20000` was sampled at
+    // 20s — so a transient change that reverts (a hit flash, a temporary state)
+    // read as unchanged and false-failed. Assertions with no window are read
+    // once at the end, as before.
+    // `overMs` is measured from PROBE START, because that is when the baseline
+    // was read — "changed within 1000ms" has to mean 1000ms from the value it is
+    // being compared against. A probe whose input runs longer than its window
+    // therefore samples immediately, which is correct: the window has already
+    // elapsed. (Observing a transient that both appears and reverts DURING a
+    // long input needs polling, not a deadline; noted as future work.)
+    const budgetLeft = Math.max(
+      0,
+      (probe.timeoutMs ?? opts.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS) - (Date.now() - started)
     );
-    const elapsed = Date.now() - started;
-    if (longestWindow > elapsed) await delay(longestWindow - elapsed);
+    const order = probe.asserts
+      .map((a, i) => ({
+        a,
+        i,
+        // Clamp to what is left of the probe budget: `overMs` comes from a
+        // model-authored manifest, and an unbounded sleep here is exactly the
+        // session wedge the step timeout exists to prevent.
+        at: needsBaseline(a) ? Math.min(a.overMs, budgetLeft) : Number.POSITIVE_INFINITY,
+      }))
+      // Explicit comparator: Infinity - Infinity is NaN, and relying on the
+      // sort spec coercing that to 0 is an accident rather than an intent.
+      .sort((x, y) => (x.at === y.at ? 0 : x.at < y.at ? -1 : 1));
 
-    const newErrors = driver.errors().filter((e) => !errorsBefore.has(e));
-    for (let i = 0; i < probe.asserts.length; i++) {
-      const a = probe.asserts[i];
+    const results = new Map<number, AssertionResult>();
+    // Flush whatever has been judged so far into `assertions`, so a throw
+    // part-way through does not discard every assertion already decided —
+    // the report would otherwise say "0/1 passed" with no detail at all.
+    const flush = (): void => {
+      assertions.length = 0;
+      for (let i = 0; i < probe.asserts.length; i++) {
+        const r = results.get(i);
+        if (r) assertions.push(r);
+      }
+    };
+    let newErrors: string[] = [];
+    for (const { a, i, at } of order) {
+      if (Number.isFinite(at)) {
+        const elapsed = Date.now() - started;
+        if (at > elapsed) await delay(at - elapsed);
+      }
+      newErrors = newErrorsSince(driver, errorsBefore);
       const read = a.expect === 'noErrors' ? { ok: true } : await readDetailed(a.expr);
-      assertions.push(
+      results.set(
+        i,
         judgeAssertion(a, i, {
           value: read.value,
           baseline: baselines.get(i),
@@ -292,7 +374,10 @@ export async function runProbe(
           ...(read.ok ? {} : { unresolved: read.error ?? 'expression did not resolve' }),
         })
       );
+      flush();
     }
+    // Errors thrown by the FINAL read land after the last in-loop snapshot.
+    newErrors = newErrorsSince(driver, errorsBefore);
 
     if (opts.evidencePath && driver.capture) await driver.capture(opts.evidencePath);
 
@@ -307,6 +392,7 @@ export async function runProbe(
     return {
       ...base,
       passed: false,
+      // `assertions` carries everything judged before the failure (see flush).
       assertions,
       errors: [`probe execution failed: ${String(e).slice(0, 300)}`],
       durationMs: Date.now() - started,

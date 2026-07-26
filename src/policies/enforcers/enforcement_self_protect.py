@@ -54,11 +54,102 @@ BYPASS_PATTERNS = (
     re.compile(r"UAP_USER_VALIDATION\s*=\s*['\"]?0", re.I),
 )
 # Destructive ops against the enforcer/policy surface.
-DESTRUCTIVE = re.compile(
-    r"\b(rm|unlink|shred|truncate|mv|chmod)\b[^\n|;&]*"
-    r"(\.policy-tools|src/policies|/policies/|anthropic-proxy\.env)",
-    re.I,
+#
+# HONEST SCOPE: this is a NUDGE, not a boundary. An agent that can write a file
+# and then run it (`Write tmp.sh` + `bash tmp.sh`), or use `python3 -c`, or hide
+# a path in a variable, walks straight past anything a regex over shell text can
+# see. What this catches is the naive, direct form — which is what was actually
+# observed in the wild. The real control is that a missing manifest FAILS under
+# max fidelity (see interaction-gate: skipped verdicts block when fidelity.max),
+# so deleting the acceptance criteria is not rewarded with a pass.
+#
+# Matched at COMMAND POSITION, never in prose: `echo "do not rm .uap/x"` is a
+# string, not a removal. This repo has already paid for that distinction once
+# (5e26c66, "gates must match commands, not prose that mentions them").
+DESTRUCTIVE_VERBS = (
+    "rm", "unlink", "shred", "truncate", "mv", "chmod", "chown", "chattr",
+    "dd", "cp", "tee", "install", "sed", "find", "ln",
 )
+
+# Paths inside a protected tree that the agent legitimately writes. Without
+# these the enforcer deadlocks the workflows it exists to support: the
+# expert-review gate REQUIRES writing .uap/reviews/<branch>.json, and the visual
+# and interaction gates write their own screenshots and evidence.
+PROTECTED_EXEMPT = (
+    ".uap/interaction/evidence",
+    "policies/waivers",
+)
+
+# Deliberately NARROW inside .uap/: that directory is mostly runtime state the
+# tooling writes constantly (verify-cadence, pending-deliver.jsonl, autoroute.log,
+# visual screenshots, deliver logs) — the repo's own hook templates do
+# `echo 0 > .uap/verify-cadence`. Guarding the whole tree would block the
+# project's own plumbing while adding nothing: what must survive is the
+# ACCEPTANCE CRITERIA and the project config, not the scratch state.
+PROTECTED_TARGETS = (
+    ".policy-tools",
+    "src/policies",
+    "policies/",
+    ".uap/interaction",
+    ".uap.json",
+    "anthropic-proxy.env",
+)
+
+_SEGMENT_SPLIT = re.compile(r"(?:\|\||&&|[;\n|&])")
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
+_QUOTES = str.maketrans("", "", "\"'")
+
+
+def _mentions_protected(text: str) -> bool:
+    """True when the text names a protected path and no exempt sub-path."""
+    low = text.translate(_QUOTES).lower()
+    # Normalise ./ and leading slashes so `./.uap`, `/.uap` and `.uap` agree.
+    low = low.replace("./", "/")
+    if any(ex in low for ex in PROTECTED_EXEMPT):
+        return False
+    # The .uap DIRECTORY ITSELF: `rm -rf .uap` / `find .uap -delete` destroy the
+    # manifest along with everything else, while `echo 0 > .uap/verify-cadence`
+    # names a deeper path and is ordinary tooling. So the bare directory is
+    # protected; a specific file under it is not (unless listed below).
+    for m in re.finditer(re.escape(".uap"), low):
+        if low[m.end():m.end() + 1] in ("", " ", '"', "'", "*"):
+            return True
+    for target in PROTECTED_TARGETS:
+        t = target.lower()
+        # Word-ish boundary so `.uap` matches `.uap`, `.uap/x` and `.uap.bak`
+        # but not an unrelated longer name like `.uapkeep`.
+        for m in re.finditer(re.escape(t), low):
+            tail = low[m.end():m.end() + 1]
+            if tail in ("", "/", ".", " ", '"', "'", "*"):
+                return True
+    return False
+
+
+def _bash_destructive(command: str) -> bool:
+    """Destructive op against a protected path, judged per command segment."""
+    for segment in _SEGMENT_SPLIT.split(command or ""):
+        seg = segment.strip()
+        if not seg:
+            continue
+        # A redirect writes just as destructively as `rm`; the target may be
+        # quoted, ./-prefixed, or fd-numbered (`1> .uap/x`).
+        for m in re.finditer(r">>?", seg):
+            if _mentions_protected(seg[m.end():]):
+                return True
+        tokens = [t for t in seg.split() if not _ENV_ASSIGN.match(t)]
+        if not tokens:
+            continue
+        verb = tokens[0].rsplit("/", 1)[-1].lower()
+        if verb == "git" and len(tokens) > 1:
+            verb = f"git {tokens[1].lower()}"
+            if verb not in ("git clean", "git checkout"):
+                continue
+        elif verb not in DESTRUCTIVE_VERBS:
+            continue
+        if _mentions_protected(" ".join(tokens[1:])):
+            return True
+    return False
+
 
 OVERRIDE = os.environ.get("UAP_SELF_PROTECT_OFF") == "1"
 
@@ -123,7 +214,7 @@ def main() -> None:
                     "`deliver` tool instead of disabling the gate. "
                     "(Operator-only override: UAP_SELF_PROTECT_OFF=1.)",
                 )
-        if DESTRUCTIVE.search(cmd):
+        if _bash_destructive(cmd):
             emit(
                 False,
                 "BLOCKED: modifying/removing the policy enforcers or proxy env is "

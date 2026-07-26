@@ -361,7 +361,7 @@ const START_KEYS = `(function () {
  * skip the risky keyboard fallback). */
 function probeLooksStarted(raw: string): boolean {
   try {
-    const p = JSON.parse(raw) as ProbeResult;
+    const p = JSON.parse(raw) as PixelProbeResult;
     return Boolean(p.readable) && (p.distinctColors ?? 0) >= MIN_DISTINCT_COLORS && (p.dominantRatio ?? 1) < MAX_DOMINANT_RATIO;
   } catch {
     return false;
@@ -418,7 +418,7 @@ export async function driveStartInteraction(
   return result;
 }
 
-interface ProbeResult {
+interface PixelProbeResult {
   canvas: boolean;
   readable?: boolean;
   cells?: string[];
@@ -630,7 +630,7 @@ export async function runVisualGate(
       // play state renders would pass with the menu never visible to the reviewer.
       let menuShot: string | null = null;
       let loaded = false;
-      let probes: ProbeResult[] = [];
+      let probes: PixelProbeResult[] = [];
       try {
         // startStaticServer's url includes its own entry path (/index.html);
         // navigate per page from the ORIGIN.
@@ -665,7 +665,7 @@ export async function runVisualGate(
             if (i > 0) await delay(intervalMs);
             try {
               const raw = await browser.evaluate<string>(PIXEL_PROBE);
-              probes.push(JSON.parse(raw) as ProbeResult);
+              probes.push(JSON.parse(raw) as PixelProbeResult);
             } catch {
               probes.push({ canvas: false });
             }
