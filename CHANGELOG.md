@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.1 (2026-07-26)
+
+- fix(interaction): deliver the six follow-ups, plus what review found in them
+
+
 ## v1.172.0 (2026-07-26)
 
 - fix(vision): corroborate findings, and demote the aesthetic judge to advisory
