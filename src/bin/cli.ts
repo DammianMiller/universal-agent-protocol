@@ -41,6 +41,7 @@ const lazy = {
   ideate: () => import('../cli/ideate.js').then((m) => m.ideateCommand),
   deliver: () => import('../cli/deliver.js').then((m) => m.deliverCommand),
   verify: () => import('../cli/verify.js').then((m) => m.verifyCommand),
+  interaction: () => import('../cli/interaction.js').then((m) => m.interactionCommand),
   orchestratorToggle: () => import('../cli/orchestrator-toggle.js').then((m) => m.orchestratorToggleCommand),
   handsfree: () => import('../cli/handsfree.js').then((m) => m.handsfreeCommand),
   proxy: () => import('../cli/proxy.js').then((m) => m.proxyCommand),
@@ -715,6 +716,7 @@ program
   .option('--acceptance <specfile>', 'Judge behavioral completeness against a spec file (LLM acceptance gate; --strict to gate on it)')
   .option('--acceptance-auto', 'DONE-gate mode: judge requirements-completeness against an auto-discovered spec (.uap/acceptance.md → REQUIREMENTS.md → the completion-ledger/TodoWrite plan); fails open if no spec/model, blocks under max/strict fidelity')
   .option('--no-visual', 'Skip the visual gate (renders entry pages headlessly, checks blank/static/errors, saves screenshots to .uap/visual)')
+  .option('--no-interaction', 'Skip the interaction gate (drives the artifact with real input and asserts its promised behaviour, before the visual pass)')
   .option('--approve-visual', 'Approve the current render as the visual regression baseline (.uap/visual/baseline) instead of gating on drift')
   .option('--user-paths', 'Run the user-path validation gate: execute .uap/user-paths.json journeys through the real client (headless browser / HTTP / built CLI)')
   .option('--user-paths-auto', 'Stop-hook mode: run the user-path gate only when delivery.userValidation is on and the last report is missing/stale/failed for the current tree')
@@ -739,6 +741,31 @@ program
       approveVisual: Boolean(options.approveVisual),
       userPaths: Boolean(options.userPaths),
       userPathsAuto: Boolean(options.userPathsAuto),
+      interaction: options.interaction,
+    });
+  });
+
+program
+  .command('interaction')
+  .description('Interaction gate: derive probes from the requirements and play the artifact through them')
+  .argument('[action]', 'mine | run | status (omit to show status)')
+  .option('-d, --dir <path>', 'Project directory (default: cwd)')
+  .option('--spec <file>', 'Requirements file to mine probes from (default: auto-discovered)')
+  .option('--modes <list>', 'Comma-separated probe modes to run: core,soak,accelerated (default: core)')
+  .option('--strict-coverage', 'Fail when a requirement has no probe')
+  .option('-m, --model <preset>', 'Model preset used to mine artifact-specific probes')
+  .option('--endpoint <url>', 'Override the model endpoint for mining')
+  .option('--json', 'Emit JSON')
+  .action(async (action, options) => {
+    const cmd = await lazy.interaction();
+    await cmd(action, {
+      dir: options.dir,
+      spec: options.spec,
+      modes: options.modes,
+      strictCoverage: Boolean(options.strictCoverage),
+      model: options.model,
+      endpoint: options.endpoint,
+      json: Boolean(options.json),
     });
   });
 

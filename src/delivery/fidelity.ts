@@ -29,6 +29,22 @@ export interface ResolvedFidelity {
   visionModel?: string;
   /** Minimum aesthetic score (0–10) to pass under max. */
   visionMinScore: number;
+  /**
+   * Whether a low aesthetic score can BLOCK, or is reported for a human.
+   *
+   * Default 'advisory'. Measured on a working build (octopus_invaders_v3,
+   * 2026-07-26): the judge scored a correct render 4/10 and all three of its
+   * findings were false against the very frame it graded — a background "with
+   * no stars or nebulae" (both plainly visible), a health bar "overflowing its
+   * container" (it read 100/100, and the fill is barW * healthPct, which cannot
+   * exceed barW), and misaligned HUD text (both strings drawn at y=40 in one
+   * font). Asked CHECKABLE questions about the same frame the same model
+   * answered correctly, so perception is fine and the list-shaped judging task
+   * is what fabricates. Corroboration removes most of it but not all, which
+   * makes the judge a useful reviewer and an unsound gate: acting on it edits
+   * correct code. Set 'block' to opt back in.
+   */
+  visionBlocking: 'advisory' | 'block';
   /** Keep/enforce visual regression baselines. */
   visualBaselines: boolean;
   /** Where the mode came from (for transparent reporting). */
@@ -67,6 +83,14 @@ export function resolveFidelity(cwd: string = process.cwd()): ResolvedFidelity {
     visionEndpoint,
     visionModel,
     visionMinScore: typeof cfg?.visionMinScore === 'number' ? cfg.visionMinScore : 6,
+    visionBlocking:
+      process.env.UAP_VISION_BLOCKING === 'block'
+        ? 'block'
+        : process.env.UAP_VISION_BLOCKING === 'advisory'
+          ? 'advisory'
+          : (cfg as { visionBlocking?: string } | undefined)?.visionBlocking === 'block'
+            ? 'block'
+            : 'advisory',
     visualBaselines: cfg?.visualBaselines !== false,
     source,
   };

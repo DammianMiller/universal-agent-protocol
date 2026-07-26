@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.172.0 (2026-07-26)
+
+- fix(vision): corroborate findings, and demote the aesthetic judge to advisory
+- fix(interaction): isolate probes, add aimAt, and stop three false verdicts
+
+
+## v1.171.0 (2026-07-26)
+
+- feat(verify): interaction gate — prove promised behaviour under real input
+- docs(proxy): sync PROXY_AUTH_TOKEN comment with X-Api-Key acceptance
+- chore: bump version to 1.170.1
+- fix(proxy): accept x-api-key as a shared-secret token source
+- fix(policies): gates must match commands, not prose that mentions them (#597)
+
+
 ## v1.170.1 (2026-07-24)
 
 - fix(proxy): accept x-api-key as a shared-secret token source
