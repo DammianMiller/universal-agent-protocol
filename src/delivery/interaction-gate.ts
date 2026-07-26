@@ -252,9 +252,16 @@ async function runGate(
       manifest,
       probes.filter((p) => ranIds.has(p.id))
     );
+    // Say WHICH artifact was driven. `findWebEntry` prefers the shallowest
+    // entry point, so a stray index.html left at the project root silently
+    // shadows the real deliverable in a subdirectory — the gate then reports
+    // confident failures about a page the author never meant to ship. Observed
+    // live: a runaway agent wrote a second copy of a game at the project root
+    // and every probe failed against it while the real build was fine.
     const verdict = judgeInteraction(manifest, results, ranCoverage, watchdog, {
       ...(options.strictCoverage ? { strictCoverage: true } : {}),
     });
+    verdict.feedback += `\nserved: ${webRoot ?? projectRoot}/${manifest.entry}`;
     if (resetProblems.length > 0) {
       verdict.feedback +=
         `\n⚠ ${resetProblems.length} probe(s) ran WITHOUT a clean reset, so they inherited the ` +
