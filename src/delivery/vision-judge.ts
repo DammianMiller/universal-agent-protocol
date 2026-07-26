@@ -236,6 +236,106 @@ export async function judgeScreenshots(
   }
 }
 
+/**
+ * Drop findings the model cannot substantiate from the image.
+ *
+ * Diagnosed live (octopus_invaders_v3, 2026-07-26): asked CHECKABLE questions
+ * about a frame, the model answered accurately — stars visible, nebula
+ * gradients present, HUD text read correctly, health bar "full". Asked for a
+ * `findings` ARRAY, the same model on the same frame then reported "no
+ * nebulae", "UI elements appear randomly placed" and a health bar overflowing
+ * its container. Perception was fine; the list-shaped task was not — a
+ * `findings: []` slot plus a "strict reviewer" persona gets filled whether or
+ * not defects exist, and single-frame input invites claims about animation and
+ * hit-feedback that one still frame cannot show.
+ *
+ * So each finding is put back to the model with the image and asked for the
+ * evidence. Anything it cannot point to is discarded rather than shipped as a
+ * defect for an agent to "fix" in working code.
+ */
+export async function corroborateFindings(
+  findings: string[],
+  screenshotPaths: string[],
+  fetchImpl?: typeof fetchModelWithRetry
+): Promise<{ kept: string[]; dropped: string[] }> {
+  const kept: string[] = [];
+  const dropped: string[] = [];
+  if (!visionJudgeConfigured() || findings.length === 0) {
+    return { kept: findings, dropped };
+  }
+  const endpoint = (process.env.UAP_VISION_ENDPOINT as string).replace(/\/$/, '');
+  const model = process.env.UAP_VISION_MODEL as string;
+  const doFetch = fetchImpl ?? fetchModelWithRetry;
+  const images = screenshotPaths.slice(0, MAX_IMAGES).map((p) => ({
+    type: 'image_url',
+    image_url: { url: `data:image/png;base64,${readFileSync(p).toString('base64')}` },
+  }));
+  for (const finding of findings.slice(0, MAX_FINDINGS)) {
+    try {
+      const res = await doFetch(`${endpoint}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.UAP_VISION_API_KEY ? { Authorization: `Bearer ${process.env.UAP_VISION_API_KEY}` } : {}),
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 220,
+          temperature: 0,
+          chat_template_kwargs: { enable_thinking: false },
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text:
+                    'A reviewer made this claim about the image:\n"' +
+                    finding.slice(0, 400) +
+                    '"\n\nYour job is to CHECK it, not to agree with it. Answer ONLY JSON: ' +
+                    '{"visible": <true|false>, "where": "<region of the image that shows it, or empty>"}\n' +
+                    'Answer false if the claim is about motion, animation, timing, or what happens ' +
+                    'when the user acts — a single still frame cannot show those. ' +
+                    'Answer false if it is a matter of taste rather than something visible. ' +
+                    'When in doubt, answer false.',
+                },
+                ...images,
+              ],
+            },
+          ],
+        }),
+      });
+      if (!res.ok) {
+        // Cannot check ⇒ cannot substantiate. Withhold rather than assert.
+        dropped.push(finding);
+        continue;
+      }
+      const data = (await res.json()) as {
+        choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
+      };
+      const raw = data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || '';
+      const start = raw.indexOf('{');
+      const end = raw.lastIndexOf('}');
+      let visible = false;
+      let where = '';
+      if (start >= 0 && end > start) {
+        try {
+          const j = JSON.parse(raw.slice(start, end + 1)) as { visible?: unknown; where?: unknown };
+          visible = j.visible === true;
+          where = typeof j.where === 'string' ? j.where : '';
+        } catch {
+          visible = false;
+        }
+      }
+      if (visible && where.trim()) kept.push(`${finding} [seen: ${where.trim().slice(0, 80)}]`);
+      else dropped.push(finding);
+    } catch {
+      dropped.push(finding);
+    }
+  }
+  return { kept, dropped };
+}
+
 /** One-line advisory summary for reports/evidence. */
 export function visionSummary(verdict: VisionVerdict | null): string | null {
   if (!verdict) return null;

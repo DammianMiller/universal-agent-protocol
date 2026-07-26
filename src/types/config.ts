@@ -454,6 +454,13 @@ export const FidelitySchema = z.object({
   visionEndpoint: z.string().optional(),
   /** Minimum aesthetic score (0–10) a UI must reach under `max` before it blocks. */
   visionMinScore: z.number().min(0).max(10).default(6),
+  /**
+   * Whether a low aesthetic score BLOCKS under `max`, or is reported only.
+   * Defaults to advisory: the judge has been measured returning confident
+   * findings that are false against the frame it graded, so it reviews rather
+   * than gates until it can substantiate what it reports.
+   */
+  visionBlocking: z.enum(['advisory', 'block']).default('advisory'),
   /** Keep approved screenshots as regression baselines and block on visual drift. */
   visualBaselines: z.boolean().default(true),
 });

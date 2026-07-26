@@ -103,6 +103,11 @@ export async function visionAcceptanceFeedback(
     if (screenshots.length === 0) return null;
     const fidelity = resolveFidelity(root);
     if (!fidelity.max) return null;
+    // Mirrors verify: the aesthetic judge only fails a turn when a project has
+    // opted back into blocking. Otherwise the loop would keep rejecting a
+    // working build over findings that are false against the frame graded —
+    // and the generator would burn turns "fixing" correct rendering code.
+    if (fidelity.visionBlocking !== 'block') return null;
     if (fidelity.visionEndpoint && !process.env.UAP_VISION_ENDPOINT) process.env.UAP_VISION_ENDPOINT = fidelity.visionEndpoint;
     if (fidelity.visionModel && !process.env.UAP_VISION_MODEL) process.env.UAP_VISION_MODEL = fidelity.visionModel;
     const vj = await import('./vision-judge.js');

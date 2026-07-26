@@ -343,9 +343,45 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
           opts.acceptanceSpec ?? 'A polished, working application UI.',
           readDesignContext(dir)
         );
+        // Corroborate before reporting: asked for a `findings` list the judge
+        // fills it whether or not defects exist, and a single still frame
+        // invites claims about animation and hit-feedback it cannot show. Each
+        // finding goes back with the image and is dropped unless the model can
+        // point to what shows it.
+        if (verdict && verdict.findings.length > 0) {
+          try {
+            const { corroborateFindings } = await import('../delivery/vision-judge.js');
+            const { kept, dropped } = await corroborateFindings(verdict.findings, shots);
+            verdict.findings = kept;
+            if (dropped.length > 0) {
+              visualReport += `\n(${dropped.length} vision finding(s) discarded — the model could not point to anything in the frame that shows them.)`;
+            }
+          } catch {
+            /* corroboration is best-effort; fall back to the raw findings */
+          }
+        }
         const summary = visionSummary(verdict);
         if (summary) visualReport += `\n${summary}`;
-        if (fidelity.max && verdict && verdict.score < fidelity.visionMinScore) {
+        // A low score that did NOT block must say so — silence here reads as
+        // "the look was approved" on exactly the runs where it was not.
+        if (
+          fidelity.max &&
+          fidelity.visionBlocking !== 'block' &&
+          verdict &&
+          verdict.score < fidelity.visionMinScore
+        ) {
+          visualReport +=
+            `\n⚠ aesthetic score ${verdict.score}/10 is below the ${fidelity.visionMinScore} threshold, ` +
+            `reported but NOT blocking (fidelity.visionBlocking = advisory). This judge has been measured ` +
+            `producing confident findings that are false against the frame it graded, so it reviews rather ` +
+            `than gates. Set fidelity.visionBlocking = "block" to make it gate again.`;
+        }
+        if (
+          fidelity.max &&
+          fidelity.visionBlocking === 'block' &&
+          verdict &&
+          verdict.score < fidelity.visionMinScore
+        ) {
           visionBlocks = true;
           visualReport += `\n✗ max fidelity: aesthetic score ${verdict.score}/10 is below the ${fidelity.visionMinScore} threshold.`;
           // Canvas apps score low most often because the render loop is gated on an
