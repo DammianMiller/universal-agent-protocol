@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.2 (2026-07-29)
+
+- fix(proxy): pin the mandated tool with 'required' + narrowing, not the OpenAI object form
+
+
 ## v1.172.1 (2026-07-26)
 
 - fix(interaction): deliver the six follow-ups, plus what review found in them
