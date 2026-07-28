@@ -18,7 +18,7 @@
 import { spawnSync } from 'child_process';
 import { createServer, type Server } from 'http';
 import { createReadStream, existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
-import { extname, join, resolve, sep } from 'path';
+import { extname, join, relative, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 import vm from 'vm';
 import type { GateRung } from './verifier-ladder.js';
@@ -275,6 +275,28 @@ export function detectArtifactType(projectRoot: string): ArtifactType | null {
 // loopback port and serves a single directory.
 // ---------------------------------------------------------------------------
 
+/** Path segments the gate server never serves, whatever the artifact asks for. */
+const DENIED_SEGMENTS = new Set(['node_modules', '.git', '.uap', '.worktrees']);
+
+/**
+ * True when a request path touches a dotfile or a dependency/VCS directory.
+ *
+ * Checked per SEGMENT so `/.uap/proxy.env`, `/x/../.env` and `/sub/.git/config`
+ * are all refused, while ordinary assets are unaffected.
+ */
+export function isDeniedPath(rel: string): boolean {
+  return rel
+    // Split on BOTH separators: on Windows `sub\\.git\\config` is one segment
+    // to a '/'-only split, matches neither rule, and then resolve() treats the
+    // backslashes as separators anyway.
+    .split(/[\\/]/)
+    .filter(Boolean)
+    // Lowercased: `node_modules` is the only entry not already covered by the
+    // dotfile rule, so a case-insensitive filesystem (macOS, Windows) serving
+    // `/NODE_MODULES/pkg/x` would be the entire gap.
+    .some((seg) => seg.startsWith('.') || DENIED_SEGMENTS.has(seg.toLowerCase()));
+}
+
 const MIME: Record<string, string> = {
   '.html': 'text/html',
   '.js': 'text/javascript',
@@ -316,6 +338,17 @@ export function startStaticServer(dir: string, entry = 'index.html'): Promise<{ 
             return;
           }
           const rel = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, '');
+          // Dotfile / dependency-tree denylist. The server roots at the PROJECT
+          // directory, so without this `/.uap/proxy.env` (this project's own
+          // convention for the proxy secret), `/.env` and `/.git/config` are all
+          // 200s on the SAME ORIGIN as the artifact — and the page's JavaScript
+          // is written by the model being graded, which can fetch and exfiltrate
+          // them. Nothing an artifact legitimately needs lives behind a dot.
+          if (isDeniedPath(rel)) {
+            response.statusCode = 403;
+            response.end('forbidden');
+            return;
+          }
           const target = resolve(rootReal, rel);
           // Lexical path-escape guard.
           if (target !== rootReal && !target.startsWith(rootReal + '/')) {
@@ -339,6 +372,16 @@ export function startStaticServer(dir: string, entry = 'index.html'): Promise<{ 
             return;
           }
           if (realTarget !== rootReal && !realTarget.startsWith(rootReal + '/')) {
+            response.statusCode = 403;
+            response.end('forbidden');
+            return;
+          }
+          // Re-apply the denylist to the RESOLVED path. Checking only the
+          // request path leaves the whole control bypassable by one symlink:
+          // `ln -s .uap/proxy.env notes.txt` inside the served root makes
+          // `/notes.txt` pass the request check, resolve to an in-tree
+          // protected file, and stream the secret to model-authored page JS.
+          if (isDeniedPath(relative(rootReal, realTarget))) {
             response.statusCode = 403;
             response.end('forbidden');
             return;
