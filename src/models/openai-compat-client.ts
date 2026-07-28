@@ -7,6 +7,9 @@
  * endpoints.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
 import { fetchModelWithRetry, modelHttpTimeoutMs } from './long-fetch.js';
 import type { ModelConfig } from './types.js';
 import type { ModelClient } from './executor.js';
@@ -85,7 +88,68 @@ export function resolveRequestCredential(
     return explicit;
   }
   // The local-proxy fallback: local endpoints only, regardless of scheme.
-  return isLocalEndpoint(url) ? process.env.PROXY_AUTH_TOKEN || undefined : undefined;
+  return isLocalEndpoint(url) ? process.env.PROXY_AUTH_TOKEN || proxyTokenFromFile() : undefined;
+}
+
+/**
+ * PROXY_AUTH_TOKEN recovered from `.uap/proxy.env`, for processes that were
+ * never handed it in their environment.
+ *
+ * Agent clients spawn UAP as a child process — most sharply the `uap-router`
+ * MCP server (`uap mcp-router start`) — and none of them source
+ * `.uap/proxy.env` first. The token the proxy requires was therefore absent
+ * from process.env, no Authorization header was attached, and every request
+ * came back 401. The user-visible symptom was the model reporting that "the
+ * uap-router_deliver tool failed due to an authentication error" and falling
+ * back to writing files by hand.
+ *
+ * The token lives in that file precisely because it is chmod 600 and
+ * gitignored. `.mcp.json` and `opencode.json` are tracked, so wiring it through
+ * an MCP `env` block would commit the secret.
+ *
+ * Read once and cached, misses included: this sits in the per-request path and
+ * re-statting on every call is pure syscall churn. Restart the process after
+ * rotating the token. Callers still gate this behind isLocalEndpoint(), so a
+ * token recovered here can only ever travel to the local proxy.
+ */
+let cachedProxyToken: string | undefined | null = null;
+
+function proxyTokenFromFile(): string | undefined {
+  if (cachedProxyToken !== null) return cachedProxyToken;
+  cachedProxyToken = undefined;
+  try {
+    let dir = process.cwd();
+    // Walk up: the MCP server's cwd is wherever the client launched it, which
+    // is often a subdirectory of the project rather than its root.
+    for (let depth = 0; depth < 12; depth++) {
+      const candidate = join(dir, '.uap', 'proxy.env');
+      if (existsSync(candidate)) {
+        for (const line of readFileSync(candidate, 'utf8').split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          // systemd EnvironmentFile semantics: KEY=<rest of line>. No shell
+          // word-splitting, and no quote handling beyond a wrapping pair.
+          const eq = trimmed.indexOf('=');
+          if (eq < 0 || trimmed.slice(0, eq).trim() !== 'PROXY_AUTH_TOKEN') continue;
+          const value = trimmed
+            .slice(eq + 1)
+            .trim()
+            .replace(/^(['"])([\s\S]*)\1$/, '$2');
+          if (value) cachedProxyToken = value;
+          break;
+        }
+        break;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    // An unreadable or malformed file is not a reason to fail the request. The
+    // caller proceeds unauthenticated and surfaces the proxy's own 401, which
+    // is a far clearer diagnostic than a crash inside credential resolution.
+  }
+  return cachedProxyToken;
 }
 
 import {
