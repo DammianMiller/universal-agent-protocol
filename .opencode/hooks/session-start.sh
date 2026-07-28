@@ -146,9 +146,27 @@ fi
 GIT_BRANCH=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "?")
 GIT_DIRTY=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 
+# .worktrees/ lives in the MAIN checkout, not in a linked worktree — so when the
+# session starts INSIDE a worktree (the normal case under the worktree policy),
+# PROJECT_DIR has no .worktrees/ and the count silently read 0. COORD_ROOT is
+# already resolved from git-common-dir, i.e. the main checkout; reuse it.
 WORKTREE_COUNT=0
-if [ -d "${PROJECT_DIR}/.worktrees" ]; then
-  WORKTREE_COUNT=$(find "${PROJECT_DIR}/.worktrees" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+if [ -d "${COORD_ROOT}/.worktrees" ]; then
+  WORKTREE_COUNT=$(find "${COORD_ROOT}/.worktrees" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+fi
+
+# Worktree drift advisory. A count of worktrees says nothing about whether any of
+# them still hold work — silent accumulation is exactly how parallel-agent work
+# gets lost. Measured here before this line existed: 151 worktrees, worst 1241
+# commits behind origin/master, 23 holding unmerged commits. Purely advisory and
+# time-boxed, so a slow git call can never delay session start.
+WORKTREE_DRIFT=""
+if [ "$WORKTREE_COUNT" -gt 0 ] && command -v uap >/dev/null 2>&1; then
+  if command -v timeout >/dev/null 2>&1; then
+    WORKTREE_DRIFT=$(cd "$COORD_ROOT" 2>/dev/null && timeout 15 uap worktree hygiene --brief 2>/dev/null || true)
+  else
+    WORKTREE_DRIFT=$(cd "$COORD_ROOT" 2>/dev/null && uap worktree hygiene --brief 2>/dev/null || true)
+  fi
 fi
 
 PATTERN_COUNT=0
@@ -200,6 +218,10 @@ output+="- Worktree gate: run uap worktree ensure --strict (or uap worktree crea
 output+="- Backup gate: copy files to .uap-backups/$(date +%Y-%m-%d)/ before modification."$'\n'
 output+="- Coordination: agent=${AGENT_ID}; announce work, check overlaps, complete announcement when done."$'\n'
 output+="- Validation: run relevant build/tests for changed code before finalizing."$'\n'
+if [ -n "$WORKTREE_DRIFT" ]; then
+  output+="- ${WORKTREE_DRIFT}"$'\n'
+  output+="- Freshness: branch from the fetched remote tip; \`uap worktree sync\` before editing a file that moved upstream."$'\n'
+fi
 output+=""$'\n'
 output+="</system-reminder>"$'\n\n'
 
@@ -248,6 +270,16 @@ if command -v uap >/dev/null 2>&1; then
   if [ -n "$resume_banner" ]; then
     output+=$'\n'"$resume_banner"$'\n'
   fi
+fi
+
+# Session-scoped proxy autostart (opt-in via .uap.json proxy.autostart). Starts
+# the proxy if none is running, or ADOPTS an already-running one, and brings the
+# operational dashboard up with it (http://localhost:3847 — opt out with
+# `uap proxy dashboard off`). Reference-counted: released only when the last
+# client leaves. Fail-open, never blocks.
+if command -v uap >/dev/null 2>&1; then
+  _uap_pc="${CLAUDE_SESSION_ID:-${FACTORY_SESSION_ID:-${CURSOR_SESSION_ID:-${UAP_SESSION_ID:-ppid-$PPID}}}}"
+  ( cd "$PROJECT_DIR" 2>/dev/null && timeout 30 uap proxy ensure --if-enabled --quiet --client "$_uap_pc" --client-pid "$PPID" ) >/dev/null 2>&1 || true
 fi
 
 if [ -n "$output" ]; then
