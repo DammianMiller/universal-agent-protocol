@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.10 (2026-07-29)
+
+- perf(inference): size the prompt cache to the measured working set (16 -> 32 GiB)
+
+
 ## v1.172.9 (2026-07-29)
 
 - fix(vision): bound the vision-model calls so verify cannot hang on a busy model
