@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.172.9 (2026-07-29)
+
+- fix(vision): bound the vision-model calls so verify cannot hang on a busy model
+- Revert "fix(test): budget the visual-gate test above the gates it actually runs"
+- fix(test): budget the visual-gate test above the gates it actually runs
+- fix(delivery,self-tuning): authenticate the proxy side-endpoint probes
+
+
 ## v1.172.8 (2026-07-29)
 
 - fix(models,test): find the proxy token from any project; stop vitest killing the execution gate
