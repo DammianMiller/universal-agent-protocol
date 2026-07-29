@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.7 (2026-07-29)
+
+- fix(policy): infra-protect also scans the body of scripts a command invokes
+
+
 ## v1.172.6 (2026-07-29)
 
 - fix(proxy,worktree): stale mandate flag on tool-less turns; base worktrees on the ahead ref
