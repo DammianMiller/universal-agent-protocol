@@ -93,6 +93,30 @@ export function resolveRequestCredential(
 }
 
 /**
+ * Auth headers for a bare `fetch` against the local proxy, or `{}`.
+ *
+ * The model calls go through resolveRequestCredential, but the proxy also serves
+ * side endpoints — `/v1/context`, `/props` — that helpers probe with a plain
+ * fetch and no headers. Those 401'd, and because every one of them is fail-soft
+ * the breakage was silent: context-window discovery quietly fell back to a
+ * preset instead of the live per-rail window, and the realtime adaptor saw no
+ * utilization at all and treated a full context as nominal. Nothing errored;
+ * the numbers were just wrong.
+ *
+ * Same credential and the same isLocalEndpoint() gate as every other caller, so
+ * a probe can never carry the token somewhere a model call would not.
+ * Non-throwing by design: a probe must degrade, never take down its caller.
+ */
+export function proxyAuthHeaders(url: string): Record<string, string> {
+  try {
+    const token = resolveRequestCredential({}, new URL(url));
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
  * PROXY_AUTH_TOKEN recovered from `.uap/proxy.env`, for processes that were
  * never handed it in their environment.
  *

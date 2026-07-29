@@ -17,6 +17,7 @@
  */
 
 import type { ModelConfig } from '../models/types.js';
+import { proxyAuthHeaders } from '../models/openai-compat-client.js';
 import { estimateTokens } from '../memory/context-compressor.js';
 
 /** Conservative fallback when neither env, config, nor preset provide a size. */
@@ -107,7 +108,7 @@ export async function discoverModelContextWindow(
       const t = setTimeout(() => ctl.abort(), timeoutMs);
       let res: Response;
       try {
-        res = await fetch(a.url, { signal: ctl.signal });
+        res = await fetch(a.url, { signal: ctl.signal, headers: proxyAuthHeaders(a.url) });
       } finally {
         clearTimeout(t);
       }
