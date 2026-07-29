@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.5 (2026-07-29)
+
+- fix(test): bind the dashboard tests to an OS-assigned port instead of a fixed one
+
+
 ## v1.172.4 (2026-07-29)
 
 - fix(proxy): the deliver mandate now outranks recon convergence
