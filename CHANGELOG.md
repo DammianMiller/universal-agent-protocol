@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.12 (2026-07-29)
+
+- fix(proxy): cancel the upstream generation when the caller hangs up mid-turn
+
+
 ## v1.172.11 (2026-07-29)
 
 - fix(proxy,deliver): abandon work when the session that ordered it is gone
