@@ -24,6 +24,7 @@ import {
 } from '../coordination/adaptation-signal.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
 import { FlagConfig, flagValue } from './flags.js';
+import { proxyAuthHeaders } from '../models/openai-compat-client.js';
 
 /** Live session signals (any subset). Absent fields are treated as nominal. */
 export interface SessionSignals {
@@ -168,7 +169,7 @@ export async function fetchSessionContext(
 ): Promise<Pick<SessionSignals, 'contextUtilization'>> {
   const base = (endpoint ?? process.env.UAP_INFERENCE_ENDPOINT ?? 'http://localhost:4000/v1').replace(/\/$/, '');
   try {
-    const res = await fetchImpl(`${base}/context`);
+    const res = await fetchImpl(`${base}/context`, { headers: proxyAuthHeaders(`${base}/context`) });
     if (!res.ok) return {};
     const data = (await res.json()) as { utilization?: number; used?: number; window?: number };
     let util = data.utilization;
