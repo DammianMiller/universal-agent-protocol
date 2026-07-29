@@ -1468,6 +1468,7 @@ class SessionMonitor:
     doubling_break_fires: int = 0  # monotonic count of injected pivot directives
     last_doubling_obs: str = ""  # msg-count:fingerprint key of the last counted observation
     mandate_deliver_fires: int = 0  # monotonic count of forced deliver-routings (mandate)
+    mandate_deliver_active: bool = False  # THIS turn is pinned to deliver (beats recon convergence)
     tool_starvation_streak: int = 0  # Consecutive forced turns with no tool_calls produced
     last_request_msg_count: int = 0  # Message count of the previous request (compaction-boundary detection)
     malformed_tool_streak: int = 0  # consecutive malformed pseudo tool payloads
@@ -5251,6 +5252,13 @@ def _maybe_inject_deferral_break(openai_body: dict, monitor: "SessionMonitor") -
 PROXY_MANDATE_DELIVER = os.environ.get("PROXY_MANDATE_DELIVER", "on").lower() not in {
     "0", "off", "false", "no",
 }
+# Precedence: when the mandate pins a turn to deliver, recon convergence must not
+# undo it. Both guards run on the same turn and both rewrite tools/tool_choice, so
+# without this the later one (recon) silently wins. Off => the old ordering, where
+# recon can release the pin mid-mandate.
+PROXY_MANDATE_BEATS_RECON = os.environ.get(
+    "PROXY_MANDATE_BEATS_RECON", "on"
+).lower() not in {"0", "off", "false", "no"}
 # Enforcer-block-SPECIFIC phrases only (src/policies/enforcers/delivery_enforcement.py).
 # Deliberately NOT matching the reactor's STANDING "route through deliver" guidance
 # (which is injected every turn) -- only the actual block event must trigger.
@@ -5318,6 +5326,47 @@ def _assistant_already_called_deliver(messages, deliver_name: str) -> bool:
     return False
 
 
+def _pin_tool_choice_to(openai_body: dict, tool_name: str) -> bool:
+    """Constrain this turn to calling exactly `tool_name`. Returns True if pinned.
+
+    The obvious encoding -- OpenAI's `{"type": "function", "function": {"name":
+    ...}}` -- does NOT work against llama.cpp. Its server reads the field as a
+    STRING (`json_value(body, "tool_choice", std::string("auto"))`) and accepts
+    only auto | none | required via common_chat_tool_choice_parse_oaicompat().
+    Handed an object it logs
+
+        Wrong type supplied for parameter 'tool_choice'. Expected 'string',
+        using default value
+
+    and falls back to "auto" -- so every "pin" silently became "the model may do
+    whatever it likes". That is how a blocked source edit could be answered with
+    "I will proceed by manually creating the files": the mandate was never a
+    constraint, only the directive text asking nicely.
+
+    Express the same intent in the vocabulary llama.cpp actually has: demand SOME
+    tool call, and narrow the advertised tools to just this one, so the only call
+    that satisfies the demand is the intended one. "required" is equally valid
+    OpenAI, so this stays correct against a non-llama.cpp upstream.
+
+    Narrowing is skipped if the tool is not present in `tools` -- sending
+    "required" with the tool absent would force a call the model cannot make.
+    """
+    tools = openai_body.get("tools")
+    if not isinstance(tools, list):
+        return False
+    wanted = str(tool_name).lower()
+    pinned = [
+        t for t in tools
+        if isinstance(t, dict)
+        and str((t.get("function") or {}).get("name") or "").lower() == wanted
+    ]
+    if not pinned:
+        return False
+    openai_body["tools"] = pinned
+    openai_body["tool_choice"] = "required"
+    return True
+
+
 def _maybe_inject_mandate_deliver(openai_body: dict, monitor: "SessionMonitor") -> None:
     """MANDATORY deliver-routing: when a direct source edit was just blocked by
     delivery-enforcement, force the next turn to call the `deliver` tool for ANY
@@ -5333,7 +5382,13 @@ def _maybe_inject_mandate_deliver(openai_body: dict, monitor: "SessionMonitor") 
         return
     if _assistant_already_called_deliver(messages, deliver_name):
         return  # deliver is already in flight -- don't loop on it
-    openai_body["tool_choice"] = {"type": "function", "function": {"name": deliver_name}}
+    if not _pin_tool_choice_to(openai_body, deliver_name):
+        # Could not actually constrain the turn (deliver absent from `tools`).
+        # Don't claim a mandate that isn't real: recording one here would
+        # suppress recon convergence while leaving the model free to hand-edit,
+        # which is strictly worse than letting recon do its job.
+        return
+    monitor.mandate_deliver_active = True
     monitor.mandate_deliver_fires += 1
     directive = (
         "\n\nMANDATORY: your direct source edit was BLOCKED by delivery-enforcement. "
@@ -5418,6 +5473,31 @@ def _maybe_inject_recon_convergence(
     tells the model to use, leaving the directive impossible to satisfy.
     """
     if PROXY_RECON_CONVERGENCE_THRESHOLD <= 0:
+        return
+    # PRECEDENCE: the deliver mandate outranks recon convergence.
+    #
+    # Both run on the same turn (mandate first), and both rewrite tools/
+    # tool_choice, so the later one wins by default -- which made the mandate's
+    # own "runs before the softer guards so the pin stands" untrue. Until
+    # v1.172.2 that was invisible: the pin was encoded in a form llama.cpp
+    # ignored, so it had nothing to override.
+    #
+    # The mandate is the more specific and more recent signal: a source edit was
+    # just BLOCKED and the only correct next action is a deliver call. Recon
+    # exists to break a read-forever deadlock -- which cannot occur while the
+    # mandate holds, because the pin leaves exactly one advertised tool under
+    # tool_choice="required", so the model is constrained to call deliver rather
+    # than read again. Letting recon win instead released that constraint and
+    # handed back the freedom to keep hand-editing.
+    #
+    # Escape hatch if this ever wedges: PROXY_MANDATE_BEATS_RECON=off.
+    if PROXY_MANDATE_BEATS_RECON and getattr(monitor, "mandate_deliver_active", False):
+        logger.info(
+            "RECON CONVERGENCE: suppressed -- deliver mandate owns this turn "
+            "(no_write_streak=%d, mandate_fires=%d).",
+            monitor.consecutive_no_write_turns,
+            monitor.mandate_deliver_fires,
+        )
         return
     streak = monitor.consecutive_no_write_turns
     if streak < PROXY_RECON_CONVERGENCE_THRESHOLD:
@@ -5888,6 +5968,10 @@ def build_openai_request(
             last_user_has_tool_result,
         )
         monitor.finalize_turn_active = False
+        # Per-turn, like finalize_turn_active. The mandate re-decides every turn
+        # from the current messages, so a stale True must never leak forward and
+        # suppress recon convergence on a turn the mandate did not actually fire.
+        monitor.mandate_deliver_active = False
         monitor.update_completion_state(anthropic_body, has_tool_results)
         state_choice, state_reason = _resolve_state_machine_tool_choice(
             anthropic_body,
