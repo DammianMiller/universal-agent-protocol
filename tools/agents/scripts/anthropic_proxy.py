@@ -5372,6 +5372,19 @@ def _maybe_inject_mandate_deliver(openai_body: dict, monitor: "SessionMonitor") 
     delivery-enforcement, force the next turn to call the `deliver` tool for ANY
     model. Pins tool_choice to the deliver tool + injects a terse directive.
     Runs before the softer guards so the pin stands. PROXY_MANDATE_DELIVER=off."""
+    # Decide the per-turn flag HERE, unconditionally, before any early return.
+    #
+    # It previously lived beside finalize_turn_active in build_openai_request --
+    # which sits inside `if has_tools:`, while this function and
+    # _maybe_inject_recon_convergence are both called unconditionally. On a
+    # TOOL-LESS turn the reset was therefore skipped, this function returned
+    # early (no deliver tool to find), and recon read a stale True from an
+    # earlier turn and suppressed itself. Owning the flag here makes it
+    # impossible to leave stale: the one function that can set it True is the
+    # same one that always clears it first, on every turn, whatever the caller
+    # does. The clear precedes the PROXY_MANDATE_DELIVER check deliberately, so
+    # disabling the mandate can never strand a True either.
+    monitor.mandate_deliver_active = False
     if not PROXY_MANDATE_DELIVER:
         return
     deliver_name = _deliver_tool_name(openai_body.get("tools"))
@@ -5968,10 +5981,6 @@ def build_openai_request(
             last_user_has_tool_result,
         )
         monitor.finalize_turn_active = False
-        # Per-turn, like finalize_turn_active. The mandate re-decides every turn
-        # from the current messages, so a stale True must never leak forward and
-        # suppress recon convergence on a turn the mandate did not actually fire.
-        monitor.mandate_deliver_active = False
         monitor.update_completion_state(anthropic_body, has_tool_results)
         state_choice, state_reason = _resolve_state_machine_tool_choice(
             anthropic_body,

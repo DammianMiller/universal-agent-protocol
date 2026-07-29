@@ -479,7 +479,7 @@ export async function resolveIntegrationRef(git: SimpleGit): Promise<string> {
  * Falls back to the local branch when there is no reachable remote, so this
  * still works offline and in never-pushed repos.
  */
-async function resolveFreshBase(
+export async function resolveFreshBase(
   git: SimpleGit,
   opts: { noFetch?: boolean; spinner?: { text: string } } = {}
 ): Promise<string> {
@@ -490,6 +490,35 @@ async function resolveFreshBase(
   }
   try {
     await git.revparse([`refs/remotes/origin/${defaultBranch}`]);
+    // Basing on the remote tip fixes "local is BEHIND origin", but the mirror
+    // case is just as real: local `master` carrying merges that have not been
+    // pushed yet. Basing on origin then puts the worktree BEHIND local work --
+    // observed here as a fresh worktree that re-bumped an already-taken version
+    // and failed on `tag already exists`, because the bump it should have
+    // inherited lived only in the unpushed local branch.
+    //
+    // Pick whichever ref is further ahead: if origin/<default> is an ancestor of
+    // local <default>, local already contains everything the remote has (and
+    // possibly more), so it is the strictly better base. Otherwise the remote is
+    // ahead or the two have diverged, and origin stays the safer choice.
+    // Count commits the remote has that local does not. Zero => local already
+    // contains origin, so local is the better (equal-or-ahead) base.
+    //
+    // Deliberately NOT `merge-base --is-ancestor`: simple-git's raw() resolves
+    // with an empty string on that command's exit-1 rather than rejecting, so a
+    // try/catch around it never fires and every case reads as "ancestor". This
+    // asks for a number on stdout instead, which cannot be misread.
+    try {
+      const behind = (
+        await git.raw([
+          'rev-list', '--count',
+          `${defaultBranch}..refs/remotes/origin/${defaultBranch}`,
+        ])
+      ).trim();
+      if (behind === '0') return defaultBranch;
+    } catch {
+      // Local branch missing / unresolvable range: fall through to the remote.
+    }
     return `origin/${defaultBranch}`;
   } catch {
     // No remote-tracking ref (offline first-run, local-only repo): use the local
