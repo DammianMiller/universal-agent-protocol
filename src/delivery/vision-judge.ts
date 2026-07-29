@@ -131,6 +131,28 @@ export function readDesignContext(projectRoot: string): string {
 }
 
 /**
+ * Hard bound on a single vision-model call.
+ *
+ * The autodetect probes were time-boxed (2s) but the calls that actually matter
+ * — judgeScreenshots and corroborateFindings, which upload PNGs — were awaited
+ * unbounded. A vision model that is merely BUSY (another agent session holding
+ * the slots) therefore stalls the caller indefinitely: `uap verify --visual`
+ * never returns, and under --fidelity max, where the vision review is BLOCKING,
+ * a deliver run wedges on it. Measured: the same verify that returns in 13s
+ * against an unreachable endpoint ran past 150s against the live busy model.
+ *
+ * Image inference is legitimately slow, so this is generous — it exists to make
+ * the wait FINITE, not short. AbortSignal actually cancels the request rather
+ * than merely letting the caller move on, so a timed-out judge leaves no
+ * in-flight upload behind. Both callers already treat a null verdict as "no
+ * vision review", so a timeout degrades to advisory-silence by construction.
+ */
+export const VISION_CALL_TIMEOUT_MS = Math.max(
+  5_000,
+  Number(process.env.UAP_VISION_TIMEOUT_MS) || 120_000
+);
+
+/**
  * Score screenshots against the spec with the configured vision model.
  * `designContext` (see readDesignContext) makes the review judge adherence to
  * the project's design system, not just generic polish. Returns null when
@@ -206,6 +228,7 @@ export async function judgeScreenshots(
           'Content-Type': 'application/json',
           ...(process.env.UAP_VISION_API_KEY ? { Authorization: `Bearer ${process.env.UAP_VISION_API_KEY}` } : {}),
         },
+        signal: AbortSignal.timeout(VISION_CALL_TIMEOUT_MS),
         body: JSON.stringify(body),
       });
       if (!res.ok) return null;
@@ -278,6 +301,7 @@ export async function corroborateFindings(
           'Content-Type': 'application/json',
           ...(process.env.UAP_VISION_API_KEY ? { Authorization: `Bearer ${process.env.UAP_VISION_API_KEY}` } : {}),
         },
+        signal: AbortSignal.timeout(VISION_CALL_TIMEOUT_MS),
         body: JSON.stringify({
           model,
           max_tokens: 220,

@@ -103,10 +103,27 @@ describe('runVerify', () => {
 
 describe('gate ORDER: build/run first, visual only after they pass', () => {
   let dir: string;
+  let savedVisionEndpoint: string | undefined;
+
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'verify-order-'));
+    // These cases assert gate ORDER, not vision quality — but runVerify(visual)
+    // ends by sending screenshots to a vision model, so on a machine that HAS a
+    // local one the test's runtime becomes a function of how busy that model is.
+    // That is how it hung: an agent session was holding the slots, and the call
+    // (unbounded until VISION_CALL_TIMEOUT_MS) outlived every budget we gave the
+    // test. CI has no local model, so it fails fast there and the suite looked
+    // green. Pin the endpoint somewhere closed so the vision step is fast and
+    // identical everywhere; the invariant under test does not involve it.
+    savedVisionEndpoint = process.env.UAP_VISION_ENDPOINT;
+    process.env.UAP_VISION_ENDPOINT = 'http://127.0.0.1:9/v1';
   });
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    if (savedVisionEndpoint === undefined) delete process.env.UAP_VISION_ENDPOINT;
+    else process.env.UAP_VISION_ENDPOINT = savedVisionEndpoint;
+  });
 
   it('SKIPS the visual + aesthetic review when the run gate fails, and says so', async () => {
     // Pixels of an artifact that does not RUN are not evidence. Worse, the
