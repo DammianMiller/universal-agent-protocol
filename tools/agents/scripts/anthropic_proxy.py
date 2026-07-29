@@ -5318,6 +5318,47 @@ def _assistant_already_called_deliver(messages, deliver_name: str) -> bool:
     return False
 
 
+def _pin_tool_choice_to(openai_body: dict, tool_name: str) -> bool:
+    """Constrain this turn to calling exactly `tool_name`. Returns True if pinned.
+
+    The obvious encoding -- OpenAI's `{"type": "function", "function": {"name":
+    ...}}` -- does NOT work against llama.cpp. Its server reads the field as a
+    STRING (`json_value(body, "tool_choice", std::string("auto"))`) and accepts
+    only auto | none | required via common_chat_tool_choice_parse_oaicompat().
+    Handed an object it logs
+
+        Wrong type supplied for parameter 'tool_choice'. Expected 'string',
+        using default value
+
+    and falls back to "auto" -- so every "pin" silently became "the model may do
+    whatever it likes". That is how a blocked source edit could be answered with
+    "I will proceed by manually creating the files": the mandate was never a
+    constraint, only the directive text asking nicely.
+
+    Express the same intent in the vocabulary llama.cpp actually has: demand SOME
+    tool call, and narrow the advertised tools to just this one, so the only call
+    that satisfies the demand is the intended one. "required" is equally valid
+    OpenAI, so this stays correct against a non-llama.cpp upstream.
+
+    Narrowing is skipped if the tool is not present in `tools` -- sending
+    "required" with the tool absent would force a call the model cannot make.
+    """
+    tools = openai_body.get("tools")
+    if not isinstance(tools, list):
+        return False
+    wanted = str(tool_name).lower()
+    pinned = [
+        t for t in tools
+        if isinstance(t, dict)
+        and str((t.get("function") or {}).get("name") or "").lower() == wanted
+    ]
+    if not pinned:
+        return False
+    openai_body["tools"] = pinned
+    openai_body["tool_choice"] = "required"
+    return True
+
+
 def _maybe_inject_mandate_deliver(openai_body: dict, monitor: "SessionMonitor") -> None:
     """MANDATORY deliver-routing: when a direct source edit was just blocked by
     delivery-enforcement, force the next turn to call the `deliver` tool for ANY
@@ -5333,7 +5374,7 @@ def _maybe_inject_mandate_deliver(openai_body: dict, monitor: "SessionMonitor") 
         return
     if _assistant_already_called_deliver(messages, deliver_name):
         return  # deliver is already in flight -- don't loop on it
-    openai_body["tool_choice"] = {"type": "function", "function": {"name": deliver_name}}
+    _pin_tool_choice_to(openai_body, deliver_name)
     monitor.mandate_deliver_fires += 1
     directive = (
         "\n\nMANDATORY: your direct source edit was BLOCKED by delivery-enforcement. "

@@ -31,6 +31,36 @@ if printf '%s\n' "$CMD" | grep -qE '^\s*</?(tool_call|tool_response|parameter(=[
   exit 2
 fi
 
+# ─── Inference-Infrastructure Protection ────────────────────────
+# Observed live (qwen, 2026-07-12): during playtest loops the model ran
+# `pkill -9 -f python3` (killed the UAP anthropic proxy) and
+# `kill $(lsof -t -i:8080)` (killed llama-server to free the port for its
+# own http.server). systemd restarts recover, but each kill = full model
+# reload + slot-cache loss. Block kills that can only hit the stack the
+# model itself runs on; killing a SPECIFIC process pattern (e.g.
+# `pkill -f "python3 -m http.server"`) stays allowed.
+INFRA_MSG="BLOCKED [infra-protect]: This command can kill the inference stack you are running on (llama-server :8080 / UAP proxy :4000 / embeddings :8081). Kill only your own processes by SPECIFIC pattern (e.g. pkill -f 'python3 -m http.server 8765') and serve on a port other than 8080/4000/8081."
+# 1) Bare-interpreter pkill/killall (pattern matches EVERY python/node proc)
+if echo "$CMD" | grep -qE "\b(pkill|killall)\b(\s+-[A-Za-z0-9-]+)*\s+([\"'](python[0-9.]*|node|bun|deno)[\"']|(python[0-9.]*|node|bun|deno)([[:space:]]|;|\||&|$))"; then
+  echo "$INFRA_MSG" >&2
+  exit 2
+fi
+# 2) Kill aimed at the inference services by name
+if echo "$CMD" | grep -qE "\b(pkill|kill|killall)\b[^|;&]*(llama-server|anthropic_proxy|nomic)"; then
+  echo "$INFRA_MSG" >&2
+  exit 2
+fi
+# 3) Kill by critical port (lsof/fuser on 8080/4000/8081)
+if echo "$CMD" | grep -qE "\bkill\b[^|;&]*lsof[^|;&]*-i[: ]*(8080|4000|8081)\b|\bfuser\s+(-[A-Za-z]+\s+)*-?k[^|;&]*(8080|4000|8081)/tcp"; then
+  echo "$INFRA_MSG" >&2
+  exit 2
+fi
+# 4) Stopping/restarting the inference services via systemctl
+if echo "$CMD" | grep -qE "systemctl\s+(--user\s+)?(stop|restart|kill|disable)\s+\S*(uap-llama-server|uap-anthropic-proxy|nomic-embeddings)"; then
+  echo "$INFRA_MSG" >&2
+  exit 2
+fi
+
 # ─── IaC Pipeline Enforcement ───────────────────────────────────
 # Block local terraform apply/destroy (policies/iac-pipeline-enforcement.md)
 # Allow: terraform fmt, validate, init, plan, output, show, state list, graph
