@@ -38,6 +38,7 @@ import { runAcceptanceGate } from '../delivery/acceptance-judge.js';
 import { buildMissionAcceptanceGate, resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createSpecRegistry } from '../delivery/spec-registry.js';
 import type { AcceptanceGate } from '../delivery/convergence-loop.js';
+import { guardAgainstOwnerExit } from '../delivery/orphan-guard.js';
 
 /**
  * Decide how deliver establishes its convergence target when (or whether) the
@@ -645,6 +646,12 @@ export function acquireDeliverLock(projectRoot: string): (() => void) | null {
 }
 
 export async function deliverCommand(instruction: string, options: DeliverOptions): Promise<void> {
+  // Stop if the session that ordered this run exits. Detaching (below) is
+  // deliberate — a mission must outlive the agent's bash tool call — but it must
+  // not outlive the SESSION: orphaned runs held both model slots for over an
+  // hour on 2026-07-29. No-op unless a detached child inherited an owner pid.
+  guardAgainstOwnerExit();
+
   // A mission must outlive the tool call that started it. An agent's bash tool
   // is a short-lived, process-group-killed container; a model that runs
   // `uap deliver` from it was spawning a long mission inside a short one, and

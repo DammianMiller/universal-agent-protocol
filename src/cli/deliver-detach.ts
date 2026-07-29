@@ -29,6 +29,7 @@
 import { spawn } from 'child_process';
 import { createWriteStream, existsSync, mkdirSync, openSync, statSync, createReadStream } from 'fs';
 import { join } from 'path';
+import { OWNER_PID_ENV, resolveOwnerPid } from '../delivery/orphan-guard.js';
 
 /** Set on the detached child so it never re-detaches (infinite recursion). */
 export const DETACH_ENV = 'UAP_DELIVER_DETACHED';
@@ -80,11 +81,20 @@ export async function relaunchDetached(projectRoot: string, stamp: string): Prom
   // Touch it so the tail below always has something to open.
   createWriteStream(logPath, { flags: 'a' }).end();
 
+  const ownerPid = resolveOwnerPid();
   const fd = openSync(logPath, 'a');
   const child = spawn(process.argv[0], process.argv.slice(1), {
     detached: true, // setsid: new session AND new process group — out of reach of a pgroup kill
     stdio: ['ignore', fd, fd], // a FILE, never a pipe the wrapper could break
-    env: { ...process.env, [DETACH_ENV]: '1' },
+    // Resolve the OWNING session here, in the parent, while the ancestor chain
+    // is still intact — after the detach this process exits and the child is
+    // re-parented, losing any way to find who ordered the work. The child uses
+    // it to stop when that session goes; undefined simply means no guard.
+    env: {
+      ...process.env,
+      [DETACH_ENV]: '1',
+      ...(ownerPid ? { [OWNER_PID_ENV]: String(ownerPid) } : {}),
+    },
     cwd: process.cwd(),
   });
   child.unref();
