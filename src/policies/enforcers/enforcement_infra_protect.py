@@ -98,6 +98,48 @@ REASON = (
 )
 
 
+# Scripts invoked by the command, e.g. `bash deploy.sh`, `sh ./x.sh`, `./x.sh`,
+# `source x.sh`. Every rule above reads the command TEXT, so moving a
+# service-restart of the inference stack one level down -- into a file -- slipped
+# past all of them. Not theoretical: it was used during this project's own
+# sessions to cycle the stack while the gate reported nothing to block.
+_SCRIPT_INVOCATION_RE = re.compile(
+    r"(?:^|[|;&]|\bsudo\b|\benv\b\s)\s*"
+    r"(?:(?:ba|z|k|da)?sh\s+|source\s+|\.\s+)?"
+    r"((?:\./|/|~/|\.\./)[^\s;|&<>()'\"]+|[\w./-]+\.(?:sh|bash|zsh))"
+)
+# Only small local files are worth reading; the cap keeps this off the hot path.
+_MAX_SCRIPT_BYTES = 256 * 1024
+
+
+def _referenced_script_bodies(cmd: str, limit: int = 4) -> list[tuple[str, str]]:
+    """(path, contents) for scripts this command would execute.
+
+    Best-effort and deliberately shallow: one level, at most `limit` files, and
+    any read error is skipped. A miss must degrade to today's behaviour
+    (text-only scanning), never to an exception that takes the whole gate down.
+    """
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for m in _SCRIPT_INVOCATION_RE.finditer(cmd):
+        raw = m.group(1)
+        if raw in seen:
+            continue
+        seen.add(raw)
+        try:
+            p = Path(raw).expanduser()
+            if not p.is_absolute():
+                p = Path.cwd() / p
+            if not p.is_file() or p.stat().st_size > _MAX_SCRIPT_BYTES:
+                continue
+            found.append((str(p), p.read_text(errors="replace")))
+        except Exception:  # noqa: BLE001 - unreadable/oddly-named file: skip it
+            continue
+        if len(found) >= limit:
+            break
+    return found
+
+
 def main() -> None:
     operation, args = parse_cli()
     if operation not in BASH_OPS:
@@ -108,6 +150,11 @@ def main() -> None:
     for rule in RULES:
         if rule.search(cmd):
             emit(False, REASON)
+    # Same rules, applied to the body of any script the command would run.
+    for path, body in _referenced_script_bodies(cmd):
+        for rule in RULES:
+            if rule.search(body):
+                emit(False, f"{REASON} (matched inside the invoked script {path})")
     emit(True, "no infra-destructive pattern")
 
 
