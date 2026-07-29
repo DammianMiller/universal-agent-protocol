@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.8 (2026-07-29)
+
+- fix(models,test): find the proxy token from any project; stop vitest killing the execution gate
+
+
 ## v1.172.7 (2026-07-29)
 
 - fix(policy): infra-protect also scans the body of scripts a command invokes
