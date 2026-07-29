@@ -3358,6 +3358,55 @@ async def _post_with_retry(
         _release_upstream_slot()
 
 
+# How often to re-check the caller while an upstream generation is in flight.
+PROXY_DISCONNECT_POLL_SECS = max(
+    0.5, float(os.environ.get("PROXY_DISCONNECT_POLL_SECS", "2"))
+)
+
+
+async def _post_watching_client(
+    client: httpx.AsyncClient, url: str, payload: dict, headers: dict
+) -> httpx.Response:
+    """POST upstream, cancelling it if the caller hangs up mid-generation.
+
+    Checking only BEFORE each upstream call stops the retry loops, but does
+    nothing for a generation already in flight: a single turn is one POST, so
+    there is no next call to block and the model runs to completion — up to
+    PROXY_TOOL_TURN_MAX_TOKENS (32k, ~13 minutes here) for a client that has
+    already gone. This closes that.
+
+    Cancelling the httpx task closes the upstream connection, and llama.cpp
+    releases the slot when its client disappears — verified directly against the
+    running server: slots went 2 -> 0 within 15s of closing the socket. So this
+    genuinely frees the GPU rather than merely letting the proxy stop waiting.
+
+    No probe (background task, tests) means no watching: plain await, unchanged.
+    """
+    probe = _current_client_gone.get()
+    if probe is None:
+        return await client.post(url, json=payload, headers=headers)
+
+    post_task = asyncio.ensure_future(client.post(url, json=payload, headers=headers))
+    try:
+        while True:
+            done, _pending = await asyncio.wait(
+                {post_task}, timeout=PROXY_DISCONNECT_POLL_SECS
+            )
+            if post_task in done:
+                return post_task.result()
+            if await _client_gone():
+                post_task.cancel()
+                try:
+                    await post_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass  # cancellation is the point; the connection is closed
+                raise ClientGoneError("client disconnected mid-generation")
+    finally:
+        # Never leave the upstream call running after we stop waiting on it.
+        if not post_task.done():
+            post_task.cancel()
+
+
 async def _post_with_retry_inner(
     client: httpx.AsyncClient,
     url: str,
@@ -3369,7 +3418,7 @@ async def _post_with_retry_inner(
         try:
             _inflight_inc(client)
             try:
-                resp = await client.post(url, json=payload, headers=headers)
+                resp = await _post_watching_client(client, url, payload, headers)
             finally:
                 _inflight_dec(client)
             # Cycle 19 Option 1: if 503 "Loading model", wait for health then retry
