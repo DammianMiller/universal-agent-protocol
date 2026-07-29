@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.172.3 (2026-07-29)
+
+- fix(test): resolve tsx by walking up, so the suite (and version bumps) work in worktrees
+- fix(models): recover PROXY_AUTH_TOKEN from .uap/proxy.env so MCP-spawned UAP can authenticate
+- perf(inference): Gemma ctx 262144 as 2 x 131072 slots
+- perf(inference): partition ctx into 130k slots on both profiles; port Qwen to upstream binary
+- perf(inference): move Gemma 26B to upstream llama.cpp, drop MTP, take full 262144 ctx
+- fix(inference): correct Gemma 26B profile to the flags and VRAM this box actually has
+- feat(inference): Gemma 4 26B-A4B MoE profile with MTP speculative decoding
+
+
 ## v1.172.2 (2026-07-29)
 
 - fix(proxy): pin the mandated tool with 'required' + narrowing, not the OpenAI object form
