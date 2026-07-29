@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.13 (2026-07-29)
+
+- fix(proxy): make the disconnect check a choke point instead of a per-call claim
+
+
 ## v1.172.12 (2026-07-29)
 
 - fix(proxy): cancel the upstream generation when the caller hangs up mid-turn
