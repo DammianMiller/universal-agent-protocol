@@ -46,7 +46,11 @@ class MandateDeliverTest(unittest.TestCase):
             {"role": "tool", "content": BLOCK_MSG},
         ], tools=[DELIVER_TOOL])
         proxy._maybe_inject_mandate_deliver(b, self.mon)
-        self.assertEqual(b["tool_choice"], {"type": "function", "function": {"name": "deliver"}})
+        # "required" + a one-tool list, NOT the OpenAI object form: llama.cpp
+        # parses tool_choice as a string and silently falls back to "auto" when
+        # handed an object, which un-pinned every mandate.
+        self.assertEqual(b["tool_choice"], "required")
+        self.assertEqual([t["function"]["name"] for t in b["tools"]], ["deliver"])
         self.assertEqual(self.mon.mandate_deliver_fires, 1)
         self.assertTrue(any("MANDATORY" in (m.get("content") or "") for m in b["messages"]))
 
@@ -79,7 +83,36 @@ class MandateDeliverTest(unittest.TestCase):
         mcp_deliver = {"type": "function", "function": {"name": "mcp__uap-router__deliver", "parameters": {}}}
         b = _body([{"role": "tool", "content": BLOCK_MSG}], tools=[mcp_deliver])
         proxy._maybe_inject_mandate_deliver(b, self.mon)
-        self.assertEqual(b["tool_choice"], {"type": "function", "function": {"name": "mcp__uap-router__deliver"}})
+        self.assertEqual(b["tool_choice"], "required")
+        self.assertEqual(
+            [t["function"]["name"] for t in b["tools"]], ["mcp__uap-router__deliver"]
+        )
+
+    def test_pin_narrows_tools_to_the_single_mandated_tool(self):
+        """The pin must REMOVE the other tools. 'required' only means "some
+        tool", so leaving `read` advertised would let the model satisfy the
+        mandate by reading a file instead of delivering."""
+        b = _body([{"role": "tool", "content": BLOCK_MSG}], tools=[READ_TOOL, DELIVER_TOOL])
+        proxy._maybe_inject_mandate_deliver(b, self.mon)
+        self.assertEqual(b["tool_choice"], "required")
+        self.assertEqual([t["function"]["name"] for t in b["tools"]], ["deliver"])
+
+    def test_tool_choice_is_never_an_object(self):
+        """Regression guard for the llama.cpp string-only parser. An object here
+        is not a hard error upstream -- it degrades to "auto" with only a log
+        line -- so nothing downstream would have caught the regression."""
+        b = _body([{"role": "tool", "content": BLOCK_MSG}], tools=[DELIVER_TOOL])
+        proxy._maybe_inject_mandate_deliver(b, self.mon)
+        self.assertIsInstance(b["tool_choice"], str)
+        self.assertIn(b["tool_choice"], {"auto", "none", "required"})
+
+    def test_pin_is_a_noop_when_the_named_tool_is_absent(self):
+        """Forcing "required" while the mandated tool is missing would demand a
+        call the model cannot make. _pin_tool_choice_to must decline instead."""
+        b = _body([{"role": "user", "content": "hi"}], tools=[READ_TOOL], tool_choice="auto")
+        self.assertFalse(proxy._pin_tool_choice_to(b, "deliver"))
+        self.assertEqual(b["tool_choice"], "auto")
+        self.assertEqual([t["function"]["name"] for t in b["tools"]], ["read"])
 
     def test_disabled_by_env(self):
         old = os.environ.get("PROXY_MANDATE_DELIVER")

@@ -83,7 +83,19 @@ fi
 
 if [[ "$LLAMA_ENABLE_SPEC_DECODING" == "true" ]]; then
   if [[ -n "${LLAMA_DRAFT_MODEL:-}" && -f "${LLAMA_DRAFT_MODEL}" ]]; then
-    # Draft model speculation (separate small model for drafting)
+    # Draft model speculation (separate small model for drafting).
+    #
+    # --spec-type selects HOW the draft model is consumed and is NOT implied by
+    # --model-draft. A trained MTP head (gemma4-assistant arch) is only valid
+    # under `draft-mtp`; passing it without the flag leaves the server on its
+    # default draft strategy and the head is either ignored or misread. Emit
+    # any explicit draft-* type here so the profile's LLAMA_SPEC_TYPE is
+    # honoured. `none`/empty keeps the previous behaviour (flag omitted), and
+    # ngram-* types are meaningless in the draft-model branch, so they are
+    # left to the self-speculation branch below.
+    if [[ "${LLAMA_SPEC_TYPE:-}" == draft-* ]]; then
+      args+=(--spec-type "$LLAMA_SPEC_TYPE")
+    fi
     args+=(
       --model-draft "$LLAMA_DRAFT_MODEL"
       --gpu-layers-draft "${LLAMA_DRAFT_GPU_LAYERS:-99}"

@@ -59,13 +59,18 @@ export const UAPSessionHooks: Plugin = async ({ client, $ }) => {
           // NOT --strict: strict turns "no runnable artifact" (a nothing-to-run
           // project) into a hard RC-1 failure and would false-alarm on every
           // fresh/empty install. Non-strict returns 1 only on a real runtime failure.
+          // User-path gate (P3): --user-paths-auto re-proves the critical user
+          // journeys when the last report is missing/stale/failed for this tree.
+          // Version-skew guard: only pass the flag when this uap build knows it.
+          const uvHelp = await $`uap verify --help`.quiet().nothrow()
+          const uvAuto = uvHelp.stdout.toString().indexOf("user-paths-auto") >= 0 ? "--user-paths-auto" : ""
           const res = tmo
-            ? await $`${tmo} 120 uap verify --runtime-only`.quiet().nothrow()
-            : await $`uap verify --runtime-only`.quiet().nothrow()
+            ? await $`${tmo} 240 uap verify --runtime-only ${uvAuto}`.quiet().nothrow()
+            : await $`uap verify --runtime-only ${uvAuto}`.quiet().nothrow()
           if (res.exitCode === 1) {
             const msg = (res.stdout.toString() + res.stderr.toString()).trim()
-            console.error("[UAP] RUNTIME EXECUTION GATE FAILED — the code does not run:\n" + msg)
-            if (output && output.context) output.context.push("<uap-context>RUNTIME GATE FAILED — the code does not run. Fix before finishing:\n" + msg + "</uap-context>")
+            console.error("[UAP] RUNTIME/USER-PATH GATE FAILED:\n" + msg)
+            if (output && output.context) output.context.push("<uap-context>RUNTIME/USER-PATH GATE FAILED — the code does not run or does not work for a real user. Fix before finishing:\n" + msg + "</uap-context>")
           }
         } catch { /* fail open */ }
       }
@@ -83,6 +88,76 @@ export const UAPSessionHooks: Plugin = async ({ client, $ }) => {
         }
       } catch (e) {
         if (e instanceof Error && e.message.indexOf("[UAP policy blocked]") === 0) throw e
+      }
+
+      // COMPLETION GATE: OpenCode cannot hard-block session end, but it CAN
+      // block a tool call — so gate the DONE signal. When the agent marks all
+      // its todos complete, run the full validation gates and REFUSE (throw)
+      // if the delivered outcome does not pass, forcing it to keep fixing
+      // instead of falsely claiming ready. Only blocks on a real gate failure
+      // (verify exit 1); infra/unknown fails OPEN. UAP_VERIFY_ON_STOP=0 opts out.
+      try {
+        if (input.tool === "todowrite" && process.env.UAP_VERIFY_ON_STOP !== "0") {
+          const todos = (output && output.args && output.args.todos) || []
+          const claimsDone = Array.isArray(todos) && todos.length > 0 && todos.every((t) => t && t.status === "completed")
+          if (claimsDone) {
+            const ch = await $`git diff --name-only HEAD`.quiet().nothrow()
+            const un = await $`git ls-files --others --exclude-standard`.quiet().nothrow()
+            const changed = ch.stdout.toString() + un.stdout.toString()
+            if (/\.(ts|tsx|js|jsx|mjs|cjs|html|css|py|go|rs|vue|svelte)$/m.test(changed)) {
+              const uvHelp = await $`uap verify --help`.quiet().nothrow()
+              const uvAuto = uvHelp.stdout.toString().indexOf("user-paths-auto") >= 0 ? "--user-paths-auto" : ""
+              // --acceptance-auto: judge requirements-completeness against the
+              // agents own plan of record (.uap/acceptance.md → REQUIREMENTS.md →
+              // the completion ledger). Fails open with no spec/model; blocks
+              // under max/strict fidelity. This is the DONE claim, so the heavier
+              // LLM judge belongs here (not on the per-edit periodic path).
+              const res2 = await $`uap verify ${uvAuto} --acceptance-auto`.quiet().nothrow()
+              if (res2.exitCode === 1) {
+                const msg = (res2.stdout.toString() + res2.stderr.toString()).trim().slice(0, 2500)
+                throw new Error("[UAP not done] Validation FAILED — you are NOT done. The outcome does not pass the gates (testing / visual / behavioral). Do NOT mark these todos complete. Fix the failures below, then let validation re-run:\n" + msg)
+              }
+            }
+          }
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.indexOf("[UAP not done]") === 0) throw e
+        /* verify infra / git error → fail OPEN (never wedge on tooling) */
+      }
+
+      // PERIODIC VALIDATION (independent of a clean todowrite-complete): the
+      // completion gate above only fires when ALL todos are marked completed.
+      // A weak local model that stops mid-plan, leaves todos in_progress, or
+      // never calls todowrite would escape validation entirely — and small
+      // edits take the trivial fast-path, so nothing routes to deliver either.
+      // So on a cadence (every N code edits) run verify and hard-inject
+      // [UAP not done] on a real runtime failure, catching a broken build even
+      // with no done signal. --runtime-only returns 1 only on a genuine runtime
+      // failure (never on a fresh/empty state). UAP_VERIFY_EVERY_N_EDITS=0 opts out.
+      try {
+        const nEvery = parseInt(process.env.UAP_VERIFY_EVERY_N_EDITS || "12", 10)
+        const isEdit = ["edit", "write", "multiedit"].includes(String(input.tool).toLowerCase())
+        const fp = String((output && output.args && (output.args.file_path || output.args.filePath || output.args.path)) || "")
+        if (nEvery > 0 && isEdit && process.env.UAP_VERIFY_ON_STOP !== "0" && /\.(ts|tsx|js|jsx|mjs|cjs|html|css|py|go|rs|vue|svelte)$/.test(fp)) {
+          const rd = await $`cat .uap/verify-cadence 2>/dev/null || echo 0`.quiet().nothrow()
+          let n = parseInt(rd.stdout.toString().trim() || "0", 10); if (!Number.isFinite(n)) n = 0
+          n = n + 1
+          if (n >= nEvery) {
+            await $`mkdir -p .uap && echo 0 > .uap/verify-cadence`.quiet().nothrow()
+            const uvHelp = await $`uap verify --help`.quiet().nothrow()
+            const uvAuto = uvHelp.stdout.toString().indexOf("user-paths-auto") >= 0 ? "--user-paths-auto" : ""
+            const res3 = await $`uap verify --runtime-only ${uvAuto}`.quiet().nothrow()
+            if (res3.exitCode === 1) {
+              const msg = (res3.stdout.toString() + res3.stderr.toString()).trim().slice(0, 2000)
+              throw new Error("[UAP not done] Periodic validation FAILED after " + nEvery + " edits — the current build does not pass the runtime gates. Fix these before continuing (validation re-runs automatically):\n" + msg)
+            }
+          } else {
+            await $`mkdir -p .uap && echo ${n} > .uap/verify-cadence`.quiet().nothrow()
+          }
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.indexOf("[UAP not done]") === 0) throw e
+        /* verify infra / io error → fail OPEN */
       }
     },
 
