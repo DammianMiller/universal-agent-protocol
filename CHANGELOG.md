@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.4 (2026-07-29)
+
+- fix(proxy): the deliver mandate now outranks recon convergence
+
+
 ## v1.172.3 (2026-07-29)
 
 - fix(test): resolve tsx by walking up, so the suite (and version bumps) work in worktrees
