@@ -2766,7 +2766,7 @@ def _detach_aclose(closeable) -> None:
 
 def _build_http_client() -> httpx.AsyncClient:
     """Upstream client factory — used at startup AND by pool self-healing."""
-    c = httpx.AsyncClient(
+    c = DisconnectAwareClient(
         timeout=httpx.Timeout(
             connect=10.0,  # 10s to establish connection
             read=PROXY_READ_TIMEOUT,  # configurable (default 10 min)
@@ -3364,47 +3364,50 @@ PROXY_DISCONNECT_POLL_SECS = max(
 )
 
 
-async def _post_watching_client(
-    client: httpx.AsyncClient, url: str, payload: dict, headers: dict
-) -> httpx.Response:
-    """POST upstream, cancelling it if the caller hangs up mid-generation.
+class DisconnectAwareClient(httpx.AsyncClient):
+    """An httpx client that abandons a call when the caller hangs up.
 
-    Checking only BEFORE each upstream call stops the retry loops, but does
-    nothing for a generation already in flight: a single turn is one POST, so
-    there is no next call to block and the model runs to completion — up to
-    PROXY_TOOL_TURN_MAX_TOKENS (32k, ~13 minutes here) for a client that has
-    already gone. This closes that.
+    THE CHOKE POINT. The previous attempt guarded ONE call site and claimed to
+    cover them all; there are fourteen, and the guardrail loops that caused the
+    incident call the model directly rather than through _post_with_retry. So
+    the check belongs where it cannot be missed: every high-level httpx method —
+    post(), stream(), request() — funnels through send(), so overriding send()
+    covers all of them, including any added later.
 
-    Cancelling the httpx task closes the upstream connection, and llama.cpp
-    releases the slot when its client disappears — verified directly against the
-    running server: slots went 2 -> 0 within 15s of closing the socket. So this
-    genuinely frees the GPU rather than merely letting the proxy stop waiting.
+    Cancelling matters rather than merely returning: closing the connection is
+    what makes llama.cpp release the slot (verified against the running server —
+    slots went 2 -> 0 within 15s of a raw socket close). Returning early without
+    cancelling would leave the model generating exactly as before.
 
-    No probe (background task, tests) means no watching: plain await, unchanged.
+    No probe (background task, health check, tests) means a plain send,
+    unwatched. Streaming sends are covered for their header phase; a body being
+    written to a vanished client fails on write anyway.
     """
-    probe = _current_client_gone.get()
-    if probe is None:
-        return await client.post(url, json=payload, headers=headers)
 
-    post_task = asyncio.ensure_future(client.post(url, json=payload, headers=headers))
-    try:
-        while True:
-            done, _pending = await asyncio.wait(
-                {post_task}, timeout=PROXY_DISCONNECT_POLL_SECS
-            )
-            if post_task in done:
-                return post_task.result()
-            if await _client_gone():
-                post_task.cancel()
-                try:
-                    await post_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass  # cancellation is the point; the connection is closed
-                raise ClientGoneError("client disconnected mid-generation")
-    finally:
-        # Never leave the upstream call running after we stop waiting on it.
-        if not post_task.done():
-            post_task.cancel()
+    async def send(self, request, **kwargs):  # type: ignore[override]
+        probe = _current_client_gone.get()
+        if probe is None:
+            return await super().send(request, **kwargs)
+
+        task = asyncio.ensure_future(super().send(request, **kwargs))
+        try:
+            while True:
+                done, _pending = await asyncio.wait(
+                    {task}, timeout=PROXY_DISCONNECT_POLL_SECS
+                )
+                if task in done:
+                    return task.result()
+                if await _client_gone():
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass  # cancellation is the point; the connection is closed
+                    raise ClientGoneError("client disconnected mid-generation")
+        finally:
+            # Never leave an upstream call running once we stop waiting on it.
+            if not task.done():
+                task.cancel()
 
 
 async def _post_with_retry_inner(
@@ -3418,7 +3421,7 @@ async def _post_with_retry_inner(
         try:
             _inflight_inc(client)
             try:
-                resp = await _post_watching_client(client, url, payload, headers)
+                resp = await client.post(url, json=payload, headers=headers)
             finally:
                 _inflight_dec(client)
             # Cycle 19 Option 1: if 503 "Loading model", wait for health then retry
@@ -3495,7 +3498,7 @@ async def _check_slot_hang(slot_url: str) -> bool:
     if PROXY_SLOT_HANG_TIMEOUT <= 0:
         return False
     try:
-        async with httpx.AsyncClient() as check_client:
+        async with DisconnectAwareClient() as check_client:
             resp = await check_client.get(slot_url, timeout=5.0)
             if resp.status_code != 200:
                 return False
