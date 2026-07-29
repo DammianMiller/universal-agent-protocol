@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.6 (2026-07-29)
+
+- fix(proxy,worktree): stale mandate flag on tool-less turns; base worktrees on the ahead ref
+
+
 ## v1.172.5 (2026-07-29)
 
 - fix(test): bind the dashboard tests to an OS-assigned port instead of a fixed one

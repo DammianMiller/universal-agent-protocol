@@ -101,6 +101,35 @@ class MandateBeatsReconTest(unittest.TestCase):
         proxy._maybe_inject_recon_convergence(body, mon, [READ_TOOL, GREP_TOOL])
         self.assertGreater(mon.recon_hard_fires, before)
 
+    def test_flag_is_cleared_on_a_TOOL_LESS_turn(self):
+        """Regression: the reset used to live beside finalize_turn_active in
+        build_openai_request, which sits inside `if has_tools:` -- while both
+        _maybe_inject_mandate_deliver and _maybe_inject_recon_convergence are
+        called unconditionally. A tool-less turn therefore skipped the reset,
+        the mandate returned early (no deliver tool to find), and recon read a
+        stale True from an earlier turn and suppressed itself.
+
+        The mandate now owns the flag and clears it on every turn, so this
+        sequence -- mandate turn, then a turn with no tools at all -- must leave
+        it False.
+        """
+        mon = proxy.SessionMonitor()
+        proxy._maybe_inject_mandate_deliver(_blocked_body([DELIVER_TOOL]), mon)
+        self.assertTrue(mon.mandate_deliver_active)
+
+        proxy._maybe_inject_mandate_deliver({"messages": [{"role": "user", "content": "hi"}]}, mon)
+        self.assertFalse(mon.mandate_deliver_active)
+
+    def test_flag_is_cleared_even_when_the_mandate_is_disabled(self):
+        """The clear precedes the PROXY_MANDATE_DELIVER check, so turning the
+        mandate off cannot strand a True set while it was on."""
+        mod = _load_proxy({"PROXY_MANDATE_DELIVER": "off"})
+        self.assertFalse(mod.PROXY_MANDATE_DELIVER)
+        mon = mod.SessionMonitor()
+        mon.mandate_deliver_active = True  # as if set on a previous turn
+        mod._maybe_inject_mandate_deliver(_blocked_body([DELIVER_TOOL]), mon)
+        self.assertFalse(mon.mandate_deliver_active)
+
     def test_flag_is_per_turn_not_sticky(self):
         """A stale True would suppress recon forever after one mandate. The
         request builder clears it each turn; assert the field is not latched by
