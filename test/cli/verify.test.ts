@@ -140,15 +140,7 @@ describe('gate ORDER: build/run first, visual only after they pass', () => {
     // This is the one case that reaches a REAL headless browser (the run gate
     // passes, so the visual gate actually launches). That exceeds the suite's
     // 15s default when 280+ files compete for CPU — a load artifact, not a hang.
-    //
-    // The budget must clear the sum of the internal timeouts this path may
-    // legitimately spend, not merely "more than 15s": runVerify(visual) runs the
-    // execution gate (DEFAULT_TIMEOUT_MS 60s) and only then the visual gate
-    // (DEFAULT_TIMEOUT_MS 30s). At 60s the test could be killed while both gates
-    // were still inside their own budgets — unwinnable under load, which is
-    // exactly how it failed here at load average 3.5. 150s clears 60+30 with
-    // room, and leaves the gates as the components that decide to give up.
-    150_000
+    60000
   );
 
   it('does not mention the visual skip for a project with NO visual output', async () => {
