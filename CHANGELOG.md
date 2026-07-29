@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.11 (2026-07-29)
+
+- fix(proxy,deliver): abandon work when the session that ordered it is gone
+
+
 ## v1.172.10 (2026-07-29)
 
 - perf(inference): size the prompt cache to the measured working set (16 -> 32 GiB)

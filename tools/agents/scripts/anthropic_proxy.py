@@ -83,6 +83,7 @@ Dependencies
 
 import asyncio
 import contextvars
+from typing import Awaitable, Callable
 import copy
 import hashlib
 import json
@@ -2958,6 +2959,47 @@ _current_request_session: contextvars.ContextVar[str | None] = contextvars.Conte
     "uap_current_request_session", default=None
 )
 
+# Is the DOWNSTREAM client still there?
+#
+# Nothing used to ask. Once a turn was accepted, the guardrail loops kept
+# retrying and re-POSTing upstream on their own — so when the client died the
+# work carried on regardless. Observed live: two `uap deliver` runs were killed,
+# no socket remained on :4000, and the proxy still drove llama for minutes,
+# generating 32k tokens per orphaned turn that nobody would ever read. Only a
+# proxy restart stopped it.
+#
+# Same ContextVar trick as the session above: request-local without threading a
+# Request through every signature. Holds Starlette's `request.is_disconnected`.
+_current_client_gone: contextvars.ContextVar[
+    Callable[[], Awaitable[bool]] | None
+] = contextvars.ContextVar("uap_current_client_gone", default=None)
+
+
+class ClientGoneError(Exception):
+    """The downstream client disconnected; abandon the turn.
+
+    Raised instead of returning a value so the whole in-flight chain unwinds at
+    once — every guardrail loop, retry and recovery step above it stops without
+    each needing its own check. Caught at the handler boundary and answered with
+    a status nobody reads, since by definition there is no one left to read it.
+    """
+
+
+async def _client_gone() -> bool:
+    """True when the caller has hung up. Never raises, never blocks meaningfully.
+
+    A disconnect check that can itself fail or stall would be worse than no
+    check: it sits in front of every upstream call. Any error means "assume the
+    client is still there" — the pre-existing behaviour.
+    """
+    probe = _current_client_gone.get()
+    if probe is None:
+        return False
+    try:
+        return bool(await probe())
+    except Exception:  # noqa: BLE001
+        return False
+
 # Session admission state. _admitted_sessions maps session_id -> last-seen
 # monotonic ts; OrderedDict insertion order is the LRU (oldest = front).
 # Guarded by _admission_cond's lock (created lazily on the running event loop).
@@ -3289,6 +3331,12 @@ async def _post_with_retry(
     # don't evict each other's KV (sticky, released by idle-TTL). No-op when
     # PROXY_SESSION_ADMISSION is off. Runs BEFORE the per-request semaphore so a
     # queued new session waits without holding a concurrency slot.
+    # Every upstream call funnels through here, so one check covers all of them:
+    # the guardrail retry loop, the completion-contract retries, recovery passes.
+    # Placed BEFORE admission and the slot acquire so a dead client never takes a
+    # concurrency slot away from a live one, and never queues behind one either.
+    if await _client_gone():
+        raise ClientGoneError("client disconnected before upstream call")
     await _ensure_session_admitted(_current_request_session.get())
     acquired = await _acquire_upstream_slot()
     if not acquired:
@@ -3541,6 +3589,23 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+@app.exception_handler(ClientGoneError)
+async def _client_gone_handler(request: Request, exc: ClientGoneError):
+    """The caller hung up mid-turn: stop, and say so at INFO rather than ERROR.
+
+    499 is nginx's "client closed request" — chosen because no standard code
+    means this and the body goes nowhere anyway; what matters is that the log
+    line reads as an abandoned turn rather than a proxy fault, so this does not
+    masquerade as an incident when someone kills an agent run.
+    """
+    logger.info(
+        "CLIENT GONE: abandoned %s mid-turn (session=%s) — no further upstream calls",
+        request.url.path,
+        (_current_request_session.get() or "?")[:24],
+    )
+    return Response(status_code=499)
+
 
 @app.exception_handler(httpx.PoolTimeout)
 async def _pool_timeout_handler(request: Request, exc: httpx.PoolTimeout):
@@ -10791,6 +10856,10 @@ async def messages(request: Request):
     """
     global last_session_id
 
+    # Publish this request's disconnect probe for the whole call tree. Set before
+    # ANY upstream work so an already-dead client is caught on the first call.
+    _current_client_gone.set(request.is_disconnected)
+
     body = await request.json()
     is_stream = body.get("stream", False)
     model = body.get("model", "default")
@@ -11067,6 +11136,8 @@ async def messages(request: Request):
                     strict_body,
                     {"Content-Type": "application/json"},
                 )
+            except ClientGoneError:
+                raise  # control flow: never swallow into a broad handler
             except Exception as exc:
                 # Check if upstream is hung before returning error
                 await _check_slot_hang(LLAMA_CPP_BASE.replace("/v1", "/slots"))
@@ -11099,6 +11170,8 @@ async def messages(request: Request):
                             strict_body,
                             {"Content-Type": "application/json"},
                         )
+                    except ClientGoneError:
+                        raise  # control flow: never swallow into a broad handler
                     except Exception:
                         pass  # fall through to next handler
             if strict_resp.status_code != 200:
@@ -11116,6 +11189,8 @@ async def messages(request: Request):
                             strict_body,
                             {"Content-Type": "application/json"},
                         )
+                    except ClientGoneError:
+                        raise  # control flow: never swallow into a broad handler
                     except Exception as exc:
                         return Response(
                             content=json.dumps(
@@ -11242,6 +11317,8 @@ async def messages(request: Request):
                             openai_resp = retry_data
                         else:
                             logger.info("DEGENERATE RETRY: retry insufficient, using truncated original")
+                except ClientGoneError:
+                    raise  # control flow: never swallow into a broad handler
                 except Exception as exc:
                     logger.warning("DEGENERATE RETRY: failed: %s", exc)
             anthropic_resp = openai_to_anthropic_response(
@@ -11535,6 +11612,8 @@ async def messages(request: Request):
                 openai_body,
                 {"Content-Type": "application/json"},
             )
+        except ClientGoneError:
+            raise  # control flow: never swallow into a broad handler
         except Exception as exc:
             return Response(
                 content=json.dumps(
@@ -11565,6 +11644,8 @@ async def messages(request: Request):
                         openai_body,
                         {"Content-Type": "application/json"},
                     )
+                except ClientGoneError:
+                    raise  # control flow: never swallow into a broad handler
                 except Exception:
                     pass  # fall through
         if resp.status_code != 200:
@@ -11582,6 +11663,8 @@ async def messages(request: Request):
                         openai_body,
                         {"Content-Type": "application/json"},
                     )
+                except ClientGoneError:
+                    raise  # control flow: never swallow into a broad handler
                 except Exception as exc:
                     return Response(
                         content=json.dumps(
@@ -11699,6 +11782,8 @@ async def messages(request: Request):
                         openai_resp = retry_data
                     else:
                         logger.info("DEGENERATE RETRY (stream): no tool call, using truncated")
+            except ClientGoneError:
+                raise  # control flow: never swallow into a broad handler
             except Exception as exc:
                 logger.warning("DEGENERATE RETRY (stream): failed: %s", exc)
         anthropic_resp = openai_to_anthropic_response(
