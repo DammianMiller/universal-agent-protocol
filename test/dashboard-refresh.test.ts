@@ -7,11 +7,50 @@ import { describe, it, expect, afterEach } from 'vitest';
 import http from 'node:http';
 import { startDashboardServer } from '../src/dashboard/server.js';
 
-let portSeq = 39610;
 const HOST = '127.0.0.1';
 const settle = () => new Promise((r) => setTimeout(r, 250));
 
 let handle: { close: () => void } | null = null;
+
+/**
+ * Start the dashboard on an OS-assigned port and resolve once it is listening.
+ *
+ * The previous `let portSeq = 39610; portSeq++` was collision-free *within* a
+ * file but not across it: vitest runs test files in separate worker processes,
+ * each with its own module instance, so every worker started counting at the
+ * same number and raced for the same ports. That surfaced as EADDRINUSE /
+ * ECONNREFUSED — and because scripts/version-bump.sh runs the full suite, an
+ * unlucky interleaving could fail a release for reasons unrelated to the code.
+ *
+ * Port 0 removes the guess entirely: the kernel hands out a free port, so no
+ * two workers can be assigned the same one. `onListening` is the only reliable
+ * way to read it back, since the bound port is not known until the listen
+ * callback fires.
+ */
+function startOnEphemeralPort(
+  opts: { updateIntervalMs?: number } = {}
+): Promise<{ handle: { close: () => void; readonly port: number }; port: number }> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const h = startDashboardServer({
+      ...opts,
+      port: 0,
+      host: HOST,
+      onListening: ({ port }) => {
+        if (settled) return;
+        settled = true;
+        resolve({ handle: h, port });
+      },
+    });
+    setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { h.close(); } catch { /* ignore */ }
+      reject(new Error('dashboard server did not report listening within 10s'));
+    }, 10_000).unref?.();
+  });
+}
+
 afterEach(() => {
   try {
     handle?.close();
@@ -59,8 +98,9 @@ function countSnapshots(port: number, windowMs: number): Promise<number> {
 
 describe('dashboard refresh interval', () => {
   it('pushes SSE snapshots at the configured cadence, not the 2s default', async () => {
-    const port = portSeq++;
-    handle = startDashboardServer({ port, host: HOST, updateIntervalMs: 300 });
+    const started = await startOnEphemeralPort({ updateIntervalMs: 300 });
+    handle = started.handle;
+    const port = started.port;
     await settle();
     // In a 4s window a 300ms cadence yields ~12 snapshots even if the first
     // getDashboardData call takes a couple of seconds (cold rtk-gain
@@ -70,8 +110,9 @@ describe('dashboard refresh interval', () => {
   }, 20000);
 
   it('injects the cadence into the served page so the client fallback poll matches', async () => {
-    const port = portSeq++;
-    handle = startDashboardServer({ port, host: HOST, updateIntervalMs: 700 });
+    const started = await startOnEphemeralPort({ updateIntervalMs: 700 });
+    handle = started.handle;
+    const port = started.port;
     await settle();
     const html = await fetchBody(port, '/');
     expect(html).not.toContain('__UAP_DASH_REFRESH_MS__');
@@ -80,24 +121,27 @@ describe('dashboard refresh interval', () => {
 
   it('honors UAP_DASH_REFRESH_MS when no explicit option is set', async () => {
     process.env.UAP_DASH_REFRESH_MS = '900';
-    const port = portSeq++;
-    handle = startDashboardServer({ port, host: HOST });
+    const started = await startOnEphemeralPort({});
+    handle = started.handle;
+    const port = started.port;
     await settle();
     const html = await fetchBody(port, '/');
     expect(html).toContain("Number('900')");
   }, 20000);
 
   it('clamps pathological intervals to the 250ms floor', async () => {
-    const port = portSeq++;
-    handle = startDashboardServer({ port, host: HOST, updateIntervalMs: 10 });
+    const started = await startOnEphemeralPort({ updateIntervalMs: 10 });
+    handle = started.handle;
+    const port = started.port;
     await settle();
     const html = await fetchBody(port, '/');
     expect(html).toContain("Number('250')");
   }, 20000);
 
   it('caps oversized intervals at 1h so setInterval cannot overflow and spin at 1ms', async () => {
-    const port = portSeq++;
-    handle = startDashboardServer({ port, host: HOST, updateIntervalMs: 9_999_999_999_999 });
+    const started = await startOnEphemeralPort({ updateIntervalMs: 9_999_999_999_999 });
+    handle = started.handle;
+    const port = started.port;
     await settle();
     const html = await fetchBody(port, '/');
     expect(html).toContain("Number('3600000')");
