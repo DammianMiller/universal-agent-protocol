@@ -8,6 +8,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { fetchModelWithRetry, modelHttpTimeoutMs } from './long-fetch.js';
@@ -114,35 +115,64 @@ export function resolveRequestCredential(
  */
 let cachedProxyToken: string | undefined | null = null;
 
+/** PROXY_AUTH_TOKEN out of one systemd-style EnvironmentFile, or undefined. */
+function readProxyTokenFrom(file: string): string | undefined {
+  if (!existsSync(file)) return undefined;
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    // systemd EnvironmentFile semantics: KEY=<rest of line>. No shell
+    // word-splitting, and no quote handling beyond a wrapping pair.
+    const eq = trimmed.indexOf('=');
+    if (eq < 0 || trimmed.slice(0, eq).trim() !== 'PROXY_AUTH_TOKEN') continue;
+    const value = trimmed
+      .slice(eq + 1)
+      .trim()
+      .replace(/^(['"])([\s\S]*)\1$/, '$2');
+    if (value) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Every place the token may live, in priority order.
+ *
+ * Walking up from cwd is not enough on its own. `uap setup` writes a
+ * `.uap/proxy.env` into EVERY project, but only the install that generated the
+ * secret carries PROXY_AUTH_TOKEN — so an agent working in an unrelated project
+ * finds a proxy.env, finds no token in it, and (previously) stopped there and
+ * sent an unauthenticated request. That is the deliver 401: the file existed,
+ * it simply wasn't the file with the secret.
+ *
+ * So: never stop at the first file, only at the first file that actually has the
+ * key, and fall back to the user-level config where the token is installed once
+ * per machine rather than once per project.
+ */
+function* proxyEnvCandidates(): Generator<string> {
+  let dir = process.cwd();
+  // The MCP server's cwd is wherever the client launched it, often a
+  // subdirectory of the project rather than its root.
+  for (let depth = 0; depth < 12; depth++) {
+    yield join(dir, '.uap', 'proxy.env');
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  const home = homedir();
+  yield join(process.env.XDG_CONFIG_HOME || join(home, '.config'), 'uap', 'proxy.env');
+  yield join(home, '.uap', 'proxy.env');
+}
+
 function proxyTokenFromFile(): string | undefined {
   if (cachedProxyToken !== null) return cachedProxyToken;
   cachedProxyToken = undefined;
   try {
-    let dir = process.cwd();
-    // Walk up: the MCP server's cwd is wherever the client launched it, which
-    // is often a subdirectory of the project rather than its root.
-    for (let depth = 0; depth < 12; depth++) {
-      const candidate = join(dir, '.uap', 'proxy.env');
-      if (existsSync(candidate)) {
-        for (const line of readFileSync(candidate, 'utf8').split('\n')) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith('#')) continue;
-          // systemd EnvironmentFile semantics: KEY=<rest of line>. No shell
-          // word-splitting, and no quote handling beyond a wrapping pair.
-          const eq = trimmed.indexOf('=');
-          if (eq < 0 || trimmed.slice(0, eq).trim() !== 'PROXY_AUTH_TOKEN') continue;
-          const value = trimmed
-            .slice(eq + 1)
-            .trim()
-            .replace(/^(['"])([\s\S]*)\1$/, '$2');
-          if (value) cachedProxyToken = value;
-          break;
-        }
+    for (const candidate of proxyEnvCandidates()) {
+      const token = readProxyTokenFrom(candidate);
+      if (token) {
+        cachedProxyToken = token;
         break;
       }
-      const parent = dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
     }
   } catch {
     // An unreadable or malformed file is not a reason to fail the request. The

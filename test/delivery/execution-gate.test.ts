@@ -44,6 +44,19 @@ function writeWebGame(dir: string, gameJs: string): void {
   writeFileSync(join(dir, 'js/game.js'), gameJs);
 }
 
+/**
+ * Budget for tests that actually run the gate.
+ *
+ * runExecutionGate's own DEFAULT_TIMEOUT_MS is 60s, while vitest's global
+ * testTimeout is 15s -- so any run slower than 15s was killed by the test
+ * harness while the gate itself was still willing to wait. On a developer
+ * machine the vm-dom path finishes in well under a second and this never
+ * showed; on a loaded CI runner it timed out and failed the build for a reason
+ * unrelated to the code under test (observed: PR #601). The gate is the
+ * component that decides when to give up, so the test budget must exceed its.
+ */
+const GATE_TEST_TIMEOUT_MS = 90_000;
+
 describe('detectArtifactType / findWebEntryDir', () => {
   let dir: string;
   beforeEach(() => {
@@ -95,7 +108,7 @@ describe('runExecutionGate — web (injected browser)', () => {
     const r = await runExecutionGate(dir, { browserFactory: fakeBrowser(), settleMs: 1 });
     expect(r.passed).toBe(true);
     expect(r.via).toBe('browser');
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('fails when the page reports a pageerror', async () => {
     const r = await runExecutionGate(dir, {
@@ -104,18 +117,18 @@ describe('runExecutionGate — web (injected browser)', () => {
     });
     expect(r.passed).toBe(false);
     expect(r.outputTail).toContain('ReferenceError: boom');
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('fails when the entry does not return HTTP 200', async () => {
     const r = await runExecutionGate(dir, { browserFactory: fakeBrowser({ status: '404' }), settleMs: 1 });
     expect(r.passed).toBe(false);
     expect(r.failureReason).toMatch(/did not load/);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('accepts any 2xx status (not just exact 200)', async () => {
     const r = await runExecutionGate(dir, { browserFactory: fakeBrowser({ status: '204' }), settleMs: 1 });
     expect(r.passed).toBe(true);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('does NOT fail on console.error / requestfailed (advisory only)', async () => {
     const r = await runExecutionGate(dir, {
@@ -129,7 +142,7 @@ describe('runExecutionGate — web (injected browser)', () => {
     });
     expect(r.passed).toBe(true);
     expect(r.outputTail).toMatch(/advisory/);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('fails on pageerror even when advisory errors are also present', async () => {
     const r = await runExecutionGate(dir, {
@@ -143,7 +156,7 @@ describe('runExecutionGate — web (injected browser)', () => {
     });
     expect(r.passed).toBe(false);
     expect(r.outputTail).toContain('x is not a function');
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('falls back to the vm-dom harness when the browser cannot launch', async () => {
     const r = await runExecutionGate(dir, {
@@ -169,7 +182,7 @@ describe('runExecutionGate — classic web uses vm-dom by default (reliable cras
     const r = await runExecutionGate(dir); // no browserFactory → vm-dom path
     expect(r.via).toBe('vm-dom');
     expect(r.passed).toBe(true);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('FAILS a classic-script page with a TDZ ReferenceError (the octopus bug)', async () => {
     writeWebGame(dir, '(function(){ function r(){ return s.x; } r(); let s = { x: 1 }; })();');
@@ -177,7 +190,7 @@ describe('runExecutionGate — classic web uses vm-dom by default (reliable cras
     expect(r.via).toBe('vm-dom');
     expect(r.passed).toBe(false);
     expect(r.outputTail).toMatch(/before initialization|is not defined/);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('RUNS an app that uses localStorage / new Image() / fetch (broadened stubs)', async () => {
     writeWebGame(
@@ -186,21 +199,21 @@ describe('runExecutionGate — classic web uses vm-dom by default (reliable cras
     );
     const r = await runExecutionGate(dir);
     expect(r.passed).toBe(true);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('fail-OPEN on an unmodelled browser global (PascalCase) — never wedges working code', async () => {
     writeWebGame(dir, 'const x = SpeechRecognition;');
     const r = await runExecutionGate(dir);
     expect(r.passed).toBe(true);
     expect(r.failureReason).toMatch(/SpeechRecognition/);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('FAILS on the app\'s own missing symbol (lowercase) — a real bug', async () => {
     writeWebGame(dir, 'frobnicate();');
     const r = await runExecutionGate(dir);
     expect(r.passed).toBe(false);
     expect(r.outputTail).toMatch(/frobnicate is not defined/);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('executes inline <script> bodies (not just src files)', async () => {
     writeFileSync(
@@ -265,7 +278,7 @@ describe('runExecutionGate — node/cli/lib (real child process)', () => {
     expect(r.passed).toBe(true);
     expect(r.via).toBe('child-process');
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('fails a lib whose entry throws at import time', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'exec-libbad-'));
@@ -289,7 +302,7 @@ describe('startStaticServer — security + serving', () => {
     srv?.close();
     srv = null;
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   it('serves index.html, 204s favicon, 404s missing, 403s traversal and out-of-tree symlinks', async () => {
     srv = await startStaticServer(dir);
