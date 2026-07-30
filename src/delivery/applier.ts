@@ -34,6 +34,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
+import { detectStub, stubGuardDisabled, stubRefusal } from './stub-detector.js';
 
 export interface FileBlock {
   path: string;
@@ -120,6 +121,15 @@ const PROTECTED_BASENAMES = new Set([
   '.npmrc',
   '.yarnrc',
   '.yarnrc.yml',
+  // `.uap.json` is the harness's OWN config, and it is far more than preferences:
+  // resolveFidelity reads `fidelity.visionEndpoint` / `visionModel` from it, which
+  // mission-acceptance copies into process.env, after which the vision judge POSTs
+  // screenshots of the app and up to 4000 chars of spec to that host — attaching
+  // UAP_VISION_API_KEY as a Bearer token if one is set. A model able to write this
+  // file can therefore redirect its own build's screenshots, spec text, and a
+  // credential to any host, and reach localhost/RFC1918 besides. The directory
+  // guards match the SEGMENT `.uap`, so this basename slipped past both of them.
+  '.uap.json',
 ]);
 
 /**
@@ -665,6 +675,11 @@ export function applyFileBlocks(
       rejected.push({ path: block.path, reason: `file exceeds ${MAX_FILE_BYTES} bytes` });
       continue;
     }
+    const stubReason = stubRejectReason(block.path, block.content, projectRoot);
+    if (stubReason) {
+      rejected.push({ path: block.path, reason: stubReason });
+      continue;
+    }
 
     const target = join(projectRoot, block.path);
     mkdirSync(dirname(target), { recursive: true });
@@ -689,6 +704,36 @@ function newDirsFor(paths: string[], projectRoot: string): string[] {
   // Deepest first so rmdir succeeds bottom-up
   return [...created].sort((a, b) => b.length - a.length);
 }
+
+/**
+ * Reject reason when a file block is a STUB rather than an implementation, else
+ * null. Mirrors the agentic executor's guard so neither write path can land the
+ * skeleton-instead-of-code failure; `rejected` reasons are fed back to the
+ * model, so this reads as instruction rather than a silent drop.
+ */
+function stubRejectReason(path: string, content: string, projectRoot: string): string | null {
+  if (stubGuardDisabled()) return null;
+  // Pathological output should not make the write path chew through megabytes of
+  // minified text, and the shape argument does not apply to bundled output anyway.
+  if (content.length > STUB_SCAN_MAX_CHARS) return null;
+  // The file on disk is the baseline, so a partial implementation of an existing
+  // skeleton reads as progress rather than as a fresh stub.
+  let prior: string | undefined;
+  try {
+    const target = join(projectRoot, path);
+    if (existsSync(target)) prior = readFileSync(target, 'utf-8');
+  } catch {
+    /* unreadable — judge the new content alone */
+  }
+  const verdict = detectStub(path, content, prior);
+  if (!verdict.isStub) return null;
+  // Reuses the agentic path's wording: two texts for one condition drift apart,
+  // and a model that hits both sees the inconsistency.
+  return stubRefusal(path, verdict);
+}
+
+/** Above this, skip stub detection rather than scan (minified/bundled output). */
+const STUB_SCAN_MAX_CHARS = 200_000;
 
 /**
  * Apply file blocks with a snapshot of the prior state of every target, so
@@ -761,6 +806,11 @@ export function applyFileBlocksWithRollback(
         }
         if (Buffer.byteLength(block.content, 'utf-8') > MAX_FILE_BYTES) {
           rejected.push({ path: block.path, reason: `file exceeds ${MAX_FILE_BYTES} bytes` });
+          continue;
+        }
+        const stubReason = stubRejectReason(block.path, block.content, projectRoot);
+        if (stubReason) {
+          rejected.push({ path: block.path, reason: stubReason });
           continue;
         }
         const target = join(projectRoot, block.path);

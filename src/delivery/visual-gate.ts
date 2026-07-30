@@ -83,6 +83,14 @@ export interface PageVisualReport {
 export interface VisualVerdict {
   /** False when any page has objective visual/behavioral problems. */
   passed: boolean;
+  /**
+   * True when any page has a STRUCTURAL problem (see structuralProblems): the
+   * page did not load, threw an uncaught error, lost a dependency, or is missing
+   * the canvas its own source demands. Callers use this to block in modes where
+   * the graded richness floors are only advisory. An unpainted canvas is NOT
+   * structural — see the note in structuralProblems for why.
+   */
+  structural: boolean;
   /** True when the gate could not run (no browser) — advisory pass. */
   skipped: boolean;
   feedback: string;
@@ -558,6 +566,78 @@ export function judgePage(
 }
 
 /**
+ * The subset of a page's problems that are STRUCTURAL rather than graded.
+ *
+ * The distinction is not severity-by-taste, it is whether the finding is a
+ * BINARY FACT about the page or a position against a tunable floor:
+ *
+ *   structural — the page did not load, or it threw an uncaught error.
+ *   graded     — rendered fewer colors than the floor asks for (including none
+ *                at all); animated less than the motion floor asks for; a
+ *                dependency failed to download; the canvas its source implies
+ *                is absent.
+ *
+ * Structural findings block in modes where the graded floors are advisory. That
+ * set is deliberately SMALL, and three candidates were cut after review traced
+ * what each would do mid-build:
+ *
+ *  - a canvas that painted nothing. It reads like a binary fact, and was
+ *    classified as one first. But an unpainted canvas is the shape of a
+ *    legitimate scaffold epic — run J (live, 2026-07-17) had scaffolds split
+ *    twice on "1 distinct color < 3 required" with every other gate green.
+ *  - a failed external request. Mid-build a 404 is the NORMAL state: an early
+ *    epic writes index.html referencing js/game.js that a later epic creates
+ *    (which is why missingMissionFiles exists). Blocking on it would fail every
+ *    non-final epic, and this gate's feedback for the case assumes a CDN and
+ *    tells the model to vendor a dependency — actively wrong advice for a module
+ *    that simply is not written yet.
+ *  - "source expects a canvas animation but no canvas exists". `hasCanvas` comes
+ *    from an in-page probe that reports false whenever `evaluate` throws or its
+ *    JSON fails to parse, so one flaky evaluation under load would hard-block a
+ *    page that renders fine. The interaction gate was kept out of this branch for
+ *    exactly that reason; a newly-blocking predicate deserves the same standard.
+ *
+ * All three remain in `problems`, so they still block in primary mode and on the
+ * final epic. They are simply not grounds to block a mode that has real gates.
+ *
+ * Pure over the report, so it is recomputed rather than threaded through
+ * judgePage. A test asserts structural ⊆ problems, because nothing else enforces
+ * that invariant and a verdict reading "renders clean" while blocking would be
+ * incoherent.
+ */
+export function structuralProblems(report: PageVisualReport): string[] {
+  if (!report.loaded) return ['page did not load'];
+  if (report.runtimeErrors.length > 0) {
+    return [`uncaught runtime error: ${report.runtimeErrors[0].slice(0, 200)}`];
+  }
+  return [];
+}
+
+/**
+ * Blocking text for a STRUCTURAL failure, naming only the structural findings.
+ *
+ * The full `feedback` lists every problem including the graded richness floors.
+ * Handing that to the model in a mode that declares those floors advisory points
+ * it at the color floor when the real blocker is one TypeError — the same
+ * misdirection this gate already recorded for failed requests.
+ */
+export function structuralFeedback(verdict: VisualVerdict): string {
+  const lines: string[] = [];
+  for (const p of verdict.pages) {
+    const problems = structuralProblems(p);
+    if (problems.length > 0) lines.push(`- ${p.file}: ${problems.join('; ')}`);
+  }
+  if (lines.length === 0) return verdict.feedback;
+  return [
+    'STRUCTURAL FAILURE — the page is broken, not merely sparse. Fix these before anything else:',
+    ...lines,
+    verdict.screenshotDir ? `screenshots: ${verdict.screenshotDir}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
  * Run the visual gate over the project's entry pages. Fail-open (skipped=true)
  * only when no browser can launch.
  */
@@ -567,7 +647,7 @@ export async function runVisualGate(
 ): Promise<VisualVerdict> {
   const files = options.files ?? discoverEntryPages(projectRoot);
   if (files.length === 0) {
-    return { passed: true, skipped: true, feedback: 'visual gate: no entry .html pages found', pages: [], screenshotDir: null };
+    return { passed: true, skipped: true, structural: false, feedback: 'visual gate: no entry .html pages found', pages: [], screenshotDir: null };
   }
   const samples = Math.max(2, options.samples ?? DEFAULT_SAMPLES);
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
@@ -607,6 +687,7 @@ export async function runVisualGate(
         return {
           passed: true,
           skipped: true,
+          structural: false,
           feedback: `visual gate skipped: browser unavailable (${String(e).slice(0, 120)})`,
           pages,
           screenshotDir: null,
@@ -737,6 +818,7 @@ export async function runVisualGate(
     return {
       passed: true,
       skipped: true,
+      structural: false,
       feedback: `visual gate skipped: ${String(e).slice(0, 160)}`,
       pages,
       screenshotDir: null,
@@ -772,11 +854,20 @@ export async function runVisualGate(
   // (run J live, 2026-07-17: scaffold-html-css split twice over "1 distinct
   // color < 3 required" with EVERY other gate green). On non-final epics the
   // verdict downgrades to an advisory pass; the FINAL epic judges for real.
+  const structural = pages.some((p) => structuralProblems(p).length > 0);
+  // The non-final allowance stays BLANKET, structural findings included. Scoping
+  // it to graded findings was the first design here, and it is wrong for this
+  // codebase: a SCAFFOLD epic is instructed to emit `throw new Error("TODO")`
+  // bodies (epic-mission.ts), which ARE uncaught runtime errors, so every
+  // compliant scaffold would have hard-failed its own deliverable. Mid-build a
+  // page that cannot load because a later epic has not written its modules yet is
+  // the same story. Callers therefore read `structural` together with `passed`,
+  // which makes non-final epics exempt without any extra plumbing.
   if (!passed && process.env.UAP_EPIC_NONFINAL === '1') {
     passed = true;
-    lines.unshift('NA: non-final epic — visual richness floors are judged for real on the FINAL epic (findings below are advisory)');
+    lines.unshift('NA: non-final epic — visual findings are judged for real on the FINAL epic (findings below are advisory)');
   }
-  return { passed, skipped: false, feedback: lines.join('\n'), pages, screenshotDir };
+  return { passed, skipped: false, structural, feedback: lines.join('\n'), pages, screenshotDir };
 }
 
 function safeRead(path: string): string {

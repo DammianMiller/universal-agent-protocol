@@ -30,6 +30,7 @@ import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename } from './applier.js';
 import { estimateMessagesTokens, formatBudgetStop } from './context-budget.js';
 import { sanitizedEnv } from './sanitized-env.js';
+import { detectStub, stubRefusal, stubGuardDisabled } from './stub-detector.js';
 
 /**
  * Directories the agent must never read, list, or write: its OWN machinery.
@@ -77,6 +78,18 @@ const READABLE_SPECS = new Set(['.uap-deliver/verify.sh', '.uap/user-paths.json'
 function agentInternalReason(projectRoot: string, abs: string, forWrite = false): string | null {
   const rel = relative(projectRoot, abs).split('\\').join('/');
   const top = rel.split('/')[0];
+  // `.uap.json` is a FILE, not a directory, so the segment check below never saw
+  // it — yet it configures the vision endpoint that acceptance POSTs screenshots,
+  // spec text and a Bearer token to (see the note beside applier's protected
+  // basenames). Readable, never writable: the same read/write split the spec
+  // carve-out below uses.
+  if (forWrite && rel === '.uap.json') {
+    return (
+      "ERROR: '.uap.json' is the harness's own configuration — it controls how you are " +
+      'graded and where verification data is sent. Never modify it. Change the ' +
+      'implementation so the existing configuration passes.'
+    );
+  }
   if (!top || !AGENT_INTERNAL_DIRS.includes(top)) return null;
 
   if (READABLE_SPECS.has(rel)) {
@@ -570,6 +583,29 @@ export function runTool(
           }
         } catch { /* unreadable prev — allow the write */ }
       }
+      // Substance guard: refuse a write whose content is a stub rather than an
+      // implementation — the case the size check above cannot see, because a
+      // brand-new file has nothing to shrink from and a stub→stub rewrite is no
+      // shrink. Replayed against the eight real files from the octopus run:
+      // seven refused, the real config.js beside them written.
+      //
+      // Deliberately ordered AFTER the size guard. A write that both guts and
+      // stubs should get the gutting message, because that one names edit_file —
+      // the actionable escape — whereas "write the real implementation" invites a
+      // byte-identical retry. It also keeps the two overrides independent:
+      // ALLOW_GUTTING permits a deliberate large deletion, which is not consent
+      // to replace the file with a skeleton.
+      if (!stubGuardDisabled()) {
+        // `prior` lets the guard judge PROGRESS: a FILL epic implementing three of
+        // eight skeleton functions is still mostly empty, and refusing that would
+        // ratchet the file permanently shut.
+        let prior: string | undefined;
+        try {
+          if (existsSync(abs)) prior = readFileSync(abs, 'utf-8');
+        } catch { /* unreadable — judge the snapshot alone */ }
+        const stub = detectStub(rel, String(args.content ?? ''), prior);
+        if (stub.isStub) return stubRefusal(String(args.path), stub);
+      }
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, String(args.content ?? ''), 'utf-8');
       // Per-write compile feedback for Rust: without it, a weak model writes
@@ -625,6 +661,20 @@ export function runTool(
         let idx = -1;
         for (let i = 0; i < occurrence; i++) idx = current.indexOf(oldStr, idx + 1);
         updated = current.slice(0, idx) + newStr + current.slice(idx + oldStr.length);
+      }
+      // Substance guard on the EDIT path too. Without it, write_file's refusals
+      // steer the model to edit_file by name, so the recommended escape route was
+      // also the bypass. `current` is the baseline, so an edit is only refused
+      // when it makes the file MORE of a stub than it already was; ordinary edits
+      // to an already-stubby file still land.
+      //
+      // Bounded honestly: this is a threshold control, so it catches a file being
+      // hollowed OUT to a skeleton, not incremental erosion that stays under the
+      // bar (emptying four of six bodies is 57%, and passes). It closes the
+      // one-shot bypass, and does not pretend to be tamper-proof.
+      if (!stubGuardDisabled()) {
+        const stub = detectStub(rel, updated, current);
+        if (stub.isStub) return stubRefusal(String(args.path), stub);
       }
       writeFileSync(abs, updated, 'utf-8');
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);

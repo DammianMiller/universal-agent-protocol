@@ -15,7 +15,7 @@ const judgeFail: AcceptanceResult = { passed: false, score: 0.5, criteria: [] };
 
 const execOk: ExecutionResult = { passed: true, exitCode: 0, outputTail: '', durationMs: 1 };
 const execFail: ExecutionResult = { passed: false, exitCode: 1, outputTail: 'boom: exit 1', durationMs: 1 };
-const visualOk: VisualVerdict = { passed: true, skipped: true, feedback: '', pages: [], screenshotDir: null };
+const visualOk: VisualVerdict = { passed: true, skipped: true, structural: false, feedback: '', pages: [], screenshotDir: null };
 const renderedPage: PageVisualReport = {
   file: 'index.html',
   loaded: true,
@@ -97,12 +97,128 @@ describe('buildMissionAcceptanceGate', () => {
     expect(judgeCalls).toBe(0);
   });
 
+  it('SECONDARY: a STRUCTURAL visual failure blocks even though the objective gates are green', async () => {
+    // The gap this closes: visual failures used to block in primary mode only, so
+    // with real project gates present a page that THREW became a note handed to a
+    // text judge — "the suite is green and the code loads" was enough to be
+    // accepted, which is exactly what a stub satisfies.
+    let judged = 0;
+    const gate = buildMissionAcceptanceGate(
+      makeDeps({
+        primary: false,
+        executionGate: async () => execOk,
+        visualGate: async (): Promise<VisualVerdict> => ({
+          passed: false,
+          skipped: false,
+          structural: true,
+          feedback: 'uncaught runtime error: TypeError: Player.update is not a function',
+          pages: [],
+          screenshotDir: null,
+        }),
+        judge: async () => {
+          judged++;
+          return judgePass;
+        },
+      })
+    );
+    const verdict = await gate('/proj');
+    expect(verdict.passed).toBe(false);
+    expect(verdict.feedback).toContain('TypeError');
+    expect(judged).toBe(0); // never graded — the page is broken
+  });
+
+  it('SECONDARY: a GRADED visual failure stays advisory and reaches the judge', async () => {
+    // The counterpart that must not regress: a scaffold epic rendering sparsely
+    // is the case the non-final allowance exists for (run J, live).
+    let judged = 0;
+    const notes: Array<string | undefined> = [];
+    const gate = buildMissionAcceptanceGate(
+      makeDeps({
+        primary: false,
+        executionGate: async () => execOk,
+        visualGate: async (): Promise<VisualVerdict> => ({
+          passed: false,
+          skipped: false,
+          structural: false,
+          feedback: 'canvas renders below the visual floor (1 distinct color < 3 required)',
+          // A page carrying a real problem, so the runtimeNote assertion below can
+          // actually demonstrate the finding reaching the judge. With `problems: []`
+          // the note read "renders+animates OK" and proved nothing.
+          pages: [{ ...renderedPage, distinctColors: 1, problems: ['canvas renders below the visual floor'] }],
+          screenshotDir: null,
+        }),
+        judge: async (opts) => {
+          judged++;
+          notes.push(opts.runtimeNote);
+          return judgePass;
+        },
+      })
+    );
+    const verdict = await gate('/proj');
+    expect(judged).toBe(1);
+    expect(verdict.passed).toBe(true);
+    // Secondary mode used to discard the observation entirely; it is evidence now.
+    expect(notes[0]).toContain('visual floor');
+  });
+
+  it('a SKIPPED visual gate never blocks, even when it reports structural', async () => {
+    // The `skipped` guard is the fail-open the gate documents: no browser means no
+    // verdict. Asserting it with `structural: false` exercised nothing — a change
+    // dropping the guard would have started hard-blocking every machine without a
+    // browser, and no test would have failed.
+    for (const primary of [true, false]) {
+      const gate = buildMissionAcceptanceGate(
+        makeDeps({
+          primary,
+          executionGate: async () => execOk,
+          visualGate: async (): Promise<VisualVerdict> => ({
+            passed: false,
+            skipped: true,
+            structural: true,
+            feedback: 'visual gate skipped: browser unavailable',
+            pages: [],
+            screenshotDir: null,
+          }),
+        })
+      );
+      expect((await gate('/proj')).passed).toBe(true);
+    }
+  });
+
+  it('SECONDARY: a non-final epic is exempt, because its verdict is downgraded to passed', async () => {
+    // A compliant SCAFFOLD epic emits `throw new Error("TODO")` bodies, which ARE
+    // uncaught runtime errors — so scoping the non-final allowance to graded
+    // findings only would have hard-failed every scaffold on its own deliverable.
+    // Reading `!passed && structural` is what keeps that satisfiable.
+    let judged = 0;
+    const gate = buildMissionAcceptanceGate(
+      makeDeps({
+        primary: false,
+        executionGate: async () => execOk,
+        visualGate: async (): Promise<VisualVerdict> => ({
+          passed: true, // the non-final downgrade already applied
+          skipped: false,
+          structural: true,
+          feedback: 'NA: non-final epic — visual findings are advisory',
+          pages: [renderedPage],
+          screenshotDir: null,
+        }),
+        judge: async () => {
+          judged++;
+          return judgePass;
+        },
+      })
+    );
+    expect((await gate('/proj')).passed).toBe(true);
+    expect(judged).toBe(1);
+  });
+
   it('PRIMARY: a failed (non-skipped) visual gate blocks with its feedback', async () => {
     const gate = buildMissionAcceptanceGate(
       makeDeps({
         primary: true,
         visualGate: async (): Promise<VisualVerdict> =>
-          ({ passed: false, skipped: false, feedback: 'blank canvas for 3s', pages: [], screenshotDir: null }),
+          ({ passed: false, skipped: false, structural: false, feedback: 'blank canvas for 3s', pages: [], screenshotDir: null }),
       })
     );
     const verdict = await gate('/proj');
@@ -118,6 +234,7 @@ describe('buildMissionAcceptanceGate', () => {
         visualGate: async (): Promise<VisualVerdict> => ({
           passed: true,
           skipped: false,
+          structural: false,
           feedback: '',
           pages: [renderedPage],
           screenshotDir: null,
@@ -154,6 +271,7 @@ describe('fidelity-max vision convergence (run Y delivered-vs-verify divergence,
     ({
       skipped: false,
       passed: true,
+      structural: false,
       feedback: '',
       pages: [
         {

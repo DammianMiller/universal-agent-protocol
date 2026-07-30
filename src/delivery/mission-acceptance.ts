@@ -24,7 +24,7 @@ import {
   type AcceptanceResult,
 } from './acceptance-judge.js';
 import { runExecutionGate } from './execution-gate.js';
-import { runVisualGate, visualRuntimeNote } from './visual-gate.js';
+import { runVisualGate, visualRuntimeNote, structuralFeedback } from './visual-gate.js';
 import { runInteractionGate } from './interaction-gate.js';
 import type { ProbeMode } from './interaction/types.js';
 import { resolveFidelity } from './fidelity.js';
@@ -191,8 +191,21 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
           // judge evidence (a code-evidence judge cannot see a never-started
           // animation; this can).
           const visual = await visualGate(root);
-          if (!visual.skipped && !visual.passed && deps.primary) {
-            return { passed: false, feedback: visual.feedback };
+          // STRUCTURAL findings block in EVERY mode. Previously a visual failure
+          // was blocking only in primary mode, so in secondary mode a page that
+          // threw or painted nothing was demoted to a note for the text judge —
+          // "the code loads and the suite is green" was then sufficient to be
+          // accepted. That is the exact gap the stub-write class exploits: a
+          // skeleton loads cleanly. Graded richness floors stay mode-dependent
+          // (a scaffold epic may legitimately render sparsely); binary facts
+          // about the page do not.
+          // `!passed` is required alongside `structural`: it is what makes the
+          // non-final-epic allowance apply here too (a compliant SCAFFOLD epic's
+          // throw-TODO bodies are uncaught errors, and downgrading to passed is
+          // how that stays satisfiable), and it keeps a "renders clean" verdict
+          // from ever being returned as a blocking failure.
+          if (!visual.skipped && !visual.passed && (deps.primary || visual.structural)) {
+            return { passed: false, feedback: structuralFeedback(visual) };
           }
           visualNote = visualRuntimeNote(visual);
           // Fidelity-max: the loop must converge against the SAME aesthetic bar
@@ -208,6 +221,37 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
             }
           }
         }
+      }
+    } else {
+      // SECONDARY mode, ordinary fidelity: none of the observation gates above
+      // ran at all, so acceptance rested on the objective gates plus a
+      // code-reading judge. "It builds, the suite is green, the page loads" was
+      // therefore sufficient — and that is exactly what a skeleton satisfies: a
+      // stub compiles, imports, and loads without complaint.
+      //
+      // Observe the running artifact here too, and block on STRUCTURAL findings
+      // only (see structuralProblems): a page that threw, never loaded, lost a
+      // dependency, or demands a canvas that does not exist. The graded richness
+      // floors stay advisory in this mode — a sparse canvas has legitimate
+      // explanations mid-build and hard-failing it re-creates the
+      // unsatisfiable-gate class the epic controller already solved for.
+      //
+      // The observation also becomes judge evidence, which the note further down
+      // has always claimed to do in BOTH modes ("discarding it in secondary mode
+      // meant paying for a headless browser pass and then throwing the result
+      // away") but could not, because visualNote was only ever assigned inside
+      // the branch above. It costs one browser pass per acceptance turn, and
+      // self-skips on projects with no entry pages.
+      //
+      // The interaction gate is deliberately NOT promoted here: its verdicts have
+      // a live history of false positives, and adding a second browser pass to
+      // every turn is not worth importing that risk. It stays primary/max-gated.
+      const visual = await visualGate(root);
+      if (!visual.skipped) {
+        if (!visual.passed && visual.structural) {
+          return { passed: false, feedback: structuralFeedback(visual) };
+        }
+        visualNote = visualRuntimeNote(visual);
       }
     }
     const resolvedSpec = deps.specs.resolve(root);
