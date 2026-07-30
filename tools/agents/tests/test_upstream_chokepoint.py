@@ -115,9 +115,9 @@ class ChokePointBehaviourTest(unittest.TestCase):
         return client, state, (lambda: setattr(httpx.AsyncClient, "send", original))
 
     def _set_probe(self, gone: bool):
-        async def probe() -> bool:
-            return gone
-        proxy._current_client_gone.set(probe)
+        # The guard now reads a shared mutable holder published by the ASGI
+        # watcher, rather than calling back into the request object.
+        proxy._disconnect_holder.set({"gone": gone})
 
     def test_cancels_upstream_when_the_caller_leaves(self):
         client, state, restore = self._client_with_send("never")
@@ -147,7 +147,7 @@ class ChokePointBehaviourTest(unittest.TestCase):
         keep working rather than acquiring surprise cancellation."""
         client, state, restore = self._client_with_send("fast")
         try:
-            proxy._current_client_gone.set(None)
+            proxy._disconnect_holder.set(None)
             self.assertEqual(asyncio.run(client.send(self._Req())), "RESPONSE")
         finally:
             restore()

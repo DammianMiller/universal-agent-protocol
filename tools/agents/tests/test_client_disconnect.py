@@ -28,33 +28,32 @@ proxy = _load_proxy()
 
 
 class ClientGoneProbeTest(unittest.TestCase):
-    def test_absent_probe_means_client_is_present(self):
-        """No probe set (background task, test harness) must not read as gone —
-        that would abandon perfectly live turns."""
-        proxy._current_client_gone.set(None)
+    """The probe is now a FLAG READ, not a call into Starlette.
+
+    It used to call request.is_disconnected() wrapped in `except Exception:
+    return False`. That was measured not to work at all behind
+    BaseHTTPMiddleware (False 16x across 30s while the caller was gone), and the
+    swallow-everything shape would have hidden a failing probe as "client still
+    present". Both are gone: there is nothing left to raise.
+    """
+
+    def test_no_holder_means_client_is_present(self):
+        """Background tasks and health checks have no request context. They must
+        not read as disconnected."""
+        proxy._disconnect_holder.set(None)
         self.assertFalse(asyncio.run(proxy._client_gone()))
 
     def test_reports_disconnect(self):
-        async def gone() -> bool:
-            return True
-
-        proxy._current_client_gone.set(gone)
+        proxy._disconnect_holder.set({"gone": True})
         self.assertTrue(asyncio.run(proxy._client_gone()))
 
     def test_reports_connected(self):
-        async def here() -> bool:
-            return False
-
-        proxy._current_client_gone.set(here)
+        proxy._disconnect_holder.set({"gone": False})
         self.assertFalse(asyncio.run(proxy._client_gone()))
 
-    def test_a_failing_probe_never_breaks_the_request(self):
-        """This check sits in front of every upstream call. A probe that can
-        raise would be worse than no probe, so failure means 'still there'."""
-        async def broken() -> bool:
-            raise RuntimeError("receive channel exploded")
-
-        proxy._current_client_gone.set(broken)
+    def test_a_malformed_holder_reads_as_present(self):
+        """Defensive: an empty dict must not be mistaken for a disconnect."""
+        proxy._disconnect_holder.set({})
         self.assertFalse(asyncio.run(proxy._client_gone()))
 
 
