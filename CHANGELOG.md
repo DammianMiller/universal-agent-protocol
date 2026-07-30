@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.0 (2026-07-30)
+
+- feat(deliver): follow an in-flight run instead of relaunching it
+
+
 ## v1.174.1 (2026-07-30)
 
 - fix(deliver): honour the --json contract on early exits

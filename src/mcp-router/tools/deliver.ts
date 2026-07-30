@@ -53,6 +53,12 @@ export interface DeliverArgs {
   dryRun?: boolean;
   /** Hard wall-clock cap in seconds (default 1800) */
   timeoutSec?: number;
+  /**
+   * Follow the run already in flight for this project instead of starting one.
+   * Use this after a timed-out deliver call, or whenever a launch reports
+   * alreadyRunning. Read-only: it starts nothing and takes no lock.
+   */
+  follow?: boolean;
   /** Judge spec behavioral completeness (LLM) after objective gates pass */
   acceptance?: boolean;
   /** Separate evaluator model preset (generator never grades its own work) */
@@ -111,6 +117,13 @@ Best for: implement a feature, fix a bug across files, refactor with tests. Not 
         type: 'boolean',
         description: 'If true, only classify complexity and show the plan (fast, no model calls). Default false.',
         default: false,
+      },
+      follow: {
+        type: 'boolean',
+        description:
+          'Wait for the deliver run already in flight and return its result, instead of starting a new one. ' +
+          'This is the correct response to a timed-out deliver call or an alreadyRunning result — it starts ' +
+          'nothing. Do not use resume for that: resume CONTINUES a run and would start a second copy of a live one.',
       },
       timeoutSec: {
         type: 'number',
@@ -281,7 +294,7 @@ export interface DeliverResult {
  */
 export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
   const {
-    instruction, projectRoot, maxTurns, hardCap, model, dryRun = false, timeoutSec,
+    instruction, projectRoot, maxTurns, hardCap, model, dryRun = false, timeoutSec, follow = false,
     acceptance, evaluatorModel, escalate, coordinate, untilDelivered, ceiling,
     resume, decompose,
   } = args;
@@ -337,6 +350,19 @@ export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
   if (coordinate) cliArgs.push('--coordinate');
   if (untilDelivered === false) cliArgs.push('--no-until-delivered');
   if (hardCap === true && ceiling !== undefined) cliArgs.push('--ceiling', String(ceiling));
+  if (follow) {
+    cliArgs.push('--await-run');
+    // Give the CLI a slightly smaller budget than this tool's own kill timeout,
+    // so a still-running mission comes back as a REPORT rather than as a killed
+    // subprocess — the caller cannot tell a kill from a failure, and that
+    // ambiguity is the whole reason follow-mode exists.
+    // Strictly below the kill timeout. A `Math.max(5, …)` floor inverted the
+    // margin for small timeouts (timeoutSec:1 gave a 5s wait behind a 1s kill),
+    // which reproduces the kill-vs-failure ambiguity follow exists to remove.
+    const killSec = Math.min(MAX_TIMEOUT_SEC, Math.max(1, timeoutSec ?? DEFAULT_TIMEOUT_SEC));
+    const followSec = Math.max(1, Math.min(Math.floor((killSec * 9) / 10), killSec - 1));
+    cliArgs.push('--await-timeout', String(followSec));
+  }
   if (resume) cliArgs.push('--resume', resume);
   if (decompose === true) cliArgs.push('--decompose');
   if (decompose === false) cliArgs.push('--no-decompose');
@@ -374,7 +400,7 @@ export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
             exitCode,
             error:
               'deliver produced no JSON result (its --json contract was not honoured on this exit path). ' +
-              'Do NOT relaunch blindly: check whether a run is already in progress, and use resume:\'latest\' to follow it.',
+              'Do NOT relaunch blindly: call deliver with follow:true to see whether a run is already in progress and wait for it.',
             result: stdout.slice(-2000),
           });
           return;
@@ -411,6 +437,40 @@ export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
         // with NO `error` at all, leaving the actionable text buried in
         // `result.blockers` — in a shape whose own contract says `error` is what
         // a caller reads first.
+        // Follow outcomes: timedOut / nothingInFlight / holderChanged all resolve
+        // success:false, so without this they fall through with NO `error` and the
+        // carefully-worded "it has NOT failed, do not relaunch" text stays buried
+        // in `result` — the exact gap fixed twice above for alreadyRunning and
+        // preflightFailed.
+        const fo = parsed as {
+          timedOut?: boolean;
+          nothingInFlight?: boolean;
+          holderChanged?: boolean;
+          followed?: boolean;
+          delivered?: boolean;
+          reason?: string;
+          nextStep?: string;
+        };
+        if (fo.timedOut === true || fo.nothingInFlight === true || fo.holderChanged === true) {
+          resolvePromise({
+            ok: false,
+            dryRun,
+            exitCode,
+            error: `${fo.reason ?? 'follow did not complete'} ${fo.nextStep ?? ''}`.trim(),
+            result: parsed,
+          });
+          return;
+        }
+        if (fo.followed === true && fo.delivered === false) {
+          resolvePromise({
+            ok: false,
+            dryRun,
+            exitCode,
+            error: `${fo.reason ?? 'the followed run did not succeed'} ${fo.nextStep ?? ''}`.trim(),
+            result: parsed,
+          });
+          return;
+        }
         const pf = parsed as { preflightFailed?: boolean; blockers?: unknown; nextStep?: string };
         if (pf.preflightFailed === true) {
           const blockers = Array.isArray(pf.blockers) ? pf.blockers.map(String) : [];
