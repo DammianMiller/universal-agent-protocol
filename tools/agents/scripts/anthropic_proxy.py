@@ -2970,9 +2970,30 @@ _current_request_session: contextvars.ContextVar[str | None] = contextvars.Conte
 #
 # Same ContextVar trick as the session above: request-local without threading a
 # Request through every signature. Holds Starlette's `request.is_disconnected`.
-_current_client_gone: contextvars.ContextVar[
-    Callable[[], Awaitable[bool]] | None
-] = contextvars.ContextVar("uap_current_client_gone", default=None)
+# Is the DOWNSTREAM client still there?
+#
+# Nothing used to ask. Once a turn was accepted, the guardrail loops kept
+# retrying and re-POSTing upstream on their own — so when the client died the
+# work carried on regardless. Observed live: two `uap deliver` runs were killed,
+# no socket remained on :4000, and the proxy still drove llama for minutes,
+# generating 32k tokens per orphaned turn that nobody would ever read.
+#
+# WHY NOT request.is_disconnected(). That was tried and MEASURED not to work
+# here: it returned False 16 times across 30s while the caller was demonstrably
+# gone. The cause is `@app.middleware("http")` — Starlette's BaseHTTPMiddleware
+# runs the endpoint in a separate anyio task behind its own receive channel, so
+# the endpoint polls a channel that never delivers http.disconnect. It works
+# fine in an app with no middleware, which is exactly why three rounds of
+# isolated testing said it was sound.
+#
+# So the signal is captured by a pure-ASGI middleware OUTSIDE all of that (see
+# DisconnectWatcherMiddleware) and published here as a mutable holder. A dict
+# rather than a bool because the middleware's poller task and the endpoint must
+# see the same object: the ContextVar is set before the app is invoked, so every
+# downstream task inherits the reference, and mutations are visible across them.
+_disconnect_holder: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "uap_disconnect_holder", default=None
+)
 
 
 class ClientGoneError(Exception):
@@ -2986,19 +3007,17 @@ class ClientGoneError(Exception):
 
 
 async def _client_gone() -> bool:
-    """True when the caller has hung up. Never raises, never blocks meaningfully.
+    """True when the caller has hung up.
 
-    A disconnect check that can itself fail or stall would be worse than no
-    check: it sits in front of every upstream call. Any error means "assume the
-    client is still there" — the pre-existing behaviour.
+    Now a flag read rather than a call into Starlette, so there is nothing to
+    raise and nothing for a fail-safe except to swallow. The previous version
+    wrapped request.is_disconnected() in `except Exception: return False`, which
+    would have hidden a failing probe as "client still present" — it turned out
+    the probe was not raising, but the shape was wrong regardless.
     """
-    probe = _current_client_gone.get()
-    if probe is None:
-        return False
-    try:
-        return bool(await probe())
-    except Exception:  # noqa: BLE001
-        return False
+    holder = _disconnect_holder.get()
+    return bool(holder and holder.get("gone"))
+
 
 # Session admission state. _admitted_sessions maps session_id -> last-seen
 # monotonic ts; OrderedDict insertion order is the LRU (oldest = front).
@@ -3385,8 +3404,8 @@ class DisconnectAwareClient(httpx.AsyncClient):
     """
 
     async def send(self, request, **kwargs):  # type: ignore[override]
-        probe = _current_client_gone.get()
-        if probe is None:
+        holder = _disconnect_holder.get()
+        if holder is None:
             return await super().send(request, **kwargs)
 
         task = asyncio.ensure_future(super().send(request, **kwargs))
@@ -3635,12 +3654,80 @@ async def lifespan(app: FastAPI):
     logger.info("Proxy shut down")
 
 
+class DisconnectWatcherMiddleware:
+    """Pure-ASGI middleware that records when the caller hangs up.
+
+    Sits OUTERMOST, above the auth middleware, and is deliberately pure ASGI:
+    Starlette's BaseHTTPMiddleware (`@app.middleware("http")`) re-tasks the
+    endpoint behind its own receive channel, which is precisely why
+    request.is_disconnected() reported False 16 times across 30s while the
+    caller was gone. Being outside that, this sees the real channel.
+
+    THE HARD PART is that wrapping receive() is not enough on its own. After the
+    request body is fully read nothing calls receive() again, so an
+    http.disconnect just sits in the channel unobserved. So once the body is
+    complete this starts polling the channel itself — safe precisely because the
+    app has no more body to ask for, and the only remaining message type is the
+    disconnect.
+
+    The flag lives in a mutable dict published on a ContextVar before the app is
+    invoked: downstream tasks inherit the reference when their context is copied,
+    so a mutation made by the poller is visible to the endpoint and to every
+    upstream call it makes.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+
+        holder: dict = {"gone": False}
+        _disconnect_holder.set(holder)
+        poller: asyncio.Task | None = None
+
+        async def poll_for_disconnect() -> None:
+            # Only reached once the body is complete, so this cannot steal a
+            # message the app still needs.
+            try:
+                while not holder["gone"]:
+                    msg = await receive()
+                    if msg.get("type") == "http.disconnect":
+                        holder["gone"] = True
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                return  # channel closed/erroring: stop watching, never crash
+
+        async def watched_receive():
+            nonlocal poller
+            msg = await receive()
+            if msg.get("type") == "http.disconnect":
+                holder["gone"] = True
+            elif msg.get("type") == "http.request" and not msg.get("more_body", False):
+                # Body complete — nobody will call receive() again, so take over.
+                if poller is None:
+                    poller = asyncio.ensure_future(poll_for_disconnect())
+            return msg
+
+        try:
+            await self.app(scope, watched_receive, send)
+        finally:
+            if poller is not None and not poller.done():
+                poller.cancel()
+
+
+
+
 app = FastAPI(
     title="UAP Anthropic Proxy",
     description="Translates Anthropic Messages API to OpenAI Chat Completions API",
     version="1.0.0",
     lifespan=lifespan,
 )
+
 
 @app.exception_handler(ClientGoneError)
 async def _client_gone_handler(request: Request, exc: ClientGoneError):
@@ -3694,6 +3781,18 @@ async def _pool_timeout_handler(request: Request, exc: httpx.PoolTimeout):
 # Open paths that never require the shared secret (liveness / discovery), so a
 # LAN health check or an SDK model-list probe works without the token.
 _PROXY_AUTH_OPEN_PATHS = frozenset({"/health", "/", "/v1/models"})
+
+
+# OUTERMOST — and it must be registered AFTER the auth middleware below to BE
+# outermost: Starlette's add_middleware inserts at position 0, so the last one
+# registered is the outermost wrapper. (Registered before auth first time round,
+# which would have put it INSIDE the very BaseHTTPMiddleware that hides
+# http.disconnect — the exact bug it exists to work around.)
+#
+# The registration therefore trails the auth definition on purpose. Auth itself
+# is deliberately untouched.
+def _install_disconnect_watcher() -> None:
+    app.add_middleware(DisconnectWatcherMiddleware)
 
 
 @app.middleware("http")
@@ -3753,6 +3852,10 @@ async def _shared_secret_auth(request: Request, call_next):
 # Request Translation: Anthropic -> OpenAI
 # ===========================================================================
 
+
+
+# Auth is now defined, so this lands OUTSIDE it (add_middleware inserts at 0).
+_install_disconnect_watcher()
 
 def _image_block_to_openai(block: dict) -> dict | None:
     """Anthropic image block → OpenAI image_url part (data URI or URL)."""
@@ -10907,10 +11010,6 @@ async def messages(request: Request):
     - Option F: Session-level token monitoring with warnings
     """
     global last_session_id
-
-    # Publish this request's disconnect probe for the whole call tree. Set before
-    # ANY upstream work so an already-dead client is caught on the first call.
-    _current_client_gone.set(request.is_disconnected)
 
     body = await request.json()
     is_stream = body.get("stream", False)
