@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.174.0 (2026-07-30)
+
+- feat(delivery): close the run_bash hole in the stub guard with a turn-end sweep
+
+
 ## v1.173.0 (2026-07-30)
 
 - feat(delivery): refuse stub writes, and stop "it loads" from being sufficient
