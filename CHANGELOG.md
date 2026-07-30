@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.14 (2026-07-30)
+
+- fix(proxy): capture the disconnect in a pure-ASGI watcher, outside BaseHTTPMiddleware
+
+
 ## v1.172.13 (2026-07-29)
 
 - fix(proxy): make the disconnect check a choke point instead of a per-call claim
