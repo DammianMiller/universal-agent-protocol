@@ -131,13 +131,25 @@ def main() -> None:
         emit(True, "not a ship operation")
 
     cmd = args.get("command") or args.get("cmd") or ""
-    # The policy-gate hook runs in the harness env, not the inline command env,
-    # so `UAP_NO_REVIEW=1 git commit ...` never reaches os.environ above. Honor
-    # an inline assignment parsed from the command string too.
-    # Anchored to a LEADING env-assignment run so an incidental mention in a
-    # quoted arg / commit message does NOT silently skip review.
-    if re.search(r"^\s*(?:[A-Za-z_]\w*=\S*\s+)*UAP_NO_REVIEW=['\"]?1\b", cmd):
-        emit(True, "UAP_NO_REVIEW inline override set")
+    # The inline override is GONE, deliberately.
+    #
+    # It used to parse a leading UAP_NO_REVIEW=1 assignment out of the command
+    # string, on the reasoning that the policy-gate hook runs in the harness
+    # environment and so cannot see one. That reasoning was correct — but the
+    # agent composes its own command strings, which made the override
+    # SELF-GRANTABLE. In practice an agent session waived expert review on every
+    # ship action it performed. That is not delegating the decision, it is
+    # removing the gate.
+    #
+    # Now environment-only: os.environ is set by whoever launched the session, so
+    # the decision stays with the operator. Two env-free routes remain for
+    # harnesses that strip the environment, and both are deliberate acts visible
+    # in the tree rather than a per-command flag:
+    #   - policies/waivers/*expert-review*.md
+    #   - .uap/reviews/WAIVER
+    # enforcement-self-protect also lists this flag among the bypasses the agent
+    # may not set, so an inline attempt is refused with an explicit message
+    # instead of appearing to work.
     if not any(p.search(cmd) for p in SHIP_PATTERNS):
         emit(True, "not a ship action")
 
@@ -175,7 +187,8 @@ def main() -> None:
             f"expert-review-required: no review artifact at .uap/reviews/{slug}.json. "
             "Run the parallel-expert-review skill (code-quality, security, performance, "
             "docs, test-coverage reviewers) and record the consolidated verdict before "
-            "shipping. Override for one-off meta-work: UAP_NO_REVIEW=1.",
+            "shipping. Operator override: UAP_NO_REVIEW=1 in the launch environment "
+            "(no longer honoured inline), or a waiver file.",
         )
 
     head = head_sha(root)
@@ -192,7 +205,7 @@ def main() -> None:
             False,
             f"expert-review-required: review at .uap/reviews/{slug}.json covers branch "
             f"'{artifact_branch}', not '{branch}'. Re-run the parallel expert review on "
-            "this branch. Override: UAP_NO_REVIEW=1.",
+            "this branch. Operator override: UAP_NO_REVIEW=1 in the launch environment.",
         )
 
     # Stale check relative to current HEAD.

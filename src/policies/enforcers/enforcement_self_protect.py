@@ -51,6 +51,14 @@ BYPASS_PATTERNS = (
     re.compile(r"UAP_SELF_PROTECT_OFF\s*=\s*['\"]?1", re.I),
     re.compile(r"UAP_NO_WORKTREE\s*=\s*['\"]?1", re.I),
     re.compile(r"UAP_WORKDIR_SCOPE_OFF\s*=\s*['\"]?1", re.I),
+    # infra-protect's hatch is environment-only by design; an inline assignment
+    # would be self-grantable, so refuse it here with a clear message rather than
+    # letting it look like it worked.
+    re.compile(r"UAP_INFRA_PROTECT_OFF\s*=\s*['\"]?1", re.I),
+    # expert-review's override is environment-only too, for the same reason: the
+    # agent writes its own command strings, so an inline form waives its own
+    # review. Refuse it here so the attempt is visible rather than silent.
+    re.compile(r"UAP_NO_REVIEW\s*=\s*['\"]?1", re.I),
     re.compile(r"UAP_USER_VALIDATION\s*=\s*['\"]?0", re.I),
 )
 # Destructive ops against the enforcer/policy surface.

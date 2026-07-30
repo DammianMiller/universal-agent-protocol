@@ -34,6 +34,7 @@ Scope (Bash/bash/run_bash commands only):
 Killing a SPECIFIC process pattern (e.g. `pkill -f "python3 -m http.server
 8765"`) and serving on non-infra ports stay allowed.
 """
+import os
 import re
 import sys
 from pathlib import Path
@@ -94,7 +95,8 @@ REASON = (
     "session runs on (llama-server :8080 / UAP proxy :4000 / embeddings :8081). "
     "Kill only your own processes by SPECIFIC pattern (e.g. pkill -f 'python3 -m "
     "http.server 8765') and serve your app on a port other than 8080/4000/8081 "
-    "(e.g. 8765)."
+    "(e.g. 8765). Operator override: set UAP_INFRA_PROTECT_OFF=1 in the launch "
+    "environment (not inline on the command)."
 )
 
 
@@ -140,8 +142,31 @@ def _referenced_script_bodies(cmd: str, limit: int = 4) -> list[tuple[str, str]]
     return found
 
 
+# Operator escape hatch — ENVIRONMENT ONLY, deliberately.
+#
+# This is the only enforcer that had no override, which is why every restart of
+# the inference stack required the operator to run the command by hand. That is
+# defensible for a control whose purpose is to stop the agent cycling the stack
+# it runs on, but it also meant an operator who WANTED the agent to restart a
+# service had no way to say so.
+#
+# It reads os.environ and nothing else. It does NOT honour an inline
+# `UAP_INFRA_PROTECT_OFF=1 systemctl ...` assignment, unlike expert-review's
+# override, because the agent composes its own command strings: an inline form is
+# self-grantable and would delete the control rather than delegate it. An
+# environment variable is set by whoever launched the session, so honouring only
+# that keeps the decision with the operator.
+#
+# enforcement-self-protect additionally lists this flag among the bypasses the
+# agent may not set, so an inline attempt is refused with an explicit message
+# instead of silently doing nothing.
+OVERRIDE = os.environ.get("UAP_INFRA_PROTECT_OFF") == "1"
+
+
 def main() -> None:
     operation, args = parse_cli()
+    if OVERRIDE:
+        emit(True, "UAP_INFRA_PROTECT_OFF=1 set in the launch environment (operator)")
     if operation not in BASH_OPS:
         emit(True, "not a shell operation")
     cmd = str(args.get("command") or "")
