@@ -34,8 +34,8 @@ import { FOLLOW_CLIENT_POLL_SEC } from '../../delivery/await-run.js';
 import { isValidRunId } from '../../delivery/run-state.js';
 
 export interface DeliverArgs {
-  /** The delivery/coding task instruction */
-  instruction: string;
+  /** The delivery/coding task. Required to LAUNCH; omit for follow/resume. */
+  instruction?: string;
   /** Project whose gates define delivery (default: cwd) */
   projectRoot?: string;
   /** Maximum execute→verify iterations (1-20). ADVISORY unless hardCap is true. */
@@ -94,6 +94,9 @@ Best for: implement a feature, fix a bug across files, refactor with tests. Not 
     properties: {
       instruction: {
         type: 'string',
+        // Stated on the property because this is where a model looks before
+        // filling one in; repeating a long brief on every poll is the cost.
+
         description: 'The delivery/coding task, e.g. "implement a token-bucket rate limiter and wire it into the auth middleware with tests"',
       },
       projectRoot: {
@@ -124,7 +127,8 @@ Best for: implement a feature, fix a bug across files, refactor with tests. Not 
         description:
           'Wait for the deliver run already in flight and return its result, instead of starting a new one. ' +
           'This is the correct response to a timed-out deliver call or an alreadyRunning result — it starts ' +
-          'nothing. It returns within about a minute either way: if the mission is still going you get ' +
+          'nothing, and needs NO instruction — omit it, do not restate the mission. ' +
+          'It returns within about a minute either way: if the mission is still going you get ' +
           '"STILL RUNNING", which is NOT a failure — just call it again to keep waiting. Prefer that over ' +
           'sleeping in a shell. Do not use resume for this: resume CONTINUES a run and would start a second ' +
           'copy of a live one.',
@@ -170,7 +174,11 @@ Best for: implement a feature, fix a bug across files, refactor with tests. Not 
         description: 'Decompose the mission into sequential phases, each converged by its own loop (auto for long complex tasks; false disables)',
       },
     },
-    required: ['instruction'],
+    // `required` is OMITTED, not empty. follow and resume are valid calls without
+    // an instruction, and a client that enforces `required` would reject them
+    // before the handler could apply the real rule (see handleDeliver). An empty
+    // array says the same thing but is rejected outright by OpenAPI 3.0 schema
+    // converters and draft-04 validators, which would drop the whole tool.
   },
 };
 
@@ -317,17 +325,17 @@ export function buildDeliverCliArgs(
   if (a.dryRun) cliArgs.push('--dry-run');
   cliArgs.push('--project-root', root); // always explicit (confined above)
   // Turn caps are forwarded ONLY under an explicit hardCap: the CLI treats
-  // --max-turns/--a.ceiling as hard stops, and LLM clients copy small example
+  // --max-turns/--ceiling as hard stops, and LLM clients copy small example
   // numbers into every call — which killed platform-scale missions at turn 20.
   // Flagless, deliver's epics + until-delivered machinery self-manages turns.
   if (a.hardCap === true && a.maxTurns !== undefined) cliArgs.push('--max-turns', String(a.maxTurns));
-  if (a.model) cliArgs.push('--a.model', a.model);
-  if (a.acceptance) cliArgs.push('--a.acceptance');
-  if (a.evaluatorModel) cliArgs.push('--evaluator-a.model', a.evaluatorModel);
-  if (a.escalate) cliArgs.push('--a.escalate');
-  if (a.coordinate) cliArgs.push('--a.coordinate');
+  if (a.model) cliArgs.push('--model', a.model);
+  if (a.acceptance) cliArgs.push('--acceptance');
+  if (a.evaluatorModel) cliArgs.push('--evaluator-model', a.evaluatorModel);
+  if (a.escalate) cliArgs.push('--escalate');
+  if (a.coordinate) cliArgs.push('--coordinate');
   if (a.untilDelivered === false) cliArgs.push('--no-until-delivered');
-  if (a.hardCap === true && a.ceiling !== undefined) cliArgs.push('--a.ceiling', String(a.ceiling));
+  if (a.hardCap === true && a.ceiling !== undefined) cliArgs.push('--ceiling', String(a.ceiling));
   if (a.follow) {
     cliArgs.push('--await-run');
     // ALWAYS explicit, and always short. This is the only layer that knows the
@@ -337,8 +345,8 @@ export function buildDeliverCliArgs(
     //
     // Clamped even when the caller names a bigger a.timeoutSec. That parameter is
     // overloaded: it is the LAUNCH kill-timeout, whose description advertises
-    // 1800 and whose sibling text invites "a larger a.timeoutSec for platform-scale
-    // work". A a.model following that advice with follow:true would ask for a
+    // 1800 and whose sibling text invites "a larger timeoutSec for platform-scale
+    // work". A model following that advice with follow:true would ask for a
     // 1620s wait and re-create the original incident verbatim — no answer, and an
     // orphaned process. Blocking longer than the client will wait is never what
     // the caller wants; calling a.follow again is.
@@ -348,9 +356,9 @@ export function buildDeliverCliArgs(
     );
     cliArgs.push('--await-timeout', String(Math.max(1, followSec)));
   }
-  if (a.resume) cliArgs.push('--a.resume', a.resume);
-  if (a.decompose === true) cliArgs.push('--a.decompose');
-  if (a.decompose === false) cliArgs.push('--no-a.decompose');
+  if (a.resume) cliArgs.push('--resume', a.resume);
+  if (a.decompose === true) cliArgs.push('--decompose');
+  if (a.decompose === false) cliArgs.push('--no-decompose');
   cliArgs.push('--', a.instruction ?? '');
   return cliArgs;
 }
@@ -360,11 +368,22 @@ export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
   // decisions moved into buildDeliverCliArgs.
   const {
     instruction, projectRoot, maxTurns, model, dryRun = false, timeoutSec,
-    evaluatorModel, ceiling, resume,
+    evaluatorModel, ceiling, resume, follow = false,
   } = args;
 
-  if ((!instruction || !instruction.trim()) && !resume) {
-    return Promise.resolve({ ok: false, dryRun, error: 'instruction is required (or pass resume)' });
+  // follow and resume both identify an EXISTING run — follow by the project's
+  // lock, resume by run id — so neither needs the mission text.
+  //
+  // This is not a nicety. With a short poll budget a caller follows repeatedly,
+  // and requiring the instruction made every poll re-send the entire mission
+  // brief: observed live at ~2 KB a call, which over a long mission is tens of
+  // KB of a 130 K context spent restating something the harness already has.
+  if ((!instruction || !instruction.trim()) && !resume && !follow) {
+    return Promise.resolve({
+      ok: false,
+      dryRun,
+      error: 'instruction is required (or pass resume to continue a stopped run, or follow to watch a running one)',
+    });
   }
   if (maxTurns !== undefined && (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_TURNS_LIMIT)) {
     return Promise.resolve({ ok: false, dryRun, error: `maxTurns must be an integer 1-${MAX_TURNS_LIMIT}` });

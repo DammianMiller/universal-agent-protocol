@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.2 (2026-07-30)
+
+- fix(mcp): restore mangled deliver CLI flags, and stop follow re-sending the brief
+
+
 ## v1.175.1 (2026-07-30)
 
 - fix(deliver): size the follow budget to the CLIENT, not to the server
