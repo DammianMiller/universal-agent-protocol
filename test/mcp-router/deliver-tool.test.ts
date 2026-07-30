@@ -5,11 +5,13 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   DELIVER_TOOL_DEFINITION,
+  buildDeliverCliArgs,
   handleDeliver,
   estimateDeliverToolTokens,
   extractLastJson,
 } from '../../src/mcp-router/tools/deliver.js';
 import { McpRouter } from '../../src/mcp-router/server.js';
+import { FOLLOW_CLIENT_POLL_SEC } from '../../src/delivery/await-run.js';
 
 describe('DELIVER_TOOL_DEFINITION', () => {
   it('is a well-formed MCP tool definition requiring instruction', () => {
@@ -206,6 +208,70 @@ describe('handleDeliver when a run is already in progress (real CLI subprocess)'
   }, 120_000);
 });
 
+describe('buildDeliverCliArgs — follow budget', () => {
+  /**
+   * These assert the thing that actually broke.
+   *
+   * The field failure was NOT a wrong constant — it was this layer overriding a
+   * sane default with 1620s, because it sized the wait from its OWN kill timeout
+   * instead of from the client's request timeout. A test that asserts
+   * `expect(45).toBeLessThan(62)` passes with that bug fully present; only argv
+   * catches it.
+   */
+  const base = { instruction: 'do it' };
+  const argv = (over: Record<string, unknown> = {}): string[] =>
+    buildDeliverCliArgs('/cli.js', '/proj', { ...base, ...over } as never);
+
+  function flagValue(args: string[], flag: string): string | undefined {
+    const i = args.indexOf(flag);
+    return i === -1 ? undefined : args[i + 1];
+  }
+
+  it('always passes an explicit short budget when following', () => {
+    // Never left to the CLI default: that default is LONG on purpose, for the
+    // shell and CI caller who has no request timeout.
+    const a = argv({ follow: true });
+    expect(a).toContain('--await-run');
+    expect(Number(flagValue(a, '--await-timeout'))).toBe(FOLLOW_CLIENT_POLL_SEC);
+    expect(FOLLOW_CLIENT_POLL_SEC).toBeLessThan(60); // inside an MCP request timeout
+  });
+
+  it('CLAMPS a caller that asks for a long block', () => {
+    // timeoutSec is overloaded — it is the LAUNCH kill-timeout, its own schema
+    // advertises 1800, and the tool description invites "a larger timeoutSec for
+    // platform-scale work". A model doing both would ask for a ~1620s wait and
+    // re-create the incident: killed at ~60s, no answer, orphaned process.
+    expect(Number(flagValue(argv({ follow: true, timeoutSec: 1800 }), '--await-timeout'))).toBe(
+      FOLLOW_CLIENT_POLL_SEC
+    );
+    expect(Number(flagValue(argv({ follow: true, timeoutSec: 600 }), '--await-timeout'))).toBe(
+      FOLLOW_CLIENT_POLL_SEC
+    );
+  });
+
+  it('respects a SHORTER explicit timeout, staying strictly under the kill', () => {
+    // Below the kill timeout, or the child is killed mid-wait and the caller is
+    // back to being unable to tell a kill from a failure.
+    const a = argv({ follow: true, timeoutSec: 10 });
+    expect(Number(flagValue(a, '--await-timeout'))).toBe(9);
+    const tiny = argv({ follow: true, timeoutSec: 1 });
+    expect(Number(flagValue(tiny, '--await-timeout'))).toBeGreaterThanOrEqual(1);
+    expect(Number(flagValue(tiny, '--await-timeout'))).toBeLessThanOrEqual(1);
+  });
+
+  it('passes no follow flags at all when not following', () => {
+    const a = argv({});
+    expect(a).not.toContain('--await-run');
+    expect(a).not.toContain('--await-timeout');
+  });
+
+  it('keeps the instruction behind `--`, after the options', () => {
+    const a = argv({ follow: true });
+    expect(a[a.length - 2]).toBe('--');
+    expect(a[a.length - 1]).toBe('do it');
+  });
+});
+
 describe('handleDeliver follow mode (real CLI subprocess)', () => {
   /**
    * `follow` is the door that was missing. A caller whose tool timeout fired had
@@ -238,6 +304,25 @@ describe('handleDeliver follow mode (real CLI subprocess)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 120_000);
+
+  it('does NOT tell a timed-out caller to resume', () => {
+    // resume CONTINUES a run and skips the single-flight lock, so on a live
+    // holder it starts a second copy. This is the highest-priority text the model
+    // reads, and it used to name resume as the answer to a timeout.
+    const d = DELIVER_TOOL_DEFINITION.description;
+    expect(d).toMatch(/times out[\s\S]{0,120}follow:true/i);
+    expect(d).toMatch(/do not use resume/i);
+  });
+
+  it('advertises that STILL RUNNING is not a failure and should be re-polled', () => {
+    // With a short default budget this is the common answer, so the schema has to
+    // say what to do with it — otherwise a caller reads "not ok" and relaunches,
+    // which is the loop follow was built to end.
+    const props = DELIVER_TOOL_DEFINITION.inputSchema.properties as Record<string, { description?: string }>;
+    expect(props.follow.description).toMatch(/still running/i);
+    expect(props.follow.description).toMatch(/call it again|keep waiting/i);
+    expect(props.follow.description).toMatch(/not a failure|NOT a failure/);
+  });
 
   it('is advertised to the model as the response to alreadyRunning', () => {
     const props = DELIVER_TOOL_DEFINITION.inputSchema.properties as Record<string, { description?: string }>;

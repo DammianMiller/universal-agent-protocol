@@ -48,6 +48,24 @@ import { listRuns, type DeliverRunState } from './run-state.js';
 /** Default poll interval — fast enough to feel immediate, idle enough to ignore. */
 const DEFAULT_POLL_MS = 2000;
 
+/**
+ * How long a follow should wait when the caller is an MCP CLIENT (seconds).
+ *
+ * The binding constraint is the client's request timeout, not the server's
+ * patience — and only the MCP layer knows its caller has one. Measured on the
+ * live client (opencode, 2026-07-30): a tool call is abandoned after 62s, which
+ * is the MCP SDK's 60s default request timeout plus start-up. A follow budget
+ * above that is killed before it can answer — reproducing the exact
+ * kill-vs-failure ambiguity follow exists to remove — and strands a process
+ * waiting on a question nobody is listening for (observed: a 1620s follow,
+ * orphaned, while the model fell back to `sleep 180 && cat`).
+ *
+ * This is deliberately NOT the CLI's default. A human at a terminal, or a CI
+ * step, has no such limit and should get a long block; capping THEM at 45s was
+ * the first attempt at this fix and it punished the caller that was not broken.
+ */
+export const FOLLOW_CLIENT_POLL_SEC = 45;
+
 export interface AwaitOptions {
   /** Give up after this long and say so. */
   timeoutMs: number;
