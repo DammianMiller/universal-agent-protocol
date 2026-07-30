@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.174.1 (2026-07-30)
+
+- fix(deliver): honour the --json contract on early exits
+
+
 ## v1.174.0 (2026-07-30)
 
 - feat(delivery): close the run_bash hole in the stub guard with a turn-end sweep
