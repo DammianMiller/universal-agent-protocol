@@ -14,9 +14,16 @@ import { McpRouter } from '../../src/mcp-router/server.js';
 import { FOLLOW_CLIENT_POLL_SEC } from '../../src/delivery/await-run.js';
 
 describe('DELIVER_TOOL_DEFINITION', () => {
-  it('is a well-formed MCP tool definition requiring instruction', () => {
+  it('is a well-formed MCP tool definition', () => {
     expect(DELIVER_TOOL_DEFINITION.name).toBe('deliver');
-    expect(DELIVER_TOOL_DEFINITION.inputSchema.required).toContain('instruction');
+    // `instruction` is deliberately NOT in `required`. It is required to LAUNCH,
+    // and the handler enforces that — but follow and resume address an existing
+    // run and need no mission text, and a client that enforces `required` would
+    // reject those calls before the handler could apply the real rule.
+    expect(DELIVER_TOOL_DEFINITION.inputSchema.properties).toHaveProperty('instruction');
+    // Deliberately ABSENT rather than empty: `required: []` is rejected by
+    // OpenAPI 3.0 converters and draft-04 validators, which would drop the tool.
+    expect(DELIVER_TOOL_DEFINITION.inputSchema.required).toBeUndefined();
     expect(DELIVER_TOOL_DEFINITION.inputSchema.properties).toHaveProperty('dryRun');
     expect(DELIVER_TOOL_DEFINITION.description).toMatch(/convergence loop|uap deliver/i);
     expect(estimateDeliverToolTokens()).toBeGreaterThan(0);
@@ -28,6 +35,36 @@ describe('handleDeliver validation', () => {
     const r = await handleDeliver({ instruction: '   ' });
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/instruction is required/);
+  });
+
+  it('does NOT demand an instruction for follow', async () => {
+    // follow identifies the run by the project's lock, not by text. Requiring it
+    // made every poll re-send the whole mission brief — observed live at ~2KB a
+    // call, which over a long mission is tens of KB of a 130K context spent
+    // restating something the harness already has.
+    // A deliberately bogus root, so the call fails at the NEXT check instead of
+    // spawning the CLI — asserting that specific error proves the instruction
+    // gate was passed, which a bare `.not.toMatch` would not.
+    const r = await handleDeliver({ follow: true, projectRoot: '/definitely/not/a/real/path' });
+    expect(r.error ?? '').not.toMatch(/instruction is required/);
+    expect(r.error).toBeTruthy();
+  });
+
+  it('names follow and resume as the alternatives when the instruction is missing', async () => {
+    const r = await handleDeliver({});
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/instruction is required/);
+    expect(r.error).toMatch(/resume/);
+    expect(r.error).toMatch(/follow/);
+  });
+
+  it('does not force `instruction` through the schema, which would reject follow client-side', () => {
+    // A client that enforces `required` rejects the call before the handler can
+    // apply the real rule, so the schema must not contradict it.
+    // Absent, not empty — see the well-formed-definition test for why.
+    expect(DELIVER_TOOL_DEFINITION.inputSchema.required).toBeUndefined();
+    const props = DELIVER_TOOL_DEFINITION.inputSchema.properties as Record<string, { description?: string }>;
+    expect(props.follow.description).toMatch(/no instruction|omit it/i);
   });
 
   it('rejects an out-of-range maxTurns', async () => {
@@ -206,6 +243,67 @@ describe('handleDeliver when a run is already in progress (real CLI subprocess)'
     const held = readFileSync(join(root, '.uap', 'deliver.lock'), 'utf8').split('|')[0];
     expect(held).toBe(String(process.pid));
   }, 120_000);
+});
+
+describe('buildDeliverCliArgs — flag names', () => {
+  /**
+   * These exist because they were absent when they were needed.
+   *
+   * Extracting this function used a bare-identifier rename that also rewrote the
+   * FLAG STRING LITERALS: `'--model'` became `'--a.model'`, and so did resume,
+   * decompose, acceptance, escalate, coordinate, ceiling and evaluator-model —
+   * nine flags, shipped. The deliver subcommand does not allow unknown options,
+   * so commander aborted with nothing on stdout, which the caller then read as
+   * "could not parse deliver output" and answered by relaunching. Every argv
+   * assertion in the suite passed, because none of them looked at these flags.
+   */
+  const argv = (over: Record<string, unknown> = {}): string[] =>
+    buildDeliverCliArgs('/cli.js', '/proj', { instruction: 'do it', ...over } as never);
+
+  it('emits real CLI flag names, not the internal parameter names', () => {
+    const a = argv({
+      model: 'qwen', evaluatorModel: 'judge', resume: 'latest', decompose: true,
+      acceptance: true, escalate: true, coordinate: true, hardCap: true, ceiling: 7,
+    });
+    for (const flag of [
+      '--model', '--evaluator-model', '--resume', '--decompose',
+      '--acceptance', '--escalate', '--coordinate', '--ceiling',
+    ]) {
+      expect(a).toContain(flag);
+    }
+    // Nothing may carry the internal object prefix into an argv position.
+    expect(a.filter((x) => x.startsWith('--')).find((x) => x.includes('a.'))).toBeUndefined();
+  });
+
+  it('emits --no-decompose for an explicit false', () => {
+    expect(argv({ decompose: false })).toContain('--no-decompose');
+  });
+
+  it('every emitted flag is one the deliver CLI actually declares', () => {
+    // The failure mode was an unknown option, so assert against the real surface.
+    const declared = new Set([
+      '--json', '--dry-run', '--project-root', '--max-turns', '--model', '--acceptance',
+      '--evaluator-model', '--escalate', '--coordinate', '--no-until-delivered', '--ceiling',
+      '--await-run', '--await-timeout', '--resume', '--decompose', '--no-decompose',
+    ]);
+    const a = argv({
+      model: 'm', evaluatorModel: 'e', resume: 'latest', decompose: false, acceptance: true,
+      escalate: true, coordinate: true, untilDelivered: false, hardCap: true, maxTurns: 3,
+      ceiling: 5, dryRun: true, follow: true,
+    });
+    const stop = a.indexOf('--');
+    for (const tok of a.slice(0, stop)) {
+      if (tok.startsWith('--')) expect(declared.has(tok)).toBe(true);
+    }
+  });
+
+  it('emits an empty operand when following without an instruction', () => {
+    // The one line that can produce `-- ''`. Safe because the CLI handles
+    // --await-run before it ever reads the operand, but pin the contract.
+    const a = buildDeliverCliArgs('/cli.js', '/proj', { follow: true } as never);
+    expect(a).toContain('--await-run');
+    expect(a.slice(-2)).toEqual(['--', '']);
+  });
 });
 
 describe('buildDeliverCliArgs — follow budget', () => {
