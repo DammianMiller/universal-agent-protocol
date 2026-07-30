@@ -209,7 +209,18 @@ import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWi
 import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
 import { awaitInFlightDeliver } from '../delivery/await-run.js';
 
-/** Follow-mode budget when the caller names none, and its ceiling (seconds). */
+/**
+ * Follow-mode budget when the caller names none, and its ceiling (seconds).
+ *
+ * LONG on purpose. This default serves the shell and CI caller, who has no
+ * request timeout and wants `uap deliver --await-run` to block until the mission
+ * is done. The MCP layer — the only one that knows its caller gives up after
+ * about a minute — always passes an explicit short budget instead of relying on
+ * this (see FOLLOW_CLIENT_POLL_SEC).
+ *
+ * Making THIS short was the first attempt, and it was the wrong layer: it capped
+ * every terminal and CI caller at 45s to fix a limit that only one client has.
+ */
 const AWAIT_DEFAULT_BUDGET_SEC = 900;
 const AWAIT_MAX_BUDGET_SEC = 14_400;
 import { resolveFidelity } from '../delivery/fidelity.js';
@@ -718,7 +729,19 @@ export async function deliverCommand(instruction: string, options: DeliverOption
     // failed mission would be the same class of lie as emitting no JSON at all.
     // "nothing was running" gets its own code, because for a shell caller that is
     // neither success nor failure — it means "go ahead and launch".
-    process.exitCode = outcome.delivered ? 0 : outcome.nothingInFlight ? 3 : 1;
+    // Distinct codes, because a shell caller chains on these and three of the
+    // four outcomes are not failures:
+    //   0 delivered · 1 the mission ended badly · 3 nothing was running · 4 still
+    //   running (healthy — the wait gave up, the mission did not)
+    // Sharing 4 with 1 made `uap deliver --await-run && ./next` report failure for
+    // a perfectly healthy run, and at a short poll budget that is the COMMON case.
+    process.exitCode = outcome.delivered
+      ? 0
+      : outcome.nothingInFlight
+        ? 3
+        : outcome.timedOut
+          ? 4
+          : 1;
     return;
   }
 
@@ -831,6 +854,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         chalk.yellow(
           `↩ deliver already running for this project${holderPid ? ` (pid ${holderPid})` : ''} — ` +
             `skipping this duplicate launch. Follow it with \`uap deliver --await-run\` (waits and reports; ` +
+            `from a tool call it returns within about a minute — "still running" is an answer, not a failure, ` +
+            `so just call it again. It starts nothing.) ` +
             `starts nothing). Do NOT use --resume on a live run: resume CONTINUES a mission and would start a ` +
             `second copy of this one. (override: UAP_DELIVER_NO_LOCK=1)`
         )
@@ -861,7 +886,8 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
               nextStep:
                 'The mission you asked for is ALREADY RUNNING — nothing is wrong and nothing is needed from you. ' +
                 'Follow it instead: call deliver again with follow:true (or `uap deliver --await-run` from a ' +
-                'shell) to wait for it and receive its result. Do NOT start another ' +
+                'shell). It returns within about a minute; if it says STILL RUNNING that is not a failure — ' +
+                'call it again to keep waiting. Do NOT start another ' +
                 'run, do NOT pass resume (resume CONTINUES a run rather than following it, and would start a ' +
                 'second copy of this live one), and do NOT change any gate or enforcement setting.',
             },
