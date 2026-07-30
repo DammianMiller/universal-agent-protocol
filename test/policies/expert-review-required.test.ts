@@ -111,19 +111,26 @@ describe('expert-review-required enforcer', () => {
     expect(runEnforcer(repo, 'git push', { UAP_NO_REVIEW: '1' })).toBe(0);
   });
 
-  it('honors an inline UAP_NO_REVIEW=1 prefix (the hook strips the env)', () => {
-    // The policy-gate hook runs in the harness env, so an EXPORTED override
-    // never reaches a hook-spawned enforcer; the inline assignment on the ship
-    // command is the only form that can. A non-1 value or look-alike var must
-    // NOT bypass.
-    expect(runEnforcer(repo, 'UAP_NO_REVIEW=1 git push')).toBe(0);
+  it('does NOT honor an inline UAP_NO_REVIEW=1 prefix — it was self-grantable', () => {
+    // This test previously asserted the OPPOSITE, on the reasoning that the
+    // policy-gate hook runs in the harness env so an exported override never
+    // reaches a hook-spawned enforcer, leaving the inline form as the only one
+    // that could work. The reasoning was right and the conclusion was wrong:
+    // the agent composes its own command strings, so an inline override is one
+    // it grants itself. One session waived review on all eleven commits it
+    // made — not delegating the decision, removing the gate.
+    //
+    // Now environment-only. An operator sets it when launching the session;
+    // the env-free routes for harnesses that strip the environment are the
+    // waiver files, which are visible in the tree rather than per-command.
+    expect(runEnforcer(repo, 'UAP_NO_REVIEW=1 git push')).toBe(2);
+    expect(runEnforcer(repo, 'FOO=bar UAP_NO_REVIEW=1 git push')).toBe(2);
+    // Look-alikes and non-1 values were already refused; still are.
     expect(runEnforcer(repo, 'UAP_NO_REVIEW=0 git push')).toBe(2);
     expect(runEnforcer(repo, 'UAP_NO_REVIEWS=1 git push')).toBe(2);
-    // Anchored to a LEADING assignment: an incidental mention inside a quoted
-    // arg / commit message must NOT bypass review.
-    expect(runEnforcer(repo, 'git commit -m "note: never set UAP_NO_REVIEW=1"')).toBe(2);
-    // But a preceding unrelated env assignment is still a valid leading run.
-    expect(runEnforcer(repo, 'FOO=bar UAP_NO_REVIEW=1 git push')).toBe(0);
+    expect(runEnforcer(repo, 'git commit -m \"note: never set UAP_NO_REVIEW=1\"')).toBe(2);
+    // Unchanged: a non-ship command is not gated at all.
+    expect(runEnforcer(repo, 'echo hi')).toBe(0);
   });
 
   it('ignores non-ship commands', () => {
