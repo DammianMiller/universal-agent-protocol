@@ -323,6 +323,68 @@ describe('edit_file tool (P1, plan D3)', () => {
     }
   });
 
+  it('refuses a NEW file written as a stub — the case the size guard cannot see', async () => {
+    // The observed failure: six brand-new modules written straight to disk as
+    // skeletons. P3 only fires when the target already exists, so a first write
+    // had nothing to shrink from and sailed through.
+    mkdirSync(join(dir, 'js'), { recursive: true });
+    const stub = [
+      '/**',
+      ' * Player Module — Stub',
+      ' */',
+      'const Player = (function () {',
+      '  return { init() {}, update() {}, draw() {}, moveUp() {}, shoot() {}, reset() {} };',
+      '})();',
+    ].join('\n');
+    mockChatSequence([
+      call('write_file', { path: 'js/player.js', content: stub }),
+      call('finish', { summary: 'done' }, 't2'),
+    ]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('build the player module');
+    expect(existsSync(join(dir, 'js/player.js'))).toBe(false);
+  });
+
+  it('still writes a real implementation of the same module', async () => {
+    // The bar that matters: refusing stubs is worthless if it also refuses code.
+    mkdirSync(join(dir, 'js'), { recursive: true });
+    const real = [
+      'const Player = (function () {',
+      '  let x = 0, vx = 0;',
+      '  function init(c) { x = c.width / 2; }',
+      '  function update(dt) { x += vx * dt; if (x < 0) x = 0; }',
+      '  function draw(ctx) { ctx.fillRect(x, 10, 20, 20); }',
+      '  function moveLeft() { vx = -200; }',
+      '  function shoot(bs) { bs.push({ x }); }',
+      '  return { init, update, draw, moveLeft, shoot };',
+      '})();',
+    ].join('\n');
+    mockChatSequence([
+      call('write_file', { path: 'js/player.js', content: real }),
+      call('finish', { summary: 'done' }, 't2'),
+    ]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('build the player module');
+    expect(readFileSync(join(dir, 'js/player.js'), 'utf-8')).toBe(real);
+  });
+
+  it('UAP_DELIVER_ALLOW_STUBS=1 permits a deliberately empty-bodied file', async () => {
+    mkdirSync(join(dir, 'js'), { recursive: true });
+    process.env.UAP_DELIVER_ALLOW_STUBS = '1';
+    try {
+      const stub = 'const A = { a() {}, b() {}, c() {}, d() {}, e() {}, f() {} };';
+      mockChatSequence([
+        call('write_file', { path: 'js/iface.js', content: stub }),
+        call('finish', { summary: 'done' }, 't2'),
+      ]);
+      const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+      await exec('write the interface');
+      expect(readFileSync(join(dir, 'js/iface.js'), 'utf-8')).toBe(stub);
+    } finally {
+      delete process.env.UAP_DELIVER_ALLOW_STUBS;
+    }
+  });
+
   it('#2a: fires onToolProgress after EACH tool execution (per-tool-call heartbeat)', async () => {
     mkdirSync(join(dir, 'src'), { recursive: true });
     let progress = 0;

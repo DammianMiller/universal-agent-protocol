@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.173.0 (2026-07-30)
+
+- feat(delivery): refuse stub writes, and stop "it loads" from being sufficient
+
+
 ## v1.172.15 (2026-07-30)
 
 - fix(policy): make both operator overrides environment-only, not self-grantable
