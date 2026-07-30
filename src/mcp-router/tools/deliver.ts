@@ -364,12 +364,68 @@ export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
           return;
         }
         if (parsed === undefined) {
-          resolvePromise({ ok: false, dryRun, exitCode, error: 'could not parse deliver output', result: stdout.slice(-2000) });
+          // Reaching here means the CLI exited without honouring --json. That is
+          // a bug in the CLI rather than anything the caller did, so the message
+          // must not read like a mission failure the caller should retry —
+          // retrying is what turned one such gap into a launch loop.
+          resolvePromise({
+            ok: false,
+            dryRun,
+            exitCode,
+            error:
+              'deliver produced no JSON result (its --json contract was not honoured on this exit path). ' +
+              'Do NOT relaunch blindly: check whether a run is already in progress, and use resume:\'latest\' to follow it.',
+            result: stdout.slice(-2000),
+          });
           return;
         }
         // Prefer the payload's own success signal over the exit code so a
         // future CLI exit-code change can't silently flip the semantics.
-        const r = parsed as { success?: boolean; alreadyDelivered?: boolean };
+        const r = parsed as {
+          success?: boolean;
+          alreadyDelivered?: boolean;
+          alreadyRunning?: boolean;
+          holderPid?: string;
+          nextStep?: string;
+        };
+        // A duplicate launch is NOT a failure of the mission — the mission is
+        // running. Saying only `ok:false` invites the caller to retry, which is
+        // what produced the observed loop: timeout -> relaunch -> duplicate ->
+        // retry. Carry the reason and the one correct next move in `error`,
+        // because that is the field a tool caller reads first.
+        if (r.alreadyRunning === true) {
+          resolvePromise({
+            ok: false,
+            dryRun,
+            exitCode,
+            error:
+              `a deliver run is already in progress for this project` +
+              `${r.holderPid ? ` (pid ${r.holderPid})` : ''} — this duplicate launch was skipped. ` +
+              (r.nextStep ??
+                'Wait for the in-flight run to finish; do not start another and do not pass resume.'),
+            result: parsed,
+          });
+          return;
+        }
+        // Preflight refusals need the same treatment: without this they resolve
+        // with NO `error` at all, leaving the actionable text buried in
+        // `result.blockers` — in a shape whose own contract says `error` is what
+        // a caller reads first.
+        const pf = parsed as { preflightFailed?: boolean; blockers?: unknown; nextStep?: string };
+        if (pf.preflightFailed === true) {
+          const blockers = Array.isArray(pf.blockers) ? pf.blockers.map(String) : [];
+          resolvePromise({
+            ok: false,
+            dryRun,
+            exitCode,
+            error:
+              'this project cannot deliver until its setup is fixed: ' +
+              (blockers.join(' | ').slice(0, 600) || 'see result.blockers') +
+              '. Re-running unchanged will fail the same way.',
+            result: parsed,
+          });
+          return;
+        }
         const ok = typeof r.success === 'boolean' ? r.success || r.alreadyDelivered === true : exitCode === 0;
         resolvePromise({ ok, dryRun, exitCode, result: parsed });
       }

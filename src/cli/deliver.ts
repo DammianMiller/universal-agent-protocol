@@ -719,6 +719,27 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   for (const h of preflight.healed) console.log(chalk.dim(`  preflight: ${h}`));
   if (!preflight.ok && !options.dryRun) {
     console.error(chalk.red(formatPreflightFailure(preflight)));
+    // Same --json contract as the duplicate-launch guard below: an exit that
+    // prints only prose leaves a `--json` caller parsing nothing, and the MCP
+    // tool turns "no JSON" into "could not parse deliver output" — a message
+    // about the harness rather than about the project, which is the opposite of
+    // actionable when the real answer is one `git init` away.
+    if (options.json) {
+      console.log(
+        JSON.stringify(
+          {
+            success: false,
+            preflightFailed: true,
+            projectRoot,
+            blockers: preflight.blockers,
+            nextStep:
+              'Fix the project setup listed in `blockers` before delivering; re-running unchanged will fail the same way.',
+          },
+          null,
+          2
+        )
+      );
+    }
     process.exitCode = 1;
     throw new ExitError();
   }
@@ -735,13 +756,53 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       try {
         holder = stripControl(readFileSync(join(projectRoot, '.uap', 'deliver.lock'), 'utf8').split('|')[0]);
       } catch { /* gone already */ }
+      // Validated, not merely trimmed: this value is read from a file any local
+      // process can write, and it ends up inside the instruction text the model
+      // acts on. A lock file containing newlines and prose would otherwise become
+      // tool-result guidance. It is always a pid or it is not forwarded.
+      const holderRaw = holder.trim();
+      const holderPid = /^\d{1,10}$/.test(holderRaw) ? holderRaw : '';
       console.log(
         chalk.yellow(
-          `↩ deliver already running for this project${holder ? ` (pid ${holder.trim()})` : ''} — ` +
+          `↩ deliver already running for this project${holderPid ? ` (pid ${holderPid})` : ''} — ` +
             `skipping this duplicate launch. Wait for it, or \`uap deliver --resume latest\` to follow it. ` +
             `(override: UAP_DELIVER_NO_LOCK=1)`
         )
       );
+      // --json is a CONTRACT: every exit must emit a parseable result. This path
+      // used to print the yellow line above and return, leaving a caller that ran
+      // `deliver --json` with a stdout containing no JSON at all.
+      //
+      // The MCP deliver tool is exactly such a caller, and its parser turns "no
+      // JSON" into `error: could not parse deliver output`. Observed live
+      // (opencode, 2026-07-30): the client's own tool timeout fired while the real
+      // mission continued detached, the model called deliver again, hit this
+      // guard, and was told its output could not be parsed. It then went looking
+      // for a delivery-enforcement override to force its way through — reaching
+      // for a gate switch because the harness never told it the plain truth, which
+      // was that its own mission was already running and it only had to wait.
+      // `alreadyRunning` states that in the one field the caller actually reads.
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            {
+              success: false,
+              alreadyRunning: true,
+              ...(holderPid ? { holderPid } : {}),
+              projectRoot,
+              reason:
+                'A deliver run is already in progress for this project; this duplicate launch was skipped.',
+              nextStep:
+                'The mission you asked for is ALREADY RUNNING — nothing is wrong and nothing is needed from you. ' +
+                'Wait for it to finish, then read its result. Do NOT start another run, do NOT pass resume ' +
+                '(resume deliberately skips this lock and would run a second copy of the same mission), and do ' +
+                'NOT change any gate or enforcement setting.',
+            },
+            null,
+            2
+          )
+        );
+      }
       return;
     }
   }
@@ -2986,6 +3047,21 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   if (result.alreadyDelivered) {
     console.log(chalk.yellow('All gates already pass — nothing to converge on. No model calls made.'));
     process.exitCode = 0;
+    // Same --json contract as the guards above. This is the likeliest state a
+    // caller reaches right after the duplicate-launch case: the detached mission
+    // finished, the caller relaunched, and the gates are now green. Returning
+    // without JSON here would have handed it the same unparseable output that
+    // sent the last one looking for a gate override.
+    if (options.json) {
+      const { finalOutput: alreadyFinal, ...alreadyRest } = result;
+      console.log(
+        JSON.stringify(
+          { ...alreadyRest, runId, finalOutput: alreadyFinal.slice(0, 4000) },
+          null,
+          2
+        )
+      );
+    }
     return;
   }
 
