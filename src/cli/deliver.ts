@@ -207,6 +207,11 @@ function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unkn
 }
 import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow } from '../delivery/context-budget.js';
 import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
+import { awaitInFlightDeliver } from '../delivery/await-run.js';
+
+/** Follow-mode budget when the caller names none, and its ceiling (seconds). */
+const AWAIT_DEFAULT_BUDGET_SEC = 900;
+const AWAIT_MAX_BUDGET_SEC = 14_400;
 import { resolveFidelity } from '../delivery/fidelity.js';
 import { installRunExitRecorder } from '../delivery/run-exit.js';
 import {
@@ -342,6 +347,10 @@ export interface DeliverOptions {
   ceiling?: string;
   /** Resume an interrupted durable run: a run id or 'latest'. */
   resume?: string;
+  /** Follow the run already in flight instead of starting one (read-only wait). */
+  awaitRun?: boolean;
+  /** Seconds --await-run waits before reporting the run as still in flight. */
+  awaitTimeout?: string;
   /** Lazy-UAP (default ON): one bare single turn first; the convergence aids
    * engage only if it fails the gates. commander sets false on --no-lazy;
    * UAP_DELIVER_LAZY=0 disables globally. */
@@ -657,6 +666,62 @@ export async function deliverCommand(instruction: string, options: DeliverOption
   // `uap deliver` from it was spawning a long mission inside a short one, and
   // the mission died wherever it happened to be when the call ended. Re-launch
   // into our own session first, then mirror the output (see deliver-detach.ts).
+  // Follow-mode: attach to the in-flight run and report it. Deliberately ahead of
+  // the detach decision — this is a read-only wait, so backgrounding it would
+  // hand the caller a detach banner instead of the answer it asked for.
+  if (options.awaitRun) {
+    // Refuse rather than silently drop: follow short-circuits everything, so
+    // `--await-run --dry-run` would return a status report to someone who asked
+    // for a plan, and `--await-run --resume X` would ignore the resume.
+    const conflict = options.dryRun ? '--dry-run' : options.resume ? '--resume' : '';
+    if (conflict) {
+      const msg = `--await-run cannot be combined with ${conflict}: following watches a run, it does not plan or continue one.`;
+      console.error(chalk.red(msg));
+      if (options.json) console.log(JSON.stringify({ success: false, error: msg }, null, 2));
+      process.exitCode = 2;
+      return;
+    }
+    const followRoot = resolve(options.projectRoot ?? process.cwd());
+    // The caller sets this just under its OWN tool timeout, so follow-mode can
+    // return "still running" as a result rather than being killed mid-wait —
+    // being killed is what the caller already cannot distinguish from failure.
+    const rawBudget = Number(options.awaitTimeout ?? 0);
+    const budgetSec =
+      Number.isFinite(rawBudget) && rawBudget > 0
+        ? Math.min(rawBudget, AWAIT_MAX_BUDGET_SEC)
+        : AWAIT_DEFAULT_BUDGET_SEC;
+    const budgetMs = Math.max(1, budgetSec) * 1000;
+    let lastTickBucket = 0;
+    const outcome = await awaitInFlightDeliver(followRoot, {
+      timeoutMs: budgetMs,
+      onTick: (elapsed, pid) => {
+        // Bucketed rather than modulo-tested: `elapsed % 15000 < pollMs` matches
+        // twice whenever the poll phase aligns with the interval.
+        const bucket = Math.floor(elapsed / 15000);
+        if (!options.json && bucket > lastTickBucket) {
+          lastTickBucket = bucket;
+          console.log(chalk.dim(`  …following deliver (pid ${pid}) — ${Math.round(elapsed / 1000)}s`));
+        }
+      },
+    });
+    console.log(
+      outcome.followed ? chalk.green(`✓ ${outcome.reason}`) : chalk.yellow(`↩ ${outcome.reason}`)
+    );
+    console.log(chalk.dim(`  ${outcome.nextStep}`));
+    // `delivered`, not `followed`: watching a mission finish and the mission
+    // SUCCEEDING are different facts. The MCP layer prefers this field over the
+    // exit code, so collapsing them reported a failed mission as ok:true — the
+    // same class of lie the exit-code comment below forbids.
+    if (options.json) console.log(JSON.stringify({ success: outcome.delivered, ...outcome }, null, 2));
+    // Exit code mirrors the FOLLOWED RUN, not the act of following: a caller that
+    // shell-chains on this wants the mission's verdict, and reporting 0 for a
+    // failed mission would be the same class of lie as emitting no JSON at all.
+    // "nothing was running" gets its own code, because for a shell caller that is
+    // neither success nor failure — it means "go ahead and launch".
+    process.exitCode = outcome.delivered ? 0 : outcome.nothingInFlight ? 3 : 1;
+    return;
+  }
+
   const projectRootForDetach = resolve(options.projectRoot ?? process.cwd());
   const decision = shouldDetach({
     alreadyDetached: isDetachedChild(),
@@ -765,8 +830,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(
         chalk.yellow(
           `↩ deliver already running for this project${holderPid ? ` (pid ${holderPid})` : ''} — ` +
-            `skipping this duplicate launch. Wait for it, or \`uap deliver --resume latest\` to follow it. ` +
-            `(override: UAP_DELIVER_NO_LOCK=1)`
+            `skipping this duplicate launch. Follow it with \`uap deliver --await-run\` (waits and reports; ` +
+            `starts nothing). Do NOT use --resume on a live run: resume CONTINUES a mission and would start a ` +
+            `second copy of this one. (override: UAP_DELIVER_NO_LOCK=1)`
         )
       );
       // --json is a CONTRACT: every exit must emit a parseable result. This path
@@ -794,9 +860,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
                 'A deliver run is already in progress for this project; this duplicate launch was skipped.',
               nextStep:
                 'The mission you asked for is ALREADY RUNNING — nothing is wrong and nothing is needed from you. ' +
-                'Wait for it to finish, then read its result. Do NOT start another run, do NOT pass resume ' +
-                '(resume deliberately skips this lock and would run a second copy of the same mission), and do ' +
-                'NOT change any gate or enforcement setting.',
+                'Follow it instead: call deliver again with follow:true (or `uap deliver --await-run` from a ' +
+                'shell) to wait for it and receive its result. Do NOT start another ' +
+                'run, do NOT pass resume (resume CONTINUES a run rather than following it, and would start a ' +
+                'second copy of this live one), and do NOT change any gate or enforcement setting.',
             },
             null,
             2

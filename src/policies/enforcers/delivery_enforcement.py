@@ -468,7 +468,9 @@ def main() -> None:
             False,
             f"WAIT: a `uap deliver` run (pid {holder}) is ALREADY in progress for this project and is "
             f"changing the code — do NOT edit '{rel_posix}', and do NOT re-run tests on it yet. "
-            "Let that run finish (check: uap deliver --resume latest / its output), THEN re-verify. "
+            "Let that run finish — follow it with `uap deliver --await-run`, which waits for it "
+            "and reports its result without starting anything. Do NOT use --resume on a live run: "
+            "resume CONTINUES a mission and would start a second copy of this one. THEN re-verify. "
             "Launching or editing now only conflicts with the in-flight run.",
             route="wait",
             deliverHint="",

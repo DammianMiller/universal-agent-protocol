@@ -206,6 +206,48 @@ describe('handleDeliver when a run is already in progress (real CLI subprocess)'
   }, 120_000);
 });
 
+describe('handleDeliver follow mode (real CLI subprocess)', () => {
+  /**
+   * `follow` is the door that was missing. A caller whose tool timeout fired had
+   * no way back to its own mission: launching again is skipped by the
+   * single-flight guard, and resume CONTINUES a run rather than following it —
+   * on a live holder that starts a second copy on the same runId.
+   */
+  it('passes --await-run through and reports when nothing is in flight', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-follow-'));
+    const saved = process.env.UAP_DELIVER_SANDBOX;
+    process.env.UAP_DELIVER_SANDBOX = dir;
+    try {
+      writeFileSync(join(dir, 'index.js'), 'console.log(1);\n');
+      const r = await handleDeliver({ instruction: 'anything', projectRoot: dir, follow: true, timeoutSec: 60 });
+      const payload = r.result as { nothingInFlight?: boolean; followed?: boolean };
+      expect(payload.nothingInFlight).toBe(true);
+      expect(payload.followed).toBe(false);
+      // Positively, not `expect(r.error ?? '').not.toMatch(...)` — that form
+      // passes when `error` is undefined, which is exactly the gap it should
+      // catch. The actionable text has to reach the field callers read first.
+      expect(r.error).toMatch(/no deliver run is in flight/i);
+      expect(r.error).toMatch(/start the mission normally/i);
+      // Follow-mode must not be blocked by preflight: it inspects a lock, it does
+      // not deliver, so a project that cannot deliver can still be asked whether
+      // something is running in it.
+      expect(r.error ?? '').not.toMatch(/could not parse/i);
+    } finally {
+      if (saved === undefined) delete process.env.UAP_DELIVER_SANDBOX;
+      else process.env.UAP_DELIVER_SANDBOX = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('is advertised to the model as the response to alreadyRunning', () => {
+    const props = DELIVER_TOOL_DEFINITION.inputSchema.properties as Record<string, { description?: string }>;
+    expect(props).toHaveProperty('follow');
+    expect(props.follow.description).toMatch(/alreadyRunning|timed-out/i);
+    // And it must warn off resume, which is the trap it replaces.
+    expect(props.follow.description).toMatch(/resume/i);
+  });
+});
+
 describe('handleDeliver dry-run (real CLI subprocess)', () => {
   it('classifies complexity and returns the plan without calling a model', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mcp-deliver-'));

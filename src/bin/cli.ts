@@ -660,6 +660,16 @@ program
   .option('--no-until-delivered', 'Disable loop-until-delivered (ON by default: extends past --max-turns to a ceiling, stopping on stagnation)')
   .option('--ceiling <n>', 'Hard turn ceiling for until-delivered (1-50, default 30)')
   .option('--resume <id>', "Resume an interrupted durable run: a run id or 'latest' (.uap/deliver-runs)")
+  .option(
+    '--await-run',
+    'Follow the deliver run already in flight for this project and report its result. ' +
+      'Starts nothing and takes no lock — this is how a caller whose tool call timed out gets back ' +
+      "to its own mission (--resume CONTINUES a run, which would start a second copy of a live one)."
+  )
+  .option(
+    '--await-timeout <sec>',
+    'How long --await-run waits before reporting the run as still in flight (default 900)'
+  )
   .option('--no-lazy', 'Skip the lazy bare first attempt (by default one bare turn runs before the convergence aids engage)')
   .option('--decompose', 'Decompose the mission into sequential phases, each converged by its own loop (auto for long complex tasks)')
   .option('--no-decompose', 'Never decompose, even for epic-shaped instructions')
