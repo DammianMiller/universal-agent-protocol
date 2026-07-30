@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.172.15 (2026-07-30)
+
+- fix(policy): make both operator overrides environment-only, not self-grantable
+
+
 ## v1.172.14 (2026-07-30)
 
 - fix(proxy): capture the disconnect in a pure-ASGI watcher, outside BaseHTTPMiddleware
