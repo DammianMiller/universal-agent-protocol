@@ -30,6 +30,15 @@ import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename } from './applier.js';
 import { estimateMessagesTokens, formatBudgetStop } from './context-budget.js';
 import { sanitizedEnv } from './sanitized-env.js';
+import {
+  beginBashSweep,
+  disabledSweep,
+  armSweepForCommand,
+  finishBashSweep,
+  prependSweepNote,
+  recordAuthorisedWrite,
+  type BashSweep,
+} from './bash-sweep.js';
 import { detectStub, stubRefusal, stubGuardDisabled } from './stub-detector.js';
 
 /**
@@ -471,7 +480,11 @@ export function runTool(
   protectedFiles: ReadonlySet<string>,
   protectGateConfigs: boolean,
   allowBash: boolean,
-  contractFiles: ReadonlySet<string> = EMPTY_SET
+  contractFiles: ReadonlySet<string> = EMPTY_SET,
+  // Turn-end substance sweep. runTool is the only place that knows the
+  // NORMALIZED path a write landed on and whether it succeeded, so attribution
+  // is recorded here rather than reconstructed by the caller.
+  sweep: BashSweep = disabledSweep()
 ): string {
   let pathNote = '';
   // Contain/repair garbled tool-call paths against the known project root before
@@ -608,6 +621,7 @@ export function runTool(
       }
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, String(args.content ?? ''), 'utf-8');
+      recordAuthorisedWrite(sweep, rel, String(args.content ?? ''));
       // Per-write compile feedback for Rust: without it, a weak model writes
       // whole turns of code against types it invented, and the turn-end gate
       // reports an avalanche it cannot dig out of (observed live 2026-07-10:
@@ -677,6 +691,7 @@ export function runTool(
         if (stub.isStub) return stubRefusal(String(args.path), stub);
       }
       writeFileSync(abs, updated, 'utf-8');
+      recordAuthorisedWrite(sweep, rel, updated);
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
       return `OK: edited ${String(args.path)} (1 replacement)${pathNote}${rustCheckNote}${jsCheckNote}`;
@@ -714,6 +729,12 @@ export function runTool(
       // it must not inherit provider/host credentials it could exfiltrate
       // (audit: previously ran with the full host env). Not containment —
       // file-based creds and egress still need `uap sandbox`.
+      // Baseline BEFORE the spawn: a command that times out or is killed may
+      // still have written files, and a sweep with nothing to compare against
+      // would be worse than none — it would report "checked" over exactly the
+      // messiest case. This is also where the walk happens at all, so a turn that
+      // never shells out pays nothing.
+      armSweepForCommand(sweep);
       const r = spawnSync('bash', ['-c', String(args.command)], {
         cwd: projectRoot,
         timeout: bashTimeoutMs,
@@ -988,7 +1009,7 @@ export function createAgenticExecutor(
       'npm/pytest/cargo, or any command to verify. Verification is AUTOMATIC: after your changes the ' +
       'delivery gates run the tests and build for you and report any failure back so you can fix it ' +
       'next turn. Just make the necessary file edits and call finish — do NOT call run_bash.';
-  return async (prompt: string): Promise<string> => {
+  const runTurn = async (prompt: string, sweep: BashSweep): Promise<string> => {
     const messages: ChatMessage[] = [
       {
         role: 'system',
@@ -1097,7 +1118,8 @@ export function createAgenticExecutor(
               protectedFiles,
               protectGateConfigs,
               allowBash,
-              contractFiles
+              contractFiles,
+              sweep
             );
             opts.onEvent?.({
               round,
@@ -1148,7 +1170,8 @@ export function createAgenticExecutor(
           protectedFiles,
           protectGateConfigs,
           allowBash,
-          contractFiles
+          contractFiles,
+          sweep
         );
         // #2a: per-tool-call progress — refresh the deliver heartbeat now, not
         // just at turn end, so wedge-detection tracks real intra-turn activity.
@@ -1183,6 +1206,39 @@ export function createAgenticExecutor(
       }
     }
     return `agent hit ${maxRounds}-round budget; partial: ${summaries.slice(-3).join('; ')}`;
+  };
+
+  /**
+   * Turn boundary: baseline the tree, run the turn, then sweep whatever the
+   * shell wrote (see bash-sweep.ts).
+   *
+   * The wrapper exists because the turn body has six ways out — finish, budget
+   * stop, round budget, no-tool-call return, chat error, and a propagating throw
+   * — and a guard placed at each one is a guard the next one silently escapes.
+   * That is the same mistake the write-path guard originally made by living on
+   * only one branch.
+   *
+   * The sweep runs in `finally`, so a turn that throws still gets swept: a
+   * command that wrote a skeleton and then failed is precisely when the tree
+   * must not be left holding it.
+   */
+  return async (prompt: string): Promise<string> => {
+    const sweep = beginBashSweep(opts.projectRoot, allowBash);
+    try {
+      return prependSweepNote(await runTurn(prompt, sweep), finishBashSweep(sweep));
+    } finally {
+      // `finally` rather than a catch, for two reasons. A throw must still
+      // PROPAGATE: the convergence loop routes a thrown executor to its
+      // executorError channel and skips the applier and the gate ladder, so
+      // swallowing it into a returned string would silently turn a failed turn
+      // into a productive one. And the sweep must still RUN on that path — a
+      // command that wrote a skeleton and then died is exactly when the tree
+      // must not be left holding it. The success path above has already swept by
+      // the time this runs; the second call is a hard no-op via the sweep's own
+      // `swept` flag — NOT because the tree happens to be unchanged, which would
+      // still pay a full second walk.
+      finishBashSweep(sweep);
+    }
   };
 }
 
