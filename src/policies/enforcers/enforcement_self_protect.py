@@ -60,6 +60,19 @@ BYPASS_PATTERNS = (
     # review. Refuse it here so the attempt is visible rather than silent.
     re.compile(r"UAP_NO_REVIEW\s*=\s*['\"]?1", re.I),
     re.compile(r"UAP_USER_VALIDATION\s*=\s*['\"]?0", re.I),
+    # Single-flight is a DATA-SAFETY control, not a policy preference: deliver
+    # runs each candidate in a git worktree, and two runs against one repo are
+    # not safe together. Disabling it cost real work — observed live
+    # (octopus_invaders_v3, 2026-07-31): the agent ran
+    # `UAP_DELIVER_NO_LOCK=1 uap deliver ...`, two runs overlapped for seven
+    # minutes, and the untracked space-shooter/ tree they were both building
+    # disappeared. It had never been committed, so nothing could recover it.
+    #
+    # The env var stays a real operator hatch; only the INLINE form is refused,
+    # because a switch the constrained party writes into its own command line is
+    # not an override — it is an off switch, the same reasoning as every entry
+    # above it.
+    re.compile(r"UAP_DELIVER_NO_LOCK\s*=\s*['\"]?1", re.I),
 )
 # Destructive ops against the enforcer/policy surface.
 #

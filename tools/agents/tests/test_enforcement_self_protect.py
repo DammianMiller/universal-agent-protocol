@@ -49,6 +49,29 @@ class SelfProtectTest(unittest.TestCase):
         rc, out = run("Bash", {"command": "UAP_ENFORCE_DELIVERY=advisory uap deliver x"})
         self.assertEqual(rc, 2)
 
+    def test_blocks_inline_single_flight_bypass(self):
+        """Single-flight is a DATA-SAFETY control, not a preference.
+
+        deliver runs each candidate in a git worktree, and two runs against one
+        repo are not safe together. Observed live (octopus_invaders_v3,
+        2026-07-31): the agent ran `UAP_DELIVER_NO_LOCK=1 uap deliver ...`, two
+        runs overlapped for seven minutes, and the untracked tree they were both
+        building disappeared. It had never been committed, so nothing could
+        recover it.
+        """
+        rc, out = run("Bash", {"command": "UAP_DELIVER_NO_LOCK=1 uap deliver -- build it"})
+        self.assertEqual(rc, 2)
+
+    def test_blocks_exported_single_flight_bypass(self):
+        rc, out = run("Bash", {"command": "export UAP_DELIVER_NO_LOCK=1 && uap deliver -- x"})
+        self.assertEqual(rc, 2)
+
+    def test_allows_merely_mentioning_the_override(self):
+        # The env var remains a real OPERATOR hatch; only the agent writing it
+        # into its own command line is refused. Talking about it is not doing it.
+        rc, out = run("Bash", {"command": "echo 'UAP_DELIVER_NO_LOCK is an operator override'"})
+        self.assertEqual(rc, 0)
+
     def test_blocks_bash_rm_enforcer(self):
         rc, out = run("Bash", {"command": "rm -f .policy-tools/abc_delivery_enforcement.py"})
         self.assertEqual(rc, 2)

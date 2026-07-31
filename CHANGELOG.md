@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.5 (2026-07-31)
+
+- fix(policy): single-flight cannot be switched off from the agent's own command line
+
+
 ## v1.175.4 (2026-07-31)
 
 - fix(proxy): the harness's own correctives are not tool failures
