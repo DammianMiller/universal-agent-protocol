@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.4 (2026-07-31)
+
+- fix(proxy): the harness's own correctives are not tool failures
+
+
 ## v1.175.3 (2026-07-31)
 
 - fix(mcp): a healthy follow poll is not a failed tool call

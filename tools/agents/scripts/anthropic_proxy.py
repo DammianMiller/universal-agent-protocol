@@ -300,19 +300,47 @@ _ERROR_LINE_RE = re.compile(
 )
 
 
+# Harness-generated CORRECTIVES, not tool failures.
+#
+# The delivery executor emits its own control lines, and some carry the word
+# "error" purely as a channel label -- e.g.
+#
+#   [agent r6 error] write-nudge injected after 5 read-only rounds
+#
+# which is the harness telling the model it has been READING too much and must
+# now WRITE. _ERROR_LINE_RE matched it on "error", so the corrective became an
+# error signature; after three repeats the ERROR-LOOP guard fired and injected
+# "Do NOT make another edit yet. FIRST re-read the ENTIRE failing file" -- which
+# tells a model already stuck in a read-only loop to read more, directly fighting
+# the nudge it was reacting to. Observed live (2026-07-31): fired six times in a
+# row against a run that was progressing.
+#
+# A corrective is the harness talking to the model about its BEHAVIOUR; an error
+# is a tool reporting that something did not work. Only the latter belongs in the
+# failure streak.
+_HARNESS_CORRECTIVE_RE = re.compile(
+    r"(?:write-nudge|nudge)\s+injected|read-only rounds|forced[- ]write round|"
+    r"deferral[- ]break|stuck[- ]break|cycle[- ]break",
+    re.IGNORECASE,
+)
+
+
 def _error_signature(text: str) -> str:
     """Edit-invariant signature of the first error line in a tool result.
 
     Normalizes away paths, line:col numbers, hex, and bare digits so that the
     SAME underlying failure produces the SAME signature across turns even as the
     model edits different code around it. Returns "" when no error line is found
-    (a passing result resets the streak)."""
+    (a passing result resets the streak), and "" for the harness's own
+    correctives -- see _HARNESS_CORRECTIVE_RE."""
     if not text:
         return ""
     m = _ERROR_LINE_RE.search(text)
     if not m:
         return ""
     line = m.group(0)
+    if _HARNESS_CORRECTIVE_RE.search(line):
+        return ""
     line = re.sub(r"(/[^\s:]+)+", "<path>", line)          # unix paths
     line = re.sub(r"\b[0-9a-fA-F]{6,}\b", "<hex>", line)    # hashes/addresses
     line = re.sub(r"\d+", "#", line)                        # line numbers, counts
