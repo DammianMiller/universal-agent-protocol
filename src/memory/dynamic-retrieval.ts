@@ -617,6 +617,20 @@ async function queryAllMemorySources(
     });
   }
 
+  // Source 7: ACTIVE RECONSTRUCTION (harness plan E, agent path).
+  //
+  // An ADDITIONAL source, never a replacement. Review of the CLI wiring caught
+  // the opposite shape — `--active` replaced two-tier retrieval with a graph
+  // over one tier, silently narrowing the corpus. Here every passive source
+  // above has already run; this contributes the associative hops they cannot
+  // make (reaching a memory the query never names, via a shared tag), and its
+  // results flow through the same dedup + budget as everything else.
+  //
+  // Opt-in and fail-open: off unless UAP_MEMORY_ACTIVE=1 with a non-empty
+  // graph, and any error leaves the other sources untouched.
+  const activeMemories = await queryActiveReconstruction(taskInstruction, projectRoot, depth);
+  memories.push(...activeMemories);
+
   // Deduplicate and sort by relevance
   const uniqueMemories = deduplicateMemories(memories);
   uniqueMemories.sort((a, b) => b.relevance - a.relevance);
@@ -633,6 +647,55 @@ async function queryAllMemorySources(
     usedTokens += memTokens;
   }
   return budgeted;
+}
+
+/**
+ * Recall by traversing the cue-tag-content graph while reasoning (harness plan E).
+ *
+ * Refreshes only when the index is STALE. A full store scan on every model turn
+ * would put a latency regression on the hot path of every agent, paid whether or
+ * not the graph helped; never refreshing would serve an index that silently ages
+ * out. The TTL is the compromise.
+ *
+ * Relevance is deliberately capped below the top of the passive range. These are
+ * associative hops — genuinely useful, but reached by structure rather than by
+ * direct match — so they should fill remaining budget, not displace a memory the
+ * query named outright.
+ */
+async function queryActiveReconstruction(
+  taskInstruction: string,
+  projectRoot: string,
+  depth: { shortTerm: number; sessionMem: number; longTerm: number; patterns: number }
+): Promise<RetrievedMemory[]> {
+  try {
+    const { shouldUseActiveRecall, recallActive } = await import('./reconstruct-store.js');
+    if (!shouldUseActiveRecall(projectRoot)) return [];
+
+    const result = await recallActive(projectRoot, taskInstruction, {
+      refresh: 'if-stale',
+      // Bounded by the same adaptive depth as every other source, so a complex
+      // query gets more hops and a simple one cannot balloon the context.
+      maxContext: Math.max(3, Math.min(12, depth.longTerm)),
+      maxSteps: 4,
+    });
+
+    return result.context.map((node, i) => ({
+      // Truncated like EVERY other source. The merged budget loop `break`s on
+      // the first item that overflows, so one multi-KB node landing mid-list
+      // would discard every lower-ranked memory beneath it — including real
+      // passive hits. No other source can produce an item large enough to do
+      // that, and this one must not either.
+      content: node.text.slice(0, 500),
+      type: node.layer === 'semantic' ? ('lesson' as const) : ('context' as const),
+      // Decay with admission order: earlier nodes were reached in earlier hops
+      // and sit closer to what the query actually asked about.
+      relevance: Math.max(0.35, 0.7 - i * 0.03),
+      source: 'active-reconstruction',
+    }));
+  } catch {
+    // Fail open — a broken or missing graph must never degrade the passive path.
+    return [];
+  }
 }
 
 /**

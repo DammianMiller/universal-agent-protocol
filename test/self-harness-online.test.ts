@@ -56,11 +56,20 @@ describe('trace-mine — HALO end-to-end', () => {
 });
 
 describe('pending — gated promotion queue', () => {
-  it('env Mods auto-promote after validation; scaffold/middleware are human-gated', () => {
+  // Harness plan B3 (2026-07-31): the gate is a RISK TIER, not a category ban.
+  // env/tool/middleware Mods are bounded, allow-listed and mechanically
+  // reversible, so they auto-promote after validation; scaffold (free-form
+  // prompt text — the one surface measured NEGATIVE at -2.3pp in arXiv
+  // 2604.25850) and config stay human-gated.
+  it('bounded, reversible Mods auto-promote after validation; free-form ones are human-gated', () => {
     const env: Mod = { kind: 'env', key: 'LLAMA_N_PREDICT', from: '8192', to: '4096' };
+    const tool: Mod = { kind: 'tool', key: 'UAP_EDIT_TOLERANT', from: '1', to: '0' };
     const mw: Mod = { kind: 'middleware', id: 'toolcall-path-normalizer', params: {} };
+    const scaffold: Mod = { kind: 'scaffold', component: 'gates', op: 'append', text: 'x' };
     expect(promotionGate(env)).toBe('auto-after-validation');
-    expect(promotionGate(mw)).toBe('human');
+    expect(promotionGate(tool)).toBe('auto-after-validation');
+    expect(promotionGate(mw)).toBe('auto-after-validation');
+    expect(promotionGate(scaffold)).toBe('human');
   });
 
   it('enqueues (de-duped), assigns the gate, and persists', () => {
@@ -73,7 +82,7 @@ describe('pending — gated promotion queue', () => {
       source: 'proxy-log', frequency: 5, createdAt: 't',
     };
     const p = q.enqueue(base);
-    expect(p.gate).toBe('human');
+    expect(p.gate).toBe('auto-after-validation'); // middleware: bounded + reversible (plan B3)
     expect(p.status).toBe('pending');
     q.enqueue(base); // duplicate while pending → ignored
     expect(new PendingQueue(path).list()).toHaveLength(1); // persisted + deduped

@@ -36,7 +36,9 @@ type MemoryAction =
   | 'correct'
   | 'maintain'
   | 'bridge'
-  | 'sync-files';
+  | 'sync-files'
+  | 'graph-build'
+  | 'graph-status';
 
 interface MemoryOptions {
   search?: string;
@@ -55,6 +57,12 @@ interface MemoryOptions {
   correction?: string;
   reason?: string;
   dir?: string;
+  /** `query --active`: recall by traversing the cue-tag-content graph. */
+  active?: boolean;
+  /** `query --active`: max reconstruction steps. */
+  steps?: string;
+  /** `graph build --rebuild`: re-ingest every source. */
+  rebuild?: boolean;
 }
 
 export async function memoryCommand(
@@ -73,10 +81,27 @@ export async function memoryCommand(
     case 'stop':
       await stopServices(cwd);
       break;
+    case 'graph-build':
+      await buildGraph(cwd, options);
+      break;
+    case 'graph-status':
+      await graphStatus(cwd);
+      break;
     case 'query':
       if (!options.search) {
         console.log(chalk.red('Search query is required. Usage: uap memory query <search>'));
         return;
+      }
+      // Active reconstruction (harness plan E). Opt-in: --active, or
+      // UAP_MEMORY_ACTIVE=1 with a non-empty graph. Falls through to the
+      // passive path otherwise, so the default behaviour is unchanged.
+      if (options.active || (await shouldUseActiveRecallSafe(cwd))) {
+        // Falls back to the passive path when reconstruction finds nothing or
+        // throws — active recall must never turn a query that WOULD have been
+        // answered into silence.
+        const answered = await queryActive(cwd, options.search, options);
+        if (answered) return;
+        console.log(chalk.dim('\n  Falling back to passive retrieval...\n'));
       }
       await queryMemory(
         cwd,
@@ -1231,4 +1256,182 @@ async function maintainMemory(cwd: string, _options: MemoryOptions): Promise<voi
     }
   }
   console.log('');
+}
+
+
+// ---------------------------------------------------------------------------
+// Active memory reconstruction (harness plan E3) — the caller area E lacked.
+// ---------------------------------------------------------------------------
+
+/** `shouldUseActiveRecall` that can never break the normal query path. */
+async function shouldUseActiveRecallSafe(cwd: string): Promise<boolean> {
+  try {
+    const { shouldUseActiveRecall } = await import('../memory/reconstruct-store.js');
+    return shouldUseActiveRecall(cwd);
+  } catch {
+    return false;
+  }
+}
+
+/** Positive integer or undefined — never NaN, which silently disables a loop. */
+function positiveInt(raw: string | undefined): number | undefined {
+  if (raw == null) return undefined;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Recall by traversing the graph. Returns TRUE when it produced an answer, so
+ * the caller can fall back to passive retrieval instead of reporting silence.
+ */
+async function queryActive(cwd: string, search: string, options: MemoryOptions): Promise<boolean> {
+  let result;
+  try {
+    const { recallActive } = await import('../memory/reconstruct-store.js');
+    console.log(chalk.bold(`\n🧠 Active reconstruction: "${search}"\n`));
+    result = await recallActive(cwd, search, {
+      maxSteps: positiveInt(options.steps),
+      maxContext: positiveInt(options.limit ?? options.topK),
+    });
+  } catch (error) {
+    // A corrupt graph must not break a command that works passively — and this
+    // path auto-engages under UAP_MEMORY_ACTIVE, i.e. when the user did not ask.
+    console.log(chalk.yellow(`  Active reconstruction failed: ${String(error).slice(0, 120)}`));
+    return false;
+  }
+
+  if (result.graphEmpty) {
+    // Say so rather than printing "no results" — an empty index and an empty
+    // answer are different failures and want different fixes.
+    console.log(chalk.yellow('  The memory graph is empty — nothing to traverse.'));
+    console.log(chalk.dim('  Populate it: uap memory graph build'));
+    return false;
+  }
+
+  const cov = result.build?.coverage;
+  if (cov) {
+    // Coverage up front: recall over a partial corpus is worse than no recall
+    // if the reader assumes it is complete.
+    console.log(
+      chalk.dim(`  corpus: ${cov.shortTerm} short-term + ${cov.longTerm} long-term memories`)
+    );
+    if (cov.longTerm === 0) {
+      console.log(
+        chalk.yellow('  long-term store unreachable — this answer covers short-term memory only.')
+      );
+    }
+  }
+
+  for (const [i, step] of result.steps.entries()) {
+    const dropped = step.dropped.length > 0 ? `, dropped ${step.dropped.length} (context full)` : '';
+    console.log(
+      chalk.dim(
+        `  step ${i + 1}: expanded ${step.expandedCues.length} cue(s) -> ` +
+          `${step.tags.length} tag(s), kept ${step.kept.length}, pruned ${step.pruned.length}${dropped}`
+      )
+    );
+  }
+  console.log('');
+
+  if (result.context.length === 0) {
+    console.log(chalk.dim('  No evidence survived pruning.'));
+    return false;
+  }
+
+  console.log(chalk.green(`Reconstructed ${result.context.length} memor(ies):\n`));
+  for (const node of result.context) {
+    const when = node.occurredAt ? chalk.dim(node.occurredAt.slice(0, 10)) : '';
+    console.log(`  ${chalk.cyan(`[${node.layer}]`)} ${when}`);
+    console.log(`    ${node.text.slice(0, 200)}${node.text.length > 200 ? '...' : ''}\n`);
+  }
+  const why = {
+    sufficient: '  Stopped: evidence sufficient.',
+    'context-full': '  Stopped: context budget full (raise with --limit).',
+    exhausted: '  Stopped: no further paths to explore.',
+    'step-budget': '  Stopped: step budget reached (raise with --steps).',
+  }[result.stopReason];
+  console.log(chalk.dim(why));
+  return true;
+}
+
+async function buildGraph(cwd: string, options: MemoryOptions): Promise<void> {
+  const { buildMemoryGraph } = await import('../memory/reconstruct-store.js');
+  const config = loadUapConfig(cwd);
+  console.log(chalk.bold('\n🧠 Building the cue-tag-content memory graph...\n'));
+  const report = await buildMemoryGraph(cwd, {
+    limit: positiveInt(options.limit),
+    projectId: config?.project?.name,
+    rebuild: options.rebuild,
+  });
+  console.log(
+    `  corpus:        ${report.coverage.shortTerm} short-term + ${report.coverage.longTerm} long-term`
+  );
+  if (report.coverage.longTerm === 0) {
+    console.log(
+      chalk.yellow('                 long-term store unreachable — the graph covers short-term only')
+    );
+  }
+  if (report.considered === 0) {
+    console.log(
+      chalk.yellow('\n  Nothing to index. Check the short-term store path and project name in .uap.json.')
+    );
+  }
+  console.log(`  considered:    ${report.considered}`);
+  console.log(`  ingested:      ${chalk.green(String(report.ingested))}`);
+  console.log(`  skipped:       ${chalk.dim(String(report.skipped))} (already indexed or no cue)`);
+  console.log(`  cues:          ${report.cues}`);
+  console.log(`  tags:          ${report.tags}`);
+  // The number that decides whether this graph is worth traversing at all.
+  // Graph-wide, not per-batch: an incremental build that adds one item would
+  // otherwise report 0 bridges and warn about a perfectly healthy graph.
+  const { openMemoryGraph } = await import('../memory/reconstruct-store.js');
+  const g = openMemoryGraph(cwd);
+  const graphBridges = (() => {
+    try {
+      return g.stats().bridgingTags;
+    } finally {
+      g.close();
+    }
+  })();
+  console.log(`  bridging tags: ${graphBridges} ${chalk.dim('(link >1 memory, <60% of corpus)')}`);
+  if (report.ingested > 0 && graphBridges === 0) {
+    console.log(
+      chalk.yellow(
+        '\n  No tag links more than one memory, so traversal cannot associate anything.'
+      )
+    );
+    console.log(chalk.dim('  That is the ~65%-recall shape from the paper; add tags to your memories.'));
+  }
+  console.log(chalk.dim(`\n  ${report.graphPath}`));
+  console.log(chalk.dim('  Query it: uap memory query "<topic>" --active'));
+}
+
+async function graphStatus(cwd: string): Promise<void> {
+  const { memoryGraphExists, memoryGraphPath, openMemoryGraph } = await import(
+    '../memory/reconstruct-store.js'
+  );
+  const { activeReconstructionEnabled } = await import('../memory/reconstruct.js');
+  console.log(chalk.bold('\n🧠 Memory graph\n'));
+  if (!memoryGraphExists(cwd)) {
+    console.log(chalk.yellow('  Not built yet.'));
+    console.log(chalk.dim('  Build it: uap memory graph build'));
+    return;
+  }
+  const graph = openMemoryGraph(cwd);
+  try {
+    const s = graph.stats();
+    console.log(`  contents:      ${s.contents}`);
+    console.log(`  cues:          ${s.cues}`);
+    console.log(`  tags:          ${s.tags}`);
+    console.log(`  triples:       ${s.triples}`);
+    console.log(`  bridging tags: ${s.bridgingTags} ${chalk.dim('(link >1 memory)')}`);
+  } finally {
+    graph.close();
+  }
+  console.log(
+    `\n  default recall: ${
+      activeReconstructionEnabled() ? chalk.green('active reconstruction') : chalk.dim('passive (set UAP_MEMORY_ACTIVE=1 to switch)')
+    }`
+  );
+  console.log(chalk.dim(`  ${memoryGraphPath(cwd)}`));
 }

@@ -21,6 +21,16 @@ import { Proposer, heuristicProposer } from './propose.js';
 import { decideAccept, Decision, DecisionOptions } from './decide.js';
 import { HarnessProfile } from './profile.js';
 import { TransferStore, modKey, makeEntry } from './transfer.js';
+import {
+  ManifestStore,
+  makeManifest,
+  attributeManifest,
+  decideManifest,
+  type ChangeManifest,
+  type ManifestAttribution,
+  type ManifestDecision,
+  type ManifestPolicyOptions,
+} from './manifest.js';
 
 export interface ValidationOutcome {
   validation: Comparison;
@@ -47,6 +57,20 @@ export interface OrchestratorOptions {
   /** ISO timestamp + provenance string stamped on recorded transfer entries. */
   validatedAt?: string;
   provenance?: string;
+  /**
+   * Change-manifest store (harness plan C). Supplied -> every accepted Mod is
+   * recorded as a falsifiable prediction, and any manifest left open by a PRIOR
+   * iteration is attributed against this iteration's records first. Omitted ->
+   * the loop behaves exactly as before.
+   */
+  manifests?: ManifestStore;
+  /**
+   * The records the PREVIOUS iteration saw, needed to attribute open manifests
+   * (before vs after). Omit on the first iteration.
+   */
+  priorRecords?: RunRecord[];
+  /** Policy for turning an attribution into keep/revert. */
+  manifestPolicy?: ManifestPolicyOptions;
 }
 
 export interface CandidateOutcome {
@@ -62,6 +86,19 @@ export interface IterationResult {
   accepted: Mod[];
   /** Profile after applying all accepted Mods. */
   profile: HarnessProfile;
+  /**
+   * Manifests from prior iterations whose predictions failed this round, with
+   * the inverse Mod already applied to `profile` (harness plan C). The caller
+   * physically applies each `revert` through the same seam it uses to apply an
+   * accepted Mod.
+   */
+  reverted: RevertedChange[];
+}
+
+export interface RevertedChange {
+  manifest: ChangeManifest;
+  attribution: ManifestAttribution;
+  decision: ManifestDecision;
 }
 
 /** Run one self-harness iteration. */
@@ -69,6 +106,25 @@ export async function runIteration(opts: OrchestratorOptions): Promise<Iteration
   const log = opts.log ?? (() => {});
   const proposer = opts.proposer ?? heuristicProposer;
   const maxC = opts.maxCandidates ?? 3;
+
+  // Stage 0 — attribute prior manifests BEFORE proposing anything new
+  // (harness plan C). Order matters: a change that failed its own prediction
+  // must be undone before this round mines weaknesses from records it polluted,
+  // or the loop proposes fixes for damage it is about to revert anyway.
+  const reverted: RevertedChange[] = [];
+  let profile = opts.profile;
+  if (opts.manifests && opts.priorRecords) {
+    for (const manifest of opts.manifests.open()) {
+      const attribution = attributeManifest(manifest, opts.priorRecords, opts.records);
+      const decision = decideManifest(manifest, attribution, opts.manifestPolicy);
+      opts.manifests.close(manifest, attribution, decision);
+      log(`manifest ${manifest.id}: ${decision.verdict.toUpperCase()} — ${decision.reason}`);
+      if (decision.verdict === 'revert' && decision.revert) {
+        profile = applyAcceptedToProfile(profile, decision.revert);
+        reverted.push({ manifest, attribution, decision });
+      }
+    }
+  }
 
   // Stage 1 — mine
   const weaknesses = mineFromRecords(opts.records, {
@@ -78,16 +134,24 @@ export async function runIteration(opts: OrchestratorOptions): Promise<Iteration
   log(`mined ${weaknesses.length} weakness(es): ${weaknesses.map((w) => w.kind).join(', ') || '(none)'}`);
 
   // Stage 2 — propose (bounded, minimal)
-  const proposed = proposer.propose(weaknesses, opts.profile).slice(0, maxC);
+  // `profile`, not `opts.profile`: stage 0 may have reverted a knob, and
+  // proposing against the pre-revert value would immediately re-propose the
+  // change just undone and record a `from` that was never in force.
+  const proposed = proposer.propose(weaknesses, profile).slice(0, maxC);
   log(`proposed ${proposed.length} candidate Mod(s) via ${proposer.id}`);
 
   // Stage 3+4 — validate + decide, each candidate in isolation
   const outcomes: CandidateOutcome[] = [];
   const accepted: Mod[] = [];
-  let profile = opts.profile;
 
   for (const mod of proposed) {
     log(`validating: ${describeMod(mod)}`);
+    // Attribute BEFORE anything mutates the profile. attributeWeakness works by
+    // re-running the proposer and matching the Mod it emits; once the accepted
+    // Mod has been folded into the profile the proposer no longer re-derives it,
+    // so attribution silently returns null. (That ordering bug also cost the
+    // transfer store its attribution — both call sites now share this value.)
+    const weakness = attributeWeakness(mod, weaknesses, proposer, profile);
     let decision: Decision;
     try {
       const { validation, heldout } = await opts.validate(mod);
@@ -106,12 +170,25 @@ export async function runIteration(opts: OrchestratorOptions): Promise<Iteration
     if (ok) {
       accepted.push(mod);
       profile = applyAcceptedToProfile(profile, mod);
+      // Acceptance is PROVISIONAL: record the prediction so the next iteration
+      // can falsify it (harness plan C). The tasks this Mod's weakness was mined
+      // from are its predicted fixes — that is the claim it is making.
+      if (opts.manifests) {
+        opts.manifests.record(
+          makeManifest({
+            id: `${modKey(mod)}@${opts.validatedAt ?? outcomes.length}`,
+            mod,
+            now: opts.validatedAt ?? '',
+            predictedFixes: weakness?.affectedTasks ?? [],
+          }),
+        );
+      }
     }
     // Record the outcome (accept OR reject) into the transfer store, attributed
     // to the weakness whose heuristic produced this Mod, so the fix transfers to
     // future models and known-bad Mods aren't re-proposed.
     if (opts.transferStore) {
-      const w = attributeWeakness(mod, weaknesses, proposer, profile);
+      const w = weakness;
       if (w) {
         opts.transferStore.record(
           makeEntry({
@@ -129,7 +206,7 @@ export async function runIteration(opts: OrchestratorOptions): Promise<Iteration
     }
   }
 
-  return { weaknesses, proposed, outcomes, accepted, profile };
+  return { weaknesses, proposed, outcomes, accepted, profile, reverted };
 }
 
 /**
@@ -169,5 +246,10 @@ function applyAcceptedToProfile(profile: HarnessProfile, mod: Mod): HarnessProfi
       // A settings-registry change lives in .uap.json / proxy.env, not in the
       // in-memory harness profile — the self-tuning flag-writer applies it.
       return profile;
+    case 'tool':
+      // A SEPARATE field from `env`: tool knobs are executor-side and disjoint
+      // from the server's launch env, and `profileFromEnvFile` filters `env` on
+      // `isKnownKnob`, so folding them together dropped them on every reload.
+      return { ...profile, tool: { ...(profile.tool ?? {}), [mod.key]: mod.to } };
   }
 }

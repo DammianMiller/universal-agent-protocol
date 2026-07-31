@@ -26,6 +26,8 @@ export interface HarnessOptions {
   traces?: string;
   prompt?: string;
   json?: boolean;
+  /** `harness evidence`: scope the corpus to one deliver run. */
+  run?: string;
 }
 
 /** True when the `halo` CLI (halo-engine) is resolvable on PATH. */
@@ -107,10 +109,94 @@ export async function harnessStatus(options: HarnessOptions = {}): Promise<void>
 }
 
 /** Dispatch for the `uap harness <subcommand>` group. */
+/**
+ * `uap harness evidence` — the per-tool-call evidence corpus (harness plan D3).
+ *
+ * This is the same distillation the self-harness propose stage reads, printed
+ * for a human. If the loop is about to change the harness, an operator should be
+ * able to see the evidence it is reasoning from.
+ */
+async function harnessEvidence(options: HarnessOptions): Promise<void> {
+  const { summarizeToolCalls, renderEvidence } = await import('../telemetry/tool-calls.js');
+  const summary = summarizeToolCalls(options.run);
+  if (options.json) {
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
+  console.log(chalk.bold('\nHarness evidence corpus'));
+  console.log(chalk.dim(options.run ? `run ${options.run}` : 'all runs'));
+  console.log('');
+  console.log(renderEvidence(summary));
+  console.log('');
+}
+
+/**
+ * `uap harness card` — the ETCSOVG disclosure card for the CURRENT harness
+ * (harness plan F). Harness variance dominates model variance 7.8x, so this is
+ * the context any score has to be read in.
+ */
+async function harnessCard(options: HarnessOptions): Promise<void> {
+  const { buildHarnessCard, renderHarnessCard } = await import('../benchmarks/harness-card.js');
+  const { toolsFor, readWindowBytes, defaultMaxToolRounds, editToleranceEnabled } = await import(
+    '../delivery/agentic-executor.js'
+  );
+  const pkgVersion = await currentVersion();
+  const card = buildHarnessCard({
+    uapVersion: pkgVersion,
+    tools: toolsFor(process.env.UAP_DELIVER_ALLOW_BASH === '1').map((t) => t.function.name),
+    allowBash: process.env.UAP_DELIVER_ALLOW_BASH === '1',
+    sandboxed: process.env.UAP_SANDBOX_ACTIVE === '1',
+    maxToolRounds: defaultMaxToolRounds(),
+    contextTokenBudget: Number(process.env.UAP_CONTEXT_TOKEN_BUDGET) || undefined,
+    memoryMode: await currentMemoryMode(),
+    verification: ['build', 'test', 'runtime', 'acceptance-judge'],
+    editStrategy: editToleranceEnabled()
+      ? 'exact, then whitespace-tolerant, then nearest-region report'
+      : 'exact only',
+    readWindowBytes: readWindowBytes(),
+    stubGuard: process.env.UAP_DELIVER_ALLOW_STUBS !== '1',
+    guttingGuard: process.env.UAP_DELIVER_ALLOW_GUTTING !== '1',
+    middleware:
+      process.env.UAP_MW_TOOLCALL_PATH_NORMALIZER === '0' ? [] : ['toolcall-path-normalizer'],
+  });
+  if (options.json) {
+    console.log(JSON.stringify(card, null, 2));
+    return;
+  }
+  console.log('');
+  console.log(renderHarnessCard(card));
+  console.log('');
+}
+
+/** The retrieval mode actually in force — one shared implementation. */
+async function currentMemoryMode(): Promise<string> {
+  try {
+    const { describeMemoryMode } = await import('../memory/reconstruct-store.js');
+    return describeMemoryMode(process.cwd());
+  } catch {
+    return 'semantic retrieval';
+  }
+}
+
+/** Read the installed package version, falling back to 'unknown'. */
+async function currentVersion(): Promise<string> {
+  try {
+    const { fileURLToPath } = await import('node:url');
+    const { join, dirname } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(join(here, '..', '..', 'package.json'), 'utf-8'));
+    return String(pkg.version ?? 'unknown');
+  } catch {
+    return 'unknown';
+  }
+}
+
 export async function harnessCommand(
-  sub: 'analyze' | 'status',
+  sub: 'analyze' | 'status' | 'evidence' | 'card',
   options: HarnessOptions = {}
 ): Promise<void> {
   if (sub === 'status') return harnessStatus(options);
+  if (sub === 'evidence') return harnessEvidence(options);
+  if (sub === 'card') return harnessCard(options);
   return harnessAnalyze(options);
 }

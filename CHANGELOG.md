@@ -1,13 +1,23 @@
 # Changelog
 
-## v1.175.13 (2026-07-31)
+## v1.178.0 (2026-07-31)
 
-- fix(plan): stamp the file the operator named, not only the reviewed one
+- feat(memory): wire active reconstruction into the AGENT context path
+- fix(merge): restore test_validate_plan_gate to test:enforcers
+- chore: bump version to 1.177.0
+- feat(memory): connect active reconstruction — ingestion bridge, callers, honest coverage
+- chore: bump version to 1.176.0
+- feat(harness): edit-tool ladder, evidence corpus, manifests, tool search space, memory substrate
 
 
-## v1.175.12 (2026-07-31)
+## v1.177.0 (2026-07-31)
 
-- fix(policy): validate the plan BEFORE the build, not on the plan write
+- feat(memory): connect active reconstruction — ingestion bridge, callers, honest coverage
+
+
+## v1.176.0 (2026-07-31)
+
+- feat(harness): edit-tool ladder, evidence corpus, manifests, tool search space, memory substrate
 
 
 ## v1.175.11 (2026-07-31)
@@ -2873,3 +2883,11 @@
 - Multi-model architecture (router, planner, executor)
 - Deploy batching system
 - Task management with DAG dependencies
+## v1.175.13 (2026-07-31)
+
+- fix(plan): stamp the file the operator named, not only the reviewed one
+
+
+## v1.175.12 (2026-07-31)
+
+- fix(policy): validate the plan BEFORE the build, not on the plan write

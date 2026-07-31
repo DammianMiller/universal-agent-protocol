@@ -219,8 +219,23 @@ program
       .option('-n, --limit <number>', 'Max results', '10')
       .option('-k, --top-k <number>', 'Alias for --limit', '10')
       .option('-t, --threshold <number>', 'Minimum similarity score (0-1)', '0.35')
+      .option(
+        '--active',
+        'Active reconstruction: traverse the cue-tag-content graph while reasoning and prune weak paths, instead of one passive top-k pull (also UAP_MEMORY_ACTIVE=1)'
+      )
+      .option('--steps <number>', 'Max reconstruction steps when --active (default 5)')
       .action(async (search, options) => {
         (await lazy.memory())('query', { search, ...options });
+      })
+  )
+  .addCommand(
+    new Command('graph')
+      .description('Cue-tag-content memory graph that active reconstruction traverses')
+      .argument('[action]', 'build | status', 'status')
+      .option('--rebuild', 'Re-ingest every source instead of building incrementally')
+      .option('-n, --limit <number>', 'Max short-term entries to ingest', '2000')
+      .action(async (action, options) => {
+        (await lazy.memory())(action === 'build' ? 'graph-build' : 'graph-status', options);
       })
   )
   .addCommand(
@@ -847,6 +862,23 @@ harness
   .action(async (options) => {
     const cmd = await lazy.harness();
     await cmd('status', options);
+  });
+harness
+  .command('evidence')
+  .description('Per-tool-call evidence corpus: failure classes, component attribution, edit-tool health')
+  .option('--run <id>', 'Scope to a single deliver run id')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.harness();
+    await cmd('evidence', options);
+  });
+harness
+  .command('card')
+  .description('ETCSOVG harness disclosure card for the current configuration (arXiv 2605.23950)')
+  .option('--json', 'Emit JSON instead of Markdown')
+  .action(async (options) => {
+    const cmd = await lazy.harness();
+    await cmd('card', options);
   });
 
 // Self-Harness — self-improving harness (arXiv:2606.09498)

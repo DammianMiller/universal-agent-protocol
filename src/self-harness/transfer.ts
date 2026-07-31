@@ -45,6 +45,8 @@ export function modKey(mod: Mod): string {
       return `mw:${mod.id}:${JSON.stringify(mod.params)}`;
     case 'config':
       return `config:${mod.key}=${mod.to}`;
+    case 'tool':
+      return `tool:${mod.key}=${mod.to}`;
   }
 }
 

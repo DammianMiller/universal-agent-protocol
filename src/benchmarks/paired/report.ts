@@ -21,6 +21,12 @@ import {
 } from './stats.js';
 import { RunnerOutput } from './runner.js';
 import { CONTINUOUS_METRICS, ContinuousMetric, MetricVector, RunRecord } from './types.js';
+import {
+  buildHarnessCard,
+  renderHarnessCard,
+  type HarnessCard,
+  type HarnessCardInput,
+} from '../harness-card.js';
 
 export interface ConditionSummary {
   label: string;
@@ -76,6 +82,14 @@ export interface AnalysisReport {
   comparisons: Comparison[];
   /** Cost-accuracy Pareto points (one per condition). */
   pareto: { label: string; successRate: number; meanTokens: number | null }[];
+  /**
+   * ETCSOVG disclosure card for the harness these numbers were produced by
+   * (harness plan F). Harness variance dominates model variance 7.8x
+   * (arXiv 2605.23950), so a score reported without it is not comparable to any
+   * other score. Absent only when the caller supplied no harness description —
+   * the card is never invented.
+   */
+  harnessCard?: HarnessCard;
 }
 
 function cellKey(r: RunRecord): string {
@@ -149,6 +163,12 @@ export interface AnalyzeOptions extends PairedOptions {
   /** ROPE half-width (composite-quality points, 0..100) below which a quality
    *  delta is a tie even if statistically significant. Default 0. */
   qualityMargin?: number;
+  /**
+   * Harness configuration in force for this run. Supplied -> the report carries
+   * an ETCSOVG disclosure card (harness plan F). Omitted -> no card, rather than
+   * a guessed one.
+   */
+  harness?: HarnessCardInput;
 }
 
 export function analyze(output: RunnerOutput, opts: AnalyzeOptions = {}): AnalysisReport {
@@ -255,6 +275,11 @@ export function analyze(output: RunnerOutput, opts: AnalyzeOptions = {}): Analys
       successRate: c.successRate,
       meanTokens: c.meanTokens,
     })),
+    // Default the card's model to the one the run actually used, so the caller
+    // cannot accidentally disclose a different model than it benchmarked.
+    ...(opts.harness
+      ? { harnessCard: buildHarnessCard({ model: output.model, ...opts.harness }) }
+      : {}),
   };
 }
 
@@ -370,5 +395,11 @@ export function renderMarkdown(r: AnalysisReport): string {
       `Single-arm point estimates without overlapping-zero CIs are not claims.`
   );
   L.push('');
+  // The disclosure card goes LAST and unconditionally when present: it is the
+  // context every number above must be read in (harness plan F).
+  if (r.harnessCard) {
+    L.push(renderHarnessCard(r.harnessCard));
+    L.push('');
+  }
   return L.join('\n');
 }
