@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.6 (2026-07-31)
+
+- fix(policies): match policies by slug so enforcers actually attach
+
+
 ## v1.175.5 (2026-07-31)
 
 - fix(policy): single-flight cannot be switched off from the agent's own command line
