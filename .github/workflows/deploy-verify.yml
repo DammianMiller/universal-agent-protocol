@@ -49,11 +49,23 @@ jobs:
   # the proxy). These security-critical tests gate self-protect, workdir-scope,
   # sandbox tool-strip, path containment, and proxy env handling — they must run
   # in CI or the whole enforcement layer can regress silently on a green PR.
-  # Scoped to the self-contained security set (via `npm run test:enforcers`);
-  # two files are excluded as a KNOWN pre-existing-red backlog, not by omission:
-  #   - test_delivery_enforcement_worktree (4 failing, needs a worktree fixture)
-  #   - test_anthropic_proxy_streaming     (7 failing)
-  # Fix those, then add them to test:enforcers so this gate covers them too.
+  # Runs via `npm run test:enforcers`, an EXPLICIT module list — not discovery.
+  #
+  # That comment used to say two files were excluded as a known-red backlog. In
+  # practice 37 of 51 modules were unlisted and 34 of them passed: the guardrail
+  # suites (error-loop, deferral-break, stuck-break, session-admission,
+  # cycle-break) had no CI coverage at all, which is how the same guards kept
+  # regressing on green PRs. All 34 are now listed — 102 tests became 436.
+  #
+  # Three remain out, each verified failing for its own pre-existing reason:
+  #   - test_anthropic_proxy_streaming     behaviour drifted from the assertions
+  #   - test_delivery_enforcement_worktree behaviour drifted from the assertions
+  #   - test_uap_compliance                needs a populated DB; environment-bound
+  # Fix those, then add them here too.
+  #
+  # A module is only covered if it is BOTH listed here AND made of
+  # unittest.TestCase subclasses — `python -m unittest` silently collects nothing
+  # from a plain pytest-style class and still exits 0.
   enforcers:
     name: Policy Enforcers (Python)
     runs-on: ubuntu-latest

@@ -325,21 +325,73 @@ _HARNESS_CORRECTIVE_RE = re.compile(
 )
 
 
+# A tool result that declares its own SUCCESS is not a failure, whatever words
+# appear in its prose.
+#
+# _ERROR_LINE_RE matches on tokens ("failed", "error", "not found"), so it reads
+# a NEGATED failure as a failure. Observed live (2026-07-31): the deliver
+# follow-mode poll returns
+#
+#   {"ok":true,...,"note":"The deliver run (pid 774213) is STILL RUNNING after
+#    45s. It has not failed -- this wait gave up, the mission did not. ..."}
+#
+# and "failed", inside the sentence saying it had NOT failed, produced an error
+# signature. Three identical healthy polls then tripped the ERROR-LOOP guard,
+# which told the model to re-read its failing output. The model concluded the
+# tool was stuck for 10+ minutes, abandoned follow mode, hand-rolled
+# `sleep 60 && ls` polling, and finally collided with "a deliver run is already
+# in progress" -- a mission that was healthy the whole time.
+#
+# The sentence was written to REASSURE the model it had not failed. Reading the
+# structured verdict instead of the prose is what makes that safe to say.
+_SUCCESS_ENVELOPE_RE = re.compile(r'"ok"\s*:\s*true', re.IGNORECASE)
+_ERROR_FIELD_RE = re.compile(r'"error"\s*:\s*(?!null|""|\s*[,}])', re.IGNORECASE)
+
+# "it has not failed", "did not fail", "no errors" -- a denial of failure, in
+# plain prose that carries no ok:true envelope to consult.
+_NEGATED_FAILURE_RE = re.compile(
+    r"\b(?:has\s+not|have\s+not|had\s+not|did\s+not|does\s+not|is\s+not|was\s+not|"
+    r"were\s+not|not|no|never|without)\s+"
+    r"(?:\w+\s+){0,2}?(?:fail(?:ed|ure|s)?|error(?:ed|s)?|crash(?:ed|es)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_successful_result(text: str) -> bool:
+    """True when the payload structurally declares success.
+
+    Only an `"ok": true` envelope with no populated `"error"` field counts. A
+    bare `"ok": true` alongside a real error field is treated as a failure,
+    because a partial success that still reports an error is one the model needs
+    to see."""
+    if not _SUCCESS_ENVELOPE_RE.search(text):
+        return False
+    return not _ERROR_FIELD_RE.search(text)
+
+
 def _error_signature(text: str) -> str:
     """Edit-invariant signature of the first error line in a tool result.
 
     Normalizes away paths, line:col numbers, hex, and bare digits so that the
     SAME underlying failure produces the SAME signature across turns even as the
     model edits different code around it. Returns "" when no error line is found
-    (a passing result resets the streak), and "" for the harness's own
-    correctives -- see _HARNESS_CORRECTIVE_RE."""
+    (a passing result resets the streak), "" for the harness's own correctives
+    (_HARNESS_CORRECTIVE_RE), and "" for results that declare success
+    (_is_successful_result) or explicitly deny failure (_NEGATED_FAILURE_RE)."""
     if not text:
+        return ""
+    # Checked against the WHOLE payload, before line matching: the ok:true lives
+    # at the head of the envelope while the failure-shaped token can be anywhere
+    # in a long note.
+    if _is_successful_result(text):
         return ""
     m = _ERROR_LINE_RE.search(text)
     if not m:
         return ""
     line = m.group(0)
     if _HARNESS_CORRECTIVE_RE.search(line):
+        return ""
+    if _NEGATED_FAILURE_RE.search(line):
         return ""
     line = re.sub(r"(/[^\s:]+)+", "<path>", line)          # unix paths
     line = re.sub(r"\b[0-9a-fA-F]{6,}\b", "<hex>", line)    # hashes/addresses

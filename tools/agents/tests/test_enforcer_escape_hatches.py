@@ -14,16 +14,30 @@ override read from os.environ is set by whoever launched the session.
 self-protect additionally refuses inline attempts at either flag, so trying reads
 as an explicit refusal rather than appearing to work.
 
-NOTE ON THE HARNESS: every case runs with cwd inside a real git repo. Outside
-one, expert-review fail-opens on an unresolvable branch and EVERY result reads
-"allowed" — the first version of this verification was run from a temp dir and
-reported the self-grant case as passing when it was not.
+NOTE ON THE HARNESS: every case runs with cwd inside a real git repo, ON A
+BRANCH, with no review artifact. All three conditions are load-bearing, and each
+one silently inverts a result when it is missing:
+
+  - outside a git repo, or on a DETACHED head, expert-review cannot resolve a
+    branch and fail-opens, so every result reads "allowed". The first version of
+    this verification ran from a temp dir and reported the self-grant case as
+    passing when it was not. The second ran with cwd=REPO, which is detached in
+    CI (checkout of a merge ref) — green locally, red in CI, for the same reason.
+  - inside THIS repo on a feature branch, a review artifact usually exists, and
+    expert-review then allows the ship on its own merits. The test would pass or
+    fail depending on whether the working session happened to record one.
+
+So the fixture is a throwaway repo built here, not the checkout the suite runs
+in. A test of a security control must not depend on the mood of its surroundings.
 """
 
+import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -39,6 +53,28 @@ SHIP = "git " + "commit -m x"
 RESTART = "systemctl --user " + "rest" + "art " + "uap-" + "llama-server.service"
 
 
+def _make_fixture_repo() -> Path:
+    """A throwaway git repo on a branch, with no review artifact.
+
+    Deterministic in every environment: local checkout, CI's detached merge ref,
+    or a bare container. See the module docstring for what each missing
+    condition would silently do to the results."""
+    proj = Path(tempfile.mkdtemp(prefix="uap-hatch-"))
+    atexit.register(shutil.rmtree, proj, True)
+    run = lambda *a: subprocess.run(a, cwd=proj, check=True, capture_output=True)  # noqa: E731
+    run("git", "init", "-q", "-b", "feature/escape-hatch-fixture")
+    (proj / "f.txt").write_text("x\n")
+    run("git", "add", "-A")
+    # --no-verify: the repo's own hooks are not under test here, and a hook that
+    # blocks would leave the fixture without the commit the enforcers look for.
+    run("git", "-c", "user.email=t@t", "-c", "user.name=t",
+        "commit", "-qm", "init", "--no-verify")
+    return proj
+
+
+PROJECT = _make_fixture_repo()
+
+
 def verdict(enforcer: str, cmd: str, env: dict | None = None):
     e = dict(os.environ)
     for k in ("UAP_NO_REVIEW", "UAP_INFRA_PROTECT_OFF", "UAP_SELF_PROTECT_OFF"):
@@ -47,12 +83,38 @@ def verdict(enforcer: str, cmd: str, env: dict | None = None):
     p = subprocess.run(
         [sys.executable, str(ENFORCERS / enforcer),
          "--operation", "Bash", "--args", json.dumps({"command": cmd})],
-        capture_output=True, text=True, cwd=str(REPO), env=e,
+        capture_output=True, text=True, cwd=str(PROJECT), env=e,
     )
     try:
         return json.loads(p.stdout or "{}").get("allowed")
     except Exception:  # noqa: BLE001
         return f"ERR {(p.stderr or '')[:80]}"
+
+
+class FixtureIsSoundTest(unittest.TestCase):
+    """If the fixture degrades, every hatch test below passes vacuously.
+
+    expert-review fail-opens when it cannot resolve a branch, so a broken
+    fixture turns "the self-grant was refused" into "everything is allowed" —
+    a suite that reports the security control working while it is bypassed.
+    That is precisely how this file was green locally and red in CI."""
+
+    def test_the_fixture_is_a_git_repo_on_a_named_branch(self):
+        got = subprocess.run(["git", "symbolic-ref", "--short", "HEAD"],
+                             cwd=str(PROJECT), capture_output=True, text=True)
+        assert got.returncode == 0, f"fixture has no branch (detached?): {got.stderr.strip()}"
+        assert got.stdout.strip() == "feature/escape-hatch-fixture", got.stdout
+
+    def test_the_fixture_has_no_review_artifact(self):
+        # With one present, expert-review allows the ship on its own merits and
+        # the refusal tests below stop testing anything.
+        assert not (PROJECT / ".uap" / "reviews").exists()
+
+    def test_expert_review_actually_engages_in_the_fixture(self):
+        # The positive control: a plain ship must be REFUSED here. If this ever
+        # reads True, the enforcer is fail-opening and every assertion that
+        # something was "refused" is meaningless.
+        assert verdict("expert_review_required.py", SHIP) is False
 
 
 class InfraProtectHatchTest(unittest.TestCase):
