@@ -234,3 +234,83 @@ describe('recall coverage and honesty', () => {
     expect(dropped).toBeGreaterThan(0);
   });
 });
+
+describe('refresh economics on the agent hot path (review findings)', () => {
+  let cwd: string;
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'uap-mem-ttl-'));
+  });
+  afterEach(() => rmSync(cwd, { recursive: true, force: true }));
+
+  it('heartbeats a completed refresh even when nothing new was stored', async () => {
+    // Deriving staleness from stored keys means an idle project (or an
+    // unreachable long-term store, or a misconfigured project id) never
+    // advances the clock, so the TTL never clears and the index rebuilds on
+    // EVERY retrieval — a full corpus scan per model turn.
+    await buildMemoryGraph(cwd, { extra: EXTRA, includeLongTerm: false });
+    const g1 = openMemoryGraph(cwd);
+    const firstIngest = g1.lastIngestedAt();
+    g1.close();
+
+    const second = await buildMemoryGraph(cwd, { extra: EXTRA, includeLongTerm: false });
+    expect(second.ingested).toBe(0); // nothing new to store
+
+    const g2 = openMemoryGraph(cwd);
+    try {
+      expect(g2.lastIngestedAt()).toBe(firstIngest); // unchanged, as expected
+      expect(g2.lastRefreshedAt()).not.toBeNull(); // but the refresh IS recorded
+    } finally {
+      g2.close();
+    }
+  });
+
+  it('skips the refresh while fresh and performs it once stale', async () => {
+    await buildMemoryGraph(cwd, { extra: EXTRA, includeLongTerm: false });
+    const stamp = () => {
+      const g = openMemoryGraph(cwd);
+      try {
+        return g.lastRefreshedAt();
+      } finally {
+        g.close();
+      }
+    };
+    const fresh = stamp();
+
+    await recallActive(cwd, 'staging', { refresh: 'if-stale', staleAfterSeconds: 3600 });
+    expect(stamp()).toBe(fresh); // inside the window: no rebuild
+
+    await recallActive(cwd, 'staging', { refresh: 'if-stale', staleAfterSeconds: 0 });
+    expect(stamp()).not.toBe(fresh); // window elapsed: rebuilt
+  });
+
+  it('single-flights concurrent builds so they cannot duplicate the corpus', async () => {
+    await buildMemoryGraph(cwd, { extra: EXTRA, includeLongTerm: false });
+    const graph = openMemoryGraph(cwd);
+    try {
+      // Simulate another process mid-build.
+      expect(graph.acquireBuildLock(Date.now())).toBe(true);
+      const blocked = await buildMemoryGraph(cwd, {
+        extra: [{ id: 'new', text: 'a brand new deployment memory', tags: ['release'] }],
+        includeLongTerm: false,
+      });
+      expect(blocked.skippedConcurrentBuild).toBe(true);
+      expect(blocked.ingested).toBe(0);
+    } finally {
+      graph.releaseBuildLock();
+      graph.close();
+    }
+  });
+
+  it('takes over a lock left behind by a crashed build', () => {
+    const graph = openMemoryGraph(cwd);
+    try {
+      const longAgo = Date.now() - 10 * 60_000;
+      expect(graph.acquireBuildLock(longAgo)).toBe(true);
+      // A stale lock must not wedge refreshes forever.
+      expect(graph.acquireBuildLock(Date.now())).toBe(true);
+    } finally {
+      graph.releaseBuildLock();
+      graph.close();
+    }
+  });
+});

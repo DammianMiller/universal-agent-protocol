@@ -75,28 +75,43 @@ describe('agent context path — active reconstruction as an ADDITIONAL source',
     process.env.UAP_MEMORY_ACTIVE = '1';
 
     const { openMemoryGraph } = await import('../../src/memory/reconstruct-store.js');
-    const before = (() => {
+    const refreshedAt = () => {
       const g = openMemoryGraph(cwd);
       try {
-        return g.lastIngestedAt();
+        return g.lastRefreshedAt();
       } finally {
         g.close();
       }
-    })();
+    };
+
+    const before = refreshedAt();
+    expect(before).not.toBeNull();
 
     await retrieveDynamicMemoryContext('checkout rollback', cwd);
     await retrieveDynamicMemoryContext('database migration', cwd);
 
-    const after = (() => {
-      const g = openMemoryGraph(cwd);
-      try {
-        return g.lastIngestedAt();
-      } finally {
-        g.close();
-      }
-    })();
-    // A fresh index must not be re-ingested: a full store scan per model turn is
-    // a latency regression paid by every agent whether the graph helped or not.
-    expect(after).toBe(before);
+    // Asserts on the REFRESH heartbeat, not on lastIngestedAt(). The ingest
+    // timestamp only moves when something new is stored, so a rebuild that
+    // found nothing would leave it unchanged and this test could never fail —
+    // which is exactly the bug the heartbeat was added to expose.
+    expect(refreshedAt()).toBe(before);
+  });
+
+  it('truncates its content like every other source', async () => {
+    const long = 'alpha '.repeat(400) + 'checkout rollback staging';
+    await buildMemoryGraph(cwd, {
+      extra: [{ id: 'big', text: long, tags: ['payments-incident'] }, ...BRIDGED],
+      includeLongTerm: false,
+    });
+    process.env.UAP_MEMORY_ACTIVE = '1';
+
+    const ctx = await retrieveDynamicMemoryContext('checkout rollback staging', cwd, {
+      useSemanticCompression: false,
+    });
+    for (const m of ctx.relevantMemories.filter((x) => x.source === 'active-reconstruction')) {
+      // The merged budget loop BREAKS on the first overflowing item, so one
+      // multi-KB node would discard every lower-ranked passive memory under it.
+      expect(m.content.length).toBeLessThanOrEqual(500);
+    }
   });
 });

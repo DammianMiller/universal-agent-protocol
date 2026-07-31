@@ -680,7 +680,12 @@ async function queryActiveReconstruction(
     });
 
     return result.context.map((node, i) => ({
-      content: node.text,
+      // Truncated like EVERY other source. The merged budget loop `break`s on
+      // the first item that overflows, so one multi-KB node landing mid-list
+      // would discard every lower-ranked memory beneath it — including real
+      // passive hits. No other source can produce an item large enough to do
+      // that, and this one must not either.
+      content: node.text.slice(0, 500),
       type: node.layer === 'semantic' ? ('lesson' as const) : ('context' as const),
       // Decay with admission order: earlier nodes were reached in earlier hops
       // and sit closer to what the query actually asked about.

@@ -91,6 +91,8 @@ export interface BuildReport extends IngestResult {
    * complete.
    */
   coverage: { shortTerm: number; longTerm: number };
+  /** True when another process held the build lock and this call did nothing. */
+  skippedConcurrentBuild?: boolean;
 }
 
 /**
@@ -152,7 +154,11 @@ export async function itemsFromLongTerm(cwd: string, limit = 2000): Promise<Inge
 
     const { getQdrantClientClass } = await import('../utils/lazy-imports.js');
     const QdrantClientClass = await getQdrantClientClass();
-    const client = new QdrantClientClass({ url, apiKey, checkCompatibility: false });
+    // The client defaults to a 300_000ms timeout. On the AGENT path this call
+    // is awaited during context assembly, so a black-holed endpoint (firewall
+    // drop, not a fast ECONNREFUSED) would block a model turn for five minutes.
+    const timeout = Number(process.env.UAP_MEMORY_QDRANT_TIMEOUT_MS) || 3000;
+    const client = new QdrantClientClass({ url, apiKey, checkCompatibility: false, timeout });
     const collections = await client.getCollections();
     const names = [collection, `${collection}_prepopulated`].filter((c: string) =>
       collections.collections.some((col: { name: string }) => col.name === c),
@@ -203,6 +209,17 @@ export async function buildMemoryGraph(
 ): Promise<BuildReport> {
   const graph = openMemoryGraph(cwd);
   try {
+    if (!graph.acquireBuildLock(Date.now())) {
+      // Another process is building. Duplicating that work would insert every
+      // item a second time under fresh ids — permanent, since the ledger then
+      // reports them indexed.
+      return {
+        ingested: 0, skipped: 0, storedKeys: [], cues: 0, tags: 0, bridgingTags: 0,
+        considered: 0, graphPath: memoryGraphPath(cwd),
+        coverage: { shortTerm: 0, longTerm: 0 },
+        skippedConcurrentBuild: true,
+      };
+    }
     const shortTerm = await itemsFromShortTerm(cwd, opts);
     const longTerm = opts.includeLongTerm === false ? [] : await itemsFromLongTerm(cwd, opts.limit);
     const items = [...shortTerm, ...longTerm, ...(opts.extra ?? [])];
@@ -217,6 +234,10 @@ export async function buildMemoryGraph(
     const result = ingestItems(graph, items, { seen });
     // Mark ONLY what was stored — see IngestResult.storedKeys.
     graph.markIngested(result.storedKeys);
+    // Heartbeat REGARDLESS of whether anything was stored. Deriving staleness
+    // from stored keys means a refresh that finds nothing new never advances the
+    // clock, so the TTL never clears and the index rebuilds every retrieval.
+    graph.markRefreshed(new Date().toISOString());
     return {
       ...result,
       considered: items.length,
@@ -224,6 +245,7 @@ export async function buildMemoryGraph(
       coverage: { shortTerm: shortTerm.length, longTerm: longTerm.length },
     };
   } finally {
+    graph.releaseBuildLock();
     graph.close();
   }
 }
@@ -303,7 +325,7 @@ async function shouldRefresh(cwd: string, opts: RecallOptions): Promise<boolean>
   if (!memoryGraphExists(cwd)) return true;
   const graph = openMemoryGraph(cwd);
   try {
-    const last = graph.lastIngestedAt();
+    const last = graph.lastRefreshedAt() ?? graph.lastIngestedAt();
     if (!last) return true;
     // SQLite datetime('now') is UTC without a zone marker; parse it as such.
     const lastMs = Date.parse(last.endsWith('Z') ? last : `${last.replace(' ', 'T')}Z`);
@@ -324,18 +346,26 @@ async function shouldRefresh(cwd: string, opts: RecallOptions): Promise<boolean>
  * content. Routing to an empty graph would silently return nothing where
  * passive retrieval would have answered — a regression dressed as a feature.
  */
-export function shouldUseActiveRecall(cwd: string): boolean {
+export function shouldUseActiveRecall(cwd: string, graph?: MemoryGraph): boolean {
   if (!activeReconstructionEnabled()) return false;
   if (!memoryGraphExists(cwd)) return false;
-  const graph = openMemoryGraph(cwd);
+  if (graph) {
+    try {
+      return !graph.isEmpty();
+    } catch {
+      return false;
+    }
+  }
+  const owned = openMemoryGraph(cwd);
+  const graphRef = owned;
   try {
     // Cheap probe, not stats(): this runs on EVERY `uap memory query` and every
     // harness-card render, and stats() is five aggregates over the triples table.
-    return !graph.isEmpty();
+    return !graphRef.isEmpty();
   } catch {
     return false;
   } finally {
-    graph.close();
+    owned.close();
   }
 }
 

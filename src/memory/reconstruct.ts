@@ -24,6 +24,14 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+/**
+ * A tag linking at least this share of the corpus relates everything and so
+ * discriminates nothing — a hub, not a bridge.
+ */
+const HUB_RATIO = 0.6;
+/** Below this many contents the ratio is noise, so no tag counts as a hub. */
+const HUB_RATIO_MIN_CONTENTS = 20;
+
 /** Which memory layer a content node lives in (MRAgent's three granularities). */
 export type MemoryLayer =
   /** Event-specific, temporally ordered. */
@@ -104,7 +112,18 @@ export interface ReconstructionPolicy {
     candidates: ContentNode[],
     context: ContentNode[],
     hops?: HopContext,
-  ): { keep: number[]; sufficient: boolean };
+  ): RouteDecision;
+}
+
+export interface RouteDecision {
+  keep: number[];
+  sufficient: boolean;
+  /**
+   * Candidates declined ONLY because a per-step cap was reached, not on the
+   * merits. The traversal keeps these reachable by a later, stronger bridge
+   * instead of blacklisting them like a genuine rejection.
+   */
+  deferred?: number[];
 }
 
 /** How the traversal reached this step's candidates. */
@@ -118,6 +137,13 @@ export interface HopContext {
    * definition the far side of a bridge does not resemble the query.
    */
   productiveTags: ReadonlySet<string>;
+  /**
+   * How many contents each tag links. Specificity is the honest discriminator
+   * for an associative admission: a tag on 3 memories asserts a real relation, a
+   * tag on 300 asserts almost nothing. Lexical overlap cannot serve here — the
+   * far side of a bridge shares no words with the query by construction.
+   */
+  tagSize: (tag: string) => number;
 }
 
 /**
@@ -136,6 +162,11 @@ export function heuristicPolicy(
     maxExpandPerStep?: number;
     /** Max tag-bridged admissions per step. 0 disables associative recall. */
     maxAssociativePerStep?: number;
+    /**
+     * A tag linking more contents than this is too broad to justify admitting a
+     * candidate that has no lexical relation to the query at all.
+     */
+    maxBridgeTagSize?: number;
   } = {},
 ): ReconstructionPolicy {
   const keepThreshold = opts.keepThreshold ?? 0.12;
@@ -150,6 +181,7 @@ export function heuristicPolicy(
   // than the passive top-k it replaces, inverting the paper's whole result.
   const maxExpand = opts.maxExpandPerStep ?? 24;
   const maxAssociative = opts.maxAssociativePerStep ?? 3;
+  const maxBridgeTagSize = opts.maxBridgeTagSize ?? 12;
   return {
     selectCues(query, activeCues, context) {
       if (activeCues.length <= maxExpand) return [...activeCues];
@@ -169,6 +201,7 @@ export function heuristicPolicy(
       const q = tokenize(query);
       const direct = candidates.filter((c) => overlap(q, tokenize(c.text)) >= keepThreshold);
       const keep = new Set(direct.map((c) => c.id));
+      const deferred: number[] = [];
 
       // ASSOCIATIVE PASS. A tag that has produced admitted evidence is a
       // known-good bridge, so a candidate reached through one earns a lower bar.
@@ -196,19 +229,40 @@ export function heuristicPolicy(
           // tags that have already produced admitted evidence, ranked by how
           // much they add to what is known. A cap is an honest way to buy recall
           // with a known amount of noise; a lexical bar here would buy neither.
-          const bridged = candidates
+          const eligible = candidates
             .filter(
               (c) =>
                 !keep.has(c.id) &&
                 (hops.tagsFor.get(c.id) ?? []).some((t) => productive.has(t)),
             )
             .map((c) => ({ c, score: Math.max(overlap(q, tokenize(c.text)), overlap(tokenize(c.text), ctx)) }))
-            .sort((a, b) => b.score - a.score || a.c.id - b.c.id)
-            .slice(0, maxAssociative);
-          for (const { c } of bridged) keep.add(c.id);
+            // A floor of >0, not a lexical bar. Without ANY floor the slice still
+            // admits `maxAssociative` when every candidate scores zero, and the
+            // id tie-break then picks the three oldest memories in the store —
+            // deterministic noise. "No lexical minimum" and "no bar at all" are
+            // different things.
+            .map((x) => ({
+              ...x,
+              // Smallest productive tag this candidate came through.
+              specificity: Math.min(
+                ...(hops.tagsFor.get(x.c.id) ?? [])
+                  .filter((t) => productive.has(t))
+                  .map((t) => hops.tagSize(t)),
+              ),
+            }))
+            // Zero lexical score is EXPECTED for a real associative hop, so it
+            // cannot be the filter. Tag specificity is: a bridge from a 3-member
+            // tag asserts a relation, one from a 300-member tag asserts noise.
+            .filter((x) => x.score > 0 || x.specificity <= maxBridgeTagSize)
+            .sort(
+              (a, b) =>
+                b.score - a.score || a.specificity - b.specificity || a.c.id - b.c.id,
+            );
+          for (const { c } of eligible.slice(0, maxAssociative)) keep.add(c.id);
+          for (const { c } of eligible.slice(maxAssociative)) deferred.push(c.id);
         }
       }
-      return { keep: [...keep], sufficient: context.length + keep.size >= sufficientAt };
+      return { keep: [...keep], sufficient: context.length + keep.size >= sufficientAt, deferred };
     },
   };
 }
@@ -271,6 +325,16 @@ export class MemoryGraph {
         key TEXT PRIMARY KEY,
         ingested_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      -- Graph-level metadata. last_refresh_at exists because staleness must
+      -- NOT be derived from mg_sources: a refresh that finds nothing new writes
+      -- no source rows, so the timestamp never moves, the TTL never clears, and
+      -- the index rebuilds on every single retrieval. That is the common case
+      -- (idle project, unreachable long-term store, misconfigured project id),
+      -- and on the agent path it would be a full corpus scan per model turn.
+      CREATE TABLE IF NOT EXISTS mg_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
   }
 
@@ -330,6 +394,41 @@ export class MemoryGraph {
     return rows.map(toNode);
   }
 
+  /**
+   * Tags too broad to be bridges: attached to >= 60% of all content. Reuses the
+   * discriminativeness rule `stats()` already applies, because a tag that links
+   * everything relates nothing — and on the short-term tier EVERY item is tagged
+   * with one of ~6 type values, so without this the "bridge" is the whole store.
+   */
+  hubTags(): Set<string> {
+    // The ratio only means something once there is a corpus to take a ratio of:
+    // on three memories a two-member tag is 67% and obviously a real bridge, and
+    // calling it a hub would stop every traversal in a small store.
+    const rows = this.db
+      .prepare(
+        `SELECT tag FROM mg_triples GROUP BY tag
+         HAVING (SELECT COUNT(*) FROM mg_contents) >= ${HUB_RATIO_MIN_CONTENTS}
+            AND COUNT(DISTINCT content_id) >= ${HUB_RATIO} * (SELECT COUNT(*) FROM mg_contents)`,
+      )
+      .all() as Array<{ tag: string }>;
+    return new Set(rows.map((r) => r.tag));
+  }
+
+  private tagSizeCache = new Map<string, number>();
+
+  /** How many distinct contents a tag links. Cached — hot in the route loop. */
+  tagSize(tag: string): number {
+    const key = norm(tag);
+    const hit = this.tagSizeCache.get(key);
+    if (hit !== undefined) return hit;
+    const row = this.db
+      .prepare('SELECT COUNT(DISTINCT content_id) AS n FROM mg_triples WHERE tag = ?')
+      .get(key) as { n: number } | undefined;
+    const n = row?.n ?? 0;
+    this.tagSizeCache.set(key, n);
+    return n;
+  }
+
   /** Cues that co-occur with a tag — how traversal discovers NEW clues. */
   cuesForTag(tag: string): string[] {
     const rows = this.db
@@ -342,6 +441,58 @@ export class MemoryGraph {
   ingestedKeys(): Set<string> {
     const rows = this.db.prepare('SELECT key FROM mg_sources').all() as Array<{ key: string }>;
     return new Set(rows.map((r) => r.key));
+  }
+
+  /** Record that a refresh COMPLETED, whether or not it stored anything. */
+  markRefreshed(nowIso: string): void {
+    this.db
+      .prepare("INSERT INTO mg_meta (key, value) VALUES ('last_refresh_at', ?) " +
+               'ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+      .run(nowIso);
+  }
+
+  /** ISO timestamp of the last completed refresh, or null if never refreshed. */
+  lastRefreshedAt(): string | null {
+    const row = this.db.prepare("SELECT value FROM mg_meta WHERE key = 'last_refresh_at'").get() as
+      | { value: string }
+      | undefined;
+    return row?.value ?? null;
+  }
+
+  /**
+   * Best-effort single-flight guard around a build.
+   *
+   * Two agents retrieving at once both see a stale graph, both build, and both
+   * insert the same items under fresh ids — permanent duplicates, since the
+   * ledger then reports them indexed. Returns false when another build holds the
+   * lock; a lock older than `staleMs` is taken over so a crashed build cannot
+   * wedge refreshes forever.
+   */
+  acquireBuildLock(nowMs: number, staleMs = 120_000): boolean {
+    try {
+      const row = this.db.prepare("SELECT value FROM mg_meta WHERE key = 'build_lock'").get() as
+        | { value: string }
+        | undefined;
+      if (row) {
+        const held = Number(row.value);
+        if (Number.isFinite(held) && nowMs - held < staleMs) return false;
+      }
+      this.db
+        .prepare("INSERT INTO mg_meta (key, value) VALUES ('build_lock', ?) " +
+                 'ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+        .run(String(nowMs));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  releaseBuildLock(): void {
+    try {
+      this.db.prepare("DELETE FROM mg_meta WHERE key = 'build_lock'").run();
+    } catch {
+      /* best-effort */
+    }
   }
 
   /** ISO timestamp of the most recent ingest, or null if never built. */
@@ -397,7 +548,10 @@ export class MemoryGraph {
            SELECT tag FROM mg_triples
            GROUP BY tag
            HAVING COUNT(DISTINCT content_id) > 1
-              AND COUNT(DISTINCT content_id) < 0.6 * (SELECT COUNT(*) FROM mg_contents)
+              AND (
+                (SELECT COUNT(*) FROM mg_contents) < ${HUB_RATIO_MIN_CONTENTS}
+                OR COUNT(DISTINCT content_id) < ${HUB_RATIO} * (SELECT COUNT(*) FROM mg_contents)
+              )
          )`,
       ),
     };
@@ -486,6 +640,8 @@ export function reconstruct(
   const steps: ReconstructionStep[] = [];
   // Tags that have produced admitted evidence, accumulated across steps.
   const productiveTags = new Set<string>();
+  // ...minus the ones too broad to mean anything.
+  const hubs = graph.hubTags();
   let converged = false;
   let stopReason: ReconstructionResult['stopReason'] = 'step-budget';
 
@@ -524,10 +680,12 @@ export function reconstruct(
       }
     }
 
-    const { keep, sufficient } = policy.route(query, candidates, context, {
+    const { keep, sufficient, deferred } = policy.route(query, candidates, context, {
       tagsFor: provenance,
       productiveTags,
+      tagSize: (t) => graph.tagSize(t),
     });
+    const bridgedButCapped = new Set(deferred ?? []);
     const keepSet = new Set(keep);
     const kept: number[] = [];
     const pruned: number[] = [];
@@ -536,7 +694,11 @@ export function reconstruct(
       if (!keepSet.has(node.id)) {
         // Pruned BEFORE it costs context — the token saving the paper measures.
         pruned.push(node.id);
-        rejected.add(node.id);
+        // Only a candidate the router actually SAW and declined is blacklisted.
+        // An associative candidate that merely missed the per-step cap was never
+        // judged on the merits, and must stay reachable by a later, stronger
+        // bridge.
+        if (!bridgedButCapped.has(node.id)) rejected.add(node.id);
         continue;
       }
       if (context.length >= maxContext) {
@@ -546,8 +708,9 @@ export function reconstruct(
       context.push(node);
       admitted.add(node.id);
       kept.push(node.id);
-      // This tag is now a proven bridge for the rest of the traversal.
-      for (const t of provenance.get(node.id) ?? []) productiveTags.add(t);
+      // This tag is now a proven bridge for the rest of the traversal — unless
+      // it is a hub, in which case it "bridges" to the entire corpus.
+      for (const t of provenance.get(node.id) ?? []) if (!hubs.has(t)) productiveTags.add(t);
     }
 
     // Discovery: tags reached by KEPT evidence surface new cues to expand. Only
