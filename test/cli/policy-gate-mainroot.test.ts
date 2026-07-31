@@ -16,18 +16,18 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync, readdirSync } from 'fs';
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 const REPO = process.cwd();
 const GATE_SRC = join(REPO, 'templates', 'hooks', 'uap-policy-gate.sh');
-const POLICY_TOOLS = join(REPO, '.policy-tools');
-const WT_ENFORCER_SRC = join(
-  POLICY_TOOLS,
-  readdirSync(POLICY_TOOLS).find((f) => f.endsWith('_worktree_required.py'))!
-);
-const COMMON_SRC = join(POLICY_TOOLS, '_common.py');
+// Read the SOURCE enforcers. This used to scan `.policy-tools/` for a
+// UUID-prefixed copy, which meant the fixture only worked on a machine that had
+// run the installer — and picked up whatever stale copy happened to be there.
+const ENFORCER_DIR = join(REPO, 'src', 'policies', 'enforcers');
+const WT_ENFORCER_SRC = join(ENFORCER_DIR, 'worktree_required.py');
+const COMMON_SRC = join(ENFORCER_DIR, '_common.py');
 
 function makeProject(): string {
   const proj = mkdtempSync(join(tmpdir(), 'uap-pgate-'));

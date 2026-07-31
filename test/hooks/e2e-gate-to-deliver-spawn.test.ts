@@ -34,7 +34,10 @@ const GATE_SRC = join(REPO, 'templates', 'hooks', 'uap-policy-gate.sh');
 const AUTOROUTE_SRC = join(REPO, 'templates', 'hooks', 'deliver_autoroute.py');
 const FASTPATH_SRC = join(REPO, 'templates', 'hooks', 'fastpath_gate.py');
 const ENFORCER_SRC = join(REPO, 'src', 'policies', 'enforcers', 'delivery_enforcement.py');
-const COMMON_SRC = join(REPO, '.policy-tools', '_common.py');
+// Read the SOURCE, not a materialised copy. `.policy-tools/` is generated and
+// gitignored, so a copy is only there if this machine happened to run the
+// installer — which made this fixture depend on local state.
+const COMMON_SRC = join(REPO, 'src', 'policies', 'enforcers', '_common.py');
 
 interface Env { proj: string; spawnLog: string; binDir: string }
 

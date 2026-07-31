@@ -8,10 +8,9 @@ import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 
-const ENF = join(
-  __dirname,
-  '../.policy-tools/6e0b2e6e-86d9-416d-a821-3aba14fe90d2_rtk_wrap.py'
-);
+// The SOURCE enforcer — see iac-parity.test.ts for why the materialised copy
+// under `.policy-tools/` is the wrong thing to point a test at.
+const ENF = join(__dirname, '../src/policies/enforcers/rtk_wrap.py');
 
 // The enforcer exits 2 on a block (valid JSON still on stdout), so use
 // spawnSync which does not throw on a non-zero exit.

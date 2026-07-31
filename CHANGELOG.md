@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.175.8 (2026-07-31)
+
+- test: point the last two enforcer fixtures at source, and guard the rule
+- test(hooks): read enforcers from source, not from generated .policy-tools
+
+
+## v1.175.7 (2026-07-31)
+
+- chore(policies): stop tracking .policy-tools/, it is generated
+
+
 ## v1.175.6 (2026-07-31)
 
 - fix(policies): match policies by slug so enforcers actually attach
