@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.176.0 (2026-07-31)
+
+- feat(harness): edit-tool ladder, evidence corpus, manifests, tool search space, memory substrate
+
+
 ## v1.175.11 (2026-07-31)
 
 - fix(deliver): reclaim an abandoned lock, don't wait on a recycled PID
