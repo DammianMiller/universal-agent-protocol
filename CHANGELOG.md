@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.13 (2026-07-31)
+
+- fix(plan): stamp the file the operator named, not only the reviewed one
+
+
 ## v1.175.12 (2026-07-31)
 
 - fix(policy): validate the plan BEFORE the build, not on the plan write
