@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.9 (2026-07-31)
+
+- fix(proxy): a successful tool result is not a failure, whatever its prose
+
+
 ## v1.175.8 (2026-07-31)
 
 - test: point the last two enforcer fixtures at source, and guard the rule
