@@ -807,8 +807,11 @@ program
 program
   .command('plan')
   .description('Validate + record plan validation (validate-plan-on-change gate): `uap plan validate [file]` reviews the plan, then stamps')
-  .argument('[action]', 'validate | status (omit to show status)')
-  .argument('[file]', 'plan artifact to review (validate only; default: newest plan-like .md)')
+  .argument('[action]', 'validate | status | clear (omit to show status)')
+  .argument(
+    '[file]',
+    'validate: plan artifact to review (default: newest plan-like .md). clear: a single unreachable pending entry (default: all of them)'
+  )
   .option('--json', 'Emit JSON')
   .option('--no-review', 'Skip the model review (stamp only)')
   .option('--force', 'Stamp even when the review verdict is fail (justify in the PR)')

@@ -25,7 +25,16 @@
  * A completed review that returns "fail" is the only thing that blocks.
  */
 import { createHash } from 'crypto';
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from 'fs';
 import { join, relative, resolve, sep } from 'path';
 import type { LoopExecutor } from '../delivery/convergence-loop.js';
 import { reviewPlanText, type PlanReviewVerdict } from '../delivery/plan-check.js';
@@ -84,6 +93,8 @@ export interface PlanState {
   review?: PlanReviewOutcome;
   pending?: Record<string, number>;
   validated?: Record<string, string>;
+  /** Audit trail of pending entries dropped as unreachable (most recent last). */
+  cleared?: Array<{ key: string; reason: string; at: number }>;
 }
 
 /** Path key shared with the enforcer: repo-relative, forward slashes. */
@@ -123,6 +134,158 @@ export function outstandingPlans(cwd: string): { pending: string[]; drifted: str
     if (planHash(text) !== hash) drifted.push(key);
   }
   return { pending, drifted: drifted.sort() };
+}
+
+/**
+ * Why a pending entry can never be cleared by `uap plan validate`, or null when
+ * it is perfectly clearable.
+ *
+ * These two cases are wedges, not gates. `validate` refuses any file outside the
+ * project (see `explicitFileProblem`) and cannot review a file that is not
+ * there, so an entry in either state blocks every build with a remedy that
+ * declines to run. Observed live: a memory note at
+ * `~/.claude/projects/<slug>/memory/plan_gate_before_build.md` — matched only
+ * because its name contains "plan" — blocked the repo until the state file was
+ * edited by hand.
+ */
+export function unclearableReason(cwd: string, key: string): string | null {
+  if (!isInsideProject(cwd, key)) {
+    return 'outside the project directory — `uap plan validate` refuses it';
+  }
+  const abs = resolve(cwd, key);
+  if (!existsSync(abs)) return 'file no longer exists — nothing left to review';
+  // "Exists" is not the same as "reviewable". `validate` reads the file and
+  // leaves the entry pending when that throws, so a directory named `*-plan.md`
+  // or a file the user cannot read is the same permanent wedge with a different
+  // cause — and would otherwise be listed as merely "awaiting validation",
+  // sending the operator back into the loop this command exists to break.
+  try {
+    if (!statSync(abs).isFile()) return 'not a regular file — validation cannot read it';
+    readFileSync(abs, 'utf-8');
+  } catch {
+    return 'unreadable — validation cannot review it';
+  }
+  return null;
+}
+
+/**
+ * Containment test that resolves symlinks.
+ *
+ * `path.resolve` is purely lexical, so `docs/plans/x.md -> ~/.ssh/id_rsa` reads
+ * as "inside the project" and the reviewer would ship that file's contents to a
+ * model endpoint. The enforcer's own check uses `os.path.realpath`; matching it
+ * here also keeps the two sides of the contract from disagreeing about the same
+ * key. Falls back to the lexical answer for paths that do not exist yet.
+ */
+export function isInsideProject(cwd: string, key: string): boolean {
+  const root = realpathIfPossible(resolve(cwd));
+  const abs = realpathIfPossible(resolve(cwd, key));
+  return abs === root || abs.startsWith(root + sep);
+}
+
+function realpathIfPossible(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/** Pending entries split into ones validation can clear and ones it cannot. */
+export function classifyPending(cwd: string): {
+  clearable: string[];
+  unclearable: Array<{ key: string; reason: string }>;
+} {
+  const clearable: string[] = [];
+  const unclearable: Array<{ key: string; reason: string }> = [];
+  for (const key of outstandingPlans(cwd).pending) {
+    const reason = unclearableReason(cwd, key);
+    if (reason) unclearable.push({ key, reason });
+    else clearable.push(key);
+  }
+  return { clearable, unclearable };
+}
+
+/**
+ * Drop pending entries. With no `file`, drops only the UNCLEARABLE ones — the
+ * supported recovery from a wedged gate, and deliberately not a way to skip
+ * review of a plan that is sitting right there awaiting it.
+ */
+export function clearPending(
+  cwd: string,
+  file?: string
+): { dropped: string[]; refused: Array<{ key: string; reason: string }> } {
+  // ONE snapshot for both the decision and the write. Reading twice let a plan
+  // recorded by the enforcer between the reads be erased by the write-back —
+  // a freshly written plan silently ungated, reachable by racing a plan write
+  // against this command.
+  const st = readState(cwd);
+  const pendingKeys = Object.keys(st.pending ?? {});
+  const pending: Record<string, number> = Object.create(null);
+  for (const k of pendingKeys) pending[k] = (st.pending ?? {})[k];
+
+  const dropped: string[] = [];
+  const refused: Array<{ key: string; reason: string }> = [];
+  const reasons = new Map<string, string>();
+  for (const k of pendingKeys) {
+    const r = unclearableReason(cwd, k);
+    if (r) reasons.set(k, r);
+  }
+
+  if (file) {
+    // Match by RESOLVED PATH, not by key string. The enforcer stores an
+    // out-of-project entry as the absolute path it saw, while `planKey` would
+    // render the same file as `../../…` — so copy-pasting the key that `status`
+    // just printed found nothing and reported "nothing to clear", contradicting
+    // the line above it.
+    const wanted = resolve(cwd, file);
+    const key = pendingKeys.find((k) => resolve(cwd, k) === wanted);
+    if (!key) return { dropped: [], refused: [] };
+    const reason = reasons.get(key);
+    if (!reason) {
+      // A real, reviewable plan. Dropping it here would turn the recovery hatch
+      // into "skip the gate", which is the one thing it must not be.
+      refused.push({ key, reason: 'reviewable — run `uap plan validate` instead' });
+    } else {
+      delete pending[key];
+      dropped.push(key);
+    }
+  } else {
+    for (const key of pendingKeys) {
+      if (!reasons.has(key)) continue;
+      delete pending[key];
+      dropped.push(key);
+    }
+  }
+
+  if (dropped.length > 0) {
+    mkdirSync(stateDir(cwd), { recursive: true });
+    // Audit what was dropped and why. A gate whose blocking set can shrink
+    // without a trace is not auditable, and "the plan was moved" is exactly the
+    // case a reviewer needs to be able to see after the fact.
+    const cleared = [
+      ...(st.cleared ?? []),
+      ...dropped.map((key) => ({
+        key,
+        reason: reasons.get(key) ?? 'unreachable',
+        at: Math.floor(Date.now() / 1000),
+      })),
+    ].slice(-50);
+    writeStateAtomic(cwd, { ...st, pending: { ...pending }, cleared });
+  }
+  return { dropped, refused };
+}
+
+/**
+ * Write via temp file + rename. `writeFileSync` truncates first, so a crash
+ * mid-write leaves a partial file — and both readers swallow a parse error into
+ * `{}`, which silently disarms the entire gate.
+ */
+function writeStateAtomic(cwd: string, state: PlanState): void {
+  const target = statePath(cwd);
+  const tmp = `${target}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(state, null, 2));
+  renameSync(tmp, target);
 }
 
 /** Mirror of the enforcer's plan-artifact test (validate_plan_on_change.py). */
@@ -174,6 +337,15 @@ function argvPlanFile(argv: string[]): string | undefined {
   return undefined;
 }
 
+function argvClearFile(argv: string[]): string | undefined {
+  const at = argv.indexOf('clear');
+  if (at === -1) return undefined;
+  for (const tok of argv.slice(at + 1)) {
+    if (!tok.startsWith('-')) return tok;
+  }
+  return undefined;
+}
+
 /**
  * An EXPLICIT file must still look like a plan artifact and live under the
  * project: the review ships file content to a model endpoint, so `uap plan
@@ -181,8 +353,9 @@ function argvPlanFile(argv: string[]): string | undefined {
  */
 function explicitFileProblem(file: string, cwd: string): string | null {
   if (!file.toLowerCase().endsWith('.md')) return 'explicit plan file must be a .md artifact';
-  const abs = resolve(cwd, file);
-  if (abs !== resolve(cwd) && !abs.startsWith(resolve(cwd) + sep)) {
+  // Symlink-resolving: a lexical check let `docs/plans/x.md -> ~/.ssh/id_rsa`
+  // pass, and the review ships the file's contents to a model endpoint.
+  if (!isInsideProject(cwd, file)) {
     return 'explicit plan file must live under the project directory';
   }
   return null;
@@ -341,9 +514,37 @@ export async function planCommand(
     const remaining = [...left.pending, ...left.drifted];
     if (remaining.length) {
       console.log(`  Still awaiting validation before a build can run: ${remaining.join(', ')}`);
+      // Name the ones validation can never satisfy, and the way out. Without
+      // this the operator re-runs `validate` forever against an entry it refuses
+      // by design, and the only exit is hand-editing state.
+      const stuck = classifyPending(cwd).unclearable;
+      if (stuck.length) {
+        console.log('  Of those, these can NEVER be cleared by validation:');
+        stuck.forEach((s) => console.log(`    • ${s.key} — ${s.reason}`));
+        console.log('  Drop them: `uap plan clear`');
+      }
     } else {
       console.log('  All touched plans are validated — builds are unblocked until a plan changes.');
     }
+    return;
+  }
+
+  if (action === 'clear') {
+    const file = options.file ?? (deps.argv ? argvClearFile(deps.argv) : undefined);
+    const { dropped, refused } = clearPending(cwd, file);
+    if (options.json) {
+      console.log(JSON.stringify({ ok: refused.length === 0, dropped, refused }));
+      return;
+    }
+    if (dropped.length === 0 && refused.length === 0) {
+      console.log('Nothing to clear: no pending plan entry is unreachable.');
+      console.log('  (`clear` drops only entries validation cannot satisfy — a reviewable plan');
+      console.log('   still needs `uap plan validate`.)');
+      return;
+    }
+    dropped.forEach((k) => console.log(`✓ dropped unreachable pending entry: ${k}`));
+    refused.forEach((r) => console.log(`✗ refused ${r.key} — ${r.reason}`));
+    if (refused.length > 0) process.exitCode = 1;
     return;
   }
 
@@ -352,6 +553,7 @@ export async function planCommand(
   const validatedAt = Number(st.validated_at) || 0;
   const ageSec = validatedAt ? Math.floor(Date.now() / 1000) - validatedAt : null;
   const { pending, drifted } = outstandingPlans(cwd);
+  const { unclearable } = classifyPending(cwd);
   // What the gate actually keys on now — not the age of the last stamp.
   const blocked = pending.length > 0 || drifted.length > 0;
   if (options.json) {
@@ -362,6 +564,7 @@ export async function planCommand(
         blocked,
         pending,
         drifted,
+        unclearable,
         review: st.review ?? null,
       })
     );
@@ -379,9 +582,21 @@ export async function planCommand(
     return;
   }
   console.log('Plan validation: BLOCKING — a build cannot run until these are validated:');
-  pending.forEach((p) => console.log(`  • ${p} (created/modified, never validated)`));
+  const stuckKeys = new Set(unclearable.map((u) => u.key));
+  pending
+    .filter((p) => !stuckKeys.has(p))
+    .forEach((p) => console.log(`  • ${p} (created/modified, never validated)`));
   drifted.forEach((p) => console.log(`  • ${p} (changed since it was validated)`));
   console.log('  Run the `validate the plan` prompt, then `uap plan validate <file>`.');
+  if (unclearable.length) {
+    // Separated deliberately. These are not awaiting review — validation refuses
+    // them — so listing them alongside real work sends the operator into a loop
+    // of re-running a command that declines the file.
+    console.log('');
+    console.log('  UNREACHABLE — validation can never clear these:');
+    unclearable.forEach((u) => console.log(`    • ${u.key} — ${u.reason}`));
+    console.log('  Drop them: `uap plan clear`');
+  }
 }
 
 export { statePath as planStatePath, windowSec as planWindowSec };
