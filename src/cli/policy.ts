@@ -394,44 +394,126 @@ async function installCommand(name: string): Promise<void> {
   }
 }
 
+/** Comparable form of a policy identifier — see resolvePolicyRef. */
+export function policySlug(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Resolve what a human typed to real policies.
+ *
+ * These commands are documented as taking `<id>` and were implemented as if
+ * that were the only possibility: `togglePolicy` filters on `{ id }`, so a NAME
+ * matched zero rows — and enable/disable reported success anyway. A policy
+ * anyone believed they had turned off stayed on. Found live: the
+ * validate-plan-before-build zombie, deleted from source on 2026-07-14 and
+ * still enforcing seventeen days later, shrugged off
+ * `uap policy disable validate-plan-before-build` with a cheerful
+ * "It will no longer be enforced."
+ *
+ * Resolution is by id, then exact name, then slug — the same ladder the policy
+ * installer needed for the same reason (a policy is stored under its markdown
+ * H1, but everyone addresses it by file slug).
+ *
+ * Resolves against UNFILTERED rows deliberately: getAllPolicies() returns only
+ * ACTIVE policies, so resolving through it would make `enable` unable to find
+ * the very policies it exists to switch back on.
+ */
+export interface PolicyStore {
+  getAllPoliciesUnfiltered(): Promise<Array<{ id: string; name: string; isActive?: boolean }>>;
+  togglePolicy(id: string, active: boolean): Promise<void>;
+}
+
+export async function resolvePolicyRef(
+  ref: string,
+  store: PolicyStore = getPolicyMemoryManager()
+): Promise<Array<{ id: string; name: string; isActive: boolean }>> {
+  const all = await store.getAllPoliciesUnfiltered();
+  const shape = (p: { id: string; name: string; isActive?: boolean }) => ({
+    id: p.id,
+    name: p.name,
+    isActive: Boolean(p.isActive),
+  });
+  const byId = all.filter((p) => p.id === ref);
+  if (byId.length) return byId.map(shape);
+  const byName = all.filter((p) => p.name === ref);
+  if (byName.length) return byName.map(shape);
+  const want = policySlug(ref);
+  return all.filter((p) => policySlug(p.name) === want).map(shape);
+}
+
+/**
+ * Flip a policy on or off, and PROVE it happened.
+ *
+ * The success line is printed only after reading the policy back and finding
+ * the state actually changed. The bug this replaces was not that the write
+ * failed loudly — it was that nothing checked, so the report was fiction.
+ */
+export async function setPolicyActive(
+  ref: string,
+  active: boolean,
+  store: PolicyStore = getPolicyMemoryManager()
+): Promise<void> {
+  const verb = active ? 'enable' : 'disable';
+  const matches = await resolvePolicyRef(ref, store);
+
+  if (matches.length === 0) {
+    console.error(chalk.red(`\n❌ No policy matches '${ref}' — nothing was ${verb}d.`));
+    console.error(chalk.dim('   Run `uap policy list` to see installed policies and their ids.'));
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    // A name can legitimately match more than one row (duplicates have happened
+    // before). Switching only the first would leave the others enforcing.
+    for (const m of matches) await store.togglePolicy(m.id, active);
+  } catch (error) {
+    console.error(
+      chalk.red(`\n❌ Failed to ${verb} policy: ${error instanceof Error ? error.message : String(error)}`)
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const after = await resolvePolicyRef(ref, store);
+  const stuck = after.filter((p) => p.isActive !== active);
+  if (stuck.length) {
+    console.error(
+      chalk.red(
+        `\n❌ ${verb} did not take effect for: ${stuck.map((p) => `${p.name} (${p.id})`).join(', ')}.\n` +
+          '   The policy is UNCHANGED and still in its previous state.'
+      )
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  getPolicyGate().invalidateCache();
+  const listed = matches.map((m) => `${m.name} (${m.id})`).join(', ');
+  if (active) {
+    console.log(chalk.green(`\n✅ Enabled: ${listed}`));
+  } else {
+    console.log(chalk.yellow(`\n⚠️  Disabled: ${listed} — no longer enforced.`));
+  }
+}
+
 /**
  * Enable command - enable a policy
  */
-async function enableCommand(id: string): Promise<void> {
-  const policyManager = getPolicyMemoryManager();
-  const policyGate = getPolicyGate();
-
-  try {
-    await policyManager.togglePolicy(id, true);
-    console.log(chalk.green(`\n✅ Policy '${id}' enabled successfully!`));
-    policyGate.invalidateCache();
-  } catch (error) {
-    console.error(
-      chalk.red(
-        `\n❌ Failed to enable policy: ${error instanceof Error ? error.message : String(error)}`
-      )
-    );
-  }
+async function enableCommand(ref: string): Promise<void> {
+  await setPolicyActive(ref, true);
 }
 
 /**
  * Disable command - disable a policy
  */
-async function disableCommand(id: string): Promise<void> {
-  const policyManager = getPolicyMemoryManager();
-  const policyGate = getPolicyGate();
-
-  try {
-    await policyManager.togglePolicy(id, false);
-    console.log(chalk.yellow(`\n⚠️  Policy '${id}' disabled. It will no longer be enforced.`));
-    policyGate.invalidateCache();
-  } catch (error) {
-    console.error(
-      chalk.red(
-        `\n❌ Failed to disable policy: ${error instanceof Error ? error.message : String(error)}`
-      )
-    );
-  }
+async function disableCommand(ref: string): Promise<void> {
+  await setPolicyActive(ref, false);
 }
 
 /**
@@ -682,15 +764,15 @@ export function registerPolicyCommands(program: Command): void {
     .option('--on', 'Enable the policy')
     .option('--off', 'Disable the policy')
     .action(async (id: string, options: { on?: boolean; off?: boolean }) => {
-      const memory = getPolicyMemoryManager();
-      const p = await memory.getPolicy(id);
+      // Resolve by id OR name: getPolicy() only ever matched an id, so a name
+      // reported "not found" for a policy that plainly exists.
+      const [p] = await resolvePolicyRef(id);
       if (!p) {
         console.error(chalk.red(`Policy ${id} not found`));
         process.exit(1);
       }
       const newState = options.off ? false : options.on ? true : !p.isActive;
-      await memory.togglePolicy(id, newState);
-      console.log(chalk.green(`Policy "${p.name}" is now ${newState ? 'ACTIVE' : 'INACTIVE'}`));
+      await setPolicyActive(p.id, newState);
     });
 
   policy
@@ -706,13 +788,15 @@ export function registerPolicyCommands(program: Command): void {
         process.exit(1);
       }
       const memory = getPolicyMemoryManager();
-      const p = await memory.getPolicy(id);
+      // By id OR name — getPolicy() matched an id only, so a name reported
+      // "not found" for a policy that plainly exists.
+      const [p] = await resolvePolicyRef(id);
       if (!p) {
         console.error(chalk.red(`Policy ${id} not found`));
         process.exit(1);
       }
       await memory.setEnforcementStage(
-        id,
+        p.id,
         options.stage as 'pre-exec' | 'post-exec' | 'review' | 'always'
       );
       console.log(chalk.green(`Policy "${p.name}" enforcement stage set to: ${options.stage}`));
@@ -731,12 +815,13 @@ export function registerPolicyCommands(program: Command): void {
         process.exit(1);
       }
       const memory = getPolicyMemoryManager();
-      const p = await memory.getPolicy(id);
+      // By id OR name — see the stage command above.
+      const [p] = await resolvePolicyRef(id);
       if (!p) {
         console.error(chalk.red(`Policy ${id} not found`));
         process.exit(1);
       }
-      await memory.setLevel(id, options.level as 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL');
+      await memory.setLevel(p.id, options.level as 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL');
       console.log(chalk.green(`Policy "${p.name}" enforcement level set to: ${options.level}`));
     });
 }
