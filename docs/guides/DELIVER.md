@@ -63,7 +63,18 @@ For a mission too large to hold in one context, `deliver` scales down the contex
 
 **Scaffold-then-fill** (on by default in phased runs; `UAP_DELIVER_SCAFFOLD=0` disables): a large phase is split into a **scaffold** phase that emits the compiling skeleton (complete public signatures, wired imports/exports, stub bodies — build/typecheck must pass) and a **fill** phase that implements the logic *without changing any signature*. The skeleton keeps the build green while the details land.
 
-Interrupted a long run? **`--resume <id|latest>`** picks up a durable run from `.uap/deliver-runs` where it left off.
+Interrupted a long run? **`--resume <id|latest>`** picks up a durable run from `.uap/deliver-runs` where it left off — but only one that has actually **stopped**.
+
+A mission outlives the tool call that launched it, so a caller whose own timeout
+fired is looking at a run that is still going, not a stopped one. **Do not resume
+a live run**: resume *continues* a mission rather than attaching to it, and
+`latest` resolves to the running one, so it starts a second copy on the same
+tree. Follow it instead with **`uap deliver --await-run`** (or the `deliver` tool
+with `follow:true`), which takes no lock and starts nothing. Each poll reports
+`progress.health` — `starting` / `active` / `wedged`, derived from the run's
+heartbeat — plus `heartbeatAgeSec` and `phase`, so consecutive polls show whether
+it is moving. See [CLI.md](../reference/CLI.md#deliver) for the flags and exit
+codes.
 
 ---
 

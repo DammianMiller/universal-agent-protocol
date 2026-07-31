@@ -383,6 +383,46 @@ uap deliver <instruction...> [options]
 | `--ceiling <n>` | Hard turn ceiling for until-delivered (1-50, default 30) |
 | `--dry-run` | Show detected gates and plan without calling the model |
 | `--json` | Emit JSON result |
+| `--await-run` | Attach to the run already in flight and report its outcome. Read-only: takes no lock, writes no run state, starts nothing |
+| `--await-timeout <sec>` | Budget for `--await-run` (default 900, max 14400). An MCP caller is clamped to at most 45s — just under a client's ~60s request timeout |
+| `--resume <id>` | CONTINUE a stopped run. Not the same as following: resuming a **live** run starts a second copy of it |
+| `--pending [file]` | Replay the edit intents the delivery gate recorded (`.uap/pending-deliver.jsonl`) by exact anchor — no model — then run the gates once |
+
+A mission outlives the tool call that launched it, so a caller whose own timeout
+fires mid-run follows it rather than relaunching:
+
+```bash
+uap deliver --await-run                    # blocks until the run ends (900s default)
+uap deliver --await-run --await-timeout 45 # one poll, then report and return
+```
+
+Exit codes for `--await-run` are distinct because three of the four outcomes are
+not failures: **0** delivered · **1** the mission ended badly · **3** nothing was
+running (go ahead and launch) · **4** still running — the wait gave up, the
+mission did not.
+
+A `4` carries a `progress` object so consecutive polls can be compared. Always
+present: `heartbeatAgeSec`, `wedgeAfterSec`, `health`. Present only when the run
+could be attributed to the lock holder: `runElapsedSec`, `phase`.
+
+`health` is derived from how recently the run stamped its heartbeat, never
+asserted:
+
+- `"starting"` — it holds the lock but has not stamped a heartbeat yet.
+- `"active"` — it stamped within `wedgeAfterSec`. Note this means the process is
+  *doing something*, not that the mission is getting closer: the heartbeat is
+  stamped on every executor tool call, so a run spinning in a tool-call loop
+  stays `"active"`. Cross-check `phase` and the run's `updatedAt`, which only
+  move when a turn or phase completes.
+- `"wedged"` — silent past `UAP_DELIVER_WEDGE_TIMEOUT` (default 1800s, shared
+  with the autoroute hook) and may be stuck.
+
+A wedged **lock** holder is reclaimed by the next launch. A resumed run holds no
+lock, so relaunching there does not reclaim it — it starts a second mission on
+the same tree; keep following instead. Never kill a deliver run by hand: that
+discards the work it already finished and leaves the lock behind. If a run
+genuinely must stop, use the dashboard's Cancel control, which writes a
+cooperative stop-file and marks the run interrupted so `--resume` can pick it up.
 
 ```bash
 uap deliver "add a /healthz endpoint with a test" --gates build,test

@@ -111,7 +111,7 @@ describe('deliver wedge reclaim (P0 reliability)', () => {
 
   it('isDeliverHolderWedged: stale heartbeat -> true, fresh -> false, missing -> false', () => {
     expect(isDeliverHolderWedged(dir)).toBe(false); // no heartbeat yet
-    heartbeatAgo(2000); // older than the 600s default
+    heartbeatAgo(2000); // older than the 1800s default
     expect(isDeliverHolderWedged(dir)).toBe(true);
     heartbeatAgo(5); // fresh
     expect(isDeliverHolderWedged(dir)).toBe(false);
