@@ -24,8 +24,9 @@
  * endpoint stamps with a note — the plan gate must never deadlock offline.
  * A completed review that returns "fail" is the only thing that blocks.
  */
+import { createHash } from 'crypto';
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
-import { join, resolve, sep } from 'path';
+import { join, relative, resolve, sep } from 'path';
 import type { LoopExecutor } from '../delivery/convergence-loop.js';
 import { reviewPlanText, type PlanReviewVerdict } from '../delivery/plan-check.js';
 
@@ -63,12 +64,65 @@ function windowSec(): number {
   return Number.isFinite(w) ? w : 300;
 }
 
-function readState(cwd: string): { validated_at?: number; review?: PlanReviewOutcome } {
+/**
+ * Shared state with the enforcer (validate_plan_on_change.py). The contract:
+ *
+ *   pending   { <repo-relative plan path>: <epoch seen> }  written by the
+ *             enforcer when a plan artifact is created or modified; cleared
+ *             here once that plan has actually been validated.
+ *   validated { <repo-relative plan path>: <sha256 of the reviewed bytes> }
+ *
+ * Keying on CONTENT is the point. The old gate keyed on a 300s timestamp and
+ * fired on the plan WRITE, which meant the agent was told to validate a plan
+ * before it existed: `uap plan validate` found no artifact (or an older one),
+ * stamped anyway, and every write for the next five minutes sailed through
+ * unread — with nothing gating the build at all. A hash says "these exact bytes
+ * were reviewed", so editing the plan afterwards re-arms the gate.
+ */
+export interface PlanState {
+  validated_at?: number;
+  review?: PlanReviewOutcome;
+  pending?: Record<string, number>;
+  validated?: Record<string, string>;
+}
+
+/** Path key shared with the enforcer: repo-relative, forward slashes. */
+export function planKey(cwd: string, file: string): string {
+  return relative(resolve(cwd), resolve(cwd, file)).split(sep).join('/');
+}
+
+export function planHash(text: string): string {
+  return createHash('sha256').update(text, 'utf-8').digest('hex');
+}
+
+function readState(cwd: string): PlanState {
   try {
-    return JSON.parse(readFileSync(statePath(cwd), 'utf-8'));
+    const parsed = JSON.parse(readFileSync(statePath(cwd), 'utf-8'));
+    return parsed && typeof parsed === 'object' ? (parsed as PlanState) : {};
   } catch {
     return {};
   }
+}
+
+/**
+ * Plans the enforcer recorded as touched but which have not been validated
+ * since, plus plans that were validated and have since DRIFTED on disk.
+ * Anything listed here is what the build gate is waiting on.
+ */
+export function outstandingPlans(cwd: string): { pending: string[]; drifted: string[] } {
+  const st = readState(cwd);
+  const pending = Object.keys(st.pending ?? {}).sort();
+  const drifted: string[] = [];
+  for (const [key, hash] of Object.entries(st.validated ?? {})) {
+    let text: string;
+    try {
+      text = readFileSync(join(cwd, key), 'utf-8');
+    } catch {
+      continue; // deleted or unreadable — nothing left to gate on
+    }
+    if (planHash(text) !== hash) drifted.push(key);
+  }
+  return { pending, drifted: drifted.sort() };
 }
 
 /** Mirror of the enforcer's plan-artifact test (validate_plan_on_change.py). */
@@ -243,7 +297,26 @@ export async function planCommand(
     mkdirSync(dir, { recursive: true });
     const prev = readState(cwd);
     const now = Math.floor(Date.now() / 1000);
-    writeFileSync(statePath(cwd), JSON.stringify({ ...prev, validated_at: now, review }, null, 2));
+    const pending = { ...(prev.pending ?? {}) };
+    const validated = { ...(prev.validated ?? {}) };
+
+    // Record the hash of what was ACTUALLY reviewed, and clear that plan from
+    // the pending set. Only the reviewed plan is cleared: validating one plan
+    // must not silently vouch for another the agent also touched.
+    if (review.file) {
+      const key = planKey(cwd, review.file);
+      try {
+        validated[key] = planHash(readFileSync(review.file, 'utf-8'));
+        delete pending[key];
+      } catch {
+        // Unreadable at stamp time — leave it pending rather than record a
+        // hash we cannot stand behind.
+      }
+    }
+    writeFileSync(
+      statePath(cwd),
+      JSON.stringify({ ...prev, validated_at: now, review, pending, validated }, null, 2)
+    );
     if (options.json) {
       console.log(JSON.stringify({ ok: true, validated_at: now, review }));
       return;
@@ -256,9 +329,13 @@ export async function planCommand(
     } else {
       console.log(`✓ Plan validation recorded (review skipped: ${review.reason}).`);
     }
-    console.log(
-      `  Plan-file writes are unblocked for ${windowSec()}s — re-run \`uap plan validate\` after that or after a substantive plan change.`
-    );
+    const left = outstandingPlans(cwd);
+    const remaining = [...left.pending, ...left.drifted];
+    if (remaining.length) {
+      console.log(`  Still awaiting validation before a build can run: ${remaining.join(', ')}`);
+    } else {
+      console.log('  All touched plans are validated — builds are unblocked until a plan changes.');
+    }
     return;
   }
 
@@ -266,22 +343,37 @@ export async function planCommand(
   const st = readState(cwd);
   const validatedAt = Number(st.validated_at) || 0;
   const ageSec = validatedAt ? Math.floor(Date.now() / 1000) - validatedAt : null;
-  const fresh = ageSec !== null && ageSec <= windowSec();
+  const { pending, drifted } = outstandingPlans(cwd);
+  // What the gate actually keys on now — not the age of the last stamp.
+  const blocked = pending.length > 0 || drifted.length > 0;
   if (options.json) {
     console.log(
-      JSON.stringify({ validated_at: validatedAt || null, ageSec, fresh, window: windowSec(), review: st.review ?? null })
+      JSON.stringify({
+        validated_at: validatedAt || null,
+        ageSec,
+        blocked,
+        pending,
+        drifted,
+        review: st.review ?? null,
+      })
     );
     return;
   }
-  if (!validatedAt) {
-    console.log('Plan validation: never recorded. A plan-file write will require `validate the plan` + `uap plan validate`.');
+  if (!blocked) {
+    console.log(
+      validatedAt
+        ? `Plan validation: OK — no plan is awaiting validation (last validated ${ageSec}s ago).`
+        : 'Plan validation: nothing pending. Creating or editing a plan will require `validate the plan` before a build.'
+    );
+    if (st.review?.status) {
+      console.log(`  Last review: ${st.review.status}${st.review.file ? ` (${st.review.file})` : ''}`);
+    }
     return;
   }
-  console.log(`Plan validation: ${fresh ? 'FRESH' : 'STALE'} — last validated ${ageSec}s ago (window ${windowSec()}s).`);
-  if (st.review?.status) {
-    console.log(`  Last review: ${st.review.status}${st.review.file ? ` (${st.review.file})` : ''}`);
-  }
-  if (!fresh) console.log('  Re-run the `validate the plan` prompt, then `uap plan validate`, before editing a plan.');
+  console.log('Plan validation: BLOCKING — a build cannot run until these are validated:');
+  pending.forEach((p) => console.log(`  • ${p} (created/modified, never validated)`));
+  drifted.forEach((p) => console.log(`  • ${p} (changed since it was validated)`));
+  console.log('  Run the `validate the plan` prompt, then `uap plan validate <file>`.');
 }
 
 export { statePath as planStatePath, windowSec as planWindowSec };

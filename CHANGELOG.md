@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.12 (2026-07-31)
+
+- fix(policy): validate the plan BEFORE the build, not on the plan write
+
+
 ## v1.175.11 (2026-07-31)
 
 - fix(deliver): reclaim an abandoned lock, don't wait on a recycled PID
