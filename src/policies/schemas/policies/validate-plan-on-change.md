@@ -59,9 +59,13 @@ State in `.uap/plan_state.json` (honours `UAP_STATE_DIR`), shared with
 ```json
 {
   "pending":   { "<repo-relative path>": "<epoch seen>" },
-  "validated": { "<repo-relative path>": "<sha256 of the reviewed bytes>" }
+  "validated": { "<repo-relative path>": "<sha256 of the reviewed bytes>" },
+  "cleared":   [ { "key": "<path>", "reason": "<why unreachable>", "at": "<epoch>" } ]
 }
 ```
+
+`cleared` is the audit trail of pending entries dropped as UNREACHABLE. The
+blocking set only shrinks through validation or through a recorded drop.
 
 Gated commands: `uap deliver`, `npm run build`, `npm start`, `yarn`/`pnpm build`,
 `make`, `cargo build|run`, `go build|run`, `mvn package|install`,
@@ -75,4 +79,12 @@ Everything not listed is allowed; there is no second allowlist to keep in sync.
 Escape hatch, justify in the plan/PR: `UAP_PLAN_VALIDATE_OFF=1`.
 
 `uap plan status` reports exactly what the gate is waiting on (pending plans and
-plans that have drifted since validation).
+plans that have drifted since validation), listing separately any entry that is
+UNREACHABLE — one validation can never clear, because the file is outside the
+project, deleted, or unreadable.
+
+`uap plan clear` drops those unreachable entries and records them under
+`cleared`. It REFUSES a plan that is present and reviewable, pointing back at
+`uap plan validate`: it is a recovery hatch for a wedged gate, not a way to skip
+review. Without it the only exit from a wedge was editing the state file by
+hand.

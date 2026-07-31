@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.179.1 (2026-07-31)
+
+- fix(policy): stop the plan gate tracking files it can never validate
+- chore: bump version to 1.178.1
+- fix(policy): make disable actually disable, and say so only when it did
+
+
 ## v5.0.0 (2026-03-13)
 
 ### Security & Performance
@@ -2798,5 +2805,3 @@
 - feat: v1.4.0 - MCP compliance, policy enforcement, and performance optimizations
 - fix: v1.3.5 - eliminate null display across all UAP operations, fix OpenCode/OMP deep integration
 - fix: v1.3.4 - restore tool_choice=required, fix chat_template tool call regression
-
-
