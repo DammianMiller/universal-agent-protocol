@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.3 (2026-07-31)
+
+- fix(mcp): a healthy follow poll is not a failed tool call
+
+
 ## v1.175.2 (2026-07-30)
 
 - fix(mcp): restore mangled deliver CLI flags, and stop follow re-sending the brief
