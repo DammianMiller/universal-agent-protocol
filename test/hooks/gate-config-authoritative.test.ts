@@ -24,7 +24,8 @@ import { join } from 'path';
 const REPO = process.cwd();
 const GATE_SRC = join(REPO, 'templates', 'hooks', 'uap-policy-gate.sh');
 const ENFORCER_SRC = join(REPO, 'src', 'policies', 'enforcers', 'delivery_enforcement.py');
-const COMMON_SRC = join(REPO, '.policy-tools', '_common.py');
+// Source, not a materialised copy — see e2e-gate-to-deliver-spawn.test.ts.
+const COMMON_SRC = join(REPO, 'src', 'policies', 'enforcers', '_common.py');
 const HOOKS_TS = join(REPO, 'src', 'cli', 'hooks.ts');
 
 /** Build a temp project whose delivery posture is declared in .uap.json. */
