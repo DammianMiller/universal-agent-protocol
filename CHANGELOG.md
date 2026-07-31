@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.179.0 (2026-07-31)
+
+- fix(plan): recover a plan gate wedged on an entry validation refuses
+- fix(memory): hot-path defects in the agent wiring found by review
+
+
 ## v1.178.0 (2026-07-31)
 
 - feat(memory): wire active reconstruction into the AGENT context path
