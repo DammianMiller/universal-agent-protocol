@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.179.2 (2026-07-31)
+
+- fix(proxy): ERROR-LOOP must read the is_error flag, not sniff file contents
+
+
 ## v1.179.1 (2026-07-31)
 
 - fix(policy): stop the plan gate tracking files it can never validate
