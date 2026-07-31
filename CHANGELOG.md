@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.177.0 (2026-07-31)
+
+- feat(memory): connect active reconstruction — ingestion bridge, callers, honest coverage
+
+
 ## v1.176.0 (2026-07-31)
 
 - feat(harness): edit-tool ladder, evidence corpus, manifests, tool search space, memory substrate
