@@ -9,7 +9,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { planCommand } from '../src/cli/plan.js';
 
-const ENFORCER = join(process.cwd(), 'src', 'policies', 'enforcers', 'validate_plan_on_change.py');
+// UAP_PLAN_ENFORCER lets a candidate enforcer be proven before an operator
+// installs it — the agent cannot write src/policies/enforcers/. CI never sets it.
+const ENFORCER =
+  process.env.UAP_PLAN_ENFORCER ||
+  join(process.cwd(), 'src', 'policies', 'enforcers', 'validate_plan_on_change.py');
 const dirs: string[] = [];
 function tmp(): string {
   const d = mkdtempSync(join(tmpdir(), 'uap-plan-'));
@@ -20,12 +24,44 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function run(op: string, filePath: string, env: Record<string, string> = {}): number {
+function run(op: string, filePath: string, env: Record<string, string> = {}, cwd?: string): number {
   const r = spawnSync('python3', [ENFORCER, '--operation', op, '--args', JSON.stringify({ file_path: filePath })], {
     env: { ...process.env, ...env },
     encoding: 'utf8',
+    cwd,
   });
   return r.status ?? -1;
+}
+
+/** The gate now fires on build-ish Bash commands, so tests need this shape too. */
+function runBash(command: string, env: Record<string, string> = {}, cwd?: string): number {
+  const r = spawnSync('python3', [ENFORCER, '--operation', 'Bash', '--args', JSON.stringify({ command })], {
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+    cwd,
+  });
+  return r.status ?? -1;
+}
+
+/**
+ * A throwaway project with a real plan on disk. The gate resolves plan paths
+ * against the CWD, so running it from the repo root (as these tests used to)
+ * silently checks the wrong tree — pending entries point at files that are not
+ * there, and a "blocked" assertion passes or fails for the wrong reason.
+ */
+function projectWithPlan(planPath = 'plans/my-plan.md', text = '# Plan\n\nDo the thing.\n'): string {
+  const d = tmp();
+  mkdirSync(join(d, '.uap'), { recursive: true });
+  mkdirSync(join(d, planPath, '..'), { recursive: true });
+  writeFileSync(join(d, planPath), text);
+  return d;
+}
+
+function seedPending(project: string, planPath = 'plans/my-plan.md'): void {
+  writeFileSync(
+    join(project, '.uap', 'plan_state.json'),
+    JSON.stringify({ pending: { [planPath]: Math.floor(Date.now() / 1000) } })
+  );
 }
 
 /** Seed `.uap/plan_state.json` in a temp state dir with a validated_at offset. */
@@ -36,35 +72,58 @@ function seedValidatedAgo(secondsAgo: number): string {
   return join(d, '.uap');
 }
 
+/**
+ * These assertions INVERTED deliberately.
+ *
+ * The gate used to block the plan WRITE unless `uap plan validate` had run in
+ * the last 300s. That asked the agent to validate a plan before it existed: the
+ * review found no artifact, recorded "skipped", stamped anyway, and for the next
+ * five minutes any plan content went in unread — while nothing gated the build.
+ * The plan that got implemented was never reviewed.
+ *
+ * Now the write is recorded and allowed, and the BUILD is what blocks. The
+ * escape hatch and plan-artifact detection are unchanged; neither was the bug.
+ */
 describe('validate-plan-on-change enforcer', () => {
-  it('BLOCKS a plan-file write when never validated', () => {
-    const stateDir = join(tmp(), '.uap'); // empty (no state)
-    expect(run('Write', 'plans/my-plan.md', { UAP_STATE_DIR: stateDir })).toBe(2);
-    expect(run('Write', 'IMPLEMENTATION-PLAN.md', { UAP_STATE_DIR: stateDir })).toBe(2);
-    expect(run('Edit', 'docs/rollout-plan.md', { UAP_STATE_DIR: stateDir })).toBe(2);
+  it('ALLOWS a plan-file write and records it instead of blocking', () => {
+    const d = projectWithPlan();
+    expect(run('Write', 'plans/my-plan.md', {}, d)).toBe(0);
+    const state = JSON.parse(readFileSync(join(d, '.uap', 'plan_state.json'), 'utf8'));
+    expect(Object.keys(state.pending ?? {})).toContain('plans/my-plan.md');
   });
 
-  it('ALLOWS non-plan files and non-edit ops', () => {
-    const stateDir = join(tmp(), '.uap');
-    expect(run('Write', 'src/foo.ts', { UAP_STATE_DIR: stateDir })).toBe(0);
-    expect(run('Write', 'planning-guide.md', { UAP_STATE_DIR: stateDir })).toBe(0); // not "plan"
-    expect(run('Write', 'explanation.md', { UAP_STATE_DIR: stateDir })).toBe(0);
-    expect(run('Bash', 'plans/x.md', { UAP_STATE_DIR: stateDir })).toBe(0); // not an edit op
+  it('BLOCKS a build while a plan is pending validation', () => {
+    const d = projectWithPlan();
+    seedPending(d);
+    expect(runBash('npm run build', {}, d)).toBe(2);
+    expect(runBash('uap deliver "ship it"', {}, d)).toBe(2);
   });
 
-  it('ALLOWS a plan write when validated within the window', () => {
-    const stateDir = seedValidatedAgo(10);
-    expect(run('Write', 'plans/my-plan.md', { UAP_STATE_DIR: stateDir, UAP_PLAN_VALIDATE_WINDOW: '300' })).toBe(0);
+  it('leaves tests, linters and reads alone even while blocking a build', () => {
+    // You cannot review a plan if you cannot inspect the tree or run its tests.
+    const d = projectWithPlan();
+    seedPending(d);
+    for (const cmd of ['npm test', 'npx tsc --noEmit', 'git status', 'ls -la']) {
+      expect(runBash(cmd, {}, d)).toBe(0);
+    }
   });
 
-  it('RE-BLOCKS a plan write once the validation is stale', () => {
-    const stateDir = seedValidatedAgo(9999);
-    expect(run('Write', 'plans/my-plan.md', { UAP_STATE_DIR: stateDir, UAP_PLAN_VALIDATE_WINDOW: '300' })).toBe(2);
+  it('ALLOWS a build when nothing is pending', () => {
+    const d = projectWithPlan();
+    expect(runBash('npm run build', {}, d)).toBe(0);
+  });
+
+  it('ALLOWS non-plan files', () => {
+    const d = projectWithPlan();
+    expect(run('Write', 'src/foo.ts', {}, d)).toBe(0);
+    expect(run('Write', 'planning-guide.md', {}, d)).toBe(0); // not "plan"
+    expect(run('Write', 'explanation.md', {}, d)).toBe(0);
   });
 
   it('honors the UAP_PLAN_VALIDATE_OFF escape hatch', () => {
-    const stateDir = join(tmp(), '.uap');
-    expect(run('Write', 'plans/my-plan.md', { UAP_STATE_DIR: stateDir, UAP_PLAN_VALIDATE_OFF: '1' })).toBe(0);
+    const d = projectWithPlan();
+    seedPending(d);
+    expect(runBash('npm run build', { UAP_PLAN_VALIDATE_OFF: '1' }, d)).toBe(0);
   });
 });
 
@@ -89,7 +148,10 @@ describe('uap plan validate CLI', () => {
       console.log = orig;
     }
     const parsed = JSON.parse(out);
-    expect(parsed.fresh).toBe(true);
+    // `fresh` (a 300s clock) is gone: status now reports whether anything is
+    // actually BLOCKING a build, which is what the gate keys on.
+    expect(parsed.blocked).toBe(false);
+    expect(parsed.pending).toEqual([]);
     expect(parsed.validated_at).toBeGreaterThan(0);
   });
 });
@@ -110,9 +172,18 @@ describe('uap plan validate — real pre-stamp review (ATG)', () => {
         reviewExecutor: async () => '{"verdict":"fail","findings":["deploys before building or testing"]}',
       });
       expect(process.exitCode).toBe(1);
-      // not stamped — the enforcer still blocks plan writes
-      const code = run('Write', 'plans/my-plan.md', { UAP_STATE_DIR: join(d, '.uap') });
-      expect(code).toBe(2);
+      // Not stamped. The plan WRITE is no longer what gets blocked — the build
+      // is — so the observable consequence is that nothing was recorded as
+      // validated, and a build therefore stays gated.
+      // A refused stamp writes no state at all, so "nothing was recorded as
+      // validated" is either an absent file or an empty `validated` map.
+      let validated: Record<string, string> = {};
+      try {
+        validated = JSON.parse(readFileSync(join(d, '.uap', 'plan_state.json'), 'utf-8')).validated ?? {};
+      } catch {
+        validated = {};
+      }
+      expect(validated).toEqual({});
     } finally {
       restore();
     }
