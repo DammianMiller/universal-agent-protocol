@@ -609,6 +609,49 @@ export function isDeliverHolderWedged(
 }
 
 /**
+ * True when the lock was ABANDONED: old, and its holder never stamped a
+ * heartbeat at all.
+ *
+ * PID-liveness alone is not a safe test of "is the holder still running",
+ * because PIDs are reused. This box: pid_max=4194304, and the counter had
+ * climbed to 4142055 after twelve days of uptime — 98.7% of the way to wrapping,
+ * after which low PIDs get reissued. A lock left by a dead deliver names a PID
+ * that some unrelated process will eventually own; `pidAlive` then says true,
+ * and with no heartbeat `isDeliverHolderWedged` says false, so every subsequent
+ * deliver in that project defers forever with "a deliver run is already in
+ * progress". Nothing recovers it: the wedge path needs a heartbeat that a dead
+ * holder never wrote. Found live with an eleven-day-old lock (pid 998109) still
+ * sitting in this repo.
+ *
+ * A real holder stamps a heartbeat the instant it takes the lock — see
+ * acquireDeliverLock — so "no heartbeat at all, and the lock is older than the
+ * wedge timeout" cannot describe a live run. The age test is what keeps a
+ * just-starting holder safe in the window before its first stamp.
+ *
+ * Deliberately NOT done by reading /proc/<pid> start times: that is Linux-only,
+ * and the portable rule already closes the hole.
+ */
+export function isDeliverLockAbandoned(
+  projectRoot: string,
+  nowS: number = Math.floor(Date.now() / 1000),
+): boolean {
+  if (readDeliverHeartbeat(projectRoot) !== null) return false;
+  const lockPath = join(projectRoot, '.uap', 'deliver.lock');
+  let writtenS: number;
+  try {
+    // Prefer the timestamp INSIDE the lock (`<pid>|<iso>`); it travels with the
+    // content, where mtime can be reset by a copy, restore, or touch.
+    const iso = (readFileSync(lockPath, 'utf8').split('|')[1] || '').trim();
+    const parsed = Date.parse(iso);
+    writtenS = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : Math.floor(statSync(lockPath).mtimeMs / 1000);
+  } catch {
+    return false; // unreadable: leave the existing behaviour alone
+  }
+  // A clock skew that puts the lock in the future must not read as ancient.
+  return nowS - writtenS > wedgeTimeoutS();
+}
+
+/**
  * Project-level deliver concurrency lock. Prevents a fan-out where an impatient
  * caller (e.g. a model that launched `uap deliver` for some work, didn't wait
  * for the slow run, and relaunched a reworded version) spawns many concurrent
@@ -629,8 +672,18 @@ export function acquireDeliverLock(projectRoot: string): (() => void) | null {
     // Reclaim a stale lock (holder no longer alive).
     if (existsSync(lockPath)) {
       const held = Number((readFileSync(lockPath, 'utf8').split('|')[0] || '').trim());
-      // Defer only to a live holder that is NOT wedged; reclaim a stuck one.
-      if (held && held !== process.pid && pidAlive(held) && !isDeliverHolderWedged(projectRoot)) return null;
+      // Defer only to a live holder that is NOT wedged and NOT abandoned.
+      // Abandonment is checked because `pidAlive` cannot distinguish the real
+      // holder from an unrelated process that inherited a recycled PID.
+      if (
+        held &&
+        held !== process.pid &&
+        pidAlive(held) &&
+        !isDeliverHolderWedged(projectRoot) &&
+        !isDeliverLockAbandoned(projectRoot)
+      ) {
+        return null;
+      }
       try { rmSync(lockPath); } catch { /* racing reclaim */ }
     }
     // Atomic create-exclusive; if we lose the race, another deliver won it.
