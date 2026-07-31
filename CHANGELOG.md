@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.179.4 (2026-07-31)
+
+- chore: bump version to 1.179.3
+- fix(deliver): answer "is it still running" with evidence, not an assertion
+
+
 ## v1.179.3 (2026-07-31)
 
 - fix(deliver): answer "is it still running" with evidence, not an assertion
