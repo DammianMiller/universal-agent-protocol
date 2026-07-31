@@ -119,6 +119,49 @@ def _is_plan_file(target: str) -> bool:
     return bool(PLAN_STEM_RE.search(name[:-3]))
 
 
+def _inside_project(target: str) -> bool:
+    """True when `target` resolves to the project root or below it.
+
+    `uap plan validate` refuses any file outside the project directory, so
+    recording one creates a pending entry NOTHING can clear: every build in the
+    repo blocks, and the remedy the refusal names declines the file. Observed
+    live with a memory note under ~/.claude/, matched only because its filename
+    contained "plan".
+
+    Fails CLOSED on error (treat as inside, i.e. record it). Failing open here
+    would let a transient getcwd() error silently un-gate a plan write.
+    """
+    try:
+        root = os.path.realpath(os.getcwd())
+        abs_target = os.path.realpath(os.path.join(root, target))
+        return abs_target == root or abs_target.startswith(root + os.sep)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _prune_unvalidatable(pending: dict) -> tuple[dict, list]:
+    """Split pending into (kept, dropped) — OUTSIDE-PROJECT entries only.
+
+    Those can never be cleared: `uap plan validate` refuses them by design, so
+    they block every build with a remedy that declines the file. This only
+    matters for state recorded before the tracking fix above.
+
+    A MISSING file is deliberately NOT pruned here. `mv PLAN.md PLAN2.md` is not
+    an edit op, so no new entry is recorded; auto-forgiving the old key on the
+    build path would make a rename a silent, unattended gate bypass with the
+    plan content fully intact. A deleted plan is dropped only by an operator
+    running `uap plan clear`, which records what it dropped and why.
+    """
+    kept: dict = {}
+    dropped: list = []
+    for key, seen in pending.items():
+        if not _inside_project(key):
+            dropped.append(key)
+        else:
+            kept[key] = seen
+    return kept, dropped
+
+
 def _key(target: str) -> str:
     """Repo-relative, forward-slashed — the shape `uap plan validate` records."""
     posix = target.replace(os.sep, "/")
@@ -148,6 +191,8 @@ def _refuse(paths: list[str], why: str) -> None:
         "risks, and whether it still matches the request.\n"
         f"  2. Record it: `uap plan validate {sorted(paths)[0]}`.\n"
         "  3. Retry this command.\n"
+        "(If validation refuses the file — outside the project, or deleted — it can "
+        "never clear: `uap plan status` names it and `uap plan clear` drops it.)\n"
         "(Escape hatch, justify in the plan/PR: UAP_PLAN_VALIDATE_OFF=1.)",
         inject_prompt="validate the plan",
     )
@@ -164,6 +209,9 @@ def main() -> None:
         target = _target(args)
         if not _is_plan_file(target):
             emit(True, "not a plan artifact")
+        # Only track what `uap plan validate` can actually validate.
+        if not _inside_project(target):
+            emit(True, "plan artifact outside the project — not tracked")
         state = _load_state()
         pending = state.get("pending") or {}
         pending[_key(target)] = int(time.time())
@@ -181,7 +229,20 @@ def main() -> None:
         emit(True, "not a build/execute/deploy command")
 
     state = _load_state()
-    pending = list((state.get("pending") or {}).keys())
+    # Drop legacy entries `uap plan validate` can never clear, recording what was
+    # dropped so a shrinking blocking set is auditable.
+    pending_map = state.get("pending") or {}
+    kept, dropped = _prune_unvalidatable(pending_map)
+    if dropped:
+        state["pending"] = kept
+        cleared = list(state.get("cleared") or [])
+        cleared.extend(
+            {"key": k, "reason": "outside the project directory", "at": int(time.time())}
+            for k in dropped
+        )
+        state["cleared"] = cleared[-50:]
+        _save_state(state)
+    pending = list(kept.keys())
     if pending:
         _refuse(pending, "these plans were created or modified and never validated")
 
