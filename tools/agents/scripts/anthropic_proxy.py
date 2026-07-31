@@ -393,11 +393,54 @@ def _error_signature(text: str) -> str:
         return ""
     if _NEGATED_FAILURE_RE.search(line):
         return ""
+    return _normalize_error_line(line)
+
+
+def _normalize_error_line(line: str) -> str:
+    """Edit-invariant form of one error line: paths, hex and digits collapsed."""
     line = re.sub(r"(/[^\s:]+)+", "<path>", line)          # unix paths
     line = re.sub(r"\b[0-9a-fA-F]{6,}\b", "<hex>", line)    # hashes/addresses
     line = re.sub(r"\d+", "#", line)                        # line numbers, counts
     line = re.sub(r"\s+", " ", line).strip().lower()
     return line[:200]
+
+
+def _error_signature_for_result(text: str, result_error: bool | None = None) -> str:
+    """Signature for a tool_result, honouring the protocol's own `is_error`.
+
+    Keyword sniffing cannot tell a program REPORTING a failure from a file that
+    merely CONTAINS the word. Observed live (2026-07-31): the model read a Python
+    source file, `_ERROR_LINE_RE` matched the line
+
+        except Exception:  # noqa: BLE001 - unreadable state must not break ...
+
+    and three reads of the same file produced three identical "failures" — so
+    ERROR-LOOP fired and told the model to re-read the file it had just read.
+    Reading a file is the single most common thing an agent does; any file whose
+    text contains `Exception`, `error`, or `not found` could manufacture a streak.
+
+    The transcript already carries the answer. A tool_result has an `is_error`
+    flag, and the DOUBLING-DOWN guard has always preferred it over the keyword
+    heuristics; ERROR-LOOP computed its signature from the text and threw the
+    flag away. Now:
+
+      is_error False -> a clean result. No signature, whatever the bytes say.
+      is_error True  -> a real failure. Signature from the text, and if none of
+                        the keywords match, from its first meaningful line, so
+                        an unfamiliar error shape still forms a streak.
+      absent         -> fall back to the keyword heuristics as before.
+    """
+    if result_error is False:
+        return ""
+    sig = _error_signature(text)
+    if sig or result_error is not True:
+        return sig
+    # Declared an error, but shaped like nothing we recognise. Anchor the streak
+    # on the first meaningful line rather than losing the failure entirely.
+    for raw in (text or "").splitlines():
+        if raw.strip():
+            return _normalize_error_line(raw)
+    return ""
 
 # ---------------------------------------------------------------------------
 # DEFERRAL-BREAK guardrail (Fix A): a model can end a turn with plain prose that
@@ -1786,15 +1829,23 @@ class SessionMonitor:
                     by_tool = self.tool_target_history.setdefault(name, {})
                     by_tool[target] = by_tool.get(target, 0) + 1
 
-    def note_tool_result_error(self, latest_result_text: str) -> None:
+    def note_tool_result_error(
+        self, latest_result_text: str, result_error: bool | None = None
+    ) -> None:
         """Track a repeated tool_result error signature (ERROR-LOOP guardrail).
 
         Same normalized error as last turn -> increment the streak; a new error
         or a clean (error-free) result -> reset. Only a SUSTAINED same-failure
-        streak (despite the model's varied edits) trips the nudge."""
+        streak (despite the model's varied edits) trips the nudge.
+
+        result_error is the tool_result `is_error` flag when the client sent one.
+        It beats the keyword heuristics in both directions — see
+        _error_signature_for_result. The caller has always computed this flag;
+        it just was not passed here, so reading a file containing the word
+        `Exception` three times looked exactly like failing three times."""
         if not PROXY_ERROR_LOOP:
             return
-        sig = _error_signature(latest_result_text or "")
+        sig = _error_signature_for_result(latest_result_text or "", result_error)
         if sig and sig == self.last_error_signature:
             self.error_signature_streak += 1
         elif sig:
@@ -6773,7 +6824,7 @@ def _record_last_assistant_tool_calls(
                 if _flags:
                     _latest_err = any(_flags)
                 break
-    monitor.note_tool_result_error(_latest_tr)
+    monitor.note_tool_result_error(_latest_tr, _latest_err)
     tool_fingerprints = []
     tool_targets: dict[str, str] = {}
     assistant_had_text = False  # Fix B: did the last assistant turn emit prose?
