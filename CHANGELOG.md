@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.7 (2026-07-31)
+
+- chore(policies): stop tracking .policy-tools/, it is generated
+
+
 ## v1.175.6 (2026-07-31)
 
 - fix(policies): match policies by slug so enforcers actually attach
