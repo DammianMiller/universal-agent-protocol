@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.178.1 (2026-07-31)
+
+- fix(policy): make disable actually disable, and say so only when it did
+- fix(memory): hot-path defects in the agent wiring found by review
+
+
 ## v1.178.0 (2026-07-31)
 
 - feat(memory): wire active reconstruction into the AGENT context path
