@@ -34,23 +34,51 @@ function enforcerPathFor(policyName: string): string {
 }
 
 /**
+ * Comparable form of a policy identifier.
+ *
+ * The name a policy is STORED under comes from its markdown H1, while callers
+ * address it by FILE SLUG. Those coincide only by accident: `# delivery-
+ * enforcement` matches its slug, `# Enforcement Self-Protect` does not — and
+ * comparing the two raw meant the enforcer silently failed to attach for every
+ * policy whose title is written for humans.
+ */
+function slugify(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/** Why an attach did not happen — the caller reports each differently. */
+type AttachResult =
+  | { attached: true }
+  | { attached: false; reason: 'no-enforcer' }
+  | { attached: false; reason: 'policy-not-found' };
+
+/**
  * Attach the Python enforcer for a given policy by name.
  * Copies the enforcer into .policy-tools/<policyId>_<tool>.py and registers
  * it in the executable_tools table + policies.executableTools column.
- * Returns true if attached, false if no enforcer exists (silent skip).
+ *
+ * The two failure modes are kept DISTINCT because they mean opposite things: no
+ * enforcer file is normal (most policies are prose), while an enforcer that
+ * exists and could not be attached leaves the previously-materialised copy in
+ * force — stale enforcement that still looks installed.
  */
-async function attachEnforcer(policyName: string): Promise<boolean> {
+async function attachEnforcer(policyName: string): Promise<AttachResult> {
   const enforcer = enforcerPathFor(policyName);
   if (!existsSync(enforcer)) {
-    return false;
+    return { attached: false, reason: 'no-enforcer' };
   }
 
   const memory = getPolicyMemoryManager();
   const policies = await memory.getAllPolicies();
-  const policy = policies.find((p) => p.name === policyName);
+  const wanted = slugify(policyName);
+  const policy =
+    policies.find((p) => p.name === policyName) ?? policies.find((p) => slugify(p.name) === wanted);
   if (!policy) {
-    console.log(chalk.yellow(`  ⚠ could not locate installed policy '${policyName}' to attach enforcer`));
-    return false;
+    return { attached: false, reason: 'policy-not-found' };
   }
 
   const toolName = policyName.replace(/-/g, '_');
@@ -78,7 +106,7 @@ async function attachEnforcer(policyName: string): Promise<boolean> {
   }
 
   console.log(chalk.dim(`    → attached enforcer ${toolName} (.policy-tools/${policy.id}_${toolName}.py)`));
-  return true;
+  return { attached: true };
 }
 
 // List of mandatory policies that should always be enforced
@@ -126,9 +154,25 @@ async function installPolicy(policyName: string): Promise<void> {
     console.log(chalk.green(`✅ Policy '${policyName}' installed successfully!`));
 
     // Auto-attach Python enforcer if one exists alongside the markdown
-    const attached = await attachEnforcer(policyName);
-    if (!attached) {
+    const attach = await attachEnforcer(policyName);
+    if (!attach.attached && attach.reason === 'no-enforcer') {
+      // Normal: most policies are prose only.
       console.log(chalk.dim(`    (no executable enforcer at ${enforcerPathFor(policyName)})`));
+    } else if (!attach.attached) {
+      // NOT normal, and not cosmetic: an enforcer exists on disk but the stored
+      // policy could not be found, so the previously-materialised copy stays in
+      // force. That is stale enforcement wearing an "installed successfully"
+      // label — how a fix to enforcement-self-protect sat unapplied for over a
+      // week while every install reported success and exited 0.
+      installFailures += 1;
+      console.log(
+        chalk.red(
+          `  ❌ enforcer NOT attached: '${policyName}' has an enforcer at ${enforcerPathFor(policyName)} ` +
+            `but no stored policy matches it.\n` +
+            `     The previously-installed enforcer REMAINS ACTIVE — enforcement is stale, not updated.\n` +
+            `     Install the policy first (its markdown H1 is stored as the name), then re-run.`
+        )
+      );
     }
   } catch (error) {
     console.error(
@@ -138,6 +182,9 @@ async function installPolicy(policyName: string): Promise<void> {
     );
   }
 }
+
+/** Non-zero exit if any enforcer could not be attached — see the caller above. */
+let installFailures = 0;
 
 async function main(): Promise<void> {
   console.log(chalk.bold('\n=== UAP Policy Installer ===\n'));
@@ -167,9 +214,24 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(
-    chalk.red(`\n❌ Fatal error: ${error instanceof Error ? error.message : String(error)}`)
-  );
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // Exit non-zero when an enforcer could not be attached. Reporting success
+    // while leaving the previous enforcer in force is the failure mode that let
+    // stale enforcement run unnoticed; a caller that automates this has to be
+    // able to see it.
+    if (installFailures > 0) {
+      console.error(
+        chalk.red(
+          `\n❌ ${installFailures} enforcer(s) could NOT be attached — enforcement is STALE for those policies.\n`
+        )
+      );
+      process.exit(1);
+    }
+  })
+  .catch((error) => {
+    console.error(
+      chalk.red(`\n❌ Fatal error: ${error instanceof Error ? error.message : String(error)}`)
+    );
+    process.exit(1);
+  });
