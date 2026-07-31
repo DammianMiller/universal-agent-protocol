@@ -204,6 +204,10 @@ export const MUTABLE_CARD_FIELDS = [
   'T.tools',
   'C.read_window_bytes',
   'C.token_budget',
+  // Memory is the LARGEST single component in the AHE ablation (+5.6pp). Leaving
+  // it out of the searchable set meant the retrieval mode could never be A/B'd,
+  // so the gate that keeps active reconstruction off could never open.
+  'C.memory_mode',
   'S.max_tool_rounds',
   'G.middleware',
 ] as const;

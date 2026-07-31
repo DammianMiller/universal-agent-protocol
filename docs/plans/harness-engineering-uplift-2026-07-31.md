@@ -206,22 +206,51 @@ as the first is the most expensive kind of debt in a self-modifying system.
 - **C — change manifests.** `runSelfHarnessLoop` threads `manifests` /
   `priorRecords` into the orchestrator, so stage 0 attribution and revert run on
   the real loop, not only in tests.
-
-### Landed but NOT connected
-
-- **E — active memory reconstruction.** `src/memory/reconstruct.ts` is complete
-  and tested, but nothing imports it and there is no ingestion bridge from the
-  Qdrant store / `knowledge-graph.ts` into cue–tag–content triples. Setting
-  `UAP_MEMORY_ACTIVE=1` today changes no retrieval behaviour. It is the E1
-  substrate; E2 (a caller) and the ingestion path are follow-up work.
+- **E — active memory reconstruction.** `reconstruct-ingest.ts` turns UAP's
+  memory entries into cue–tag–content triples (deterministic extractor behind an
+  injectable seam, mirroring `ReconstructionPolicy`); `reconstruct-store.ts`
+  builds the derived graph from **both** memory tiers and exposes `recallActive`;
+  `uap memory graph build|status` and `uap memory query --active` are the
+  callers. Verified on the real store: 50 memories → 462 cues, 77 tags, **19
+  bridging tags**, and a five-hop traversal that reaches evidence the query never
+  names. Opt-in (`--active` / `UAP_MEMORY_ACTIVE=1`), refuses to route to an
+  empty graph, and **falls back to passive retrieval** when reconstruction finds
+  nothing or throws.
 
 ### Not done (deliberately)
 
+- **E, remaining.** The extractor is deterministic rather than the paper's LLM
+  extraction — a seam, not a rewrite. And no *agent* code path calls
+  `recallActive` yet: `dynamic-retrieval.ts` (what assembles model context) is
+  untouched, so today this changes what a **human** gets from `uap memory query`,
+  not what a **model** is given. The AHE memory ablation (+5.6pp) is about the
+  latter; claiming that number for this would be wrong.
 - **G** (container/microVM execution tier) — blast-radius work, no measured
   benchmark lift. Out of scope.
 - No uplift figure is claimed. Every mechanism here is wired and tested; which of
   them pays on OUR suite is what `uap bench paired` is for, and that run has not
   happened yet. The literature's numbers are the literature's.
+
+## E-connection review (second pass)
+
+Connecting E drew its own parallel review; the blockers it found:
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | **`--active` silently dropped long-term memory.** The passive path queries short-term FTS *and* Qdrant; active replaced it with a graph built from the rolling ~50-entry short-term window only. A regression wearing a feature's clothes | `itemsFromLongTerm` ingests the semantic store; coverage reported per tier; falls back to passive when reconstruction is empty or throws |
+| 2 | `--rebuild` duplicated the corpus instead of rebuilding — it reset the dedupe set without truncating, so two rebuilds meant every memory twice, permanently | `graph.clear()` truncates; test asserts `stats().contents` |
+| 3 | Items skipped for "no cue" were marked ingested, dropping them forever — including after the extractor seam is upgraded | `seen.add` only after a successful store; `storedKeys` returned and marked |
+| 4 | Ledger keyed on source id alone, so `uap memory correct` never reached the graph — it served pre-correction text forever | Key includes a content hash and the extractor id |
+| 5 | The per-query refresh used `projectId: 'project'` and ignored the configured store path, so it indexed zero rows for any real project | `resolveStoreConfig` mirrors `uap memory query` |
+| 6 | Default policy stopped after ONE hop (`sufficientAt: 3`) — every test had to override it, so the multi-hop mechanism was proven only under a policy the product did not ship | Default raised to 12 |
+| 7 | `maxExpandPerStep` lived only inside the default policy, so the first LLM policy would reproduce the 453-cue full scan | Enforced in `reconstruct`, intersected with the active set |
+| 8 | STOPWORDS were bypassed by the identifier regex — "The deploy failed" produced the cue `the` | Stopwords applied to identifiers |
+| 9 | `type` and `when:YYYY-MM` derived tags are hubs, not bridges (a month links everything written that month), and inflated the `bridgingTags` health metric | Hubs only as a last-resort edge; bridging requires <60% corpus coverage |
+| 10 | `bench paired` hardcoded `memoryMode`, so its card would state the wrong mode | One `describeMemoryMode`; `C.memory_mode` added to `MUTABLE_CARD_FIELDS` |
+| 11 | Short-term handle leaked when the read threw — once per query, since recall refreshes every call | `close()` in `finally` |
+| 12 | `--steps abc` produced NaN → zero iterations → "No evidence survived pruning", a false statement | `positiveInt` validation |
+| 13 | `shouldUseActiveRecall` ran five aggregates on every query and card render | Cheap `isEmpty()` probe; added the missing `mg_triples(tag)` index |
+| 14 | Context-budget overflow was reported as "pruned" and advised raising `--steps`, which cannot help | Separate `dropped` list and a `stopReason` |
 
 ## Defects found and fixed during review
 

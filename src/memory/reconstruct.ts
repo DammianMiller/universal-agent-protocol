@@ -57,8 +57,14 @@ export interface ReconstructionStep {
   tags: string[];
   /** Content ids admitted into the reconstructed context. */
   kept: number[];
-  /** Content ids reached but pruned as irrelevant. */
+  /** Content ids reached but judged IRRELEVANT. */
   pruned: number[];
+  /**
+   * Content ids the policy kept but that did not fit the context budget.
+   * Separate from `pruned`: "judged irrelevant" and "budget full" are different
+   * outcomes and want different remedies.
+   */
+  dropped: number[];
   /** Whether the model declared the evidence sufficient after this step. */
   sufficient: boolean;
 }
@@ -69,6 +75,8 @@ export interface ReconstructionResult {
   steps: ReconstructionStep[];
   /** True when the loop stopped because evidence sufficed, not because it ran out of steps. */
   converged: boolean;
+  /** Why the traversal stopped, so callers can give accurate advice. */
+  stopReason: 'sufficient' | 'context-full' | 'exhausted' | 'step-budget';
 }
 
 /**
@@ -101,14 +109,34 @@ export interface ReconstructionPolicy {
  * required for the structure to pay off, and a deterministic policy is what
  * makes the loop unit-testable.
  */
-export function heuristicPolicy(opts: { keepThreshold?: number; sufficientAt?: number } = {}): ReconstructionPolicy {
+export function heuristicPolicy(
+  opts: { keepThreshold?: number; sufficientAt?: number; maxExpandPerStep?: number } = {},
+): ReconstructionPolicy {
   const keepThreshold = opts.keepThreshold ?? 0.12;
-  const sufficientAt = opts.sufficientAt ?? 3;
+  // 3 was too eager: on any realistic graph step 1 admits >=3 nodes, the loop
+  // stops immediately, and the multi-hop discovery that IS the contribution
+  // never runs — the shipped default would have been passive retrieval with a
+  // worse ranker. 12 lets the second hop happen while staying under maxContext.
+  const sufficientAt = opts.sufficientAt ?? 12;
+  // Expansion MUST be bounded. Discovery reseeds the active set from every cue
+  // sharing a productive tag, so on a real store step 2 expanded 453 cues —
+  // effectively a full scan, which would make this slower AND more expensive
+  // than the passive top-k it replaces, inverting the paper's whole result.
+  const maxExpand = opts.maxExpandPerStep ?? 24;
   return {
-    selectCues(_query, activeCues) {
-      // Expand everything currently active: the pruning happens at routing, so
-      // narrowing here would discard paths before their evidence is seen.
-      return [...activeCues];
+    selectCues(query, activeCues, context) {
+      if (activeCues.length <= maxExpand) return [...activeCues];
+      // Rank by relevance to the query first, then to evidence already
+      // accumulated — the second term is what makes this reconstruction rather
+      // than retrieval: what to look at next depends on what was just found.
+      const q = tokenize(query);
+      const ctx = tokenize(context.map((c) => c.text).join(' '));
+      const scored = activeCues.map((cue) => {
+        const t = tokenize(cue);
+        return { cue, score: overlap(t, q) * 2 + overlap(t, ctx) };
+      });
+      scored.sort((a, b) => b.score - a.score || a.cue.localeCompare(b.cue));
+      return scored.slice(0, maxExpand).map((s) => s.cue);
     },
     route(query, candidates, context) {
       const q = tokenize(query);
@@ -168,6 +196,16 @@ export class MemoryGraph {
       );
       CREATE INDEX IF NOT EXISTS idx_mg_triples_cue ON mg_triples(cue);
       CREATE INDEX IF NOT EXISTS idx_mg_triples_cue_tag ON mg_triples(cue, tag);
+      -- cuesForTag filters on tag ALONE and runs once per productive tag per
+      -- step; without this it full-scans mg_triples in the discovery hot path.
+      CREATE INDEX IF NOT EXISTS idx_mg_triples_tag ON mg_triples(tag);
+      -- Source keys already ingested. Durable dedupe lives WITH the graph so a
+      -- rebuild is incremental and a deleted graph cannot leave a stale ledger
+      -- behind claiming everything is already indexed.
+      CREATE TABLE IF NOT EXISTS mg_sources (
+        key TEXT PRIMARY KEY,
+        ingested_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
     `);
   }
 
@@ -235,6 +273,63 @@ export class MemoryGraph {
     return rows.map((r) => r.cue);
   }
 
+  /** Source keys already ingested, for incremental rebuilds. */
+  ingestedKeys(): Set<string> {
+    const rows = this.db.prepare('SELECT key FROM mg_sources').all() as Array<{ key: string }>;
+    return new Set(rows.map((r) => r.key));
+  }
+
+  /** Mark source keys as ingested. */
+  markIngested(keys: Iterable<string>): void {
+    const stmt = this.db.prepare('INSERT OR IGNORE INTO mg_sources (key) VALUES (?)');
+    const tx = this.db.transaction((ks: string[]) => {
+      for (const k of ks) stmt.run(k);
+    });
+    tx([...keys]);
+  }
+
+  /**
+   * Cheap emptiness probe. `stats()` runs five aggregates including two
+   * COUNT(DISTINCT) and a GROUP BY — far too expensive for the "should I route
+   * here" check that runs on every single query.
+   */
+  isEmpty(): boolean {
+    const row = this.db.prepare('SELECT 1 AS n FROM mg_contents LIMIT 1').get() as
+      | { n: number }
+      | undefined;
+    return row === undefined;
+  }
+
+  /** Delete everything — the truncate half of a real rebuild. */
+  clear(): void {
+    this.db.exec('DELETE FROM mg_triples; DELETE FROM mg_contents; DELETE FROM mg_sources;');
+  }
+
+  /** Shape of the graph, for `uap memory graph status` and honest reporting. */
+  stats(): { contents: number; cues: number; tags: number; triples: number; bridgingTags: number } {
+    const one = (sql: string): number =>
+      ((this.db.prepare(sql).get() as { n: number } | undefined)?.n ?? 0);
+    return {
+      contents: one('SELECT COUNT(*) AS n FROM mg_contents'),
+      cues: one('SELECT COUNT(DISTINCT cue) AS n FROM mg_triples'),
+      tags: one('SELECT COUNT(DISTINCT tag) AS n FROM mg_triples'),
+      triples: one('SELECT COUNT(*) AS n FROM mg_triples'),
+      // Tags linking >1 content node are the ones doing associative work — but
+      // a tag attached to EVERY memory (a type enum, a month bucket) links
+      // everything and discriminates nothing, so counting it as a bridge
+      // reports health while the graph is a hairball. Require >1 and <60% of
+      // all contents.
+      bridgingTags: one(
+        `SELECT COUNT(*) AS n FROM (
+           SELECT tag FROM mg_triples
+           GROUP BY tag
+           HAVING COUNT(DISTINCT content_id) > 1
+              AND COUNT(DISTINCT content_id) < 0.6 * (SELECT COUNT(*) FROM mg_contents)
+         )`,
+      ),
+    };
+  }
+
   /** Every cue in the graph — the seed set when the query matches nothing. */
   allCues(): string[] {
     const rows = this.db.prepare('SELECT DISTINCT cue FROM mg_triples').all() as Array<{ cue: string }>;
@@ -269,6 +364,22 @@ export interface ReconstructOptions {
   policy?: ReconstructionPolicy;
   /** Seed cues. Omitted -> derived from the query's own tokens. */
   seedCues?: string[];
+  /**
+   * Hard ceiling on admitted context. `sufficient` only stops FURTHER steps —
+   * everything kept in the current step is already in context — so without this
+   * one step over a well-connected graph can admit thousands of nodes and blow
+   * the token budget this whole approach exists to protect.
+   */
+  maxContext?: number;
+  /** Seed cues to draw when the query matches nothing. Default 32. */
+  maxSeeds?: number;
+  /**
+   * Hard cap on cues expanded per step, enforced HERE rather than trusted to the
+   * policy. The policy seam exists for an LLM to plug into, and an LLM will
+   * happily return 200 cues (or cues that were never active), reproducing the
+   * full-scan this bound was added to prevent.
+   */
+  maxExpandPerStep?: number;
 }
 
 /**
@@ -286,22 +397,31 @@ export function reconstruct(
   options: ReconstructOptions = {},
 ): ReconstructionResult {
   const maxSteps = options.maxSteps ?? 5;
+  const maxContext = options.maxContext ?? 24;
+  const maxExpand = options.maxExpandPerStep ?? 24;
   const policy = options.policy ?? heuristicPolicy();
 
-  const seeds = options.seedCues ?? seedCuesFromQuery(graph, query);
+  const seeds = options.seedCues ?? seedCuesFromQuery(graph, query, options.maxSeeds);
   let active = new Set(seeds.map(norm));
   const visitedCues = new Set<string>();
   const context: ContentNode[] = [];
   const admitted = new Set<number>();
   const steps: ReconstructionStep[] = [];
   let converged = false;
+  let stopReason: ReconstructionResult['stopReason'] = 'step-budget';
 
   for (let step = 1; step <= maxSteps; step++) {
     const toExpand = policy
       .selectCues(query, [...active], context)
       .map(norm)
-      .filter((c) => !visitedCues.has(c));
-    if (toExpand.length === 0) break;
+      // Intersect with the ACTIVE set: a policy may only expand cues the
+      // traversal actually reached, never ones it invented.
+      .filter((c) => active.has(c) && !visitedCues.has(c))
+      .slice(0, maxExpand);
+    if (toExpand.length === 0) {
+      stopReason = 'exhausted';
+      break;
+    }
 
     const tags = new Set<string>();
     const candidates: ContentNode[] = [];
@@ -325,15 +445,20 @@ export function reconstruct(
     const keepSet = new Set(keep);
     const kept: number[] = [];
     const pruned: number[] = [];
+    const dropped: number[] = [];
     for (const node of candidates) {
-      if (keepSet.has(node.id)) {
-        context.push(node);
-        admitted.add(node.id);
-        kept.push(node.id);
-      } else {
+      if (!keepSet.has(node.id)) {
         // Pruned BEFORE it costs context — the token saving the paper measures.
         pruned.push(node.id);
+        continue;
       }
+      if (context.length >= maxContext) {
+        dropped.push(node.id);
+        continue;
+      }
+      context.push(node);
+      admitted.add(node.id);
+      kept.push(node.id);
     }
 
     // Discovery: tags reached by KEPT evidence surface new cues to expand. Only
@@ -352,23 +477,34 @@ export function reconstruct(
       }
     }
 
-    steps.push({ step, expandedCues: toExpand, tags: [...tags], kept, pruned, sufficient });
-    if (sufficient) {
-      converged = true;
+    steps.push({ step, expandedCues: toExpand, tags: [...tags], kept, pruned, dropped, sufficient });
+    if (sufficient || context.length >= maxContext) {
+      converged = sufficient;
+      stopReason = sufficient ? 'sufficient' : 'context-full';
       break;
     }
-    if (active.size === 0) break;
+    if (active.size === 0) {
+      stopReason = 'exhausted';
+      break;
+    }
   }
 
-  return { context, steps, converged };
+  return { context, steps, converged, stopReason };
 }
 
-/** Seed cues = query tokens that exist in the graph; else every cue. */
-export function seedCuesFromQuery(graph: MemoryGraph, query: string): string[] {
+/**
+ * Seed cues = query tokens present in the graph.
+ *
+ * When nothing matches we fall back to a BOUNDED sample rather than every cue
+ * in the graph: an off-topic query would otherwise load the entire content
+ * table on step 1, which is the opposite of what this is for.
+ */
+export function seedCuesFromQuery(graph: MemoryGraph, query: string, maxSeeds = 32): string[] {
   const tokens = [...tokenize(query)];
   const known = new Set(graph.allCues());
   const hits = tokens.filter((t) => known.has(t));
-  return hits.length > 0 ? hits : [...known];
+  if (hits.length > 0) return hits;
+  return [...known].sort().slice(0, maxSeeds);
 }
 
 /**

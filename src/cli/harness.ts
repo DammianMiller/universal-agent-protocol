@@ -148,7 +148,7 @@ async function harnessCard(options: HarnessOptions): Promise<void> {
     sandboxed: process.env.UAP_SANDBOX_ACTIVE === '1',
     maxToolRounds: defaultMaxToolRounds(),
     contextTokenBudget: Number(process.env.UAP_CONTEXT_TOKEN_BUDGET) || undefined,
-    memoryMode: 'semantic retrieval',
+    memoryMode: await currentMemoryMode(),
     verification: ['build', 'test', 'runtime', 'acceptance-judge'],
     editStrategy: editToleranceEnabled()
       ? 'exact, then whitespace-tolerant, then nearest-region report'
@@ -166,6 +166,16 @@ async function harnessCard(options: HarnessOptions): Promise<void> {
   console.log('');
   console.log(renderHarnessCard(card));
   console.log('');
+}
+
+/** The retrieval mode actually in force — one shared implementation. */
+async function currentMemoryMode(): Promise<string> {
+  try {
+    const { describeMemoryMode } = await import('../memory/reconstruct-store.js');
+    return describeMemoryMode(process.cwd());
+  } catch {
+    return 'semantic retrieval';
+  }
 }
 
 /** Read the installed package version, falling back to 'unknown'. */

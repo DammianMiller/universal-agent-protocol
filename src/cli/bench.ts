@@ -183,6 +183,15 @@ function stamp(iso: string): string {
  * disclosure card. Reads the live knobs ONCE, here, rather than letting the card
  * builder reach into `process.env` at render time.
  */
+async function describeMemoryModeSafe(): Promise<string> {
+  try {
+    const { describeMemoryMode } = await import('../memory/reconstruct-store.js');
+    return describeMemoryMode(process.cwd());
+  } catch {
+    return 'semantic retrieval';
+  }
+}
+
 function uapVersion(): string {
   try {
     const here = dirname(fileURLToPath(import.meta.url));
@@ -214,7 +223,9 @@ async function currentHarnessCardInput(adapter: string) {
         ? 'exact, then whitespace-tolerant, then nearest-region report'
         : 'exact only'
       : `external adapter (${adapter})`,
-    memoryMode: 'semantic retrieval',
+    // Derived, not hardcoded: a literal here made the bench card state the wrong
+    // retrieval mode for the run — the exact failure the card exists to prevent.
+    memoryMode: await describeMemoryModeSafe(),
     stubGuard: process.env.UAP_DELIVER_ALLOW_STUBS !== '1',
     guttingGuard: process.env.UAP_DELIVER_ALLOW_GUTTING !== '1',
     middleware:
