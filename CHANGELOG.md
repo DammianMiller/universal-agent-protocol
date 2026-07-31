@@ -1,5 +1,100 @@
 # Changelog
 
+## v5.0.0 (2026-03-13)
+
+### Security & Performance
+
+- **Async exec in DeployBatcher** — Replaced all `execSync` calls with async `execFile` using argument arrays. Eliminates shell injection risk (especially on commit messages and deploy commands) and stops blocking the event loop during git/gh operations.
+
+### Features
+
+- **Routing strategy differentiation** — `routingStrategy` config now actually changes behavior: `performance-first` always uses planner model, `cost-optimized` picks cheapest capable model, `balanced`/`adaptive` use priority-rule matching. Added `getRequiredCapability()` helper.
+- **Task due dates** — Added `due_date` column to tasks schema with automatic migration for existing databases. `overdue` stats now query tasks past their due date. Create/update/list/JSONL all support `dueDate` field.
+- **`uap sync` command** — Full implementation replacing the stub. Syncs droids/agents, skills, and commands between claude/factory/opencode/vscode platforms. Supports `--dry-run` mode.
+- **`uap model --execute`** — Executes plans via MockModelClient with progress output and execution summary. Prints clear note that real execution requires API keys.
+
+### Tests
+
+- **66 new tests** — Added test suites for CoordinationService (agent lifecycle, work claims, announcements, messaging, status), TaskService (CRUD, queries, dependencies, statistics, overdue, history, JSONL, hierarchy), and DeployBatcher (batch windows, queue, batch creation, execution, retrieval). Total: 215 tests across 20 files.
+
+## v4.8.2 (2026-03-13)
+
+- Version bump only
+
+## v4.8.1 (2026-03-13)
+
+### Performance Optimizations
+
+- **WAL mode for coordination DB** — Enable WAL journal mode, NORMAL synchronous, and 10s busy timeout on `CoordinationDatabase` and `TaskDatabase` for concurrent multi-agent read/write performance
+- **LRU cache for embeddings** — Changed embedding cache from FIFO to LRU eviction, ensuring frequently-accessed embeddings stay cached
+- **Connection pool round-robin** — Fixed `Date.now() % poolSize` to use a deterministic counter for even distribution across SQLite connection pool
+- **Exponential backoff on executor retries** — Retry delays now double each attempt (1s, 2s, 4s) instead of fixed 1s
+
+### Bug Fixes
+
+- **GitHub backend date parsing** — Fixed `rawTimestamp.replace(/-/g, ':')` which corrupted date portions (YYYY-MM-DD became YYYY:MM:DD), causing `Invalid Date` and broken pruning
+- **SQL injection in memory consolidator** — Replaced string-interpolated `ids.join(',')` with parameterized placeholders in DELETE query
+- **Executor retry context** — `previousAttempts` in `ExecutionContext` is now populated between retries, enabling the retry-context prompt section to provide failure info to subsequent attempts
+- **Exit handler leak in AutoAgentCoordinator** — Track and remove SIGINT/SIGTERM/exit handlers on cleanup to prevent listener accumulation across start/cleanup cycles
+- **Plan validation timeout** — `validationTimeoutMs` is now enforced via `Promise.race()` (was previously stored but never used)
+
+### Features
+
+- **PatternRouter restored** — Replaced no-op stub with full implementation: loads patterns from `.factory/patterns/index.json`, keyword-based matching, enforcement checklist with always-included critical patterns (P12, P35), singleton with lazy init
+- **Mandatory plan validation** — Validator now always runs on every plan at every complexity level (removed `skipIfTrivial: true` and conditional `enableAutoValidation` gate)
+
+### Documentation
+
+- **docs/FEATURES.md** — Complete rewrite with accurate implementation status, verified file:line references, and honest performance claims
+- **PUBLISH_STATUS.md** — Updated to v4.8.1 with current pipeline status
+- **# Changelog.md** — Replaced empty changelog with full history
+
+## v4.8.0 (2026-03-13)
+
+### Features
+
+- Mandatory plan validation on every plan regardless of complexity level
+
+## v4.7.0 (2026-03-13)
+
+### Features
+
+- **Multi-agent coordination system** — CoordinationService, AutoAgentCoordinator, TaskCoordinator with automatic registration, heartbeat, and graceful exit cleanup
+- **PlanValidator** — Validates subtasks, dependencies, model assignments, constraints, cost estimates
+- **Auto-validation in TaskPlanner** — `createPlan()` now async, always validates generated plans
+- **CLI `uap agent auto` command** — Automatic agent registration from CLI
+
+### Bug Fixes
+
+- Converted `require()` to ES6 imports across codebase
+- Fixed unused variables and stale `@ts-expect-error` directives
+- Fixed async `createPlan()` callers in tests and CLI
+
+## v4.6.0 (2026-03-13)
+
+### Features
+
+- Auto-validation for generated plans (PlanValidator class)
+- Comprehensive validation: subtasks, dependencies, model assignments, constraints, cost estimates
+
+## v4.3.1 and earlier
+
+- Initial release through iterative development
+- Memory system (4-layer: working, session, semantic, knowledge graph)
+- Pattern Router (58 Terminal-Bench patterns)
+- MCP Router with output compression
+- Worktree system for isolated development
+- Hooks system (session-start, pre-compact)
+- Droid system with JSON schema validation
+- Multi-model architecture (router, planner, executor)
+- Deploy batching system
+- Task management with DAG dependencies
+## v1.179.0 (2026-07-31)
+
+- fix(plan): recover a plan gate wedged on an entry validation refuses
+- fix(memory): hot-path defects in the agent wiring found by review
+
+
 ## v1.178.1 (2026-07-31)
 
 - fix(policy): make disable actually disable, and say so only when it did
@@ -26,6 +121,14 @@
 - feat(harness): edit-tool ladder, evidence corpus, manifests, tool search space, memory substrate
 
 
+## v1.175.13 (2026-07-31)
+
+- fix(plan): stamp the file the operator named, not only the reviewed one
+
+
+## v1.175.12 (2026-07-31)
+
+- fix(policy): validate the plan BEFORE the build, not on the plan write
 ## v1.175.11 (2026-07-31)
 
 - fix(deliver): reclaim an abandoned lock, don't wait on a recycled PID
@@ -247,45 +350,6 @@
 - feat(skills): record-walkthroughs — automated product walkthrough videos (#591)
 - chore: bump version to 1.164.0
 - feat(proxy): run the operational dashboard as part of the uap proxy
-## v1.166.0 (2026-07-24)
-
-- fix(ladder): the starvation fix was half a fix — intra-tier fail-fast too
-- fix(ladder): a synthetic self-gate must not starve the real gates behind it
-- fix(deliver): close the false-green and judge-evidence holes a review found
-- chore: bump version to 1.165.0
-- fix(security): never send the local proxy token off-machine
-- feat(deliver): break the self-gate/vision catch-22 under max fidelity
-- fix(policies): iac gate must look the PR up in the repo being merged (#592)
-- feat(skills): record-walkthroughs — automated product walkthrough videos (#591)
-- feat(deliver): small-model resilience — achievable journeys, per-write syntax check, actionable vision feedback, full-gate keep-best
-- chore: bump version to 1.164.0
-- feat(proxy): run the operational dashboard as part of the uap proxy
-- feat(deliver): inject the up-front user-path acceptance contract into the executor
-- docs: rewrite documentation to pure current-state (no change-over-time)
-- fix(deliver): address deep-rewire review findings (tier-guard + tuner wiring)
-- feat(models): Q4-full route selectModel through the canonical per-phase source
-- feat(deliver): 3a wire MIPRO fragments into defaultPromptBuilder (no-op default)
-- feat(models): Q4 canonical per-phase selector + 3a frozen-fragment binding
-- feat(models): Q2 route router.classifyTask through the unified classifier
-- feat(deliver): Q3 judge derives from the preset review chain
-- fix(deliver): address integration-batch review findings
-- feat(self-tuning): tuner prompt-dimension adapter (S8 -> optimizer)
-- feat(deliver): S7 write-conflict edges wired at the DeliveryPhase layer
-- feat(deliver): reflectProvider seam — the async GEPA reflect turn
-- feat(deliver): per-phase escalation controller (S5 -> loop, execute phase)
-- feat(deliver): wire GEPA reflect (mutateInstruction) into the convergence loop
-- fix(deliver): address S4-S8 review findings (frozen-fragment trap, scope dedupe)
-- feat(self-tuning): S8 MIPRO tunable prompts (with frozen safety fragments)
-- feat(deliver): S7 graph-engineering safety (false-independence, silent-node, fan-in)
-- feat(deliver): S6 GEPA reflect phase (Pareto archive + approach rewrite)
-- feat(deliver): S5 per-phase escalation (hybrid policy)
-- feat(coordination): S4 effort-dial orchestration profiles
-- fix(deliver): address S1-S3 parallel-review findings
-- feat(models): S3 per-phase x per-tier routing matrix
-- feat(models): S2 unified complexity classifier (preserves critical)
-- feat(deliver): S1 verification hardening — distinct judge, provenance banner
-
-
 ## v1.165.1 (2026-07-24)
 
 - fix(coordination): address parallel expert review — drift check was inert
@@ -327,41 +391,6 @@
 - feat(skills): record-walkthroughs — automated product walkthrough videos (#591)
 - chore: bump version to 1.164.0
 - feat(proxy): run the operational dashboard as part of the uap proxy
-## v1.165.0 (2026-07-24)
-
-- fix(security): never send the local proxy token off-machine
-- feat(deliver): break the self-gate/vision catch-22 under max fidelity
-- fix(policies): iac gate must look the PR up in the repo being merged (#592)
-- feat(skills): record-walkthroughs — automated product walkthrough videos (#591)
-- feat(deliver): small-model resilience — achievable journeys, per-write syntax check, actionable vision feedback, full-gate keep-best
-- chore: bump version to 1.164.0
-- feat(proxy): run the operational dashboard as part of the uap proxy
-- feat(deliver): inject the up-front user-path acceptance contract into the executor
-- docs: rewrite documentation to pure current-state (no change-over-time)
-- fix(deliver): address deep-rewire review findings (tier-guard + tuner wiring)
-- feat(models): Q4-full route selectModel through the canonical per-phase source
-- feat(deliver): 3a wire MIPRO fragments into defaultPromptBuilder (no-op default)
-- feat(models): Q4 canonical per-phase selector + 3a frozen-fragment binding
-- feat(models): Q2 route router.classifyTask through the unified classifier
-- feat(deliver): Q3 judge derives from the preset review chain
-- fix(deliver): address integration-batch review findings
-- feat(self-tuning): tuner prompt-dimension adapter (S8 -> optimizer)
-- feat(deliver): S7 write-conflict edges wired at the DeliveryPhase layer
-- feat(deliver): reflectProvider seam — the async GEPA reflect turn
-- feat(deliver): per-phase escalation controller (S5 -> loop, execute phase)
-- feat(deliver): wire GEPA reflect (mutateInstruction) into the convergence loop
-- fix(deliver): address S4-S8 review findings (frozen-fragment trap, scope dedupe)
-- feat(self-tuning): S8 MIPRO tunable prompts (with frozen safety fragments)
-- feat(deliver): S7 graph-engineering safety (false-independence, silent-node, fan-in)
-- feat(deliver): S6 GEPA reflect phase (Pareto archive + approach rewrite)
-- feat(deliver): S5 per-phase escalation (hybrid policy)
-- feat(coordination): S4 effort-dial orchestration profiles
-- fix(deliver): address S1-S3 parallel-review findings
-- feat(models): S3 per-phase x per-tier routing matrix
-- feat(models): S2 unified complexity classifier (preserves critical)
-- feat(deliver): S1 verification hardening — distinct judge, provenance banner
-
-
 ## v1.164.0 (2026-07-24)
 
 - feat(proxy): run the operational dashboard as part of the uap proxy
@@ -666,14 +695,6 @@
 - feat(delivery): worktree-isolated parallel dispatch — the safe production consumer for ATG concurrency
 
 
-## v1.150.0 (2026-07-14)
-
-- feat(deliver): P1 — replayable edit intents, anchored edit_file, bash -n self-gates
-- fix(agentic-executor): a repeated read gets a nudge, never a denial (v1.148.28) (#514)
-- fix(deliver): P0 anti-vacuous hardening — no more false-green no-op deliveries
-- fix(deliver): enforce "tests actually ran" in the gate that decides DONE (v1.148.27) (#512)
-
-
 ## v1.149.5 (2026-07-14)
 
 - fix(agentic-executor): **the dedup guard withheld file content and deadlocked the agent — my own regression from v1.148.21.** That guard answered a repeated read of an unchanged file with *"UNCHANGED — act on what you already have"* **instead of the content**. But the model re-reads a file for a REASON: its context was pruned, or the agent session is fresh and it never had the content at all. Denying it the content leaves it unable to proceed — so it asks again. Live result: **76 re-reads of one file, 64 nudges fired, and ZERO writes in 36 minutes.** The guard caught the loop and then guaranteed it. The content is now **always served**, with the nudge prepended — so repetition costs a line, not the mission. Exactly the same failure as the phantom `run_bash`, the unreadable acceptance gate, the "stop writing" order and the raw `EISDIR`: the harness punishing a reasonable move. This one was self-inflicted.
@@ -974,9 +995,6 @@
 
 - chore(bench): terminal-bench UAP arm is now LAZY (matches UAP's --lazy philosophy) — opencode one-shots the task directly with full UAP context (reactor + AGENTS.md gate discipline + the deliver tool available) and escalates to `deliver`'s verified-convergence loop ONLY when its build/tests fail after a couple of attempts. Forcing deliver on every edit timed out all tasks on a weak local model; lazy escalation one-shots the easy tasks and rescues the hard ones. Pair with `tb run --global-agent-timeout-sec 1200` for small models (per-task default 360s is too short for deliver on qwen).
 
-## v1.136.2 (2026-07-11)
-
-- fix(bench): terminal-bench full-UAP arm now installs `sqlite3` (+ git) in the container. THE root cause of the faithful benchmark not working: the policy gate (`uap-policy-gate.sh`) reads `policies.db` via the `sqlite3` CLI, which the base image lacks — so the gate query silently failed and FAIL-OPENED, letting opencode edit directly and never routing through deliver. With sqlite3 present (and the v1.136.1 filePath fix), the full chain is proven in a container: opencode edit → BLOCKED by delivery-enforcement → opencode calls the `deliver` tool. Validated end-to-end via docker exec.
 ## v1.136.1 (2026-07-11)
 
 - fix(policy): delivery-enforcement now recognizes opencode's `filePath` tool-arg key (plus `filename`/`file`) in addition to Claude's `file_path` — previously opencode Write/Edit calls slipped through the gate ungated because the enforcer only looked for `file_path`/`path`/`target`, so "route through deliver" never fired for opencode. Validated: opencode-format edits to source now hard-block (exit 2, route:deliver) in block mode; test files still exempt. 3 new tests.
@@ -1273,11 +1291,6 @@
 ## v1.108.0 (2026-07-05)
 
 - fix(policies): cluster-routing scoped to Bash commands only + heredoc bodies stripped before pattern-matching (ported from pay2u) — file writes that merely mention cluster product names no longer trip the gate
-
-
-## v1.108.0 (2026-07-05)
-
-- feat(dashboard): real per-influence token savings + orchestration hierarchy
 
 
 ## v1.107.0 (2026-07-05)
@@ -2454,19 +2467,6 @@
 - feat: update supported Droid models to latest versions
 
 
-## v1.20.4 (2026-03-29)
-
-- feat: add benchmark automation tooling
-- fix: align local qwen runtime defaults
-
-
-## v1.20.3 (2026-03-29)
-
-- chore: bump version to 1.20.3
-- fix: stabilize release validation flow
-- fix: build before tests in version bump pipeline
-
-
 ## v1.18.0 (2026-03-27)
 
 - feat: implement full optimization suite - adaptive cache O(1) eviction, SQLite WAL mode, query caching, pattern router LRU cache, async hook execution
@@ -2800,100 +2800,3 @@
 - fix: v1.3.4 - restore tool_choice=required, fix chat_template tool call regression
 
 
-## v5.0.0 (2026-03-13)
-
-### Security & Performance
-
-- **Async exec in DeployBatcher** — Replaced all `execSync` calls with async `execFile` using argument arrays. Eliminates shell injection risk (especially on commit messages and deploy commands) and stops blocking the event loop during git/gh operations.
-
-### Features
-
-- **Routing strategy differentiation** — `routingStrategy` config now actually changes behavior: `performance-first` always uses planner model, `cost-optimized` picks cheapest capable model, `balanced`/`adaptive` use priority-rule matching. Added `getRequiredCapability()` helper.
-- **Task due dates** — Added `due_date` column to tasks schema with automatic migration for existing databases. `overdue` stats now query tasks past their due date. Create/update/list/JSONL all support `dueDate` field.
-- **`uap sync` command** — Full implementation replacing the stub. Syncs droids/agents, skills, and commands between claude/factory/opencode/vscode platforms. Supports `--dry-run` mode.
-- **`uap model --execute`** — Executes plans via MockModelClient with progress output and execution summary. Prints clear note that real execution requires API keys.
-
-### Tests
-
-- **66 new tests** — Added test suites for CoordinationService (agent lifecycle, work claims, announcements, messaging, status), TaskService (CRUD, queries, dependencies, statistics, overdue, history, JSONL, hierarchy), and DeployBatcher (batch windows, queue, batch creation, execution, retrieval). Total: 215 tests across 20 files.
-
-## v4.8.2 (2026-03-13)
-
-- Version bump only
-
-## v4.8.1 (2026-03-13)
-
-### Performance Optimizations
-
-- **WAL mode for coordination DB** — Enable WAL journal mode, NORMAL synchronous, and 10s busy timeout on `CoordinationDatabase` and `TaskDatabase` for concurrent multi-agent read/write performance
-- **LRU cache for embeddings** — Changed embedding cache from FIFO to LRU eviction, ensuring frequently-accessed embeddings stay cached
-- **Connection pool round-robin** — Fixed `Date.now() % poolSize` to use a deterministic counter for even distribution across SQLite connection pool
-- **Exponential backoff on executor retries** — Retry delays now double each attempt (1s, 2s, 4s) instead of fixed 1s
-
-### Bug Fixes
-
-- **GitHub backend date parsing** — Fixed `rawTimestamp.replace(/-/g, ':')` which corrupted date portions (YYYY-MM-DD became YYYY:MM:DD), causing `Invalid Date` and broken pruning
-- **SQL injection in memory consolidator** — Replaced string-interpolated `ids.join(',')` with parameterized placeholders in DELETE query
-- **Executor retry context** — `previousAttempts` in `ExecutionContext` is now populated between retries, enabling the retry-context prompt section to provide failure info to subsequent attempts
-- **Exit handler leak in AutoAgentCoordinator** — Track and remove SIGINT/SIGTERM/exit handlers on cleanup to prevent listener accumulation across start/cleanup cycles
-- **Plan validation timeout** — `validationTimeoutMs` is now enforced via `Promise.race()` (was previously stored but never used)
-
-### Features
-
-- **PatternRouter restored** — Replaced no-op stub with full implementation: loads patterns from `.factory/patterns/index.json`, keyword-based matching, enforcement checklist with always-included critical patterns (P12, P35), singleton with lazy init
-- **Mandatory plan validation** — Validator now always runs on every plan at every complexity level (removed `skipIfTrivial: true` and conditional `enableAutoValidation` gate)
-
-### Documentation
-
-- **docs/FEATURES.md** — Complete rewrite with accurate implementation status, verified file:line references, and honest performance claims
-- **PUBLISH_STATUS.md** — Updated to v4.8.1 with current pipeline status
-- **# Changelog.md** — Replaced empty changelog with full history
-
-## v4.8.0 (2026-03-13)
-
-### Features
-
-- Mandatory plan validation on every plan regardless of complexity level
-
-## v4.7.0 (2026-03-13)
-
-### Features
-
-- **Multi-agent coordination system** — CoordinationService, AutoAgentCoordinator, TaskCoordinator with automatic registration, heartbeat, and graceful exit cleanup
-- **PlanValidator** — Validates subtasks, dependencies, model assignments, constraints, cost estimates
-- **Auto-validation in TaskPlanner** — `createPlan()` now async, always validates generated plans
-- **CLI `uap agent auto` command** — Automatic agent registration from CLI
-
-### Bug Fixes
-
-- Converted `require()` to ES6 imports across codebase
-- Fixed unused variables and stale `@ts-expect-error` directives
-- Fixed async `createPlan()` callers in tests and CLI
-
-## v4.6.0 (2026-03-13)
-
-### Features
-
-- Auto-validation for generated plans (PlanValidator class)
-- Comprehensive validation: subtasks, dependencies, model assignments, constraints, cost estimates
-
-## v4.3.1 and earlier
-
-- Initial release through iterative development
-- Memory system (4-layer: working, session, semantic, knowledge graph)
-- Pattern Router (58 Terminal-Bench patterns)
-- MCP Router with output compression
-- Worktree system for isolated development
-- Hooks system (session-start, pre-compact)
-- Droid system with JSON schema validation
-- Multi-model architecture (router, planner, executor)
-- Deploy batching system
-- Task management with DAG dependencies
-## v1.175.13 (2026-07-31)
-
-- fix(plan): stamp the file the operator named, not only the reviewed one
-
-
-## v1.175.12 (2026-07-31)
-
-- fix(policy): validate the plan BEFORE the build, not on the plan write
