@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.10 (2026-07-31)
+
+- test(enforcers): make the escape-hatch suite hermetic, not ambient
+
+
 ## v1.175.9 (2026-07-31)
 
 - fix(proxy): a successful tool result is not a failure, whatever its prose
