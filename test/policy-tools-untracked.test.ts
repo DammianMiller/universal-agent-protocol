@@ -46,6 +46,29 @@ describe('.policy-tools/ is generated, not versioned', () => {
   });
 });
 
+describe('nothing in the test suite reads the generated directory', () => {
+  it('no test resolves a path into .policy-tools/', () => {
+    // Six fixtures used to copy their enforcer out of `.policy-tools/`, two of
+    // them hardcoding a UUID filename that is minted per machine. They passed in
+    // CI only because those generated files were tracked by accident — untracking
+    // them turned CI red, which is the dependency showing itself.
+    //
+    // A test that reads a materialised copy is not testing the code under
+    // review; it is testing whatever the installer last wrote on that box.
+    const offenders = tracked('test')
+      .filter((f) => /\.(ts|js|py|sh)$/.test(f))
+      .filter((f) => {
+        const src = readFileSync(join(ROOT, f), 'utf-8');
+        // This file names the directory throughout, in prose and in assertions.
+        if (f.endsWith('policy-tools-untracked.test.ts')) return false;
+        // A fixture may CREATE .policy-tools inside its own temp project; what
+        // must not happen is resolving a path against the repo's own copy.
+        return /\.\.\/\.policy-tools|join\(\s*REPO\s*,\s*'\.policy-tools'/.test(src);
+      });
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe('deleted policies leave nothing behind in git', () => {
   it('validate-plan-before-build is gone from every tracked location', () => {
     // It was replaced by validate-plan-on-change. test/policy-hygiene.test.ts

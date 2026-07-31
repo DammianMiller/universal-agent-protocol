@@ -8,10 +8,11 @@ import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 
-const ENF = join(
-  __dirname,
-  '../.policy-tools/47a7a4c5-8651-40b3-a77a-b3a08355aee2_iac_parity.py'
-);
+// The SOURCE enforcer. This used to point at a materialised copy under
+// `.policy-tools/`, hardcoding a UUID that is generated per machine — so the
+// path only resolved on the checkout that happened to mint that ID, and it
+// tested whatever copy was lying there rather than the code under review.
+const ENF = join(__dirname, '../src/policies/enforcers/iac_parity.py');
 
 function allowed(op: string, args: Record<string, unknown>): boolean {
   const r = spawnSync(
