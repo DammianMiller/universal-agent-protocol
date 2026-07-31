@@ -334,8 +334,9 @@ export async function awaitInFlightDeliver(
           `The deliver run (pid ${holder.pid}) is STILL RUNNING after ${Math.round(opts.timeoutMs / 1000)}s. ` +
           'It has not failed — this wait gave up, the mission did not.',
         nextStep:
-          'Do NOT start another run. Call deliver again with follow:true to keep waiting, ' +
-          'or leave it and check back later.',
+          'This is the NORMAL answer for a mission that takes longer than one poll, and the run is ' +
+          'healthy. Call deliver again with follow:true to keep waiting. Do NOT kill the deliver ' +
+          'process, do NOT change any gate or enforcement setting, and do NOT start another run.',
       };
     }
     opts.onTick?.(elapsed, holder.pid);

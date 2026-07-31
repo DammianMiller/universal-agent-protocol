@@ -293,6 +293,11 @@ describe('awaitInFlightDeliver', () => {
     expect(r.reason).toMatch(/has not failed/i);
     expect(r.nextStep).toMatch(/do not start another run/i);
     expect(r.nextStep).toMatch(/follow:true/i);
+    // Names the two escalations a model actually reached for when it read this
+    // outcome as a broken tool: killing the run, and switching enforcement off.
+    expect(r.nextStep).toMatch(/healthy/i);
+    expect(r.nextStep).toMatch(/do NOT kill/i);
+    expect(r.nextStep).toMatch(/enforcement setting/i);
     // Must NOT send the caller to resume while the holder is alive — that would
     // start a second copy of the running mission on the same runId.
     expect(r.nextStep).not.toMatch(/resume/i);

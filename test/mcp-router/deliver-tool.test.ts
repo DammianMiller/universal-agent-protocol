@@ -245,6 +245,50 @@ describe('handleDeliver when a run is already in progress (real CLI subprocess)'
   }, 120_000);
 });
 
+describe('follow outcomes: healthy is not an error', () => {
+  /**
+   * The live failure this encodes (opencode, 2026-07-31):
+   *
+   *   follow returned ok:false with error "the deliver run (pid X) is STILL
+   *   RUNNING - it has not failed". The model read ok:false plus a populated
+   *   error as a broken tool, the proxy's ERROR-LOOP guard fired on the repeated
+   *   signature, and the model escalated to `kill -9` on its own mission and
+   *   then to switching the self-protect enforcer off.
+   *
+   * The mission was healthy the whole time. No amount of reassuring prose
+   * survives the two fields that mean "this call failed", so the fix is to stop
+   * setting them for an answer that is not a failure.
+   */
+  it('tells the model, in the schema, that a still-running answer is healthy', () => {
+    const props = DELIVER_TOOL_DEFINITION.inputSchema.properties as Record<
+      string,
+      { description?: string }
+    >;
+    expect(props.follow.description).toMatch(/ok:true/i);
+    expect(props.follow.description).toMatch(/healthy/i);
+    // Names the two escalations that actually happened.
+    expect(props.follow.description).toMatch(/do not kill/i);
+    expect(props.follow.description).toMatch(/enforcement setting/i);
+  });
+
+  it('reserves `error` for calls that did not work', () => {
+    // A followed run that FAILED is a real negative and keeps ok:false — the
+    // caller must know its work did not land. The distinction is delivered vs
+    // followed, never "did the poll come back".
+    const src = readFileSync(
+      new URL('../../src/mcp-router/tools/deliver.ts', import.meta.url),
+      'utf8'
+    );
+    const healthy = src.slice(
+      src.indexOf('if (fo.timedOut === true'),
+      src.indexOf('if (fo.followed === true')
+    );
+    expect(healthy).toContain('ok: true');
+    expect(healthy).toContain('note:');
+    expect(healthy).not.toContain('error:');
+  });
+});
+
 describe('buildDeliverCliArgs — flag names', () => {
   /**
    * These exist because they were absent when they were needed.
@@ -387,11 +431,15 @@ describe('handleDeliver follow mode (real CLI subprocess)', () => {
       const payload = r.result as { nothingInFlight?: boolean; followed?: boolean };
       expect(payload.nothingInFlight).toBe(true);
       expect(payload.followed).toBe(false);
-      // Positively, not `expect(r.error ?? '').not.toMatch(...)` — that form
-      // passes when `error` is undefined, which is exactly the gap it should
-      // catch. The actionable text has to reach the field callers read first.
-      expect(r.error).toMatch(/no deliver run is in flight/i);
-      expect(r.error).toMatch(/start the mission normally/i);
+      // A poll that ANSWERS is a successful call. ok:false plus a populated
+      // `error` reads as a broken tool — observed live: the model concluded
+      // "the deliver tool is stuck", killed its own mission with kill -9, and
+      // then tried to switch the self-protect enforcer off.
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeUndefined();
+      // The guidance still has to be prominent — it moves to `note`.
+      expect(r.note).toMatch(/no deliver run is in flight/i);
+      expect(r.note).toMatch(/start the mission normally/i);
       // Follow-mode must not be blocked by preflight: it inspects a lock, it does
       // not deliver, so a project that cannot deliver can still be asked whether
       // something is running in it.
@@ -418,7 +466,7 @@ describe('handleDeliver follow mode (real CLI subprocess)', () => {
     // which is the loop follow was built to end.
     const props = DELIVER_TOOL_DEFINITION.inputSchema.properties as Record<string, { description?: string }>;
     expect(props.follow.description).toMatch(/still running/i);
-    expect(props.follow.description).toMatch(/call it again|keep waiting/i);
+    expect(props.follow.description).toMatch(/call (it|follow) again|keep waiting/i);
     expect(props.follow.description).toMatch(/not a failure|NOT a failure/);
   });
 
