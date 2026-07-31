@@ -17,10 +17,14 @@
  * suite-arm runner and the server restart are INJECTED so the loop is testable
  * without a live llama server.
  *
- * `scaffold` / `middleware` Mods are NOT auto-validated here — their physical A/B
- * is a prompt/proxy change that the autonomous env loop deliberately does not
- * own; they route through the human-gated pending queue (§9). Passing one returns
- * a null (no-lift) comparison so `decide` rejects it, never silently applying it.
+ * `tool` and `middleware` Mods ARE auto-validated (harness plan B), but by a
+ * different physical route: they are CLIENT-side, so the arms differ by a
+ * process env var and no server restart is needed.
+ *
+ * `scaffold` / `config` Mods are NOT auto-validated here — free-form prompt text
+ * is unbounded, and prompt-only edits measured NEGATIVE (-2.3pp, arXiv
+ * 2604.25850). They route through the human-gated pending queue (§9). Passing one
+ * returns a null (no-lift) comparison so `decide` rejects it.
  *
  * See docs/design/SELF_HARNESS.md §4, §7, §11.
  */
@@ -36,7 +40,7 @@ import {
   type UapComponent,
 } from '../benchmarks/paired/types.js';
 import { applyEnvModToFile } from './profile.js';
-import { Mod, invertMod, describeMod, EnvMod } from './mods.js';
+import { Mod, invertMod, describeMod, validateMod, EnvMod } from './mods.js';
 import type { Validator, ValidationOutcome } from './orchestrator.js';
 
 const BASELINE_LABEL = 'baseline';
@@ -79,8 +83,9 @@ export interface ValidatorDeps {
 }
 
 /**
- * Build a real, live-suite `Validator` for the orchestrator. Only `env` Mods are
- * validated against the server; other kinds return a null comparison (reject).
+ * Build a real, live-suite `Validator` for the orchestrator. `env` Mods are
+ * validated against the server; `tool`/`middleware` Mods against a process-env
+ * flip; everything else returns a null comparison (reject).
  */
 export function buildValidator(deps: ValidatorDeps): Validator {
   const components = deps.components ?? makeFullCondition().components;
@@ -88,8 +93,58 @@ export function buildValidator(deps: ValidatorDeps): Validator {
   const runArm = deps.runArm ?? defaultArmRunner(deps, components);
 
   return async (mod: Mod): Promise<ValidationOutcome> => {
+    // Harness plan B: `tool` and `middleware` Mods are now auto-validated too.
+    // They are CLIENT-side (executor env / proxy config), so their A/B needs a
+    // process-env flip on the candidate arm rather than a server restart — which
+    // is exactly why they were reachable all along and simply were not wired.
+    // `scaffold`/`config` still route to the human gate: free-form prompt text is
+    // unbounded, and prompt-only edits measured NEGATIVE (arXiv 2604.25850).
+    if (mod.kind === 'tool' || mod.kind === 'middleware') {
+      // A Mod reaching this far sets a process env var, which is the only
+      // env-injection primitive in the codebase (NODE_OPTIONS, ALLOW_STUBS,
+      // ALLOW_BASH...). `buildValidator` is exported public API and the Proposer
+      // interface is explicitly "the seam an LLM proposer drops into", so the
+      // allow-list check cannot be left to the proposers' good manners.
+      const check = validateMod(mod);
+      if (!check.ok) {
+        log(`  refusing ${describeMod(mod)}: ${check.reason}`);
+        return { validation: nullComparison(), heldout: null };
+      }
+      const key = mod.kind === 'tool' ? mod.key : middlewareEnvKey(mod.id);
+      const value = mod.kind === 'tool' ? mod.to : mod.params.enabled === false ? '0' : '1';
+      // Capture the OBSERVED prior, not the Mod's claimed `from`: a proposer that
+      // mis-states `from` would otherwise leave the wrong value set for every
+      // later candidate in this process, silently degrading their baselines.
+      let prior: string | undefined;
+      const apply = () => {
+        prior = process.env[key];
+        process.env[key] = value;
+      };
+      const restore = () => {
+        if (prior === undefined) delete process.env[key];
+        else process.env[key] = prior;
+      };
+      const runClientSuite = async (dir: string): Promise<Comparison> => {
+        const baseRecs = await runArm(dir, BASELINE_LABEL, components);
+        apply();
+        let candRecs: RunRecord[];
+        try {
+          candRecs = await runArm(dir, CANDIDATE_LABEL, components);
+        } finally {
+          // Always restore: a leaked env var would silently contaminate every
+          // later candidate in the same process (§7 isolation).
+          restore();
+        }
+        return compare([...baseRecs, ...candRecs], deps.analyzeOpts);
+      };
+      log(`  auto-validating ${mod.kind} Mod: ${describeMod(mod)}`);
+      const validation = await runClientSuite(deps.suiteDir);
+      const heldout = deps.heldoutDir ? await runClientSuite(deps.heldoutDir) : null;
+      return { validation, heldout };
+    }
+
     if (mod.kind !== 'env') {
-      log(`  ${describeMod(mod)} is ${mod.kind}, not env — routed to human gate, no auto-validation`);
+      log(`  ${describeMod(mod)} is ${mod.kind} — routed to human gate, no auto-validation`);
       return { validation: nullComparison(), heldout: null };
     }
     const envMod: EnvMod = mod;
@@ -116,6 +171,15 @@ export function buildValidator(deps: ValidatorDeps): Validator {
     const heldout = deps.heldoutDir ? await runSuite(deps.heldoutDir) : null;
     return { validation, heldout };
   };
+}
+
+/**
+ * Env var a middleware toggle maps to, e.g. `toolcall-path-normalizer` ->
+ * `UAP_MW_TOOLCALL_PATH_NORMALIZER`. Shared with the proxy so a validated
+ * toggle means the same thing in both processes.
+ */
+export function middlewareEnvKey(id: string): string {
+  return `UAP_MW_${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`;
 }
 
 /** Default arm runner: a single-condition `runPaired` over the suite. */

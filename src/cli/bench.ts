@@ -7,8 +7,9 @@
  */
 
 import chalk from 'chalk';
-import { mkdirSync, writeFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { dirname, join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 
 import {
   analyze,
@@ -134,7 +135,16 @@ export async function benchPairedCommand(options: BenchPairedOptions = {}): Prom
   if (!options.json) process.stderr.write('\n');
 
   const ropeMargin = options.ropeMargin ? parseFloat(options.ropeMargin) : 0;
-  const report = analyze(output, { seed, iterations, ropeMargin });
+  // Harness plan F: attach the ETCSOVG card. Harness variance dominates model
+  // variance 7.8x (arXiv 2605.23950), so a paired report WITHOUT the harness it
+  // ran under is not comparable to the next one — which is the whole point of
+  // producing these numbers.
+  const report = analyze(output, {
+    seed,
+    iterations,
+    ropeMargin,
+    harness: await currentHarnessCardInput(adapterName),
+  });
   const ablation = options.ablation ? analyzeAblation(output, { seed, iterations }) : null;
 
   // Persist artifacts (raw records for audit, JSON + Markdown reports).
@@ -165,4 +175,50 @@ export async function benchPairedCommand(options: BenchPairedOptions = {}): Prom
 
 function stamp(iso: string): string {
   return iso.replace(/[:.]/g, '-');
+}
+
+
+/**
+ * Describe the harness this process is about to benchmark with, for the
+ * disclosure card. Reads the live knobs ONCE, here, rather than letting the card
+ * builder reach into `process.env` at render time.
+ */
+function uapVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    return String(JSON.parse(readFileSync(join(here, '..', '..', 'package.json'), 'utf-8')).version);
+  } catch {
+    return 'unknown';
+  }
+}
+
+async function currentHarnessCardInput(adapter: string) {
+  const { toolsFor, readWindowBytes, defaultMaxToolRounds, editToleranceEnabled } = await import(
+    '../delivery/agentic-executor.js'
+  );
+  const allowBash =
+    process.env.UAP_DELIVER_ALLOW_BASH === '1' || process.env.UAP_SANDBOX_ACTIVE === '1';
+  // Only the `deliver` adapter drives UAP's own agentic executor; for any other
+  // adapter the tool surface belongs to that agent, and claiming ours would be a
+  // false disclosure.
+  const ours = adapter === 'deliver';
+  return {
+    uapVersion: uapVersion(),
+    tools: ours ? toolsFor(allowBash).map((t) => t.function.name) : undefined,
+    allowBash: ours ? allowBash : undefined,
+    sandboxed: process.env.UAP_SANDBOX_ACTIVE === '1',
+    maxToolRounds: ours ? defaultMaxToolRounds() : undefined,
+    readWindowBytes: ours ? readWindowBytes() : undefined,
+    editStrategy: ours
+      ? editToleranceEnabled()
+        ? 'exact, then whitespace-tolerant, then nearest-region report'
+        : 'exact only'
+      : `external adapter (${adapter})`,
+    memoryMode: 'semantic retrieval',
+    stubGuard: process.env.UAP_DELIVER_ALLOW_STUBS !== '1',
+    guttingGuard: process.env.UAP_DELIVER_ALLOW_GUTTING !== '1',
+    middleware:
+      process.env.UAP_MW_TOOLCALL_PATH_NORMALIZER === '0' ? [] : ['toolcall-path-normalizer'],
+    verification: ['build', 'test', 'runtime'],
+  };
 }

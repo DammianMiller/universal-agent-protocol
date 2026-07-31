@@ -40,6 +40,52 @@ import {
   type BashSweep,
 } from './bash-sweep.js';
 import { detectStub, stubRefusal, stubGuardDisabled } from './stub-detector.js';
+import { resolveEditMatch, applyEditMatch, applyRangeEdit, isIndentSensitive } from './edit-match.js';
+import { recordToolCall } from '../telemetry/tool-calls.js';
+
+/**
+ * Is the whitespace-tolerant edit rung on? (harness plan A1)
+ *
+ * This is a HARNESS KNOB, not a constant: `ToolMod` in the self-harness search
+ * space flips it so the paired bench can MEASURE whether tolerance helps this
+ * model on these tasks. The literature says the edit-tool format is the highest
+ * leverage surface in the tool layer (6.7% -> 68.3% on a fixed model, arXiv
+ * 2605.23950); it does not say our particular tolerance rule is the right one.
+ * Default on, `UAP_EDIT_TOLERANT=0` off.
+ */
+export function editToleranceEnabled(): boolean {
+  return process.env.UAP_EDIT_TOLERANT !== '0';
+}
+
+/**
+ * Does a failed edit return the nearest CURRENT region of the file instead of a
+ * bare "not found"? (harness plan A2 / knob `UAP_EDIT_DIAGNOSTICS`.)
+ */
+export function editDiagnosticsEnabled(): boolean {
+  return process.env.UAP_EDIT_DIAGNOSTICS !== '0';
+}
+
+/**
+ * Bytes of a file `read_file` returns per call (knob `UAP_READ_WINDOW_BYTES`).
+ * A window too small forces re-reads and burns turns; too large burns context.
+ * Which way that trades is model-dependent, so it is measured, not asserted.
+ */
+export function readWindowBytes(): number {
+  const set = (process.env.UAP_READ_WINDOW_BYTES ?? '').trim();
+  const raw = set === '' ? NaN : Number(set);
+  if (!Number.isFinite(raw)) return DEFAULT_READ_WINDOW_BYTES;
+  return Math.min(32_000, Math.max(2_000, Math.trunc(raw)));
+}
+
+const DEFAULT_READ_WINDOW_BYTES = 8_000;
+
+/** Tool-call rounds before a final answer is forced (knob `UAP_MAX_TOOL_ROUNDS`). */
+export function defaultMaxToolRounds(): number {
+  const set = (process.env.UAP_MAX_TOOL_ROUNDS ?? '').trim();
+  const raw = set === '' ? NaN : Number(set);
+  if (!Number.isFinite(raw)) return 12;
+  return Math.min(40, Math.max(4, Math.trunc(raw)));
+}
 
 /**
  * Directories the agent must never read, list, or write: its OWN machinery.
@@ -180,6 +226,14 @@ export interface AgenticExecutorOptions {
    * path off that marker. Omit to disable (legacy unbounded behavior).
    */
   contextTokenBudget?: number;
+  /**
+   * Identity for the per-tool-call evidence corpus (harness plan D1). Every
+   * tool call is filed under these so the self-harness propose stage can ask
+   * "which harness component bled turns on which task" instead of guessing.
+   * Omit and calls are still recorded, just unattributed.
+   */
+  runId?: string;
+  taskId?: string;
 }
 
 export interface AgenticEvent {
@@ -292,7 +346,7 @@ const TOOLS = [
     function: {
       name: 'edit_file',
       description:
-        'Surgically replace ONE exact occurrence of old_string with new_string in an existing file (path relative to project root). PREFER this over write_file for existing files — no need to re-emit the whole file (large re-emits truncate). old_string must match the CURRENT file content exactly, whitespace included, and exactly once unless occurrence (1-based) is given.',
+        'Surgically replace an occurrence of old_string with new_string in an existing file (path relative to project root). Provide EITHER old_string + new_string, OR edits[]. PREFER this over write_file for existing files — no need to re-emit the whole file (large re-emits truncate). old_string should match the CURRENT file content; if it differs only in whitespace/indentation the edit still applies and you are told. Pass occurrence (1-based) when the anchor appears several times. To make SEVERAL edits to one file in a single call, pass edits: [{old_string, new_string, occurrence?}, ...] — they apply atomically, all or nothing.',
       parameters: {
         type: 'object',
         properties: {
@@ -300,8 +354,41 @@ const TOOLS = [
           old_string: { type: 'string' },
           new_string: { type: 'string' },
           occurrence: { type: 'number' },
+          edits: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                old_string: { type: 'string' },
+                new_string: { type: 'string' },
+                occurrence: { type: 'number' },
+              },
+              required: ['old_string', 'new_string'],
+            },
+          },
         },
-        required: ['path', 'old_string', 'new_string'],
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_range',
+      // The rung that does not require reproducing file bytes at all. A model
+      // that cannot echo exact whitespace can still count lines, and the
+      // nearest-region report hands it numbered context on a miss.
+      description:
+        'Replace an inclusive 1-based LINE RANGE of an existing file with new_text. Use this when edit_file cannot find your anchor — line numbers are shown in the nearest-region report and are immune to whitespace drift. start_line and end_line are both inclusive.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          start_line: { type: 'number' },
+          end_line: { type: 'number' },
+          new_text: { type: 'string' },
+        },
+        required: ['path', 'start_line', 'end_line', 'new_text'],
       },
     },
   },
@@ -318,6 +405,31 @@ const TOOLS = [
     },
   },
 ] as const;
+
+/** Cap on edits[] entries in one edit_file call — see the batch handler. */
+const MAX_BATCH_EDITS = 64;
+
+/**
+ * Anti-gutting guard for the EDIT paths (review finding, 2026-07-31).
+ *
+ * `write_file` has refused suspected gutting since P3, and its refusal text
+ * names edit_file as the correct alternative — so without this check the
+ * recommended escape route was also the bypass, and `edit_range(1, N, "")`
+ * deleted a 90KB implementation while returning OK. The stub guard does not
+ * cover it: a file reduced to a single comment declares no function bodies, so
+ * `detectStub` correctly reports "not a stub".
+ *
+ * Returns a refusal string, or null when the edit is fine.
+ */
+function editGuttingRefusal(path: string, before: string, after: string): string | null {
+  if (process.env.UAP_DELIVER_ALLOW_GUTTING === '1') return null;
+  if (!isSuspectedGutting(before.length, after.length)) return null;
+  return (
+    `ERROR: refusing to shrink ${path} from ${before.length} to ${after.length} bytes — ` +
+    'that removes most of the file. If you meant to delete code, do it in smaller, ' +
+    'reviewable edits; if you meant to replace it, send the replacement body.'
+  );
+}
 
 /** Resolve a model-supplied path inside the project root, refusing escapes. */
 function safePath(projectRoot: string, p: string): string {
@@ -492,8 +604,17 @@ export function runTool(
   // would otherwise escape the root or land nowhere (the proxy fixes this for
   // Claude Code; deliver's agentic path bypassed it).
   if (
-    (name === 'read_file' || name === 'list_dir' || name === 'write_file' || name === 'edit_file') &&
-    typeof args.path === 'string'
+    (name === 'read_file' ||
+      name === 'list_dir' ||
+      name === 'write_file' ||
+      name === 'edit_file' ||
+      name === 'edit_range') &&
+    typeof args.path === 'string' &&
+    // The toolcall-path-normalizer MIDDLEWARE toggle. It was applied
+    // unconditionally while `MiddlewareMod` claimed to A/B it, so both arms of
+    // that experiment were byte-identical and the loop was accepting noise.
+    // Default ON — this only makes the existing behaviour addressable.
+    process.env.UAP_MW_TOOLCALL_PATH_NORMALIZER !== '0'
   ) {
     const norm = normalizeToolPath(projectRoot, args.path, { forWrite: name === 'write_file' });
     if (norm.changed) {
@@ -523,7 +644,7 @@ export function runTool(
           `Its contents:\n${entries}`
         );
       }
-      return readFileSync(abs, 'utf-8').slice(0, 8000);
+      return readFileSync(abs, 'utf-8').slice(0, readWindowBytes());
     }
     if (name === 'list_dir') {
       const abs = safePath(projectRoot, String(args.path ?? '.'));
@@ -650,32 +771,73 @@ export function runTool(
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
       }
+      // The agent-internal guard write_file has, which edit_file did NOT: without
+      // it the surgical path could edit `.uap/`, `.git/` and node_modules while
+      // the whole-file path refused — the recommended escape route was also the
+      // bypass. Found reviewing the batch-edit change (harness plan A4).
+      const internalEdit = agentInternalReason(projectRoot, abs, true);
+      if (internalEdit) return internalEdit;
       if (!existsSync(abs)) {
         return `ERROR: ${String(args.path)} does not exist — use write_file to create new files.`;
       }
       const current = readFileSync(abs, 'utf-8');
-      const oldStr = String(args.old_string ?? '');
-      const newStr = String(args.new_string ?? '');
-      if (!oldStr) return 'ERROR: old_string must be non-empty.';
-      const count = current.split(oldStr).length - 1;
-      if (count === 0) {
-        return `ERROR: old_string not found in ${String(args.path)} — re-read the file and match the CURRENT content exactly (whitespace included).`;
+
+      // Batch form: edits[] applies several replacements to one file in ONE call.
+      // Atomic by construction — every edit is resolved against the in-progress
+      // buffer and nothing is written unless all of them land, so a half-applied
+      // file can never reach the gate.
+      const hasBatch = Array.isArray(args.edits);
+      // Silently dropping one form when both are sent loses an edit the model
+      // believes it made, and the "N replacements" count would not reveal it.
+      if (hasBatch && (args.old_string != null || args.new_string != null)) {
+        return (
+          'ERROR: pass EITHER old_string + new_string OR edits[], not both — ' +
+          'the top-level pair would be silently dropped.'
+        );
       }
-      const occurrence = args.occurrence == null ? null : Number(args.occurrence);
-      if (count > 1 && occurrence == null) {
-        return `ERROR: old_string matches ${count} times in ${String(args.path)} — add surrounding context or pass occurrence (1-based).`;
+      const batch = hasBatch
+        ? (args.edits as Array<Record<string, unknown>>)
+        : [{ old_string: args.old_string, new_string: args.new_string, occurrence: args.occurrence }];
+      if (batch.length === 0) return 'ERROR: edits must contain at least one {old_string, new_string}.';
+      // Each entry costs a full-file scan + allocation. An unbounded batch is a
+      // synchronous multi-GB stall that blocks the event loop, so onToolProgress
+      // never fires and the deliver heartbeat looks wedged.
+      if (batch.length > MAX_BATCH_EDITS) {
+        return `ERROR: too many edits in one call (${batch.length} > ${MAX_BATCH_EDITS}) — split them across calls.`;
       }
-      let updated: string;
-      if (occurrence == null) {
-        updated = current.replace(oldStr, newStr);
-      } else {
-        if (!Number.isInteger(occurrence) || occurrence < 1 || occurrence > count) {
-          return `ERROR: occurrence ${String(args.occurrence)} out of range (1..${count}).`;
+      const indentSensitive = isIndentSensitive(rel);
+
+      let updated = current;
+      let tolerantHits = 0;
+      for (let i = 0; i < batch.length; i++) {
+        const spec = batch[i] ?? {};
+        const oldStr = String(spec.old_string ?? '');
+        const label = batch.length > 1 ? ` (edit ${i + 1} of ${batch.length})` : '';
+        if (!oldStr) return `ERROR: old_string must be non-empty${label}.`;
+        // An absent new_string coerced to '' would silently DELETE the anchor.
+        // Deletion is a legitimate intent, but it has to be stated.
+        if (spec.new_string == null) {
+          return `ERROR: new_string is required${label} — pass an empty string explicitly to delete the anchor.`;
         }
-        let idx = -1;
-        for (let i = 0; i < occurrence; i++) idx = current.indexOf(oldStr, idx + 1);
-        updated = current.slice(0, idx) + newStr + current.slice(idx + oldStr.length);
+        const newStr = String(spec.new_string);
+        const match = resolveEditMatch(updated, oldStr, {
+          occurrence: spec.occurrence == null ? null : Number(spec.occurrence),
+          tolerant: editToleranceEnabled(),
+          diagnostics: editDiagnosticsEnabled(),
+          indentSensitive,
+        });
+        if (match.kind === 'miss' || match.kind === 'ambiguous') {
+          // Nothing has been written yet, so the batch aborts clean.
+          return `ERROR: ${String(args.path)}${label}: ${match.note ?? 'old_string not found.'}`;
+        }
+        if (match.kind === 'tolerant') tolerantHits++;
+        updated = applyEditMatch(updated, match, newStr);
       }
+      const editNote =
+        tolerantHits > 0
+          ? ' — NOTE: old_string did not match byte-for-byte; matched after normalising whitespace. ' +
+            'Re-read the file before your next edit so your anchors are current.'
+          : '';
       // Substance guard on the EDIT path too. Without it, write_file's refusals
       // steer the model to edit_file by name, so the recommended escape route was
       // also the bypass. `current` is the baseline, so an edit is only refused
@@ -686,6 +848,8 @@ export function runTool(
       // hollowed OUT to a skeleton, not incremental erosion that stays under the
       // bar (emptying four of six bodies is 57%, and passes). It closes the
       // one-shot bypass, and does not pretend to be tamper-proof.
+      const guttedEdit = editGuttingRefusal(String(args.path), current, updated);
+      if (guttedEdit) return guttedEdit;
       if (!stubGuardDisabled()) {
         const stub = detectStub(rel, updated, current);
         if (stub.isStub) return stubRefusal(String(args.path), stub);
@@ -694,7 +858,54 @@ export function runTool(
       recordAuthorisedWrite(sweep, rel, updated);
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
-      return `OK: edited ${String(args.path)} (1 replacement)${pathNote}${rustCheckNote}${jsCheckNote}`;
+      const plural = batch.length === 1 ? 'replacement' : 'replacements';
+      return `OK: edited ${String(args.path)} (${batch.length} ${plural})${pathNote}${rustCheckNote}${jsCheckNote}${editNote}`;
+    }
+    if (name === 'edit_range') {
+      // Line-anchored replace. Shares edit_file's whole protection surface —
+      // adding a second write path that skipped the guards would make the guards
+      // advisory.
+      const abs = safePath(projectRoot, String(args.path));
+      if (protectedFiles.has(protectedKey(projectRoot, abs))) {
+        return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
+      }
+      if (contractFiles.has(protectedKey(projectRoot, abs))) {
+        return `ERROR: ${String(args.path)} is a LOCKED CONTRACT file — build against it, do not modify it.`;
+      }
+      const rel = relative(projectRoot, abs).split(/[\\/]/).join('/');
+      const blocked = protectedWritePathReason(rel, protectGateConfigs);
+      if (blocked) {
+        return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
+      }
+      const internal = agentInternalReason(projectRoot, abs, true);
+      if (internal) return internal;
+      if (!existsSync(abs)) {
+        return `ERROR: ${String(args.path)} does not exist — use write_file to create new files.`;
+      }
+      const current = readFileSync(abs, 'utf-8');
+      const ranged = applyRangeEdit(
+        current,
+        Number(args.start_line),
+        Number(args.end_line),
+        String(args.new_text ?? ''),
+      );
+      if (!ranged.ok || ranged.text == null) {
+        return `ERROR: ${String(args.path)}: ${ranged.error ?? 'invalid range.'}`;
+      }
+      const guttedRange = editGuttingRefusal(String(args.path), current, ranged.text);
+      if (guttedRange) return guttedRange;
+      if (!stubGuardDisabled()) {
+        const stub = detectStub(rel, ranged.text, current);
+        if (stub.isStub) return stubRefusal(String(args.path), stub);
+      }
+      writeFileSync(abs, ranged.text, 'utf-8');
+      recordAuthorisedWrite(sweep, rel, ranged.text);
+      const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
+      const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
+      return (
+        `OK: replaced lines ${Number(args.start_line)}-${Number(args.end_line)} ` +
+        `(${ranged.replacedLines} lines) in ${String(args.path)}${pathNote}${rustCheckNote}${jsCheckNote}`
+      );
     }
     if (name === 'run_bash') {
       // Containment gate (audit X3): run_bash is an uncontained host shell when
@@ -978,7 +1189,7 @@ export function createAgenticExecutor(
   model: ModelConfig,
   opts: AgenticExecutorOptions
 ): LoopExecutor {
-  const maxRounds = opts.maxToolRounds ?? 12;
+  const maxRounds = opts.maxToolRounds ?? defaultMaxToolRounds();
   const bashTimeoutMs = opts.bashTimeoutMs ?? 30_000;
   const protectedFiles = opts.protectedFiles ?? new Set<string>();
   // Live reference — the epic controller grows this Set between epics.
@@ -1176,13 +1387,26 @@ export function createAgenticExecutor(
         // #2a: per-tool-call progress — refresh the deliver heartbeat now, not
         // just at turn end, so wedge-detection tracks real intra-turn activity.
         opts.onToolProgress?.();
+        // Evidence corpus (harness plan D1): one row per call, classified and
+        // attributed. Fails open — recordToolCall swallows its own errors.
+        recordToolCall({
+          runId: opts.runId,
+          taskId: opts.taskId,
+          tool: call.function.name,
+          result: toolResult,
+          turn: round,
+          path: typeof args.path === 'string' ? args.path : undefined,
+        });
         // A productive mutation resets the streak. write_file/edit_file return
         // 'OK: ...'; run_bash returns 'exit=<code> ...' and so NEVER matched
         // startsWith('OK') — a latent bug that was harmless when the streak only
         // drove a soft nudge, but not once it strips run_bash under force: an
         // --allow-bash session writing files through the shell would have been
         // forced and had its bash taken away. Reset on a clean bash exit too.
-        const isWrite = call.function.name === 'write_file' || call.function.name === 'edit_file';
+        const isWrite =
+          call.function.name === 'write_file' ||
+          call.function.name === 'edit_file' ||
+          call.function.name === 'edit_range';
         const isBash = call.function.name === 'run_bash';
         if ((isWrite && toolResult.startsWith('OK')) || (isBash && /(^|\s)exit=0(\s|$)/.test(toolResult))) {
           roundsWithoutWrite = -1; // reset below by the per-round increment

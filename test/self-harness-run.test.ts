@@ -96,12 +96,42 @@ describe('buildValidator — env Mod A/B applies + reverts + restarts', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('does not auto-validate a non-env Mod (returns a rejectable null comparison)', async () => {
+  // Harness plan B2 (2026-07-31): middleware Mods ARE auto-validated now. They
+  // are client-side config, so the A/B is a flag flip on the candidate arm — no
+  // inference-server restart, which is why they were always reachable.
+  it('auto-validates a middleware Mod WITHOUT restarting the server', async () => {
+    let restarts = 0;
+    let sawFlag = '';
+    const arms: string[] = [];
     const validate = buildValidator({
-      suiteDir: 'x', envPath: 'x', restart: async () => {},
-      runArm: async () => { throw new Error('runArm must not be called for non-env Mods'); },
+      suiteDir: 'x', envPath: 'x',
+      restart: async () => { restarts++; },
+      runArm: async (_dir, label) => {
+        arms.push(label);
+        // Record the env the arm actually saw, so "the flag reached the
+        // candidate" is asserted rather than assumed.
+        if (label === CANDIDATE_LABEL) sawFlag = process.env.UAP_MW_TOOLCALL_PATH_NORMALIZER ?? '';
+        return TASKS.map((t) => rec(t, 0, label, label === CANDIDATE_LABEL));
+      },
+      analyzeOpts: { seed: 1, iterations: 500 },
+      heldoutDir: null,
     });
     const out = await validate({ kind: 'middleware', id: 'toolcall-path-normalizer', params: {} });
+    expect(arms).toEqual([BASELINE_LABEL, CANDIDATE_LABEL]);
+    expect(sawFlag).toBe('1');
+    expect(restarts).toBe(0);
+    expect(out.heldout).toBeNull();
+    // The env var must not leak past the candidate arm, or it silently
+    // contaminates every later candidate in this process.
+    expect(process.env.UAP_MW_TOOLCALL_PATH_NORMALIZER).toBeUndefined();
+  });
+
+  it('still routes a scaffold Mod to the human gate (no auto-validation)', async () => {
+    const validate = buildValidator({
+      suiteDir: 'x', envPath: 'x', restart: async () => {},
+      runArm: async () => { throw new Error('runArm must not be called for scaffold Mods'); },
+    });
+    const out = await validate({ kind: 'scaffold', component: 'gates', op: 'append', text: 'x' });
     expect(out.validation.correctness.delta.significant).toBe(false);
     expect(out.heldout).toBeNull();
   });

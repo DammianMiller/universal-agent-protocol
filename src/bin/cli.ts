@@ -848,6 +848,23 @@ harness
     const cmd = await lazy.harness();
     await cmd('status', options);
   });
+harness
+  .command('evidence')
+  .description('Per-tool-call evidence corpus: failure classes, component attribution, edit-tool health')
+  .option('--run <id>', 'Scope to a single deliver run id')
+  .option('--json', 'Emit JSON instead of a human-readable report')
+  .action(async (options) => {
+    const cmd = await lazy.harness();
+    await cmd('evidence', options);
+  });
+harness
+  .command('card')
+  .description('ETCSOVG harness disclosure card for the current configuration (arXiv 2605.23950)')
+  .option('--json', 'Emit JSON instead of Markdown')
+  .action(async (options) => {
+    const cmd = await lazy.harness();
+    await cmd('card', options);
+  });
 
 // Self-Harness — self-improving harness (arXiv:2606.09498)
 const selfHarness = program

@@ -16,12 +16,34 @@ import { FailureKind } from './weakness.js';
 export type PromotionGate = 'auto-after-validation' | 'human';
 
 /**
- * Promotion policy: env-knob Mods are low-risk and may auto-promote after they
- * pass validation; scaffold + middleware Mods change behavior more broadly and
- * always require a human gate. This is the safety boundary for online learning.
+ * Promotion policy — a RISK TIER, not a category ban (harness plan B3).
+ *
+ * The old rule was `env ? auto : human`, which gated middleware behind a human
+ * and left the loop searching inference-server knobs alone. The
+ * Agentic-Harness-Engineering ablation (arXiv 2604.25850) measures where gains
+ * actually live — tools +3.3pp, middleware +2.2pp, memory +5.6pp, and
+ * system-prompt edits NEGATIVE at -2.3pp — so that rule had the search space
+ * almost exactly inverted.
+ *
+ * The tiers now follow blast radius rather than kind:
+ *
+ *   auto-after-validation — env knobs, tool knobs, middleware toggles. All are
+ *     bounded, allow-listed, mechanically reversible, and measurable by the
+ *     paired bench with its held-out suite.
+ *   human — scaffold (free-form prompt text: unbounded, and the one surface
+ *     measured negative) and config (settings-registry keys reaching beyond the
+ *     bench into product behaviour).
  */
 export function promotionGate(mod: Mod): PromotionGate {
-  return mod.kind === 'env' ? 'auto-after-validation' : 'human';
+  switch (mod.kind) {
+    case 'env':
+    case 'tool':
+    case 'middleware':
+      return 'auto-after-validation';
+    case 'scaffold':
+    case 'config':
+      return 'human';
+  }
 }
 
 export interface PendingProposal {

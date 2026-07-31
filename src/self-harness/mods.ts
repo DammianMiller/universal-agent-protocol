@@ -23,8 +23,16 @@ export type JsonScalar = string | number | boolean;
 // loop's reach. Only safe, hot-reloadable sampler/guardrail knobs are listed.
 // ---------------------------------------------------------------------------
 
+/**
+ * Where a knob takes effect. `executor` was added with ToolMod (harness plan
+ * B1): unlike proxy/llama targets it is read CLIENT-side by the delivery
+ * executor, so changing it needs an env var on the candidate arm rather than an
+ * inference-server restart — which is precisely why tool knobs can auto-validate.
+ */
+export type KnobTarget = 'proxy' | 'llama' | 'executor';
+
 export interface NumericKnob {
-  target: 'proxy' | 'llama';
+  target: KnobTarget;
   type: 'number';
   /** Inclusive safe range. A proposed value outside this is rejected. */
   min: number;
@@ -35,7 +43,7 @@ export interface NumericKnob {
 }
 
 export interface EnumKnob {
-  target: 'proxy' | 'llama';
+  target: KnobTarget;
   type: 'enum';
   values: readonly string[];
   description: string;
@@ -103,6 +111,53 @@ export function isMiddlewareId(s: string): s is MiddlewareId {
 }
 
 // ---------------------------------------------------------------------------
+// Tool Mods (harness plan area B1, 2026-07-31).
+//
+// WHY these exist: the self-harness search space was env knobs ONLY — the
+// inference server's launch parameters. The Agentic-Harness-Engineering ablation
+// (arXiv 2604.25850) measures where harness gains actually come from:
+//
+//     long-term memory +5.6pp | tools +3.3pp | middleware +2.2pp | prompt -2.3pp
+//
+// Server knobs are not on that list, and prompt edits are NEGATIVE. So the loop
+// was searching the one surface with no measured value while the surfaces with
+// measured value were gated behind a human.
+//
+// Tool knobs are CLIENT-side (the executor reads them per run), which is also
+// why they can auto-validate where env knobs could not: flipping one needs an
+// environment variable on the candidate arm, not a server restart.
+// ---------------------------------------------------------------------------
+
+export const TOOL_KNOB_ALLOWLIST = {
+  UAP_EDIT_TOLERANT: {
+    target: 'executor', type: 'enum', values: ['0', '1'],
+    description: 'edit_file falls back to whitespace-tolerant matching on an exact miss',
+  },
+  UAP_EDIT_DIAGNOSTICS: {
+    target: 'executor', type: 'enum', values: ['0', '1'],
+    description: 'a failed edit returns the nearest current region instead of "not found"',
+  },
+  UAP_READ_WINDOW_BYTES: {
+    target: 'executor', type: 'number', min: 2000, max: 32000, integer: true,
+    description: 'bytes of a file read_file returns per call',
+  },
+  UAP_MAX_TOOL_ROUNDS: {
+    target: 'executor', type: 'number', min: 4, max: 40, integer: true,
+    description: 'tool-call rounds before a final answer is forced',
+  },
+} as const satisfies Record<string, KnobSpec>;
+
+export type KnownToolKnob = keyof typeof TOOL_KNOB_ALLOWLIST;
+
+export function isKnownToolKnob(k: string): k is KnownToolKnob {
+  return Object.prototype.hasOwnProperty.call(TOOL_KNOB_ALLOWLIST, k);
+}
+
+export function toolKnobSpec(key: KnownToolKnob): KnobSpec {
+  return TOOL_KNOB_ALLOWLIST[key];
+}
+
+// ---------------------------------------------------------------------------
 // The Mod union.
 // ---------------------------------------------------------------------------
 
@@ -151,7 +206,22 @@ export interface ConfigMod {
   category: string;
 }
 
-export type Mod = EnvMod | ScaffoldMod | MiddlewareMod | ConfigMod;
+/**
+ * A change to the TOOL SURFACE the model sees (harness plan B1). Same shape as
+ * an EnvMod, different allow-list and a different application seam: tool knobs
+ * are read by the executor process, so an A/B needs an env var on the candidate
+ * arm rather than an inference-server restart.
+ */
+export interface ToolMod {
+  kind: 'tool';
+  key: KnownToolKnob;
+  /** Prior value (for revert + audit). */
+  from: string;
+  /** Proposed value. */
+  to: string;
+}
+
+export type Mod = EnvMod | ScaffoldMod | MiddlewareMod | ConfigMod | ToolMod;
 
 export interface ValidationOk {
   ok: true;
@@ -215,6 +285,32 @@ export function validateMod(mod: Mod): ValidationResult {
     }
     case 'config':
       return validateConfigMod(mod);
+    case 'tool': {
+      // Same bounds discipline as an env knob: an out-of-range tool knob is
+      // rejected at parse time, never handed to a bench arm.
+      if (!isKnownToolKnob(mod.key)) {
+        return { ok: false, reason: `unknown/non-allow-listed tool knob: ${String(mod.key)}` };
+      }
+      const spec = toolKnobSpec(mod.key);
+      if (spec.type === 'number') {
+        const n = Number(mod.to);
+        if (!Number.isFinite(n)) return { ok: false, reason: `${mod.key}: "${mod.to}" is not numeric` };
+        if (spec.integer && !Number.isInteger(n)) {
+          return { ok: false, reason: `${mod.key}: must be an integer, got ${mod.to}` };
+        }
+        if (n < spec.min || n > spec.max) {
+          return {
+            ok: false,
+            reason: `${mod.key}=${mod.to} out of safe range [${spec.min}, ${spec.max}]`,
+          };
+        }
+        return { ok: true };
+      }
+      if (!spec.values.includes(mod.to)) {
+        return { ok: false, reason: `${mod.key}="${mod.to}" not in {${spec.values.join(', ')}}` };
+      }
+      return { ok: true };
+    }
     default:
       return { ok: false, reason: `unknown mod kind` };
   }
@@ -260,6 +356,8 @@ export function describeMod(mod: Mod): string {
       return `middleware ${mod.id}(${JSON.stringify(mod.params)})`;
     case 'config':
       return `config ${mod.key}: ${mod.from} -> ${mod.to}`;
+    case 'tool':
+      return `tool ${mod.key}: ${mod.from} -> ${mod.to}`;
   }
 }
 
@@ -285,5 +383,7 @@ export function invertMod(mod: Mod): Mod {
       return { kind: 'middleware', id: mod.id, params: { ...mod.params, enabled: false } };
     case 'config':
       return { kind: 'config', key: mod.key, from: mod.to, to: mod.from, category: mod.category };
+    case 'tool':
+      return { kind: 'tool', key: mod.key, from: mod.to, to: mod.from };
   }
 }

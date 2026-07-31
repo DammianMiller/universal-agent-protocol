@@ -15,7 +15,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import type { UapComponent } from '../benchmarks/paired/types.js';
-import { KNOB_ALLOWLIST, KnownKnob, EnvMod, isKnownKnob } from './mods.js';
+import { KNOB_ALLOWLIST, KnownKnob, KnownToolKnob, EnvMod, isKnownKnob } from './mods.js';
 
 export interface HarnessProfile {
   /** Allow-listed env knob values currently in effect (string form). */
@@ -24,10 +24,18 @@ export interface HarnessProfile {
   scaffold: Partial<Record<UapComponent, string>>;
   /** Accepted middleware configs (id -> params). */
   middleware: Record<string, Record<string, string | number | boolean>>;
+  /**
+   * Accepted TOOL knob values (harness plan B1). A separate field from `env`
+   * because the two are disjoint key sets read by different processes: `env` is
+   * the inference server's launch environment, `tool` is the delivery
+   * executor's. Folding tool knobs into `env` made the declared type a lie and
+   * broke round-tripping, since `profileFromEnvFile` filters on `isKnownKnob`.
+   */
+  tool?: Partial<Record<KnownToolKnob, string>>;
 }
 
 export function emptyProfile(): HarnessProfile {
-  return { env: {}, scaffold: {}, middleware: {} };
+  return { env: {}, scaffold: {}, middleware: {}, tool: {} };
 }
 
 /** Parse a KEY=value env file into a flat map (ignores comments/blank lines). */
@@ -61,21 +69,29 @@ export function profileFromEnvFile(path: string): HarnessProfile {
  * file's current value when present (guards against a stale proposal).
  */
 export function applyEnvModToFile(path: string, mod: EnvMod): { priorValue: string | null } {
+  return upsertEnvValue(path, mod.key, mod.to);
+}
+
+/**
+ * Set KEY=value in a KEY=value file, replacing an existing entry or appending.
+ * Extracted from `applyEnvModToFile` so runtime (tool/middleware) knobs persist
+ * through exactly the same writer as env knobs.
+ */
+export function upsertEnvValue(path: string, key: string, value: string): { priorValue: string | null } {
   const lines = existsSync(path) ? readFileSync(path, 'utf-8').split('\n') : [];
   let prior: string | null = null;
   let replaced = false;
-  const key = mod.key;
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i].trim();
     if (t.startsWith('#') || !t.includes('=')) continue;
     if (t.slice(0, t.indexOf('=')).trim() === key) {
       prior = t.slice(t.indexOf('=') + 1).trim();
-      lines[i] = `${key}=${mod.to}`;
+      lines[i] = `${key}=${value}`;
       replaced = true;
       break;
     }
   }
-  if (!replaced) lines.push(`${key}=${mod.to}`);
+  if (!replaced) lines.push(`${key}=${value}`);
   writeFileSync(path, lines.join('\n'), 'utf-8');
   return { priorValue: prior };
 }
