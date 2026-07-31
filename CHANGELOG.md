@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.175.11 (2026-07-31)
+
+- fix(deliver): reclaim an abandoned lock, don't wait on a recycled PID
+
+
 ## v1.175.10 (2026-07-31)
 
 - test(enforcers): make the escape-hatch suite hermetic, not ambient
