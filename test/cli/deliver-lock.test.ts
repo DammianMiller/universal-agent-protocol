@@ -28,7 +28,14 @@ describe('acquireDeliverLock', () => {
   it('refuses (returns null) when a LIVE holder owns the lock', () => {
     mkdirSync(join(dir, '.uap'), { recursive: true });
     // A live pid that is not us: our own parent process is alive.
-    writeFileSync(join(dir, '.uap', 'deliver.lock'), `${process.ppid}|2026-01-01T00:00:00Z`);
+    //
+    // The timestamp used to be a fixed 2026-01-01, which is now reclaimed as
+    // ABANDONED — a lock older than the wedge timeout whose holder never
+    // stamped a heartbeat cannot be a live run, and deferring to it forever was
+    // a deadlock waiting on PID reuse (see deliver-lock-abandoned.test.ts).
+    // Stamping it now keeps this test on its actual subject: a genuinely live
+    // holder must still be respected.
+    writeFileSync(join(dir, '.uap', 'deliver.lock'), `${process.ppid}|${new Date().toISOString()}`);
     expect(acquireDeliverLock(dir)).toBeNull();
   });
 
