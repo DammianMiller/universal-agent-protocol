@@ -128,8 +128,11 @@ Best for: implement a feature, fix a bug across files, refactor with tests. Not 
           'Wait for the deliver run already in flight and return its result, instead of starting a new one. ' +
           'This is the correct response to a timed-out deliver call or an alreadyRunning result — it starts ' +
           'nothing, and needs NO instruction — omit it, do not restate the mission. ' +
-          'It returns within about a minute either way: if the mission is still going you get ' +
-          '"STILL RUNNING", which is NOT a failure — just call it again to keep waiting. Prefer that over ' +
+          'It returns within about a minute either way and SUCCEEDS (ok:true) whatever it finds: if the ' +
+          'mission is still going you get "STILL RUNNING" in `note`, which is NOT a failure — it means the ' +
+          'run is HEALTHY and you should simply call follow again. It does not mean the tool is stuck: ' +
+          'do not kill the deliver ' +
+          'process, do not change any enforcement setting, do not start a second run. Prefer this over ' +
           'sleeping in a shell. Do not use resume for this: resume CONTINUES a run and would start a second ' +
           'copy of a live one.',
       },
@@ -300,6 +303,15 @@ export interface DeliverResult {
   /** Non-zero CLI exit code, if delivery did not fully succeed */
   exitCode?: number;
   error?: string;
+  /**
+   * Informational message for a call that SUCCEEDED but has something to say —
+   * "the mission is still running", "nothing was in flight".
+   *
+   * Deliberately not `error`: ok:false plus an error string reads as a broken
+   * tool, and a caller told its tool is broken starts killing processes and
+   * reaching for override switches rather than simply waiting.
+   */
+  note?: string;
 }
 
 /**
@@ -503,16 +515,33 @@ export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
           reason?: string;
           nextStep?: string;
         };
+        // A poll that ANSWERS is a successful tool call, whatever the answer.
+        //
+        // These three used to resolve ok:false with a populated `error`, and that
+        // combination reads as a broken tool no matter how carefully the prose
+        // says otherwise. Observed live (opencode, 2026-07-31): follow returned
+        // "the deliver run (pid X) is STILL RUNNING — it has not failed", the
+        // model saw ok:false + error and concluded "The deliver tool is stuck",
+        // the proxy's ERROR-LOOP guard fired on the repeated failure signature,
+        // and the model escalated to `kill -9` on its own mission and then tried
+        // to switch off the self-protect enforcer.
+        //
+        // The mission was healthy the entire time. The guidance now travels in
+        // `note`, which is read but does not mean failure; `error` is reserved for
+        // "this call did not work".
         if (fo.timedOut === true || fo.nothingInFlight === true || fo.holderChanged === true) {
           resolvePromise({
-            ok: false,
+            ok: true,
             dryRun,
             exitCode,
-            error: `${fo.reason ?? 'follow did not complete'} ${fo.nextStep ?? ''}`.trim(),
+            note: `${fo.reason ?? 'follow returned'} ${fo.nextStep ?? ''}`.trim(),
             result: parsed,
           });
           return;
         }
+        // The MISSION ending badly IS a real negative, and stays ok:false — the
+        // caller has to know its work did not land. `followed` alone is not that
+        // signal: it is true for a run that failed.
         if (fo.followed === true && fo.delivered === false) {
           resolvePromise({
             ok: false,
