@@ -92,12 +92,32 @@ export interface ReconstructionPolicy {
   /**
    * Semantic routing: which reached contents are worth keeping, and is the
    * accumulated evidence now enough to answer?
+   *
+   * `hops` carries how each candidate was reached. A router that ignores it can
+   * only judge lexical similarity to the query — and then the tag bridge, which
+   * is the whole point of the structure, buys nothing: the traversal reaches the
+   * associated memory and the router throws it away for sharing no words with
+   * the question.
    */
   route(
     query: string,
     candidates: ContentNode[],
     context: ContentNode[],
+    hops?: HopContext,
   ): { keep: number[]; sufficient: boolean };
+}
+
+/** How the traversal reached this step's candidates. */
+export interface HopContext {
+  /** Candidate id -> the tags it was reached through. */
+  tagsFor: Map<number, string[]>;
+  /**
+   * Tags that have produced admitted evidence in ANY prior step — accumulated,
+   * not per-step. A bridge proves itself once; requiring it to re-prove itself
+   * every step is what stops a second hop from ever landing, since by
+   * definition the far side of a bridge does not resemble the query.
+   */
+  productiveTags: ReadonlySet<string>;
 }
 
 /**
@@ -110,7 +130,13 @@ export interface ReconstructionPolicy {
  * makes the loop unit-testable.
  */
 export function heuristicPolicy(
-  opts: { keepThreshold?: number; sufficientAt?: number; maxExpandPerStep?: number } = {},
+  opts: {
+    keepThreshold?: number;
+    sufficientAt?: number;
+    maxExpandPerStep?: number;
+    /** Max tag-bridged admissions per step. 0 disables associative recall. */
+    maxAssociativePerStep?: number;
+  } = {},
 ): ReconstructionPolicy {
   const keepThreshold = opts.keepThreshold ?? 0.12;
   // 3 was too eager: on any realistic graph step 1 admits >=3 nodes, the loop
@@ -123,6 +149,7 @@ export function heuristicPolicy(
   // effectively a full scan, which would make this slower AND more expensive
   // than the passive top-k it replaces, inverting the paper's whole result.
   const maxExpand = opts.maxExpandPerStep ?? 24;
+  const maxAssociative = opts.maxAssociativePerStep ?? 3;
   return {
     selectCues(query, activeCues, context) {
       if (activeCues.length <= maxExpand) return [...activeCues];
@@ -138,12 +165,50 @@ export function heuristicPolicy(
       scored.sort((a, b) => b.score - a.score || a.cue.localeCompare(b.cue));
       return scored.slice(0, maxExpand).map((s) => s.cue);
     },
-    route(query, candidates, context) {
+    route(query, candidates, context, hops) {
       const q = tokenize(query);
-      const keep = candidates
-        .filter((c) => overlap(q, tokenize(c.text)) >= keepThreshold)
-        .map((c) => c.id);
-      return { keep, sufficient: context.length + keep.length >= sufficientAt };
+      const direct = candidates.filter((c) => overlap(q, tokenize(c.text)) >= keepThreshold);
+      const keep = new Set(direct.map((c) => c.id));
+
+      // ASSOCIATIVE PASS. A tag that has produced admitted evidence is a
+      // known-good bridge, so a candidate reached through one earns a lower bar.
+      // That is what "associative" means — and without it a lexical router
+      // discards exactly the hops the graph exists to make, because the far side
+      // of a bridge does not resemble the query by construction.
+      //
+      // Still a bar, not a free pass: the candidate must relate to the query or
+      // to evidence already admitted.
+      if (hops && maxAssociative > 0) {
+        // Only tags proven in an EARLIER step. Folding in this step's own direct
+        // hits would let a bridge admit a sibling the router is rejecting in the
+        // very same pass — which is not an associative hop, it is bypassing the
+        // pruning. A bridge earns its keep across hops, not within one.
+        const productive = hops.productiveTags;
+        if (productive.size > 0) {
+          const ctx = tokenize([...context, ...direct].map((c) => c.text).join(' '));
+          // NO lexical minimum here, deliberately. The far side of a bridge does
+          // not resemble the query by construction — that is precisely the
+          // evidence retrieval cannot reach — so requiring word overlap would
+          // make the tag layer decorative and this whole structure a slower
+          // top-k. The PROVEN TAG is the evidence of relatedness.
+          //
+          // Bounded instead of filtered: at most `maxAssociative` per step, from
+          // tags that have already produced admitted evidence, ranked by how
+          // much they add to what is known. A cap is an honest way to buy recall
+          // with a known amount of noise; a lexical bar here would buy neither.
+          const bridged = candidates
+            .filter(
+              (c) =>
+                !keep.has(c.id) &&
+                (hops.tagsFor.get(c.id) ?? []).some((t) => productive.has(t)),
+            )
+            .map((c) => ({ c, score: Math.max(overlap(q, tokenize(c.text)), overlap(tokenize(c.text), ctx)) }))
+            .sort((a, b) => b.score - a.score || a.c.id - b.c.id)
+            .slice(0, maxAssociative);
+          for (const { c } of bridged) keep.add(c.id);
+        }
+      }
+      return { keep: [...keep], sufficient: context.length + keep.size >= sufficientAt };
     },
   };
 }
@@ -279,6 +344,14 @@ export class MemoryGraph {
     return new Set(rows.map((r) => r.key));
   }
 
+  /** ISO timestamp of the most recent ingest, or null if never built. */
+  lastIngestedAt(): string | null {
+    const row = this.db.prepare('SELECT MAX(ingested_at) AS t FROM mg_sources').get() as
+      | { t: string | null }
+      | undefined;
+    return row?.t ?? null;
+  }
+
   /** Mark source keys as ingested. */
   markIngested(keys: Iterable<string>): void {
     const stmt = this.db.prepare('INSERT OR IGNORE INTO mg_sources (key) VALUES (?)');
@@ -406,7 +479,13 @@ export function reconstruct(
   const visitedCues = new Set<string>();
   const context: ContentNode[] = [];
   const admitted = new Set<number>();
+  // Content the router judged irrelevant. A rejection is DURABLE: the router
+  // ruled on the merits, and a later bridge must not resurrect it — otherwise a
+  // single mis-tagged memory re-enters on every hop that touches its tag.
+  const rejected = new Set<number>();
   const steps: ReconstructionStep[] = [];
+  // Tags that have produced admitted evidence, accumulated across steps.
+  const productiveTags = new Set<string>();
   let converged = false;
   let stopReason: ReconstructionResult['stopReason'] = 'step-budget';
 
@@ -426,22 +505,29 @@ export function reconstruct(
     const tags = new Set<string>();
     const candidates: ContentNode[] = [];
     const seenThisStep = new Set<number>();
+    // Which tags each candidate was reached through — the router needs it to
+    // tell an associative hop from an unrelated match.
+    const provenance = new Map<number, string[]>();
     for (const cue of toExpand) {
       visitedCues.add(cue);
       active.delete(cue);
       for (const tag of graph.tagsForCue(cue)) {
         tags.add(tag);
         for (const node of graph.contentsFor(cue, tag)) {
+          provenance.set(node.id, [...(provenance.get(node.id) ?? []), tag]);
           // Already in context, or already a candidate this step — the graph is
           // many-to-many, so the same content is reached by several paths.
-          if (admitted.has(node.id) || seenThisStep.has(node.id)) continue;
+          if (admitted.has(node.id) || rejected.has(node.id) || seenThisStep.has(node.id)) continue;
           seenThisStep.add(node.id);
           candidates.push(node);
         }
       }
     }
 
-    const { keep, sufficient } = policy.route(query, candidates, context);
+    const { keep, sufficient } = policy.route(query, candidates, context, {
+      tagsFor: provenance,
+      productiveTags,
+    });
     const keepSet = new Set(keep);
     const kept: number[] = [];
     const pruned: number[] = [];
@@ -450,6 +536,7 @@ export function reconstruct(
       if (!keepSet.has(node.id)) {
         // Pruned BEFORE it costs context — the token saving the paper measures.
         pruned.push(node.id);
+        rejected.add(node.id);
         continue;
       }
       if (context.length >= maxContext) {
@@ -459,17 +546,15 @@ export function reconstruct(
       context.push(node);
       admitted.add(node.id);
       kept.push(node.id);
+      // This tag is now a proven bridge for the rest of the traversal.
+      for (const t of provenance.get(node.id) ?? []) productiveTags.add(t);
     }
 
     // Discovery: tags reached by KEPT evidence surface new cues to expand. Only
     // productive tags propagate, or a pruned branch would keep reseeding itself.
     if (kept.length > 0) {
-      const productiveTags = new Set<string>();
-      for (const cue of toExpand) {
-        for (const tag of graph.tagsForCue(cue)) {
-          if (graph.contentsFor(cue, tag).some((n) => keepSet.has(n.id))) productiveTags.add(tag);
-        }
-      }
+      // Reuse the tags just proven, rather than re-issuing every tagsForCue and
+      // contentsFor query the expansion above already made.
       for (const tag of productiveTags) {
         for (const cue of graph.cuesForTag(tag)) {
           if (!visitedCues.has(cue)) active.add(cue);

@@ -233,8 +233,21 @@ export interface RecallOptions {
   maxSteps?: number;
   /** Ceiling on admitted context. */
   maxContext?: number;
-  /** Build/refresh the graph before querying. Default true. */
-  refresh?: boolean;
+  /**
+   * Build/refresh the graph before querying.
+   *
+   *   true        — always (the CLI default: an operator asking a question wants
+   *                 the freshest answer and accepts the wait)
+   *   false       — never
+   *   'if-stale'  — only when the last ingest is older than `staleAfterSeconds`
+   *
+   * `'if-stale'` exists for the AGENT path. Refreshing on every retrieval would
+   * put a full store scan on the hot path of every model turn; never refreshing
+   * would serve an index that silently ages out. The TTL is the compromise.
+   */
+  refresh?: boolean | 'if-stale';
+  /** Staleness window for `refresh: 'if-stale'`. Default 900s (15 min). */
+  staleAfterSeconds?: number;
   buildOptions?: BuildOptions;
 }
 
@@ -257,7 +270,9 @@ export async function recallActive(
   query: string,
   opts: RecallOptions = {},
 ): Promise<RecallResult> {
-  const build = opts.refresh === false ? undefined : await buildMemoryGraph(cwd, opts.buildOptions);
+  const build = (await shouldRefresh(cwd, opts))
+    ? await buildMemoryGraph(cwd, opts.buildOptions)
+    : undefined;
   const graph = openMemoryGraph(cwd);
   try {
     if (graph.isEmpty()) {
@@ -276,6 +291,27 @@ export async function recallActive(
       maxContext: opts.maxContext,
     });
     return { ...result, graphEmpty: false, build };
+  } finally {
+    graph.close();
+  }
+}
+
+/** Decide whether this recall should rebuild the index first. */
+async function shouldRefresh(cwd: string, opts: RecallOptions): Promise<boolean> {
+  if (opts.refresh === false) return false;
+  if (opts.refresh !== 'if-stale') return true;
+  if (!memoryGraphExists(cwd)) return true;
+  const graph = openMemoryGraph(cwd);
+  try {
+    const last = graph.lastIngestedAt();
+    if (!last) return true;
+    // SQLite datetime('now') is UTC without a zone marker; parse it as such.
+    const lastMs = Date.parse(last.endsWith('Z') ? last : `${last.replace(' ', 'T')}Z`);
+    if (!Number.isFinite(lastMs)) return true;
+    const ttlMs = (opts.staleAfterSeconds ?? 900) * 1000;
+    return Date.now() - lastMs > ttlMs;
+  } catch {
+    return false;
   } finally {
     graph.close();
   }
