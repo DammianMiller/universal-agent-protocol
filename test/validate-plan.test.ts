@@ -127,6 +127,61 @@ describe('validate-plan-on-change enforcer', () => {
   });
 });
 
+describe('uap plan validate — the validation must actually clear the gate', () => {
+  /**
+   * Found by running the LIVE gate end to end, not by a unit test: every unit
+   * test passed while `uap plan validate PLAN.md` printed "validation recorded"
+   * and left the build blocked on that exact file.
+   *
+   * Cause: the stamp keyed off `review.file`, which is absent whenever the
+   * review does not resolve an artifact — above all when the review is DISABLED
+   * (UAP_PLAN_REVIEW=0 / --no-review), which returns a bare {status:'skipped'}.
+   * So the operator names a file, is told it worked, and nothing is recorded.
+   */
+  it('stamps the EXPLICIT file even when the review is disabled', async () => {
+    const d = tmp();
+    writeFileSync(join(d, 'PLAN.md'), '# Plan\n\nBuild the thing.\n');
+    mkdirSync(join(d, '.uap'), { recursive: true });
+    writeFileSync(join(d, '.uap', 'plan_state.json'), JSON.stringify({ pending: { 'PLAN.md': 1 } }));
+
+    await planCommand('validate', { file: 'PLAN.md', review: false }, d);
+
+    const state = JSON.parse(readFileSync(join(d, '.uap', 'plan_state.json'), 'utf-8'));
+    expect(state.pending).toEqual({});
+    expect(Object.keys(state.validated ?? {})).toContain('PLAN.md');
+  });
+
+  it('unblocks the real enforcer after that validation', async () => {
+    // The end-to-end assertion the unit tests were missing: validate, then the
+    // build actually runs.
+    const d = tmp();
+    writeFileSync(join(d, 'PLAN.md'), '# Plan\n\nBuild the thing.\n');
+    mkdirSync(join(d, '.uap'), { recursive: true });
+    expect(run('Write', 'PLAN.md', {}, d)).toBe(0);
+    expect(runBash('npm run build', {}, d)).toBe(2);
+
+    await planCommand('validate', { file: 'PLAN.md', review: false }, d);
+    expect(runBash('npm run build', {}, d)).toBe(0);
+
+    // …and editing the plan re-arms it.
+    writeFileSync(join(d, 'PLAN.md'), '# Plan\n\nBuild the thing. And another.\n');
+    expect(runBash('npm run build', {}, d)).toBe(2);
+  });
+
+  it('falls back to the most recent plan when no file is named', async () => {
+    const d = tmp();
+    writeFileSync(join(d, 'rollout-plan.md'), '# Plan\n\nShip it.\n');
+    mkdirSync(join(d, '.uap'), { recursive: true });
+    writeFileSync(join(d, '.uap', 'plan_state.json'), JSON.stringify({ pending: { 'rollout-plan.md': 1 } }));
+
+    await planCommand('validate', { review: false }, d);
+
+    const state = JSON.parse(readFileSync(join(d, '.uap', 'plan_state.json'), 'utf-8'));
+    expect(state.pending).toEqual({});
+    expect(Object.keys(state.validated ?? {})).toContain('rollout-plan.md');
+  });
+});
+
 describe('uap plan validate CLI', () => {
   it('records a fresh validation the enforcer then honors', async () => {
     const d = tmp();

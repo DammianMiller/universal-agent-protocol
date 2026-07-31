@@ -303,10 +303,18 @@ export async function planCommand(
     // Record the hash of what was ACTUALLY reviewed, and clear that plan from
     // the pending set. Only the reviewed plan is cleared: validating one plan
     // must not silently vouch for another the agent also touched.
-    if (review.file) {
-      const key = planKey(cwd, review.file);
+    // Which plan this validation vouches for. `review.file` is absent whenever
+    // the review did not resolve one — most importantly when the review was
+    // DISABLED (UAP_PLAN_REVIEW=0 / --no-review), which returns a bare
+    // {status:'skipped'}. Keying only off review.file meant `uap plan validate
+    // PLAN.md` reported success, recorded nothing, and left the build blocked
+    // on the very file the operator had just named. Fall back to the explicit
+    // argument, then to the artifact the review would have picked.
+    const stamped = review.file ?? explicitFile ?? findPlanArtifact(cwd) ?? undefined;
+    if (stamped) {
+      const key = planKey(cwd, stamped);
       try {
-        validated[key] = planHash(readFileSync(review.file, 'utf-8'));
+        validated[key] = planHash(readFileSync(resolve(cwd, stamped), 'utf-8'));
         delete pending[key];
       } catch {
         // Unreadable at stamp time — leave it pending rather than record a
