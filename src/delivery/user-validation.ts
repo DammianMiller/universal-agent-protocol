@@ -741,6 +741,61 @@ export function synthesizeUserValidationRung(mode: UserValidationMode): GateRung
  * Skipped-not-failed when every path was environment-skipped, mirroring the
  * deploy-dev docker-unavailable behavior.
  */
+/** A failed step reached only after the journey performed an interaction. */
+function failedAfterInteraction(r: PathResult): boolean {
+  const firstFail = r.steps.findIndex((s) => !s.ok);
+  if (firstFail < 0) return false;
+  return r.steps
+    .slice(0, firstFail)
+    .some((s) => /\b(clicked|pressed|filled)\b/i.test(s.observed ?? ''));
+}
+
+/**
+ * Choose the feedback that names the CAUSE, not just the symptom.
+ *
+ * A weak model acts on what the gate tells it. "expect_visible:#hud → NOT
+ * visible" describes the symptom, and the reasonable response to it is to
+ * restructure the HUD — which is exactly what happened live (Octopus Invaders,
+ * 2026-08-01): a rewrite dropped `window.addEventListener('load', () =>
+ * Game.init())`, and across four turns the model rebuilt HUD markup while the
+ * real defect was one missing line. The artifact had been fully working two
+ * turns earlier.
+ *
+ * The discriminator is breadth. One broken handler breaks one journey; a
+ * missing entry point breaks EVERY journey that depends on an interaction,
+ * because none of the handlers were ever attached. So when all of them fail
+ * that way — and there is more than one, since a single failure is not evidence
+ * of a common cause — say so.
+ */
+export function selectTransitionHint(failedPaths: readonly PathResult[]): string {
+  const notVisibleAfterInteraction = (r: PathResult): boolean =>
+    failedAfterInteraction(r) &&
+    /not visible/i.test(r.steps.find((s) => !s.ok)?.observed ?? '');
+
+  const interactive = failedPaths.filter(notVisibleAfterInteraction);
+  if (interactive.length === 0) return '';
+
+  // Count only browser journeys toward the "everything is dead" claim. A
+  // failing cli/http path says nothing about browser bootstrap, and letting one
+  // suppress the hint (or, worse, letting a mixed failure set assert that every
+  // journey failed "the same way") is how a confident hint becomes a wrong one.
+  const browserPaths = failedPaths.filter((r) => r.client === 'browser');
+  const allInteractionsDead =
+    interactive.length >= 2 && interactive.length === browserPaths.length;
+
+  return allInteractionsDead
+    ? '\nHINT: EVERY journey that depends on an interaction failed the same way. That is rarely ' +
+        'several broken handlers — it is usually ONE missing entry point, so none of them were ever ' +
+        'attached. Check that something actually CALLS your init/start function at top level (e.g. ' +
+        "window.addEventListener('load', () => App.init()) or a direct App.init() call). A module that " +
+        'only DEFINES an init and never invokes it parses cleanly, logs no errors, and does nothing — ' +
+        'so every element those handlers would reveal stays hidden. Verify the entry point BEFORE ' +
+        'rewriting the elements themselves.'
+    : '\nHINT: an element is expected visible only AFTER a click/keypress but never appeared — the handler ' +
+        'for that interaction MUST reveal it (set style.display, toggle a CSS class, or add it to the DOM). Build ' +
+        'the state transition; do not just place a hidden element on the page.';
+}
+
 export function createUserValidationRunner(runOpts: RunUserValidationOptions = {}): LadderRunFn {
   return async (rungs: GateRung[], projectRoot: string): Promise<LadderResult> => {
     const rung = rungs.find((r) => r.id === USER_VALIDATION_RUNG_ID) ?? rungs[0];
@@ -752,25 +807,10 @@ export function createUserValidationRunner(runOpts: RunUserValidationOptions = {
     const detail = report.results
       .map((r) => `${r.status.toUpperCase()} ${r.id}: ${r.rule}${r.status === 'fail' ? ` — ${r.steps.find((s) => !s.ok)?.step ?? ''} → ${r.steps.find((s) => !s.ok)?.observed ?? ''}` : ''}`)
       .join('\n');
-    // The dominant weak-model user-path failure: an element the journey clicks
-    // toward never becomes visible because the click/keypress handler was not
-    // wired to REVEAL it (observed repeatedly: click #start-btn → #hud-score "NOT
-    // visible"). A bare Playwright timeout is not actionable enough for a small
-    // model; name the fix — build the state transition, not just a hidden element.
-    const missingTransition = failedPaths.some((r) => {
-      const firstFail = r.steps.findIndex((s) => !s.ok);
-      if (firstFail < 0) return false;
-      const failedObserved = r.steps[firstFail].observed ?? '';
-      const priorInteraction = r.steps
-        .slice(0, firstFail)
-        .some((s) => /\b(clicked|pressed|filled)\b/i.test(s.observed ?? ''));
-      return /not visible/i.test(failedObserved) && priorInteraction;
-    });
-    const transitionHint = missingTransition
-      ? '\nHINT: an element is expected visible only AFTER a click/keypress but never appeared — the handler ' +
-        'for that interaction MUST reveal it (set style.display, toggle a CSS class, or add it to the DOM). Build ' +
-        'the state transition; do not just place a hidden element on the page.'
-      : '';
+    // A bare Playwright timeout is not actionable for a small model, so name
+    // the likely fix. selectTransitionHint decides WHICH fix to name — the
+    // handler, or the entry point that would have attached every handler.
+    const transitionHint = selectTransitionHint(failedPaths);
     const result: RungResult = {
       id: rung.id,
       name: rung.name,
