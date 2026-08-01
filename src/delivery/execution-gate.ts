@@ -804,15 +804,45 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
         cb(t += 16);
       }
     };
+    // Start the page the way a browser does. Without this the harness executed
+    // only top-level definitions, so an app whose entry point is
+    // `window.addEventListener('load', () => Game.init())` never ran a line of
+    // its own logic — and an artifact that had LOST that listener was
+    // byte-indistinguishable from a working one. Observed live (Octopus
+    // Invaders, 2026-08-01): a rewrite deleted the bootstrap, this gate still
+    // reported "booted N script(s) ... clean", and the only failing signal was
+    // a user-path assertion three journeys downstream saying "#hud NOT visible".
+    sandbox.__fire('DOMContentLoaded');
+    sandbox.__fire('load');
     tick(3);
     sandbox.__fire('click');
     sandbox.__fire('mousedown');
     sandbox.__fire('mousemove', { clientX: 100, clientY: 100 });
     tick(60);
+    // "Nothing started" signal — ADVISORY, not blocking.
+    //
+    // After load and a click, an app that started has usually scheduled a
+    // frame, registered a listener, or drawn. One that only DEFINES things does
+    // none of those — the run-C signature, where a rewrite deleted
+    // `window.addEventListener('load', () => Game.init())` and the artifact
+    // parsed, threw nothing, and did nothing.
+    //
+    // It is NOT a failure, because the same signature is produced by code that
+    // legitimately ran and did little: a page whose top-level script only
+    // constructs objects, or a static page. Blocking on it failed three real
+    // fixtures in this suite. So report it where the model will read it and let
+    // the user-path rung decide — a wrong hint costs a turn, a wrong refusal
+    // costs a working artifact.
+    const startedNote = sandbox.__started()
+      ? ''
+      : ' — WARNING: nothing started. After DOMContentLoaded, load and a click, the page scheduled no' +
+        ' animation frame, registered no listeners and drew nothing. If this app is meant to do something' +
+        ' on load, check that a top-level call actually STARTS it (e.g. App.init()); a module that only' +
+        ' defines an init and never invokes it parses cleanly and does nothing.';
     return {
       passed: true,
       exitCode: 0,
-      outputTail: `vm-dom: booted ${srcs.length} script(s), ran menu→playing frames clean${note ? ` (${note})` : ''}`,
+      outputTail: `vm-dom: booted ${srcs.length} script(s), ran menu→playing frames clean${note ? ` (${note})` : ''}${startedNote}`,
       durationMs: Date.now() - start,
       via: 'vm-dom',
     };
@@ -879,10 +909,16 @@ function buildDomSandbox(): any {
   const reg = (bag: Record<string, Array<(e: unknown) => void>>) => (type: string, fn: (e: unknown) => void) => {
     (bag[type] ||= []).push(fn);
   };
+  const drew = { any: false };
   const ctxStub: unknown = new Proxy(
     {},
     {
       get(_t, p) {
+        // Reading ANY 2d-context member means app code is executing against the
+        // canvas. Existing fixtures do exactly this at top level with no rAF and
+        // no listeners — treating them as "never started" was a false positive
+        // the suite caught.
+        if (p !== 'canvas') drew.any = true;
         if (p === 'canvas') return canvas;
         if (p === 'measureText') return () => ({ width: 10 });
         if (p === 'createLinearGradient' || p === 'createRadialGradient')
@@ -925,7 +961,12 @@ function buildDomSandbox(): any {
       },
     }
   );
-  const raf: { cb: ((t: number) => void) | null } = { cb: null };
+  // `everScheduled` is sticky: tick() consumes raf.cb each frame, so the live
+  // field cannot answer "did this app ever schedule a frame?" after ticking.
+  const raf: { cb: ((t: number) => void) | null; everScheduled: boolean } = {
+    cb: null,
+    everScheduled: false,
+  };
   const win: Record<string, unknown> = {
     innerWidth: 1280,
     innerHeight: 720,
@@ -933,6 +974,7 @@ function buildDomSandbox(): any {
     addEventListener: reg(listeners.window),
     requestAnimationFrame: (cb: (t: number) => void) => {
       raf.cb = cb;
+      raf.everScheduled = true;
       return 1;
     },
     cancelAnimationFrame: () => {},
@@ -1033,6 +1075,23 @@ function buildDomSandbox(): any {
     ...common,
     __raf: raf,
     __fire: fire,
+    // Did the app do ANYTHING beyond defining things?
+    //
+    // A scheduled frame counts. A registered listener counts — EXCEPT for
+    // load/DOMContentLoaded, which are a promise to start rather than proof of
+    // having started. Counting those would make the dead artifact look alive:
+    // its one surviving act is registering the very bootstrap that never fires.
+    // Excluding them is also what makes this probe depend on the load dispatch
+    // above — without it, a working app registers only its load listener and
+    // would be reported dead.
+    __started: (): boolean =>
+      drew.any ||
+      raf.everScheduled ||
+      [listeners.canvas, listeners.document, listeners.window].some((bag) =>
+        Object.entries(bag).some(
+          ([type, fns]) => type !== 'load' && type !== 'DOMContentLoaded' && fns.length > 0
+        )
+      ),
   };
 }
 
