@@ -98,6 +98,74 @@ describe('delivery-enforcement enforcer', () => {
   });
 });
 
+// Deleting the gate's own state is not a way out of the gate. Observed live 7x
+// on 2026-07-31 (octopus_invaders_v3): `rm -f .uap/pending-deliver.jsonl`
+// interleaved with kill -9 of the running deliver, discarding the queued edit
+// intents that `uap deliver --pending` replays rather than completing them.
+describe('delivery-enforcement — deliver state files are not removable', () => {
+  function runBash(command: string, env: Record<string, string> = {}) {
+    const r = spawnSync('python3', [ENFORCER, '--operation', 'bash', '--args', JSON.stringify({ command })], {
+      env: { ...hermeticEnv(), UAP_REPO_ROOT: ROOT, ...env },
+      encoding: 'utf8',
+    });
+    let p: { allowed?: boolean; reason?: string } = {};
+    try { p = JSON.parse(r.stdout || '{}'); } catch { /* empty */ }
+    return { exit: r.status ?? -1, allowed: p.allowed ?? false, reason: p.reason ?? '' };
+  }
+
+  it('blocks rm of the pending-deliver queue', () => {
+    const r = runBash('rm -f .uap/pending-deliver.jsonl');
+    expect(r.exit).toBe(2);
+    expect(r.reason).toMatch(/delivery gate's own state/i);
+    // Must point at the constructive path, not just refuse.
+    expect(r.reason).toMatch(/--pending/i);
+    expect(r.reason).toContain('.uap/pending-deliver.jsonl');
+  });
+
+  it('blocks rm of the lock and heartbeat, including via an absolute path', () => {
+    expect(runBash('rm -f /home/u/proj/.uap/deliver.lock').exit).toBe(2);
+    expect(runBash('rm .uap/deliver.heartbeat').exit).toBe(2);
+    expect(runBash('rm -f /home/u/proj/.uap/deliver.lock').reason).toContain('/home/u/proj/.uap/deliver.lock');
+  });
+
+  it('names the right remedy for the lock, which is NOT the pending queue', () => {
+    // Telling an agent on a wedged lock to run `--pending` sends it somewhere
+    // that cannot help; the lock's answer is that stale locks self-reclaim.
+    const r = runBash('rm -f .uap/deliver.lock');
+    expect(r.reason).toMatch(/single-flight/i);
+    expect(r.reason).not.toMatch(/--pending/);
+  });
+
+  // Guarding only `rm <literal path>` would repeat the mistake this change
+  // exists to fix: the model found the laundered kill 8s after being refused.
+  // `: > …` is SHORTER than the command it blocks and equally destructive.
+  it('blocks the non-rm ways to destroy the same state', () => {
+    expect(runBash(': > .uap/pending-deliver.jsonl').exit).toBe(2);
+    expect(runBash('truncate -s 0 .uap/pending-deliver.jsonl').exit).toBe(2);
+    expect(runBash('mv .uap/deliver.lock /tmp/').exit).toBe(2);
+    expect(runBash('unlink .uap/deliver.lock').exit).toBe(2);
+  });
+
+  it('blocks removing the whole .uap directory or globbing it', () => {
+    expect(runBash('rm -rf .uap').exit).toBe(2);
+    expect(runBash('rm -rf .uap/').exit).toBe(2);
+    expect(runBash('rm -rf .uap/*').exit).toBe(2);
+  });
+
+  it('is not relaxed by advisory mode (destroying state is not an edit)', () => {
+    expect(runBash('rm -f .uap/pending-deliver.jsonl', { UAP_ENFORCE_DELIVERY: 'advisory' }).exit).toBe(2);
+  });
+
+  it("does not block deliver's own housekeeping (UAP_DELIVER_ACTIVE=1)", () => {
+    expect(runBash('rm -f .uap/pending-deliver.jsonl', { UAP_DELIVER_ACTIVE: '1' }).exit).toBe(0);
+  });
+
+  it('leaves ordinary rm alone', () => {
+    expect(runBash('rm -rf dist/').exit).toBe(0);
+    expect(runBash('rm -f .uap/visual/shot.png').exit).toBe(0);
+  });
+});
+
 // A/B: fast-path + deliver-running back-off. These need full args (old/new
 // strings, lock state) so they use a dedicated runner.
 function runArgs(

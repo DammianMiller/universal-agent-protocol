@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.179.3 (2026-07-31)
+
+- fix(policy): close laundered and bare-PID kills of the stack and deliver
+
+
 ## v1.179.2 (2026-07-31)
 
 - fix(proxy): ERROR-LOOP must read the is_error flag, not sniff file contents
