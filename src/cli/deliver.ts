@@ -167,6 +167,37 @@ export function decideThickenWithAcceptance(opts: {
  * fast-tier gate ran this turn (not scoreable → do not advance the snapshot).
  * PURE — unit-tested.
  */
+/**
+ * Never-regress resolution — DEFAULT ON.
+ *
+ * This was opt-in, and the cost of that default was measured: across three
+ * Octopus Invaders runs (2026-08-01) a run reached a fully working, playable
+ * game at turn 2, then a later turn fixed an unrelated TypeError and in the
+ * same whole-file rewrite deleted the line that started the program.
+ * `captureBestKeep` would have snapshotted that peak and rolled back to it —
+ * but it is armed only by this flag, so it never ran and the working artifact
+ * was lost. A loop that applies turns in place without preserving its best
+ * result is strictly worse than one that does; nobody wants the regressed end
+ * state, they just did not know to ask for the flag.
+ *
+ * Safe as a default: snapshotTree is disk-backed (never RAM tmpfs), excludes
+ * node_modules/target/.git, and is size-capped (UAP_SNAPSHOT_MAX_MB, default
+ * 4096) — over the cap it degrades to "no rollback this run" with a warning
+ * rather than failing the run.
+ *
+ * Opt out with `--no-keep-best` (commander sets keepBest=false) or
+ * UAP_DELIVER_KEEP_BEST=0. Only an EXPLICIT false disables it: `undefined`
+ * means "flag not passed", which is now on.
+ */
+export function resolveKeepBest(
+  flag: boolean | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  if (flag === false) return false;
+  if (env.UAP_DELIVER_KEEP_BEST === '0') return false;
+  return true;
+}
+
 export function bestKeepFastScore(
   gateResults: Array<{ id: string; passed: boolean }>,
   fastRungIds: Set<string>
@@ -2826,7 +2857,21 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   const KEEP_BEST_TIERS = new Set<GateTier>(['fast', 'runtime', 'integration', 'final']);
   const KEEP_BEST_EXCLUDE_IDS = new Set(['bootstrap', 'acceptance']);
   const fastRungs = rungs.filter((r) => KEEP_BEST_TIERS.has(tierOf(r)) && !KEEP_BEST_EXCLUDE_IDS.has(r.id));
-  const keepBest = Boolean(options.keepBest) && fastRungs.length > 0 && !needsSelfGate;
+  // DEFAULT ON. This was opt-in, and the cost of that default was measured:
+  // across three Octopus Invaders runs (2026-08-01) a run reached a fully
+  // working, playable game at turn 2, then a later turn fixed an unrelated
+  // TypeError and in the same whole-file rewrite deleted the line that started
+  // the program. captureBestKeep would have snapshotted the peak and rolled
+  // back to it — but it is armed only by this flag, so it never ran and the
+  // working artifact was lost. A convergence loop that applies turns in place
+  // without preserving its best result is strictly worse than one that does;
+  // nobody wants the regressed end state, they just did not know to ask.
+  //
+  // Safe to default: snapshotTree is disk-backed (never RAM tmpfs), excludes
+  // node_modules/target/.git, and is size-capped (UAP_SNAPSHOT_MAX_MB, 4096)
+  // — over the cap it degrades to "no rollback this run" with a warning rather
+  // than failing the run. Opt out with --no-keep-best or UAP_DELIVER_KEEP_BEST=0.
+  const keepBest = resolveKeepBest(options.keepBest) && fastRungs.length > 0 && !needsSelfGate;
   let regressSnapshot: string | null = null;
   let baselineGateScore = 0;
   if (keepBest) {
