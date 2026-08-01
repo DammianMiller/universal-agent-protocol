@@ -5834,3 +5834,228 @@ class TestPassthroughTimeout(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(captured.get("timeout"))
         self.assertEqual(captured["timeout"].read, proxy.PROXY_PASSTHROUGH_TIMEOUT)
+
+
+class _FakeStreamResponse:
+    """Stand-in for a streamed httpx.Response, faithful to two contracts.
+
+    Both are load-bearing for _send_stream_with_retry, and a fake that models
+    neither lets the fix be deleted with the suite still green:
+
+    1. `.text` raises ResponseNotRead until the body has been read. That is why
+       the production code calls aread() before _is_loading_model_503 — whose
+       bare `except` would otherwise swallow the raise into a silent False and
+       silently disable the retry.
+    2. aread() caches. The caller re-reads the same response in its non-200
+       handler, which only works because httpx serves the second read from
+       cache rather than raising StreamConsumed.
+    """
+
+    def __init__(self, status_code, text=""):
+        self.status_code = status_code
+        self._body = text
+        self._read = False
+        self.read_count = 0
+        self.closed = False
+
+    @property
+    def text(self):
+        if not self._read:
+            raise httpx.ResponseNotRead()
+        return self._body
+
+    async def aread(self):
+        if self._read:
+            return self._body.encode()  # cached: no second stream consumption
+        self._read = True
+        self.read_count += 1
+        return self._body.encode()
+
+    async def aclose(self):
+        self.closed = True
+
+
+class _FakeStreamClient:
+    """Replays a queued script of responses/exceptions for client.send()."""
+
+    def __init__(self, scripted):
+        self._scripted = list(scripted)
+        self.sends = 0
+        self.requests = []
+        self.stream_flags = []
+
+    def build_request(self, method, url, **kwargs):
+        return {"method": method, "url": url, **kwargs}
+
+    async def send(self, request, stream=False):
+        self.sends += 1
+        self.requests.append(request)
+        self.stream_flags.append(stream)
+        if not self._scripted:
+            raise AssertionError("no scripted response left")
+        nxt = self._scripted.pop(0)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+
+class TestSendStreamWithRetry(unittest.TestCase):
+    """The streaming path must treat 503 'Loading model' as transient.
+
+    Regression guard: this path used to break out of its retry loop on any HTTP
+    response, so a streamed turn that began while llama-server was still mapping
+    a GGUF surfaced 'AI_APICallError: Loading model' to the client as a fatal
+    error. The non-streaming sibling (_post_with_retry_inner) retried it —
+    health-gated and bounded by PROXY_UPSTREAM_RETRY_MAX — while the streaming
+    path, the one every opencode turn actually uses, did not retry it at all.
+    """
+
+    def _run(self, client, health_ok=True, retry_max=3):
+        waited = []
+
+        async def _fake_health(_client, max_wait=60.0, poll_interval=5.0):
+            waited.append(max_wait)
+            return health_ok
+
+        async def _no_sleep(_secs):
+            return None
+
+        def _sync_close(closeable):
+            # Production schedules the close on a detached task; inside a test
+            # the loop closes before it runs. Close eagerly so `.closed` is a
+            # deterministic assertion rather than a race.
+            closeable.closed = True
+
+        with unittest.mock.patch.object(proxy, "_wait_for_upstream_health", _fake_health), \
+                unittest.mock.patch.object(proxy, "_detach_aclose", _sync_close), \
+                unittest.mock.patch.object(proxy, "PROXY_UPSTREAM_RETRY_MAX", retry_max), \
+                unittest.mock.patch.object(asyncio, "sleep", _no_sleep):
+            resp = asyncio.run(
+                proxy._send_stream_with_retry(client, "http://x/v1/chat/completions", {})
+            )
+        return resp, waited
+
+    def test_retries_loading_model_503_then_returns_success(self):
+        loading = _FakeStreamResponse(503, "Loading model")
+        ok = _FakeStreamResponse(200, "")
+        client = _FakeStreamClient([loading, ok])
+
+        resp, waited = self._run(client)
+
+        self.assertIs(resp, ok)
+        self.assertEqual(client.sends, 2, "should have retried after the 503")
+        self.assertEqual(len(waited), 1, "should have waited for upstream health")
+        self.assertTrue(loading.closed, "the discarded 503 must be closed")
+
+    def test_does_not_retry_a_non_loading_503(self):
+        # A 503 that is not a model load is a real upstream failure; passing it
+        # straight through preserves the existing error contract.
+        overloaded = _FakeStreamResponse(503, "server is overloaded")
+        client = _FakeStreamClient([overloaded, _FakeStreamResponse(200, "")])
+
+        resp, waited = self._run(client)
+
+        self.assertIs(resp, overloaded)
+        self.assertEqual(client.sends, 1)
+        self.assertEqual(waited, [])
+
+    def test_returns_503_after_exhausting_retry_budget(self):
+        responses = [_FakeStreamResponse(503, "Loading model") for _ in range(3)]
+        client = _FakeStreamClient(list(responses))
+
+        resp, waited = self._run(client, retry_max=3)
+
+        self.assertEqual(client.sends, 3)
+        self.assertEqual(resp.status_code, 503)
+        self.assertIs(resp, responses[-1], "last 503 is surfaced to the caller")
+        self.assertEqual(len(waited), 2, "waits between attempts, not after the last")
+
+    def test_surfaces_the_503_when_the_health_wait_times_out(self):
+        # Mirrors _post_with_retry_inner: once upstream is still unhealthy after
+        # a full wait, stacking more waits only buys the client dead air. Without
+        # this gate a dead upstream costs retry_max x 60s before the same failure.
+        loading = _FakeStreamResponse(503, "Loading model")
+        client = _FakeStreamClient([loading, _FakeStreamResponse(200, "")])
+
+        resp, waited = self._run(client, health_ok=False)
+
+        self.assertIs(resp, loading, "unhealthy upstream surfaces the 503 now")
+        self.assertEqual(client.sends, 1, "must not retry a still-unhealthy upstream")
+        self.assertEqual(len(waited), 1)
+
+    def test_reads_the_body_before_classifying_a_503(self):
+        # The fix hinges on aread() preceding _is_loading_model_503, whose bare
+        # `except` would turn httpx's ResponseNotRead into a silent False and
+        # disable the retry entirely. Deleting that aread() must fail here.
+        loading = _FakeStreamResponse(503, "Loading model")
+        ok = _FakeStreamResponse(200, "")
+        client = _FakeStreamClient([loading, ok])
+
+        resp, _ = self._run(client)
+
+        self.assertIs(resp, ok)
+        self.assertEqual(loading.read_count, 1, "body read exactly once, before .text")
+
+    def test_closes_the_response_when_the_body_read_fails(self):
+        # A ReadError while reading the 503 body is retryable; if the discarded
+        # response is not closed the connection accrues as CLOSE-WAIT until the
+        # pool saturates, with the client seeing nothing wrong.
+        class _ExplodingResponse(_FakeStreamResponse):
+            async def aread(self):
+                raise httpx.ReadError("reset mid-body")
+
+        boom = _ExplodingResponse(503, "Loading model")
+        ok = _FakeStreamResponse(200, "")
+        client = _FakeStreamClient([boom, ok])
+
+        resp, _ = self._run(client)
+
+        self.assertIs(resp, ok, "the read failure is retried")
+        self.assertTrue(boom.closed, "the abandoned response must be closed")
+
+    def test_still_retries_connect_errors(self):
+        # Regression guard for the pre-existing behaviour the extraction replaced.
+        ok = _FakeStreamResponse(200, "")
+        client = _FakeStreamClient([httpx.ConnectError("boom"), ok])
+
+        resp, _ = self._run(client)
+
+        self.assertIs(resp, ok)
+        self.assertEqual(client.sends, 2)
+
+    def test_raises_when_every_connect_attempt_fails(self):
+        client = _FakeStreamClient([httpx.ConnectError("boom") for _ in range(3)])
+
+        with self.assertRaises(httpx.ConnectError):
+            self._run(client, retry_max=3)
+
+        self.assertEqual(client.sends, 3)
+
+    def test_retry_max_of_zero_still_makes_one_attempt(self):
+        # An unclamped 0 skipped the loop and raised a bare RuntimeError, which
+        # the call site's narrow `except` misses — an unhandled 500 where the
+        # old code returned a clean 529.
+        ok = _FakeStreamResponse(200, "")
+        client = _FakeStreamClient([ok])
+
+        resp, _ = self._run(client, retry_max=0)
+
+        self.assertIs(resp, ok)
+        self.assertEqual(client.sends, 1)
+
+    def test_preserves_the_streaming_contract_the_caller_depends_on(self):
+        # stream=True keeps the turn incremental (buffering it would silently
+        # reintroduce full-generation latency), and _uap_client drives the
+        # inflight accounting that the pool-retire logic waits on.
+        ok = _FakeStreamResponse(200, "")
+        client = _FakeStreamClient([ok])
+
+        resp, _ = self._run(client)
+
+        self.assertEqual(client.stream_flags, [True])
+        self.assertIs(getattr(resp, "_uap_client"), client)
+        self.assertEqual(client.requests[0]["url"], "http://x/v1/chat/completions")
+
+
+if __name__ == "__main__":
+    unittest.main()

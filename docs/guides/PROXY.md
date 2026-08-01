@@ -179,6 +179,8 @@ set is below.
 | Env (default) | Behavior |
 |---|---|
 | `PROXY_MAX_CONNECTIONS` (20) | httpx pool size; a large pool + 529 backoff absorbs connection churn gracefully |
+| `PROXY_UPSTREAM_RETRY_MAX` (3) / `PROXY_UPSTREAM_RETRY_DELAY_SECS` (5) | Transient-failure retry budget for upstream calls, on both the buffered and the streaming path. Values below 1 are clamped to 1 |
+| **503 "Loading model"** (no toggle) | llama-server answers 503 while a GGUF is still being mapped. Both paths treat it as transient: wait for `/health` (up to 60s), then retry. A wait that times out surfaces the 503 rather than stacking another — so a cold start costs at most ~60s of extra latency per attempt, not `RETRY_MAX × 60s` of dead air |
 | **529 backpressure** (no toggle) | A pool timeout returns HTTP **529 `overloaded_error`** with `retry-after` — pure graceful degradation, not a hard failure |
 | `PROXY_CLOSEWAIT_REAP_INTERVAL` (0 = **off**) | Opt-in CLOSE-WAIT reaper (pool self-heal); off by default because pool-swap churn can harm a saturated upstream |
 | `PROXY_TOOL_NARROWING` (**off**) | Opt-in: drop cycling/banned tools from the set on loops — always keeps the Bash/WebFetch/Agent escape hatch + write tools (a floor invariant that never strands the agent) |

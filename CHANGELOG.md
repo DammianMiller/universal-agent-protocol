@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.179.5 (2026-08-01)
+
+- fix(proxy): retry 503 "Loading model" on the streaming path too
+- fix: ship as 1.179.4 — 1.179.3 is already published
+- chore: bump version to 1.179.3
+- fix(policy): close laundered and bare-PID kills of the stack and deliver
+
+
 ## v1.179.4 (2026-07-31)
 
 - fix(deliver): answer "is it still running" with evidence, not an assertion
