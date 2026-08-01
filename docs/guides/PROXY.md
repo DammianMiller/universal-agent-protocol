@@ -117,7 +117,23 @@ token is not echoed into the ride-along log. Binding beyond loopback
 `uap-anthropic-proxy.service`, reading its environment from
 `~/.config/uap/anthropic-proxy.env`; a plain spawned proxy seeds the same file
 for parity. The proxy also loads project-local `.uap/proxy.env` at startup
-(real environment always wins). PID reuse is defended with a `/proc/<pid>`
+(real environment always wins). That search walks up from the working
+directory and **stops at the repository root**, so a checkout nested inside an
+unrelated checkout no longer inherits the outer repo's `PROXY_AUTH_TOKEN`; a
+git *worktree* is the same repository, so its `.git` pointer is followed back
+to the main checkout rather than terminating the search. If nothing is found
+under the repo, `$XDG_CONFIG_HOME/uap/proxy.env` and `~/.uap/proxy.env` are
+tried, matching the client-side resolver. The proxy logs which file it loaded
+(or that it found none) plus its auth state at startup, so a discovery miss is
+visible rather than silently degrading to defaults.
+
+| Env (default) | Behavior |
+|---|---|
+| `UAP_PROXY_ENV_FILE` (unset) | Explicit path to a proxy.env, tried before the walk |
+| `UAP_PROXY_ENV_AUTOLOAD` (**on**) | Set to `0` to make *importing* the proxy module inert — it then mutates no process environment. Used by the Python test suite so tests assert shipped defaults rather than the developer's config. Does not affect a server run |
+| `PROXY_ALLOW_UNAUTHENTICATED_BIND` (**off**) | The proxy **refuses to start** on a non-loopback `PROXY_HOST` when `PROXY_AUTH_TOKEN` is empty, because the auth middleware treats an empty token as "no auth configured" and would leave every route open on the LAN. Set to `1` only if an open listener is genuinely intended |
+
+PID reuse is defended with a `/proc/<pid>`
 start-time token so `release` never kills an unrelated process that inherited an
 old pid. Everything hook-driven **fails open** — if the proxy won't start, the
 agent just runs without it.
