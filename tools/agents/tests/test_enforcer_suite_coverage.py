@@ -28,8 +28,19 @@ TESTS = Path(__file__).resolve().parent
 # Verified failing for their own pre-existing reasons, not by omission. Each
 # entry is a debt with a stated cause — not a place to park a newly broken test.
 KNOWN_EXCLUDED = {
-    "test_anthropic_proxy_streaming": "behaviour drifted from the assertions",
-    "test_delivery_enforcement_worktree": "behaviour drifted from the assertions",
+    # test_anthropic_proxy_streaming and test_delivery_enforcement_worktree
+    # were both listed here as "behaviour drifted from the assertions" and are
+    # now listed in test:enforcers instead:
+    #   - proxy_streaming had 7 genuinely stale assertions (max_tokens floors
+    #     superseded by the thinking-floor, a grammar guard that postdated the
+    #     test, the turn-count breaker's rewording, and two malformed-payload
+    #     cases deliberately reversed by _strip_orphan_tool_xml). All rewritten
+    #     against current intent. This is the module that covers the streaming
+    #     503 retry, so it was the gap that let that bug ship.
+    #   - delivery_enforcement_worktree never drifted at all: two of its env
+    #     helpers failed to strip an ambient UAP_DELIVER_BYPASS, so the
+    #     enforcer allowed every write and four block-expecting tests read 0
+    #     instead of 2. It passes clean; the helpers are now hermetic.
     "test_uap_compliance": "needs a populated DB; environment-bound",
 }
 
@@ -85,6 +96,51 @@ class TestEveryListedModuleActuallyCollects(unittest.TestCase):
     def test_every_listed_module_exists(self):
         ghosts = {n for n in _listed_modules() if not (TESTS / f"{n}.py").exists()}
         assert ghosts == set(), f"test:enforcers names modules that do not exist: {sorted(ghosts)}"
+
+
+class TestTheGateCollectsWhatItClaims(unittest.TestCase):
+    """Every check above is structural — none pins how many tests actually run.
+
+    A listed module can define a TestCase and still contribute almost nothing.
+    Two real instances: a mid-file `unittest.main()` in
+    test_anthropic_proxy_streaming and test_delivery_enforcement_worktree cut
+    direct runs off partway through the file (273 -> 168 and 14 -> 7) while
+    still printing OK; and a mass deletion inside any listed module is invisible
+    to the listing checks. A floor on the collected count catches both.
+    """
+
+    # Deliberately below the current count so ordinary churn doesn't trip it.
+    # Raise it when the suite grows substantially; never lower it to make a
+    # failing gate pass — that is the deletion this test exists to catch.
+    MINIMUM_COLLECTED = 750
+
+    def test_listed_modules_collect_at_least_the_expected_test_count(self):
+        loader = unittest.TestLoader()
+        suite = loader.loadTestsFromNames(
+            [f"tools.agents.tests.{m}" for m in sorted(_listed_modules())]
+        )
+        # loadTestsFromNames turns an import failure into a _FailedTest that
+        # still counts, so surface those rather than let them pad the total.
+        broken = [
+            str(t) for t in _flatten(suite)
+            if type(t).__name__ == "_FailedTest"
+        ]
+        assert broken == [], f"listed modules that fail to even import: {broken}"
+
+        count = suite.countTestCases()
+        assert count >= self.MINIMUM_COLLECTED, (
+            f"the gate collects {count} tests, below the {self.MINIMUM_COLLECTED} floor. "
+            "Tests were deleted, a module stopped collecting, or an entrypoint "
+            "truncates the file. Investigate before adjusting this number."
+        )
+
+
+def _flatten(suite):
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from _flatten(item)
+        else:
+            yield item
 
 
 if __name__ == "__main__":

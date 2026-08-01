@@ -45,7 +45,13 @@ NOT_GATED = ["package.json", "config.yaml", "data.xml", "README.md", "notes.txt"
 
 def run(path, content="x" * 2000):
     e = {**os.environ, "UAP_ENFORCE_DELIVERY": "block", "UAP_INFERENCE_ENDPOINT": "http://172.17.0.1:8080/v1"}
-    for k in ("UAP_DELIVER_ACTIVE", "UAP_DELIVER_BYPASS", "UAP_DELIVER_LOCAL_MODE", "UAP_DELIVER_LOCAL_ADVISORY"):
+    # ANTHROPIC_BASE_URL / OPENAI_BASE_URL must be stripped too: the enforcer
+    # downgrades block -> advisory for a local-model session, so a developer
+    # with a loopback base URL exported (the normal shape of a local session)
+    # sees every block-expecting test here allow instead. CI has them unset, so
+    # this is green in CI and red on the developer's machine.
+    for k in ("UAP_DELIVER_ACTIVE", "UAP_DELIVER_BYPASS", "UAP_DELIVER_LOCAL_MODE",
+              "UAP_DELIVER_LOCAL_ADVISORY", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"):
         e.pop(k, None)
     p = subprocess.run(
         [sys.executable, str(ENF), "--operation", "Write", "--args", json.dumps({"file_path": path, "content": content})],

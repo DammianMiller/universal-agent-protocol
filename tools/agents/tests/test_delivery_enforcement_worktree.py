@@ -24,8 +24,17 @@ def run(path, root, env_extra=None):
     env = dict(os.environ)
     env["UAP_REPO_ROOT"] = str(root)
     env["UAP_ENFORCE_DELIVERY"] = "block"
-    env.pop("UAP_DELIVER_ACTIVE", None)
-    env.pop("UAP_DELIVER_BYPASS", None)
+    # Every ambient input that can turn "block" into "allow" must be cleared,
+    # or these tests assert the developer's shell rather than the enforcer.
+    # ANTHROPIC_BASE_URL is the subtle one: delivery_enforcement downgrades
+    # block -> advisory for a local-model session, so with a loopback base URL
+    # exported (the normal shape of a local session here) the three
+    # block-expecting tests below flip to allowed. CI has it unset, so this
+    # fails only for developers — presenting as "behaviour drifted".
+    for k in ("UAP_DELIVER_ACTIVE", "UAP_DELIVER_BYPASS",
+              "UAP_DELIVER_LOCAL_MODE", "UAP_DELIVER_LOCAL_ADVISORY",
+              "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"):
+        env.pop(k, None)
     if env_extra:
         env.update(env_extra)
     p = subprocess.run(
@@ -82,8 +91,12 @@ class TestDeliveryEnforcementWorktree(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
+# NB: the `unittest.main()` entrypoint lives at the END of this file, not here.
+# It used to sit at this point, above the two classes below, so running the file
+# directly (`python3 tools/agents/tests/test_delivery_enforcement_worktree.py`)
+# ran 7 tests and printed OK while `python -m unittest` ran 14 — the 7 it
+# skipped being exactly LocalAdvisoryTest + LocalModeTest. Anyone verifying a
+# change to those got a false green.
 
 
 import os as _os, subprocess as _sp, sys as _sys, json as _json, tempfile as _tf
@@ -96,7 +109,21 @@ class LocalAdvisoryTest(unittest.TestCase):
             root = _Path(td); (root/".git").mkdir()
             f = root/"src"/"a.ts"; f.parent.mkdir(parents=True); f.write_text("x")
             e = dict(_os.environ); e["UAP_REPO_ROOT"]=str(root)
-            for k in ("ANTHROPIC_BASE_URL","UAP_DELIVER_LOCAL_ADVISORY","UAP_DELIVER_ACTIVE"): e.pop(k, None)
+            # This test asserts the DEFAULT for a local session, so every input
+            # that overrides that default has to be cleared:
+            #  - UAP_DELIVER_BYPASS: run() already strips it. An agent shell
+            #    commonly exports it, the enforcer then allows every write, and
+            #    the block-expecting tests fail rc 0 != 2 — which reads as
+            #    "behaviour drifted" rather than "your env leaked".
+            #  - UAP_DELIVER_LOCAL_MODE: LocalModeTest._run already strips it;
+            #    omitting it here was an inconsistency. Importing the proxy
+            #    module (any test that does _load_proxy_module()) runs
+            #    _load_proxy_env_file(), which loads .uap/proxy.env into the
+            #    real os.environ — and that file sets UAP_DELIVER_LOCAL_MODE.
+            #    So this test's result depended on whether a proxy-importing
+            #    module ran before it in the same process.
+            for k in ("ANTHROPIC_BASE_URL","UAP_DELIVER_LOCAL_ADVISORY","UAP_DELIVER_ACTIVE",
+                      "UAP_DELIVER_BYPASS","UAP_DELIVER_LOCAL_MODE"): e.pop(k, None)
             e.update(extra_env)
             p = _sp.run([_sys.executable, str(_ENF), "--operation","Write","--args",_json.dumps({"file_path":str(f)})], capture_output=True, text=True, env=e)
             return p.returncode, _json.loads(p.stdout) if p.stdout.strip() else {}
@@ -120,7 +147,8 @@ class LocalModeTest(unittest.TestCase):
             root = _Path(td); (root/".git").mkdir()
             f = root/"src"/"a.ts"; f.parent.mkdir(parents=True); f.write_text("x")
             e = dict(_os.environ); e["UAP_REPO_ROOT"]=str(root)
-            for k in ("ANTHROPIC_BASE_URL","UAP_DELIVER_LOCAL_ADVISORY","UAP_DELIVER_LOCAL_MODE","UAP_DELIVER_ACTIVE"): e.pop(k, None)
+            # See the note in LocalAdvisoryTest._run — same ambient-bypass leak.
+            for k in ("ANTHROPIC_BASE_URL","UAP_DELIVER_LOCAL_ADVISORY","UAP_DELIVER_LOCAL_MODE","UAP_DELIVER_ACTIVE","UAP_DELIVER_BYPASS"): e.pop(k, None)
             e.update(env)
             p = _sp.run([_sys.executable, str(_ENF), "--operation","Write","--args",_json.dumps({"file_path":str(f)})], capture_output=True, text=True, env=e)
             return p.returncode, _json.loads(p.stdout) if p.stdout.strip() else {}
@@ -141,3 +169,7 @@ class LocalModeTest(unittest.TestCase):
     def test_default_is_advisory(self):
         rc, out = self._run({"ANTHROPIC_BASE_URL":"http://127.0.0.1:4000"})
         self.assertEqual(rc, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

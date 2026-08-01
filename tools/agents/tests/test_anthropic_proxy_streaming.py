@@ -3,6 +3,7 @@
 import asyncio
 import importlib.util
 import json
+import os
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -91,36 +92,44 @@ class TestProxyConfigTuning(unittest.TestCase):
         finally:
             setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
 
-    def test_build_request_bypasses_floor_for_tool_turns_when_thinking_disabled(self):
-        old_floor = getattr(proxy, "PROXY_MAX_TOKENS_FLOOR")
-        old_disable = getattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS")
-        try:
-            setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", 4096)
-            setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", True)
-
-            body = {
-                "model": "test",
-                "max_tokens": 512,
-                "messages": [{"role": "user", "content": "run pwd"}],
-                "tools": [
+    def test_thinking_disabled_flag_no_longer_changes_the_tool_turn_budget(self):
+        # This test used to assert 512 while toggling
+        # PROXY_DISABLE_THINKING_ON_TOOL_TURNS. That gating was deliberately
+        # removed — it skipped the floor on every tool turn once thinking was
+        # off, which re-introduced truncated tool calls on long edits — and the
+        # flag now only feeds a log line. Asserting the post-removal number
+        # alone would just duplicate test_max_tokens_floor_bypassed_for_small_
+        # preflight, so pin the removal itself: the flag must not move the
+        # budget in either position. 512 lands on THINKING_MIN_FOR_TOOLS (2048)
+        # because Qwen emits <think> regardless of the flag, and on a tool turn
+        # those blocks alone eat ~400-1000 tokens, leaving nothing for the
+        # tool_call (observed live as ~5 required_tool_miss retries per turn).
+        def budget(disable_thinking):
+            with unittest.mock.patch.object(proxy, "PROXY_MAX_TOKENS_FLOOR", 4096), \
+                    unittest.mock.patch.object(
+                        proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", disable_thinking):
+                return proxy.build_openai_request(
                     {
-                        "name": "Bash",
-                        "description": "run command",
-                        "input_schema": {"type": "object"},
-                    }
-                ],
-            }
+                        "model": "test",
+                        "max_tokens": 512,
+                        "messages": [{"role": "user", "content": "run pwd"}],
+                        "tools": [
+                            {
+                                "name": "Bash",
+                                "description": "run command",
+                                "input_schema": {"type": "object"},
+                            }
+                        ],
+                    },
+                    proxy.SessionMonitor(context_window=0),
+                ).get("max_tokens")
 
-            openai = proxy.build_openai_request(
-                body, proxy.SessionMonitor(context_window=0)
-            )
-            self.assertEqual(openai.get("max_tokens"), 512)
-        finally:
-            setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
-            setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
+        self.assertEqual(budget(True), budget(False), "flag must no longer gate the floor")
+        self.assertEqual(budget(True), 2048)
 
-    def test_build_request_skips_floor_for_non_tool_turns(self):
-        """Non-tool requests should NOT have the max_tokens floor applied."""
+    def test_non_tool_turn_takes_thinking_floor_not_the_big_floor(self):
+        """Non-tool requests skip PROXY_MAX_TOKENS_FLOOR and land on
+        THINKING_MIN_NO_TOOLS instead — a different, larger mechanism."""
         old_floor = getattr(proxy, "PROXY_MAX_TOKENS_FLOOR")
         old_disable = getattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS")
         try:
@@ -133,11 +142,20 @@ class TestProxyConfigTuning(unittest.TestCase):
                 "messages": [{"role": "user", "content": "say ok"}],
             }
 
-            openai = proxy.build_openai_request(
-                body, proxy.SessionMonitor(context_window=0)
-            )
-            # Floor should NOT inflate max_tokens for non-tool requests
-            self.assertEqual(openai.get("max_tokens"), 512)
+            with unittest.mock.patch.dict(
+                os.environ, {"PROXY_THINKING_MIN_NO_TOOLS": "8192"}
+            ):
+                openai = proxy.build_openai_request(
+                    body, proxy.SessionMonitor(context_window=0)
+                )
+            # The big PROXY_MAX_TOKENS_FLOOR (4096) is still skipped for
+            # non-tool turns — that is what this test guards. What the request
+            # lands on instead is THINKING_MIN_NO_TOOLS: Qwen spends small
+            # no-tool budgets entirely inside <think>, the EMPTY-OUTPUT GUARD
+            # then promotes truncated reasoning as the body, and evaluator
+            # callers get an unparseable verdict. Distinct mechanism, distinct
+            # value — assert it explicitly rather than the raw 512.
+            self.assertEqual(openai.get("max_tokens"), 8192)
         finally:
             setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
@@ -170,30 +188,56 @@ class TestProfileSelection(unittest.TestCase):
         )
         self.assertIn(suffix, openai_body["messages"][0]["content"])
 
+    @staticmethod
+    def _grammar_body():
+        return {
+            "model": "default",
+            "max_tokens": 128,
+            "messages": [{"role": "user", "content": "run pwd"}],
+            "tools": [
+                {
+                    "name": "Bash",
+                    "description": "run command",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+        }
+
     def test_build_request_uses_profile_grammar_override(self):
-        old_flag = getattr(proxy, "PROXY_TOOL_CALL_GRAMMAR")
-        setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", True)
-        try:
-            body = {
-                "model": "default",
-                "max_tokens": 128,
-                "messages": [{"role": "user", "content": "run pwd"}],
-                "tools": [
-                    {
-                        "name": "Bash",
-                        "description": "run command",
-                        "input_schema": {"type": "object"},
-                    }
-                ],
-            }
+        # PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY defaults to True and gates the
+        # whole grammar path on tool_choice == "required". It postdates this
+        # test, which is why the override looked broken: _apply_tool_call_grammar
+        # returned before ever consulting it. Relax the gate so this test covers
+        # what its name says — the override winning over the default GBNF — and
+        # let the test below cover the gate itself.
+        with unittest.mock.patch.object(proxy, "PROXY_TOOL_CALL_GRAMMAR", True), \
+                unittest.mock.patch.object(
+                    proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", False):
             openai_body = proxy.build_openai_request(
-                body,
+                self._grammar_body(),
                 proxy.SessionMonitor(context_window=0),
                 profile_grammar="grammar-test",
             )
-            self.assertEqual(openai_body.get("grammar"), "grammar-test")
-        finally:
-            setattr(proxy, "PROXY_TOOL_CALL_GRAMMAR", old_flag)
+        self.assertEqual(openai_body.get("grammar"), "grammar-test")
+
+    def test_required_only_gate_is_what_decides_whether_grammar_attaches(self):
+        # The gate that broke the test above is real behaviour and was untested.
+        # Assert it on the DISCRIMINATING axis — tool_choice — rather than only
+        # the negative case: a bare assertIsNone would also pass if the grammar
+        # flag were off, if tools were stripped, or if the _apply_tool_call_grammar
+        # call site were deleted outright, so it would prove nothing.
+        def grammar_for(tool_choice):
+            body = {"tools": [{"type": "function"}], "tool_choice": tool_choice}
+            with unittest.mock.patch.object(proxy, "PROXY_TOOL_CALL_GRAMMAR", True), \
+                    unittest.mock.patch.object(
+                        proxy, "PROXY_TOOL_CALL_GRAMMAR_REQUIRED_ONLY", True):
+                proxy._apply_tool_call_grammar(
+                    body, tool_choice=tool_choice, grammar_override="grammar-test"
+                )
+            return body.get("grammar")
+
+        self.assertEqual(grammar_for("required"), "grammar-test")
+        self.assertIsNone(grammar_for("auto"))
 
     def test_prune_target_fraction_uses_config_or_default(self):
         old_target = getattr(proxy, "PROXY_CONTEXT_PRUNE_TARGET_FRACTION")
@@ -408,7 +452,18 @@ class TestStreamGuardedPathSelection(unittest.TestCase):
 
 
 class TestMalformedToolGuardrail(unittest.TestCase):
-    def test_detects_malformed_tool_payload(self):
+    def test_tolerates_orphan_parameter_closer_after_a_valid_answer(self):
+        # Reversed deliberately on 2026-05-12 (_strip_orphan_tool_xml): an orphan
+        # closer with no opener is no longer treated as a malformed tool call,
+        # because Qwen3.6 leaks bare </parameter> training residue after a valid
+        # answer when forced into tool_choice='required' with nothing to call, and
+        # rejecting those cost ~11 false rejections in 40 min on a related branch.
+        #
+        # Be honest about the trade-off this pins: THIS payload is the model
+        # regurgitating its own tool schema twice, which is a plausible genuine
+        # failure. It survives only because the separator is '= {' rather than
+        # '=\n{' — one whitespace character flips the verdict. We accept that
+        # false negative to kill a much larger false-positive class.
         openai_resp = {
             "choices": [
                 {
@@ -427,9 +482,43 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
             "messages": [{"role": "user", "content": "fix this"}],
         }
-        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+        self.assertFalse(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
 
-    def test_detects_closing_function_tag_payload(self):
+    def test_still_detects_a_payload_that_retains_its_opener(self):
+        # The other half of the contract the strip promises: tolerating orphan
+        # closers must not blind the guardrail to a genuine malformed attempt,
+        # which keeps its opener. Without this, the test above alone would be
+        # satisfied by deleting the detector outright.
+        anthropic_body = {
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": "fix this"}],
+        }
+        for payload in (
+            # The load-bearing case: an orphan closer AND a real opener in the
+            # same text. Only this one proves the strip removes the residue
+            # without also swallowing the genuine attempt beside it — the other
+            # payloads return early before _strip_orphan_tool_xml ever runs.
+            '</function> then <function=Bash><parameter name="c">ls</parameter></function>',
+            '<parameter name="cmd">ls</parameter>',
+            '<tool_call>{"name":"Read"}',
+            '<function=Bash>{"cmd":"ls"}',
+        ):
+            with self.subTest(payload=payload):
+                openai_resp = {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": payload, "tool_calls": []},
+                        }
+                    ]
+                }
+                self.assertTrue(
+                    proxy._is_malformed_tool_response(openai_resp, anthropic_body)
+                )
+
+    def test_tolerates_orphan_function_closer_after_a_valid_answer(self):
+        # Same 2026-05-12 reversal as the </parameter> case above: a trailing
+        # </function> with no opener is training residue, not a tool call.
         openai_resp = {
             "choices": [
                 {
@@ -449,7 +538,7 @@ class TestMalformedToolGuardrail(unittest.TestCase):
             "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
             "messages": [{"role": "user", "content": "list root docs/json files"}],
         }
-        self.assertTrue(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
+        self.assertFalse(proxy._is_malformed_tool_response(openai_resp, anthropic_body))
 
     def test_detects_think_tag_with_repeated_policy_phrase(self):
         openai_resp = {
@@ -1840,7 +1929,14 @@ class TestTurnCountFinalizeBreaker(unittest.TestCase):
                 self._body(45), proxy.SessionMonitor(context_window=262144)
             )
             self.assertFalse(out.get("tools"))  # tools stripped
-            self.assertIn("STOP now", out["messages"][-1]["content"])
+            # The breaker's wording moved from a hard "STOP now" to a periodic
+            # progress checkpoint that explicitly resumes next turn. Assert the
+            # contract that survives rewording rather than the prose: the turn
+            # count is cited, and the model is told not to emit a tool call —
+            # which is the half that must agree with the stripped toolset.
+            nudge = out["messages"][-1]["content"]
+            self.assertIn("45", nudge)
+            self.assertRegex(nudge, r"(?i)do NOT emit any tool call|no tools are available")
         finally:
             setattr(proxy, "PROXY_HARD_FINALIZE_TURNS", old)
 
@@ -3643,8 +3739,9 @@ class TestDegenerateRepetitionDetection(unittest.TestCase):
         self.assertFalse(truncated)
         self.assertEqual(result["choices"][0]["message"]["content"], text)
 
-    def test_max_tokens_floor_skipped_for_non_tool_requests(self):
-        """max_tokens floor should not inflate non-tool requests."""
+    def test_non_tool_request_lands_below_the_big_floor(self):
+        """The 16384 floor is skipped for non-tool turns; the much smaller
+        THINKING_MIN_NO_TOOLS applies instead."""
         old_floor = getattr(proxy, "PROXY_MAX_TOKENS_FLOOR")
         old_disable = getattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS")
         try:
@@ -3656,11 +3753,17 @@ class TestDegenerateRepetitionDetection(unittest.TestCase):
                 "max_tokens": 100,
                 "messages": [{"role": "user", "content": "generate a title"}],
             }
-            openai = proxy.build_openai_request(
-                body, proxy.SessionMonitor(context_window=0)
-            )
-            # No tools = no floor inflation
-            self.assertEqual(openai.get("max_tokens"), 100)
+            with unittest.mock.patch.dict(
+                os.environ, {"PROXY_THINKING_MIN_NO_TOOLS": "8192"}
+            ):
+                openai = proxy.build_openai_request(
+                    body, proxy.SessionMonitor(context_window=0)
+                )
+            # No tools = the 16384 floor is skipped. The result is the much
+            # smaller THINKING_MIN_NO_TOOLS, not the raw 100: a 100-token
+            # no-tool budget is consumed entirely by Qwen's mandatory <think>,
+            # leaving nothing for the answer. Still well under the floor.
+            self.assertEqual(openai.get("max_tokens"), 8192)
         finally:
             setattr(proxy, "PROXY_MAX_TOKENS_FLOOR", old_floor)
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
@@ -3826,8 +3929,10 @@ class EmptyOutputGuardTest(unittest.TestCase):
         self.assertFalse(any(b.get("type") == "text" for b in out["content"]))
 
 
-if __name__ == "__main__":
-    unittest.main()
+# NB: the `unittest.main()` entrypoint is at the END of this file. It used to
+# sit here, above ~2200 further lines of TestCase classes, so running the file
+# directly exited after this point and silently skipped roughly 40% of the
+# module — including TestSendStreamWithRetry — while still printing OK.
 
 
 class TestCompletionContractGuardrails(unittest.TestCase):

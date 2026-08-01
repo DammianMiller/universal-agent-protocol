@@ -17,7 +17,13 @@ ENF = Path(__file__).resolve().parents[3] / "src" / "policies" / "enforcers" / "
 
 def run(op, args, env=None):
     e = {**os.environ, "UAP_ENFORCE_DELIVERY": "block", "UAP_INFERENCE_ENDPOINT": "http://172.17.0.1:8080/v1"}
-    for k in ("UAP_DELIVER_ACTIVE", "UAP_DELIVER_BYPASS", "UAP_DELIVER_LOCAL_MODE", "UAP_DELIVER_LOCAL_ADVISORY"):
+    # ANTHROPIC_BASE_URL / OPENAI_BASE_URL must be stripped too: the enforcer
+    # downgrades block -> advisory for a local-model session, so a developer
+    # with a loopback base URL exported (the normal shape of a local session)
+    # sees every block-expecting test here allow instead. CI has them unset, so
+    # this is green in CI and red on the developer's machine.
+    for k in ("UAP_DELIVER_ACTIVE", "UAP_DELIVER_BYPASS", "UAP_DELIVER_LOCAL_MODE",
+              "UAP_DELIVER_LOCAL_ADVISORY", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"):
         e.pop(k, None)
     if env:
         e.update(env)
