@@ -42,11 +42,14 @@ Configuration (Environment Variables)
     PROXY_READ_TIMEOUT   Read timeout in seconds for upstream LLM streaming
                          Default: 600 (10 minutes)
 
+    PROXY_DEFAULT_MAX_TOKENS   max_tokens applied when the client sends none
+                               Default: 16384
+
     PROXY_TOOL_TURN_MAX_TOKENS   Max tokens for tool-call turns (0 to disable)
-                                Default: 8192
+                                Default: 32768
 
     PROXY_TOOL_TURN_MAX_TOKENS_GARBLED   Max tokens after garbled/malformed output
-                                         Default: 4096
+                                         Default: 16384
 
     PROXY_MAX_CONNECTIONS   Max concurrent connections to upstream
                             Default: 20
@@ -1011,6 +1014,14 @@ PROXY_STREAM_REASONING_MAX_CHARS = int(
     os.environ.get("PROXY_STREAM_REASONING_MAX_CHARS", "240")
 )
 PROXY_MAX_TOKENS_FLOOR = int(os.environ.get("PROXY_MAX_TOKENS_FLOOR", "16384"))
+# What a client gets when it sends no max_tokens at all — replaces a hardcoded
+# 4096 buried in openai_to_anthropic_request. Deliberately modest: for TOOL
+# turns this value barely matters, because _resolve_max_tokens_request already
+# lifts anything above 1024 to PROXY_MAX_TOKENS_FLOOR. It governs NO-TOOL turns
+# — judges, critics, acceptance verdicts — where a large budget buys nothing
+# and gives a thinking-runaway room to burn, so it is aligned with
+# THINKING_MIN_NO_TOOLS rather than raised to match a file-write ceiling.
+PROXY_DEFAULT_MAX_TOKENS = int(os.environ.get("PROXY_DEFAULT_MAX_TOKENS", "8192"))
 PROXY_TOOL_TURN_MAX_TOKENS = int(os.environ.get("PROXY_TOOL_TURN_MAX_TOKENS", "8192"))
 PROXY_TOOL_TURN_MAX_TOKENS_GARBLED = int(
     os.environ.get("PROXY_TOOL_TURN_MAX_TOKENS_GARBLED", "4096")
@@ -4848,7 +4859,17 @@ def openai_to_anthropic_request(openai_body: dict) -> dict:
     anthropic_body: dict = {
         "model": openai_body.get("model", "default"),
         "messages": anthropic_messages,
-        "max_tokens": int(openai_body.get("max_tokens", 4096) or 4096),
+        # A client that omits max_tokens is not asking for a small answer — it
+        # has no opinion. Defaulting to 4096 (~16KB of code) silently truncated
+        # every large write: the agentic executor sends no max_tokens, so 52 of
+        # 56 requests in a measured build ran at 4096 and a 36KB game.js came
+        # back cut off mid-file, which the model then spent turns "repairing".
+        # Neither the tool-turn cap (8192) nor llama's --n-predict (16384) was
+        # ever reached, so nothing logged a truncation — it just looked like a
+        # model that could not finish a file.
+        "max_tokens": int(
+            openai_body.get("max_tokens") or PROXY_DEFAULT_MAX_TOKENS
+        ),
     }
     if system_text_parts:
         anthropic_body["system"] = "\n\n".join(p for p in system_text_parts if p)
@@ -9249,6 +9270,7 @@ def _build_malformed_retry_body(
     attempt: int = 1,
     total_attempts: int = 1,
     is_garbled: bool = False,
+    is_truncated: bool = False,
     exclude_tools: list[str] | None = None,
 ) -> dict:
     retry_body = dict(openai_body)
@@ -9298,6 +9320,18 @@ def _build_malformed_retry_body(
             "RETRY GARBLED CAP: max_tokens=%d for garbled retry attempt=%d",
             PROXY_TOOL_TURN_MAX_TOKENS_GARBLED,
             attempt,
+        )
+    elif is_truncated:
+        # A write that ran out of tokens is the one case where retrying SMALLER
+        # is guaranteed to fail again — the attempt was cut off for lack of room,
+        # so clamping the retry to PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS (8192
+        # deployed, ~32KB) below the budget that already proved insufficient
+        # just reproduces the truncation. Keep the original budget instead.
+        # Observed: a 36KB module truncated, then every retry re-truncated.
+        logger.info(
+            "RETRY TRUNCATED: keeping max_tokens=%s (retrying smaller cannot fit "
+            "what was already cut off)",
+            retry_body.get("max_tokens"),
         )
     elif PROXY_MALFORMED_TOOL_RETRY_MAX_TOKENS > 0:
         current_max = int(
@@ -9632,6 +9666,7 @@ async def _apply_malformed_tool_guardrail(
             attempt=attempt + 1,
             total_attempts=attempts,
             is_garbled=current_issue.kind == "invalid_tool_args",
+            is_truncated=current_issue.kind == "truncated_tool_args",
             exclude_tools=exclude,
         )
         retry_resp = await client.post(

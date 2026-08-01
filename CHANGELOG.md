@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.179.9 (2026-08-01)
+
+- fix(proxy): don't retry a truncated write with less room than already failed
+
+
 ## v1.179.8 (2026-08-01)
 
 - fix(deliver): ground the forced-write round instead of blinding it
