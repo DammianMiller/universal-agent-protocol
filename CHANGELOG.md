@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.179.7 (2026-08-01)
+
+- fix(proxy): scope .uap/proxy.env discovery, and fail closed on an open bind
+
+
 ## v1.179.6 (2026-08-01)
 
 - test(ci): run the Python proxy + delivery suites in CI (483 -> 771 tests)
