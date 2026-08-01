@@ -3560,6 +3560,92 @@ class DisconnectAwareClient(httpx.AsyncClient):
                 task.cancel()
 
 
+async def _send_stream_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict,
+) -> httpx.Response:
+    """POST a streaming completion, retrying transient failures and 503 "Loading model".
+
+    The streaming sibling of `_post_with_retry_inner`. Both retry the
+    `_UPSTREAM_RETRY_EXCEPTIONS` set — which is wider than connect errors; a
+    ReadTimeout/ReadError mid-setup is retried too — so a llama-server restart
+    doesn't fail the turn. Both also treat a 503 "Loading model" as transient:
+    llama-server answers that while a GGUF is still being mapped, so the right
+    move is to wait for /health and retry rather than surface a fatal error.
+
+    Raises the last transient exception when every attempt failed. Otherwise
+    returns the response, which may itself be a non-200 the caller must handle —
+    including a loading 503 that outlived the retry budget, or one whose health
+    wait timed out.
+    """
+    # Clamp: a configured 0 would skip the loop entirely and fall through to the
+    # terminal raise with last_exc unset, escaping the caller's narrow except as
+    # an unhandled 500. One attempt is the floor.
+    retry_max = max(1, PROXY_UPSTREAM_RETRY_MAX)
+    last_exc: Exception | None = None
+    for attempt in range(retry_max):
+        try:
+            resp = await client.send(
+                client.build_request(
+                    "POST",
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                ),
+                stream=True,
+            )
+            setattr(resp, "_uap_client", client)
+            if resp.status_code == 503:
+                # _is_loading_model_503 reads .text, which raises ResponseNotRead
+                # on an unread streaming body — and its bare `except` turns that
+                # into a silent False, so without this read every loading 503
+                # would look permanent and the retry would never fire. httpx
+                # caches the body, so the caller's non-200 handler re-reads free.
+                try:
+                    await resp.aread()
+                except BaseException:
+                    # Never leave the connection checked out: a ReadError here is
+                    # retryable and would otherwise loop with resp unreferenced
+                    # and unclosed, accruing CLOSE-WAIT until the pool saturates.
+                    _detach_aclose(resp)
+                    raise
+                if _is_loading_model_503(resp) and attempt < retry_max - 1:
+                    logger.warning(
+                        "Upstream 503 Loading model (stream attempt %d/%d) – waiting for health",
+                        attempt + 1,
+                        retry_max,
+                    )
+                    healthy = await _wait_for_upstream_health(client, max_wait=60.0)
+                    if not healthy:
+                        # Matches _post_with_retry_inner: once a health wait has
+                        # timed out, stacking another one just buys the client
+                        # minutes of dead air before the same failure. Surface it.
+                        return resp
+                    _detach_aclose(resp)
+                    continue
+            return resp
+        except _UPSTREAM_RETRY_EXCEPTIONS as exc:
+            last_exc = exc
+            if attempt < retry_max - 1:
+                logger.warning(
+                    "Upstream transient error (stream attempt %d/%d): %s – retrying in %.0fs",
+                    attempt + 1,
+                    retry_max,
+                    type(exc).__name__,
+                    PROXY_UPSTREAM_RETRY_DELAY_SECS,
+                )
+                await asyncio.sleep(PROXY_UPSTREAM_RETRY_DELAY_SECS)
+            else:
+                logger.error(
+                    "Upstream stream failed after %d attempts: %s: %s",
+                    retry_max,
+                    type(exc).__name__,
+                    exc,
+                )
+    raise last_exc if last_exc else RuntimeError("upstream stream retry failed")
+
+
 async def _post_with_retry_inner(
     client: httpx.AsyncClient,
     url: str,
@@ -11676,43 +11762,17 @@ async def messages(request: Request):
         # Retry upstream connection with backoff to handle
         # llama-server restarts gracefully instead of 500-ing to the client.
         MAX_UPSTREAM_RETRIES = PROXY_UPSTREAM_RETRY_MAX
-        RETRY_DELAY_SECS = PROXY_UPSTREAM_RETRY_DELAY_SECS
         last_exc: Exception | None = None
         resp: httpx.Response | None = None
 
-        for attempt in range(MAX_UPSTREAM_RETRIES):
-            try:
-                resp = await client.send(
-                    client.build_request(
-                        "POST",
-                        f"{LLAMA_CPP_BASE}/chat/completions",
-                        json=openai_body,
-                        headers={"Content-Type": "application/json"},
-                    ),
-                    stream=True,
-                )
-                setattr(resp, "_uap_client", client)
-                # Connection succeeded – break out of retry loop
-                last_exc = None
-                break
-            except _UPSTREAM_RETRY_EXCEPTIONS as exc:
-                last_exc = exc
-                if attempt < MAX_UPSTREAM_RETRIES - 1:
-                    logger.warning(
-                        "Upstream connect failed (attempt %d/%d): %s – retrying in %.0fs",
-                        attempt + 1,
-                        MAX_UPSTREAM_RETRIES,
-                        type(exc).__name__,
-                        RETRY_DELAY_SECS,
-                    )
-                    await asyncio.sleep(RETRY_DELAY_SECS)
-                else:
-                    logger.error(
-                        "Upstream connect failed after %d attempts: %s: %s",
-                        MAX_UPSTREAM_RETRIES,
-                        type(exc).__name__,
-                        exc,
-                    )
+        try:
+            resp = await _send_stream_with_retry(
+                client,
+                f"{LLAMA_CPP_BASE}/chat/completions",
+                openai_body,
+            )
+        except _UPSTREAM_RETRY_EXCEPTIONS as exc:
+            last_exc = exc
 
         if last_exc is not None:
             return Response(
