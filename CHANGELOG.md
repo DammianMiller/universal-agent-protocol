@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.179.6 (2026-08-01)
+
+- test(ci): run the Python proxy + delivery suites in CI (483 -> 771 tests)
+
+
 ## v1.179.5 (2026-08-01)
 
 - fix(proxy): retry 503 "Loading model" on the streaming path too

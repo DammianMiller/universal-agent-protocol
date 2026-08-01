@@ -57,11 +57,24 @@ jobs:
   # cycle-break) had no CI coverage at all, which is how the same guards kept
   # regressing on green PRs. All 34 are now listed — 102 tests became 436.
   #
-  # Three remain out, each verified failing for its own pre-existing reason:
-  #   - test_anthropic_proxy_streaming     behaviour drifted from the assertions
-  #   - test_delivery_enforcement_worktree behaviour drifted from the assertions
+  # Two of the three remaining exclusions are now fixed and listed — 483 tests
+  # became 770:
+  #   - test_anthropic_proxy_streaming had 7 genuinely stale assertions (the
+  #     max_tokens floors superseded by the thinking-floor, a grammar guard that
+  #     postdated its test, the turn-count breaker's rewording, and two
+  #     malformed-payload cases deliberately reversed by _strip_orphan_tool_xml).
+  #     This is the module covering the streaming 503 retry, so its absence is
+  #     what let that bug ship on a green PR.
+  #   - test_delivery_enforcement_worktree never drifted at all. Its env helpers
+  #     copied os.environ without stripping UAP_DELIVER_BYPASS / _LOCAL_MODE /
+  #     ANTHROPIC_BASE_URL, so a local-session shell turned block into advisory
+  #     and the block-expecting tests read 0 instead of 2. Hermetic now.
+  #
+  # One remains out:
   #   - test_uap_compliance                needs a populated DB; environment-bound
-  # Fix those, then add them here too.
+  # Fix that, then add it here too. (Its schema-only assertions could be made
+  # CI-runnable with a tmpdir fixture; two of its cases accept both success and
+  # failure and should be tightened first.)
   #
   # A module is only covered if it is BOTH listed here AND made of
   # unittest.TestCase subclasses — `python -m unittest` silently collects nothing
