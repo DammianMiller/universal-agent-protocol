@@ -11,10 +11,11 @@
  * `isAlive` and `sleep` are injected so the waiting itself is deterministic —
  * the property under test is the DECISION at each outcome, not the clock.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { DEFAULT_WEDGE_TIMEOUT_S, updateDeliverHeartbeat } from '../../src/delivery/heartbeat.js';
 import {
   awaitInFlightDeliver,
   currentHolder,
@@ -52,7 +53,16 @@ function writeRun(root: string, runId: string, over: Record<string, unknown> = {
 }
 const noSleep = async (): Promise<void> => undefined;
 
+// wedgeTimeoutS() reads the real process env, and the DEFAULT is the property
+// under test — an ambient UAP_DELIVER_WEDGE_TIMEOUT (a debugging session, a CI
+// job) would silently flip these assertions. Clear it before each test and
+// restore the original after, rather than deleting whatever was there.
+const wedgeEnv = process.env.UAP_DELIVER_WEDGE_TIMEOUT;
+beforeEach(() => { delete process.env.UAP_DELIVER_WEDGE_TIMEOUT; });
+
 afterEach(() => {
+  if (wedgeEnv === undefined) delete process.env.UAP_DELIVER_WEDGE_TIMEOUT;
+  else process.env.UAP_DELIVER_WEDGE_TIMEOUT = wedgeEnv;
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
 });
 
@@ -295,12 +305,262 @@ describe('awaitInFlightDeliver', () => {
     expect(r.nextStep).toMatch(/follow:true/i);
     // Names the two escalations a model actually reached for when it read this
     // outcome as a broken tool: killing the run, and switching enforcement off.
-    expect(r.nextStep).toMatch(/healthy/i);
+    //
+    // This used to assert the word "healthy", which the message stated
+    // unconditionally without anything having checked it. Health is now DERIVED
+    // from the heartbeat (see FollowProgress), so the assertion is on the
+    // verdict rather than on the adjective — a message that claims health it has
+    // not measured is the bug, not the fix.
+    expect(r.progress?.health).toBe('starting'); // alive, no heartbeat written yet
     expect(r.nextStep).toMatch(/do NOT kill/i);
     expect(r.nextStep).toMatch(/enforcement setting/i);
     // Must NOT send the caller to resume while the holder is alive — that would
     // start a second copy of the running mission on the same runId.
     expect(r.nextStep).not.toMatch(/resume/i);
+  });
+
+  // Three identical "STILL RUNNING" replies look exactly like a hung process.
+  // Observed live 2026-07-31 (octopus_invaders_v3, qwen on opencode): the model
+  // polled three times, got the same sentence each time, and killed the run —
+  // six times in one hour. The kill routes were closed separately; this is the
+  // reason it reached for them.
+  describe('progress evidence, so a repeated poll is not an identical poll', () => {
+    function beat(root: string, agoSec: number): void {
+      writeFileSync(
+        join(root, '.uap', 'deliver.heartbeat'),
+        String(Math.floor(Date.now() / 1000) - agoSec)
+      );
+    }
+
+    async function follow(root: string) {
+      return awaitInFlightDeliver(root, { timeoutMs: 1, sleep: noSleep, isAlive: () => true });
+    }
+
+    // The default wedge window is the load-bearing safety property here: one turn
+    // on a local model (generation plus the full gate ladder) is legitimately
+    // MINUTES of heartbeat silence. Without this test, an implementation that
+    // ignores DEFAULT_WEDGE_TIMEOUT_S and hardcodes ~30s passes every other case
+    // in this file — and then reports every slow-but-healthy run as wedged,
+    // reintroducing the incident.
+    it('uses the DEFAULT wedge window, not a short one, when the env override is unset', async () => {
+      const root = project();
+      holdLock(root, 4242);
+      writeRun(root, 'run-20260730T090000-aaaaaa', { pid: 4242, status: 'running' });
+      beat(root, 600); // ten minutes silent: slow, not stuck
+
+      const r = await follow(root);
+      expect(r.progress?.wedgeAfterSec).toBe(DEFAULT_WEDGE_TIMEOUT_S);
+      expect(r.progress?.health).toBe('active');
+      expect(r.reason).not.toMatch(/wedge/i);
+    });
+
+    it('reports a fresh heartbeat as active, with facts the caller can diff', async () => {
+      const root = project();
+      holdLock(root, 4242);
+      writeRun(root, 'run-20260730T090000-aaaaaa', { pid: 4242, status: 'running' });
+      beat(root, 3);
+
+      const r = await follow(root);
+      expect(r.progress?.health).toBe('active');
+      expect(r.progress?.heartbeatAgeSec).toBeGreaterThanOrEqual(3);
+      expect(r.progress?.heartbeatAgeSec).toBeLessThan(10);
+      // The prose must carry the same fact as the struct, since a model reads one
+      // and a script reads the other.
+      expect(r.reason).toMatch(/last activity \d+s ago/i);
+      expect(r.reason).not.toMatch(/wedge/i);
+      expect(r.nextStep).toMatch(/heartbeatAgeSec/);
+    });
+
+    it('reports a heartbeat older than the wedge timeout as wedged, and says so', async () => {
+      const root = project();
+      holdLock(root, 4242);
+      writeRun(root, 'run-20260730T090000-aaaaaa', { pid: 4242, status: 'running' });
+      beat(root, 60);
+      process.env.UAP_DELIVER_WEDGE_TIMEOUT = '30';
+      try {
+        const r = await follow(root);
+        expect(r.progress?.health).toBe('wedged');
+        expect(r.progress?.wedgeAfterSec).toBe(30);
+        expect(r.reason).toMatch(/may be stuck rather than slow/i);
+        // A wedged holder is RECLAIMED by the next launch. Telling the caller to
+        // kill it is what produced the incident; telling it nothing is what
+        // produced the disbelief.
+        expect(r.nextStep).toMatch(/do NOT kill/i);
+        expect(r.nextStep).toMatch(/reclaimed automatically/i);
+      } finally {
+        delete process.env.UAP_DELIVER_WEDGE_TIMEOUT; // afterEach restores the original
+      }
+    });
+
+    it('never claims health it has not measured', async () => {
+      const root = project();
+      holdLock(root, 4242);
+      writeRun(root, 'run-20260730T090000-aaaaaa', { pid: 4242, status: 'running' });
+      // No heartbeat file at all — starting up, which is neither healthy nor stuck.
+      const r = await follow(root);
+      expect(r.progress?.health).toBe('starting');
+      expect(r.progress?.heartbeatAgeSec).toBeNull();
+      expect(r.reason).toMatch(/no heartbeat yet/i);
+      expect(r.reason).not.toMatch(/\bhealthy\b/i);
+    });
+
+    it('does not call an hour-old run "starting"', async () => {
+      // No heartbeat is 'starting' only while the run is YOUNG. Unconditionally
+      // is the same unmeasured adjective as the "the run is healthy" this
+      // projection replaced — and it would contradict the lock path, which calls
+      // the identical state (no heartbeat, old) abandoned and reclaimable.
+      const root = project();
+      holdLock(root, 4242);
+      writeRun(root, 'run-20260730T090000-aaaaaa', {
+        pid: 4242,
+        status: 'running',
+        createdAt: new Date(Date.now() - 3_600_000).toISOString(),
+      });
+      process.env.UAP_DELIVER_WEDGE_TIMEOUT = '1800';
+      const r = await follow(root);
+      expect(r.progress?.runElapsedSec).toBeGreaterThan(3000);
+      expect(r.progress?.health).not.toBe('starting');
+      expect(r.progress?.health).toBe('wedged');
+    });
+
+    it('reports how long the RUN has been going, not how long this wait was', async () => {
+      // Otherwise runElapsedSec can be dropped silently, while CLI.md promises it
+      // and the reason line prints it. The wait here is 1ms; the run is 5 min old.
+      const root = project();
+      holdLock(root, 4242);
+      writeRun(root, 'run-20260730T090000-aaaaaa', {
+        pid: 4242,
+        status: 'running',
+        createdAt: new Date(Date.now() - 300_000).toISOString(),
+      });
+      beat(root, 2);
+      const r = await follow(root);
+      expect(r.progress?.runElapsedSec).toBeGreaterThanOrEqual(299);
+      expect(r.progress?.runElapsedSec).toBeLessThan(360);
+      expect(r.reason).toMatch(/running for \d+s/);
+    });
+
+    it('omits runElapsedSec for an unparseable or future createdAt', async () => {
+      // readState validates updatedAt but NOT createdAt, so this reaches
+      // Date.parse as untrusted data. A field frozen at 0 would read as "not
+      // moving" — the inference that produced the kills — so it is omitted.
+      for (const bad of ['not-a-date', new Date(Date.now() + 3_600_000).toISOString()]) {
+        const root = project();
+        holdLock(root, 4242);
+        writeRun(root, 'run-20260730T090000-aaaaaa', {
+          pid: 4242, status: 'running', createdAt: bad,
+        });
+        beat(root, 2);
+        const r = await follow(root);
+        expect(r.progress?.runElapsedSec, bad).toBeUndefined();
+        expect(r.reason, bad).not.toMatch(/running for/);
+        expect(r.reason, bad).toMatch(/last activity/); // still answers the real question
+      }
+    });
+
+    it('treats a torn or garbage heartbeat as no heartbeat, not as epoch 1970', async () => {
+      // Parsing '' as 0 would make the age ~57 YEARS and report every starting
+      // run as wedged — the false positive that gets a healthy mission killed.
+      for (const junk of ['', '   ', 'not-a-number', '0', '-1']) {
+        const root = project();
+        holdLock(root, 4242);
+        writeRun(root, 'run-20260730T090000-aaaaaa', { pid: 4242, status: 'running' });
+        writeFileSync(join(root, '.uap', 'deliver.heartbeat'), junk);
+        const r = await follow(root);
+        expect(r.progress?.heartbeatAgeSec, junk).toBeNull();
+        expect(r.reason, junk).not.toMatch(/last activity/);
+      }
+    });
+
+    it('clamps a future heartbeat to age 0 rather than reporting time running backwards', async () => {
+      const root = project();
+      holdLock(root, 4242);
+      writeRun(root, 'run-20260730T090000-aaaaaa', { pid: 4242, status: 'running' });
+      beat(root, -120); // stamped two minutes into the future
+      const r = await follow(root);
+      expect(r.progress?.heartbeatAgeSec).toBe(0);
+      expect(r.progress?.health).toBe('active');
+    });
+
+    it('still answers with progress when the run cannot be attributed to the holder', async () => {
+      // The heartbeat is project-global, so it is valid even unattributed — and an
+      // unattributed poll returning NO progress would be the identical repeated
+      // reply this change exists to remove. Per-run facts must not be borrowed
+      // from someone else's mission.
+      const root = project();
+      holdLock(root, 4242);
+      writeRun(root, 'run-20260730T090000-aaaaaa', { pid: 999, status: 'running' });
+      beat(root, 4);
+      const r = await follow(root);
+      expect(r.attributed).toBe(false);
+      expect(r.progress?.health).toBe('active');
+      expect(r.progress?.heartbeatAgeSec).toBeGreaterThanOrEqual(4);
+      expect(r.progress?.phase).toBeUndefined();
+      expect(r.progress?.runElapsedSec).toBeUndefined();
+      expect(r.runId).toBeUndefined();
+      // A guessed run's status must not be published as the followed run's.
+      expect(r.status).toBeUndefined();
+    });
+
+    it('reads what the REAL writer writes, not what this test thinks it writes', async () => {
+      // Change updateDeliverHeartbeat to emit ms or JSON and every hand-written
+      // fixture here stays green while production wedges every healthy run. This
+      // is the only case that closes the writer/reader loop.
+      const root = project();
+      holdLock(root, 4242);
+      writeRun(root, 'run-20260730T090000-aaaaaa', { pid: 4242, status: 'running' });
+      updateDeliverHeartbeat(root); // the production writer, atomic temp+rename
+      const r = await follow(root);
+      expect(r.progress?.heartbeatAgeSec).toBeLessThan(5);
+      expect(r.progress?.health).toBe('active');
+    });
+
+    it('reports phase 1/N at phaseIndex 0, and omits phase without a cursor', async () => {
+      // phaseIndex 0 is FALSY: the natural `run?.phaseIndex && …` drops the phase
+      // for every mission on its FIRST phase — the poll where a caller is deciding
+      // whether anything started at all.
+      const phases = [
+        { id: 'p1', title: 'a', goal: 'g' },
+        { id: 'p2', title: 'b', goal: 'g' },
+      ];
+      const a = project();
+      holdLock(a, 4242);
+      writeRun(a, 'run-20260730T090000-aaaaaa', { pid: 4242, status: 'running', phaseIndex: 0, phases });
+      beat(a, 1);
+      expect((await follow(a)).progress?.phase).toBe('1/2');
+
+      const b = project(); // planned but not started: phases, no cursor
+      holdLock(b, 4242);
+      writeRun(b, 'run-20260730T090000-aaaaaa', { pid: 4242, status: 'running', phases });
+      beat(b, 1);
+      const r = await follow(b);
+      expect(r.progress?.phase).toBeUndefined();
+      expect(r.reason).not.toMatch(/phase/i);
+    });
+
+    it('carries the phase position when the mission is decomposed', async () => {
+      const root = project();
+      holdLock(root, 4242);
+      writeRun(root, 'run-20260730T090000-aaaaaa', {
+        pid: 4242,
+        status: 'running',
+        phaseIndex: 2,
+        // readState REJECTS the whole run if a phase is missing id/title/goal,
+        // so a shorthand fixture here silently yields attributed:false and the
+        // phase assertion would fail for an unrelated reason.
+        phases: [
+          { id: 'p1', title: 'a', goal: 'g' },
+          { id: 'p2', title: 'b', goal: 'g' },
+          { id: 'p3', title: 'c', goal: 'g' },
+          { id: 'p4', title: 'd', goal: 'g' },
+        ],
+      });
+      beat(root, 1);
+
+      const r = await follow(root);
+      expect(r.progress?.phase).toBe('3/4'); // 1-based for a human/model reader
+      expect(r.reason).toMatch(/phase 3\/4/);
+    });
   });
 
   it('never mutates the project', async () => {

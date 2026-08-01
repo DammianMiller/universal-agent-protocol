@@ -8,7 +8,7 @@
 
 import chalk from 'chalk';
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync, renameSync, readdirSync, statSync } from 'fs';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync, readdirSync, statSync } from 'fs';
 import { join, resolve, relative } from 'path';
 import { ConvergenceLoop, composeIterationHooks } from '../delivery/convergence-loop.js';
 import type {
@@ -545,68 +545,30 @@ export function applyAutoPlan(options: DeliverOptions, plan: AutoPlan): void {
 // gone stale. Language-agnostic contract: `.uap/deliver.heartbeat` = one integer
 // (unix epoch seconds), rewritten each turn; also read by deliver_autoroute.py.
 
-/**
- * Default wedge timeout (seconds). Override with UAP_DELIVER_WEDGE_TIMEOUT.
- * Deliberately generous (30 min): the heartbeat only advances between
- * convergence iterations, and one turn on a slow local model (generation + the
- * full gate ladder) can legitimately take many minutes. The timeout must sit
- * comfortably above the worst-case single-turn latency so a healthy-but-slow
- * run is never mistaken for a wedged one and reclaimed out from under itself.
- */
-export const DEFAULT_WEDGE_TIMEOUT_S = 1800;
-
-/** Resolve the wedge timeout in seconds (env override, else the default). */
-export function wedgeTimeoutS(): number {
-  const raw = process.env.UAP_DELIVER_WEDGE_TIMEOUT;
-  const n = raw !== undefined ? Number(raw) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_WEDGE_TIMEOUT_S;
-}
-
-/**
- * Stamp the current epoch-seconds into `.uap/deliver.heartbeat`, ATOMICALLY
- * (write a temp file then rename over the target). A plain truncate-in-place
- * write leaves the file momentarily empty, and a concurrent reader would parse
- * `""` as 0 (epoch 1970) and wrongly conclude the holder is wedged. Best-effort.
- */
-export function updateDeliverHeartbeat(projectRoot: string): void {
-  try {
-    const dir = join(projectRoot, '.uap');
-    mkdirSync(dir, { recursive: true });
-    const hbPath = join(dir, 'deliver.heartbeat');
-    const tmp = `${hbPath}.${process.pid}.tmp`;
-    const fd = openSync(tmp, 'w');
-    writeSync(fd, String(Math.floor(Date.now() / 1000)));
-    closeSync(fd);
-    renameSync(tmp, hbPath);
-  } catch { /* non-fatal — lock path falls back to PID-liveness only */ }
-}
-
-/**
- * Read the heartbeat epoch-seconds, or null if absent/unreadable/non-positive.
- * Rejecting non-positive values guards against a torn read (empty file parses
- * to 0) being treated as a real 1970 timestamp.
- */
-export function readDeliverHeartbeat(projectRoot: string): number | null {
-  try {
-    const v = Number(readFileSync(join(projectRoot, '.uap', 'deliver.heartbeat'), 'utf8').trim());
-    return Number.isFinite(v) && v > 0 ? v : null;
-  } catch { return null; }
-}
-
-/**
- * True when the lock holder is alive but WEDGED — its heartbeat is older than
- * the wedge timeout. A MISSING heartbeat is not wedged (the holder may be
- * starting up), so this returns false in that case and the caller keeps
- * deferring to PID-liveness.
- */
-export function isDeliverHolderWedged(
-  projectRoot: string,
-  nowS: number = Math.floor(Date.now() / 1000),
-): boolean {
-  const hb = readDeliverHeartbeat(projectRoot);
-  if (hb === null) return false;
-  return nowS - hb > wedgeTimeoutS();
-}
+// Legacy export surface. The heartbeat helpers moved to delivery/heartbeat.ts so
+// await-run.ts can use them without importing this module (which imports IT — a
+// cycle). They are re-exported below ONLY because existing callers and tests
+// already address them through this path.
+//
+// @deprecated import from '../delivery/heartbeat.js' instead. Reaching a 10-byte
+// file read through this module drags the whole deliver graph — chalk, spawn,
+// the orchestrator, the epic controller — into the importer, and back into the
+// cycle-prone hub the extraction just escaped. `heartbeatAgeS` is deliberately
+// NOT re-exported: it is new here, so it has no back-compat claim and gets
+// exactly one import path from the start.
+import {
+  wedgeTimeoutS,
+  updateDeliverHeartbeat,
+  readDeliverHeartbeat,
+  isDeliverHolderWedged,
+} from '../delivery/heartbeat.js';
+export {
+  DEFAULT_WEDGE_TIMEOUT_S,
+  wedgeTimeoutS,
+  updateDeliverHeartbeat,
+  readDeliverHeartbeat,
+  isDeliverHolderWedged,
+} from '../delivery/heartbeat.js';
 
 /**
  * True when the lock was ABANDONED: old, and its holder never stamped a
@@ -785,7 +747,10 @@ export async function deliverCommand(instruction: string, options: DeliverOption
     // Distinct codes, because a shell caller chains on these and three of the
     // four outcomes are not failures:
     //   0 delivered · 1 the mission ended badly · 3 nothing was running · 4 still
-    //   running (healthy — the wait gave up, the mission did not)
+    //   running — the wait gave up, the mission did not
+    // 4 deliberately does NOT mean "healthy": a wedged run is still running and
+    // still exits 4. Health is reported in `progress.health`, derived from the
+    // heartbeat, precisely because it cannot be inferred from the exit code.
     // Sharing 4 with 1 made `uap deliver --await-run && ./next` report failure for
     // a perfectly healthy run, and at a short poll budget that is the COMMON case.
     process.exitCode = outcome.delivered

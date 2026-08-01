@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.179.4 (2026-07-31)
+
+- fix(deliver): answer "is it still running" with evidence, not an assertion
+
+
 ## v1.179.3 (2026-07-31)
 
 - fix(policy): close laundered and bare-PID kills of the stack and deliver

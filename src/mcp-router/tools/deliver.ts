@@ -129,8 +129,13 @@ Best for: implement a feature, fix a bug across files, refactor with tests. Not 
           'This is the correct response to a timed-out deliver call or an alreadyRunning result — it starts ' +
           'nothing, and needs NO instruction — omit it, do not restate the mission. ' +
           'It returns within about a minute either way and SUCCEEDS (ok:true) whatever it finds: if the ' +
-          'mission is still going you get "STILL RUNNING" in `note`, which is NOT a failure — it means the ' +
-          'run is HEALTHY and you should simply call follow again. It does not mean the tool is stuck: ' +
+          'mission is still going you get "STILL RUNNING" in `note`, which is NOT a failure — call follow ' +
+          'again. Do not take that on trust: `result.progress.health` reports "starting", "active" or ' +
+          '"wedged", DERIVED from how recently the run stamped its heartbeat, and ' +
+          '`result.progress.heartbeatAgeSec` / `.phase` are the numbers behind it — compare them across ' +
+          'polls to watch the run move. (This used to assert the run was HEALTHY unconditionally, which ' +
+          'nothing had checked; three identical replies then read as a hung process and the run got ' +
+          'killed.) It does not mean the tool is stuck: ' +
           'do not kill the deliver ' +
           'process, do not change any enforcement setting, do not start a second run. Prefer this over ' +
           'sleeping in a shell. Do not use resume for this: resume CONTINUES a run and would start a second ' +

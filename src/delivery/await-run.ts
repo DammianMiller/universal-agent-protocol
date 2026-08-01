@@ -44,6 +44,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { listRuns, type DeliverRunState } from './run-state.js';
+import { heartbeatAgeS, wedgeTimeoutS } from './heartbeat.js';
 
 /** Default poll interval — fast enough to feel immediate, idle enough to ignore. */
 const DEFAULT_POLL_MS = 2000;
@@ -101,10 +102,127 @@ export interface AwaitResult {
   run?: RunSummary;
   /** False when the run had to be guessed rather than matched to the holder. */
   attributed?: boolean;
+  /**
+   * Evidence that the run is MOVING, set whenever the wait gave up on a live
+   * run. See FollowProgress — this is the field that makes a repeated poll
+   * informative rather than identical.
+   */
+  progress?: FollowProgress;
   /** Human/model-facing explanation. Always set. */
   reason: string;
   /** What the caller should do next. Always set. */
   nextStep: string;
+}
+
+/**
+ * What a caller needs to tell "slow but working" from "stuck".
+ *
+ * THE GAP THIS CLOSES
+ * A follow that times out used to answer with elapsed-wait only — the same
+ * sentence every time, and an UNCONDITIONAL claim that "the run is healthy"
+ * which nothing had checked. Three identical answers look exactly like a hung
+ * process, so a caller with no way to see movement concludes the run is wedged.
+ *
+ * Observed live (2026-07-31, octopus_invaders_v3, qwen on opencode): the model
+ * followed three times, got three identical "STILL RUNNING after 45s" replies,
+ * and then killed the run — six times in one hour, each kill discarding work the
+ * run had already finished. Closing the kill ROUTES is a separate change; this
+ * closes the REASON it reached for them. A gate that refuses without answering
+ * the question just moves the loop somewhere else.
+ *
+ * Every field here is a fact the caller can DIFF across consecutive polls:
+ * `heartbeatAgeSec` falling, `phase` advancing, `run.updatedAt` moving. The
+ * health verdict is derived from the heartbeat rather than asserted, so a run
+ * that really has stopped is reported as stopped.
+ */
+export interface FollowProgress {
+  /** Seconds since the run's own start (not since this wait began). */
+  runElapsedSec?: number;
+  /**
+   * Seconds since the mission last stamped `.uap/deliver.heartbeat`, or null
+   * when it has not stamped one yet (starting up). THE liveness signal.
+   */
+  heartbeatAgeSec: number | null;
+  /** The wedge threshold this verdict was measured against. */
+  wedgeAfterSec: number;
+  /** 1-based phase position, when the mission is decomposed. */
+  phase?: string;
+  /**
+   * 'starting' — alive, no heartbeat yet.
+   * 'active'   — heartbeat within the wedge window.
+   * 'wedged'   — alive but silent past the wedge window.
+   *
+   * Deliberately 'active', NOT 'advancing'. The heartbeat is stamped on every
+   * executor TOOL CALL, not only on completed turns, so a run spinning in a
+   * tool-call loop — an attractor loop, an error loop, a read-forever recon
+   * loop, all of which this project has hit — stamps a fresh heartbeat forever
+   * while achieving nothing. This field can honestly say the process is doing
+   * something; it cannot say the mission is getting closer, and a label that
+   * claimed otherwise would be the same unmeasured assertion this projection
+   * exists to remove. Cross-check `phase` and `run.updatedAt`, which only move
+   * when a turn or phase actually completes.
+   */
+  health: 'starting' | 'active' | 'wedged';
+}
+
+function describeProgress(projectRoot: string, run?: DeliverRunState): FollowProgress {
+  const ageS = heartbeatAgeS(projectRoot);
+  const wedgeAfterSec = wedgeTimeoutS();
+  const startedMs = run?.createdAt ? Date.parse(run.createdAt) : NaN;
+  const phase =
+    run?.phaseIndex !== undefined && run?.phases?.length
+      ? `${run.phaseIndex + 1}/${run.phases.length}`
+      : undefined;
+  // OMITTED rather than clamped when the delta is negative (a future or planted
+  // createdAt). Clamping would pin the field at exactly 0 on every poll, and a
+  // field frozen at 0 reads as "not moving" — the very inference that produced
+  // the six kills. An absent field says "unknown"; a present one that lies is
+  // worse than none.
+  const elapsedMs = Date.now() - startedMs;
+  const runElapsedSec =
+    Number.isFinite(startedMs) && elapsedMs >= 0 ? Math.round(elapsedMs / 1000) : undefined;
+
+  // A missing heartbeat means 'starting' only while the run is YOUNG. Treating
+  // it as 'starting' unconditionally would report an hour-old run as still
+  // starting up — the same unmeasured adjective as the "the run is healthy" this
+  // projection replaced, just in a new coat. It would also CONTRADICT the lock
+  // path, which calls the identical state (no heartbeat, old) abandoned and
+  // reclaimable; two readers of one file disagreeing is what heartbeat.ts exists
+  // to prevent. Falling back to the run's own age keeps them consistent.
+  const silentForSec = ageS ?? runElapsedSec;
+  const health: FollowProgress['health'] =
+    silentForSec === undefined
+      ? 'starting'
+      : silentForSec > wedgeAfterSec
+        ? 'wedged'
+        : ageS === null
+          ? 'starting'
+          : 'active';
+
+  return {
+    ...(runElapsedSec !== undefined ? { runElapsedSec } : {}),
+    heartbeatAgeSec: ageS,
+    wedgeAfterSec,
+    ...(phase ? { phase } : {}),
+    // `updatedAt` is NOT repeated here: RunSummary already ships it on the same
+    // result object, and a projection whose purpose is diffable facts must not
+    // publish one fact twice — a caller comparing run.updatedAt on one poll and
+    // progress.updatedAt on the next is comparing nothing.
+    health,
+  };
+}
+
+/** One line of evidence, so the prose carries the same facts as the struct. */
+function progressSentence(p: FollowProgress): string {
+  const bits: string[] = [];
+  if (p.runElapsedSec !== undefined) bits.push(`running for ${p.runElapsedSec}s`);
+  bits.push(
+    p.heartbeatAgeSec === null
+      ? 'no heartbeat yet'
+      : `last activity ${p.heartbeatAgeSec}s ago`
+  );
+  if (p.phase) bits.push(`phase ${p.phase}`);
+  return bits.join(', ');
 }
 
 /**
@@ -311,6 +429,11 @@ export async function awaitInFlightDeliver(
         delivered: false,
         holderChanged: true,
         holderPid: holder.pid,
+        // This branch also gives up on a LIVE run and also tells the caller to
+        // poll again, so it needs the same evidence — without it, repeated
+        // reclaims produce byte-identical replies on the one path that is
+        // actually describing instability.
+        progress: describeProgress(projectRoot),
         reason:
           `The deliver run being followed (pid ${holder.pid}) was replaced by another (pid ${now.pid}) — ` +
           'the lock was reclaimed or the run handed over.',
@@ -321,22 +444,56 @@ export async function awaitInFlightDeliver(
     const elapsed = Date.now() - startedAt;
     if (elapsed >= opts.timeoutMs) {
       const { run, attributed } = runForHolder(projectRoot, holder.pid, isAlive);
+      const progress = describeProgress(projectRoot, attributed ? (run ?? undefined) : undefined);
+      // The old message asserted "the run is healthy" unconditionally, which
+      // nothing had checked — so it was a claim, not an answer, and it was
+      // wrong precisely when it mattered. Derive it from the heartbeat instead,
+      // and hand back the numbers so a caller can watch them move.
+      const evidence = progressSentence(progress);
       return {
         followed: false,
         delivered: false,
         timedOut: true,
         holderPid: holder.pid,
         runId: attributed ? run?.runId : undefined,
-        status: run?.status,
+        // Gated like runId and run: publishing a GUESSED run's status while
+        // withholding its id hands the caller a fact about someone else's
+        // mission with nothing to notice the mismatch by.
+        status: attributed ? run?.status : undefined,
         run: run && attributed ? summarize(run) : undefined,
         attributed,
+        progress,
         reason:
-          `The deliver run (pid ${holder.pid}) is STILL RUNNING after ${Math.round(opts.timeoutMs / 1000)}s. ` +
-          'It has not failed — this wait gave up, the mission did not.',
+          `The deliver run (pid ${holder.pid}) is STILL RUNNING after ${Math.round(opts.timeoutMs / 1000)}s ` +
+          `of waiting — ${evidence}. It has not failed: this wait gave up, the mission did not.` +
+          (progress.health === 'wedged'
+            ? ` WARNING: it has been silent for longer than the ${progress.wedgeAfterSec}s wedge` +
+              ' timeout, so it may be stuck rather than slow.'
+            : ''),
         nextStep:
-          'This is the NORMAL answer for a mission that takes longer than one poll, and the run is ' +
-          'healthy. Call deliver again with follow:true to keep waiting. Do NOT kill the deliver ' +
-          'process, do NOT change any gate or enforcement setting, and do NOT start another run.',
+          progress.health === 'wedged'
+            ? // "Relaunch and it will be reclaimed" is true ONLY of a lock
+              // holder: acquireDeliverLock reclaims a wedged holder, but it
+              // only looks at all when a lock FILE exists. A resumed run never
+              // takes the lock, so the same advice there hands the relaunch a
+              // free lock and puts a SECOND mission on the same tree —
+              // precisely the fan-out this module exists to prevent. The
+              // remedy has to follow the holder, not the health.
+              holder.source === 'lock'
+              ? 'Do NOT kill it — a wedged LOCK holder is reclaimed automatically: start the ' +
+                'mission again and the new run takes the lock from it. Killing it by hand ' +
+                'discards the work it already finished and leaves the lock behind.'
+              : 'Do NOT kill it, and do NOT relaunch: this holder is a RESUMED run, which holds ' +
+                'no lock, so a new run would not reclaim it — it would execute concurrently on ' +
+                'the same tree. Keep following, and if it never recovers, raise it with the ' +
+                'operator rather than starting or killing anything.'
+            : 'This is the NORMAL answer for a mission that takes longer than one poll. Call deliver ' +
+              'again with follow:true to keep waiting, and compare heartbeatAgeSec against this reply ' +
+              'to watch it move (also phase and the run\'s updatedAt when present — they advance only ' +
+              'when a turn or phase actually completes). From the MCP tool these are under ' +
+              'result.progress and result.run; from `uap deliver --json` they are top-level. Do NOT ' +
+              'kill the deliver process, do NOT change any gate or enforcement setting, and do NOT ' +
+              'start another run.',
       };
     }
     opts.onTick?.(elapsed, holder.pid);
