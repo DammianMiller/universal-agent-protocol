@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.179.10 (2026-08-02)
+
+- fix(execution-gate): start the page, so "nothing started" is visible
+
+
 ## v1.179.9 (2026-08-01)
 
 - fix(proxy): don't retry a truncated write with less room than already failed
