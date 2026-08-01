@@ -211,6 +211,31 @@ def _local_mode() -> str:
 
 BASH_OPS = {"Bash", "bash", "run_bash", "shell"}
 
+# The delivery gate's own state. The pending log is the replay queue for
+# `uap deliver --pending`; the lock and heartbeat are how an in-flight run is
+# found, followed, and reclaimed when wedged.
+#
+# Guarding only `rm <literal path>` would repeat the mistake this whole change
+# exists to fix. `: > .uap/pending-deliver.jsonl` is SHORTER than the command it
+# blocks and just as destructive, and `rm -rf .uap` takes all three at once. So
+# match any destructive verb (or a truncating redirect) against any path under
+# `.uap/` that names deliver state — including the directory itself and globs.
+_DELIVER_STATE_PATH = (
+    r"(?:pending-deliver\.jsonl|deliver\.lock|deliver\.heartbeat"
+    r"|pending-[^\s'\"|;&]*|deliver\.[^\s'\"|;&]*|\*[^\s'\"|;&]*)"
+)
+_DELIVER_STATE_RM_RE = re.compile(
+    r"(?:\b(?:rm|unlink|shred|truncate|mv)\b"
+    r"|\bfind\b[^|;&\n]*-(?:delete|exec\s+rm)"
+    r"|\bgit\s+clean\b"
+    r"|(?<![0-9<>])>(?!>))"
+    r"[^|;&\n]*?"
+    # The inner path is optional INSIDE the slash group so a bare `.uap/`
+    # (trailing slash, nothing after) still matches — `rm -rf .uap/` destroys
+    # exactly as much as `rm -rf .uap`.
+    r"((?:[^\s'\"|;&]*/)?\.uap(?:/(?:" + _DELIVER_STATE_PATH + r")?)?)(?:\s|$|['\"])"
+)
+
 # A bash command that WRITES a source file: `> f.ts`, `>> f.ts`, `tee f.ts`,
 # `sed -i ... f.ts`. Without this, Edit/Write gating is trivially bypassable —
 # `cat > app.js <<EOF` writes source with no deliver run and no validation.
@@ -375,6 +400,44 @@ def _handle_bash(args: dict) -> None:
     if os.environ.get("UAP_DELIVER_BYPASS") == "1":
         emit(True, "bash: UAP_DELIVER_BYPASS override set")
         return
+    # Destroying the gate's own state is not a way out of the gate. Observed
+    # live 7x on 2026-07-31 (octopus_invaders_v3), interleaved with kill -9 of
+    # the running deliver: the queued edit intents were discarded to escape a
+    # block rather than completing the work.
+    #
+    # deliver's own housekeeping is unaffected twice over: it rewrites the
+    # pending log in-process (delivery/pending-intents.ts) rather than shelling
+    # out, and its subprocesses carry UAP_DELIVER_ACTIVE=1, which returned
+    # above. UAP_DELIVER_BYPASS=1 also returned above — operator-set only, since
+    # enforcement_self_protect refuses the inline form.
+    #
+    # This block is deliberately NOT relaxed by UAP_ENFORCE_DELIVERY=advisory:
+    # advisory trades verification for speed on an EDIT, but destroying recorded
+    # state is not an edit and has no verified-later equivalent.
+    sm = _DELIVER_STATE_RM_RE.search(cmd)
+    if sm:
+        target = sm.group(1)
+        if "pending-" in target:
+            what = (
+                "that is the queue of edit intents deliver replays; removing it "
+                "discards recorded work rather than completing it. To apply what "
+                "is already queued, run `uap deliver --pending`"
+            )
+        else:
+            what = (
+                "that is the single-flight lock/heartbeat; deleting it starts a "
+                "SECOND concurrent run on the same tree. A stale lock is "
+                "reclaimed automatically by heartbeat age, so it never needs "
+                "deleting"
+            )
+        emit(
+            False,
+            f"BLOCKED: do not destroy the delivery gate's own state ('{target}') — "
+            f"{what}. If a deliver run is in flight, wait for it (deliver tool "
+            "with follow:true, or `uap deliver --await-run`).",
+        )
+        return
+
     m = _BASH_WRITE_RE.search(cmd)
     if m:
         target = m.group(1)

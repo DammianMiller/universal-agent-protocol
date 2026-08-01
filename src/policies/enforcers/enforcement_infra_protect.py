@@ -26,13 +26,34 @@ Scope (Bash/bash/run_bash commands only):
   - broad `-f`/`--full` kill whose pattern is a substring of the stack's argv
     (uap/llama/qwen/mmproj/nomic/anthropic) or a glob over the python
     interpreter that runs the proxy.
+  - a kill held APART from its target — by a pipe (`ps aux | grep llama-server
+    | xargs kill -9`), by an infra-port lookup feeding it (`lsof -t -i:4000 |
+    xargs kill -9`), by a variable (`X=$(pgrep -f llama-server); kill -9 $X`),
+    or by a `-f` pattern that is an infra port (`pkill -f 8080`) — rule 8.
+    Matching is on TEXT, so a token counts wherever it appears; quoted data and
+    heredoc bodies are stripped first so prose about a kill is not a kill.
+  - a kill whose bare PID resolves to a deliver run or the inference stack
+    (`kill -9 3936358`, `kill -9 -3936358`) — rule 9. Resolved from
+    .uap/deliver.lock and /proc argv, not from the command text, and only for
+    the numbers the command actually names.
   - systemctl stop/restart/kill/disable of the inference services.
   - Starting a server that BINDS an infra port (http.server 8080 etc.) —
     this is how the port got stolen even with kills blocked (the model
     bound the port inside llama-server's crash/restart window).
 
 Killing a SPECIFIC process pattern (e.g. `pkill -f "python3 -m http.server
-8765"`) and serving on non-infra ports stay allowed.
+8765"`) and serving on non-infra ports stay allowed — unless the pattern itself
+carries a stack token, so `pkill -f 'uap deliver'` is refused; wait for the run
+instead.
+
+KNOWN LIMITS, so nobody reads this as airtight. It is a TEXT gate on a language
+with unbounded ways to say the same thing:
+  - obfuscated patterns (`grep '[l]lama-server'`, `pkill -f 'llam[a]-server'`)
+    match the real process but not these rules;
+  - anything routed through `eval`/base64 defeats every text rule by design;
+  - the script-body scan is depth-1 and shell-only (`.sh/.bash/.zsh`).
+Rule 9 is the part that cannot be spelled around, because it resolves PIDs
+rather than reading them. Treat 1-8 as raising the cost, not as a boundary.
 """
 import os
 import re
@@ -40,7 +61,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import emit, parse_cli  # noqa: E402
+from _common import emit, parse_cli, repo_root, scannable_command  # noqa: E402
 
 BASH_OPS = {"Bash", "bash", "run_bash", "shell", "execute_command"}
 
@@ -88,6 +109,233 @@ RULES = (
         r"(\s-(?:-full|[A-Za-z0-9]*f)\b)"
         r"[^|;&\n]*[\"']?python[0-9.]*[.*\[\]\\]"
     ),
+)
+
+# --------------------------------------------------------------------------
+# 8) LAUNDERED kills — the verb and its target pulled apart.
+#
+# Rules 1-7 each scan a single shell SEGMENT (`[^|;&\n]*`), so moving the PID
+# list one hop away splits the kill verb from the thing being killed and the
+# whole rule set goes blind. Every one of these reached the stack:
+#     ps aux | grep llama-server | awk '{print $2}' | xargs kill -9   (pipe)
+#     lsof -t -i:4000 | xargs kill -9                                 (pipe)
+#     PIDS=$(pgrep -f llama-server); kill -9 $PIDS                    (variable)
+#     for p in $(pgrep -f llama-server); do kill -9 $p; done          (loop)
+#
+# Observed live (2026-07-31, octopus_invaders_v3, qwen on opencode): the model's
+# `pkill -f "uap deliver"` was refused at 11:13:46Z and EIGHT SECONDS LATER it
+# ran the xargs form and reported "cleaned"; it repeated that at 11:41:53Z. The
+# evasion is found without being sought, so closing only the observed spelling
+# is not closing anything — the `;` twin is the same thought one keystroke away.
+#
+# Three passes, all on ONE logical command:
+#   a) statement-local: a kill verb plus a stack token / infra-port lookup.
+#   b) cross-statement taint: a LOOKUP that names the stack (pgrep/ps/lsof/...)
+#      anywhere, plus a kill verb anywhere. This is what catches the `;` and
+#      loop forms, where neither half is damning alone.
+#   c) a `-f` kill whose pattern IS an infra port (`pkill -f 8080`), which names
+#      no token yet matches llama-server's argv.
+# Statements split on `;`, `&&`, `||`, newline — never on `|`, since a pipeline
+# is one command.
+#
+# Quoted DATA is stripped first via scannable_command(), which removes heredoc
+# bodies and multi-word quoted blobs but keeps single-word quoted arguments, and
+# strips nothing when the command hands text to a shell (`bash <<EOF`, `sh -c`,
+# `eval`, `xargs`). That kills the false-positive class — a commit message or an
+# `echo` describing a kill — WITHOUT opening a heredoc as an evasion. Rules 1-7
+# still read the raw text, so `pkill -f "uap deliver"` stays caught by rule 6.
+_STATEMENT_SPLIT_RE = re.compile(r";|&&|\|\||\n")
+# A kill in COMMAND POSITION, not the word "kill" inside prose or a grep pattern.
+# The `xargs` branch is what keeps the pipe form matching.
+_KILL_VERB_RE = re.compile(
+    r"(?:^|[|;&(`]|\|\||&&|\bxargs\b[^|;&\n]*|\bsudo\b\s+|\bexec\b\s+"
+    r"|\bthen\b\s+|\bdo\b\s+|\$\()"
+    r"\s*(?:\w+=\S*\s+)*(?:[\w./~-]*/)?(?:p?kill(?:all)?[0-9]*|skill)\b"
+)
+_LOOKUP_VERB_RE = re.compile(r"\b(?:pgrep|pidof|ps|lsof|fuser|ss|netstat)\b")
+_INFRA_TOKEN_RE = re.compile(
+    r"\b(uap|llama|llama-server|anthropic|anthropic_proxy|nomic|mmproj"
+    r"|qwen[0-9.]*|llama-slots|slots?[_-]?save|deliver)\b",
+    re.IGNORECASE,
+)
+_PORT_LOOKUP_RE = re.compile(
+    r"\b(lsof|fuser|ss|netstat)\b[^\n]*?[:\s=]" + INFRA_PORTS + r"\b"
+)
+# `pkill -f 8080` — the pattern is the port itself; no token, still fatal.
+_KILL_PATTERN_PORT_RE = re.compile(
+    r"\b(?:p?kill(?:all)?|skill)\b[^|;&\n]*"
+    r"(?:\s-(?:-full|[A-Za-z0-9]*f)\b)[^|;&\n]*\b" + INFRA_PORTS + r"\b"
+)
+# Simple `VAR=value` / `VAR="value"` bindings, substituted before splitting so
+# `X=llama-server; pkill -f "$X"` collapses to the form rule 6 already refuses.
+# Heuristic by design: no scoping, no command-substitution values. It can only
+# ADD matches, never remove one, so it cannot introduce a miss.
+_ASSIGN_RE = re.compile(
+    r"\b([A-Za-z_]\w*)=(?:\"([^\"]*)\"|'([^']*)'|([^\s;&|]+))"
+)
+
+
+def _expand_assignments(cmd: str) -> str:
+    bindings = {
+        m.group(1): (m.group(2) or m.group(3) or m.group(4) or "")
+        for m in _ASSIGN_RE.finditer(cmd)
+    }
+    for name, value in bindings.items():
+        if value:
+            cmd = re.sub(r"\$\{?" + re.escape(name) + r"\}?", value, cmd)
+    return cmd
+
+
+def _laundered_infra_kill(cmd: str) -> bool:
+    """True when a command kills the stack with the verb held apart from it.
+
+    The two halves are read from DIFFERENT views of the same command, because
+    they fail in opposite directions:
+
+      * the kill VERB is read from scannable_command() — quoted data removed —
+        so `-m "…laundered kill of llama-server"` is not mistaken for a kill;
+      * the stack TOKEN is read from the RAW text, because the token routinely
+        lives inside the quotes that identify the victim
+        (`pgrep -f "uap deliver" | while read p; do kill -9 $p; done`). Reading
+        tokens from the blanked view lost exactly that form.
+
+    Statement counts are compared before pairing the two views; if blanking
+    changed the shape (a heredoc removed lines), fall back to the raw text for
+    both, which is the conservative direction.
+    """
+    raw = _expand_assignments(cmd)
+    scannable = _expand_assignments(scannable_command(cmd))
+    raw_stmts = _STATEMENT_SPLIT_RE.split(raw)
+    kill_stmts = _STATEMENT_SPLIT_RE.split(scannable)
+    if len(kill_stmts) != len(raw_stmts):
+        kill_stmts = raw_stmts
+
+    kills = [bool(_KILL_VERB_RE.search(s)) for s in kill_stmts]
+    for is_kill, stmt in zip(kills, raw_stmts):
+        if is_kill and (_INFRA_TOKEN_RE.search(stmt) or _PORT_LOOKUP_RE.search(stmt)):
+            return True
+    if _KILL_PATTERN_PORT_RE.search(raw):
+        return True
+    # Cross-statement: a lookup that NAMES the stack, and a kill anywhere.
+    if any(kills) and any(
+        _LOOKUP_VERB_RE.search(s)
+        and (_INFRA_TOKEN_RE.search(s) or _PORT_LOOKUP_RE.search(s))
+        for s in raw_stmts
+    ):
+        return True
+    return False
+
+
+# --------------------------------------------------------------------------
+# 9) Kill by BARE PID.
+#
+# `kill -9 3936358` names nothing, so no text rule can see what it hits. The
+# model killed its own in-flight deliver this way six times in one hour on
+# 2026-07-31, discarding each run's completed work — the direct cause of ~50
+# minutes spent in a ps/sleep/kill loop making no progress.
+#
+# Resolution is SEMANTIC, not textual, so it cannot be spelled around: the
+# numbers the command names are looked up in /proc and compared against the
+# deliver lock and the stack's argv. Only the PIDs the command actually names
+# are resolved (never a full /proc walk), which is both cheaper and narrower.
+#
+# A dead PID is never protected, and a lock PID must ALSO still look like a
+# deliver run: a crashed run leaves a stale lock, and without the identity check
+# whatever process later recycles that number becomes unkillable while the
+# refusal says "wait for the deliver run" — recreating the exact stall this rule
+# exists to prevent. delivery_enforcement._deliver_lock_holder() has taken the
+# same precaution since the PID-reuse incident; this must not diverge from it.
+_PID_TOKEN_RE = re.compile(r"(?<![\w.])(-?\d{1,10})(?![\w.-])")
+_STACK_ARGV_RE = re.compile(
+    r"(llama-server|anthropic_proxy|nomic-embed"
+    r"|\buap\s+deliver\b|(?:cli\.js|uap)\s+(?:\S+\s+)*deliver\b)",
+    re.IGNORECASE,
+)
+# A pathological command full of integers must not become a syscall storm.
+_MAX_PID_CANDIDATES = 32
+
+
+def _lock_holder_pids() -> dict[str, str]:
+    """PIDs claimed by a deliver lock, from the main root AND any worktree.
+
+    deliver writes its lock under the root it was LAUNCHED from, which under
+    this repo's mandated worktree workflow is often `.worktrees/NNN-*/`, while
+    the gate resolves repo_root() to the main checkout. Reading only the main
+    root would leave rule 9's headline case unprotected in the normal workflow.
+    """
+    holders: dict[str, str] = {}
+    roots = [repo_root()]
+    try:
+        roots.extend(sorted((repo_root() / ".worktrees").glob("*")))
+    except Exception:  # noqa: BLE001 - no worktrees dir: main root only
+        pass
+    for root in roots:
+        try:
+            text = (root / ".uap" / "deliver.lock").read_text(errors="replace")
+        except OSError:
+            continue
+        m = re.match(r"\s*(\d+)", text)
+        if m:
+            holders[str(int(m.group(1)))] = "the deliver run in progress"
+    return holders
+
+
+def _identify_pid(pid: str, holders: dict[str, str]) -> str | None:
+    """What `pid` actually IS right now, or None if it is nothing to protect."""
+    try:
+        argv = (
+            Path(f"/proc/{pid}/cmdline")
+            .read_bytes()
+            .replace(b"\0", b" ")
+            .decode(errors="replace")
+        )
+    except OSError:
+        return None  # dead: a stale lock protects nothing
+    m = _STACK_ARGV_RE.search(argv)
+    if pid in holders:
+        # Confirm identity too — a recycled PID must not inherit the claim.
+        return holders[pid] if m else None
+    return m.group(1).lower() if m else None
+
+
+def _protected_pid_hit(text: str) -> tuple[str, str] | None:
+    if not (_KILL_VERB_RE.search(text) and _PID_TOKEN_RE.search(text)):
+        return None
+    holders = _lock_holder_pids()
+    seen: set[str] = set()
+    for m in _PID_TOKEN_RE.finditer(text):
+        # `kill -9 -3936358` kills the process GROUP — strictly more
+        # destructive, and invisible if the sign is treated as part of the token.
+        pid = str(abs(int(m.group(1))))
+        if pid in seen:
+            continue
+        seen.add(pid)
+        if len(seen) > _MAX_PID_CANDIDATES:
+            break
+        what = _identify_pid(pid, holders)
+        if what:
+            return pid, what
+    return None
+
+
+DELIVER_PID_REASON = (
+    "infra-protect: this command kills the deliver run in progress (pid {pid}). "
+    "A deliver run that is still working is NOT stuck — killing it discards the "
+    "work it has already done and starts the cycle over. Wait for it instead: "
+    "call the deliver tool with follow:true, which answers within about a "
+    "minute; a 'STILL RUNNING' answer is normal and means keep polling, not "
+    "fail. From a shell, `uap deliver --await-run` blocks until the run ends. "
+    "Operator override: set UAP_INFRA_PROTECT_OFF=1 in the launch environment "
+    "(not inline on the command)."
+)
+
+STACK_PID_REASON = (
+    "infra-protect: this command kills {what} (pid {pid}) — the inference stack "
+    "answering this session's own requests (llama-server :8080 / UAP proxy "
+    ":4000 / embeddings :8081). Killing it ends your own session; it is not a "
+    "way to fix a slow response. If the stack genuinely needs restarting, ask "
+    "the operator. Operator override: set UAP_INFRA_PROTECT_OFF=1 in the launch "
+    "environment (not inline on the command)."
 )
 
 REASON = (
@@ -175,11 +423,24 @@ def main() -> None:
     for rule in RULES:
         if rule.search(cmd):
             emit(False, REASON)
-    # Same rules, applied to the body of any script the command would run.
-    for path, body in _referenced_script_bodies(cmd):
-        for rule in RULES:
-            if rule.search(body):
-                emit(False, f"{REASON} (matched inside the invoked script {path})")
+    # Rules 8 and 9 apply to the command AND to any script it would run — the
+    # script-body pass exists because moving a stack-restart one level down into
+    # a file slipped past every text rule once already, and a rule that skips
+    # that pass reopens exactly that hole.
+    for label, text in [("", cmd), *((f" (matched inside the invoked script {p})", b)
+                                     for p, b in _referenced_script_bodies(cmd))]:
+        if text is not cmd:
+            for rule in RULES:
+                if rule.search(text):
+                    emit(False, f"{REASON}{label}")
+        if _laundered_infra_kill(text):
+            emit(False, f"{REASON}{label}")
+        hit = _protected_pid_hit(text)
+        if hit:
+            pid, what = hit
+            if what == "the deliver run in progress":
+                emit(False, DELIVER_PID_REASON.format(pid=pid) + label)
+            emit(False, STACK_PID_REASON.format(what=what, pid=pid) + label)
     emit(True, "no infra-destructive pattern")
 
 
