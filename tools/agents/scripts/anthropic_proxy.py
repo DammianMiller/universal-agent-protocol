@@ -109,21 +109,92 @@ from fastapi.responses import StreamingResponse
 import uvicorn
 
 
+# Path of the .uap/proxy.env actually loaded, or "" if none was found. Reported
+# at startup so a silent discovery miss is visible in the journal.
+_PROXY_ENV_FILE_LOADED = ""
+
+
+def _git_common_root(gitfile: Path) -> "Path | None":
+    """Resolve a worktree/submodule `.git` FILE to its main checkout root.
+
+    A worktree's .git is a file containing `gitdir: <main>/.git/worktrees/<n>`.
+    It names the SAME repository — same object store, same operator, same trust
+    domain — so config discovery must follow it home rather than treat the
+    worktree as a foreign tree. Returns None if the file isn't a gitdir pointer.
+    """
+    try:
+        text = gitfile.read_text(errors="ignore").strip()
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    target = Path(text.split(":", 1)[1].strip())
+    if not target.is_absolute():
+        target = (gitfile.parent / target)
+    try:
+        target = target.resolve()
+    except OSError:
+        return None
+    for parent in [target, *target.parents]:
+        if parent.name == ".git":
+            return parent.parent
+    return None
+
+
 def _load_proxy_env_file() -> None:
     """Load .uap/proxy.env (KEY=VALUE) written by `uap setup` into os.environ so
     recipe / escalation / delivery selections reach the proxy without the user
     hand-exporting env. Existing process env ALWAYS wins (setdefault). Walks up
-    from CWD to the filesystem root looking for a .uap/proxy.env; override the
-    path with UAP_PROXY_ENV_FILE. Runs before the import-time env reads below.
-    Fails open."""
+    from CWD looking for a .uap/proxy.env, stopping at the repository root;
+    override the path with UAP_PROXY_ENV_FILE. Runs before the import-time env
+    reads below. Fails open."""
     try:
         candidates = []
         explicit = os.environ.get("UAP_PROXY_ENV_FILE")
         if explicit:
             candidates.append(Path(explicit))
         d = Path.cwd()
+        try:
+            home = Path.home()
+        except Exception:
+            home = None
         for base in [d, *d.parents]:
             candidates.append(base / ".uap" / "proxy.env")
+            git = base / ".git"
+            # A real repository root: stop. The walk used to climb to the
+            # FILESYSTEM root, so a checkout nested under another repo silently
+            # loaded the outer repo's proxy.env — PROXY_AUTH_TOKEN included.
+            if git.is_dir():
+                break
+            # A worktree or submodule: its .git is a FILE naming the SAME
+            # repository. Same object store, same operator, same trust domain —
+            # so follow it to the main checkout instead of stopping. Stopping
+            # here would be worse than the leak: a worktree gets no .uap/ of its
+            # own, so the proxy would start with an EMPTY PROXY_AUTH_TOKEN, and
+            # the auth middleware treats empty as "no auth configured" rather
+            # than "misconfigured". Since PROXY_HOST=0.0.0.0 arrives from a
+            # different file that this walk never touched, that combination is
+            # an unauthenticated listener on the LAN.
+            if git.is_file():
+                main_root = _git_common_root(git)
+                if main_root is not None:
+                    candidates.append(main_root / ".uap" / "proxy.env")
+                break
+            # Never climb above the user's home. With no repository anywhere
+            # above cwd the walk would otherwise reach "/", where a
+            # world-writable /tmp/.uap/proxy.env would be loaded unconditionally.
+            if home is not None and base == home:
+                break
+        # Machine-wide fallbacks, mirroring the TypeScript reader in
+        # src/models/openai-compat-client.ts. Without these the two halves
+        # disagree about where the token lives: the client finds one and sends
+        # it while the server has none and skips the check.
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        if xdg:
+            candidates.append(Path(xdg) / "uap" / "proxy.env")
+        if home is not None:
+            candidates.append(home / ".config" / "uap" / "proxy.env")
+            candidates.append(home / ".uap" / "proxy.env")
         for path in candidates:
             try:
                 if not path.is_file():
@@ -139,12 +210,36 @@ def _load_proxy_env_file() -> None:
                 val = val.strip().strip('"').strip("'")
                 if key:
                     os.environ.setdefault(key, val)
+            global _PROXY_ENV_FILE_LOADED
+            _PROXY_ENV_FILE_LOADED = str(path)
             break  # first file found wins
     except Exception:
         pass
 
 
-_load_proxy_env_file()
+def _proxy_env_autoload_enabled() -> bool:
+    """Whether importing this module may mutate the process environment.
+
+    On by default: the module-level constants below read os.environ at import,
+    so a server run needs the file loaded first. But `import anthropic_proxy`
+    is not always a server run — the test suite imports it ~6 times, and each
+    import used to setdefault the whole of .uap/proxy.env into the real
+    os.environ. Every enforcer subprocess spawned afterwards inherited it, so
+    tests asserted the developer's proxy config instead of the shipped
+    defaults, and the outcome depended on module order. Set
+    UAP_PROXY_ENV_AUTOLOAD=0 to import the module inertly; callers that want
+    the file can still invoke _load_proxy_env_file() explicitly.
+    """
+    return os.environ.get("UAP_PROXY_ENV_AUTOLOAD", "1").strip().lower() not in {
+        "0",
+        "off",
+        "false",
+        "no",
+    }
+
+
+if _proxy_env_autoload_enabled():
+    _load_proxy_env_file()
 
 # ---------------------------------------------------------------------------
 # Configuration (all configurable via environment variables)
@@ -12588,7 +12683,58 @@ async def context_status(request: Request):
 # Entry Point
 # ===========================================================================
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", ""}
+
+
+def _assert_bind_is_authenticated(host: str, token: str) -> None:
+    """Refuse to expose an unauthenticated proxy beyond loopback.
+
+    The auth middleware is a no-op when PROXY_AUTH_TOKEN is empty — it reads
+    "no auth configured", not "misconfigured". The token arrives from
+    .uap/proxy.env while PROXY_HOST commonly arrives from the systemd
+    EnvironmentFile, so any failure to locate the former leaves the latter
+    intact: bind-all survives, require-a-credential does not. That asymmetry
+    turns a silent config miss into an open LLM proxy on the LAN, fronting both
+    the local model and cloud passthrough on the operator's credentials.
+
+    Fail closed instead. Set PROXY_ALLOW_UNAUTHENTICATED_BIND=1 to override
+    when an open listener is genuinely intended.
+    """
+    if host in _LOOPBACK_HOSTS or token:
+        return
+    if os.environ.get("PROXY_ALLOW_UNAUTHENTICATED_BIND", "").strip().lower() in {
+        "1",
+        "on",
+        "true",
+        "yes",
+    }:
+        logger.warning(
+            "PROXY AUTH DISABLED on a non-loopback bind (%s) — allowed only "
+            "because PROXY_ALLOW_UNAUTHENTICATED_BIND is set.",
+            host,
+        )
+        return
+    raise SystemExit(
+        f"refusing to bind {host} with no PROXY_AUTH_TOKEN: every route would be "
+        f"unauthenticated. The token normally comes from .uap/proxy.env — if the "
+        f"proxy cannot find that file, config discovery is broken rather than the "
+        f"token being genuinely unset. Set PROXY_AUTH_TOKEN, bind 127.0.0.1, or "
+        f"set PROXY_ALLOW_UNAUTHENTICATED_BIND=1 if an open listener is intended."
+    )
+
+
 if __name__ == "__main__":
+    # Config discovery is silent by design (it fails open so a missing file can
+    # never stop the proxy). Say what it found, so a miss is visible in the
+    # journal instead of showing up later as unexplained default behaviour.
+    logger.info(
+        "proxy env: %s | auth=%s | bind=%s:%d",
+        f"loaded {_PROXY_ENV_FILE_LOADED}" if _PROXY_ENV_FILE_LOADED else "no proxy.env found",
+        "enabled" if PROXY_AUTH_TOKEN else "DISABLED",
+        PROXY_HOST,
+        PROXY_PORT,
+    )
+    _assert_bind_is_authenticated(PROXY_HOST, PROXY_AUTH_TOKEN)
     uvicorn.run(
         app,
         host=PROXY_HOST,
