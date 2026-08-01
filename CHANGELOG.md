@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.179.8 (2026-08-01)
+
+- fix(deliver): ground the forced-write round instead of blinding it
+
+
 ## v1.179.7 (2026-08-01)
 
 - fix(proxy): scope .uap/proxy.env discovery, and fail closed on an open bind
