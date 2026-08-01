@@ -543,6 +543,87 @@ export interface ReadCache {
   seen: Map<string, { mtimeMs: number; round: number }>;
 }
 
+/** Bounds for forced-round grounding — see buildForcedRoundGrounding. */
+export const FORCED_GROUNDING_MAX_FILES = 3;
+export const FORCED_GROUNDING_MAX_BYTES = 24_000;
+
+/**
+ * Build the grounding block for a forced-write round.
+ *
+ * Stripping the read tools is what actually breaks a read-forever loop, but it
+ * also means the model composes its edit from memory. Measured on the Octopus
+ * Invaders build (2026-08-01): 50% of forced rounds broke syntax, 6 of the
+ * run's 7 syntax errors landed on the round immediately after a force, and the
+ * model's recovery from a broken edit was to re-emit the whole file — which is
+ * what produced 18 rewrites of a single file. Two of the wasted forced rounds
+ * failed specifically on stale context (`old_string not found`, and a
+ * 4-character old_string matching 20 times).
+ *
+ * So hand it the CURRENT content of what it has been reading. The loop is still
+ * broken (no read tools, tool_choice:'required'), but the write is grounded in
+ * fact rather than recall. Bounded to the most recently read files so this
+ * cannot blow the session's context budget.
+ *
+ * Returns undefined when there is nothing useful to inject.
+ */
+export function buildForcedRoundGrounding(
+  cache: ReadCache,
+  projectRoot: string,
+  readFile: (p: string) => string = (p) => readFileSync(p, 'utf8'),
+): string | undefined {
+  // Cache keys are `${tool}:${path}` (see repeatReadNote). Only read_file
+  // entries name an actual file — a list_dir key is a directory and would
+  // otherwise be "read" as one, silently yielding nothing.
+  const recent = [...cache.seen.entries()]
+    .filter(([key]) => key.startsWith('read_file:'))
+    .map(([key, meta]) => [key.slice('read_file:'.length), meta] as const)
+    .sort((a, b) => b[1].round - a[1].round)
+    .slice(0, FORCED_GROUNDING_MAX_FILES);
+  if (recent.length === 0) return undefined;
+
+  const blocks: string[] = [];
+  let budget = FORCED_GROUNDING_MAX_BYTES;
+  for (const [rel] of recent) {
+    if (budget <= 0) break;
+    let body: string;
+    try {
+      body = readFile(isAbsolute(rel) ? rel : join(projectRoot, rel));
+    } catch {
+      continue; // deleted or unreadable since it was read — skip, never throw
+    }
+    const clipped = body.length > budget ? `${body.slice(0, budget)}\n… (truncated)` : body;
+    budget -= clipped.length;
+    blocks.push(`--- ${rel} (current content) ---\n${clipped}`);
+  }
+  if (blocks.length === 0) return undefined;
+
+  return (
+    'Read tools are unavailable this round. Here is the CURRENT on-disk content ' +
+    'of the files you have been reading, so you do not have to recall it:\n\n' +
+    `${blocks.join('\n\n')}\n\n` +
+    'Base your edit on exactly this text. For edit_file, copy old_string ' +
+    'verbatim from above and make it long enough to be unique. Do not rewrite a ' +
+    'whole file when a targeted edit will do.'
+  );
+}
+
+/**
+ * Read a positive-integer round threshold from the environment.
+ *
+ * Falls back to `fallback` for anything that isn't a finite integer >= 1.
+ * That strictness is the point: these values gate the write-forcing rail, and
+ * a typo'd or empty variable silently coercing to 0 or NaN would disable the
+ * rail entirely — the exact read-forever failure it exists to break. Refusing
+ * junk keeps a misconfiguration merely ineffective rather than harmful.
+ */
+export function readRoundsEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw.trim());
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1) return fallback;
+  return n;
+}
+
 export function newReadCache(): ReadCache {
   return { seen: new Map() };
 }
@@ -1239,7 +1320,21 @@ export function createAgenticExecutor(
     // missing files). Reads are never denied (see repeatReadNote), but after
     // WRITE_NUDGE_AFTER consecutive mutation-free rounds the next round opens
     // with an explicit order to write.
-    const WRITE_NUDGE_AFTER = 5;
+    // Kept at 5. Log forensics on the Octopus Invaders build (2026-08-01,
+    // 143 min) killed the case for lowering it: the run's 281-reads-to-44-writes
+    // ratio is a TOOL-CALL ratio, not a repeating streak cycle — rounds batch
+    // reads (one round carried 11), and the nudge fired 20 times across 22
+    // sessions with 19 of those at exactly r6, i.e. at session OPEN, not in a
+    // mid-session loop. Lowering the threshold would have saved ~1 round per
+    // session opening, ~3-6% of wall clock, while pushing on the run's actual
+    // failure mode: forcing strips the read tools, so the model composes a
+    // blind edit — 50% of forced rounds broke syntax, and 6 of the run's 7
+    // syntax errors landed on the round immediately after a force. Its recovery
+    // from a broken edit is to re-emit the whole file, which is what produced
+    // 18 rewrites of one file. Forcing EARLIER means less context and more of
+    // exactly that. Grounding the forced round (below) is the fix; the env
+    // override exists so this can be tuned per workload without another patch.
+    const WRITE_NUDGE_AFTER = readRoundsEnv('UAP_DELIVER_WRITE_NUDGE_AFTER', 5);
     // After the soft nudge is IGNORED for this many further read-only rounds,
     // stop asking and force it: the next request offers only write/edit/finish
     // with tool_choice:'required'. A weak local model (qwen35-a3b live,
@@ -1247,7 +1342,10 @@ export function createAgenticExecutor(
     // prose and keeps reading; removing the read tools is the only reliable
     // lever. Kept just above WRITE_NUDGE_AFTER so the model gets one soft chance
     // to self-correct before the hard rail engages.
-    const FORCE_WRITE_AFTER = WRITE_NUDGE_AFTER + 1;
+    const FORCE_WRITE_AFTER = Math.max(
+      WRITE_NUDGE_AFTER + 1,
+      readRoundsEnv('UAP_DELIVER_FORCE_WRITE_AFTER', WRITE_NUDGE_AFTER + 1),
+    );
     let roundsWithoutWrite = 0;
     let writeNudged = false;
     // Force NON-consecutively: at most one forced round, then always a normal
@@ -1275,10 +1373,17 @@ export function createAgenticExecutor(
       const forceWrite: boolean = roundsWithoutWrite >= FORCE_WRITE_AFTER && !lastRoundForced;
       lastRoundForced = forceWrite;
       if (forceWrite) {
+        // Ground the forced round rather than blinding it — see
+        // buildForcedRoundGrounding. Stripping the read tools stops the loop;
+        // injecting current file content stops the blind edit that follows.
+        const grounding = buildForcedRoundGrounding(readCache, opts.projectRoot);
+        if (grounding) messages.push({ role: 'user', content: grounding });
         opts.onEvent?.({
           round,
           kind: 'error',
-          detail: `forced-write round: read tools stripped after ${roundsWithoutWrite} read-only rounds`,
+          detail:
+            `forced-write round: read tools stripped after ${roundsWithoutWrite} read-only rounds` +
+            (grounding ? ' (grounded with current file content)' : ''),
         });
       }
       // Rail sizing: stop BEFORE sending a request that would outgrow the

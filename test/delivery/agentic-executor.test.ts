@@ -466,11 +466,17 @@ describe('looksTruncated (truncated-emit guard)', () => {
 
 describe('createAgenticExecutor — read-only-streak write nudge', () => {
   let dir: string;
+  // Pin the threshold rather than inheriting the shipped default: these tests
+  // assert the BEHAVIOUR (nudge fires, then forcing, non-consecutively) at a
+  // known round, so they must not break when the default is tuned. They also
+  // exercise the env override itself.
   beforeEach(() => {
+    process.env.UAP_DELIVER_WRITE_NUDGE_AFTER = '5';
     dir = mkdtempSync(join(tmpdir(), 'agx-nudge-'));
     writeFileSync(join(dir, 'a.js'), 'const a = 1;\n');
   });
   afterEach(() => {
+    delete process.env.UAP_DELIVER_WRITE_NUDGE_AFTER;
     rmSync(dir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
@@ -569,6 +575,23 @@ describe('createAgenticExecutor — read-only-streak write nudge', () => {
     expect(names7).toContain('write_file');
     expect(names7).toContain('edit_file');
     expect(names7).toContain('finish');
+
+    // Stripping the read tools is only half of it: the forced round must also
+    // CARRY the current content of what the model was reading, or it composes
+    // the edit from memory. That blind edit is the measured failure — 50% of
+    // forced rounds broke syntax on the Octopus run, and the recovery was to
+    // re-emit the whole file. Assert the grounding reached the wire, not just
+    // that the helper exists.
+    const forcedMessages = round7.messages as Array<{ role: string; content: string | null }>;
+    const grounded = forcedMessages.some(
+      (m) => typeof m.content === 'string' && m.content.includes('CURRENT on-disk content'),
+    );
+    expect(grounded).toBe(true);
+    const groundingMsg = forcedMessages.find(
+      (m) => typeof m.content === 'string' && m.content.includes('CURRENT on-disk content'),
+    )!;
+    // It must be the real file body from disk, not a placeholder.
+    expect(groundingMsg.content).toContain('const a = 1;');
   });
 
   it('forces NON-consecutively: the round after a forced round restores read tools', async () => {
