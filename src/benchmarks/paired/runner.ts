@@ -10,6 +10,7 @@
  */
 
 import { concurrentMap } from '../../utils/concurrency-pool.js';
+import type { StopReason, TurnTrace } from './types.js';
 import { materializeWorkdir, runSetup, runVerify } from './suite.js';
 import { MetricVector, RunRecord, RunnerConfig, TaskSpec, Condition } from './types.js';
 
@@ -140,10 +141,19 @@ async function executeCell(cell: Cell, cfg: RunnerConfig, suiteDir: string): Pro
     wellFormed: agent.wellFormed,
     error: verifyErr,
   };
-  return record(cell, cfg, metrics);
+  // Carry the adapter's per-turn attribution into the record. Without it the
+  // adapter builds a turn-by-turn account and the runner drops it on the floor,
+  // so wasted work is visible in aggregate and unexplainable in detail.
+  return record(cell, cfg, metrics, agent.turnTrace, agent.stopReason);
 }
 
-function record(cell: Cell, cfg: RunnerConfig, metrics: MetricVector): RunRecord {
+function record(
+  cell: Cell,
+  cfg: RunnerConfig,
+  metrics: MetricVector,
+  turnTrace?: TurnTrace[],
+  stopReason?: StopReason
+): RunRecord {
   return {
     taskId: cell.task.id,
     condition: cell.condition.label,
@@ -151,6 +161,8 @@ function record(cell: Cell, cfg: RunnerConfig, metrics: MetricVector): RunRecord
     metrics,
     adapter: cfg.adapter.id,
     model: cfg.model,
+    ...(turnTrace && turnTrace.length ? { turnTrace } : {}),
+    ...(stopReason ? { stopReason } : {}),
   };
 }
 

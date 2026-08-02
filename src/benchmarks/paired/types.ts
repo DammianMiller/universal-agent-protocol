@@ -241,6 +241,10 @@ export interface RunRecord {
    * alongside correctness so the tuner has a signal beyond pass/fail.
    */
   qualityScore?: QualityScore;
+  /** Per-turn attribution from the adapter, when it produced one. */
+  turnTrace?: TurnTrace[];
+  /** Why the agent loop stopped. */
+  stopReason?: StopReason;
 }
 
 // ============================================================================
@@ -261,7 +265,37 @@ export interface AgentRunResult {
   error: string | null;
   /** Raw stdout/log for debugging and post-hoc audit (HAL-style log inspection). */
   rawLog?: string;
+  /**
+   * Per-turn trace, so wasted work is ATTRIBUTABLE after the fact.
+   *
+   * The raw adapter already built a human log of this and threw it away at the
+   * runner boundary, which is why "47% of cells burned the full turn budget and
+   * solved nothing" could be seen in aggregate but not explained.
+   */
+  turnTrace?: TurnTrace[];
+  /** Why the agent loop stopped — the field that makes futility measurable. */
+  stopReason?: StopReason;
 }
+
+export interface TurnTrace {
+  turn: number;
+  /** Files the model actually wrote this turn. */
+  files: number;
+  /** Did the gate pass after this turn? Null when no gate ran. */
+  gateOk: boolean | null;
+}
+
+export type StopReason =
+  /** Gate passed. */
+  | 'solved'
+  /** Ran out of the iteration budget without passing. */
+  | 'budget'
+  /** The gate produced byte-identical output on consecutive turns. */
+  | 'no-progress'
+  /** The completion errored. */
+  | 'error'
+  /** Single-shot condition — no gate loop. */
+  | 'single-shot';
 
 export interface AgentRunContext {
   task: TaskSpec;

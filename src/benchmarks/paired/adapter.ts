@@ -11,6 +11,7 @@
  * crashed run degrades to an incorrect result rather than aborting the suite.
  */
 
+import type { StopReason, TurnTrace } from './types.js';
 import { spawn, spawnSync } from 'child_process';
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
@@ -450,6 +451,13 @@ export interface RawAdapterConfig {
   endpoint?: string;
   /** Max execute->verify->fix iterations when gating. Default 4. */
   maxGateIters?: number;
+  /**
+   * Break when the gate repeats itself byte-for-byte after a turn that wrote
+   * files. Default OFF — unvalidated: it never fired in the run that killed its
+   * sibling rule, so there is no evidence it helps. `UAP_RAW_STOP_NO_PROGRESS=1`
+   * enables it for an A/B.
+   */
+  stopOnNoProgress?: boolean;
   temperature?: number;
 }
 
@@ -552,11 +560,14 @@ export class RawCompletionAdapter implements AgentAdapter {
   readonly id = 'raw';
   private readonly endpoint: string;
   private readonly maxGateIters: number;
+  private readonly stopOnNoProgress: boolean;
   private readonly temperature: number;
   constructor(cfg: RawAdapterConfig = {}) {
     this.endpoint =
       cfg.endpoint ?? process.env.UAP_RAW_ENDPOINT ?? 'http://127.0.0.1:8080/v1/chat/completions';
     this.maxGateIters = cfg.maxGateIters ?? Number(process.env.UAP_RAW_GATE_ITERS ?? 4);
+    this.stopOnNoProgress =
+      cfg.stopOnNoProgress ?? process.env.UAP_RAW_STOP_NO_PROGRESS === '1';
     this.temperature = cfg.temperature ?? Number(process.env.UAP_RAW_TEMPERATURE ?? 0.2);
   }
 
@@ -598,6 +609,9 @@ export class RawCompletionAdapter implements AgentAdapter {
     const maxIters = useGate ? this.maxGateIters : 1;
     let lastGateOut: string | null = null;
 
+    const turnTrace: TurnTrace[] = [];
+    let stopReason: StopReason = useGate ? 'budget' : 'single-shot';
+
     for (let iter = 0; iter < maxIters; iter++) {
       const bare = lazy && iter === 0;
       const messages = buildMessages(bare, lastGateOut);
@@ -612,13 +626,18 @@ export class RawCompletionAdapter implements AgentAdapter {
       totalTokens += chat.tokens;
       if (chat.error) {
         error = chat.error;
+        stopReason = 'error';
+        turnTrace.push({ turn: turns, files: 0, gateOk: null });
         break;
       }
       const blocks = parseFileBlocks(chat.content);
       applyFileBlocks(ctx.workdir, blocks);
       logParts.push(`--- turn ${turns}: ${blocks.length} file(s) ---`);
 
-      if (!useGate) break;
+      if (!useGate) {
+        turnTrace.push({ turn: turns, files: blocks.length, gateOk: null });
+        break;
+      }
 
       const gate = spawnSync('bash', ['-lc', ctx.task.gateCmd as string], {
         cwd: ctx.workdir,
@@ -627,9 +646,36 @@ export class RawCompletionAdapter implements AgentAdapter {
         env: sanitizedEnv(),
       });
       gateRuns++;
-      if (gate.status === 0) break;
+      const gateOk = gate.status === 0;
+      turnTrace.push({ turn: turns, files: blocks.length, gateOk });
+      if (gateOk) {
+        stopReason = 'solved';
+        break;
+      }
       if (iter === maxIters - 1) break; // out of budget
-      lastGateOut = `${gate.stdout ?? ''}\n${gate.stderr ?? ''}`.slice(-2000);
+
+      const gateOut = `${gate.stdout ?? ''}\n${gate.stderr ?? ''}`.slice(-2000);
+
+      // A NO-OP TURN IS NOT A FUTILE ONE. Cutting the loop when a turn wrote no
+      // files looked provable — the workdir is byte-identical and the gate is
+      // deterministic, so the next gate result is the same. That reasoning is
+      // sound about the GATE and irrelevant to the loop: the next turn
+      // re-prompts the MODEL, which is the stochastic part, and re-prompting is
+      // precisely how a turn that emitted no parseable blocks recovers.
+      //
+      // Measured on real-gate-brutal (6 epochs): 27 of 30 first turns emit ZERO
+      // parseable <<<FILE ...>>> blocks. Stopping there fired on 28/30 cells and
+      // took correctness from 30.0% to 6.7% — none of the stopped cells had
+      // solved. The turn budget is not waste; it is the format-compliance retry.
+      //
+      // The no-progress rule below is a different claim (a turn that DID write
+      // and moved nothing), but it never fired in that run, so it is unvalidated
+      // and ships OFF. Turn it on with UAP_RAW_STOP_NO_PROGRESS=1 to A/B it.
+      if (this.stopOnNoProgress && gateOut === lastGateOut) {
+        stopReason = 'no-progress';
+        break;
+      }
+      lastGateOut = gateOut;
     }
 
     return {
@@ -640,6 +686,8 @@ export class RawCompletionAdapter implements AgentAdapter {
       wellFormed: null,
       error,
       rawLog: logParts.join('\n'),
+      turnTrace,
+      stopReason,
     };
   }
 }

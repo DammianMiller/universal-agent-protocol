@@ -88,15 +88,31 @@ describe('raw adapter lazy behavior (P1+P5)', () => {
   it('re-prompts are stateless: exactly one system + one user message per iteration', async () => {
     const failing = { ...task, gateCmd: 'false' };
     let lastMessageCount = 0;
+    let n = 0;
     vi.stubGlobal('fetch', async (_url: unknown, init?: { body?: string }) => {
       const body = JSON.parse(init?.body ?? '{}') as { messages: unknown[] };
       lastMessageCount = body.messages.length;
+      // Must WRITE each turn, or the no-op futility stop ends the loop on turn 1
+      // — correctly, since an unchanged workdir cannot change a deterministic
+      // gate. This test is about prompt SHAPE across iterations, so it needs a
+      // loop that legitimately iterates.
+      n++;
       return {
         ok: true, status: 200,
-        json: async () => ({ choices: [{ message: { content: 'no files' } }], usage: { total_tokens: 5 } }),
+        json: async () => ({
+          choices: [{ message: { content: `<<<FILE main.js>>>\nmodule.exports = ${n};\n<<<END>>>` } }],
+          usage: { total_tokens: 5 },
+        }),
       } as unknown as Response;
     });
-    const adapter = new RawCompletionAdapter({ endpoint: 'http://stub/v1/chat/completions', maxGateIters: 3 });
+    // `false` emits identical (empty) output every turn, which is a no-progress
+    // loop by design. Disable that stop here so the prompt-shape assertion still
+    // sees three iterations; the stop itself is covered in raw-futility-stop.
+    const adapter = new RawCompletionAdapter({
+      endpoint: 'http://stub/v1/chat/completions',
+      maxGateIters: 3,
+      stopOnNoProgress: false,
+    });
     const result = await adapter.run({
       task: failing as never,
       condition: makeFullCondition(),
