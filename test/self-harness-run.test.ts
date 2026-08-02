@@ -36,7 +36,11 @@ function comparison(meanDelta: number, significant: boolean, netGain = 0): Compa
   return {
     label: CANDIDATE_LABEL, baseline: BASELINE_LABEL,
     correctness: {
-      baselineRate: 0, treatmentRate: meanDelta,
+      // A realistic held-out baseline: a suite the baseline can already pass,
+      // so a regression would have somewhere to show up. Leaving this at 0
+      // describes a suite where nothing is left to break, which decideAccept
+      // now (correctly) refuses to call "held-out clean".
+      baselineRate: 0.5, treatmentRate: 0.5 + meanDelta,
       delta: { meanDelta, ci: { lower: 0, upper: 0 }, pValue: 0.5, n: 8, significant },
       mcnemar: { bothCorrect: 0, onlyTreatment: Math.max(0, netGain), onlyBaseline: Math.max(0, -netGain), bothWrong: 0, netGain, pValue: 0.5, n: 8 },
       verdict: 'tie',

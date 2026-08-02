@@ -24,7 +24,7 @@ function accepting(): Comparison {
     label: 'with-mod',
     baseline: 'baseline',
     correctness: {
-      baselineRate: 0,
+      baselineRate: 0.5,
       treatmentRate: 0.3,
       delta: { meanDelta: 0.3, ci: { lower: 0, upper: 0 }, pValue: 0.5, n: 10, significant: true },
       mcnemar: {

@@ -7,9 +7,10 @@
  */
 
 import chalk from 'chalk';
-import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { getMaxModelConcurrency } from '../utils/model-slots.js';
 
 import {
   analyze,
@@ -48,7 +49,17 @@ export interface BenchPairedOptions {
   iterations?: string;
   ropeMargin?: string;
   json?: boolean;
+  /** Exit 0 even when the run could not measure anything (CI / exploratory use). */
+  allowNoSignal?: boolean;
+  /** Override the ±effect the run must be able to resolve (default 0.25). */
+  minDetectableEffect?: string;
 }
+
+/**
+ * Distinct from the `2` used for "failed to load suite" — a caller must be able
+ * to tell "the suite is missing" from "the run completed but measured nothing".
+ */
+const NO_SIGNAL_EXIT = 3;
 
 const DEFAULT_SUITE = 'benchmarks/suites/real-gate';
 
@@ -85,7 +96,13 @@ export async function benchPairedCommand(options: BenchPairedOptions = {}): Prom
   const adapterName = options.adapter ?? 'mock';
   const model = options.model ?? process.env.UAP_BENCH_MODEL ?? 'qwen35-a3b';
   const epochs = Math.max(1, parseInt(options.epochs ?? '5', 10));
-  const concurrency = Math.max(1, parseInt(options.concurrency ?? '4', 10));
+  // Default to the inference backend's slot budget rather than a fixed 4: every
+  // cell is a model call, so a fixed number either queues cells behind each
+  // other or leaves the machine idle. An explicit --concurrency still wins.
+  const explicitConcurrency = options.concurrency ? parseInt(options.concurrency, 10) : NaN;
+  const concurrency = Number.isFinite(explicitConcurrency)
+    ? Math.max(1, explicitConcurrency)
+    : await defaultBenchConcurrency(adapterName);
   const seed = parseInt(options.seed ?? '1', 10);
   const iterations = Math.max(1000, parseInt(options.iterations ?? '10000', 10));
 
@@ -139,11 +156,13 @@ export async function benchPairedCommand(options: BenchPairedOptions = {}): Prom
   // variance 7.8x (arXiv 2605.23950), so a paired report WITHOUT the harness it
   // ran under is not comparable to the next one — which is the whole point of
   // producing these numbers.
+  const mde = options.minDetectableEffect ? parseFloat(options.minDetectableEffect) : undefined;
   const report = analyze(output, {
     seed,
     iterations,
     ropeMargin,
     harness: await currentHarnessCardInput(adapterName),
+    discrimination: Number.isFinite(mde) ? { minDetectableEffect: mde } : undefined,
   });
   const ablation = options.ablation ? analyzeAblation(output, { seed, iterations }) : null;
 
@@ -164,6 +183,13 @@ export async function benchPairedCommand(options: BenchPairedOptions = {}): Prom
   if (ablation) md += '\n' + renderAblationMarkdown(ablation);
   writeFileSync(join(outDir, 'report.md'), md, 'utf-8');
 
+  // Set BEFORE the --json return: the programmatic caller is the one most
+  // likely to be automated, and it was the only one getting exit 0 on a run
+  // that measured nothing.
+  if (!report.discrimination.usable && !options.allowNoSignal) {
+    process.exitCode = NO_SIGNAL_EXIT;
+  }
+
   if (options.json) {
     process.stdout.write(JSON.stringify({ report, ablation, outDir }, null, 2) + '\n');
     return;
@@ -171,6 +197,50 @@ export async function benchPairedCommand(options: BenchPairedOptions = {}): Prom
 
   console.log(md);
   console.log(chalk.dim(`\nArtifacts written to ${outDir}`));
+
+  // A run that could not measure anything must not exit 0 with a tidy report —
+  // that is how three consecutive no-signal runs got read as null results. Name
+  // the problem, name a suite that would fix it, and fail the command.
+  if (!report.discrimination.usable) {
+    console.log('');
+    const what = report.discrimination.efficiencyUsable
+      ? 'No correctness signal'
+      : 'No usable signal';
+    console.log(chalk.yellow(`⚠️  ${what} (${report.discrimination.status}).`));
+    console.log(chalk.yellow(`   ${report.discrimination.reason}`));
+    if (report.discrimination.status === 'ceiling') {
+      const harder = harderSuitesThan(suiteDir);
+      if (harder.length) {
+        console.log(chalk.dim(`   Try a harder suite: ${harder.map((h) => `--suite ${h}`).join('  |  ')}`));
+      }
+    }
+    if (report.discrimination.status === 'floor') {
+      console.log(
+        chalk.dim('   Check the adapter matches the suite — a mock-only suite (verifyCmd `test -f MOCK_SOLVED`)')
+      );
+      console.log(chalk.dim('   scores 0% against every real model, which looks identical to "too hard".'));
+    }
+    if (report.discrimination.efficiencyUsable) {
+      console.log(chalk.dim('   Efficiency deltas (tokens/turns/latency) remain valid.'));
+    }
+    if (options.allowNoSignal) {
+      console.log(chalk.dim('   --allow-no-signal set: exiting 0 anyway.'));
+    }
+  }
+}
+
+/** Sibling suites ranked harder than the one just run, if they exist on disk. */
+function harderSuitesThan(suiteDir: string): string[] {
+  // Ordered easiest -> hardest by construction of the suite set.
+  const ladder = [
+    'benchmarks/suites/real-gate',
+    'benchmarks/suites/real-gate-medium',
+    'benchmarks/suites/real-gate-hard',
+    'benchmarks/suites/real-gate-brutal',
+  ];
+  const at = ladder.findIndex((s) => resolve(s) === resolve(suiteDir));
+  if (at === -1) return [];
+  return ladder.slice(at + 1).filter((s) => existsSync(resolve(s)));
 }
 
 function stamp(iso: string): string {
@@ -189,6 +259,33 @@ async function describeMemoryModeSafe(): Promise<string> {
     return describeMemoryMode(process.cwd());
   } catch {
     return 'semantic retrieval';
+  }
+}
+
+/**
+ * Cells per wave.
+ *
+ * Adapters that drive OUR backend (`raw`, `deliver`) are sized by its slot
+ * budget. Adapters that shell out to another agent (`claude`, `opencode`,
+ * `mini`) hit that vendor's rate limits, not our slots, so they keep the
+ * conservative fixed default — sizing them by our budget is simply the wrong
+ * resource.
+ *
+ * The probe MUST be warmed: `getMaxModelConcurrency` is synchronous and returns
+ * DEFAULT_SLOTS (2) on a cold cache, so calling it bare in a fresh CLI process
+ * silently HALVED bench concurrency from 4 to 2 — a throughput change in the
+ * wrong direction, dressed as an optimisation.
+ */
+async function defaultBenchConcurrency(adapterName: string): Promise<number> {
+  const OURS = new Set(['raw', 'deliver', 'mock']);
+  if (!OURS.has(adapterName)) return 4;
+  try {
+    const { warmModelSlotBudget } = await import('../utils/model-slots.js');
+    await warmModelSlotBudget(process.cwd());
+    const n = getMaxModelConcurrency(process.cwd());
+    return Number.isFinite(n) && n > 0 ? n : 4;
+  } catch {
+    return 4;
   }
 }
 
