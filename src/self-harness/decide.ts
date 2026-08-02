@@ -19,6 +19,11 @@ export interface DecisionOptions {
    */
   heldoutRegressionTolerance?: number;
   /**
+   * Held-out baseline rate at or below which no regression is detectable
+   * (nothing left to break). Default 0.02.
+   */
+  heldoutFloor?: number;
+  /**
    * Max tolerated increase in mean tokens (treatment-baseline) on validation.
    * `null` disables the cost gate. Default null.
    */
@@ -85,6 +90,28 @@ export function decideAccept(
   //    delta beyond tolerance (a non-significant dip is noise and allowed).
   if (heldout) {
     const hd = heldout.correctness.delta;
+
+    // 3a) The held-out arm must have been ABLE to see a regression, or "no
+    //     regression" is unexamined rather than clean — and this is the one
+    //     place a machine acts on that distinction unsupervised.
+    //
+    //     The test is the BASELINE rate, not discordance. A regression is
+    //     baseline-passes -> treatment-fails, so it is undetectable exactly when
+    //     the baseline already failed everything. Note a held-out at the CEILING
+    //     is fine: a regression there would have shown up as treatment failures,
+    //     so zero discordance is real evidence.
+    if (heldout.correctness.baselineRate <= (opts.heldoutFloor ?? 0.02)) {
+      return {
+        verdict: 'reject',
+        reason:
+          `held-out could not detect a regression (baseline solved ` +
+          `${(heldout.correctness.baselineRate * 100).toFixed(0)}% of ${hd.n} cells) — nothing was ` +
+          'left to break, so "no regression" is unearned. Use a held-out suite the baseline can pass.',
+        validationDelta: vDelta,
+        heldoutDelta: hDelta,
+      };
+    }
+
     if (hd.significant && hd.meanDelta < -tol) {
       return {
         verdict: 'reject',

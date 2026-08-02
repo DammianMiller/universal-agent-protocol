@@ -27,7 +27,9 @@ function comparison(meanDelta: number, significant: boolean, netGain = 0): Compa
   return {
     label: 'with-mod', baseline: 'baseline',
     correctness: {
-      baselineRate: 0, treatmentRate: meanDelta,
+      // See self-harness-run.test.ts: a held-out baseline of 0 means no
+      // regression is detectable, which is no longer accepted as "clean".
+      baselineRate: 0.5, treatmentRate: 0.5 + meanDelta,
       delta: { meanDelta, ci: { lower: 0, upper: 0 }, pValue: 0.5, n: 10, significant },
       mcnemar: { bothCorrect: 0, onlyTreatment: Math.max(0, netGain), onlyBaseline: Math.max(0, -netGain), bothWrong: 0, netGain, pValue: 0.5, n: 10 },
     },

@@ -840,6 +840,14 @@ bench
   .option('--rope-margin <x>', 'Practical-equivalence margin: a correctness delta within ±x (success-rate units) is a TIE, not a win', '0')
   .option('--out <dir>', 'Artifact output directory (default: benchmark-results/paired-<ts>)')
   .option('--json', 'Emit JSON to stdout instead of the Markdown report')
+  .option(
+    '--allow-no-signal',
+    'Exit 0 even when the run could not measure anything (default: exit 3, so a no-signal run cannot be mistaken for a null result)'
+  )
+  .option(
+    '--min-detectable-effect <x>',
+    'Smallest correctness delta the run must be able to resolve, in success-rate units (default 0.25)'
+  )
   .action(async (options) => {
     const cmd = await lazy.benchPaired();
     await cmd(options);

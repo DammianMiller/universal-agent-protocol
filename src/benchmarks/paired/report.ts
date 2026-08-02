@@ -83,6 +83,13 @@ export interface AnalysisReport {
   /** Cost-accuracy Pareto points (one per condition). */
   pareto: { label: string; successRate: number; meanTokens: number | null }[];
   /**
+   * Whether this run could have detected a difference at all (see
+   * `assessDiscrimination`). A suite where every arm scores 100% — or 0% —
+   * yields `delta=+0.000, significant=false`, which reads like "no effect" but
+   * actually means "no measurement".
+   */
+  discrimination: DiscriminationVerdict;
+  /**
    * ETCSOVG disclosure card for the harness these numbers were produced by
    * (harness plan F). Harness variance dominates model variance 7.8x
    * (arXiv 2605.23950), so a score reported without it is not comparable to any
@@ -90,6 +97,214 @@ export interface AnalysisReport {
    * the card is never invented.
    */
   harnessCard?: HarnessCard;
+}
+
+/**
+ * Can this run tell the arms apart at all?
+ *
+ * A paired benchmark reports `delta=+0.000, significant=false` in two very
+ * different situations: the arms genuinely perform the same, or the SUITE
+ * cannot separate them because every arm sits at the ceiling (or the floor).
+ * The numbers are identical; the conclusions are opposite. Reporting only the
+ * delta invites reading "no measurement" as "no effect" — three consecutive
+ * runs against `real-gate` (100%/100%) and `smoke` (0%/0%, wrong adapter) were
+ * each read as a null result before anyone noticed nothing had been measured.
+ *
+ * So the verdict is computed and printed alongside the delta, always.
+ */
+export type DiscriminationStatus =
+  | 'ok'
+  /** Every arm solved (nearly) everything — the suite cannot separate them. */
+  | 'ceiling'
+  /** Nothing was solved — suite too hard, or adapter/harness misconfigured. */
+  | 'floor'
+  /**
+   * Arms differed nowhere on CORRECTNESS: zero discordant pairs. This is the
+   * criterion McNemar tests on, and it is the honest name for the failure — a
+   * bootstrap over an all-zero delta vector returns CI [0.000, 0.000], which
+   * reads as "conclusively no effect" when it means "no information".
+   */
+  | 'no-discordant-pairs'
+  /** The interval spans both zero and the effect worth having. */
+  | 'underpowered'
+  /** Nothing to compare — a report with no treatment arm. */
+  | 'no-comparisons';
+
+export interface DiscriminationVerdict {
+  status: DiscriminationStatus;
+  /**
+   * True when a CORRECTNESS difference could have shown up. Efficiency results
+   * are judged separately — see `efficiencyUsable`.
+   */
+  usable: boolean;
+  /**
+   * True when at least one continuous metric (tokens/turns/cost/latency) or the
+   * quality score carries a non-degenerate interval.
+   *
+   * This exists because "same accuracy, 40% fewer tokens" is a real, citable
+   * result — and the first cut of this check refused it, printing "not evidence
+   * of anything" directly above a token table reading 🟢 WIN. A saturated suite
+   * measures correctness badly and efficiency perfectly well.
+   */
+  efficiencyUsable: boolean;
+  reason: string;
+  minSuccess: number;
+  maxSuccess: number;
+  /** Paired cells in the PRIMARY comparison. */
+  pairedCells: number;
+  /** Discordant correctness pairs in the PRIMARY comparison (McNemar b+c). */
+  discordantPairs: number;
+}
+
+export interface DiscriminationOptions {
+  /** Every arm at or above this is a ceiling. Default 0.98. */
+  ceilingAt?: number;
+  /** Every arm at or below this is a floor. Default 0.02. */
+  floorAt?: number;
+  /** Fewer paired cells than this cannot support a verdict. Default 8. */
+  minPairedCells?: number;
+  /**
+   * Smallest correctness delta worth detecting, in success-rate units. A run is
+   * inconclusive when its interval contains BOTH zero and this effect.
+   * Default 0.25.
+   */
+  minDetectableEffect?: number;
+}
+
+function finite(n: number | undefined | null): boolean {
+  return typeof n === 'number' && Number.isFinite(n);
+}
+
+/**
+ * Does any continuous metric or quality score carry a real difference?
+ *
+ * Keyed on a NON-ZERO paired mean, not on interval width. Zero width means
+ * opposite things for the two kinds of measure: an all-zero correctness delta is
+ * no information, while a constant -1200-token delta across every cell is the
+ * strongest efficiency result there is — perfectly consistent, zero variance.
+ * Testing width alone refused exactly that.
+ */
+function hasEfficiencySignal(c: Comparison | undefined): boolean {
+  if (!c) return false;
+  const carries = (pd: { n: number; meanDelta: number } | undefined): boolean =>
+    Boolean(pd && pd.n > 0 && finite(pd.meanDelta) && pd.meanDelta !== 0);
+  for (const m of CONTINUOUS_METRICS) {
+    if (carries(c.metrics[m])) return true;
+  }
+  return carries(c.quality);
+}
+
+/**
+ * Can this run tell the arms apart?
+ *
+ * Judged against the PRIMARY comparison (the first treatment arm), not folded
+ * across every arm: an `--ablation` run has 6 comparisons, and summing their
+ * discordance let one noisy leave-one-out arm mask a null primary, while taking
+ * the widest CI let it refuse a tight primary.
+ */
+export function assessDiscrimination(
+  perCondition: ConditionSummary[],
+  comparisons: Comparison[],
+  opts: DiscriminationOptions = {},
+): DiscriminationVerdict {
+  const ceilingAt = opts.ceilingAt ?? 0.98;
+  const floorAt = opts.floorAt ?? 0.02;
+  const minCells = opts.minPairedCells ?? 8;
+  const mde = opts.minDetectableEffect ?? 0.25;
+
+  const rates = perCondition.map((c) => c.successRate).filter(finite);
+  const minSuccess = rates.length ? Math.min(...rates) : 0;
+  const maxSuccess = rates.length ? Math.max(...rates) : 0;
+
+  const primary = comparisons[0];
+  const efficiencyUsable = hasEfficiencySignal(primary);
+  const d = primary?.correctness.delta;
+  const pairedCells = finite(d?.n) ? (d as { n: number }).n : 0;
+  const discordantPairs = primary
+    ? primary.correctness.mcnemar.onlyTreatment + primary.correctness.mcnemar.onlyBaseline
+    : 0;
+  const base = { minSuccess, maxSuccess, pairedCells, discordantPairs, efficiencyUsable };
+  const alsoEfficiency = efficiencyUsable
+    ? ' Efficiency deltas (tokens/turns/latency) below ARE valid and may be cited.'
+    : '';
+
+  if (!primary) {
+    return {
+      status: 'no-comparisons',
+      usable: false,
+      reason: 'no treatment arm to compare against the baseline — nothing was measured.',
+      ...base,
+    };
+  }
+  if (rates.length > 0 && minSuccess >= ceilingAt) {
+    return {
+      status: 'ceiling',
+      usable: false,
+      reason:
+        `every condition solved ${(minSuccess * 100).toFixed(0)}%+ of cells — the suite cannot separate ` +
+        `them on correctness. Either it is too easy, or the verify command always passes (a mock adapter ` +
+        `against a mock suite looks identical). A zero correctness delta here means NO MEASUREMENT.` +
+        alsoEfficiency,
+      ...base,
+    };
+  }
+  if (rates.length > 0 && maxSuccess <= floorAt) {
+    return {
+      status: 'floor',
+      usable: false,
+      reason:
+        `no condition solved anything (max ${(maxSuccess * 100).toFixed(0)}%) — the suite is too hard, ` +
+        `or the adapter/suite are mismatched (a mock-only suite scores 0% against every real model, ` +
+        `which looks identical to "too hard"). A zero delta here means NO MEASUREMENT.` + alsoEfficiency,
+      ...base,
+    };
+  }
+  if (discordantPairs === 0) {
+    return {
+      status: 'no-discordant-pairs',
+      usable: false,
+      reason:
+        `the arms produced identical correctness on all ${pairedCells} paired cells (0 discordant), so ` +
+        `the run carries no information about a correctness difference — the CI collapses to [0, 0], ` +
+        `which LOOKS conclusive and is not.` + alsoEfficiency,
+      ...base,
+    };
+  }
+  if (pairedCells > 0 && pairedCells < minCells) {
+    return {
+      status: 'underpowered',
+      usable: false,
+      reason:
+        `only ${pairedCells} paired cells — too few to distinguish a real effect from noise. ` +
+        `Raise --epochs or add tasks before reading the delta.` + alsoEfficiency,
+      ...base,
+    };
+  }
+  // Inconclusive = the interval admits both "no effect" and an effect worth
+  // having. Half-width alone got this wrong in both directions: it passed
+  // [-0.24, +0.24] (cannot tell a 24pp regression from a 24pp win) and refused
+  // [0.02, 0.55] (a proven win with a long tail).
+  const ci = d?.ci;
+  const significant = Boolean(d?.significant);
+  if (!significant && ci && finite(ci.lower) && finite(ci.upper) && ci.lower < mde && ci.upper > -mde) {
+    return {
+      status: 'underpowered',
+      usable: false,
+      reason:
+        `the correctness CI [${ci.lower.toFixed(2)}, ${ci.upper.toFixed(2)}] contains both zero and the ` +
+        `±${mde} effect worth detecting — this run could not have told a real difference from none. ` +
+        `Raise --epochs or add tasks.` + alsoEfficiency,
+      ...base,
+    };
+  }
+  return {
+    status: 'ok',
+    usable: true,
+    reason:
+      `conditions span ${(minSuccess * 100).toFixed(0)}%-${(maxSuccess * 100).toFixed(0)}% over ` +
+      `${pairedCells} paired cells with ${discordantPairs} discordant — a difference could show up here.`,
+    ...base,
+  };
 }
 
 function cellKey(r: RunRecord): string {
@@ -169,6 +384,8 @@ export interface AnalyzeOptions extends PairedOptions {
    * a guessed one.
    */
   harness?: HarnessCardInput;
+  /** Thresholds for the ceiling/floor/underpowered verdict. */
+  discrimination?: DiscriminationOptions;
 }
 
 export function analyze(output: RunnerOutput, opts: AnalyzeOptions = {}): AnalysisReport {
@@ -275,6 +492,7 @@ export function analyze(output: RunnerOutput, opts: AnalyzeOptions = {}): Analys
       successRate: c.successRate,
       meanTokens: c.meanTokens,
     })),
+    discrimination: assessDiscrimination(perCondition, comparisons, opts.discrimination),
     // Default the card's model to the one the run actually used, so the caller
     // cannot accidentally disclose a different model than it benchmarked.
     ...(opts.harness
@@ -320,6 +538,24 @@ export function renderMarkdown(r: AnalysisReport): string {
   );
   L.push(`*${r.meta.startedAt} → ${r.meta.finishedAt}*`);
   L.push('');
+
+  // Ahead of every number, because a reader who quotes a delta from a run that
+  // could not measure anything has been misled by the report, not by the data.
+  const d = r.discrimination;
+  if (!d.usable) {
+    const what = d.efficiencyUsable ? 'NO CORRECTNESS SIGNAL' : 'NO USABLE SIGNAL';
+    L.push(`> ⚠️ **${what} (${d.status})** — ${d.reason}`);
+    L.push('>');
+    L.push(
+      d.efficiencyUsable
+        ? '> The CORRECTNESS delta below is not evidence of anything. The efficiency deltas are.'
+        : '> The deltas below are not evidence of anything. Do not cite them.'
+    );
+    L.push('');
+  } else {
+    L.push(`> Signal check: ${d.reason}`);
+    L.push('');
+  }
 
   L.push(`## Per-condition summary`);
   L.push('');

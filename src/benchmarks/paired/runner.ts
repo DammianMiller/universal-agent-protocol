@@ -57,7 +57,11 @@ export async function runPaired(
       cfg.onProgress?.(done, total, `${cell.task.id}/${cell.condition.label}#${cell.seed}`);
       return rec;
     },
-    { maxConcurrent: cfg.concurrency, mode: 'cpu' }
+    // 'model', not 'cpu': every cell is an inference call, so the ceiling is the
+    // backend's slot budget, not core count. The mode only decides the fallback
+    // when the caller passes no explicit concurrency — but declaring it wrong
+    // meant an unset concurrency sized the run against the wrong resource.
+    { maxConcurrent: cfg.concurrency, mode: 'model' }
   );
 
   return {
