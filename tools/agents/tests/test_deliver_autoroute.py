@@ -268,8 +268,27 @@ class DeliverSingleFlightTest(unittest.TestCase):
         import time
         r = self._root()
         (r / ".uap" / "deliver.lock").write_text(f"{os.getppid()}|now")
-        (r / ".uap" / "deliver.heartbeat").write_text(str(int(time.time()) - 700))  # wedged
+        # Derive the age from the hook's OWN threshold rather than hardcoding
+        # one. The literal here used to be 700, which silently encoded the old
+        # 600s default: when that default was corrected to 1800 to match
+        # DEFAULT_WEDGE_TIMEOUT_S in heartbeat.ts, this test agreed with the bug
+        # instead of catching it -- and because it loads templates/hooks (which
+        # never received the correction) it kept passing on master while the
+        # installed hook and the template disagreed.
+        wedged = mod._deliver_wedge_timeout() + 60
+        (r / ".uap" / "deliver.heartbeat").write_text(str(int(time.time()) - wedged))
         self.assertFalse(mod._deliver_inflight(r))
+
+    def test_live_lock_heartbeat_just_inside_threshold_is_inflight(self):
+        # The other side of the same boundary: just inside the threshold the
+        # holder is alive, so a duplicate autoroute spawn must stay suppressed.
+        # Without this, raising the threshold to a huge value would pass.
+        import time
+        r = self._root()
+        (r / ".uap" / "deliver.lock").write_text(f"{os.getppid()}|now")
+        fresh = max(0, mod._deliver_wedge_timeout() - 60)
+        (r / ".uap" / "deliver.heartbeat").write_text(str(int(time.time()) - fresh))
+        self.assertTrue(mod._deliver_inflight(r))
 
     def test_dead_pid_lock_is_not_inflight(self):
         r = self._root()

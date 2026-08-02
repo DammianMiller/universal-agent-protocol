@@ -233,6 +233,17 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _deliver_wedge_timeout() -> int:
+    """Seconds of heartbeat silence after which a holder counts as wedged.
+
+    MUST match DEFAULT_WEDGE_TIMEOUT_S in src/delivery/heartbeat.ts. It did not:
+    this returned 600 while TypeScript used 1800, so for any heartbeat aged
+    600-1800s the two readers of the SAME file reached opposite conclusions —
+    this hook treating the holder as dead (and so eligible for a duplicate
+    autoroute spawn) at the very moment the lock path still deferred to it.
+    Divergent readers of one file is the bug heartbeat.ts was created to stop;
+    it does not stop at the language boundary. Pinned by
+    tools/agents/tests/test_deliver_autoroute.py.
+    """
     raw = os.environ.get("UAP_DELIVER_WEDGE_TIMEOUT")
     try:
         if raw is not None:
@@ -241,7 +252,7 @@ def _deliver_wedge_timeout() -> int:
                 return v
     except Exception:
         pass
-    return 600
+    return 1800
 
 
 def _deliver_inflight(root: Path) -> bool:

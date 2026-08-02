@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.179.12 (2026-08-02)
+
+- fix(deliver): refuse a finish from a turn that changed nothing
+
+
 ## v1.179.11 (2026-08-02)
 
 - feat(deliver): never-regress ON by default
