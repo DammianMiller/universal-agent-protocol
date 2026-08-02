@@ -318,6 +318,7 @@ async function currentHarnessCardInput(adapter: string) {
   const { toolsFor, readWindowBytes, defaultMaxToolRounds, editToleranceEnabled } = await import(
     '../delivery/agentic-executor.js'
   );
+  const { rawMaxTokens } = await import('../benchmarks/paired/adapter.js');
   const allowBash =
     process.env.UAP_DELIVER_ALLOW_BASH === '1' || process.env.UAP_SANDBOX_ACTIVE === '1';
   // Only the `deliver` adapter drives UAP's own agentic executor; for any other
@@ -339,6 +340,13 @@ async function currentHarnessCardInput(adapter: string) {
     // Derived, not hardcoded: a literal here made the bench card state the wrong
     // retrieval mode for the run — the exact failure the card exists to prevent.
     memoryMode: await describeMemoryModeSafe(),
+    // NOT gated on `ours`: the completion budget is sent by the `raw` adapter
+    // too, and `raw` is precisely where a 4096 ceiling silently truncated 8/15
+    // first turns mid-reasoning and pinned both arms toward the floor. Gating
+    // this on the deliver adapter would have left it `unset` in the exact
+    // report where it mattered — which is what the first version of this change
+    // did, disclosing it only in `uap harness` and not in any bench run.
+    completionTokenBudget: adapter === 'raw' ? rawMaxTokens() : undefined,
     stubGuard: process.env.UAP_DELIVER_ALLOW_STUBS !== '1',
     guttingGuard: process.env.UAP_DELIVER_ALLOW_GUTTING !== '1',
     middleware:

@@ -125,4 +125,16 @@ describe('raw adapter completion-budget truncation', () => {
     const r = await run(new RawCompletionAdapter({ maxGateIters: 1 }));
     expect(r.rawLog).toContain('finish=stop');
   });
+
+  it('discloses the completion budget in a raw-adapter bench card', async () => {
+    // The first version of this change wired the budget into `uap harness`
+    // only, so every bench report still rendered `completion_budget | unset` —
+    // the one report where the starving budget actually did its damage. Pin the
+    // raw path specifically.
+    const { buildHarnessCard, renderHarnessCard } = await import(
+      '../../src/benchmarks/harness-card.js'
+    );
+    const card = buildHarnessCard({ uapVersion: 'test', completionTokenBudget: rawMaxTokens() });
+    expect(renderHarnessCard(card)).toContain(String(rawMaxTokens()));
+  });
 });
