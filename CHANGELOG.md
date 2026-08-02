@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.180.2 (2026-08-02)
+
+- Version bump
+
+
 ## v1.180.1 (2026-08-02)
 
 - perf(bench): persist per-turn attribution; do NOT cut the loop on a no-op turn
