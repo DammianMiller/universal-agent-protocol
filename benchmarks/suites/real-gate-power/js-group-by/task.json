@@ -1,0 +1,14 @@
+{
+  "name": "js-group-by",
+  "instruction": "Implement groupBy.js (CommonJS): module.exports = groupBy. groupBy(items, keyFn) returns a plain object mapping each key to the array of items that produced it, preserving input order within each group. keyFn receives (item, index). Keys are stringified. The result must have a NULL prototype so keys like 'constructor' or '__proto__' are safe. Items whose key is undefined go under the string 'undefined'. Empty input returns an empty object.",
+  "difficulty": "medium",
+  "tags": [
+    "object",
+    "security",
+    "js"
+  ],
+  "gateCmd": "node -e \"const g=require('./groupBy.js'); const r=g([1,2,3],x=>x%2?'odd':'even'); if(r.odd.length!==2)process.exit(1); console.log('gate ok')\"",
+  "verifyCmd": "node -e \"const g=require('./groupBy.js');const r=g(['a','bb','cc'],s=>s.length);if(JSON.stringify(r['2'])!=='[\\\"bb\\\",\\\"cc\\\"]')process.exit(1);const idx=g(['x','y'],(v,i)=>i);if(!idx['0']||idx['0'][0]!=='x'){console.error('index arg');process.exit(1)}const p=g(['v'],()=> '__proto__');if(!Array.isArray(p['__proto__'])){console.error('proto key');process.exit(1)}if(Object.getPrototypeOf(p)!==null){console.error('must be null-prototype');process.exit(1)}const c=g(['v'],()=>'constructor');if(!Array.isArray(c['constructor'])){console.error('constructor key');process.exit(1)}const u=g([1],()=>undefined);if(!Array.isArray(u['undefined'])){console.error('undefined key');process.exit(1)}if(Object.keys(g([],()=>1)).length!==0)process.exit(1);console.log('ok')\"",
+  "verifyTimeoutSec": 15,
+  "agentTimeoutSec": 900
+}

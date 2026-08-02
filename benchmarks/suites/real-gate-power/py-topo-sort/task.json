@@ -1,0 +1,14 @@
+{
+  "name": "py-topo-sort",
+  "instruction": "Implement topo_sort.py: def topo_sort(graph: dict) -> list. graph maps node -> list of nodes it DEPENDS ON. Return a topological order where every dependency precedes its dependent. Break ties by sorting names alphabetically so the output is DETERMINISTIC. A node that only appears as a dependency (never as a key) is still part of the graph. Raise ValueError('cycle') on any cycle. An empty graph returns [].",
+  "difficulty": "medium",
+  "tags": [
+    "algorithm",
+    "graph",
+    "py"
+  ],
+  "gateCmd": "python3 -c \"from topo_sort import topo_sort as t; assert t({'b':['a'],'a':[]})==['a','b']; print('gate ok')\"",
+  "verifyCmd": "python3 -c \"from topo_sort import topo_sort as t\nassert t({})==[]\nassert t({'b':['a'],'a':[]})==['a','b']\nr=t({'c':['a','b'],'b':['a'],'a':[]})\nassert r==['a','b','c'], r\nr2=t({'z':[],'y':[],'x':[]})\nassert r2==['x','y','z'], r2\nr3=t({'app':['lib']})\nassert r3==['lib','app'], r3\ntry:\n    t({'a':['b'],'b':['a']}); raise SystemExit('no cycle error')\nexcept ValueError: pass\nprint('ok')\"",
+  "verifyTimeoutSec": 15,
+  "agentTimeoutSec": 900
+}

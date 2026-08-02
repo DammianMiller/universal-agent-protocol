@@ -214,6 +214,22 @@ export async function benchPairedCommand(options: BenchPairedOptions = {}): Prom
         console.log(chalk.dim(`   Try a harder suite: ${harder.map((h) => `--suite ${h}`).join('  |  ')}`));
       }
     }
+    if (report.discrimination.status === 'underpowered') {
+      // "Underpowered" is a WIDTH problem, not a difficulty problem — a harder
+      // suite would only widen the interval further. Point at the wide suite,
+      // and at the epoch count, which is the other lever on n.
+      const wide = resolve('benchmarks/suites/real-gate-power');
+      if (existsSync(wide) && resolve(suiteDir) !== wide) {
+        console.log(
+          chalk.dim('   This is too few paired cells, not too easy — a harder suite would not help.')
+        );
+        console.log(
+          chalk.dim('   Widen instead: --suite benchmarks/suites/real-gate-power (15 tasks; 6 epochs ~= +/-0.15)')
+        );
+      } else {
+        console.log(chalk.dim('   Raise --epochs to add paired cells; the interval narrows as 1/sqrt(n).'));
+      }
+    }
     if (report.discrimination.status === 'floor') {
       console.log(
         chalk.dim('   Check the adapter matches the suite — a mock-only suite (verifyCmd `test -f MOCK_SOLVED`)')

@@ -1,0 +1,14 @@
+{
+  "name": "js-chunk",
+  "instruction": "Implement chunk.js (CommonJS): module.exports = chunk. chunk(arr, size) splits arr into consecutive arrays of length `size`; the final chunk holds the remainder. chunk([], n) returns []. size must be a positive INTEGER \u2014 throw a RangeError for size < 1 or a non-integer size. Do not mutate arr.",
+  "difficulty": "medium",
+  "tags": [
+    "array",
+    "edge-cases",
+    "js"
+  ],
+  "gateCmd": "node -e \"const c=require('./chunk.js'); if(JSON.stringify(c([1,2,3],2))!=='[[1,2],[3]]')process.exit(1); console.log('gate ok')\"",
+  "verifyCmd": "node -e \"const c=require('./chunk.js');const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b);if(!eq(c([1,2,3,4],2),[[1,2],[3,4]]))process.exit(1);if(!eq(c([1,2,3],2),[[1,2],[3]]))process.exit(1);if(!eq(c([],3),[]))process.exit(1);const src=[1,2,3];c(src,2);if(!eq(src,[1,2,3])){console.error('mutated');process.exit(1)}for(const bad of [0,-1,1.5,'2']){try{c([1,2],bad);console.error('no throw',bad);process.exit(1)}catch(e){if(!(e instanceof RangeError)){console.error('wrong error',bad);process.exit(1)}}}console.log('ok')\"",
+  "verifyTimeoutSec": 15,
+  "agentTimeoutSec": 900
+}

@@ -1,0 +1,14 @@
+{
+  "name": "py-parse-ini",
+  "instruction": "Implement parse_ini.py: def parse_ini(text: str) -> dict. Parse an INI-like config into {section: {key: value}}. Keys before any [section] header go into the '' (empty-string) section. Lines starting with ';' or '#' are comments; a '#' INSIDE a value is literal, not a comment. Keys and values are stripped of surrounding whitespace. A repeated key overwrites. A later [section] header merges into the existing section rather than replacing it. A line with no '=' outside a header raises ValueError.",
+  "difficulty": "medium",
+  "tags": [
+    "parsing",
+    "edge-cases",
+    "py"
+  ],
+  "gateCmd": "python3 -c \"from parse_ini import parse_ini as p; assert p('[a]\\\\nk=1')=={'a':{'k':'1'}}; print('gate ok')\"",
+  "verifyCmd": "python3 -c \"from parse_ini import parse_ini as p\nassert p('g=1\\\\n[a]\\\\nk=2')=={'':{'g':'1'},'a':{'k':'2'}}\nassert p('[a]\\\\nk = v ')=={'a':{'k':'v'}}\nassert p('; c\\\\n[a]\\\\nk=1')=={'a':{'k':'1'}}\nassert p('[a]\\\\nk=a#b')=={'a':{'k':'a#b'}}, p('[a]\\\\nk=a#b')\nassert p('[a]\\\\nk=1\\\\n[b]\\\\nj=2\\\\n[a]\\\\nm=3')=={'a':{'k':'1','m':'3'},'b':{'j':'2'}}\nassert p('[a]\\\\nk=1\\\\nk=2')=={'a':{'k':'2'}}\ntry:\n    p('[a]\\\\nbroken'); raise SystemExit('no ValueError')\nexcept ValueError: pass\nprint('ok')\"",
+  "verifyTimeoutSec": 15,
+  "agentTimeoutSec": 900
+}

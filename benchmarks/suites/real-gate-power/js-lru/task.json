@@ -1,0 +1,14 @@
+{
+  "name": "js-lru",
+  "instruction": "Implement lru.js (CommonJS): module.exports = LRUCache, a class. new LRUCache(capacity) throws RangeError for capacity < 1. get(key) returns the value or undefined AND marks the key most-recently-used. put(key, value) inserts or updates, marks most-recently-used, and evicts the LEAST-recently-used key when the size would exceed capacity. Updating an existing key must NOT evict. `size` is a getter returning the current entry count. has(key) must NOT change recency.",
+  "difficulty": "medium",
+  "tags": [
+    "stateful",
+    "edge-cases",
+    "js"
+  ],
+  "gateCmd": "node -e \"const L=require('./lru.js');const c=new L(2);c.put('a',1);if(c.get('a')!==1)process.exit(1);console.log('gate ok')\"",
+  "verifyCmd": "node -e \"const L=require('./lru.js');try{new L(0);console.error('cap0');process.exit(1)}catch(e){if(!(e instanceof RangeError))process.exit(1)}const c=new L(2);c.put('a',1);c.put('b',2);c.get('a');c.put('c',3);if(c.get('b')!==undefined){console.error('evicted wrong key');process.exit(1)}if(c.get('a')!==1||c.get('c')!==3)process.exit(1);if(c.size!==2){console.error('size',c.size);process.exit(1)}const d=new L(2);d.put('x',1);d.put('y',2);d.put('x',9);d.put('z',3);if(d.get('y')!==undefined){console.error('update should not evict y');process.exit(1)}if(d.get('x')!==9)process.exit(1);const e=new L(2);e.put('p',1);e.put('q',2);e.has('p');e.put('r',3);if(e.get('p')!==undefined){console.error('has must not touch recency');process.exit(1)}console.log('ok')\"",
+  "verifyTimeoutSec": 15,
+  "agentTimeoutSec": 900
+}

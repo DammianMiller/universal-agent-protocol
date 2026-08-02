@@ -1,0 +1,14 @@
+{
+  "name": "py-money",
+  "instruction": "Implement money.py: class Money with Money(amount_str) where amount_str looks like '12.34' or '-0.05'. Store INTEGER cents internally \u2014 never a float. Support +, -, and == between Money objects, and * by an int. __str__ returns a two-decimal string with a leading '-' for negatives ('-0.05'). Money('0.1') + Money('0.2') must equal Money('0.3') exactly. Multiplying by a float raises TypeError; adding a non-Money raises TypeError. Reject a malformed amount with ValueError.",
+  "difficulty": "medium",
+  "tags": [
+    "numeric",
+    "edge-cases",
+    "py"
+  ],
+  "gateCmd": "python3 -c \"from money import Money; assert str(Money('1.50'))=='1.50'; print('gate ok')\"",
+  "verifyCmd": "python3 -c \"from money import Money as M\nassert M('0.1')+M('0.2')==M('0.3')\nassert str(M('-0.05'))=='-0.05', str(M('-0.05'))\nassert str(M('12.34')*3)=='37.02', str(M('12.34')*3)\nassert str(M('1.00')-M('1.50'))=='-0.50', str(M('1.00')-M('1.50'))\ntry:\n    M('1.00')*1.5; raise SystemExit('no TypeError on float mul')\nexcept TypeError: pass\ntry:\n    M('1.00')+5; raise SystemExit('no TypeError on add')\nexcept TypeError: pass\ntry:\n    M('abc'); raise SystemExit('no ValueError')\nexcept ValueError: pass\nprint('ok')\"",
+  "verifyTimeoutSec": 15,
+  "agentTimeoutSec": 900
+}

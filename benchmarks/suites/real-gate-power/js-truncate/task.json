@@ -1,0 +1,14 @@
+{
+  "name": "js-truncate",
+  "instruction": "Implement truncate.js (CommonJS): module.exports = truncate. truncate(str, maxLen, ellipsis='\u2026') returns str unchanged when its length is <= maxLen. Otherwise it cuts at the last WORD boundary that keeps the TOTAL length (text + ellipsis) <= maxLen, and appends the ellipsis. If no word boundary fits, hard-cut mid-word instead. Trailing whitespace before the ellipsis must be trimmed. Throw a RangeError when maxLen is shorter than the ellipsis itself.",
+  "difficulty": "medium",
+  "tags": [
+    "string",
+    "edge-cases",
+    "js"
+  ],
+  "gateCmd": "node -e \"const t=require('./truncate.js'); if(t('hello',10)!=='hello')process.exit(1); console.log('gate ok')\"",
+  "verifyCmd": "node -e \"const t=require('./truncate.js');if(t('hello world',5)!=='hell\u2026'&&t('hello world',5)!=='hello'.slice(0,4)+'\u2026'){console.error('hard cut',JSON.stringify(t('hello world',5)));process.exit(1)}const r=t('the quick brown fox',10);if(r.length>10){console.error('too long',JSON.stringify(r));process.exit(1)}if(!r.endsWith('\u2026')){console.error('no ellipsis');process.exit(1)}if(/\\\\s\u2026$/.test(r)){console.error('untrimmed space before ellipsis',JSON.stringify(r));process.exit(1)}if(t('abc',3)!=='abc'){console.error('exact fit unchanged');process.exit(1)}try{t('abcdef',0);console.error('no throw');process.exit(1)}catch(e){if(!(e instanceof RangeError))process.exit(1)}console.log('ok')\"",
+  "verifyTimeoutSec": 15,
+  "agentTimeoutSec": 900
+}

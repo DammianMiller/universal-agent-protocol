@@ -1,0 +1,14 @@
+{
+  "name": "js-deep-get",
+  "instruction": "Implement deepGet.js (CommonJS): module.exports = deepGet. deepGet(obj, path, fallback) reads a dotted path like 'a.b.c'. Return `fallback` (default undefined) when any segment is missing. A path segment that exists but holds `undefined` still counts as PRESENT \u2014 return undefined, not the fallback. Numeric segments index arrays: 'a.0.b'. An empty path string returns obj. Never throw on null/undefined intermediates.",
+  "difficulty": "medium",
+  "tags": [
+    "object",
+    "edge-cases",
+    "js"
+  ],
+  "gateCmd": "node -e \"const g=require('./deepGet.js'); if(g({a:{b:1}},'a.b')!==1)process.exit(1); console.log('gate ok')\"",
+  "verifyCmd": "node -e \"const g=require('./deepGet.js');if(g({a:{b:{c:5}}},'a.b.c')!==5)process.exit(1);if(g({a:1},'a.b.c','X')!=='X')process.exit(1);if(g(null,'a','X')!=='X')process.exit(1);if(g({a:[{b:7}]},'a.0.b')!==7){console.error('array idx');process.exit(1)}const o={a:{b:undefined}};if(g(o,'a.b','FB')!==undefined){console.error('present-undefined must not fall back');process.exit(1)}const same={x:1};if(g(same,'')!==same){console.error('empty path');process.exit(1)}if(g({a:{b:0}},'a.b','FB')!==0){console.error('falsy zero');process.exit(1)}console.log('ok')\"",
+  "verifyTimeoutSec": 15,
+  "agentTimeoutSec": 900
+}

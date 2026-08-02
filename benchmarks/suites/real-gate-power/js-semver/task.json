@@ -1,0 +1,14 @@
+{
+  "name": "js-semver",
+  "instruction": "Implement semver.js (CommonJS): module.exports = compare. compare(a, b) compares semantic versions, returning -1, 0 or 1. Compare major, minor, patch numerically (so 1.10.0 > 1.9.0). A version WITH a prerelease is LOWER than the same version without one (1.0.0-alpha < 1.0.0). Prerelease identifiers compare dot-part by dot-part: numeric parts numerically, non-numeric lexically, and a numeric part is lower than a non-numeric one. Build metadata after '+' is IGNORED. Throw a TypeError on a malformed version.",
+  "difficulty": "medium",
+  "tags": [
+    "algorithm",
+    "parsing",
+    "js"
+  ],
+  "gateCmd": "node -e \"const c=require('./semver.js'); if(c('1.0.1','1.0.0')!==1)process.exit(1); console.log('gate ok')\"",
+  "verifyCmd": "node -e \"const c=require('./semver.js');if(c('1.10.0','1.9.0')!==1){console.error('numeric minor');process.exit(1)}if(c('1.0.0-alpha','1.0.0')!==-1){console.error('prerelease lower');process.exit(1)}if(c('1.0.0','1.0.0+build')!==0){console.error('build ignored');process.exit(1)}if(c('1.0.0-alpha.1','1.0.0-alpha.2')!==-1)process.exit(1);if(c('1.0.0-1','1.0.0-alpha')!==-1){console.error('numeric < alnum');process.exit(1)}if(c('2.0.0','10.0.0')!==-1)process.exit(1);if(c('1.2.3','1.2.3')!==0)process.exit(1);try{c('1.2','1.2.3');console.error('no throw');process.exit(1)}catch(e){if(!(e instanceof TypeError))process.exit(1)}console.log('ok')\"",
+  "verifyTimeoutSec": 15,
+  "agentTimeoutSec": 900
+}

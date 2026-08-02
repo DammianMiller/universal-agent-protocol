@@ -1,0 +1,14 @@
+{
+  "name": "js-retry",
+  "instruction": "Implement retry.js (CommonJS): module.exports = retry. retry(fn, {attempts=3, onRetry}) calls the SYNCHRONOUS fn() and returns its value. On a thrown error it retries until `attempts` TOTAL calls have been made, then rethrows the LAST error. onRetry(error, attemptNumber) is called before each retry only \u2014 never before the first call, never after the final failure. attempts must be a positive integer or RangeError. A successful call stops immediately.",
+  "difficulty": "medium",
+  "tags": [
+    "control-flow",
+    "edge-cases",
+    "js"
+  ],
+  "gateCmd": "node -e \"const r=require('./retry.js'); if(r(()=>7)!==7)process.exit(1); console.log('gate ok')\"",
+  "verifyCmd": "node -e \"const r=require('./retry.js');let n=0;const v=r(()=>{n++;if(n<3)throw new Error('x');return 'ok'},{attempts:3});if(v!=='ok'||n!==3){console.error('retry count',n);process.exit(1)}let calls=0,notes=[];try{r(()=>{calls++;throw new Error('boom'+calls)},{attempts:2,onRetry:(e,a)=>notes.push(a)});console.error('should rethrow');process.exit(1)}catch(e){if(e.message!=='boom2'){console.error('last error',e.message);process.exit(1)}}if(calls!==2){console.error('total calls',calls);process.exit(1)}if(notes.length!==1||notes[0]!==1){console.error('onRetry pattern',JSON.stringify(notes));process.exit(1)}let once=0;r(()=>{once++;return 1},{attempts:5});if(once!==1){console.error('stop on success');process.exit(1)}try{r(()=>1,{attempts:0});console.error('no throw');process.exit(1)}catch(e){if(!(e instanceof RangeError))process.exit(1)}console.log('ok')\"",
+  "verifyTimeoutSec": 15,
+  "agentTimeoutSec": 900
+}
