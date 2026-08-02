@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.182.0 (2026-08-02)
+
+- feat(bench): replace the ten ceiling tasks with genuinely hard ones
+
+
 ## v1.181.1 (2026-08-02)
 
 - fix(bench): disclose completion_budget in bench cards, not just `uap harness`
