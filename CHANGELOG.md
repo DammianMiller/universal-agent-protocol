@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.180.3 (2026-08-02)
+
+- Version bump
+
+
 ## v1.180.2 (2026-08-02)
 
 - Version bump
