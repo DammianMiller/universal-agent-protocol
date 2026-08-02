@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.179.11 (2026-08-02)
+
+- feat(deliver): never-regress ON by default
+
+
 ## v1.179.10 (2026-08-02)
 
 - fix(execution-gate): start the page, so "nothing started" is visible
