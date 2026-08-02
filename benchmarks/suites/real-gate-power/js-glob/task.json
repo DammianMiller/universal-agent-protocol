@@ -1,0 +1,14 @@
+{
+  "name": "js-glob",
+  "instruction": "Implement globMatch.js (CommonJS): module.exports = globMatch. globMatch(pattern, str) returns true iff the WHOLE string matches the glob. Syntax: '*' matches any run of characters except '/'; '**' crosses '/' boundaries, and the pattern segment '**/' also matches zero directories (so 'a/**/b' matches 'a/b'); '?' matches exactly one non-'/' character; '[abc]' and '[a-z]' are character classes; a leading '!' or '^' inside the brackets negates the class; a backslash escapes the next character so it is matched literally. An unterminated '[' throws an Error, and so does a trailing backslash.",
+  "difficulty": "hard",
+  "tags": [
+    "glob",
+    "pattern",
+    "js"
+  ],
+  "gateCmd": "node <<'GATEJS'\nconst g=require('./globMatch.js');\nif(g('*.js','a.js')!==true)process.exit(1);\nconsole.log('gate ok');\nGATEJS",
+  "verifyCmd": "node <<'VERIFYJS'\nconst g = require('./globMatch.js');\nconst t = (p, s, want, m) => { if (g(p, s) !== want) { console.error('FAIL', m, p, s); process.exit(1); } };\nt('*.js', 'a.js', true, 'star');\nt('*.js', 'a/b.js', false, 'star must not cross /');\nt('**/*.js', 'a/b/c.js', true, 'globstar');\nt('**/*.js', 'c.js', true, 'globstar matches zero dirs');\nt('a/**/b', 'a/b', true, 'a/**/b matches a/b');\nt('a/**/b', 'a/x/y/b', true, 'a/**/b matches nested');\nt('?.js', 'a.js', true, 'question');\nt('?.js', 'ab.js', false, 'question is exactly one');\nt('[abc].js', 'b.js', true, 'class');\nt('[a-z].js', 'q.js', true, 'range');\nt('[!abc].js', 'd.js', true, 'negated class');\nt('[!abc].js', 'a.js', false, 'negated class excludes');\nt('\\\\*.js', '*.js', true, 'escaped star literal');\nt('\\\\*.js', 'a.js', false, 'escaped star is not a wildcard');\nt('a*c', 'abc', true, 'mid star');\nt('a*c', 'ac', true, 'star matches empty');\ntry { g('[abc', 'x'); console.error('no throw on unterminated class'); process.exit(1); } catch (e) {}\ntry { g('a\\\\', 'a'); console.error('no throw on trailing escape'); process.exit(1); } catch (e) {}\nconsole.log('ok');\nVERIFYJS",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

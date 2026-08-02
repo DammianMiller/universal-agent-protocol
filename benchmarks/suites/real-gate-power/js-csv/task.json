@@ -1,0 +1,14 @@
+{
+  "name": "js-csv",
+  "instruction": "Implement parseCsv.js (CommonJS): module.exports = parseCsv. parseCsv(text) parses RFC4180 CSV and returns an array of rows, each row an array of field strings. Rules: fields may be double-quoted; inside a quoted field, '' (two double quotes) is a literal quote, and commas, LF and CRLF are literal content. Rows are separated by LF or CRLF. A trailing row separator does NOT produce an extra empty row, but a lone separator line DOES produce one row containing a single empty field. Empty input returns []. An unterminated quoted field throws an Error.",
+  "difficulty": "hard",
+  "tags": [
+    "parsing",
+    "rfc4180",
+    "js"
+  ],
+  "gateCmd": "node <<'GATEJS'\nconst p=require('./parseCsv.js');\nif(JSON.stringify(p('a,b'))!==JSON.stringify([['a','b']]))process.exit(1);\nconsole.log('gate ok');\nGATEJS",
+  "verifyCmd": "node <<'VERIFYJS'\nconst p = require('./parseCsv.js');\nconst eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { console.error(m, JSON.stringify(a)); process.exit(1); } };\neq(p(''), [], 'empty');\neq(p('a,b\\n'), [['a','b']], 'trailing LF must not add a row');\neq(p('a,b\\r\\nc,d'), [['a','b'],['c','d']], 'CRLF');\neq(p('\"a,b\",c'), [['a,b','c']], 'quoted comma');\neq(p('\"a\"\"b\"'), [['a\"b']], 'escaped quote');\neq(p('\"a\\nb\",c'), [['a\\nb','c']], 'embedded newline');\neq(p('\\n'), [['']], 'lone separator is one empty field');\neq(p('a,,b'), [['a','','b']], 'empty middle field');\neq(p('\"\",x'), [['','x']], 'empty quoted field');\ntry { p('\"abc'); console.error('no throw on unterminated'); process.exit(1); } catch (e) {}\nconsole.log('ok');\nVERIFYJS",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

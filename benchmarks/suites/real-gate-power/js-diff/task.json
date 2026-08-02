@@ -1,0 +1,14 @@
+{
+  "name": "js-diff",
+  "instruction": "Implement diffLines.js (CommonJS): module.exports = diffLines. diffLines(a, b) splits both strings on '\\n' and returns a MINIMAL line diff as an array of { type, line } objects, where type is 'eq', 'del' (present in a only) or 'add' (present in b only). Minimal means it is based on a longest common subsequence: the number of del+add entries must be as small as possible. When a deletion and an insertion are equally good at some position, emit the DELETION first, so the output is deterministic. An empty string counts as zero lines, not one.",
+  "difficulty": "hard",
+  "tags": [
+    "lcs",
+    "algorithm",
+    "js"
+  ],
+  "gateCmd": "node <<'GATEJS'\nconst d=require('./diffLines.js');\nif(JSON.stringify(d('a','a'))!==JSON.stringify([{type:'eq',line:'a'}]))process.exit(1);\nconsole.log('gate ok');\nGATEJS",
+  "verifyCmd": "node <<'VERIFYJS'\nconst d = require('./diffLines.js');\nconst S = (x) => JSON.stringify(x);\nconst eq = (got, want, m) => { if (S(got) !== S(want)) { console.error('FAIL', m, S(got)); process.exit(1); } };\neq(d('', ''), [], 'empty vs empty is zero lines');\neq(d('a', ''), [{ type: 'del', line: 'a' }], 'delete only');\neq(d('', 'a'), [{ type: 'add', line: 'a' }], 'add only');\neq(d('a\\nb', 'a\\nb'), [{ type: 'eq', line: 'a' }, { type: 'eq', line: 'b' }], 'identical');\neq(d('a\\nb\\nc', 'a\\nc'), [{ type: 'eq', line: 'a' }, { type: 'del', line: 'b' }, { type: 'eq', line: 'c' }], 'middle delete');\neq(d('a\\nc', 'a\\nb\\nc'), [{ type: 'eq', line: 'a' }, { type: 'add', line: 'b' }, { type: 'eq', line: 'c' }], 'middle add');\neq(d('x', 'y'), [{ type: 'del', line: 'x' }, { type: 'add', line: 'y' }], 'replacement puts del first');\n// Minimality: the LCS of these is a,c,e (3), so exactly 2 del + 2 add.\nconst r = d('a\\nb\\nc\\nd\\ne', 'a\\nc\\nx\\ne');\nconst dels = r.filter((h) => h.type === 'del').length;\nconst adds = r.filter((h) => h.type === 'add').length;\nconst eqs = r.filter((h) => h.type === 'eq').length;\nif (eqs !== 3 || dels !== 2 || adds !== 1) { console.error('not minimal', S(r)); process.exit(1); }\n// Reconstruction invariants: eq+del rebuilds a, eq+add rebuilds b.\nconst back = (t) => r.filter((h) => h.type === 'eq' || h.type === t).map((h) => h.line).join('\\n');\nif (back('del') !== 'a\\nb\\nc\\nd\\ne') { console.error('a not reconstructible', back('del')); process.exit(1); }\nif (back('add') !== 'a\\nc\\nx\\ne') { console.error('b not reconstructible', back('add')); process.exit(1); }\nconsole.log('ok');\nVERIFYJS",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

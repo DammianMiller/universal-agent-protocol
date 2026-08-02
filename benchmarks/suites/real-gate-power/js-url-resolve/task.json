@@ -1,0 +1,14 @@
+{
+  "name": "js-url-resolve",
+  "instruction": "Implement resolveUrl.js (CommonJS): module.exports = resolveUrl. resolveUrl(base, ref) resolves a URI reference against a base URI per RFC3986 section 5.3, INCLUDING the remove_dot_segments algorithm. Do not use the built-in URL class. An empty reference returns the base without its fragment; a reference that is only a query replaces the query and drops the base fragment; a reference that is only a fragment keeps the base query. '..' segments that would escape the root are discarded rather than producing leading '..'.",
+  "difficulty": "hard",
+  "tags": [
+    "rfc3986",
+    "parsing",
+    "js"
+  ],
+  "gateCmd": "node <<'GATEJS'\nconst r=require('./resolveUrl.js');\nif(r('http://a/b/c/d','g')!=='http://a/b/c/g')process.exit(1);\nconsole.log('gate ok');\nGATEJS",
+  "verifyCmd": "node <<'VERIFYJS'\nconst r = require('./resolveUrl.js');\nconst B = 'http://a/b/c/d;p?q';\nconst cases = [\n  ['g', 'http://a/b/c/g'],\n  ['./g', 'http://a/b/c/g'],\n  ['g/', 'http://a/b/c/g/'],\n  ['/g', 'http://a/g'],\n  ['//g', 'http://g'],\n  ['?y', 'http://a/b/c/d;p?y'],\n  ['g?y', 'http://a/b/c/g?y'],\n  ['#s', 'http://a/b/c/d;p?q#s'],\n  ['g#s', 'http://a/b/c/g#s'],\n  ['', 'http://a/b/c/d;p?q'],\n  ['.', 'http://a/b/c/'],\n  ['..', 'http://a/b/'],\n  ['../', 'http://a/b/'],\n  ['../g', 'http://a/b/g'],\n  ['../..', 'http://a/'],\n  ['../../g', 'http://a/g'],\n  ['../../../g', 'http://a/g'],\n  ['/./g', 'http://a/g'],\n  ['/../g', 'http://a/g'],\n  ['g.', 'http://a/b/c/g.'],\n  ['.g', 'http://a/b/c/.g'],\n  ['g..', 'http://a/b/c/g..'],\n  ['./../g', 'http://a/b/g'],\n  ['./g/.', 'http://a/b/c/g/'],\n  ['g/./h', 'http://a/b/c/g/h'],\n  ['g/../h', 'http://a/b/c/h'],\n  ['http://x/y', 'http://x/y'],\n];\nfor (const [ref, want] of cases) {\n  const got = r(B, ref);\n  if (got !== want) { console.error('FAIL ref=' + JSON.stringify(ref) + ' got=' + got + ' want=' + want); process.exit(1); }\n}\nconsole.log('ok');\nVERIFYJS",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

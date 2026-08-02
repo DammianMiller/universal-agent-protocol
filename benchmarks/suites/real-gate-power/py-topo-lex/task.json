@@ -1,0 +1,14 @@
+{
+  "name": "py-topo-lex",
+  "instruction": "Implement topo_lex.py: def topo_sort(graph: dict) -> list. The graph maps a node to the list of nodes it must come BEFORE (its dependents/successors). Return a topological order that is the LEXICOGRAPHICALLY SMALLEST of all valid orders - at every step, among the nodes whose prerequisites are all placed, emit the smallest by normal string comparison. Nodes that appear only as a successor still belong in the output. Raise ValueError if the graph contains a cycle. An empty graph returns an empty list.",
+  "difficulty": "hard",
+  "tags": [
+    "graph",
+    "determinism",
+    "py"
+  ],
+  "gateCmd": "python3 - <<'GATEPY'\nfrom topo_lex import topo_sort as t\nassert t({'a': ['b']}) == ['a', 'b'], t({'a': ['b']})\nprint('gate ok')\nGATEPY",
+  "verifyCmd": "python3 - <<'VERIFYPY'\nfrom topo_lex import topo_sort as t\n\nassert t({}) == [], 'empty graph'\nassert t({'a': []}) == ['a'], 'single node'\nassert t({'a': ['b']}) == ['a', 'b'], 'simple edge'\n\n# Successor-only nodes must appear.\nassert sorted(t({'a': ['z']})) == ['a', 'z'], 'successor-only node missing'\n\n# Lexicographically smallest among all valid orders.\ng = {'b': ['c'], 'a': ['c'], 'c': []}\nassert t(g) == ['a', 'b', 'c'], t(g)\n\ng2 = {'z': ['y'], 'a': ['y'], 'y': [], 'b': []}\nassert t(g2) == ['a', 'b', 'z', 'y'], t(g2)\n\ng3 = {'a': ['b', 'c'], 'b': ['d'], 'c': ['d'], 'd': []}\nassert t(g3) == ['a', 'b', 'c', 'd'], t(g3)\n\n# Ties must resolve to the smaller name, not insertion order.\ng4 = {'d': [], 'c': [], 'b': [], 'a': []}\nassert t(g4) == ['a', 'b', 'c', 'd'], t(g4)\n\n# Validity check on a wider graph: every edge respected.\ng5 = {'m': ['n', 'o'], 'n': ['p'], 'o': ['p'], 'p': [], 'e': ['n']}\norder = t(g5)\npos = {v: i for i, v in enumerate(order)}\nfor src, dsts in g5.items():\n    for d in dsts:\n        assert pos[src] < pos[d], 'edge %s->%s violated in %r' % (src, d, order)\nassert order == ['e', 'm', 'n', 'o', 'p'], order\n\nfor cyc in [{'a': ['b'], 'b': ['a']}, {'a': ['a']}, {'a': ['b'], 'b': ['c'], 'c': ['a']}]:\n    try:\n        t(cyc)\n        raise SystemExit('no ValueError for cycle %r' % (cyc,))\n    except ValueError:\n        pass\nprint('ok')\nVERIFYPY",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}
