@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.181.0 (2026-08-02)
+
+- feat(bench): power suite that can resolve a real effect, and fix the budget starving it
+
+
 ## v1.180.0 (2026-08-02)
 
 - fix(bench): refuse to report a delta from a run that measured nothing
