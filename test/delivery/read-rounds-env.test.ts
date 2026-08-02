@@ -1,5 +1,6 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { readRoundsEnv } from '../../src/delivery/agentic-executor.js';
+import { readCountEnv,
+  readRoundsEnv } from '../../src/delivery/agentic-executor.js';
 
 const VAR = 'UAP_TEST_ROUNDS_ENV';
 
@@ -69,5 +70,30 @@ describe('shipped write-nudge threshold', () => {
   it('matches what the executor actually uses when unset', () => {
     delete process.env.UAP_DELIVER_WRITE_NUDGE_AFTER;
     expect(readRoundsEnv('UAP_DELIVER_WRITE_NUDGE_AFTER', SHIPPED_DEFAULT)).toBe(SHIPPED_DEFAULT);
+  });
+});
+
+describe('readCountEnv', () => {
+  afterEach(() => delete process.env.UAP_TEST_COUNT);
+
+  it('accepts 0 — the kill-switch readRoundsEnv silently swallows', () => {
+    // readRoundsEnv floors at 1, so `=0` fell through to the fallback and the
+    // feature the operator just disabled stayed on at its default.
+    process.env.UAP_TEST_COUNT = '0';
+    expect(readCountEnv('UAP_TEST_COUNT', 2)).toBe(0);
+    expect(readRoundsEnv('UAP_TEST_COUNT', 2)).toBe(2);
+  });
+
+  it('falls back on unset, blank, negative and non-integer values', () => {
+    expect(readCountEnv('UAP_TEST_COUNT', 3)).toBe(3);
+    for (const v of ['', '  ', '-1', '1.5', 'two', 'NaN', 'Infinity']) {
+      process.env.UAP_TEST_COUNT = v;
+      expect(readCountEnv('UAP_TEST_COUNT', 3)).toBe(3);
+    }
+  });
+
+  it('accepts positive integers', () => {
+    process.env.UAP_TEST_COUNT = '7';
+    expect(readCountEnv('UAP_TEST_COUNT', 3)).toBe(7);
   });
 });

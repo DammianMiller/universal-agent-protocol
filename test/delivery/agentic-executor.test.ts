@@ -782,3 +782,119 @@ describe('PROXY_AUTH_TOKEN never leaks off-machine', () => {
     }
   });
 });
+
+describe('createAgenticExecutor — empty-finish refusal', () => {
+  let dir: string;
+  beforeEach(() => {
+    process.env.UAP_DELIVER_EMPTY_FINISH_REFUSALS = '2';
+    dir = mkdtempSync(join(tmpdir(), 'agx-finish-'));
+    writeFileSync(join(dir, 'a.js'), 'const a = 1;\n');
+  });
+  afterEach(() => {
+    delete process.env.UAP_DELIVER_EMPTY_FINISH_REFUSALS;
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  const readCall = (n: number) => ({
+    role: 'assistant',
+    content: null,
+    tool_calls: [
+      { id: `r${n}`, type: 'function', function: { name: 'read_file', arguments: '{"path":"a.js"}' } },
+    ],
+  });
+  const finishCall = (n: number) => ({
+    role: 'assistant',
+    content: null,
+    tool_calls: [
+      { id: `f${n}`, type: 'function', function: { name: 'finish', arguments: '{"summary":"all done"}' } },
+    ],
+  });
+  const writeCall = {
+    role: 'assistant',
+    content: null,
+    tool_calls: [
+      {
+        id: 'w1',
+        type: 'function',
+        function: { name: 'write_file', arguments: '{"path":"b.js","content":"const b = 2;"}' },
+      },
+    ],
+  };
+
+  /** Script the chat endpoint and capture every outgoing request body. */
+  function run(responses: Array<Record<string, unknown>>) {
+    const bodies: string[] = [];
+    let i = 0;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      bodies.push(String((init as RequestInit | undefined)?.body ?? ''));
+      const msg = responses[Math.min(i, responses.length - 1)];
+      i++;
+      return { ok: true, json: async () => ({ choices: [{ message: msg }] }) } as unknown as Response;
+    });
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    return { bodies, done: exec('remove the duplicate title') };
+  }
+
+  it('refuses a finish from a turn that modified nothing', async () => {
+    // The Octopus run-E shape: read one file, declare completion. Before this
+    // guard the turn ended at round 2 having done nothing, and every turn after
+    // it scored identically.
+    const { bodies, done } = run([readCall(1), finishCall(1), writeCall, finishCall(2)]);
+    await done;
+    expect(bodies.some((b) => b.includes('REFUSED'))).toBe(true);
+    // The refusal must not end the turn — the write that follows has to land.
+    expect(existsSync(join(dir, 'b.js'))).toBe(true);
+  });
+
+  it('accepts a finish from a turn that wrote something', async () => {
+    const { bodies, done } = run([writeCall, finishCall(1), readCall(9)]);
+    const result = await done;
+    expect(bodies.some((b) => b.includes('REFUSED'))).toBe(false);
+    expect(result).toBe('all done');
+  });
+
+  it('bounds the refusals so a genuinely-done turn cannot deadlock', async () => {
+    // Never writes, only ever finishes. Must still terminate, and must not
+    // burn the whole round budget doing it.
+    const { bodies, done } = run([finishCall(1)]);
+    const result = await done;
+    expect(result).toBe('all done');
+    const refusals = bodies.filter((b) => b.includes('REFUSED')).length;
+    // Body N carries refusal N-1, so 2 refusals appear in bodies 2 and 3.
+    expect(refusals).toBeLessThanOrEqual(4);
+    expect(bodies.length).toBeLessThan(10);
+  });
+
+  it('escalates the existing write rail rather than only scolding', async () => {
+    const { bodies, done } = run([finishCall(1)]);
+    await done;
+    // First refusal arms the soft nudge; the last arms the forced round.
+    expect(bodies.some((b) => b.includes('STOP exploring'))).toBe(true);
+  });
+
+  it('credits a recovered-from-text write, so that turn is not refused', async () => {
+    // The model emitted file content as prose instead of calling write_file;
+    // the executor materialized it. That is a real mutation, so the finish that
+    // follows must be honoured. Asserting on the REFUSAL rather than on the
+    // summary matters: the refusal budget means a wrongly-refused turn still
+    // ends with the right summary a few rounds later, which hides the bug.
+    const { bodies, done } = run([
+      { content: ['```file:js/calc.js', 'module.exports = (a, b) => a + b;', '```'].join('\n') },
+      finishCall(1),
+      readCall(9),
+    ]);
+    const result = await done;
+    expect(existsSync(join(dir, 'js/calc.js'))).toBe(true);
+    expect(bodies.some((b) => b.includes('REFUSED'))).toBe(false);
+    expect(result).toBe('all done');
+  });
+
+  it('is disabled by UAP_DELIVER_EMPTY_FINISH_REFUSALS=0', async () => {
+    process.env.UAP_DELIVER_EMPTY_FINISH_REFUSALS = '0';
+    const { bodies, done } = run([finishCall(1)]);
+    const result = await done;
+    expect(result).toBe('all done');
+    expect(bodies.some((b) => b.includes('REFUSED'))).toBe(false);
+  });
+});

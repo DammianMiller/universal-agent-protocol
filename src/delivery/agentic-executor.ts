@@ -624,6 +624,23 @@ export function readRoundsEnv(name: string, fallback: number): number {
   return n;
 }
 
+/**
+ * Same as readRoundsEnv, but 0 is a legal value.
+ *
+ * readRoundsEnv floors at 1 because a round threshold of 0 is meaningless, and
+ * that floor silently swallows the kill-switch for anything that is a COUNT
+ * rather than a threshold: `FOO=0` fell through to the fallback, so the feature
+ * the operator just tried to disable stayed on at its default. Split rather
+ * than loosened, so round thresholds keep rejecting 0.
+ */
+export function readCountEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw.trim());
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) return fallback;
+  return n;
+}
+
 export function newReadCache(): ReadCache {
   return { seen: new Map() };
 }
@@ -1348,6 +1365,31 @@ export function createAgenticExecutor(
     );
     let roundsWithoutWrite = 0;
     let writeNudged = false;
+    // Mutations made in THIS turn. Distinct from roundsWithoutWrite, which is a
+    // streak: a turn that ends after one round has a streak of 1 and a mutation
+    // count of 0, and only the second of those is evidence of a no-op turn.
+    let mutationsThisTurn = 0;
+    // A turn that calls `finish` having modified nothing is refused this many
+    // times before the turn is allowed to end.
+    //
+    // The read-only rails above are STREAK-driven, so they can only fire in a
+    // turn long enough to accumulate a streak. A model that reads two files and
+    // then declares completion never accumulates one, and the rails are dead
+    // code for it — the failure mode is not that the model won't stop reading,
+    // it is that it stops too early. Octopus Invaders run E (2026-08-02,
+    // qwen35-a3b, 5 turns): 13 rounds ended at r1, six at r2, one at r3; six
+    // `finish` calls; 14 read_file calls; ZERO writes; zero nudges and zero
+    // forced rounds, because 5 consecutive read-only rounds never happened. The
+    // requested change (delete a duplicate canvas title) was never attempted,
+    // and every turn scored identically, so the convergence loop had no signal
+    // that it was looping on nothing.
+    //
+    // Bounded rather than absolute: refusing forever would deadlock a turn whose
+    // work genuinely is already done, and the gate ladder — not the model — is
+    // what decides completion. After the budget is spent the finish is honoured
+    // and the loop scores the turn as it always did.
+    const EMPTY_FINISH_REFUSALS = readCountEnv('UAP_DELIVER_EMPTY_FINISH_REFUSALS', 2);
+    let emptyFinishes = 0;
     // Force NON-consecutively: at most one forced round, then always a normal
     // round before forcing again. The recovery round restores the read tools so
     // a model whose correct next move is a surgical edit_file (which needs to
@@ -1443,7 +1485,12 @@ export function createAgenticExecutor(
               tool: 'write_file',
               detail: `recovered-from-text ${block.path} -> ${result.slice(0, 60)}`,
             });
-            if (result.startsWith('OK:')) written.push(block.path);
+            if (result.startsWith('OK:')) {
+              written.push(block.path);
+              // Recovered-from-text writes are real mutations, so a turn that
+              // only wrote this way must not be judged a no-op on finish.
+              mutationsThisTurn += 1;
+            }
             summaries.push(`write_file(${block.path}) [recovered-from-text]`);
           }
           // Feed back what we materialized and nudge it to verify or finish,
@@ -1473,6 +1520,37 @@ export function createAgenticExecutor(
           /* leave args empty */
         }
         if (call.function.name === 'finish') {
+          if (mutationsThisTurn === 0 && emptyFinishes < EMPTY_FINISH_REFUSALS) {
+            emptyFinishes += 1;
+            opts.onEvent?.({
+              round,
+              kind: 'error',
+              detail: `empty finish refused (${emptyFinishes}/${EMPTY_FINISH_REFUSALS}) — turn modified no files`,
+            });
+            // Every tool_call in the assistant message needs a matching tool
+            // result or the next request is malformed, so the refusal IS the
+            // result — the model reads it in the same place it would have read
+            // a success.
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content:
+                'REFUSED: you called finish without modifying a single file in this turn. ' +
+                'Reading a file, or describing the change you would make, is not making it. ' +
+                'Apply the change now with edit_file or write_file, then call finish.',
+            });
+            // Escalate the EXISTING write rail rather than opening a second one:
+            // pretend the streak reached the soft-nudge threshold on the first
+            // refusal and the forced-round threshold on the last, so the next
+            // round gets the same grounded nudge/force machinery (and the same
+            // env overrides) that a long read-only turn would have earned.
+            roundsWithoutWrite =
+              emptyFinishes >= EMPTY_FINISH_REFUSALS ? FORCE_WRITE_AFTER : WRITE_NUDGE_AFTER;
+            writeNudged = false;
+            // Skip any remaining calls in this round: they were composed on the
+            // assumption the turn was ending.
+            break;
+          }
           opts.onEvent?.({ round, kind: 'final', tool: 'finish', detail: String(args.summary ?? '') });
           return String(args.summary ?? (summaries.join('; ') || 'done'));
         }
@@ -1516,6 +1594,11 @@ export function createAgenticExecutor(
         if ((isWrite && toolResult.startsWith('OK')) || (isBash && /(^|\s)exit=0(\s|$)/.test(toolResult))) {
           roundsWithoutWrite = -1; // reset below by the per-round increment
           writeNudged = false;
+          // Same condition as the streak reset, deliberately: whatever counts as
+          // productive enough to forgive a read-only streak is exactly what
+          // counts as a turn having done something, so the two can't disagree
+          // about whether a turn was a no-op.
+          mutationsThisTurn += 1;
         }
         // WITHHOLDING the content was a deadlock. The model re-reads a file for a
         // reason — its context was pruned, or this is a fresh agent session — so
