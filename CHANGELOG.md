@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.180.0 (2026-08-02)
+
+- fix(bench): refuse to report a delta from a run that measured nothing
+
+
 ## v1.179.12 (2026-08-02)
 
 - fix(deliver): refuse a finish from a turn that changed nothing
