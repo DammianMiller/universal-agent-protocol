@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.180.1 (2026-08-02)
+
+- perf(bench): persist per-turn attribution; do NOT cut the loop on a no-op turn
+
+
 ## v1.180.0 (2026-08-02)
 
 - fix(bench): refuse to report a delta from a run that measured nothing
