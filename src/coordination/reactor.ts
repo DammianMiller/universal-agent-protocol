@@ -1,6 +1,7 @@
 import { CapabilityRouter, getCapabilityRouter } from './capability-router.js';
 import { PatternRouter, getPatternRouter } from './pattern-router.js';
 import { maybeDesignInjection } from '../design/reactor-inject.js';
+import { maybePrinciplesInjection } from '../principles/reactor-inject.js';
 import { maybeBoardInjection } from './board-inject.js';
 import { maybeCollaborationInjection } from './collaboration-inject.js';
 import { maybeStateInjection } from '../state/reactor-inject.js';
@@ -150,6 +151,18 @@ export function resolve(
       ? maybeCollaborationInjection(ctx.cwd, ctx.promptText)
       : null;
 
+  // Engineering principles: fires ONLY while the rule-1 stance is unresolved
+  // for this project + session, asking the user once whether obsolete paths get
+  // removed or preserved. Once recorded it goes quiet — the principles
+  // themselves reach the model through the deliver prompt and the policy block,
+  // so repeating them per turn would be pure context cost. Deduped per session
+  // via `principles:stance`.
+  const principlesKey = 'principles:stance';
+  const principlesInject =
+    ctx.cwd && !(ctx.surfaced ?? []).includes(principlesKey)
+      ? maybePrinciplesInjection(ctx.cwd, ctx.promptText, ctx.changedFiles, ctx.sessionId)
+      : null;
+
   // Hands-free persistence (Options A-D): when a multi-epic build is in
   // progress (active completion ledger with remaining items), inject a
   // "keep going until the whole build is complete — REMAINING: ..." directive
@@ -209,6 +222,10 @@ export function resolve(
     if (designInject) {
       blocks.push(`## Design system (DESIGN.md)\n${designInject}`);
       keys.push(designKey);
+    }
+    if (principlesInject) {
+      blocks.push(`## Engineering principles — resolve the stance once\n${principlesInject}`);
+      keys.push(principlesKey);
     }
     return { inject: blocks.join('\n\n'), keys };
   };

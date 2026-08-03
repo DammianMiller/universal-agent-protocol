@@ -49,6 +49,7 @@ const lazy = {
   tune: () => import('../cli/self-tuning.js').then((m) => m.tuneCommand),
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
+  principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
   fidelity: () => import('../cli/fidelity.js').then((m) => m.fidelityCommand),
   plan: () => import('../cli/plan.js').then((m) => m.planCommand),
@@ -544,6 +545,20 @@ program
     if (target && !options.file) options.file = target;
     const cmd = await lazy.design();
     await cmd(subcommand, options);
+  });
+
+// Engineering principles — the rule-1 stance, asked once per project per session
+program
+  .command('principles')
+  .description('Engineering principles: show them, and answer the backward-compatibility stance')
+  .argument('[subcommand]', 'status | ask | compat | maturity | show')
+  .argument('[value]', 'Value for compat (preserve|remove) or maturity (greenfield|production)')
+  .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
+  .option('--save', "Persist as the project default in .uap.json, not just this session")
+  .option('--json', 'Emit machine-readable JSON (status)')
+  .action(async (subcommand, value, options) => {
+    const cmd = await lazy.principles();
+    await cmd(subcommand, value, options);
   });
 
 // Open multi-agent challenge mode (composes board + findings + staged + significance)
