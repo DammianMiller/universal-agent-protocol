@@ -92,6 +92,9 @@ export async function memoryCommand(
         console.log(chalk.red('Search query is required. Usage: uap memory query <search>'));
         return;
       }
+      // Record the consultation before retrieval, so BOTH the active-recall
+      // early return and the passive path leave evidence for memory-before-plan.
+      recordMemoryQuery(cwd, options.search);
       // Active reconstruction (harness plan E). Opt-in: --active, or
       // UAP_MEMORY_ACTIVE=1 with a non-empty graph. Falls through to the
       // passive path otherwise, so the default behaviour is unchanged.
@@ -845,6 +848,46 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
   } catch (error) {
     spinner.fail('Failed to prepopulate memory');
     console.error(chalk.red(error));
+  }
+}
+
+/**
+ * Record that a memory query ran, so the `memory-before-plan` gate has the
+ * evidence it looks for.
+ *
+ * That enforcer requires a recent `session_memories` row of type
+ * `memory_query` (or content mentioning `uap memory query`) and, finding none,
+ * tells the agent to "run `uap memory query`" — but nothing ever wrote that
+ * row, so its own remedy could not clear it and the gate blocked planning
+ * outright. Writing the row here closes that loop.
+ *
+ * Best-effort by design: recording is bookkeeping, and must never make a
+ * memory query fail.
+ */
+export function recordMemoryQuery(cwd: string, search: string): void {
+  try {
+    const config = loadUapConfig(cwd);
+    const dbPath =
+      config?.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
+    mkdirSync(dirname(dbPath), { recursive: true });
+
+    const db = new Database(dbPath);
+    ensureSessionSchema(db);
+    // (session_id, content) is UNIQUE, so re-running the same query must
+    // REFRESH the timestamp. INSERT OR IGNORE would keep the original one and
+    // leave the evidence stale — the exact failure this function exists to fix.
+    db.prepare(
+      `INSERT INTO session_memories (session_id, timestamp, type, content, importance)
+       VALUES (?, ?, 'memory_query', ?, 5)
+       ON CONFLICT(session_id, content) DO UPDATE SET timestamp = excluded.timestamp`
+    ).run(
+      config?.project?.name || 'default',
+      new Date().toISOString(),
+      `uap memory query: ${search}`
+    );
+    db.close();
+  } catch {
+    // Never let bookkeeping break the query the user actually asked for.
   }
 }
 
