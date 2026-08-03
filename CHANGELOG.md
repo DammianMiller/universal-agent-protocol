@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.183.0 (2026-08-03)
+
+- feat(bench): pre-registered held-out task set, with the registration enforced in code
+
+
 ## v1.182.1 (2026-08-03)
 
 - fix(bench): a CI that clears zero while p does not is BORDERLINE, not a win
