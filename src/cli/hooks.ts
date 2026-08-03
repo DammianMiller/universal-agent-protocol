@@ -124,6 +124,10 @@ function copyHookScripts(targetHooksDir: string): void {
     'deliver_autoroute.py',
     // consumed by uap-policy-gate.sh: cumulative-aware trivial-edit fast-path decider
     'fastpath_gate.py',
+    // Writes .uap/read_log.state, the ONLY evidence codebase-read-before-plan
+    // accepts. Without it that gate has no writer, its entries age out, and it
+    // blocks every plan with a remedy that can never clear.
+    'post-tool-use-read.sh',
   ];
   for (const file of hookFiles) {
     const src = join(templateHooksDir, file);
@@ -263,6 +267,10 @@ async function installClaudeHooks(cwd: string): Promise<void> {
         ],
       },
       {
+        matcher: 'Read|Grep|Glob',
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-tool-use-read.sh"' }],
+      },
+      {
         matcher: 'TodoWrite',
         hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-todo-ledger.sh"' }],
       },
@@ -371,6 +379,10 @@ async function installFactoryHooks(cwd: string): Promise<void> {
         ],
       },
       {
+        matcher: 'Read|Grep|Glob',
+        hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/post-tool-use-read.sh' }],
+      },
+      {
         matcher: 'TodoWrite',
         hooks: [{ type: 'command', command: '"$FACTORY_PROJECT_DIR"/.factory/hooks/uap-todo-ledger.sh' }],
       },
@@ -446,6 +458,9 @@ async function installCursorHooks(cwd: string): Promise<void> {
     postToolUse: [
       { matcher: 'Edit|Write', command: '.cursor/hooks/post-tool-use-edit-write.sh' },
       { matcher: 'Edit|Write', command: '.cursor/hooks/uap-schema-post.sh' },
+      // Without this, the hook is copied but never fires, and
+      // codebase-read-before-plan blocks planning on evidence that is never written.
+      { matcher: 'Read|Grep|Glob', command: '.cursor/hooks/post-tool-use-read.sh' },
     ],
     preCompact: [{ command: '.cursor/hooks/pre-compact.sh' }],
     postCompact: [{ command: '.cursor/hooks/post-compact.sh' }],
@@ -524,6 +539,10 @@ async function installVscodeHooks(cwd: string): Promise<void> {
           { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-tool-use-edit-write.sh"' },
           { type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/uap-schema-post.sh"' },
         ],
+      },
+      {
+        matcher: 'Read|Grep|Glob',
+        hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-tool-use-read.sh"' }],
       },
       {
         matcher: 'TodoWrite',
@@ -1491,6 +1510,7 @@ const HOOK_FILES: HookFileInfo[] = [
   { name: 'pre-tool-use-edit-write.sh', event: 'PreToolUse', desc: 'Worktree file guard (BLOCKS non-worktree edits)' },
   { name: 'pre-tool-use-bash.sh', event: 'PreToolUse', desc: 'Dangerous command guard (BLOCKS terraform apply, force push, etc)' },
   { name: 'post-tool-use-edit-write.sh', event: 'PostToolUse', desc: 'Build gate + backup reminder after edits' },
+  { name: 'post-tool-use-read.sh', event: 'PostToolUse', desc: 'Read-log writer (evidence for codebase-read-before-plan)' },
   { name: 'post-compact.sh', event: 'PostCompact', desc: 'Re-injects policy awareness after compaction' },
   { name: 'stop.sh', event: 'Stop', desc: 'Completion gate checklist + session cleanup' },
   { name: 'session-end.sh', event: 'SessionEnd', desc: 'Agent deregistration + backup retention' },
