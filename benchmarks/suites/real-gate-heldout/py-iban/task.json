@@ -1,0 +1,15 @@
+{
+  "name": "py-iban",
+  "instruction": "Implement iban.py: def is_valid(iban: str) -> bool and def check_digits(country: str, bban: str) -> str. is_valid normalises by removing spaces and uppercasing, then requires: length 15..34, the first two characters are letters, the next two are digits, the rest are alphanumeric. It then applies the ISO 7064 MOD-97-10 test - move the first four characters to the end, replace each letter with its position value (A=10 ... Z=35), and require the resulting integer mod 97 == 1. Anything malformed returns False rather than raising. check_digits(country, bban) returns the two-digit check string (zero padded) that makes country+digits+bban valid; it raises ValueError if country is not two letters or bban is not alphanumeric.",
+  "difficulty": "hard",
+  "tags": [
+    "checksum",
+    "mod97",
+    "py",
+    "tier:medium-hard"
+  ],
+  "gateCmd": "python3 - <<'GATEPY'\nfrom iban import is_valid\nassert is_valid('GB82 WEST 1234 5698 7654 32') is True\nprint('gate ok')\nGATEPY",
+  "verifyCmd": "python3 - <<'VERIFYPY'\nfrom iban import is_valid, check_digits\n\nVALID = [\n    'GB82WEST12345698765432',\n    'GB82 WEST 1234 5698 7654 32',\n    'gb82west12345698765432',\n    'DE89370400440532013000',\n    'FR1420041010050500013M02606',\n    'NL91ABNA0417164300',\n    'BE68539007547034',\n]\nfor v in VALID:\n    assert is_valid(v) is True, 'should be valid: %r' % v\n\nINVALID = [\n    'GB82WEST12345698765433',   # bad checksum\n    'GB82WEST1234569876543',    # wrong length for the checksum\n    '',\n    'GB',\n    '1234567890123456',         # no country letters\n    'GBX2WEST12345698765432',   # check digits not numeric\n    'GB82WEST123456987654$2',   # non-alnum\n    'GB82WEST1234',             # too short\n    'G' * 40,                   # too long\n    None,\n    12345,\n]\nfor v in INVALID:\n    assert is_valid(v) is False, 'should be invalid: %r' % (v,)\n\n# check_digits must produce something is_valid accepts.\nfor country, bban in [('GB', 'WEST12345698765432'), ('DE', '370400440532013000'),\n                      ('NL', 'ABNA0417164300'), ('BE', '539007547034')]:\n    cd = check_digits(country, bban)\n    assert len(cd) == 2 and cd.isdigit(), 'check digits must be two digits, got %r' % cd\n    assert is_valid(country + cd + bban), 'generated IBAN not valid: %s%s%s' % (country, cd, bban)\n\nassert check_digits('GB', 'WEST12345698765432') == '82', check_digits('GB', 'WEST12345698765432')\n\nfor bad in [('G', 'ABC123456789012'), ('GBR', 'ABC123456789012'), ('12', 'ABC123456789012'),\n            ('GB', ''), ('GB', 'ABC$123')]:\n    try:\n        check_digits(*bad)\n        raise SystemExit('no ValueError for %r' % (bad,))\n    except ValueError:\n        pass\nprint('ok')\nVERIFYPY",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

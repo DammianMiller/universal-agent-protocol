@@ -1,0 +1,15 @@
+{
+  "name": "js-cookie",
+  "instruction": "Implement parseCookie.js (CommonJS): module.exports = parseCookie. parseCookie(header) parses a Cookie request header into a plain object. Pairs are separated by ';', and the FIRST '=' splits name from value. Names and values are trimmed. A value wrapped in double quotes has the quotes removed. Values are URL-decoded, but a value with a malformed percent escape is kept verbatim rather than throwing. When a name repeats, the FIRST occurrence wins. A segment with no '=' is skipped, as is an empty name. A non-string or empty header returns {}.",
+  "difficulty": "medium",
+  "tags": [
+    "http",
+    "parsing",
+    "js",
+    "tier:medium"
+  ],
+  "gateCmd": "node <<'GATEJS'\nconst p=require('./parseCookie.js');\nif(p('a=1').a!=='1')process.exit(1);\nconsole.log('gate ok');\nGATEJS",
+  "verifyCmd": "node <<'VERIFYJS'\nconst p = require('./parseCookie.js');\nconst S = JSON.stringify;\nconst eq = (got, want, m) => { if (S(got) !== S(want)) { console.error('FAIL', m, S(got)); process.exit(1); } };\neq(p('a=1; b=2'), { a: '1', b: '2' }, 'basic');\neq(p('  a = 1 ;b=2'), { a: '1', b: '2' }, 'trimming');\neq(p('a=b=c'), { a: 'b=c' }, 'first = splits');\neq(p('a=\"quoted\"'), { a: 'quoted' }, 'quotes stripped');\neq(p('a=hello%20world'), { a: 'hello world' }, 'url decoded');\neq(p('a=%E4%B8%AD'), { a: '\u4e2d' }, 'utf8 decoded');\neq(p('a=%zz'), { a: '%zz' }, 'malformed escape kept verbatim');\neq(p('a=1; a=2'), { a: '1' }, 'first duplicate wins');\neq(p('novalue; a=1'), { a: '1' }, 'segment without = skipped');\neq(p('=noname; a=1'), { a: '1' }, 'empty name skipped');\neq(p(''), {}, 'empty header');\neq(p(null), {}, 'non-string');\neq(p('a='), { a: '' }, 'empty value');\neq(p('a=\"1'), { a: '\"1' }, 'unbalanced quote kept');\nconsole.log('ok');\nVERIFYJS",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

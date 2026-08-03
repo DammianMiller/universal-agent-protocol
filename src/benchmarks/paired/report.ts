@@ -524,7 +524,10 @@ function sig(p: PairedDeltaResult): string {
 
 /** Win/tie/loss badge under the ROPE norm — ties within noise are NOT wins. */
 function vbadge(v: Verdict): string {
-  return v === 'win' ? '🟢 WIN' : v === 'loss' ? '🔴 LOSS' : '⚪ TIE';
+  if (v === 'win') return '🟢 WIN';
+  if (v === 'loss') return '🔴 LOSS';
+  if (v === 'borderline') return '🟡 BORDERLINE';
+  return '⚪ TIE';
 }
 
 export function renderMarkdown(r: AnalysisReport): string {

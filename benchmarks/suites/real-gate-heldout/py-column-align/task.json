@@ -1,0 +1,15 @@
+{
+  "name": "py-column-align",
+  "instruction": "Implement column_align.py: def format_table(rows: list, aligns: str) -> list[str]. Each row is a list of cell strings; `aligns` is a string of 'l', 'r' or 'c' - one per column. Every column is padded to the width of its widest cell, cells are joined with ' | ', and each returned line has NO trailing whitespace (so padding on the final column is stripped). Ragged rows are padded with empty strings, and a row longer than `aligns` raises ValueError, as does an alignment character other than l/r/c. For 'c', an odd leftover space goes on the RIGHT. An empty rows list returns [].",
+  "difficulty": "hard",
+  "tags": [
+    "formatting",
+    "tables",
+    "py",
+    "tier:hard"
+  ],
+  "gateCmd": "python3 - <<'GATEPY'\nfrom column_align import format_table as f\nassert f([['a','b']], 'll') == ['a | b'], f([['a','b']], 'll')\nprint('gate ok')\nGATEPY",
+  "verifyCmd": "python3 - <<'VERIFYPY'\nfrom column_align import format_table as f\n\ndef chk(got, want, m):\n    assert got == want, '%s:\\n got  %r\\n want %r' % (m, got, want)\n\nchk(f([], 'll'), [], 'empty rows')\nchk(f([['a', 'b']], 'll'), ['a | b'], 'single row')\nchk(f([['a', 'bb'], ['ccc', 'd']], 'll'), ['a   | bb', 'ccc | d'], 'left align pads')\nchk(f([['a', 'bb'], ['ccc', 'd']], 'rr'), ['  a | bb', 'ccc |  d'], 'right align')\nchk(f([['a'], ['bbb']], 'c'), [' a', 'bbb'], 'centre keeps leading pad, strips only trailing')\nchk(f([['a', 'x'], ['bbb', 'y']], 'cl'), [' a  | x', 'bbb | y'], 'centre puts odd space on the right')\nchk(f([['ab', 'x'], ['abcd', 'y']], 'cl'), [' ab  | x', 'abcd | y'], 'centre even pad')\nchk(f([['a', 'b'], ['c']], 'll'), ['a | b', 'c |'], 'ragged row keeps the separator, loses only the pad')\nchk(f([['', '']], 'll'), [' |'], 'all-empty still emits the separator; only the pad is stripped')\n\nfor line in f([['a', 'bb', 'c'], ['dddd', 'e', 'ff']], 'lrc'):\n    assert line == line.rstrip(), 'trailing whitespace in %r' % line\n\nfor bad in [([['a', 'b', 'c']], 'll'), ([['a']], 'x'), ([['a']], 'lx')]:\n    try:\n        f(*bad)\n        raise SystemExit('no ValueError for %r' % (bad,))\n    except ValueError:\n        pass\nprint('ok')\nVERIFYPY",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

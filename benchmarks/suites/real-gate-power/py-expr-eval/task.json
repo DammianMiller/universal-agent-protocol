@@ -1,0 +1,14 @@
+{
+  "name": "py-expr-eval",
+  "instruction": "Implement expr_eval.py: def eval_expr(s: str). Parse and evaluate an arithmetic expression over integer and float literals with the operators + - * / // % ** , parentheses, and unary + and -. Precedence, lowest first: (+ -), (* / // %), unary, then ** which is RIGHT associative and binds tighter than a unary minus on its left, so -2**2 is -4 and 2**3**2 is 512. Integer operands must keep integer results, except '/' which always yields a float. Division, floor-division or modulo by zero raises ZeroDivisionError. Any syntax error - empty input, unbalanced parentheses, a trailing operator, or an unknown character - raises ValueError. Do NOT use eval() or exec().",
+  "difficulty": "hard",
+  "tags": [
+    "parsing",
+    "precedence",
+    "py"
+  ],
+  "gateCmd": "python3 - <<'GATEPY'\nfrom expr_eval import eval_expr as e\nassert e('1+2*3') == 7, e('1+2*3')\nprint('gate ok')\nGATEPY",
+  "verifyCmd": "python3 - <<'VERIFYPY'\nfrom expr_eval import eval_expr as e\n\ndef chk(expr, want, msg):\n    got = e(expr)\n    assert got == want, '%s: %r -> %r want %r' % (msg, expr, got, want)\n\nchk('1+2*3', 7, 'precedence')\nchk('(1+2)*3', 9, 'parens')\nchk('2**3**2', 512, '** is right associative')\nchk('-2**2', -4, 'unary minus binds looser than **')\nchk('2**-1', 0.5, 'negative exponent')\nchk('7//2', 3, 'floor div')\nchk('-7//2', -4, 'floor div rounds down')\nchk('7%3', 1, 'modulo')\nchk('2 - -3', 5, 'double negative')\nchk('--3', 3, 'repeated unary')\nchk('10/4', 2.5, 'true division is float')\nchk('1.5*2', 3.0, 'float literal')\nchk('  8  /  2  ', 4.0, 'whitespace')\n\nassert isinstance(e('4/2'), float), 'true division must be float'\nassert isinstance(e('2*3'), int), 'int arithmetic stays int'\nassert isinstance(e('7//2'), int), 'floor div of ints stays int'\n\nfor bad, exc in [('1/0', ZeroDivisionError), ('1//0', ZeroDivisionError), ('1%0', ZeroDivisionError),\n                 ('', ValueError), ('(1+2', ValueError), ('1+', ValueError), ('1+*2', ValueError),\n                 ('1 $ 2', ValueError), ('1 2', ValueError)]:\n    try:\n        e(bad)\n        raise SystemExit('no %s for %r' % (exc.__name__, bad))\n    except exc:\n        pass\n\nsrc = open('expr_eval.py').read()\nassert 'eval(' not in src and 'exec(' not in src, 'must not use eval/exec'\nprint('ok')\nVERIFYPY",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

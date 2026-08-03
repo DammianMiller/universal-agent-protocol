@@ -1,0 +1,14 @@
+{
+  "name": "js-balanced",
+  "instruction": "Implement balanced.js (CommonJS): module.exports = balanced. balanced(str) returns true when every (), [] and {} is correctly nested and closed. Brackets INSIDE a single- or double-quoted string literal must be ignored, and a backslash escapes the next character inside such a literal. An unterminated string literal makes the input unbalanced. Empty input is balanced.",
+  "difficulty": "medium",
+  "tags": [
+    "parsing",
+    "algorithm",
+    "js"
+  ],
+  "gateCmd": "node -e \"const b=require('./balanced.js'); if(b('(a[b]{c})')!==true)process.exit(1); console.log('gate ok')\"",
+  "verifyCmd": "node -e \"const b=require('./balanced.js');if(b('')!==true)process.exit(1);if(b('([)]')!==false){console.error('interleaved');process.exit(1)}if(b('(\\\"a)b\\\")')!==true){console.error('bracket in string ignored');process.exit(1)}if(b(\\\"('[')\\\")!==true){console.error('single-quoted');process.exit(1)}if(b('(\\\"a')!==false){console.error('unterminated string');process.exit(1)}if(b('(\\\"\\\\\\\\\\\")\\\")')!==true&&b('(\\\"\\\\\\\\\\\")\\\")')!==false){}if(b('(')!==false)process.exit(1);if(b(')(')!==false){console.error('order');process.exit(1)}console.log('ok')\"",
+  "verifyTimeoutSec": 15,
+  "agentTimeoutSec": 900
+}

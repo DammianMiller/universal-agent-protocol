@@ -1,0 +1,14 @@
+{
+  "name": "js-async-pool",
+  "instruction": "Implement asyncPool.js (CommonJS): module.exports = asyncPool. asyncPool(limit, items, fn) runs fn(item, index) over every item with AT MOST `limit` invocations in flight at once, and resolves to an array of results in INPUT order (not completion order). As soon as one call rejects, no further items may be started, and the returned promise rejects with that error. limit must be a positive integer or an Error is thrown. An empty items array resolves to [].",
+  "difficulty": "hard",
+  "tags": [
+    "async",
+    "concurrency",
+    "js"
+  ],
+  "gateCmd": "node <<'GATEJS'\nconst p=require('./asyncPool.js');\np(2,[1,2,3],async(x)=>x*2).then(r=>{if(JSON.stringify(r)!==JSON.stringify([2,4,6]))process.exit(1);console.log('gate ok');}).catch(()=>process.exit(1));\nGATEJS",
+  "verifyCmd": "node <<'VERIFYJS'\nconst pool = require('./asyncPool.js');\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\n(async () => {\n  const fail = (m) => { console.error('FAIL', m); process.exit(1); };\n  if (JSON.stringify(await pool(2, [], async () => 1)) !== '[]') fail('empty items');\n  // Results must be in INPUT order even though later items finish first.\n  const out = await pool(2, [30, 20, 10], async (ms) => { await sleep(ms); return ms; });\n  if (JSON.stringify(out) !== JSON.stringify([30, 20, 10])) fail('input order, got ' + JSON.stringify(out));\n  // Concurrency must never exceed the limit.\n  let live = 0, peak = 0;\n  await pool(3, Array.from({ length: 12 }, (_, i) => i), async () => {\n    live++; peak = Math.max(peak, live); await sleep(5); live--;\n  });\n  if (peak > 3) fail('peak concurrency ' + peak + ' exceeded limit 3');\n  if (peak < 2) fail('did not run concurrently at all, peak ' + peak);\n  // A rejection propagates and stops new work.\n  let started = 0;\n  try {\n    await pool(2, Array.from({ length: 20 }, (_, i) => i), async (i) => {\n      started++; await sleep(2);\n      if (i === 1) throw new Error('boom');\n      return i;\n    });\n    fail('rejection not propagated');\n  } catch (e) {\n    if (e.message !== 'boom') fail('wrong error: ' + e.message);\n  }\n  if (started >= 20) fail('kept starting work after a rejection (' + started + ')');\n  for (const bad of [0, -1, 1.5, 'x']) {\n    let threw = false;\n    try { await pool(bad, [1], async (x) => x); } catch (e) { threw = true; }\n    if (!threw) fail('bad limit accepted: ' + bad);\n  }\n  console.log('ok');\n})();\nVERIFYJS",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

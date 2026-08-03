@@ -1,0 +1,14 @@
+{
+  "name": "js-json-pointer",
+  "instruction": "Implement jsonPointer.js (CommonJS): module.exports = get. get(doc, pointer) resolves an RFC6901 JSON Pointer. The empty string returns the whole document. Otherwise the pointer MUST start with '/' or an Error is thrown. Each reference token is unescaped with '~1' -> '/' and '~0' -> '~', IN THAT ORDER. Tokens index objects by key and arrays by a decimal index with no leading zeros. Return undefined (do not throw) when a key is absent, an array index is out of range or not a valid index, or an intermediate value is not an object. A key that exists but holds undefined, null, 0 or '' must be returned as-is rather than treated as missing.",
+  "difficulty": "hard",
+  "tags": [
+    "rfc6901",
+    "edge-cases",
+    "js"
+  ],
+  "gateCmd": "node <<'GATEJS'\nconst g=require('./jsonPointer.js');\nif(g({a:{b:1}},'/a/b')!==1)process.exit(1);\nconsole.log('gate ok');\nGATEJS",
+  "verifyCmd": "node <<'VERIFYJS'\nconst g = require('./jsonPointer.js');\nconst doc = { foo: ['bar', 'baz'], '': 0, 'a/b': 1, 'm~n': 2, ' ': 3, nested: { x: { y: 'deep' } }, nul: null, und: undefined };\nconst t = (ptr, want, m) => { const got = g(doc, ptr); if (got !== want) { console.error('FAIL', m, ptr, JSON.stringify(got)); process.exit(1); } };\nif (g(doc, '') !== doc) { console.error('empty pointer is whole doc'); process.exit(1); }\nt('/foo/0', 'bar', 'array index');\nt('/foo/1', 'baz', 'array index 1');\nt('/', 0, 'empty key');\nt('/a~1b', 1, '~1 unescapes to slash');\nt('/m~0n', 2, '~0 unescapes to tilde');\nt('/ ', 3, 'space key');\nt('/nested/x/y', 'deep', 'nested');\nt('/nope', undefined, 'missing key');\nt('/foo/5', undefined, 'index out of range');\nt('/foo/01', undefined, 'leading zero is not an index');\nt('/foo/x', undefined, 'non-numeric array token');\nt('/nul', null, 'null value returned as null');\nt('/und', undefined, 'present-undefined');\nt('/nul/deeper', undefined, 'descend through null');\nif (g({ '~1': 9 }, '/~01') !== 9) { console.error('~0 then ~1 ordering'); process.exit(1); }\ntry { g(doc, 'foo'); console.error('no throw on missing leading slash'); process.exit(1); } catch (e) {}\nconsole.log('ok');\nVERIFYJS",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

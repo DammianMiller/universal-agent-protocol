@@ -1,0 +1,15 @@
+{
+  "name": "js-range-header",
+  "instruction": "Implement parseRange.js (CommonJS): module.exports = parseRange. parseRange(size, header) parses an RFC7233 Range header against a resource of `size` bytes. Return -2 if the header is malformed (missing, no '=', a range with neither start nor end, or a start greater than its end). Return -1 if every range is unsatisfiable (start >= size). Otherwise return an ARRAY of { start, end } with INCLUSIVE end, carrying a `type` property naming the unit (e.g. 'bytes'). An end past the last byte clamps to size-1. A suffix range '-N' means the LAST N bytes, and clamps to the whole resource when N >= size; '-0' is unsatisfiable. Unsatisfiable ranges are dropped from an otherwise satisfiable list, and the ranges are returned in the order given.",
+  "difficulty": "hard",
+  "tags": [
+    "http",
+    "rfc7233",
+    "js",
+    "tier:hard"
+  ],
+  "gateCmd": "node <<'GATEJS'\nconst p=require('./parseRange.js');\nconst r=p(1000,'bytes=0-499');\nif(!Array.isArray(r)||r[0].start!==0||r[0].end!==499)process.exit(1);\nconsole.log('gate ok');\nGATEJS",
+  "verifyCmd": "node <<'VERIFYJS'\nconst p = require('./parseRange.js');\nconst S = JSON.stringify;\nconst arr = (r) => (Array.isArray(r) ? r.map((x) => ({ start: x.start, end: x.end })) : r);\nconst eq = (got, want, m) => { if (S(arr(got)) !== S(want)) { console.error('FAIL', m, S(arr(got)), 'want', S(want)); process.exit(1); } };\neq(p(1000, 'bytes=0-499'), [{ start: 0, end: 499 }], 'simple');\neq(p(1000, 'bytes=500-'), [{ start: 500, end: 999 }], 'open end');\neq(p(1000, 'bytes=-500'), [{ start: 500, end: 999 }], 'suffix');\neq(p(1000, 'bytes=-2000'), [{ start: 0, end: 999 }], 'suffix larger than resource clamps');\neq(p(1000, 'bytes=0-2000'), [{ start: 0, end: 999 }], 'end clamps');\neq(p(1000, 'bytes=0-0'), [{ start: 0, end: 0 }], 'single byte');\neq(p(1000, 'bytes=0-99,200-299'), [{ start: 0, end: 99 }, { start: 200, end: 299 }], 'multiple in order');\neq(p(1000, 'bytes=200-299,0-99'), [{ start: 200, end: 299 }, { start: 0, end: 99 }], 'order preserved, not sorted');\neq(p(1000, 'bytes=0-99,5000-6000'), [{ start: 0, end: 99 }], 'unsatisfiable member dropped');\nif (p(1000, 'bytes=-0') !== -1) { console.error('-0 must be unsatisfiable'); process.exit(1); }\nif (p(1000, 'bytes=1000-') !== -1) { console.error('start at size is unsatisfiable'); process.exit(1); }\nif (p(1000, 'bytes=2000-3000') !== -1) { console.error('wholly past end is unsatisfiable'); process.exit(1); }\nfor (const bad of ['bytes', 'bytes=', 'bytes=-', 'bytes=abc', 'bytes=100-50', '', null, undefined, '=0-9']) {\n  if (p(1000, bad) !== -2) { console.error('must be malformed (-2):', S(bad), 'got', S(p(1000, bad))); process.exit(1); }\n}\nconst typed = p(1000, 'items=0-9');\nif (typed.type !== 'items') { console.error('unit not carried, got', typed.type); process.exit(1); }\nconsole.log('ok');\nVERIFYJS",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

@@ -43,6 +43,16 @@ export interface HarnessCardInput {
   sandboxed?: boolean;
   /** Estimated-token ceiling for one agentic session, if set. */
   contextTokenBudget?: number;
+  /**
+   * Per-completion `max_tokens` ceiling. Disclosed because a reasoning model
+   * spends this budget on a hidden thinking channel BEFORE emitting any answer
+   * token, so a budget set for the answer alone silently yields EMPTY
+   * completions (finish_reason=length) that look like format non-compliance.
+   * The raw bench adapter hardcoded 4096 while this repo's profile for the same
+   * local model allocates 81920 — a 20x starvation that pinned both arms toward
+   * the floor and appeared nowhere in any report.
+   */
+  completionTokenBudget?: number;
   /** Max tool-call rounds before a final answer is forced. */
   maxToolRounds?: number;
   /** Per-command bash timeout, ms. */
@@ -117,6 +127,7 @@ export function buildHarnessCard(input: HarnessCardInput): HarnessCard {
         name: 'Context',
         fields: [
           { key: 'token_budget', value: num(input.contextTokenBudget) },
+          { key: 'completion_budget', value: num(input.completionTokenBudget) },
           { key: 'read_window_bytes', value: num(input.readWindowBytes) },
           { key: 'memory_mode', value: input.memoryMode ?? 'unknown' },
           { key: 'compression', value: 'semantic units + dynamic compressor' },

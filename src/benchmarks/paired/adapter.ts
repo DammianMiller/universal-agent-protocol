@@ -513,6 +513,39 @@ interface ChatResult {
   content: string;
   tokens: number;
   error: string | null;
+  /** Server's finish_reason, kept so truncation is distinguishable from refusal. */
+  finishReason: string | null;
+  /** finish_reason === 'length' AND no content: the answer never started. */
+  truncated: boolean;
+}
+
+/**
+ * Completion budget. Reasoning models spend this budget on a hidden thinking
+ * channel BEFORE emitting any answer tokens, so a budget that merely fits the
+ * answer silently produces an EMPTY completion with finish_reason=length.
+ *
+ * Measured on real-gate-power (15 tasks, this model, first turn):
+ *
+ *   max_tokens=4096   8/15 zero-block, and ALL EIGHT were finish_reason=length
+ *                     with 0 content and 11k-15k chars of reasoning. The seven
+ *                     successes landed at 1982-3964 tokens — pressed right up
+ *                     against the cap. Zero of the fifteen were malformed.
+ *   max_tokens=8192   2/15 zero-block. Successes ranged to 7631 tokens.
+ *
+ * Note the shape of what is left: re-probing those last two succeeded using
+ * 6196 and 5035 tokens — under 8192 — so they were not deterministically too
+ * expensive, they were the long tail of a stochastic thinking length. The
+ * budget therefore has to clear the TAIL, not the mean; 16384 is a bit over 2x
+ * the largest observed success. This costs nothing on cells that finish early,
+ * since generation stops at finish_reason=stop either way.
+ *
+ * For scale, this repo's own profile for the same local model (qwen36.json)
+ * allocates 81920. The bench was starving the model ~20x relative to how the
+ * product runs it, which pinned BOTH arms toward the floor.
+ */
+export function rawMaxTokens(): number {
+  const n = Number(process.env.UAP_RAW_MAX_TOKENS ?? 16384);
+  return Number.isFinite(n) && n > 0 ? n : 16384;
 }
 
 async function chatCompletion(
@@ -524,25 +557,37 @@ async function chatCompletion(
 ): Promise<ChatResult> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const fail = (error: string): ChatResult => ({
+    content: '',
+    tokens: 0,
+    error,
+    finishReason: null,
+    truncated: false,
+  });
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages, temperature, max_tokens: 4096 }),
+      body: JSON.stringify({ model, messages, temperature, max_tokens: rawMaxTokens() }),
       signal: ctrl.signal,
     });
-    if (!res.ok) return { content: '', tokens: 0, error: `http ${res.status}` };
+    if (!res.ok) return fail(`http ${res.status}`);
     const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: { message?: { content?: string }; finish_reason?: string }[];
       usage?: { total_tokens?: number };
     };
+    const choice = data.choices?.[0];
+    const content = choice?.message?.content ?? '';
+    const finishReason = choice?.finish_reason ?? null;
     return {
-      content: data.choices?.[0]?.message?.content ?? '',
+      content,
       tokens: data.usage?.total_tokens ?? 0,
       error: null,
+      finishReason,
+      truncated: finishReason === 'length' && content.trim() === '',
     };
   } catch (e) {
-    return { content: '', tokens: 0, error: e instanceof Error ? e.message : String(e) };
+    return fail(e instanceof Error ? e.message : String(e));
   } finally {
     clearTimeout(timer);
   }
@@ -589,6 +634,7 @@ export class RawCompletionAdapter implements AgentAdapter {
     let totalTokens = 0;
     let turns = 0;
     let gateRuns = 0;
+    let truncatedTurns = 0;
     let error: string | null = null;
     const logParts: string[] = [];
     // Budget parity: the lazy bare attempt counts INSIDE the same iteration
@@ -616,7 +662,17 @@ export class RawCompletionAdapter implements AgentAdapter {
       }
       const blocks = parseFileBlocks(chat.content);
       applyFileBlocks(ctx.workdir, blocks);
-      logParts.push(`--- turn ${turns}: ${blocks.length} file(s) ---`);
+      if (chat.truncated) truncatedTurns++;
+      // A turn that wrote nothing has two very different causes, and the record
+      // has to say which: the model answered in the wrong format, or it never
+      // answered at all because the budget ran out mid-reasoning. Conflating
+      // them sent the first investigation after a prompt-format fix for what
+      // was actually a max_tokens ceiling.
+      logParts.push(
+        `--- turn ${turns}: ${blocks.length} file(s)` +
+          (chat.truncated ? ' [TRUNCATED: budget exhausted before any answer]' : '') +
+          ` finish=${chat.finishReason ?? 'n/a'} ---`
+      );
 
       if (!useGate) break;
 
@@ -639,7 +695,9 @@ export class RawCompletionAdapter implements AgentAdapter {
       toolCalls: useGate ? gateRuns : 0,
       wellFormed: null,
       error,
-      rawLog: logParts.join('\n'),
+      rawLog:
+        logParts.join('\n') +
+        (truncatedTurns > 0 ? `\n[${truncatedTurns}/${turns} turn(s) truncated mid-reasoning]` : ''),
     };
   }
 }

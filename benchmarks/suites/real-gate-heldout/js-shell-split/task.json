@@ -1,0 +1,15 @@
+{
+  "name": "js-shell-split",
+  "instruction": "Implement shellSplit.js (CommonJS): module.exports = shellSplit. shellSplit(line) splits a command line into an argv array using POSIX-ish quoting: runs of whitespace separate arguments; single quotes are fully literal (a backslash inside them is literal too); double quotes preserve spaces but a backslash escapes only the characters \\ \" $ and ` inside them, and is otherwise literal; outside quotes a backslash escapes the next character. Adjacent quoted and unquoted runs join into ONE argument, and an empty quoted string produces an empty argument. An unterminated quote or a trailing backslash throws an Error.",
+  "difficulty": "hard",
+  "tags": [
+    "parsing",
+    "quoting",
+    "js",
+    "tier:medium-hard"
+  ],
+  "gateCmd": "node <<'GATEJS'\nconst s=require('./shellSplit.js');\nif(JSON.stringify(s('a b'))!==JSON.stringify(['a','b']))process.exit(1);\nconsole.log('gate ok');\nGATEJS",
+  "verifyCmd": "node <<'VERIFYJS'\nconst sp = require('./shellSplit.js');\nconst S = JSON.stringify;\nconst eq = (got, want, m) => { if (S(got) !== S(want)) { console.error('FAIL', m, S(got), 'want', S(want)); process.exit(1); } };\neq(sp('a b c'), ['a', 'b', 'c'], 'basic');\neq(sp('  a   b  '), ['a', 'b'], 'whitespace runs');\neq(sp(''), [], 'empty line');\neq(sp('\"a b\"'), ['a b'], 'double quotes keep spaces');\neq(sp(\"'a b'\"), ['a b'], 'single quotes keep spaces');\neq(sp(\"'a\\\\b'\"), ['a\\\\b'], 'backslash literal inside single quotes');\neq(sp('\"a\\\\\"b\"'), ['a\"b'], 'escaped quote inside double quotes');\neq(sp('\"a\\\\nb\"'), ['a\\\\nb'], 'backslash before ordinary char stays literal in double quotes');\neq(sp('a\\\\ b'), ['a b'], 'escaped space outside quotes');\neq(sp('a\"b\"c'), ['abc'], 'adjacent runs join');\neq(sp(\"x''y\"), ['xy'], 'empty quotes join');\neq(sp(\"''\"), [''], 'lone empty quotes make an empty arg');\neq(sp('cmd --flag=\"a b\" pos'), ['cmd', '--flag=a b', 'pos'], 'realistic');\neq(sp('\"$HOME\"'), ['$HOME'], 'no variable expansion');\neq(sp('\"a\\\\$b\"'), ['a$b'], 'escaped dollar');\nfor (const bad of ['\"unterminated', \"'unterminated\", 'trailing\\\\']) {\n  let threw = false; try { sp(bad); } catch (e) { threw = true; }\n  if (!threw) { console.error('must throw on', S(bad)); process.exit(1); }\n}\nconsole.log('ok');\nVERIFYJS",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

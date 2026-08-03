@@ -137,6 +137,7 @@ async function harnessEvidence(options: HarnessOptions): Promise<void> {
  */
 async function harnessCard(options: HarnessOptions): Promise<void> {
   const { buildHarnessCard, renderHarnessCard } = await import('../benchmarks/harness-card.js');
+  const { rawMaxTokens } = await import('../benchmarks/paired/adapter.js');
   const { toolsFor, readWindowBytes, defaultMaxToolRounds, editToleranceEnabled } = await import(
     '../delivery/agentic-executor.js'
   );
@@ -148,6 +149,7 @@ async function harnessCard(options: HarnessOptions): Promise<void> {
     sandboxed: process.env.UAP_SANDBOX_ACTIVE === '1',
     maxToolRounds: defaultMaxToolRounds(),
     contextTokenBudget: Number(process.env.UAP_CONTEXT_TOKEN_BUDGET) || undefined,
+    completionTokenBudget: rawMaxTokens(),
     memoryMode: await currentMemoryMode(),
     verification: ['build', 'test', 'runtime', 'acceptance-judge'],
     editStrategy: editToleranceEnabled()

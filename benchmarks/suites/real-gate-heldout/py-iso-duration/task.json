@@ -1,0 +1,15 @@
+{
+  "name": "py-iso-duration",
+  "instruction": "Implement iso_duration.py: def parse_duration(s: str) -> dict. Parse an ISO-8601 duration such as 'P1Y2M3DT4H5M6S' into a dict with the integer keys years, months, days, hours, minutes and a float key seconds, defaulting to 0. The string must start with 'P'; date components come before an optional 'T' and time components after it; 'M' means months before the T and minutes after it. Seconds may be fractional ('PT1.5S'). A leading '-' negates EVERY component. The dict also has 'total_seconds', computed with the fixed conventions 1 year = 365 days and 1 month = 30 days. Raise ValueError on: a missing 'P', no components at all, a 'T' with nothing after it, components out of order, a repeated component, or any trailing junk.",
+  "difficulty": "hard",
+  "tags": [
+    "iso8601",
+    "parsing",
+    "py",
+    "tier:medium-hard"
+  ],
+  "gateCmd": "python3 - <<'GATEPY'\nfrom iso_duration import parse_duration as p\nassert p('PT1H')['hours'] == 1, p('PT1H')\nprint('gate ok')\nGATEPY",
+  "verifyCmd": "python3 - <<'VERIFYPY'\nfrom iso_duration import parse_duration as p\n\nd = p('P1Y2M3DT4H5M6S')\nassert d['years'] == 1 and d['months'] == 2 and d['days'] == 3, d\nassert d['hours'] == 4 and d['minutes'] == 5 and d['seconds'] == 6, d\n\nassert p('PT1H')['hours'] == 1\nassert p('P1D')['days'] == 1\nassert p('P1D')['hours'] == 0, 'missing components default to 0'\n# M means months before T and minutes after it.\nassert p('P3M')['months'] == 3 and p('P3M')['minutes'] == 0, p('P3M')\nassert p('PT3M')['minutes'] == 3 and p('PT3M')['months'] == 0, p('PT3M')\n\nassert p('PT1.5S')['seconds'] == 1.5, 'fractional seconds'\nassert p('PT0.25S')['total_seconds'] == 0.25\n\nassert p('PT1H')['total_seconds'] == 3600\nassert p('P1D')['total_seconds'] == 86400\nassert p('P1Y')['total_seconds'] == 365 * 86400, 'year is 365 days'\nassert p('P1M')['total_seconds'] == 30 * 86400, 'month is 30 days'\nassert p('PT1M')['total_seconds'] == 60\n\nneg = p('-P1DT2H')\nassert neg['days'] == -1 and neg['hours'] == -2, neg\nassert neg['total_seconds'] == -(86400 + 7200), neg\n\nfor bad in ['', 'P', '1Y', 'PT', 'P1H', 'PT1D', 'P1Y1Y', 'P1DT', 'PT1S1S', 'P1Djunk', 'PXY', 'T1H', None, 5]:\n    try:\n        p(bad)\n        raise SystemExit('no ValueError for %r' % (bad,))\n    except ValueError:\n        pass\nprint('ok')\nVERIFYPY",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

@@ -157,7 +157,16 @@ export function pairedDelta(deltas: number[], opts: PairedOptions = {}): PairedD
 // BOTH statistically significant AND larger than a practical margin. This stops
 // benchmarks from reporting noise as a win.
 // ---------------------------------------------------------------------------
-export type Verdict = 'win' | 'tie' | 'loss';
+/**
+ * 'borderline' exists because the bootstrap CI and the p-value can disagree,
+ * and when they do the result is genuinely equivocal rather than a win. A
+ * 6-epoch replication landed at +12.2pp with CI [0.011, 0.233] but p=0.064:
+ * the CI cleared zero by a hair while the significance test did not. Reporting
+ * that as a confident WIN is exactly the overstatement this whole report layer
+ * is supposed to prevent, and collapsing it to TIE would understate a real
+ * +12pp point estimate just as badly. So it gets its own name.
+ */
+export type Verdict = 'win' | 'tie' | 'loss' | 'borderline';
 
 export interface VerdictOptions {
   /** Practical-equivalence margin (ROPE half-width) on the delta scale. A delta
@@ -166,6 +175,9 @@ export interface VerdictOptions {
   /** Whether a positive delta is good (default true). Set false for metrics like
    *  tokens/cost/latency where lower is better. */
   higherIsBetter?: boolean;
+  /** Significance threshold the p-value must clear for a full win/loss. A CI
+   *  that excludes zero while p exceeds this yields 'borderline'. Default 0.05. */
+  alpha?: number;
 }
 
 /**
@@ -186,6 +198,11 @@ export function verdict(result: PairedDeltaResult, opts: VerdictOptions = {}): V
   if (margin > 0 && result.ci.lower < margin && result.ci.upper > -margin) return 'tie';
 
   const better = higherIsBetter ? result.meanDelta > 0 : result.meanDelta < 0;
+  // The CI has cleared zero by here. If a p-value is available and does NOT
+  // clear alpha, the two tests disagree — say so instead of picking the
+  // flattering one.
+  const alpha = opts.alpha ?? 0.05;
+  if (Number.isFinite(result.pValue) && result.pValue > alpha) return 'borderline';
   return better ? 'win' : 'loss';
 }
 

@@ -1,0 +1,14 @@
+{
+  "name": "py-semver-range",
+  "instruction": "Implement semver_range.py: def satisfies(version: str, range_: str) -> bool. Versions are 'MAJOR.MINOR.PATCH' with an optional '-prerelease' suffix. A range is one or more comma-free clauses separated by '||' (OR); within a clause, space-separated comparators are ANDed. Comparators: '>=', '>', '<=', '<', '=' (bare version means '='), plus caret and tilde. '^1.2.3' means >=1.2.3 <2.0.0; '^0.2.3' means >=0.2.3 <0.3.0; '^0.0.3' means >=0.0.3 <0.0.4. '~1.2.3' means >=1.2.3 <1.3.0. Ordering compares major, minor, patch numerically, and a version WITH a prerelease sorts BEFORE the same version without one. Critically, a prerelease version only satisfies a range if some comparator in the matching clause names the same major.minor.patch AND itself has a prerelease - so '1.2.3-alpha' does NOT satisfy '>=1.0.0'. Raise ValueError on a malformed version or range.",
+  "difficulty": "hard",
+  "tags": [
+    "semver",
+    "edge-cases",
+    "py"
+  ],
+  "gateCmd": "python3 - <<'GATEPY'\nfrom semver_range import satisfies as s\nassert s('1.2.3', '^1.0.0') is True\nprint('gate ok')\nGATEPY",
+  "verifyCmd": "python3 - <<'VERIFYPY'\nfrom semver_range import satisfies as s\n\ndef chk(v, r, want):\n    got = s(v, r)\n    assert got == want, '%s vs %s -> %r want %r' % (v, r, got, want)\n\nchk('1.2.3', '^1.0.0', True)\nchk('2.0.0', '^1.0.0', False)\nchk('1.0.0', '^1.0.0', True)\nchk('0.2.9', '^0.2.3', True)\nchk('0.3.0', '^0.2.3', False)\nchk('0.0.3', '^0.0.3', True)\nchk('0.0.4', '^0.0.3', False)\nchk('1.2.9', '~1.2.3', True)\nchk('1.3.0', '~1.2.3', False)\nchk('1.2.2', '~1.2.3', False)\nchk('1.5.0', '>=1.2.3 <2.0.0', True)\nchk('2.0.0', '>=1.2.3 <2.0.0', False)\nchk('1.0.0', '<1.0.0 || >=2.0.0', False)\nchk('2.1.0', '<1.0.0 || >=2.0.0', True)\nchk('0.9.0', '<1.0.0 || >=2.0.0', True)\nchk('1.2.3', '1.2.3', True)\nchk('1.2.4', '1.2.3', False)\nchk('1.2.3', '=1.2.3', True)\nchk('1.10.0', '>1.9.0', True)\nchk('1.9.0', '>1.10.0', False)\n\n# Prerelease ordering and the exclusion rule.\nchk('1.2.3-alpha', '>=1.0.0', False)\nchk('1.2.3-alpha', '>=1.2.3-alpha', True)\nchk('1.2.3-beta', '>=1.2.3-alpha <1.2.3', True)\nchk('1.2.3', '>=1.2.3-alpha', True)\nchk('1.2.4-alpha', '>=1.2.3-alpha', False)\nchk('1.2.3-alpha.1', '>1.2.3-alpha', True)\n\nfor bad in [('x.y.z', '^1.0.0'), ('1.2.3', ''), ('1.2', '^1.0.0'), ('1.2.3', '^notaversion')]:\n    try:\n        s(*bad)\n        raise SystemExit('no ValueError for %r' % (bad,))\n    except ValueError:\n        pass\nprint('ok')\nVERIFYPY",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

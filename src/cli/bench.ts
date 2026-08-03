@@ -214,6 +214,22 @@ export async function benchPairedCommand(options: BenchPairedOptions = {}): Prom
         console.log(chalk.dim(`   Try a harder suite: ${harder.map((h) => `--suite ${h}`).join('  |  ')}`));
       }
     }
+    if (report.discrimination.status === 'underpowered') {
+      // "Underpowered" is a WIDTH problem, not a difficulty problem — a harder
+      // suite would only widen the interval further. Point at the wide suite,
+      // and at the epoch count, which is the other lever on n.
+      const wide = resolve('benchmarks/suites/real-gate-power');
+      if (existsSync(wide) && resolve(suiteDir) !== wide) {
+        console.log(
+          chalk.dim('   This is too few paired cells, not too easy — a harder suite would not help.')
+        );
+        console.log(
+          chalk.dim('   Widen instead: --suite benchmarks/suites/real-gate-power (15 tasks; 6 epochs ~= +/-0.15)')
+        );
+      } else {
+        console.log(chalk.dim('   Raise --epochs to add paired cells; the interval narrows as 1/sqrt(n).'));
+      }
+    }
     if (report.discrimination.status === 'floor') {
       console.log(
         chalk.dim('   Check the adapter matches the suite — a mock-only suite (verifyCmd `test -f MOCK_SOLVED`)')
@@ -302,6 +318,7 @@ async function currentHarnessCardInput(adapter: string) {
   const { toolsFor, readWindowBytes, defaultMaxToolRounds, editToleranceEnabled } = await import(
     '../delivery/agentic-executor.js'
   );
+  const { rawMaxTokens } = await import('../benchmarks/paired/adapter.js');
   const allowBash =
     process.env.UAP_DELIVER_ALLOW_BASH === '1' || process.env.UAP_SANDBOX_ACTIVE === '1';
   // Only the `deliver` adapter drives UAP's own agentic executor; for any other
@@ -323,6 +340,13 @@ async function currentHarnessCardInput(adapter: string) {
     // Derived, not hardcoded: a literal here made the bench card state the wrong
     // retrieval mode for the run — the exact failure the card exists to prevent.
     memoryMode: await describeMemoryModeSafe(),
+    // NOT gated on `ours`: the completion budget is sent by the `raw` adapter
+    // too, and `raw` is precisely where a 4096 ceiling silently truncated 8/15
+    // first turns mid-reasoning and pinned both arms toward the floor. Gating
+    // this on the deliver adapter would have left it `unset` in the exact
+    // report where it mattered — which is what the first version of this change
+    // did, disclosing it only in `uap harness` and not in any bench run.
+    completionTokenBudget: adapter === 'raw' ? rawMaxTokens() : undefined,
     stubGuard: process.env.UAP_DELIVER_ALLOW_STUBS !== '1',
     guttingGuard: process.env.UAP_DELIVER_ALLOW_GUTTING !== '1',
     middleware:

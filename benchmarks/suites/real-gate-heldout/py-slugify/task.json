@@ -1,0 +1,15 @@
+{
+  "name": "py-slugify",
+  "instruction": "Implement slugify.py: def slugify(text: str, max_length: int = None) -> str. Lowercase the text, replace every run of characters that are not ASCII letters or digits with a single '-', and strip leading and trailing '-'. When max_length is given, the result must not exceed it and must be cut at a '-' BOUNDARY so no word is left partial - unless the very first word is already longer than max_length, in which case that word is hard-truncated to max_length. The result never starts or ends with '-' and never contains '--'. Text with no alphanumerics yields ''. A max_length that is not a positive integer raises ValueError.",
+  "difficulty": "medium",
+  "tags": [
+    "text",
+    "truncation",
+    "py",
+    "tier:medium"
+  ],
+  "gateCmd": "python3 - <<'GATEPY'\nfrom slugify import slugify as s\nassert s('Hello World') == 'hello-world', s('Hello World')\nprint('gate ok')\nGATEPY",
+  "verifyCmd": "python3 - <<'VERIFYPY'\nfrom slugify import slugify as s\n\ndef chk(args, want):\n    got = s(*args)\n    assert got == want, 'slugify%r -> %r want %r' % (args, got, want)\n\nchk(('Hello World',), 'hello-world')\nchk(('  Leading and trailing  ',), 'leading-and-trailing')\nchk(('Multiple   Spaces',), 'multiple-spaces')\nchk(('Punctuation!!! Here???',), 'punctuation-here')\nchk(('under_score',), 'under-score')\nchk(('CamelCase',), 'camelcase')\nchk(('a1b2c3',), 'a1b2c3')\nchk(('',), '')\nchk(('!!!',), '')\nchk(('---',), '')\nchk(('a---b',), 'a-b')\n\n# Truncation at a word boundary.\nchk(('hello world foo', 11), 'hello-world')\nchk(('hello world foo', 12), 'hello-world')\nchk(('hello world foo', 5), 'hello')\nchk(('hello world foo', 100), 'hello-world-foo')\n# The first word alone is too long: hard truncate.\nchk(('supercalifragilistic', 5), 'super')\nchk(('abcdefghij more', 4), 'abcd')\n\nfor text, n in [('hello world foo bar', k) for k in range(1, 25)]:\n    out = s(text, n)\n    assert len(out) <= n, 'exceeded max_length: %r %d -> %r' % (text, n, out)\n    assert not out.startswith('-') and not out.endswith('-'), 'edge dash: %r' % out\n    assert '--' not in out, 'double dash: %r' % out\n\nfor bad in [0, -1, 'x', 2.5, True]:\n    try:\n        s('hello world', bad)\n        raise SystemExit('no ValueError for max_length=%r' % (bad,))\n    except ValueError:\n        pass\nprint('ok')\nVERIFYPY",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

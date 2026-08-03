@@ -1,0 +1,15 @@
+{
+  "name": "py-bencode",
+  "instruction": "Implement bencode.py: def decode(s: str). Decode bencoded data using str for byte strings. Grammar: 'i<int>e' is an integer; '<len>:<data>' is a string; 'l...e' is a list; 'd...e' is a dict whose keys must be strings. Decoding is STRICT and raises ValueError on: a leading zero in an integer or length ('i03e', '03:abc'), a negative zero ('i-0e'), a truncated value, a length that runs past the end of the input, a dict with a non-string key, a dict whose keys are not in strictly increasing sorted order, an unterminated container, or ANY trailing data after the first complete value. 'i0e' and '0:' are valid.",
+  "difficulty": "hard",
+  "tags": [
+    "decoding",
+    "strict",
+    "py",
+    "tier:hard"
+  ],
+  "gateCmd": "python3 - <<'GATEPY'\nfrom bencode import decode\nassert decode('i42e') == 42, decode('i42e')\nprint('gate ok')\nGATEPY",
+  "verifyCmd": "python3 - <<'VERIFYPY'\nfrom bencode import decode\n\nassert decode('i42e') == 42\nassert decode('i0e') == 0\nassert decode('i-3e') == -3\nassert decode('4:spam') == 'spam'\nassert decode('0:') == ''\nassert decode('le') == []\nassert decode('l4:spami42ee') == ['spam', 42]\nassert decode('de') == {}\nassert decode('d3:bar4:spam3:fooi42ee') == {'bar': 'spam', 'foo': 42}\nassert decode('d1:ali1ei2eee') == {'a': [1, 2]}\nassert decode('ll4:deepee') == [['deep']]\nassert decode('d1:ad1:bi1eee') == {'a': {'b': 1}}\nassert decode('10:0123456789') == '0123456789'\n\nBAD = [\n    'i03e',        # leading zero\n    'i-0e',        # negative zero\n    'ie',          # empty int\n    'i-e',\n    'i42',         # unterminated\n    '03:abc',      # length leading zero\n    '5:abc',       # runs past end\n    '4:spamextra', # trailing data\n    'l4:spam',     # unterminated list\n    'd3:foo',      # dict missing value\n    'di1e1:ae',    # non-string key\n    'd3:foo1:a3:bar1:be',   # keys out of order\n    'd3:foo1:a3:foo1:be',   # duplicate key\n    '',\n    'x',\n    'i1ei2e',      # two values\n    'e',\n    None,\n]\nfor bad in BAD:\n    try:\n        decode(bad)\n        raise SystemExit('no ValueError for %r' % (bad,))\n    except ValueError:\n        pass\nprint('ok')\nVERIFYPY",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

@@ -1,0 +1,14 @@
+{
+  "name": "py-money-allocate",
+  "instruction": "Implement money_allocate.py: def allocate(total_cents: int, ratios: list) -> list[int]. Split an integer number of cents across the given non-negative ratios so that the returned integers sum EXACTLY to total_cents, with no cent invented or lost. Each share starts as the floor of its exact proportion; the leftover cents are then handed out one at a time by LARGEST FRACTIONAL REMAINDER, and ties are broken by the earlier index. Negative totals distribute the leftover the same way in the negative direction, so the sum invariant still holds exactly. A ratio of 0 always receives 0. Raise ValueError if ratios is empty, if any ratio is negative, or if the ratios sum to 0.",
+  "difficulty": "hard",
+  "tags": [
+    "money",
+    "invariants",
+    "py"
+  ],
+  "gateCmd": "python3 - <<'GATEPY'\nfrom money_allocate import allocate as a\nassert a(100, [1, 1]) == [50, 50], a(100, [1, 1])\nprint('gate ok')\nGATEPY",
+  "verifyCmd": "python3 - <<'VERIFYPY'\nfrom money_allocate import allocate as a\n\ndef chk(total, ratios, want):\n    got = a(total, ratios)\n    assert got == want, 'allocate(%r, %r) -> %r want %r' % (total, ratios, got, want)\n\nchk(100, [1, 1], [50, 50])\nchk(100, [1, 1, 1], [34, 33, 33])\nchk(5, [3, 7], [2, 3])\nchk(0, [1, 2], [0, 0])\nchk(1, [1, 1], [1, 0])\nchk(10, [0, 1], [0, 10])\nchk(100, [2, 0, 2], [50, 0, 50])\n\n# The sum invariant is the point: never invent or lose a cent.\nimport random\nrandom.seed(7)\nfor _ in range(300):\n    n = random.randint(1, 6)\n    ratios = [random.randint(0, 9) for _ in range(n)]\n    if sum(ratios) == 0:\n        continue\n    total = random.randint(-500, 500)\n    out = a(total, ratios)\n    assert sum(out) == total, 'sum invariant broken: %r %r -> %r' % (total, ratios, out)\n    assert len(out) == n, 'length'\n    for i, r in enumerate(ratios):\n        if r == 0:\n            assert out[i] == 0, 'zero ratio must get zero: %r %r -> %r' % (total, ratios, out)\n\n# Negative totals keep the invariant exactly.\nchk(-100, [1, 1, 1], [-34, -33, -33])\nchk(-5, [3, 7], [-2, -3])\n\nfor bad in [(100, []), (100, [1, -1]), (100, [0, 0])]:\n    try:\n        a(*bad)\n        raise SystemExit('no ValueError for %r' % (bad,))\n    except ValueError:\n        pass\nprint('ok')\nVERIFYPY",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}
