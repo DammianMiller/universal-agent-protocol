@@ -1,9 +1,13 @@
 # Changelog
 
-## v1.183.4 (2026-08-04)
+## v1.184.1 (2026-08-04)
 
 - fix(policies): scope the plan-time gates correctly, and close three containment bypasses
-- fix(policies): give the plan-time gates the writers they check for (#645)
+
+
+## v1.184.0 (2026-08-03)
+
+- feat(principles): apply engineering principles to agent and generated code
 
 
 ## v1.183.3 (2026-08-03)

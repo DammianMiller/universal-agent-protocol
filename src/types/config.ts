@@ -440,6 +440,22 @@ export const ReactorSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+// Engineering principles injected into agent + deliver prompts.
+//
+// `compat`/`maturity` default to 'ask' rather than to an answer: "remove
+// obsolete paths" is right for a side project and destructive on a published
+// one, so it is resolved per project per session by asking (see
+// src/principles/stance.ts). Readers that report the CURRENT setting must use
+// loadUapConfigRaw — through this schema an unset key parses as 'ask', which is
+// correct as behaviour but must never be shown back as a choice the user made.
+export const PrinciplesSchema = z.object({
+  enabled: z.boolean().default(true),
+  compat: z.enum(['ask', 'preserve', 'remove']).default('ask'),
+  maturity: z.enum(['ask', 'greenfield', 'production']).default('ask'),
+  /** Include the compact principles section in deliver prompts. */
+  injectDeliver: z.boolean().default(true),
+});
+
 // Maximum-fidelity mode. `max` flips every verification default to its
 // strongest setting (raised verifier floor, acceptance judge required,
 // blocking vision review, fail-CLOSED visual gate) so a delivery is accepted
@@ -502,6 +518,8 @@ export const AgentContextConfigSchema = z.object({
   design: DesignSchema.optional(),
   // Reactor per-prompt injection (on by default)
   reactor: ReactorSchema.optional(),
+  // Engineering principles (rule-1 stance asked per project per session)
+  principles: PrinciplesSchema.optional(),
   // Maximum-fidelity mode (raised gates + always-on visual/vision verification)
   fidelity: FidelitySchema.optional(),
   // Real-time flag adaptation (LLM Self-Tuning P4) — auto-on; set enabled:false

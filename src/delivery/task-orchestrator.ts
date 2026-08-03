@@ -205,6 +205,12 @@ export function assembleTaskContext(
   mission: string,
   blackboard: Map<string, TaskOutcome>,
   maxDepSummaryChars = DEFAULT_DEP_SUMMARY_CHARS,
+  // NOTE: engineering principles are deliberately NOT assembled here. Every
+  // orchestrated task is executed by running this prompt through
+  // ConvergenceLoop.deliver() (orchestrated-mission -> runLoop -> loop.deliver),
+  // and the loop already injects them from its own projectRoot. Adding them
+  // here too rendered the block twice in every orchestrated task prompt —
+  // double cost inside the very context budget this assembler exists to protect.
   opts: { designLines?: string[]; budgetChars?: number; lastFailure?: string } = {}
 ): AssembledContext {
   const sections: string[] = [];
