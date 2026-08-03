@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.183.2 (2026-08-03)
+
+- fix(proxy): tool narrowing stranded any client that isn't Claude Code
+
+
 ## v1.183.1 (2026-08-03)
 
 - fix(bench): held-out difficulty must use the schema enum (metadata only)
