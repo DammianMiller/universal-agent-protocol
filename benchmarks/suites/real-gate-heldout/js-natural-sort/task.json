@@ -1,11 +1,12 @@
 {
   "name": "js-natural-sort",
   "instruction": "Implement naturalSort.js (CommonJS): module.exports = naturalSort. naturalSort(arr) returns a NEW array sorted in human/natural order: runs of digits compare NUMERICALLY, so 'file2' precedes 'file10'. Non-digit runs compare case-INSENSITIVELY first; only if they are equal ignoring case does a case-sensitive comparison break the tie, with lowercase before uppercase. When two strings differ only in leading zeros within a numeric run ('a01' vs 'a1'), the SHORTER run sorts first. The sort must be stable for fully equal strings and must not mutate the input.",
-  "difficulty": "medium-hard",
+  "difficulty": "hard",
   "tags": [
     "sorting",
     "comparator",
-    "js"
+    "js",
+    "tier:medium-hard"
   ],
   "gateCmd": "node <<'GATEJS'\nconst n=require('./naturalSort.js');\nif(JSON.stringify(n(['file10','file2']))!==JSON.stringify(['file2','file10']))process.exit(1);\nconsole.log('gate ok');\nGATEJS",
   "verifyCmd": "node <<'VERIFYJS'\nconst n = require('./naturalSort.js');\nconst S = JSON.stringify;\nconst eq = (got, want, m) => { if (S(got) !== S(want)) { console.error('FAIL', m, S(got), 'want', S(want)); process.exit(1); } };\neq(n(['file10', 'file2', 'file1']), ['file1', 'file2', 'file10'], 'numeric runs');\neq(n(['a2b', 'a10b', 'a1b']), ['a1b', 'a2b', 'a10b'], 'digits in the middle');\neq(n(['x', 'a', 'm']), ['a', 'm', 'x'], 'plain alpha');\neq(n(['a1', 'a01']), ['a1', 'a01'], 'shorter numeric run first');\neq(n(['B', 'a', 'A', 'b']), ['a', 'A', 'b', 'B'], 'case-insensitive primary, lowercase first on ties');\neq(n(['2', '10', '1']), ['1', '2', '10'], 'pure numbers');\neq(n([]), [], 'empty');\neq(n(['v1.10.0', 'v1.2.0']), ['v1.2.0', 'v1.10.0'], 'version-like');\neq(n(['img12', 'img10', 'img2', 'img1']), ['img1', 'img2', 'img10', 'img12'], 'many');\nconst input = ['b', 'a'];\nn(input);\neq(input, ['b', 'a'], 'must not mutate input');\nconst dup = n(['same', 'same', 'same']);\neq(dup, ['same', 'same', 'same'], 'stable on equal');\nconsole.log('ok');\nVERIFYJS",

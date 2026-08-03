@@ -5,7 +5,8 @@
   "tags": [
     "numerals",
     "validation",
-    "js"
+    "js",
+    "tier:medium"
   ],
   "gateCmd": "node <<'GATEJS'\nconst {toRoman,fromRoman}=require('./roman.js');\nif(toRoman(4)!=='IV')process.exit(1);\nif(fromRoman('IV')!==4)process.exit(1);\nconsole.log('gate ok');\nGATEJS",
   "verifyCmd": "node <<'VERIFYJS'\nconst { toRoman, fromRoman } = require('./roman.js');\nconst t = (n, s) => { if (toRoman(n) !== s) { console.error('toRoman', n, '->', toRoman(n), 'want', s); process.exit(1); } };\nt(1, 'I'); t(4, 'IV'); t(9, 'IX'); t(14, 'XIV'); t(40, 'XL'); t(90, 'XC');\nt(400, 'CD'); t(900, 'CM'); t(1994, 'MCMXCIV'); t(3999, 'MMMCMXCIX'); t(2024, 'MMXXIV');\nfor (const bad of [0, 4000, -1, 1.5, '5']) {\n  let threw = false;\n  try { toRoman(bad); } catch (e) { threw = e instanceof RangeError; }\n  if (!threw) { console.error('toRoman must RangeError on', bad); process.exit(1); }\n}\nconst f = (s, n) => { if (fromRoman(s) !== n) { console.error('fromRoman', s, '->', fromRoman(s), 'want', n); process.exit(1); } };\nf('I', 1); f('IV', 4); f('XIX', 19); f('MCMXCIV', 1994); f('MMMCMXCIX', 3999);\nfor (const bad of ['IIII', 'VV', 'IC', 'XXXX', 'LL', 'DD', 'IM', 'VX', '', 'iv', 'ABC', 'MMMM']) {\n  let threw = false;\n  try { fromRoman(bad); } catch (e) { threw = true; }\n  if (!threw) { console.error('fromRoman must reject non-canonical', JSON.stringify(bad)); process.exit(1); }\n}\nfor (let n = 1; n <= 3999; n++) if (fromRoman(toRoman(n)) !== n) { console.error('round-trip broke at', n); process.exit(1); }\nconsole.log('ok');\nVERIFYJS",

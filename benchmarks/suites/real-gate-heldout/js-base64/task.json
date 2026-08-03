@@ -1,11 +1,12 @@
 {
   "name": "js-base64",
   "instruction": "Implement base64.js (CommonJS): module.exports = { encode, decode }. encode(str) returns the standard base64 of the string's UTF-8 bytes, with '=' padding. decode(b64) is the exact inverse and returns the original string. You must NOT use Buffer, atob, btoa, or TextEncoder/TextDecoder - do the UTF-8 and base64 conversion yourself. decode throws an Error on a string whose length is not a multiple of 4, on characters outside the base64 alphabet, and on misplaced padding.",
-  "difficulty": "medium-hard",
+  "difficulty": "hard",
   "tags": [
     "encoding",
     "bytes",
-    "js"
+    "js",
+    "tier:medium-hard"
   ],
   "gateCmd": "node <<'GATEJS'\nconst {encode,decode}=require('./base64.js');\nif(encode('hi')!=='aGk=')process.exit(1);\nif(decode('aGk=')!=='hi')process.exit(1);\nconsole.log('gate ok');\nGATEJS",
   "verifyCmd": "node <<'VERIFYJS'\nconst { encode, decode } = require('./base64.js');\nconst e = (s, b) => { if (encode(s) !== b) { console.error('encode', JSON.stringify(s), '->', encode(s), 'want', b); process.exit(1); } };\ne('', ''); e('f', 'Zg=='); e('fo', 'Zm8='); e('foo', 'Zm9v'); e('foob', 'Zm9vYg==');\ne('fooba', 'Zm9vYmE='); e('foobar', 'Zm9vYmFy');\ne('hello world', 'aGVsbG8gd29ybGQ=');\ne('\u00e9', 'w6k=');\ne('\u4e2d\u6587', '5Lit5paH');\nfor (const s of ['', 'a', 'ab', 'abc', 'hello world', '\u00e9\u00e8\u00ea', '\u4e2d\u6587\u6d4b\u8bd5', '\ud83d\ude00 emoji', 'x'.repeat(100)]) {\n  if (decode(encode(s)) !== s) { console.error('round-trip failed for', JSON.stringify(s)); process.exit(1); }\n}\nfor (const bad of ['abc', 'a', 'ab', '====', 'Zm9v!', 'a===']) {\n  let threw = false; try { decode(bad); } catch (err) { threw = true; }\n  if (!threw) { console.error('decode must reject', JSON.stringify(bad)); process.exit(1); }\n}\nconst src = require('fs').readFileSync('base64.js', 'utf-8');\nfor (const banned of ['Buffer', 'atob', 'btoa', 'TextEncoder', 'TextDecoder']) {\n  if (src.includes(banned)) { console.error('must not use', banned); process.exit(1); }\n}\nconsole.log('ok');\nVERIFYJS",
