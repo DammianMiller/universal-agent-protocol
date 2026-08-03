@@ -14,8 +14,9 @@ Allowed targets:
     checkout (UAP_REPO_ROOT) — worktrees included;
   * relative paths (they resolve under the project root);
   * a scratch allow-list: /tmp, $TMPDIR, ~/.cache/uap, ~/.config/uap,
-    ~/.claude/projects (Claude Code auto-memory/session storage), plus any
-    colon-separated prefixes in UAP_WORKDIR_ALLOW.
+    ~/.claude/projects and ~/.claude/plans (Claude Code auto-memory, session
+    and plan-file storage), plus any colon-separated prefixes in
+    UAP_WORKDIR_ALLOW.
 
 Escape hatch: UAP_WORKDIR_SCOPE_OFF=1 allows everything (operator override).
 """
@@ -64,12 +65,19 @@ def _allowed_roots() -> list[Path]:
     # topic files, MEMORY.md index, session/transcript data). The harness
     # instructs agents to persist memories there; blocking it silently breaks
     # memory recording (observed on pay2u 2026-07-05).
+    #
+    # ~/.claude/plans is the same story for plan mode: the harness assigns the
+    # agent a plan file under it and ExitPlanMode reads the plan back from
+    # there. Blocking it makes plan mode unusable - and since self-protect
+    # matches this enforcer's own override env var, that documented escape is
+    # unreachable from inside a session too (observed 2026-08-03).
     for p in (
         "/tmp",
         os.environ.get("TMPDIR", "/tmp"),
         "~/.cache/uap",
         "~/.config/uap",
         "~/.claude/projects",
+        "~/.claude/plans",
     ):
         add(_expand(p))
     for p in os.environ.get("UAP_WORKDIR_ALLOW", "").split(":"):
@@ -114,6 +122,108 @@ def _check_path(target: str, roots: list[Path]) -> str:
     return "" if _inside(p, roots) else str(p)
 
 
+# Shell constructs the quote model above does not represent. Their presence
+# means a quoted span may still contain EXECUTING code (command substitution)
+# or may not be quoted at all (escaped quote characters), so masking is unsafe.
+_UNMODELLED = re.compile(r"\$\(|`|\$'|\\['\"]")
+
+
+_LINE_CONT = re.compile(r'\\\n')
+_REDIR_OP = re.compile(r'(?:\d*>>?|&>)')
+# Targets may be tilde- or variable-prefixed: `> ~/x`, `> $HOME/x`. _expand()
+# already resolves both before the scope check, but a `/`-anchored pattern
+# never handed them over — so they were silently unchecked (confirmed by
+# writing outside the project through both forms).
+_REDIR_TARGET = re.compile(r'\s*("?)([~/$][^\s"\';|&)]+)\1')
+
+
+def _risk_view(cmd: str) -> str:
+    """`cmd` with SINGLE-quoted spans blanked, for the unmodelled-construct check.
+
+    Single quotes suppress every expansion, so `$(`, a backtick or `$'` inside
+    them is inert prose and must not force the conservative raw scan — that is
+    how an ordinary `git commit -m '... $(uname) ... > /opt/notes ...'` came
+    to be refused. Double-quoted and unquoted occurrences stay visible, because
+    those DO execute.
+    """
+    out = list(cmd)
+    in_sq = False
+    i = 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if in_sq:
+            if ch == "'":
+                in_sq = False
+            else:
+                out[i] = " "
+        elif ch == "\\":
+            i += 2          # escaped char cannot open a quote
+            continue
+        elif ch == "'" and not (i and cmd[i - 1] == "$"):
+            # $'...' processes escapes, so it is NOT inert — leave it visible.
+            in_sq = True
+        i += 1
+    return "".join(out)
+
+
+def _mask_quoted(cmd: str) -> tuple[str, bool]:
+    """(masked copy, whether a quote was left unterminated).
+
+    Blanks the CONTENT of quoted spans, preserving length so offsets still line
+    up with the original and the redirect TARGET can be read from the real
+    string.
+
+    Escape-aware, and that is the load-bearing part. A naive quote toggle
+    desyncs on an escaped quote and then blanks everything after it — including
+    a genuinely unquoted redirect. `: \\" > /root/x` was ALLOWED by exactly
+    that bug: a containment gate turned into a bypass, which is strictly worse
+    than the false positive the masking was added to fix.
+
+    Shell rules honoured:
+      * unquoted `\\X` escapes X, so X can neither open a quote nor be an
+        operator (`\\>` is a literal, not a redirect);
+      * inside '...' there is NO escaping — the next ' always closes;
+      * inside "..." a backslash escapes the following character;
+      * $'...' does process escapes, so a backslashed quote does not close it.
+    """
+    out = list(cmd)
+    n = len(cmd)
+    quote = None          # None | "'" | '"' | "$'"
+    i = 0
+    while i < n:
+        ch = cmd[i]
+        if quote is None:
+            if ch == "\\":
+                # Escapes the next character: blank it so it cannot be read as an
+                # operator, and never let it open a quoted span.
+                if i + 1 < n:
+                    out[i + 1] = " "
+                i += 2
+                continue
+            if ch == "'":
+                # $'...' processes escapes; a bare '...' does not.
+                quote = "$'" if i and cmd[i - 1] == "$" else "'"
+            elif ch == '"':
+                quote = '"'
+        elif quote == "'":
+            if ch == "'":
+                quote = None
+            else:
+                out[i] = " "
+        else:  # '"' or "$'" — both process backslash escapes
+            if ch == "\\" and i + 1 < n:
+                out[i] = " "
+                out[i + 1] = " "
+                i += 2
+                continue
+            if (quote == '"' and ch == '"') or (quote == "$'" and ch == "'"):
+                quote = None
+            else:
+                out[i] = " "
+        i += 1
+    return "".join(out), quote is not None
+
+
 def _scan_bash(cmd: str, roots: list[Path]) -> str:
     """Best-effort: flag an out-of-scope absolute path that a CREATE/MOVE command
     would write. Conservative — only inspects the destinations of known
@@ -125,6 +235,11 @@ def _scan_bash(cmd: str, roots: list[Path]) -> str:
     # newlines flags any path-shaped string inside it. Bodies that could be
     # executed are left in place by the helper.
     cmd = strip_heredoc_bodies(cmd)
+    # Bash removes `\\<newline>` before word-splitting. Leaving it in split one
+    # logical command across two segments, so a create verb on the first line
+    # never met its destination on the second — `mkdir -p \\<newline> /outside`
+    # was allowed while bash created the directory.
+    cmd = _LINE_CONT.sub(" ", cmd)
     try:
         tokens = shlex.split(cmd, comments=True)
     except ValueError:
@@ -132,12 +247,41 @@ def _scan_bash(cmd: str, roots: list[Path]) -> str:
 
     candidates: list[str] = []
 
-    # Output redirections: > /abs, >> /abs (also 2>/abs).
-    for m in re.finditer(r'(?:\d*>>?|&>)\s*("?)(/[^\s"\';|&)]+)\1', cmd):
-        candidates.append(m.group(2))
+    # Output redirections.
+    #
+    # Operators are located in a QUOTE-MASKED copy, because a redirect
+    # operator inside quotes is not a redirect - it is literal text.
+    # Scanning the raw string refused a sed range expression, reading the
+    # trailing '/p' of `sed -n '/a/,/b/p'` as a write to /p when the range
+    # delimiters were angle brackets (observed 2026-08-03, while editing
+    # this very enforcer). The TARGET is then read from the ORIGINAL
+    # string at that offset, so a legitimately quoted absolute destination
+    # is still detected.
+    masked, unterminated = _mask_quoted(cmd)
+    # Scan the RAW string whenever the quote model cannot be trusted:
+    #
+    #   * an unterminated quote — the mask is desynced by construction;
+    #   * a construct the model does not represent (_UNMODELLED). Command
+    #     substitution is the important one: it EXECUTES inside double quotes,
+    #     so blanking a quoted span hides a live redirect. Verified with bash —
+    #     `echo "$(id > /outside)"` writes the file, and the masked scan saw
+    #     nothing. A containment gate must over-block, never under-block, so
+    #     these fall back to the conservative scan and accept its false
+    #     positives.
+    #
+    # The sed-range case this masking exists to fix contains none of them, so it
+    # still passes.
+    untrusted = unterminated or _UNMODELLED.search(_risk_view(cmd)) is not None
+    for m in _REDIR_OP.finditer(cmd if untrusted else masked):
+        target = _REDIR_TARGET.match(cmd, m.end())
+        if target:
+            candidates.append(target.group(2))
 
     # Split into pipeline/sequence segments so we read each command's own verb.
-    segments = re.split(r'\|\||&&|[;|&\n]', cmd)
+    # Parens are separators too, so the inner command of a process substitution
+    # becomes its own segment: `> >(tee /outside)` otherwise hid `tee`'s
+    # destination from the verb scan entirely, while bash wrote the file.
+    segments = re.split(r'\|\||&&|[;|&\n()]', cmd)
     for seg in segments:
         try:
             parts = shlex.split(seg, comments=True)
