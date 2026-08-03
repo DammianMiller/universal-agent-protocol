@@ -5113,12 +5113,63 @@ def _tokenize_for_tool_ranking(text: str) -> set[str]:
 
 
 # Core action tools a coding agent must always retain through narrowing — losing
-# any of these strands the agent (it can read/think but not act). Names are the
-# Claude Code canonical tool names, matched case-insensitively.
+# any of these strands the agent (it can read/think but not act).
+#
+# This started as Claude Code's canonical names only, and that made the guard
+# a no-op for every client that names its tools differently. Hermes (2026-08-03)
+# sends terminal/execute_code/write_file/search_files/patch — ZERO overlap — so
+# narrowing cut 36 tools to 8, kept browser_type/clarify/cronjob and dropped
+# terminal AND write_file. The model then tried to run `ls -la` through
+# browser_type, failed on "no browser session" three times, CYCLE BREAK removed
+# browser_type leaving 6 tools, and it spent the rest of the session emitting
+# `clarify` calls that said "I've been stuck in a loop". That is the exact
+# failure the comment here already claimed to have fixed, recurring for a
+# client whose tools have other names.
+#
+# Kept as an exact-match fast path; _is_core_action_tool() below adds semantic
+# classification so an unknown client is covered without an entry here.
 _CORE_TOOL_NAMES = frozenset({
+    # Claude Code canonical
     "read", "write", "edit", "multiedit", "notebookedit",
     "bash", "glob", "grep", "ls", "applypatch", "apply_patch",
+    # Common equivalents across other clients (hermes, Forge, opencode, …)
+    "terminal", "shell", "run_command", "run_shell_command", "execute_command",
+    "execute_code", "python", "run_python",
+    "write_file", "create_file", "save_file", "new_file",
+    "edit_file", "patch", "str_replace", "str_replace_editor", "replace_in_file",
+    "read_file", "view_file", "open_file", "cat",
+    "list_dir", "list_files", "search_files", "find_files", "file_search",
 })
+
+# Phrases that identify a core ACTION capability from a tool's description, for
+# clients whose names we do not know. Deliberately require a file/command noun:
+# "type text into an element" (browser_type) must NOT read as a file write, and
+# it is better to under-match here than to pin a browser tool as core.
+_CORE_TOOL_DESC_PATTERNS = (
+    r"\b(execute|run)\b[^.]{0,40}\b(shell|bash|command|script|code)\b",
+    r"\bcommand[- ]line\b",
+    r"\b(write|create|save)\b[^.]{0,40}\bfile\b",
+    r"\b(edit|modify|patch|replace)\b[^.]{0,40}\b(file|code)\b",
+    r"\bread\b[^.]{0,40}\b(file|contents)\b",
+    r"\b(list|search|find)\b[^.]{0,40}\b(file|directory|directories)\b",
+)
+
+
+def _is_core_action_tool(name: str, description: str = "") -> bool:
+    """True when a tool is a core action tool that narrowing must never drop.
+
+    Exact name match first (cheap, and what most clients hit), then a semantic
+    read of the description so a client we have never seen still keeps its
+    ability to act. Losing shell/write is what strands an agent; everything else
+    is recoverable.
+    """
+    nm = (name or "").strip().lower()
+    if nm in _CORE_TOOL_NAMES:
+        return True
+    desc = (description or "").strip().lower()
+    if not desc:
+        return False
+    return any(re.search(p, desc) for p in _CORE_TOOL_DESC_PATTERNS)
 
 
 def _narrow_tools_for_request(
@@ -5187,10 +5238,27 @@ def _narrow_tools_for_request(
     # otherwise keep an arbitrary first-N subset — observed dropping
     # Write/Edit/Bash entirely and stalling the agent on meta-tools. `keep` thus
     # acts as a soft floor: core tools are added on top of the top-scored set.
+    core_ids = set()
     for tool in openai_tools:
-        nm = tool.get("function", {}).get("name", "").lower()
-        if nm in _CORE_TOOL_NAMES:
-            selected.add(id(tool))
+        fn = tool.get("function", {}) or {}
+        if _is_core_action_tool(fn.get("name", ""), fn.get("description", "")):
+            core_ids.add(id(tool))
+
+    # FAIL-SAFE: if NOTHING in this client's surface reads as a core action tool,
+    # we do not understand it well enough to prune it, and pruning it anyway is
+    # exactly how hermes lost terminal + write_file and burned a session looping.
+    # Ranking is lexical overlap with the user's text, which happily promotes
+    # cronjob/clarify over the tools that do the work. Keep everything and say so
+    # — an unnarrowed request costs prompt tokens; a stranded agent costs the run.
+    if not core_ids:
+        logger.info(
+            "TOOL NARROWING: skipped — no core action tool recognised among %d tools "
+            "(unknown client surface; not pruning blind)",
+            len(openai_tools),
+        )
+        return openai_tools
+
+    selected |= core_ids
     narrowed = [tool for tool in openai_tools if id(tool) in selected]
 
     top_names = [t.get("function", {}).get("name", "") for t in narrowed[:4]]
