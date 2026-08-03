@@ -1,0 +1,41 @@
+Subject: workdir-scope: allow ~/.claude/plans, the harness's own plan storage
+
+Same bug already fixed once for ~/.claude/projects: Claude Code instructs the
+agent to write its plan file to ~/.claude/plans/<name>.md, but that prefix is
+not in the allow-list, so every plan-mode session is blocked from writing the
+plan it was told to write. Verified: applies clean with patch -p1.
+
+--- a/src/policies/enforcers/workdir_scope.py
++++ b/src/policies/enforcers/workdir_scope.py
+@@ -14,8 +14,9 @@
+     checkout (UAP_REPO_ROOT) — worktrees included;
+   * relative paths (they resolve under the project root);
+   * a scratch allow-list: /tmp, $TMPDIR, ~/.cache/uap, ~/.config/uap,
+-    ~/.claude/projects (Claude Code auto-memory/session storage), plus any
+-    colon-separated prefixes in UAP_WORKDIR_ALLOW.
++    ~/.claude/projects and ~/.claude/plans (Claude Code auto-memory, session
++    and plan-file storage), plus any colon-separated prefixes in
++    UAP_WORKDIR_ALLOW.
+ 
+ Escape hatch: UAP_WORKDIR_SCOPE_OFF=1 allows everything (operator override).
+ """
+@@ -64,12 +65,19 @@
+     # topic files, MEMORY.md index, session/transcript data). The harness
+     # instructs agents to persist memories there; blocking it silently breaks
+     # memory recording (observed on pay2u 2026-07-05).
++    #
++    # ~/.claude/plans is the same story for plan mode: the harness assigns the
++    # agent a plan file under it and ExitPlanMode reads the plan back from
++    # there. Blocking it makes plan mode unusable — and since self-protect
++    # matches this enforcer's own override env var, that documented escape is
++    # unreachable from inside a session too (observed 2026-08-03).
+     for p in (
+         "/tmp",
+         os.environ.get("TMPDIR", "/tmp"),
+         "~/.cache/uap",
+         "~/.config/uap",
+         "~/.claude/projects",
++        "~/.claude/plans",
+     ):
+         add(_expand(p))
+     for p in os.environ.get("UAP_WORKDIR_ALLOW", "").split(":"):

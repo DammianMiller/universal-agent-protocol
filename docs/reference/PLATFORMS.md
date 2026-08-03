@@ -66,6 +66,7 @@ platform's lifecycle events:
 | `pre-tool-use-bash.sh` | PreToolUse (Bash) | Dangerous-command guard — **blocks** force push, `terraform apply`, etc. |
 | `uap-policy-gate.sh` | PreToolUse | DB-driven policy gate (`policies.db` + `.policy-tools/*.py`). |
 | `post-tool-use-edit-write.sh` | PostToolUse (Edit/Write) | Build gate + backup reminder after edits. |
+| `post-tool-use-read.sh` | PostToolUse (Read/Grep/Glob) | Writes `.uap/read_log.state` — the evidence `codebase-read-before-plan` gates on. |
 | `pre-compact.sh` | PreCompact | Flushes a compaction marker to memory. |
 | `post-compact.sh` | PostCompact | Re-injects policy awareness after compaction. |
 | `stop.sh` | Stop | Completion-gate checklist + session cleanup. |

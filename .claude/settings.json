@@ -60,6 +60,15 @@
         ]
       },
       {
+        "matcher": "Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-tool-use-read.sh\"; if [ -f \"$f\" ]; then bash \"$f\"; else exit 0; fi"
+          }
+        ]
+      },
+      {
         "matcher": "TodoWrite",
         "hooks": [
           {

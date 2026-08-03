@@ -5,6 +5,11 @@
 - feat(principles): apply engineering principles to agent and generated code
 
 
+## v1.183.3 (2026-08-03)
+
+- fix(policies): give the plan-time gates the writers they check for
+
+
 ## v1.183.2 (2026-08-03)
 
 - fix(proxy): tool narrowing stranded any client that isn't Claude Code
