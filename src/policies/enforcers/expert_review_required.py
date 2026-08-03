@@ -2,8 +2,9 @@
 """expert-review-required enforcer: a parallel expert review must precede ship.
 
 Blocks ship actions (git commit / git push / gh pr create / merge / pr-ready /
-signoff) unless a review artifact exists for the current branch AND covers the
-current HEAD. This makes the `parallel-expert-review` skill's "REQUIRED by
+signoff) unless a review artifact exists for the branch being shipped AND covers
+its HEAD. For `gh pr merge <N>` the branch being shipped is the PR's head
+branch, resolved via gh — not whatever branch the invoking shell is on. This makes the `parallel-expert-review` skill's "REQUIRED by
 policy" claim real rather than advisory.
 
 Review artifact: .uap/reviews/<branch-slug>.json, written by the
@@ -20,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -36,6 +38,19 @@ SHIP_PATTERNS = (
     re.compile(r"\bgh\s+pr\s+(create|merge|ready)\b"),
     re.compile(r"\b(pr[-_ ]?ready|sign[-_ ]?off|ready[-_ ]for[-_ ]review)\b", re.I),
 )
+
+# A ship action that NAMES a pull request. The review that matters is the one
+# for that PR's head branch, which is usually not the branch the shell is on.
+PR_SHIP_VERBS = ("merge", "ready")
+
+# Flags on those verbs that consume the NEXT token as their value. Without this,
+# `gh pr merge -b 1 900` reads "1" as the PR — so the review for PR 1 authorises
+# shipping PR 900. `gh pr merge --body Merging 123` misfires the same way by
+# accident, which is the more likely path to it happening.
+PR_VALUE_FLAGS = frozenset({
+    "-b", "--body", "-F", "--body-file", "-t", "--subject",
+    "-R", "--repo", "--match-head-commit", "-c", "--comment",
+})
 
 # Risk-scope: a parallel expert review is required only for *substantive* diffs.
 # A diff that touches ONLY low-risk surfaces (frontend/styles, docs, config,
@@ -115,6 +130,64 @@ def slug_for(branch: str) -> str:
     return branch.replace("%", "%25").replace("/", "%2F")
 
 
+def pr_reference(cmd: str) -> str | None:
+    """The pull request a `gh pr merge|ready` command names, or None.
+
+    Tokenized rather than pattern-matched on "digits right after the verb":
+    flags may come first (`gh pr merge --squash 645`), and gh accepts a number,
+    a URL, or a branch name interchangeably. The narrow form missed all of
+    those and fell back to the local branch — silently reinstating the very bug
+    this resolution exists to fix.
+
+    A bare `gh pr merge` (the current branch's PR) returns None, which is
+    correct: the local branch IS the right thing to check then.
+    """
+    try:
+        tokens = shlex.split(cmd, comments=True)
+    except ValueError:
+        return None
+    for i in range(len(tokens) - 2):
+        if (
+            os.path.basename(tokens[i]) == "gh"
+            and tokens[i + 1] == "pr"
+            and tokens[i + 2] in PR_SHIP_VERBS
+        ):
+            skip_value = False
+            for tok in tokens[i + 3:]:
+                if skip_value:
+                    skip_value = False
+                    continue
+                if tok.startswith("-"):
+                    # `--body=x` carries its value inline; `--body x` does not,
+                    # and that value can look exactly like a PR reference.
+                    if tok in PR_VALUE_FLAGS:
+                        skip_value = True
+                    continue
+                return tok
+            return None
+    return None
+
+
+def pr_target(root: Path, ref: str) -> tuple[str | None, str | None]:
+    """(head branch, head sha) of the PR being shipped, resolved via `gh`.
+
+    Returns (None, None) on any failure — no gh, no network, no auth, unknown
+    PR — so the caller falls back to the local branch and this stays fail-open.
+    `run` already bounds the call at 5s, and PR_SHIP_RE only matches an explicit
+    `gh pr merge/ready <N>`, so the cost is paid on ship actions, not per Bash.
+    """
+    rc, out, _ = run(
+        ["gh", "pr", "view", ref, "--json", "headRefName,headRefOid"], cwd=root
+    )
+    if rc != 0 or not out.strip():
+        return None, None
+    try:
+        data = json.loads(out)
+    except Exception:  # noqa: BLE001
+        return None, None
+    return (data.get("headRefName") or None), (data.get("headRefOid") or None)
+
+
 def head_sha(root: Path) -> str | None:
     rc, out, _ = run(["git", "rev-parse", "HEAD"], cwd=root)
     return out.strip() if rc == 0 and out.strip() else None
@@ -158,7 +231,16 @@ def main() -> None:
     # to MAIN_ROOT by the gate, so it always read the main checkout's branch and
     # demanded a review for the wrong branch on every worktree commit/push.
     root = worktree_root()
-    branch = current_branch(root)
+
+    # `gh pr merge 645` ships PR 645's branch. Reading the LOCAL branch here
+    # meant a merge run from the main checkout looked for .uap/reviews/master
+    # .json — an artifact for a branch that is not being shipped — and refused
+    # a PR whose own branch was reviewed and approved. Resolve the PR's head
+    # instead; fall back to the local branch when gh cannot answer.
+    pr_ref = pr_reference(cmd)
+    pr_branch, pr_sha = pr_target(root, pr_ref) if pr_ref else (None, None)
+
+    branch = pr_branch or current_branch(root)
     if branch is None:
         emit(True, "branch not resolvable (detached/non-git) — fail-open")
     slug = slug_for(branch)
@@ -172,7 +254,10 @@ def main() -> None:
     # migrations, or policy code — the change ships without a parallel review.
     # When the base diff is not resolvable (None) we do NOT skip: we can't prove
     # the change is low-risk, so the review requirement below still applies.
-    changed = _changed_files(root)
+    # Skipped for a PR ship: this diffs the LOCAL working tree, which on a
+    # `gh pr merge` from the main checkout is not the PR's contents at all —
+    # it would grade the wrong change as low-risk.
+    changed = None if pr_branch else _changed_files(root)
     if changed and all(_is_low_risk(f) for f in changed):
         emit(
             True,
@@ -191,7 +276,7 @@ def main() -> None:
             "(no longer honoured inline), or a waiver file.",
         )
 
-    head = head_sha(root)
+    head = pr_sha or head_sha(root)
     try:
         data = json.loads(review.read_text())
     except Exception:  # noqa: BLE001

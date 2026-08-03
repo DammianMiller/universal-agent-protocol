@@ -191,3 +191,46 @@ uap policy convert --input <id|file.md> --output out.md   # render to CLAUDE.md 
 
 Changes invalidate the gate's policy cache immediately, so they take effect on
 the next tool call.
+
+## Changing an enforcer's code
+
+Two things trip people up here, and both fail *silently* — the source looks
+fixed while the gate keeps enforcing the old behaviour.
+
+**1. The gate does not run `src/policies/enforcers/*.py`.** It runs
+`.policy-tools/<policyId>_<toolName>.py`, a separate materialized copy (plus a
+snapshot in the `code` column of `policies.db`). Editing the source changes
+nothing on its own — re-run `uap policy install <slug>` to refresh the
+executable copy:
+
+```bash
+uap policy install workdir-scope
+grep -l _my_new_function .policy-tools/*workdir_scope.py   # verify it took
+```
+
+**2. Run that install from the MAIN checkout, not a worktree.** The policy gate
+anchors runtime state — `policies.db` and `.policy-tools/` — to `MAIN_ROOT`, so
+that every worktree enforces the same policies. `uap policy install` run from
+inside a worktree gets this wrong in *both* directions, while still printing
+success:
+
+- it **reads** the enforcer source from the main checkout (not the worktree's
+  edited copy), and
+- it **writes** the materialized copy into a worktree-local `.policy-tools/`
+  that the gate never reads.
+
+So the install is a no-op for enforcement, and it is silent about it: the
+edited enforcer is verified by the test suite (which reads the worktree source)
+while the running gate still executes the old code. Verified 2026-08-03 by
+comparing the materialized copy against both sources — it matched the main
+checkout byte for byte.
+
+So an enforcer fix is two separate steps in two different directories:
+
+- edit the enforcer **in your worktree**, so the change ships in the PR;
+- after it merges, run `uap policy install <slug>` **from the main checkout** to
+  refresh the runtime copy.
+
+Note that `enforcement-self-protect` blocks agent writes to `src/policies/**`
+outright, with no model-reachable bypass. An agent cannot make either change —
+enforcer edits are an operator action by design.

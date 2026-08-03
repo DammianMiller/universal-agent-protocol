@@ -97,25 +97,20 @@ describe('read-log writer hook', () => {
   });
 });
 
-describe('patches/enforcers staging area', () => {
-  // These are not applied to src/policies/** (self-protect forbids it), so
-  // nothing else would notice them rotting.
-  it('the workdir_scope patch still applies to the current enforcer', () => {
-    const res = spawnSync('git', ['apply', '--check', 'patches/enforcers/workdir_scope.patch'], {
-      cwd: ROOT,
-      encoding: 'utf-8',
-    });
-    expect(res.stderr).toBe('');
-    expect(res.status).toBe(0);
-  });
-
-  it('the replacement enforcers compile', () => {
-    for (const f of ['codebase_read_before_plan.py', 'memory_before_plan.py']) {
-      const res = spawnSync('python3', ['-m', 'py_compile', join(ROOT, 'patches/enforcers', f)], {
-        encoding: 'utf-8',
-      });
-      expect(res.status, `${f}: ${res.stderr}`).toBe(0);
-    }
+describe('the applied enforcers', () => {
+  // The patches/enforcers/ staging area these once guarded is gone: the fixes
+  // it carried are applied in src/policies/enforcers/ as of this branch, and
+  // their behaviour is covered directly by the Python suite
+  // (tools/agents/tests/, `npm run test:enforcers`) rather than by checking
+  // that a copy still compiles.
+  it('codebase-read-before-plan degrades to advisory when its writer hook is absent', () => {
+    // The half of the contract this repo's own writer hook depends on.
+    const src = readFileSync(
+      join(ROOT, 'src/policies/enforcers/codebase_read_before_plan.py'),
+      'utf-8'
+    );
+    expect(src).toContain('writer_installed');
+    expect(src).toContain('post-tool-use-read.sh');
   });
 
   it('logs a Read as "<epoch>\\t<path>" that lands inside the enforcer window', () => {

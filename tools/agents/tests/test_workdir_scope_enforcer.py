@@ -140,5 +140,157 @@ class TestWorkdirScopeEnforcer(unittest.TestCase):
         self._allow(out, c, "read outside allowed")
 
 
+# Redirect operator, built by codepoint: a literal one in this file would be
+# read as a redirection by the very enforcer under test.
+GT = chr(62)
+BS = chr(92)
+DQ = chr(34)
+SQ = chr(39)
+BT = chr(96)
+TILDE = chr(126)
+
+
+class TestWorkdirScopeQuoting(unittest.TestCase):
+    """A redirect operator inside quotes is literal text, not a redirect.
+
+    Scanning the raw command string made `sed -n '/a/,/b/p'` unusable whenever
+    the range delimiters were angle brackets: the trailing `/p` was read as a
+    write to /p. That refused an ordinary conflict-inspection command, and it
+    refused the edit that fixes it (observed 2026-08-03).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _allow(self, out, code, label):
+        self.assertTrue(out.get("allowed"), f"{label}: {out.get('reason')}")
+        self.assertEqual(code, 0, label)
+
+    def _block(self, out, code, label):
+        self.assertFalse(out.get("allowed"), f"{label} should be blocked")
+        self.assertEqual(code, 2, label)
+
+    # --- the false positive ---
+
+    def test_sed_range_with_angle_delimiters_allowed(self):
+        cmd = "sed -n '/" + "<" * 7 + "/,/" + GT * 7 + "/p' CHANGELOG.md"
+        out, c = run("Bash", {"command": cmd}, self.root)
+        self._allow(out, c, "sed range is not a redirect")
+
+    def test_quoted_redirect_text_allowed(self):
+        out, c = run("Bash", {"command": "echo 'writes to /etc/passwd'"}, self.root)
+        self._allow(out, c, "quoted text is not a redirect")
+
+    def test_double_quoted_redirect_text_allowed(self):
+        out, c = run("Bash", {"command": 'echo "result ' + GT + ' /etc/passwd"'}, self.root)
+        self._allow(out, c, "double-quoted text is not a redirect")
+
+    # --- and the detection it must NOT weaken ---
+
+    def test_real_redirect_still_blocked(self):
+        out, c = run("Bash", {"command": "echo hi " + GT + " /etc/uap-marker"}, self.root)
+        self._block(out, c, "real redirect outside workdir")
+
+    def test_real_append_still_blocked(self):
+        out, c = run("Bash", {"command": "echo hi " + GT * 2 + " /etc/uap-marker"}, self.root)
+        self._block(out, c, "real append outside workdir")
+
+    def test_quoted_destination_still_blocked(self):
+        # The operator is unquoted; only the TARGET is quoted. Masking quoted
+        # spans must not lose this one.
+        out, c = run("Bash", {"command": 'echo hi ' + GT + ' "/etc/uap-marker"'}, self.root)
+        self._block(out, c, "quoted absolute destination")
+
+    # --- escaped quotes must not hide a REAL redirect (security review) ---
+    #
+    # A naive quote toggle desyncs on an escaped quote and blanks everything
+    # after it, including a live redirect. Each of these was ALLOWED by that
+    # bug: a containment bypass, strictly worse than the false positive the
+    # masking was added to fix.
+
+    def test_escaped_double_quote_does_not_hide_a_redirect(self):
+        cmd = ": " + BS + DQ + " " + GT + " /root/uap-probe"
+        out, c = self._run_bash(cmd)
+        self._block(out, c, "escaped double quote then real redirect")
+
+    def test_escaped_single_quote_does_not_hide_a_redirect(self):
+        cmd = ": " + BS + SQ + " " + GT + " /root/uap-probe"
+        out, c = self._run_bash(cmd)
+        self._block(out, c, "escaped single quote then real redirect")
+
+    def test_ansi_c_quoting_does_not_hide_a_redirect(self):
+        cmd = "echo $" + SQ + "a" + BS + SQ + "b" + SQ + " " + GT + " /root/uap-probe"
+        out, c = self._run_bash(cmd)
+        self._block(out, c, "ANSI-C quoting then real redirect")
+
+    def test_unterminated_quote_falls_back_to_raw_scan(self):
+        # The mask cannot be trusted, so over-block rather than under-block.
+        cmd = "echo " + DQ + "oops " + GT + " /root/uap-probe"
+        out, c = self._run_bash(cmd)
+        self._block(out, c, "unterminated quote")
+
+    # --- command substitution EXECUTES inside double quotes ---
+    #
+    # Masking a quoted span hid these: bash really does perform the redirect
+    # (verified), so blanking the span turned a containment gate into a bypass.
+    # The masker cannot model substitution, so its presence forces the raw scan.
+
+    def test_command_substitution_in_double_quotes_is_not_hidden(self):
+        cmd = "echo " + DQ + "$(id " + GT + " /root/uap-probe)" + DQ
+        out, c = self._run_bash(cmd)
+        self._block(out, c, "$() inside double quotes")
+
+    def test_backticks_in_double_quotes_are_not_hidden(self):
+        cmd = "echo " + DQ + BT + "id " + GT + " /root/uap-probe" + BT + DQ
+        out, c = self._run_bash(cmd)
+        self._block(out, c, "backticks inside double quotes")
+
+    # --- targets the scanner used to never look at (bash-confirmed writes) ---
+
+    def test_tilde_redirect_target_is_checked(self):
+        # _expand() resolves ~ already; the target pattern just never handed it
+        # over, so `> ~/x` wrote outside the project unchecked.
+        out, c = self._run_bash("echo hi " + GT + " " + TILDE + "/uap-probe")
+        self._block(out, c, "tilde redirect target")
+
+    def test_variable_redirect_target_is_checked(self):
+        out, c = self._run_bash("echo hi " + GT + " $HOME/uap-probe")
+        self._block(out, c, "$HOME redirect target")
+
+    def test_line_continuation_keeps_verb_and_destination_together(self):
+        # Bash removes the continuation before word-splitting; the scanner did
+        # not, so the destination landed in a segment with no create verb.
+        out, c = self._run_bash("mkdir -p " + chr(92) + "\n  /root/uap-probe")
+        self._block(out, c, "destination after a line continuation")
+
+    def test_process_substitution_destination_is_checked(self):
+        # `> >(tee /outside)` really writes; parens were not segment
+        # separators, so tee's argument was invisible to the verb scan.
+        out, c = self._run_bash("echo data " + GT + " " + GT + "(tee /root/uap-probe)")
+        self._block(out, c, "process substitution destination")
+
+    # --- and the prose that must NOT be mistaken for a redirect ---
+
+    def test_inert_single_quoted_prose_is_not_a_redirect(self):
+        # Single quotes suppress substitution, so $( inside them is text. Forcing
+        # the conservative raw scan on its account blocked ordinary commit
+        # messages that merely discuss shell syntax.
+        cmd = ("git commit -m 'See $(uname) docs; example redirect "
+               + GT + " /opt/notes explained here'")
+        out, c = self._run_bash(cmd)
+        self._allow(out, c, "inert prose in a single-quoted message")
+
+    def _run_bash(self, cmd):
+        return run("Bash", {"command": cmd}, self.root)
+
+    def test_stderr_redirect_to_dev_null_allowed(self):
+        out, c = run("Bash", {"command": "ls 2" + GT + "/dev/null"}, self.root)
+        self._allow(out, c, "/dev/null is not an escape")
+
+
 if __name__ == "__main__":
     unittest.main()
