@@ -1,0 +1,14 @@
+{
+  "name": "js-flatten",
+  "instruction": "Implement flatten.js (CommonJS): module.exports = { flatten, unflatten }. flatten(obj) maps a nested object/array to a flat object keyed by dotted paths, where array elements use their numeric index ('a.0.b'). An EMPTY object or array is preserved as a leaf value rather than vanishing. A key that itself contains a '.' is escaped as '\\.' in the path. unflatten(flat) is the exact inverse and must rebuild arrays (a purely numeric, zero-based, gapless key set becomes an array) and unescape '\\.' back to '.'. flatten(unflatten(x)) must round-trip.",
+  "difficulty": "medium-hard",
+  "tags": [
+    "object",
+    "round-trip",
+    "js"
+  ],
+  "gateCmd": "node <<'GATEJS'\nconst {flatten}=require('./flatten.js');\nif(JSON.stringify(flatten({a:{b:1}}))!==JSON.stringify({'a.b':1}))process.exit(1);\nconsole.log('gate ok');\nGATEJS",
+  "verifyCmd": "node <<'VERIFYJS'\nconst { flatten, unflatten } = require('./flatten.js');\nconst S = JSON.stringify;\nconst eq = (got, want, m) => { if (S(got) !== S(want)) { console.error('FAIL', m, S(got), 'want', S(want)); process.exit(1); } };\neq(flatten({ a: { b: 1 } }), { 'a.b': 1 }, 'nested');\neq(flatten({ a: [1, 2] }), { 'a.0': 1, 'a.1': 2 }, 'array index');\neq(flatten({ a: [{ b: 3 }] }), { 'a.0.b': 3 }, 'array of objects');\neq(flatten({ a: {} }), { a: {} }, 'empty object preserved as leaf');\neq(flatten({ a: [] }), { a: [] }, 'empty array preserved as leaf');\neq(flatten({ a: null }), { a: null }, 'null is a leaf');\neq(flatten({ 'x.y': 1 }), { 'x\\\\.y': 1 }, 'dot in key escaped');\neq(unflatten({ 'a.b': 1 }), { a: { b: 1 } }, 'unflatten nested');\neq(unflatten({ 'a.0': 1, 'a.1': 2 }), { a: [1, 2] }, 'rebuilds array');\neq(unflatten({ 'x\\\\.y': 1 }), { 'x.y': 1 }, 'unescapes dot');\neq(unflatten({ 'a.1': 'x' }), { a: { 1: 'x' } }, 'gapped keys stay an object');\nfor (const v of [\n  { a: { b: { c: 1 } } }, { a: [1, [2, 3]] }, { a: {}, b: [] }, { 'k.1': { 'm.2': 5 } },\n  { list: [{ id: 1 }, { id: 2 }] }, { mixed: { 0: 'a', 2: 'b' } }, { deep: { a: [{ b: [1] }] } },\n]) {\n  const round = unflatten(flatten(v));\n  if (S(round) !== S(v)) { console.error('round-trip failed', S(v), '->', S(round)); process.exit(1); }\n}\nconsole.log('ok');\nVERIFYJS",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

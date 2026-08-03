@@ -1,0 +1,14 @@
+{
+  "name": "js-word-wrap",
+  "instruction": "Implement wordWrap.js (CommonJS): module.exports = wordWrap. wordWrap(text, width) greedily wraps text so no output line exceeds `width` characters. Words are separated by runs of spaces, which collapse to a single space inside a line. An existing '\\n' in the input is a HARD break that is preserved, and an empty line stays empty. A word longer than `width` is NOT split - it goes on a line of its own and may exceed the width. Output lines never have leading or trailing spaces. width must be a positive integer or an Error is thrown.",
+  "difficulty": "medium",
+  "tags": [
+    "text",
+    "formatting",
+    "js"
+  ],
+  "gateCmd": "node <<'GATEJS'\nconst w=require('./wordWrap.js');\nif(w('a b c',3)!=='a b\\nc')process.exit(1);\nconsole.log('gate ok');\nGATEJS",
+  "verifyCmd": "node <<'VERIFYJS'\nconst w = require('./wordWrap.js');\nconst eq = (got, want, m) => { if (got !== want) { console.error('FAIL', m, JSON.stringify(got), 'want', JSON.stringify(want)); process.exit(1); } };\neq(w('aaa bbb ccc', 7), 'aaa bbb\\nccc', 'greedy fill');\neq(w('a b c', 3), 'a b\\nc', 'exact width');\neq(w('short', 100), 'short', 'no wrap needed');\neq(w('supercalifragilistic x', 5), 'supercalifragilistic\\nx', 'long word not split');\neq(w('a    b', 10), 'a b', 'space runs collapse');\neq(w('one\\ntwo', 10), 'one\\ntwo', 'hard break preserved');\neq(w('a\\n\\nb', 10), 'a\\n\\nb', 'empty line preserved');\neq(w('', 5), '', 'empty input');\neq(w('  lead trail  ', 20), 'lead trail', 'no leading/trailing spaces');\neq(w('aa bb cc dd', 5), 'aa bb\\ncc dd', 'multi line');\nfor (const line of w('the quick brown fox jumps over the lazy dog', 10).split('\\n')) {\n  if (line !== line.trim()) { console.error('line has edge whitespace:', JSON.stringify(line)); process.exit(1); }\n  if (line.length > 10 && line.split(' ').length > 1) { console.error('overlong wrapped line', JSON.stringify(line)); process.exit(1); }\n}\nfor (const bad of [0, -3, 2.5, 'x']) {\n  let threw = false; try { w('a', bad); } catch (e) { threw = true; }\n  if (!threw) { console.error('bad width accepted:', bad); process.exit(1); }\n}\nconsole.log('ok');\nVERIFYJS",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}

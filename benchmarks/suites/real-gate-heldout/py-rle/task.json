@@ -1,0 +1,14 @@
+{
+  "name": "py-rle",
+  "instruction": "Implement rle.py: def encode(s: str) -> str and def decode(s: str) -> str. encode run-length encodes every run as '<count>[<char>]', e.g. 'aaab' -> '3[a]1[b]'. Every run is encoded, including runs of length one, so the format is unambiguous for ANY input character including digits and brackets. decode is the exact inverse and must round-trip any string. decode raises ValueError on malformed input: a missing bracket, a count that is not a positive decimal integer, a count with a leading zero, an empty bracket, or trailing junk. encode('') == '' and decode('') == ''.",
+  "difficulty": "medium",
+  "tags": [
+    "encoding",
+    "round-trip",
+    "py"
+  ],
+  "gateCmd": "python3 - <<'GATEPY'\nfrom rle import encode, decode\nassert encode('aaab') == '3[a]1[b]', encode('aaab')\nassert decode('3[a]1[b]') == 'aaab'\nprint('gate ok')\nGATEPY",
+  "verifyCmd": "python3 - <<'VERIFYPY'\nfrom rle import encode, decode\n\nassert encode('') == '', 'empty encode'\nassert decode('') == '', 'empty decode'\nassert encode('aaab') == '3[a]1[b]', encode('aaab')\nassert encode('a') == '1[a]', encode('a')\nassert encode('abc') == '1[a]1[b]1[c]', encode('abc')\nassert encode('aa') == '2[a]', encode('aa')\nassert decode('3[a]1[b]') == 'aaab'\nassert decode('10[z]') == 'z' * 10\n\n# Round-trip must survive digits, brackets and unicode.\nfor s in ['', 'a', 'aaa', 'abc', 'aaabbbccc', '1234', '3[a]', '[[]]', 'x' * 50,\n          'mississippi', 'aAaA', '  ', '\\n\\n\\t', '\u00fcn\u00efc\u00f6d\u00e9', '\u4e2d\u4e2d\u6587']:\n    assert decode(encode(s)) == s, 'round-trip failed for %r -> %r' % (s, encode(s))\n\nfor bad in ['a', '[a]', '0[a]', '01[a]', '3a]', '3[a', '3[]', '3[ab]', '3[a]junk', '-1[a]', '3[a]]']:\n    try:\n        decode(bad)\n        raise SystemExit('no ValueError for %r' % bad)\n    except ValueError:\n        pass\nprint('ok')\nVERIFYPY",
+  "verifyTimeoutSec": 20,
+  "agentTimeoutSec": 900
+}
