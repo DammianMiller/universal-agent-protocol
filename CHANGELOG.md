@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.183.1 (2026-08-03)
+
+- fix(bench): held-out difficulty must use the schema enum (metadata only)
+
+
 ## v1.183.0 (2026-08-03)
 
 - feat(bench): pre-registered held-out task set, with the registration enforced in code
