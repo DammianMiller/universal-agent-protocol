@@ -7,6 +7,7 @@
  */
 
 import type { LoopExecutor } from './convergence-loop.js';
+import { judgeablePrinciples } from '../principles/rules.js';
 
 export interface JudgeCandidate {
   /** Stable candidate id, e.g. 'c1' */
@@ -34,6 +35,11 @@ function buildJudgePrompt(task: string, candidates: JudgeCandidate[]): string {
   const sections = [
     'You are a strict senior code reviewer judging competing solutions to the same task.',
     'Rate on: correctness, completeness, simplicity, and how well gate feedback was addressed.',
+    // Two candidates that both pass the gates are separated by how they are
+    // built, so make that explicit rather than leaving "simplicity" to carry it.
+    // Composed from the principles themselves — a hand-copied paraphrase here
+    // would drift the moment the rules are reworded.
+    `Then break ties on these, in order: ${judgeablePrinciples()}`,
     '',
     `TASK: ${task}`,
     '',

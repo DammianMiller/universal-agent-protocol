@@ -157,6 +157,90 @@ describe('ConvergenceLoop', () => {
     expect(result.finalFeedback).toContain('feedback run 3');
   });
 
+  it('carries the engineering principles into RETRY prompts, not just turn 1', async () => {
+    // The loop resolves principles once and threads them through prevContext,
+    // which is rebuilt from scratch at the bottom of every turn. A retry is
+    // exactly where a model cuts corners to get green, so dropping them there
+    // would remove the rules at the moment they matter most. Testing the prompt
+    // BUILDER with a hand-set field cannot catch that — only the loop can.
+    writeFileSync(
+      join(dir, '.uap.json'),
+      JSON.stringify({ principles: { compat: 'remove', maturity: 'greenfield' } })
+    );
+    const prompts: string[] = [];
+    let run = 0;
+
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 2, rungs: stubRungs(), baselineCheck: false },
+      async (prompt) => {
+        prompts.push(prompt);
+        return FILE_BLOCK_OUTPUT;
+      },
+      { ladderRunner: () => ladderResult(0.5, run++ > 0, 'still failing') }
+    );
+
+    await loop.deliver('fix the bug');
+    expect(prompts).toHaveLength(2);
+    for (const p of prompts) {
+      expect(p).toContain('ENGINEERING PRINCIPLES');
+      // The project's actual stance, not the assumed fallback.
+      expect(p).toContain('Delete obsolete paths');
+    }
+  });
+
+  it('carries the engineering principles into a RESUMED run', async () => {
+    // The resume path rebuilds prevContext by hand rather than spreading it, so
+    // it is a second place the field can silently go missing.
+    writeFileSync(
+      join(dir, '.uap.json'),
+      JSON.stringify({ principles: { compat: 'preserve', maturity: 'production' } })
+    );
+    const prompts: string[] = [];
+
+    const loop = new ConvergenceLoop(
+      {
+        projectRoot: dir,
+        maxTurns: 1,
+        rungs: stubRungs(),
+        baselineCheck: false,
+        resumeFrom: {
+          turn: 1,
+          history: [
+            { turn: 1, passed: false, score: 0.3, gateResults: [], filesApplied: [], durationMs: 1 },
+          ],
+          prevContext: { feedback: 'prior feedback' },
+          bestSoFar: 0.3,
+        },
+      },
+      async (prompt) => {
+        prompts.push(prompt);
+        return FILE_BLOCK_OUTPUT;
+      },
+      { ladderRunner: () => ladderResult(1.0, true) }
+    );
+
+    await loop.deliver('resume the thing');
+    expect(prompts[0]).toContain('ENGINEERING PRINCIPLES');
+    expect(prompts[0]).toContain('Keep existing paths working');
+  });
+
+  it('omits the principles block entirely when the project opts out', async () => {
+    writeFileSync(join(dir, '.uap.json'), JSON.stringify({ principles: { injectDeliver: false } }));
+    const prompts: string[] = [];
+
+    const loop = new ConvergenceLoop(
+      { projectRoot: dir, maxTurns: 1, rungs: stubRungs(), baselineCheck: false },
+      async (prompt) => {
+        prompts.push(prompt);
+        return FILE_BLOCK_OUTPUT;
+      },
+      { ladderRunner: () => ladderResult(1.0, true) }
+    );
+
+    await loop.deliver('build it');
+    expect(prompts[0]).not.toContain('ENGINEERING PRINCIPLES');
+  });
+
   it('feeds gate feedback and prior output into subsequent prompts', async () => {
     const prompts: string[] = [];
     let run = 0;

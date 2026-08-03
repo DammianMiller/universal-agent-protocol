@@ -17,6 +17,9 @@ import {
 } from '../src/coordination/reactor';
 import type { CapabilityRouter, RoutingResult } from '../src/coordination/capability-router';
 import type { PatternRouter, PatternDefinition } from '../src/coordination/pattern-router';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 function stubCapabilityRouter(result: Partial<RoutingResult>): CapabilityRouter {
   const full: RoutingResult = {
@@ -250,3 +253,75 @@ describe('reactor.resolve — delivery routing (#3-B / #3-C2)', () => {
   });
 });
 
+
+describe('reactor.resolve — engineering principles stance', () => {
+  const deps: ReactorDeps = {
+    capabilityRouter: stubCapabilityRouter({ confidence: 0.1 }),
+    patternRouter: stubPatternRouter([]),
+  };
+
+  function project(principles?: Record<string, unknown>): string {
+    const dir = mkdtempSync(join(tmpdir(), 'uap-reactor-principles-'));
+    if (principles) {
+      writeFileSync(join(dir, '.uap.json'), JSON.stringify({ principles }));
+    }
+    return dir;
+  }
+
+  it('asks for the stance even at LOW routing confidence', () => {
+    // It is a standalone context block, not a routed capability: a code task
+    // whose routing is uncertain still needs the compat question answered.
+    const cwd = project();
+    try {
+      const r = resolve(
+        { event: 'user-prompt', promptText: 'implement the parser', cwd },
+        { injectThreshold: 0.9 },
+        deps
+      );
+      expect(r.surfacedKeys).toContain('principles:stance');
+      expect(r.inject).toContain('Engineering principles');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('asks once — dedupes on the surfaced key', () => {
+    const cwd = project();
+    try {
+      const r = resolve(
+        {
+          event: 'user-prompt',
+          promptText: 'implement the parser',
+          cwd,
+          surfaced: ['principles:stance'],
+        },
+        undefined,
+        deps
+      );
+      expect(r.surfacedKeys).not.toContain('principles:stance');
+      expect(r.inject).not.toContain('Engineering principles');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('goes quiet once the project has answered', () => {
+    const cwd = project({ compat: 'preserve', maturity: 'production' });
+    try {
+      const r = resolve({ event: 'user-prompt', promptText: 'implement the parser', cwd }, undefined, deps);
+      expect(r.surfacedKeys).not.toContain('principles:stance');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('stays silent on work that will not write code', () => {
+    const cwd = project();
+    try {
+      const r = resolve({ event: 'user-prompt', promptText: 'what does this repo do?', cwd }, undefined, deps);
+      expect(r.surfacedKeys).not.toContain('principles:stance');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});

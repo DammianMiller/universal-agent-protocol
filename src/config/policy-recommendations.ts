@@ -46,6 +46,10 @@ export const SCENARIOS: readonly Scenario[] = [
       { slug: 'local-build-before-push', why: 'never push code that fails to build locally' },
       { slug: 'ship-loop-gate', why: 'converge to green before shipping' },
       { slug: 'doc-live-over-report', why: "trust the live system, not the agent's self-report" },
+      {
+        slug: 'engineering-principles',
+        why: 'a small model reaches for reinvention and stopgaps unless told not to',
+      },
     ],
   },
   {
@@ -105,6 +109,19 @@ export const SCENARIOS: readonly Scenario[] = [
     extra: [
       { slug: 'design-token-gate', why: 'UI edits stay on your design tokens/spacing' },
       { slug: 'visual-verification', why: 'UI changes are verified visually, not just by tests' },
+    ],
+  },
+  {
+    id: 'greenfield',
+    title: 'Greenfield / side project',
+    blurb: 'Nothing depends on it yet — optimise for simplicity over compatibility.',
+    extra: [
+      {
+        slug: 'engineering-principles',
+        why: 'simplest-thing-that-works, reuse over reinvention, no stopgaps',
+      },
+      { slug: 'codebase-read-before-plan', why: 'read what exists before adding to it' },
+      { slug: 'test-gate', why: 'the smallest end-to-end version still has to pass' },
     ],
   },
 ];

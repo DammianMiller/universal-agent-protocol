@@ -30,6 +30,7 @@ import { applyFileBlocks } from './applier.js';
 import { snapshotProtection } from './spec-imports.js';
 import { captureIntegrity, verifyAndRestore, integrityViolationFeedback } from './integrity.js';
 import { appendMissingFilesNote } from './mission-files.js';
+import { resolvePrinciplesSection } from '../principles/index.js';
 import type { StrategySeed } from './explorer.js';
 import { exploreAndCommit } from './explorer.js';
 import type { Judge } from './judge.js';
@@ -61,6 +62,12 @@ export interface PromptContext {
   critique?: string[];
   /** Best-practice guidance retrieved for this task (Phase 4) */
   practices?: string[];
+  /**
+   * Compact engineering-principles section (src/principles/render.ts). Carried
+   * forward across turns like `practices`, so a retry is held to the same
+   * standard as the first attempt.
+   */
+  principles?: string;
   /** Pre-existing test/oracle files the applier will refuse to modify */
   protectedFiles?: string[];
   /**
@@ -445,7 +452,7 @@ export interface LoopCheckpoint {
   /** Last completed 1-based turn. */
   turn: number;
   history: IterationRecord[];
-  /** Prompt context carried into the next turn (practices/protectedFiles are re-derived on resume). */
+  /** Prompt context carried into the next turn (practices/principles/protectedFiles are re-derived on resume). */
   prevContext: {
     previousOutput?: string;
     feedback?: string;
@@ -557,6 +564,19 @@ function guidanceSection(guidance?: string): string[] {
   return ['', 'OPERATOR GUIDANCE (incorporate this now and keep going — do NOT stop):', guidance.trim()];
 }
 
+/**
+ * Render the engineering principles as a prompt section.
+ *
+ * How the code should be written, as opposed to what it must do — so it sits
+ * with the other standing instructions rather than next to the task. Already
+ * line-capped by the renderer; the empty check keeps it free when the feature
+ * is off.
+ */
+function principlesSection(principles?: string): string[] {
+  if (!principles || !principles.trim()) return [];
+  return ['', principles.trim()];
+}
+
 /** Render retrieved best-practice cards as a prompt section. */
 function practiceSection(practices?: string[]): string[] {
   if (!practices || practices.length === 0) return [];
@@ -597,10 +617,10 @@ export const defaultPromptBuilder: PromptBuilder = (ctx) => {
     // variable and added the tuner-selected tone section; 580 appends the
     // up-front acceptance contract. Both apply — the contract goes last so the
     // concrete journeys sit closest to the task.
-    return [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract)].join('\n');
+    return [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...principlesSection(ctx.principles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract)].join('\n');
   }
 
-  const sections = [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ''];
+  const sections = [outputContract, ...toneSection, ...autonomySection(ctx.autonomous), ...guidanceSection(ctx.guidance), ...protectedSection(ctx.protectedFiles), ...principlesSection(ctx.principles), ...practiceSection(ctx.practices), '', `TASK: ${ctx.instruction}`, ...contractSection(ctx.acceptanceContract), ''];
   sections.push(`PREVIOUS ATTEMPT (turn ${ctx.turn - 1}):`);
 
   if (ctx.previousFiles && ctx.previousFiles.length > 0) {
@@ -1162,10 +1182,20 @@ export class ConvergenceLoop {
       }
     }
 
+    // Engineering principles: how the code should be written. Resolved once —
+    // it is project-level, not turn-level — and fail-soft, since a missing
+    // stance must never stop a delivery (an unattended run assumes `preserve`).
+    let principles: string | undefined;
+    try {
+      principles = resolvePrinciplesSection(this.config.projectRoot);
+    } catch {
+      principles = undefined;
+    }
+
     let success = false;
     let finalOutput = '';
     let finalFeedback = '';
-    let prevContext: Omit<PromptContext, 'instruction' | 'turn'> = { practices, protectedFiles: protectedList };
+    let prevContext: Omit<PromptContext, 'instruction' | 'turn'> = { practices, principles, protectedFiles: protectedList };
     // GEPA reflect (S6): the live instruction fed to the PromptBuilder. A reflect
     // directive (IterationDirective.mutateInstruction) rewrites the APPROACH here
     // for the next turn, distinct from switchExecutor which swaps the MODEL.
@@ -1177,7 +1207,10 @@ export class ConvergenceLoop {
     const resume = this.config.resumeFrom;
     if (resume && resume.turn >= 1 && resume.history.length > 0) {
       history.push(...resume.history);
-      prevContext = { ...resume.prevContext, practices, protectedFiles: protectedList };
+      // practices/principles/protectedFiles are re-derived on resume rather than
+      // restored, so a resumed run gets the CURRENT stance, not the one that was
+      // live when the run was interrupted.
+      prevContext = { ...resume.prevContext, practices, principles, protectedFiles: protectedList };
       bestSoFar = resume.bestSoFar ?? -1;
       bestAcceptance = resume.bestAcceptance ?? -1;
       stagnantTurns = resume.stagnantTurns ?? 0;
@@ -1524,6 +1557,7 @@ export class ConvergenceLoop {
         previousFiles: outcome.filesApplied.length > 0 ? outcome.filesApplied : undefined,
         critique,
         practices,
+        principles,
         protectedFiles: protectedList,
       };
 

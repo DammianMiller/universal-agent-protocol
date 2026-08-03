@@ -194,6 +194,14 @@
       "abbreviation": "IaC-Parity",
       "category": "Infrastructure",
       "keywords": ["terraform", "kubernetes", "kubectl", "infrastructure", "deploy", "pipeline"]
+    },
+    {
+      "id": 38,
+      "file": "P38_prior_art_first.md",
+      "title": "Prior Art First",
+      "abbreviation": "PriorArt",
+      "category": "Planning",
+      "keywords": ["design", "approach", "from scratch", "new feature", "library", "convention", "prior art", "reimplement", "invent"]
     }
   ]
 }

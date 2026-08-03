@@ -35,6 +35,7 @@ export type SettingCategoryId =
   | 'orchestration'
   | 'reactor'
   | 'design'
+  | 'principles'
   | 'worktree'
   | 'proxy'
   | 'dashboard'
@@ -83,6 +84,7 @@ export const CATEGORIES: readonly SettingCategory[] = [
   { id: 'orchestration', title: 'Orchestrator & hands-free', blurb: 'Long-task autonomy: decompose, resume, and loop-to-100%.' },
   { id: 'reactor', title: 'Reactor (auto-apply)', blurb: 'Per-prompt injection of the matching experts, skills, and patterns.' },
   { id: 'design', title: 'Design system', blurb: 'DESIGN.md interrogation and the hard token gate for UI work.' },
+  { id: 'principles', title: 'Engineering principles', blurb: 'How code should be written, and the backward-compatibility stance.' },
   { id: 'worktree', title: 'Worktree workflow', blurb: 'Branch-per-feature isolation and auto-cleanup.' },
   { id: 'proxy', title: 'Inference proxy tuning', blurb: 'Guardrails and context limits for a local model behind the proxy.' },
   { id: 'dashboard', title: 'Dashboard', blurb: 'The live analytics server and its mutation token.' },
@@ -339,6 +341,30 @@ export const SETTINGS: readonly SettingDef[] = [
     key: 'design.tokenGate', kind: 'json', type: 'boolean', default: false, category: 'design',
     description: 'Hard-blocks UI edits that hardcode off-token colors or off-scale spacing.',
     recommendation: 'Enable once your DESIGN.md tokens are stable — it keeps the UI on-system automatically.',
+  },
+
+  // ── Engineering principles ────────────────────────────────────────────────
+  {
+    key: 'principles.enabled', kind: 'json', type: 'boolean', default: true, category: 'principles',
+    description: 'Applies the engineering principles (simplest sufficient implementation, reuse over reinvention, no stopgaps, prior art first) to generated code.',
+    recommendation: 'Leave on. Turn it off only if your project has its own conflicting house style.',
+  },
+  {
+    key: 'principles.compat', kind: 'json', type: 'enum', enumValues: ['ask', 'preserve', 'remove'],
+    default: 'ask', category: 'principles',
+    description: 'Backward-compatibility stance. `remove` deletes obsolete paths outright; `preserve` keeps them working and migrates callers; `ask` (default) prompts once per session instead of guessing.',
+    recommendation: "Leave on `ask` unless the project's answer is settled. `remove` is for side projects — on anything published it tells the agent to delete migration paths.",
+  },
+  {
+    key: 'principles.maturity', kind: 'json', type: 'enum', enumValues: ['ask', 'greenfield', 'production'],
+    default: 'ask', category: 'principles',
+    description: 'What breaking a caller costs. `production` adds caveats about existing callers and dependency cost; `greenfield` states the rules absolutely.',
+    recommendation: 'Set `production` for anything with real users; `greenfield` for a fresh side project.',
+  },
+  {
+    key: 'principles.injectDeliver', kind: 'json', type: 'boolean', default: true, category: 'principles',
+    description: 'Injects the compact principles block into deliver prompts, so generated code follows them rather than only the agent preamble.',
+    recommendation: 'Leave on. Disable only if you are tight on prompt budget with a small-context model.',
   },
 
   // ── Worktree workflow ─────────────────────────────────────────────────────

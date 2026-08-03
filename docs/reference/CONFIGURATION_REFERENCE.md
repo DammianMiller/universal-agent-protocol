@@ -26,6 +26,7 @@ uap config wizard               # interactive expert configurator (also: uap set
 - [Orchestrator & hands-free](#orchestration) — Long-task autonomy: decompose, resume, and loop-to-100%.
 - [Reactor (auto-apply)](#reactor) — Per-prompt injection of the matching experts, skills, and patterns.
 - [Design system](#design) — DESIGN.md interrogation and the hard token gate for UI work.
+- [Engineering principles](#principles) — How code should be written, and the backward-compatibility stance.
 - [Worktree workflow](#worktree) — Branch-per-feature isolation and auto-cleanup.
 - [Inference proxy tuning](#proxy) — Guardrails and context limits for a local model behind the proxy.
 - [Dashboard](#dashboard) — The live analytics server and its mutation token.
@@ -59,6 +60,18 @@ How the delivery gate treats a direct source edit outside `uap deliver`. `block`
 How local-model sessions are routed through delivery. `deliver` runs builds through the convergence loop; `block` forbids raw edits; `advisory` warns.
 
 **Recommendation:** `deliver` when a local model does the writing (routes it through the verified loop); `advisory` for exploratory work.
+
+### `deliver.escalateModel`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | string |
+| **Default** | `null` |
+
+Stronger model id for deliver escalation ladders: repair passes, the phase-5 escalation tier, and the evaluator fallback. Same role as $UAP_ESCALATE_MODEL but persisted in .uap.json (reproducible).
+
+**Recommendation:** Point at your strongest available preset/model (e.g. an Opus cloud id) when the executor is a local model — stuck epics then escalate instead of re-splitting into the same wall.
 
 ### `UAP_ENFORCE_DELIVERY`
 
@@ -100,6 +113,30 @@ Installs the runtime-verify Stop-hook: at end of turn it actually runs the chang
 
 **Recommendation:** Enable for any project with a runnable artifact — it catches "declared done but never ran". Safe on empty projects (it skips when nothing is runnable).
 
+### `delivery.userValidation`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | string |
+| **Default** | `block` |
+
+User-path validation gate: deliver runs the .uap/user-paths.json critical journeys through the real client (headless browser / HTTP / built CLI) as the terminal gate rung. block = DELIVERED requires them green; advisory = report only; off = disabled.
+
+**Recommendation:** Leave on block — it is the only gate that proves the artifact works for a real user, not just that tests pass.
+
+### `UAP_USER_VALIDATION`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | boolean |
+| **Default** | `true` |
+
+Runtime downgrade for the user-validation gate: `0` demotes block to advisory for this run only. Persisting `0` is blocked by the self-protect enforcer.
+
+**Recommendation:** Leave unset. Use inline `UAP_USER_VALIDATION=0 uap deliver ...` only to unblock a run where the gate itself misfires.
+
 ### `UAP_VERIFY_ON_STOP`
 
 | | |
@@ -111,6 +148,78 @@ Installs the runtime-verify Stop-hook: at end of turn it actually runs the chang
 Master switch for the runtime execution gate in the Stop hook. `0` bypasses it.
 
 **Recommendation:** Leave on (default). Set `0` only to unblock a session where the runtime gate misfires.
+
+### `fidelity.mode`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | enum (standard \| max) |
+| **Default** | `standard` |
+
+Maximum-fidelity mode. `max` flips every verification default to its strongest: raised verifier floor (runtime+integration), acceptance judge required, blocking vision review, and a fail-CLOSED visual gate — a delivery is accepted only when it builds, runs, looks right, and matches the spec. (`UAP_FIDELITY` overrides at runtime.)
+
+**Recommendation:** `max` when correctness matters more than speed (UI work, releases, hands-free autonomy). `standard` for fast exploratory iteration.
+
+### `UAP_FIDELITY`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | enum (standard \| max) |
+| **Default** | `standard` |
+
+Runtime override of `fidelity.mode`, read from the shell env by verify/deliver and the Python enforcers. Takes precedence over the config value.
+
+**Recommendation:** Set inline (`UAP_FIDELITY=max <cmd>`) to force max fidelity for one command without editing config.
+
+### `fidelity.visionMinScore`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | number |
+| **Default** | `6` |
+
+Minimum aesthetic score (0–10) the vision judge must give a rendered UI before it passes under `max` fidelity.
+
+**Recommendation:** 6 is a reasonable "looks like a real, polished app" bar. Raise toward 8 for design-critical surfaces; lower to 4 to only catch broken/blank UIs.
+
+### `fidelity.visualBaselines`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | boolean |
+| **Default** | `true` |
+
+Keep approved UI screenshots as regression baselines under `.uap/visual/baseline/` and block on visual drift beyond threshold on later runs.
+
+**Recommendation:** Leave on so accepted UIs are pinned against regressions. Disable for throwaway prototypes where every render legitimately differs.
+
+### `UAP_VISION_ENDPOINT`
+
+| | |
+|---|---|
+| **Where** | `.uap/proxy.env` |
+| **Type** | string |
+| **Default** | `` |
+
+Base URL of an OpenAI-compatible, image_url-capable endpoint used for aesthetic screenshot review (e.g. http://127.0.0.1:8080/v1). Defaults to the local model when set by setup.
+
+**Recommendation:** Point at your local vision-capable model so aesthetic review runs offline with no per-image cost.
+
+### `UAP_VISION_MODEL`
+
+| | |
+|---|---|
+| **Where** | `.uap/proxy.env` |
+| **Type** | string |
+| **Default** | `` |
+
+Model id sent to the vision endpoint for aesthetic review (e.g. qwen36-35b-a3b-iq4xs).
+
+**Recommendation:** Set by `uap setup` to your local vision model. Required for blocking vision review under `max` fidelity.
 
 ## Model routing
 
@@ -482,6 +591,58 @@ Hard-blocks UI edits that hardcode off-token colors or off-scale spacing.
 
 **Recommendation:** Enable once your DESIGN.md tokens are stable — it keeps the UI on-system automatically.
 
+## Engineering principles
+
+<a id="principles"></a>How code should be written, and the backward-compatibility stance.
+
+### `principles.enabled`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | boolean |
+| **Default** | `true` |
+
+Applies the engineering principles (simplest sufficient implementation, reuse over reinvention, no stopgaps, prior art first) to generated code.
+
+**Recommendation:** Leave on. Turn it off only if your project has its own conflicting house style.
+
+### `principles.compat`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | enum (ask \| preserve \| remove) |
+| **Default** | `ask` |
+
+Backward-compatibility stance. `remove` deletes obsolete paths outright; `preserve` keeps them working and migrates callers; `ask` (default) prompts once per session instead of guessing.
+
+**Recommendation:** Leave on `ask` unless the project's answer is settled. `remove` is for side projects — on anything published it tells the agent to delete migration paths.
+
+### `principles.maturity`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | enum (ask \| greenfield \| production) |
+| **Default** | `ask` |
+
+What breaking a caller costs. `production` adds caveats about existing callers and dependency cost; `greenfield` states the rules absolutely.
+
+**Recommendation:** Set `production` for anything with real users; `greenfield` for a fresh side project.
+
+### `principles.injectDeliver`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | boolean |
+| **Default** | `true` |
+
+Injects the compact principles block into deliver prompts, so generated code follows them rather than only the agent preamble.
+
+**Recommendation:** Leave on. Disable only if you are tight on prompt budget with a small-context model.
+
 ## Worktree workflow
 
 <a id="worktree"></a>Branch-per-feature isolation and auto-cleanup.
@@ -650,6 +811,66 @@ The token required for dashboard policy-mutation routes (enable/disable/stage/le
 Dashboard data refresh interval in milliseconds (floor 250).
 
 **Recommendation:** 2000 is fine; lower for a more live feel at higher CPU cost.
+
+### `proxy.dashboard`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | boolean |
+| **Default** | `true` |
+
+Ride-along dashboard: `uap proxy ensure|start` also starts (or adopts) `uap dashboard serve`, and release/stop tears it down under the same ownership rules — so a session gets monitoring without running a second command. Only takes effect where the proxy itself runs (hooks gate on proxy.autostart).
+
+**Recommendation:** Leave on. Turn off if you prefer to run `uap dash serve` yourself, or the port is spoken for.
+
+### `UAP_PROXY_DASHBOARD`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | boolean |
+| **Default** | `true` |
+
+Force the ride-along dashboard on (1/on/true) or off (0/off/false). Wins over .uap.json proxy.dashboard.
+
+**Recommendation:** Use for one-off overrides; prefer `uap proxy dashboard on|off` for a durable project setting.
+
+### `UAP_DASH_PORT`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | number |
+| **Default** | `3847` |
+
+Port the ride-along dashboard binds and is probed on (1-65535). Does not change `uap dash serve --port`.
+
+**Recommendation:** Change only on a port clash; keep it consistent across sessions so adoption works.
+
+### `UAP_DASH_HOST`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | string |
+| **Default** | `localhost` |
+
+Interface the ride-along dashboard binds. `0.0.0.0` exposes it beyond this machine.
+
+**Recommendation:** Keep localhost. Bind wider only behind a trusted network, and set UAP_DASHBOARD_TOKEN when you do.
+
+### `UAP_DASH_HEALTH_WAIT_MS`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | number |
+| **Default** | `10000` |
+
+How long `uap proxy ensure` waits for the ride-along dashboard to serve before giving up.
+
+**Recommendation:** Lower it if session start feels slow on a cold dashboard; the proxy is unaffected either way.
 
 ## Token & time optimization
 
