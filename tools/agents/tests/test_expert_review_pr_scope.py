@@ -378,6 +378,34 @@ class TestShipDetectionIsCommandPosition(unittest.TestCase):
         self.assert_not_ship("printf " + SQ + "run gh pr merge later" + SQ)
         self.assert_not_ship("cat docs/merge-strategy.md")
 
+    # --- verbs that ship without saying "push" or "merge" ---
+    #
+    # Catalogued as gaps that pattern-matching could not reach. Three of the
+    # four turned out to be reachable; the fourth (a variable holding the
+    # binary name, `G=git; $G push`) is not, because knowing what $G contains
+    # means running the shell — it is documented rather than half-solved.
+
+    def test_plumbing_push_is_a_ship_action(self):
+        # `git push` is a wrapper around send-pack. Same effect, different verb.
+        self.assert_ship("git send-pack origin HEAD:refs/heads/main")
+
+    def test_plumbing_commit_is_a_ship_action(self):
+        self.assert_ship("git commit-tree abc123 -m msg")
+
+    def test_gh_api_rest_merge_is_a_ship_action(self):
+        # Merges the PR without the string "pr merge" appearing anywhere.
+        self.assert_ship("gh api -X PUT repos/owner/repo/pulls/1/merge")
+
+    def test_gh_api_graphql_merge_is_a_ship_action(self):
+        self.assert_ship(
+            "gh api graphql -f query=" + SQ + "mutation{mergePullRequest(input:{})}" + SQ
+        )
+
+    def test_prose_naming_a_merge_endpoint_is_still_prose(self):
+        # The endpoint patterns must not resurrect the false positives #649
+        # removed: naming an endpoint is not calling it.
+        self.assert_not_ship("echo " + SQ + "see repos/owner/repo/pulls/1/merge" + SQ)
+
     def test_read_only_git_is_not_a_ship_action(self):
         self.assert_not_ship("git diff --merge-base main")
         self.assert_not_ship("git status --short")

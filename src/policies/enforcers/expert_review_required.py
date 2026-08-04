@@ -43,7 +43,24 @@ SHIP_PATTERNS = (
 # Additional, command-position detection: `git -C <path> push` is a real ship
 # action that the patterns above never matched (they require git and the
 # subcommand to be adjacent). Unioned with them, so it only ever ADDS coverage.
-GIT_SHIP_SUBCOMMANDS = frozenset({"commit", "push", "merge"})
+# Porcelain verbs, plus the plumbing that does the same job under another
+# name. `git send-pack` IS a push (push is a wrapper around it) and
+# `commit-tree` + `update-ref` is a commit; neither says "push" or "commit".
+GIT_SHIP_SUBCOMMANDS = frozenset({
+    "commit", "push", "merge",
+    "send-pack", "commit-tree", "update-ref", "fast-import",
+})
+
+# `gh api` reaches the same endpoints without ever saying "pr merge":
+#   gh api -X PUT repos/o/r/pulls/1/merge
+#   gh api graphql -f query=mutation{mergePullRequest(...)}
+GH_API_SHIP_RE = re.compile(
+    r"pulls/[^/\s]+/merge"
+    r"|/merges\b"
+    r"|mergePullRequest"
+    r"|createPullRequest",
+    re.I,
+)
 GIT_VALUE_OPTIONS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
 WRAPPER_VERBS = frozenset({
     "rtk", "env", "nohup", "sudo", "time", "command", "timeout", "stdbuf",
@@ -100,7 +117,28 @@ def _mask_prose(text: str) -> str:
     return text if quote is not None else "".join(out)
 
 
-def _ships_at_command_position(text: str) -> bool:
+def _git_ship_aliases(root: Path) -> frozenset[str]:
+    """Alias names that expand to a ship subcommand.
+
+    `git p` is a push when the user's gitconfig says so, and a scanner that
+    only knows the porcelain verbs never sees it. git itself is the authority,
+    so ask it. Empty on any failure — this only ever ADDS coverage.
+    """
+    rc, out, _ = run(["git", "config", "--get-regexp", r"^alias" + chr(92) + "."], cwd=root)
+    if rc != 0 or not out.strip():
+        return frozenset()
+
+    found = set()
+    for line in out.splitlines():
+        name, _, expansion = line.partition(" ")
+        alias = name.split(".", 1)[1] if "." in name else ""
+        first = expansion.strip().lstrip("!").split()
+        if alias and first and first[0].lower() in GIT_SHIP_SUBCOMMANDS:
+            found.add(alias.lower())
+    return frozenset(found)
+
+
+def _ships_at_command_position(text: str, root: Path | None = None) -> bool:
     """True when a segment's VERB is git with a ship subcommand.
 
     Only used to add `git -C <path> push`; the patterns carry the rest.
@@ -118,8 +156,12 @@ def _ships_at_command_position(text: str) -> bool:
         rest, i = tokens[1:], 0
         while i < len(rest) and rest[i].startswith("-"):
             i += 2 if rest[i] in GIT_VALUE_OPTIONS else 1
-        if i < len(rest) and rest[i].lower() in GIT_SHIP_SUBCOMMANDS:
-            return True
+        if i < len(rest):
+            sub = rest[i].lower()
+            if sub in GIT_SHIP_SUBCOMMANDS:
+                return True
+            if root is not None and sub in _git_ship_aliases(root):
+                return True
     return False
 
 
@@ -146,7 +188,7 @@ def _only_inert_verbs(text: str) -> bool:
     return saw
 
 
-def is_ship_action(command: str) -> bool:
+def is_ship_action(command: str, root: Path | None = None) -> bool:
     """True when the command line PERFORMS a ship action.
 
     The patterns used to run against the raw string, so any text that merely
@@ -165,7 +207,14 @@ def is_ship_action(command: str) -> bool:
     scan = _mask_prose(text) if _only_inert_verbs(text) else text
     if any(p.search(scan) for p in SHIP_PATTERNS):
         return True
-    return _ships_at_command_position(text)
+
+    # `gh api` hitting a merge/create endpoint is a ship action however it is
+    # spelled. Checked on the same `scan` text, so quoted prose describing an
+    # endpoint is still prose.
+    if "gh" in scan and GH_API_SHIP_RE.search(scan):
+        return True
+
+    return _ships_at_command_position(text, root)
 
 # A ship action that NAMES a pull request. The review that matters is the one
 # for that PR's head branch, which is usually not the branch the shell is on.
@@ -351,7 +400,7 @@ def main() -> None:
     # enforcement-self-protect also lists this flag among the bypasses the agent
     # may not set, so an inline attempt is refused with an explicit message
     # instead of appearing to work.
-    if not is_ship_action(cmd):
+    if not is_ship_action(cmd, worktree_root()):
         emit(True, "not a ship action")
 
     # Resolve against the WORKING TREE the operation runs in (the worktree when a
