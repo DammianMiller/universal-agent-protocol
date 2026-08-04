@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.184.2 (2026-08-04)
+
+- docs(policies): an enforcer edit reaches the gate only via the running package
+
+
 ## v1.184.1 (2026-08-04)
 
 - fix(policies): scope the plan-time gates correctly, and close three containment bypasses
