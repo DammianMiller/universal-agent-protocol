@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 import re
 import subprocess
 import sys
@@ -142,6 +143,53 @@ def hands_text_to_shell(cmd: str) -> bool:
     itself a command.
     """
     return bool(_SHELL_EXEC_RE.search(cmd or ""))
+
+
+# Gate evidence: records proving a required action actually happened.
+#
+# Kept OUT of the general .uap/ runtime area because self-protect's Bash scan is
+# intentionally permissive there. This subdirectory is listed in self-protect's
+# PROTECTED_TARGETS, so an agent cannot append to it from a shell the way it
+# could to .uap/read_log.state. Written only by the PostToolUse hook and the
+# CLI, neither of which is an agent tool call.
+EVIDENCE_DIR = Path(os.environ.get("UAP_STATE_DIR", ".uap")) / "evidence"
+
+
+def evidence_path(kind: str) -> Path:
+    """Path of the append-only log for one kind of evidence."""
+    return EVIDENCE_DIR / f"{kind}.log"
+
+
+def recent_evidence(kind: str, window_sec: int, root: Path | None = None) -> int:
+    """How many `kind` records were written within `window_sec`.
+
+    Records are "<epoch>\t<detail>" lines. A malformed or missing line is
+    skipped rather than failing the read: evidence is a signal, and a corrupt
+    line should not decide whether work proceeds.
+    """
+    candidates = [evidence_path(kind)]
+    if root is not None:
+        # The gate pins cwd to MAIN_ROOT, but a direct invocation may not, so
+        # the repo-rooted path is checked too.
+        candidates.append(root / ".uap" / "evidence" / f"{kind}.log")
+
+    now = time.time()
+    seen = 0
+    for path in candidates:
+        try:
+            lines = path.read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            ts, _, _detail = line.partition("\t")
+            try:
+                if now - float(ts) < window_sec:
+                    seen += 1
+            except ValueError:
+                continue
+        if seen:
+            break
+    return seen
 
 
 def strip_heredoc_bodies(cmd: str) -> str:

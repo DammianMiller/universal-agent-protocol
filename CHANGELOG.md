@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.184.6 (2026-08-04)
+
+- fix(policies): put gate evidence where the agent cannot write it
+
+
 ## v1.184.5 (2026-08-04)
 
 - fix(policies): attach enforcers by slug OR title, and close three ship-detection gaps

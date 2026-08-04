@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, writeFileSync, statSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, statSync, readdirSync, readFileSync, appendFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { execSync } from 'child_process';
 // QdrantClient lazy-loaded via shared utility (saves ~100ms startup)
@@ -865,6 +865,19 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
  * memory query fail.
  */
 export function recordMemoryQuery(cwd: string, search: string): void {
+  // Protected evidence first. The DB row below is an ordinary row in a database
+  // the agent writes to constantly, so it proves little on its own; this file
+  // lives under .uap/evidence/, which self-protect refuses agent writes to.
+  // The CLI is not an agent tool call, so it is not gated writing here.
+  try {
+    const evidenceDir = join(cwd, '.uap', 'evidence');
+    mkdirSync(evidenceDir, { recursive: true });
+    const line = `${Math.floor(Date.now() / 1000)}\t${search.replace(/[\t\n\r]/g, ' ')}\n`;
+    appendFileSync(join(evidenceDir, 'memory-queries.log'), line);
+  } catch {
+    // Evidence is best-effort; never fail the query over bookkeeping.
+  }
+
   try {
     const config = loadUapConfig(cwd);
     const dbPath =
