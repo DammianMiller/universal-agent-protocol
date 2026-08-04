@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.185.0 (2026-08-04)
+
+- feat(memory): make stored memories actually durable
+- fix(memory): anchor gate evidence to the main checkout so the memory-before-plan
+  gate sees it from inside a worktree instead of falling back to the weaker db-row
+  route (surfaced only once #653 and this branch were merged together)
+
+
 ## v1.184.6 (2026-08-04)
 
 - fix(policies): put gate evidence where the agent cannot write it
