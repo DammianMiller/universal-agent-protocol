@@ -26,6 +26,7 @@ ENFORCER = (
 
 PR_NUMBER = "645"
 VERB = "merge"
+DQ, SQ = chr(34), chr(39)
 PR_BRANCH = "feature/160-plan-gate-writers"
 PR_SHA = "dd5ce346281d720dff357d4a649d7389e65bfd61"
 STALE_SHA = "2f1b660f" + "0" * 32
@@ -195,6 +196,191 @@ class TestExpertReviewPrScope(unittest.TestCase):
         self.assertFalse(out.get("allowed"), "stale master review blocks a master push")
         self.assertEqual(code, 2)
         self.assertIn("master", out.get("reason", ""))
+
+
+class TestShipDetectionIsCommandPosition(unittest.TestCase):
+    """A ship verb in PROSE is not a ship action.
+
+    The patterns used to be searched over the whole command string, so any text
+    that merely named a ship verb tripped the gate — a quoted string, a grep
+    pattern, a heredoc body. It self-deadlocked too: writing this gate's own
+    review artifact was refused because the notes described the bug being fixed.
+
+    The risk in the fix is UNDER-detection, so the ship cases below matter more
+    than the prose ones. `rtk git push` especially: this repo requires git to be
+    invoked through rtk, so a verb check that stopped at the wrapper would miss
+    every real ship command in the codebase.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        self.root = base / "repo"
+        self.bin = base / "bin"
+        self.root.mkdir()
+        self.bin.mkdir()
+        self._write_stub_gh()
+        self._init_repo()
+        # Deliberately NO review artifact: a ship action must be refused, and a
+        # non-ship command must sail past with "not a ship action".
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    _write_stub_gh = TestExpertReviewPrScope._write_stub_gh
+    _init_repo = TestExpertReviewPrScope._init_repo
+    _run = TestExpertReviewPrScope._run
+
+    def assert_ship(self, command):
+        out, code = self._run(command)
+        self.assertFalse(out.get("allowed"), f"{command!r} should be gated as a ship action")
+        self.assertEqual(code, 2, command)
+
+    def assert_not_ship(self, command):
+        out, code = self._run(command)
+        self.assertTrue(out.get("allowed"), f"{command!r} should not be a ship action")
+        self.assertIn("not a ship action", out.get("reason", ""), command)
+
+    # --- real ship actions must STILL be gated ---
+
+    def test_plain_git_push_is_a_ship_action(self):
+        self.assert_ship("git push origin master")
+
+    def test_rtk_wrapped_git_is_a_ship_action(self):
+        # The mandated form in this repo. Missing it would silently ungate
+        # every push and commit made here.
+        self.assert_ship("rtk git push origin master")
+
+    def test_ship_action_after_a_chained_command(self):
+        self.assert_ship("cd sub && git commit -m x")
+
+    def test_git_global_option_before_the_subcommand(self):
+        # `git -C <path> push` — not caught by the old pattern at all.
+        self.assert_ship("git -C /repo push")
+
+    def test_gh_pr_merge_is_a_ship_action(self):
+        self.assert_ship("gh pr merge 645 --squash")
+
+    # --- prose that merely NAMES a ship verb must not be ---
+
+    def test_quoted_ship_verb_is_prose(self):
+        self.assert_not_ship("echo 'gh pr merge 645'")
+
+    def test_grep_pattern_is_prose(self):
+        self.assert_not_ship("grep -r 'git push' docs/")
+
+    def test_heredoc_body_is_data_not_commands(self):
+        # The exact self-deadlock: writing the review artifact whose notes
+        # describe the gate being fixed.
+        self.assert_not_ship(
+            "python3 - <<'PY'\n"
+            "notes = 'refused because the notes mention gh pr merge'\n"
+            "print(notes)\n"
+            "PY"
+        )
+
+    # --- forms a command-position-only check LOSES ---
+    #
+    # A first attempt at this fix replaced the patterns with a verb-at-position-0
+    # check, copying self-protect. Measured against the old patterns it dropped
+    # 14 real detections, every one of them below: the loose patterns caught
+    # these by accident and the verb check does not. A gate that stops
+    # recognising a ship action stops gating, which is strictly worse than the
+    # false positives being fixed — so these are pinned.
+
+    def test_wrapper_with_its_own_argument_still_ships(self):
+        # The wrapper takes an argument, so the wrapped verb is not token 1.
+        self.assert_ship("timeout 30 git push")
+        self.assert_ship("sudo -u someone git push")
+
+    def test_subshell_and_brace_group_still_ship(self):
+        self.assert_ship("(git push)")
+        self.assert_ship("{ git push; }")
+
+    def test_negated_command_still_ships(self):
+        self.assert_ship("! git push")
+
+    def test_shell_exec_string_still_ships(self):
+        # The ship verb is inside quotes, but `bash -c` makes that text a
+        # command — which is exactly what separates it from `echo 'git push'`.
+        self.assert_ship("bash -c 'git push'")
+        self.assert_ship("sh -c 'git push'")
+
+    def test_xargs_and_find_exec_still_ship(self):
+        self.assert_ship("echo origin | xargs git push")
+        self.assert_ship("find . -exec git push ;")
+
+    def test_leading_redirect_still_ships(self):
+        # Bash allows a redirection before the command word.
+        self.assert_ship("> /tmp/uap-out.log git push")
+
+    def test_commit_message_naming_other_ship_verbs_still_ships(self):
+        # The quotes hold prose, but `git commit` is outside them.
+        self.assert_ship("git commit -m 'explain gh pr merge behaviour'")
+
+    # --- an interpreter's -c/-e payload is CODE, not prose ---
+    #
+    # Masking quoted spans assumed quoted text is inert. That holds for `echo`
+    # and fails for every interpreter: each command below really pushed in a
+    # throwaway repo (the bare origin gained the commit) while an earlier
+    # version of this fix blanked the payload and let it through.
+
+    def test_python_payload_that_shells_out_is_a_ship_action(self):
+        self.assert_ship(
+            "python3 -c " + DQ + "import os; os.system(" + SQ + "git push" + SQ + ")" + DQ
+        )
+
+    def test_perl_payload_that_shells_out_is_a_ship_action(self):
+        self.assert_ship("perl -e " + DQ + "system(" + SQ + "git push" + SQ + ")" + DQ)
+
+    def test_node_payload_that_shells_out_is_a_ship_action(self):
+        self.assert_ship(
+            "node -e " + DQ + "require(" + SQ + "child_process" + SQ
+            + ").execSync(" + SQ + "git push" + SQ + ")" + DQ
+        )
+
+    def test_an_inert_interpreter_payload_is_over_detected_on_purpose(self):
+        # `print('git push')` ships nothing, but is indistinguishable from
+        # `os.system('git push')` without running the interpreter. Gated on
+        # purpose: an unnecessary review is a nuisance, an ungated ship is not.
+        self.assert_ship("python3 -c " + DQ + "print(" + SQ + "git push" + SQ + ")" + DQ)
+
+    # --- executors nobody thought to list ---
+    #
+    # Quoting used to be masked by default, with an exemption list for things
+    # that execute: bash -c, then python/perl/node, and `script -qc` still got
+    # through — it really ships (a throwaway bare repo gained the commit). su,
+    # fish, expect, parallel and watch sat behind it. A denylist of executors
+    # cannot be completed, so masking is now allowlisted to verbs that print or
+    # search their arguments, and anything unrecognised scans the raw text.
+    #
+    # These cases exist to keep that inversion from being quietly undone: they
+    # pass because `script`/`su`/`fish` are NOT on the inert allowlist, not
+    # because anyone enumerated them.
+
+    def test_script_wrapped_ship_is_detected(self):
+        self.assert_ship("script -qc " + SQ + "git push" + SQ + " /dev/null")
+
+    def test_su_wrapped_ship_is_detected(self):
+        self.assert_ship("su -c " + SQ + "git push" + SQ)
+
+    def test_unlisted_shell_wrapped_ship_is_detected(self):
+        self.assert_ship("fish -c " + SQ + "git push" + SQ)
+        self.assert_ship("expect -c " + SQ + "git push" + SQ)
+
+    def test_remote_execution_is_detected(self):
+        # Ships on the far side; gated on purpose.
+        self.assert_ship("ssh somehost " + SQ + "git push" + SQ)
+
+    def test_inert_verbs_still_treat_quotes_as_prose(self):
+        # The allowlist half: these must stay unblocked, or the false positives
+        # this branch exists to fix come straight back.
+        self.assert_not_ship("printf " + SQ + "run gh pr merge later" + SQ)
+        self.assert_not_ship("cat docs/merge-strategy.md")
+
+    def test_read_only_git_is_not_a_ship_action(self):
+        self.assert_not_ship("git diff --merge-base main")
+        self.assert_not_ship("git status --short")
 
 
 if __name__ == "__main__":

@@ -27,7 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import (  # noqa: E402
-    emit, parse_cli, worktree_root, run, REVIEW_ARTIFACT_DIR, REVIEW_WAIVER_DIR,
+    emit, parse_cli, worktree_root, run, strip_heredoc_bodies,
+    REVIEW_ARTIFACT_DIR, REVIEW_WAIVER_DIR,
 )
 
 # Ship verbs are anchored to their tool prefix so that the bare tokens "merge"
@@ -38,6 +39,133 @@ SHIP_PATTERNS = (
     re.compile(r"\bgh\s+pr\s+(create|merge|ready)\b"),
     re.compile(r"\b(pr[-_ ]?ready|sign[-_ ]?off|ready[-_ ]for[-_ ]review)\b", re.I),
 )
+
+# Additional, command-position detection: `git -C <path> push` is a real ship
+# action that the patterns above never matched (they require git and the
+# subcommand to be adjacent). Unioned with them, so it only ever ADDS coverage.
+GIT_SHIP_SUBCOMMANDS = frozenset({"commit", "push", "merge"})
+GIT_VALUE_OPTIONS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
+WRAPPER_VERBS = frozenset({
+    "rtk", "env", "nohup", "sudo", "time", "command", "timeout", "stdbuf",
+})
+_SEGMENT_SPLIT = re.compile(r"(?:\|\||&&|[;\n|&])")
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
+
+
+# Verbs that PRINT or SEARCH their arguments rather than executing them.
+# Quoted text is treated as prose only for these.
+#
+# An allowlist, deliberately. The inverse — masking by default and listing
+# the executors to exempt — cannot be completed: bash -c, python -c, perl -e,
+# su -c, script -qc, fish -c, parallel, expect ... every review round found
+# another, and `script -qc 'git push' /dev/null` really does ship. An
+# unrecognised verb here simply scans the raw text, which is the behaviour
+# this enforcer always had, so being wrong about one costs nothing.
+INERT_VERBS = frozenset({
+    "echo", "printf", "cat", "head", "tail", "less", "more",
+    "grep", "egrep", "fgrep", "rg", "ag", "ack",
+    "wc", "sort", "uniq", "comm", "diff", "cut", "column",
+    "ls", "basename", "dirname", "date", "jq", "true", "false",
+})
+
+
+def _mask_prose(text: str) -> str:
+    """`text` with the CONTENT of quoted spans blanked.
+
+    Quoted text is where prose lives: a commit message, an echoed string, a
+    grep pattern. Blanking it stops a mere MENTION of a ship verb from being
+    read as one.
+
+    Returns the text UNCHANGED when the quoting is not simple enough to model
+    (an unterminated quote). For this gate the safe direction is to
+    over-detect: a review demanded unnecessarily is a nuisance, a ship that
+    slips past ungated is the failure this enforcer exists to prevent.
+    """
+    out = list(text)
+    quote = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote is None:
+            if ch == "\\":
+                i += 2                      # escaped char cannot open a quote
+                continue
+            if ch in ("'", '"'):
+                quote = ch
+        elif ch == quote:
+            quote = None
+        else:
+            out[i] = " "
+        i += 1
+    return text if quote is not None else "".join(out)
+
+
+def _ships_at_command_position(text: str) -> bool:
+    """True when a segment's VERB is git with a ship subcommand.
+
+    Only used to add `git -C <path> push`; the patterns carry the rest.
+    """
+    for segment in _SEGMENT_SPLIT.split(text):
+        try:
+            tokens = shlex.split(segment.strip(), comments=True)
+        except ValueError:
+            tokens = segment.split()
+        while tokens and (_ENV_ASSIGN.match(tokens[0])
+                          or os.path.basename(tokens[0]).lower() in WRAPPER_VERBS):
+            tokens = tokens[1:]
+        if not tokens or os.path.basename(tokens[0]).lower() != "git":
+            continue
+        rest, i = tokens[1:], 0
+        while i < len(rest) and rest[i].startswith("-"):
+            i += 2 if rest[i] in GIT_VALUE_OPTIONS else 1
+        if i < len(rest) and rest[i].lower() in GIT_SHIP_SUBCOMMANDS:
+            return True
+    return False
+
+
+def _only_inert_verbs(text: str) -> bool:
+    """True when every segment's verb merely prints or searches its arguments.
+
+    Only then is quoted text safely prose. `hands_text_to_shell` still decides
+    the heredoc question upstream; this decides the quoting one.
+    """
+    saw = False
+    for segment in _SEGMENT_SPLIT.split(text):
+        try:
+            tokens = shlex.split(segment.strip(), comments=True)
+        except ValueError:
+            return False                     # unlexable: do not mask
+        while tokens and (_ENV_ASSIGN.match(tokens[0])
+                          or os.path.basename(tokens[0]).lower() in WRAPPER_VERBS):
+            tokens = tokens[1:]
+        if not tokens:
+            continue
+        if os.path.basename(tokens[0]).lower() not in INERT_VERBS:
+            return False
+        saw = True
+    return saw
+
+
+def is_ship_action(command: str) -> bool:
+    """True when the command line PERFORMS a ship action.
+
+    The patterns used to run against the raw string, so any text that merely
+    NAMED a ship verb tripped the gate — a quoted string, a grep pattern, a
+    heredoc body. It self-deadlocked too: writing this gate's own review
+    artifact was refused because the notes described the bug being fixed.
+
+    So the prose is removed before matching, rather than the matching being
+    replaced. `git commit -m 'mentions gh pr merge'` is still a ship action —
+    the commit is outside the quotes.
+    """
+    text = strip_heredoc_bodies(command or "")
+    # Quoted text counts as prose only under a verb that prints or searches it
+    # (`echo 'git push'`). Under anything else — a shell, an interpreter, or
+    # something nobody listed — the raw text is scanned, as it always was.
+    scan = _mask_prose(text) if _only_inert_verbs(text) else text
+    if any(p.search(scan) for p in SHIP_PATTERNS):
+        return True
+    return _ships_at_command_position(text)
 
 # A ship action that NAMES a pull request. The review that matters is the one
 # for that PR's head branch, which is usually not the branch the shell is on.
@@ -223,7 +351,7 @@ def main() -> None:
     # enforcement-self-protect also lists this flag among the bypasses the agent
     # may not set, so an inline attempt is refused with an explicit message
     # instead of appearing to work.
-    if not any(p.search(cmd) for p in SHIP_PATTERNS):
+    if not is_ship_action(cmd):
         emit(True, "not a ship action")
 
     # Resolve against the WORKING TREE the operation runs in (the worktree when a
