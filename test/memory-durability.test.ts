@@ -12,7 +12,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import { join } from 'path';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { memoryRoot, shortTermDbPath } from '../src/memory/paths.js';
+import { recordMemoryQuery } from '../src/cli/memory.js';
 import { dimensionedName, storeLongTerm } from '../src/memory/long-term.js';
 import type { AgentContextConfig } from '../src/types/index.js';
 
@@ -22,6 +25,34 @@ describe('memory paths resolve to the main checkout', () => {
   it('strips a worktree suffix so every agent shares one store', () => {
     expect(memoryRoot(`${MAIN}/.worktrees/166-some-slug`)).toBe(MAIN);
     expect(memoryRoot(`${MAIN}/.worktrees/166-some-slug/src/deeper`)).toBe(MAIN);
+  });
+
+  it('writes gate evidence where the GATE reads it, not where the query ran', () => {
+    // The memory-before-plan gate reads evidence relative to its own cwd and
+    // repo_root(), which are both the main checkout. Evidence written into the
+    // worktree was therefore invisible to it, and the gate quietly fell back to
+    // its "db row" branch — an ordinary row the agent writes constantly, i.e.
+    // exactly the weak signal this evidence file exists to replace. The gate
+    // still ALLOWED, so nothing looked broken; the hardening was just inert in
+    // the one workflow the worktree policy mandates.
+    const root = mkdtempSync(join(tmpdir(), 'uap-evidence-'));
+    try {
+      const worktree = join(root, '.worktrees', '166-some-slug');
+      mkdirSync(worktree, { recursive: true });
+
+      recordMemoryQuery(worktree, 'probe topic');
+
+      expect(
+        existsSync(join(root, '.uap', 'evidence', 'memory-queries.log')),
+        'evidence must land in the main checkout, where the gate looks'
+      ).toBe(true);
+      expect(
+        existsSync(join(worktree, '.uap', 'evidence', 'memory-queries.log')),
+        'evidence must NOT be stranded in the worktree'
+      ).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('leaves a main-checkout path alone', () => {

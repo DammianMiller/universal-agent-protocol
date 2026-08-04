@@ -3,6 +3,19 @@
 ## v1.185.0 (2026-08-04)
 
 - feat(memory): make stored memories actually durable
+- fix(memory): anchor gate evidence to the main checkout so the memory-before-plan
+  gate sees it from inside a worktree instead of falling back to the weaker db-row
+  route (surfaced only once #653 and this branch were merged together)
+
+
+## v1.184.6 (2026-08-04)
+
+- fix(policies): put gate evidence where the agent cannot write it
+
+
+## v1.184.5 (2026-08-04)
+
+- fix(policies): attach enforcers by slug OR title, and close three ship-detection gaps
 - chore: stop tracking the per-platform hook copies (#650)
 - fix(policies): a ship verb in prose is not a ship action (#649)
 - docs(policies): an enforcer edit reaches the gate only via the running package (#648)

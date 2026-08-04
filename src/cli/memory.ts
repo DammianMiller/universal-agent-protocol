@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, writeFileSync, statSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, statSync, readdirSync, readFileSync, appendFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { execSync } from 'child_process';
 // QdrantClient lazy-loaded via shared utility (saves ~100ms startup)
@@ -18,7 +18,7 @@ import type { DiscoveredSkill } from '../memory/prepopulate.js';
 import { statusBadge, miniGauge, divider, keyValue, tree, type TreeNode } from './visualize.js';
 import { evaluateWriteGate, formatGateResult } from '../memory/write-gate.js';
 import { DailyLog } from '../memory/daily-log.js';
-import { shortTermDbPath } from '../memory/paths.js';
+import { memoryRoot, shortTermDbPath } from '../memory/paths.js';
 import { storeLongTerm, dimensionedName } from '../memory/long-term.js';
 import { propagateCorrection } from '../memory/correction-propagator.js';
 import { runMaintenance } from '../memory/memory-maintenance.js';
@@ -895,10 +895,30 @@ async function prepopulateFromSources(cwd: string, options: MemoryOptions): Prom
  * memory query fail.
  */
 export function recordMemoryQuery(cwd: string, search: string): void {
+  // Protected evidence first. The DB row below is an ordinary row in a database
+  // the agent writes to constantly, so it proves little on its own; this file
+  // lives under .uap/evidence/, which self-protect refuses agent writes to.
+  // The CLI is not an agent tool call, so it is not gated writing here.
+  //
+  // Anchored to the MAIN checkout, not cwd. The gate reads evidence relative to
+  // its own cwd and repo_root(), both of which are the main checkout — so a
+  // query run from inside a worktree (which the worktree policy MANDATES) wrote
+  // evidence the gate could not see, and it silently fell through to the "db
+  // row" branch. That is the weak route this evidence exists to replace, so the
+  // hardening was inert in the exact workflow the repo requires. Verified by
+  // running the enforcer with cwd+roots set the way the hook sets them.
+  try {
+    const evidenceDir = join(memoryRoot(cwd), '.uap', 'evidence');
+    mkdirSync(evidenceDir, { recursive: true });
+    const line = `${Math.floor(Date.now() / 1000)}\t${search.replace(/[\t\n\r]/g, ' ')}\n`;
+    appendFileSync(join(evidenceDir, 'memory-queries.log'), line);
+  } catch {
+    // Evidence is best-effort; never fail the query over bookkeeping.
+  }
+
   try {
     const config = loadUapConfig(cwd);
-    const dbPath =
-      config?.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
+    const dbPath = shortTermDbPath(cwd, config?.memory?.shortTerm?.path);
     mkdirSync(dirname(dbPath), { recursive: true });
 
     const db = new Database(dbPath);

@@ -40,6 +40,21 @@ const ENFORCER_DIR = resolvePolicyDir('enforcers');
  * basename with hyphens->underscores), attach it via PolicyToolRegistry.
  * Returns the tool name on success, null if no enforcer present.
  */
+/**
+ * Slug form of a stored policy name: `Enforcement Self-Protect` ->
+ * `enforcement-self-protect`.
+ *
+ * A policy is stored under its markdown H1, which for older catalog entries is
+ * a Title Case heading rather than the slug. Matching on the raw name alone
+ * meant those policies never got their enforcer attached.
+ */
+export function policyNameSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 export async function autoAttachEnforcer(policyName: string): Promise<string | null> {
   const toolName = policyName.replace(/-/g, '_');
   const enforcerPath = join(ENFORCER_DIR, `${toolName}.py`);
@@ -47,12 +62,28 @@ export async function autoAttachEnforcer(policyName: string): Promise<string | n
 
   const memory = getPolicyMemoryManager();
   const policies = await memory.getAllPolicies();
-  const installed = policies.find((p) => p.name === policyName);
-  if (!installed) return null;
+
+  // Match the slug OR a name that slugifies to it. Exact-match only was a
+  // silent, load-bearing failure: `enforcement-self-protect` is stored as
+  // "Enforcement Self-Protect", so the lookup missed, no executable_tools row
+  // was ever written, and uap-policy-gate.sh — which finds runnable policies by
+  // INNER JOINing policies against executable_tools — could not see the policy
+  // at all. Its `sec_enforcer_ran` flag then never got set, so the gate
+  // FAILED CLOSED on every edit to the enforcement surface, in every checkout.
+  // Thirty-one active policies were in this state.
+  const matches = policies.filter(
+    (p) => p.name === policyName || policyNameSlug(p.name) === policyName
+  );
+  if (matches.length === 0) return null;
 
   const code = readFileSync(enforcerPath, 'utf-8');
   const registry = getPolicyToolRegistry();
-  await registry.storeToolCode(installed.id, toolName, code);
+  // Attach to EVERY match. Duplicate rows for one policy exist in the wild
+  // (`Enforcement Self Protect` and `Enforcement Self-Protect` both), and the
+  // gate may pick either — attaching to one leaves the other unrunnable.
+  for (const installed of matches) {
+    await registry.storeToolCode(installed.id, toolName, code);
+  }
   return toolName;
 }
 

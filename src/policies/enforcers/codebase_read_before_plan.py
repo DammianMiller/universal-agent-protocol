@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import arg_str, emit, parse_cli, repo_root  # noqa: E402
+from _common import arg_str, emit, parse_cli, repo_root, recent_evidence  # noqa: E402
 
 PLAN_OPS = {"ExitPlanMode", "Plan", "TodoWrite"}
 PLAN_WORD_RE = re.compile(r"(?<![-\w/])(plan the|design the|architect the|propose a plan|spec the)", re.I)
@@ -66,9 +66,16 @@ def main() -> None:
     if op not in PLAN_OPS and not PLAN_WORD_RE.search(blob):
         emit(True, "not a plan op")
 
+    # Prefer the protected evidence log; fall back to the legacy read_log while
+    # installs catch up. The legacy file is shell-writable, so it is accepted
+    # but no longer the only source.
+    trusted = recent_evidence("reads", RECENT_SEC, repo_root())
+    if trusted:
+        emit(True, f"{trusted} recent codebase reads on record (evidence)")
+
     reads = recent_reads()
     if reads:
-        emit(True, f"{len(reads)} recent codebase reads on record")
+        emit(True, f"{len(reads)} recent codebase reads on record (legacy log)")
 
     if not writer_installed():
         emit(True, "read-log writer hook not installed — gate advisory (run `uap hooks install`)")
