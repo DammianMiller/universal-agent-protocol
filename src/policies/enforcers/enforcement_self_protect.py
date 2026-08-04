@@ -112,6 +112,12 @@ PROTECTED_TARGETS = (
     "src/policies",
     "policies/",
     ".uap/interaction",
+    # Gate evidence. The rest of .uap/ stays permissive on purpose (the tooling
+    # writes runtime state there constantly), but these records are what the
+    # plan-time gates accept as proof a required action happened. Leaving them
+    # shell-writable meant a single append could satisfy a gate — which is
+    # exactly how one was satisfied during development.
+    ".uap/evidence",
     ".uap.json",
     "anthropic-proxy.env",
 )

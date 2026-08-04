@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import arg_str, emit, parse_cli, repo_root, worktree_root  # noqa: E402
+from _common import arg_str, emit, parse_cli, repo_root, worktree_root, recent_evidence  # noqa: E402
 
 PLAN_OPS = {"ExitPlanMode", "Plan", "TodoWrite", "plan", "design"}
 # Only match standalone words, not compounds like 'validate-plan-on-change'
@@ -66,9 +66,14 @@ def main() -> None:
     if op not in PLAN_OPS and not PLAN_WORD_RE.search(blob):
         emit(True, "not a plan operation")
 
+    # Protected evidence first; the DB row is still accepted, but it is an
+    # ordinary row in a database the agent writes to constantly.
+    if recent_evidence("memory-queries", RECENT_SEC, repo_root()):
+        emit(True, "recent uap memory query on record (evidence)")
+
     for db in candidate_dbs():
         if recent_memory_query(db):
-            emit(True, "recent uap memory query on record")
+            emit(True, "recent uap memory query on record (db row)")
 
     emit(
         False,
