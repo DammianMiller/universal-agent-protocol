@@ -19,6 +19,25 @@ Allowed targets:
     UAP_WORKDIR_ALLOW.
 
 Escape hatch: UAP_WORKDIR_SCOPE_OFF=1 allows everything (operator override).
+
+SCOPE — read this before trusting it as a boundary.
+
+The Write/Edit path IS a boundary: it receives a concrete file path and
+checks it, with no parsing involved.
+
+The Bash path is DEFENCE IN DEPTH, not a boundary. It pattern-matches shell
+text rather than parsing shell, and three separate review rounds each found
+another construct the patterns missed: an escaped quote desyncing the mask,
+command substitution executing inside double quotes, a tilde- or
+variable-prefixed redirect target, a line continuation splitting a verb from
+its destination, a process substitution hiding its destination in parens.
+Each was fixed; the pattern is that there is always another one, because a
+regex over command text cannot know what a shell will do with it.
+
+So it raises the cost of an accidental escape and catches the naive forms —
+which is what was actually observed in the wild. It does not stop a
+determined one. The real containment is the tool-level path check above,
+plus the fact that the agent cannot edit this file (enforcement-self-protect).
 """
 from __future__ import annotations
 
