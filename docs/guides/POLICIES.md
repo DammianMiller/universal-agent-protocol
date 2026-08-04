@@ -194,43 +194,52 @@ the next tool call.
 
 ## Changing an enforcer's code
 
-Two things trip people up here, and both fail *silently* — the source looks
-fixed while the gate keeps enforcing the old behaviour.
+Three things trip people up here, and all of them fail *silently* — the source
+looks fixed, `uap policy install` prints success, and the gate goes on
+enforcing the old behaviour.
 
 **1. The gate does not run `src/policies/enforcers/*.py`.** It runs
 `.policy-tools/<policyId>_<toolName>.py`, a separate materialized copy (plus a
 snapshot in the `code` column of `policies.db`). Editing the source changes
-nothing on its own — re-run `uap policy install <slug>` to refresh the
-executable copy:
+nothing on its own — the executable copy has to be refreshed by
+`uap policy install <slug>`.
+
+**2. `uap policy install` reads the enforcer from the RUNNING PACKAGE, not from
+your repo.** `resolvePolicyDir()` resolves `src/policies/enforcers/` relative to
+the installed package first, and only falls back to `process.cwd()` — deliberately,
+so that `uap` works in projects that are not this repo. When `uap` is the global
+install, editing this repo's enforcer and running `uap policy install` copies the
+**global package's** version, and the message still says
+"attached enforcer … from src/policies/enforcers/…".
+
+So an enforcer change reaches the running gate only after the package the `uap`
+binary comes from contains it:
 
 ```bash
+which uap                       # /usr/local/bin/uap -> the global install?
+uap --version                   # does it match this repo's package.json?
+
+npm i -g .                      # from the repo, after the fix is merged
 uap policy install workdir-scope
 grep -l _my_new_function .policy-tools/*workdir_scope.py   # verify it took
 ```
 
-**2. Run that install from the MAIN checkout, not a worktree.** The policy gate
-anchors runtime state — `policies.db` and `.policy-tools/` — to `MAIN_ROOT`, so
-that every worktree enforces the same policies. `uap policy install` run from
-inside a worktree gets this wrong in *both* directions, while still printing
-success:
+That last `grep` is the only real confirmation. A byte-size comparison against
+the enforcer source works too: a mismatch means the copy came from somewhere else.
 
-- it **reads** the enforcer source from the main checkout (not the worktree's
-  edited copy), and
-- it **writes** the materialized copy into a worktree-local `.policy-tools/`
-  that the gate never reads.
+**3. Run the install from the MAIN checkout, not a worktree.** The gate anchors
+runtime state — `policies.db` and `.policy-tools/` — to `MAIN_ROOT`, so every
+worktree enforces the same policies. Run from inside a worktree, the install
+writes a worktree-local `.policy-tools/` that the gate never reads.
 
-So the install is a no-op for enforcement, and it is silent about it: the
-edited enforcer is verified by the test suite (which reads the worktree source)
-while the running gate still executes the old code. Verified 2026-08-03 by
-comparing the materialized copy against both sources — it matched the main
-checkout byte for byte.
-
-So an enforcer fix is two separate steps in two different directories:
+Put together, an enforcer fix is three steps in two directories:
 
 - edit the enforcer **in your worktree**, so the change ships in the PR;
-- after it merges, run `uap policy install <slug>` **from the main checkout** to
-  refresh the runtime copy.
+- after it merges, update the package the `uap` binary resolves to
+  (`npm i -g .` from the main checkout, or install the published version);
+- run `uap policy install <slug>` **from the main checkout**, and verify the
+  materialized copy actually changed.
 
 Note that `enforcement-self-protect` blocks agent writes to `src/policies/**`
-outright, with no model-reachable bypass. An agent cannot make either change —
-enforcer edits are an operator action by design.
+outright, with no model-reachable bypass. An agent cannot make any of these
+changes — enforcer edits are an operator action by design.
