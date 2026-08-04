@@ -12650,6 +12650,57 @@ def _parse_anthropic_sse_to_message(raw: bytes) -> dict | None:
     }
 
 
+ADVERTISED_MODEL_IDS = (
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-6",
+    "claude-sonnet-5-20250514",
+    "claude-fable-5",
+    "qwen36-35b-a3b-iq4xs",
+)
+
+# Keys OpenAI-compatible clients probe for a model's context window. There is no
+# standard, so emit the common spellings rather than betting on one: hermes reads
+# context_length / context_window / max_context_length / max_model_len / n_ctx
+# (agent/model_metadata.py:_CONTEXT_LENGTH_KEYS), LiteLLM and vLLM prefer
+# max_model_len, LM Studio uses max_context_length. They are all the same number.
+_CONTEXT_WINDOW_KEYS = (
+    "context_length",
+    "context_window",
+    "max_context_length",
+    "max_model_len",
+    "n_ctx",
+)
+
+
+def _model_entry(model_id: str) -> dict:
+    """One /v1/models row, carrying the context window when we know it.
+
+    Advertising this is not cosmetic. A client that cannot discover the window
+    cannot size its own history to it, so it grows unbounded and the FIRST thing
+    that notices is this proxy — which can then only prune blind, after the
+    prompt is already built.
+
+    Live, 2026-08-04: hermes has a context compressor and probes for exactly
+    these keys. We advertised bare {"id", "object"} rows, its model cache held no
+    entry for our model, so the compressor never engaged. It sent 470 messages /
+    219,957 tokens against a 130,048 window (169%), and the proxy CRITICAL PRUNEd
+    290 of them to fit — 61 such events in 18 hours. Raising the window from
+    86,784 to 130,048 had not helped, because the growth was never sized to the
+    window in the first place.
+
+    Only advertised for models this proxy serves LOCALLY. A model that
+    round-trips to api.anthropic.com has its own (much larger) window, and
+    stamping the local llama.cpp figure on it would make clients truncate
+    needlessly — a worse bug than the one being fixed, so when in doubt emit
+    nothing and leave the client on its own defaults.
+    """
+    entry = {"id": model_id, "object": "model"}
+    if PROXY_CONTEXT_WINDOW > 0 and not _should_passthrough_model(model_id):
+        for key in _CONTEXT_WINDOW_KEYS:
+            entry[key] = PROXY_CONTEXT_WINDOW
+    return entry
+
+
 @app.get("/v1/models")
 async def models():
     """Return available model list.
@@ -12666,15 +12717,7 @@ async def models():
     ANTHROPIC_PASSTHROUGH_MODELS=__local_only__ is set, all IDs (including
     the Claude ones below) are served by the local llama.cpp backend.
     """
-    return {
-        "data": [
-            {"id": "claude-haiku-4-5-20251001", "object": "model"},
-            {"id": "claude-sonnet-4-6", "object": "model"},
-            {"id": "claude-sonnet-5-20250514", "object": "model"},
-            {"id": "claude-fable-5", "object": "model"},
-            {"id": "qwen36-35b-a3b-iq4xs", "object": "model"},
-        ]
-    }
+    return {"data": [_model_entry(mid) for mid in ADVERTISED_MODEL_IDS]}
 
 
 @app.get("/health")
