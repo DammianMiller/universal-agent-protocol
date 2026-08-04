@@ -15,7 +15,16 @@ export const ShortTermMemorySchema = z.object({
   path: z.string().default('./agents/data/memory/short_term.db'),
   // Web: IndexedDB database name (optional - if set, uses web template)
   webDatabase: z.string().optional(),
-  maxEntries: z.number().default(50),
+  /**
+   * Rolling window size for short-term recall.
+   *
+   * Was 50, which is a handful of hours of work: prune() runs after EVERY
+   * write, so a session's learnings evicted each other before anyone could
+   * recall them. 500 holds a realistic working history while keeping SQLite
+   * queries fast. Durability is not this number's job — that is long-term
+   * (Qdrant) storage, which every `uap memory store` now also writes to.
+   */
+  maxEntries: z.number().default(500),
   // Force desktop mode even if webDatabase is set
   forceDesktop: z.boolean().optional(),
 });

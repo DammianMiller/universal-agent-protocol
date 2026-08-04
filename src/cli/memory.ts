@@ -18,6 +18,8 @@ import type { DiscoveredSkill } from '../memory/prepopulate.js';
 import { statusBadge, miniGauge, divider, keyValue, tree, type TreeNode } from './visualize.js';
 import { evaluateWriteGate, formatGateResult } from '../memory/write-gate.js';
 import { DailyLog } from '../memory/daily-log.js';
+import { shortTermDbPath } from '../memory/paths.js';
+import { storeLongTerm, dimensionedName } from '../memory/long-term.js';
 import { propagateCorrection } from '../memory/correction-propagator.js';
 import { runMaintenance } from '../memory/memory-maintenance.js';
 
@@ -518,9 +520,25 @@ async function queryQdrant(
     const client = new QdrantClientClass({ url, apiKey, checkCompatibility: false });
     await client.getCollections();
 
-    // Try collection variants (main and prepopulated)
+    // Real semantic embedding (nomic-embed-text-v2 via llama.cpp). The
+    // 'search_query:' prefix is nomic's asymmetric-retrieval counterpart to
+    // documents stored with 'search_document:'. (Previously this used a
+    // deterministic hash placeholder, so scores were ~random and recall failed.)
+    //
+    // Computed BEFORE the collection list because its width selects which
+    // collections can even be searched.
+    const searchVector = await generateEmbedding(`search_query: ${search}`);
+
+    // Collection variants: the configured name, the prepopulated corpus, and
+    // the width-pinned sibling the write path uses when the configured
+    // collection was built with a different embedding model. Without the last
+    // one, everything stored since that model changed is unreachable.
     const collections = await client.getCollections();
-    const candidates = [collection, `${collection}_prepopulated`];
+    const candidates = [
+      collection,
+      `${collection}_prepopulated`,
+      dimensionedName(collection, searchVector.length),
+    ];
     const availableCollections = candidates.filter((c: string) =>
       collections.collections.some((col: { name: string }) => col.name === c)
     );
@@ -529,12 +547,6 @@ async function queryQdrant(
       console.log(chalk.dim('\nNo Qdrant collections found. Run `uap memory prepopulate` first.'));
       return;
     }
-
-    // Real semantic embedding (nomic-embed-text-v2 via llama.cpp). The
-    // 'search_query:' prefix is nomic's asymmetric-retrieval counterpart to
-    // documents stored with 'search_document:'. (Previously this used a
-    // deterministic hash placeholder, so scores were ~random and recall failed.)
-    const searchVector = await generateEmbedding(`search_query: ${search}`);
 
     let allResults: Array<{ content: string; type: string; score: number; tags?: string[] }> = [];
     for (const col of availableCollections) {
@@ -659,8 +671,13 @@ async function storeMemory(
               ? 'observation'
               : 'action';
 
-  // Always write to daily log first (staging area)
-  const dbPath = config.memory?.shortTerm?.path || join(cwd, 'agents/data/memory/short_term.db');
+  // Always write to daily log first (staging area).
+  //
+  // Anchored to the MAIN checkout: the configured path is relative and used to
+  // resolve against cwd, so a store issued from inside a worktree — which the
+  // worktree policy makes the normal case for anyone doing work — landed in
+  // that worktree's private DB that nothing else reads.
+  const dbPath = shortTermDbPath(cwd, config.memory?.shortTerm?.path);
   const gateScore = force ? 1.0 : evaluateWriteGate(content).score;
   try {
     const dailyLog = new DailyLog(dbPath);
@@ -679,7 +696,11 @@ async function storeMemory(
       maxEntries: config.memory?.shortTerm?.maxEntries || 50,
     });
 
-    await shortTermDb.store(memoryType, content);
+    // `importance` was not passed here, so every memory stored at the default
+    // of 5 no matter what --importance said. That is the value prune() orders
+    // by, so the flag silently did the opposite of its purpose: entries meant
+    // to be kept were the first evicted.
+    await shortTermDb.store(memoryType, content, importance);
     await shortTermDb.close();
 
     console.log(chalk.green('✓ Stored in short-term memory (SQLite)'));
@@ -689,16 +710,25 @@ async function storeMemory(
     console.log(chalk.red('Failed to store in short-term memory:'), error);
   }
 
-  // Note about long-term storage
-  if (importance >= 7) {
-    console.log(
-      chalk.dim('\nNote: High-importance memories should also be stored in long-term memory.')
-    );
-    console.log(
-      chalk.dim(
-        'Long-term semantic storage requires Qdrant + embedding service (not yet integrated).'
-      )
-    );
+  // Long-term (semantic) storage — the durable tier. Short-term is a rolling
+  // window pruned on every write, so without this a memory survives only until
+  // the window fills. Every memory that passed the write gate is worth keeping;
+  // the gate is what decides that, not a separate importance threshold here.
+  const longTerm = await storeLongTerm(config, {
+    content,
+    type: memoryType,
+    importance,
+    tags: tags ? tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
+    project: config.project.name,
+  });
+  if (longTerm.stored) {
+    console.log(chalk.green('✓ Stored in long-term memory (Qdrant)'));
+    console.log(chalk.dim(`  Collection: ${longTerm.collection}`));
+  } else {
+    // Say so plainly. Reporting a durable write that did not happen is how
+    // knowledge gets silently lost.
+    console.log(chalk.yellow('⚠ Not stored long-term — this memory is not durable'));
+    console.log(chalk.dim(`  ${longTerm.reason}`));
   }
 }
 
