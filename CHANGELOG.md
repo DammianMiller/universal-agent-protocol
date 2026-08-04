@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.184.4 (2026-08-04)
+
+- chore: stop tracking the per-platform hook copies
+- fix(policies): a ship verb in prose is not a ship action (#649)
+- docs(policies): an enforcer edit reaches the gate only via the running package (#648)
+
+
 ## v1.184.3 (2026-08-04)
 
 - fix(policies): a ship verb in prose is not a ship action
