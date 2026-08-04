@@ -141,20 +141,15 @@ dist
 # in package.json "files"). .claude/hooks/ also stays tracked: it is this repo's
 # own live configuration, dogfooded here, alongside .claude/settings.json.
 #
-# Written as `dir/*` rather than `dir/` so specific files can be re-included:
-# gitignore cannot negate inside an excluded DIRECTORY. Three Factory hooks
-# exist nowhere else — not in templates/, not in any other platform dir — so a
-# blanket ignore would have deleted them for good.
+# .factory/hooks/ is NOT in this list: it is the canonical store. Every other
+# platform — including .claude — symlinks 9 of its hooks into it, and those
+# symlinks are tracked. Untracking .factory left them dangling in a fresh
+# checkout and broke 17 hook tests in CI. It also holds three hooks
+# (pattern-rag-*, task_completion_hook) that exist nowhere else at all.
 .codex/hooks/*
 .cursor/hooks/*
-.factory/hooks/*
 .forge/hooks/*
 .opencode/hooks/*
-
-# Factory-only hooks with no template to regenerate them from.
-!.factory/hooks/pattern-rag-prompt.sh
-!.factory/hooks/pattern-rag-session.sh
-!.factory/hooks/task_completion_hook.sh
 
 # Generated platform configs written by the same installer (.codex/config.toml
 # is already ignored above for the same reason).
