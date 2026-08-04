@@ -1,1 +1,0 @@
-../../.factory/hooks/pre-compact.sh

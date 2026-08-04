@@ -127,3 +127,38 @@ agents/data/memory/long_term_prepopulated.json
 .codex/hooks-root-backup-tmp/
 dist
 .codex/config.toml
+
+# Per-platform hook copies — install output, not source.
+#
+# `uap hooks install` materializes these from templates/hooks/ for every
+# platform it supports. Tracking the copies as well meant the same script lived
+# in six places, and the copies drifted from their template: the committed
+# .codex/hooks/deliver_autoroute.py still returned a 600s heartbeat timeout
+# after templates/ had moved to 1800, and every worktree created since showed
+# the regenerated copies as uncommitted changes.
+#
+# templates/hooks/ is the source of truth and stays tracked (and shipped — it is
+# in package.json "files"). .claude/hooks/ also stays tracked: it is this repo's
+# own live configuration, dogfooded here, alongside .claude/settings.json.
+#
+# Written as `dir/*` rather than `dir/` so specific files can be re-included:
+# gitignore cannot negate inside an excluded DIRECTORY. Three Factory hooks
+# exist nowhere else — not in templates/, not in any other platform dir — so a
+# blanket ignore would have deleted them for good.
+.codex/hooks/*
+.cursor/hooks/*
+.factory/hooks/*
+.forge/hooks/*
+.opencode/hooks/*
+
+# Factory-only hooks with no template to regenerate them from.
+!.factory/hooks/pattern-rag-prompt.sh
+!.factory/hooks/pattern-rag-session.sh
+!.factory/hooks/task_completion_hook.sh
+
+# Generated platform configs written by the same installer (.codex/config.toml
+# is already ignored above for the same reason).
+.cursor/hooks.json
+
+# Plugin manifest written by the opencode setup step.
+.opencode/package.json

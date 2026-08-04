@@ -1,1 +1,0 @@
-../../.factory/hooks/post-compact.sh

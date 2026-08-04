@@ -1,1 +1,0 @@
-../../.factory/hooks/session-end.sh

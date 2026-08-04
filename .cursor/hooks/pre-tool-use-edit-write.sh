@@ -1,1 +1,0 @@
-../../.factory/hooks/pre-tool-use-edit-write.sh

@@ -1,1 +1,0 @@
-../../.factory/hooks/post-tool-use-edit-write.sh
