@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.185.1 (2026-08-04)
+
+- fix(proxy): advertise the context window in /v1/models
+- feat(memory): make stored memories actually durable (#651)
+
+
 ## v1.185.0 (2026-08-04)
 
 - feat(memory): make stored memories actually durable
