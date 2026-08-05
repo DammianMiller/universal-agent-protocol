@@ -131,9 +131,42 @@ cmd = a.get("command") or ""
 # ("rm .policy-tools/x") would not match without it. Concatenating the raw
 # command silently missed exactly the deletions this fix is about -- caught by
 # measuring old-vs-new, not by reading the diff.
-low = ("/" + str(target)).lower() + " " + " ".join(
-    "/" + t for t in str(cmd).lower().split())
+low = ("/" + str(target)).lower()
 hit = any(m in low for m in markers)
+# The command side needs its own pass. Markers are slash-terminated
+# ("/.policy-tools/"), so a plain substring test missed the DIRECTORY forms --
+# `rm -rf .policy-tools` scored 0, i.e. the single most destructive command
+# against the surface did not arm the fail-closed net. Quoted paths missed too.
+# Match on a path-segment boundary instead, per token, quotes stripped.
+if not hit and cmd:
+    words = str(cmd).lower().replace("./", "/").split()
+    lead = ""
+    for w in words:
+        if "=" in w and not w.startswith("/"):
+            continue
+        lead = w.rsplit("/", 1)[-1]
+        break
+    # A read-only command cannot weaken anything, and arming fail-closed for it
+    # turns `cat .uap.json` into a hard block on any checkout where self-protect
+    # is not attached -- a state this repo has actually been in.
+    readonly = ("cat", "ls", "grep", "rg", "head", "tail", "wc", "jq", "less",
+                "stat", "file", "which", "wc")
+    if lead not in readonly:
+        for w in words:
+            u = "/" + w.strip("\"" + chr(39) + "").lstrip("/")
+            for mk in markers:
+                base = mk.rstrip("/")
+                start = u.find(base)
+                while start != -1:
+                    tail = u[start + len(base):start + len(base) + 1]
+                    if tail in ("", "/", ".", "*"):
+                        hit = True
+                        break
+                    start = u.find(base, start + 1)
+                if hit:
+                    break
+            if hit:
+                break
 bypass = re.search(
     r"UAP_DELIVER_BYPASS\s*=\s*[\x27\"]?1|UAP_ENFORCE_DELIVERY\s*=\s*[\x27\"]?(advisory|off|0|false|no)"
     r"|UAP_SELF_PROTECT_OFF\s*=\s*[\x27\"]?1|UAP_NO_WORKTREE\s*=\s*[\x27\"]?1|UAP_WORKDIR_SCOPE_OFF\s*=\s*[\x27\"]?1|UAP_USER_VALIDATION\s*=\s*[\x27\"]?0",

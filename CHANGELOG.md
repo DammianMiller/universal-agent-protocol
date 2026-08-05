@@ -8,8 +8,14 @@
   enforcers at import and the next write to .uap/evidence/ was allowed.
 - fix(policies): the gate now restores .policy-tools/_common.py before enforcing,
   and fails closed when it cannot — one missing helper took down the whole surface.
-- fix(policies): argument indirection is no longer an escape — `xargs rm < list`
-  and `echo <path> | xargs rm` are resolved when a destructive verb is present.
+- fix(policies): argument indirection is no longer an escape. self-protect now
+  asks "will a protected path be an ARGUMENT to something destructive" instead of
+  "is one mentioned anywhere", resolving the argument set from `< file`,
+  `--arg-file`, `$(cat f)`, shell wrappers (`bash -c`, `eval`, `env`) and literal
+  pipe producers. Where the producer is unknowable (`grep … | xargs sed`) the
+  command is ALLOWED rather than guessed at — guessing blocked ordinary refactors.
+- fix(policies): PROTECTED_EXEMPT is judged per token, not over the whole text —
+  one `policies/waivers` line in a deletion list used to hide every other line.
 
 
 ## v1.185.0 (2026-08-04)
