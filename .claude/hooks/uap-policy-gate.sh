@@ -117,7 +117,22 @@ markers = ("/.policy-tools/", "/src/policies/", "/policies/", "/.uap.json",
            "uap-reactor-prompt.sh", "pre-tool-use")
 target = a.get("file_path") or a.get("path") or a.get("target") or ""
 cmd = a.get("command") or ""
-low = ("/" + str(target)).lower()
+# Scan the COMMAND as well as file_path. Only file_path was checked, so for
+# every Bash call SEC_SENSITIVE was 0 unless the command set a bypass var --
+# leaving the fail-closed branch below blind to the entire shell surface. A
+# shell deletion under .policy-tools/ then fell through to fail-OPEN the moment
+# the enforcer could not run. Observed live: deleting .policy-tools/_common.py
+# broke every enforcer at import, and the next `>> .uap/evidence/...` was
+# allowed. Widening this only ever TIGHTENS: SEC_SENSITIVE gates the fail-
+# closed path and the fastpath skip, never an allow.
+#
+# Each token gets a leading "/" for the same reason the target does: the markers
+# are slash-anchored ("/.policy-tools/"), so a bare relative path in a command
+# ("rm .policy-tools/x") would not match without it. Concatenating the raw
+# command silently missed exactly the deletions this fix is about -- caught by
+# measuring old-vs-new, not by reading the diff.
+low = ("/" + str(target)).lower() + " " + " ".join(
+    "/" + t for t in str(cmd).lower().split())
 hit = any(m in low for m in markers)
 bypass = re.search(
     r"UAP_DELIVER_BYPASS\s*=\s*[\x27\"]?1|UAP_ENFORCE_DELIVERY\s*=\s*[\x27\"]?(advisory|off|0|false|no)"
@@ -224,6 +239,21 @@ record_execution() {
     DELETE FROM policy_executions WHERE id < (SELECT MAX(id)-2000 FROM policy_executions)
       AND (SELECT COUNT(*) FROM policy_executions) > 2000;" 2>/dev/null || true
 }
+
+# Every materialized enforcer does `from _common import ...`, so that single
+# file is a single point of failure for the WHOLE surface: remove it and all 29
+# enforcers die at import, self-protect included. Repair it before enforcing
+# rather than only failing closed -- a control surface that self-heals beats one
+# that merely notices. If it cannot be restored, the SEC_SENSITIVE checks below
+# still fail closed.
+if [[ ! -f "$MAIN_ROOT/.policy-tools/_common.py" \
+      && -f "$MAIN_ROOT/src/policies/enforcers/_common.py" ]]; then
+  cp "$MAIN_ROOT/src/policies/enforcers/_common.py" \
+     "$MAIN_ROOT/.policy-tools/_common.py" 2>/dev/null || true
+fi
+if [[ ! -f "$MAIN_ROOT/.policy-tools/_common.py" && -d "$MAIN_ROOT/.policy-tools" ]]; then
+  [[ "$SEC_SENSITIVE" == "1" ]] && fail_closed "enforcer helper _common.py missing"
+fi
 
 # Did the self-protect enforcer actually run and make a decision this call?
 sec_enforcer_ran=0

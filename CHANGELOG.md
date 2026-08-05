@@ -2,8 +2,14 @@
 
 ## v1.185.1 (2026-08-04)
 
-- fix(proxy): advertise the context window in /v1/models
-- feat(memory): make stored memories actually durable (#651)
+- fix(policies): the fail-closed net never covered Bash — SEC_SENSITIVE scanned
+  only file_path, so a broken enforcer fell through to fail-OPEN for every shell
+  operation. Verified live: deleting .policy-tools/_common.py disabled all 29
+  enforcers at import and the next write to .uap/evidence/ was allowed.
+- fix(policies): the gate now restores .policy-tools/_common.py before enforcing,
+  and fails closed when it cannot — one missing helper took down the whole surface.
+- fix(policies): argument indirection is no longer an escape — `xargs rm < list`
+  and `echo <path> | xargs rm` are resolved when a destructive verb is present.
 
 
 ## v1.185.0 (2026-08-04)

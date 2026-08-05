@@ -152,8 +152,62 @@ def _mentions_protected(text: str) -> bool:
     return False
 
 
+# Constructs that feed a command its arguments from somewhere other than its own
+# command line. With one of these present the target path may never appear at a
+# verb's command position, which is the only place the per-segment scan looks.
+_INDIRECTION = re.compile(r"(?:^|[\s|;&(])(?:xargs|eval)\b|\$\(|`")
+# Bounded: a source file is read only to decide THIS call, never stored.
+_MAX_SRC_BYTES = 1 << 20
+
+
+def _readable_sources(command: str) -> list[str]:
+    """Contents of files this command names that could supply its arguments."""
+    out: list[str] = []
+    for raw in command.split():
+        tok = raw.strip("\"'<>()`$").rstrip(";|&")
+        if not tok or tok.startswith("-"):
+            continue
+        try:
+            p = Path(tok)
+            if not p.is_file() or p.stat().st_size > _MAX_SRC_BYTES:
+                continue
+            out.append(p.read_text(errors="replace"))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def _bash_indirect_destructive(command: str) -> bool:
+    """Destructive intent whose target arrives via indirection, not the cmdline.
+
+    `rm .policy-tools/x` was blocked while `xargs rm < list` and
+    `echo .policy-tools/x | xargs rm` were not: the path never sits at a
+    destructive verb's command position, so the per-segment scan never saw it.
+    That is not theoretical -- it is how .policy-tools/_common.py was actually
+    deleted, which disabled every enforcer at once.
+
+    HONEST LIMIT: shell state this process cannot see still wins. `P=.policy-
+    tools; rm $P/x` expands inside the shell, and no scan of the command TEXT
+    can resolve it. Refusing every destructive command containing a variable
+    would block ordinary work (`rm $TMPDIR/x`) for no real gain, so the residual
+    is accepted and covered by the gate's fail-closed + _common.py self-heal.
+    """
+    if not command or not _INDIRECTION.search(command):
+        return False
+    tokens = {t.rsplit("/", 1)[-1].lower().strip("\"'") for t in command.split()}
+    if not (tokens & set(DESTRUCTIVE_VERBS)):
+        return False
+    # The whole command, not per segment: in `echo .policy-tools/x | xargs rm`
+    # the path and the verb live in different segments by construction.
+    if _mentions_protected(command):
+        return True
+    return any(_mentions_protected(src) for src in _readable_sources(command))
+
+
 def _bash_destructive(command: str) -> bool:
     """Destructive op against a protected path, judged per command segment."""
+    if _bash_indirect_destructive(command):
+        return True
     for segment in _SEGMENT_SPLIT.split(command or ""):
         seg = segment.strip()
         if not seg:
