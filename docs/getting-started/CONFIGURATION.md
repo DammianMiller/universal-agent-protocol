@@ -75,7 +75,7 @@ defaults are applied for anything you omit.
 | Field | Default | Notes |
 | --- | --- | --- |
 | `enabled` | `true` | |
-| `provider` | `qdrant` | One of `qdrant`, `chroma`, `pinecone`, `github`, `qdrant-cloud`, `serverless`, `none`. |
+| `provider` | `qdrant` | One of `qdrant`, `github`, `qdrant-cloud`, `none`. |
 | `endpoint` | — | Qdrant endpoint; falls back to `localhost:6333`. |
 | `collection` | `agent_memory` | |
 | `embeddingModel` | `all-MiniLM-L6-v2` | |

@@ -39,7 +39,7 @@ Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
       "maxEntries": 50
     },
     "longTerm": {
-      "provider": "qdrant",            // qdrant|chroma|pinecone|github|qdrant-cloud|serverless|none
+      "provider": "qdrant",            // qdrant|github|qdrant-cloud|none
       "collection": "agent_memory",
       "embeddingModel": "all-MiniLM-L6-v2",
       "endpoint": "localhost:6333"

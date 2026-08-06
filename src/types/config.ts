@@ -91,10 +91,19 @@ export const QdrantServerlessSchema = z.object({
 
 export const LongTermMemorySchema = z.object({
   enabled: z.boolean().default(true),
-  // Legacy local provider (keep for backward compatibility)
+  // `chroma`, `pinecone` and `serverless` were accepted here but never
+  // implemented — no backend ever read them, so selecting one silently did
+  // nothing. Dropped rather than left as a choice that cannot work.
+  //
+  // `.catch` is the migration, and it is load-bearing: loadUapConfig() runs
+  // AgentContextConfigSchema.parse() inside a try/catch that returns null for
+  // the WHOLE config on any failure. Without this, one stale `"provider":
+  // "chroma"` would not just reset that field — it would blank every setting
+  // in .uap.json silently. An unknown value now falls back to the default.
   provider: z
-    .enum(['qdrant', 'chroma', 'pinecone', 'github', 'qdrant-cloud', 'serverless', 'none'])
-    .default('qdrant'),
+    .enum(['qdrant', 'github', 'qdrant-cloud', 'none'])
+    .default('qdrant')
+    .catch('qdrant'),
   endpoint: z.string().optional(),
   collection: z.string().default('agent_memory'),
   embeddingModel: z.string().default('all-MiniLM-L6-v2'),

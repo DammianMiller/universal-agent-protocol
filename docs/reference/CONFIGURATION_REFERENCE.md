@@ -371,7 +371,7 @@ Enables long-term semantic memory (vector recall across sessions) via Qdrant.
 | | |
 |---|---|
 | **Where** | `.uap.json` |
-| **Type** | enum (qdrant \| chroma \| pinecone \| github \| qdrant-cloud \| serverless \| none) |
+| **Type** | enum (qdrant \| github \| qdrant-cloud \| none) |
 | **Default** | `qdrant` |
 
 The long-term memory backend.
