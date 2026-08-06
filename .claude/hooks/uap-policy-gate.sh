@@ -273,16 +273,52 @@ record_execution() {
       AND (SELECT COUNT(*) FROM policy_executions) > 2000;" 2>/dev/null || true
 }
 
-# Every materialized enforcer does `from _common import ...`, so that single
-# file is a single point of failure for the WHOLE surface: remove it and all 29
-# enforcers die at import, self-protect included. Repair it before enforcing
-# rather than only failing closed -- a control surface that self-heals beats one
-# that merely notices. If it cannot be restored, the SEC_SENSITIVE checks below
-# still fail closed.
-if [[ ! -f "$MAIN_ROOT/.policy-tools/_common.py" \
+# INTEGRITY: the gate runs COPIES in .policy-tools/. Verify them against the
+# manifest written at materialization and restore anything changed or missing,
+# BEFORE any enforcer runs. This is the durable control: a text scan over shell
+# commands cannot stop `python3 -c` from rewriting an enforcer (that is allowed
+# by design), but it does not need to if the surface repairs itself on the next
+# call. Covers the two observed failures — a stale copy leaving a merged fix
+# inert, and deleting _common.py to kill all 29 enforcers at import.
+#
+# Cost is one hash pass over ~30 small files. `sha256sum` on Linux, `shasum` on
+# macOS; with neither, verification is skipped rather than blocking work.
+_PT="$MAIN_ROOT/.policy-tools"
+if [[ -f "$_PT/.integrity.sha256" ]]; then
+  _SUM=""
+  command -v sha256sum >/dev/null 2>&1 && _SUM="sha256sum"
+  [[ -z "$_SUM" ]] && command -v shasum >/dev/null 2>&1 && _SUM="shasum -a 256"
+  if [[ -n "$_SUM" ]]; then
+    # `|| true` is load-bearing: sha256sum exits non-zero when a check fails,
+    # and under `set -euo pipefail` that status propagates out of the command
+    # substitution and kills the gate — turning a repairable drift into a dead
+    # hook. Match only the FAILED lines: they cover BOTH a changed file
+    # ("x.py: FAILED") and a missing one ("x.py: FAILED open or read"), while
+    # sha256sum's own stderr ("sha256sum: x.py: No such file...") would
+    # otherwise be captured with its prefix and restore a file called
+    # "sha256sum: x.py".
+    _BAD="$( cd "$_PT" && { $_SUM --quiet -c .integrity.sha256 2>/dev/null \
+             | sed -n 's/^\(.*\): FAILED.*$/\1/p'; } || true )"
+    if [[ -n "$_BAD" ]]; then
+      _SRC=""
+      [[ -f "$_PT/.integrity.source" ]] && _SRC="$(cat "$_PT/.integrity.source" 2>/dev/null)"
+      [[ -d "$_SRC" ]] || _SRC="$MAIN_ROOT/src/policies/enforcers"
+      while IFS= read -r _f; do
+        [[ -z "$_f" ]] && continue
+        # copies are <uuid>_<tool>.py; sources are <tool>.py
+        _base="${_f#*_}"; [[ "$_f" == "_common.py" ]] && _base="_common.py"
+        [[ -f "$_SRC/$_base" ]] && cp "$_SRC/$_base" "$_PT/$_f" 2>/dev/null || true
+      done <<< "$_BAD"
+      printf '%s\t%s\n' "$(date +%s)" "restored: $(echo "$_BAD" | tr '\n' ' ')" \
+        >> "$MAIN_ROOT/.uap/evidence/integrity.log" 2>/dev/null || true
+    fi
+  fi
+fi
+# Helper fallback for surfaces that predate the manifest.
+if [[ ! -f "$_PT/_common.py" \
       && -f "$MAIN_ROOT/src/policies/enforcers/_common.py" ]]; then
   cp "$MAIN_ROOT/src/policies/enforcers/_common.py" \
-     "$MAIN_ROOT/.policy-tools/_common.py" 2>/dev/null || true
+     "$_PT/_common.py" 2>/dev/null || true
 fi
 if [[ ! -f "$MAIN_ROOT/.policy-tools/_common.py" && -d "$MAIN_ROOT/.policy-tools" ]]; then
   [[ "$SEC_SENSITIVE" == "1" ]] && fail_closed "enforcer helper _common.py missing"
