@@ -336,6 +336,57 @@ async function dedupeCommand(options: { json?: boolean }): Promise<void> {
 }
 
 /**
+ * Verify (and optionally repair) the materialized enforcers.
+ *
+ * The gate executes `.policy-tools/<policyId>_<tool>.py`, not the source. This
+ * is the operator surface for the two ways that diverges: a stale copy (a
+ * merged fix quietly not in force) and a tampered or deleted one (removing
+ * `_common.py` breaks every enforcer at import and silently turns the gate into
+ * a no-op).
+ */
+async function verifyIntegrityCommand(options: { repair?: boolean; json?: boolean }): Promise<void> {
+  const { verifyIntegrity, repairIntegrity } = await import('../integrity/enforcer-manifest.js');
+  const toolDir = join(process.cwd(), '.policy-tools');
+  const report = options.repair
+    ? repairIntegrity(toolDir)
+    : { ...verifyIntegrity(toolDir), restored: [] as string[], unrecoverable: [] as string[] };
+  const { restored, unrecoverable } = report;
+
+  if (options.json) {
+    console.log(JSON.stringify(report));
+    if (unrecoverable.length) process.exitCode = 1;
+    return;
+  }
+
+  if (report.unmanaged) {
+    console.log(
+      chalk.yellow('\n⚠ No integrity manifest — these enforcers predate it.') +
+        chalk.dim('\n  Run `uap policy install <name>` (or `uap setup`) to materialize and record one.')
+    );
+    return;
+  }
+
+  const drift = report.changed.length + report.missing.length;
+  if (!drift && !report.unknown.length) {
+    console.log(chalk.green('\n✓ Enforcers match their manifest.'));
+    return;
+  }
+
+  for (const f of report.changed) console.log(`  ${chalk.yellow('changed')}  ${f}`);
+  for (const f of report.missing) console.log(`  ${chalk.red('missing')}  ${f}`);
+  // Not an error: an operator may have added an enforcer by hand, and deleting
+  // their work to satisfy a checksum is worse than the drift.
+  for (const f of report.unknown) console.log(`  ${chalk.dim('untracked')}  ${f}`);
+  for (const f of restored) console.log(`  ${chalk.green('restored')}  ${f}`);
+  for (const f of unrecoverable) console.log(`  ${chalk.red('UNRECOVERABLE')}  ${f}`);
+
+  if (!options.repair && drift) {
+    console.log(chalk.dim('\n  Re-run with --repair to restore them from source.'));
+  }
+  if (unrecoverable.length) process.exitCode = 1;
+}
+
+/**
  * List command - show all policies
  */
 async function listCommand(): Promise<void> {
@@ -616,6 +667,13 @@ export function registerPolicyCommands(program: Command): void {
     .description('Remove duplicate policy rows (same name), keeping one canonical each')
     .option('--json', 'Emit JSON')
     .action(dedupeCommand);
+
+  policy
+    .command('verify')
+    .description('Check the materialized enforcers against their manifest (--repair restores them)')
+    .option('--repair', 'Restore changed/missing enforcers from source')
+    .option('--json', 'Emit JSON')
+    .action(verifyIntegrityCommand);
 
   policy
     .command('recommend [scenario]')
