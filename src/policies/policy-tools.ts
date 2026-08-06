@@ -68,6 +68,14 @@ export class PolicyToolRegistry {
     const filePath = join(this.toolDir, `${policyId}_${toolName}.py`);
     writeFileSync(filePath, pythonCode);
     this.ensureCommonModule();
+    // Record hashes so the gate can verify — and repair — what it executes.
+    // Best-effort: failing to write a manifest must never fail an install.
+    try {
+      const { writeIntegrityManifest } = await import('../integrity/enforcer-manifest.js');
+      writeIntegrityManifest(this.toolDir);
+    } catch {
+      /* integrity manifest is an optimisation for the gate, not a gate itself */
+    }
 
     return filePath;
   }
