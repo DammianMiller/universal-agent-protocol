@@ -318,6 +318,56 @@ class TestGateEndToEnd(unittest.TestCase):
         (self.sb / "src/policies/enforcers/_common.py").unlink()
         self.assertEqual(self.gate("npm run build"), 0)
 
+    def test_self_heal_copies_rather_than_moves(self):
+        # Mutation `cp` -> `mv` survived every other assertion: the helper still
+        # appears in .policy-tools/ and the op is still blocked, while the
+        # TRACKED source has been deleted from the repo.
+        (self.sb / ".policy-tools/_common.py").unlink()
+        self.gate("npm run build")
+        self.assertTrue((self.sb / "src/policies/enforcers/_common.py").is_file(),
+                        "self-heal moved the source instead of copying it")
+
+    def test_self_heal_does_not_clobber_an_existing_helper(self):
+        # Repair only when MISSING. A gate that rewrites the materialized helper
+        # on every call would silently undo a deliberate install.
+        helper = self.sb / ".policy-tools/_common.py"
+        helper.write_text(helper.read_text() + "\nSENTINEL = 1\n")
+        self.gate("npm run build")
+        self.assertIn("SENTINEL", helper.read_text())
+
+    def test_absent_policy_tools_dir_does_not_wedge_a_fresh_checkout(self):
+        # A checkout that has never run `uap setup` has no .policy-tools/ at all.
+        # Failing closed there is the fresh-install wedge this repo has already
+        # shipped once.
+        import shutil
+        shutil.rmtree(self.sb / ".policy-tools")
+        self.assertEqual(self.gate("npm run build"), 0)
+
+
+class TestTheFixIsActuallyInForce(unittest.TestCase):
+    """The gate runs .policy-tools/<id>_<tool>.py — a COPY. Every other test in
+    this file runs src/. Nothing pinned that they are the same file, which is
+    exactly how this repo once had enforcer fixes merged but never in force for
+    over a week (the H1-vs-slug installer bug).
+
+    Anchored to the MAIN checkout: the materialized copies live there, not in a
+    worktree.
+    """
+
+    def test_materialized_enforcer_matches_source(self):
+        main = Path(str(ROOT).split("/.worktrees/")[0])
+        live = sorted((main / ".policy-tools").glob("*_enforcement_self_protect.py"))
+        if not live:
+            self.skipTest("enforcers not materialized in this checkout")
+        source = (main / "src/policies/enforcers/enforcement_self_protect.py").read_text()
+        stale = [p.name for p in live if p.read_text() != source]
+        self.assertFalse(
+            stale,
+            "materialized enforcer(s) differ from source — the gate is running "
+            f"OLD code: {stale}. Re-materialize with `npm i -g . && uap policy "
+            "install enforcement-self-protect`.",
+        )
+
 
 class TestGateCopiesStayInSync(unittest.TestCase):
     def test_every_copy_exists_and_is_identical(self):
