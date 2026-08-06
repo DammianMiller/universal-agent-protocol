@@ -147,6 +147,65 @@ class TestIndirectionIsNotAnEscape(_Sandbox):
         self.assertBlocked("chmod 000 .policy-tools/x.py")
 
 
+class TestNaiveDirectFormsAreCaught(_Sandbox):
+    """The re-review found these still open — in master too, not introduced.
+
+    They shipped uncovered because the round-3 fixes lived only in a dev harness
+    (`patches/169/verify3.py`), which CI never runs. A fix with no test in the
+    suite is how this regresses, so the cases move here.
+
+    None of these is exotic. They are the naive, direct form the enforcer exists
+    to catch, hidden behind one token of prefix or one character of suffix.
+    """
+
+    def test_launcher_prefixes_do_not_hide_the_verb(self):
+        # `verb` was read as tokens[0] with no launcher handling, so one word
+        # in front of the removal made it invisible.
+        for cmd in ("nohup rm -rf .policy-tools",
+                    "timeout 5 rm -rf .policy-tools",
+                    "sudo rm -rf .policy-tools",
+                    "command rm -rf .policy-tools"):
+            self.assertBlocked(cmd)
+
+    def test_quoted_verb_is_still_a_verb(self):
+        self.assertBlocked("'rm' -rf .policy-tools")
+
+    def test_the_directory_itself_is_protected(self):
+        # A trailing slash was excluded from the boundary set so that
+        # `.uap/verify-cadence` stays writable — but `.uap/` names the whole
+        # directory, and takes evidence, reviews and interaction with it.
+        self.assertBlocked("rm -rf .uap/")
+        self.assertBlocked("rm -rf .uap/*")
+
+    def test_traversal_through_an_exempt_path(self):
+        # The exemption was a substring test, so routing through it made the
+        # real target invisible while the kernel still resolved the path.
+        self.assertBlocked("rm -rf policies/waivers/../../.policy-tools")
+
+    def test_verb_and_target_both_inside_the_source(self):
+        # Destructive intent was judged on the OUTER command text only, so when
+        # both lived in the resolved source nothing fired.
+        (self.root / "SCRIPT").write_text("rm .policy-tools/_common.py\n")
+        self.assertBlocked('bash -c "$(cat SCRIPT)"')
+        self.assertBlocked("cat SCRIPT | bash")
+
+    def test_agent_chosen_producer_is_not_free(self):
+        # An unresolvable producer is allowed for a SEARCH tool, because grep's
+        # output genuinely cannot be known here. A producer the agent picked is
+        # different: the path is sitting in the command text.
+        self.assertBlocked("python3 -c 'print(\".policy-tools/x\")' | xargs rm -f")
+
+    def test_search_producers_stay_allowed(self):
+        # The other half: guessing from a grep pattern is what made ordinary
+        # refactors unrunnable, and that must not come back.
+        self.assertAllowed("grep -rl policies/ docs/ | xargs sed -i s/a/b/")
+        self.assertAllowed("git ls-files | xargs wc -l")
+
+    def test_launchers_on_benign_commands_stay_allowed(self):
+        for cmd in ("timeout 30 npm test", "nohup npm run dev", "sudo systemctl restart nginx"):
+            self.assertAllowed(cmd)
+
+
 class TestOrdinaryWorkIsNotBlocked(_Sandbox):
     """Over-blocking is the expensive failure: it makes people disable the gate.
 
