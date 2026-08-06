@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.186.0 (2026-08-06)
+
+- feat(policies): make the enforcement surface repair itself
+- fix(policies): close two verified bypasses of the enforcement surface (#655)
+
+
 ## v1.185.1 (2026-08-04)
 
 - fix(policies): the fail-closed net never covered Bash — SEC_SENSITIVE scanned
