@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import (  # noqa: E402
     emit, parse_cli, repo_root, REVIEW_ARTIFACT_DIR, REVIEW_WAIVER_DIR,
+    hands_text_to_shell,
 )
 
 EDIT_OPS = {"Edit", "Write", "MultiEdit", "edit", "write", "multiedit"}
@@ -128,55 +129,179 @@ _QUOTES = str.maketrans("", "", "\"'")
 
 
 def _mentions_protected(text: str) -> bool:
-    """True when the text names a protected path and no exempt sub-path."""
-    low = text.translate(_QUOTES).lower()
-    # Normalise ./ and leading slashes so `./.uap`, `/.uap` and `.uap` agree.
-    low = low.replace("./", "/")
-    if any(ex in low for ex in PROTECTED_EXEMPT):
-        return False
-    # The .uap DIRECTORY ITSELF: `rm -rf .uap` / `find .uap -delete` destroy the
-    # manifest along with everything else, while `echo 0 > .uap/verify-cadence`
-    # names a deeper path and is ordinary tooling. So the bare directory is
-    # protected; a specific file under it is not (unless listed below).
-    for m in re.finditer(re.escape(".uap"), low):
-        if low[m.end():m.end() + 1] in ("", " ", '"', "'", "*"):
-            return True
-    for target in PROTECTED_TARGETS:
-        t = target.lower()
-        # Word-ish boundary so `.uap` matches `.uap`, `.uap/x` and `.uap.bak`
-        # but not an unrelated longer name like `.uapkeep`.
-        for m in re.finditer(re.escape(t), low):
-            tail = low[m.end():m.end() + 1]
-            if tail in ("", "/", ".", " ", '"', "'", "*"):
+    """True when any UNIT of `text` names a protected path.
+
+    Judged unit by unit, not over the whole blob. The exemption used to be
+    evaluated across the entire text, so one `policies/waivers` anywhere made
+    everything else invisible — appending a single innocuous line to a deletion
+    list defeated the check completely (found by the review, reproduced).
+    """
+    for unit in text.translate(_QUOTES).lower().replace("./", "/").split():
+        if any(ex in unit for ex in PROTECTED_EXEMPT):
+            continue
+        # The .uap DIRECTORY ITSELF: `rm -rf .uap` destroys the manifest, while
+        # `echo 0 > .uap/verify-cadence` names a deeper path and is ordinary
+        # tooling. Bare directory protected; a file under it is not.
+        for m in re.finditer(re.escape(".uap"), unit):
+            if unit[m.end():m.end() + 1] in ("", " ", '"', "'", "*"):
                 return True
+        for target in PROTECTED_TARGETS:
+            t = target.lower()
+            for m in re.finditer(re.escape(t), unit):
+                if unit[m.end():m.end() + 1] in ("", "/", ".", " ", '"', "'", "*"):
+                    return True
     return False
 
 
-def _bash_destructive(command: str) -> bool:
-    """Destructive op against a protected path, judged per command segment."""
+# An argument list is a list of paths; it is never a megabyte. The old 1 MiB cap
+# also SKIPPED anything larger, so padding a list file past the cap was a
+# one-line bypass. Read a bounded prefix instead of skipping.
+_MAX_SRC_BYTES = 1 << 16
+_MAX_SOURCES = 32
+# Commands whose arguments are literal paths we can read now.
+_FILE_READERS = ("cat", "head", "tail", "sort", "uniq", "cut", "tr", "nl", "rev")
+_LITERAL_EMITTERS = ("echo", "printf")
+# Wrappers that hand their remaining words back to a shell as a command.
+_WRAPPERS = ("eval", "env", "exec", "source", ".")
+_SHELL_C = re.compile(
+    r"(?:^|[\s;|&(])(?:ba|z|k|da|a)?sh\s+(?:-\w+\s+)*-\w*c\s+(['\"])(.*?)\1", re.S)
+_REDIRECT = re.compile(r">>?")
+_SUBST_FILE = re.compile(r"\$\(\s*(?:cat\s+)?<?\s*([^\s)]+)[^)]*\)|`\s*cat\s+([^`]+)`")
+_ARGFILE = re.compile(r"--arg-file=([^\s;|&]+)|(?:^|\s)-a\s+([^\s;|&]+)")
+_STDIN_REDIR = re.compile(r"<\s*([^\s;|&<>]+)")
+
+
+def _read_source(tok: str) -> str:
+    """A bounded prefix of `tok` if it is a readable regular file, else ""."""
+    tok = (tok or "").strip("\"'`$()").rstrip(";|&")
+    if not tok or tok.startswith("-"):
+        return ""
+    try:
+        p = Path(tok)
+        if not p.is_file():          # excludes FIFOs and devices: no blocking read
+            return ""
+        with p.open(errors="replace") as fh:
+            return fh.read(_MAX_SRC_BYTES)
+    except (OSError, ValueError):
+        return ""
+
+
+def _resolved_arguments(command: str) -> list[str]:
+    """Text that will actually REACH a command as arguments.
+
+    Only sources knowable right now: a `< file` redirect, xargs --arg-file/-a,
+    $(cat f)/`cat f`, and an upstream pipe stage that is a literal emitter
+    (echo/printf) or a file reader (cat/head/tail/...).
+
+    Deliberately NOT resolved: `grep … | xargs sed`. grep's output is unknown
+    here, and inferring it from the pattern text is exactly what made ordinary
+    refactors unrunnable. Unknowable means allow — the same call made for a path
+    held in a shell variable.
+    """
+    out: list[str] = []
+
+    def add(text: str) -> None:
+        if text and len(out) < _MAX_SOURCES:
+            out.append(text)
+
+    for m in _STDIN_REDIR.finditer(command):
+        add(_read_source(m.group(1)))
+    for m in _ARGFILE.finditer(command):
+        add(_read_source(m.group(1) or m.group(2)))
+    for m in _SUBST_FILE.finditer(command):
+        add(_read_source(m.group(1) or m.group(2)))
+
+    stages = [s.strip() for s in command.split("|") if s.strip()]
+    for stage in stages[:-1]:                       # producers only
+        toks = [t for t in stage.split() if not _ENV_ASSIGN.match(t)]
+        if not toks:
+            continue
+        verb = toks[0].rsplit("/", 1)[-1].lower()
+        if verb in _LITERAL_EMITTERS:
+            add(" ".join(toks[1:]))
+        elif verb in _FILE_READERS:
+            for t in toks[1:]:
+                if not t.startswith("-"):
+                    add(_read_source(t))
+    return out
+
+
+def _inner_commands(command: str) -> list[str]:
+    """Command strings this command hands back to a shell to execute."""
+    out = [m.group(2) for m in _SHELL_C.finditer(command or "")]
+    for segment in _SEGMENT_SPLIT.split(command or ""):
+        toks = [t for t in segment.split() if not _ENV_ASSIGN.match(t)]
+        if toks and toks[0].rsplit("/", 1)[-1].lower() in _WRAPPERS:
+            rest = " ".join(toks[1:]).strip().strip("\"'")
+            if rest:
+                out.append(rest)
+    return out
+
+
+def _destructive_intent(command: str) -> bool:
+    """A destructive verb or a redirect appears somewhere in `command`."""
+    toks = {t.rsplit("/", 1)[-1].lower().strip("\"'") for t in command.split()}
+    return bool(toks & set(DESTRUCTIVE_VERBS)) or bool(_REDIRECT.search(command))
+
+
+def _direct_destructive(command: str) -> bool:
+    """Destructive op naming a protected path, judged per command segment."""
+    cd_into_protected = False
     for segment in _SEGMENT_SPLIT.split(command or ""):
         seg = segment.strip()
         if not seg:
             continue
         # A redirect writes just as destructively as `rm`; the target may be
         # quoted, ./-prefixed, or fd-numbered (`1> .uap/x`).
-        for m in re.finditer(r">>?", seg):
+        for m in _REDIRECT.finditer(seg):
             if _mentions_protected(seg[m.end():]):
                 return True
         tokens = [t for t in seg.split() if not _ENV_ASSIGN.match(t)]
         if not tokens:
             continue
         verb = tokens[0].rsplit("/", 1)[-1].lower()
+        # `cd .policy-tools && rm -f _common.py` put the protected path in one
+        # segment and the verb in another, so neither segment looked dangerous.
+        if verb == "cd":
+            cd_into_protected = _mentions_protected(" ".join(tokens[1:]))
+            continue
         if verb == "git" and len(tokens) > 1:
             verb = f"git {tokens[1].lower()}"
             if verb not in ("git clean", "git checkout"):
                 continue
         elif verb not in DESTRUCTIVE_VERBS:
             continue
-        if _mentions_protected(" ".join(tokens[1:])):
+        if cd_into_protected or _mentions_protected(" ".join(tokens[1:])):
             return True
     return False
 
+
+def _bash_destructive(command: str, _depth: int = 0) -> bool:
+    """Destructive op against the protected surface, however the target arrives.
+
+    Three ways a target reaches a verb, all of them observed:
+      1. on the command line              -> _direct_destructive
+      2. through a shell wrapper          -> _inner_commands (bash -c, eval, env)
+      3. as resolved arguments            -> _resolved_arguments (xargs, $(cat))
+
+    HONEST LIMIT: shell state this process cannot see still wins. `P=.policy-
+    tools; rm $P/x` expands inside the shell, and no scan of command TEXT can
+    resolve a VALUE. Refusing every destructive command containing a variable
+    would block ordinary work for no real gain, so the residual is accepted and
+    covered by the gate's fail-closed and the _common.py self-heal.
+    """
+    if not command:
+        return False
+    if _direct_destructive(command):
+        return True
+    if _depth < 2:                       # bounded: `bash -c "bash -c ..."`
+        for inner in _inner_commands(command):
+            if _bash_destructive(inner, _depth + 1):
+                return True
+    if (hands_text_to_shell(command) or "$(" in command or "`" in command) \
+            and _destructive_intent(command):
+        return any(_mentions_protected(src) for src in _resolved_arguments(command))
+    return False
 
 OVERRIDE = os.environ.get("UAP_SELF_PROTECT_OFF") == "1"
 

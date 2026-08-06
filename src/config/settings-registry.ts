@@ -245,7 +245,11 @@ export const SETTINGS: readonly SettingDef[] = [
   },
   {
     key: 'memory.longTerm.provider', kind: 'json', type: 'enum',
-    enumValues: ['qdrant', 'chroma', 'pinecone', 'github', 'qdrant-cloud', 'serverless', 'none'],
+    // `serverless` is NOT a provider: the serverless Qdrant manager is gated by
+    // its own `memory.longTerm.serverless.enabled` key, so listing it here only
+    // ever offered a selection that selected nothing. `chroma`/`pinecone` had no
+    // backend at all.
+    enumValues: ['qdrant', 'github', 'qdrant-cloud', 'none'],
     default: 'qdrant', category: 'memory',
     description: 'The long-term memory backend.',
     recommendation: '`qdrant` (local) for privacy/speed; `qdrant-cloud` or `github` if you want memory to follow you across machines.',
