@@ -20,6 +20,7 @@ import { evaluateWriteGate, formatGateResult } from '../memory/write-gate.js';
 import { DailyLog } from '../memory/daily-log.js';
 import { memoryRoot, shortTermDbPath } from '../memory/paths.js';
 import { storeLongTerm, dimensionedName } from '../memory/long-term.js';
+import { searchByVector, isDimensionMismatch } from '../memory/qdrant-search.js';
 import { propagateCorrection } from '../memory/correction-propagator.js';
 import { runMaintenance } from '../memory/memory-maintenance.js';
 
@@ -549,15 +550,12 @@ async function queryQdrant(
     }
 
     let allResults: Array<{ content: string; type: string; score: number; tags?: string[] }> = [];
+    let searchFailure: unknown = null;
     for (const col of availableCollections) {
       try {
-        const results = await client.search(col, {
-          vector: searchVector,
-          limit,
-          with_payload: true,
-        });
+        const results = await searchByVector(client, col, searchVector, limit);
         for (const r of results) {
-          const payload = r.payload as Record<string, unknown> | null;
+          const payload = r.payload;
           if (payload) {
             allResults.push({
               content: (payload.content as string) || '',
@@ -567,9 +565,21 @@ async function queryQdrant(
             });
           }
         }
-      } catch {
-        // Collection might have incompatible vector size
+      } catch (error) {
+        // A width mismatch is EXPECTED — an older collection built by a
+        // different embedding model cannot be searched with this vector, and
+        // the width-pinned sibling in the candidate list is the one that can.
+        // Anything else is a real fault and must not be swallowed: a bare
+        // `catch {}` here hid `client.search is not a function` for a full day,
+        // during which every store succeeded and every query returned nothing.
+        if (!isDimensionMismatch(error)) searchFailure = error;
       }
+    }
+    if (allResults.length === 0 && searchFailure) {
+      console.log(
+        chalk.yellow('\n⚠ Long-term search failed (not "no matches"):') +
+          `\n  ${String((searchFailure as { message?: string })?.message ?? searchFailure).slice(0, 200)}`
+      );
     }
 
     // Deduplicate and sort by score
