@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.186.2 (2026-08-07)
+## v1.186.3 (2026-08-07)
 
 - fix(proxy): break a loop that keeps SUCCEEDING
 - fix(policies): close the five naive forms the re-review found, with tests (#657)
