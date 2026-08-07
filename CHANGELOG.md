@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.186.3 (2026-08-07)
+
+- fix(proxy): break a loop that keeps SUCCEEDING
+
 ## v1.186.2 (2026-08-07)
 
 - fix(memory): recall was broken by a client rename, and hidden by a bare catch

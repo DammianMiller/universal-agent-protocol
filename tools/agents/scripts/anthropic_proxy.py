@@ -374,6 +374,30 @@ _RATE_LIMITED_API_RE = re.compile(r"api\.github\.com", re.IGNORECASE)
 PROXY_STUCK_TEXT_THRESHOLD = int(os.environ.get("PROXY_STUCK_TEXT_THRESHOLD", "2"))
 PROXY_STUCK_API_THRESHOLD = int(os.environ.get("PROXY_STUCK_API_THRESHOLD", "3"))
 
+# REPEAT-CALL guardrail: the same tool call, with the same arguments, over and
+# over -- while SUCCEEDING every time.
+#
+# Observed live (opencode + qwen3.6, 2026-08-07): `git diff --stat` re-issued 44
+# times in one run, ~2.5s apart, until the operator interrupted. On screen it
+# reads as the final message repeating forever.
+#
+# Every existing guard missed it, and each for a defensible reason:
+#   STUCK-BREAK  needs self-reported "stuck" phrasing or an api.github.com arg.
+#   ERROR-LOOP   needs a repeated tool-RESULT error signature; this call works.
+#   LOOP BREAKER detects the identical fingerprint, but is ANDed with
+#                no_progress_streak -- and a command that returns output every
+#                time never accumulates one, so the condition never holds.
+#
+# The blind spot is therefore a repeatedly-SUCCESSFUL identical call: the other
+# guards all key off failure or self-awareness, and this loop has neither. A
+# read-only command issued four times with identical arguments is not a
+# strategy, so this fires on the fingerprint alone, independent of outcome.
+# PROXY_REPEAT_CALL_THRESHOLD=0 disables.
+PROXY_REPEAT_CALL_THRESHOLD = int(os.environ.get("PROXY_REPEAT_CALL_THRESHOLD", "4"))
+# Marker so the injected directive can address a SUCCEEDING loop correctly
+# rather than telling the model to stop retrying "a failing action".
+_REPEAT_CALL_REASON = "identical tool call"
+
 # ---------------------------------------------------------------------------
 # ERROR-LOOP guardrail: the model edits, runs a command, hits the SAME failure,
 # edits again (a DIFFERENT edit), runs, hits the same failure — for many turns.
@@ -1993,6 +2017,14 @@ class SessionMonitor:
             return True, f"self-reported stuck x{self.self_stuck_streak}"
         if self.rate_limited_api_streak >= PROXY_STUCK_API_THRESHOLD:
             return True, f"rate-limited-API retries x{self.rate_limited_api_streak}"
+        # Repeated identical call, judged on the fingerprint ALONE. Deliberately
+        # not ANDed with no_progress_streak the way the LOOP BREAKER is: a call
+        # that succeeds every time never builds a no-progress streak, which is
+        # exactly how a 44-turn `git diff --stat` loop ran unchallenged.
+        if PROXY_REPEAT_CALL_THRESHOLD > 0:
+            looping, count = self.detect_tool_loop(window=PROXY_REPEAT_CALL_THRESHOLD)
+            if looping and count >= PROXY_REPEAT_CALL_THRESHOLD:
+                return True, f"{_REPEAT_CALL_REASON} x{count}"
         return False, ""
 
     def note_deferral_signal(self, text: str, had_tool_call: bool) -> None:
@@ -5677,6 +5709,51 @@ def _strip_sandbox_unreachable_tools(body: dict) -> int:
     return removed
 
 
+def _seed_tool_history_from_request(monitor: "SessionMonitor", messages: list) -> None:
+    """Rebuild the tool-call streak from the CONVERSATION, not from server state.
+
+    Every streak guard here counted appends to a per-session SessionMonitor. That
+    monitor is keyed `fp:<hash of the first user message>` whenever the client
+    sends no session header — and opencode sends none. So anything that shifts
+    that text (compaction, a re-summarised opening turn) silently starts a FRESH
+    monitor with empty history, and every streak restarts at zero. A proxy
+    restart mid-session does the same.
+
+    The client re-sends the whole conversation each turn, so the streak is
+    already in the request. Deriving it from there makes the guards independent
+    of monitor identity and of proxy uptime.
+
+    Only ever EXTENDS: if the monitor already knows at least as much as the
+    request implies, it is left alone, so this cannot double-count the normal
+    path that appends one fingerprint per request.
+    """
+    if not isinstance(messages, list):
+        return
+    rebuilt: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        fps = [
+            _tool_call_fingerprint(b)
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+        if fps:
+            rebuilt.append("|".join(sorted(fps)))
+    # Drop the LAST turn: the incremental path immediately appends that one, and
+    # seeding it here too would count the current turn twice — inflating every
+    # streak by one and firing the guards a turn early. Caught by two existing
+    # streaming tests, which replay one body three times and reached the
+    # threshold sooner than they should have.
+    rebuilt = rebuilt[:-1]
+    if len(rebuilt) > len(monitor.tool_call_history):
+        # Keep the same bound the incremental path uses.
+        monitor.tool_call_history = rebuilt[-30:]
+
+
 def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> None:
     """Force a terminal turn when the model is looping self-awarely or hammering
     a rate-limited API. Unlike the cycle-breaker (which narrows tools), this
@@ -5697,15 +5774,29 @@ def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> N
         if monitor.sandboxed
         else "use the browser tool or `git clone` (git protocol)"
     )
-    directive = (
-        "\n\nSTOP — you are repeating a failing action (" + reason + "). Do NOT "
-        "retry the same tool or fetch again. If a resource is unreachable (e.g. a "
-        "rate-limited GitHub REST API), switch channel: " + channel_hint + ", NOT "
-        "api.github.com. If it is still "
-        "unavailable, proceed WITHOUT it using what you already have, or ask the "
-        "operator the single blocking question in one sentence. Take a DIFFERENT "
-        "action now."
-    )
+    if reason.startswith(_REPEAT_CALL_REASON):
+        # The call SUCCEEDS every time, so "stop retrying a failing action" and
+        # the switch-channel advice would both be nonsense here. Name the real
+        # problem: the answer is already in hand and re-asking cannot change it.
+        directive = (
+            "\n\nSTOP — you have issued the same tool call with the same "
+            "arguments " + reason.rsplit("x", 1)[-1] + " times in a row. It "
+            "SUCCEEDED each time and the result will not change by asking again. "
+            "You already have that output. Do NOT repeat it. Either take the "
+            "NEXT concrete action using what it told you, or — if you genuinely "
+            "cannot proceed — state the single blocking question in one sentence "
+            "and stop. Answer in plain text now if the work is done."
+        )
+    else:
+        directive = (
+            "\n\nSTOP — you are repeating a failing action (" + reason + "). Do NOT "
+            "retry the same tool or fetch again. If a resource is unreachable (e.g. a "
+            "rate-limited GitHub REST API), switch channel: " + channel_hint + ", NOT "
+            "api.github.com. If it is still "
+            "unavailable, proceed WITHOUT it using what you already have, or ask the "
+            "operator the single blocking question in one sentence. Take a DIFFERENT "
+            "action now."
+        )
     msgs = openai_body.get("messages")
     if not isinstance(msgs, list):
         msgs = []
@@ -7095,6 +7186,7 @@ def _record_last_assistant_tool_calls(
                     _latest_err = any(_flags)
                 break
     monitor.note_tool_result_error(_latest_tr, _latest_err)
+    _seed_tool_history_from_request(monitor, messages)
     tool_fingerprints = []
     tool_targets: dict[str, str] = {}
     assistant_had_text = False  # Fix B: did the last assistant turn emit prose?
