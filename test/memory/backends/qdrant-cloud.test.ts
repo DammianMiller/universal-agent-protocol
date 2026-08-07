@@ -120,11 +120,16 @@ describe('QdrantCloudBackend', () => {
     expect(results[0].id).toBe('1');
     expect(results[0].content).toBe('Test memory');
     // Collection name includes project ID hash for isolation
+    // `with_payload: true` is now explicit rather than relying on the server
+    // default — the search goes through searchByVector, which must ask for the
+    // payload because the caller maps content/type/tags out of it. The mock
+    // exposes only `search()`, so this also pins the pre-1.19 client path.
     expect(mockClient.search).toHaveBeenCalledWith(
       expect.stringMatching(/^agent_memory_test-project_/),
       {
         vector: expect.any(Array),
         limit: 10,
+        with_payload: true,
         score_threshold: 0.5,
       }
     );
