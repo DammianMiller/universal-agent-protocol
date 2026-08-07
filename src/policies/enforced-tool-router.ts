@@ -6,7 +6,15 @@ export interface PolicyToolDefinition {
   execute: (args: Record<string, unknown>) => Promise<unknown>;
 }
 
-/** @deprecated Use PolicyToolDefinition instead */
+/**
+ * @deprecated Use PolicyToolDefinition instead.
+ *
+ * Retained because it is re-exported from the package root, so removing it
+ * would break `import type { ToolDefinition } from '@miller-tech/uap'` for
+ * downstream TypeScript consumers. Project stance is compat=preserve /
+ * maturity=production: published surface gets migrated, not deleted. Internal
+ * code uses PolicyToolDefinition directly.
+ */
 export type ToolDefinition = PolicyToolDefinition;
 
 /**
@@ -25,7 +33,7 @@ export type ToolDefinition = PolicyToolDefinition;
  *   const result = await router.executeTool('web_browser', { url: '...' });
  */
 export class EnforcedToolRouter {
-  private tools: Map<string, ToolDefinition> = new Map();
+  private tools: Map<string, PolicyToolDefinition> = new Map();
   private _gate: PolicyGate | null = null;
 
   private get gate(): PolicyGate {
@@ -38,7 +46,7 @@ export class EnforcedToolRouter {
   /**
    * Register a tool. All registered tools are policy-gated.
    */
-  registerTool(tool: ToolDefinition): void {
+  registerTool(tool: PolicyToolDefinition): void {
     this.tools.set(tool.name, tool);
   }
 

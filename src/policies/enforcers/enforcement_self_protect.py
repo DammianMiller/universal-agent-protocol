@@ -19,6 +19,7 @@ would reopen the hole (the model would just set it). Operator override is
 out-of-band only: UAP_SELF_PROTECT_OFF=1 in the trusted launch env.
 """
 import os
+import posixpath
 import re
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import (  # noqa: E402
     emit, parse_cli, repo_root, REVIEW_ARTIFACT_DIR, REVIEW_WAIVER_DIR,
-    hands_text_to_shell,
+    hands_text_to_shell, scannable_command,
 )
 
 EDIT_OPS = {"Edit", "Write", "MultiEdit", "edit", "write", "multiedit"}
@@ -136,14 +137,26 @@ def _mentions_protected(text: str) -> bool:
     everything else invisible — appending a single innocuous line to a deletion
     list defeated the check completely (found by the review, reproduced).
     """
-    for unit in text.translate(_QUOTES).lower().replace("./", "/").split():
+    for raw_unit in text.translate(_QUOTES).lower().split():
+        # Normalise BEFORE matching. `policies/waivers/../../.policy-tools` was
+        # exempt by substring while resolving to a protected path, and the old
+        # "./" -> "/" rewrite ran first and mangled the `..` segments so a later
+        # normpath could not undo it. normpath subsumes that rewrite: it maps
+        # "./.uap" -> ".uap", which is what the rewrite existed to do.
+        unit = posixpath.normpath(raw_unit) if "/" in raw_unit else raw_unit
         if any(ex in unit for ex in PROTECTED_EXEMPT):
             continue
         # The .uap DIRECTORY ITSELF: `rm -rf .uap` destroys the manifest, while
         # `echo 0 > .uap/verify-cadence` names a deeper path and is ordinary
         # tooling. Bare directory protected; a file under it is not.
         for m in re.finditer(re.escape(".uap"), unit):
-            if unit[m.end():m.end() + 1] in ("", " ", '"', "'", "*"):
+            rest = unit[m.end():]
+            if rest[:1] in ("", " ", '"', "'", "*"):
+                return True
+            # `rm -rf .uap/` and `rm -rf .uap/*` name the DIRECTORY, and take
+            # evidence, reviews and interaction with it. A deeper path
+            # (`.uap/verify-cadence`) is ordinary tooling and stays writable.
+            if rest.strip("/") in ("", "*"):
                 return True
         for target in PROTECTED_TARGETS:
             t = target.lower()
@@ -170,6 +183,30 @@ _SUBST_FILE = re.compile(r"\$\(\s*(?:cat\s+)?<?\s*([^\s)]+)[^)]*\)|`\s*cat\s+([^
 _ARGFILE = re.compile(r"--arg-file=([^\s;|&]+)|(?:^|\s)-a\s+([^\s;|&]+)")
 _STDIN_REDIR = re.compile(r"<\s*([^\s;|&<>]+)")
 
+
+
+_LAUNCHERS = ("nohup", "timeout", "command", "builtin", "setsid", "sudo", "doas",
+              "nice", "ionice", "stdbuf", "time", "unbuffer")
+# Producers whose output genuinely cannot be known from the command text.
+_SEARCH_PRODUCERS = ("grep", "egrep", "fgrep", "rg", "ag", "ack", "find", "fd",
+                     "ls", "comm", "diff", "git", "locate", "which")
+
+
+def _verb_of(token: str) -> str:
+    """The command a token invokes, with quoting and \\-escaping removed."""
+    return token.strip("\"'").lstrip("\\").rsplit("/", 1)[-1].lower()
+
+
+def _has_unknown_producer(command: str) -> bool:
+    """True when a pipeline stage feeding a consumer is not a search tool."""
+    stages = [s.strip() for s in command.split("|") if s.strip()]
+    if len(stages) < 2:
+        return False
+    for stage in stages[:-1]:
+        toks = [t for t in stage.split() if not _ENV_ASSIGN.match(t)]
+        if toks and _verb_of(toks[0]) not in _SEARCH_PRODUCERS:
+            return True
+    return False
 
 def _read_source(tok: str) -> str:
     """A bounded prefix of `tok` if it is a readable regular file, else ""."""
@@ -257,9 +294,17 @@ def _direct_destructive(command: str) -> bool:
             if _mentions_protected(seg[m.end():]):
                 return True
         tokens = [t for t in seg.split() if not _ENV_ASSIGN.match(t)]
+        # Step over launchers: `nohup rm -rf x`, `timeout 5 rm -rf x`,
+        # `command rm …`, `sudo rm …` all run rm, but the verb read as the
+        # launcher and the removal was invisible. Flags and their values are
+        # skipped with them.
+        while len(tokens) > 1 and _verb_of(tokens[0]) in _LAUNCHERS:
+            tokens = tokens[1:]
+            while tokens and (tokens[0].startswith("-") or tokens[0].isdigit()):
+                tokens = tokens[1:]
         if not tokens:
             continue
-        verb = tokens[0].rsplit("/", 1)[-1].lower()
+        verb = _verb_of(tokens[0])
         # `cd .policy-tools && rm -f _common.py` put the protected path in one
         # segment and the verb in another, so neither segment looked dangerous.
         if verb == "cd":
@@ -298,9 +343,26 @@ def _bash_destructive(command: str, _depth: int = 0) -> bool:
         for inner in _inner_commands(command):
             if _bash_destructive(inner, _depth + 1):
                 return True
-    if (hands_text_to_shell(command) or "$(" in command or "`" in command) \
-            and _destructive_intent(command):
-        return any(_mentions_protected(src) for src in _resolved_arguments(command))
+    if not (hands_text_to_shell(command) or "$(" in command or "`" in command):
+        return False
+    sources = _resolved_arguments(command)
+    # Intent can live in the SOURCE rather than the outer text: for
+    # `bash -c "$(cat f)"` the outer words are just bash, so judging intent on
+    # them alone found nothing while f held both the verb and the target.
+    for src in sources:
+        if _mentions_protected(src) and (
+                _destructive_intent(command) or _destructive_intent(src)):
+            return True
+    if not _destructive_intent(command):
+        return False
+    # Nothing resolvable. A SEARCH producer really is unknowable here, and
+    # guessing from its pattern text is what blocked ordinary refactors
+    # (`grep -rl policies/ docs/ | xargs sed -i …`). An arbitrary producer the
+    # agent chose is a different matter: `python3 -c 'print(".policy-tools/x")'
+    # | xargs rm` carries the path in plain sight. Fall back to the text only
+    # when no producer is a search tool.
+    if not sources and _has_unknown_producer(command):
+        return _mentions_protected(scannable_command(command))
     return False
 
 OVERRIDE = os.environ.get("UAP_SELF_PROTECT_OFF") == "1"

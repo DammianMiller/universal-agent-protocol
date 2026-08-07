@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.186.1 (2026-08-06)
+
+- fix(policies): close the five naive forms the re-review found, with tests
+- feat(policies): make the enforcement surface repair itself (#656)
+- fix(policies): close two verified bypasses of the enforcement surface (#655)
+
+
 ## v1.186.0 (2026-08-06)
 
 - feat(policies): make the enforcement surface repair itself
