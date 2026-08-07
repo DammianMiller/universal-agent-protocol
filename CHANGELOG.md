@@ -3,6 +3,10 @@
 ## v1.186.3 (2026-08-07)
 
 - fix(proxy): break a loop that keeps SUCCEEDING
+
+## v1.186.2 (2026-08-07)
+
+- fix(memory): recall was broken by a client rename, and hidden by a bare catch
 - fix(policies): close the five naive forms the re-review found, with tests (#657)
 - feat(policies): make the enforcement surface repair itself (#656)
 - fix(policies): close two verified bypasses of the enforcement surface (#655)

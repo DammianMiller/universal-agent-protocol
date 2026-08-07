@@ -1,6 +1,7 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import type { MemoryBackend, MemoryEntry } from './base.js';
 import { getEmbeddingService } from '../embeddings.js';
+import { searchByVector } from '../qdrant-search.js';
 import { createHash } from 'crypto';
 
 interface QdrantCloudBackendConfig {
@@ -89,22 +90,23 @@ export class QdrantCloudBackend implements MemoryBackend {
     const embeddingService = getEmbeddingService();
     const queryEmbedding = await embeddingService.embed(queryText);
 
-    const results = await this.client.search(this.collection, {
-      vector: queryEmbedding,
-      limit,
-      score_threshold: 0.5, // Only return relevant results
-    });
+    // Via searchByVector: `.search()` was removed in @qdrant/js-client-rest 1.19
+    // in favour of `.query()`, and calling the missing one throws a TypeError
+    // rather than returning nothing. The 0.5 threshold stays SERVER-side, where
+    // Qdrant applies it before `limit`.
+    const hits = await searchByVector(this.client, this.collection, queryEmbedding, limit, 0.5);
 
-    return results.map((r) => ({
-      id: String(r.id),
-      timestamp: (r.payload?.timestamp as string) ?? new Date().toISOString(),
-      type: (r.payload?.type as MemoryEntry['type']) ?? 'observation',
-      content: (r.payload?.content as string) ?? '',
-      embedding: r.vector as number[],
-      tags: Array.isArray(r.payload?.tags) ? (r.payload.tags as string[]) : [],
-      importance: (r.payload?.importance as number) ?? 5,
-      metadata: (r.payload as Record<string, unknown>) ?? {},
-    }));
+    return hits
+      .map((r) => ({
+        id: String(r.id ?? ''),
+        timestamp: (r.payload?.timestamp as string) ?? new Date().toISOString(),
+        type: (r.payload?.type as MemoryEntry['type']) ?? 'observation',
+        content: (r.payload?.content as string) ?? '',
+        embedding: r.vector ?? [],
+        tags: Array.isArray(r.payload?.tags) ? (r.payload.tags as string[]) : [],
+        importance: (r.payload?.importance as number) ?? 5,
+        metadata: (r.payload as Record<string, unknown>) ?? {},
+      }));
   }
 
   async getRecent(limit = 50): Promise<MemoryEntry[]> {
