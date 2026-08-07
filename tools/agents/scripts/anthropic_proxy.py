@@ -5709,6 +5709,51 @@ def _strip_sandbox_unreachable_tools(body: dict) -> int:
     return removed
 
 
+def _seed_tool_history_from_request(monitor: "SessionMonitor", messages: list) -> None:
+    """Rebuild the tool-call streak from the CONVERSATION, not from server state.
+
+    Every streak guard here counted appends to a per-session SessionMonitor. That
+    monitor is keyed `fp:<hash of the first user message>` whenever the client
+    sends no session header — and opencode sends none. So anything that shifts
+    that text (compaction, a re-summarised opening turn) silently starts a FRESH
+    monitor with empty history, and every streak restarts at zero. A proxy
+    restart mid-session does the same.
+
+    The client re-sends the whole conversation each turn, so the streak is
+    already in the request. Deriving it from there makes the guards independent
+    of monitor identity and of proxy uptime.
+
+    Only ever EXTENDS: if the monitor already knows at least as much as the
+    request implies, it is left alone, so this cannot double-count the normal
+    path that appends one fingerprint per request.
+    """
+    if not isinstance(messages, list):
+        return
+    rebuilt: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        fps = [
+            _tool_call_fingerprint(b)
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+        if fps:
+            rebuilt.append("|".join(sorted(fps)))
+    # Drop the LAST turn: the incremental path immediately appends that one, and
+    # seeding it here too would count the current turn twice — inflating every
+    # streak by one and firing the guards a turn early. Caught by two existing
+    # streaming tests, which replay one body three times and reached the
+    # threshold sooner than they should have.
+    rebuilt = rebuilt[:-1]
+    if len(rebuilt) > len(monitor.tool_call_history):
+        # Keep the same bound the incremental path uses.
+        monitor.tool_call_history = rebuilt[-30:]
+
+
 def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> None:
     """Force a terminal turn when the model is looping self-awarely or hammering
     a rate-limited API. Unlike the cycle-breaker (which narrows tools), this
@@ -7141,6 +7186,7 @@ def _record_last_assistant_tool_calls(
                     _latest_err = any(_flags)
                 break
     monitor.note_tool_result_error(_latest_tr, _latest_err)
+    _seed_tool_history_from_request(monitor, messages)
     tool_fingerprints = []
     tool_targets: dict[str, str] = {}
     assistant_had_text = False  # Fix B: did the last assistant turn emit prose?

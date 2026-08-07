@@ -154,3 +154,75 @@ class TestDirectiveMatchesTheFailure(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStreakSurvivesAFreshMonitor(unittest.TestCase):
+    """The guards counted server-side state that silently resets.
+
+    The monitor is keyed `fp:<hash of the first user message>` when the client
+    sends no session header — and opencode sends none. Compaction, a re-summarised
+    opening turn, or a proxy restart therefore starts a FRESH monitor with empty
+    history, and every streak restarts at zero no matter how long the real loop is.
+
+    The conversation is re-sent whole each turn, so the streak is derivable from
+    the request. These tests pin that.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.proxy = load_proxy()
+
+    @staticmethod
+    def convo(n, cmd="git diff --stat"):
+        """A conversation containing `n` identical assistant tool calls."""
+        msgs = [{"role": "user", "content": "check the diff"}]
+        for i in range(n):
+            msgs.append({"role": "assistant", "content": [
+                {"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {"command": cmd}}]})
+            msgs.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}", "content": "1 file changed"}]})
+        return msgs
+
+    def test_a_fresh_monitor_still_sees_the_loop(self):
+        # THE RESIDUAL: brand-new monitor, 44-turn loop already in the transcript.
+        mon = self.proxy.SessionMonitor(context_window=100000)
+        self.assertEqual(mon.tool_call_history, [])
+        self.proxy._seed_tool_history_from_request(mon, self.convo(44))
+        should, reason = mon.should_force_stuck_break()
+        self.assertTrue(should, "a reset monitor must not erase a live loop")
+        self.assertIn("identical tool call", reason)
+
+    def test_it_only_extends_never_double_counts(self):
+        # The incremental path appends one fingerprint per request; seeding must
+        # not stack on top of that and inflate the streak.
+        mon = self.proxy.SessionMonitor(context_window=100000)
+        for _ in range(6):
+            mon.record_tool_calls(tool_names=["Bash"], fingerprint="Bash|x")
+        before = list(mon.tool_call_history)
+        self.proxy._seed_tool_history_from_request(mon, self.convo(2))
+        self.assertEqual(mon.tool_call_history, before)
+
+    def test_varied_history_is_reconstructed_without_tripping(self):
+        mon = self.proxy.SessionMonitor(context_window=100000)
+        msgs = [{"role": "user", "content": "go"}]
+        for i, cmd in enumerate(["ls", "npm test", "git status", "npm run build", "ls -la"]):
+            msgs.append({"role": "assistant", "content": [
+                {"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {"command": cmd}}]})
+        self.proxy._seed_tool_history_from_request(mon, msgs)
+        # 5 assistant turns, 4 seeded: the last is deliberately left for the
+        # incremental path to append, so the current turn is not counted twice.
+        self.assertEqual(len(mon.tool_call_history), 4)
+        should, _ = mon.should_force_stuck_break()
+        self.assertFalse(should)
+
+    def test_it_is_bounded(self):
+        mon = self.proxy.SessionMonitor(context_window=100000)
+        self.proxy._seed_tool_history_from_request(mon, self.convo(200))
+        self.assertLessEqual(len(mon.tool_call_history), 30)
+
+    def test_malformed_input_is_survivable(self):
+        mon = self.proxy.SessionMonitor(context_window=100000)
+        for bad in (None, "not-a-list", [], [None, 3, {"role": "assistant"}],
+                    [{"role": "assistant", "content": "plain text"}]):
+            self.proxy._seed_tool_history_from_request(mon, bad)
+        self.assertEqual(mon.tool_call_history, [])
