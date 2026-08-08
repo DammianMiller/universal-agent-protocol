@@ -10,6 +10,40 @@ const ok = (summary: string, turns = 1): EpicRunResult => ({ success: true, summ
 const fail = (summary: string, turns = 1): EpicRunResult => ({ success: false, summary, turns });
 
 describe('runEpics', () => {
+
+  it('stops retrying an epic whose attempt never reached the model endpoint', async () => {
+    // The turn loop giving up is not enough on its own: the controller retries
+    // a failed epic up to 3 times and then a re-plan splits it. With the
+    // endpoint down, every one of those re-pays the connect timeout and fails
+    // identically. Live 2026-08-09: 5 turns x 3 attempts + a re-plan, none of
+    // which reached a model.
+    let attempts = 0;
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'a', title: 'A', goal: 'do a' }],
+      runEpic: async () => {
+        attempts++;
+        return { success: false, summary: 'endpoint down', turns: 1, endpointUnreachable: true };
+      },
+    });
+    expect(res.success).toBe(false);
+    expect(attempts).toBe(1); // not 3
+  });
+
+  it('still retries an ordinary epic failure the normal number of times', async () => {
+    // The narrowing that keeps the abort from swallowing real retry behaviour.
+    let attempts = 0;
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'a', title: 'A', goal: 'do a' }],
+      runEpic: async () => {
+        attempts++;
+        return fail('just a bad attempt');
+      },
+    });
+    expect(res.success).toBe(false);
+    expect(attempts).toBeGreaterThan(1);
+  });
   it('runs epics in dependency order, injecting only prior summaries into each fresh run', async () => {
     const seen: Array<{ id: string; priors: string[] }> = [];
     const epics: Epic[] = [

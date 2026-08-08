@@ -406,12 +406,15 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         // split path keys off the structured budgetStopped field below; the
         // marker in the summary is human-facing text, not protocol.
         const budgetHit = !r.success && r.history.some((h) => h.budgetStopped);
+        // Same idea as budgetHit: a structured reason the controller must not retry.
+        const unreachable = !r.success && r.history.some((h) => h.endpointUnreachable);
         return {
           success: r.success,
           turns: r.turns,
           // Structured field for the controller's split trigger; the marker
           // stays in the summary for humans (and marker-matching callers).
           ...(budgetHit ? { budgetStopped: true } : {}),
+          ...(unreachable ? { endpointUnreachable: true } : {}),
           // Prior-attempt writes must count for the anti-no-op rail on retry.
           ...(r.changedTree ? { changedTree: true } : {}),
           summary:

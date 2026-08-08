@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSy
 import { join, dirname, resolve, relative, isAbsolute } from 'path';
 import type { ModelConfig } from '../models/types.js';
 import type { LoopExecutor } from './convergence-loop.js';
-import { fetchModelWithRetry } from '../models/long-fetch.js';
+import { fetchModelWithRetry, isEndpointUnreachable, ENDPOINT_UNREACHABLE } from '../models/long-fetch.js';
 import { resolveRequestCredential } from '../models/openai-compat-client.js';
 import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename } from './applier.js';
@@ -1509,6 +1509,28 @@ export function createAgenticExecutor(
         msg = await chat(opts.endpoint, model, messages, opts.temperature, allowBash, forceWrite);
       } catch (err) {
         opts.onEvent?.({ round, kind: 'error', detail: String(err).slice(0, 200) });
+        // An UNREACHABLE endpoint is not a bad turn — it is no turn at all,
+        // and no amount of retrying can fix it from in here.
+        //
+        // The predicate is deliberately narrower than the retry predicate: only
+        // "the connection could not be established" counts. A reset socket or a
+        // model thinking past the timeout is retryable but NOT evidence the
+        // endpoint is gone, and aborting on those would kill a healthy long run.
+        //
+        // Returning a string here made the loop treat it as an ordinary failed
+        // turn: an errored turn is "inconclusive", which RESETS the no-progress
+        // streak, so the stuck-abort could never fire. Live on 2026-08-09 with
+        // the proxy down, one mission burned 5 turns x 3 epic attempts plus a
+        // re-plan — 15 turns of nothing — each turn 6s of retry timeouts, and
+        // reported "75% of gates" throughout. Throwing marks it fatal so the
+        // run stops on the first turn and says what is actually wrong.
+        if (isEndpointUnreachable(err)) {
+          throw new Error(
+            `${ENDPOINT_UNREACHABLE}: cannot reach the model endpoint at ${opts.endpoint} ` +
+            `(${String(err).slice(0, 120)}). Retrying cannot help until it is back. Check the ` +
+            `inference stack is up — \`uap proxy status\`, then \`uap proxy start\`.`,
+          );
+        }
         return `agentic executor error: ${String(err).slice(0, 200)}`;
       }
 
