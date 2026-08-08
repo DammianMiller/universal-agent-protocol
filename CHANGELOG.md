@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.186.4 (2026-08-08)
+
+- fix(deliver): close two loop-causing feedback bugs from a live 2h churn
+- fix(proxy): break a loop that keeps SUCCEEDING (#659)
+- fix(memory): recall was broken by a client rename, and hidden by a bare catch (#658)
+- fix(policies): close the five naive forms the re-review found, with tests (#657)
+- feat(policies): make the enforcement surface repair itself (#656)
+- fix(policies): close two verified bypasses of the enforcement surface (#655)
+
+
 ## v1.186.3 (2026-08-07)
 
 - fix(proxy): break a loop that keeps SUCCEEDING
