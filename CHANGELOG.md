@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.186.6 (2026-08-09)
+
+- fix(deliver): stop a run when the model endpoint is unreachable
+
+
 ## v1.186.5 (2026-08-09)
 
 - fix(deliver): warn on a gateless root, and stop no-op edits banking success
