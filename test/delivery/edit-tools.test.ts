@@ -231,3 +231,77 @@ describe('batch edit input validation', () => {
     expect(out).toMatch(/too many edits/);
   });
 });
+
+/**
+ * Both regressions below come from one live run (cognition-engine, 2026-08-08)
+ * in which a deliver churned ~2h without converging. The two tool behaviours
+ * exercised here each handed the model a SUCCESS signal for a round that
+ * changed nothing, which is what let the loop run flat.
+ */
+describe('loop-causing tool feedback (live incident 2026-08-08)', () => {
+  let dir: string;
+  const SRC = ['function add(a, b) {', '    return a + b;', '}', ''].join('\n');
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'loop-fix-'));
+    writeFileSync(join(dir, 'calc.js'), SRC, 'utf-8');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('reports a byte-identical write_file as a NO-OP, not as "OK: wrote"', () => {
+    const identical = readFileSync(join(dir, 'calc.js'), 'utf-8');
+    const out = call(dir, 'write_file', { path: 'calc.js', content: identical });
+    expect(out).toMatch(/^NO-OP/);
+    expect(out).not.toMatch(/^OK: wrote/);
+    // The file must survive untouched — a no-op is not a delete.
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toBe(identical);
+  });
+
+  it('still reports a genuinely changed write_file as OK', () => {
+    const changed = SRC.replace('a + b', 'a + b + 1');
+    const out = call(dir, 'write_file', { path: 'calc.js', content: changed });
+    expect(out).toMatch(/^OK: wrote/);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toBe(changed);
+  });
+
+  it('rejects a same-length but DIFFERENT write — the no-op check compares bytes, not size', () => {
+    // The size comparison is only a short-circuit. If it were the whole test,
+    // every same-length edit would be answered NO-OP and silently discarded.
+    const sameLength = SRC.replace('a + b', 'a - b');
+    expect(sameLength.length).toBe(SRC.length);
+    const out = call(dir, 'write_file', { path: 'calc.js', content: sameLength });
+    expect(out).toMatch(/^OK: wrote/);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toBe(sameLength);
+  });
+
+  it('edit_range past EOF refuses WITHOUT truncating the file', () => {
+    // The refusal is the point: clamping to the last line deleted the closing
+    // brace and the trailing newline, i.e. produced the unclosed-delimiter
+    // corruption that made the live run unrecoverable.
+    const out = call(dir, 'edit_range', {
+      path: 'calc.js',
+      start_line: 2,
+      end_line: 300,
+      new_text: '    return a * b;',
+    });
+    expect(out).toMatch(/^ERROR/);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toBe(SRC);
+  });
+
+  it('tells the model the last line, so its retry needs no extra read round', () => {
+    const out = call(dir, 'edit_range', {
+      path: 'calc.js',
+      start_line: 2,
+      end_line: 300,
+      new_text: '    return a * b;',
+    });
+    expect(out).toMatch(/has 3 lines/);
+    expect(out).toMatch(/end_line=3/);
+  });
+
+  it('still errors on a start_line past EOF through the tool path', () => {
+    const out = call(dir, 'edit_range', { path: 'calc.js', start_line: 99, end_line: 100, new_text: 'x' });
+    expect(out).toMatch(/^ERROR/);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toBe(SRC);
+  });
+});

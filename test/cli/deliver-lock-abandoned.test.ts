@@ -42,11 +42,21 @@ function writeHeartbeat(agoS: number): void {
   writeFileSync(join(proj, '.uap', 'deliver.heartbeat'), String(nowS() - agoS));
 }
 
+let registry: string;
+
 beforeEach(() => {
   proj = mkdtempSync(join(tmpdir(), 'uap-lock-'));
   mkdirSync(join(proj, '.uap'), { recursive: true });
+  // Acquiring publishes to the cross-project run registry; keep it out of the
+  // real home so these tests neither pollute it nor read a developer's live run.
+  registry = mkdtempSync(join(tmpdir(), 'uap-abandoned-registry-'));
+  process.env.UAP_ACTIVE_RUNS_DIR = registry;
 });
-afterEach(() => rmSync(proj, { recursive: true, force: true }));
+afterEach(() => {
+  delete process.env.UAP_ACTIVE_RUNS_DIR;
+  rmSync(registry, { recursive: true, force: true });
+  rmSync(proj, { recursive: true, force: true });
+});
 
 describe('isDeliverLockAbandoned', () => {
   it('is true for an old lock whose holder never stamped a heartbeat', () => {

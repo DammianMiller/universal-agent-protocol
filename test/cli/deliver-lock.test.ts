@@ -7,11 +7,19 @@ import { acquireDeliverLock, isDeliverHolderWedged, wedgeTimeoutS, updateDeliver
 
 describe('acquireDeliverLock', () => {
   let dir: string;
+  let registry: string;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'uap-deliver-lock-'));
+    // Keep the cross-project run registry OFF the real home: acquiring writes
+    // an entry there, and scanning reads every entry — including a developer's
+    // genuinely live deliver, which would fail these tests for unrelated reasons.
+    registry = mkdtempSync(join(tmpdir(), 'uap-lock-registry-'));
+    process.env.UAP_ACTIVE_RUNS_DIR = registry;
     delete process.env.UAP_DELIVER_NO_LOCK;
   });
   afterEach(() => {
+    delete process.env.UAP_ACTIVE_RUNS_DIR;
+    rmSync(registry, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -75,12 +83,17 @@ describe('deliver wedge reclaim (P0 reliability)', () => {
     mkdirSync(join(dir, '.uap'), { recursive: true });
     writeFileSync(join(dir, '.uap', 'deliver.heartbeat'), String(Math.floor(Date.now() / 1000) - secondsAgo));
   };
+  let registry: string;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'uap-deliver-wedge-'));
+    registry = mkdtempSync(join(tmpdir(), 'uap-wedge-registry-'));
+    process.env.UAP_ACTIVE_RUNS_DIR = registry;
     delete process.env.UAP_DELIVER_NO_LOCK;
     delete process.env.UAP_DELIVER_WEDGE_TIMEOUT;
   });
   afterEach(() => {
+    delete process.env.UAP_ACTIVE_RUNS_DIR;
+    rmSync(registry, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
     delete process.env.UAP_DELIVER_WEDGE_TIMEOUT;
   });

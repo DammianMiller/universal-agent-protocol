@@ -81,6 +81,8 @@ Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
 | `UAP_DELIVER_AUTO` | `0` disables auto-deliver | enabled |
 | `UAP_DELIVER_UNTIL_DELIVERED` | `0` disables loop-until-delivered | enabled |
 | `UAP_DELIVER_SANDBOX` | Deliver sandbox root path | — |
+| `UAP_ACTIVE_RUNS_DIR` | Registry of live deliver runs, used for cross-root (nested-project) single-flight | `~/.uap/active-runs` |
+| `UAP_DELIVER_NO_LOCK` | `1` disables the per-project lock **and** the overlapping-root check; the run also becomes invisible to other runs' checks | enabled |
 | `UAP_HALO_TRACE` | `1` enables HALO tracing | off |
 | `UAP_HALO_TRACE_PATH` | HALO trace output file | `.uap/halo/traces.jsonl` |
 | `UAP_HALO_PROJECT_ID` | HALO project id | `uap` |

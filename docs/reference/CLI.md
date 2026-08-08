@@ -398,8 +398,12 @@ uap deliver --await-run --await-timeout 45 # one poll, then report and return
 
 Exit codes for `--await-run` are distinct because three of the four outcomes are
 not failures: **0** delivered · **1** the mission ended badly · **3** nothing was
-running (go ahead and launch) · **4** still running — the wait gave up, the
-mission did not.
+running *on this root* · **4** still running — the wait gave up, the mission did
+not.
+
+A **3** normally means "safe to launch". The exception is a launch that was just
+refused because an *overlapping* root holds the run: follow that root instead —
+this one has nothing in flight and will keep answering 3.
 
 A `4` carries a `progress` object so consecutive polls can be compared. Always
 present: `heartbeatAgeSec`, `wedgeAfterSec`, `health`. Present only when the run
@@ -416,6 +420,13 @@ asserted:
   move when a turn or phase completes.
 - `"wedged"` — silent past `UAP_DELIVER_WEDGE_TIMEOUT` (default 1800s, shared
   with the autoroute hook) and may be stuck.
+
+Single-flight is a property of the **subtree**, not of the lock path. A run also
+exits early when an older live run holds an *overlapping* (nested or identical)
+project root: `repo` and `repo/src/ext` edit the same files even though their
+`.uap/deliver.lock` paths differ. The refusal names the holder's root — follow
+*that* root, because following your own reports nothing in flight. Live runs
+register in `~/.uap/active-runs` (redirect with `UAP_ACTIVE_RUNS_DIR`).
 
 A wedged **lock** holder is reclaimed by the next launch. A resumed run holds no
 lock, so relaunching there does not reclaim it — it starts a second mission on

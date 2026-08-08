@@ -8,7 +8,9 @@
 
 import chalk from 'chalk';
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync, readdirSync, statSync } from 'fs';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, writeFileSync, renameSync, realpathSync, closeSync, readdirSync, statSync } from 'fs';
+import { homedir } from 'os';
+import { createHash } from 'crypto';
 import { join, resolve, relative } from 'path';
 import { ConvergenceLoop, composeIterationHooks } from '../delivery/convergence-loop.js';
 import type {
@@ -645,6 +647,158 @@ export function isDeliverLockAbandoned(
 }
 
 /**
+ * True when two deliver project roots share a subtree — identical, or one an
+ * ancestor of the other. Such runs edit the SAME files, so they must not run
+ * concurrently even though their `.uap/deliver.lock` paths differ.
+ */
+export function deliverRootsOverlap(a: string, b: string): boolean {
+  // realpath so one tree reached through a symlink and through its target does
+  // not read as two unrelated projects — a silent miss of the exact case this
+  // guards. Falls back to resolve() for a path that does not exist yet.
+  const norm = (p: string) => {
+    let abs: string;
+    try { abs = realpathSync.native(resolve(p)); } catch { abs = resolve(p); }
+    return abs.replace(/\/+$/, '');
+  };
+  const x = norm(a);
+  const y = norm(b);
+  if (x === y) return true;
+  // Segment-boundary check: `/srv/app` must not "contain" `/srv/app-two`.
+  return x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
+/**
+ * A project root a registry entry is allowed to claim.
+ *
+ * `/` (and any root stripped to `''` by the trailing-slash trim) would overlap
+ * EVERY project on the machine, so one such entry disables deliver everywhere.
+ * Requiring at least two path segments keeps a corrupt or hostile entry from
+ * becoming a machine-wide off-switch.
+ */
+function isPlausibleRunRoot(root: string): boolean {
+  if (!root.startsWith('/')) return false;
+  return root.replace(/\/+$/, '').split('/').filter(Boolean).length >= 2;
+}
+
+/**
+ * A pid a registry entry is allowed to claim.
+ *
+ * Bare `Number()` accepts `-1`, and `process.kill(-1, 0)` is a "does any
+ * process exist" query that always succeeds — so a negative pid would read as
+ * eternally alive and its entry could never be swept.
+ */
+function isPlausibleRunPid(raw: string): boolean {
+  return /^[1-9]\d{0,9}$/.test(raw.trim());
+}
+
+/** Only names this module writes are read or unlinked. */
+const ACTIVE_RUN_FILE = /^[0-9a-f]{16}\.run$/;
+
+/**
+ * Registry of live deliver runs, keyed across ALL projects on this machine.
+ * `UAP_ACTIVE_RUNS_DIR` redirects it so tests never write to a real home.
+ */
+function activeRunsDir(): string {
+  const override = process.env.UAP_ACTIVE_RUNS_DIR;
+  return override && override.trim() ? resolve(override.trim()) : join(homedir(), '.uap', 'active-runs');
+}
+
+function activeRunEntry(projectRoot: string): string {
+  // Path → filename, reversibly enough to read back and stable per root.
+  const key = createHash('sha1').update(resolve(projectRoot)).digest('hex').slice(0, 16);
+  return join(activeRunsDir(), `${key}.run`);
+}
+
+/** Publish this run's entry atomically, so no scanner can read a torn record. */
+function publishActiveRun(projectRoot: string, iso: string): void {
+  const dir = activeRunsDir();
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Absolute paths carry usernames and client/project names; keep them off
+  // other local uids, matching proxy-lifecycle's 0700/0600 convention.
+  const entry = activeRunEntry(projectRoot);
+  const tmp = `${entry}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${process.pid}|${iso}|${resolve(projectRoot)}`, { encoding: 'utf8', mode: 0o600 });
+  renameSync(tmp, entry);
+}
+
+/**
+ * Deliver runs on OVERLAPPING project roots, anywhere on this machine.
+ *
+ * Returns the first live overlapping run that owns the subtree ahead of us
+ * (started earlier — PID breaks an exact tie), or null when we are clear to
+ * proceed. Stale entries are swept as they are read.
+ *
+ * `pidAlive` alone is NOT sufficient evidence that a run is live, and this
+ * function must not repeat the mistake the per-project lock already paid for
+ * (see isDeliverLockAbandoned): pids get recycled, and a run killed with
+ * SIGKILL never runs its exit handler, so its entry outlives it. An entry whose
+ * pid has been reissued to an unrelated process would otherwise block every
+ * overlapping deliver on the machine forever, with no operator-visible cause.
+ * So a claimed holder must ALSO still look live at its own root — it must hold
+ * that root's lock and not be abandoned there.
+ */
+export function findOverlappingDeliverRun(
+  projectRoot: string,
+  selfPid: number = process.pid,
+  selfStartedMs: number = Date.now(),
+): { pid: number; root: string } | null {
+  const pidAlive = (pid: number): boolean => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  const dir = activeRunsDir();
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return null; // no registry yet — nothing to collide with
+  }
+  for (const name of entries) {
+    // Never read or unlink a name we did not write. Without this, pointing
+    // UAP_ACTIVE_RUNS_DIR at any directory turns the sweep below into an
+    // arbitrary-file delete.
+    if (!ACTIVE_RUN_FILE.test(name)) continue;
+    const file = join(dir, name);
+    const sweep = () => { try { rmSync(file); } catch { /* racing sweep */ } };
+    try {
+      const [pidRaw = '', iso = '', rootRaw = ''] = readFileSync(file, 'utf8').split('|');
+      const root = rootRaw.trim();
+      if (!isPlausibleRunPid(pidRaw) || !isPlausibleRunRoot(root)) { sweep(); continue; }
+      const pid = Number(pidRaw.trim());
+      if (pid === selfPid) continue;
+      if (!pidAlive(pid)) { sweep(); continue; }
+      if (!deliverRootsOverlap(projectRoot, root)) continue;
+      // The pid is alive, but is it still THIS run? Cross-check the holder's
+      // own root: a recycled pid does not hold that lock, and a wedged or
+      // abandoned holder is reclaimable there rather than blocking us here.
+      if (isDeliverLockAbandoned(root) || isDeliverHolderWedged(root)) { sweep(); continue; }
+      // Both runs see each other; exactly one must yield. The earlier start
+      // keeps the subtree, so the decision is the same from either side.
+      const theirs = Date.parse(iso.trim());
+      const olderThanUs = Number.isFinite(theirs)
+        ? theirs < selfStartedMs || (theirs === selfStartedMs && pid < selfPid)
+        : true;
+      if (olderThanUs) return { pid, root };
+    } catch { /* unreadable entry — ignore */ }
+  }
+  return null;
+}
+
+/**
+ * Why the LAST refusal happened, when it was an overlapping foreign root.
+ *
+ * `acquireDeliverLock` returns a bare null, but "another run owns a DIFFERENT,
+ * overlapping root" and "another run owns THIS root" need opposite advice: the
+ * caller must send the operator to the holder's root, because following our own
+ * finds nothing in flight and loops straight back into relaunching.
+ */
+let lastOverlapBlock: { pid: number; root: string } | null = null;
+
+/** The overlapping holder that caused the last refusal, if that was the cause. */
+export function lastOverlapBlocker(): { pid: number; root: string } | null {
+  return lastOverlapBlock;
+}
+
+/**
  * Project-level deliver concurrency lock. Prevents a fan-out where an impatient
  * caller (e.g. a model that launched `uap deliver` for some work, didn't wait
  * for the slow run, and relaunched a reworded version) spawns many concurrent
@@ -652,6 +806,15 @@ export function isDeliverLockAbandoned(
  * burning tokens/GPU in parallel. Returns a release() thunk, or null when
  * another live deliver already holds the lock (the caller then exits cleanly).
  * Stale locks (dead PID) are reclaimed. Off-switch: UAP_DELIVER_NO_LOCK=1.
+ *
+ * The lock is keyed on `<projectRoot>/.uap/`, so it only ever saw runs that
+ * named the SAME root. Two runs on NESTED roots therefore each took their own
+ * lock and edited one shared source tree: live on 2026-08-08, roots
+ * `cognition-engine` and `cognition-engine/src/rust-pg-ext` ran for ~2h,
+ * overwriting each other's edits to src/cooccurrence.rs until it stopped
+ * compiling — each one's gate failing on damage the other had just done. The
+ * cross-project registry below closes that, because overlap is a property of
+ * the SUBTREE, not of the lock path.
  */
 export function acquireDeliverLock(projectRoot: string): (() => void) | null {
   if (process.env.UAP_DELIVER_NO_LOCK === '1') return () => {};
@@ -686,8 +849,31 @@ export function acquireDeliverLock(projectRoot: string): (() => void) | null {
     } catch {
       return null;
     }
-    writeSync(fd, `${process.pid}|${new Date().toISOString()}`);
+    const startedIso = new Date().toISOString();
+    writeSync(fd, `${process.pid}|${startedIso}`);
     closeSync(fd);
+    // Publish to the cross-project registry BEFORE checking it, so a run that
+    // starts while we are scanning still sees us and one of the two yields.
+    let published = false;
+    try {
+      publishActiveRun(projectRoot, startedIso);
+      published = true;
+    } catch { /* registry unavailable — fall back to the per-project lock alone */ }
+    // Compare against the stamp we PUBLISHED, not a fresh Date.now(). The other
+    // run can only see the published one, and a tiebreak both sides must agree
+    // on has to be computed from values both sides can read — otherwise a
+    // millisecond crossing between publish and scan makes both runs yield.
+    const overlapping = published
+      ? findOverlappingDeliverRun(projectRoot, process.pid, Date.parse(startedIso))
+      : null;
+    if (overlapping) {
+      // Someone older owns this subtree. Give back everything we just took.
+      try { rmSync(activeRunEntry(projectRoot)); } catch { /* best-effort */ }
+      try { rmSync(lockPath); } catch { /* best-effort */ }
+      lastOverlapBlock = overlapping;
+      return null;
+    }
+    lastOverlapBlock = null;
     // Stamp a fresh heartbeat immediately so this brand-new holder is never
     // classified as wedged in the window before its first iteration (and so a
     // reclaim overwrites the previous holder's stale heartbeat).
@@ -704,6 +890,13 @@ export function acquireDeliverLock(projectRoot: string): (() => void) | null {
       if (existsSync(lockPath)) {
         const held = Number((readFileSync(lockPath, 'utf8').split('|')[0] || '').trim());
         if (held === process.pid) rmSync(lockPath);
+      }
+    } catch { /* best-effort */ }
+    try {
+      const entry = activeRunEntry(projectRoot);
+      if (existsSync(entry)) {
+        const held = Number((readFileSync(entry, 'utf8').split('|')[0] || '').trim());
+        if (held === process.pid) rmSync(entry);
       }
     } catch { /* best-effort */ }
   };
@@ -898,15 +1091,34 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       // acts on. A lock file containing newlines and prose would otherwise become
       // tool-result guidance. It is always a pid or it is not forwarded.
       const holderRaw = holder.trim();
-      const holderPid = /^\d{1,10}$/.test(holderRaw) ? holderRaw : '';
+      let holderPid = /^\d{1,10}$/.test(holderRaw) ? holderRaw : '';
+      // Was this refused by a run on a DIFFERENT, overlapping root? Then our own
+      // lock was never left behind for us to read, and — more importantly —
+      // `--await-run` on OUR root finds nothing in flight and answers "safe to
+      // launch", which sends the caller straight back here. Name the holder's
+      // root so the follow lands where the mission actually is.
+      const overlap = lastOverlapBlocker();
+      // The root comes from a file any local process can write and ends up in
+      // model-facing instruction text; forward it only if it still looks like a
+      // path, control characters stripped.
+      const overlapRoot = overlap ? stripControl(overlap.root).trim() : '';
+      const foreign = overlap && overlapRoot.startsWith('/') && !overlapRoot.includes('\n')
+        ? { pid: String(overlap.pid), root: overlapRoot }
+        : null;
+      if (foreign) holderPid = foreign.pid;
       console.log(
         chalk.yellow(
-          `↩ deliver already running for this project${holderPid ? ` (pid ${holderPid})` : ''} — ` +
-            `skipping this duplicate launch. Follow it with \`uap deliver --await-run\` (waits and reports; ` +
-            `from a tool call it returns within about a minute — "still running" is an answer, not a failure, ` +
-            `so just call it again. It starts nothing.) ` +
-            `starts nothing). Do NOT use --resume on a live run: resume CONTINUES a mission and would start a ` +
-            `second copy of this one. (override: UAP_DELIVER_NO_LOCK=1)`
+          foreign
+            ? `↩ another deliver run (pid ${foreign.pid}) already owns an OVERLAPPING project root: ` +
+                `${foreign.root} — it edits the same files, so this launch was skipped. Follow THAT run: ` +
+                `\`uap deliver --project-root ${foreign.root} --await-run\` (following this root would report ` +
+                `nothing in flight). Do NOT use --resume on a live run. (override: UAP_DELIVER_NO_LOCK=1)`
+            : `↩ deliver already running for this project${holderPid ? ` (pid ${holderPid})` : ''} — ` +
+                `skipping this duplicate launch. Follow it with \`uap deliver --await-run\` (waits and reports; ` +
+                `from a tool call it returns within about a minute — "still running" is an answer, not a failure, ` +
+                `so just call it again. It starts nothing.) ` +
+                `Do NOT use --resume on a live run: resume CONTINUES a mission and would start a ` +
+                `second copy of this one. (override: UAP_DELIVER_NO_LOCK=1)`
         )
       );
       // --json is a CONTRACT: every exit must emit a parseable result. This path
@@ -930,15 +1142,23 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
               alreadyRunning: true,
               ...(holderPid ? { holderPid } : {}),
               projectRoot,
-              reason:
-                'A deliver run is already in progress for this project; this duplicate launch was skipped.',
-              nextStep:
-                'The mission you asked for is ALREADY RUNNING — nothing is wrong and nothing is needed from you. ' +
-                'Follow it instead: call deliver again with follow:true (or `uap deliver --await-run` from a ' +
-                'shell). It returns within about a minute; if it says STILL RUNNING that is not a failure — ' +
-                'call it again to keep waiting. Do NOT start another ' +
-                'run, do NOT pass resume (resume CONTINUES a run rather than following it, and would start a ' +
-                'second copy of this live one), and do NOT change any gate or enforcement setting.',
+              ...(foreign ? { overlappingRoot: foreign.root } : {}),
+              reason: foreign
+                ? `An older deliver run (pid ${foreign.pid}) holds an OVERLAPPING project root ` +
+                  `(${foreign.root}); it edits the same files, so this launch was skipped.`
+                : 'A deliver run is already in progress for this project; this duplicate launch was skipped.',
+              nextStep: foreign
+                ? 'The files you asked for are ALREADY being worked on by a run rooted at ' +
+                  `${foreign.root}. Follow THAT run: \`uap deliver --project-root ${foreign.root} --await-run\`. ` +
+                  'Do NOT follow this root — it has nothing in flight and will tell you it is safe to launch, ' +
+                  'which puts you back here. Do NOT start another run, do NOT pass resume, and do NOT change ' +
+                  'any gate or enforcement setting.'
+                : 'The mission you asked for is ALREADY RUNNING — nothing is wrong and nothing is needed from you. ' +
+                  'Follow it instead: call deliver again with follow:true (or `uap deliver --await-run` from a ' +
+                  'shell). It returns within about a minute; if it says STILL RUNNING that is not a failure — ' +
+                  'call it again to keep waiting. Do NOT start another ' +
+                  'run, do NOT pass resume (resume CONTINUES a run rather than following it, and would start a ' +
+                  'second copy of this live one), and do NOT change any gate or enforcement setting.',
             },
             null,
             2

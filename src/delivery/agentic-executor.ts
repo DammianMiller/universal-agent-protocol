@@ -333,7 +333,11 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Create or overwrite a text file (relative to project root) with the given content.',
+      description:
+        'Create or overwrite a text file (relative to project root) with the given content. ' +
+        'Writing content byte-identical to what the file already holds is a NO-OP: nothing is ' +
+        'written and you are told so. Re-sending the same content can never change anything or ' +
+        'fix a failing gate — if a gate still fails, the cause is elsewhere.',
       parameters: {
         type: 'object',
         properties: { path: { type: 'string' }, content: { type: 'string' } },
@@ -794,6 +798,32 @@ export function runTool(
       const blocked = protectedWritePathReason(rel, protectGateConfigs);
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
+      }
+      // Byte-identical re-write: report a NO-OP, not success.
+      //
+      // `OK: wrote <path> (N bytes)` reads as progress, so a model that rewrites
+      // the same content gets the same reward as one that changed something and
+      // has no signal to stop. Live (cognition-engine, 2026-08-08): five
+      // byte-identical 8195-byte writes of src/cooccurrence.rs, four of them
+      // consecutive inside one turn, each answered "OK: wrote" + "cargo check:
+      // clean" — a perfect success loop over an empty edit.
+      //
+      // Ordered FIRST among the write guards: a write that changes nothing
+      // cannot gut or stub the file, so no other guard has an opinion on it.
+      // Size is compared before content so the common (differing) case never
+      // pays for a full read.
+      if (existsSync(abs)) {
+        try {
+          const incoming = String(args.content ?? '');
+          if (statSync(abs).size === Buffer.byteLength(incoming, 'utf-8')
+              && readFileSync(abs, 'utf-8') === incoming) {
+            return (
+              `NO-OP: ${String(args.path)} already contains exactly this content — nothing was written. ` +
+              `Re-sending it again will not change anything. If the gate is still failing, the problem is ` +
+              `NOT in this file's current content: read the failure output and fix a DIFFERENT cause.`
+            );
+          }
+        } catch { /* unreadable — fall through to the normal write path */ }
       }
       // P3 anti-gutting: refuse a write that GUTS an existing substantial file
       // into a stub (observed live: deliver.ts collapsed 2560 → 453 lines in one
