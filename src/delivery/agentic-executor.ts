@@ -350,7 +350,7 @@ const TOOLS = [
     function: {
       name: 'edit_file',
       description:
-        'Surgically replace an occurrence of old_string with new_string in an existing file (path relative to project root). Provide EITHER old_string + new_string, OR edits[]. PREFER this over write_file for existing files — no need to re-emit the whole file (large re-emits truncate). old_string should match the CURRENT file content; if it differs only in whitespace/indentation the edit still applies and you are told. Pass occurrence (1-based) when the anchor appears several times. To make SEVERAL edits to one file in a single call, pass edits: [{old_string, new_string, occurrence?}, ...] — they apply atomically, all or nothing.',
+        'Surgically replace an occurrence of old_string with new_string in an existing file (path relative to project root). Provide EITHER old_string + new_string, OR edits[]. PREFER this over write_file for existing files — no need to re-emit the whole file (large re-emits truncate). old_string should match the CURRENT file content; if it differs only in whitespace/indentation the edit still applies and you are told. Pass occurrence (1-based) when the anchor appears several times. To make SEVERAL edits to one file in a single call, pass edits: [{old_string, new_string, occurrence?}, ...] — they apply atomically, all or nothing. If the replacement produces content identical to what the file already holds, the call is a NO-OP: nothing is written and you are told so — repeating it cannot change anything.',
       parameters: {
         type: 'object',
         properties: {
@@ -383,7 +383,7 @@ const TOOLS = [
       // that cannot echo exact whitespace can still count lines, and the
       // nearest-region report hands it numbered context on a miss.
       description:
-        'Replace an inclusive 1-based LINE RANGE of an existing file with new_text. Use this when edit_file cannot find your anchor — line numbers are shown in the nearest-region report and are immune to whitespace drift. start_line and end_line are both inclusive.',
+        'Replace an inclusive 1-based LINE RANGE of an existing file with new_text. Use this when edit_file cannot find your anchor — line numbers are shown in the nearest-region report and are immune to whitespace drift. start_line and end_line are both inclusive. If new_text is identical to what that range already contains, the call is a NO-OP: nothing is written and you are told so.',
       parameters: {
         type: 'object',
         properties: {
@@ -976,6 +976,22 @@ export function runTool(
       // hollowed OUT to a skeleton, not incremental erosion that stays under the
       // bar (emptying four of six bodies is 57%, and passes). It closes the
       // one-shot bypass, and does not pretend to be tamper-proof.
+      // An edit that changes nothing is a NO-OP, not a replacement.
+      //
+      // The same reasoning as write_file's identical-content check, on the path
+      // the write_file refusals actively steer models toward. `old_string ===
+      // new_string` reports "OK: edited (1 replacement)" while leaving the file
+      // byte-identical, so a model can repeat it forever against a rising
+      // success count. Observed live (cognition-engine, 2026-08-08): rounds 9,
+      // 10 and 11 of one turn were the same edit_file anchor, each answered OK.
+      if (updated === current) {
+        return (
+          `NO-OP: ${String(args.path)} is unchanged — the replacement produced exactly the content already ` +
+          `on disk (old_string and new_string are equivalent here). Nothing was written, and repeating this ` +
+          `edit cannot change anything. If a gate is still failing, the cause is elsewhere: read the failure ` +
+          `output and target a DIFFERENT anchor.${editNote}`
+        );
+      }
       const guttedEdit = editGuttingRefusal(String(args.path), current, updated);
       if (guttedEdit) return guttedEdit;
       if (!stubGuardDisabled()) {
@@ -1019,6 +1035,16 @@ export function runTool(
       );
       if (!ranged.ok || ranged.text == null) {
         return `ERROR: ${String(args.path)}: ${ranged.error ?? 'invalid range.'}`;
+      }
+      // Same NO-OP rule as write_file/edit_file: replacing a range with what it
+      // already contains is not progress, and reporting it as such lets a model
+      // bank success for a round that changed nothing.
+      if (ranged.text === current) {
+        return (
+          `NO-OP: ${String(args.path)} is unchanged — lines ${Number(args.start_line)}-${Number(args.end_line)} ` +
+          `already contain exactly this text. Nothing was written, and re-sending it cannot change anything. ` +
+          `If a gate is still failing, the cause is elsewhere.`
+        );
       }
       const guttedRange = editGuttingRefusal(String(args.path), current, ranged.text);
       if (guttedRange) return guttedRange;

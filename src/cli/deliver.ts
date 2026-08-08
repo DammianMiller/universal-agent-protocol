@@ -784,6 +784,130 @@ export function findOverlappingDeliverRun(
 }
 
 /**
+ * Cheap PREFILTER for "this directory might be a project root".
+ *
+ * Deliberately not the authority — a manifest can exist and still yield no
+ * gates (a package.json with no scripts is the common case), so a hit here is
+ * only a candidate. `dirHasGates` below is what actually decides, by asking the
+ * same detectors the real ladder uses. This list exists so we ask that question
+ * a handful of times instead of once per directory in the tree.
+ */
+const BUILD_MANIFESTS = new Set([
+  'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', 'setup.py', 'requirements.txt',
+  'pom.xml', 'build.gradle', 'build.gradle.kts', 'build.sbt',
+  'Makefile', 'makefile', 'GNUmakefile', 'CMakeLists.txt',
+  'Gemfile', 'composer.json', 'mix.exs', 'pubspec.yaml', 'Package.swift', 'build.zig',
+]);
+
+/**
+ * Directories never worth descending into when looking for a project root.
+ *
+ * Two classes: build output / dependency trees (which are full of manifests
+ * belonging to somebody else — node_modules alone would otherwise nominate a
+ * dependency as the project), and directories that conventionally hold sample
+ * or fixture projects, which are never what the mission meant.
+ */
+const NON_PROJECT_DIRS = new Set([
+  'node_modules', 'target', 'dist', 'build', 'out', 'bin', 'obj', 'vendor', 'coverage',
+  'venv', '__pycache__', 'Pods', 'bower_components', 'third_party',
+  'testdata', 'fixtures', 'examples', 'templates',
+]);
+
+/** Upper bound on directories read, so the cost never scales with the mistake. */
+const GATED_SCAN_MAX_VISITS = 400;
+
+/**
+ * Does this directory actually produce gate rungs? Asks the real detectors, so
+ * the advice cannot name a root that is just as gateless as the current one.
+ * Pure filesystem inspection — no commands run.
+ */
+function dirHasGates(dir: string): boolean {
+  // `detectRungs` already folds in the cargo, polyglot and non-npm detectors,
+  // so calling them again here could never change the answer — it only probed
+  // the filesystem three extra times per candidate.
+  try {
+    return detectRungs(dir).length > 0;
+  } catch { /* detection is best-effort; treat a thrower as gateless */ }
+  return false;
+}
+
+/**
+ * The operator-facing advisory, or null when there is nothing useful to say.
+ *
+ * Split out from the call site so the wording is testable without standing up a
+ * whole delivery run — the message IS the feature, since nothing about the run
+ * changes.
+ */
+export function formatGatelessRootAdvice(projectRoot: string, gated: string[]): string | null {
+  if (!gated.length) return null;
+  const rel = (p: string) => relative(projectRoot, p) || p;
+  return (
+    `⚠ gateless root: no objective gates detected at ${projectRoot}, but ` +
+    `${gated.length === 1 ? 'a subdirectory has them' : `${gated.length} subdirectories have them`}: ` +
+    `${gated.map(rel).join(', ')}. Rooted here this mission has NO compile/test gate — the LLM judge is ` +
+    `the only convergence target, and rollback is sized against this whole tree. If the work is in ` +
+    `${rel(gated[0])}, re-run with \`--project-root ${gated[0]}\` to converge on its real gates.`
+  );
+}
+
+/**
+ * Subdirectories that DO carry a build manifest, when the root itself carries none.
+ *
+ * A deliver rooted above the actual project gets no objective gates at all — the
+ * LLM judge becomes the only convergence target, so the run cannot tell whether
+ * the code it is fixing even compiles. Live on 2026-08-08: a mission to repair a
+ * Rust crate ran rooted at the crate's grandparent, which has no manifest. It got
+ * `bootstrap` (trivially passes) plus a skipped user-validation gate, reported
+ * "100% of gates" for five consecutive turns, and left the crate not compiling.
+ * The same misconfiguration also disables rollback, because the size guard walks
+ * the whole (here 22 GB) tree instead of the 117 MB crate.
+ *
+ * Breadth-first and hard-bounded: this runs on the startup path of every gateless
+ * deliver, including ones rooted at a huge tree — the cost of the advice must not
+ * scale with the mistake.
+ */
+export function findGatedSubprojects(
+  projectRoot: string,
+  maxDepth = 3,
+  maxHits = 5,
+  maxVisits = GATED_SCAN_MAX_VISITS,
+): string[] {
+  const hits: string[] = [];
+  let frontier: Array<{ dir: string; depth: number }> = [{ dir: resolve(projectRoot), depth: 0 }];
+  let visited = 0;
+  while (frontier.length && hits.length < maxHits && visited < maxVisits) {
+    const next: Array<{ dir: string; depth: number }> = [];
+    for (const { dir, depth } of frontier) {
+      if (hits.length >= maxHits || visited >= maxVisits) break;
+      visited += 1;
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch { continue; }
+      // Do not report the root itself — the caller already knows it is gateless.
+      // A candidate is only reported once the real detectors confirm it, so the
+      // "would have gates" claim in the advice is measured, not assumed.
+      if (depth > 0 && entries.some((e) => !e.isDirectory() && BUILD_MANIFESTS.has(e.name))) {
+        if (dirHasGates(dir)) {
+          hits.push(dir);
+          // A workspace member inside a crate belongs to that crate; descending
+          // would offer a root strictly worse than the one just reported.
+          continue;
+        }
+      }
+      if (depth >= maxDepth) continue;
+      for (const e of entries) {
+        if (next.length >= maxVisits) break;
+        if (!e.isDirectory() || e.name.startsWith('.') || NON_PROJECT_DIRS.has(e.name)) continue;
+        next.push({ dir: join(dir, e.name), depth: depth + 1 });
+      }
+    }
+    frontier = next;
+  }
+  return hits;
+}
+
+/**
  * Why the LAST refusal happened, when it was an overlapping foreign root.
  *
  * `acquireDeliverLock` returns a bare null, but "another run owns a DIFFERENT,
@@ -1505,6 +1629,21 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     console.log(
       chalk.cyan('⚖ acceptance: LLM judge is the convergence target (no objective project gates; self-gate skipped)')
     );
+  }
+
+  // A gateless root is sometimes the truth (a docs repo, a fresh dir) and
+  // sometimes a misrouted --project-root pointing one level above the actual
+  // project. Those two are indistinguishable in the logs, and the second is
+  // expensive: the run cannot compile or test the thing it was asked to fix.
+  //
+  // Deliberately OUTSIDE the acceptancePrimary branch. Both gateless strategies
+  // reach here — acceptance-as-primary and self-gate — and the misrouted root
+  // hurts them identically. Scoping the advice to one of them would have left
+  // the DEFAULT path (no --acceptance) silent, which is the more common way to
+  // hit this.
+  if (noRealGates) {
+    const advice = formatGatelessRootAdvice(projectRoot, findGatedSubprojects(projectRoot));
+    if (advice) console.log(chalk.yellow(advice));
   }
 
   const cfgRawEarlyForUv = cfgRawEarlyForUvFactory(projectRoot);

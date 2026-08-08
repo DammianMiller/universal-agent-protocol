@@ -305,3 +305,122 @@ describe('loop-causing tool feedback (live incident 2026-08-08)', () => {
     expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toBe(SRC);
   });
 });
+
+/**
+ * The NO-OP rule has to cover all three write paths, not just write_file.
+ *
+ * Observed live (cognition-engine, 2026-08-08) AFTER the write_file fix shipped:
+ * rounds 9, 10 and 11 of one turn were the same edit_file anchor, each answered
+ * "OK: edited (1 replacement)" — the identical loop signal, on the very path the
+ * write_file refusals steer models toward by name.
+ */
+describe('no-op edits report NO-OP on every write path', () => {
+  let dir: string;
+  const SRC = ['function add(a, b) {', '    return a + b;', '}', ''].join('\n');
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'noop-edit-'));
+    writeFileSync(join(dir, 'calc.js'), SRC, 'utf-8');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('edit_file with old_string === new_string is a NO-OP, not "1 replacement"', () => {
+    const out = call(dir, 'edit_file', {
+      path: 'calc.js',
+      old_string: 'return a + b;',
+      new_string: 'return a + b;',
+    });
+    expect(out).toMatch(/^NO-OP/);
+    // Must not be countable as progress: no "OK" prefix, no "(1 replacement)".
+    expect(out).not.toMatch(/^OK/);
+    expect(out).not.toMatch(/\(1 replacement\)/);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toBe(SRC);
+  });
+
+  it('edit_range that rewrites a range with its current text is a NO-OP', () => {
+    const out = call(dir, 'edit_range', {
+      path: 'calc.js',
+      start_line: 2,
+      end_line: 2,
+      new_text: '    return a + b;',
+    });
+    expect(out).toMatch(/^NO-OP/);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toBe(SRC);
+  });
+
+  it('a real edit_file change is still reported as OK', () => {
+    const out = call(dir, 'edit_file', {
+      path: 'calc.js',
+      old_string: 'return a + b;',
+      new_string: 'return a * b;',
+    });
+    expect(out).toMatch(/^OK: edited/);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toContain('a * b');
+  });
+
+  it('a real edit_range change is still reported as OK', () => {
+    const out = call(dir, 'edit_range', {
+      path: 'calc.js',
+      start_line: 2,
+      end_line: 2,
+      new_text: '    return a * b;',
+    });
+    expect(out).toMatch(/^OK: replaced/);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toContain('a * b');
+  });
+});
+
+/**
+ * The NO-OP predicate is a CONTENT comparison, not an argument comparison.
+ *
+ * A guard written as `old_string === new_string` passes every test above while
+ * being strictly weaker: it misses the two shapes that actually occur live —
+ * a stale whitespace anchor whose replacement is what is already on disk, and a
+ * batch whose edits cancel out.
+ */
+describe('no-op detection compares CONTENT, not arguments', () => {
+  let dir: string;
+  const SRC = ['function add(a, b) {', '    return a + b;', '}', ''].join('\n');
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'noop-content-'));
+    writeFileSync(join(dir, 'calc.js'), SRC, 'utf-8');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('catches a tolerant-match edit whose replacement is already on disk', () => {
+    // old_string differs from new_string, so an argument-level guard lets this
+    // through and reports a replacement that changed nothing.
+    const out = call(dir, 'edit_file', {
+      path: 'calc.js',
+      old_string: 'function  add(a,  b) {',
+      new_string: 'function add(a, b) {',
+    });
+    expect(out).toMatch(/^NO-OP/);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toBe(SRC);
+  });
+
+  it('catches a batch whose edits cancel each other out', () => {
+    const out = call(dir, 'edit_file', {
+      path: 'calc.js',
+      edits: [
+        { old_string: 'a + b', new_string: 'a - b' },
+        { old_string: 'a - b', new_string: 'a + b' },
+      ],
+    });
+    expect(out).toMatch(/^NO-OP/);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toBe(SRC);
+  });
+
+  it('still lets a batch through when any member really changes the file', () => {
+    const out = call(dir, 'edit_file', {
+      path: 'calc.js',
+      edits: [
+        { old_string: 'a + b', new_string: 'a - b' },
+        { old_string: 'function add', new_string: 'function sub' },
+      ],
+    });
+    expect(out).toMatch(/^OK: edited/);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toContain('function sub');
+  });
+});
