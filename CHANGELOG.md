@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.186.5 (2026-08-09)
+
+- fix(deliver): warn on a gateless root, and stop no-op edits banking success
+
+
 ## v1.186.4 (2026-08-08)
 
 - fix(deliver): close two loop-causing feedback bugs from a live 2h churn
