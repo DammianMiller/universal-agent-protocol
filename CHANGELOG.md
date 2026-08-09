@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.187.1 (2026-08-09)
+
+- fix(reactor): tell the truth about when deliver is required
+
+
 ## v1.187.0 (2026-08-09)
 
 - feat(deliver): a demoted gate blocks again on tests it was passing before
