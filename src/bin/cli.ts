@@ -701,6 +701,13 @@ program
     '--await-timeout <sec>',
     'How long --await-run waits before reporting the run as still in flight (default 900)'
   )
+  .option(
+    '--allow-gateless-root',
+    'Proceed even when this --project-root has no compile/test gate while a subdirectory does. ' +
+      'That combination is refused by default: rooted above the real project a run cannot verify ' +
+      'its own work, so an LLM judge becomes its only convergence target and rollback is sized ' +
+      'against the whole tree.'
+  )
   .option('--no-lazy', 'Skip the lazy bare first attempt (by default one bare turn runs before the convergence aids engage)')
   .option('--decompose', 'Decompose the mission into sequential phases, each converged by its own loop (auto for long complex tasks)')
   .option('--no-decompose', 'Never decompose, even for epic-shaped instructions')

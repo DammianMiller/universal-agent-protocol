@@ -572,6 +572,24 @@ export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
           });
           return;
         }
+        // A gateless-root refusal is actionable, and `error` is what a caller
+        // reads first. Without this branch it fell to the catch-all below and
+        // resolved with no `error` and no `note` — the shape this file has
+        // twice recorded as making a model conclude the tool was broken.
+        const gl = parsed as { gatelessRoot?: boolean; suggestedProjectRoot?: string };
+        if (gl.gatelessRoot === true) {
+          resolvePromise({
+            ok: false,
+            dryRun,
+            exitCode,
+            error:
+              'refused to start: this projectRoot has no compile/test gate while a subdirectory does, so ' +
+              'the run could not verify its own work. Re-run with projectRoot ' +
+              `"${String(gl.suggestedProjectRoot ?? 'the subdirectory named in result')}".`,
+            result: parsed,
+          });
+          return;
+        }
         const ok = typeof r.success === 'boolean' ? r.success || r.alreadyDelivered === true : exitCode === 0;
         resolvePromise({ ok, dryRun, exitCode, result: parsed });
       }

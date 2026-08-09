@@ -11,14 +11,21 @@
  * disabled rollback, because the snapshot size guard walked the whole 22 GB
  * tree instead of the 117 MB crate.
  *
- * "No objective gates" is a legitimate state for a docs repo, so this is advice
- * rather than a refusal — but it must be able to tell the two apart.
+ * "No objective gates" is a legitimate state for a docs repo, so the detector
+ * must be able to tell the two apart. It became load-bearing on 2026-08-09 when
+ * the advisory was escalated to a REFUSAL (see gateless-root-refusal.test.ts):
+ * a false positive here now stops a run rather than merely nagging.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { findGatedSubprojects, formatGatelessRootAdvice } from '../../src/cli/deliver.js';
+import {
+  findGatedSubprojects,
+  formatGatelessRootAdvice,
+  allowGatelessRoot,
+  GATELESS_ENV,
+} from '../../src/cli/deliver.js';
 
 let root: string;
 
@@ -190,5 +197,41 @@ describe('formatGatelessRootAdvice', () => {
     expect(formatGatelessRootAdvice('/srv/app', ['/srv/app/a'])).toContain('a subdirectory has them');
     expect(formatGatelessRootAdvice('/srv/app', ['/srv/app/a', '/srv/app/b']))
       .toContain('2 subdirectories have them');
+  });
+});
+
+describe('allowGatelessRoot — the escape hatch on the refusal', () => {
+  const ENV = 'UAP_ALLOW_GATELESS_ROOT';
+  afterEach(() => { delete process.env[ENV]; });
+
+  it('is closed by default, so the refusal actually refuses', () => {
+    delete process.env[ENV];
+    expect(allowGatelessRoot(undefined)).toBe(false);
+    expect(allowGatelessRoot(false)).toBe(false);
+  });
+
+  it('opens on the explicit flag', () => {
+    delete process.env[ENV];
+    expect(allowGatelessRoot(true)).toBe(true);
+  });
+
+  it('opens on the env var, for scripted launches that cannot add a flag', () => {
+    process.env[ENV] = '1';
+    expect(allowGatelessRoot(undefined)).toBe(true);
+  });
+
+  it('does not open on a merely-present env var', () => {
+    // "0"/"" must not read as consent, or a shell that exports the name
+    // unconditionally would silently disable the gate.
+    process.env[ENV] = '0';
+    expect(allowGatelessRoot(undefined)).toBe(false);
+    process.env[ENV] = '';
+    expect(allowGatelessRoot(undefined)).toBe(false);
+  });
+
+  it('GATELESS_ENV names the variable the messages tell operators to set', () => {
+    // The refusal text interpolates this constant; a rename that missed the
+    // message would send operators to a variable that does nothing.
+    expect(GATELESS_ENV).toBe(ENV);
   });
 });

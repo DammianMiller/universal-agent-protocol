@@ -304,6 +304,12 @@ import type { ModelConfig } from '../models/types.js';
 import { detectExecutionProfile } from '../models/execution-profiles.js';
 
 export interface DeliverOptions {
+  /**
+   * Proceed even when this project root has no objective gates while a
+   * subdirectory does. Without it that combination is refused, because the run
+   * cannot compile or test its own work from here.
+   */
+  allowGatelessRoot?: boolean;
   maxTurns?: string;
   /** True when --max-turns was passed on the command line (vs the commander
    * default) — set by the CLI action via getOptionValueSource. An explicit
@@ -838,6 +844,92 @@ function dirHasGates(dir: string): boolean {
  * whole delivery run — the message IS the feature, since nothing about the run
  * changes.
  */
+/** Env escape hatch for the gateless-root refusal. */
+export const GATELESS_ENV = 'UAP_ALLOW_GATELESS_ROOT';
+
+/**
+ * True when the caller has explicitly accepted a root that cannot verify its
+ * own work. The env form exists for scripted launches that cannot easily add
+ * a flag.
+ */
+export function allowGatelessRoot(flag?: boolean): boolean {
+  return flag === true || process.env[GATELESS_ENV] === '1';
+}
+
+/**
+ * Refuse a project root that cannot verify its own work. Returns false when the
+ * caller should stop.
+ *
+ * Escalated 2026-08-09 from a warning. The warning worked — it printed on line
+ * 3 of the log naming the exact right root — and the run was launched at the
+ * gateless root anyway, because a warning in a log is not a decision point for
+ * a scripted or agent-driven launch. That run then spent 34 minutes taking a
+ * Rust crate from 1 failing test to 3 while reporting "100% of gates" every
+ * turn, because with no cargo rung nothing could tell it otherwise.
+ *
+ * Refusing is safe precisely BECAUSE the trigger is narrow: this root has no
+ * gates AND a subdirectory demonstrably does. A genuinely gateless tree — a
+ * docs repo, an empty dir — finds no candidate and is untouched.
+ *
+ * The root is judged by its OWN unfiltered gate set, not by the post-`--gates`
+ * / post-tier `rungs` array: `--tiers fast` against a root whose only rungs are
+ * integration-tier empties that array, and refusing there would reject a root
+ * that is objectively well gated.
+ */
+export function refuseGatelessRoot(projectRoot: string, options: DeliverOptions): boolean {
+  // A dry-run plans and writes nothing, and is the one diagnostic an operator
+  // reaches for AFTER being refused ("show me what gates you see here").
+  // Refusing it would remove the tool that explains the refusal. Matches how
+  // preflight and the lock already exempt it.
+  if (options.dryRun) return true;
+  // Resume continues a mission whose root was adjudicated at launch. Refusing
+  // here would strand a run that was legitimately started with consent, because
+  // the consent is not persisted in run state.
+  if (options.resume) return true;
+  if (dirHasGates(projectRoot)) return true;
+  const gated = findGatedSubprojects(projectRoot);
+  const advice = formatGatelessRootAdvice(projectRoot, gated);
+  if (!advice) return true;
+  if (allowGatelessRoot(options.allowGatelessRoot)) {
+    console.log(chalk.yellow(advice));
+    console.log(chalk.yellow('  (continuing anyway: gateless root explicitly allowed)'));
+    return true;
+  }
+  console.error(chalk.red(advice));
+  console.error(
+    chalk.red(
+      '⛔ refusing to start: this root cannot verify the work. Re-run with the --project-root above. ' +
+        `(Operator override, human prose only — deliberately not in the JSON: --allow-gateless-root, or ${GATELESS_ENV}=1.)`,
+    ),
+  );
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        {
+          success: false,
+          gatelessRoot: true,
+          projectRoot,
+          suggestedProjectRoot: gated[0],
+          gatedSubprojects: gated,
+          reason:
+            'No objective gates were detected at this project root, but a subdirectory has them. ' +
+            'Rooted here the run cannot compile or test its own work.',
+          // Deliberately does NOT name the bypass flag. This whole refusal
+          // exists because an agent-driven launch does not honour advice, and
+          // `nextStep` is the field such a caller reads first — advertising the
+          // off-switch there would hand it the way around the gate. The human
+          // prose on stderr names it; a model reading JSON gets the fix only.
+          nextStep: `Re-run with --project-root ${gated[0]}.`,
+        },
+        null,
+        2,
+      ),
+    );
+  }
+  process.exitCode = 2;
+  return false;
+}
+
 export function formatGatelessRootAdvice(projectRoot: string, gated: string[]): string | null {
   if (!gated.length) return null;
   const rel = (p: string) => relative(projectRoot, p) || p;
@@ -1112,6 +1204,19 @@ export async function deliverCommand(instruction: string, options: DeliverOption
   }
 
   const projectRootForDetach = resolve(options.projectRoot ?? process.cwd());
+
+  // Gateless-root refusal, deliberately BEFORE the detach decision — and so
+  // before preflight, the lock and the cross-project registry.
+  //
+  // It is a pure, bounded filesystem inspection of this invocation's own
+  // arguments, so it depends on nothing those steps establish. Running it later
+  // meant a refusal still spawned a detached child, printed "mission detached",
+  // and created .uap/ state inside the directory it was about to declare the
+  // wrong root — and, worse, when the CORRECT run was already live in the
+  // subdirectory the overlap check fired first, so the operator got the generic
+  // "another run owns an overlapping root" instead of the specific diagnosis.
+  if (!refuseGatelessRoot(projectRootForDetach, options)) return;
+
   const decision = shouldDetach({
     alreadyDetached: isDetachedChild(),
     noDetach: process.env[NO_DETACH_ENV] === '1',
@@ -1641,11 +1746,6 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // hurts them identically. Scoping the advice to one of them would have left
   // the DEFAULT path (no --acceptance) silent, which is the more common way to
   // hit this.
-  if (noRealGates) {
-    const advice = formatGatelessRootAdvice(projectRoot, findGatedSubprojects(projectRoot));
-    if (advice) console.log(chalk.yellow(advice));
-  }
-
   const cfgRawEarlyForUv = cfgRawEarlyForUvFactory(projectRoot);
   // Baseline-delta gating: a required rung that is ALREADY red cannot be a
   // regression this mission causes, but it makes acceptance unreachable and
