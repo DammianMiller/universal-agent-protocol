@@ -159,10 +159,18 @@ export interface FollowProgress {
    * while achieving nothing. This field can honestly say the process is doing
    * something; it cannot say the mission is getting closer, and a label that
    * claimed otherwise would be the same unmeasured assertion this projection
-   * exists to remove. Cross-check `phase` and `run.updatedAt`, which only move
-   * when a turn or phase actually completes.
+   * exists to remove. Cross-check `turn`, `phase` and `run.updatedAt`, which
+   * only move when a turn or phase actually completes.
    */
   health: 'starting' | 'active' | 'wedged';
+  /**
+   * Turns COMPLETED so far — the advancement signal, as opposed to liveness.
+   *
+   * `phase` is absent for an undecomposed mission, which left those runs with
+   * no advancement signal at all in this projection. That is the shape the
+   * kills happened on.
+   */
+  turn?: number;
 }
 
 function describeProgress(projectRoot: string, run?: DeliverRunState): FollowProgress {
@@ -204,6 +212,7 @@ function describeProgress(projectRoot: string, run?: DeliverRunState): FollowPro
     heartbeatAgeSec: ageS,
     wedgeAfterSec,
     ...(phase ? { phase } : {}),
+    ...(typeof run?.checkpoint?.turn === 'number' ? { turn: run.checkpoint.turn } : {}),
     // `updatedAt` is NOT repeated here: RunSummary already ships it on the same
     // result object, and a projection whose purpose is diffable facts must not
     // publish one fact twice — a caller comparing run.updatedAt on one poll and
@@ -222,6 +231,9 @@ function progressSentence(p: FollowProgress): string {
       : `last activity ${p.heartbeatAgeSec}s ago`
   );
   if (p.phase) bits.push(`phase ${p.phase}`);
+  // Last, and stated as a COUNT: it is the one number a caller can compare
+  // against the previous reply to tell "slow" from "stuck".
+  if (p.turn !== undefined) bits.push(`${p.turn} turn${p.turn === 1 ? '' : 's'} completed`);
   return bits.join(', ');
 }
 
@@ -239,6 +251,18 @@ export interface RunSummary {
   updatedAt: string;
   phaseIndex?: number;
   phaseCount?: number;
+  /**
+   * Turns the mission has COMPLETED — the count that actually advances.
+   *
+   * A follower could previously see only phase position, and an undecomposed
+   * run reports phase 0 of 0 forever; `heartbeatAgeSec` moves on every tool
+   * call, so it says "alive", never "getting somewhere". A run on 2026-08-09
+   * went turn 1 → 4 over an hour with none of that visible, and the agent
+   * following it killed the run and relaunched — twice, escalating to
+   * `kill -9` and an attempted enforcement bypass. Reporting the number that
+   * moved is the difference between "no evidence of progress" and "slow".
+   */
+  turn?: number;
   runnerKind?: DeliverRunState['runnerKind'];
   exit?: DeliverRunState['exit'];
 }
@@ -250,6 +274,7 @@ function summarize(run: DeliverRunState): RunSummary {
     updatedAt: run.updatedAt,
     ...(run.phaseIndex !== undefined ? { phaseIndex: run.phaseIndex } : {}),
     ...(run.phases ? { phaseCount: run.phases.length } : {}),
+    ...(typeof run.checkpoint?.turn === 'number' ? { turn: run.checkpoint.turn } : {}),
     ...(run.runnerKind ? { runnerKind: run.runnerKind } : {}),
     ...(run.exit ? { exit: run.exit } : {}),
   };
