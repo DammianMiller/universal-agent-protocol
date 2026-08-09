@@ -613,3 +613,75 @@ describe('awaitInFlightDeliver', () => {
     expect(r.reason).toMatch(/no run state could be read/i);
   });
 });
+
+describe('a killed run explains WHY, so the follower can stop repeating it', () => {
+  it('quotes the recorded cause instead of only "it was interrupted"', async () => {
+    const root = project();
+    writeRun(root, 'run-orphaned', {
+      status: 'running',
+      pid: 4242,
+      exit: {
+        at: new Date().toISOString(),
+        code: 130,
+        reason: 'stopped by the orphan guard: the session that started this run (pid 99) exited',
+      },
+    });
+    const r = await awaitInFlightDeliver(root, {
+      timeoutMs: 1_000,
+      isAlive: () => false,
+      sleep: noSleep,
+    });
+    expect(r.reason).toContain('Cause:');
+    expect(r.reason).toContain('orphan guard');
+  });
+
+  it('names the remedy for an orphan-guard stop, since relaunching repeats it', async () => {
+    const root = project();
+    writeRun(root, 'run-orphaned', {
+      status: 'running',
+      pid: 4242,
+      exit: {
+        at: new Date().toISOString(),
+        code: 130,
+        reason: 'stopped by the orphan guard: the session that started this run (pid 99) exited',
+      },
+    });
+    const r = await awaitInFlightDeliver(root, {
+      timeoutMs: 1_000,
+      isAlive: () => false,
+      sleep: noSleep,
+    });
+    // Resume advice must SURVIVE the addition - the mission is still resumable.
+    expect(r.nextStep).toContain("resume:'run-orphaned'");
+    expect(r.nextStep).toContain('UAP_ALLOW_ORPHAN=1');
+  });
+
+  it('adds no remedy for an interruption we did not cause', async () => {
+    const root = project();
+    writeRun(root, 'run-killed', {
+      status: 'running',
+      pid: 4242,
+      exit: { at: new Date().toISOString(), signal: 'SIGTERM', reason: 'killed by SIGTERM' },
+    });
+    const r = await awaitInFlightDeliver(root, {
+      timeoutMs: 1_000,
+      isAlive: () => false,
+      sleep: noSleep,
+    });
+    expect(r.reason).toContain('killed by SIGTERM');
+    expect(r.nextStep).not.toContain('UAP_ALLOW_ORPHAN');
+  });
+
+  it('still reports a run that recorded no cause at all', async () => {
+    const root = project();
+    writeRun(root, 'run-silent', { status: 'running', pid: 4242 });
+    const r = await awaitInFlightDeliver(root, {
+      timeoutMs: 1_000,
+      isAlive: () => false,
+      sleep: noSleep,
+    });
+    expect(r.reason).toContain('it was interrupted');
+    expect(r.reason).not.toContain('Cause:');
+    expect(r.nextStep).toContain("resume:'run-silent'");
+  });
+});
