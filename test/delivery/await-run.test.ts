@@ -685,3 +685,91 @@ describe('a killed run explains WHY, so the follower can stop repeating it', () 
     expect(r.nextStep).toContain("resume:'run-silent'");
   });
 });
+
+describe('a follower can see the mission ADVANCE, not merely stay alive', () => {
+  // The kills this closes happened on an UNDECOMPOSED run: `phase` is absent
+  // for those, `heartbeatAgeSec` moves on every tool call, and `runElapsedSec`
+  // only grows — so nothing in the reply distinguished "slow" from "stuck".
+  // The turn count was moving the whole time (1 -> 4 over an hour) and was the
+  // one thing not reported.
+
+  it('reports completed turns for a run with no phases at all', async () => {
+    const root = project();
+    holdLock(root, 4242);
+    writeRun(root, 'run-undecomposed', {
+      pid: 4242,
+      status: 'running',
+      checkpoint: { turn: 4 },
+    });
+    const r = await awaitInFlightDeliver(root, {
+      timeoutMs: 1,
+      sleep: noSleep,
+      isAlive: () => true,
+    });
+    expect(r.timedOut).toBe(true);
+    expect(r.progress?.turn).toBe(4);
+    expect(r.progress?.phase).toBeUndefined(); // exactly the shape that had no signal
+    expect(r.run?.turn).toBe(4);
+  });
+
+  it('puts the count in the prose too, so the sentence carries the same fact', async () => {
+    const root = project();
+    holdLock(root, 4242);
+    writeRun(root, 'run-undecomposed', {
+      pid: 4242,
+      status: 'running',
+      checkpoint: { turn: 4 },
+    });
+    const r = await awaitInFlightDeliver(root, {
+      timeoutMs: 1,
+      sleep: noSleep,
+      isAlive: () => true,
+    });
+    expect(r.reason).toContain('4 turns completed');
+  });
+
+  it('says "1 turn", not "1 turns"', async () => {
+    const root = project();
+    holdLock(root, 4242);
+    writeRun(root, 'run-first-turn', { pid: 4242, status: 'running', checkpoint: { turn: 1 } });
+    const r = await awaitInFlightDeliver(root, {
+      timeoutMs: 1,
+      sleep: noSleep,
+      isAlive: () => true,
+    });
+    expect(r.reason).toContain('1 turn completed');
+    expect(r.reason).not.toContain('1 turns');
+  });
+
+  it('reports turn 0 rather than omitting it — "none yet" is the answer that matters', async () => {
+    // Omitting a zero would make a mission that has completed NOTHING look
+    // identical to one whose progress is simply unknown, and those call for
+    // opposite responses.
+    const root = project();
+    holdLock(root, 4242);
+    writeRun(root, 'run-no-turns', { pid: 4242, status: 'running', checkpoint: { turn: 0 } });
+    const r = await awaitInFlightDeliver(root, {
+      timeoutMs: 1,
+      sleep: noSleep,
+      isAlive: () => true,
+    });
+    expect(r.progress?.turn).toBe(0);
+    expect(r.reason).toContain('0 turns completed');
+  });
+
+  it('omits the count entirely when the run has no checkpoint', async () => {
+    // Absent means unknown. A default of 0 would assert no progress on a run
+    // that simply has not checkpointed yet.
+    const root = project();
+    holdLock(root, 4242);
+    writeRun(root, 'run-nocheckpoint', { pid: 4242, status: 'running' });
+    const r = await awaitInFlightDeliver(root, {
+      timeoutMs: 1,
+      sleep: noSleep,
+      isAlive: () => true,
+    });
+    expect(r.progress?.turn).toBeUndefined();
+    expect(r.run?.turn).toBeUndefined();
+    expect(r.reason).not.toContain('turn');
+  });
+});
