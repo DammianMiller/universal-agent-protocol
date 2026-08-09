@@ -6,8 +6,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'child_process';
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { join, dirname } from 'path';
+import { tmpdir } from 'os';
 import { globSync } from 'glob';
 
 const ROOT = process.cwd();
@@ -43,7 +44,23 @@ describe('hook cd-target parsing', () => {
 });
 
 describe('every tracked policy-gate hook copy carries the fix', () => {
-  const hooks = globSync('**/uap-policy-gate.sh', { cwd: ROOT, dot: true, ignore: ['**/node_modules/**'] });
+  // `.worktrees/` holds OTHER checkouts, most of them of older commits. Their
+  // hook copies predate this fix and always will — nothing done in this tree
+  // can change a file that belongs to a different commit. Globbing them made
+  // the assertion unpassable by construction: it went red for a stale sibling
+  // worktree, which reads as "this change broke the hooks" when the change is
+  // not involved at all. It cost a real diagnosis on 2026-08-09, where the
+  // named file was in .worktrees/330-dash-resilient — deleting that worktree
+  // just moved the failure to the next stale one.
+  //
+  // The contract is about THIS working tree's copies. Whether some other
+  // checkout is stale is worktree hygiene (`uap worktree hygiene`), which
+  // reports drift instead of failing a unit test that cannot fix it.
+  const hooks = globSync('**/uap-policy-gate.sh', {
+    cwd: ROOT,
+    dot: true,
+    ignore: ['**/node_modules/**', '.worktrees/**'],
+  });
 
   it('finds the hook copies', () => {
     expect(hooks.length).toBeGreaterThan(1); // template + per-platform copies
@@ -57,5 +74,56 @@ describe('every tracked policy-gate hook copy carries the fix', () => {
       const check = spawnSync('bash', ['-n', abs], { encoding: 'utf8' });
       expect(check.status, `bash -n failed for ${h}: ${check.stderr}`).toBe(0);
     }
+  });
+});
+
+describe('the hook scan looks at THIS tree, not at other checkouts', () => {
+  // Built against a fixture rather than the real tree: whether .worktrees/
+  // exists here depends on where the suite runs, and a test that silently
+  // becomes a no-op is how the scoping bug survived in the first place.
+  const OPTS = { dot: true, ignore: ['**/node_modules/**', '.worktrees/**'] };
+
+  function fixture(): string {
+    const root = mkdtempSync(join(tmpdir(), 'uap-hookscan-'));
+    for (const rel of [
+      '.claude/hooks/uap-policy-gate.sh',                        // this tree
+      'templates/hooks/uap-policy-gate.sh',                      // this tree
+      '.worktrees/900-old/templates/hooks/uap-policy-gate.sh',   // another checkout
+      '.worktrees/901-old/.claude/hooks/uap-policy-gate.sh',     // another checkout
+    ]) {
+      const abs = join(root, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, '#!/usr/bin/env bash\nexit 0\n');
+    }
+    return root;
+  }
+
+  it('excludes every copy under .worktrees/', () => {
+    const root = fixture();
+    const found = globSync('**/uap-policy-gate.sh', { cwd: root, ...OPTS });
+    expect(found.some((h) => h.startsWith('.worktrees'))).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('still finds this tree\'s own copies (the exclusion is not a blanket skip)', () => {
+    const root = fixture();
+    const found = globSync('**/uap-policy-gate.sh', { cwd: root, ...OPTS });
+    expect(found.sort()).toEqual([
+      '.claude/hooks/uap-policy-gate.sh',
+      'templates/hooks/uap-policy-gate.sh',
+    ]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('without the exclusion the other checkouts WOULD be scanned', () => {
+    // Pins why the ignore is needed: these copies belong to older commits and
+    // can never carry a later fix, so scanning them can only produce failures
+    // that nothing in this tree can resolve.
+    const root = fixture();
+    const found = globSync('**/uap-policy-gate.sh', {
+      cwd: root, dot: true, ignore: ['**/node_modules/**'],
+    });
+    expect(found.filter((h) => h.startsWith('.worktrees'))).toHaveLength(2);
+    rmSync(root, { recursive: true, force: true });
   });
 });
