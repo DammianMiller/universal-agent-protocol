@@ -27,40 +27,77 @@ PM_BUILTINS = {
 PMS = ("npm", "pnpm", "yarn")
 
 
+# A command is a sequence of STATEMENTS; each one invokes its own binary.
+_STATEMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|&\n]")
+
+
+def _leading_binary(statement: str) -> tuple[str, list[str]] | None:
+    """The binary a statement invokes, plus its tokens — or None.
+
+    Skips env assignments (`FOO=bar cmd`) and shell grouping, then reads the
+    FIRST real word. That word is what the shell executes; a wrapped CLI
+    appearing later is an argument, not an invocation.
+    """
+    tokens = statement.replace("(", " ").replace("{", " ").split()
+    idx = 0
+    while idx < len(tokens) and "=" in tokens[idx].split("/")[0]:
+        idx += 1  # env assignment prefix
+    if idx >= len(tokens):
+        return None
+    return tokens[idx].split("/")[-1], tokens[idx:]
+
+
 def main() -> None:
     op, args = parse_cli()
     cmd = (args.get("command") or args.get("cmd") or "").strip()
     if not cmd or op.lower() != "bash":
         emit(True, "not a Bash command")
 
-    first = cmd.split(maxsplit=1)[0].lstrip("(").lstrip("{")
-    if first == "rtk" and RTK_META.search(cmd):
-        emit(True, "rtk meta command")
-    if ALREADY_WRAPPED.match(cmd):
-        emit(True, "already wrapped")
+    # Evaluate each statement on its own.
+    #
+    # Whole-command matching got this wrong in BOTH directions. It only accepted
+    # `rtk` at the very start, so `cd /srv/app && rtk git log` — already wrapped —
+    # was refused, with a suggestion that prefixed rtk to the entire line and
+    # produced nonsense like `rtk cd /srv/app; git log`. And it scanned only the
+    # first three tokens, so `cd /srv/app && git log` slipped through entirely:
+    # `git` sat at index 3. That is a bypass, not just noise — any bare invocation
+    # could be hidden behind a `cd`. Reading the leading binary of each statement
+    # fixes both, because that is what the shell actually runs.
+    for raw in _STATEMENT_SPLIT_RE.split(cmd):
+        statement = raw.strip()
+        if not statement:
+            continue
+        found = _leading_binary(statement)
+        if not found:
+            continue
+        bin_name, tokens = found
 
-    # Inspect tokens (ignore env assignments like FOO=bar cmd)
-    tokens = [t for t in cmd.split() if "=" not in t.split("/")[0]]
-    for tok in tokens[:3]:
-        bin_name = tok.split("/")[-1]
-        if bin_name in WRAPPED:
-            wrapper = "rtk"
-            if bin_name in PMS:
-                sub = ""
-                for nxt in tokens[tokens.index(tok) + 1:]:
-                    if not nxt.startswith("-"):
-                        sub = nxt.split("/")[-1]
-                        break
-                if sub in PM_BUILTINS:
-                    wrapper = "rtk proxy"
-            emit(
-                False,
-                f"rtk-wrap: '{bin_name}' must be invoked via rtk. "
-                f"Use: {wrapper} {cmd}",
-                bin=bin_name,
-            )
+        # A statement led by `rtk` (or anything else outside WRAPPED) is fine:
+        # in `rtk git log` the leading binary is rtk and `git` is its argument.
+        # No separate rtk check is needed - rtk is simply not a wrapped CLI.
+        # Mutation testing flagged the earlier explicit check as equivalent,
+        # i.e. dead.
+        if bin_name not in WRAPPED:
+            continue
 
-    emit(True, "no wrapped CLI in command")
+        wrapper = "rtk"
+        if bin_name in PMS:
+            sub = ""
+            for nxt in tokens[1:]:
+                if not nxt.startswith("-"):
+                    sub = nxt.split("/")[-1]
+                    break
+            if sub in PM_BUILTINS:
+                wrapper = "rtk proxy"
+        # Suggest fixing THIS statement, not the whole line.
+        emit(
+            False,
+            f"rtk-wrap: '{bin_name}' must be invoked via rtk. "
+            f"Use: {wrapper} {statement}",
+            bin=bin_name,
+        )
+
+    emit(True, "no unwrapped CLI in any statement")
 
 
 if __name__ == "__main__":
