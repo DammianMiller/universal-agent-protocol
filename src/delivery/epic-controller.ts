@@ -42,6 +42,12 @@ export interface EpicRunResult {
    * `summary` is human-facing text, not protocol.)
    */
   budgetStopped?: boolean;
+  /**
+   * The attempt never reached a model — the endpoint was unreachable. Retrying
+   * the epic cannot help while that is true, so the controller stops instead of
+   * spending its remaining attempts (and then a re-plan) on the same failure.
+   */
+  endpointUnreachable?: boolean;
   /** The attempt changed the working tree (even if not accepted) — counts as
    * prior work for the anti-no-op rail on later attempts and sub-epics. */
   changedTree?: boolean;
@@ -287,6 +293,16 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
         epicTurns += result.turns;
         lastSummary = result.summary;
         lastBudgetStopped = result.budgetStopped === true;
+        // The endpoint was never reachable this attempt, so no model ran. The
+        // remaining attempts would each re-pay the connect timeout and fail
+        // identically, and the split that follows a whole-epic failure would
+        // re-plan work that never executed. Stop while the reason is still
+        // legible. (Live 2026-08-09, proxy down: 5 turns x 3 attempts + a
+        // re-plan, none of which reached a model.)
+        if (result.endpointUnreachable) {
+          lastFailure = `attempt ${attempts} could not reach the model endpoint: ${result.summary}`;
+          break;
+        }
 
         if (result.success) {
           let ok = true;

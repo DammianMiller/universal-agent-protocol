@@ -75,7 +75,27 @@ BYPASS_PATTERNS = (
     # not an override — it is an off switch, the same reasoning as every entry
     # above it.
     re.compile(r"UAP_DELIVER_NO_LOCK\s*=\s*['\"]?1", re.I),
+    # The gateless-root refusal exists BECAUSE an agent-driven launch does not
+    # honour a warning: the warning shipped, fired, named the right root, and
+    # the run went ahead at the gateless root anyway, then spent 34 minutes
+    # taking a crate from 1 failing test to 3 while reporting "100% of gates".
+    # A hatch the constrained party can write into its own command line is not
+    # an override, it is an off switch — same reasoning as every entry above.
+    # The CLI-flag spelling is just as self-grantable, but it is matched
+    # separately below: a bare flag NAME appears in ordinary prose (docs,
+    # commit messages, `grep`), so scanning the raw command for it refused
+    # honest work. It runs against `scannable_command`, which blanks quoted
+    # blobs, instead.
+    re.compile(r"UAP_ALLOW_GATELESS_ROOT\s*=\s*['\"]?1", re.I),
 )
+
+# The gateless-root override in its CLI-flag spelling. Anchored on both sides
+# so a longer option that merely starts the same way does not collide, and
+# case-sensitive because commander does not accept an upper-case spelling.
+GATELESS_FLAG_RE = re.compile(r"(?:^|\s)--allow-gateless-root(?:[=\s]|$)")
+# Only a deliver invocation can be bypassed by the flag. `\b` keeps this off
+# `src/delivery/`, which merely starts with the same letters.
+DELIVER_INVOCATION_RE = re.compile(r"\bdeliver\b")
 # Destructive ops against the enforcer/policy surface.
 #
 # HONEST SCOPE: this is a NUDGE, not a boundary. An agent that can write a file
@@ -419,6 +439,22 @@ def main() -> None:
 
     if op in {"Bash", "bash"}:
         cmd = args.get("command") or ""
+        # The flag form is checked against the SCANNABLE command, not the raw
+        # one: `scannable_command` blanks multi-word quoted blobs, so a commit
+        # message or a `uap memory store "..."` that merely NAMES the switch is
+        # not refused, while text handed to a shell is left intact and still
+        # caught. It must ALSO look like a deliver invocation — the flag does
+        # nothing anywhere else, so refusing `rg -- <flag> src/` bought no
+        # security and blocked someone auditing the switch.
+        _scannable = scannable_command(cmd)
+        if GATELESS_FLAG_RE.search(_scannable) and DELIVER_INVOCATION_RE.search(_scannable):
+            emit(
+                False,
+                "BLOCKED: setting a delivery-enforcement bypass/advisory flag is "
+                "not allowed for the agent. Route your change through the "
+                "`deliver` tool instead of disabling the gate. "
+                "(Operator-only override: UAP_SELF_PROTECT_OFF=1.)",
+            )
         for pat in BYPASS_PATTERNS:
             if pat.search(cmd):
                 emit(

@@ -18,6 +18,14 @@
 import { join } from 'node:path';
 import { execSync } from 'child_process';
 import { statSync } from 'fs';
+import { ENDPOINT_UNREACHABLE } from '../models/long-fetch.js';
+
+/**
+ * Consecutive unreachable-endpoint turns before the run gives up. Two, so a
+ * proxy restart (longer than the ~6s of per-request retries) does not read as
+ * a dead endpoint.
+ */
+const UNREACHABLE_ABORT_LIMIT = 2;
 
 import {
   bindFrozenFragments,
@@ -136,6 +144,12 @@ export interface IterationRecord {
    * this to route budget-exhausted work to the epic split path.
    */
   budgetStopped?: boolean;
+  /**
+   * The turn never reached a model: the endpoint could not be connected to.
+   * Structured so the epic controller can stop retrying an epic that cannot
+   * possibly run, rather than re-deriving it from summary text.
+   */
+  endpointUnreachable?: boolean;
   durationMs: number;
 }
 
@@ -1063,6 +1077,8 @@ export class ConvergenceLoop {
     // in circles". Observed live: 4 turns / 2h20m of pure re-reading, because
     // the gate feedback named a file that was not the defect.
     let noProgressStreak = 0;
+    // Consecutive turns whose executor could not reach the model endpoint.
+    let unreachableStreak = 0;
     // Seeded AFTER the baseline ladder run (see below) for the same reason
     // runStartTreeFingerprint is: files the gates themselves create on first
     // run must not read as turn-1 movement.
@@ -1366,6 +1382,7 @@ export class ConvergenceLoop {
         judgeRationale: outcome.judgeRationale,
         acceptanceMet,
         ...(decodeBudgetStop(outcome.output) ? { budgetStopped: true } : {}),
+        ...(outcome.executorError?.includes(ENDPOINT_UNREACHABLE) ? { endpointUnreachable: true } : {}),
         durationMs: Date.now() - turnStart,
       };
       history.push(record);
@@ -1517,6 +1534,26 @@ export class ConvergenceLoop {
           directive.requestReflect ||
           directive.mutateInstruction
       );
+      // An unreachable endpoint is fatal to the RUN, not to this turn. The
+      // no-progress rail below cannot catch it: an errored turn counts as
+      // `inconclusive`, which RESETS the streak, so a dead endpoint would keep
+      // the loop alive until the turn and epic budgets ran out (live 2026-08-09
+      // with the proxy down: 5 turns x 3 attempts + a re-plan, all reporting a
+      // gate percentage, none of which ever called a model). Stop on the first
+      // one and say what is actually wrong.
+      if (outcome.executorError?.includes(ENDPOINT_UNREACHABLE)) {
+        unreachableStreak++;
+        // Two in a row, not one. A single ECONNREFUSED is also what a proxy
+        // RESTART looks like, and the per-request retries only span ~6s — less
+        // than a restart takes. A second failed turn costs another ~6s and
+        // distinguishes "restarting" from "gone".
+        if (unreachableStreak >= UNREACHABLE_ABORT_LIMIT) {
+          stallReason = outcome.executorError;
+          break;
+        }
+      } else {
+        unreachableStreak = 0;
+      }
       if (inconclusive || scoreMoved || !provablyIdle || escalated) noProgressStreak = 0;
       else noProgressStreak++;
       if (noProgressStreak >= NO_APPLY_ABORT_LIMIT) {

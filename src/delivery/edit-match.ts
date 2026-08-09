@@ -411,10 +411,29 @@ export function applyRangeEdit(
   if (startLine < 1 || endLine < startLine) {
     return { ok: false, error: `invalid range ${startLine}..${endLine} (need 1 <= start_line <= end_line).` };
   }
+  // A range past EOF still REFUSES rather than clamping to the last line.
+  //
+  // Clamping was tried (2026-08-08) to save the round the refusal costs, and
+  // reverted the same day: `edit_range(2, 300)` on a 3-line file silently ate
+  // the closing brace AND the terminating newline, i.e. it manufactured the
+  // exact "unclosed delimiter" corruption this whole branch exists to stop.
+  // The premise was wrong too — when the model's own edit has shrunk the file,
+  // `start_line` is stale by the same amount, so clamping lands the
+  // replacement at the wrong offset and deletes everything after it. A refusal
+  // costs one round; a silent truncation costs the file.
+  //
+  // What the refusal CAN do is carry enough detail to be fixed in one shot
+  // instead of forcing a re-read: name the last line, so "to the end of the
+  // file" is a number the model already has.
   if (endLine > lines.length) {
+    const lastContentLine = current.endsWith('\n') ? lines.length - 1 : lines.length;
     return {
       ok: false,
-      error: `end_line ${endLine} is past the end of the file (${lines.length} lines) — re-read it.`,
+      error:
+        `end_line ${endLine} is past the end of the file, which has ${lastContentLine} lines. ` +
+        `Your line numbers are stale — a previous edit changed the length. ` +
+        `To replace through the end of the file, re-issue with end_line=${lastContentLine}; ` +
+        `otherwise re-read the file first.`,
     };
   }
   // A trailing newline on new_text would inject a blank line, because the join

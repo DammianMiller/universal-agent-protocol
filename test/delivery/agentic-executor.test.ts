@@ -898,3 +898,65 @@ describe('createAgenticExecutor — empty-finish refusal', () => {
     expect(bodies.some((b) => b.includes('REFUSED'))).toBe(false);
   });
 });
+
+/**
+ * A NO-OP must not be bankable as progress.
+ *
+ * The whole no-op guard rests on the executor testing `toolResult.startsWith('OK')`
+ * to decide whether a round mutated anything. That coupling is a STRING PREFIX:
+ * reword the message to "OK (no-op): …" and every string-level test still passes
+ * while the live loop returns in full — a model banks a mutation for a round that
+ * changed nothing, and the empty-finish rail stops refusing.
+ *
+ * So assert the consequence, not the wording.
+ */
+describe('a no-op edit does not count as a mutation', () => {
+  let dir: string;
+  const SRC = 'function add(a, b) {\n    return a + b;\n}\n';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agx-noop-'));
+    writeFileSync(join(dir, 'calc.js'), SRC, 'utf-8');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const editCall = (oldStr: string, newStr: string) => ({
+    content: null,
+    tool_calls: [{
+      id: 'e1',
+      type: 'function',
+      function: {
+        name: 'edit_file',
+        arguments: JSON.stringify({ path: 'calc.js', old_string: oldStr, new_string: newStr }),
+      },
+    }],
+  });
+  const finish = {
+    content: null,
+    tool_calls: [{ id: 'f1', type: 'function', function: { name: 'finish', arguments: '{"summary":"done"}' } }],
+  };
+
+  it('refuses a finish whose only "edit" changed nothing', async () => {
+    const spy = mockChatSequence([editCall('return a + b;', 'return a + b;'), finish]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('go');
+    // The refusal is delivered back to the model, so it shows up in a later
+    // request body rather than in the return value.
+    const sent = spy.mock.calls
+      .map((c) => String((c[1] as { body?: unknown } | undefined)?.body ?? ''))
+      .join('\n');
+    expect(sent).toMatch(/REFUSED|without modifying|no files/i);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toBe(SRC);
+  });
+
+  it('accepts a finish once an edit really changed the file', async () => {
+    const spy = mockChatSequence([editCall('return a + b;', 'return a * b;'), finish]);
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('go');
+    const sent = spy.mock.calls
+      .map((c) => String((c[1] as { body?: unknown } | undefined)?.body ?? ''))
+      .join('\n');
+    expect(sent).not.toMatch(/REFUSED/i);
+    expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toContain('a * b');
+  });
+});

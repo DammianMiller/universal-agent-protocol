@@ -186,3 +186,112 @@ describe('enforcement-infra-protect enforcer', () => {
     });
   });
 });
+
+/** A real process whose /proc cmdline genuinely contains `uap deliver`. */
+function deliverShaped(): { pid: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'uap-deliverish-'));
+  const script = join(dir, 'uap');
+  writeFileSync(script, 'setTimeout(() => {}, 30000);\n');
+  const proc = spawn(process.execPath, [script, 'deliver', '--project-root', dir], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  proc.unref();
+  return {
+    pid: String(proc.pid),
+    cleanup: () => {
+      try { process.kill(Number(proc.pid), 'SIGKILL'); } catch { /* already gone */ }
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+describe('a deliver run is not the inference stack (false positive, 2026-08-09)', () => {
+  /**
+   * `_STACK_ARGV_RE` already recognised a deliver process, but `_identify_pid`
+   * returned the raw matched text, and only the LOCK-HOLDER path produced the
+   * deliver label — and that path fires only when the lock is under THIS repo.
+   * A mission launched against another project (the usual case) was therefore
+   * refused as "the inference stack answering this session's own requests",
+   * telling the operator that stopping their own run would end the session and
+   * pointing at llama-server and the proxy. None of it true, and the remedy was
+   * wrong too. It cost several round-trips in one live session.
+   */
+  it('names it as a deliver run, not as the inference stack', () => {
+    const { pid, cleanup } = deliverShaped();
+    try {
+      const r = run(`kill -TERM ${pid}`);
+      expect(r.exit).toBe(2);
+      expect(r.reason).toMatch(/deliver run in progress/i);
+      expect(r.reason).not.toMatch(/inference stack/i);
+      expect(r.reason).not.toMatch(/llama-server/i);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('offers the cooperative stop, and names a path a shell can act on', () => {
+    // The CLI docs say never to kill a deliver by hand: the STOP file lets the
+    // loop exit at a turn boundary with its work checkpointed and the lock
+    // released, which a signal does not. `requestStop` is a TypeScript symbol
+    // with no CLI surface, so the refusal must name the file, not the function.
+    const { pid, cleanup } = deliverShaped();
+    try {
+      const reason = run(`kill -9 ${pid}`).reason;
+      expect(reason).toMatch(/do NOT kill it/i);
+      expect(reason).toMatch(/cooperative/i);
+      expect(reason).toMatch(/deliver-runs\/<runId>\/STOP/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('still protects the real stack with the stack message', () => {
+    const r = run('pkill -9 -f llama-server');
+    expect(r.exit).toBe(2);
+    expect(r.reason).toMatch(/inference stack/i);
+    expect(r.reason).not.toMatch(/deliver run in progress/i);
+  });
+});
+
+describe('kill -0 is a liveness probe, not a kill', () => {
+  /**
+   * Signal 0 performs error checking only — it tests whether the PID exists and
+   * is signalable, and delivers nothing. Refusing it protected nothing and
+   * denied the cheapest way to ask "is that run still alive?".
+   *
+   * The exemption is scoped PER STATEMENT. A whole-command exemption let one
+   * probe anywhere switch rule 9 off for every PID in the text — and rule 9 is
+   * the ONLY guard on a bare-PID kill, since rules 1-8 all need pkill/killall,
+   * a service name, a -f pattern or a lookup verb.
+   */
+  it('allows a probe', () => {
+    const { pid, cleanup } = deliverShaped();
+    try {
+      expect(run(`kill -0 ${pid}`).exit).toBe(0);
+      expect(run(`kill -s 0 ${pid}`).exit).toBe(0);
+      expect(run(`kill -0 ${pid} && kill -0 ${pid}`).exit).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does NOT let -0 launder a BARE-PID kill', () => {
+    // An earlier version of this test used `pkill -f llama-server`, which rule 2
+    // catches by NAME before the exemption is ever consulted — so it passed
+    // whether the exemption was scoped or not, while the real hole stayed open.
+    // A bare PID has no name to match on.
+    const { pid, cleanup } = deliverShaped();
+    try {
+      expect(run(`kill -0 ${pid} && kill -9 ${pid}`).exit).toBe(2);
+      expect(run(`kill -9 ${pid}; kill -0 ${pid}`).exit).toBe(2);
+      // The canonical "kill it if it is alive" idiom — the spelling a model
+      // reaches for by default, which is why a whole-text exemption was unsafe.
+      expect(run(`if kill -0 ${pid}; then kill -9 ${pid}; fi`).exit).toBe(2);
+      // Merely NAMING the probe must not buy an exemption either.
+      expect(run(`echo "probe with kill -0"; kill -9 ${pid}`).exit).toBe(2);
+    } finally {
+      cleanup();
+    }
+  });
+});

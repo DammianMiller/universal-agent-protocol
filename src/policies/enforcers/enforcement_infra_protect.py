@@ -246,6 +246,18 @@ def _laundered_infra_kill(cmd: str) -> bool:
 # exists to prevent. delivery_enforcement._deliver_lock_holder() has taken the
 # same precaution since the PID-reuse incident; this must not diverge from it.
 _PID_TOKEN_RE = re.compile(r"(?<![\w.])(-?\d{1,10})(?![\w.-])")
+# The label both deliver paths agree on, so the caller has one thing to compare.
+DELIVER_LABEL = "the deliver run in progress"
+
+# A deliver PROCESS, by argv. Deliberately separate from _STACK_ARGV_RE: a
+# deliver run is protected for a different reason than llama-server, and gets a
+# different remedy, so the two must not be told apart by string-matching the
+# combined pattern's output.
+_DELIVER_ARGV_RE = re.compile(
+    r"(\buap\s+deliver\b|(?:cli\.js|uap)\s+(?:\S+\s+)*deliver\b)",
+    re.IGNORECASE,
+)
+
 _STACK_ARGV_RE = re.compile(
     r"(llama-server|anthropic_proxy|nomic-embed"
     r"|\buap\s+deliver\b|(?:cli\.js|uap)\s+(?:\S+\s+)*deliver\b)",
@@ -276,7 +288,7 @@ def _lock_holder_pids() -> dict[str, str]:
             continue
         m = re.match(r"\s*(\d+)", text)
         if m:
-            holders[str(int(m.group(1)))] = "the deliver run in progress"
+            holders[str(int(m.group(1)))] = DELIVER_LABEL
     return holders
 
 
@@ -293,13 +305,60 @@ def _identify_pid(pid: str, holders: dict[str, str]) -> str | None:
         return None  # dead: a stale lock protects nothing
     m = _STACK_ARGV_RE.search(argv)
     if pid in holders:
-        # Confirm identity too — a recycled PID must not inherit the claim.
-        return holders[pid] if m else None
-    return m.group(1).lower() if m else None
+        # Confirm identity too — a recycled PID must not inherit the claim. The
+        # claim is "this is the deliver run", so confirm it with the DELIVER
+        # pattern: checking the combined stack pattern let a stale lock whose
+        # PID had been recycled by llama-server inherit the deliver label, and
+        # with it a remedy that does not apply to the stack.
+        if _DELIVER_ARGV_RE.search(argv):
+            return holders[pid]
+        return m.group(1).lower() if m else None
+    if not m:
+        return None
+    # Canonicalise a deliver match to the SAME label the lock-holder path uses.
+    # Without this the caller fell through to the inference-stack message, which
+    # told the operator that killing their own mission "ends your own session"
+    # and pointed at llama-server / the proxy — none of which is true. The
+    # lock-holder path only fires when the lock is under THIS repo, so any
+    # deliver launched against another project (the usual case) got the wrong
+    # message and the wrong remedy.
+    if _DELIVER_ARGV_RE.search(argv):
+        return DELIVER_LABEL
+    return m.group(1).lower()
+
+
+_PROBE_RE = re.compile(r"\bkill\b\s+(?:-0\b|-s\s+0\b|-s\s+SIGNULL\b)", re.IGNORECASE)
+
+
+def _only_liveness_probes(text: str) -> bool:
+    """True when EVERY kill in `text` is `kill -0` / `kill -s 0` — a probe.
+
+    Signal 0 performs error checking only: it tests whether the PID exists and
+    is signalable, and delivers nothing. Refusing it protects nothing and denies
+    the cheapest way to ask "is that run still alive?".
+
+    Scoped per STATEMENT, and deliberately so. Testing the whole command instead
+    let one probe anywhere switch rule 9 off for every PID in the text, so
+    `kill -0 $P && kill -9 $P` — the canonical "kill it if it is alive" idiom,
+    and the `if kill -0 …; then kill -9 …; fi` form — reached the stack. Rule 9
+    is the ONLY guard on a bare-PID kill (rules 1-8 all need pkill/killall, a
+    service name, a -f pattern or a lookup verb), so a whole-text exemption
+    turned this module's one un-spell-around-able rule into a text rule whose
+    password was two characters. Measured before the fix: all four laundering
+    spellings were allowed.
+    """
+    kills = [
+        seg for seg in _STATEMENT_SPLIT_RE.split(text) if _KILL_VERB_RE.search(seg)
+    ]
+    if not kills:
+        return False
+    return all(_PROBE_RE.search(seg) for seg in kills)
 
 
 def _protected_pid_hit(text: str) -> tuple[str, str] | None:
     if not (_KILL_VERB_RE.search(text) and _PID_TOKEN_RE.search(text)):
+        return None
+    if _only_liveness_probes(text):
         return None
     holders = _lock_holder_pids()
     seen: set[str] = set()
@@ -325,6 +384,10 @@ DELIVER_PID_REASON = (
     "call the deliver tool with follow:true, which answers within about a "
     "minute; a 'STILL RUNNING' answer is normal and means keep polling, not "
     "fail. From a shell, `uap deliver --await-run` blocks until the run ends. "
+    "If it genuinely must stop, do NOT kill it: request the COOPERATIVE stop "
+    "(the dashboard's Cancel, or `touch <projectRoot>/.uap/deliver-runs/<runId>/STOP`) — "
+    "the loop observes it at the next turn boundary and exits with its work "
+    "checkpointed and the lock released, which a signal does not. "
     "Operator override: set UAP_INFRA_PROTECT_OFF=1 in the launch environment "
     "(not inline on the command)."
 )
@@ -438,7 +501,7 @@ def main() -> None:
         hit = _protected_pid_hit(text)
         if hit:
             pid, what = hit
-            if what == "the deliver run in progress":
+            if what == DELIVER_LABEL:
                 emit(False, DELIVER_PID_REASON.format(pid=pid) + label)
             emit(False, STACK_PID_REASON.format(what=what, pid=pid) + label)
     emit(True, "no infra-destructive pattern")

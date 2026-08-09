@@ -22,6 +22,15 @@
 export type ToolOutcomeClass =
   /** Call succeeded with no caveat. */
   | 'ok'
+  /**
+   * The call was accepted but changed NOTHING — a write or edit whose result
+   * already matched the file. Neither a success nor a failure: the tool did
+   * exactly what it was told, and the turn made no progress. It gets its own
+   * class because folding it into `ok` is what the no-op guards exist to stop —
+   * the corpus would report edit tooling as healthy precisely while a run is
+   * spinning on repeated no-op edits.
+   */
+  | 'no-op'
   /** Succeeded, but only via the whitespace-tolerant edit rung (anchor drift). */
   | 'ok-tolerant'
   /** `old_string` matched nothing. The dominant edit-tool failure. */
@@ -108,6 +117,9 @@ export function classifyToolResult(tool: string, result: string): ToolOutcomeCla
   }
 
   if (!lower.startsWith('error:')) {
+    // Checked BEFORE the tolerant note: a no-op reached through the tolerant
+    // rung still changed nothing, and "no progress" is the more important fact.
+    if (lower.startsWith('no-op:')) return 'no-op';
     // Success paths. The tolerant-match note is a success WITH a signal: the
     // model's anchors are drifting, which predicts future misses.
     if (lower.includes('did not match byte-for-byte')) return 'ok-tolerant';

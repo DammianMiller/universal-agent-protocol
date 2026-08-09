@@ -122,8 +122,16 @@ if echo "$CMD" | grep -qE '\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-[a-z]*f'; t
 fi
 
 # ─── Manual Version Edit Protection ─────────────────────────────
-# Block direct edits to package.json version field via sed/awk
-if echo "$CMD" | grep -qE "(sed|awk).*package\.json.*(version|\"version\")|((sed|awk).*version.*package\.json)|(jq.*\.version.*package\.json)"; then
+# Block direct edits to package.json version field via sed/awk/jq.
+#
+# Scoped to a single shell STATEMENT. Matching across the whole command line
+# meant any sed/awk anywhere plus `package.json` and `version` anywhere later
+# tripped it, so reading the version alongside unrelated text munging was
+# refused:  `curl ... | sed 's/^/x/'; node -p "require('./package.json').version"`
+# That is a READ. Splitting on ; && || | and newline keeps every real edit
+# (each has sed/awk/jq and package.json inside one statement) and drops the
+# cross-statement coincidence. Verified against both corpora before and after.
+if printf '%s' "$CMD" | tr ';|&\n' '\n\n\n\n' | grep -qE "(sed|awk).*package\.json.*(version|\"version\")|((sed|awk).*version.*package\.json)|(jq.*\.version.*package\.json)"; then
   echo "BLOCKED [semver-versioning]: Manual package.json version edits are prohibited. Use: npm run version:patch, version:minor, or version:major. See policies/semver-versioning.md" >&2
   exit 2
 fi

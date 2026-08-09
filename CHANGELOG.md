@@ -1,5 +1,56 @@
 # Changelog
 
+## v1.187.3 (2026-08-09)
+
+- fix(hooks): reading a version is not editing it
+- chore(hooks): commit the installed post-tool-use-read hook so worktrees start clean
+
+
+## v1.187.2 (2026-08-09)
+
+- fix(policies): a deliver run is not the inference stack
+
+
+## v1.187.1 (2026-08-09)
+
+- fix(reactor): tell the truth about when deliver is required
+
+
+## v1.187.0 (2026-08-09)
+
+- feat(deliver): a demoted gate blocks again on tests it was passing before
+
+
+## v1.186.8 (2026-08-09)
+
+- fix(policies): close the self-grant hole on the gateless-root override
+
+
+## v1.186.7 (2026-08-09)
+
+- fix(deliver): refuse a project root that cannot verify its own work
+
+
+## v1.186.6 (2026-08-09)
+
+- fix(deliver): stop a run when the model endpoint is unreachable
+
+
+## v1.186.5 (2026-08-09)
+
+- fix(deliver): warn on a gateless root, and stop no-op edits banking success
+
+
+## v1.186.4 (2026-08-08)
+
+- fix(deliver): close two loop-causing feedback bugs from a live 2h churn
+- fix(proxy): break a loop that keeps SUCCEEDING (#659)
+- fix(memory): recall was broken by a client rename, and hidden by a bare catch (#658)
+- fix(policies): close the five naive forms the re-review found, with tests (#657)
+- feat(policies): make the enforcement surface repair itself (#656)
+- fix(policies): close two verified bypasses of the enforcement surface (#655)
+
+
 ## v1.186.3 (2026-08-07)
 
 - fix(proxy): break a loop that keeps SUCCEEDING

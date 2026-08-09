@@ -8,7 +8,9 @@
 
 import chalk from 'chalk';
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync, readdirSync, statSync } from 'fs';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync, writeFileSync, renameSync, realpathSync, closeSync, readdirSync, statSync } from 'fs';
+import { homedir } from 'os';
+import { createHash } from 'crypto';
 import { join, resolve, relative } from 'path';
 import { ConvergenceLoop, composeIterationHooks } from '../delivery/convergence-loop.js';
 import type {
@@ -288,7 +290,7 @@ import {
   extractKeywords,
   retrievePracticesSemantic,
 } from '../delivery/practice.js';
-import { detectRungs, mergeRedetectedRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER, demoteBaselineFailures } from '../delivery/verifier-ladder.js';
+import { detectRungs, mergeRedetectedRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER, demoteBaselineFailures, baselineRegressions } from '../delivery/verifier-ladder.js';
 import type { GateTier, LadderRunFn, GateRung } from '../delivery/verifier-ladder.js';
 import { runDeployDevLadder } from '../delivery/deploy-dev-gate.js';
 import { commitPushAndWatch } from '../delivery/ci-watcher.js';
@@ -302,6 +304,12 @@ import type { ModelConfig } from '../models/types.js';
 import { detectExecutionProfile } from '../models/execution-profiles.js';
 
 export interface DeliverOptions {
+  /**
+   * Proceed even when this project root has no objective gates while a
+   * subdirectory does. Without it that combination is refused, because the run
+   * cannot compile or test its own work from here.
+   */
+  allowGatelessRoot?: boolean;
   maxTurns?: string;
   /** True when --max-turns was passed on the command line (vs the commander
    * default) — set by the CLI action via getOptionValueSource. An explicit
@@ -645,6 +653,368 @@ export function isDeliverLockAbandoned(
 }
 
 /**
+ * True when two deliver project roots share a subtree — identical, or one an
+ * ancestor of the other. Such runs edit the SAME files, so they must not run
+ * concurrently even though their `.uap/deliver.lock` paths differ.
+ */
+export function deliverRootsOverlap(a: string, b: string): boolean {
+  // realpath so one tree reached through a symlink and through its target does
+  // not read as two unrelated projects — a silent miss of the exact case this
+  // guards. Falls back to resolve() for a path that does not exist yet.
+  const norm = (p: string) => {
+    let abs: string;
+    try { abs = realpathSync.native(resolve(p)); } catch { abs = resolve(p); }
+    return abs.replace(/\/+$/, '');
+  };
+  const x = norm(a);
+  const y = norm(b);
+  if (x === y) return true;
+  // Segment-boundary check: `/srv/app` must not "contain" `/srv/app-two`.
+  return x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
+/**
+ * A project root a registry entry is allowed to claim.
+ *
+ * `/` (and any root stripped to `''` by the trailing-slash trim) would overlap
+ * EVERY project on the machine, so one such entry disables deliver everywhere.
+ * Requiring at least two path segments keeps a corrupt or hostile entry from
+ * becoming a machine-wide off-switch.
+ */
+function isPlausibleRunRoot(root: string): boolean {
+  if (!root.startsWith('/')) return false;
+  return root.replace(/\/+$/, '').split('/').filter(Boolean).length >= 2;
+}
+
+/**
+ * A pid a registry entry is allowed to claim.
+ *
+ * Bare `Number()` accepts `-1`, and `process.kill(-1, 0)` is a "does any
+ * process exist" query that always succeeds — so a negative pid would read as
+ * eternally alive and its entry could never be swept.
+ */
+function isPlausibleRunPid(raw: string): boolean {
+  return /^[1-9]\d{0,9}$/.test(raw.trim());
+}
+
+/** Only names this module writes are read or unlinked. */
+const ACTIVE_RUN_FILE = /^[0-9a-f]{16}\.run$/;
+
+/**
+ * Registry of live deliver runs, keyed across ALL projects on this machine.
+ * `UAP_ACTIVE_RUNS_DIR` redirects it so tests never write to a real home.
+ */
+function activeRunsDir(): string {
+  const override = process.env.UAP_ACTIVE_RUNS_DIR;
+  return override && override.trim() ? resolve(override.trim()) : join(homedir(), '.uap', 'active-runs');
+}
+
+function activeRunEntry(projectRoot: string): string {
+  // Path → filename, reversibly enough to read back and stable per root.
+  const key = createHash('sha1').update(resolve(projectRoot)).digest('hex').slice(0, 16);
+  return join(activeRunsDir(), `${key}.run`);
+}
+
+/** Publish this run's entry atomically, so no scanner can read a torn record. */
+function publishActiveRun(projectRoot: string, iso: string): void {
+  const dir = activeRunsDir();
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Absolute paths carry usernames and client/project names; keep them off
+  // other local uids, matching proxy-lifecycle's 0700/0600 convention.
+  const entry = activeRunEntry(projectRoot);
+  const tmp = `${entry}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${process.pid}|${iso}|${resolve(projectRoot)}`, { encoding: 'utf8', mode: 0o600 });
+  renameSync(tmp, entry);
+}
+
+/**
+ * Deliver runs on OVERLAPPING project roots, anywhere on this machine.
+ *
+ * Returns the first live overlapping run that owns the subtree ahead of us
+ * (started earlier — PID breaks an exact tie), or null when we are clear to
+ * proceed. Stale entries are swept as they are read.
+ *
+ * `pidAlive` alone is NOT sufficient evidence that a run is live, and this
+ * function must not repeat the mistake the per-project lock already paid for
+ * (see isDeliverLockAbandoned): pids get recycled, and a run killed with
+ * SIGKILL never runs its exit handler, so its entry outlives it. An entry whose
+ * pid has been reissued to an unrelated process would otherwise block every
+ * overlapping deliver on the machine forever, with no operator-visible cause.
+ * So a claimed holder must ALSO still look live at its own root — it must hold
+ * that root's lock and not be abandoned there.
+ */
+export function findOverlappingDeliverRun(
+  projectRoot: string,
+  selfPid: number = process.pid,
+  selfStartedMs: number = Date.now(),
+): { pid: number; root: string } | null {
+  const pidAlive = (pid: number): boolean => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  const dir = activeRunsDir();
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return null; // no registry yet — nothing to collide with
+  }
+  for (const name of entries) {
+    // Never read or unlink a name we did not write. Without this, pointing
+    // UAP_ACTIVE_RUNS_DIR at any directory turns the sweep below into an
+    // arbitrary-file delete.
+    if (!ACTIVE_RUN_FILE.test(name)) continue;
+    const file = join(dir, name);
+    const sweep = () => { try { rmSync(file); } catch { /* racing sweep */ } };
+    try {
+      const [pidRaw = '', iso = '', rootRaw = ''] = readFileSync(file, 'utf8').split('|');
+      const root = rootRaw.trim();
+      if (!isPlausibleRunPid(pidRaw) || !isPlausibleRunRoot(root)) { sweep(); continue; }
+      const pid = Number(pidRaw.trim());
+      if (pid === selfPid) continue;
+      if (!pidAlive(pid)) { sweep(); continue; }
+      if (!deliverRootsOverlap(projectRoot, root)) continue;
+      // The pid is alive, but is it still THIS run? Cross-check the holder's
+      // own root: a recycled pid does not hold that lock, and a wedged or
+      // abandoned holder is reclaimable there rather than blocking us here.
+      if (isDeliverLockAbandoned(root) || isDeliverHolderWedged(root)) { sweep(); continue; }
+      // Both runs see each other; exactly one must yield. The earlier start
+      // keeps the subtree, so the decision is the same from either side.
+      const theirs = Date.parse(iso.trim());
+      const olderThanUs = Number.isFinite(theirs)
+        ? theirs < selfStartedMs || (theirs === selfStartedMs && pid < selfPid)
+        : true;
+      if (olderThanUs) return { pid, root };
+    } catch { /* unreadable entry — ignore */ }
+  }
+  return null;
+}
+
+/**
+ * Cheap PREFILTER for "this directory might be a project root".
+ *
+ * Deliberately not the authority — a manifest can exist and still yield no
+ * gates (a package.json with no scripts is the common case), so a hit here is
+ * only a candidate. `dirHasGates` below is what actually decides, by asking the
+ * same detectors the real ladder uses. This list exists so we ask that question
+ * a handful of times instead of once per directory in the tree.
+ */
+const BUILD_MANIFESTS = new Set([
+  'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', 'setup.py', 'requirements.txt',
+  'pom.xml', 'build.gradle', 'build.gradle.kts', 'build.sbt',
+  'Makefile', 'makefile', 'GNUmakefile', 'CMakeLists.txt',
+  'Gemfile', 'composer.json', 'mix.exs', 'pubspec.yaml', 'Package.swift', 'build.zig',
+]);
+
+/**
+ * Directories never worth descending into when looking for a project root.
+ *
+ * Two classes: build output / dependency trees (which are full of manifests
+ * belonging to somebody else — node_modules alone would otherwise nominate a
+ * dependency as the project), and directories that conventionally hold sample
+ * or fixture projects, which are never what the mission meant.
+ */
+const NON_PROJECT_DIRS = new Set([
+  'node_modules', 'target', 'dist', 'build', 'out', 'bin', 'obj', 'vendor', 'coverage',
+  'venv', '__pycache__', 'Pods', 'bower_components', 'third_party',
+  'testdata', 'fixtures', 'examples', 'templates',
+]);
+
+/** Upper bound on directories read, so the cost never scales with the mistake. */
+const GATED_SCAN_MAX_VISITS = 400;
+
+/**
+ * Does this directory actually produce gate rungs? Asks the real detectors, so
+ * the advice cannot name a root that is just as gateless as the current one.
+ * Pure filesystem inspection — no commands run.
+ */
+function dirHasGates(dir: string): boolean {
+  // `detectRungs` already folds in the cargo, polyglot and non-npm detectors,
+  // so calling them again here could never change the answer — it only probed
+  // the filesystem three extra times per candidate.
+  try {
+    return detectRungs(dir).length > 0;
+  } catch { /* detection is best-effort; treat a thrower as gateless */ }
+  return false;
+}
+
+/**
+ * The operator-facing advisory, or null when there is nothing useful to say.
+ *
+ * Split out from the call site so the wording is testable without standing up a
+ * whole delivery run — the message IS the feature, since nothing about the run
+ * changes.
+ */
+/** Env escape hatch for the gateless-root refusal. */
+export const GATELESS_ENV = 'UAP_ALLOW_GATELESS_ROOT';
+
+/**
+ * True when the caller has explicitly accepted a root that cannot verify its
+ * own work. The env form exists for scripted launches that cannot easily add
+ * a flag.
+ */
+export function allowGatelessRoot(flag?: boolean): boolean {
+  return flag === true || process.env[GATELESS_ENV] === '1';
+}
+
+/**
+ * Refuse a project root that cannot verify its own work. Returns false when the
+ * caller should stop.
+ *
+ * Escalated 2026-08-09 from a warning. The warning worked — it printed on line
+ * 3 of the log naming the exact right root — and the run was launched at the
+ * gateless root anyway, because a warning in a log is not a decision point for
+ * a scripted or agent-driven launch. That run then spent 34 minutes taking a
+ * Rust crate from 1 failing test to 3 while reporting "100% of gates" every
+ * turn, because with no cargo rung nothing could tell it otherwise.
+ *
+ * Refusing is safe precisely BECAUSE the trigger is narrow: this root has no
+ * gates AND a subdirectory demonstrably does. A genuinely gateless tree — a
+ * docs repo, an empty dir — finds no candidate and is untouched.
+ *
+ * The root is judged by its OWN unfiltered gate set, not by the post-`--gates`
+ * / post-tier `rungs` array: `--tiers fast` against a root whose only rungs are
+ * integration-tier empties that array, and refusing there would reject a root
+ * that is objectively well gated.
+ */
+export function refuseGatelessRoot(projectRoot: string, options: DeliverOptions): boolean {
+  // A dry-run plans and writes nothing, and is the one diagnostic an operator
+  // reaches for AFTER being refused ("show me what gates you see here").
+  // Refusing it would remove the tool that explains the refusal. Matches how
+  // preflight and the lock already exempt it.
+  if (options.dryRun) return true;
+  // Resume continues a mission whose root was adjudicated at launch. Refusing
+  // here would strand a run that was legitimately started with consent, because
+  // the consent is not persisted in run state.
+  if (options.resume) return true;
+  if (dirHasGates(projectRoot)) return true;
+  const gated = findGatedSubprojects(projectRoot);
+  const advice = formatGatelessRootAdvice(projectRoot, gated);
+  if (!advice) return true;
+  if (allowGatelessRoot(options.allowGatelessRoot)) {
+    console.log(chalk.yellow(advice));
+    console.log(chalk.yellow('  (continuing anyway: gateless root explicitly allowed)'));
+    return true;
+  }
+  console.error(chalk.red(advice));
+  console.error(
+    chalk.red(
+      '⛔ refusing to start: this root cannot verify the work. Re-run with the --project-root above. ' +
+        `(Operator override, human prose only — deliberately not in the JSON: --allow-gateless-root, or ${GATELESS_ENV}=1.)`,
+    ),
+  );
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        {
+          success: false,
+          gatelessRoot: true,
+          projectRoot,
+          suggestedProjectRoot: gated[0],
+          gatedSubprojects: gated,
+          reason:
+            'No objective gates were detected at this project root, but a subdirectory has them. ' +
+            'Rooted here the run cannot compile or test its own work.',
+          // Deliberately does NOT name the bypass flag. This whole refusal
+          // exists because an agent-driven launch does not honour advice, and
+          // `nextStep` is the field such a caller reads first — advertising the
+          // off-switch there would hand it the way around the gate. The human
+          // prose on stderr names it; a model reading JSON gets the fix only.
+          nextStep: `Re-run with --project-root ${gated[0]}.`,
+        },
+        null,
+        2,
+      ),
+    );
+  }
+  process.exitCode = 2;
+  return false;
+}
+
+export function formatGatelessRootAdvice(projectRoot: string, gated: string[]): string | null {
+  if (!gated.length) return null;
+  const rel = (p: string) => relative(projectRoot, p) || p;
+  return (
+    `⚠ gateless root: no objective gates detected at ${projectRoot}, but ` +
+    `${gated.length === 1 ? 'a subdirectory has them' : `${gated.length} subdirectories have them`}: ` +
+    `${gated.map(rel).join(', ')}. Rooted here this mission has NO compile/test gate — the LLM judge is ` +
+    `the only convergence target, and rollback is sized against this whole tree. If the work is in ` +
+    `${rel(gated[0])}, re-run with \`--project-root ${gated[0]}\` to converge on its real gates.`
+  );
+}
+
+/**
+ * Subdirectories that DO carry a build manifest, when the root itself carries none.
+ *
+ * A deliver rooted above the actual project gets no objective gates at all — the
+ * LLM judge becomes the only convergence target, so the run cannot tell whether
+ * the code it is fixing even compiles. Live on 2026-08-08: a mission to repair a
+ * Rust crate ran rooted at the crate's grandparent, which has no manifest. It got
+ * `bootstrap` (trivially passes) plus a skipped user-validation gate, reported
+ * "100% of gates" for five consecutive turns, and left the crate not compiling.
+ * The same misconfiguration also disables rollback, because the size guard walks
+ * the whole (here 22 GB) tree instead of the 117 MB crate.
+ *
+ * Breadth-first and hard-bounded: this runs on the startup path of every gateless
+ * deliver, including ones rooted at a huge tree — the cost of the advice must not
+ * scale with the mistake.
+ */
+export function findGatedSubprojects(
+  projectRoot: string,
+  maxDepth = 3,
+  maxHits = 5,
+  maxVisits = GATED_SCAN_MAX_VISITS,
+): string[] {
+  const hits: string[] = [];
+  let frontier: Array<{ dir: string; depth: number }> = [{ dir: resolve(projectRoot), depth: 0 }];
+  let visited = 0;
+  while (frontier.length && hits.length < maxHits && visited < maxVisits) {
+    const next: Array<{ dir: string; depth: number }> = [];
+    for (const { dir, depth } of frontier) {
+      if (hits.length >= maxHits || visited >= maxVisits) break;
+      visited += 1;
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch { continue; }
+      // Do not report the root itself — the caller already knows it is gateless.
+      // A candidate is only reported once the real detectors confirm it, so the
+      // "would have gates" claim in the advice is measured, not assumed.
+      if (depth > 0 && entries.some((e) => !e.isDirectory() && BUILD_MANIFESTS.has(e.name))) {
+        if (dirHasGates(dir)) {
+          hits.push(dir);
+          // A workspace member inside a crate belongs to that crate; descending
+          // would offer a root strictly worse than the one just reported.
+          continue;
+        }
+      }
+      if (depth >= maxDepth) continue;
+      for (const e of entries) {
+        if (next.length >= maxVisits) break;
+        if (!e.isDirectory() || e.name.startsWith('.') || NON_PROJECT_DIRS.has(e.name)) continue;
+        next.push({ dir: join(dir, e.name), depth: depth + 1 });
+      }
+    }
+    frontier = next;
+  }
+  return hits;
+}
+
+/**
+ * Why the LAST refusal happened, when it was an overlapping foreign root.
+ *
+ * `acquireDeliverLock` returns a bare null, but "another run owns a DIFFERENT,
+ * overlapping root" and "another run owns THIS root" need opposite advice: the
+ * caller must send the operator to the holder's root, because following our own
+ * finds nothing in flight and loops straight back into relaunching.
+ */
+let lastOverlapBlock: { pid: number; root: string } | null = null;
+
+/** The overlapping holder that caused the last refusal, if that was the cause. */
+export function lastOverlapBlocker(): { pid: number; root: string } | null {
+  return lastOverlapBlock;
+}
+
+/**
  * Project-level deliver concurrency lock. Prevents a fan-out where an impatient
  * caller (e.g. a model that launched `uap deliver` for some work, didn't wait
  * for the slow run, and relaunched a reworded version) spawns many concurrent
@@ -652,6 +1022,15 @@ export function isDeliverLockAbandoned(
  * burning tokens/GPU in parallel. Returns a release() thunk, or null when
  * another live deliver already holds the lock (the caller then exits cleanly).
  * Stale locks (dead PID) are reclaimed. Off-switch: UAP_DELIVER_NO_LOCK=1.
+ *
+ * The lock is keyed on `<projectRoot>/.uap/`, so it only ever saw runs that
+ * named the SAME root. Two runs on NESTED roots therefore each took their own
+ * lock and edited one shared source tree: live on 2026-08-08, roots
+ * `cognition-engine` and `cognition-engine/src/rust-pg-ext` ran for ~2h,
+ * overwriting each other's edits to src/cooccurrence.rs until it stopped
+ * compiling — each one's gate failing on damage the other had just done. The
+ * cross-project registry below closes that, because overlap is a property of
+ * the SUBTREE, not of the lock path.
  */
 export function acquireDeliverLock(projectRoot: string): (() => void) | null {
   if (process.env.UAP_DELIVER_NO_LOCK === '1') return () => {};
@@ -686,8 +1065,31 @@ export function acquireDeliverLock(projectRoot: string): (() => void) | null {
     } catch {
       return null;
     }
-    writeSync(fd, `${process.pid}|${new Date().toISOString()}`);
+    const startedIso = new Date().toISOString();
+    writeSync(fd, `${process.pid}|${startedIso}`);
     closeSync(fd);
+    // Publish to the cross-project registry BEFORE checking it, so a run that
+    // starts while we are scanning still sees us and one of the two yields.
+    let published = false;
+    try {
+      publishActiveRun(projectRoot, startedIso);
+      published = true;
+    } catch { /* registry unavailable — fall back to the per-project lock alone */ }
+    // Compare against the stamp we PUBLISHED, not a fresh Date.now(). The other
+    // run can only see the published one, and a tiebreak both sides must agree
+    // on has to be computed from values both sides can read — otherwise a
+    // millisecond crossing between publish and scan makes both runs yield.
+    const overlapping = published
+      ? findOverlappingDeliverRun(projectRoot, process.pid, Date.parse(startedIso))
+      : null;
+    if (overlapping) {
+      // Someone older owns this subtree. Give back everything we just took.
+      try { rmSync(activeRunEntry(projectRoot)); } catch { /* best-effort */ }
+      try { rmSync(lockPath); } catch { /* best-effort */ }
+      lastOverlapBlock = overlapping;
+      return null;
+    }
+    lastOverlapBlock = null;
     // Stamp a fresh heartbeat immediately so this brand-new holder is never
     // classified as wedged in the window before its first iteration (and so a
     // reclaim overwrites the previous holder's stale heartbeat).
@@ -704,6 +1106,13 @@ export function acquireDeliverLock(projectRoot: string): (() => void) | null {
       if (existsSync(lockPath)) {
         const held = Number((readFileSync(lockPath, 'utf8').split('|')[0] || '').trim());
         if (held === process.pid) rmSync(lockPath);
+      }
+    } catch { /* best-effort */ }
+    try {
+      const entry = activeRunEntry(projectRoot);
+      if (existsSync(entry)) {
+        const held = Number((readFileSync(entry, 'utf8').split('|')[0] || '').trim());
+        if (held === process.pid) rmSync(entry);
       }
     } catch { /* best-effort */ }
   };
@@ -795,6 +1204,19 @@ export async function deliverCommand(instruction: string, options: DeliverOption
   }
 
   const projectRootForDetach = resolve(options.projectRoot ?? process.cwd());
+
+  // Gateless-root refusal, deliberately BEFORE the detach decision — and so
+  // before preflight, the lock and the cross-project registry.
+  //
+  // It is a pure, bounded filesystem inspection of this invocation's own
+  // arguments, so it depends on nothing those steps establish. Running it later
+  // meant a refusal still spawned a detached child, printed "mission detached",
+  // and created .uap/ state inside the directory it was about to declare the
+  // wrong root — and, worse, when the CORRECT run was already live in the
+  // subdirectory the overlap check fired first, so the operator got the generic
+  // "another run owns an overlapping root" instead of the specific diagnosis.
+  if (!refuseGatelessRoot(projectRootForDetach, options)) return;
+
   const decision = shouldDetach({
     alreadyDetached: isDetachedChild(),
     noDetach: process.env[NO_DETACH_ENV] === '1',
@@ -898,15 +1320,34 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       // acts on. A lock file containing newlines and prose would otherwise become
       // tool-result guidance. It is always a pid or it is not forwarded.
       const holderRaw = holder.trim();
-      const holderPid = /^\d{1,10}$/.test(holderRaw) ? holderRaw : '';
+      let holderPid = /^\d{1,10}$/.test(holderRaw) ? holderRaw : '';
+      // Was this refused by a run on a DIFFERENT, overlapping root? Then our own
+      // lock was never left behind for us to read, and — more importantly —
+      // `--await-run` on OUR root finds nothing in flight and answers "safe to
+      // launch", which sends the caller straight back here. Name the holder's
+      // root so the follow lands where the mission actually is.
+      const overlap = lastOverlapBlocker();
+      // The root comes from a file any local process can write and ends up in
+      // model-facing instruction text; forward it only if it still looks like a
+      // path, control characters stripped.
+      const overlapRoot = overlap ? stripControl(overlap.root).trim() : '';
+      const foreign = overlap && overlapRoot.startsWith('/') && !overlapRoot.includes('\n')
+        ? { pid: String(overlap.pid), root: overlapRoot }
+        : null;
+      if (foreign) holderPid = foreign.pid;
       console.log(
         chalk.yellow(
-          `↩ deliver already running for this project${holderPid ? ` (pid ${holderPid})` : ''} — ` +
-            `skipping this duplicate launch. Follow it with \`uap deliver --await-run\` (waits and reports; ` +
-            `from a tool call it returns within about a minute — "still running" is an answer, not a failure, ` +
-            `so just call it again. It starts nothing.) ` +
-            `starts nothing). Do NOT use --resume on a live run: resume CONTINUES a mission and would start a ` +
-            `second copy of this one. (override: UAP_DELIVER_NO_LOCK=1)`
+          foreign
+            ? `↩ another deliver run (pid ${foreign.pid}) already owns an OVERLAPPING project root: ` +
+                `${foreign.root} — it edits the same files, so this launch was skipped. Follow THAT run: ` +
+                `\`uap deliver --project-root ${foreign.root} --await-run\` (following this root would report ` +
+                `nothing in flight). Do NOT use --resume on a live run. (override: UAP_DELIVER_NO_LOCK=1)`
+            : `↩ deliver already running for this project${holderPid ? ` (pid ${holderPid})` : ''} — ` +
+                `skipping this duplicate launch. Follow it with \`uap deliver --await-run\` (waits and reports; ` +
+                `from a tool call it returns within about a minute — "still running" is an answer, not a failure, ` +
+                `so just call it again. It starts nothing.) ` +
+                `Do NOT use --resume on a live run: resume CONTINUES a mission and would start a ` +
+                `second copy of this one. (override: UAP_DELIVER_NO_LOCK=1)`
         )
       );
       // --json is a CONTRACT: every exit must emit a parseable result. This path
@@ -930,15 +1371,23 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
               alreadyRunning: true,
               ...(holderPid ? { holderPid } : {}),
               projectRoot,
-              reason:
-                'A deliver run is already in progress for this project; this duplicate launch was skipped.',
-              nextStep:
-                'The mission you asked for is ALREADY RUNNING — nothing is wrong and nothing is needed from you. ' +
-                'Follow it instead: call deliver again with follow:true (or `uap deliver --await-run` from a ' +
-                'shell). It returns within about a minute; if it says STILL RUNNING that is not a failure — ' +
-                'call it again to keep waiting. Do NOT start another ' +
-                'run, do NOT pass resume (resume CONTINUES a run rather than following it, and would start a ' +
-                'second copy of this live one), and do NOT change any gate or enforcement setting.',
+              ...(foreign ? { overlappingRoot: foreign.root } : {}),
+              reason: foreign
+                ? `An older deliver run (pid ${foreign.pid}) holds an OVERLAPPING project root ` +
+                  `(${foreign.root}); it edits the same files, so this launch was skipped.`
+                : 'A deliver run is already in progress for this project; this duplicate launch was skipped.',
+              nextStep: foreign
+                ? 'The files you asked for are ALREADY being worked on by a run rooted at ' +
+                  `${foreign.root}. Follow THAT run: \`uap deliver --project-root ${foreign.root} --await-run\`. ` +
+                  'Do NOT follow this root — it has nothing in flight and will tell you it is safe to launch, ' +
+                  'which puts you back here. Do NOT start another run, do NOT pass resume, and do NOT change ' +
+                  'any gate or enforcement setting.'
+                : 'The mission you asked for is ALREADY RUNNING — nothing is wrong and nothing is needed from you. ' +
+                  'Follow it instead: call deliver again with follow:true (or `uap deliver --await-run` from a ' +
+                  'shell). It returns within about a minute; if it says STILL RUNNING that is not a failure — ' +
+                  'call it again to keep waiting. Do NOT start another ' +
+                  'run, do NOT pass resume (resume CONTINUES a run rather than following it, and would start a ' +
+                  'second copy of this live one), and do NOT change any gate or enforcement setting.',
             },
             null,
             2
@@ -1287,6 +1736,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     );
   }
 
+  // A gateless root is sometimes the truth (a docs repo, a fresh dir) and
+  // sometimes a misrouted --project-root pointing one level above the actual
+  // project. Those two are indistinguishable in the logs, and the second is
+  // expensive: the run cannot compile or test the thing it was asked to fix.
+  //
+  // Deliberately OUTSIDE the acceptancePrimary branch. Both gateless strategies
+  // reach here — acceptance-as-primary and self-gate — and the misrouted root
+  // hurts them identically. Scoping the advice to one of them would have left
+  // the DEFAULT path (no --acceptance) silent, which is the more common way to
+  // hit this.
   const cfgRawEarlyForUv = cfgRawEarlyForUvFactory(projectRoot);
   // Baseline-delta gating: a required rung that is ALREADY red cannot be a
   // regression this mission causes, but it makes acceptance unreachable and
@@ -1320,6 +1779,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       );
     } else {
       console.log(chalk.dim(`  baseline-delta: baseline green (preflight ${(bd.preflightMs / 1000).toFixed(0)}s)`));
+    }
+    // KNOWN LIMIT on --resume: this re-preflights a tree the mission has
+    // already changed, so a regression introduced before the interruption is
+    // adopted as the new "pre-existing" state and forgiven. Skipping the
+    // preflight instead is WORSE: rungs are not persisted in run state, so a
+    // resumed run re-detects them as REQUIRED, the pre-existing red suite
+    // fail-fasts, and the run cannot converge at all — the wedge demotion
+    // exists to remove. The real fix is to persist the demotion in run state.
+    if (options.resume && bd.demoted.length > 0) {
+      console.log(chalk.dim('  (resumed run: baseline re-measured against the current tree)'));
     }
   }
 
@@ -3117,13 +3586,23 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // --keep-best: if deliver left the project worse than it started (by real
   // gate score), roll back to the snapshot so the run is never a regression.
   if (keepBest && regressSnapshot) {
-    const endScore = runLadder(fastRungs, projectRoot).score;
-    if (endScore < baselineGateScore) {
+    // Score alone cannot see a name-level regression: a demoted rung is red
+    // both before and after, so `score` is byte-identical while the suite got
+    // worse. That matters here specifically, because this rollback is what the
+    // demotion docstring names as the whole-tree backstop for exactly the
+    // breakage rung-granularity cannot catch.
+    const endLadder = runLadder(fastRungs, projectRoot);
+    const endScore = endLadder.score;
+    const endRegressions = baselineRegressions(fastRungs, endLadder.results);
+    if (endScore < baselineGateScore || endRegressions.length > 0) {
       try {
         restoreTree(projectRoot, regressSnapshot);
         console.log(
           chalk.yellow(
-            `  ↩ no-regress: reverted to best (end gate score ${endScore.toFixed(2)} < best ${baselineGateScore.toFixed(2)})`
+            endRegressions.length > 0
+              ? `  ↩ no-regress: reverted to best — tests that passed at baseline are failing now: ` +
+                `${endRegressions.flatMap((r) => r.tests).slice(0, 5).join(', ')}`
+              : `  ↩ no-regress: reverted to best (end gate score ${endScore.toFixed(2)} < best ${baselineGateScore.toFixed(2)})`
           )
         );
         disposeSnapshot(regressSnapshot);

@@ -113,6 +113,28 @@ describe('applyRangeEdit (harness plan A3)', () => {
     expect(r.error).toMatch(/past the end/);
   });
 
+  // Clamping this to the last line was tried on 2026-08-08 and reverted the
+  // same day: on a newline-terminated file `lines.length` counts the phantom
+  // trailing element, so the clamp ate the closing brace AND the final newline
+  // — manufacturing the same "unclosed delimiter" corruption the run that
+  // motivated the change had produced. A refusal costs one round; a silent
+  // truncation costs the file. This test is the guard against re-adding it.
+  it('leaves the file untouched rather than truncating its tail', () => {
+    const src = 'function add(a, b) {\n    return a + b;\n}\n';
+    const r = applyRangeEdit(src, 2, 300, '    return a * b;');
+    expect(r.ok).toBe(false);
+    expect(r.text).toBeUndefined();
+  });
+
+  it('names the last line so the retry needs no extra read', () => {
+    // 'a\nb\n' is 2 lines of content; the error must say 2, not the 3 that
+    // split('\n') reports, or the model retries with a number that fails again.
+    const r = applyRangeEdit('a\nb\n', 1, 99, 'x');
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/has 2 lines/);
+    expect(r.error).toMatch(/end_line=2/);
+  });
+
   it('refuses an inverted range', () => {
     const r = applyRangeEdit(FILE, 5, 2, 'x');
     expect(r.ok).toBe(false);

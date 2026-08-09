@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSy
 import { join, dirname, resolve, relative, isAbsolute } from 'path';
 import type { ModelConfig } from '../models/types.js';
 import type { LoopExecutor } from './convergence-loop.js';
-import { fetchModelWithRetry } from '../models/long-fetch.js';
+import { fetchModelWithRetry, isEndpointUnreachable, ENDPOINT_UNREACHABLE } from '../models/long-fetch.js';
 import { resolveRequestCredential } from '../models/openai-compat-client.js';
 import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename } from './applier.js';
@@ -333,7 +333,11 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Create or overwrite a text file (relative to project root) with the given content.',
+      description:
+        'Create or overwrite a text file (relative to project root) with the given content. ' +
+        'Writing content byte-identical to what the file already holds is a NO-OP: nothing is ' +
+        'written and you are told so. Re-sending the same content can never change anything or ' +
+        'fix a failing gate — if a gate still fails, the cause is elsewhere.',
       parameters: {
         type: 'object',
         properties: { path: { type: 'string' }, content: { type: 'string' } },
@@ -346,7 +350,7 @@ const TOOLS = [
     function: {
       name: 'edit_file',
       description:
-        'Surgically replace an occurrence of old_string with new_string in an existing file (path relative to project root). Provide EITHER old_string + new_string, OR edits[]. PREFER this over write_file for existing files — no need to re-emit the whole file (large re-emits truncate). old_string should match the CURRENT file content; if it differs only in whitespace/indentation the edit still applies and you are told. Pass occurrence (1-based) when the anchor appears several times. To make SEVERAL edits to one file in a single call, pass edits: [{old_string, new_string, occurrence?}, ...] — they apply atomically, all or nothing.',
+        'Surgically replace an occurrence of old_string with new_string in an existing file (path relative to project root). Provide EITHER old_string + new_string, OR edits[]. PREFER this over write_file for existing files — no need to re-emit the whole file (large re-emits truncate). old_string should match the CURRENT file content; if it differs only in whitespace/indentation the edit still applies and you are told. Pass occurrence (1-based) when the anchor appears several times. To make SEVERAL edits to one file in a single call, pass edits: [{old_string, new_string, occurrence?}, ...] — they apply atomically, all or nothing. If the replacement produces content identical to what the file already holds, the call is a NO-OP: nothing is written and you are told so — repeating it cannot change anything.',
       parameters: {
         type: 'object',
         properties: {
@@ -379,7 +383,7 @@ const TOOLS = [
       // that cannot echo exact whitespace can still count lines, and the
       // nearest-region report hands it numbered context on a miss.
       description:
-        'Replace an inclusive 1-based LINE RANGE of an existing file with new_text. Use this when edit_file cannot find your anchor — line numbers are shown in the nearest-region report and are immune to whitespace drift. start_line and end_line are both inclusive.',
+        'Replace an inclusive 1-based LINE RANGE of an existing file with new_text. Use this when edit_file cannot find your anchor — line numbers are shown in the nearest-region report and are immune to whitespace drift. start_line and end_line are both inclusive. If new_text is identical to what that range already contains, the call is a NO-OP: nothing is written and you are told so.',
       parameters: {
         type: 'object',
         properties: {
@@ -795,6 +799,32 @@ export function runTool(
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
       }
+      // Byte-identical re-write: report a NO-OP, not success.
+      //
+      // `OK: wrote <path> (N bytes)` reads as progress, so a model that rewrites
+      // the same content gets the same reward as one that changed something and
+      // has no signal to stop. Live (cognition-engine, 2026-08-08): five
+      // byte-identical 8195-byte writes of src/cooccurrence.rs, four of them
+      // consecutive inside one turn, each answered "OK: wrote" + "cargo check:
+      // clean" — a perfect success loop over an empty edit.
+      //
+      // Ordered FIRST among the write guards: a write that changes nothing
+      // cannot gut or stub the file, so no other guard has an opinion on it.
+      // Size is compared before content so the common (differing) case never
+      // pays for a full read.
+      if (existsSync(abs)) {
+        try {
+          const incoming = String(args.content ?? '');
+          if (statSync(abs).size === Buffer.byteLength(incoming, 'utf-8')
+              && readFileSync(abs, 'utf-8') === incoming) {
+            return (
+              `NO-OP: ${String(args.path)} already contains exactly this content — nothing was written. ` +
+              `Re-sending it again will not change anything. If the gate is still failing, the problem is ` +
+              `NOT in this file's current content: read the failure output and fix a DIFFERENT cause.`
+            );
+          }
+        } catch { /* unreadable — fall through to the normal write path */ }
+      }
       // P3 anti-gutting: refuse a write that GUTS an existing substantial file
       // into a stub (observed live: deliver.ts collapsed 2560 → 453 lines in one
       // write, silently destroying the implementation). Steer to edit_file for a
@@ -946,6 +976,22 @@ export function runTool(
       // hollowed OUT to a skeleton, not incremental erosion that stays under the
       // bar (emptying four of six bodies is 57%, and passes). It closes the
       // one-shot bypass, and does not pretend to be tamper-proof.
+      // An edit that changes nothing is a NO-OP, not a replacement.
+      //
+      // The same reasoning as write_file's identical-content check, on the path
+      // the write_file refusals actively steer models toward. `old_string ===
+      // new_string` reports "OK: edited (1 replacement)" while leaving the file
+      // byte-identical, so a model can repeat it forever against a rising
+      // success count. Observed live (cognition-engine, 2026-08-08): rounds 9,
+      // 10 and 11 of one turn were the same edit_file anchor, each answered OK.
+      if (updated === current) {
+        return (
+          `NO-OP: ${String(args.path)} is unchanged — the replacement produced exactly the content already ` +
+          `on disk (old_string and new_string are equivalent here). Nothing was written, and repeating this ` +
+          `edit cannot change anything. If a gate is still failing, the cause is elsewhere: read the failure ` +
+          `output and target a DIFFERENT anchor.${editNote}`
+        );
+      }
       const guttedEdit = editGuttingRefusal(String(args.path), current, updated);
       if (guttedEdit) return guttedEdit;
       if (!stubGuardDisabled()) {
@@ -989,6 +1035,16 @@ export function runTool(
       );
       if (!ranged.ok || ranged.text == null) {
         return `ERROR: ${String(args.path)}: ${ranged.error ?? 'invalid range.'}`;
+      }
+      // Same NO-OP rule as write_file/edit_file: replacing a range with what it
+      // already contains is not progress, and reporting it as such lets a model
+      // bank success for a round that changed nothing.
+      if (ranged.text === current) {
+        return (
+          `NO-OP: ${String(args.path)} is unchanged — lines ${Number(args.start_line)}-${Number(args.end_line)} ` +
+          `already contain exactly this text. Nothing was written, and re-sending it cannot change anything. ` +
+          `If a gate is still failing, the cause is elsewhere.`
+        );
       }
       const guttedRange = editGuttingRefusal(String(args.path), current, ranged.text);
       if (guttedRange) return guttedRange;
@@ -1453,6 +1509,28 @@ export function createAgenticExecutor(
         msg = await chat(opts.endpoint, model, messages, opts.temperature, allowBash, forceWrite);
       } catch (err) {
         opts.onEvent?.({ round, kind: 'error', detail: String(err).slice(0, 200) });
+        // An UNREACHABLE endpoint is not a bad turn — it is no turn at all,
+        // and no amount of retrying can fix it from in here.
+        //
+        // The predicate is deliberately narrower than the retry predicate: only
+        // "the connection could not be established" counts. A reset socket or a
+        // model thinking past the timeout is retryable but NOT evidence the
+        // endpoint is gone, and aborting on those would kill a healthy long run.
+        //
+        // Returning a string here made the loop treat it as an ordinary failed
+        // turn: an errored turn is "inconclusive", which RESETS the no-progress
+        // streak, so the stuck-abort could never fire. Live on 2026-08-09 with
+        // the proxy down, one mission burned 5 turns x 3 epic attempts plus a
+        // re-plan — 15 turns of nothing — each turn 6s of retry timeouts, and
+        // reported "75% of gates" throughout. Throwing marks it fatal so the
+        // run stops on the first turn and says what is actually wrong.
+        if (isEndpointUnreachable(err)) {
+          throw new Error(
+            `${ENDPOINT_UNREACHABLE}: cannot reach the model endpoint at ${opts.endpoint} ` +
+            `(${String(err).slice(0, 120)}). Retrying cannot help until it is back. Check the ` +
+            `inference stack is up — \`uap proxy status\`, then \`uap proxy start\`.`,
+          );
+        }
         return `agentic executor error: ${String(err).slice(0, 200)}`;
       }
 

@@ -28,6 +28,17 @@ import { Agent } from 'undici';
 type FetchLike = (url: string | URL, init?: RequestInit & { dispatcher?: unknown }) => Promise<Response>;
 const globalFetch: FetchLike = (url, init) => (globalThis.fetch as unknown as FetchLike)(url, init);
 
+/**
+ * Marks a failure as "the model endpoint is not reachable".
+ *
+ * A greppable prefix rather than an Error subclass because it has to survive
+ * being stringified into an executor error string and read back by the
+ * convergence loop, which never sees the original Error object. Lives here, in
+ * the transport module, so both the executor that raises it and the loop that
+ * consumes it can import it without a cycle.
+ */
+export const ENDPOINT_UNREACHABLE = 'ENDPOINT_UNREACHABLE';
+
 const DEFAULT_MODEL_HTTP_TIMEOUT_MS = 30 * 60 * 1000;
 const CONNECT_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRIES = 2;
@@ -65,6 +76,42 @@ const TRANSIENT_CODES = new Set([
   'UND_ERR_CONNECT_TIMEOUT',
   'UND_ERR_SOCKET',
 ]);
+
+/**
+ * Codes that mean the connection could never be ESTABLISHED — nothing is
+ * listening, or the name does not resolve.
+ *
+ * Deliberately a strict subset of TRANSIENT_CODES, and deliberately NOT reused
+ * from it. The transient set answers "is a retry safe?", which is a different
+ * question from "is the endpoint dead?", and most of it means *reachable but
+ * flaky or slow*: ECONNRESET/EPIPE/UND_ERR_SOCKET are a dropped connection
+ * under load, and UND_ERR_*_TIMEOUT is a model still thinking past the
+ * 30-minute ceiling. Treating those as "unreachable" would kill a long,
+ * healthy run and tell the operator to go restart a proxy that is fine.
+ */
+const UNREACHABLE_CODES = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+/**
+ * True only when the endpoint could not be reached at all.
+ *
+ * Note the asymmetry with `isTransientNetworkError`: a bare
+ * `TypeError: fetch failed` with no cause code is NOT enough here. It is
+ * retryable (safe), but it does not say the listener is gone, and this
+ * predicate gates an abort.
+ */
+export function isEndpointUnreachable(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'AbortError') return false;
+  const cause = (err as Error & { cause?: { code?: string } }).cause;
+  if (cause?.code && UNREACHABLE_CODES.has(cause.code)) return true;
+  const direct = (err as Error & { code?: string }).code;
+  return Boolean(direct && UNREACHABLE_CODES.has(direct));
+}
 
 /** True for network-level failures worth retrying (never HTTP responses). */
 export function isTransientNetworkError(err: unknown): boolean {
