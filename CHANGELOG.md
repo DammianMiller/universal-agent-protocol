@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.187.7 (2026-08-09)
+
+- test(dashboard): measure cadence from the first snapshot, not from connect
+
+
 ## v1.187.6 (2026-08-09)
 
 - test(hooks): scan this tree's hook copies, not other checkouts
