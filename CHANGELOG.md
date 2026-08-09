@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.187.6 (2026-08-09)
+
+- test(hooks): scan this tree's hook copies, not other checkouts
+
+
 ## v1.187.5 (2026-08-09)
 
 - fix(delivery): a run stopped by the orphan guard now says so
