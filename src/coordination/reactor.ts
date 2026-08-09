@@ -186,13 +186,36 @@ export function resolve(
     (routeResult.matchedCapabilities ?? []).some((c) => CODE_CAPABILITIES.has(c)) &&
     confidence >= injectThreshold;
   const isCodeTask = codeCapMatch || hasSourceFile;
+  //
+  // The text must match what the gate ACTUALLY does, which is narrower than
+  // "all source edits". `delivery_enforcement.py` allows a trivial Edit
+  // (under UAP_DELIVER_TRIVIAL_EDIT_CHARS changed characters, default 240 —
+  // its own comment calls a full decompose→epics→gates cycle unwarranted for a
+  // one-line tweak), and never fires on deleting or renaming a file, or on
+  // docs/tests/scripts. It blocks whole-file Writes, larger Edits, and shell
+  // writes.
+  //
+  // Saying "direct Edit/Write is gated and will be blocked" was both false and
+  // expensive: it reads as "deliver is the only way to touch code", so work the
+  // gate would have allowed gets pushed through a convergence loop anyway. Live
+  // 2026-08-09: a three-file DELETION was routed through deliver on this advice
+  // — deletion is not gated at all — and the loop, having nothing to write,
+  // improvised an unrequested `pgrx` dependency that broke the build. The loop's
+  // job is to make gates pass; handed a task with nothing to author, it invents
+  // work. Route by whether the change needs convergence, not by whether it
+  // touches code.
   const deliverInject =
     isCodeTask && !(ctx.surfaced ?? []).includes(deliverKey)
-      ? 'This task creates or modifies source code. Use the `deliver` tool ' +
-        '(or run `uap deliver "<one-line description>"`) to write code — direct ' +
-        'Edit/Write on source files is gated and will be blocked. Deliver writes ' +
-        'the files and verifies them against the gates; do not report completion ' +
-        'until deliver reports success.'
+      ? 'Route SUBSTANTIVE code changes through the `deliver` tool (or ' +
+        '`uap deliver "<one-line description>"`): new files, whole-file rewrites, ' +
+        'and edits whose outcome you are not already certain of. Deliver writes ' +
+        'the files and converges them against the real gates — do not report ' +
+        'completion until it reports success.\n\n' +
+        'Do NOT route work that needs no convergence. Small surgical edits ' +
+        '(roughly under 240 changed characters), deleting or renaming files, and ' +
+        'changes to docs, tests, scripts or config are not gated — make them ' +
+        'directly and verify with the project\'s own build/test command. Handing ' +
+        'deliver a task with nothing to author invites it to invent work.'
       : null;
 
   // Standalone context blocks (design + board) ride even on low-confidence turns.

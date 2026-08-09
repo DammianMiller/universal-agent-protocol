@@ -325,3 +325,54 @@ describe('reactor.resolve — engineering principles stance', () => {
     }
   });
 });
+
+describe('reactor.resolve — the deliver advice must match what the gate does', () => {
+  /**
+   * The advice used to say "direct Edit/Write on source files is gated and will
+   * be blocked". That is false — `delivery_enforcement.py` allows a trivial Edit
+   * (under UAP_DELIVER_TRIVIAL_EDIT_CHARS, default 240), and never fires on
+   * deleting or renaming a file, or on docs/tests/scripts. Reading it as
+   * "deliver is the only way to touch code" cost a live incident on 2026-08-09:
+   * a three-file DELETION was routed through deliver, and the loop — with
+   * nothing to author — invented an unrequested dependency that broke the build.
+   */
+  const codeTask = () =>
+    resolve(
+      { event: 'user-prompt', promptText: 'build a feature' },
+      undefined,
+      {
+        capabilityRouter: stubCapabilityRouter({ matchedCapabilities: ['typescript'], confidence: 0.6 }),
+        patternRouter: stubPatternRouter([]),
+      }
+    );
+
+  it('no longer claims every direct Edit/Write is blocked', () => {
+    const t = codeTask().inject.toLowerCase();
+    expect(t).not.toContain('direct edit/write on source files is gated');
+    expect(t).not.toMatch(/edit\/write[^.]*will be blocked/);
+  });
+
+  it('scopes the routing to SUBSTANTIVE changes', () => {
+    expect(codeTask().inject.toLowerCase()).toContain('substantive');
+  });
+
+  it('names the work that is NOT gated, so it is not needlessly routed', () => {
+    const t = codeTask().inject.toLowerCase();
+    expect(t).toContain('deleting or renaming');
+    expect(t).toMatch(/docs, tests, scripts/);
+    expect(t).toContain('not gated');
+  });
+
+  it('warns against handing deliver a task with nothing to author', () => {
+    // The mechanism behind the live incident: the loop's job is to make gates
+    // pass, so with nothing to write it improvises.
+    expect(codeTask().inject.toLowerCase()).toContain('invent work');
+  });
+
+  it('still routes real code work through deliver', () => {
+    // The point is accuracy, not removing the routing.
+    const r = codeTask();
+    expect(r.inject.toLowerCase()).toContain('route through deliver');
+    expect(r.surfacedKeys).toContain('deliver:routing');
+  });
+});
