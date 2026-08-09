@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.187.0 (2026-08-09)
+
+- feat(deliver): a demoted gate blocks again on tests it was passing before
+
+
 ## v1.186.8 (2026-08-09)
 
 - fix(policies): close the self-grant hole on the gateless-root override
