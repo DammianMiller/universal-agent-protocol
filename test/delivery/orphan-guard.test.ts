@@ -12,7 +12,8 @@
  *     which would delete the feature.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -152,5 +153,39 @@ describe('guardAgainstOwnerExit', () => {
     await new Promise((r) => setTimeout(r, 60));
     stop();
     expect(fired).toBe(false);
+  });
+});
+
+describe('the guard records its reason where the follower reads', () => {
+  it('END TO END: an orphaned run states the guard as its cause', () => {
+    // A dead owner pid, a real recorder, a real exit - the exact live path.
+    const guard = new URL('../../dist/delivery/orphan-guard.js', import.meta.url).pathname;
+    const exitMod = new URL('../../dist/delivery/run-exit.js', import.meta.url).pathname;
+    const stateMod = new URL('../../dist/delivery/run-state.js', import.meta.url).pathname;
+    const dir = mkdtempSync(join(tmpdir(), 'uap-orphan-e2e-'));
+    const runId = 'run-e2e-orphan';
+    const script = `
+      const { guardAgainstOwnerExit } = require(${JSON.stringify(guard)});
+      const { installRunExitRecorder } = require(${JSON.stringify(exitMod)});
+      const { saveRunState } = require(${JSON.stringify(stateMod)});
+      saveRunState({ runId: ${JSON.stringify(runId)}, instruction:'x', presetId:'p',
+        projectRoot: process.cwd(), status:'running', pid: process.pid, ppid: process.ppid,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      installRunExitRecorder(process.cwd(), ${JSON.stringify(runId)});
+      process.env.UAP_DELIVER_OWNER_PID = '987654321';  // never alive
+      guardAgainstOwnerExit({ intervalMs: 10 });
+      setTimeout(() => {}, 5000);
+    `;
+    spawnSync('node', ['-e', script], { cwd: dir, encoding: 'utf-8', timeout: 20_000 });
+
+    const raw = JSON.parse(
+      readFileSync(join(dir, '.uap', 'deliver-runs', runId, 'state.json'), 'utf-8')
+    );
+    expect(raw.exit).toBeTruthy();
+    expect(raw.exit.reason).toContain('orphan guard');
+    expect(raw.exit.reason).toContain('987654321');
+    // Still resumable: the guard stops the process, it does not fail the mission.
+    expect(raw.status).toBe('running');
+    rmSync(dir, { recursive: true, force: true });
   });
 });

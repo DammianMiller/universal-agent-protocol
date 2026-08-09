@@ -77,6 +77,56 @@ describe('run-exit — the process becomes its own witness', () => {
     expect(() => recordExit(notADir, RUN_ID, { at: 'T', code: 1, reason: 'x' })).not.toThrow();
   });
 
+  it('END TO END: a noted reason replaces the anonymous exit code', () => {
+    // The orphan guard's exact shape: declare a cause, then exit(130). Without
+    // the note this records "exited with code 130", which names no cause and
+    // leaves the follower nothing to act on.
+    const cli = new URL('../../dist/delivery/run-exit.js', import.meta.url).pathname;
+    const state = new URL('../../dist/delivery/run-state.js', import.meta.url).pathname;
+    const script = `
+      const { installRunExitRecorder, noteExitReason } = require(${JSON.stringify(cli)});
+      const { saveRunState } = require(${JSON.stringify(state)});
+      const runId = ${JSON.stringify(RUN_ID)};
+      saveRunState({ runId, instruction:'x', presetId:'p', projectRoot: process.cwd(),
+        status:'running', pid: process.pid, ppid: process.ppid,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      installRunExitRecorder(process.cwd(), runId);
+      noteExitReason('stopped by the orphan guard: the session that started this run (pid 99) exited');
+      process.exit(130);
+    `;
+    spawnSync('node', ['-e', script], { cwd: dir, encoding: 'utf-8', timeout: 20_000 });
+
+    const s = loadRunState(dir, RUN_ID) as any;
+    expect(s.exit.code).toBe(130);
+    expect(s.exit.reason).toContain('orphan guard');
+    expect(s.exit.reason).not.toContain('exited with code');
+  });
+
+  it('END TO END: an observed SIGNAL beats a predicted reason', () => {
+    // A note says why we EXPECT to stop; a signal is a cause observed directly.
+    // If both are present the signal is the more reliable witness.
+    const cli = new URL('../../dist/delivery/run-exit.js', import.meta.url).pathname;
+    const state = new URL('../../dist/delivery/run-state.js', import.meta.url).pathname;
+    const script = `
+      const { installRunExitRecorder, noteExitReason } = require(${JSON.stringify(cli)});
+      const { saveRunState } = require(${JSON.stringify(state)});
+      const runId = ${JSON.stringify(RUN_ID)};
+      saveRunState({ runId, instruction:'x', presetId:'p', projectRoot: process.cwd(),
+        status:'running', pid: process.pid, ppid: process.ppid,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      installRunExitRecorder(process.cwd(), runId);
+      noteExitReason('a prediction that never happened');
+      process.kill(process.pid, 'SIGTERM');
+      setTimeout(() => {}, 2000);
+    `;
+    spawnSync('node', ['-e', script], { cwd: dir, encoding: 'utf-8', timeout: 20_000 });
+
+    const s = loadRunState(dir, RUN_ID) as any;
+    expect(s.exit.signal).toBe('SIGTERM');
+    expect(s.exit.reason).toContain('SIGTERM');
+    expect(s.exit.reason).not.toContain('prediction');
+  });
+
   it('END TO END: a killed process records its OWN death (SIGHUP → parent teardown)', () => {
     // The exact live scenario: the parent tears down the spawned deliver.
     const cli = new URL('../../dist/delivery/run-exit.js', import.meta.url).pathname;
