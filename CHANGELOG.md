@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.187.4 (2026-08-09)
+
+- fix(policies): rtk-wrap judges each statement, closing a bypass
+
+
 ## v1.187.3 (2026-08-09)
 
 - fix(hooks): reading a version is not editing it
