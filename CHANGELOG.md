@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.186.8 (2026-08-09)
+
+- fix(policies): close the self-grant hole on the gateless-root override
+
+
 ## v1.186.7 (2026-08-09)
 
 - fix(deliver): refuse a project root that cannot verify its own work
