@@ -40,6 +40,39 @@ export interface RunExit {
 
 const SIGNALS: NodeJS.Signals[] = ['SIGHUP', 'SIGTERM', 'SIGINT', 'SIGQUIT'];
 
+/**
+ * Why this process is about to exit, when something already knows.
+ *
+ * `process.on('exit')` is handed a number and nothing else, so a run stopped
+ * deliberately by one of our own watchdogs recorded the same anonymous "exited
+ * with code 130" as an operator pressing Ctrl-C. The difference is the whole
+ * answer: one is a failure to investigate, the other is a policy that fired and
+ * has a named remedy.
+ *
+ * That cost a real session on 2026-08-09. The orphan guard stopped two long
+ * missions in `cognition-engine/src/rust-pg-ext`; the agent following them was
+ * told only "it was interrupted", so it never learned that its own session
+ * ending was the cause — it relaunched into the same guard, killed a run by
+ * hand, and tried to disable the delivery gate. The cause was printed, but only
+ * to a log file nobody had a reason to open.
+ */
+let pendingReason: string | null = null;
+
+/**
+ * Declare why this process is stopping, for the exit recorder to pick up.
+ *
+ * Call it immediately before exiting. A signal still wins if one arrives: the
+ * signal handler names a cause it observed directly, which beats one we predicted.
+ */
+export function noteExitReason(reason: string): void {
+  pendingReason = reason;
+}
+
+/** Forget any noted reason (tests, and long-lived hosts between runs). */
+export function clearExitReason(): void {
+  pendingReason = null;
+}
+
 /** Human-readable exit line for `.uap/deliver-exits.log`. */
 export function formatExitLine(runId: string, exit: RunExit): string {
   const how = exit.signal ? `signal=${exit.signal}` : `code=${exit.code ?? '?'}`;
@@ -110,7 +143,7 @@ export function installRunExitRecorder(projectRoot: string, runId: string): () =
       at: new Date().toISOString(),
       code,
       ppid: process.ppid,
-      reason: code === 0 ? 'exited normally' : `exited with code ${code}`,
+      reason: pendingReason ?? (code === 0 ? 'exited normally' : `exited with code ${code}`),
     });
   };
   process.on('exit', onExit);

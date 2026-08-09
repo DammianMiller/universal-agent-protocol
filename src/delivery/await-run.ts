@@ -364,6 +364,17 @@ function terminalOutcome(
   // holder is provably gone and continuing cannot fork a live mission.
   const stale = run.status === 'running';
   const who = holderPid !== undefined ? ` (pid ${holderPid})` : '';
+  // The run's own account of how it died. "It was interrupted" alone is a
+  // dead end for the follower: it names no cause, so the only move left is to
+  // try the same thing again. When the process recorded a cause, quote it —
+  // and when the cause is one WE caused and can prevent, say how.
+  const cause = run.exit?.reason;
+  const orphaned = cause !== undefined && cause.includes('orphan guard');
+  const remedy = orphaned
+    ? ' It was stopped because the session that started it ended — not because the work failed. ' +
+      'Relaunching from a session that also ends will stop the same way: keep that session alive ' +
+      'while the mission runs, or start it with UAP_ALLOW_ORPHAN=1 so it survives on its own.'
+    : '';
   return {
     followed: true,
     delivered: run.status === 'delivered',
@@ -373,11 +384,13 @@ function terminalOutcome(
     run: summarize(run),
     attributed,
     reason: stale
-      ? `The deliver run${who} exited without recording a final status — it was interrupted.`
+      ? `The deliver run${who} exited without recording a final status — it was interrupted.` +
+        (cause ? ` Cause: ${cause}.` : '')
       : `The deliver run${who} ${justEnded ? 'finished' : 'had already finished'} with status '${run.status}'.` +
         (attributed ? '' : ' (Matched by run state rather than by process id — verify the run id below is the one you meant.)'),
     nextStep: stale
-      ? `The mission is interrupted, not lost. Continue it with resume:'${run.runId}' — safe now that the holder is gone.`
+      ? `The mission is interrupted, not lost. Continue it with resume:'${run.runId}' — safe now that the holder is gone.` +
+        remedy
       : run.status === 'delivered'
         ? 'The mission completed. Inspect the result; no further deliver call is needed.'
         : `The mission ended '${run.status}'. Read its output before deciding: continue it with resume:'${run.runId}', or start a new mission if the goal changed.`,

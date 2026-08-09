@@ -23,6 +23,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { noteExitReason } from './run-exit.js';
 
 /** Env var carrying the resolved owner pid across the detach boundary. */
 export const OWNER_PID_ENV = 'UAP_DELIVER_OWNER_PID';
@@ -117,6 +118,13 @@ export function guardAgainstOwnerExit(opts: OwnerGuardOptions = {}): () => void 
   const timer = setInterval(() => {
     if (isAlive(ownerPid)) return;
     clearInterval(timer);
+    // Say why into the RUN's record, not just onto the console. The console
+    // line lands in a deliver log the follower has no reason to open; the exit
+    // record is what `--await-run` reads back, so this is the only channel that
+    // reaches the agent that is actually waiting on this mission.
+    noteExitReason(
+      `stopped by the orphan guard: the session that started this run (pid ${ownerPid}) exited`
+    );
     if (opts.onOwnerGone) {
       opts.onOwnerGone(ownerPid);
       return;
