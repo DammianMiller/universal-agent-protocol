@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.187.8 (2026-08-09)
+
+- fix(delivery): tell the follower how many turns the mission has completed
+
+
 ## v1.187.7 (2026-08-09)
 
 - test(dashboard): measure cadence from the first snapshot, not from connect
