@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.188.0 (2026-08-09)
+
+- feat(delivery): say up front when a task names files out of scope
+
+
 ## v1.187.8 (2026-08-09)
 
 - fix(delivery): tell the follower how many turns the mission has completed
