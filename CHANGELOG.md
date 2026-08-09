@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.187.3 (2026-08-09)
+
+- fix(hooks): reading a version is not editing it
+- chore(hooks): commit the installed post-tool-use-read hook so worktrees start clean
+
+
 ## v1.187.2 (2026-08-09)
 
 - fix(policies): a deliver run is not the inference stack
