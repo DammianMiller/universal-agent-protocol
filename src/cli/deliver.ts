@@ -290,7 +290,7 @@ import {
   extractKeywords,
   retrievePracticesSemantic,
 } from '../delivery/practice.js';
-import { detectRungs, mergeRedetectedRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER, demoteBaselineFailures } from '../delivery/verifier-ladder.js';
+import { detectRungs, mergeRedetectedRungs, runLadder, runTieredLadder, tierOf, TIER_ORDER, demoteBaselineFailures, baselineRegressions } from '../delivery/verifier-ladder.js';
 import type { GateTier, LadderRunFn, GateRung } from '../delivery/verifier-ladder.js';
 import { runDeployDevLadder } from '../delivery/deploy-dev-gate.js';
 import { commitPushAndWatch } from '../delivery/ci-watcher.js';
@@ -1779,6 +1779,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       );
     } else {
       console.log(chalk.dim(`  baseline-delta: baseline green (preflight ${(bd.preflightMs / 1000).toFixed(0)}s)`));
+    }
+    // KNOWN LIMIT on --resume: this re-preflights a tree the mission has
+    // already changed, so a regression introduced before the interruption is
+    // adopted as the new "pre-existing" state and forgiven. Skipping the
+    // preflight instead is WORSE: rungs are not persisted in run state, so a
+    // resumed run re-detects them as REQUIRED, the pre-existing red suite
+    // fail-fasts, and the run cannot converge at all — the wedge demotion
+    // exists to remove. The real fix is to persist the demotion in run state.
+    if (options.resume && bd.demoted.length > 0) {
+      console.log(chalk.dim('  (resumed run: baseline re-measured against the current tree)'));
     }
   }
 
@@ -3576,13 +3586,23 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // --keep-best: if deliver left the project worse than it started (by real
   // gate score), roll back to the snapshot so the run is never a regression.
   if (keepBest && regressSnapshot) {
-    const endScore = runLadder(fastRungs, projectRoot).score;
-    if (endScore < baselineGateScore) {
+    // Score alone cannot see a name-level regression: a demoted rung is red
+    // both before and after, so `score` is byte-identical while the suite got
+    // worse. That matters here specifically, because this rollback is what the
+    // demotion docstring names as the whole-tree backstop for exactly the
+    // breakage rung-granularity cannot catch.
+    const endLadder = runLadder(fastRungs, projectRoot);
+    const endScore = endLadder.score;
+    const endRegressions = baselineRegressions(fastRungs, endLadder.results);
+    if (endScore < baselineGateScore || endRegressions.length > 0) {
       try {
         restoreTree(projectRoot, regressSnapshot);
         console.log(
           chalk.yellow(
-            `  ↩ no-regress: reverted to best (end gate score ${endScore.toFixed(2)} < best ${baselineGateScore.toFixed(2)})`
+            endRegressions.length > 0
+              ? `  ↩ no-regress: reverted to best — tests that passed at baseline are failing now: ` +
+                `${endRegressions.flatMap((r) => r.tests).slice(0, 5).join(', ')}`
+              : `  ↩ no-regress: reverted to best (end gate score ${endScore.toFixed(2)} < best ${baselineGateScore.toFixed(2)})`
           )
         );
         disposeSnapshot(regressSnapshot);

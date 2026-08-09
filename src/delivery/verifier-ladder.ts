@@ -85,6 +85,18 @@ export interface GateRung {
    */
   tier?: GateTier;
   /**
+   * Names of the tests that PASSED when baseline-delta demoted this rung.
+   *
+   * Demotion says "this gate was already red, do not punish the mission for
+   * it" — correct, but at rung granularity it also let the mission break
+   * anything else in the same rung for free (the gap the demotion docstring
+   * admits). This set is what makes the difference legible: a test that was
+   * passing at baseline and is failing now is breakage this mission caused.
+   *
+   * A plain array rather than a Set so a rung stays structured-cloneable.
+   */
+  baselinePassing?: string[];
+  /**
    * Optional teardown run after the rung regardless of outcome (e.g. a
    * deploy-dev compose down / server kill). Best-effort; a teardown failure
    * never flips a passing rung to failed.
@@ -135,6 +147,17 @@ export interface RungResult {
   /** Tail of combined stdout+stderr, truncated for prompt injection */
   outputTail: string;
   /**
+   * Per-test PASS/FAIL names parsed from the FULL output, before truncation.
+   *
+   * Parsing them from `outputTail` instead was a latent, size-dependent bug:
+   * the tail keeps the SUFFIX, and every runner prints its per-test lines
+   * ABOVE the panic bodies and summary. On a small crate the default 2 000-char
+   * tail happens to retain them; on a real suite it retains none, the parse
+   * returns null, and the regression check silently stops working —
+   * nondeterministically, since libtest prints in completion order.
+   */
+  testOutcomes?: { passed: string[]; failed: string[] };
+  /**
    * True when this is a TEST rung that exited 0 having run ZERO tests. Passing
    * because there is nothing to run is not evidence of anything — see
    * testsActuallyRan.
@@ -174,6 +197,15 @@ export interface LadderOptions {
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 export const DEFAULT_TAIL_CHARS = 2_000;
+
+/**
+ * Tail kept from the one-off baseline preflight.
+ *
+ * The per-test names no longer come from here — `runRung` parses them from the
+ * untruncated output — so this only governs how much failure text the demotion
+ * report carries. Kept generous because it is paid once per mission.
+ */
+export const BASELINE_CAPTURE_TAIL_CHARS = 200_000;
 
 // Secret-stripping for gate spawns now lives in ./sanitized-env (shared with
 // the execution/self gates and the agentic executor's own shell; the pattern
@@ -483,11 +515,151 @@ export interface BaselineDeltaResult {
  * NEW failures (green at baseline → red now) still block as before.
  *
  * Preflights only side-effect-free tiers (fast/integration) and skips rungs
- * with teardown hooks; everything else passes through untouched. Rung-level
- * granularity: new breakage WITHIN an already-red rung is not distinguished —
- * the failure output still reaches the model and judge, and --keep-best
- * remains the whole-tree regression backstop.
+ * with teardown hooks; everything else passes through untouched.
+ *
+ * Rung-level granularity WAS the gap: new breakage inside an already-red rung
+ * used to be indistinguishable from the failures the rung was demoted for.
+ * `regressedTests` closes it by NAME — a test that was passing at baseline and
+ * is failing now is this mission's doing — and --keep-best consults the same
+ * predicate, so the whole-tree backstop sees it too rather than reading an
+ * unchanged score.
  */
+/** Per-test outcomes recovered from a gate's output. */
+export interface TestOutcomes {
+  passed: Set<string>;
+  failed: Set<string>;
+}
+
+/**
+ * Per-test PASS/FAIL names from a runner's output, or null when the output
+ * does not report per-test outcomes.
+ *
+ * Counting failures was tried first and reverted: `cargo test` fail-fasts at
+ * the first failing target, so a mission that FIXES that target lets cargo
+ * reach the next one and report ITS pre-existing failures — the count rises
+ * and an improving mission gets told it caused a regression. Names do not have
+ * that problem, because a test that never ran at baseline is unknown rather
+ * than newly-broken.
+ *
+ * Null unless at least one per-test line is recognised. A runner that prints
+ * only a summary cannot distinguish "revealed" from "broken", and the safe
+ * answer there is the behaviour demotion already had.
+ */
+export function parseTestOutcomes(output: string, rungId?: string): TestOutcomes | null {
+  // The check-mark forms are matched ONLY for a rung that is actually a JS test
+  // runner. `✓ 34 modules transformed`, `✔ Prettier` and miette/oxlint's `×`
+  // diagnostic bullets are not test outcomes, and letting a lint or build rung
+  // parse non-null quietly defeats the "opaque output ⇒ old behaviour" valve
+  // that keeps this check conservative.
+  const jsRunner = rungId === undefined || /test|vitest|jest|spec/i.test(rungId);
+  const passed = new Set<string>();
+  const failed = new Set<string>();
+  const add = (set: Set<string>, name: string | undefined) => {
+    const n = (name ?? '').trim();
+    if (n) set.add(n);
+  };
+
+  for (const line of output.split('\n')) {
+    // cargo / rust libtest: `test mod::tests::name ... ok|FAILED|ignored`
+    let m = /^\s*test\s+(\S+)\s+\.\.\.\s*(ok|FAILED|ignored)\b/.exec(line);
+    if (m) {
+      if (m[2] === 'ok') add(passed, m[1]);
+      else if (m[2] === 'FAILED') add(failed, m[1]);
+      continue; // `ignored` is neither
+    }
+    // go test -v: `--- PASS: TestName` / `--- FAIL: TestName`
+    m = /^\s*---\s+(PASS|FAIL):\s+(\S+)/.exec(line);
+    if (m) {
+      add(m[1] === 'PASS' ? passed : failed, m[2]);
+      continue;
+    }
+    // pytest -v: `tests/test_x.py::test_name PASSED|FAILED`
+    m = /^(\S+::\S+)\s+(PASSED|FAILED)\b/.exec(line);
+    if (m) {
+      add(m[2] === 'PASSED' ? passed : failed, m[1]);
+      continue;
+    }
+    if (!jsRunner) continue;
+    // jest / vitest verbose: `✓ name` / `✕ name` / `× name`. The file-level
+    // summary lines vitest prints (`✓ test/foo.test.ts (12 tests) 34ms`) are
+    // excluded — they are files, not tests, and would collide across runs.
+    m = /^\s*(?:[✓✔])\s+(.+?)(?:\s+\(\d+\s*(?:ms|tests?)\))?\s*$/.exec(line);
+    if (m && !/\(\d+\s+tests?\)/.test(line)) {
+      add(passed, m[1]);
+      continue;
+    }
+    m = /^\s*(?:[✕✖×])\s+(.+?)(?:\s+\(\d+\s*ms\))?\s*$/.exec(line);
+    if (m && !/\(\d+\s+tests?\)/.test(line)) add(failed, m[1]);
+  }
+
+  if (passed.size === 0 && failed.size === 0) return null;
+  // Deliberately NOT reconciling passed/failed here: the parser stays a pure
+  // reader so callers can still see that a name was BOTH. `regressedTests`
+  // does the reconciliation, symmetrically on both sides — doing it here also
+  // applied it to the baseline capture, which could record an ambiguous name
+  // as cleanly-passing and then report a permanent regression once its passing
+  // instance stopped being printed.
+  return { passed, failed };
+}
+
+/**
+ * Tests that were PASSING when this rung was demoted and are FAILING now —
+ * i.e. breakage this mission introduced into an already-red gate.
+ *
+ * Both sides come from `RungResult.testOutcomes`, parsed from the UNTRUNCATED
+ * output, so this no longer depends on what fits in a tail. Where a caller
+ * supplies no parsed outcomes the tail is used as a fallback, and that path is
+ * a subset of truth — it can under-report, never invent.
+ */
+/**
+ * The demoted rungs whose CURRENT result contains tests that were passing at
+ * baseline — with the names, so the model is told what IT broke rather than
+ * being handed the pre-existing red suite it was explicitly told to ignore.
+ */
+export function baselineRegressions(
+  rungs: GateRung[],
+  results: RungResult[]
+): Array<{ id: string; tests: string[] }> {
+  const out: Array<{ id: string; tests: string[] }> = [];
+  for (const rung of rungs) {
+    const res = results.find((r) => r.id === rung.id);
+    if (!res || res.skipped || res.passed) continue;
+    const tests = regressedTests(rung, res);
+    if (tests.length) out.push({ id: rung.id, tests });
+  }
+  return out;
+}
+
+/** Model-facing note naming the regressed tests, or '' when there are none. */
+export function formatBaselineRegressions(
+  regressions: Array<{ id: string; tests: string[] }>
+): string {
+  if (!regressions.length) return '';
+  const body = regressions
+    .map((r) => `  ${r.id}: ${r.tests.slice(0, 10).join(', ')}${r.tests.length > 10 ? ` (+${r.tests.length - 10} more)` : ''}`)
+    .join('\n');
+  return (
+    `\n\nREGRESSION — these tests PASSED before your changes and fail now. They are ` +
+    `NOT the pre-existing failures this gate was demoted for, so "already red" does not ` +
+    `excuse them:\n${body}\nFix these first; they are breakage you introduced.`
+  );
+}
+
+export function regressedTests(rung: GateRung, result: RungResult): string[] {
+  if (!rung.baselinePassing?.length) return [];
+  // Prefer what runRung parsed from the FULL output; fall back to the tail only
+  // for callers that synthesised a result without it.
+  const outcomes = result.testOutcomes
+    ? { passed: new Set(result.testOutcomes.passed), failed: new Set(result.testOutcomes.failed) }
+    : parseTestOutcomes(result.outputTail, rung.id);
+  if (!outcomes) return [];
+  // A name observed passing somewhere in THIS run is not evidence of breakage
+  // (aliased names across crates; a retry that later succeeded).
+  return rung.baselinePassing
+    .filter((name) => outcomes.failed.has(name) && !outcomes.passed.has(name))
+    .sort();
+}
+
 export function demoteBaselineFailures(
   rungs: GateRung[],
   projectRoot: string,
@@ -498,10 +670,25 @@ export function demoteBaselineFailures(
   const demoted: BaselineDeltaResult['demoted'] = [];
   const out = rungs.map((r) => {
     if (!r.required || !PREFLIGHT_TIERS.has(tierOf(r)) || r.teardown) return r;
-    const res = runRung(r, projectRoot, tailChars);
+    // Capture the baseline with a much larger tail than the per-turn one. The
+    // per-test lines a runner prints BEFORE its summary are the first thing
+    // truncation eats, and they are exactly what the regression check needs.
+    // Under-capturing here only loses regressions, never invents them — but
+    // there is no reason to lose them cheaply.
+    const res = runRung(r, projectRoot, Math.max(tailChars, BASELINE_CAPTURE_TAIL_CHARS), false, true);
     if (res.passed) return r;
     demoted.push({ id: r.id, name: r.name, outputTail: res.outputTail });
-    return { ...r, required: false, name: `${r.name} ${BASELINE_DEMOTION_NOTE}` };
+    // Only names that were unambiguously green. A name printed both ok and
+    // FAILED in one run (two crates, same unqualified test name) tells us
+    // nothing, and treating it as green would report a regression forever.
+    const baselineFailed = new Set(res.testOutcomes?.failed ?? []);
+    const baselinePassing = (res.testOutcomes?.passed ?? []).filter((n) => !baselineFailed.has(n));
+    return {
+      ...r,
+      required: false,
+      name: `${r.name} ${BASELINE_DEMOTION_NOTE}`,
+      ...(baselinePassing.length ? { baselinePassing } : {}),
+    };
   });
   return { rungs: out, demoted, preflightMs: Date.now() - start };
 }
@@ -813,7 +1000,9 @@ export function runRung(
   rung: GateRung,
   projectRoot: string,
   tailChars: number = DEFAULT_TAIL_CHARS,
-  requireTestsRan = false
+  requireTestsRan = false,
+  /** Capture per-test names even without a baseline set (the preflight). */
+  captureOutcomes = false
 ): RungResult {
   const start = Date.now();
   const res = spawnSync(rung.command, rung.args, {
@@ -864,6 +1053,17 @@ export function runRung(
   }
 
   const combined = `${diagnostic}\n${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+  // Parse per-test outcomes HERE, from the whole output — the truncated tail is
+  // for humans and prompts, and a gate must not depend on what fits in it.
+  //
+  // Only when something will actually consume them: either this rung already
+  // carries a baseline set (so this run is the CURRENT side of a comparison),
+  // or the caller is capturing a baseline. Attaching them unconditionally put
+  // every test name of every rung into `RungResult`, which rides
+  // IterationRecord → LoopCheckpoint.history → run-state.json, rewritten in
+  // full every turn — megabytes on a large workspace, for data nothing reads.
+  const wantOutcomes = Boolean(rung.baselinePassing?.length) || captureOutcomes;
+  const parsedOutcomes = wantOutcomes ? parseTestOutcomes(combined, rung.id) : null;
 
   return {
     id: rung.id,
@@ -874,6 +1074,9 @@ export function runRung(
     failureReason,
     durationMs,
     outputTail: passed ? '' : truncateTail(combined, tailChars),
+    ...(parsedOutcomes
+      ? { testOutcomes: { passed: [...parsedOutcomes.passed], failed: [...parsedOutcomes.failed] } }
+      : {}),
     ...(zeroTests ? { zeroTests: true } : {}),
   };
 }
@@ -883,8 +1086,22 @@ export function runRung(
  * rung's output is included in detail — small models do better with one
  * concrete problem at a time than with a wall of every failure.
  */
-export function formatFeedback(results: RungResult[], rungs: GateRung[]): string {
-  const requiredIds = new Set(rungs.filter((r) => r.required).map((r) => r.id));
+export function formatFeedback(
+  results: RungResult[],
+  rungs: GateRung[],
+  /**
+   * Rungs that are nominally optional but ARE blocking this turn — a demoted
+   * rung the mission regressed. Without this they take the branch below that
+   * says "OPTIONAL … do not prioritize it" while the ladder is refusing to
+   * pass on them, and they lose the failure tail that branch withholds on
+   * purpose. Both are exactly wrong for breakage the model just caused.
+   */
+  blockingOptionalIds: ReadonlySet<string> = new Set()
+): string {
+  const requiredIds = new Set([
+    ...rungs.filter((r) => r.required).map((r) => r.id),
+    ...blockingOptionalIds,
+  ]);
   const lines: string[] = ['Gate results:'];
   for (const r of results) {
     const status = r.skipped
@@ -1075,13 +1292,17 @@ export function runLadder(
   const requiredPassed = results.filter(
     (r) => r.passed && requiredRungs.some((rung) => rung.id === r.id)
   ).length;
-  const passed = requiredPassed === requiredRungs.length;
+  // A demoted rung blocks again once THIS mission broke something inside it.
+  const regressions = baselineRegressions(rungs, results);
+  const passed = requiredPassed === requiredRungs.length && regressions.length === 0;
 
   return {
     passed,
     score,
     results,
-    feedback: formatFeedback(results, rungs),
+    feedback:
+      formatFeedback(results, rungs, new Set(regressions.map((r) => r.id))) +
+      formatBaselineRegressions(regressions),
   };
 }
 
@@ -1253,6 +1474,21 @@ export async function runTieredLadder(
         if (r.passed || r.skipped) continue;
         const rung = tierRungs.find((g) => g.id === r.id);
         const required = rung?.required ?? true;
+        // A demoted rung the mission REGRESSED is blocking this turn, so it
+        // must stop promotion like any other blocking failure. Otherwise a turn
+        // that provably cannot pass still brings up the integration tier's
+        // containers, the dev deploy, and the vision model in `final` — paying
+        // the most expensive tiers to confirm a verdict already decided.
+        if (rung && regressedTests(rung, r).length > 0) {
+          // Defer the COSTLY tiers, do not stop promotion outright. Stopping
+          // would also skip `runtime` and `final` — the execution and user-path
+          // gates — and COSTLY_TIERS exists precisely because starving those
+          // "re-starves exactly what blocksPromotion unstarved". A regression
+          // can persist for several turns, and the model still needs to know
+          // whether the artifact runs while it fixes it.
+          nonBlockingFailed = true;
+          continue;
+        }
         if (!required) continue;
         if (rung?.blocksPromotion === false) nonBlockingFailed = true;
         else blockingFailed = true;
@@ -1273,12 +1509,23 @@ export async function runTieredLadder(
   const requiredPassed = requiredInScope.filter((rung) =>
     results.some((r) => r.id === rung.id && r.passed)
   ).length;
-  const passed = requiredPassed === requiredInScope.length;
+  // The same rule, applied HERE too. This aggregator recomputes the verdict
+  // from required rungs, and a demoted rung is required:false by construction —
+  // so a check that lived only in runLadder was silently discarded on the one
+  // path deliver actually uses. Found by testing the aggregator, not the inner
+  // function; the inner-only version passed 15 tests while doing nothing.
+  const regressions = baselineRegressions(inScope.length > 0 ? inScope : rungs, results);
+  const passed = requiredPassed === requiredInScope.length && regressions.length === 0;
 
   return {
     passed,
     score,
     results,
-    feedback: formatFeedback(results, inScope.length > 0 ? inScope : rungs),
+    feedback:
+      formatFeedback(
+        results,
+        inScope.length > 0 ? inScope : rungs,
+        new Set(regressions.map((r) => r.id))
+      ) + formatBaselineRegressions(regressions),
   };
 }
