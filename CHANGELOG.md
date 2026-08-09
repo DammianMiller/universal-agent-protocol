@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.186.7 (2026-08-09)
+
+- fix(deliver): refuse a project root that cannot verify its own work
+
+
 ## v1.186.6 (2026-08-09)
 
 - fix(deliver): stop a run when the model endpoint is unreachable
