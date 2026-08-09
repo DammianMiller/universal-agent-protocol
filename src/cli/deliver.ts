@@ -41,6 +41,7 @@ import { buildMissionAcceptanceGate, resolveAcceptanceVerdict } from '../deliver
 import { createSpecRegistry } from '../delivery/spec-registry.js';
 import type { AcceptanceGate } from '../delivery/convergence-loop.js';
 import { guardAgainstOwnerExit } from '../delivery/orphan-guard.js';
+import { findRepoRoot, formatScopeNotice, unreachablePaths } from '../delivery/scope-notice.js';
 
 /**
  * Decide how deliver establishes its convergence target when (or whether) the
@@ -2820,6 +2821,33 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     } catch {
       /* contract injection is a best-effort completeness aid */
     }
+  }
+  // Say up front when the task names files this run cannot reach. Refusing the
+  // path at edit time (safePath) does not stop the model wanting the file, and
+  // its fallback — creating a same-named file INSIDE the root — is allowed and
+  // silently wrong. Rides the acceptance-contract channel rather than adding a
+  // second prompt field, since both are the same kind of up-front constraint.
+  // Fail-soft: an aid, never a blocker.
+  try {
+    const repoRoot = findRepoRoot(projectRoot);
+    if (repoRoot) {
+      const notice = formatScopeNotice(
+        unreachablePaths(instruction, projectRoot, repoRoot),
+        projectRoot,
+        repoRoot
+      );
+      if (notice) {
+        loopConfig.acceptanceContract = [loopConfig.acceptanceContract, notice]
+          .filter((s): s is string => Boolean(s && s.trim()))
+          .join('\n\n');
+        console.log(chalk.yellow(`  scope: ${notice.split('\n')[0]}`));
+        for (const line of notice.split('\n').slice(2)) {
+          if (line.startsWith('  - ')) console.log(chalk.yellow(`  scope: ${line.trim()}`));
+        }
+      }
+    }
+  } catch {
+    /* scope detection is advisory */
   }
   const runState: DeliverRunState = {
     runId,
