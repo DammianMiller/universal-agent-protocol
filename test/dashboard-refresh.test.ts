@@ -74,20 +74,58 @@ function fetchBody(port: number, path: string): Promise<string> {
   });
 }
 
-/** Count COMPLETE `snapshot` SSE frames received within `windowMs`. */
-function countSnapshots(port: number, windowMs: number): Promise<number> {
+/** Complete `snapshot` frames in `buf` — only blank-line-terminated ones count. */
+function completeSnapshots(buf: string): number {
+  // Large snapshots span multiple TCP chunks, so the trailing fragment is not
+  // yet a frame.
+  const frames = buf.split('\n\n');
+  frames.pop();
+  return frames.filter((f) => f.includes('event: snapshot')).length;
+}
+
+/**
+ * Count COMPLETE `snapshot` frames in a window that opens at the FIRST one.
+ *
+ * Timing the window from the request instead made this the flakiest test in the
+ * suite, and for a reason the assertion could not see: the first snapshot costs
+ * whatever `getDashboardData` costs, and that call shells out to `rtk gain`
+ * (cached for 30s AFTER the first one). Under the full 366-file suite that cold
+ * call can take seconds, so most of a 4s window was spent before the cadence
+ * being measured had produced anything. The test then reported a cadence
+ * failure when what it had actually measured was startup latency on a busy box.
+ *
+ * Waiting for the first frame separates the two: everything after it is the
+ * steady-state cadence, which is the property under test.
+ */
+function countSnapshotsAfterFirst(
+  port: number,
+  windowMs: number,
+  warmupMs = 15_000
+): Promise<number> {
   return new Promise((resolve, reject) => {
     const req = http.get({ host: HOST, port, path: '/api/events' }, (res) => {
       let buf = '';
-      res.on('data', (c) => (buf += c.toString()));
-      setTimeout(() => {
+      let windowStartedAt: number | null = null;
+      let baseline = 0;
+
+      const giveUp = setTimeout(() => {
         req.destroy();
-        // Drop the trailing partial frame — only blank-line-terminated frames
-        // are complete (large snapshots span multiple TCP chunks).
-        const frames = buf.split('\n\n');
-        frames.pop();
-        resolve(frames.filter((f) => f.includes('event: snapshot')).length);
-      }, windowMs);
+        reject(new Error(`no snapshot frame arrived within ${warmupMs}ms of connecting`));
+      }, warmupMs);
+
+      res.on('data', (c) => {
+        buf += c.toString();
+        if (windowStartedAt !== null) return;
+        if (completeSnapshots(buf) < 1) return;
+        // First frame is in: start the clock and discount everything so far.
+        clearTimeout(giveUp);
+        windowStartedAt = Date.now();
+        baseline = completeSnapshots(buf);
+        setTimeout(() => {
+          req.destroy();
+          resolve(completeSnapshots(buf) - baseline);
+        }, windowMs);
+      });
       res.on('error', () => {
         /* stream teardown */
       });
@@ -102,12 +140,13 @@ describe('dashboard refresh interval', () => {
     handle = started.handle;
     const port = started.port;
     await settle();
-    // In a 4s window a 300ms cadence yields ~12 snapshots even if the first
-    // getDashboardData call takes a couple of seconds (cold rtk-gain
-    // subprocess); the 2s default would yield at most 2. Require ≥3.
-    const count = await countSnapshots(port, 4000);
+    // Measured from the FIRST snapshot, so this is cadence and not startup: a
+    // 300ms cadence yields ~13 more frames in the next 4s, the 2s default at
+    // most 2. Require ≥3 — enough to separate the two without pinning a rate
+    // that a loaded machine cannot hit.
+    const count = await countSnapshotsAfterFirst(port, 4000);
     expect(count).toBeGreaterThanOrEqual(3);
-  }, 20000);
+  }, 30000);
 
   it('injects the cadence into the served page so the client fallback poll matches', async () => {
     const started = await startOnEphemeralPort({ updateIntervalMs: 700 });
