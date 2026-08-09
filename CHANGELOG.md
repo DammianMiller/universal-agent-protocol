@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.187.2 (2026-08-09)
+
+- fix(policies): a deliver run is not the inference stack
+
+
 ## v1.187.1 (2026-08-09)
 
 - fix(reactor): tell the truth about when deliver is required
