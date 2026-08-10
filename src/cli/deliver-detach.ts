@@ -75,7 +75,17 @@ export function detachLogPath(projectRoot: string, stamp: string): string {
  * session, and its stdio is a file, so nothing about the wrapper's death can
  * reach it.
  */
-export async function relaunchDetached(projectRoot: string, stamp: string): Promise<number> {
+/**
+ * Returned when the mirror budget expired while the mission was still running.
+ * Distinct from any real exit code so a caller cannot mistake it for failure.
+ */
+export const STILL_RUNNING = -1;
+
+export async function relaunchDetached(
+  projectRoot: string,
+  stamp: string,
+  opts: { mirrorBudgetMs?: number } = {}
+): Promise<number> {
   const logPath = detachLogPath(projectRoot, stamp);
   mkdirSync(join(projectRoot, '.uap', 'deliver-logs'), { recursive: true });
   // Touch it so the tail below always has something to open.
@@ -114,7 +124,20 @@ export async function relaunchDetached(projectRoot: string, stamp: string): Prom
       '   had finished, leaves the lock behind, and the next launch starts from zero.)'
   );
 
-  // Mirror the log to our stdout for as long as we are alive.
+  // Mirror the log to our stdout for as long as we are alive — but not past a
+  // caller that has already given up.
+  //
+  // The mission is DETACHED by this point; mirroring is a convenience. For a
+  // terminal or CI caller that convenience is the whole point and it should run
+  // to completion. For an AGENT it inverts: its tool budget expires mid-mirror,
+  // the call is killed, and a launch that SUCCEEDED is reported to the model as
+  // a timeout. Seen on 2026-08-10 — "shell tool terminated command after
+  // exceeding timeout 300000 ms", followed by "The deliver tool keeps timing
+  // out", followed by `xargs kill -9` on the very run that was still working.
+  //
+  // So a bounded mirror returns STILL_RUNNING instead of being killed, and the
+  // caller is told the mission continues. Unbounded when no budget is given,
+  // which is what a terminal keeps.
   return await new Promise<number>((resolve) => {
     let offset = 0;
     let done = false;
@@ -131,10 +154,16 @@ export async function relaunchDetached(projectRoot: string, stamp: string): Prom
       stream.on('data', (chunk) => process.stdout.write(String(chunk)));
     };
     const timer = setInterval(pump, 400);
+    let budget: NodeJS.Timeout | undefined;
+    if (opts.mirrorBudgetMs && opts.mirrorBudgetMs > 0) {
+      budget = setTimeout(() => finish(STILL_RUNNING), opts.mirrorBudgetMs);
+      budget.unref?.();
+    }
     const finish = (code: number): void => {
       if (done) return;
       done = true;
       clearInterval(timer);
+      if (budget) clearTimeout(budget);
       setTimeout(() => {
         pump(); // one last flush so the tail of the mission is not lost
         resolve(code);
