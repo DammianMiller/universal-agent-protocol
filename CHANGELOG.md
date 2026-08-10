@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.191.0 (2026-08-10)
+
+- feat(policies): verify tells a superseded enforcer from a tampered one
+
+
 ## v1.190.2 (2026-08-10)
 
 - fix(policies): a stop request must be withdrawable
