@@ -36,6 +36,21 @@ export interface RouterOptions {
   verbose?: boolean;
 }
 
+/**
+ * Environment switch that removes the `deliver` MCP tool from this session.
+ *
+ * Operator-only by construction: read from the launch environment, so a model
+ * cannot grant it to itself inline. It withdraws a TOOL, not a gate — delivery
+ * enforcement is unaffected, and the CLI remains available — so it changes what
+ * is convenient, never what is permitted.
+ */
+export const DELIVER_TOOL_OFF_ENV = 'UAP_NO_DELIVER_TOOL';
+
+/** True when the operator turned the deliver tool off for this session. */
+export function deliverToolDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return ['1', 'true', 'on', 'yes'].includes(String(env[DELIVER_TOOL_OFF_ENV] ?? '').toLowerCase());
+}
+
 export class McpRouter {
   private config: McpConfig;
   private searchIndex: ToolSearchIndex;
@@ -132,7 +147,10 @@ export class McpRouter {
     | typeof DELIVER_TOOL_DEFINITION
     | typeof REACT_TOOL_DEFINITION
   > {
-    return [DISCOVER_TOOLS_DEFINITION, EXECUTE_TOOL_DEFINITION, DELIVER_TOOL_DEFINITION, REACT_TOOL_DEFINITION];
+    const base = [DISCOVER_TOOLS_DEFINITION, EXECUTE_TOOL_DEFINITION, REACT_TOOL_DEFINITION] as const;
+    return deliverToolDisabled()
+      ? [...base]
+      : [DISCOVER_TOOLS_DEFINITION, EXECUTE_TOOL_DEFINITION, DELIVER_TOOL_DEFINITION, REACT_TOOL_DEFINITION];
   }
 
   /**
@@ -159,6 +177,21 @@ export class McpRouter {
         );
 
       case 'deliver':
+        // Withdrawing it from tools/list is not enough on its own: a client may
+        // have cached the list, and a model may call a tool it remembers. The
+        // refusal has to be here too, and it has to say WHY and what to use
+        // instead — a bare "unknown tool" reads as a broken server and invites
+        // a retry loop, which is the failure mode this switch exists to avoid.
+        if (deliverToolDisabled()) {
+          return Promise.resolve({
+            ok: false,
+            error:
+              'the deliver MCP tool is disabled for this session ' +
+              `(${DELIVER_TOOL_OFF_ENV} is set in the launch environment). ` +
+              'Use the CLI instead: `uap deliver "<instruction>"` to start one, ' +
+              'and `uap deliver --await-run` to follow it.',
+          });
+        }
         return handleDeliver(args as DeliverArgs);
 
       case 'react':

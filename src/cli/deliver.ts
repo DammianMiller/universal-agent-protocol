@@ -40,7 +40,7 @@ import { runAcceptanceGate } from '../delivery/acceptance-judge.js';
 import { buildMissionAcceptanceGate, resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createSpecRegistry } from '../delivery/spec-registry.js';
 import type { AcceptanceGate } from '../delivery/convergence-loop.js';
-import { guardAgainstOwnerExit } from '../delivery/orphan-guard.js';
+import { guardAgainstOwnerExit, resolveOwnerPid } from '../delivery/orphan-guard.js';
 import { findRepoRoot, formatScopeNotice, unreachablePaths } from '../delivery/scope-notice.js';
 import { deletionTargets, formatDeletionNotice } from '../delivery/deletion-notice.js';
 
@@ -242,7 +242,7 @@ function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unkn
 }
 import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow } from '../delivery/context-budget.js';
 import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
-import { awaitInFlightDeliver } from '../delivery/await-run.js';
+import { awaitInFlightDeliver, FOLLOW_CLIENT_POLL_SEC } from '../delivery/await-run.js';
 
 /**
  * Follow-mode budget when the caller names none, and its ceiling (seconds).
@@ -257,6 +257,40 @@ import { awaitInFlightDeliver } from '../delivery/await-run.js';
  * every terminal and CI caller at 45s to fix a limit that only one client has.
  */
 const AWAIT_DEFAULT_BUDGET_SEC = 900;
+
+/**
+ * The follow budget to use when the caller named none.
+ *
+ * The 900s default above is right for the caller it describes — a human at a
+ * terminal, or a CI step — and the note is right that making it short globally
+ * was the wrong layer. What it does not cover is the caller that appeared
+ * since: an AGENT shelling out to `uap deliver --await-run` from a bash tool.
+ * That caller has a request timeout exactly like the MCP one, but it is not the
+ * MCP layer, so it got the long default and was killed mid-wait every time.
+ *
+ * Measured over 24h on 2026-08-10: thirteen waiting invocations from a bash
+ * tool, TEN of them with a tool budget of 300s against this 900s default —
+ * guaranteed to be cut short. The model read every one as "the deliver tool
+ * keeps timing out" and went looking for other ways through, which is the loop.
+ * The MCP tool itself never timed out once in the same window (max 48s).
+ *
+ * Discriminating on a TTY would not work: CI is not a TTY either and genuinely
+ * wants the long block. The question is "does my caller give up on me", and
+ * this repo already answers it — `resolveOwnerPid` walks the process ancestry
+ * for an agent client, which is how a detached run knows whose session it
+ * belongs to. Same question, same answer, one implementation.
+ *
+ * An explicit --await-timeout always wins over this.
+ */
+export function defaultAwaitBudgetSec(
+  ownerPid: () => number | undefined = resolveOwnerPid
+): number {
+  try {
+    return ownerPid() !== undefined ? FOLLOW_CLIENT_POLL_SEC : AWAIT_DEFAULT_BUDGET_SEC;
+  } catch {
+    return AWAIT_DEFAULT_BUDGET_SEC; // unknowable: keep the long-standing default
+  }
+}
 const AWAIT_MAX_BUDGET_SEC = 14_400;
 import { resolveFidelity } from '../delivery/fidelity.js';
 import { installRunExitRecorder } from '../delivery/run-exit.js';
@@ -1157,7 +1191,7 @@ export async function deliverCommand(instruction: string, options: DeliverOption
     const budgetSec =
       Number.isFinite(rawBudget) && rawBudget > 0
         ? Math.min(rawBudget, AWAIT_MAX_BUDGET_SEC)
-        : AWAIT_DEFAULT_BUDGET_SEC;
+        : defaultAwaitBudgetSec();
     const budgetMs = Math.max(1, budgetSec) * 1000;
     let lastTickBucket = 0;
     const outcome = await awaitInFlightDeliver(followRoot, {
