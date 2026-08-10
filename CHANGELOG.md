@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.192.0 (2026-08-10)
+
+- feat(delivery): say up front that a deletion mission cannot succeed here
+
+
 ## v1.191.0 (2026-08-10)
 
 - feat(policies): verify tells a superseded enforcer from a tampered one
