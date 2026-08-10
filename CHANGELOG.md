@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.189.0 (2026-08-10)
+
+- feat(delivery): offer a stop the caller can actually reach
+
+
 ## v1.188.0 (2026-08-09)
 
 - feat(delivery): say up front when a task names files out of scope
