@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.190.0 (2026-08-10)
+
+- feat(policies): judge a Write on nature AND complexity
+
+
 ## v1.189.3 (2026-08-10)
 
 - fix(delivery): stop advertising a door the gate keeps shut
