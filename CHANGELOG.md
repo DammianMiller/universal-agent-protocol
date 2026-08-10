@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.190.2 (2026-08-10)
+
+- fix(policies): a stop request must be withdrawable
+
+
 ## v1.190.1 (2026-08-10)
 
 - fix(cli): explain the working directory when add-tool fails

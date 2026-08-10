@@ -146,3 +146,40 @@ describe('the heartbeat is part of the same guard', () => {
     expect(reason).toMatch(/reclaims a RUNNING mission/i);
   });
 });
+
+describe('the STOP file is a signal, and must be withdrawable', () => {
+  // It lives under deliver-runs/ and so inherited that directory's protection,
+  // which made a stop request impossible to cancel. An unconsumed STOP ends the
+  // NEXT run at its first turn boundary, so an un-removable one is a trap.
+  //
+  // Seen live 2026-08-10: an agent created a STOP at 20:46:38 and its own
+  // removal of that same file three seconds later was refused. It cleared only
+  // because a run happened to start and consume it — luck, not design.
+  it('allows removing it, relative or absolute', () => {
+    expect(run('rm -f .uap/deliver-runs/STOP').blocked).toBe(false);
+    expect(run('rm .uap/deliver-runs/STOP').blocked).toBe(false);
+    expect(run('rm -f /abs/proj/.uap/deliver-runs/STOP').blocked).toBe(false);
+  });
+
+  it('still allows requesting it — a remedy needs both directions', () => {
+    expect(run('touch .uap/deliver-runs/STOP').blocked).toBe(false);
+  });
+
+  it('opens up NOTHING else under deliver-runs', () => {
+    // The blast radius is the whole risk of an exemption: the checkpoints are
+    // the run DIRECTORIES, and they must stay protected.
+    for (const cmd of [
+      'rm -rf .uap/deliver-runs',
+      'rm -rf .uap/deliver-runs/*',
+      'rm -rf .uap/deliver-runs/run-20260810T104851-15d789',
+      'rm -rf .uap/deliver-runs/* .uap/deliver.lock',
+    ]) {
+      expect(run(cmd).blocked, cmd).toBe(true);
+    }
+  });
+
+  it('leaves the lock and heartbeat protected', () => {
+    expect(run('rm -f .uap/deliver.lock').blocked).toBe(true);
+    expect(run('rm -f .uap/deliver.heartbeat').blocked).toBe(true);
+  });
+});
