@@ -152,6 +152,18 @@ export async function relaunchDetached(
       const stream = createReadStream(logPath, { start: offset, end: size - 1, encoding: 'utf-8' });
       offset = size;
       stream.on('data', (chunk) => process.stdout.write(String(chunk)));
+      // The stat above and this read are two separate moments, and the file can
+      // go between them — rotated, cleaned up, or on a temp filesystem being
+      // torn down. An unhandled 'error' on a read stream is a hard crash, so a
+      // vanished LOG would take down a launch whose MISSION is fine, which is
+      // precisely backwards: mirroring is a convenience and its failure must
+      // never be louder than the thing it is reporting on.
+      //
+      // Found by CI, not locally: the race needs the log to disappear inside a
+      // 400ms window, which a slower machine hits and mine did not.
+      stream.on('error', () => {
+        /* the mission is unaffected; stop echoing this chunk and try again */
+      });
     };
     const timer = setInterval(pump, 400);
     let budget: NodeJS.Timeout | undefined;

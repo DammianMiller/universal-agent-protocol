@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.193.2 (2026-08-10)
+
+- fix(cli): unbreak the master publish my own test broke
+
+
 ## v1.193.1 (2026-08-10)
 
 - fix(delivery): a launch stops WATCHING at the caller's budget, not the mission
