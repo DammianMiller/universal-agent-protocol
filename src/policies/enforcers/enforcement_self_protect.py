@@ -140,6 +140,27 @@ PROTECTED_TARGETS = (
     # shell-writable meant a single append could satisfy a gate — which is
     # exactly how one was satisfied during development.
     ".uap/evidence",
+    # Delivery COORDINATION state. Same argument as the evidence records, and
+    # listed individually for the same reason rather than by widening .uap/:
+    # the rest of that directory really is scratch the tooling rewrites
+    # constantly, but these two are mechanisms, not logs.
+    #
+    # `deliver.lock` is the single-flight guard. Removing it puts a second
+    # mission on the same tree - not hypothetical: two runs on nested roots
+    # overwrote each other's edits to src/cooccurrence.rs on 2026-08-08 until
+    # it stopped compiling, each one's gate failing on damage the other had
+    # just done. On 2026-08-10 an agent ran
+    #     rm -f .uap/deliver.lock && uap deliver "<reworded instruction>"
+    # to force a relaunch past the guard.
+    #
+    # `deliver-runs` holds every run's checkpoint - the resumable work itself.
+    # Removing that directory was allowed and would discard all of it.
+    #
+    # Neither ever needs deleting by hand: a lock whose holder is dead or
+    # wedged is reclaimed automatically on the next launch, and a run is
+    # stopped with the STOP file, which leaves the checkpoint intact.
+    ".uap/deliver.lock",
+    ".uap/deliver-runs",
     ".uap.json",
     "anthropic-proxy.env",
 )
@@ -299,6 +320,19 @@ def _destructive_intent(command: str) -> bool:
     """A destructive verb or a redirect appears somewhere in `command`."""
     toks = {t.rsplit("/", 1)[-1].lower().strip("\"'") for t in command.split()}
     return bool(toks & set(DESTRUCTIVE_VERBS)) or bool(_REDIRECT.search(command))
+
+
+_DELIVER_COORD = (".uap/deliver.lock", ".uap/deliver-runs")
+
+
+def _mentions_deliver_coord(command: str) -> bool:
+    """True when the command names the delivery coordination surface.
+
+    Only chooses the WORDING of a refusal that has already been decided by
+    `_bash_destructive`; it never widens or narrows what is refused.
+    """
+    text = command.translate(_QUOTES).lower()
+    return any(t in text for t in _DELIVER_COORD)
 
 
 def _direct_destructive(command: str) -> bool:
@@ -465,6 +499,28 @@ def main() -> None:
                     "(Operator-only override: UAP_SELF_PROTECT_OFF=1.)",
                 )
         if _bash_destructive(cmd):
+            # Name the SURFACE that was touched. "policy enforcers or proxy env"
+            # is simply untrue of a lock file, and a refusal that describes the
+            # wrong thing and offers no alternative is how a loop survives a
+            # guard: the agent that hit this had been clearing the lock to force
+            # a relaunch, seven times, and nothing told it what to do instead.
+            if _mentions_deliver_coord(cmd):
+                emit(
+                    False,
+                    "BLOCKED: this removes delivery COORDINATION state. "
+                    "`.uap/deliver.lock` is the single-flight guard - deleting it "
+                    "does not free anything, it puts a SECOND mission on the same "
+                    "tree, and two of them overwrite each other's edits. "
+                    "`.uap/deliver-runs/` holds every run's checkpoint, which is "
+                    "the work itself. "
+                    "You never need to remove either: a lock whose holder is dead "
+                    "or wedged is reclaimed automatically by the next launch. "
+                    "To STOP a run instead of forcing past it, request the "
+                    "cooperative stop - `touch .uap/deliver-runs/STOP` - which "
+                    "ends it at the next turn boundary with its work checkpointed "
+                    "and the lock released. "
+                    "(Operator-only override: UAP_SELF_PROTECT_OFF=1.)",
+                )
             emit(
                 False,
                 "BLOCKED: modifying/removing the policy enforcers or proxy env is "

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.189.1 (2026-08-10)
+
+- fix(policies): the deliver lock and checkpoints are not scratch state
+
+
 ## v1.189.0 (2026-08-10)
 
 - feat(delivery): offer a stop the caller can actually reach
