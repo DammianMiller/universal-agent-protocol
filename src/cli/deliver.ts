@@ -1335,6 +1335,12 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       const foreign = overlap && overlapRoot.startsWith('/') && !overlapRoot.includes('\n')
         ? { pid: String(overlap.pid), root: overlapRoot }
         : null;
+      // Neither message names the off-switch flag any more. Printing it told a
+      // blocked caller to run something self-protect refuses the moment it is
+      // set inline, so the advice cost a turn and taught the wrong lesson:
+      // that the lock is a door with a key. The one that hit this went looking
+      // for another key and found `rm -f .uap/deliver.lock`, which is worse
+      // than the flag would have been.
       if (foreign) holderPid = foreign.pid;
       console.log(
         chalk.yellow(
@@ -1342,13 +1348,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
             ? `↩ another deliver run (pid ${foreign.pid}) already owns an OVERLAPPING project root: ` +
                 `${foreign.root} — it edits the same files, so this launch was skipped. Follow THAT run: ` +
                 `\`uap deliver --project-root ${foreign.root} --await-run\` (following this root would report ` +
-                `nothing in flight). Do NOT use --resume on a live run. (override: UAP_DELIVER_NO_LOCK=1)`
+                `nothing in flight). Do NOT use --resume on a live run. (There is an operator off-switch for the lock, but it only works from the LAUNCH environment - setting it inline is refused, so it is not a door you can open.)`
             : `↩ deliver already running for this project${holderPid ? ` (pid ${holderPid})` : ''} — ` +
                 `skipping this duplicate launch. Follow it with \`uap deliver --await-run\` (waits and reports; ` +
                 `from a tool call it returns within about a minute — "still running" is an answer, not a failure, ` +
                 `so just call it again. It starts nothing.) ` +
                 `Do NOT use --resume on a live run: resume CONTINUES a mission and would start a ` +
-                `second copy of this one. (override: UAP_DELIVER_NO_LOCK=1)`
+                `second copy of this one. (There is an operator off-switch for the lock, but it only works from the LAUNCH environment - setting it inline is refused, so it is not a door you can open.)`
         )
       );
       // --json is a CONTRACT: every exit must emit a parseable result. This path
