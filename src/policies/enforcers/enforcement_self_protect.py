@@ -121,6 +121,20 @@ DESTRUCTIVE_VERBS = (
 PROTECTED_EXEMPT = (
     ".uap/interaction/evidence",
     "policies/waivers",
+    # The STOP file is a SIGNAL, not state. It lives under deliver-runs/ and so
+    # inherited that directory's protection, which made it un-removable — and a
+    # stop request you cannot withdraw is a trap: an unconsumed STOP ends the
+    # NEXT run at its first turn boundary, wasting a launch, with no way to
+    # clear it by hand.
+    #
+    # Seen live on 2026-08-10: an agent created one at 20:46:38 and its own
+    # `rm -f .uap/deliver-runs/STOP` three seconds later was refused. It cleared
+    # only because a run happened to start and consume it. That was luck.
+    #
+    # Removing it destroys nothing: the checkpoints are the run DIRECTORIES,
+    # which stay protected, and writing the file is already allowed — a remedy
+    # you can request but not withdraw is half a remedy.
+    ".uap/deliver-runs/stop",
 )
 
 # Deliberately NARROW inside .uap/: that directory is mostly runtime state the
