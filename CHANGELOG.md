@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.193.0 (2026-08-10)
+
+- fix(delivery): size the follow wait to the caller, and add a tool off-switch
+
+
 ## v1.192.0 (2026-08-10)
 
 - feat(delivery): say up front that a deletion mission cannot succeed here
