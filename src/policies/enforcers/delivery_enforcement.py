@@ -167,6 +167,57 @@ def _changed_chars(args: dict) -> int | None:
     return None  # Write (full content) — not a trivial edit
 
 
+def _write_cost(args: dict, root: Path) -> int | None:
+    """Changed characters for a whole-file Write, or None when it is not small.
+
+    A Write used to be judged only by being a Write: a 120-character new file
+    and a 9000-character rewrite were the same answer. That is nature without
+    complexity, and it is why creating one small module cost a full
+    decompose -> epics -> gates cycle (~10 min on a local executor) while an
+    equivalent Edit went straight through.
+
+    Two things make a Write cheap, and BOTH are required:
+
+      - the content is small — same budget as an edit, so there is one number
+        to reason about and one env var to tune; and
+      - it does not REPLACE substantial existing content. Creating a file, or
+        growing a small one, risks little. Overwriting 8000 characters with 120
+        is the gutting signature, and the size of what is being destroyed is
+        the whole point — measuring only the new content would call the most
+        destructive write the cheapest.
+
+    None means "not trivially small", which is what every caller already treats
+    as "route it through deliver".
+    """
+    content = args.get("content")
+    if content is None:
+        content = args.get("new_string") or args.get("newString")
+    if content is None:
+        return None
+    new_len = len(str(content))
+    # No size check here on purpose: the caller already compares the returned
+    # cost against the same budget, and applying it twice was provably dead —
+    # a mutant deleting this check could not be distinguished by any test,
+    # because both paths refuse an oversized write. One place to change the
+    # threshold is worth more than an early return that saves one stat().
+    try:
+        prev_len = (root / _rel_of(args)).stat().st_size
+    except (OSError, ValueError, TypeError):
+        prev_len = 0  # new file: nothing to destroy
+    # Shrinking a substantial file is gutting, however small the new content.
+    # Thresholds match the executor's own anti-gutting predicate so the two
+    # cannot disagree about the same write.
+    if prev_len >= 1500 and new_len < prev_len * 0.35:
+        return None
+    return new_len
+
+
+def _rel_of(args: dict) -> str:
+    """The write target as given, for a best-effort size lookup."""
+    p = args.get("file_path") or args.get("filePath") or args.get("path") or ""
+    return str(p)
+
+
 def _deliver_lock_holder(root: Path) -> str | None:
     """PID string of a LIVE deliver run holding the project lock, else None."""
     lock = root / ".uap" / "deliver.lock"
@@ -512,6 +563,10 @@ def main() -> None:
     # than paying a full deliver cycle for a one-liner.
     if _fastpath_on():
         changed = _changed_chars(args)
+        if changed is None:
+            # Not an Edit — judge the Write on the same two axes rather than
+            # refusing it for being a Write.
+            changed = _write_cost(args, root)
         if changed is not None and changed <= _trivial_edit_chars():
             print(
                 f"[delivery-enforcement] trivial edit to '{rel_posix}' "

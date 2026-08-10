@@ -24,14 +24,23 @@ def run(args, env=None):
     return p.returncode, p.stdout
 
 
+# Content big enough to be past the trivial-write budget. These two tests are
+# about the KEY being recognised, and a tiny sample can no longer show that: a
+# small new file is now allowed on its own merits, so "allowed" would no longer
+# distinguish "the key was not recognised" from "the write was trivial". The
+# sample has to be substantial for the assertion to mean what the test name
+# says. The assertions themselves are unchanged.
+SUBSTANTIAL = "export const x = 1;\n" * 40
+
+
 class FilePathKeyTest(unittest.TestCase):
     def test_opencode_filePath_is_gated(self):
-        code, out = run({"filePath": "src/newfeature.ts", "content": "export const x=1;"})
+        code, out = run({"filePath": "src/newfeature.ts", "content": SUBSTANTIAL})
         self.assertEqual(code, 2, out)
         self.assertIn("route", out)
 
     def test_claude_file_path_still_gated(self):
-        code, _ = run({"file_path": "src/newfeature.ts", "content": "x"})
+        code, _ = run({"file_path": "src/newfeature.ts", "content": SUBSTANTIAL})
         self.assertEqual(code, 2)
 
     def test_test_file_allowed(self):
