@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.193.1 (2026-08-10)
+
+- fix(delivery): a launch stops WATCHING at the caller's budget, not the mission
+
+
 ## v1.193.0 (2026-08-10)
 
 - fix(delivery): size the follow wait to the caller, and add a tool off-switch
