@@ -297,6 +297,7 @@ import { installRunExitRecorder } from '../delivery/run-exit.js';
 import {
   shouldDetach,
   relaunchDetached,
+  STILL_RUNNING,
   isDetachedChild,
   canHostDetachLog,
   NO_DETACH_ENV,
@@ -1261,7 +1262,56 @@ export async function deliverCommand(instruction: string, options: DeliverOption
   });
   if (decision.detach && canHostDetachLog(projectRootForDetach)) {
     const stamp = new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15);
-    process.exitCode = await relaunchDetached(projectRootForDetach, stamp);
+    // Cap the mirror for a caller that gives up. The mission is already
+    // detached; mirroring past the caller's budget does not help it and
+    // converts a SUCCESSFUL launch into a reported timeout — after which the
+    // model kills the run it just started. Same discriminator as the follow
+    // budget: an agent client in the ancestry means somebody is counting.
+    const mirrorBudgetMs =
+      resolveOwnerPid() !== undefined ? FOLLOW_CLIENT_POLL_SEC * 1000 : undefined;
+    const code = await relaunchDetached(projectRootForDetach, stamp, { mirrorBudgetMs });
+    if (code === STILL_RUNNING) {
+      // The mission continues. Say so as a RESULT, not as a truncated stream:
+      // a caller that reads this as failure is the loop being fixed.
+      console.log(
+        chalk.yellow(
+          '\n⇢ still running — this launch stopped WATCHING, the mission did not stop. ' +
+            'It continues in the background.'
+        )
+      );
+      console.log(
+        chalk.dim(
+          '  Follow it with `uap deliver --await-run` (returns quickly; "still running" is an ' +
+            'answer, call it again).\n  Do NOT relaunch and do NOT kill it — the run is intact and ' +
+            'holds the lock.'
+        )
+      );
+      // --json is a contract: every exit emits parseable output. Without this a
+      // --json caller gets a truncated stream with no JSON at all, which is
+      // exactly what sent one looking for a gate override.
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            {
+              success: true,
+              stillRunning: true,
+              detached: true,
+              projectRoot: projectRootForDetach,
+              reason:
+                'the mission is running in the background; this launch stopped watching after ' +
+                `${FOLLOW_CLIENT_POLL_SEC}s because the caller has a request timeout`,
+              nextStep:
+                'Follow it with `uap deliver --await-run`. Do not relaunch and do not kill it.',
+            },
+            null,
+            2
+          )
+        );
+      }
+      process.exitCode = 0;
+      return;
+    }
+    process.exitCode = code;
     return;
   }
 
