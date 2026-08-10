@@ -42,6 +42,7 @@ import { createSpecRegistry } from '../delivery/spec-registry.js';
 import type { AcceptanceGate } from '../delivery/convergence-loop.js';
 import { guardAgainstOwnerExit } from '../delivery/orphan-guard.js';
 import { findRepoRoot, formatScopeNotice, unreachablePaths } from '../delivery/scope-notice.js';
+import { deletionTargets, formatDeletionNotice } from '../delivery/deletion-notice.js';
 
 /**
  * Decide how deliver establishes its convergence target when (or whether) the
@@ -2854,6 +2855,27 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
   } catch {
     /* scope detection is advisory */
+  }
+  // Say up front when the task asks for files to be DELETED. There is no delete
+  // tool and no shell by default, so the only move left to the model is to
+  // overwrite the file with a stub — which half-works, and that is the damage:
+  // a small file is replaced successfully and the build breaks on the missing
+  // module, while a large one is refused as gutting and the job ends half-done.
+  // Observed live on 2026-08-10 at 20% of gates after 435s.
+  // Fail-soft: an aid, never a blocker.
+  try {
+    const notice = formatDeletionNotice(deletionTargets(instruction, projectRoot));
+    if (notice) {
+      loopConfig.acceptanceContract = [loopConfig.acceptanceContract, notice]
+        .filter((s): s is string => Boolean(s && s.trim()))
+        .join('\n\n');
+      console.log(chalk.yellow(`  deletion: ${notice.split('\n')[0]}`));
+      for (const line of notice.split('\n').slice(1)) {
+        if (line.startsWith('  - ')) console.log(chalk.yellow(`  deletion: ${line.trim()}`));
+      }
+    }
+  } catch {
+    /* deletion detection is advisory */
   }
   const runState: DeliverRunState = {
     runId,
