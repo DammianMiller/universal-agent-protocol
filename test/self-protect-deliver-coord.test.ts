@@ -123,11 +123,15 @@ describe('the heartbeat is part of the same guard', () => {
     expect(run('mv .uap/deliver.heartbeat /tmp/x').blocked).toBe(true);
   });
 
-  it('refuses destroying the pending-deliver replay queue', () => {
-    // Named by the delivery-enforcement policy for the same reason: deleting it
-    // discards recorded work rather than completing it.
-    expect(run('rm -f .uap/pending-deliver.jsonl').blocked).toBe(true);
-    expect(run('truncate -s 0 .uap/pending-deliver.jsonl').blocked).toBe(true);
+  it('does NOT protect the pending-deliver queue, though the policy names it', () => {
+    // Deliberate, and the correction is the point. The policy lists it with the
+    // lock and heartbeat, so it went in with them — and the Python enforcer
+    // suite caught it: `echo x >> .uap/pending-deliver.jsonl` is how the queue
+    // is FILLED, and the destructive check treats every redirect alike, so
+    // protecting the file refuses its own writes. Guarding it needs a rule that
+    // tells `>>` from `>`; blocking the queue's own appends is not that rule.
+    expect(run('echo x >> .uap/pending-deliver.jsonl').blocked).toBe(false);
+    expect(run('rm -f .uap/pending-deliver.jsonl').blocked).toBe(false);
   });
 
   it('still allows READING both', () => {

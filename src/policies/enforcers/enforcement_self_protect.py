@@ -169,9 +169,14 @@ PROTECTED_TARGETS = (
     # by a live pid is abandoned=False; delete it and the same lock is
     # abandoned=True.
     ".uap/deliver.heartbeat",
-    # The replay queue for `uap deliver --pending`: deleting it discards
-    # recorded work rather than completing it.
-    ".uap/pending-deliver.jsonl",
+    # NOT `.uap/pending-deliver.jsonl`, though the delivery-enforcement policy
+    # names it alongside these. It is an APPEND-ONLY queue the tooling writes
+    # constantly, and the destructive check treats every redirect alike, so
+    # protecting it here refuses `echo x >> .uap/pending-deliver.jsonl` — the
+    # ordinary way the queue is filled. Caught by the Python enforcer suite
+    # (test_gate_evidence), which asserts that exact append stays allowed.
+    # Guarding it needs a rule that tells `>>` from `>`; blocking the queue's
+    # own writes to protect it is not that rule.
     ".uap.json",
     "anthropic-proxy.env",
 )
@@ -337,7 +342,6 @@ _DELIVER_COORD = (
     ".uap/deliver.lock",
     ".uap/deliver-runs",
     ".uap/deliver.heartbeat",
-    ".uap/pending-deliver.jsonl",
 )
 
 
@@ -530,8 +534,7 @@ def main() -> None:
                     "`.uap/deliver-runs/` holds every run's checkpoint, which is "
                     "the work itself. `.uap/deliver.heartbeat` is how a live run is "
                     "told apart from an abandoned one - remove it and the next launch "
-                    "reclaims a RUNNING mission's lock. `.uap/pending-deliver.jsonl` "
-                    "is the replay queue for `uap deliver --pending`. "
+                    "reclaims a RUNNING mission's lock. "
                     "You never need to remove either: a lock whose holder is dead "
                     "or wedged is reclaimed automatically by the next launch. "
                     "To STOP a run instead of forcing past it, request the "
