@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.190.1 (2026-08-10)
+
+- fix(cli): explain the working directory when add-tool fails
+- test(policies): run the new enforcer test in CI
+
+
 ## v1.190.0 (2026-08-10)
 
 - feat(policies): judge a Write on nature AND complexity
