@@ -161,6 +161,17 @@ PROTECTED_TARGETS = (
     # stopped with the STOP file, which leaves the checkpoint intact.
     ".uap/deliver.lock",
     ".uap/deliver-runs",
+    # The heartbeat is part of the SAME guard, and leaving it out left the
+    # bypass open one file over. `isDeliverLockAbandoned` treats a MISSING
+    # heartbeat plus a lock older than the wedge timeout as abandoned, so
+    # deleting it makes a live holder look dead and the next launch reclaims
+    # its lock. Verified: with the heartbeat present a two-hour-old lock held
+    # by a live pid is abandoned=False; delete it and the same lock is
+    # abandoned=True.
+    ".uap/deliver.heartbeat",
+    # The replay queue for `uap deliver --pending`: deleting it discards
+    # recorded work rather than completing it.
+    ".uap/pending-deliver.jsonl",
     ".uap.json",
     "anthropic-proxy.env",
 )
@@ -322,7 +333,12 @@ def _destructive_intent(command: str) -> bool:
     return bool(toks & set(DESTRUCTIVE_VERBS)) or bool(_REDIRECT.search(command))
 
 
-_DELIVER_COORD = (".uap/deliver.lock", ".uap/deliver-runs")
+_DELIVER_COORD = (
+    ".uap/deliver.lock",
+    ".uap/deliver-runs",
+    ".uap/deliver.heartbeat",
+    ".uap/pending-deliver.jsonl",
+)
 
 
 def _mentions_deliver_coord(command: str) -> bool:
@@ -512,7 +528,10 @@ def main() -> None:
                     "does not free anything, it puts a SECOND mission on the same "
                     "tree, and two of them overwrite each other's edits. "
                     "`.uap/deliver-runs/` holds every run's checkpoint, which is "
-                    "the work itself. "
+                    "the work itself. `.uap/deliver.heartbeat` is how a live run is "
+                    "told apart from an abandoned one - remove it and the next launch "
+                    "reclaims a RUNNING mission's lock. `.uap/pending-deliver.jsonl` "
+                    "is the replay queue for `uap deliver --pending`. "
                     "You never need to remove either: a lock whose holder is dead "
                     "or wedged is reclaimed automatically by the next launch. "
                     "To STOP a run instead of forcing past it, request the "
