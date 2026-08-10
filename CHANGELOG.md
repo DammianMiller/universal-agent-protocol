@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.189.2 (2026-08-10)
+
+- fix(policies): close the heartbeat route to the same lock bypass
+
+
 ## v1.189.1 (2026-08-10)
 
 - fix(policies): the deliver lock and checkpoints are not scratch state

@@ -108,3 +108,41 @@ describe('ordinary .uap plumbing keeps working', () => {
     expect(run('touch .uap/deliver-runs/STOP').blocked).toBe(false);
   });
 });
+
+describe('the heartbeat is part of the same guard', () => {
+  // Leaving it out left the bypass open one file over. `isDeliverLockAbandoned`
+  // treats a MISSING heartbeat plus a lock older than the wedge timeout as
+  // abandoned, so deleting it makes a LIVE holder look dead and the next launch
+  // reclaims its lock — the same two-missions-on-one-tree collision, reached
+  // without touching the lock at all. Verified against the real predicate: a
+  // two-hour-old lock held by a live pid is abandoned=false with the heartbeat
+  // present and abandoned=true once it is deleted.
+  it('refuses removing or moving the heartbeat', () => {
+    expect(run('rm -f .uap/deliver.heartbeat').blocked).toBe(true);
+    expect(run('rm .uap/deliver.heartbeat').blocked).toBe(true);
+    expect(run('mv .uap/deliver.heartbeat /tmp/x').blocked).toBe(true);
+  });
+
+  it('does NOT protect the pending-deliver queue, though the policy names it', () => {
+    // Deliberate, and the correction is the point. The policy lists it with the
+    // lock and heartbeat, so it went in with them — and the Python enforcer
+    // suite caught it: `echo x >> .uap/pending-deliver.jsonl` is how the queue
+    // is FILLED, and the destructive check treats every redirect alike, so
+    // protecting the file refuses its own writes. Guarding it needs a rule that
+    // tells `>>` from `>`; blocking the queue's own appends is not that rule.
+    expect(run('echo x >> .uap/pending-deliver.jsonl').blocked).toBe(false);
+    expect(run('rm -f .uap/pending-deliver.jsonl').blocked).toBe(false);
+  });
+
+  it('still allows READING both', () => {
+    expect(run('cat .uap/deliver.heartbeat').blocked).toBe(false);
+    expect(run('cat .uap/pending-deliver.jsonl').blocked).toBe(false);
+    expect(run('tail -5 .uap/pending-deliver.applied.jsonl').blocked).toBe(false);
+  });
+
+  it('explains what the heartbeat is for, not just that it is protected', () => {
+    const { reason } = run('rm -f .uap/deliver.heartbeat');
+    expect(reason).toMatch(/abandoned/i);
+    expect(reason).toMatch(/reclaims a RUNNING mission/i);
+  });
+});
