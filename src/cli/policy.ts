@@ -16,7 +16,7 @@ import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { getPolicyToolRegistry } from '../policies/policy-tools.js';
 import { convertPolicyToClaude } from '../policies/convert-policy-to-claude.js';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 // Resolve built-in schema/enforcer dirs relative to the INSTALLED PACKAGE
@@ -802,9 +802,54 @@ export function registerPolicyCommands(program: Command): void {
     .requiredOption('-t, --tool <name>', 'Tool name')
     .requiredOption('-c, --code <file>', 'Path to Python code file')
     .action(async (options: { policy: string; tool: string; code: string }) => {
+      // Both failure modes here have ONE cause — the working directory — and
+      // neither said so. The policy DB defaults to
+      // `<cwd>/agents/data/memory/policies.db`, and `-c` is read relative to
+      // cwd too, so running this from anywhere but the project root produced
+      // either a raw ENOENT stack trace or "Policy <uuid> not found" about a
+      // policy that plainly exists. Worse, the DB layer CREATES the directory
+      // it is pointed at, so the second case silently leaves an empty
+      // policies.db behind and then reports the id missing from it.
+      //
+      // This is the command an operator runs to put a merged enforcer INTO
+      // FORCE, usually while something is broken. It cost two round-trips on
+      // 2026-08-10 for exactly that reason.
+      const codePath = resolve(options.code);
+      if (!existsSync(codePath)) {
+        console.error(chalk.red(`No such file: ${codePath}`));
+        console.error(
+          chalk.yellow(
+            `  -c is resolved against the current directory (${process.cwd()}).\n` +
+              '  Run this from the project root, or pass an absolute path.'
+          )
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      const dbPath = join(process.cwd(), 'agents', 'data', 'memory', 'policies.db');
+      const dbExists = existsSync(dbPath);
+
       const registry = getPolicyToolRegistry();
-      const pythonCode = readFileSync(options.code, 'utf-8');
-      await registry.storeToolCode(options.policy, options.tool, pythonCode);
+      const pythonCode = readFileSync(codePath, 'utf-8');
+      try {
+        await registry.storeToolCode(options.policy, options.tool, pythonCode);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/not found/i.test(msg)) throw err;
+        console.error(chalk.red(msg));
+        console.error(
+          chalk.yellow(
+            `  Policies are read from ${dbPath}` +
+              (dbExists ? '' : ' (which does not exist)') +
+              `.\n  That path is relative to the current directory (${process.cwd()}), so a policy ` +
+              'that exists\n  in the project can look missing when this is run from somewhere else. ' +
+              'Run it from\n  the project root. `uap policy list` shows the ids in the DB being read.'
+          )
+        );
+        process.exitCode = 1;
+        return;
+      }
       console.log(chalk.green(`Tool "${options.tool}" added to policy ${options.policy}`));
     });
 
