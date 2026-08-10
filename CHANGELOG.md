@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.189.3 (2026-08-10)
+
+- fix(delivery): stop advertising a door the gate keeps shut
+- fix(policies): drop the pending queue from the protected list
+
+
 ## v1.189.2 (2026-08-10)
 
 - fix(policies): close the heartbeat route to the same lock bypass
