@@ -51,6 +51,16 @@ export interface IntegrityReport {
   missing: string[];
   /** Files present but absent from the manifest (never materialized by us). */
   unknown: string[];
+  /**
+   * Files that match the manifest but NOT the current source — intact copies of
+   * a superseded version.
+   *
+   * Separate from `changed` because the two mean opposite things. A changed file
+   * was tampered with. A stale file is exactly what was recorded, and that is
+   * the problem: the manifest agrees with it, so integrity passes while the gate
+   * executes code that a later release replaced.
+   */
+  stale: string[];
   /** True when there is no manifest to check against. */
   unmanaged: boolean;
 }
@@ -125,10 +135,50 @@ export function readManifest(toolDir: string): Map<string, string> | null {
   return map;
 }
 
-export function verifyIntegrity(toolDir: string): IntegrityReport {
+/**
+ * Materialized copies that match the manifest but no longer match SOURCE.
+ *
+ * `changed` and `stale` are different failures with different remedies, and
+ * collapsing them is what let this go unnoticed. A CHANGED file was tampered
+ * with: the copy drifted from what was recorded. A STALE file is intact and
+ * faithfully records an OLD version — the manifest agrees with it, so integrity
+ * verification passes while the gate runs code that was superseded.
+ *
+ * That is the shape of nearly every enforcer fix in this repo: merged, green,
+ * and inert. `uap policy verify` printed "Enforcers match their manifest" on a
+ * tree whose source had moved two releases ahead of the running copy.
+ *
+ * Source is resolved from the INSTALLED package first, so this works in any
+ * project, not only in this repo.
+ */
+function staleAgainstSource(
+  toolDir: string,
+  manifest: Map<string, string>,
+  sourceDir: string | null
+): string[] {
+  if (!sourceDir) return []; // no source to compare against — unknowable, not stale
+  const stale: string[] = [];
+  for (const file of manifest.keys()) {
+    const copy = join(toolDir, file);
+    const src = join(sourceDir, sourceNameFor(file));
+    if (!existsSync(copy) || !existsSync(src)) continue; // missing is a separate verdict
+    if (sha256(readFileSync(copy)) !== sha256(readFileSync(src))) stale.push(file);
+  }
+  return stale;
+}
+
+/** The source dir a manifest recorded, falling back to the installed package. */
+function sourceDirFor(toolDir: string, cwd: string = process.cwd()): string | null {
+  const recorded = existsSync(join(toolDir, SOURCE_NAME))
+    ? readFileSync(join(toolDir, SOURCE_NAME), 'utf-8').trim()
+    : null;
+  return recorded && existsSync(recorded) ? recorded : resolveEnforcerSourceDir(cwd);
+}
+
+export function verifyIntegrity(toolDir: string, cwd: string = process.cwd()): IntegrityReport {
   const manifest = readManifest(toolDir);
   if (!manifest) {
-    return { changed: [], missing: [], unknown: [], unmanaged: true };
+    return { changed: [], missing: [], unknown: [], stale: [], unmanaged: true };
   }
   const changed: string[] = [];
   const missing: string[] = [];
@@ -141,7 +191,11 @@ export function verifyIntegrity(toolDir: string): IntegrityReport {
     if (sha256(readFileSync(p)) !== hash) changed.push(file);
   }
   const unknown = pyFiles(toolDir).filter((f) => !manifest.has(f));
-  return { changed, missing, unknown, unmanaged: false };
+  // Only files that are otherwise intact can be stale; a tampered or missing
+  // copy already has a louder verdict and the same remedy.
+  const intact = new Map([...manifest].filter(([f]) => !changed.includes(f) && !missing.includes(f)));
+  const stale = staleAgainstSource(toolDir, intact, sourceDirFor(toolDir, cwd));
+  return { changed, missing, unknown, stale, unmanaged: false };
 }
 
 /**
@@ -157,19 +211,28 @@ export function repairIntegrity(toolDir: string, cwd: string = process.cwd()): R
   const unrecoverable: string[] = [];
   if (report.unmanaged) return { ...report, restored, unrecoverable };
 
-  const recorded = existsSync(join(toolDir, SOURCE_NAME))
-    ? readFileSync(join(toolDir, SOURCE_NAME), 'utf-8').trim()
-    : null;
-  const sourceDir =
-    recorded && existsSync(recorded) ? recorded : resolveEnforcerSourceDir(cwd);
+  const sourceDir = sourceDirFor(toolDir, cwd);
 
-  for (const file of [...report.missing, ...report.changed]) {
+  // Stale copies are refreshed alongside tampered ones: both end with the
+  // materialized file equal to source, and a repair that left the gate running
+  // superseded code would be repairing the wrong thing.
+  for (const file of [...report.missing, ...report.changed, ...report.stale]) {
     const src = sourceDir ? join(sourceDir, sourceNameFor(file)) : null;
     if (src && existsSync(src)) {
       copyFileSync(src, join(toolDir, file));
       restored.push(file);
     } else {
       unrecoverable.push(file);
+    }
+  }
+  // Re-record, or the refreshed copies would read as TAMPERED on the next
+  // verify — the manifest still holds the superseded hashes.
+  if (restored.length) {
+    try {
+      writeIntegrityManifest(toolDir, sourceDir);
+    } catch {
+      /* the copies are already correct; a manifest write failure is reported
+         by the next verify rather than losing the repair */
     }
   }
   return { ...report, restored, unrecoverable };

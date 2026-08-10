@@ -366,14 +366,20 @@ async function verifyIntegrityCommand(options: { repair?: boolean; json?: boolea
     return;
   }
 
-  const drift = report.changed.length + report.missing.length;
+  // `stale` counts as drift. It is the quiet one: the copy matches the manifest
+  // exactly, so the old message — "Enforcers match their manifest" — was TRUE
+  // and useless, printed over a gate running superseded code. Nearly every
+  // enforcer fix in this repo has been merged, green, and inert for exactly
+  // that reason.
+  const drift = report.changed.length + report.missing.length + report.stale.length;
   if (!drift && !report.unknown.length) {
-    console.log(chalk.green('\n✓ Enforcers match their manifest.'));
+    console.log(chalk.green('\n✓ Enforcers match their manifest and the installed source.'));
     return;
   }
 
   for (const f of report.changed) console.log(`  ${chalk.yellow('changed')}  ${f}`);
   for (const f of report.missing) console.log(`  ${chalk.red('missing')}  ${f}`);
+  for (const f of report.stale) console.log(`  ${chalk.yellow('stale')}    ${f}`);
   // Not an error: an operator may have added an enforcer by hand, and deleting
   // their work to satisfy a checksum is worse than the drift.
   for (const f of report.unknown) console.log(`  ${chalk.dim('untracked')}  ${f}`);
@@ -382,6 +388,14 @@ async function verifyIntegrityCommand(options: { repair?: boolean; json?: boolea
 
   if (!options.repair && drift) {
     console.log(chalk.dim('\n  Re-run with --repair to restore them from source.'));
+    if (report.stale.length) {
+      console.log(
+        chalk.dim(
+          '  `stale` means the copy is intact but SUPERSEDED — the gate is running an older\n' +
+            '  version than the installed package. That is what --repair puts into force.'
+        )
+      );
+    }
   }
   if (unrecoverable.length) process.exitCode = 1;
 }
