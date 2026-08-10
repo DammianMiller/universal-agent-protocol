@@ -57,6 +57,11 @@ describe('the mirror budget', () => {
     const root = project();
     const code = await relaunchDetached(root, 'teststamp-unbounded');
     expect(code).not.toBe(STILL_RUNNING); // it waited and reported a real code
+    // Let the mirror's FINAL flush land before afterEach deletes the tree.
+    // resolve() happens 500ms before that last pump, so tearing the directory
+    // down immediately raced it — which is exactly how this test broke the
+    // publish on CI (ENOENT on its own log) while passing locally.
+    await new Promise((r) => setTimeout(r, 800));
   }, 40_000);
 
   it('STILL_RUNNING cannot be confused with a real exit code', () => {
@@ -87,3 +92,4 @@ describe('the mirror budget', () => {
     expect(sizeAt()).toBeGreaterThanOrEqual(before);
   }, 40_000);
 });
+
