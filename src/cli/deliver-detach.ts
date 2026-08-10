@@ -102,6 +102,17 @@ export async function relaunchDetached(projectRoot: string, stamp: string): Prom
   console.log(
     `⇢ mission detached (pid ${child.pid}) so it outlives this tool call — streaming ${logPath}`
   );
+  // This line is the only place the pid is handed over, and for ~90 seconds it
+  // is the ONLY handle the caller has — the runId does not exist yet. So the
+  // clean alternative has to be offered here, next to the pid, or the pid is
+  // what gets used. It is: eight of eleven runs on 2026-08-10 died by signal,
+  // most before their first checkpoint.
+  console.log(
+    `  to stop it: touch ${join(projectRoot, '.uap', 'deliver-runs', 'STOP')}\n` +
+      '  (it stops at the next turn boundary with its work checkpointed and the lock\n' +
+      '   released. Killing the pid does none of that — the run loses everything it\n' +
+      '   had finished, leaves the lock behind, and the next launch starts from zero.)'
+  );
 
   // Mirror the log to our stdout for as long as we are alive.
   return await new Promise<number>((resolve) => {

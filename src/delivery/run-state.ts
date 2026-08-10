@@ -313,9 +313,45 @@ export function stopFilePath(projectRoot: string, runId: string): string {
   return join(deliverRunsDir(projectRoot), runId, 'STOP');
 }
 
-/** True when a stop has been requested for this run. Checked by the loop per turn. */
+/**
+ * A stop-file that does not need a runId: `.uap/deliver-runs/STOP`.
+ *
+ * The per-run STOP is the right thing for a dashboard Cancel, which knows which
+ * run it is cancelling. An AGENT does not: the detach banner hands it a pid
+ * ~90 seconds before the run registers a runId, so for the whole window in
+ * which it decides to intervene, the only handle it has is that pid — and it
+ * uses it. Measured on 2026-08-10: eleven runs in two and a half hours, eight
+ * of them SIGTERMed, most before completing a single turn, one launched roughly
+ * every four minutes.
+ *
+ * A kill is the worst of the options. SIGKILL runs no handler, so nothing is
+ * checkpointed, no exit is recorded, and the lock is left behind — the next
+ * launch starts from zero, which is what makes it a loop rather than a
+ * decision. This gives that same impatient caller a handle it can actually use
+ * at the moment it wants one.
+ */
+export function projectStopFilePath(projectRoot: string): string {
+  return join(deliverRunsDir(projectRoot), 'STOP');
+}
+
+/**
+ * True when a stop has been requested for this run. Checked by the loop per turn.
+ *
+ * The project-level file is CONSUMED when it is observed. A stop-file that
+ * outlived its run would silently stop every future one, which is a worse
+ * failure than the one this fixes — and unlike the per-run file, nothing
+ * scopes this one to a mission that has ended.
+ */
 export function isStopRequested(projectRoot: string, runId: string): boolean {
-  try { return isValidRunId(runId) && existsSync(stopFilePath(projectRoot, runId)); } catch { return false; }
+  try {
+    if (isValidRunId(runId) && existsSync(stopFilePath(projectRoot, runId))) return true;
+    const shared = projectStopFilePath(projectRoot);
+    if (existsSync(shared)) {
+      try { unlinkSync(shared); } catch { /* consumed by a racing reader */ }
+      return true;
+    }
+    return false;
+  } catch { return false; }
 }
 
 /** Request a cooperative stop: write the run's STOP file (creating the dir if needed). */
