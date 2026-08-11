@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.194.0 (2026-08-11)
+
+- feat(delivery): a run before turn 1 is PLANNING, and now says so
+
+
 ## v1.193.2 (2026-08-10)
 
 - fix(cli): unbreak the master publish my own test broke
