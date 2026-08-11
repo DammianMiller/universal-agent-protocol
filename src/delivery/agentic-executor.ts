@@ -144,6 +144,86 @@ export function readFileWindow(
   );
 }
 
+/** Bytes a single `list_dir` / `run_bash` reply may occupy. */
+export const TOOL_OUTPUT_MAX_BYTES = 4_000;
+
+/**
+ * One window of a directory listing, plus what it left out.
+ *
+ * Same defect as `read_file` had, in a different costume: `readdirSync(...)
+ * .join('\n').slice(0, 4000)` cut mid-name and said nothing, so a large
+ * directory was silently unlistable past its first ~200 entries and the agent
+ * had no way to learn the rest existed.
+ *
+ * Truncates on ENTRY boundaries — half a filename is worse than no filename,
+ * because the model will confidently `read_file` it — and takes the same
+ * 1-based `offset` as `read_file` so a big directory is reachable rather than
+ * merely honest about being cut.
+ */
+export function listingWindow(
+  entries: readonly string[],
+  opts: { offset?: number; maxBytes?: number; path?: string } = {}
+): string {
+  const maxBytes = Math.max(1, opts.maxBytes ?? TOOL_OUTPUT_MAX_BYTES);
+  const total = entries.length;
+  const rawOffset = Number(opts.offset);
+  const start = Number.isFinite(rawOffset) ? Math.max(1, Math.trunc(rawOffset)) : 1;
+
+  if (total === 0) return '';
+  if (start > total) {
+    return `NOTE: offset ${start} is past the end of ${opts.path ?? 'this directory'} (${total} entries).`;
+  }
+
+  const shown: string[] = [];
+  let used = 0;
+  for (const entry of entries.slice(start - 1)) {
+    const cost = entry.length + 1;
+    if (shown.length > 0 && used + cost > maxBytes) break;
+    shown.push(entry);
+    used += cost;
+  }
+  const end = start + shown.length - 1;
+  const body = shown.join('\n');
+  if (start === 1 && end >= total) return body;
+
+  const next = end + 1;
+  const more =
+    next <= total
+      ? ` Call list_dir with {"path":"${opts.path ?? '.'}","offset":${next}} for the rest.`
+      : '';
+  return `${body}\n\n… showing entries ${start}-${end} of ${total}.${more}`;
+}
+
+/**
+ * A command's output, clipped from the MIDDLE rather than the end.
+ *
+ * `${stdout}${stderr}`.slice(0, 4000) keeps the head — which is the worst half
+ * to keep. A failing build puts its summary at the END ("error: could not
+ * compile", "3 failed, 41 passed", the exit line); head-only truncation hands
+ * the model a wall of compiler noise with the verdict cut off, and it cannot
+ * ask again because command output is not re-fetchable the way a file is.
+ *
+ * So both ends: the head carries the FIRST error (the one that usually causes
+ * the rest) and the invocation, the tail carries the verdict. The elision is
+ * stated in the middle where it happened, because a gap the reader cannot see
+ * is a gap the reader will read straight across.
+ */
+export function clipCommandOutput(
+  output: string,
+  maxBytes: number = TOOL_OUTPUT_MAX_BYTES
+): string {
+  if (output.length <= maxBytes) return output;
+  const budget = Math.max(1, maxBytes);
+  // Tail-weighted: the verdict is worth more than the preamble, but the first
+  // error still has to survive.
+  const headBytes = Math.floor(budget * 0.4);
+  const tailBytes = budget - headBytes;
+  const head = output.slice(0, headBytes);
+  const tail = output.slice(output.length - tailBytes);
+  const elided = output.length - head.length - tail.length;
+  return `${head}\n\n… [${elided} bytes of output elided — this is the START and the END of ${output.length} bytes] …\n\n${tail}`;
+}
+
 /** Tool-call rounds before a final answer is forced (knob `UAP_MAX_TOOL_ROUNDS`). */
 export function defaultMaxToolRounds(): number {
   const set = (process.env.UAP_MAX_TOOL_ROUNDS ?? '').trim();
@@ -383,10 +463,18 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'list_dir',
-      description: 'List files/dirs at a path relative to the project root.',
+      description:
+        'List files/dirs at a path relative to the project root. A large directory comes ' +
+        'back one window at a time and the reply says so — pass offset (1-based entry) for the rest.',
       parameters: {
         type: 'object',
-        properties: { path: { type: 'string' } },
+        properties: {
+          path: { type: 'string' },
+          offset: {
+            type: 'integer',
+            description: '1-based entry to start at. Omit for the start of the listing.',
+          },
+        },
         required: ['path'],
       },
     },
@@ -763,10 +851,11 @@ export function repeatReadNote(
   // page 1, and scolding a model for paging through a long file would push it
   // straight back into the read-loop this is meant to end. Only a genuine
   // repeat — same path, same window, unchanged on disk — earns the note.
-  const offsetKey =
-    name === 'read_file' && Number.isFinite(Number(args.offset))
-      ? `@${Math.max(1, Math.trunc(Number(args.offset)))}`
-      : '';
+  // Both windowed tools, not just read_file: list_dir pages too now, and a
+  // directory's second page is no more a re-read than a file's.
+  const offsetKey = Number.isFinite(Number(args.offset))
+    ? `@${Math.max(1, Math.trunc(Number(args.offset)))}`
+    : '';
   const key = `${name}:${args.path}${offsetKey}`;
   const abs = resolve(projectRoot, args.path);
   const mtime = mtimeOf(abs);
@@ -832,11 +921,12 @@ export function runTool(
       // see what is in there. Serve that intent instead of failing, and name the
       // right tool for next time. A wasted turn becomes a useful one.
       if (statSync(abs).isDirectory()) {
-        const entries = readdirSync(abs)
-          .filter((e) => !AGENT_INTERNAL_DIRS.includes(e))
-          .map((e) => (statSync(join(abs, e)).isDirectory() ? `${e}/` : e))
-          .join('\n')
-          .slice(0, 4000);
+        const entries = listingWindow(
+          readdirSync(abs)
+            .filter((e) => !AGENT_INTERNAL_DIRS.includes(e))
+            .map((e) => (statSync(join(abs, e)).isDirectory() ? `${e}/` : e)),
+          { path: String(args.path) }
+        );
         return (
           `NOTE: '${String(args.path)}' is a DIRECTORY, not a file — use list_dir for it. ` +
           `Its contents:\n${entries}`
@@ -852,13 +942,14 @@ export function runTool(
       const internal = agentInternalReason(projectRoot, abs);
       if (internal) return internal;
       if (!existsSync(abs)) return `ERROR: not found: ${args.path}`;
-      return readdirSync(abs)
-        // Also HIDE the internal dirs from any listing (e.g. the project root), so
-        // the agent never even sees `.uap/` and is not tempted to spelunk it.
-        .filter((e) => !AGENT_INTERNAL_DIRS.includes(e))
-        .map((e) => (statSync(join(abs, e)).isDirectory() ? `${e}/` : e))
-        .join('\n')
-        .slice(0, 4000);
+      return listingWindow(
+        readdirSync(abs)
+          // Also HIDE the internal dirs from any listing (e.g. the project root), so
+          // the agent never even sees `.uap/` and is not tempted to spelunk it.
+          .filter((e) => !AGENT_INTERNAL_DIRS.includes(e))
+          .map((e) => (statSync(join(abs, e)).isDirectory() ? `${e}/` : e)),
+        { offset: args.offset as number | undefined, path: String(args.path ?? '.') }
+      );
     }
     if (name === 'write_file') {
       const abs = safePath(projectRoot, String(args.path));
@@ -1218,7 +1309,7 @@ export function runTool(
           /* best effort */
         }
       }
-      const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(0, 4000);
+      const out = clipCommandOutput(`${r.stdout ?? ''}${r.stderr ?? ''}`);
       const note =
         (restored.length > 0
           ? `\n[blocked: restored ${restored.length} protected file(s) your command modified]`

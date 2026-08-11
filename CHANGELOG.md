@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.195.3 (2026-08-11)
+
+- fix(delivery): list_dir cut names in half, run_bash threw away the verdict
+
+
 ## v1.195.2 (2026-08-11)
 
 - fix(proxy): non-streaming turns logged a request and no answer
