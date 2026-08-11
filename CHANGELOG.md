@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.197.0 (2026-08-11)
+
+- feat(delivery): size the edit fast-path in .uap.json, not env-only
+
+
 ## v1.196.0 (2026-08-11)
 
 - feat(delivery): refuse a write that re-adds a definition the file already has
