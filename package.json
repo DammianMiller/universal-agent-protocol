@@ -1,6 +1,6 @@
 {
   "name": "@miller-tech/uap",
-  "version": "1.197.0",
+  "version": "1.198.0",
   "description": "Autonomous AI agent memory system with CLAUDE.md protocol enforcement",
   "type": "module",
   "main": "dist/index.js",
@@ -31,7 +31,7 @@
     "install:web": "bash scripts/setup/install-web.sh",
     "install:desktop": "bash scripts/setup/install-desktop.sh",
     "install:cloakbrowser": "tsx scripts/setup/install-cloakbrowser.ts",
-    "postinstall": "echo '\n\u2728 Run: npx @miller-tech/uap init --interactive'",
+    "postinstall": "echo '\n✨ Run: npx @miller-tech/uap init --interactive'",
     "version:patch": "bash scripts/version-bump.sh patch",
     "version:minor": "bash scripts/version-bump.sh minor",
     "version:major": "bash scripts/version-bump.sh major",
