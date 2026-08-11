@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.195.1 (2026-08-11)
+
+- fix(delivery): read_file hid 97% of a file and never said so
+
+
 ## v1.195.0 (2026-08-11)
 
 - feat(delivery): reuse a recent plan for the same instruction
