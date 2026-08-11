@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.195.2 (2026-08-11)
+
+- fix(proxy): non-streaming turns logged a request and no answer
+
+
 ## v1.195.1 (2026-08-11)
 
 - fix(delivery): read_file hid 97% of a file and never said so
