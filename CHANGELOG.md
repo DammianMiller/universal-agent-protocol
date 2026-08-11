@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.196.0 (2026-08-11)
+
+- feat(delivery): refuse a write that re-adds a definition the file already has
+
+
 ## v1.195.3 (2026-08-11)
 
 - fix(delivery): list_dir cut names in half, run_bash threw away the verdict
