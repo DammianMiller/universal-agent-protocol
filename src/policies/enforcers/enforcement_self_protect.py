@@ -18,6 +18,7 @@ There is intentionally NO model-reachable bypass: honoring UAP_DELIVER_BYPASS he
 would reopen the hole (the model would just set it). Operator override is
 out-of-band only: UAP_SELF_PROTECT_OFF=1 in the trusted launch env.
 """
+import json
 import os
 import posixpath
 import re
@@ -369,6 +370,107 @@ def _mentions_deliver_coord(command: str) -> bool:
     return any(t in text for t in _DELIVER_COORD)
 
 
+# --- Signalling a LIVE deliver run -------------------------------------------
+#
+# The lock, the run checkpoints and the heartbeat are protected above, but the
+# RUN ITSELF was not: `kill <pid>` ended a mission mid-turn and no rule saw it.
+#
+# Measured 2026-08-11: three consecutive runs reached turn 3, turn 8 and turn 10
+# and every one was terminated from outside. The journal caught the exact shape,
+# a kill of that run's own pid followed by a cooperative stop request, five
+# minutes after launch. Both halves are the caller trying to stop a run; only
+# the second keeps the work. The first drops the turn on the floor with the lock
+# still held, and it is why "deliver never gets past planning" was believed
+# while the runs were in fact working.
+#
+# Deliberately NARROW. Killing anything else stays allowed - a blanket refusal
+# on `kill` would block ordinary process cleanup for no gain. The rule fires
+# only when the target is verified to be a live deliver run.
+
+# `kill -0` is a liveness PROBE and must stay allowed: refusing it would break
+# the very check that tells a caller whether a run is still alive.
+_KILL_RE = re.compile(r"\bkill\s+(?P<flag>-[\w]+\s+)?(?P<pids>[\d\s]+)")
+_PKILL_RE = re.compile(r"\b(?:pkill|killall)\b(?P<rest>[^;&|]*)")
+_PROBE_SIGNALS = {"-0"}
+
+
+def _signalled_pids(command: str) -> set:
+    """PIDs a command would send a TERMINATING signal to."""
+    out = set()
+    for m in _KILL_RE.finditer(command or ""):
+        if (m.group("flag") or "").strip() in _PROBE_SIGNALS:
+            continue
+        for tok in (m.group("pids") or "").split():
+            if tok.isdigit():
+                out.add(int(tok))
+    return out
+
+
+def _cmdline_of(pid: int) -> str:
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as fh:
+            return fh.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def _live_deliver_runs(root) -> dict:
+    """{pid: runId} for deliver runs that are RUNNING and still alive.
+
+    Verifies the pid against /proc rather than trusting state.json. Pids are
+    recycled, and a stale record pointing at a reused pid would otherwise refuse
+    an unrelated kill - the same PID-reuse trap that once deadlocked the deliver
+    lock. If the process is not a deliver, the record is stale and the kill is
+    none of this rule's business.
+    """
+    runs = {}
+    base = Path(root) / ".uap" / "deliver-runs"
+    try:
+        entries = list(base.iterdir())
+    except OSError:
+        return runs
+    for entry in entries:
+        try:
+            data = json.loads((entry / "state.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        pid = data.get("pid")
+        if not isinstance(pid, int) or data.get("status") != "running":
+            continue
+        if data.get("exit"):
+            continue
+        if "deliver" not in _cmdline_of(pid):
+            continue
+        runs[pid] = str(data.get("runId") or entry.name)
+    return runs
+
+
+def _kills_live_deliver_run(command: str, root) -> str:
+    """The runId this command would terminate, or "" when it terminates none."""
+    if not command or not re.search(r"\b(?:kill|pkill|killall)\b", command):
+        return ""
+    live = _live_deliver_runs(root)
+    if not live:
+        return ""
+    for pid in _signalled_pids(command):
+        if pid in live:
+            return live[pid]
+    # Pattern kills name no pid: test the pattern against what the run IS.
+    for m in _PKILL_RE.finditer(command):
+        for raw in re.findall(r"""["\']([^"\']+)["\']|(\S+)""", m.group("rest") or ""):
+            token = (raw[0] or raw[1]).strip()
+            if not token or token.startswith("-"):
+                continue
+            try:
+                pat = re.compile(token)
+            except re.error:
+                continue
+            for pid, run_id in live.items():
+                if pat.search(_cmdline_of(pid)):
+                    return run_id
+    return ""
+
+
 def _direct_destructive(command: str) -> bool:
     """Destructive op naming a protected path, judged per command segment."""
     cd_into_protected = False
@@ -532,6 +634,23 @@ def main() -> None:
                     "`deliver` tool instead of disabling the gate. "
                     "(Operator-only override: UAP_SELF_PROTECT_OFF=1.)",
                 )
+        live_run = _kills_live_deliver_run(cmd, repo_root())
+        if live_run:
+            emit(
+                False,
+                "BLOCKED: that signal would kill deliver run %s, which is RUNNING "
+                "right now. Killing it drops the turn in flight - its work is lost "
+                "and the lock stays held until the next launch reclaims it. "
+                "Measured 2026-08-11: three runs were killed this way at turns 3, 8 "
+                "and 10 while they were working, and the runs were then reported as "
+                "'stuck in planning'. "
+                "To STOP it and KEEP the work, request the cooperative stop - "
+                "`touch .uap/deliver-runs/STOP` - which ends the run at the next "
+                "turn boundary with its checkpoint written and the lock released. "
+                "To watch it instead, `uap deliver --await-run` reports live "
+                "progress. (Operator-only override: UAP_SELF_PROTECT_OFF=1.)"
+                % live_run,
+            )
         if _bash_destructive(cmd):
             # Name the SURFACE that was touched. "policy enforcers or proxy env"
             # is simply untrue of a lock file, and a refusal that describes the
