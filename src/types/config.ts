@@ -444,6 +444,21 @@ export const DeliverySchema = z.object({
   // UAP_USER_VALIDATION=0 downgrades to advisory for one run (the env var is
   // self-protect-blocked so the model cannot persist it).
   userValidation: z.enum(['block', 'advisory', 'off']).default('block'),
+  // Edit fast-path budgets (hooks/fastpath_gate.py). How much un-routed change
+  // a single file may accumulate before the next edit must go through deliver.
+  //
+  // Here rather than env-only because the right number is a PROJECT decision —
+  // how big the work is, what a deliver cycle costs on the local executor — and
+  // env-only meant only whoever launched the agent could set it, with the
+  // choice leaving no trace in the repo.
+  //
+  // DELIBERATELY `.optional()` with no `.default()`: a default would be
+  // materialised into every config the loader round-trips, turning an unset
+  // budget into a written-down one nobody chose. Absent means "use the hook's
+  // own default" (240 / 800 / 6). The environment still overrides both.
+  trivialEditChars: z.number().int().min(0).optional(),
+  cumulativeChars: z.number().int().min(0).optional(),
+  cumulativeEdits: z.number().int().min(0).optional(),
 });
 
 // DESIGN.md integration (interrogate/lint + reactor design guidance + token gate).

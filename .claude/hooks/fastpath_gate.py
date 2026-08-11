@@ -18,15 +18,50 @@ tally resets. So un-validated drift per file is bounded to ~CUM_CHARS.
 stdin: the tool_input JSON. exit 0 = fast-path (allow directly); exit 1 = route
 through deliver. On any parse/IO trouble it fails toward ROUTING (safe).
 
-env: TRIVIAL (per-edit trivial threshold, default 240), CUM_CHARS (cumulative
-budget, default 800), CUM_EDITS (cumulative edit-count budget, default 6),
-UAP_MAIN_ROOT (project root holding .uap/, default cwd). Test files always
-fast-path and never accumulate.
+Budgets come from `.uap.json` (`delivery.trivialEditChars`,
+`delivery.cumulativeChars`, `delivery.cumulativeEdits`) so sizing them is a
+committed, reviewable project decision rather than something only the launching
+operator can set. The environment still wins where it is set: TRIVIAL,
+CUM_CHARS, CUM_EDITS (defaults 240 / 800 / 6). UAP_MAIN_ROOT names the project
+root holding .uap/ (default cwd). Test files always fast-path and never
+accumulate.
 """
 import json
 import os
 import sys
 from pathlib import Path
+
+
+def _configured(key: str, env_name: str, default: int) -> int:
+    """A budget, from the environment or the project's committed config.
+
+    These budgets decide how much un-routed change a file may accumulate, which
+    is a PROJECT decision — how big the work is, how much the local executor
+    costs per cycle. Env-only meant only whoever launched the agent could size
+    them, and the choice left no trace in the repo. `.uap.json` makes it a
+    committed, reviewable setting.
+
+    Environment still wins, so an operator can override a project's value for
+    one session without editing the repo.
+    """
+    raw = os.environ.get(env_name)
+    if raw is not None:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass  # a malformed override falls through to the config/default
+    root = os.environ.get("UAP_MAIN_ROOT") or "."
+    try:
+        cfg = json.loads((Path(root) / ".uap.json").read_text())
+        value = (cfg.get("delivery") or {}).get(key)
+        if isinstance(value, bool):
+            return default          # a bool is not a budget
+        if isinstance(value, (int, float)):
+            return max(0, int(value))
+    except Exception:
+        pass  # unreadable/absent config is not an error — fall back to default
+    return default
+
 
 TEST_MARKERS = (
     ".test.", ".spec.", "_test.", "test_", "/test/", "/tests/",
@@ -81,13 +116,13 @@ def main() -> int:
         return 0  # test files always fast-path, no accounting
 
     c = _changed_chars(a)
-    trivial_threshold = int(os.environ.get("TRIVIAL", "240"))
+    trivial_threshold = _configured("trivialEditChars", "TRIVIAL", 240)
     if c is None or c > trivial_threshold:
         return 1  # non-trivial (or no diff info) → route
 
     # Trivial source edit: allow only while cumulative drift stays under budget.
-    cum_chars = int(os.environ.get("CUM_CHARS", "800"))
-    cum_edits = int(os.environ.get("CUM_EDITS", "6"))
+    cum_chars = _configured("cumulativeChars", "CUM_CHARS", 800)
+    cum_edits = _configured("cumulativeEdits", "CUM_EDITS", 6)
     root = os.environ.get("UAP_MAIN_ROOT") or "."
     accum_file = Path(root) / ".uap" / "fastpath-accum.json"
     try:
