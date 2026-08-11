@@ -597,6 +597,154 @@ function editGuttingRefusal(path: string, before: string, after: string): string
   );
 }
 
+/**
+ * Top-level definition HEADERS in a file, counted.
+ *
+ * Keyed on the whole header line, not the name, and that distinction is the
+ * whole design. Overloading is legal and common — Postgres `f(int)` beside
+ * `f(text)`, a TypeScript overload set — and those have DIFFERENT headers. An
+ * appended copy has an IDENTICAL one. Counting names would refuse the first and
+ * miss nothing extra; counting headers refuses only the copy.
+ *
+ * Column 0 only. A method inside a class or a nested helper is indented, and
+ * two classes may legitimately both define `run`. Top-level definitions are
+ * where re-adding is unambiguous.
+ *
+ * An unrecognised extension yields nothing, so the guard is inert rather than
+ * guessing at a language it does not know.
+ */
+export function topLevelDefinitionHeaders(content: string, path: string): Map<string, number> {
+  const ext = (path.split('.').pop() ?? '').toLowerCase();
+  const patterns: RegExp[] | undefined = {
+    sql: [
+      /^CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?(?:FUNCTION|PROCEDURE|VIEW|TABLE|TYPE|INDEX)\b.*/i,
+    ],
+    ts: [TS_DEF, TS_CONST],
+    tsx: [TS_DEF, TS_CONST],
+    js: [TS_DEF, TS_CONST],
+    jsx: [TS_DEF, TS_CONST],
+    mjs: [TS_DEF, TS_CONST],
+    py: [/^(?:async\s+)?(?:def|class)\s+\w+.*/],
+    rs: [/^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait)\s+\w+.*/],
+    go: [/^func\s+\w+.*/, /^type\s+\w+\s+.*/],
+  }[ext];
+  if (!patterns) return new Map();
+
+  const counts = new Map<string, number>();
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]!;
+    // Column 0: no leading whitespace.
+    if (raw !== raw.trimStart()) continue;
+    const line = raw.trim();
+    // No comment filter: every pattern is anchored at ^, so `-- CREATE …`,
+    // `// export function …` and `# def …` cannot match in the first place.
+    // A filter here survived mutation because it could never change an outcome.
+    if (!line) continue;
+    for (const re of patterns) {
+      if (!re.test(line)) continue;
+      counts.set(signatureKey(lines, i), (counts.get(signatureKey(lines, i)) ?? 0) + 1);
+      break;
+    }
+  }
+  return counts;
+}
+
+/** How many lines of a wrapped signature to gather before giving up. */
+const SIGNATURE_MAX_LINES = 24;
+
+/**
+ * The WHOLE signature, not just the line the definition starts on.
+ *
+ * Found by running this over the repo itself: `src/benchmarks/model-integration.ts`
+ * declares `runModelBenchmark` three times — a legitimate TypeScript overload
+ * set — and two of those start with the identical line
+ * `export async function runModelBenchmark(`, because the parameters wrap. Keying
+ * on that first line alone would call a real overload a duplicate and refuse a
+ * legitimate write. The parameters are exactly what distinguishes overloads, so
+ * the key has to reach them.
+ *
+ * Gathers until the parentheses balance, bounded, so a malformed or enormous
+ * signature degrades to "just this line" instead of swallowing the file.
+ */
+function signatureKey(lines: readonly string[], start: number): string {
+  let text = lines[start]!.trim();
+  let depth = countParens(text);
+  for (let j = start + 1; depth > 0 && j < lines.length && j - start < SIGNATURE_MAX_LINES; j++) {
+    text += ` ${lines[j]!.trim()}`;
+    depth += countParens(lines[j]!);
+  }
+  // Collapse whitespace so reformatting is not read as a different signature,
+  // and drop a trailing brace/semicolon so `fn f() {` matches `fn f()`.
+  return text.replace(/\s+/g, ' ').replace(/[{;]\s*$/, '').trim();
+}
+
+function countParens(s: string): number {
+  let d = 0;
+  for (const ch of s) {
+    if (ch === '(') d += 1;
+    else if (ch === ')') d -= 1;
+  }
+  return d;
+}
+const TS_DEF = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class)\s+\w+.*/;
+const TS_CONST = /^(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?(?:\(|function\b|class\b).*/;
+
+/** Escape hatch for a file that genuinely repeats a header (generated code). */
+export function duplicateDefinitionGuardDisabled(): boolean {
+  return process.env.UAP_DELIVER_ALLOW_DUPLICATE_DEFS === '1';
+}
+
+/**
+ * Refuse a write that RE-ADDS a definition the file already has.
+ *
+ * The guards around this one all watch a file get smaller — anti-gutting
+ * (bytes), stub-substance (empty bodies), byte-identical NO-OP. Nothing watched
+ * it get BIGGER by repetition, and that is the shape the damage actually took.
+ *
+ * Live (cognition-engine, 2026-08-11): setup.sql ended the day holding 65 copies
+ * of `CREATE FUNCTION cognition.join_by_i_sql`, 63 of `join_by_i_time_sql`, and
+ * 40+ each of six more objects — 246 KB / 8,025 lines grown to 361 KB / 11,785,
+ * with 8,604 duplicate non-comment lines. A client relaunching the same "add X"
+ * mission dozens of times, against a file the agent could only see 3% of, will
+ * re-add X every time. Worse, every cheap check read as SUCCESS: the six lateral
+ * joins the mission targeted really were gone.
+ *
+ * Only the FIRST new duplicate is named. A refusal listing sixty of them is a
+ * wall the model will not act on.
+ */
+export function duplicateDefinitionRefusal(
+  path: string,
+  before: string,
+  after: string
+): string | null {
+  if (duplicateDefinitionGuardDisabled()) return null;
+  const now = topLevelDefinitionHeaders(after, path);
+  // Fast path only — the loop below is already a no-op on an empty map. It
+  // earns its place by skipping the second parse, not by changing an outcome,
+  // which is why mutating it away leaves every test passing.
+  if (now.size === 0) return null;
+  const was = topLevelDefinitionHeaders(before, path);
+
+  for (const [header, count] of now) {
+    const prior = was.get(header) ?? 0;
+    // Adding a brand-new definition (0 -> 1) is the normal case. Editing one in
+    // place (1 -> 1) is fine. Going 1 -> 2 is re-adding what is already there.
+    if (count <= prior || count < 2) continue;
+    const firstLine = before.split('\n').findIndex((l) => l === l.trimStart() && l.trim().replace(/\s+/g, ' ').replace(/[{;]\s*$/, '').trim() === header);
+    const where = firstLine >= 0 ? ` at line ${firstLine + 1}` : '';
+    return (
+      `ERROR: refusing to write ${path} — it would add a SECOND copy of a definition the file ` +
+      `already contains${where}:\n\n    ${header.slice(0, 160)}\n\n` +
+      `The file already has this (${prior} ${prior === 1 ? 'copy' : 'copies'}; this write makes ${count}). ` +
+      `Do not append it again — use edit_file to change the existing one in place, or read the file ` +
+      `first to see what is already there. If this file genuinely repeats that header, set ` +
+      `UAP_DELIVER_ALLOW_DUPLICATE_DEFS=1.`
+    );
+  }
+  return null;
+}
+
 /** Resolve a model-supplied path inside the project root, refusing escapes. */
 function safePath(projectRoot: string, p: string): string {
   const abs = isAbsolute(p) ? p : resolve(projectRoot, p);
@@ -1058,6 +1206,19 @@ export function runTool(
         const stub = detectStub(rel, String(args.content ?? ''), prior);
         if (stub.isStub) return stubRefusal(String(args.path), stub);
       }
+      // Growth by repetition. Ordered LAST among the write guards: it is the
+      // only one that reads the whole prior file for structure, so it never
+      // pays that cost for a write another guard has already refused.
+      if (existsSync(abs)) {
+        try {
+          const dup = duplicateDefinitionRefusal(
+            String(args.path),
+            readFileSync(abs, 'utf-8'),
+            String(args.content ?? '')
+          );
+          if (dup) return dup;
+        } catch { /* unreadable — a guard that cannot read cannot judge */ }
+      }
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, String(args.content ?? ''), 'utf-8');
       recordAuthorisedWrite(sweep, rel, String(args.content ?? ''));
@@ -1188,6 +1349,11 @@ export function runTool(
         const stub = detectStub(rel, updated, current);
         if (stub.isStub) return stubRefusal(String(args.path), stub);
       }
+      // An edit can append just as easily as a write can — an old_string anchored
+      // at the end of the file with the whole definition in new_string is exactly
+      // how a file grows a second copy.
+      const dupEdit = duplicateDefinitionRefusal(String(args.path), current, updated);
+      if (dupEdit) return dupEdit;
       writeFileSync(abs, updated, 'utf-8');
       recordAuthorisedWrite(sweep, rel, updated);
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
