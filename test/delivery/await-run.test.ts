@@ -535,7 +535,12 @@ describe('awaitInFlightDeliver', () => {
       beat(b, 1);
       const r = await follow(b);
       expect(r.progress?.phase).toBeUndefined();
-      expect(r.reason).not.toMatch(/phase/i);
+      // Position, not the word. This half is about not publishing a phase
+      // POSITION without a cursor, and it does not. The prose now also reports
+      // a phase COUNT while a run is still planning — a different fact, and a
+      // true one — so a bare /phase/i match would forbid describing planning
+      // at all.
+      expect(r.reason).not.toMatch(/phase \d+\/\d+/);
     });
 
     it('carries the phase position when the mission is decomposed', async () => {
@@ -770,6 +775,81 @@ describe('a follower can see the mission ADVANCE, not merely stay alive', () => 
     });
     expect(r.progress?.turn).toBeUndefined();
     expect(r.run?.turn).toBeUndefined();
-    expect(r.reason).not.toContain('turn');
+    // Field, not substring: no turn COUNT is claimed (progress.turn is absent),
+    // while the prose may still say "no turn yet", which is the planning stage
+    // reporting itself rather than a fabricated count.
+    expect(r.progress?.turn).toBeUndefined();
+    expect(r.reason).not.toMatch(/\d+ turns? completed/);
+  });
+});
+
+describe('a run that has not reached turn 1 is PLANNING, not stuck', () => {
+  // Traced 2026-08-11: nine runs SIGKILLed at a median of 59 SECONDS after
+  // launch, every one still planning. Decomposition is a model call that
+  // produces no turns and no phases until it finishes, so every advancement
+  // field is legitimately empty while it runs — and the caller read those
+  // empties as "hung". Its words: "the deliver tool keeps getting stuck in
+  // multi-phase plans".
+  function planning(root: string, over: Record<string, unknown> = {}): void {
+    holdLock(root, 4242);
+    writeRun(root, 'run-planning', { pid: 4242, status: 'running', ...over });
+  }
+
+  it('reports the planning stage while no turn exists', async () => {
+    const root = project();
+    planning(root);
+    const r = await awaitInFlightDeliver(root, { timeoutMs: 1, sleep: noSleep, isAlive: () => true });
+    expect(r.progress?.stage).toBe('planning');
+    expect(r.progress?.turn).toBeUndefined();
+  });
+
+  it('counts phases as they appear, so the caller sees planning ADVANCE', async () => {
+    const root = project();
+    planning(root, {
+      // Same shape the loader accepts elsewhere in this file: a bare {id}
+      // is dropped on load, which made phasesPlanned undefined.
+      phases: [
+        { id: 'p1', title: 'a', goal: 'g' },
+        { id: 'p2', title: 'b', goal: 'g' },
+        { id: 'p3', title: 'c', goal: 'g' },
+      ],
+    });
+    const r = await awaitInFlightDeliver(root, { timeoutMs: 1, sleep: noSleep, isAlive: () => true });
+    expect(r.progress?.phasesPlanned).toBe(3);
+    expect(r.reason).toContain('3 phases decomposed');
+  });
+
+  it('says decomposing when not even a phase exists yet', async () => {
+    const root = project();
+    planning(root);
+    const r = await awaitInFlightDeliver(root, { timeoutMs: 1, sleep: noSleep, isAlive: () => true });
+    expect(r.progress?.phasesPlanned).toBe(0);
+    expect(r.reason).toMatch(/decomposing; no phases or turns yet/);
+  });
+
+  it('drops the stage once a turn exists — turn says more from then on', async () => {
+    const root = project();
+    planning(root, { checkpoint: { turn: 1 } });
+    const r = await awaitInFlightDeliver(root, { timeoutMs: 1, sleep: noSleep, isAlive: () => true });
+    expect(r.progress?.stage).toBeUndefined();
+    expect(r.progress?.turn).toBe(1);
+  });
+
+  it('tells the caller what killing it costs, in the planning case', async () => {
+    // The generic advice arrived only after the caller had already decided.
+    const root = project();
+    planning(root);
+    const r = await awaitInFlightDeliver(root, { timeoutMs: 1, sleep: noSleep, isAlive: () => true });
+    expect(r.nextStep).toMatch(/still PLANNING/);
+    expect(r.nextStep).toMatch(/NOT[\s\S]*stuck/i);
+    expect(r.nextStep).toMatch(/starts it again from nothing|throws away the planning/i);
+  });
+
+  it('keeps the ordinary advice when a turn HAS completed', async () => {
+    const root = project();
+    planning(root, { checkpoint: { turn: 2 } });
+    const r = await awaitInFlightDeliver(root, { timeoutMs: 1, sleep: noSleep, isAlive: () => true });
+    expect(r.nextStep).toMatch(/NORMAL answer/);
+    expect(r.nextStep).not.toMatch(/still PLANNING/);
   });
 });
