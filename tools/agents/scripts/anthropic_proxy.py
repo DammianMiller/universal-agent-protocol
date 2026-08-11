@@ -10504,6 +10504,43 @@ def _extract_thinking_block(text: str) -> tuple[str | None, str]:
     return "\n\n".join(p for p in parts if p), remaining.lstrip()
 
 
+def _log_non_stream_resp(content: list, finish: str, usage: dict) -> None:
+    """Log what a NON-STREAMING turn produced, in the streaming line's shape.
+
+    ``RESP:`` was emitted only from ``stream_anthropic_response``, so every
+    non-streaming turn logged a request and no outcome. That is not a small
+    gap: ``uap deliver``'s agentic executor is entirely non-streaming, so the
+    journal recorded 431 requests and ONE response during a three-hour run on
+    2026-08-11 — and diagnosing that run meant reconstructing what the model
+    had done from the delivery log and the tool counts instead of reading it.
+    A monitor that cannot see the answers cannot tell working from looping.
+
+    Same field order and prefix as the streaming line ON PURPOSE, so existing
+    log analysis picks both up without a second parser; ``path=json`` is
+    appended for anyone who needs to tell them apart.
+    """
+    text = "".join(
+        b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+    )
+    tool_names = [
+        b.get("name") for b in content if isinstance(b, dict) and b.get("type") == "tool_use"
+    ]
+    tool_args = [
+        json.dumps(b.get("input", {}), separators=(",", ":"))[:200]
+        for b in content
+        if isinstance(b, dict) and b.get("type") == "tool_use"
+    ]
+    logger.info(
+        "RESP: finish=%s output_tokens=%d text_len=%d text=%.300s tool_calls=%s args=%s path=json",
+        finish,
+        usage.get("completion_tokens", 0),
+        len(text),
+        text[:300],
+        tool_names,
+        tool_args,
+    )
+
+
 def openai_to_anthropic_response(
     openai_resp: dict,
     model: str,
@@ -10645,6 +10682,8 @@ def openai_to_anthropic_response(
     }
 
     usage = openai_resp.get("usage", {})
+
+    _log_non_stream_resp(content, finish, usage)
 
     return {
         "id": f"msg_{uuid.uuid4().hex[:24]}",
