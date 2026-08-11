@@ -171,6 +171,25 @@ export interface FollowProgress {
    * kills happened on.
    */
   turn?: number;
+  /**
+   * What the run is DOING, when it has not completed a turn yet.
+   *
+   * 'planning' — decomposing the mission into phases. This is a model call and
+   * it produces no turns and no phases until it finishes, so every advancement
+   * field is legitimately empty while it runs. A caller reading those empties
+   * as "hung" is the failure this exists to prevent.
+   *
+   * Traced on 2026-08-11: nine runs killed with `kill -9`, median 59 SECONDS
+   * after launch, every one of them still planning. The agent's stated reason
+   * was "the deliver tool keeps getting stuck in multi-phase plans" — it was
+   * not stuck, it had simply not reached turn 1, and nothing in this reply
+   * distinguished those.
+   *
+   * Absent once a turn exists: `turn` is the better signal from then on.
+   */
+  stage?: 'planning';
+  /** Phases decomposed so far — 0 while the planner is still thinking. */
+  phasesPlanned?: number;
 }
 
 function describeProgress(projectRoot: string, run?: DeliverRunState): FollowProgress {
@@ -213,6 +232,11 @@ function describeProgress(projectRoot: string, run?: DeliverRunState): FollowPro
     wedgeAfterSec,
     ...(phase ? { phase } : {}),
     ...(typeof run?.checkpoint?.turn === 'number' ? { turn: run.checkpoint.turn } : {}),
+    // Only while there is no turn: after that, `turn` says more and this would
+    // just be a second name for the same moment.
+    ...(run !== undefined && typeof run.checkpoint?.turn !== 'number'
+      ? { stage: 'planning' as const, phasesPlanned: run.phases?.length ?? 0 }
+      : {}),
     // `updatedAt` is NOT repeated here: RunSummary already ships it on the same
     // result object, and a projection whose purpose is diffable facts must not
     // publish one fact twice — a caller comparing run.updatedAt on one poll and
@@ -234,6 +258,15 @@ function progressSentence(p: FollowProgress): string {
   // Last, and stated as a COUNT: it is the one number a caller can compare
   // against the previous reply to tell "slow" from "stuck".
   if (p.turn !== undefined) bits.push(`${p.turn} turn${p.turn === 1 ? '' : 's'} completed`);
+  // No turn yet is a STAGE, not an absence. Saying "0 turns" would read as
+  // failure to start; saying "still planning" says the same fact as progress.
+  if (p.stage === 'planning') {
+    bits.push(
+      p.phasesPlanned
+        ? `still PLANNING (${p.phasesPlanned} phases decomposed, no turn yet)`
+        : 'still PLANNING (decomposing; no phases or turns yet)'
+    );
+  }
   return bits.join(', ');
 }
 
@@ -525,7 +558,22 @@ export async function awaitInFlightDeliver(
                 'no lock, so a new run would not reclaim it — it would execute concurrently on ' +
                 'the same tree. Keep following, and if it never recovers, raise it with the ' +
                 'operator rather than starting or killing anything.'
-            : 'This is the NORMAL answer for a mission that takes longer than one poll. Call deliver ' +
+            : progress.stage === 'planning'
+              // The kill window, verbatim: nine runs SIGKILLed at a median of
+              // 59s, every one still planning, because no turn and no phase
+              // read as no progress. Name the stage and its cost before
+              // repeating the generic advice, or the generic advice arrives
+              // after the caller has already decided.
+              ? 'The run has not reached turn 1 yet because it is still PLANNING — decomposing the ' +
+                'mission into phases, which is a model call and produces no turns and no phases ' +
+                'until it finishes. Empty advancement fields here mean "not started yet", NOT ' +
+                '"stuck": planning routinely takes minutes on a local model. Killing it now throws ' +
+                'away the planning and the next launch starts it again from nothing — that loop has ' +
+                'happened, repeatedly. Call deliver again with follow:true and watch ' +
+                'progress.phasesPlanned appear, then progress.turn; heartbeatAgeSec staying small ' +
+                'means the planner is still working. Do NOT kill the deliver process, do NOT ' +
+                'change any gate or enforcement setting, and do NOT start another run.'
+              : 'This is the NORMAL answer for a mission that takes longer than one poll. Call deliver ' +
               'again with follow:true to keep waiting, and compare heartbeatAgeSec against this reply ' +
               'to watch it move (also phase and the run\'s updatedAt when present — they advance only ' +
               'when a turn or phase actually completes). From the MCP tool these are under ' +
