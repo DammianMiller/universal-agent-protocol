@@ -304,6 +304,7 @@ import {
 } from './deliver-detach.js';
 import type { LifecycleHintProvider } from '../delivery/decompose.js';
 import type { DeliveryPhase } from '../delivery/decompose.js';
+import { resolveEpicPlan } from '../delivery/decompose.js';
 import { completeDeliveryTask, openDeliveryTask, recordDeliveryOutcome, recordOrchestratorTaskOutcome, reopenDeliveryTask } from '../delivery/task-sync.js';
 import { autoMineHaloTraces, summarizeWeaknesses, weaknessGuidance, loadPersistedWeaknesses } from '../delivery/auto-mine.js';
 import { createGitWorktreeProvider } from '../delivery/candidate-workspace.js';
@@ -3296,12 +3297,27 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     return runEpicMissionCore({
       instruction,
       projectRoot,
+      // A short mission is not multi-part: planning it costs a model call
+      // (minutes on a local model) to divide work that has one piece. Run it as
+      // ONE epic instead — same wrapper, same gates, no planning call.
       planEpics: () =>
-        planDeliveryPhases(instruction, verdictExecutor, undefined, {
-          sessionTokenBudget: sessionBudget,
-          contractsFirst,
-          scaffoldFirst,
-        }),
+        resolveEpicPlan(
+          instruction,
+          () =>
+            planDeliveryPhases(instruction, verdictExecutor, undefined, {
+              sessionTokenBudget: sessionBudget,
+              contractsFirst,
+              scaffoldFirst,
+            }),
+          () =>
+            console.log(
+              chalk.cyan(
+                '⚡ single epic: instruction is short, so this runs as one epic ' +
+                  'without a planning call (the decomposition overhead only pays ' +
+                  'off on multi-part missions).'
+              )
+            )
+        ),
       // Re-decomposition is already reactive (the failure text is in the
       // goal) — the extra thought-experiment judge call buys nothing here.
       planSplit: (subGoal) =>

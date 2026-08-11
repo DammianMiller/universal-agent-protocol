@@ -26,6 +26,7 @@
 import { CONTEXT_BUDGET_MARKER } from './context-budget.js';
 import type { DeliveryResult } from './convergence-loop.js';
 import type { DeliveryPhase } from './decompose.js';
+import { singleEpicFor } from './decompose.js';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { runEpics, type Epic, type EpicRunResult } from './epic-controller.js';
@@ -221,7 +222,7 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
   const planned = persisted ?? (await deps.planEpics());
   const epics: Epic[] = (persisted || planned.length >= 2
     ? planned
-    : [{ id: 'mission', title: 'Mission', goal: deps.instruction }]
+    : singleEpicFor(deps.instruction)
   ).map((ph) => ({
     id: ph.id,
     title: ph.title,

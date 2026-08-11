@@ -73,7 +73,68 @@ function maxPhases(): number {
   return 10;
 }
 /** Only instructions this long are epic-shaped enough to auto-decompose. */
-const AUTO_DECOMPOSE_MIN_CHARS = 200;
+export const AUTO_DECOMPOSE_MIN_CHARS = 200;
+
+/**
+ * Is this instruction epic-SHAPED — worth drawing a phase plan for at all?
+ *
+ * The same question `shouldDecompose` already answers, asked on the path that
+ * never asked it. Epics are on by default for every mission, and the epic
+ * runner plans unconditionally, so the rule right above this — "short tasks
+ * stay single-loop, the decomposition overhead only pays off on genuinely
+ * multi-part missions" — was enforced only when epics were switched OFF.
+ *
+ * The overhead is not theoretical. Measured in `cognition-engine` on
+ * 2026-08-11: 22 epic runs, 13 of them from instructions under 200 characters,
+ * each paying two to three minutes of planning before any work — and that
+ * planning time is what the caller kept killing, nine times, at a median of 59
+ * seconds. "Add #[pg_extern] before fn join_by_i_time_sql" is not a multi-part
+ * mission, and it was drawing plans of 1, 5, and 8 phases on successive tries.
+ *
+ * Deliberately the SAME constant rather than a new one: two thresholds for one
+ * question drift apart, and this one already carries the reasoning.
+ *
+ * Deliberately the LENGTH half only, not `shouldDecompose`'s complexity clause:
+ * a long-but-simple mission still gets planned here. Skipping those as well is
+ * a bigger swing on a signal (`autoPlan.complexity`) this path has never used,
+ * and it isn't what the measurement above showed hurting.
+ */
+export function shouldPlanEpicPhases(instruction: string): boolean {
+  return instruction.trim().length >= AUTO_DECOMPOSE_MIN_CHARS;
+}
+
+/**
+ * The one epic a short mission runs as — same wrapper, same gates, no planning
+ * call.
+ *
+ * The literal shape is load-bearing, which is why it is defined ONCE here and
+ * called from `epic-mission.ts`'s degenerate-plan fallback rather than written
+ * out twice: `id` keys the ledger and the resume state (it has to keep matching
+ * run-state's PHASE_ID_RE), and `title` is what the epic controller prints.
+ */
+export function singleEpicFor(instruction: string): DeliveryPhase[] {
+  return [{ id: 'mission', title: 'Mission', goal: instruction }];
+}
+
+/**
+ * The epic runner's plan: either the planner's phases, or a single epic when
+ * the instruction is too short to be worth a planning call.
+ *
+ * Lives here rather than inline in the CLI so the SHORT-CIRCUIT itself is
+ * testable — a version of this that ignores `shouldPlanEpicPhases` and always
+ * plans has to fail a test, not just look wrong in a diff.
+ */
+export async function resolveEpicPlan(
+  instruction: string,
+  plan: () => Promise<DeliveryPhase[]>,
+  onSingleEpic?: () => void
+): Promise<DeliveryPhase[]> {
+  if (!shouldPlanEpicPhases(instruction)) {
+    onSingleEpic?.();
+    return singleEpicFor(instruction);
+  }
+  return plan();
+}
 
 /**
  * Auto-decomposition policy: complex-classified AND long enough to plausibly

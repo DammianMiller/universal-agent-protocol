@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { missingMissionFiles, moduleSurface, runEpicMission, type EpicMissionDeps } from '../../src/delivery/epic-mission.js';
 import type { DeliveryResult } from '../../src/delivery/convergence-loop.js';
 import type { DeliveryPhase } from '../../src/delivery/decompose.js';
+import { singleEpicFor } from '../../src/delivery/decompose.js';
 import { CONTEXT_BUDGET_MARKER } from '../../src/delivery/context-budget.js';
 
 const phase = (id: string, extra: Partial<DeliveryPhase> = {}): DeliveryPhase => ({
@@ -69,6 +70,31 @@ describe('epic planning + fallback', () => {
     expect(scopes.length).toBe(1);
     expect(scopes[0]).toContain('build the platform');
     expect(scopes[0]).toContain('Deliver ONLY this epic');
+  });
+
+  it('a SHORT mission planned as one epic survives intake with its id intact', async () => {
+    // `shouldPlanEpicPhases` now returns a one-epic plan for short instructions
+    // instead of calling the planner. A one-element plan does NOT satisfy the
+    // `planned.length >= 2` test above, so it lands in the degenerate-plan
+    // fallback — this pins that the two shapes are the SAME object, and that
+    // `mission` is the id the ledger and resume state actually see.
+    const inits: string[][] = [];
+    const scopes: string[] = [];
+    const r = await runEpicMission(
+      baseDeps({
+        instruction: 'Add #[pg_extern] before fn join_by_i_time_sql',
+        planEpics: async () => singleEpicFor('Add #[pg_extern] before fn join_by_i_time_sql'),
+        ledgerInit: (items) => inits.push(items.map((i) => i.id)),
+        runEpicLoop: async (scoped) => {
+          scopes.push(scoped);
+          return ok();
+        },
+      })
+    );
+    expect(r.success).toBe(true);
+    expect(inits).toEqual([['mission']]);
+    expect(scopes.length).toBe(1);
+    expect(scopes[0]).toContain('Add #[pg_extern] before fn join_by_i_time_sql');
   });
 
   it('initializes the completion ledger with the epic ids and marks outcomes', async () => {
