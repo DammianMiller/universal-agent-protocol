@@ -41,8 +41,8 @@
  * it turns "is that pid alive" into "is that same holder still there".
  */
 
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { join, resolve } from 'path';
 import { listRuns, type DeliverRunState } from './run-state.js';
 import { heartbeatAgeS, wedgeTimeoutS } from './heartbeat.js';
 
@@ -89,6 +89,14 @@ export interface AwaitOptions {
 }
 
 export interface AwaitResult {
+  /**
+   * Live runs found in project roots BELOW the one asked about.
+   *
+   * Present only when this root had nothing in flight of its own — the case
+   * where the honest answer used to be a confidently wrong one about a
+   * different (often older) mission. See liveRunsInNestedRoots.
+   */
+  nestedLiveRuns?: NestedLiveRun[];
   /** True when a run was followed to completion within the budget. */
   followed: boolean;
   /**
@@ -445,6 +453,95 @@ function mostRecentRun(projectRoot: string): DeliverRunState | null {
   return listRuns(projectRoot)[0] ?? null;
 }
 
+/** How deep below the given root to look for another project's runs. */
+export const NESTED_ROOT_MAX_DEPTH = 4;
+/** Never descend into these while looking — they are not project roots. */
+const NESTED_SKIP = new Set(['node_modules', '.git', 'target', 'dist', 'build', '.worktrees', 'vendor']);
+
+export interface NestedLiveRun {
+  runId: string;
+  projectRoot: string;
+  pid: number;
+  turn?: number;
+}
+
+/**
+ * Live deliver runs in project roots BELOW this one.
+ *
+ * A project root is wherever `.uap/` sits, and this repo nests them: one tree
+ * held runs in `src/sql/.uap` and `src/rust-pg-ext/.uap` at the same time.
+ * `currentHolder` only ever looks at the root it is given, so asking from the
+ * PARENT answered from the parent's own — and on 2026-08-11 that meant reporting
+ * confidently on YESTERDAY's run, and offering to resume it, while two of
+ * today's were live one directory down.
+ *
+ * The harm is specific and already documented in this codebase: a caller told
+ * "nothing is in flight, start the mission normally" starts a SECOND run
+ * against the same tree, and two of them overwrite each other's edits.
+ *
+ * Liveness is verified against the process, not the record: `status` stays
+ * 'running' on a run whose process died (deliberately — that IS the resumable
+ * state), so trusting it would report long-dead runs as live.
+ */
+export function liveRunsInNestedRoots(
+  root: string,
+  isAlive: (pid: number) => boolean = livePid,
+  maxDepth: number = NESTED_ROOT_MAX_DEPTH
+): NestedLiveRun[] {
+  const found: NestedLiveRun[] = [];
+  const walk = (dir: string, depth: number): void => {
+    if (depth > maxDepth) return;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return; // unreadable directory is not an error here
+    }
+    for (const name of entries) {
+      if (NESTED_SKIP.has(name)) continue;
+      const child = join(dir, name);
+      try {
+        if (!statSync(child).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      if (name === '.uap') {
+        // `dir` is a project root. Skip the one we were asked about — the
+        // caller has already been told about it.
+        if (resolve(dir) !== resolve(root)) {
+          for (const run of listRuns(dir)) {
+            if (run.status !== 'running') continue;
+            if (typeof run.pid !== 'number' || !isAlive(run.pid)) continue;
+            found.push({
+              runId: run.runId,
+              projectRoot: dir,
+              pid: run.pid,
+              ...(typeof run.checkpoint?.turn === 'number' ? { turn: run.checkpoint.turn } : {}),
+            });
+          }
+        }
+        continue; // never descend INTO .uap
+      }
+      walk(child, depth + 1);
+    }
+  };
+  walk(root, 0);
+  return found;
+}
+
+/** The warning that keeps a caller from starting a second mission on one tree. */
+export function nestedRunNotice(runs: readonly NestedLiveRun[]): string {
+  if (runs.length === 0) return '';
+  const [first] = runs;
+  const others = runs.length > 1 ? ` (and ${runs.length - 1} more)` : '';
+  const turn = first!.turn !== undefined ? `, ${first!.turn} turn(s) completed` : '';
+  return (
+    ` A deliver run IS live in a nested project root${others}: ${first!.runId} under ` +
+    `${first!.projectRoot} (pid ${first!.pid}${turn}). Do NOT start a mission here — ` +
+    `follow that one from its own root instead, or two runs will edit the same tree.`
+  );
+}
+
 function terminalOutcome(
   run: DeliverRunState,
   holderPid: number | undefined,
@@ -510,15 +607,26 @@ export async function awaitInFlightDeliver(
     // common case for this call (the caller's tool timeout fired, it called
     // back). Reporting "nothing ever happened, start the mission normally"
     // there sends it to re-run work that is already done.
+    // Look BELOW this root before answering. Both answers here — "here is the
+    // last run" and "start the mission normally" — are wrong and actively
+    // harmful when a live run sits one directory down.
+    const nested = liveRunsInNestedRoots(projectRoot, isAlive);
     const recent = mostRecentRun(projectRoot);
-    if (recent) return terminalOutcome(recent, undefined, true, false);
+    if (recent) {
+      const outcome = terminalOutcome(recent, undefined, true, false);
+      return nested.length
+        ? { ...outcome, nestedLiveRuns: nested, nextStep: outcome.nextStep + nestedRunNotice(nested) }
+        : outcome;
+    }
     return {
       followed: false,
       delivered: false,
       nothingInFlight: true,
+      ...(nested.length ? { nestedLiveRuns: nested } : {}),
       reason: 'No deliver run is in flight for this project, and no previous run was found.',
-      nextStep:
-        'Nothing to follow. Start the mission normally — a fresh deliver call will acquire the lock.',
+      nextStep: nested.length
+        ? `Nothing to follow HERE.${nestedRunNotice(nested)}`
+        : 'Nothing to follow. Start the mission normally — a fresh deliver call will acquire the lock.',
     };
   }
 
