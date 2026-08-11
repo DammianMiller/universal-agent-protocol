@@ -243,7 +243,7 @@ function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unkn
 }
 import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow } from '../delivery/context-budget.js';
 import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
-import { awaitInFlightDeliver, FOLLOW_CLIENT_POLL_SEC } from '../delivery/await-run.js';
+import { awaitInFlightDeliver, followTickDetail, FOLLOW_CLIENT_POLL_SEC } from '../delivery/await-run.js';
 
 /**
  * Follow-mode budget when the caller names none, and its ceiling (seconds).
@@ -1197,15 +1197,19 @@ export async function deliverCommand(instruction: string, options: DeliverOption
         : defaultAwaitBudgetSec();
     const budgetMs = Math.max(1, budgetSec) * 1000;
     let lastTickBucket = 0;
+    let lastTickTurn: number | undefined;
     const outcome = await awaitInFlightDeliver(followRoot, {
       timeoutMs: budgetMs,
-      onTick: (elapsed, pid) => {
+      onTick: (elapsed, pid, progress) => {
         // Bucketed rather than modulo-tested: `elapsed % 15000 < pollMs` matches
         // twice whenever the poll phase aligns with the interval.
         const bucket = Math.floor(elapsed / 15000);
         if (!options.json && bucket > lastTickBucket) {
           lastTickBucket = bucket;
-          console.log(chalk.dim(`  …following deliver (pid ${pid}) — ${Math.round(elapsed / 1000)}s`));
+          console.log(
+            chalk.dim(`  …following deliver (pid ${pid}) — ${Math.round(elapsed / 1000)}s${followTickDetail(progress, lastTickTurn)}`)
+          );
+          lastTickTurn = progress?.turn;
         }
       },
     });

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.198.0 (2026-08-11)
+
+- feat(delivery): put advancement in the follow ticker, not just a clock
+- chore: bump version to 1.196.1
+- fix(policies): protect a RUNNING deliver run from being killed
+
+
 <<<<<<< HEAD
 ## v1.197.0 (2026-08-11)
 

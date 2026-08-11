@@ -71,8 +71,17 @@ export interface AwaitOptions {
   /** Give up after this long and say so. */
   timeoutMs: number;
   pollMs?: number;
-  /** Called on each poll, for a heartbeat/progress line. */
-  onTick?: (elapsedMs: number, holderPid: number) => void;
+  /**
+   * Called on each poll, for a heartbeat/progress line.
+   *
+   * Carries the same projection the final reply carries. The ticker used to
+   * show elapsed seconds and nothing else — `…following deliver (pid N) — 30s`
+   * — which is a clock, not progress: it ticks at exactly the same rate whether
+   * the mission is completing turns or spinning. A caller watching that for the
+   * length of a poll learns only that time passed, and the runs killed on
+   * 2026-08-11 were killed by a caller who had been watching precisely this.
+   */
+  onTick?: (elapsedMs: number, holderPid: number, progress?: FollowProgress) => void;
   /** Injected for tests. Defaults to a real liveness probe. */
   isAlive?: (pid: number) => boolean;
   /** Injected for tests. Defaults to a real sleep. */
@@ -190,6 +199,31 @@ export interface FollowProgress {
   stage?: 'planning';
   /** Phases decomposed so far — 0 while the planner is still thinking. */
   phasesPlanned?: number;
+}
+
+/**
+ * The advancement half of a follow tick, appended to the elapsed clock.
+ *
+ * `previousTurn` is what the LAST tick showed, so a completed turn can be
+ * called out as it happens. That transition is the only thing in a follow line
+ * that distinguishes a mission from a stalled process, and it is exactly what
+ * the old ticker — elapsed seconds alone — could never show.
+ */
+export function followTickDetail(progress?: FollowProgress, previousTurn?: number): string {
+  if (!progress) return '';
+  const bits: string[] = [];
+  if (progress.stage === 'planning') {
+    bits.push('planning');
+  } else if (progress.turn !== undefined) {
+    bits.push(
+      previousTurn !== undefined && progress.turn > previousTurn
+        ? `turn ${previousTurn} → ${progress.turn} ✓`
+        : `${progress.turn} turn${progress.turn === 1 ? '' : 's'}`
+    );
+  }
+  if (progress.phase) bits.push(`phase ${progress.phase}`);
+  if (progress.heartbeatAgeSec !== null) bits.push(`active ${progress.heartbeatAgeSec}s ago`);
+  return bits.length ? ` · ${bits.join(', ')}` : '';
 }
 
 function describeProgress(projectRoot: string, run?: DeliverRunState): FollowProgress {
@@ -582,7 +616,9 @@ export async function awaitInFlightDeliver(
               'start another run.',
       };
     }
-    opts.onTick?.(elapsed, holder.pid);
+    // Re-read per tick rather than reusing the projection computed above: the
+    // point of the ticker is to show what CHANGED since the last one.
+    opts.onTick?.(elapsed, holder.pid, describeProgress(projectRoot, runForHolder(projectRoot, holder.pid, isAlive).run ?? undefined));
     await sleep(Math.min(pollMs, Math.max(1, opts.timeoutMs - elapsed)));
   }
 
