@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.194.2 (2026-08-11)
+
+- fix(delivery): a relaunched short mission was "complete" before it started
+
+
 ## v1.194.1 (2026-08-11)
 
 - perf(delivery): stop planning phases for missions too small to have any

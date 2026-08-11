@@ -297,6 +297,19 @@ export function loadRunState(projectRoot: string, runId: string): DeliverRunStat
   return best;
 }
 
+/**
+ * Is this launch resuming an EPIC run — i.e. does the persisted state describe
+ * work that belongs to this same mission-in-progress?
+ *
+ * The one question behind everything a resume inherits: the plan, the done set,
+ * the phase summaries, and the completion ledger's marks. Named because those
+ * four had to agree and were four separate copies of the same expression; a
+ * fresh run that inherits any of them is claiming work it has not done.
+ */
+export function isEpicResume(state: Pick<DeliverRunState, 'runnerKind'> | null | undefined): boolean {
+  return state?.runnerKind === 'epic';
+}
+
 /** List all persisted runs for a project, most-recently-updated first. */
 export function listRuns(projectRoot: string): DeliverRunState[] {
   const dir = deliverRunsDir(projectRoot);

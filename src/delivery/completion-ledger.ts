@@ -86,16 +86,46 @@ export interface NewItem {
   criteria?: string[];
 }
 
+export interface InitLedgerOptions {
+  /**
+   * Carry a same-id item's status over from the previous ledger.
+   *
+   * True is right for re-planning INSIDE a run (that is what makes re-planning
+   * non-destructive) and for resume, where the prior marks describe work this
+   * same run already did.
+   *
+   * False is right for a fresh run, where carrying them over is a lie about
+   * work this run has not done. Ids collide across runs far more often than the
+   * original "re-planning mints new slugs" assumption allowed: every short
+   * mission is now the single epic `mission` (see decompose.singleEpicFor), so
+   * relaunching one inherited a ledger that was already 100% done — and
+   * `isComplete` is what the hands-free Stop hook reads to decide a build is
+   * finished. It would report "build complete" for a run that had done nothing.
+   */
+  carryPriorStatus?: boolean;
+}
+
 /**
- * Create (or replace) the ledger for a mission from a set of items. Existing
- * items with the same id preserve their status so re-planning is non-destructive.
+ * Create (or replace) the ledger for a mission from a set of items. By default
+ * existing items with the same id preserve their status, so re-planning within
+ * a run is non-destructive; pass `carryPriorStatus: false` for a fresh run.
  */
-export function initLedger(cwd: string, mission: string, items: NewItem[]): CompletionLedger {
+export function initLedger(
+  cwd: string,
+  mission: string,
+  items: NewItem[],
+  options: InitLedgerOptions = {}
+): CompletionLedger {
+  const carry = options.carryPriorStatus !== false;
   const prior = loadLedger(cwd);
-  const priorById = new Map((prior?.items ?? []).map((i) => [i.id, i]));
+  const priorById = carry
+    ? new Map((prior?.items ?? []).map((i) => [i.id, i]))
+    : new Map<string, LedgerItem>();
   const ledger: CompletionLedger = {
     mission: mission.slice(0, 500),
-    createdAt: prior?.createdAt ?? nowISO(),
+    // A fresh run's ledger is a new ledger, so it is not backdated to the one
+    // it replaced — `createdAt` reads as "when this build started".
+    createdAt: (carry ? prior?.createdAt : undefined) ?? nowISO(),
     updatedAt: nowISO(),
     items: items.map((it) => {
       const existing = priorById.get(it.id);

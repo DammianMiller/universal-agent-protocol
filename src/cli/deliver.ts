@@ -217,7 +217,7 @@ export function bestKeepFastScore(
 export { resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
-import { clearStop, isStopRequested, requestStop, loadRunState, newRunId, saveRunState, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
+import { clearStop, isStopRequested, requestStop, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
@@ -3348,10 +3348,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       // (resetting the completion ledger's done marks) and draw new
       // boundaries over already-built work, which the anti-no-op rail then
       // refuses to accept (a wedge).
-      initialEpics: resumeState?.runnerKind === 'epic' ? resumeState.phases : undefined,
-      initialDone: resumeState?.runnerKind === 'epic' ? (resumeState.completedEpicIds ?? []) : [],
+      initialEpics: isEpicResume(resumeState) ? resumeState!.phases : undefined,
+      initialDone: isEpicResume(resumeState) ? (resumeState!.completedEpicIds ?? []) : [],
       initialPriorSummaries:
-        resumeState?.runnerKind === 'epic' ? (resumeState.phaseSummaries ?? []) : [],
+        isEpicResume(resumeState) ? (resumeState!.phaseSummaries ?? []) : [],
       persistPlan: (plan) => {
         runState.phases = plan;
         saveRunState(runState);
@@ -3395,7 +3395,15 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       openTask: (title) => openDeliveryTask(title, projectRoot, missionTask?.id),
       completeTask: (record, r) => completeDeliveryTask(record, r),
       ledgerInit: (items) =>
-        initLedger(projectRoot, instruction, items.map((i) => ({ ...i, kind: 'epic' as const }))),
+        initLedger(
+          projectRoot,
+          instruction,
+          items.map((i) => ({ ...i, kind: 'epic' as const })),
+          // A fresh run starts its own ledger. Only a resume inherits the marks,
+          // because only there do they describe work THIS run already did — the
+          // epic controller's own done set is seeded the same way, right above.
+          { carryPriorStatus: isEpicResume(resumeState) }
+        ),
       ledgerMark: (id, status, noteText) => markItem(projectRoot, id, status, noteText),
       lockedContracts: () => [...contractLock],
       lockContracts: (files) => {
