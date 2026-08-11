@@ -43,6 +43,7 @@ import type { AcceptanceGate } from '../delivery/convergence-loop.js';
 import { guardAgainstOwnerExit, resolveOwnerPid } from '../delivery/orphan-guard.js';
 import { findRepoRoot, formatScopeNotice, unreachablePaths } from '../delivery/scope-notice.js';
 import { deletionTargets, formatDeletionNotice } from '../delivery/deletion-notice.js';
+import { planWithReuse } from '../delivery/plan-reuse.js';
 
 /**
  * Decide how deliver establishes its convergence target when (or whether) the
@@ -3303,12 +3304,23 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       planEpics: () =>
         resolveEpicPlan(
           instruction,
+          // Reached only for missions long enough to be worth planning. Same
+          // instruction, same project, planned recently -> reuse that plan
+          // rather than paying for a second model call that draws a DIFFERENT
+          // one. Resume already refuses to replan for this reason; a relaunch
+          // had no equivalent.
           () =>
-            planDeliveryPhases(instruction, verdictExecutor, undefined, {
-              sessionTokenBudget: sessionBudget,
-              contractsFirst,
-              scaffoldFirst,
-            }),
+            planWithReuse(
+              projectRoot,
+              instruction,
+              () =>
+                planDeliveryPhases(instruction, verdictExecutor, undefined, {
+                  sessionTokenBudget: sessionBudget,
+                  contractsFirst,
+                  scaffoldFirst,
+                }),
+              (notice) => console.log(chalk.cyan(notice))
+            ),
           () =>
             console.log(
               chalk.cyan(
