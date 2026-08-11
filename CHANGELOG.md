@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.195.0 (2026-08-11)
+
+- feat(delivery): reuse a recent plan for the same instruction
+
+
 ## v1.194.2 (2026-08-11)
 
 - fix(delivery): a relaunched short mission was "complete" before it started
