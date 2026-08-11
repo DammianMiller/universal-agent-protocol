@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.196.1 (2026-08-11)
+
+- fix(policies): protect a RUNNING deliver run from being killed
+
+
 ## v1.196.0 (2026-08-11)
 
 - feat(delivery): refuse a write that re-adds a definition the file already has
