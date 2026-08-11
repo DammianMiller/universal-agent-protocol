@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.194.1 (2026-08-11)
+
+- perf(delivery): stop planning phases for missions too small to have any
+
+
 ## v1.194.0 (2026-08-11)
 
 - feat(delivery): a run before turn 1 is PLANNING, and now says so
