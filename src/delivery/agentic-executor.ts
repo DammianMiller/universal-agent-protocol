@@ -79,6 +79,71 @@ export function readWindowBytes(): number {
 
 const DEFAULT_READ_WINDOW_BYTES = 8_000;
 
+/**
+ * One window of a file, plus an honest statement of what was left out.
+ *
+ * `read_file` used to return `contents.slice(0, readWindowBytes())` and say
+ * nothing about it. On a big file that is a trap with no exit: the model asks
+ * for the file, receives the first 8 KB, and has no way to learn that the rest
+ * exists or how to reach it.
+ *
+ * Measured live on 2026-08-11 (cognition-engine, run …T015944): the mission was
+ * "replace the 6 lateral joins in setup.sql at lines 607, 803, 861, 928, 1047,
+ * 1101". setup.sql is 246,583 bytes / 8,025 lines, so the window ended at line
+ * 270 — 3.2% of the file, and ALL SIX target lines were unreachable. The model
+ * read that same 8 KB 76 times and listed directories 133 more, across 439
+ * rounds and 2h55m, before the run was killed. It was not confused; it was
+ * hunting for text the tool would never return.
+ *
+ * So: `offset` to move the window, and a trailer that names the range, the
+ * total, and the exact call for the next chunk. The trailer matters more than
+ * the parameter — a truncation nobody is told about cannot be worked around.
+ */
+export function readFileWindow(
+  contents: string,
+  opts: { offset?: number; windowBytes?: number; path?: string } = {}
+): string {
+  const windowBytes = Math.max(1, opts.windowBytes ?? readWindowBytes());
+  const lines = contents.split('\n');
+  const totalLines = lines.length;
+  // Offsets are 1-based lines, as the model is told and as task text speaks
+  // ("the joins at lines 607, 803"). Garbage clamps to the start rather than
+  // erroring: a wrong offset should cost a re-read, not a wasted round.
+  const rawOffset = Number(opts.offset);
+  const startLine = Number.isFinite(rawOffset) ? Math.max(1, Math.trunc(rawOffset)) : 1;
+
+  if (startLine > totalLines) {
+    return (
+      `NOTE: offset ${startLine} is past the end of ${opts.path ?? 'the file'} ` +
+      `(${totalLines} lines). Read from an earlier line.`
+    );
+  }
+
+  const from = lines.slice(startLine - 1);
+  let used = 0;
+  const shown: string[] = [];
+  for (const line of from) {
+    // +1 for the newline that rejoins it — the budget is bytes on the wire.
+    const cost = line.length + 1;
+    if (shown.length > 0 && used + cost > windowBytes) break;
+    shown.push(line);
+    used += cost;
+  }
+  const endLine = startLine + shown.length - 1;
+  const body = shown.join('\n');
+  if (startLine === 1 && endLine >= totalLines) return body;
+
+  const next = endLine + 1;
+  const more =
+    next <= totalLines
+      ? ` Call read_file with {"path":"${opts.path ?? '<path>'}","offset":${next}} for the next part.`
+      : '';
+  return (
+    `${body}\n\n… showing lines ${startLine}-${endLine} of ${totalLines} ` +
+    `(${contents.length} bytes total).${more}`
+  );
+}
+
 /** Tool-call rounds before a final answer is forced (knob `UAP_MAX_TOOL_ROUNDS`). */
 export function defaultMaxToolRounds(): number {
   const set = (process.env.UAP_MAX_TOOL_ROUNDS ?? '').trim();
@@ -297,10 +362,19 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read a UTF-8 text file relative to the project root.',
+      description:
+        'Read a UTF-8 text file relative to the project root. Long files come back in ' +
+        'one window at a time and the reply says so — pass offset (1-based line) to read ' +
+        'a later part, e.g. {"path":"big.sql","offset":600} to start at line 600.',
       parameters: {
         type: 'object',
-        properties: { path: { type: 'string' } },
+        properties: {
+          path: { type: 'string' },
+          offset: {
+            type: 'integer',
+            description: '1-based line to start at. Omit for the start of the file.',
+          },
+        },
         required: ['path'],
       },
     },
@@ -544,7 +618,14 @@ function restoreProtected(snap: Map<string, string>): string[] {
  * edit, which is far worse than a wasted call.
  */
 export interface ReadCache {
-  seen: Map<string, { mtimeMs: number; round: number }>;
+  /**
+   * Keyed by tool + path + window, so paging through a long file is not
+   * mistaken for re-reading it. `path` is carried on the ENTRY rather than
+   * parsed back out of the key — a key is now lossy (it may carry an offset
+   * suffix), and a path recovered by string-slicing a key is how the grounding
+   * builder would silently start reading files that do not exist.
+   */
+  seen: Map<string, { mtimeMs: number; round: number; path?: string }>;
 }
 
 /** Bounds for forced-round grounding — see buildForcedRoundGrounding. */
@@ -578,9 +659,16 @@ export function buildForcedRoundGrounding(
   // Cache keys are `${tool}:${path}` (see repeatReadNote). Only read_file
   // entries name an actual file — a list_dir key is a directory and would
   // otherwise be "read" as one, silently yielding nothing.
-  const recent = [...cache.seen.entries()]
-    .filter(([key]) => key.startsWith('read_file:'))
-    .map(([key, meta]) => [key.slice('read_file:'.length), meta] as const)
+  const byPath = new Map<string, { round: number }>();
+  for (const [key, meta] of cache.seen.entries()) {
+    if (!key.startsWith('read_file:')) continue;
+    // Entries carry their path; keys may also carry a window offset, and
+    // several windows of one file must ground it ONCE, not three times.
+    const rel = meta.path ?? key.slice('read_file:'.length);
+    const prior = byPath.get(rel);
+    if (!prior || meta.round > prior.round) byPath.set(rel, { round: meta.round });
+  }
+  const recent = [...byPath.entries()]
     .sort((a, b) => b[1].round - a[1].round)
     .slice(0, FORCED_GROUNDING_MAX_FILES);
   if (recent.length === 0) return undefined;
@@ -671,7 +759,15 @@ export function repeatReadNote(
 ): string | null {
   if (name !== 'read_file' && name !== 'list_dir') return null;
   if (typeof args.path !== 'string') return null;
-  const key = `${name}:${args.path}`;
+  // The offset is part of the identity: page 2 of a file is NOT a re-read of
+  // page 1, and scolding a model for paging through a long file would push it
+  // straight back into the read-loop this is meant to end. Only a genuine
+  // repeat — same path, same window, unchanged on disk — earns the note.
+  const offsetKey =
+    name === 'read_file' && Number.isFinite(Number(args.offset))
+      ? `@${Math.max(1, Math.trunc(Number(args.offset)))}`
+      : '';
+  const key = `${name}:${args.path}${offsetKey}`;
   const abs = resolve(projectRoot, args.path);
   const mtime = mtimeOf(abs);
   const prior = cache.seen.get(key);
@@ -682,7 +778,7 @@ export function repeatReadNote(
       'make the edit, or call finish.]'
     );
   }
-  if (mtime !== null) cache.seen.set(key, { mtimeMs: mtime, round });
+  if (mtime !== null) cache.seen.set(key, { mtimeMs: mtime, round, path: args.path });
   return null;
 }
 
@@ -746,7 +842,10 @@ export function runTool(
           `Its contents:\n${entries}`
         );
       }
-      return readFileSync(abs, 'utf-8').slice(0, readWindowBytes());
+      return readFileWindow(readFileSync(abs, 'utf-8'), {
+        offset: args.offset as number | undefined,
+        path: String(args.path),
+      });
     }
     if (name === 'list_dir') {
       const abs = safePath(projectRoot, String(args.path ?? '.'));
