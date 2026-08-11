@@ -90,7 +90,12 @@ export function saveRunState(state: DeliverRunState): boolean {
 }
 
 const VALID_STATUSES = new Set<DeliverRunStatus>(['running', 'delivered', 'failed', 'interrupted']);
-const MAX_INSTRUCTION_CHARS = 8000;
+/**
+ * Instructions are truncated to this on READ, while `saveRunState` writes them
+ * verbatim. Exported because anything comparing a live instruction against a
+ * persisted one has to apply the same cap or it will never match above it.
+ */
+export const MAX_INSTRUCTION_CHARS = 8000;
 // Must match the planner's hard ceiling (decompose.ts): the old cap of 5
 // silently TRUNCATED bigger persisted plans, so a legally-sized 8-phase
 // mission resumed at phaseIndex 6 skipped the loop entirely and reported
