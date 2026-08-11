@@ -144,10 +144,33 @@ def _fastpath_on() -> bool:
 
 
 def _trivial_edit_chars() -> int:
+    """The per-edit trivial threshold, from the environment or `.uap.json`.
+
+    Reads the SAME setting the fast-path hook reads
+    (`delivery.trivialEditChars`), because the two halves of one gate
+    disagreeing about how big a trivial edit is would be worse than either
+    number: the hook would fast-path an edit this enforcer then refuses.
+
+    Environment first, so an operator override still wins for one session.
+    """
+    raw = os.environ.get("UAP_DELIVER_TRIVIAL_EDIT_CHARS")
+    if raw is not None:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass  # malformed override falls through to the config/default
     try:
-        return max(0, int(os.environ.get("UAP_DELIVER_TRIVIAL_EDIT_CHARS", "240")))
-    except ValueError:
-        return 240
+        import json as _json
+        root = os.environ.get("UAP_MAIN_ROOT") or "."
+        cfg = _json.loads((Path(root) / ".uap.json").read_text(encoding="utf-8"))
+        value = (cfg.get("delivery") or {}).get("trivialEditChars")
+        if isinstance(value, bool):
+            return 240              # a bool is not a budget
+        if isinstance(value, (int, float)):
+            return max(0, int(value))
+    except Exception:
+        pass  # absent/unreadable config is normal, not an error
+    return 240
 
 
 def _changed_chars(args: dict) -> int | None:

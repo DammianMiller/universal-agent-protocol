@@ -1,8 +1,14 @@
 # Changelog
 
+<<<<<<< HEAD
+## v1.197.0 (2026-08-11)
+
+- feat(delivery): size the edit fast-path in .uap.json, not env-only
+=======
 ## v1.196.1 (2026-08-11)
 
 - fix(policies): protect a RUNNING deliver run from being killed
+>>>>>>> origin/master
 
 
 ## v1.196.0 (2026-08-11)
