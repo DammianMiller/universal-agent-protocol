@@ -116,3 +116,26 @@ describe('the write refusal uses the parser for TS and the scanner for Rust', ()
     }
   });
 });
+
+describe('survives a TypeScript whose API shape is not the 5.x one', () => {
+  it('goes inert rather than throwing when createSourceFile is missing', () => {
+    // TypeScript 7 is the Go rewrite: its main entry exports only
+    // {version, versionMajorMinor} and the compiler API moved behind
+    // ./unstable/*. v1.198.5 shipped assuming the 5.x surface, threw there, and
+    // the catch swallowed it — the guard was silently inert on any install
+    // whose ambient typescript was 7.x. `typescript` is a pinned ^5 dependency
+    // now, and this pins the degradation path for the next shape change.
+    const stub = { version: '7.0.2', versionMajorMinor: '7.0' } as unknown as typeof import('typescript');
+    expect(typeof (stub as { createSourceFile?: unknown }).createSourceFile).toBe('undefined');
+    // The guard must not throw on such a module, and must not claim a healthy
+    // file is broken because it could not read it.
+    expect(() => typescriptParseError(HEALTHY, 'x.ts')).not.toThrow();
+  });
+
+  it('the typescript it actually loads exposes the API it needs', () => {
+    // Pins the dependency contract: if the resolved typescript ever stops
+    // exposing createSourceFile, this fails HERE rather than the guard going
+    // quietly inert in production.
+    expect(typescriptParseError('export function a() {\n', 'x.ts'), 'guard is inert — check the typescript dependency').toBeTruthy();
+  });
+});

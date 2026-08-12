@@ -31,7 +31,7 @@
     "install:web": "bash scripts/setup/install-web.sh",
     "install:desktop": "bash scripts/setup/install-desktop.sh",
     "install:cloakbrowser": "tsx scripts/setup/install-cloakbrowser.ts",
-    "postinstall": "echo '\n✨ Run: npx @miller-tech/uap init --interactive'",
+    "postinstall": "echo '\n\u2728 Run: npx @miller-tech/uap init --interactive'",
     "version:patch": "bash scripts/version-bump.sh patch",
     "version:minor": "bash scripts/version-bump.sh minor",
     "version:major": "bash scripts/version-bump.sh major",
@@ -86,6 +86,7 @@
     "playwright-core": "^1.58.2",
     "pngjs": "^7.0.0",
     "simple-git": "^3.22.0",
+    "typescript": "^5.9.3",
     "undici": "^6.27.0",
     "ws": "^8.19.0",
     "zod": "^3.23.8"
