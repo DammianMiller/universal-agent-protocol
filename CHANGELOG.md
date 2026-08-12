@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.198.2 (2026-08-12)
+
+- fix(delivery): a cooperative stop could not stop an epic mission
+
+
 ## v1.198.1 (2026-08-11)
 
 - fix(delivery): look BELOW the root before saying nothing is in flight
