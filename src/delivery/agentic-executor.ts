@@ -1109,12 +1109,37 @@ export function protectedKey(projectRoot: string, abs: string): string {
  * P3 anti-gutting predicate. A weak model re-emitting a large existing file
  * often truncates it, replacing real implementation with a stub (observed live:
  * deliver.ts collapsed 2560 → 453 lines in one write_file). Flag a write that
- * shrinks a SUBSTANTIAL existing file (≥1500 bytes) to under 35% of its size —
- * the gutting signature — so the caller can refuse it and steer to edit_file.
- * Small files are never guarded (legitimate rewrites are common there). PURE.
+ * shrinks a SUBSTANTIAL existing file so the caller can refuse it and steer to
+ * edit_file. Small files are never guarded (legitimate rewrites are common
+ * there). PURE.
+ *
+ * Thresholds are CALIBRATED per file type against 187 real shrinking
+ * file-changes from this repo's history, because the original pair missed both
+ * halves of a live loss: a crate verified at 0 errors came back at 20 after the
+ * applier wrote lib.rs 6554B→2602B (ratio 0.40, above the 0.35 line) and
+ * contracts.rs 1423B→144B (90% destroyed, yet 77 bytes under the 1500 floor).
+ *
+ * For implementation files, `>=400B and <50%` refuses 3 of 86 real changes
+ * (3.5%) and catches both. That rate is only tolerable because the refusal is
+ * recoverable — the model is steered to edit_file, and an operator can override
+ * — whereas the miss destroys verified work.
+ *
+ * NOT applied to other types, which shrink honestly and often: the same rule
+ * would refuse 52% of real .sh changes (this repo replaces hook scripts with
+ * one-line delegating stubs) and 41% of .md ones. Without a path, the original
+ * conservative pair is used, so existing callers are unchanged.
  */
-export function isSuspectedGutting(prevLen: number, newLen: number): boolean {
-  return prevLen >= 1500 && newLen < prevLen * 0.35;
+const IMPLEMENTATION_FILE =
+  /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|rs|py|go|java|kt|swift|rb|php|cs|cpp|cc|c|h|hpp|scala|ex|exs)$/i;
+
+export function isSuspectedGutting(prevLen: number, newLen: number, path?: string): boolean {
+  if (path === undefined) return prevLen >= 1500 && newLen < prevLen * 0.35; // legacy callers
+  // A path means the CALIBRATED rule, which applies to implementation files
+  // only. Scripts and docs shrink honestly and hard — a hook script replaced by
+  // a one-line delegating stub goes 8262B→39B, and the legacy pair flags that
+  // just as eagerly — so for them the answer is no, not a gentler threshold.
+  if (!IMPLEMENTATION_FILE.test(path)) return false;
+  return prevLen >= 400 && newLen < prevLen * 0.5;
 }
 
 /** Snapshot current contents of protected files that exist. */

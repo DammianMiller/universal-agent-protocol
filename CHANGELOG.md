@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.201.1 (2026-08-12)
+
+- fix(delivery): guard the applier against gutting, on calibrated thresholds
+
+
 ## v1.201.0 (2026-08-12)
 
 - feat(gates): fail a crate whose code hides behind a feature it never declares
