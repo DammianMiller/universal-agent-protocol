@@ -791,7 +791,60 @@ function rustSources(dir: string, depth = 0, budget = { left: 400 }): string[] {
   return out;
 }
 
-export function detectCargoRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): GateRung[] {
+/**
+ * Is a usable docker CLI present? Probed once per ladder build, cheaply.
+ *
+ * UNVERIFIED BY TESTS: on a machine with docker this is indistinguishable from
+ * `return true`, and on one without it from `return false` — so a mutation of it
+ * survives either way. The DECISION that uses it is covered instead, through the
+ * injectable seam on detectCargoRungs. Noted rather than left looking covered.
+ */
+export function dockerAvailable(): boolean {
+  try {
+    const r = spawnSync('docker', ['version', '--format', '{{.Server.Version}}'], {
+      timeout: 5_000,
+      encoding: 'utf-8',
+      env: sanitizedEnv(),
+    });
+    return r.status === 0 && !!`${r.stdout ?? ''}`.trim();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Has the project asked for the containerised feature check?
+ *
+ * OPT-IN, and that is measured rather than cautious. A non-default feature
+ * gates a module in 218 of 681 real registry crates (32%), and this rung pulls
+ * an image and compiles a workspace inside it — minutes, with no warm target
+ * dir, every time the ladder runs. Defaulting it on would tax a third of all
+ * Rust projects on every turn to answer a question most of them do not have.
+ * A project whose real API lives behind a feature turns it on and gets an
+ * actual check instead of the advisory notice.
+ */
+function dockerFeatureCheckEnabled(projectRoot: string): boolean {
+  const raw = process.env.UAP_DOCKER_FEATURE_CHECK;
+  if (raw !== undefined) return ['1', 'true', 'on', 'yes'].includes(raw.toLowerCase());
+  try {
+    const cfg = JSON.parse(readFileSync(join(projectRoot, '.uap.json'), 'utf8')) as {
+      delivery?: { dockerFeatureCheck?: unknown };
+    };
+    return cfg.delivery?.dockerFeatureCheck === true;
+  } catch {
+    return false; // absent or unreadable config is not an opt-in
+  }
+}
+
+export function detectCargoRungs(
+  projectRoot: string,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  // Injected so the container decision is testable without depending on
+  // whether the machine running the suite happens to have docker. Without this
+  // seam a mutant making the rung unreachable still passed every test, because
+  // the assertions could only say "the rung OR the notice".
+  opts: { hasDocker?: () => boolean } = {}
+): GateRung[] {
   if (!existsSync(join(projectRoot, 'Cargo.toml'))) return [];
   const cargoTimeoutMs = Math.max(timeoutMs, 900_000);
   return [
@@ -846,6 +899,18 @@ export function detectCargoRungs(projectRoot: string, timeoutMs: number = DEFAUL
     ...(() => {
       const blind = featureGatedModules(projectRoot);
       if (blind.length === 0) return [];
+      // Opted in AND docker present: actually CHECK the hidden code instead of
+      // only naming it. One rung per feature, never a combined --all-features:
+      // feature sets are routinely mutually exclusive (pgrx declares pg12
+      // through pg17 and errors if two are on).
+      if (dockerFeatureCheckEnabled(projectRoot) && (opts.hasDocker ?? dockerAvailable)()) {
+        const containerRungs = blind
+          .map((feature) =>
+            dockerCargoRung(projectRoot, feature, { hasDocker: true, timeoutMs: cargoTimeoutMs })
+          )
+          .filter((r): r is GateRung => r !== null);
+        if (containerRungs.length > 0) return containerRungs;
+      }
       const list = blind.join(', ');
       return [
         {
@@ -854,7 +919,7 @@ export function detectCargoRungs(projectRoot: string, timeoutMs: number = DEFAUL
           command: 'bash',
           args: [
             '-c',
-            `echo "NOTE: cargo check --workspace compiles DEFAULT features only, and these features gate whole modules that the default build therefore never sees: ${list}. Code inside them can be arbitrarily broken while this gate stays green. Verify it with: cargo check --workspace --features ${blind[0]}"; exit 1`,
+            `echo "NOTE: cargo check --workspace compiles DEFAULT features only, and these features gate whole modules that the default build therefore never sees: ${list}. Code inside them can be arbitrarily broken while this gate stays green. Verify it with: cargo check --workspace --features ${blind[0]} — or set delivery.dockerFeatureCheck=true in .uap.json to run that check inside a container as part of this gate."; exit 1`,
           ],
           required: false,
           timeoutMs: Math.min(timeoutMs, 30_000),
@@ -1656,5 +1721,59 @@ export async function runTieredLadder(
         inScope.length > 0 ? inScope : rungs,
         new Set(regressions.map((r) => r.id))
       ) + formatBaselineRegressions(regressions),
+  };
+}
+
+/**
+ * `cargo check --features <feature>` inside a container.
+ *
+ * A crate can hide its whole API behind a cargo feature, and the default gate
+ * then reports zero errors on code that does not compile. Enabling the feature
+ * locally is not a general answer — the motivating pgrx crate needs
+ * `cargo pgrx init`, which builds PostgreSQL from source. A container carries
+ * that toolchain instead, so the check works on a host that has nothing.
+ *
+ * Returns null when docker is unavailable or the feature is empty, so a caller
+ * can always ask and simply get nothing back.
+ *
+ * Authored by the local model against an executable spec
+ * (test/delivery/docker-cargo-rung.test.ts), which pins every rule below.
+ */
+export function dockerCargoRung(
+  projectRoot: string,
+  feature: string,
+  opts?: { image?: string; hasDocker?: boolean; timeoutMs?: number }
+): GateRung | null {
+  if (opts?.hasDocker === false) return null;
+  if (!feature || feature.trim().length === 0) return null;
+
+  const image = opts?.image ?? 'rust:1-slim';
+  const timeoutMs = opts?.timeoutMs ?? 900_000;
+
+  return {
+    id: `cargo-check-docker-${feature}`,
+    name: `Cargo check (docker, feature: ${feature})`,
+    command: 'docker',
+    // Verbatim args: the rung runner does no shell interpolation, so a path
+    // with spaces must arrive as ONE argument rather than pre-quoted.
+    args: [
+      'run',
+      '--rm',
+      '-v',
+      `${projectRoot}:/w`,
+      '-w',
+      '/w',
+      image,
+      'cargo',
+      'check',
+      '--workspace',
+      '--features',
+      feature,
+    ],
+    // Advisory: a missing image, no network or a cold pull must never fail a
+    // delivery for a reason unrelated to the mission.
+    required: false,
+    timeoutMs,
+    tier: 'fast',
   };
 }

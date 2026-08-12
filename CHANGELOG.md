@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.199.0 (2026-08-12)
+
+- feat(gates): check feature-gated Rust inside a container, on request
+
+
 ## v1.198.6 (2026-08-12)
 
 - fix(delivery): the TypeScript guard was inert in production
