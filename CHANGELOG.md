@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.200.3 (2026-08-12)
+
+- fix(delivery): stop a path that repeats the project root creating a phantom tree
+
+
 ## v1.200.2 (2026-08-12)
 
 - fix(delivery): make a cooperative stop stop the RUN, not one epic
