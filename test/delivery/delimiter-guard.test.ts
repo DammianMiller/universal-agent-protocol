@@ -95,7 +95,11 @@ describe('delimiterImbalance', () => {
     // than the problem this fixes.
     expect(delimiterImbalance('const re = /[^)]/;\nfunction a() {', 'a.ts')).toBeNull();
     expect(delimiterImbalance('function a() {', 'a.js')).toBeNull();
-    expect(delimiterRefusal('a.ts', 'const a = 1;', 'function a() {')).toBeNull();
+    // The SCANNER stays off for .ts — but the refusal no longer does: it hands
+    // TypeScript to the real compiler instead (see typescript-parse-guard),
+    // which reads regex literals correctly. So a broken .ts write IS refused,
+    // just not by this scanner.
+    expect(delimiterRefusal('a.ts', 'const a = 1;', 'function a() {')).toBeTruthy();
   });
 });
 
