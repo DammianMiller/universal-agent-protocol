@@ -773,9 +773,42 @@ export class ConvergenceLoop {
         .split('\n')
         .filter((line) => line.trim() && !isHarnessOwned(line.slice(3).trim()))
         .join('\n');
+      // `?? path` says a file is untracked and NOTHING about its contents, and
+      // `git diff HEAD` only covers TRACKED files — so in a repo that has
+      // commits but whose source was never `git add`ed, rewriting a file moves
+      // neither half of the fingerprint. The rail then reads "nothing
+      // happened" while the model works, and the no-progress breaker reads
+      // "tree untouched" on every productive turn (measured on a pgrx crate
+      // sitting untracked in its parent repo: 6 stagnant turns out of 7).
+      //
+      // Size+mtime rather than a content hash: a false "changed" merely lets a
+      // run continue, while a false "unchanged" aborts a run that is working,
+      // so the cheap signal errs in the safe direction — and byte-identical
+      // rewrites never reach the disk anyway, the NO-OP write guard refuses
+      // them upstream.
+      const statLines = (lines: string[]): string =>
+        lines
+          .map((line) => line.slice(3).trim())
+          .filter(Boolean)
+          .map((rel) => {
+            try {
+              const st = statSync(join(this.config.projectRoot, rel));
+              return `${rel} ${st.size} ${Math.floor(st.mtimeMs)}`;
+            } catch {
+              // Unstattable (a race against deletion, a broken symlink). The
+              // marker is for humans reading a fingerprint diff — swapping it
+              // for any other constant is an EQUIVALENT MUTANT and no test
+              // kills it, because a path that comes or goes has already moved
+              // the `??` listing above.
+              return `${rel} gone`;
+            }
+          })
+          .join('\n');
+      const untrackedLines = status.split('\n').filter((line) => line.startsWith('??'));
+
       let diff: string;
       try {
-        diff = execSync('git diff HEAD --stat', opts).toString();
+        diff = `${execSync('git diff HEAD --stat', opts).toString()}\n${statLines(untrackedLines)}`;
       } catch {
         // Unborn HEAD (a repo with no commits yet — the fresh-scaffold case):
         // `git diff HEAD` fails, and one throw here used to null the WHOLE
@@ -784,20 +817,9 @@ export class ConvergenceLoop {
         // forever no matter how many files the model wrote (octopus runs
         // D/F, 2026-07-17). In an unborn repo every file is untracked, so
         // `?? path` lines never change on content edits — stat the listed
-        // files (size + mtime) to cover edits instead.
-        diff = status
-          .split('\n')
-          .map((line) => line.slice(3).trim())
-          .filter(Boolean)
-          .map((rel) => {
-            try {
-              const st = statSync(join(this.config.projectRoot, rel));
-              return `${rel} ${st.size} ${Math.floor(st.mtimeMs)}`;
-            } catch {
-              return `${rel} gone`;
-            }
-          })
-          .join('\n');
+        // files (size + mtime) to cover edits instead. Every file is untracked
+        // in an unborn repo, so this stats the whole listing.
+        diff = statLines(status.split('\n'));
       }
       return `${status}\n---\n${diff}`;
     } catch {
