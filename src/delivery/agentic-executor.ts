@@ -745,6 +745,162 @@ export function duplicateDefinitionRefusal(
   return null;
 }
 
+/**
+ * Languages this can check WITHOUT a parser, and nothing else.
+ *
+ * Measured over 19,960 real committed sources before choosing this list:
+ *
+ *   .rs    18,878 files   0 false positives  (0.000%)
+ *   .json     725 files   0 false positives  (0.000%)
+ *   .ts       350 files  50 false positives  (14.3%)
+ *   .js         7 files   6 false positives  (85.7%)
+ *
+ * The JS/TS failures are all REGEX LITERALS — `/[^)]/` pushes a `[` that never
+ * closes — and telling a regex from a division needs the parser this
+ * deliberately is not. A guard that refuses one healthy TypeScript file in
+ * seven would be worse than the problem it fixes, so those stay off until
+ * something measures them clean. C-likes are off for the same reason: no
+ * corpus, no claim.
+ */
+const DELIMITER_CHECKED = /\.(rs|json)$/i;
+
+/**
+ * Are the brackets balanced, ignoring strings and comments?
+ *
+ * Returns a description of the first imbalance, or null when the file is fine.
+ *
+ * Deliberately NOT a parser. It answers the one structural question that a
+ * broken write actually fails on, in microseconds, for any brace language —
+ * which is what lets it run on EVERY write rather than only where a compiler
+ * happens to be installed and fast.
+ */
+export function delimiterImbalance(content: string, path: string): string | null {
+  if (!DELIMITER_CHECKED.test(path)) return null;
+  const PAIRS: Record<string, string> = { '}': '{', ')': '(', ']': '[' };
+  const OPEN = new Set(['{', '(', '[']);
+  const stack: Array<{ ch: string; line: number }> = [];
+  let line = 1;
+  let i = 0;
+  const n = content.length;
+  const rust = /\.rs$/i.test(path);
+
+  while (i < n) {
+    const c = content[i]!;
+    const next = content[i + 1];
+
+    if (c === '\n') { line += 1; i += 1; continue; }
+
+    // Line comment
+    if (c === '/' && next === '/') {
+      while (i < n && content[i] !== '\n') i += 1;
+      continue;
+    }
+    // Block comment (Rust nests them; C-likes do not — nesting depth is safe for both)
+    if (c === '/' && next === '*') {
+      let depth = 1;
+      i += 2;
+      while (i < n && depth > 0) {
+        if (content[i] === '\n') line += 1;
+        else if (content[i] === '/' && content[i + 1] === '*') { depth += 1; i += 1; }
+        else if (content[i] === '*' && content[i + 1] === '/') { depth -= 1; i += 1; }
+        i += 1;
+      }
+      continue;
+    }
+    // Rust raw string: r"…", r#"…"#, r##"…"##
+    if (rust && c === 'r' && (next === '"' || next === '#')) {
+      let j = i + 1;
+      let hashes = 0;
+      while (content[j] === '#') { hashes += 1; j += 1; }
+      if (content[j] === '"') {
+        j += 1;
+        const close = '"' + '#'.repeat(hashes);
+        const end = content.indexOf(close, j);
+        const stop = end === -1 ? n : end + close.length;
+        for (let k = j; k < stop; k++) if (content[k] === '\n') line += 1;
+        i = stop;
+        continue;
+      }
+    }
+    // Rust lifetimes (`'a`, `&'static`) are NOT char literals. Treating them as
+    // quotes swallows everything to the next apostrophe — in `fn a<'a>(x: &'a str)`
+    // that eats the `(`, and the guard then reports a healthy file as broken.
+    // A char literal is `'x'` or `'\n'`: the closing quote is 2-3 chars away.
+    if (rust && c === "'" && !/^'(?:\\.|[^'\\])'/.test(content.slice(i, i + 4))) {
+      i += 1;
+      continue;
+    }
+    // Ordinary string / char
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      i += 1;
+      while (i < n) {
+        if (content[i] === '\\') { i += 2; continue; }
+        if (content[i] === '\n') {
+          line += 1;
+          // A single quote that reaches end-of-line is a Rust lifetime (`'a`),
+          // not an unterminated char literal — do not swallow the rest of the file.
+          if (quote === "'") break;
+        }
+        if (content[i] === quote) { i += 1; break; }
+        i += 1;
+      }
+      continue;
+    }
+
+    if (OPEN.has(c)) stack.push({ ch: c, line });
+    else if (PAIRS[c]) {
+      const top = stack.pop();
+      if (!top) return `unexpected closing \`${c}\` at line ${line} (nothing is open there)`;
+      if (top.ch !== PAIRS[c]) {
+        return `mismatched \`${c}\` at line ${line} — it closes \`${top.ch}\` opened at line ${top.line}`;
+      }
+    }
+    i += 1;
+  }
+
+  if (stack.length) {
+    const first = stack[0]!;
+    return `unclosed \`${first.ch}\` opened at line ${first.line} (${stack.length} still open at end of file)`;
+  }
+  return null;
+}
+
+/**
+ * Refuse a write that leaves the file structurally unparseable.
+ *
+ * The other write guards REFUSE (anti-gutting, stub-substance, duplicate
+ * definitions); a broken delimiter was only ever REPORTED, after the write had
+ * already landed. That difference is the whole problem: the tree is left in a
+ * state no compiler can read, so the next edit is authored against a file the
+ * model cannot see the structure of, and it digs deeper.
+ *
+ * Measured 2026-08-12 on a live pgrx mission: across 8 turns the compile error
+ * count read 52 → 22 → 45 → 2 → 27 → 23, where every "2" was `unclosed
+ * delimiter` — a parse failure truncating compilation and HIDING the real
+ * errors behind it. Three of eight turns were spent with the crate unparseable.
+ * Per-write `cargo check` was running fine (1s) and reporting it; being told
+ * afterwards did not help, because by then the damage was on disk.
+ *
+ * Only fires when the write makes it WORSE: a file already unbalanced can still
+ * be edited, or the guard would ratchet a broken file permanently shut — the
+ * same rule the duplicate-definition guard follows.
+ */
+export function delimiterRefusal(path: string, before: string, after: string): string | null {
+  if (process.env.UAP_DELIVER_ALLOW_UNBALANCED === '1') return null;
+  const broke = delimiterImbalance(after, path);
+  if (!broke) return null;
+  if (delimiterImbalance(before, path)) return null; // already broken; not this write's doing
+  return (
+    `ERROR: refusing to write ${path} — the result does not parse: ${broke}.\n` +
+    `Nothing was written, so the file on disk is still the version you read. ` +
+    `A file with unbalanced brackets stops the compiler at that point, which HIDES every ` +
+    `other error behind it and makes the next edit blind. Re-send this edit with the ` +
+    `brackets matched — check that every block you opened is closed, and that you did not ` +
+    `delete a closing brace along with the code above it.`
+  );
+}
+
 /** Resolve a model-supplied path inside the project root, refusing escapes. */
 function safePath(projectRoot: string, p: string): string {
   const abs = isAbsolute(p) ? p : resolve(projectRoot, p);
@@ -1217,6 +1373,12 @@ export function runTool(
             String(args.content ?? '')
           );
           if (dup) return dup;
+          const broke = delimiterRefusal(
+            String(args.path),
+            readFileSync(abs, 'utf-8'),
+            String(args.content ?? '')
+          );
+          if (broke) return broke;
         } catch { /* unreadable — a guard that cannot read cannot judge */ }
       }
       mkdirSync(dirname(abs), { recursive: true });
@@ -1354,6 +1516,8 @@ export function runTool(
       // how a file grows a second copy.
       const dupEdit = duplicateDefinitionRefusal(String(args.path), current, updated);
       if (dupEdit) return dupEdit;
+      const brokeEdit = delimiterRefusal(String(args.path), current, updated);
+      if (brokeEdit) return brokeEdit;
       writeFileSync(abs, updated, 'utf-8');
       recordAuthorisedWrite(sweep, rel, updated);
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
@@ -1402,6 +1566,8 @@ export function runTool(
           `If a gate is still failing, the cause is elsewhere.`
         );
       }
+      const brokeRange = delimiterRefusal(String(args.path), current, ranged.text);
+      if (brokeRange) return brokeRange;
       const guttedRange = editGuttingRefusal(String(args.path), current, ranged.text);
       if (guttedRange) return guttedRange;
       if (!stubGuardDisabled()) {
