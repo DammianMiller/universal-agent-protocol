@@ -35,6 +35,7 @@ import {
 } from 'fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { detectStub, stubGuardDisabled, stubRefusal } from './stub-detector.js';
+import { isSuspectedGutting } from './agentic-executor.js';
 
 export interface FileBlock {
   path: string;
@@ -680,6 +681,19 @@ export function applyFileBlocks(
       rejected.push({ path: block.path, reason: stubReason });
       continue;
     }
+    // Anti-gutting, which the agentic tool path has had all along. Without it
+    // the SAME destructive write is refused through one door and applied
+    // through the other — measured live 2026-08-12, a crate verified at 0
+    // errors and 37 passing tests came back at 20 after `✓ applied write:`
+    // collapsed lib.rs 6554B→2602B and contracts.rs 1423B→144B.
+    //
+    // The stub check above cannot see this: it measures empty-body ratio, and
+    // a file cut to 40% of itself is not a skeleton, merely much less code.
+    const gutReason = guttingRejectReason(block.path, block.content, projectRoot);
+    if (gutReason) {
+      rejected.push({ path: block.path, reason: gutReason });
+      continue;
+    }
 
     const target = join(projectRoot, block.path);
     mkdirSync(dirname(target), { recursive: true });
@@ -711,6 +725,33 @@ function newDirsFor(paths: string[], projectRoot: string): string[] {
  * skeleton-instead-of-code failure; `rejected` reasons are fed back to the
  * model, so this reads as instruction rather than a silent drop.
  */
+/**
+ * Reason to refuse a block that collapses an existing file, or null.
+ *
+ * Shares `isSuspectedGutting` with the agentic write path so the two doors
+ * cannot drift apart again — that divergence is what let a verified crate be
+ * destroyed by the applier while the tool path would have refused it.
+ */
+function guttingRejectReason(path: string, content: string, projectRoot: string): string | null {
+  if (process.env.UAP_DELIVER_ALLOW_GUTTING === '1') return null;
+  let prevLen: number;
+  try {
+    const target = join(projectRoot, path);
+    if (!existsSync(target)) return null; // a new file has nothing to gut
+    prevLen = Buffer.byteLength(readFileSync(target, 'utf-8'), 'utf-8');
+  } catch {
+    return null; // unreadable baseline — cannot judge, so do not block
+  }
+  const newLen = Buffer.byteLength(content, 'utf-8');
+  if (!isSuspectedGutting(prevLen, newLen, path)) return null;
+  return (
+    `refusing to write ${path} — it replaces ${prevLen} bytes with ${newLen} ` +
+    `(${Math.round((newLen / prevLen) * 100)}% of the original), which is the gutting signature of a ` +
+    `truncated re-emission rather than an edit. Nothing was written. Make the change surgically ` +
+    `instead of re-emitting the whole file, and if this really is a large deletion, say so.`
+  );
+}
+
 function stubRejectReason(path: string, content: string, projectRoot: string): string | null {
   if (stubGuardDisabled()) return null;
   // Pathological output should not make the write path chew through megabytes of
