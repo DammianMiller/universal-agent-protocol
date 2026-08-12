@@ -456,6 +456,13 @@ export const DeliverySchema = z.object({
   // materialised into every config the loader round-trips, turning an unset
   // budget into a written-down one nobody chose. Absent means "use the hook's
   // own default" (240 / 800 / 6). The environment still overrides both.
+  /**
+   * Run the feature-gated cargo check inside a container (see
+   * verifier-ladder's dockerCargoRung). OFF unless asked for: a non-default
+   * feature gates a module in 32% of real registry crates, and this pulls an
+   * image and compiles a workspace every time the ladder runs.
+   */
+  dockerFeatureCheck: z.boolean().optional(),
   trivialEditChars: z.number().int().min(0).optional(),
   cumulativeChars: z.number().int().min(0).optional(),
   cumulativeEdits: z.number().int().min(0).optional(),

@@ -191,6 +191,7 @@ export {
   runLadder,
   runRung,
   formatFeedback,
+  dockerCargoRung,
   type GateRung,
   type RungResult,
   type RungFailureReason,
