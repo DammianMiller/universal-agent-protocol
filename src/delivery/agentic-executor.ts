@@ -900,18 +900,35 @@ export function typescriptParseError(content: string, path: string): string | nu
     // guard that measured as "zero false positives" precisely because it never
     // fired. Caught by checking the instrument against a deliberately broken
     // file instead of trusting the sweep.
-    ts = createRequire(import.meta.url)('typescript') as typeof import('typescript');
+    const loaded = createRequire(import.meta.url)('typescript') as Record<string, unknown>;
+    // Unwrap ESM/CJS interop, then VERIFY the shape. TypeScript 7 is the Go
+    // rewrite: its main entry exports only {version, versionMajorMinor} and the
+    // compiler API moved behind ./unstable/*. A guard that assumes the 5.x
+    // surface throws there, gets swallowed by the catch, and goes silently
+    // inert — which is exactly what shipped in v1.198.5 and did nothing on an
+    // install whose ambient typescript was 7.0.2. `typescript` is now a pinned
+    // ^5 dependency so the nested copy always has this API; the check below is
+    // what keeps a future shape change VISIBLE as inert rather than pretending.
+    const api = ((loaded.default as Record<string, unknown>) ?? loaded) as unknown as typeof import('typescript');
+    if (typeof api?.createSourceFile !== 'function') return null;
+    ts = api;
   } catch {
     return null; // compiler unavailable — fail soft, never block a write
   }
   try {
-    const sf = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, false);
+    // Numeric fallback: ScriptTarget is an enum object that a reduced build
+    // may not expose, and 99 IS ScriptTarget.Latest.
+    const target = (ts.ScriptTarget?.Latest ?? 99) as number;
+    const sf = ts.createSourceFile(path, content, target, false);
     const diags = (sf as unknown as { parseDiagnostics?: readonly { category: number; messageText: unknown; start?: number }[] }).parseDiagnostics;
     // No category filter: parse diagnostics are always errors, so filtering
     // was dead code that survived mutation — it could never change an outcome.
     const first = diags?.[0];
     if (!first) return null;
-    const msg = ts.flattenDiagnosticMessageText(first.messageText as string, ' ');
+    const msg =
+      typeof ts.flattenDiagnosticMessageText === 'function'
+        ? ts.flattenDiagnosticMessageText(first.messageText as string, ' ')
+        : String(first.messageText);
     const line =
       typeof first.start === 'number'
         ? sf.getLineAndCharacterOfPosition(first.start).line + 1
