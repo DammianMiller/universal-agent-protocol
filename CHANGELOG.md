@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.200.2 (2026-08-12)
+
+- fix(delivery): make a cooperative stop stop the RUN, not one epic
+
+
 ## v1.200.1 (2026-08-12)
 
 - fix(delivery): tell a model when its edit was ALREADY APPLIED
