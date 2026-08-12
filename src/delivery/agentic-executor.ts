@@ -18,6 +18,7 @@
  */
 
 import { spawnSync } from 'child_process';
+import { createRequire } from 'node:module';
 import { normalizeToolPath } from './path-normalize.js';
 import { withModelSlot, recordModelSuccess, recordModelExhaustion, isExhaustionError } from '../utils/model-slot-lease.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'fs';
@@ -866,6 +867,64 @@ export function delimiterImbalance(content: string, path: string): string | null
   return null;
 }
 
+/** Files the TypeScript parser can judge — it reads plain JS and JSX too. */
+const TS_PARSED = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
+
+/**
+ * The first SYNTAX error the TypeScript compiler finds, or null.
+ *
+ * The delimiter scanner below deliberately skips TypeScript: regex literals
+ * (`/[^)]/`) push a bracket that never closes, which produced false positives
+ * on 14.3% of 350 real .ts files and 6 of 7 .js files. Guessing is the wrong
+ * tool when the actual parser is right there — `typescript` resolves at runtime
+ * through @qdrant/js-client-rest, so no dependency is added for this.
+ *
+ * Measured 2026-08-12, live: a mission implementing one small function appended
+ * it after an existing one and left a stray `}`. The whole file stopped
+ * parsing, so its eleven target tests could not even run, and nothing told it —
+ * `maybeJsSyntaxCheck` matches only /\.(js|cjs|mjs)$/ and shells to
+ * `node --check`, which cannot read TypeScript. A .ts write had no syntax
+ * feedback of any kind.
+ *
+ * PARSE errors only. `createSourceFile` does no type checking, so this cannot
+ * refuse a write for a type error the model is midway through fixing — it
+ * answers exactly one question: does this file still parse?
+ */
+export function typescriptParseError(content: string, path: string): string | null {
+  if (!TS_PARSED.test(path)) return null;
+  let ts: typeof import('typescript');
+  try {
+    // createRequire, not `require`: this module is built as ESM, where a bare
+    // `require` is undefined. It threw on every call and the catch below
+    // swallowed it, so the guard returned null for BROKEN files too — an inert
+    // guard that measured as "zero false positives" precisely because it never
+    // fired. Caught by checking the instrument against a deliberately broken
+    // file instead of trusting the sweep.
+    ts = createRequire(import.meta.url)('typescript') as typeof import('typescript');
+  } catch {
+    return null; // compiler unavailable — fail soft, never block a write
+  }
+  try {
+    const sf = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, false);
+    const diags = (sf as unknown as { parseDiagnostics?: readonly { category: number; messageText: unknown; start?: number }[] }).parseDiagnostics;
+    // No category filter: parse diagnostics are always errors, so filtering
+    // was dead code that survived mutation — it could never change an outcome.
+    const first = diags?.[0];
+    if (!first) return null;
+    const msg = ts.flattenDiagnosticMessageText(first.messageText as string, ' ');
+    const line =
+      typeof first.start === 'number'
+        ? sf.getLineAndCharacterOfPosition(first.start).line + 1
+        : undefined;
+    return line === undefined ? msg : `${msg} (line ${line})`;
+  } catch {
+    // UNVERIFIED: no input in the suite makes createSourceFile throw, so this
+    // branch survives mutation. Kept anyway — fail-soft is the rule for every
+    // check in this file — but it is defensive code, not tested behaviour.
+    return null; // a parser that throws is not evidence the file is bad
+  }
+}
+
 /**
  * Refuse a write that leaves the file structurally unparseable.
  *
@@ -888,9 +947,12 @@ export function delimiterImbalance(content: string, path: string): string | null
  */
 export function delimiterRefusal(path: string, before: string, after: string): string | null {
   if (process.env.UAP_DELIVER_ALLOW_UNBALANCED === '1') return null;
-  const broke = delimiterImbalance(after, path);
+  // TypeScript/JavaScript are judged by the real compiler rather than the
+  // bracket scanner, which cannot tell a regex literal from a division.
+  const broke = typescriptParseError(after, path) ?? delimiterImbalance(after, path);
   if (!broke) return null;
-  if (delimiterImbalance(before, path)) return null; // already broken; not this write's doing
+  const wasBroken = typescriptParseError(before, path) ?? delimiterImbalance(before, path);
+  if (wasBroken) return null; // already broken; not this write's doing
   return (
     `ERROR: refusing to write ${path} — the result does not parse: ${broke}.\n` +
     `Nothing was written, so the file on disk is still the version you read. ` +
