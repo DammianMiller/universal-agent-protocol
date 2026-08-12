@@ -97,6 +97,25 @@ describe('epic planning + fallback', () => {
     expect(scopes[0]).toContain('Add #[pg_extern] before fn join_by_i_time_sql');
   });
 
+  it('forwards a cooperative stop to the epic controller', async () => {
+    // Testing the controller is not testing the wiring: runEpicMission can drop
+    // the hook while every controller test still passes, and then the STOP file
+    // is written, consumed and ignored — which is exactly what happened live.
+    const scopes: string[] = [];
+    const r = await runEpicMission(
+      baseDeps({
+        planEpics: async () => [phase('a'), phase('b'), phase('c')],
+        runEpicLoop: async (scoped) => {
+          scopes.push(scoped);
+          return ok();
+        },
+        shouldStop: () => scopes.length >= 1,
+      })
+    );
+    expect(scopes.length, 'the run must stop after the first epic').toBe(1);
+    expect(r.success, 'a run cut short did not succeed').toBe(false);
+  });
+
   it('initializes the completion ledger with the epic ids and marks outcomes', async () => {
     const inits: string[][] = [];
     const marks: Array<[string, string]> = [];

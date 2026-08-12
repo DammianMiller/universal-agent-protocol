@@ -127,6 +127,24 @@ export interface EpicControllerConfig {
   /** Progress hook. */
   onEpic?: (epic: Epic, outcome: EpicOutcome) => void;
   /**
+   * Cooperative stop, checked at every EPIC boundary.
+   *
+   * `shouldStop` already existed on the convergence loop — per TURN. Nothing on
+   * this path ever consulted it, so an epic mission could not be stopped:
+   * measured 2026-08-12, a 16-epic run took two `touch .uap/deliver-runs/STOP`
+   * requests, consumed both markers, and carried on from epic 9 to epic 13.
+   *
+   * That mattered more than it looks. The cooperative stop is the alternative
+   * the kill-guard points at — "to STOP a run and KEEP the work, request the
+   * cooperative stop" — so with this unchecked, an operator watching an epic
+   * mission produce nothing had no sanctioned way to end it at all.
+   *
+   * At the boundary rather than mid-epic: an epic that stops halfway leaves a
+   * partial edit no gate has judged, which is the state this whole subsystem
+   * exists to avoid. Between epics, everything accepted so far is checkpointed.
+   */
+  shouldStop?: () => boolean;
+  /**
    * Epic ids already ACCEPTED by an interrupted run: marked done WITHOUT
    * running (their summaries ride in via initialPriorSummaries), so their
    * dependents unblock and completed work is never redone on resume.
@@ -178,6 +196,8 @@ export interface EpicControllerConfig {
 
 export interface EpicControllerResult {
   success: boolean;
+  /** True when a cooperative stop ended the run before every epic was tried. */
+  stopped?: boolean;
   completed: string[];
   failed: string[];
   turns: number;
@@ -202,7 +222,14 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
   const outcomes: EpicOutcome[] = [];
   let totalTurns = 0;
 
+  let stopped = false;
   for (const epic of ordered) {
+    // Checked BEFORE the resume skip so a stop is honoured even while the
+    // controller is replaying already-accepted epics.
+    if (config.shouldStop?.()) {
+      stopped = true;
+      break;
+    }
     // Resume skip: this epic was accepted by the interrupted run. Its summary
     // already rides in priorSummaries; report it, unblock dependents (via the
     // seeded done set), and never redo the work — a redo would produce zero
@@ -438,7 +465,11 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
   }
 
   return {
-    success: failed.size === 0,
+    // A stopped run did not succeed, however few epics failed: it was ended
+    // before it could try them. Reporting success here would tell the caller
+    // the mission is finished when most of it was never attempted.
+    success: failed.size === 0 && !stopped,
+    ...(stopped ? { stopped: true } : {}),
     completed: [...done],
     failed: [...failed],
     turns: totalTurns,

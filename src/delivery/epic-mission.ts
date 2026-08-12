@@ -80,6 +80,13 @@ export interface EpicMissionDeps {
   ledgerInit?: (items: Array<{ id: string; title: string; deps?: string[] }>) => void;
   ledgerMark?: (id: string, status: 'done' | 'failed', note?: string) => void;
   /**
+   * Cooperative stop, forwarded to the epic controller so it is honoured
+   * BETWEEN epics. Without it the stop marker is written, consumed, and
+   * ignored — measured on a live 16-epic run that ran from epic 9 to 13 across
+   * two stop requests.
+   */
+  shouldStop?: () => boolean;
+  /**
    * The PERSISTED epic plan from an interrupted run. When provided (and ≥1),
    * planEpics is skipped entirely: resume must be deterministic — replanning
    * would mint new epic ids (resetting the completion ledger's done marks)
@@ -262,6 +269,7 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
     maxAttemptsPerEpic: deps.maxAttemptsPerEpic,
     splitDepth: deps.splitDepth,
     splitOnAnyFailure: deps.splitOnAnyFailure,
+    ...(deps.shouldStop ? { shouldStop: deps.shouldStop } : {}),
     // Resume at the epic boundary: completed epics from an interrupted run
     // ride in as priors + a done set (skipped, never redone); each accepted
     // epic persists the updated progress back.
