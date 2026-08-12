@@ -701,6 +701,96 @@ export function demoteBaselineFailures(
  * Workspace builds routinely exceed the generic 5-minute rung timeout on a
  * cold target dir, so cargo rungs get a 15-minute floor.
  */
+/**
+ * Features whose code the DEFAULT build never compiles.
+ *
+ * `cargo check --workspace` compiles default features only. A crate can put its
+ * entire public surface behind `#[cfg(feature = "x")]`, and then the compile
+ * gate passes without ever looking at it — the same shape as the workspace
+ * membership hazard below, where code outside `[workspace] members` "passes"
+ * because cargo never sees it.
+ *
+ * Measured 2026-08-12 on a pgrx Postgres extension: every `#[pg_extern]` lived
+ * in `#[cfg(feature = "pgrx")] mod pgrx_funcs`, and `default = []`. The gate
+ * reported ZERO errors. Enabling the feature revealed 52 — invented pgrx APIs,
+ * `SetOfIterator` returns with no item type — none of which any judge caught,
+ * because a green compile gate is exactly the evidence a judge trusts.
+ *
+ * Detects a GATED MODULE specifically, not any `cfg(feature)`. A crate gating a
+ * few `serde` impls is ordinary and its default build still covers the crate;
+ * gating a whole `mod` means entire files or bodies are invisible. That
+ * distinction is what keeps this from firing on half of crates.io.
+ */
+export function featureGatedModules(projectRoot: string): string[] {
+  let manifest: string;
+  try {
+    manifest = readFileSync(join(projectRoot, 'Cargo.toml'), 'utf8');
+  } catch {
+    return [];
+  }
+  const featureBlock = /\n\[features\]([\s\S]*?)(?=\n\[|$)/.exec(manifest);
+  if (!featureBlock) return [];
+  const declared = new Set<string>();
+  let defaults: string[] = [];
+  for (const line of featureBlock[1]!.split('\n')) {
+    const m = /^\s*([A-Za-z0-9_-]+)\s*=\s*\[([^\]]*)\]/.exec(line);
+    if (!m) continue;
+    if (m[1] === 'default') {
+      defaults = [...m[2]!.matchAll(/"([^"]+)"/g)].map((x) => x[1]!);
+    } else {
+      declared.add(m[1]!);
+    }
+  }
+  // A feature reachable from `default` IS compiled by the plain gate.
+  const reachable = new Set(defaults);
+  const gated = new Set<string>();
+  for (const file of rustSources(join(projectRoot, 'src'))) {
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    // `#[cfg(feature = "x")]` immediately preceding a `mod` / `pub mod`.
+    const re = /#\[cfg\(\s*feature\s*=\s*"([^"]+)"\s*\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\b/g;
+    for (const m of text.matchAll(re)) {
+      const name = m[1]!;
+      if (declared.has(name) && !reachable.has(name)) gated.add(name);
+    }
+  }
+  return [...gated].sort();
+}
+
+/** Every .rs file under a directory, bounded so a huge tree cannot stall detection. */
+function rustSources(dir: string, depth = 0, budget = { left: 400 }): string[] {
+  if (depth > 6 || budget.left <= 0) return [];
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const name of entries) {
+    if (budget.left <= 0) break;
+    const p = join(dir, name);
+    let stat;
+    try {
+      stat = lstatSync(p);
+    } catch {
+      continue;
+    }
+    if (stat.isDirectory()) {
+      if (name === 'target' || name === 'node_modules' || name.startsWith('.')) continue;
+      out.push(...rustSources(p, depth + 1, budget));
+    } else if (name.endsWith('.rs')) {
+      budget.left -= 1;
+      out.push(p);
+    }
+  }
+  return out;
+}
+
 export function detectCargoRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): GateRung[] {
   if (!existsSync(join(projectRoot, 'Cargo.toml'))) return [];
   const cargoTimeoutMs = Math.max(timeoutMs, 900_000);
@@ -733,6 +823,45 @@ export function detectCargoRungs(projectRoot: string, timeoutMs: number = DEFAUL
       timeoutMs: cargoTimeoutMs,
       tier: 'fast',
     },
+    // Blind-spot notice for feature-gated modules. ADVISORY, and deliberately
+    // compiles nothing.
+    //
+    // The obvious implementation — add `cargo check --features x` as a required
+    // rung — was measured against 681 real crates from the registry and is
+    // wrong twice over. It fires on 32% of them, so a third of all Rust
+    // projects would pay an extra full compile per gated feature; and the
+    // feature may not be buildable at all on this machine (the pgrx crate that
+    // exposed this needs a source-built Postgres via `cargo pgrx init`), so a
+    // REQUIRED rung would fail every gate for a reason unrelated to the
+    // mission. Narrowing by how much code hides behind the gate does not rescue
+    // it either: the crate that motivated this scores 19%, below any threshold
+    // that keeps the false-positive rate sane, because its gated module is
+    // small in lines while holding 100% of its Postgres API.
+    //
+    // So: state the fact, cheaply, where the operator and the acceptance judge
+    // both see it — the same trade-off cargo-test already documents ("runs and
+    // is reported but does not block"). What it prevents is the specific way
+    // this went wrong: a GREEN compile gate on a crate whose entire surface did
+    // not compile, which is exactly the evidence a judge trusts most.
+    ...(() => {
+      const blind = featureGatedModules(projectRoot);
+      if (blind.length === 0) return [];
+      const list = blind.join(', ');
+      return [
+        {
+          id: 'cargo-feature-blind-spot',
+          name: `Feature blind spot (default build skips: ${list})`,
+          command: 'bash',
+          args: [
+            '-c',
+            `echo "NOTE: cargo check --workspace compiles DEFAULT features only, and these features gate whole modules that the default build therefore never sees: ${list}. Code inside them can be arbitrarily broken while this gate stays green. Verify it with: cargo check --workspace --features ${blind[0]}"; exit 1`,
+          ],
+          required: false,
+          timeoutMs: Math.min(timeoutMs, 30_000),
+          tier: 'fast',
+        } as GateRung,
+      ];
+    })(),
     {
       id: 'cargo-test',
       name: 'Tests (cargo test --workspace)',
