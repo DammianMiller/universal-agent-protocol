@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.198.3 (2026-08-12)
+
+- fix(gates): name the feature-gated code the cargo gate cannot see
+
+
 ## v1.198.2 (2026-08-12)
 
 - fix(delivery): a cooperative stop could not stop an epic mission
