@@ -372,6 +372,30 @@ export function isStopRequested(projectRoot: string, runId: string): boolean {
   } catch { return false; }
 }
 
+/**
+ * Wrap a one-shot stop signal so it stays true once it has fired.
+ *
+ * `isStopRequested` CONSUMES the project-level stop file when it observes it —
+ * deliberately, because a file that outlived its run would silently stop every
+ * future one. Wired straight into `shouldStop`, though, that makes the signal
+ * answer true exactly ONCE: the convergence loop sees it and ends that epic,
+ * the epic controller asks again before the next epic, the file is gone, and
+ * the run carries on (measured 2026-08-12 — stop consumed, fresh epic started
+ * with its turn counter back at 1).
+ *
+ * Latching keeps both properties: still consumed on first observation, and now
+ * applying to everything after it. Per run, so one mission stopping cannot
+ * stop another.
+ */
+export function makeStopLatch(read: () => boolean): () => boolean {
+  let latched = false;
+  return () => {
+    if (latched) return true;
+    latched = read();
+    return latched;
+  };
+}
+
 /** Request a cooperative stop: write the run's STOP file (creating the dir if needed). */
 export function requestStop(projectRoot: string, runId: string): boolean {
   try {

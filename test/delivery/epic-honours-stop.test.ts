@@ -17,6 +17,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { runEpics, type Epic, type EpicRunResult } from '../../src/delivery/epic-controller.js';
+import { makeStopLatch } from '../../src/delivery/run-state.js';
 
 const epic = (id: string, over: Partial<Epic> = {}): Epic => ({
   id,
@@ -48,6 +49,23 @@ describe('the epic controller honours a cooperative stop', () => {
       shouldStop: () => ran.length >= 1,   // stop after the first epic finishes
     }));
     expect(ran, 'the second epic must never start').toEqual(['a']);
+    expect(r.stopped).toBe(true);
+  });
+
+  it('stops even when the stop signal is ONE-SHOT', async () => {
+    // The project-level stop file is CONSUMED the moment it is observed, so a
+    // shouldStop wired straight to it answers true exactly once. The epic that
+    // saw it ends, the controller asks again for the next epic, the file is
+    // gone, and the run carries on — measured live 2026-08-12, turn counter
+    // back at 1 on a fresh epic. The caller must hand in a LATCHED signal.
+    const ran: string[] = [];
+    let reads = 0;
+    const oneShot = () => ++reads === 1;
+    const r = await runEpics(base({
+      runEpic: async (e) => { ran.push(e.id); return ok(); },
+      shouldStop: makeStopLatch(oneShot),
+    }));
+    expect(ran, 'nothing may run after a stop, however briefly the flag was up').toEqual([]);
     expect(r.stopped).toBe(true);
   });
 

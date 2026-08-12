@@ -217,7 +217,7 @@ export function bestKeepFastScore(
 export { resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
-import { clearStop, isStopRequested, requestStop, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
+import { clearStop, isStopRequested, makeStopLatch, requestStop, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
@@ -3006,7 +3006,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // itself before grading (mission-acceptance), preserving the required ordering.
   loopConfig.runAcceptanceDespiteLadder = deliverFidelity.max;
   // Cooperative cancel from the dashboard: the loop polls this each turn.
-  loopConfig.shouldStop = () => isStopRequested(projectRoot, runId);
+  //
+  // ONE latch for the whole run, shared with the epic controller below.
+  // `isStopRequested` consumes the project-level stop file when it sees it, so
+  // an unlatched signal answers true exactly once: the loop ends that epic,
+  // the controller asks again for the next one, the file is gone, and the run
+  // carries on (measured 2026-08-12 — consumed, then a fresh epic at turn 1).
+  const stopLatch = makeStopLatch(() => isStopRequested(projectRoot, runId));
+  loopConfig.shouldStop = stopLatch;
   clearStop(projectRoot, runId);
   // The restored checkpoint feeds exactly one loop (the in-flight phase).
   let resumeCheckpoint = resumeState?.checkpoint;
@@ -3305,7 +3312,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       // The SAME cooperative stop the convergence loop honours per turn —
       // forwarded so it is also honoured between epics. The kill-guard points
       // callers at this file as the way to stop a run and keep the work.
-      shouldStop: () => isStopRequested(projectRoot, runId),
+      // The SAME latch the convergence loop holds, not a second reader: the
+      // stop file is consumed on first observation, so a fresh closure here
+      // would find nothing and let the next epic start.
+      shouldStop: stopLatch,
       // A short mission is not multi-part: planning it costs a model call
       // (minutes on a local model) to divide work that has one piece. Run it as
       // ONE epic instead — same wrapper, same gates, no planning call.
