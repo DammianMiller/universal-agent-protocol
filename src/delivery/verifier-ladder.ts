@@ -761,6 +761,78 @@ export function featureGatedModules(projectRoot: string): string[] {
   return [...gated].sort();
 }
 
+/** Features a `#[cfg(feature = "...")]` immediately preceding a `mod` refers to. */
+function cfgGatedFeatureNames(projectRoot: string): string[] {
+  const names = new Set<string>();
+  const re = /#\[cfg\(\s*feature\s*=\s*"([^"]+)"\s*\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\b/g;
+  for (const file of rustSources(join(projectRoot, 'src'))) {
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const m of text.matchAll(re)) names.add(m[1]!);
+  }
+  return [...names];
+}
+
+/**
+ * Every feature name the manifest declares — including the ones Cargo creates
+ * IMPLICITLY for optional dependencies. `serde = { optional = true }` declares
+ * a feature "serde" with no `[features]` table in sight, so missing that would
+ * make this rule fire on perfectly ordinary crates.
+ */
+function manifestFeatureNames(manifest: string): Set<string> {
+  const names = new Set<string>();
+  const featureBlock = /\n\[features\]([\s\S]*?)(?=\n\[|$)/.exec(manifest);
+  if (featureBlock) {
+    for (const line of featureBlock[1]!.split('\n')) {
+      const m = /^\s*([A-Za-z0-9_-]+)\s*=\s*\[/.exec(line);
+      if (m) names.add(m[1]!);
+    }
+  }
+  // Inline form: `[dependencies]` … `name = { …, optional = true }`.
+  for (const block of manifest.matchAll(/\n\[(?:[a-z0-9_.-]+\.)?dependencies\]([\s\S]*?)(?=\n\[|$)/g)) {
+    for (const line of block[1]!.split('\n')) {
+      const m = /^\s*([A-Za-z0-9_-]+)\s*=\s*\{([^}]*)\}/.exec(line);
+      if (m && /\boptional\s*=\s*true\b/.test(m[2]!)) names.add(m[1]!);
+    }
+  }
+  // Table form: `[dependencies.name]` … `optional = true`.
+  for (const block of manifest.matchAll(
+    /\n\[(?:[a-z0-9_.-]+\.)?dependencies\.([A-Za-z0-9_-]+)\]([\s\S]*?)(?=\n\[|$)/g
+  )) {
+    if (/\boptional\s*=\s*true\b/.test(block[2]!)) names.add(block[1]!);
+  }
+  return names;
+}
+
+/**
+ * Features that gate a module but that the manifest never declares.
+ *
+ * Distinct from — and worse than — `featureGatedModules`. That one reports real
+ * code the DEFAULT build skips; this reports code NOTHING can build. Cargo
+ * rejects `--features x` for an undeclared x ("unknown feature"), so the module
+ * is not merely unchecked, it is dead, while `cargo check` reports zero errors.
+ *
+ * Measured live 2026-08-12: nine `#[pg_extern]` functions inside
+ * `#[cfg(feature = "pgrx")] mod pgrx_funcs`, a manifest with no `[features]`
+ * table and no pgrx dependency, and a green gate over all of it.
+ */
+export function undeclaredFeatureGates(projectRoot: string): string[] {
+  let manifest: string;
+  try {
+    manifest = readFileSync(join(projectRoot, 'Cargo.toml'), 'utf8');
+  } catch {
+    return [];
+  }
+  const declared = manifestFeatureNames(manifest);
+  return cfgGatedFeatureNames(projectRoot)
+    .filter((name) => !declared.has(name))
+    .sort();
+}
+
 /** Every .rs file under a directory, bounded so a huge tree cannot stall detection. */
 function rustSources(dir: string, depth = 0, budget = { left: 400 }): string[] {
   if (depth > 6 || budget.left <= 0) return [];
@@ -896,6 +968,34 @@ export function detectCargoRungs(
     // is reported but does not block"). What it prevents is the specific way
     // this went wrong: a GREEN compile gate on a crate whose entire surface did
     // not compile, which is exactly the evidence a judge trusts most.
+    // A gate on a feature the manifest never declares. Its sibling below
+    // reports code the DEFAULT build skips; this reports code NOTHING can
+    // build, because cargo rejects `--features x` for an undeclared x. REQUIRED
+    // rather than advisory: unlike the container check it needs no toolchain,
+    // no image and no network — it compares the manifest to the sources — and
+    // a run that newly hides its work behind a feature that cannot exist has
+    // delivered nothing. A crate already in this state is not punished:
+    // baseline-delta demotes a rung that was red at preflight, so only NEW
+    // breakage blocks.
+    ...(() => {
+      const undeclared = undeclaredFeatureGates(projectRoot);
+      if (undeclared.length === 0) return [];
+      const list = undeclared.join(', ');
+      return [
+        {
+          id: 'cargo-feature-undeclared',
+          name: `Undeclared feature gate (${list})`,
+          command: 'bash',
+          args: [
+            '-c',
+            `echo "NOTE: modules are gated behind #[cfg(feature = \\"...\\")] for features this crate never declares: ${list}. Cargo rejects --features ${undeclared[0]} as an unknown feature, so that code can NEVER be compiled by any gate — it is dead, and \\\`cargo check\\\` reports zero errors over it. Declare it under [features] in Cargo.toml (or make the dependency optional, which declares it implicitly), then verify with: cargo check --workspace --features ${undeclared[0]}."; exit 1`,
+          ],
+          required: true,
+          timeoutMs: Math.min(timeoutMs, 30_000),
+          tier: 'fast',
+        } as GateRung,
+      ];
+    })(),
     ...(() => {
       const blind = featureGatedModules(projectRoot);
       if (blind.length === 0) return [];
