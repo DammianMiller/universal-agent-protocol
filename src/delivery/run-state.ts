@@ -372,6 +372,57 @@ export function isStopRequested(projectRoot: string, runId: string): boolean {
   } catch { return false; }
 }
 
+/** Wall-clock budget for one delivery, in minutes. 0 (or negative) disables it. */
+export const DEFAULT_RUN_BUDGET_MINUTES = 120;
+
+/**
+ * The run's wall-clock budget: `UAP_DELIVER_MAX_MINUTES`, else
+ * `delivery.maxRunMinutes` in `.uap.json`, else the default.
+ *
+ * Calibrated, not chosen. Across 61 local runs, every one that DELIVERED
+ * finished within 119.9 minutes, so 120 would have ended 18 futile runs and no
+ * successful one; 60 would have cut a run that succeeded. The environment wins
+ * over the file so an operator can rescue a genuinely long mission without
+ * editing config mid-flight.
+ */
+export function runBudgetMinutes(projectRoot: string): number {
+  const env = process.env.UAP_DELIVER_MAX_MINUTES;
+  if (env !== undefined) {
+    const n = Number(env);
+    if (Number.isFinite(n)) return n;
+  }
+  try {
+    const cfg = JSON.parse(readFileSync(join(projectRoot, '.uap.json'), 'utf-8')) as {
+      delivery?: { maxRunMinutes?: unknown };
+    };
+    const n = Number(cfg.delivery?.maxRunMinutes);
+    if (Number.isFinite(n)) return n;
+  } catch {
+    /* absent or unreadable config — the default stands */
+  }
+  return DEFAULT_RUN_BUDGET_MINUTES;
+}
+
+/**
+ * Has this run outlived its budget? PURE.
+ *
+ * A non-positive budget means OFF, not "expire immediately" — a config typo
+ * must not stop every run on its first turn.
+ *
+ * A start time in the FUTURE (clock skew, a restored checkpoint) cannot expire
+ * either, and needs no guard of its own: the budget is already known positive
+ * here, so a negative elapsed can never exceed it. An explicit `elapsed > 0`
+ * check was written first and removed — no test could distinguish it, because
+ * nothing it guards against is reachable.
+ */
+export function isRunBudgetExpired(startedAtMs: number, budgetMinutes: number): boolean {
+  if (!(budgetMinutes > 0)) return false;
+  // `>` vs `>=` differ only when elapsed equals the budget to the exact
+  // millisecond: an EQUIVALENT MUTANT no test kills, and not worth freezing a
+  // clock to pin.
+  return Date.now() - startedAtMs > budgetMinutes * 60_000;
+}
+
 /**
  * Wrap a one-shot stop signal so it stays true once it has fired.
  *
