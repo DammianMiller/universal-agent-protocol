@@ -462,6 +462,7 @@ export const DeliverySchema = z.object({
    * feature gates a module in 32% of real registry crates, and this pulls an
    * image and compiles a workspace every time the ladder runs.
    */
+  maxRunMinutes: z.number().optional(),
   dockerFeatureCheck: z.boolean().optional(),
   trivialEditChars: z.number().int().min(0).optional(),
   cumulativeChars: z.number().int().min(0).optional(),

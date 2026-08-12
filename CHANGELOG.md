@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.202.0 (2026-08-13)
+
+- feat(delivery): bound a run in wall-clock time, at a calibrated default
+
+
 ## v1.201.1 (2026-08-12)
 
 - fix(delivery): guard the applier against gutting, on calibrated thresholds

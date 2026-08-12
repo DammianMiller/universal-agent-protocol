@@ -217,7 +217,7 @@ export function bestKeepFastScore(
 export { resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
-import { clearStop, isStopRequested, makeStopLatch, requestStop, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
+import { clearStop, isRunBudgetExpired, isStopRequested, makeStopLatch, requestStop, runBudgetMinutes, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
@@ -3012,7 +3012,23 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // an unlatched signal answers true exactly once: the loop ends that epic,
   // the controller asks again for the next one, the file is gone, and the run
   // carries on (measured 2026-08-12 — consumed, then a fresh epic at turn 1).
-  const stopLatch = makeStopLatch(() => isStopRequested(projectRoot, runId));
+  //
+  // The latch also carries the run's WALL-CLOCK budget. Nothing else bounds a
+  // delivery in time: `wedgeAfterSec` fires on SILENCE, so a run that
+  // heartbeats while its gate score never moves runs forever (measured
+  // 2026-08-13 — 651 minutes, still phase 0 of 6, 20% of gates on every turn).
+  // Riding the stop latch means expiry behaves exactly like an operator's stop
+  // request: the turn finishes, the work is checkpointed, the lock is released.
+  const budgetMinutes = runBudgetMinutes(projectRoot);
+  const runStartedAtMs = Date.now();
+  let stoppedForBudget = false;
+  const stopLatch = makeStopLatch(() => {
+    if (isRunBudgetExpired(runStartedAtMs, budgetMinutes)) {
+      stoppedForBudget = true;
+      return true;
+    }
+    return isStopRequested(projectRoot, runId);
+  });
   loopConfig.shouldStop = stopLatch;
   clearStop(projectRoot, runId);
   // The restored checkpoint feeds exactly one loop (the in-flight phase).
@@ -3952,6 +3968,20 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         `✗ Not delivered after ${result.turns} turn(s). Best: ${Math.round(result.bestScore * 100)}% of gates (turn ${result.bestTurn}).`
       )
     );
+    // Name the wall-clock budget when it is what ended the run. A stop with no
+    // stated cause is how a caller invents one: an agent watching a run that
+    // simply went quiet reported it "stuck in PLANNING" and looped on follow
+    // for a quarter of an hour (2026-08-12).
+    if (stoppedForBudget) {
+      console.log(
+        chalk.yellow(
+          `  Stopped by the run's wall-clock budget of ${budgetMinutes} minutes — the work so far is ` +
+            `checkpointed and the lock is released. It did not fail; it ran out of time. Resume it with ` +
+            `\`uap deliver --resume\`, and raise the budget for this mission with delivery.maxRunMinutes ` +
+            `in .uap.json if the mission is genuinely this long.`
+        )
+      );
+    }
     if (result.finalFeedback) {
       console.log(chalk.dim(stripControl(result.finalFeedback)));
     }
