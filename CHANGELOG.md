@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.198.6 (2026-08-12)
+
+- fix(delivery): the TypeScript guard was inert in production
+
+
 ## v1.198.5 (2026-08-12)
 
 - fix(delivery): judge TypeScript writes with the real parser
