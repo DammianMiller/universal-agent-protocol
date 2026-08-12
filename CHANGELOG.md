@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.199.1 (2026-08-12)
+
+- fix(delivery): see content edits to untracked files in the tree fingerprint
+
+
 ## v1.199.0 (2026-08-12)
 
 - feat(gates): check feature-gated Rust inside a container, on request
