@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.201.0 (2026-08-12)
+
+- feat(gates): fail a crate whose code hides behind a feature it never declares
+
+
 ## v1.200.3 (2026-08-12)
 
 - fix(delivery): stop a path that repeats the project root creating a phantom tree
