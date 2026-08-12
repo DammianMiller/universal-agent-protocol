@@ -154,6 +154,46 @@ export function repairFilename(abs: string): ContainResult {
  *   - read of an existing file → also repair the filename to a real sibling
  * Returns the corrected path (absolute or relative as given) + a note if changed.
  */
+/**
+ * Strip a leading run of segments that repeats the project root's own trailing
+ * segments, or null when the path is not a root echo.
+ *
+ * Narrow by construction, because the cost of a wrong rewrite is a write to the
+ * wrong file:
+ *   - the echoed prefix must be the root's OWN trailing segments, longest first
+ *     (so `.../src/rust-pg-ext` matches `src/rust-pg-ext/...` before `rust-pg-ext/...`);
+ *   - the stripped path must already EXIST — never invent a destination;
+ *   - the doubled path must NOT exist. A genuinely nested `packages/foo/packages/foo`
+ *     is then left alone, because if the deeper file is real it is what was meant.
+ *
+ * That last clause makes this a first-write guard, which is the whole job: the
+ * phantom is what creates the ambiguity, so preventing it is enough.
+ */
+export function stripRootEcho(projectRoot: string, rel: string, forWrite: boolean): string | null {
+  const rootSegs = projectRoot.split('/').filter(Boolean);
+  const relSegs = rel.split('/').filter(Boolean);
+  // Belt-and-braces: `maxEcho` below already excludes a single-segment path
+  // (its ceiling becomes 0, so the loop never runs). Removing this line is an
+  // EQUIVALENT MUTANT and no test kills it; it stays as a cheap early-out that
+  // says the intent out loud.
+  if (relSegs.length < 2) return null;
+  if (existsSync(join(projectRoot, rel))) return null; // the deep path is real
+  // `- 1` keeps at least one segment for the file itself. Widening it to
+  // consume the whole path is an EQUIVALENT MUTANT: the strip would yield an
+  // empty string, which the `!stripped` guard below already skips.
+  const maxEcho = Math.min(rootSegs.length, relSegs.length - 1);
+  for (let k = maxEcho; k >= 1; k--) {
+    const tail = rootSegs.slice(rootSegs.length - k);
+    if (!tail.every((seg, i) => relSegs[i] === seg)) continue;
+    const stripped = relSegs.slice(k).join('/');
+    if (!stripped) continue;
+    if (existsSync(join(projectRoot, stripped))) return stripped;
+    // Creating a new file is legitimate as long as its directory is real.
+    if (forWrite && existsSync(join(projectRoot, dirname(stripped)))) return stripped;
+  }
+  return null;
+}
+
 export function normalizeToolPath(
   projectRoot: string,
   proposed: string,
@@ -170,6 +210,17 @@ export function normalizeToolPath(
     }
     return contained.changed ? contained : { path: trimmed, changed: trimmed !== proposed, reason: 'trimmed' };
   }
+
+  // A path that re-enters the project root BY NAME. A model handed a
+  // repo-root-relative path (`src/rust-pg-ext/src/lib.rs`) while the run's root
+  // already IS `.../src/rust-pg-ext` writes one level too deep, and the result
+  // is a phantom tree that looks plausible to every later reader — including a
+  // self-authored gate, which then reports progress on files the project does
+  // not have. Measured live 2026-08-12: 20 minutes of work landed in
+  // `src/rust-pg-ext/src/rust-pg-ext/src/lib.rs` while the real crate file was
+  // never touched.
+  const echoed = stripRootEcho(projectRoot, trimmed, opts.forWrite === true);
+  if (echoed) return { path: echoed, changed: true, reason: 'path repeated the project root' };
 
   // Relative: fuzzy-correct garbled existing subdirs under the root.
   const corrected = fsCorrectSuffix(projectRoot, trimmed);
