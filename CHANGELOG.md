@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.198.5 (2026-08-12)
+
+- fix(delivery): judge TypeScript writes with the real parser
+
+
 ## v1.198.4 (2026-08-12)
 
 - fix(delivery): refuse a write that leaves the file unparseable
