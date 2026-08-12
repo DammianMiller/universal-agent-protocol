@@ -3302,6 +3302,10 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     return runEpicMissionCore({
       instruction,
       projectRoot,
+      // The SAME cooperative stop the convergence loop honours per turn —
+      // forwarded so it is also honoured between epics. The kill-guard points
+      // callers at this file as the way to stop a run and keep the work.
+      shouldStop: () => isStopRequested(projectRoot, runId),
       // A short mission is not multi-part: planning it costs a model call
       // (minutes on a local model) to divide work that has one piece. Run it as
       // ONE epic instead — same wrapper, same gates, no planning call.
