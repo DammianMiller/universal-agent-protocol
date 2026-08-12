@@ -980,6 +980,61 @@ export function delimiterRefusal(path: string, before: string, after: string): s
   );
 }
 
+/**
+ * The `default` feature list of a Cargo manifest, or null when the manifest
+ * has no `[features]`/`default` at all. Deliberately a small regex reader
+ * rather than a TOML dependency: it needs to survive a half-written manifest
+ * mid-edit, where a strict parser would throw and take the write with it.
+ */
+function defaultFeatures(manifest: string): string[] | null {
+  const start = /^\[features\][^\n]*\n/m.exec(manifest);
+  if (!start) return null;
+  const rest = manifest.slice(start.index + start[0].length);
+  const next = /^\[/m.exec(rest);
+  const section = next ? rest.slice(0, next.index) : rest;
+  const decl = /^\s*default\s*=\s*\[([\s\S]*?)\]/m.exec(section);
+  if (!decl) return null;
+  return decl[1]
+    .split(',')
+    .map((entry) => entry.replace(/#.*$/, '').trim().replace(/^["']|["']$/g, ''))
+    .filter(Boolean);
+}
+
+/**
+ * Refuse a write that REMOVES entries from a crate's `default` feature list.
+ *
+ * `cargo check --workspace` compiles default features only, so when a crate's
+ * API lives behind `#[cfg(feature = "pgrx")]`, dropping "pgrx" from `default`
+ * makes the required gate compile nothing and report zero errors. Observed
+ * three times in one live run: the gate went red, `default = ["pgrx"]` came
+ * back as `default = []`, and the next turn "passed".
+ *
+ * That is worse than writing bad code, because it is invisible — the run ends
+ * green over a crate that does not build. #696 added a rung that REPORTS this
+ * blind spot; this refuses to create it.
+ *
+ * Only shrinking is refused. Adding features, reordering them, and every other
+ * edit to the manifest pass straight through.
+ */
+export function featureDowngradeRefusal(path: string, before: string, after: string): string | null {
+  if (process.env.UAP_DELIVER_ALLOW_FEATURE_DOWNGRADE === '1') return null;
+  if (!/(^|[\\/])Cargo\.toml$/i.test(path)) return null;
+  const had = defaultFeatures(before);
+  if (!had || had.length === 0) return null; // nothing to protect
+  const now = defaultFeatures(after) ?? []; // section or key deleted entirely
+  const dropped = had.filter((f) => !now.includes(f));
+  if (dropped.length === 0) return null;
+  const list = dropped.join(', ');
+  return (
+    `ERROR: refusing to write ${path} — it removes ${list} from the crate's default features.\n` +
+    `Nothing was written, so the file on disk is still the version you read. ` +
+    `\`cargo check\` compiles DEFAULT features only, so taking ${list} out of that list does not ` +
+    `fix anything: it stops the gate compiling the code behind \`#[cfg(feature = "...")]\` at all, ` +
+    `and the run would finish green over a crate that does not build. ` +
+    `Fix the code behind the feature instead, and leave the default list as you found it.`
+  );
+}
+
 /** Resolve a model-supplied path inside the project root, refusing escapes. */
 function safePath(projectRoot: string, p: string): string {
   const abs = isAbsolute(p) ? p : resolve(projectRoot, p);
@@ -1458,6 +1513,12 @@ export function runTool(
             String(args.content ?? '')
           );
           if (broke) return broke;
+          const downgrade = featureDowngradeRefusal(
+            String(args.path),
+            readFileSync(abs, 'utf-8'),
+            String(args.content ?? '')
+          );
+          if (downgrade) return downgrade;
         } catch { /* unreadable — a guard that cannot read cannot judge */ }
       }
       mkdirSync(dirname(abs), { recursive: true });
@@ -1597,6 +1658,8 @@ export function runTool(
       if (dupEdit) return dupEdit;
       const brokeEdit = delimiterRefusal(String(args.path), current, updated);
       if (brokeEdit) return brokeEdit;
+      const downgradeEdit = featureDowngradeRefusal(String(args.path), current, updated);
+      if (downgradeEdit) return downgradeEdit;
       writeFileSync(abs, updated, 'utf-8');
       recordAuthorisedWrite(sweep, rel, updated);
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
@@ -1647,6 +1710,8 @@ export function runTool(
       }
       const brokeRange = delimiterRefusal(String(args.path), current, ranged.text);
       if (brokeRange) return brokeRange;
+      const downgradeRange = featureDowngradeRefusal(String(args.path), current, ranged.text);
+      if (downgradeRange) return downgradeRange;
       const guttedRange = editGuttingRefusal(String(args.path), current, ranged.text);
       if (guttedRange) return guttedRange;
       if (!stubGuardDisabled()) {
