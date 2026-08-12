@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.198.4 (2026-08-12)
+
+- fix(delivery): refuse a write that leaves the file unparseable
+
+
 ## v1.198.3 (2026-08-12)
 
 - fix(gates): name the feature-gated code the cargo gate cannot see
