@@ -1035,6 +1035,34 @@ export function featureDowngradeRefusal(path: string, before: string, after: str
   );
 }
 
+/**
+ * Shortest replacement text that can be trusted to mean "this edit already
+ * landed". A fragment like `)` or `let x` occurs all over a real source file,
+ * so a floor is what keeps this from swallowing genuine misses behind a
+ * reassuring message.
+ */
+const APPLIED_MIN_CHARS = 12;
+
+/**
+ * The message for a miss whose replacement is already present, or null when
+ * this is an ordinary miss and the caller should report it as one.
+ */
+export function alreadyAppliedNote(
+  path: string,
+  label: string,
+  current: string,
+  newStr: string
+): string | null {
+  if (newStr.trim().length < APPLIED_MIN_CHARS) return null;
+  if (!current.includes(newStr)) return null;
+  return (
+    `NO-OP: ${path}${label}: this edit is ALREADY APPLIED — old_string is not in the file because ` +
+    `your replacement text is already there. Nothing was written and nothing needs to be: the file ` +
+    `on disk already has the change you are asking for. Do not re-send this edit or hunt for a ` +
+    `better anchor; move on to the next change, and if there is none left, finish.`
+  );
+}
+
 /** Resolve a model-supplied path inside the project root, refusing escapes. */
 function safePath(projectRoot: string, p: string): string {
   const abs = isAbsolute(p) ? p : resolve(projectRoot, p);
@@ -1608,6 +1636,14 @@ export function runTool(
           indentSensitive,
         });
         if (match.kind === 'miss' || match.kind === 'ambiguous') {
+          // A miss whose replacement is ALREADY in the file is not a failed
+          // edit — it is the same edit sent twice. "old_string not found"
+          // reads as "your anchor is wrong, try again", which is the opposite
+          // of the truth and is how the model burns rounds re-anchoring a
+          // change it already made (observed live 2026-08-12: applied at round
+          // 7, `cargo check` clean at round 10, re-sent at rounds 11 and 12).
+          const applied = alreadyAppliedNote(String(args.path), label, updated, newStr);
+          if (applied) return applied;
           // Nothing has been written yet, so the batch aborts clean.
           return `ERROR: ${String(args.path)}${label}: ${match.note ?? 'old_string not found.'}`;
         }
