@@ -73,6 +73,32 @@ export function decideGateStrategy(opts: {
 }
 
 /**
+ * Should a self-gate be authored even though the acceptance judge was chosen as
+ * the primary convergence target?
+ *
+ * Yes exactly when that judge has collapsed onto the GENERATOR. Making an LLM
+ * the convergence target is sound while the judge is a different model; when it
+ * is the same model it is not verification at all, it is the run marking its
+ * own homework — and on a local/offline setup that is the normal case, not an
+ * edge one. Observed live 2026-08-13: the harness printed "LLM judge is the
+ * convergence target (self-gate skipped)" and "no distinct judge reachable —
+ * generator grades its own output" in the same run, knowing it was self-grading
+ * and doing nothing differently.
+ *
+ * A runnable script is objective in a way a self-judgement can never be, and it
+ * costs one authoring call. An operator who explicitly allowed self-judging is
+ * taken at their word.
+ */
+export function needsGateDespiteAcceptance(opts: {
+  acceptancePrimary: boolean;
+  judgeDistinct: boolean;
+  allowSelfJudge: boolean;
+  selfGateAllowed: boolean;
+}): boolean {
+  return opts.acceptancePrimary && !opts.judgeDistinct && !opts.allowSelfJudge && opts.selfGateAllowed;
+}
+
+/**
  * B2 — tiered acceptance. The per-turn LLM acceptance judge is skipped for a
  * `simple` task UNLESS it is the only verification (acceptancePrimary): the
  * objective gates / self-gate (a runnable script) already cover simple work,
@@ -2285,7 +2311,25 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // Self-authored acceptance gate: give deliver a real convergence target when
   // the project exposes none. The gate must FAIL on the current unsolved repo
   // (enforced in authorAcceptanceGate) so turn 1 cannot trivially pass.
-  if (needsSelfGate) {
+  // ...and author one anyway when the acceptance judge turned out to BE the
+  // generator. That check could not be made at strategy time: the judge plan is
+  // only resolved further down, so the decision to skip the self-gate was taken
+  // before anyone knew who the judge would be.
+  const selfJudgingNeedsGate = needsGateDespiteAcceptance({
+    acceptancePrimary,
+    judgeDistinct,
+    allowSelfJudge,
+    selfGateAllowed,
+  });
+  if (selfJudgingNeedsGate && !options.dryRun) {
+    console.log(
+      chalk.yellow(
+        '⚖ self-gate: authoring one after all — the acceptance judge IS the generator, so it is not ' +
+          'an independent check. A runnable script is.'
+      )
+    );
+  }
+  if (needsSelfGate || selfJudgingNeedsGate) {
     console.log(chalk.cyan('⚖ self-gate: authoring a task-specific acceptance check…'));
     // Author the gate with the blind executor — it is a single-shot script
     // write, not a task to solve agentically.
