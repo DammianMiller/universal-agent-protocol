@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.204.0 (2026-08-13)
+
+- feat(protect-tests): sanction append-only test additions to protected test files
+
+
 ## v1.203.5 (2026-08-13)
 
 - fix(user-validation): anchored journey patterns must match real CLI output
