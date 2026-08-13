@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.203.3 (2026-08-13)
+
+- fix(visual-gate): bound the browser launch so an unavailable one skips
+
+
 ## v1.203.2 (2026-08-13)
 
 - fix(snapshot): stop a no-regress revert deleting the run's own state

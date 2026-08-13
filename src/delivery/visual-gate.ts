@@ -48,6 +48,13 @@ export interface VisualGateOptions {
   intervalMs?: number;
   /** Per-page hard budget in ms (default 30000). */
   timeoutMs?: number;
+  /**
+   * Hard bound on starting the browser (default 20000). Separate from
+   * `timeoutMs`, which budgets a page once the browser is up: a launch that
+   * never returns is not a slow page, it is an unavailable browser, and the
+   * gate should skip rather than wait.
+   */
+  launchTimeoutMs?: number;
   /** Injected browser (tests). Default: the real WebBrowser (cloakbrowser). */
   browserFactory?: () => VisualBrowserDriver;
 }
@@ -128,6 +135,8 @@ const GRID = 24;
 const DEFAULT_SAMPLES = 3;
 const DEFAULT_INTERVAL_MS = 900;
 const DEFAULT_TIMEOUT_MS = 30_000;
+/** Starting a browser should take seconds; beyond this it is not coming up. */
+export const DEFAULT_LAUNCH_TIMEOUT_MS = 20_000;
 const MAX_PAGES = 6;
 /** A canvas showing fewer distinct colors than this is a blank/failed render. */
 const MIN_DISTINCT_COLORS = 3;
@@ -652,6 +661,7 @@ export async function runVisualGate(
   const samples = Math.max(2, options.samples ?? DEFAULT_SAMPLES);
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const launchTimeoutMs = options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS;
 
   const visualTargets = readVisualTargets(projectRoot);
   const screenshotDir = join(projectRoot, '.uap', 'visual');
@@ -677,7 +687,19 @@ export async function runVisualGate(
       browser = null;
       try {
         browser = options.browserFactory ? options.browserFactory() : await loadRealBrowser();
-        await browser.launch({ headless: true });
+        // BOUNDED. This gate is written to fail open — a browser that cannot
+        // start returns skipped:true and the delivery carries on — but an
+        // unbounded launch never reaches that path, it just waits. A browser
+        // that hangs (first-run download, no display, a wedged binary) then
+        // stalls the whole turn. It is also the entire `visual-gate` flake:
+        // 7.3s locally three runs out of three, dead at exactly 60111ms in CI,
+        // which is the test budget rather than any failure.
+        await Promise.race([
+          browser.launch({ headless: true }),
+          delay(launchTimeoutMs).then(() => {
+            throw new Error(`launch timed out after ${launchTimeoutMs}ms`);
+          }),
+        ]);
       } catch (e) {
         try {
           await browser?.close();
