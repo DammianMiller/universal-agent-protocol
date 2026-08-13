@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.203.1 (2026-08-13)
+
+- fix(deliver): stop a run converging on a judge that IS the generator
+
+
 ## v1.203.0 (2026-08-13)
 
 - feat(self-gate): make an authored gate RUN the code, not grade its spelling
