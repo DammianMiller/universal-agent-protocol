@@ -479,6 +479,30 @@ Upper bound on parallel agent/tool fan-out regardless of slot budget.
 
 **Recommendation:** Match to CPU/GPU capacity; 4 is a safe default, lower it on constrained hosts.
 
+### `UAP_MODEL_LEASE`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | boolean |
+| **Default** | `true` |
+
+Cross-process model-slot lease around every completion so concurrent agents stay within the inference backend's slot budget. `0` bypasses the lease.
+
+**Recommendation:** Leave on. Set `0` only when diagnosing lease contention or running against a backend with its own queueing.
+
+### `UAP_TRUNCATION_RETRY`
+
+| | |
+|---|---|
+| **Where** | shell env |
+| **Type** | boolean |
+| **Default** | `true` |
+
+When a completion comes back truncated (`finish_reason: length`) and the caller did not pin maxTokens, the model client re-requests once at a 32k budget and returns the better of the two results. `0` disables the retry.
+
+**Recommendation:** Leave on — reasoning models routinely burn the default budget on thinking and return cut-off answers. Disable only when paying twice for a completion is worse than losing it.
+
 ## Multi-agent collaboration
 
 <a id="collaboration"></a>The shared coordination board and file-overlap protection.

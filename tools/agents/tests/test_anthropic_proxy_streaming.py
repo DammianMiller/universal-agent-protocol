@@ -3708,7 +3708,14 @@ class TestDegenerateRepetitionDetection(unittest.TestCase):
     """Tests for degenerate repetition detection and truncation."""
 
     def test_detects_and_truncates_repetitive_text(self):
-        """Highly repetitive text should be truncated."""
+        """Highly repetitive text is truncated and honestly marked incomplete.
+
+        The guard used to stamp finish_reason="stop", presenting its own cut as
+        the model's finished answer — measured live (2026-08-13), that handed
+        deliver a bash script chopped mid-quote that "looked complete". The
+        truncated remainder must carry "length" so downstream consumers treat
+        the text as untrustworthy-as-complete.
+        """
         repeated = "Mermaid Diagrams](docs/mermaid-diagrams" * 50
         openai_resp = {
             "choices": [{"message": {"content": repeated}, "finish_reason": "length"}]
@@ -3717,7 +3724,7 @@ class TestDegenerateRepetitionDetection(unittest.TestCase):
         truncated_text = result["choices"][0]["message"]["content"]
         self.assertTrue(truncated)
         self.assertLess(len(truncated_text), len(repeated))
-        self.assertEqual(result["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(result["choices"][0]["finish_reason"], "length")
 
     def test_preserves_non_repetitive_text(self):
         """Normal text should not be modified."""

@@ -23,10 +23,21 @@ export interface OpenAICompatClientOptions {
 }
 
 interface ChatCompletionResponse {
-  choices?: Array<{ message?: { content?: string } }>;
+  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
   error?: { message?: string } | string;
 }
+
+/**
+ * Budget for the single automatic re-request after a truncated completion.
+ * Reasoning models spend their budget on in-band thinking BEFORE the visible
+ * answer, so `finish_reason: "length"` routinely lands mid-string: measured
+ * live (statlib gate authoring, 2026-08-13), 8192 tokens bought ~7.6k tokens
+ * of reasoning and 519 characters of bash script cut inside a quoted block.
+ * 32k is 4x the proxy's default completion budget of 8192 — room for a long
+ * reasoning preamble AND a complete visible answer.
+ */
+const TRUNCATION_RETRY_MAX_TOKENS = 32768;
 
 const DEFAULT_TIMEOUT_MS = modelHttpTimeoutMs();
 
@@ -236,13 +247,18 @@ export class OpenAICompatClient implements ModelClient {
     model: ModelConfig,
     prompt: string,
     options?: { maxTokens?: number; timeout?: number; temperature?: number; jsonResponse?: boolean }
-  ): Promise<{ content: string; tokensUsed: { input: number; output: number }; latencyMs: number }> {
+  ): Promise<{
+    content: string;
+    tokensUsed: { input: number; output: number };
+    latencyMs: number;
+    finishReason?: string;
+  }> {
     if (process.env.UAP_MODEL_LEASE === '0') {
-      return this._request(model, prompt, options);
+      return this._requestWithTruncationRetry(model, prompt, options);
     }
     return withModelSlot(`model:${model.apiModel ?? 'default'}`, async () => {
       try {
-        const result = await this._request(model, prompt, options);
+        const result = await this._requestWithTruncationRetry(model, prompt, options);
         await recordModelSuccess({}).catch(() => undefined);
         return result;
       } catch (err) {
@@ -252,11 +268,85 @@ export class OpenAICompatClient implements ModelClient {
     });
   }
 
+  /**
+   * One bounded re-request when the completion was TRUNCATED.
+   *
+   * `finish_reason: "length"` means the text ends wherever the budget ran out,
+   * not where the model finished — for code/scripts that is a syntax error the
+   * caller cannot distinguish from a model mistake. Measured live (2026-08-13):
+   * deliver's self-gate authoring burned two of its three attempts on scripts
+   * cut mid-quote, failed the run, and fed the model feedback ("make sure it is
+   * complete") about a defect only the budget could fix.
+   *
+   * Retries once with an explicit raised budget, and ONLY when the caller did
+   * not pin `maxTokens` — an explicit cap is a cost decision the caller owns.
+   * The pick is non-regressive: a cleanly-finished retry always wins; a retry
+   * that also ended early wins only if it carries more text; a retry that
+   * ERRORS is discarded in favor of the first (partial) result. Either way
+   * `finishReason` reports what the returned content actually is.
+   * Kill-switch: UAP_TRUNCATION_RETRY=0.
+   */
+  private async _requestWithTruncationRetry(
+    model: ModelConfig,
+    prompt: string,
+    options?: { maxTokens?: number; timeout?: number; temperature?: number; jsonResponse?: boolean }
+  ): Promise<{
+    content: string;
+    tokensUsed: { input: number; output: number };
+    latencyMs: number;
+    finishReason?: string;
+  }> {
+    const first = await this._request(model, prompt, options);
+    const retryAllowed =
+      first.finishReason === 'length' &&
+      options?.maxTokens === undefined &&
+      // A first call that already produced >= the retry budget was not starved
+      // by a low server-side default — re-requesting at the same ceiling is a
+      // deterministic duplicate decode.
+      first.tokensUsed.output < TRUNCATION_RETRY_MAX_TOKENS &&
+      process.env.UAP_TRUNCATION_RETRY !== '0';
+    if (!retryAllowed) return first;
+    let retry: Awaited<ReturnType<OpenAICompatClient['_request']>>;
+    try {
+      retry = await this._request(model, prompt, {
+        ...options,
+        maxTokens: TRUNCATION_RETRY_MAX_TOKENS,
+      });
+    } catch {
+      // The retry is opportunistic. Failing it must not destroy the partial
+      // result the first request already paid for — truncated-but-visible
+      // (finishReason: 'length') beats a thrown error the caller cannot
+      // salvage anything from.
+      return first;
+    }
+    // Non-regressive pick: a clean retry always wins; a retry that ALSO ended
+    // early (still 'length', or chopped by the proxy's degenerate guard) wins
+    // only if it carries more text. Both requests were paid for either way, so
+    // usage reports the sum regardless of which content is returned.
+    const best =
+      retry.finishReason !== 'length' || retry.content.length >= first.content.length
+        ? retry
+        : first;
+    return {
+      ...best,
+      tokensUsed: {
+        input: first.tokensUsed.input + retry.tokensUsed.input,
+        output: first.tokensUsed.output + retry.tokensUsed.output,
+      },
+      latencyMs: first.latencyMs + retry.latencyMs,
+    };
+  }
+
   private async _request(
     model: ModelConfig,
     prompt: string,
     options?: { maxTokens?: number; timeout?: number; temperature?: number; jsonResponse?: boolean }
-  ): Promise<{ content: string; tokensUsed: { input: number; output: number }; latencyMs: number }> {
+  ): Promise<{
+    content: string;
+    tokensUsed: { input: number; output: number };
+    latencyMs: number;
+    finishReason?: string;
+  }> {
     const endpoint = (model.endpoint ?? this.defaultEndpoint).replace(/\/$/, '');
     const timeout = options?.timeout ?? this.timeoutMs;
 
@@ -315,6 +405,7 @@ export class OpenAICompatClient implements ModelClient {
           output: data.usage?.completion_tokens ?? 0,
         },
         latencyMs: Date.now() - start,
+        finishReason: data.choices?.[0]?.finish_reason,
       };
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {

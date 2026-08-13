@@ -10339,8 +10339,17 @@ def _detect_and_truncate_degenerate_repetition(
     """Detect degenerate repetitive text and truncate at first repetition.
 
     When the model produces highly repetitive output (e.g. the same 20+ char
-    substring repeated 10+ times), truncate at the first repetition boundary
-    and set finish_reason to stop.
+    substring repeated 10+ times), truncate at the first repetition boundary.
+
+    The cut lands on a LINE boundary when one exists at a positive offset
+    (falling back to a mid-line cut for single-line repetition), and the
+    response is marked ``finish_reason: "length"`` — NOT ``"stop"``. Measured live
+    (statlib gate authoring, 2026-08-13): a mid-line cut handed the caller a
+    bash script ending inside a quoted string, stamped complete. deliver's
+    self-gate loop burned an authoring attempt on the resulting "unexpected
+    EOF" and told the model to fix a defect the model never produced. "length"
+    is the honest signal: consumers already treat it as "do not trust this
+    text as complete", and clients with a truncation retry get a fresh roll.
 
     Returns (response, was_degenerate) so the caller can retry if needed.
     """
@@ -10361,7 +10370,17 @@ def _detect_and_truncate_degenerate_repetition(
             first_pos = text.find(sample)
             second_pos = text.find(sample, first_pos + len(sample))
             if second_pos > first_pos:
-                truncated = text[:second_pos].rstrip()
+                # Back the cut up to the previous newline so line-oriented
+                # output (scripts, code) stays parseable. For inline (no-newline)
+                # degeneration this can drop the real prefix of the line where
+                # the loop began — bounded to one line, and finish_reason=length
+                # below flags the incompleteness either way; a partial line is
+                # the greater hazard (it is how a chopped script "looks
+                # complete" while ending mid-string).
+                cut = text.rfind("\n", 0, second_pos)
+                if cut <= 0:
+                    cut = second_pos
+                truncated = text[:cut].rstrip()
                 logger.warning(
                     "DEGENERATE REPETITION: detected %d repeats of %d-char substring, truncating %d -> %d chars",
                     count,
@@ -10374,7 +10393,7 @@ def _detect_and_truncate_degenerate_repetition(
                 if choices:
                     msg = choices[0].get("message", {})
                     msg["content"] = truncated
-                    choices[0]["finish_reason"] = "stop"
+                    choices[0]["finish_reason"] = "length"
                 return openai_resp, True
     return openai_resp, False
 
