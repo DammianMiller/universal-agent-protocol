@@ -556,7 +556,7 @@ function protectedSection(protectedFiles?: string[]): string[] {
   const more = protectedFiles.length - shown.length;
   return [
     '',
-    'PROTECTED FILES (tests + the fixtures/helpers they use) — read-only for this run; implement the source so the existing tests pass:',
+    'PROTECTED FILES (tests + the fixtures/helpers they use) — existing content is locked for this run: never remove, rename, or weaken existing tests; implement the source so they pass. You MAY append NEW test cases to an existing test file (all existing tests and assertions must remain), and you may create new test files:',
     ...shown.map((f) => `- ${f}`),
     ...(more > 0 ? [`…and ${more} more`] : []),
   ];

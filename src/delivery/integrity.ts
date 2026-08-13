@@ -17,6 +17,8 @@
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, resolve } from 'path';
+import { isTestFilePath } from './applier.js';
+import { additiveTestEditRefusal } from './test-oracle-additive.js';
 
 /** Per-file restoration budget; larger files are hash-verified only. */
 const MAX_RESTORE_BYTES = 1_000_000;
@@ -109,6 +111,22 @@ export function verifyAndRestore(projectRoot: string, snapshot: IntegritySnapsho
 
       const bytes = readFileSync(abs);
       if (sha256(bytes) !== record.hash) {
+        // Additive test-edit carve-out (same rule as the executor and the
+        // applier — see test-oracle-additive.ts): a sanctioned write through
+        // those layers lands here looking exactly like tampering, and
+        // restoring it would silently revert what the tool call reported as
+        // written. Deliberately STATELESS: the baseline is never mutated, so
+        // one candidate workspace's added tests cannot leak into another via
+        // a shared snapshot — a still-additive tree just re-verifies against
+        // the original capture on every pass. Only verifiable text (content
+        // kept, test path) qualifies; everything else restores as before.
+        if (
+          record.content !== null &&
+          isTestFilePath(rel.split(/[\\/]/).join('/')) &&
+          additiveTestEditRefusal(record.content.toString('utf-8'), bytes.toString('utf-8')) === null
+        ) {
+          continue;
+        }
         check.tampered.push(rel);
         if (record.content) {
           writeFileSync(abs, record.content);
@@ -129,8 +147,9 @@ export function verifyAndRestore(projectRoot: string, snapshot: IntegritySnapsho
 export function integrityViolationFeedback(check: IntegrityCheck): string {
   const lines = [
     `GATE INTEGRITY VIOLATION: test execution modified protected file(s): ${check.tampered.join(', ')}.`,
-    'Gate results for this turn are DISCARDED. Protected test/oracle files must never be written —',
-    'not via file blocks and not at runtime from test code. Implement the source instead.',
+    'Gate results for this turn are DISCARDED. Protected test/oracle files must not be rewritten —',
+    'the only sanctioned change is APPENDING new test cases to a pre-existing test file, with the',
+    'existing content byte-identical. Implement the source instead.',
   ];
   if (check.unrecoverable.length > 0) {
     lines.push(`Could not restore: ${check.unrecoverable.join(', ')} — manual attention needed.`);
