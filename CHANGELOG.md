@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.205.0 (2026-08-13)
+
+- feat(integrity): oracle-consistency recheck behind the additive test-edit carve-out
+
+
 ## v1.204.0 (2026-08-13)
 
 - feat(protect-tests): sanction append-only test additions to protected test files
