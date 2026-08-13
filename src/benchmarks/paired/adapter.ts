@@ -733,7 +733,18 @@ export class DeliverCliAdapter implements AgentAdapter {
       args.push('--no-auto', '--no-until-delivered', '--max-turns', '1', '--no-lazy', '--no-decompose');
     }
     args.push('--', ctx.task.instruction);
-    const env: NodeJS.ProcessEnv = { ...process.env, UAP_DELIVER_MODEL: ctx.model };
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      UAP_DELIVER_MODEL: ctx.model,
+      // The mission must run to COMPLETION in the foreground. Without this,
+      // deliver detaches after a 45s watch window and the launcher exits with
+      // a stillRunning JSON containing "success": true — the adapter scored
+      // that as the verdict against a barely-started workdir, every cell took
+      // exactly ~45.9s, and 50 detached missions kept grinding the GPU in
+      // scratch dirs the runner had already deleted (paired-uplift-v1204-r3,
+      // 2026-08-13).
+      UAP_DELIVER_NO_DETACH: '1',
+    };
     if (ctx.condition.lazy) env.UAP_DELIVER_LAZY = '1';
     const timeoutMs = ctx.task.agentTimeoutSec * 1000 * 3;
     return new Promise((resolvePromise) => {
@@ -758,13 +769,20 @@ export class DeliverCliAdapter implements AgentAdapter {
         // scratch dirs, ~1s cells). Scoring it as a clean model failure
         // poisons both arms symmetrically.
         const preflight = /"preflightFailed":\s*true/.test(stdout);
+        // A detach handoff is NOT a result: the launcher's stillRunning JSON
+        // says "success": true about the LAUNCH, not the mission. Belt to
+        // UAP_DELIVER_NO_DETACH's braces — if detach ever re-engages, the
+        // cell must scream, not score.
+        const detached = /"stillRunning":\s*true/.test(stdout);
         const error = killed
           ? 'timeout'
           : preflight
             ? 'agent did not run: deliver preflight refused the workdir'
-            : err && !producedVerdict
-              ? `agent did not run: ${(err as Error).message.slice(0, 160)}`
-              : null;
+            : detached
+              ? 'agent did not complete: deliver detached instead of running foreground'
+              : err && !producedVerdict
+                ? `agent did not run: ${(err as Error).message.slice(0, 160)}`
+                : null;
         resolvePromise({
           tokens: null,
           costUsd: null,
