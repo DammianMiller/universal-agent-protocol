@@ -140,7 +140,7 @@ describe('self-gate: path anchoring (wrong-path probes make gates unwinnable)', 
       if (prompts.length === 1) {
         return '```bash\ntest -f audio.js || { echo missing >&2; exit 1; }\n```';
       }
-      return '```bash\ngrep -q NEVER_THERE space-shooter/js/audio.js || { echo unsolved >&2; exit 1; }\n```';
+      return '```bash\nnode -e "process.exit(1)" || { echo unsolved >&2; exit 1; }\ngrep -q NEVER_THERE space-shooter/js/audio.js || { echo unsolved >&2; exit 1; }\n```';
     };
     const res = await authorAcceptanceGate({ instruction: 'finish the game in space-shooter/', projectRoot: dir, executor });
     expect(res.vacuous).toBe(false);
@@ -171,7 +171,7 @@ describe('self-gate: script-dir anchor rejection (octopus variant run, 2026-07-1
         if (prompts.length === 1) {
           return '```bash\nROOT="$(cd "$(dirname "$0")" && pwd)"\ntest -f "$ROOT/thing.js" || { echo miss >&2; exit 1; }\n```';
         }
-        return '```bash\ngrep -q NEVER_HERE thing.js || { echo unsolved >&2; exit 1; }\n```';
+        return '```bash\nnode -e "process.exit(1)" || { echo unsolved >&2; exit 1; }\ngrep -q NEVER_HERE thing.js || { echo unsolved >&2; exit 1; }\n```';
       };
       const res = await authorAcceptanceGate({ instruction: 'finish thing.js', projectRoot: dir, executor });
       expect(res.vacuous).toBe(false);

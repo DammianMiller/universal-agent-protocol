@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.203.0 (2026-08-13)
+
+- feat(self-gate): make an authored gate RUN the code, not grade its spelling
+
+
 ## v1.202.0 (2026-08-13)
 
 - feat(delivery): bound a run in wall-clock time, at a calibrated default
