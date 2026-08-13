@@ -715,7 +715,15 @@ export class DeliverCliAdapter implements AgentAdapter {
   readonly id = 'deliver';
   private readonly cliPath: string;
   constructor(cliPath?: string) {
-    this.cliPath = cliPath ?? process.env.UAP_BENCH_DELIVER_CLI ?? 'dist/bin/cli.js';
+    // MUST be absolute: execFile below runs with cwd = the TASK WORKDIR, so a
+    // relative default resolved there is MODULE_NOT_FOUND in ~200ms — which,
+    // combined with the old error swallowing, scored every cell in BOTH arms
+    // as a clean model failure. Measured live (paired-uplift-v1204,
+    // 2026-08-13): a whole 5-epoch matrix of 0% at ~200ms/cell with
+    // toolCalls:0; only the suite-level no-signal guard stopped it being read
+    // as "no uplift".
+    const configured = cliPath ?? process.env.UAP_BENCH_DELIVER_CLI ?? 'dist/bin/cli.js';
+    this.cliPath = resolve(process.cwd(), configured);
   }
   async run(ctx: AgentRunContext): Promise<AgentRunResult> {
     const { execFile } = await import('child_process');
@@ -738,13 +746,32 @@ export class DeliverCliAdapter implements AgentAdapter {
             if (typeof r.turns === 'number') turns = r.turns;
           }
         } catch { /* metrics best-effort */ }
+        // A non-timeout error means the AGENT NEVER RAN (spawn failure, crash,
+        // non-zero exit) — recording it as error:null made a broken harness
+        // indistinguishable from a model that tried and failed, poisoning both
+        // arms symmetrically. Deliver legitimately exits non-zero on a
+        // not-delivered mission, so only surface errors with no JSON verdict.
+        const killed = Boolean(err && (err as Error & { killed?: boolean }).killed);
+        const producedVerdict = /"delivered"|"success"/.test(stdout);
+        // A preflight refusal IS a JSON verdict but not a model attempt — the
+        // workdir was structurally unable to deliver (observed: non-git-repo
+        // scratch dirs, ~1s cells). Scoring it as a clean model failure
+        // poisons both arms symmetrically.
+        const preflight = /"preflightFailed":\s*true/.test(stdout);
+        const error = killed
+          ? 'timeout'
+          : preflight
+            ? 'agent did not run: deliver preflight refused the workdir'
+            : err && !producedVerdict
+              ? `agent did not run: ${(err as Error).message.slice(0, 160)}`
+              : null;
         resolvePromise({
           tokens: null,
           costUsd: null,
           turns,
           toolCalls: 0,
           wellFormed: null,
-          error: err && (err as Error & { killed?: boolean }).killed ? 'timeout' : null,
+          error,
           rawLog: stdout.slice(-4000),
         });
       });

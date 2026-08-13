@@ -78,6 +78,24 @@ export function materializeWorkdir(suiteDir: string, task: TaskSpec, workRoot: s
   const scratch = mkdtempSync(join(workRoot, `${task.id}-`));
   const dest = join(scratch, 'repo');
   cpSync(taskRepoPath(suiteDir, task), dest, { recursive: true });
+  // The workdir must be a git repository with a baseline commit: deliver's
+  // project-preflight REFUSES a non-repo (its candidate workspace is worktree
+  // based), so every deliver-adapter cell exited in ~1s with preflightFailed
+  // and 0% scored in BOTH arms (paired-uplift-v1204-r2, 2026-08-13). Inert
+  // for the other adapters. GIT_* env is stripped for the same reason
+  // runVerify strips it — an inherited GIT_DIR would point these commands at
+  // an enclosing repo instead of the scratch copy.
+  if (!existsSync(join(dest, '.git'))) {
+    const git = (...args: string[]): void => {
+      const r = spawnSync('git', args, { cwd: dest, encoding: 'utf-8', env: sanitizedEnv() });
+      if (r.status !== 0) {
+        throw new Error(`workdir git ${args[0]} failed: ${(r.stderr || r.stdout || '').slice(0, 200)}`);
+      }
+    };
+    git('init', '-q');
+    git('-c', 'user.email=bench@uap', '-c', 'user.name=bench', 'add', '-A');
+    git('-c', 'user.email=bench@uap', '-c', 'user.name=bench', 'commit', '-q', '-m', 'baseline', '--allow-empty');
+  }
   return dest;
 }
 
