@@ -134,7 +134,9 @@ describe('authorAcceptanceGate rejects a broken gate end-to-end', () => {
       // 2nd: a well-formed discriminating gate.
       return call === 1
         ? "```bash\ngrep -q 'background\\.initStars\\(' main.js || { echo FAIL; exit 1; }\n```"
-        : '```bash\ntest -f done.txt\n```';
+        // Runs something, so this pins the BROKEN-script validator alone and
+        // does not also trip the "gate never runs the code" one.
+        : '```bash\nnode -e "process.exit(1)" || { echo FAIL; exit 1; }\n```';
     };
     const res = await authorAcceptanceGate({
       instruction: 'wire up the background',
@@ -147,6 +149,6 @@ describe('authorAcceptanceGate rejects a broken gate end-to-end', () => {
     expect(res.vacuous).toBe(false);
     expect(res.notes.some((n) => n.includes('BROKEN'))).toBe(true);
     // The installed gate is the good one, failing for the RIGHT reason.
-    expect(readFileSync(join(dir, '.uap-deliver', 'verify.sh'), 'utf-8')).toContain('done.txt');
+    expect(readFileSync(join(dir, '.uap-deliver', 'verify.sh'), 'utf-8')).toContain('process.exit(1)');
   });
 });

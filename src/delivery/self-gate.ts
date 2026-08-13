@@ -195,8 +195,13 @@ function buildAuthorPrompt(
     'Write a self-contained POSIX bash script that:',
     '  - exits 0 ONLY if the task is fully and correctly completed',
     '  - exits non-zero otherwise (print a short reason to stderr)',
-    '  - checks concrete, observable evidence: expected files exist, a program',
-    '    builds/runs, output matches what the task requires',
+    '  - RUNS the code and checks what it DOES: execute the program, its test',
+    '    suite or its build, and assert on the OUTPUT or the exit status',
+    '  - does NOT grade the source text. A gate that only greps the source is',
+    '    checking how the code is SPELLED: a correct solution written',
+    '    differently fails it forever, and text that matches but does not work',
+    '    passes it. Use grep on the OUTPUT of something you ran, or for a file',
+    '    that has no runtime (config, docs)',
     '  - uses ONLY the repository and standard tools (no network, no access to',
     '    any hidden test harness)',
     '  - is runnable from the project root: it EXECUTES with CWD = project root,',
@@ -281,6 +286,81 @@ export function detectBrokenGate(output: string): string | null {
     if (sig.re.test(output)) return sig.what;
   }
   return null;
+}
+
+/** Manifests that mean the project has a toolchain a gate could actually invoke. */
+const RUNTIME_MANIFESTS = [
+  'package.json',
+  'pyproject.toml',
+  'setup.py',
+  'requirements.txt',
+  'Cargo.toml',
+  'go.mod',
+  'pom.xml',
+  'build.gradle',
+  'build.gradle.kts',
+  'Gemfile',
+  'composer.json',
+  'Makefile',
+  'CMakeLists.txt',
+  'deno.json',
+  'bun.lockb',
+];
+
+const RUNNABLE_SOURCE = /\.(js|mjs|cjs|jsx|ts|tsx|py|rs|go|java|kt|rb|php|cs|swift|c|cc|cpp)$/i;
+
+/**
+ * True when the project has something a gate could run — a toolchain manifest,
+ * or simply source files in a language with a runtime.
+ *
+ * The manifest alone is too narrow for the population that matters most: a
+ * fresh scaffold has no package.json at the moment the gate is authored, and
+ * "no native gate" is precisely when a self-authored one is used.
+ */
+function hasRuntimeManifest(projectRoot: string): boolean {
+  if (RUNTIME_MANIFESTS.some((m) => existsSync(join(projectRoot, m)))) return true;
+  return listRepoFiles(projectRoot, 60).some((f) => RUNNABLE_SOURCE.test(f));
+}
+
+/** Interpreters, build tools and runners that mean the gate actually RUNS something. */
+const EXECUTES = new RegExp(
+  String.raw`\b(node|nodejs|python3?|pytest|tox|cargo|rustc|npm|npx|pnpm|yarn|deno|bun|go|java|gradle|mvn|ruby|rake|php|dotnet|swift|make|cmake|ctest|jest|vitest|mocha|bash\s+\S+\.sh|sh\s+\S+\.sh|\./\S+)\b`
+);
+
+/**
+ * Reason a gate never runs the code it is grading, or null when it does.
+ *
+ * Surveyed on this machine: 3 of 4 real acceptance gates execute NOTHING. They
+ * assert on source text instead (`grep -q "return (sr, src)"`), which grades
+ * how the implementation is spelled rather than what it does. Both failure
+ * directions were seen live: a correct solution phrased differently can never
+ * pass, so the mission is unwinnable; and text that matches but does not work
+ * passes, so a run reports success over code nobody executed.
+ *
+ * Comments are stripped first — a script that merely MENTIONS `npm test` in a
+ * comment still runs nothing.
+ */
+export function neverExecutesReason(script: string, projectRoot?: string): string | null {
+  const body = script
+    .split('\n')
+    .map((line) => line.replace(/(^|\s)#.*$/, '$1'))
+    .join('\n');
+  if (!body.trim()) return null; // nothing to judge; other validators own this
+  if (EXECUTES.test(body)) return null;
+  // Demanding that a gate RUN something is only fair when the project has a
+  // runtime to run. A docs or config tree has nothing to execute, and neither
+  // does a bare scaffold — asking there would burn an attempt to arrive back
+  // at the same script.
+  if (projectRoot !== undefined && !hasRuntimeManifest(projectRoot)) return null;
+  // The diagnosis half of this sentence is prose: rewording it is an
+  // EQUIVALENT MUTANT, because what the model acts on is the instruction that
+  // follows — execute something, assert on output. That half IS pinned.
+  return (
+    'it never RUNS anything — every check reads the source text. That grades how the code is ' +
+    'written rather than what it does, so a correct solution written differently fails forever, ' +
+    'and text that matches but does not work passes. Execute the program, its test suite, or its ' +
+    'build, and assert on the OUTPUT or exit status. Keep grep only for checking that output.'
+  );
 }
 
 /**
@@ -388,6 +468,19 @@ export async function authorAcceptanceGate(opts: SelfGateOptions): Promise<SelfG
         'so it can never pass. Check quoting and escaping — in a POSIX basic regex `\\(` means ' +
         'group-open, so use a plain `(` to match a literal parenthesis (or use grep -F / grep -E). ' +
         'Verify each command runs cleanly before relying on its exit status.';
+      continue;
+    }
+
+    // A gate that grades SPELLING rather than behaviour. Worth exactly one
+    // more attempt: some tasks genuinely have nothing to run (a docs change, a
+    // config file), so this must never be a hard rejection — the cost of being
+    // wrong here is one model call, while refusing outright would leave such a
+    // task unable to author any gate at all. Checked LAST, so a gate that is
+    // vacuous or broken is still reported as that, which is more actionable.
+    const noRun = neverExecutesReason(script, projectRoot);
+    if (noRun && attempt < attempts) {
+      notes.push(`attempt ${attempt}: gate never runs the code — regenerating once`);
+      priorFeedback = noRun;
       continue;
     }
 
