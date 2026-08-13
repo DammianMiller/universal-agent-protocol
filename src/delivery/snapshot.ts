@@ -53,6 +53,14 @@ const EXCLUDE = new Set([
   // VCS / UAP-internal
   '.git',
   '.worktrees',
+  // The run's OWN state: logs, run-state checkpoints, heartbeat, lock. It sat
+  // inside the snapshot, so a no-regress revert took all of it with the
+  // mission changes (measured on a clean fixture 2026-08-13): the log that
+  // explains the revert lives here, so the revert deleted its own explanation
+  // and looked like silent data loss, and the checkpoint was rewound from
+  // turn 9 to turn 1, which makes a later --resume redo work already done.
+  // Its siblings were already excluded; this one was simply missed.
+  '.uap',
   '.uap-deliver',
   '.uap-backups',
   // JS

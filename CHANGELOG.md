@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.203.2 (2026-08-13)
+
+- fix(snapshot): stop a no-regress revert deleting the run's own state
+
+
 ## v1.203.1 (2026-08-13)
 
 - fix(deliver): stop a run converging on a judge that IS the generator
