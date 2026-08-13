@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.204.2 (2026-08-13)
+
+- fix(bench): materialize workdirs as git repos; attribute preflight refusals
+
+
 ## v1.204.1 (2026-08-13)
 
 - fix(bench): deliver adapter must resolve its CLI against the invoking cwd
