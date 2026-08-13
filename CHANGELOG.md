@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.204.1 (2026-08-13)
+
+- fix(bench): deliver adapter must resolve its CLI against the invoking cwd
+
+
 ## v1.204.0 (2026-08-13)
 
 - feat(protect-tests): sanction append-only test additions to protected test files
