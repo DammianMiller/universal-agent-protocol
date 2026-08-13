@@ -753,11 +753,18 @@ export class DeliverCliAdapter implements AgentAdapter {
         // not-delivered mission, so only surface errors with no JSON verdict.
         const killed = Boolean(err && (err as Error & { killed?: boolean }).killed);
         const producedVerdict = /"delivered"|"success"/.test(stdout);
+        // A preflight refusal IS a JSON verdict but not a model attempt — the
+        // workdir was structurally unable to deliver (observed: non-git-repo
+        // scratch dirs, ~1s cells). Scoring it as a clean model failure
+        // poisons both arms symmetrically.
+        const preflight = /"preflightFailed":\s*true/.test(stdout);
         const error = killed
           ? 'timeout'
-          : err && !producedVerdict
-            ? `agent did not run: ${(err as Error).message.slice(0, 160)}`
-            : null;
+          : preflight
+            ? 'agent did not run: deliver preflight refused the workdir'
+            : err && !producedVerdict
+              ? `agent did not run: ${(err as Error).message.slice(0, 160)}`
+              : null;
         resolvePromise({
           tokens: null,
           costUsd: null,
