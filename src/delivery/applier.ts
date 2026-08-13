@@ -36,6 +36,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { detectStub, stubGuardDisabled, stubRefusal } from './stub-detector.js';
 import { isSuspectedGutting } from './agentic-executor.js';
+import { additiveTestEditRefusal } from './test-oracle-additive.js';
 
 export interface FileBlock {
   path: string;
@@ -548,7 +549,8 @@ function realParentEscapes(target: string, realRoot: string): boolean {
 }
 
 const PROTECTED_TEST_REASON =
-  'pre-existing test/oracle file is protected — implement the source so the existing tests pass instead of modifying them';
+  'pre-existing test/oracle file is protected — implement the source so the existing tests pass. ' +
+  'You may APPEND new test cases after the existing content (which must remain byte-identical), or create a new test file';
 const GATE_CONFIG_REASON =
   'test-runner/compiler config files are protected — they control the gates and cannot be changed by the model';
 
@@ -580,7 +582,11 @@ function validatePath(
   blockPath: string,
   projectRoot: string,
   realRoot: string,
-  options?: ApplyOptions
+  options?: ApplyOptions,
+  // Prospective content, when the caller has it. Enables the additive
+  // test-edit carve-out; without it a protected test target is refused
+  // outright (the safe pre-carve-out behavior).
+  content?: string
 ): string | null {
   if (isAbsolute(blockPath)) return 'absolute paths are not allowed';
 
@@ -616,7 +622,23 @@ function validatePath(
     options?.protectedFiles &&
     isProtectedTestTarget(rel, target, realRoot, options.protectedFiles)
   ) {
-    return PROTECTED_TEST_REASON;
+    // Additive carve-out (same rule as the agentic executor and the runtime
+    // integrity guard — one definition, see test-oracle-additive.ts): a
+    // mission may ADD tests to a pre-existing test file; anything the rule
+    // cannot positively verify keeps the original refusal. A sanctioned edit
+    // falls THROUGH — the symlink/escape checks below still apply to it.
+    let sanctionedAdditive = false;
+    if (content !== undefined && isTestFilePath(rel.split(sep).join('/'))) {
+      try {
+        if (existsSync(target)) {
+          const prior = readFileSync(target, 'utf-8');
+          sanctionedAdditive = additiveTestEditRefusal(prior, content) === null;
+        }
+      } catch {
+        sanctionedAdditive = false;
+      }
+    }
+    if (!sanctionedAdditive) return PROTECTED_TEST_REASON;
   }
 
   // Reject writing through an existing symlink, and any symlinked ancestor.
@@ -667,7 +689,7 @@ export function applyFileBlocks(
   const rejected: ApplyResult['rejected'] = [];
 
   for (const block of blocks) {
-    const invalid = validatePath(block.path, projectRoot, realRoot, options);
+    const invalid = validatePath(block.path, projectRoot, realRoot, options, block.content);
     if (invalid) {
       rejected.push({ path: block.path, reason: invalid });
       continue;
@@ -794,7 +816,7 @@ export function applyFileBlocksWithRollback(
   const snapshots = new Map<string, string | null>();
   const validPaths: string[] = [];
   for (const block of blocks) {
-    if (validatePath(block.path, projectRoot, realRoot, options)) continue;
+    if (validatePath(block.path, projectRoot, realRoot, options, block.content)) continue;
     const target = join(projectRoot, block.path);
     if (!snapshots.has(block.path)) {
       snapshots.set(block.path, existsSync(target) ? readFileSync(target, 'utf-8') : null);
@@ -840,7 +862,7 @@ export function applyFileBlocksWithRollback(
     } else {
       const rejected: ApplyResult['rejected'] = [];
       for (const block of blocks) {
-        const invalid = validatePath(block.path, projectRoot, realRoot, options);
+        const invalid = validatePath(block.path, projectRoot, realRoot, options, block.content);
         if (invalid) {
           rejected.push({ path: block.path, reason: invalid });
           continue;

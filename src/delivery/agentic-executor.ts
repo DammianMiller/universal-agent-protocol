@@ -28,7 +28,8 @@ import type { LoopExecutor } from './convergence-loop.js';
 import { fetchModelWithRetry, isEndpointUnreachable, ENDPOINT_UNREACHABLE } from '../models/long-fetch.js';
 import { resolveRequestCredential } from '../models/openai-compat-client.js';
 import type { ApplyResult } from './applier.js';
-import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename } from './applier.js';
+import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename, isTestFilePath } from './applier.js';
+import { additiveTestEditRefusal, protectedTestRefusal } from './test-oracle-additive.js';
 import { estimateMessagesTokens, formatBudgetStop } from './context-budget.js';
 import { sanitizedEnv } from './sanitized-env.js';
 import {
@@ -1463,7 +1464,23 @@ export function runTool(
       const internal = agentInternalReason(projectRoot, abs, true);
       if (internal) return internal;
       if (protectedFiles.has(protectedKey(projectRoot, abs))) {
-        return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
+        // Additive carve-out: a mission may legitimately ADD tests to a
+        // pre-existing test file (statlib runs 2–3, 2026-08-13: the flat
+        // refusal deadlocked the write-nudge escalation against the only
+        // write the mission required). Weakening edits stay refused; so does
+        // everything the rule cannot positively verify.
+        const relP = relative(projectRoot, abs).split(/[\\/]/).join('/');
+        const currentProtected = existsSync(abs) ? readFileSync(abs, 'utf-8') : null;
+        // Non-test oracle material (fixtures, helpers, data) keeps the
+        // original flat refusal — the additive rule is for TEST files only.
+        if (!isTestFilePath(relP) || currentProtected === null) {
+          return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
+        }
+        const additiveReason = additiveTestEditRefusal(currentProtected, String(args.content ?? ''));
+        if (additiveReason !== null) {
+          return protectedTestRefusal(String(args.path), additiveReason);
+        }
+        // Sanctioned additive edit — fall through to the remaining guards.
       }
       if (contractFiles.has(protectedKey(projectRoot, abs))) {
         return (
@@ -1594,13 +1611,16 @@ export function runTool(
       // old/new replacement is deterministic and cheap. Shares write_file's
       // protection surface (tests/contracts/gate-configs).
       const abs = safePath(projectRoot, String(args.path));
-      if (protectedFiles.has(protectedKey(projectRoot, abs))) {
-        return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
-      }
+      // Protected test files accept ADDITIVE edits only — decided below once
+      // the prospective content is known, with the same rule as write_file.
+      const protectedTestEdit = protectedFiles.has(protectedKey(projectRoot, abs));
       if (contractFiles.has(protectedKey(projectRoot, abs))) {
         return `ERROR: ${String(args.path)} is a LOCKED CONTRACT file — build against it, do not modify it.`;
       }
       const rel = relative(projectRoot, abs).split(/[\\/]/).join('/');
+      if (protectedTestEdit && !isTestFilePath(rel)) {
+        return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
+      }
       const blocked = protectedWritePathReason(rel, protectGateConfigs);
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
@@ -1706,6 +1726,12 @@ export function runTool(
           `output and target a DIFFERENT anchor.${editNote}`
         );
       }
+      if (protectedTestEdit) {
+        const additiveReason = additiveTestEditRefusal(current, updated);
+        if (additiveReason !== null) {
+          return protectedTestRefusal(String(args.path), additiveReason);
+        }
+      }
       const guttedEdit = editGuttingRefusal(String(args.path), current, updated);
       if (guttedEdit) return guttedEdit;
       if (!stubGuardDisabled()) {
@@ -1733,13 +1759,16 @@ export function runTool(
       // adding a second write path that skipped the guards would make the guards
       // advisory.
       const abs = safePath(projectRoot, String(args.path));
-      if (protectedFiles.has(protectedKey(projectRoot, abs))) {
-        return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
-      }
+      // Same additive carve-out as edit_file — decided once the ranged result
+      // is computed below.
+      const protectedTestRange = protectedFiles.has(protectedKey(projectRoot, abs));
       if (contractFiles.has(protectedKey(projectRoot, abs))) {
         return `ERROR: ${String(args.path)} is a LOCKED CONTRACT file — build against it, do not modify it.`;
       }
       const rel = relative(projectRoot, abs).split(/[\\/]/).join('/');
+      if (protectedTestRange && !isTestFilePath(rel)) {
+        return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
+      }
       const blocked = protectedWritePathReason(rel, protectGateConfigs);
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
@@ -1768,6 +1797,12 @@ export function runTool(
           `already contain exactly this text. Nothing was written, and re-sending it cannot change anything. ` +
           `If a gate is still failing, the cause is elsewhere.`
         );
+      }
+      if (protectedTestRange) {
+        const additiveReason = additiveTestEditRefusal(current, ranged.text);
+        if (additiveReason !== null) {
+          return protectedTestRefusal(String(args.path), additiveReason);
+        }
       }
       const brokeRange = delimiterRefusal(String(args.path), current, ranged.text);
       if (brokeRange) return brokeRange;
