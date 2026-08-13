@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.205.1 (2026-08-13)
+
+- fix(bench): run deliver missions foreground; refuse detach handoffs as verdicts
+- chore: bump version to 1.205.0
+- feat(integrity): oracle-consistency recheck behind the additive test-edit carve-out
+
+
 ## v1.205.0 (2026-08-13)
 
 - feat(integrity): oracle-consistency recheck behind the additive test-edit carve-out
