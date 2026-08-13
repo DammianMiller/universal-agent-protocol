@@ -34,9 +34,15 @@ import {
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
 import { mergeRedetectedRungs, detectRungs, runLadder } from './verifier-ladder.js';
 import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
-import { applyFileBlocks } from './applier.js';
+import { applyFileBlocks, listGateConfigFiles } from './applier.js';
 import { snapshotProtection } from './spec-imports.js';
-import { captureIntegrity, verifyAndRestore, integrityViolationFeedback } from './integrity.js';
+import {
+  captureIntegrity,
+  verifyAndRestore,
+  integrityViolationFeedback,
+  oracleConsistencyCheck,
+  oracleConsistencyFeedback,
+} from './integrity.js';
 import { appendMissingFilesNote } from './mission-files.js';
 import { resolvePrinciplesSection } from '../principles/index.js';
 import type { StrategySeed } from './explorer.js';
@@ -1173,6 +1179,20 @@ export class ConvergenceLoop {
     if (this.config.extraProtectedPaths?.length) {
       protectedList = [...(protectedList ?? []), ...this.config.extraProtectedPaths];
     }
+    // Runner/compiler CONFIGS join the integrity capture (security review F1):
+    // the applier already refuses config writes, but run_bash and test-executed
+    // code bypass the applier — and a config edit re-points what the ORACLE
+    // rungs execute, which silently bounds what the oracle-consistency check
+    // below can guarantee. Snapshot them so a runtime config mutation is
+    // tampering, same as a test-file mutation.
+    if (protectTests) {
+      try {
+        const cfgs = listGateConfigFiles(this.config.projectRoot);
+        if (cfgs.length > 0) protectedList = [...new Set([...(protectedList ?? []), ...cfgs])];
+      } catch {
+        /* fail-soft: capture stays as it was */
+      }
+    }
     const applyOptions: ApplyOptions | undefined = protectTests
       ? { protectedFiles, protectGateConfigs: true }
       : undefined;
@@ -1200,6 +1220,49 @@ export class ConvergenceLoop {
               passed: false,
               feedback: `${integrityViolationFeedback(check)}\n\n${ladderResult.feedback}`,
             };
+          }
+          // Behavioral control behind the additive carve-out: a PASSING tree
+          // that contains sanctioned appends to protected test files must
+          // ALSO pass with the original oracle bytes restored — otherwise the
+          // append is what makes it pass, which is oracle-weakening the
+          // textual rule cannot see. Off-switch for operators diagnosing the
+          // checker itself: UAP_ORACLE_CONSISTENCY=0.
+          if (
+            ladderResult.passed &&
+            check.sanctionedAdditive.length > 0 &&
+            process.env.UAP_ORACLE_CONSISTENCY !== '0'
+          ) {
+            const oracle = oracleConsistencyCheck(root, integrity, check.sanctionedAdditive, gateRungs);
+            if (!oracle.consistent) {
+              return {
+                ...ladderResult,
+                passed: false,
+                feedback: `${oracleConsistencyFeedback(oracle)}\n\n${ladderResult.feedback}`,
+              };
+            }
+            // A failed candidate-byte restoration means the tree silently
+            // LOST the sanctioned append — never report that as a clean pass.
+            if (oracle.restoreFailed && oracle.restoreFailed.length > 0) {
+              return {
+                ...ladderResult,
+                passed: false,
+                feedback:
+                  `ORACLE-CONSISTENCY: could not restore the appended content of ${oracle.restoreFailed.join(', ')} ` +
+                  `after the recheck — the tree now holds the original test content. Re-apply the appended tests.\n\n${ladderResult.feedback}`,
+              };
+            }
+            // The recheck EXECUTED model-authored test code once more — the
+            // exact class the runtime tamper guard exists for. Verify again so
+            // a mutation during the re-run cannot persist into a passing turn
+            // (review finding 2).
+            const recheck = verifyAndRestore(root, integrity);
+            if (recheck.tampered.length > 0) {
+              return {
+                ...ladderResult,
+                passed: false,
+                feedback: `${integrityViolationFeedback(recheck)}\n\n${ladderResult.feedback}`,
+              };
+            }
           }
           return ladderResult;
         };

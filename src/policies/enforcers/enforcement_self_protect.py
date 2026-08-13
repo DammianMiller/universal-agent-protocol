@@ -88,6 +88,11 @@ BYPASS_PATTERNS = (
     # honest work. It runs against `scannable_command`, which blanks quoted
     # blobs, instead.
     re.compile(r"UAP_ALLOW_GATELESS_ROOT\s*=\s*['\"]?1", re.I),
+    # Oracle-consistency is the BEHAVIORAL control: the model must not be able
+    # to disable the consistency check that ensures its outputs match the
+    # acceptance criteria. An inline assignment would let the agent waive its
+    # own consistency requirement, so refuse it here.
+    re.compile(r"UAP_ORACLE_CONSISTENCY\s*=\s*['\"]?0", re.I),
 )
 
 # The gateless-root override in its CLI-flag spelling. Anchored on both sides
