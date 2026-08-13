@@ -214,6 +214,69 @@ describe('runUserValidation', () => {
     expect(bad?.steps.find((s) => !s.ok)?.observed).toContain('exit=3');
   });
 
+  it('anchored ^…$ patterns match real CLI output despite the trailing newline', async () => {
+    // console.log/print always append "\n"; without the m flag /^2$/ does not
+    // match "2\n" and every anchored mined journey false-FAILs (statlib run,
+    // 2026-08-13: five journeys reported `expect_stdout_matches:^2$ → 2`).
+    writeManifest(dir, {
+      version: 1,
+      paths: [
+        {
+          id: 'anchored-stdout',
+          rule: 'mode() basic outcome',
+          client: 'cli',
+          steps: [
+            { run: { argv: [process.execPath, '-e', 'console.log(2)'] } },
+            { expect_stdout_matches: '^2$' },
+          ],
+        },
+        {
+          id: 'anchored-stderr',
+          rule: 'validation error surfaces',
+          client: 'cli',
+          steps: [
+            { run: { argv: [process.execPath, '-e', 'console.error("TypeError")'] } },
+            { expect_stderr_matches: '^TypeError$' },
+          ],
+        },
+      ],
+    });
+    const report = await runUserValidation(dir);
+    expect(report.results.find((r) => r.id === 'anchored-stdout')?.status).toBe('pass');
+    expect(report.results.find((r) => r.id === 'anchored-stderr')?.status).toBe('pass');
+    expect(report.verdict).toBe('pass');
+  });
+
+  it('a genuinely wrong anchored pattern still fails', async () => {
+    writeManifest(dir, {
+      version: 1,
+      paths: [
+        {
+          id: 'wrong',
+          rule: 'output mismatch surfaces',
+          client: 'cli',
+          steps: [
+            { run: { argv: [process.execPath, '-e', 'console.log(3)'] } },
+            { expect_stdout_matches: '^2$' },
+          ],
+        },
+        {
+          id: 'wrong-stderr',
+          rule: 'stderr mismatch surfaces',
+          client: 'cli',
+          steps: [
+            { run: { argv: [process.execPath, '-e', 'console.error("RangeError")'] } },
+            { expect_stderr_matches: '^TypeError$' },
+          ],
+        },
+      ],
+    });
+    const report = await runUserValidation(dir);
+    expect(report.results.find((r) => r.id === 'wrong')?.status).toBe('fail');
+    expect(report.results.find((r) => r.id === 'wrong-stderr')?.status).toBe('fail');
+    expect(report.verdict).toBe('fail');
+  });
+
   it('non-final epic downgrades a whole-mission FAIL to NA (deferred, not a defect)', async () => {
     // A decomposed epic mission cannot pass whole-mission journeys until the
     // FINAL epic assembles the app; gating an early epic on the finished app

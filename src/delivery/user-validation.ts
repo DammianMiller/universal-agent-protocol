@@ -348,11 +348,17 @@ function runCliPath(path: UserPath, ctx: RunContext): PathResult {
         steps.push({ step: label, ok, observed: `exit=${String(lastExit)}` });
         failed = !ok;
       } else if (step.expect_stdout_matches !== undefined) {
-        const ok = new RegExp(step.expect_stdout_matches).test(lastStdout);
+        // 'm' flag: ^/$ anchor per LINE. CLI stdout virtually always ends in a
+        // newline (console.log / print), and in JS /^2$/ does NOT match "2\n" —
+        // without the flag every anchored journey pattern false-FAILs against
+        // output that visibly matches. Measured live (statlib, 2026-08-13): a
+        // functionally perfect delivery burned its turns on five journeys all
+        // reporting `expect_stdout_matches:^2$ → 2`.
+        const ok = new RegExp(step.expect_stdout_matches, 'm').test(lastStdout);
         steps.push({ step: label, ok, observed: lastStdout.slice(0, 160) });
         failed = !ok;
       } else if (step.expect_stderr_matches !== undefined) {
-        const ok = new RegExp(step.expect_stderr_matches).test(lastStderr);
+        const ok = new RegExp(step.expect_stderr_matches, 'm').test(lastStderr);
         steps.push({ step: label, ok, observed: lastStderr.slice(0, 160) });
         failed = !ok;
       } else {

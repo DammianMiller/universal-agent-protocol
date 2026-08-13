@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.203.5 (2026-08-13)
+
+- fix(user-validation): anchored journey patterns must match real CLI output
+
+
 ## v1.203.4 (2026-08-13)
 
 - fix(models): retry truncated completions and stop corrupting degenerate output
