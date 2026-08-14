@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.207.0 (2026-08-14)
+
+- feat(user-paths): derived journeys must anchor to the mission
+
+
 ## v1.206.3 (2026-08-14)
 
 - fix(lease): heartbeat renewal so long decodes keep their model slot
