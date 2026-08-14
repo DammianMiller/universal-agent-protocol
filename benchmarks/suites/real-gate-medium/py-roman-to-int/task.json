@@ -2,8 +2,11 @@
   "name": "Roman numeral to integer",
   "instruction": "Implement roman_to_int(s) in roman.py: convert a valid Roman numeral string (I,V,X,L,C,D,M) to its integer value, honoring the subtractive cases (IV=4, IX=9, XL=40, XC=90, CD=400, CM=900). E.g. 'LVIII'=58, 'MCMXCIV'=1994.",
   "difficulty": "medium",
-  "tags": ["feature", "python"],
+  "tags": [
+    "feature",
+    "python"
+  ],
   "verifyCmd": "python3 -c \"from roman import roman_to_int as f; import sys; c={'III':3,'IV':4,'IX':9,'LVIII':58,'MCMXCIV':1994}; sys.exit(0 if all(f(k)==v for k,v in c.items()) else 1)\"",
   "verifyTimeoutSec": 30,
-  "agentTimeoutSec": 300
+  "agentTimeoutSec": 1200
 }

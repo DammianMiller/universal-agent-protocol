@@ -2,8 +2,11 @@
   "name": "Balanced brackets validator",
   "instruction": "Implement is_balanced(s) in brackets.py: return True iff every '(', '[' and '{' in s is matched by the correct closing bracket in the right order, and there are no unmatched closers. Ignore any non-bracket characters. The empty string is balanced. E.g. '([{}])'=True, '([)]'=False, '((('=False.",
   "difficulty": "medium",
-  "tags": ["feature", "python"],
+  "tags": [
+    "feature",
+    "python"
+  ],
   "verifyCmd": "python3 -c \"from brackets import is_balanced as f; import sys; t=[('()[]{}',True),('([{}])',True),('(]',False),('([)]',False),('',True),('(((',False),('a(b)c',True)]; sys.exit(0 if all(f(s)==e for s,e in t) else 1)\"",
   "verifyTimeoutSec": 30,
-  "agentTimeoutSec": 300
+  "agentTimeoutSec": 1200
 }

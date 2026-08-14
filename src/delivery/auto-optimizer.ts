@@ -25,6 +25,9 @@ export type DeliveryComplexity = QueryComplexity;
 export const DELIVERY_COMPLEXITY_THRESHOLDS: ComplexityThresholds = {
   moderate: 1,
   complex: 2,
+  // Delivery takes the r4 right-sizing bet: one-file single-step missions run
+  // the plain single-shot loop no matter how precisely they are specified.
+  scopeCap: true,
 };
 
 export interface AutoPlan {
