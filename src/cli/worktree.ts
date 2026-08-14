@@ -44,7 +44,7 @@ let worktreeDb: Database.Database | null = null;
  * The MAIN checkout — where .worktrees/ and the shared coordination DB live.
  * git-common-dir resolves it even when called from inside a linked worktree.
  */
-async function mainRootOf(git: SimpleGit): Promise<string> {
+export async function mainRootOf(git: SimpleGit): Promise<string> {
   try {
     const common = (await git.raw(['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim();
     if (common) return dirname(common);
@@ -111,14 +111,26 @@ export async function worktreeCommand(
   action: WorktreeAction,
   options: WorktreeOptions = {}
 ): Promise<void> {
-  const cwd = process.cwd();
-  const git = simpleGit(cwd);
+  const invokedFrom = process.cwd();
+  let git = simpleGit(invokedFrom);
 
   // Check if we're in a git repo
   const isRepo = await git.checkIsRepo();
   if (!isRepo) {
     console.error(chalk.red('Not a git repository'));
     process.exit(1);
+  }
+
+  // Anchor EVERY subcommand at the MAIN checkout, not the shell's cwd.
+  // Observed live (2026-08-13): `worktree create` run with cwd inside an
+  // existing worktree created a NESTED tree
+  // (.worktrees/219-x/.worktrees/001-y) on a rolled-over id — the nested
+  // .uap/ also got its own id database, which is where the rollover came
+  // from. The phantom-nested-root class, in the tool meant to prevent it.
+  const cwd = await mainRootOf(git);
+  if (cwd !== invokedFrom) {
+    git = simpleGit(cwd);
+    console.log(chalk.dim(`  (anchored at main checkout: ${cwd})`));
   }
 
   switch (action) {
