@@ -509,6 +509,74 @@ export function sanitizeCanvasEntityAssertions(
  * returns null on any error/parse failure so delivery never wedges on the
  * planner (the gate then reports "no manifest" instead).
  */
+/** Common words that anchor nothing — journeys and missions both use them. */
+const SCOPE_STOPWORDS = new Set([
+  'implement', 'return', 'returns', 'function', 'functions', 'add', 'update', 'create', 'change',
+  'export', 'exports', 'input', 'output', 'value', 'values', 'test', 'tests', 'file', 'files',
+  'must', 'both', 'each', 'with', 'that', 'this', 'from', 'into', 'when', 'then', 'should',
+  'error', 'errors', 'string', 'number', 'array', 'object', 'empty', 'valid', 'invalid',
+  'verify', 'check', 'ensure', 'build', 'existing',
+]);
+
+/**
+ * Drop derived journeys that share NO anchor with the mission.
+ *
+ * Observed live (2026-08-13): a one-file ENFORCER mission in this repo mined
+ * 4 journeys that targeted the DASHBOARD — an unrelated app surface that
+ * happened to live in the same tree — and the gate's pressure then drove the
+ * executor to patch web/dash files the mission never named. The miner sees
+ * only the instruction, but a weak model pattern-matches to whatever the
+ * repo's most prominent surface is.
+ *
+ * Anchors are the mission's named files (basenames, extension stripped) and
+ * its distinctive identifiers (≥4 chars, stopworded). A journey stays iff its
+ * id/rule/step text contains at least one anchor. Fail direction: dropping
+ * every journey degrades to the existing no-manifest chain (deterministic web
+ * fallback or an NA gate) — never to journeys about a different app. A
+ * mission with NO extractable anchors keeps everything (nothing to scope by).
+ */
+export function dropOutOfScopeJourneys(
+  manifest: UserPathsManifest,
+  instruction: string
+): UserPathsManifest {
+  const anchors = new Set<string>();
+  for (const m of instruction.matchAll(/([\w-]+)\.[a-z]{1,6}\b/gi)) {
+    if (m[1].length >= 3) anchors.add(m[1].toLowerCase());
+  }
+  for (const m of instruction.matchAll(/[A-Za-z_][A-Za-z0-9_]{3,}/g)) {
+    const w = m[0].toLowerCase();
+    if (!SCOPE_STOPWORDS.has(w)) anchors.add(w);
+  }
+  if (anchors.size === 0) return manifest;
+
+  const kept = manifest.paths.filter((p) => {
+    // A pure load-smoke journey (navigate + no-console-errors, no selectors,
+    // no commands) is mission-agnostic BY NATURE: it checks the artifact
+    // under construction, whatever the mission calls it. Only journeys that
+    // name concrete surfaces (selectors, commands, URLs beyond goto) must
+    // anchor to the mission.
+    const steps = (p.steps ?? []) as Array<Record<string, unknown>>;
+    const genericSmoke =
+      steps.length > 0 &&
+      steps.every(
+        (s) => 'goto' in s || 'expect_no_console_errors' in s || 'expect_title_matches' in s
+      );
+    if (genericSmoke) return true;
+    const text = JSON.stringify(p).toLowerCase();
+    for (const a of anchors) {
+      if (text.includes(a)) return true;
+    }
+    return false;
+  });
+  if (kept.length < manifest.paths.length) {
+    console.log(
+      `  user-validation: dropped ${manifest.paths.length - kept.length} derived journey(s) that ` +
+        'share no anchor with the mission (out-of-scope surface)'
+    );
+  }
+  return { ...manifest, paths: kept };
+}
+
 export async function deriveUserPaths(
   instruction: string,
   executor: ModelExecutor,
@@ -526,11 +594,14 @@ export async function deriveUserPaths(
       const out = await executor(prompt);
       const manifest = parseManifestFromModel(out);
       if (manifest) {
-        return dropRedundantStaticServer(
-          sanitizeCanvasEntityAssertions(
-            sanitizeUnreachableGameStateAssertions(sanitizeCanvasTextAssertions(manifest, instruction)),
-            instruction
-          )
+        return dropOutOfScopeJourneys(
+          dropRedundantStaticServer(
+            sanitizeCanvasEntityAssertions(
+              sanitizeUnreachableGameStateAssertions(sanitizeCanvasTextAssertions(manifest, instruction)),
+              instruction
+            )
+          ),
+          instruction
         );
       }
     } catch {
