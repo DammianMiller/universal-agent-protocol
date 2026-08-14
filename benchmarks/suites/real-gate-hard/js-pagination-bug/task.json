@@ -2,8 +2,11 @@
   "name": "Fix 1-indexed pagination off-by-one + totalPages",
   "instruction": "paginate(items, page, perPage) uses 1-indexed pages: page 1 must return the first perPage items. Fix two bugs in paginate.js: (1) the slice start is off by one page (page 1 currently skips the first page of items); (2) totalPages must be the ceiling of items.length / perPage, not the floor. Keep the returned object shape {items, page, perPage, totalPages}.",
   "difficulty": "medium",
-  "tags": ["bugfix", "javascript"],
+  "tags": [
+    "bugfix",
+    "javascript"
+  ],
   "verifyCmd": "node -e \"const p=require('./paginate.js'); const items=Array.from({length:23},(_,i)=>i+1); let r=p(items,1,10); if(r.items[0]!==1||r.items.length!==10){console.error('page1',r.items);process.exit(1)} r=p(items,3,10); if(r.items[0]!==21||r.items.length!==3){console.error('page3',r.items);process.exit(1)} if(r.totalPages!==3){console.error('totalPages',r.totalPages);process.exit(1)} console.log('ok')\"",
   "verifyTimeoutSec": 30,
-  "agentTimeoutSec": 300
+  "agentTimeoutSec": 1200
 }

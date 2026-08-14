@@ -2,8 +2,11 @@
   "name": "Implement a non-mutating deep merge",
   "instruction": "Implement deepMerge(a, b) in merge.js. Recursively merge plain objects: keys present in both whose values are plain objects are merged recursively; for any other type b's value wins; arrays are replaced (not concatenated). The function must NOT mutate either input. Return a new object. Keep the CommonJS export shape.",
   "difficulty": "medium",
-  "tags": ["feature", "javascript"],
+  "tags": [
+    "feature",
+    "javascript"
+  ],
   "verifyCmd": "node -e \"const m=require('./merge.js'); const a={x:1,n:{p:1,q:2},arr:[1,2]}; const b={y:2,n:{q:9,r:3},arr:[9]}; const r=m(a,b); const eq=(x,y)=>JSON.stringify(x)===JSON.stringify(y); if(!eq(r,{x:1,n:{p:1,q:9,r:3},arr:[9],y:2})){console.error('merged=',JSON.stringify(r));process.exit(1)} if(a.n.q!==2||JSON.stringify(a.arr)!=='[1,2]'){console.error('mutated a');process.exit(1)} console.log('ok')\"",
   "verifyTimeoutSec": 30,
-  "agentTimeoutSec": 420
+  "agentTimeoutSec": 1200
 }
