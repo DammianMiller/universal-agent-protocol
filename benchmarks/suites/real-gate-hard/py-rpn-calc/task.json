@@ -10,5 +10,5 @@
   "gateCmd": "python3 test_rpn.py",
   "verifyCmd": "python3 - <<'EOF'\nimport rpn\ndef ev(s):\n    try: return rpn.evaluate(s)\n    except ValueError: return 'VE'\nassert ev('2 3 +')==5\nassert ev('10 4 -')==6\nassert ev('6 7 *')==42\nassert ev('20 4 /')==5\nassert ev('100 5 / 3 -')==17\nassert ev('42')==42\nassert ev('2 3 + 4 *')==20\nassert ev('5 1 2 + 4 * + 3 -')==14\nassert ev('1 0 /')=='VE'\nassert ev('1 2 %')=='VE'\nassert ev('1 +')=='VE'\nassert ev('+')=='VE'\nprint('VERIFY OK')\nEOF",
   "verifyTimeoutSec": 30,
-  "agentTimeoutSec": 240
+  "agentTimeoutSec": 1200
 }

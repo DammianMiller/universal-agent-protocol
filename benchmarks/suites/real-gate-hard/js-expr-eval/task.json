@@ -2,8 +2,12 @@
   "name": "Implement an arithmetic expression evaluator",
   "instruction": "Implement evaluate(expr) in eval.js. It takes a string arithmetic expression and returns its numeric value. It must support +, -, *, /, parentheses, integer and decimal literals, unary minus, and standard operator precedence (multiplication/division before addition/subtraction). Keep the CommonJS export shape. Do not add dependencies.",
   "difficulty": "hard",
-  "tags": ["feature", "javascript", "parsing"],
+  "tags": [
+    "feature",
+    "javascript",
+    "parsing"
+  ],
   "verifyCmd": "node -e \"const e=require('./eval.js'); const c=(s,v)=>{const r=e(s); if(!Number.isFinite(r)||Math.abs(r-v)>1e-9){console.error('FAIL',s,'=>',r,'expected',v);process.exit(1)}}; c('1+2*3',7); c('(1+2)*3',9); c('2*3+4*5',26); c('10/4',2.5); c('-3+5',2); c('2*(3+(4-1))',12); c('1.5*2',3); c('100-2*3*4',76); c('-(2+3)*2',-10); console.log('ok')\"",
   "verifyTimeoutSec": 30,
-  "agentTimeoutSec": 420
+  "agentTimeoutSec": 1200
 }

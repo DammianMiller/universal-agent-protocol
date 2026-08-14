@@ -2,8 +2,12 @@
   "name": "Implement an O(1) LRU cache",
   "instruction": "Implement the LRUCache class in lru_cache.py. get(key) returns the value or -1 if absent and marks the key most-recently-used. put(key, value) inserts or updates, marking the key most-recently-used; when the number of keys exceeds capacity, evict the least-recently-used key. Both get and put should be O(1). Keep the class name and method signatures.",
   "difficulty": "hard",
-  "tags": ["feature", "python", "data-structures"],
+  "tags": [
+    "feature",
+    "python",
+    "data-structures"
+  ],
   "verifyCmd": "python3 -c \"from lru_cache import LRUCache as L; c=L(2); c.put(1,1); c.put(2,2); assert c.get(1)==1; c.put(3,3); assert c.get(2)==-1; c.put(4,4); assert c.get(1)==-1; assert c.get(3)==3; assert c.get(4)==4; d=L(2); d.put(1,1); d.put(2,2); d.put(1,10); d.put(3,3); assert d.get(2)==-1; assert d.get(1)==10; assert d.get(3)==3; print('ok')\"",
   "verifyTimeoutSec": 30,
-  "agentTimeoutSec": 420
+  "agentTimeoutSec": 1200
 }
