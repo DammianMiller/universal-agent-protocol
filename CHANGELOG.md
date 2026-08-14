@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.206.2 (2026-08-14)
+
+- fix(worktree): anchor every subcommand at the MAIN checkout, not the shell cwd
+
+
 ## v1.206.1 (2026-08-14)
 
 - fix(right-sizing): miner skip keys on mission size, not the --auto flag
