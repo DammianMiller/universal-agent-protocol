@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.207.1 (2026-08-14)
+
+- chore(bench): real-gate-hard agentTimeoutSec -> 1200 for completed-mission measurement
+
+
 ## v1.207.0 (2026-08-14)
 
 - feat(user-paths): derived journeys must anchor to the mission
