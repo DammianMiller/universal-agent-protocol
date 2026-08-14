@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.206.3 (2026-08-14)
+
+- fix(lease): heartbeat renewal so long decodes keep their model slot
+
+
 ## v1.206.2 (2026-08-14)
 
 - fix(worktree): anchor every subcommand at the MAIN checkout, not the shell cwd
