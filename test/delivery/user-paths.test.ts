@@ -182,9 +182,13 @@ describe('sanitizeCanvasTextAssertions', () => {
     const mined = await deriveUserPaths(canvasMission, async () =>
       JSON.stringify({
         version: 1,
+        // '#canvas' anchors this journey to the canvas mission — the derive
+        // pipeline now drops selector-bearing journeys that share no anchor
+        // with the mission (dropOutOfScopeJourneys), and this test is about
+        // expect_text sanitization, not scoping.
         paths: [{ id: 'p', rule: 'r', client: 'browser', steps: [
           { goto: '/' },
-          { expect_visible: '#game' },
+          { expect_visible: '#canvas' },
           { expect_text: { selector: 'body', contains: 'TITLE' } },
         ] }],
       })
