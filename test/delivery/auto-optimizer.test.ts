@@ -55,11 +55,26 @@ describe('planAutoOptimization', () => {
   // Characterization tests: these pin the cost-tier boundary for real
   // instructions. If classifier tuning moves them, that is a deliberate
   // delivery-cost decision — update with intent.
-  it('classifies a real non-trivial coding instruction as non-simple by default', () => {
+  it('classifies a precise ONE-file instruction as simple — scope beats verbosity (bench r4)', () => {
+    // Deliberate boundary move (2026-08-14, measured): this shape scored
+    // complex on length + tech words alone, the full aid stack engaged, and
+    // bench r4 measured the stack at -16pp (CI [-32,-4]) on exactly this
+    // class — rails consumed the budget before implementation landed. One
+    // named file, no sequencing, ≤80 words ⇒ plain single-shot loop.
     const plan = planAutoOptimization(
       'Implement src/duration.mjs exporting parseDuration(str) and formatDuration(seconds); ' +
         'parse compound duration strings, throw TypeError on invalid input, and also add ' +
         'round-trip tests so the build and test gates pass'
+    );
+    expect(plan.complexity).toBe('simple');
+    expect(plan.candidates).toBeUndefined();
+    expect(plan.critic).toBe(false);
+  });
+
+  it('a SECOND named file keeps the aid stack (scope, not verbosity, is the trigger)', () => {
+    const plan = planAutoOptimization(
+      'Implement src/duration.mjs exporting parseDuration(str) and formatDuration(seconds); ' +
+        'add round-trip tests to test/duration.test.mjs so the build and test gates pass'
     );
     expect(['moderate', 'complex']).toContain(plan.complexity);
     expect(plan.candidates).toBeGreaterThanOrEqual(3);

@@ -2,8 +2,11 @@
   "name": "Title-case a sentence",
   "instruction": "Implement titleCase(s) in titlecase.js: words are separated by single spaces; for each word, uppercase the first character and lowercase the rest; join with single spaces. E.g. 'the QUICK brown' -> 'The Quick Brown'; '' -> ''; 'a' -> 'A'. Keep the CommonJS export shape.",
   "difficulty": "medium",
-  "tags": ["feature", "javascript"],
+  "tags": [
+    "feature",
+    "javascript"
+  ],
   "verifyCmd": "node -e \"const f=require('./titlecase.js'); if(f('hello world')!=='Hello World')process.exit(1); if(f('the QUICK brown')!=='The Quick Brown')process.exit(1); if(f('')!=='')process.exit(1); if(f('a')!=='A')process.exit(1); console.log('ok')\"",
   "verifyTimeoutSec": 30,
-  "agentTimeoutSec": 300
+  "agentTimeoutSec": 1200
 }

@@ -2921,7 +2921,19 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // overwritten). Fail-soft — a planner miss means the gate reports
   // "no manifest" instead of blocking on derivation.
   if (userValidationMode !== 'off' && !options.dryRun && !loadUserPaths(projectRoot)) {
-    const derived = await deriveUserPaths(instruction, verdictExecutor);
+    // Small-mission right-sizing (bench r4): the model-driven path miner costs
+    // model calls (observed retrying live) that on a one-file mission exceed
+    // the implementation itself. ONLY the miner is skipped — the shared chain
+    // below still installs the deterministic web fallback (zero model calls)
+    // and a user-curated manifest is always honoured (review 2026-08-14
+    // finding 1: the first cut wrapped the fallback into the skip and left
+    // simple WEB missions with no behavioral gate at all).
+    let derived: Awaited<ReturnType<typeof deriveUserPaths>> = null;
+    if (autoPlan?.complexity === 'simple') {
+      console.log(chalk.dim('  user-validation: simple mission — skipping model-driven path derivation'));
+    } else {
+      derived = await deriveUserPaths(instruction, verdictExecutor);
+    }
     if (derived && derived.paths.length > 0) {
       mergeUserPaths(projectRoot, derived);
       console.log(

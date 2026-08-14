@@ -85,7 +85,10 @@ export function classifyComplexity(input: {
     return { tier: 'high', score: SCORE.high, reasons, source: 'heuristic' };
   }
 
-  const q = measureQueryComplexity(text, { moderate: 1, complex: 2 });
+  // scopeCap: routing takes the same r4 bet as delivery — a one-file
+  // single-step mission routes to the cheap tier. CRITICAL_KW/HIGH_KW above
+  // still outrank this (security/architecture words can never be capped).
+  const q = measureQueryComplexity(text, { moderate: 1, complex: 2, scopeCap: true });
   reasons.push(`query-complexity=${q}`);
   let tier: Tier = q === 'simple' ? 'low' : q === 'moderate' ? 'medium' : 'high';
   // Many files raises the floor a notch (capped at high; critical is keyword-only).
