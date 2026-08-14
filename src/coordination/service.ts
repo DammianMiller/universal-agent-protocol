@@ -1093,6 +1093,24 @@ export class CoordinationService {
     this.db.prepare(`DELETE FROM model_leases WHERE id = ?`).run(leaseId);
   }
 
+  /**
+   * Extend a live lease's expiry (heartbeat renewal). Returns false when the
+   * lease no longer exists — it was reaped as expired, so the holder has LOST
+   * its slot and admission control has already admitted someone else.
+   *
+   * Why: the TTL (default 120s) exists to reap crashed holders, but a single
+   * local-model decode routinely runs many minutes — a fixed expiry reaped
+   * LIVE holders mid-decode, so the single GPU oversubscribed exactly when it
+   * was busiest (review 2026-08-13 F3, wt216). A working holder renews; a
+   * crashed one stops renewing and still reaps at TTL.
+   */
+  renewModelSlot(leaseId: number, ttlMs = 120_000): boolean {
+    const info = this.db
+      .prepare(`UPDATE model_leases SET expires_at = ? WHERE id = ?`)
+      .run(new Date(Date.now() + ttlMs).toISOString(), leaseId);
+    return info.changes > 0;
+  }
+
   // ==================== Adaptive backpressure (AIMD) ====================
   // Multiplicative-decrease on exhaustion, additive-increase on success toward
   // the ceiling. Shared across processes so the fleet backs off together.

@@ -124,9 +124,29 @@ export async function withModelSlot<T>(
       /* ignore */
     }
   }
+  // Heartbeat renewal while fn runs: the TTL reaps CRASHED holders, but a
+  // local-model decode routinely outlives 120s — without renewal the lease
+  // expired mid-decode and admission control oversubscribed the GPU exactly
+  // when it was busiest (review 2026-08-13 F3). A live holder renews at
+  // ttl/3; a crashed one stops renewing and still reaps at TTL. Renewal
+  // failure is fail-open by design, matching every other edge in this module.
+  const ttlMs = opts.ttlMs ?? 120_000;
+  let renewTimer: ReturnType<typeof setInterval> | null = null;
+  if (leaseId !== null) {
+    renewTimer = setInterval(() => {
+      try {
+        service.renewModelSlot(leaseId, ttlMs);
+      } catch {
+        /* fail-open: a lost lease degrades to today's behavior */
+      }
+    }, Math.max(1_000, Math.floor(ttlMs / 3)));
+    // Never hold the event loop open for a heartbeat.
+    renewTimer.unref?.();
+  }
   try {
     return await holding.run(true, fn);
   } finally {
+    if (renewTimer !== null) clearInterval(renewTimer);
     if (leaseId !== null) {
       try {
         service.releaseModelSlot(leaseId);
