@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.206.1 (2026-08-14)
+
+- fix(right-sizing): miner skip keys on mission size, not the --auto flag
+
+
 ## v1.206.0 (2026-08-14)
 
 - feat(right-sizing): scope-capped complexity so rails scale with mission size
