@@ -29,7 +29,8 @@ import { MAX_CANDIDATES } from '../delivery/explorer.js';
 import type { StrategySeed } from '../delivery/explorer.js';
 import { generateStrategySeeds, seedsFromIdeas } from '../delivery/ideation.js';
 import { DEFAULT_STRATEGY_SEEDS } from '../delivery/explorer.js';
-import { planAutoOptimization } from '../delivery/auto-optimizer.js';
+import { planAutoOptimization, DELIVERY_COMPLEXITY_THRESHOLDS } from '../delivery/auto-optimizer.js';
+import { measureQueryComplexity } from '../utils/query-complexity.js';
 import { RoutingPresets, resolvePresetModel, resolvePhaseChain } from '../models/types.js';
 import type { TaskComplexity } from '../models/types.js';
 import { classifyComplexity, tierToRouting } from '../models/complexity.js';
@@ -2928,8 +2929,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // and a user-curated manifest is always honoured (review 2026-08-14
     // finding 1: the first cut wrapped the fallback into the skip and left
     // simple WEB missions with no behavioral gate at all).
+    // Mission size is a property of the MISSION, not of the --auto flag:
+    // keying this off autoPlan made --no-auto runs (the bench baseline arm,
+    // any operator running plain) pay the miner that auto runs skip —
+    // observed live in r5 as an inverted handicap between the paired arms.
+    const simpleMission =
+      measureQueryComplexity(instruction, DELIVERY_COMPLEXITY_THRESHOLDS) === 'simple';
     let derived: Awaited<ReturnType<typeof deriveUserPaths>> = null;
-    if (autoPlan?.complexity === 'simple') {
+    if (simpleMission) {
       console.log(chalk.dim('  user-validation: simple mission — skipping model-driven path derivation'));
     } else {
       derived = await deriveUserPaths(instruction, verdictExecutor);
