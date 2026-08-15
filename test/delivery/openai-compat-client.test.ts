@@ -48,9 +48,17 @@ describe('OpenAICompatClient', () => {
   });
 
   it('throws a descriptive error on non-OK responses and missing choices', async () => {
+    // 503 is now a RETRYABLE status (transient upstream window); disable the
+    // status-retry budget here so the test exercises the terminal error path
+    // rather than waiting out real backoff.
+    process.env.UAP_MODEL_STATUS_RETRIES = '0';
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('overloaded', { status: 503 })));
     const client = new OpenAICompatClient();
-    await expect(client.complete(model(), 'hi')).rejects.toThrow(/503.*overloaded/s);
+    try {
+      await expect(client.complete(model(), 'hi')).rejects.toThrow(/503.*overloaded/s);
+    } finally {
+      delete process.env.UAP_MODEL_STATUS_RETRIES;
+    }
 
     vi.stubGlobal(
       'fetch',
@@ -188,6 +196,9 @@ describe('OpenAICompatClient', () => {
   });
 
   it('falls back to the truncated first result when the retry request fails', async () => {
+    // The continuation request's 503 must not spin the status-retry ladder —
+    // the fallback answer already exists. Budget pinned to 0 for the test.
+    process.env.UAP_MODEL_STATUS_RETRIES = '0';
     const truncated = {
       choices: [{ message: { content: 'partial but real' }, finish_reason: 'length' }],
       usage: { prompt_tokens: 10, completion_tokens: 100 },
@@ -198,12 +209,16 @@ describe('OpenAICompatClient', () => {
       .mockResolvedValueOnce(new Response('overloaded', { status: 503 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const client = new OpenAICompatClient();
-    const result = await client.complete(model(), 'hi');
+    try {
+      const client = new OpenAICompatClient();
+      const result = await client.complete(model(), 'hi');
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(result.content).toBe('partial but real');
-    expect(result.finishReason).toBe('length');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(result.content).toBe('partial but real');
+      expect(result.finishReason).toBe('length');
+    } finally {
+      delete process.env.UAP_MODEL_STATUS_RETRIES;
+    }
   });
 
   it('makes a single request when finish_reason is absent and no maxTokens was pinned', async () => {

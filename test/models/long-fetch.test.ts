@@ -75,6 +75,103 @@ describe('fetchModelWithRetry', () => {
   });
 });
 
+describe('fetchModelWithRetry — transient HTTP statuses', () => {
+  const resp = (status: number) =>
+    ({ ok: status < 400, status, text: async () => 'busy' }) as unknown as Response;
+
+  it('rides out retryable statuses (529 model-reload window) and returns the recovery', async () => {
+    let calls = 0;
+    const impl = (async () => {
+      calls++;
+      return calls < 3 ? resp(529) : resp(200);
+    }) as never;
+    const res = await fetchModelWithRetry('http://x', {}, {
+      fetchImpl: impl,
+      retryStatuses: new Set([529, 503]),
+      statusBackoffMs: 1,
+    });
+    expect(res.status).toBe(200);
+    expect(calls).toBe(3);
+  });
+
+  it('does NOT retry statuses outside the set — 500 carries a real verdict', async () => {
+    let calls = 0;
+    const impl = (async () => { calls++; return resp(500); }) as never;
+    const res = await fetchModelWithRetry('http://x', {}, {
+      fetchImpl: impl,
+      retryStatuses: new Set([529, 503]),
+      statusBackoffMs: 1,
+    });
+    expect(res.status).toBe(500);
+    expect(calls).toBe(1);
+  });
+
+  it('returns the final retryable response once the status budget is spent', async () => {
+    let calls = 0;
+    const impl = (async () => { calls++; return resp(503); }) as never;
+    const res = await fetchModelWithRetry('http://x', {}, {
+      fetchImpl: impl,
+      retryStatuses: new Set([503]),
+      statusRetries: 2,
+      statusBackoffMs: 1,
+    });
+    expect(res.status).toBe(503);
+    expect(calls).toBe(3); // initial + 2 status retries
+  });
+
+  it('is off by default — a 529 with no retryStatuses is returned untouched', async () => {
+    let calls = 0;
+    const impl = (async () => { calls++; return resp(529); }) as never;
+    const res = await fetchModelWithRetry('http://x', {}, { fetchImpl: impl });
+    expect(res.status).toBe(529);
+    expect(calls).toBe(1);
+  });
+
+  it('an abort cuts the status-retry backoff short instead of sleeping through it', async () => {
+    // A judge with a 60s AbortController must not sit blind through a
+    // 155s retry ladder — the sleep resolves on abort and the next attempt
+    // surfaces the AbortError promptly.
+    const controller = new AbortController();
+    let calls = 0;
+    const impl = (async (_url: unknown, init: { signal?: AbortSignal }) => {
+      calls++;
+      if (init.signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      return resp(529);
+    }) as never;
+    const started = Date.now();
+    setTimeout(() => controller.abort(), 20);
+    await expect(
+      fetchModelWithRetry('http://x', { signal: controller.signal }, {
+        fetchImpl: impl,
+        retryStatuses: new Set([529]),
+        statusBackoffMs: 60_000, // would sleep a minute without abort-awareness
+      })
+    ).rejects.toThrow('aborted');
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(calls).toBe(2); // initial 529, then the aborted attempt
+  });
+
+  it('status retries do not consume the transport-retry budget', async () => {
+    let calls = 0;
+    const impl = (async () => {
+      calls++;
+      if (calls === 1) return resp(529);          // status retry (own budget)
+      if (calls === 2) throw fetchFailed('UND_ERR_HEADERS_TIMEOUT'); // transport retry 1
+      if (calls === 3) throw fetchFailed('UND_ERR_HEADERS_TIMEOUT'); // transport retry 2
+      return resp(200);
+    }) as never;
+    const res = await fetchModelWithRetry('http://x', {}, {
+      fetchImpl: impl,
+      retries: 2,
+      backoffMs: 1,
+      retryStatuses: new Set([529]),
+      statusBackoffMs: 1,
+    });
+    expect(res.status).toBe(200);
+    expect(calls).toBe(4);
+  });
+});
+
 describe('modelHttpTimeoutMs', () => {
   it('defaults to 30 minutes and honors the env override', () => {
     delete process.env.UAP_MODEL_HTTP_TIMEOUT_MS;

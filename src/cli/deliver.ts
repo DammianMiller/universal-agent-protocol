@@ -244,7 +244,7 @@ export function bestKeepFastScore(
 export { resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
-import { clearStop, finalRunStatus, isRunBudgetExpired, isStopRequested, makeStopLatch, requestStop, runBudgetMinutes, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
+import { clearProjectStop, clearStop, finalRunStatus, isRunBudgetExpired, isStopRequested, makeStopLatch, requestStop, runBudgetMinutes, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
@@ -3104,6 +3104,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   });
   loopConfig.shouldStop = stopLatch;
   clearStop(projectRoot, runId);
+  // A project-level STOP that PREDATES this launch was aimed at a previous
+  // run — consuming it keeps it from instant-stopping this one at turn 0
+  // (observed 2026-08-15: a leaked STOP latched a resume dead in 0 turns).
+  // mtime-gated against PROCESS start, not this line's timestamp: planning
+  // runs for minutes before we get here, and a stop touched during planning
+  // (the impatient pre-runId window the project STOP exists for) is a live
+  // operator signal that must reach the stop latch untouched.
+  const processStartedAtMs = Date.now() - process.uptime() * 1000;
+  if (clearProjectStop(projectRoot, processStartedAtMs)) {
+    console.error(chalk.dim('  cleared a stale project-level STOP left over from a previous run'));
+  }
   // The restored checkpoint feeds exactly one loop (the in-flight phase).
   let resumeCheckpoint = resumeState?.checkpoint;
 
@@ -3466,6 +3477,18 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       persistCompleted: ({ summaries, completed }) => {
         runState.phaseSummaries = [...summaries];
         runState.completedEpicIds = [...completed];
+        // Advance the visible phase pointer as epics are ACCEPTED. Followers
+        // read state.json for progress; a phaseIndex frozen at 0 through a
+        // 30-minute first epic read as "stuck at phase 1/20" and got a healthy
+        // run cooperatively stopped (2026-08-15). Clamped to the plan's last
+        // index: the loader validates the cursor's range and silently DROPS an
+        // out-of-range value (split sub-epic ids can push completed.length past
+        // the top-level plan), which would erase the very progress signal this
+        // write exists to provide.
+        runState.phaseIndex = Math.min(
+          completed.length,
+          Math.max(0, (runState.phases?.length ?? 1) - 1)
+        );
         // The checkpoint belongs to the finished epic (phased-path parity) —
         // never seed a later loop with a completed epic's session state.
         runState.checkpoint = undefined;

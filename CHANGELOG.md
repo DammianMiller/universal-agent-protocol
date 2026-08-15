@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.209.0 (2026-08-15)
+
+- feat(deliver): runs complete by default — orphan continuation, stale-STOP sweep, progress stamping, transient-upstream retry
+
+
 ## v1.208.0 (2026-08-15)
 
 - feat(deliver): surface cooperative stops as 'interrupted', not 'failed'

@@ -39,6 +39,15 @@ const globalFetch: FetchLike = (url, init) => (globalThis.fetch as unknown as Fe
  */
 export const ENDPOINT_UNREACHABLE = 'ENDPOINT_UNREACHABLE';
 
+/**
+ * Statuses a LOCAL inference stack emits during a survivable window: 529
+ * (proxy admission/overload while the model reloads), 502/503/504 (proxy
+ * restarting or the upstream moving ports). Deliberately excludes 500 — that
+ * carries a real per-request verdict (e.g. "context size has been exceeded")
+ * a retry cannot change.
+ */
+export const TRANSIENT_HTTP_STATUSES: ReadonlySet<number> = new Set([502, 503, 504, 529]);
+
 const DEFAULT_MODEL_HTTP_TIMEOUT_MS = 30 * 60 * 1000;
 const CONNECT_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRIES = 2;
@@ -135,6 +144,20 @@ export interface ModelFetchOptions {
   fetchImpl?: FetchLike;
   /** Called before each retry (logging seam). */
   onRetry?: (attempt: number, err: unknown) => void;
+  /**
+   * HTTP statuses to treat as TRANSIENT and retry (own budget, below). Off by
+   * default: 4xx/5xx are protocol, not transport, and most must reach the
+   * caller (500 "context size exceeded" is a real answer). But a local-stack
+   * caller knows its 529 (proxy up, model loading), 502/503/504 (proxy
+   * restarting / upstream moving ports) windows are 20–90s blips worth riding
+   * out — each one killed a whole multi-minute agentic turn before this
+   * (observed 2026-08-15: every Studio model reload risked an in-flight turn).
+   */
+  retryStatuses?: ReadonlySet<number>;
+  /** Retries for retryStatuses responses (default 5; ~2.5min at 5s base). */
+  statusRetries?: number;
+  /** Base backoff for status retries; doubles each attempt (default 5000ms). */
+  statusBackoffMs?: number;
 }
 
 /**
@@ -150,16 +173,55 @@ export async function fetchModelWithRetry(
   const retries = Math.max(0, options.retries ?? DEFAULT_RETRIES);
   const backoffMs = options.backoffMs ?? DEFAULT_BACKOFF_MS;
   const impl = options.fetchImpl ?? globalFetch;
+  const retryStatuses = options.retryStatuses;
+  const statusRetries = Math.max(0, options.statusRetries ?? 5);
+  const statusBackoffMs = options.statusBackoffMs ?? 5000;
 
+  // Separate budgets on purpose: transport retries are cheap-and-fast (the
+  // request never reached a server), status retries wait out a slow upstream
+  // window. One shared counter would let a flapping connection starve the
+  // status budget or vice versa.
+  //
+  // Backoff sleeps observe the caller's AbortSignal: a judge with a 60s
+  // timeout must not sit blind through a 155s status-retry ladder. An abort
+  // resolves the sleep immediately; the next attempt then rejects with the
+  // caller's AbortError through the normal non-transient path.
+  const signal = (init as { signal?: AbortSignal | null }).signal ?? undefined;
+  const wait = (ms: number) =>
+    new Promise<void>((resolve) => {
+      if (signal?.aborted) return resolve();
+      const done = () => {
+        signal?.removeEventListener('abort', done);
+        clearTimeout(t);
+        resolve();
+      };
+      const t = setTimeout(done, ms);
+      signal?.addEventListener('abort', done, { once: true });
+    });
+
+  let statusAttempt = 0;
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      return await impl(url, { dispatcher: dispatcher(), ...init });
+      const res = await impl(url, { dispatcher: dispatcher(), ...init });
+      if (retryStatuses?.has(res.status) && statusAttempt < statusRetries && !signal?.aborted) {
+        statusAttempt++;
+        options.onRetry?.(statusAttempt, new Error(`HTTP ${res.status} (retryable upstream window)`));
+        // Consume the body so the connection can be reused, then wait.
+        // Jittered (±20%): 529 IS the overload signal, and unjittered
+        // exponential backoff resynchronizes every waiting caller into
+        // retry waves against the already-overloaded upstream.
+        try { await res.text(); } catch { /* discarded */ }
+        await wait(statusBackoffMs * 2 ** (statusAttempt - 1) * (0.8 + Math.random() * 0.4));
+        attempt--; // status retries do not spend the transport budget
+        continue;
+      }
+      return res;
     } catch (err) {
       lastErr = err;
       if (!isTransientNetworkError(err) || attempt === retries) throw err;
       options.onRetry?.(attempt + 1, err);
-      await new Promise((r) => setTimeout(r, backoffMs * 2 ** attempt));
+      await wait(backoffMs * 2 ** attempt);
     }
   }
   throw lastErr; // unreachable, satisfies control flow
