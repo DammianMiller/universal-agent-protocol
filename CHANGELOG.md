@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.208.0 (2026-08-15)
+
+- feat(deliver): surface cooperative stops as 'interrupted', not 'failed'
+
+
 ## v1.207.1 (2026-08-14)
 
 - chore(bench): real-gate-hard agentTimeoutSec -> 1200 for completed-mission measurement

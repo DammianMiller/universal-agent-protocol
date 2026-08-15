@@ -229,6 +229,52 @@ describe('scoped prompt + epic spec composition', () => {
   });
 });
 
+describe('cooperative stop reporting', () => {
+  it('a stop before any epic reports STOPPED, not an empty failed-epic list', async () => {
+    const r = await runEpicMission(
+      baseDeps({
+        planEpics: async () => [phase('a'), phase('b', { deps: ['a'] })],
+        shouldStop: () => true,
+      })
+    );
+    expect(r.success).toBe(false);
+    expect(r.stopped).toBe(true);
+    expect(r.finalFeedback).toContain('stopped by request');
+    expect(r.finalFeedback).toContain('0 epic(s) accepted');
+    expect(r.finalFeedback).toContain('resume this run');
+    // The misread this fix removes: "failed epic(s):" with nothing after it.
+    expect(r.finalFeedback).not.toContain('failed epic(s)');
+  });
+
+  it('a stop mid-sequence counts the accepted epics and keeps stopped=true', async () => {
+    let checks = 0;
+    const r = await runEpicMission(
+      baseDeps({
+        planEpics: async () => [phase('a'), phase('b', { deps: ['a'] })],
+        // First pre-epic check passes (epic a runs); the second stops the run.
+        shouldStop: () => ++checks > 1,
+      })
+    );
+    expect(r.success).toBe(false);
+    expect(r.stopped).toBe(true);
+    expect(r.finalFeedback).toContain('1 epic(s) accepted');
+  });
+
+  it('a genuine epic failure still reports the failed-epic list without stopped', async () => {
+    const r = await runEpicMission(
+      baseDeps({
+        planEpics: async () => [phase('a'), phase('b', { deps: ['a'] })],
+        runOrchestrated: async () => ok({ success: false, finalFeedback: 'gates red' }),
+        runEpicLoop: async () => ok({ success: false, finalFeedback: 'gates red' }),
+      })
+    );
+    expect(r.success).toBe(false);
+    expect(r.stopped).toBeUndefined();
+    expect(r.finalFeedback).toContain('failed epic(s)');
+    expect(r.finalFeedback).toContain('a');
+  });
+});
+
 describe('split re-planning', () => {
   it('an exhausted epic consults planSplit with a reactive sub-goal', async () => {
     const splitGoals: string[] = [];

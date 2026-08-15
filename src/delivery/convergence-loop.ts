@@ -175,6 +175,17 @@ export interface DeliveryResult {
   finalOutput: string;
   totalDurationMs: number;
   /**
+   * The run ended because a cooperative stop was observed (operator STOP file,
+   * wall-clock budget, or an epic-controller shouldStop) — interrupted and
+   * resumable, not a gate failure. Consumers must not read a stopped run as
+   * "the work failed": the project-level STOP file is consumed the moment it
+   * is observed, so this flag is the only record of the stop that survives to
+   * the end of the run (re-checking the filesystem at bookkeeping time races
+   * that consumption and loses — observed 2026-08-15, four runs reported
+   * 'failed' after cooperative stops and were needlessly relaunched).
+   */
+  stopped?: boolean;
+  /**
    * The run changed the working tree (applier bookkeeping OR git
    * fingerprint — the latter covers agentic write_file, which bypasses the
    * applier). Lets the epic controller count prior-ATTEMPT work the same as
@@ -1347,6 +1358,7 @@ export class ConvergenceLoop {
         : resume.turn + maxTurns;
     }
 
+    let stoppedByPredicate = false;
     for (let turn = startTurn; turn <= maxTurns; turn++) {
       const turnStart = Date.now();
 
@@ -1354,7 +1366,10 @@ export class ConvergenceLoop {
       // turn. Fail-open — a broken predicate must never wedge the loop.
       if (this.config.shouldStop) {
         try {
-          if (await this.config.shouldStop()) break;
+          if (await this.config.shouldStop()) {
+            stoppedByPredicate = true;
+            break;
+          }
         } catch {
           /* ignore predicate errors */
         }
@@ -1754,6 +1769,7 @@ export class ConvergenceLoop {
       totalDurationMs: Date.now() - start,
       changedTree: this.hasAppliedChanges(),
       stallReason,
+      ...(stoppedByPredicate && !success ? { stopped: true } : {}),
     };
   }
 }

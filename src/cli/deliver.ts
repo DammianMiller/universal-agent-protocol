@@ -244,7 +244,7 @@ export function bestKeepFastScore(
 export { resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
-import { clearStop, isRunBudgetExpired, isStopRequested, makeStopLatch, requestStop, runBudgetMinutes, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
+import { clearStop, finalRunStatus, isRunBudgetExpired, isStopRequested, makeStopLatch, requestStop, runBudgetMinutes, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
@@ -3085,12 +3085,22 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   const budgetMinutes = runBudgetMinutes(projectRoot);
   const runStartedAtMs = Date.now();
   let stoppedForBudget = false;
+  // Captured at OBSERVATION time: isStopRequested consumes the project-level
+  // STOP file when it sees it, so this flag is the only record of the stop
+  // that survives to final bookkeeping (a re-check there returns false and the
+  // run lands 'failed' — the misread that caused the 2026-08-15 stop/relaunch
+  // thrash).
+  let stoppedByRequest = false;
   const stopLatch = makeStopLatch(() => {
     if (isRunBudgetExpired(runStartedAtMs, budgetMinutes)) {
       stoppedForBudget = true;
       return true;
     }
-    return isStopRequested(projectRoot, runId);
+    if (isStopRequested(projectRoot, runId)) {
+      stoppedByRequest = true;
+      return true;
+    }
+    return false;
   });
   loopConfig.shouldStop = stopLatch;
   clearStop(projectRoot, runId);
@@ -3896,16 +3906,31 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     }
   }
 
+  // Surface the observed stop on the result itself: the JSON output (and the
+  // MCP deliver tool reading it) is what the NEXT agent decides from, and a
+  // stopped run that prints as a plain failure gets relaunched instead of
+  // resumed. The epic path may have set this already; the plain loop's stop is
+  // only visible here, via the latch flags.
+  if (!result.success && (stoppedByRequest || stoppedForBudget)) result.stopped = true;
+
   haloTracer.finish(result);
 
   // Durable-run bookkeeping + task/memory trail (all fail-soft): the run's
   // outcome lands in the task DB and short-term memory so future sessions
   // know exactly what was delivered (or what failed and why).
-  runState.status = result.success
-    ? 'delivered'
-    : isStopRequested(projectRoot, runId)
-      ? 'interrupted'
-      : 'failed';
+  // Deliberate side effect: isStopRequested CONSUMES a project-level STOP it
+  // finds, on the success path too — a stop file that outlived its run would
+  // silently stop the NEXT mission (that stale-STOP hazard is real; observed
+  // 2026-08-15). Hoisted so the consumption is visible, not buried in an
+  // argument list to a pure function.
+  const lateStopFilePresent = isStopRequested(projectRoot, runId);
+  runState.status = finalRunStatus(
+    result.success,
+    // The latch flags ride along directly so this mapping cannot silently
+    // regress if the result.stopped annotation above ever moves below it.
+    result.stopped === true || stoppedByRequest || stoppedForBudget,
+    lateStopFilePresent
+  );
   if (result.success) runState.checkpoint = undefined;
   clearStop(projectRoot, runId);
   saveRunState(runState);
@@ -4042,6 +4067,17 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
             `checkpointed and the lock is released. It did not fail; it ran out of time. Resume it with ` +
             `\`uap deliver --resume\`, and raise the budget for this mission with delivery.maxRunMinutes ` +
             `in .uap.json if the mission is genuinely this long.`
+        )
+      );
+    } else if (result.stopped) {
+      // Budget stops are named by the branch above; anything else that set
+      // result.stopped is a cooperative stop of some kind — keep the copy
+      // cause-neutral so it stays true if new stop sources appear.
+      console.log(
+        chalk.yellow(
+          `  Stopped by a cooperative stop request — interrupted, not failed. The work is ` +
+            `checkpointed and the lock is released. Resume it with \`uap deliver --resume ${runId}\`; ` +
+            `relaunching from scratch discards the accepted work.`
         )
       );
     }
