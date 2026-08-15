@@ -122,9 +122,15 @@ export function completeDeliveryTask(
           : `delivered in ${result.turns} turn(s)`
       );
     } else {
+      // A stopped run is interrupted, not failed — the note is what the next
+      // agent reads, and "failed" here is one of the channels that produced
+      // the stop→relaunch misread (2026-08-15).
+      const how = result.stopped
+        ? `deliver STOPPED (interrupted, resumable) after ${result.turns} turn(s)`
+        : `deliver failed after ${result.turns} turn(s)`;
       handle.service.update(handle.id, {
         status: 'open',
-        notes: `deliver failed after ${result.turns} turn(s); best ${Math.round(result.bestScore * 100)}% of gates (turn ${result.bestTurn}). ${result.finalFeedback.slice(0, 500)}`,
+        notes: `${how}; best ${Math.round(result.bestScore * 100)}% of gates (turn ${result.bestTurn}). ${result.finalFeedback.slice(0, 500)}`,
       });
     }
   } catch {
@@ -157,7 +163,9 @@ export async function recordDeliveryOutcome(
       ? result.alreadyDelivered
         ? 'already delivered (baseline green)'
         : `delivered in ${result.turns} turn(s)`
-      : `NOT delivered after ${result.turns} turn(s), best ${Math.round(result.bestScore * 100)}% of gates`;
+      : result.stopped
+        ? `STOPPED (interrupted, resumable — not a gate failure) after ${result.turns} turn(s), best ${Math.round(result.bestScore * 100)}% of gates`
+        : `NOT delivered after ${result.turns} turn(s), best ${Math.round(result.bestScore * 100)}% of gates`;
     const content = `[deliver] ${verdict} — model ${modelId} — task: ${instruction.slice(0, 300)}`;
     await memory.store(type, content, result.success ? 6 : 7);
     await memory.close?.();

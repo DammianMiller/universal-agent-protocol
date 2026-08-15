@@ -424,6 +424,30 @@ export function isRunBudgetExpired(startedAtMs: number, budgetMinutes: number): 
 }
 
 /**
+ * Map a finished delivery to its durable status. PURE.
+ *
+ * `stopObserved` is the stop as WITNESSED during the run (the latch fired, or
+ * the result carries `stopped`). It must be threaded through rather than
+ * re-derived: the project-level STOP file is consumed at observation time, so
+ * an `isStopRequested` re-check at bookkeeping time returns false for exactly
+ * the runs that were stopped that way — they landed 'failed', and followers
+ * relaunched work that was checkpointed and resumable (2026-08-15, four
+ * stop/relaunch cycles in 30 minutes). `stopFilePresent` still matters for the
+ * per-run STOP file (which persists until cleared) and for a project-level
+ * STOP arriving after the final turn began — either way a late stop rightly
+ * lands 'interrupted'.
+ */
+export function finalRunStatus(
+  success: boolean,
+  stopObserved: boolean,
+  stopFilePresent: boolean
+): DeliverRunStatus {
+  if (success) return 'delivered';
+  if (stopObserved || stopFilePresent) return 'interrupted';
+  return 'failed';
+}
+
+/**
  * Wrap a one-shot stop signal so it stays true once it has fired.
  *
  * `isStopRequested` CONSUMES the project-level stop file when it observes it —

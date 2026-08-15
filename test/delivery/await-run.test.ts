@@ -245,6 +245,32 @@ describe('awaitInFlightDeliver', () => {
     expect(r.nextStep).toMatch(/read its output/i);
   });
 
+  it('an INTERRUPTED mission is reported as stopped-not-failed with a resume pointer', async () => {
+    // This nextStep prose is the follower agent's decision input. Routing
+    // interrupted runs to the generic "read its output... or start a new
+    // mission" branch is precisely the relaunch-inducing misread the
+    // stopped-status fix removes — pin the dedicated branch.
+    const root = project();
+    holdLock(root, 4242);
+    writeRun(root, 'run-20260730T090000-aaaaaa', { pid: 4242, status: 'running' });
+    let polls = 0;
+    const r = await awaitInFlightDeliver(root, {
+      timeoutMs: 60_000,
+      sleep: noSleep,
+      isAlive: () => {
+        if (++polls <= 1) return true;
+        writeRun(root, 'run-20260730T090000-aaaaaa', { pid: 4242, status: 'interrupted' });
+        return false;
+      },
+    });
+    expect(r.followed).toBe(true);
+    expect(r.delivered).toBe(false);
+    expect(r.status).toBe('interrupted');
+    expect(r.nextStep).toContain("resume:'run-20260730T090000-aaaaaa'");
+    expect(r.nextStep).toMatch(/not failed/i);
+    expect(r.nextStep).toMatch(/do not relaunch/i);
+  });
+
   it('returns a SUMMARY of the run, not the whole state', async () => {
     // DeliverRunState carries the instruction, phase plan, summaries, checkpoint
     // and task outcomes — ~100KB. Spreading that into a tool result puts a

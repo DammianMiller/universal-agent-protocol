@@ -510,8 +510,18 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
   });
 
   all.success = epicResult.success;
+  if (epicResult.stopped) all.stopped = true;
   if (!epicResult.success) {
-    all.finalFeedback = `epic controller incomplete — failed epic(s): ${epicResult.failed.join(', ')}\n${all.finalFeedback}`;
+    // A stopped run must not read as a failed one: "failed epic(s): <empty>"
+    // told followers the work was lost, and they relaunched from scratch
+    // (2026-08-15 — four stop/relaunch cycles, zero epics kept). Name the stop,
+    // count what was accepted, and point at resume.
+    all.finalFeedback = epicResult.stopped
+      ? `epic controller stopped by request (cooperative STOP) — ` +
+        `${epicResult.completed.length} epic(s) accepted` +
+        (epicResult.failed.length ? `, failed: ${epicResult.failed.join(', ')}` : '') +
+        `; remaining epics not attempted. The work is checkpointed — resume this run, do not relaunch.\n${all.finalFeedback}`
+      : `epic controller incomplete — failed epic(s): ${epicResult.failed.join(', ')}\n${all.finalFeedback}`;
   }
   return all;
 }

@@ -582,7 +582,12 @@ function terminalOutcome(
         remedy
       : run.status === 'delivered'
         ? 'The mission completed. Inspect the result; no further deliver call is needed.'
-        : `The mission ended '${run.status}'. Read its output before deciding: continue it with resume:'${run.runId}', or start a new mission if the goal changed.`,
+        : run.status === 'interrupted'
+          ? `The mission was STOPPED before completing — interrupted, not failed. ` +
+            `Its accepted work is checkpointed: continue it with resume:'${run.runId}'. Do NOT relaunch ` +
+            `from scratch and do NOT treat this as a gate failure.` +
+            remedy
+          : `The mission ended '${run.status}'. Read its output before deciding: continue it with resume:'${run.runId}', or start a new mission if the goal changed.`,
   };
 }
 
