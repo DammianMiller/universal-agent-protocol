@@ -9,7 +9,7 @@
  * (tmp + rename) and fail-soft — persistence must never break a run.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
 import type { LoopCheckpoint } from './convergence-loop.js';
@@ -484,4 +484,32 @@ export function requestStop(projectRoot: string, runId: string): boolean {
 /** Clear a stale stop-file so a fresh/resumed run is not instantly interrupted. */
 export function clearStop(projectRoot: string, runId: string): void {
   try { const p = stopFilePath(projectRoot, runId); if (existsSync(p)) unlinkSync(p); } catch { /* ignore */ }
+}
+
+/**
+ * Consume a lingering PROJECT-level STOP at run start. Returns true when one
+ * was present.
+ *
+ * "Stop" addressed no runId, so it meant "stop whatever is running" — and at
+ * launch time, nothing is. A STOP left behind by (or aimed at) a PREVIOUS run
+ * must not kill the next one on its first shouldStop check: that exact leak
+ * instant-stopped a resume on 2026-08-15 (stop latched at turn 0, mission
+ * reported dead, follower relaunched from scratch). An operator who wants THIS
+ * run stopped can still touch STOP any time after launch.
+ */
+export function clearProjectStop(projectRoot: string, staleBeforeMs?: number): boolean {
+  try {
+    const p = projectStopFilePath(projectRoot);
+    if (!existsSync(p)) return false;
+    // Staleness is judged by mtime, not mere existence: a STOP written AFTER
+    // the launcher started is a live operator signal racing this launch and
+    // must survive to the first shouldStop check. Only a file predating the
+    // launcher can be aimed at a previous run.
+    if (staleBeforeMs !== undefined) {
+      const mtime = statSync(p).mtimeMs;
+      if (mtime >= staleBeforeMs) return false;
+    }
+    unlinkSync(p);
+    return true;
+  } catch { return false; }
 }

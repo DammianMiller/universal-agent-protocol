@@ -36,9 +36,11 @@ function writeProc(pid: number, comm: string, ppid: number) {
 
 beforeEach(() => {
   procRoot = mkdtempSync(join(tmpdir(), 'orphan-proc-'));
-  for (const k of [OWNER_PID_ENV, 'UAP_ALLOW_ORPHAN']) saved[k] = process.env[k];
+  for (const k of [OWNER_PID_ENV, 'UAP_ALLOW_ORPHAN', 'UAP_STOP_ON_ORPHAN', 'UAP_ORPHAN_MAX_MINUTES']) saved[k] = process.env[k];
   delete process.env[OWNER_PID_ENV];
   delete process.env.UAP_ALLOW_ORPHAN;
+  delete process.env.UAP_STOP_ON_ORPHAN;
+  delete process.env.UAP_ORPHAN_MAX_MINUTES;
 });
 
 afterEach(() => {
@@ -103,8 +105,42 @@ describe('pidAlive', () => {
 });
 
 describe('guardAgainstOwnerExit', () => {
-  it('fires once the owning session is gone', async () => {
+  it('CONTINUES by default when the owning session is gone — the artifact outlives the launcher', async () => {
+    // Stop-on-orphan threw away three healthy mid-mission runs in one day
+    // (2026-08-15); completion is the default now. onOwnerGone is the stop
+    // path's test seam, so it must NOT fire here.
     process.env[OWNER_PID_ENV] = '4242';
+    let fired = false;
+    const stop = guardAgainstOwnerExit({
+      intervalMs: 10,
+      isAlive: () => false,
+      onOwnerGone: () => { fired = true; },
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    stop();
+    expect(fired).toBe(false);
+  });
+
+  it('a continued orphan still stops once it exceeds UAP_ORPHAN_MAX_MINUTES', async () => {
+    // The continue default must not mean "runs forever when the budget is
+    // off": the lifetime cap is the independent backstop.
+    process.env[OWNER_PID_ENV] = '4242';
+    process.env.UAP_ORPHAN_MAX_MINUTES = '0.001'; // 60ms cap
+    let goneFor: number | undefined;
+    const stop = guardAgainstOwnerExit({
+      intervalMs: 10,
+      isAlive: () => false,
+      onOwnerGone: (pid) => { goneFor = pid; },
+    });
+    await new Promise((r) => setTimeout(r, 250));
+    stop();
+    delete process.env.UAP_ORPHAN_MAX_MINUTES;
+    expect(goneFor).toBe(4242);
+  });
+
+  it('fires once the owning session is gone when UAP_STOP_ON_ORPHAN=1', async () => {
+    process.env[OWNER_PID_ENV] = '4242';
+    process.env.UAP_STOP_ON_ORPHAN = '1';
     let goneFor: number | undefined;
     const stop = guardAgainstOwnerExit({
       intervalMs: 10,
@@ -173,6 +209,7 @@ describe('the guard records its reason where the follower reads', () => {
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
       installRunExitRecorder(process.cwd(), ${JSON.stringify(runId)});
       process.env.UAP_DELIVER_OWNER_PID = '987654321';  // never alive
+      process.env.UAP_STOP_ON_ORPHAN = '1';             // this test pins the STOP path
       guardAgainstOwnerExit({ intervalMs: 10 });
       setTimeout(() => {}, 5000);
     `;
@@ -186,6 +223,23 @@ describe('the guard records its reason where the follower reads', () => {
     expect(raw.exit.reason).toContain('987654321');
     // Still resumable: the guard stops the process, it does not fail the mission.
     expect(raw.status).toBe('running');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('END TO END: by default an orphaned run survives its owner and exits normally', () => {
+    const guard = new URL('../../dist/delivery/orphan-guard.js', import.meta.url).pathname;
+    const dir = mkdtempSync(join(tmpdir(), 'uap-orphan-e2e-'));
+    const script = `
+      const { guardAgainstOwnerExit } = require(${JSON.stringify(guard)});
+      process.env.UAP_DELIVER_OWNER_PID = '987654321';  // never alive
+      guardAgainstOwnerExit({ intervalMs: 10 });
+      // Outlive several guard intervals, then finish the "mission" normally.
+      setTimeout(() => { console.log('MISSION-DONE'); }, 300);
+    `;
+    const r = spawnSync('node', ['-e', script], { cwd: dir, encoding: 'utf-8', timeout: 20_000 });
+    expect(r.status).toBe(0); // not exit 130 — the guard did not stop the run
+    expect(r.stdout).toContain('MISSION-DONE');
+    expect(r.stderr).toContain('continuing detached');
     rmSync(dir, { recursive: true, force: true });
   });
 });

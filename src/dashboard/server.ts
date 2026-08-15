@@ -63,6 +63,8 @@ async function suggestPolicyOrder(useAi: boolean): Promise<{
       const endpoint = process.env.UAP_INFERENCE_ENDPOINT || 'http://127.0.0.1:8080/v1';
       const model = process.env.UAP_DELIVER_MODEL || 'local';
       const { fetchModelWithRetry } = await import('../models/long-fetch.js');
+      // No retryStatuses here on purpose: an interactive dashboard request
+      // should fail fast on 529/503, not block minutes riding out a reload.
       const res = await fetchModelWithRetry(`${endpoint.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

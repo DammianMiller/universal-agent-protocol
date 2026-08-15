@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { fetchModelWithRetry, modelHttpTimeoutMs } from './long-fetch.js';
+import { fetchModelWithRetry, modelHttpTimeoutMs, TRANSIENT_HTTP_STATUSES } from './long-fetch.js';
 import type { ModelConfig } from './types.js';
 import type { ModelClient } from './executor.js';
 
@@ -383,6 +383,15 @@ export class OpenAICompatClient implements ModelClient {
             : {}),
         }),
         signal: controller.signal,
+      }, {
+        // Judge/planner/critic calls ride out proxy restarts and model-reload
+        // windows (529/502/503/504) instead of failing the verdict — a lost
+        // judge verdict fails the surrounding turn just like a lost turn.
+        // Env knobs let operators (and tests) shrink or disable the window;
+        // the caller's AbortController timeout still cuts every sleep short.
+        retryStatuses: TRANSIENT_HTTP_STATUSES,
+        statusRetries: Number(process.env.UAP_MODEL_STATUS_RETRIES ?? 5),
+        statusBackoffMs: Number(process.env.UAP_MODEL_STATUS_BACKOFF_MS ?? 5000),
       });
 
       if (!response.ok) {

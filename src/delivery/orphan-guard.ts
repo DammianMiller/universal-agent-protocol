@@ -100,9 +100,16 @@ export interface OwnerGuardOptions {
 }
 
 /**
- * Exit when the owning session exits. No-op when there is no owner, or when the
- * operator opted out with UAP_ALLOW_ORPHAN=1 (a deliberately detached run — say,
- * a long mission started over SSH).
+ * Watch the owning session and CONTINUE when it exits. No-op when there is no
+ * owner. The mission's value is the delivered artifact on disk, not the log
+ * stream the launcher was watching — stopping on owner-exit threw away three
+ * healthy mid-mission runs in one day (2026-08-15) and each loss triggered a
+ * from-scratch relaunch. The run already has two bounded ends of its own (the
+ * wall-clock budget and the wedge watchdog), so an orphan cannot run forever.
+ *
+ * The old stop-on-orphan behavior remains available via UAP_STOP_ON_ORPHAN=1
+ * for environments where an unwatched run must never hold a model slot.
+ * UAP_ALLOW_ORPHAN=1 (the old opt-out) still disables the watcher entirely.
  *
  * Returns a stop function. The timer is unref'd: a watchdog that by itself kept
  * the process alive would be its own bug.
@@ -111,19 +118,53 @@ export function guardAgainstOwnerExit(opts: OwnerGuardOptions = {}): () => void 
   const optOut = (process.env.UAP_ALLOW_ORPHAN ?? '').toLowerCase();
   if (['1', 'true', 'on', 'yes'].includes(optOut)) return () => {};
 
+  const stopOnOrphan = ['1', 'true', 'on', 'yes'].includes(
+    (process.env.UAP_STOP_ON_ORPHAN ?? '').toLowerCase()
+  );
+
   const ownerPid = Number(process.env[OWNER_PID_ENV]);
   if (!Number.isFinite(ownerPid) || ownerPid <= 1) return () => {};
 
   const isAlive = opts.isAlive ?? pidAlive;
+  // Fallback lifetime for a CONTINUED orphan. The run budget and wedge
+  // watchdog usually bound it, but the budget can be configured OFF and the
+  // wedge only bounds silence — an actively-looping orphan with no budget
+  // would otherwise run forever. 0 disables the cap (explicitly unbounded).
+  const orphanCapMs =
+    Math.max(0, Number(process.env.UAP_ORPHAN_MAX_MINUTES ?? 120)) * 60_000;
+  let orphanedAtMs: number | null = null;
+  let announced = false;
   const timer = setInterval(() => {
-    if (isAlive(ownerPid)) return;
+    if (isAlive(ownerPid)) {
+      orphanedAtMs = null;
+      return;
+    }
+    if (!stopOnOrphan) {
+      if (orphanedAtMs === null) orphanedAtMs = Date.now();
+      if (!announced) {
+        announced = true;
+        // Continue detached. Announce it so the log explains why the process
+        // outlived its launcher; budget/wedge rails plus this cap bound it.
+        console.error(
+          `\nuap: the session that started this run (pid ${ownerPid}) has exited — ` +
+            `continuing detached to completion (work lands on disk; follow with ` +
+            `\`uap deliver --await-run\`). Set UAP_STOP_ON_ORPHAN=1 to restore stop-on-orphan.`
+        );
+      }
+      if (orphanCapMs === 0 || Date.now() - orphanedAtMs < orphanCapMs) return;
+      // Cap exceeded: fall through to the stop path below so an unwatched,
+      // unbudgeted run cannot hold a model slot indefinitely.
+    }
     clearInterval(timer);
     // Say why into the RUN's record, not just onto the console. The console
     // line lands in a deliver log the follower has no reason to open; the exit
     // record is what `--await-run` reads back, so this is the only channel that
     // reaches the agent that is actually waiting on this mission.
     noteExitReason(
-      `stopped by the orphan guard: the session that started this run (pid ${ownerPid}) exited`
+      stopOnOrphan
+        ? `stopped by the orphan guard: the session that started this run (pid ${ownerPid}) exited`
+        : `stopped by the orphan guard: continued ${Math.round(orphanCapMs / 60_000)} minutes past ` +
+          `its owner's exit (pid ${ownerPid}) and hit the orphan lifetime cap (UAP_ORPHAN_MAX_MINUTES)`
     );
     if (opts.onOwnerGone) {
       opts.onOwnerGone(ownerPid);

@@ -25,7 +25,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSy
 import { join, dirname, resolve, relative, isAbsolute } from 'path';
 import type { ModelConfig } from '../models/types.js';
 import type { LoopExecutor } from './convergence-loop.js';
-import { fetchModelWithRetry, isEndpointUnreachable, ENDPOINT_UNREACHABLE } from '../models/long-fetch.js';
+import { fetchModelWithRetry, isEndpointUnreachable, ENDPOINT_UNREACHABLE, TRANSIENT_HTTP_STATUSES } from '../models/long-fetch.js';
 import { resolveRequestCredential } from '../models/openai-compat-client.js';
 import type { ApplyResult } from './applier.js';
 import { protectedWritePathReason, parseFileBlocks, listGateConfigFiles, isGateConfigBasename, isTestFilePath } from './applier.js';
@@ -2088,6 +2088,16 @@ async function _chat(
       messages,
       ...(temperature !== undefined ? { temperature } : {}),
     }),
+  }, {
+    // Ride out proxy restarts / model reloads instead of failing the whole
+    // multi-minute turn on one 529/503 (each Studio reload killed an in-flight
+    // turn before this — 2026-08-15). Deliberate tradeoff: the slot lease is
+    // held through the retry window, and 529-exhaustion AIMD feedback is
+    // delayed until the status budget spends — riding out a reload beats
+    // failing the turn.
+    retryStatuses: TRANSIENT_HTTP_STATUSES,
+    onRetry: (n, err) =>
+      console.error(`  agentic model call: transient upstream (${(err as Error).message}) — retry ${n}`),
   });
   if (!res.ok) throw new Error(`agentic chat failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
   const data = (await res.json()) as { choices?: Array<{ message: ChatMessage }> };
