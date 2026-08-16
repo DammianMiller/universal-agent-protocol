@@ -101,7 +101,7 @@ grammar constraints, and passthrough control. These are set in the operator's
 | `ANTHROPIC_API_BASE` | Passthrough target | `https://api.anthropic.com` |
 | `ANTHROPIC_PASSTHROUGH_MODELS` | Cloud allowlist; `__local_only__` disables cloud | default Claude patterns |
 | `PROXY_HOST` / `PROXY_PORT` | Bind (defaults expose the LAN) | `0.0.0.0` / `4000` |
-| `PROXY_CONTEXT_WINDOW` | Prune window (0 = auto-detect from `/slots`) | 0 |
+| `PROXY_CONTEXT_WINDOW` | Prune window and the window advertised on `/v1/models` — both resolve from the same source. `0` = auto-detect from `/slots` (**recommended**). A non-zero value is a **startup fallback, not a cap**: the server is probed first and the detected rail wins (re-checked every 60s), so the setting only applies when the probe fails. To run shallower than the rail for quality, lower `PROXY_CONTEXT_PRUNE_THRESHOLD` / `PROXY_COMPACT_TARGET_FRACTION` instead — those are fractions of the rail and survive a rail change. A window that was never measured (upstream down at boot) is used by the pruner but **not** advertised | 0 |
 | `PROXY_CONCURRENCY_LIMIT` | Concurrent requests to the single llama slot | 1 |
 | `PROXY_SESSION_ADMISSION` | Cap distinct hot sessions | off |
 | `PROXY_SLOT_SAVE_RESTORE` | Cross-session KV save/restore | off |
