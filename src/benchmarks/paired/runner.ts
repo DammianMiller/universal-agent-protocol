@@ -9,6 +9,8 @@
  * key to the paired statistics in ./stats.ts.
  */
 
+import { rmSync } from 'fs';
+import { dirname } from 'path';
 import { concurrentMap } from '../../utils/concurrency-pool.js';
 import { materializeWorkdir, runSetup, runVerify } from './suite.js';
 import { MetricVector, RunRecord, RunnerConfig, TaskSpec, Condition } from './types.js';
@@ -96,51 +98,62 @@ async function executeCell(cell: Cell, cfg: RunnerConfig, suiteDir: string): Pro
     return record(cell, cfg, { ...baseMetrics(), error: `materialize failed: ${errMsg(e)}` });
   }
 
-  // Optional setup; a failed setup means the cell can't be scored fairly.
   try {
-    const setup = runSetup(task, workdir);
-    if (setup && !setup.passed) {
-      return record(cell, cfg, {
-        ...baseMetrics(),
-        error: `setup failed (exit ${setup.exitCode})`,
-      });
+    // Optional setup; a failed setup means the cell can't be scored fairly.
+    try {
+      const setup = runSetup(task, workdir);
+      if (setup && !setup.passed) {
+        return record(cell, cfg, {
+          ...baseMetrics(),
+          error: `setup failed (exit ${setup.exitCode})`,
+        });
+      }
+    } catch (e) {
+      return record(cell, cfg, { ...baseMetrics(), error: `setup error: ${errMsg(e)}` });
     }
-  } catch (e) {
-    return record(cell, cfg, { ...baseMetrics(), error: `setup error: ${errMsg(e)}` });
-  }
 
-  // Drive the agent (adapters capture their own failures in `error`).
-  let agent;
-  try {
-    agent = await cfg.adapter.run({ task, condition, workdir, seed, model: cfg.model });
-  } catch (e) {
-    return record(cell, cfg, { ...baseMetrics(), error: `adapter threw: ${errMsg(e)}` });
-  }
-
-  // Score with the deterministic ground-truth verify command.
-  let correct = false;
-  let verifyErr: string | null = agent.error;
-  try {
-    const v = runVerify(task, workdir);
-    correct = v.passed;
-    if (!correct && !verifyErr) {
-      verifyErr = v.timedOut ? 'verify timed out' : `verify failed (exit ${v.exitCode})`;
+    // Drive the agent (adapters capture their own failures in `error`).
+    let agent;
+    try {
+      agent = await cfg.adapter.run({ task, condition, workdir, seed, model: cfg.model });
+    } catch (e) {
+      return record(cell, cfg, { ...baseMetrics(), error: `adapter threw: ${errMsg(e)}` });
     }
-  } catch (e) {
-    verifyErr = `verify error: ${errMsg(e)}`;
-  }
 
-  const metrics: MetricVector = {
-    correct,
-    tokens: agent.tokens,
-    costUsd: agent.costUsd,
-    turns: agent.turns,
-    toolCalls: agent.toolCalls,
-    latencyMs: Date.now() - t0,
-    wellFormed: agent.wellFormed,
-    error: verifyErr,
-  };
-  return record(cell, cfg, metrics);
+    // Score with the deterministic ground-truth verify command.
+    let correct = false;
+    let verifyErr: string | null = agent.error;
+    try {
+      const v = runVerify(task, workdir);
+      correct = v.passed;
+      if (!correct && !verifyErr) {
+        verifyErr = v.timedOut ? 'verify timed out' : `verify failed (exit ${v.exitCode})`;
+      }
+    } catch (e) {
+      verifyErr = `verify error: ${errMsg(e)}`;
+    }
+
+    const metrics: MetricVector = {
+      correct,
+      tokens: agent.tokens,
+      costUsd: agent.costUsd,
+      turns: agent.turns,
+      toolCalls: agent.toolCalls,
+      latencyMs: Date.now() - t0,
+      wellFormed: agent.wellFormed,
+      error: verifyErr,
+    };
+    return record(cell, cfg, metrics);
+  } finally {
+    // The cell is settled — its scratch copy has no further purpose (every
+    // return above passes through here). Workdirs live in RAM-backed /tmp on
+    // typical dev boxes; a 50-cell run leaked ~50 repo copies and 26k entries
+    // accumulated before this (2026-08-16). UAP_BENCH_KEEP_WORKDIRS=1
+    // preserves them for post-mortem debugging.
+    if (process.env.UAP_BENCH_KEEP_WORKDIRS !== '1') {
+      try { rmSync(dirname(workdir), { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+  }
 }
 
 function record(cell: Cell, cfg: RunnerConfig, metrics: MetricVector): RunRecord {

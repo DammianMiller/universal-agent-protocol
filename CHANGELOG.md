@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.210.2 (2026-08-16)
+
+- fix(bench): stop leaking cell workdirs into RAM-backed /tmp
+
+
 ## v1.210.1 (2026-08-16)
 
 - fix(deliver): heartbeat during PLANNING-phase model calls too

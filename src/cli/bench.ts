@@ -7,7 +7,7 @@
  */
 
 import chalk from 'chalk';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { getMaxModelConcurrency } from '../utils/model-slots.js';
@@ -182,6 +182,13 @@ export async function benchPairedCommand(options: BenchPairedOptions = {}): Prom
   let md = renderMarkdown(report);
   if (ablation) md += '\n' + renderAblationMarkdown(ablation);
   writeFileSync(join(outDir, 'report.md'), md, 'utf-8');
+
+  // Cells clean their own scratch dirs; remove the (now-empty) run root too so
+  // RAM-backed /tmp does not accumulate one dir per run. Kept alongside the
+  // cells when UAP_BENCH_KEEP_WORKDIRS=1.
+  if (process.env.UAP_BENCH_KEEP_WORKDIRS !== '1') {
+    try { rmSync(workRoot, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
 
   // Set BEFORE the --json return: the programmatic caller is the one most
   // likely to be automated, and it was the only one getting exit 0 on a run
