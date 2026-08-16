@@ -20,6 +20,7 @@
 import { spawnSync } from 'child_process';
 import { createRequire } from 'node:module';
 import { normalizeToolPath } from './path-normalize.js';
+import { generationHeartbeatMs, startGenerationTicker } from './heartbeat.js';
 import { withModelSlot, recordModelSuccess, recordModelExhaustion, isExhaustionError } from '../utils/model-slot-lease.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'fs';
 import { join, dirname, resolve, relative, isAbsolute } from 'path';
@@ -2277,6 +2278,20 @@ export function createAgenticExecutor(
       }
       roundsWithoutWrite++;
       let msg: ChatMessage;
+      // #2c: heartbeat DURING generation, not only per tool call. A single
+      // long completion (40k-token prompt on a local model) runs 5–15 minutes
+      // with zero tool calls, so the heartbeat went stale and every external
+      // reader concluded the run was dead — three separate clients tried to
+      // kill/clear a healthy run over exactly this (2026-08-15/16). Conscious
+      // trade: a genuinely HUNG endpoint now keeps the heartbeat fresh for the
+      // whole fetch window (30-min HTTP timeout x up to 3 transport attempts ≈
+      // 90 min worst case), so wedge-based reclaim moves out by that much — the
+      // 120-min wall-clock run budget is the effective backstop for that case.
+      // A retrying run IS alive; reclaiming it mid-retry was the worse bug.
+      const stopGenerationTicker = startGenerationTicker(
+        () => opts.onToolProgress?.(),
+        opts.onToolProgress ? generationHeartbeatMs() : 0
+      );
       try {
         msg = await chat(opts.endpoint, model, messages, opts.temperature, allowBash, forceWrite);
       } catch (err) {
@@ -2304,6 +2319,8 @@ export function createAgenticExecutor(
           );
         }
         return `agentic executor error: ${String(err).slice(0, 200)}`;
+      } finally {
+        stopGenerationTicker();
       }
 
       const calls = msg.tool_calls ?? [];

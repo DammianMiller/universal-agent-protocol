@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.210.0 (2026-08-16)
+
+- feat(deliver): heartbeat during model generation — long turns are observably alive
+
+
 ## v1.209.0 (2026-08-15)
 
 - feat(deliver): runs complete by default — orphan continuation, stale-STOP sweep, progress stamping, transient-upstream retry
