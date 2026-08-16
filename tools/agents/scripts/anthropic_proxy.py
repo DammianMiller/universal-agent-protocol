@@ -54,8 +54,10 @@ Configuration (Environment Variables)
     PROXY_MAX_CONNECTIONS   Max concurrent connections to upstream
                             Default: 20
 
-    PROXY_CONTEXT_WINDOW   Override context window size (auto-detected from
-                           upstream /slots endpoint if not set)
+    PROXY_CONTEXT_WINDOW   Startup FALLBACK for the context window, used only
+                           when the upstream /slots probe fails. The detected
+                           rail wins (re-checked every 60s) and is what
+                           /v1/models advertises. Not a cap.
                            Default: 0 (auto-detect)
 
     PROXY_CONTEXT_PRUNE_THRESHOLD   Fraction of context window at which
@@ -2407,6 +2409,11 @@ class SessionMonitor:
 
 session_monitors: dict[str, SessionMonitor] = {}
 default_context_window = 0
+# True only when `default_context_window` came from the SERVER (a /slots read)
+# or from an explicit operator setting — never when it is the hardcoded
+# fallback. /v1/models publishes the window to clients as fact, and a guess
+# published as fact is the failure `_model_entry` exists to prevent.
+_context_window_measured: bool = False
 last_session_id = ""
 _last_ctx_recheck_ts: float = 0.0
 _CTX_RECHECK_INTERVAL: float = 60.0  # Re-detect context window every 60s
@@ -2476,13 +2483,41 @@ def _cleanup_stale_monitors(now_ts: float) -> None:
         session_monitors.pop(sid, None)
 
 
+def _effective_context_window() -> int:
+    """The window this proxy actually ENFORCES, in tokens (0 = unknown).
+
+    The detected value wins over the env pin because the pin goes stale: the
+    upstream server can restart with a different --ctx-size, and
+    `_maybe_recheck_context_window` tracks that. `PROXY_CONTEXT_WINDOW` is the
+    fallback for when detection has not run or could not reach the server.
+
+    This is the idiom already used at the count_tokens compaction-forcing call
+    sites; it exists as a function so the process-wide consumers — the forcing
+    scale and the /v1/models advertisement — resolve the window from ONE
+    source. They did not: /v1/models stamped the raw env value while everything
+    else used the detected rail. Live on 2026-08-16 that meant the endpoint
+    advertised 65,536 while the proxy enforced 199,680, and the two errors
+    compounded. A client sizing itself to 65,536 while receiving counts
+    inflated 1.73x for compaction forcing compacts at ~35k REAL tokens — 18%
+    of the rail it was given.
+
+    NOT every window in the process: a request carrying a model profile
+    overrides `monitor.context_window` (see `messages`), and the pruner reads
+    that per-session value. This function is the process default, not a claim
+    about every session.
+    """
+    if default_context_window > 0:
+        return default_context_window
+    return max(PROXY_CONTEXT_WINDOW, 0)
+
+
 async def _maybe_recheck_context_window() -> None:
     """Periodically re-query the upstream server's context window.
 
     Handles server restarts with different --ctx-size mid-session.
     Non-blocking: skips if the check interval hasn't elapsed.
     """
-    global default_context_window, _last_ctx_recheck_ts
+    global default_context_window, _last_ctx_recheck_ts, _context_window_measured
     now = time.time()
     if now - _last_ctx_recheck_ts < _CTX_RECHECK_INTERVAL:
         return
@@ -2496,6 +2531,8 @@ async def _maybe_recheck_context_window() -> None:
             slots = resp.json()
             if slots and isinstance(slots, list):
                 n_ctx = slots[0].get("n_ctx", 0)
+                if n_ctx > 0:
+                    _context_window_measured = True
                 if n_ctx > 0 and n_ctx != default_context_window:
                     old = default_context_window
                     default_context_window = n_ctx
@@ -2533,10 +2570,17 @@ async def detect_context_window(client: httpx.AsyncClient) -> int:
 
     Queries the /slots endpoint (llama.cpp) to get the actual n_ctx value.
     Falls back to PROXY_CONTEXT_WINDOW env var, then to a safe default.
+
+    The probe runs FIRST, which is what this docstring always claimed but the
+    code did not do: it returned the env value without asking the server, so a
+    stale setting governed until the first /v1/messages request triggered the
+    60s recheck — and SDK clients read /v1/models before ever sending a message.
+    The env value is a hand-maintained copy of this same number (the operator
+    file that carries it says "re-derive it whenever --parallel or --ctx-size
+    moves"), so asking the server is strictly better information; the setting
+    stays as the answer for when the server cannot be reached.
     """
-    if PROXY_CONTEXT_WINDOW > 0:
-        logger.info("Using configured context window: %d tokens", PROXY_CONTEXT_WINDOW)
-        return PROXY_CONTEXT_WINDOW
+    global _context_window_measured
 
     try:
         slots_url = LLAMA_CPP_BASE.replace("/v1", "/slots")
@@ -2551,13 +2595,21 @@ async def detect_context_window(client: httpx.AsyncClient) -> int:
                         n_ctx,
                         len(slots),
                     )
+                    _context_window_measured = True
                     return n_ctx
     except Exception as exc:
         logger.warning("Failed to auto-detect context window: %s", exc)
 
-    # Safe default: 128K (common for modern models)
+    if PROXY_CONTEXT_WINDOW > 0:
+        logger.info("Using configured context window: %d tokens", PROXY_CONTEXT_WINDOW)
+        _context_window_measured = True  # an operator setting is an assertion
+        return PROXY_CONTEXT_WINDOW
+
+    # Safe default: 128K (common for modern models). NOT measured — the pruner
+    # may use it as a backstop, but it must never be published as fact.
     default = 131072
     logger.warning("Using default context window: %d tokens", default)
+    _context_window_measured = False
     return default
 
 
@@ -11485,7 +11537,7 @@ async def count_tokens(request: Request):
                 "fires at ~%d real tokens, before the pruner",
                 scale,
                 PROXY_CLIENT_ASSUMED_WINDOW,
-                default_context_window if default_context_window > 0 else PROXY_CONTEXT_WINDOW,
+                _effective_context_window(),
                 int(PROXY_CLIENT_ASSUMED_WINDOW * 0.925 / scale),
             )
         return {"input_tokens": scaled}
@@ -11510,7 +11562,7 @@ def _count_tokens_scale() -> float:
             return max(1.0, float(raw))
         except ValueError:
             return 1.0
-    window = default_context_window if default_context_window > 0 else PROXY_CONTEXT_WINDOW
+    window = _effective_context_window()
     if window <= 0:
         return 1.0
     frac = (
@@ -12845,9 +12897,10 @@ def _model_entry(model_id: str) -> dict:
     nothing and leave the client on its own defaults.
     """
     entry = {"id": model_id, "object": "model"}
-    if PROXY_CONTEXT_WINDOW > 0 and not _should_passthrough_model(model_id):
+    window = _effective_context_window() if _context_window_measured else 0
+    if window > 0 and not _should_passthrough_model(model_id):
         for key in _CONTEXT_WINDOW_KEYS:
-            entry[key] = PROXY_CONTEXT_WINDOW
+            entry[key] = window
     return entry
 
 
@@ -12867,6 +12920,12 @@ async def models():
     ANTHROPIC_PASSTHROUGH_MODELS=__local_only__ is set, all IDs (including
     the Claude ones below) are served by the local llama.cpp backend.
     """
+    # Refresh the rail before answering. This endpoint is the FIRST thing SDK
+    # clients call (it is in _PROXY_AUTH_OPEN_PATHS precisely so discovery
+    # works), and clients cache the model list — so answering from a window
+    # that only refreshes on /v1/messages means the number a client keeps for
+    # the whole session is the one from before any traffic existed.
+    await _maybe_recheck_context_window()
     return {"data": [_model_entry(mid) for mid in ADVERTISED_MODEL_IDS]}
 
 

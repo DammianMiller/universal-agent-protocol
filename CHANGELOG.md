@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.210.4 (2026-08-17)
+
+- fix(proxy): advertise the context window the proxy actually enforces
+
+
 ## v1.210.3 (2026-08-16)
 
 - fix(proxy): resolve the llama upstream instead of trusting a stale pin
