@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.210.3 (2026-08-16)
+
+- fix(proxy): resolve the llama upstream instead of trusting a stale pin
+
+
 ## v1.210.2 (2026-08-16)
 
 - fix(bench): stop leaking cell workdirs into RAM-backed /tmp
