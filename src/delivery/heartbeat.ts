@@ -45,6 +45,38 @@ export function wedgeTimeoutS(): number {
 }
 
 /**
+ * Interval for heartbeating DURING a model generation (ms). The per-tool-call
+ * stamp goes silent for the whole length of one completion — 5–15 minutes on a
+ * local model with a large prompt — and every external reader (followers,
+ * impatient client agents, wedge heuristics) concluded "dead" from exactly
+ * that silence: three separate clients tried to kill or clear a healthy
+ * mid-generation run on 2026-08-15/16. Override with
+ * UAP_GENERATION_HEARTBEAT_MS; values <= 0 disable the ticker.
+ */
+export const DEFAULT_GENERATION_HEARTBEAT_MS = 30_000;
+
+export function generationHeartbeatMs(): number {
+  const raw = process.env.UAP_GENERATION_HEARTBEAT_MS;
+  const n = raw !== undefined ? Number(raw) : NaN;
+  return Number.isFinite(n) ? n : DEFAULT_GENERATION_HEARTBEAT_MS;
+}
+
+/**
+ * Start a ticker that calls `beat` every `intervalMs` until stopped — the
+ * "still decoding" signal for the duration of one model call. Returns the stop
+ * function; a non-positive interval returns a no-op. unref'd so the ticker can
+ * never keep the process alive by itself.
+ */
+export function startGenerationTicker(beat: () => void, intervalMs: number): () => void {
+  if (!(intervalMs > 0)) return () => {};
+  // A throwing beat must not become a recurring uncaughtException — the
+  // ticker is best-effort observability, never a failure source.
+  const t = setInterval(() => { try { beat(); } catch { /* best-effort */ } }, intervalMs);
+  (t as { unref?: () => void }).unref?.();
+  return () => clearInterval(t);
+}
+
+/**
  * Stamp the current epoch-seconds into `.uap/deliver.heartbeat`, ATOMICALLY
  * (write a temp file then rename over the target). A plain truncate-in-place
  * write leaves the file momentarily empty, and a concurrent reader would parse
