@@ -93,7 +93,11 @@ grammar constraints, and passthrough control. These are set in the operator's
 
 | Var | Effect | Default |
 |---|---|---|
-| `LLAMA_CPP_BASE` | Local backend URL (note: LAN, not loopback) | `http://192.168.1.165:8080/v1` |
+| `LLAMA_CPP_BASE` | Local backend URL (note: LAN, not loopback). A **pin**: kept while it answers `/health`, otherwise the launcher discovers the live llama-server (see below) | `http://192.168.1.165:8080/v1` |
+| `UAP_LLAMA_UPSTREAM_AUTODISCOVER` | `off` pins `LLAMA_CPP_BASE` hard — no discovery even when it is dead | `on` |
+| `UAP_LLAMA_UPSTREAM_WATCH` | Background guard that restarts the proxy when the upstream moves to a new port. `auto` = only under a supervisor (systemd sets `INVOCATION_ID`); `on` forces it; `off` disables. **Never run it unsupervised** — there, stopping the proxy is the end of it | `auto` |
+| `UAP_LLAMA_UPSTREAM_WATCH_SECS` | Watcher poll interval; it acts only after 2 consecutive misses AND a live server on a different port | `20` |
+| `UAP_LLAMA_PROBE_TIMEOUT` | Per-probe timeout (seconds) for `/health`, `/props`, `/v1/models` during resolution | `2` |
 | `ANTHROPIC_API_BASE` | Passthrough target | `https://api.anthropic.com` |
 | `ANTHROPIC_PASSTHROUGH_MODELS` | Cloud allowlist; `__local_only__` disables cloud | default Claude patterns |
 | `PROXY_HOST` / `PROXY_PORT` | Bind (defaults expose the LAN) | `0.0.0.0` / `4000` |

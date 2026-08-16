@@ -1,6 +1,6 @@
 {
   "name": "@miller-tech/uap",
-  "version": "1.210.2",
+  "version": "1.210.3",
   "description": "Autonomous AI agent memory system with CLAUDE.md protocol enforcement",
   "type": "module",
   "main": "dist/index.js",
@@ -119,6 +119,8 @@
     "src/policies/schemas/policies",
     "src/policies/enforcers",
     "tools/agents",
+    "scripts/lib",
+    "scripts/run-anthropic-proxy-continuity.sh",
     "scripts/setup",
     "scripts/version-bump.sh",
     "scripts/validate-build.sh",

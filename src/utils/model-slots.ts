@@ -12,6 +12,7 @@
  * minus `headroom`, floored at 1. Cached briefly so hot paths stay cheap.
  */
 import { loadUapConfigRaw } from './config-loader.js';
+import { discoverLocalLlamaBases } from './llama-discovery.js';
 
 export const DEFAULT_SLOTS = 2; // matches llama-server-optimize's `--parallel 2`
 const CACHE_TTL_MS = 30_000;
@@ -47,10 +48,17 @@ function intEnv(name: string): number | undefined {
 
 /** The inference base URL (without a trailing /v1) for probing `/slots`. */
 export function inferenceBase(cwd?: string): string {
+  // The literal below is a convention, and llama does not always honour it:
+  // Unsloth Studio picks a new random port every launch. When nothing is
+  // configured, ask the OS which llama-server is actually listening — otherwise
+  // probeSlots() fails and the slot budget silently falls back to DEFAULT_SLOTS,
+  // sizing the cross-process lease against a fiction.
   const raw =
     process.env.UAP_MODEL_ENDPOINT ||
     process.env.UAP_INFERENCE_ENDPOINT ||
     cfg(cwd).endpoint ||
+    process.env.LLAMA_CPP_BASE ||
+    discoverLocalLlamaBases()[0] ||
     'http://localhost:8080';
   return raw.replace(/\/v1\/?$/, '').replace(/\/+$/, '');
 }
