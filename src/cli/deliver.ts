@@ -364,7 +364,7 @@ import type { DeployEnvironment } from '../delivery/ci-watcher.js';
 import { snapshotTree, restoreTree, disposeSnapshot } from '../delivery/snapshot.js';
 import { snapshotProtection } from '../delivery/spec-imports.js';
 import { listGateConfigFiles } from '../delivery/applier.js';
-import { OpenAICompatClient } from '../models/openai-compat-client.js';
+import { OpenAICompatClient, setModelCallProgress } from '../models/openai-compat-client.js';
 import { ModelPresets } from '../models/types.js';
 import type { ModelConfig } from '../models/types.js';
 import { detectExecutionProfile } from '../models/execution-profiles.js';
@@ -666,6 +666,7 @@ import {
   updateDeliverHeartbeat,
   readDeliverHeartbeat,
   isDeliverHolderWedged,
+  generationHeartbeatMs,
 } from '../delivery/heartbeat.js';
 export {
   DEFAULT_WEDGE_TIMEOUT_S,
@@ -2825,6 +2826,13 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // acquire the lock, so acquireDeliverLock's stamp never ran and the on-disk
     // heartbeat still holds the PRIOR interrupted run's timestamp).
     updateDeliverHeartbeat(projectRoot);
+    // Every completion through the compat client (planner, plan-check, judge,
+    // critic) ticks the run heartbeat while in flight. Without this, the
+    // PLANNING phase — minutes of model calls with zero tool activity — read
+    // as a dead run and external agents kept trying to kill it (2026-08-16).
+    // Scoped to in-flight calls only, so wedge detection between calls is
+    // untouched.
+    setModelCallProgress(() => updateDeliverHeartbeat(projectRoot), generationHeartbeatMs());
     const wedgeS = wedgeTimeoutS();
     wedgeWatchdog = setInterval(() => {
       if (isDeliverHolderWedged(projectRoot) && !isStopRequested(projectRoot, runId)) {
@@ -3887,6 +3895,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // process exit) — avoids a stray requestStop on a finished runId and, for
     // repeated in-process callers, interval/listener accumulation.
     if (wedgeWatchdog) { clearInterval(wedgeWatchdog); wedgeWatchdog = null; }
+    // Unregister the model-call heartbeat with the run it belongs to: a later
+    // completion in the same process must not keep stamping a FINISHED run's
+    // heartbeat (that would make a dead run look alive — the exact inverse of
+    // the bug the hook fixes).
+    setModelCallProgress(null);
   }
 
   // --keep-best: if deliver left the project worse than it started (by real

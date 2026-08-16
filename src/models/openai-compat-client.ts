@@ -360,6 +360,13 @@ export class OpenAICompatClient implements ModelClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
 
+    // "Still generating" progress for the whole call (planner/judge/critic
+    // completions run minutes on a local model with zero tool calls). The
+    // executor's per-tool heartbeat covers the tool loop; THIS covers
+    // everything else — a deliver run in its PLANNING phase looked dead for
+    // 5+ minutes and external agents kept trying to kill it (2026-08-16).
+    const stopTicker = startModelCallTicker();
+
     try {
       const response = await fetchModelWithRetry(url, {
         method: 'POST',
@@ -423,6 +430,36 @@ export class OpenAICompatClient implements ModelClient {
       throw err;
     } finally {
       clearTimeout(timer);
+      stopTicker();
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Model-call progress hook. The models/ layer cannot import delivery/ (it
+// would invert the dependency), so the deliver CLI REGISTERS its heartbeat
+// here once per run, and every completion through this client ticks it while
+// in flight. Unregistered (every other consumer of this client), the ticker
+// is a no-op.
+// ---------------------------------------------------------------------------
+
+let modelCallProgress: (() => void) | null = null;
+let modelCallTickMs = 30_000;
+
+/**
+ * Register a callback ticked every `tickMs` while any completion through this
+ * client is in flight — deliver points this at its run heartbeat so planning
+ * and judge calls are observably alive. Pass null to unregister.
+ */
+export function setModelCallProgress(cb: (() => void) | null, tickMs = 30_000): void {
+  modelCallProgress = cb;
+  modelCallTickMs = tickMs;
+}
+
+function startModelCallTicker(): () => void {
+  const cb = modelCallProgress;
+  if (!cb || !(modelCallTickMs > 0)) return () => {};
+  const t = setInterval(() => { try { cb(); } catch { /* best-effort */ } }, modelCallTickMs);
+  (t as { unref?: () => void }).unref?.();
+  return () => clearInterval(t);
 }
