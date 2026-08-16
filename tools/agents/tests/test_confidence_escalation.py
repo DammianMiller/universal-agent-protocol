@@ -9,11 +9,17 @@ mod_path = Path(__file__).resolve().parents[3] / "tools" / "agents" / "scripts" 
 spec = importlib.util.spec_from_file_location("confidence_escalation", mod_path)
 ce = importlib.util.module_from_spec(spec)
 sys.modules["confidence_escalation"] = ce
-import tempfile, os as _os2
-_os2.environ["UAP_RECIPE_SIGNAL_DIR"] = tempfile.mkdtemp(prefix="uap-sig-")
+import atexit, shutil, tempfile, os as _os2
+_sig_dir = tempfile.mkdtemp(prefix="uap-sig-")
+_os2.environ["UAP_RECIPE_SIGNAL_DIR"] = _sig_dir
 # Isolate the (now auto-on) real-time adaptation dir to an empty temp so no test
 # accidentally reads a stray ~/.cache adaptation signal from the dev machine.
-_os2.environ["UAP_ADAPTATION_SIGNAL_DIR"] = tempfile.mkdtemp(prefix="uap-adapt-empty-")
+_adapt_dir = tempfile.mkdtemp(prefix="uap-adapt-empty-")
+_os2.environ["UAP_ADAPTATION_SIGNAL_DIR"] = _adapt_dir
+# These leaked one dir per suite run into RAM-backed /tmp (26k accumulated by
+# 2026-08-16 — the enforcer suite runs on every commit). Clean up on exit.
+atexit.register(shutil.rmtree, _sig_dir, True)
+atexit.register(shutil.rmtree, _adapt_dir, True)
 spec.loader.exec_module(ce)
 
 

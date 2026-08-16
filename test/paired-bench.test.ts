@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
@@ -197,6 +197,47 @@ describe('adapter: opencode JSONL usage parser', () => {
 });
 
 // ---------------------------------------------------------------------------
+describe('runner: cell workdir cleanup', () => {
+  it('removes every cell scratch dir after the run (26k leaked before this)', async () => {
+    const root = scratchRoot();
+    const tasks = loadSuite(SMOKE_SUITE).slice(0, 2);
+    const cfg: RunnerConfig = {
+      tasks,
+      conditions: [makeBaselineCondition(), makeFullCondition()],
+      adapter: new MockAdapter(),
+      model: 'test-model',
+      epochs: 2,
+      concurrency: 2,
+      workRoot: root,
+    };
+    const out = await runPaired(cfg, SMOKE_SUITE, new Date().toISOString());
+    expect(out.records.length).toBe(8);
+    // Cells scored -> scratch dirs gone; only the (possibly empty) root remains.
+    expect(readdirSync(root)).toEqual([]);
+  });
+
+  it('UAP_BENCH_KEEP_WORKDIRS=1 preserves cell dirs for post-mortem', async () => {
+    process.env.UAP_BENCH_KEEP_WORKDIRS = '1';
+    try {
+      const root = scratchRoot();
+      const tasks = loadSuite(SMOKE_SUITE).slice(0, 1);
+      const cfg: RunnerConfig = {
+        tasks,
+        conditions: [makeBaselineCondition()],
+        adapter: new MockAdapter(),
+        model: 'test-model',
+        epochs: 1,
+        concurrency: 1,
+        workRoot: root,
+      };
+      await runPaired(cfg, SMOKE_SUITE, new Date().toISOString());
+      expect(readdirSync(root).length).toBeGreaterThan(0);
+    } finally {
+      delete process.env.UAP_BENCH_KEEP_WORKDIRS;
+    }
+  });
+});
+
 describe('adapter: SubprocessAdapter group-timeout (orphan-proof)', () => {
   function ctx(agentTimeoutSec: number) {
     const task = TaskSpecSchema.parse({
