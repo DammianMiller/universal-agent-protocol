@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.210.1 (2026-08-16)
+
+- fix(deliver): heartbeat during PLANNING-phase model calls too
+
+
 ## v1.210.0 (2026-08-16)
 
 - feat(deliver): heartbeat during model generation — long turns are observably alive
