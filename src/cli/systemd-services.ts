@@ -1,6 +1,29 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import os from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+/**
+ * Read a file shipped with the UAP package (or, when running from a checkout,
+ * from the repo root). Returns null when it is not present — callers degrade
+ * rather than fail, since `package.json` "files" decides what actually ships.
+ */
+function readPackagedFile(relPath: string): string | null {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, '..', '..', relPath),
+    join(here, '..', '..', '..', relPath),
+    join(process.cwd(), relPath),
+  ];
+  for (const c of candidates) {
+    try {
+      if (existsSync(c)) return readFileSync(c, 'utf-8');
+    } catch {
+      /* unreadable — try the next */
+    }
+  }
+  return null;
+}
 
 export interface SystemdServiceSetupOptions {
   force?: boolean;
@@ -44,6 +67,17 @@ export function installSystemdUserServices(
   const proxyScriptPath = join(scriptsDir, 'run-anthropic-proxy-continuity.sh');
   const llamaScriptPath = join(scriptsDir, 'run-llama-server-continuity.sh');
 
+  // The upstream resolver is copied from the package rather than re-inlined
+  // here. This template and the repo's own launcher have to agree, and a second
+  // hand-maintained copy of the resolver is exactly how the .claude/hooks vs
+  // templates/hooks drift happened.
+  const libDir = join(scriptsDir, 'lib');
+  const upstreamLib = readPackagedFile(join('scripts', 'lib', 'llama-upstream.sh'));
+  if (upstreamLib) {
+    mkdirSync(libDir, { recursive: true });
+    writeIfMissing(join(libDir, 'llama-upstream.sh'), upstreamLib, installed, skipped, force);
+  }
+
   writeIfMissing(
     proxyScriptPath,
     [
@@ -55,6 +89,28 @@ export function installSystemdUserServices(
       'export PROXY_PORT="${PROXY_PORT:-4000}"',
       'export LLAMA_CPP_BASE="${LLAMA_CPP_BASE:-http://127.0.0.1:8080/v1}"',
       'export PROXY_LOG_LEVEL="${PROXY_LOG_LEVEL:-INFO}"',
+      '',
+      '# The pin above goes stale whenever llama moves (Unsloth Studio picks a new',
+      '# random port every launch), after which every request 529s. Keep the pin',
+      '# while it answers; otherwise discover the live server. Sourced defensively:',
+      '# aborting here would crash-loop the unit with no proxy at all.',
+      '_upstream_lib="${ROOT_DIR}/scripts/lib/llama-upstream.sh"',
+      'if [ -r "$_upstream_lib" ]; then',
+      '    . "$_upstream_lib"',
+      '    _resolved_base="$(llama_upstream_resolve "$LLAMA_CPP_BASE")"',
+      '    [ -n "$_resolved_base" ] || _resolved_base="$LLAMA_CPP_BASE"',
+      '    if [ "$_resolved_base" != "$LLAMA_CPP_BASE" ]; then',
+      '        echo "[proxy-startup] pinned upstream ${LLAMA_CPP_BASE} is unreachable;' +
+        ' using discovered ${_resolved_base}"',
+      '        export LLAMA_CPP_BASE="$_resolved_base"',
+      '    fi',
+      '    # Watcher only under a supervisor that will restart us (systemd sets',
+      '    # INVOCATION_ID). Unsupervised, stopping the proxy is the end of it.',
+      '    _watch="${UAP_LLAMA_UPSTREAM_WATCH:-auto}"',
+      '    if [ "$_watch" = "on" ] || { [ "$_watch" = "auto" ] && [ -n "${INVOCATION_ID:-}" ]; }; then',
+      '        llama_upstream_watch "$LLAMA_CPP_BASE" "$$" &',
+      '    fi',
+      'fi',
       '',
       'export PROXY_LOOP_BREAKER="${PROXY_LOOP_BREAKER:-on}"',
       'export PROXY_LOOP_WINDOW="${PROXY_LOOP_WINDOW:-6}"',

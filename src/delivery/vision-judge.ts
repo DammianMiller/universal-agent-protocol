@@ -13,6 +13,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { fetchModelWithRetry } from '../models/long-fetch.js';
+import { discoverLocalLlamaBases } from '../utils/llama-discovery.js';
 
 export interface VisionVerdict {
   /** 0–10 aesthetic/behavioral score across the reviewed screenshots. */
@@ -38,12 +39,33 @@ export function visionJudgeConfigured(): boolean {
  * (the caller then reports "not configured" exactly as before). Idempotent.
  */
 export async function autodetectLocalVision(): Promise<boolean> {
-  if (visionJudgeConfigured()) return true;
+  if (visionJudgeConfigured()) {
+    // A pin is authoritative only while it answers. `uap setup` writes a
+    // conventional 127.0.0.1:8080 endpoint, which is wrong the moment llama
+    // runs on an ephemeral port — and because this early return preceded the
+    // probing below, a dead pin permanently defeated discovery and the judge
+    // failed later with a connection error instead of finding the live server.
+    const pinned = (process.env.UAP_VISION_ENDPOINT ?? '').replace(/\/v1\/?$/, '').replace(/\/$/, '');
+    try {
+      const res = await fetch(`${pinned}/props`, { signal: AbortSignal.timeout(2000) });
+      if (res.ok) return true;
+    } catch {
+      /* unreachable — fall through to discovery */
+    }
+    delete process.env.UAP_VISION_ENDPOINT;
+    delete process.env.UAP_VISION_MODEL;
+  }
   // Candidate OpenAI-compat bases, most-specific first. LLAMA_CPP_BASE is what
   // the proxy talks to; the rest are conventional local llama-server ports.
+  // Explicit config first, then the servers actually listening, then the
+  // conventional port. Without the discovery step this list is env vars that are
+  // usually unset plus :8080 — which is empty whenever llama runs on an
+  // ephemeral port (Unsloth Studio picks a new one every launch), so a
+  // vision-capable server sitting right there reports "not configured".
   const bases = [
     process.env.UAP_INFERENCE_ENDPOINT,
     process.env.LLAMA_CPP_BASE,
+    ...discoverLocalLlamaBases(),
     'http://127.0.0.1:8080/v1',
   ].filter((b): b is string => Boolean(b));
   for (const base of bases) {
