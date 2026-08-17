@@ -93,6 +93,13 @@ BYPASS_PATTERNS = (
     # acceptance criteria. An inline assignment would let the agent waive its
     # own consistency requirement, so refuse it here.
     re.compile(r"UAP_ORACLE_CONSISTENCY\s*=\s*['\"]?0", re.I),
+    # schema-diff's re-entry guard. It exists so a nested gate skips its own
+    # inline checker run rather than recursing, and it no longer allows
+    # anything on its own -- but it still WEAKENS the gate to its fallback
+    # layer, and every other switch of that shape is listed here. An inline
+    # assignment is written by the constrained party into its own command
+    # line, which is an off switch rather than an override.
+    re.compile(r"UAP_SCHEMA_DIFF_INLINE\s*=\s*['\"]?1", re.I),
 )
 
 # The gateless-root override in its CLI-flag spelling. Anchored on both sides

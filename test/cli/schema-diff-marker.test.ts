@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -169,6 +169,18 @@ describe('marker handshake with the enforcer', () => {
     writeFileSync(join(repo, 'migrations', '003.sql'), 'CREATE TABLE u (id int);');
     execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'ignore' });
 
+    // A PATH carrying git and python3 and nothing else. This test is about the
+    // MARKER handshake, which the gate only reaches when its inline checker
+    // cannot answer; on the ambient PATH the enforcer finds the installed
+    // `uap`, the inline layer answers first, and the marker is never consulted.
+    // It passed only while that binary predated --json. Same pinning as
+    // tools/agents/tests/test_schema_diff_gate.py, for the same reason.
+    const shim = mkdtempSync(join(tmpdir(), 'uap-gitonly-'));
+    for (const bin of ['git', 'python3']) {
+      const resolved = execFileSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf-8' }).trim();
+      symlinkSync(resolved, join(shim, bin));
+    }
+
     const allowed = (): boolean => {
       // The enforcer exits 2 to DENY, which makes execFileSync throw — the
       // verdict is on stdout either way.
@@ -180,7 +192,12 @@ describe('marker handshake with the enforcer', () => {
           {
             cwd: repo,
             encoding: 'utf-8',
-            env: { ...process.env, UAP_REPO_ROOT: repo, UAP_WORKTREE_ROOT: repo },
+            env: {
+              ...process.env,
+              PATH: shim,
+              UAP_REPO_ROOT: repo,
+              UAP_WORKTREE_ROOT: repo,
+            },
           }
         );
       } catch (err) {

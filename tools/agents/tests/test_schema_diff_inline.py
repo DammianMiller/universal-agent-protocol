@@ -23,6 +23,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,13 +36,36 @@ BASE_SQL = "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);\n"
 BREAKING_SQL = "CREATE TABLE t (id INTEGER PRIMARY KEY);\n"
 
 
+def _git_only_path() -> str:
+    """A PATH with git and nothing else, so `cli_argv` can find no checker.
+
+    A test that means "no checker is available" has to SAY so. Without this it
+    inherits the ambient PATH, finds the globally installed `uap`, and the
+    inline layer answers -- which is a different test with a different
+    expectation. It passed only while that binary predated --json, and inverted
+    the day it was updated. Exactly the coupling the marker suite was pinned
+    against in test_schema_diff_gate.py; this file needed the same treatment.
+    """
+    d = Path(tempfile.mkdtemp(prefix="schema-inline-gitonly-"))
+    found = shutil.which("git")
+    if found:
+        (d / "git").symlink_to(found)
+    return str(d)
+
+
+_GIT_ONLY_PATH = _git_only_path()
+
+
 def run_gate(op: str, args: dict, root: Path, env_extra: dict | None = None):
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["UAP_REPO_ROOT"] = str(root)
     env["UAP_WORKTREE_ROOT"] = str(root)
     env.update(env_extra or {})
     r = subprocess.run(
-        ["python3", str(ENFORCER), "--operation", op, "--args", json.dumps(args)],
+        # Absolute interpreter, not "python3": a test may pin PATH to exclude
+        # the checker, and resolving the interpreter through that same PATH
+        # fails before the enforcer ever runs.
+        [sys.executable, str(ENFORCER), "--operation", op, "--args", json.dumps(args)],
         cwd=root,
         env=env,
         capture_output=True,
@@ -212,7 +236,11 @@ class InlineSchemaDiffTest(unittest.TestCase):
                 self.assertNotEqual(reason, "", "the gate must answer, not die silently")
 
     def test_a_missing_checker_leaves_the_shipped_behaviour_untouched(self):
-        allowed, reason = self.commit()
+        # No stub, and a PATH with no `uap` on it, so there is genuinely no
+        # checker to run. Without the PATH pin this found the installed CLI and
+        # asserted against the inline layer's message instead -- green for the
+        # wrong reason until that binary learned --json, then red.
+        allowed, reason = self.commit(PATH=_GIT_ONLY_PATH)
         self.assertFalse(allowed, f"missing checker must not open the gate: {reason}")
         self.assertIn("uap schema-diff", reason)
 
@@ -342,10 +370,22 @@ class CheckerProvenanceTest(unittest.TestCase):
         subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
         bin_dir = self.root / "dist" / "bin"
         bin_dir.mkdir(parents=True)
-        # A rubber stamp: three lines, and it attests to anything.
+        # A rubber stamp: three lines, and it attests to anything. It also
+        # leaves a footprint, because "the gate blocked" does not by itself
+        # prove this file went unread -- the installed CLI would also block
+        # here, on the real breaking change. The footprint is the only thing
+        # that distinguishes "ignored the foreign build" from "ran something
+        # else that happened to agree".
         (bin_dir / "cli.js").write_text(
+            "require('fs').writeFileSync('rubber-stamp-was-run', '1');\n"
             "console.log(JSON.stringify({contract:1,ran:true,base:'HEAD',files:"
             "[{path:'" + WATCHED + "',sha:'x',analysed:true,breaking:[]}]}));\n"
+        )
+
+    def assertStampUnread(self):
+        self.assertFalse(
+            (self.root / "rubber-stamp-was-run").exists(),
+            "the gate executed a checker out of the tree it was gating",
         )
 
     def tearDown(self):
@@ -362,11 +402,27 @@ class CheckerProvenanceTest(unittest.TestCase):
         """
         (self.root / "package.json").write_text('{"name":"totally-normal-app"}\n')
         allowed, reason = run_gate("Bash", {"command": "git commit -m x"}, self.root)
+        self.assertStampUnread()
         self.assertFalse(allowed, f"a foreign dist/ must not be the oracle: {reason}")
 
     def test_no_package_json_is_also_not_the_uap_checkout(self):
         allowed, reason = run_gate("Bash", {"command": "git commit -m x"}, self.root)
+        self.assertStampUnread()
         self.assertFalse(allowed, f"unidentified tree must not be trusted: {reason}")
+
+    def test_the_stamp_would_fire_if_the_build_were_trusted(self):
+        """Proves the two assertions above can fail.
+
+        A footprint check is worthless if the stub could never run in the
+        first place. Claiming to be the UAP checkout is exactly the condition
+        that makes the local build trusted, so here it MUST be executed.
+        """
+        (self.root / "package.json").write_text('{"name":"@miller-tech/uap"}\n')
+        run_gate("Bash", {"command": "git commit -m x"}, self.root)
+        self.assertTrue(
+            (self.root / "rubber-stamp-was-run").exists(),
+            "the local build should be trusted in the UAP checkout itself",
+        )
 
 
 if __name__ == "__main__":
