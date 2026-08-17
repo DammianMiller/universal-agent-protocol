@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.210.5 (2026-08-17)
+
+- fix(proxy): make the thinking switches reach the template that reads them
+
+
 ## v1.210.4 (2026-08-17)
 
 - fix(proxy): advertise the context window the proxy actually enforces

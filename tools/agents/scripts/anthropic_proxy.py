@@ -1540,10 +1540,46 @@ def _apply_json_response_grammar(openai_body: dict, anthropic_body: dict) -> Non
     if openai_body.get("tools") or openai_body.get("grammar"):
         return
     openai_body["grammar"] = JSON_RESPONSE_GBNF
-    openai_body["enable_thinking"] = False
-    ctk = openai_body.setdefault("chat_template_kwargs", {})
-    ctk["enable_thinking"] = False
+    _set_thinking(openai_body, False)
     logger.info("JSON-RESPONSE grammar applied (evaluator verdict turn)")
+
+
+def _set_thinking(body: dict, enabled: bool) -> None:
+    """Turn upstream reasoning on/off, in BOTH places llama.cpp reads.
+
+    The top-level `enable_thinking` field alone does NOTHING on a `--jinja`
+    server: the Qwen chat template reads `chat_template_kwargs`, and this one is
+    launched with `--chat-template-kwargs {"enable_thinking": true}`, so an
+    unqualified top-level flag is silently overridden by the template default.
+
+    Measured on the live server, identical tool-call prompt:
+        top-level only                     -> 703 chars of reasoning, 196 tokens
+        chat_template_kwargs               ->   0 chars,                27 tokens
+    and on a planning-flavoured prompt with max_tokens=700, reasoning consumed
+    the ENTIRE budget and no tool call was emitted at all.
+
+    The OPERATOR switches — PROXY_DISABLE_THINKING_ALWAYS and
+    PROXY_DISABLE_THINKING_ON_TOOL_TURNS, plus the tool-turn breakers — set only
+    the top-level field, so they were no-ops against a jinja server: they
+    existed, logged themselves as active, and changed nothing. The paths that
+    already set both (the JSON-verdict grammar, the empty-max_tokens retry, and
+    the prefill/continuation turn) worked, which is why evaluator turns were
+    unaffected and this went unnoticed elsewhere.
+
+    Use this for a switch that expresses INTENT ("this turn must not reason").
+    The Anthropic protocol-default translation deliberately does NOT use it —
+    see the comment there; making a default authoritative would change serving
+    policy for every client rather than fix a broken control.
+    """
+    body["enable_thinking"] = enabled
+    # REPLACE the nested dict rather than mutate it: callers build retry bodies
+    # with `dict(openai_body)`, a SHALLOW copy that still shares this dict, so
+    # mutating in place would silently disable thinking on the original request
+    # too. Copying keeps any other template kwargs the server was launched with.
+    existing = body.get("chat_template_kwargs")
+    ctk = dict(existing) if isinstance(existing, dict) else {}
+    ctk["enable_thinking"] = enabled
+    body["chat_template_kwargs"] = ctk
 
 
 def _apply_thinking_grammar(request_body: dict) -> None:
@@ -1634,6 +1670,13 @@ def _apply_profile_overrides(
     if "stop_sequences" in profile:
         updated["stop_sequences"] = profile["stop_sequences"]
     if "enable_thinking" in profile:
+        # Left as a plain assignment: `updated` is the ANTHROPIC-shaped body,
+        # and build_openai_request constructs the upstream body from a fresh
+        # literal that never reads this key — so this has never reached the
+        # wire, and writing a llama.cpp template kwarg into an Anthropic body
+        # would only add a field that passthrough requests must not carry.
+        # Wiring profiles to thinking is a separate change from making the
+        # operator switches work.
         updated["enable_thinking"] = profile["enable_thinking"]
 
     tool_call_batching = profile.get("tool_call_batching") or {}
@@ -6618,14 +6661,26 @@ def build_openai_request(
     # consume the client's max_tokens budget on internal reasoning, leaving
     # nothing for the visible answer.
     anthropic_thinking = anthropic_body.get("thinking")
+    # PROTOCOL DEFAULT — deliberately top-level only, NOT via _set_thinking.
+    #
+    # Anthropic's default is "thinking off unless asked", so this branch sets
+    # off for almost every request. Against a jinja server the top-level field
+    # is inert, which is why the upstream has been reasoning by default all
+    # along. Routing this through _set_thinking would make it authoritative and
+    # silently flip EVERY client that never asked for thinking — Claude Code,
+    # opencode, benchmarks, all OpenAI-compat traffic — from the server's
+    # configured default to off. That is a serving-policy change, not a bug fix.
+    #
+    # The same reasoning applies to the "enabled" case in reverse: making it
+    # authoritative would let a client turn reasoning ON against a server
+    # deliberately launched with it off. The measured bug was one-directional
+    # (an operator's OFF switch didn't stick); the fix stays one-directional.
+    # Operators who want thinking off across the board have an explicit switch
+    # below (PROXY_DISABLE_THINKING_ALWAYS), and it now works.
     if isinstance(anthropic_thinking, dict):
         ttype = (anthropic_thinking.get("type") or "").lower()
-        if ttype == "enabled":
-            openai_body["enable_thinking"] = True
-        else:
-            openai_body["enable_thinking"] = False
+        openai_body["enable_thinking"] = ttype == "enabled"
     else:
-        # Match Anthropic default: thinking off unless explicitly requested.
         openai_body["enable_thinking"] = False
 
     # Global thinking-off (G): apply to every request, not just tool turns.
@@ -6633,7 +6688,7 @@ def build_openai_request(
     # Per-path tool-turn handling below (DISABLE_THINKING_ON_TOOL_TURNS) is
     # additive — ALWAYS supersedes when set.
     if PROXY_DISABLE_THINKING_ALWAYS:
-        openai_body["enable_thinking"] = False
+        _set_thinking(openai_body, False)
 
     # Inject agentic protocol instructions only for tool-enabled turns.
     # Use minimal supplement for qwen models to reduce prompt leak surface.
@@ -6953,7 +7008,7 @@ def build_openai_request(
                 monitor.catastrophic_ctx_streak,
             )
             if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
-                openai_body["enable_thinking"] = False
+                _set_thinking(openai_body, False)
             if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
                 openai_body["speculative.n_max"] = 0
             return openai_body
@@ -6978,7 +7033,7 @@ def build_openai_request(
             )
             # Skip all further tool_choice logic — no tools this turn
             if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
-                openai_body["enable_thinking"] = False
+                _set_thinking(openai_body, False)
             if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
                 openai_body["speculative.n_max"] = 0
             return openai_body
@@ -7028,7 +7083,7 @@ def build_openai_request(
                     PROXY_HARD_FINALIZE_TURNS,
                 )
                 if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
-                    openai_body["enable_thinking"] = False
+                    _set_thinking(openai_body, False)
                 if PROXY_DISABLE_SPEC_ON_TOOL_TURNS:
                     openai_body["speculative.n_max"] = 0
                 return openai_body
@@ -7222,7 +7277,7 @@ def build_openai_request(
 
 
         if PROXY_DISABLE_THINKING_ALWAYS or PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
-            openai_body["enable_thinking"] = False
+            _set_thinking(openai_body, False)
             logger.info(
                 "Thinking disabled (always=%s tool_turns=%s)",
                 PROXY_DISABLE_THINKING_ALWAYS,
@@ -9584,10 +9639,7 @@ async def _apply_empty_maxtokens_recovery(
     if not _is_empty_maxtokens_response(openai_resp):
         return openai_resp
     retry_body = dict(openai_body)
-    retry_body["enable_thinking"] = False
-    ctk = dict(retry_body.get("chat_template_kwargs") or {})
-    ctk["enable_thinking"] = False
-    retry_body["chat_template_kwargs"] = ctk
+    _set_thinking(retry_body, False)
     requested = int(openai_body.get("max_tokens") or PROXY_EMPTY_MAXTOKENS_RETRY_MAX_TOKENS)
     retry_body["max_tokens"] = min(requested, PROXY_EMPTY_MAXTOKENS_RETRY_MAX_TOKENS)
     logger.warning(
@@ -9753,7 +9805,7 @@ def _build_malformed_retry_body(
             )
 
     if PROXY_DISABLE_THINKING_ON_TOOL_TURNS:
-        retry_body["enable_thinking"] = False
+        _set_thinking(retry_body, False)
 
     # Option 3: Proactively strip grammar from retry when tools are present and
     # grammar+tools is known to be incompatible. Prevents the 400 error
