@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.211.2 (2026-08-18)
+
+- test: fix two flaky tests, and the vacuity that hid one of them
+
+
 ## v1.211.1 (2026-08-17)
 
 - fix(policy-gate): a schema-diff enforcer that cannot run must not read as consent

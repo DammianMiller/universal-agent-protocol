@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { initCommand, type InitOptions } from '../../src/cli/init.js';
@@ -16,12 +16,15 @@ import { generateClaudeMd } from '../../src/generators/claude-md.js';
 import { mergeClaudeMd } from '../../src/utils/merge-claude-md.js';
 import { isQdrantReachable } from '../../src/cli/memory.js';
 
-// Mock console output
+// Mock console output.
+//
+// Installed per test, not once at module scope: afterEach calls
+// vi.restoreAllMocks(), which removed these spies after the first test and
+// left every later assertion on them unable to fail. Silencing the command's
+// output is the job that remains -- the tests below assert on the files it
+// writes, not on what it printed.
 const mockConsoleLog = vi.fn();
 const mockConsoleError = vi.fn();
-
-vi.spyOn(console, 'log').mockImplementation(mockConsoleLog);
-vi.spyOn(console, 'error').mockImplementation(mockConsoleError);
 
 // Mock all external dependencies
 vi.mock('chalk', () => ({
@@ -116,6 +119,8 @@ describe('initCommand', () => {
     vi.mocked(generateClaudeMd).mockResolvedValue('# Test CLAUDE.md');
     vi.mocked(mergeClaudeMd).mockImplementation((existing: string, _new: string) => existing || _new);
     vi.mocked(isQdrantReachable).mockResolvedValue(true);
+    vi.spyOn(console, 'log').mockImplementation(mockConsoleLog);
+    vi.spyOn(console, 'error').mockImplementation(mockConsoleError);
     testDir = mkdtempSync(join(tmpdir(), 'uap-init-'));
   });
 
@@ -124,90 +129,101 @@ describe('initCommand', () => {
     rmSync(testDir, { recursive: true, force: true });
   });
 
+  /**
+   * The config initCommand actually wrote.
+   *
+   * Asserting on the artefact rather than on "did anything print an error"
+   * keeps these tests about the flag under test. initCommand also initialises
+   * a memory DB, probes Qdrant, builds a venv, runs git and indexes patterns;
+   * any of those logging on a loaded machine used to fail a test nominally
+   * about --no-memory.
+   */
+  function writtenConfig(dir: string): AgentContextConfig {
+    const path = join(dir, '.uap.json');
+    expect(existsSync(path), `initCommand wrote no .uap.json in ${dir}`).toBe(true);
+    return JSON.parse(readFileSync(path, 'utf-8')) as AgentContextConfig;
+  }
+
   it('should accept platform options', async () => {
-    const options: InitOptions = {
+    await initCommand({
       platform: ['claude', 'vscode'],
       memory: true,
       worktrees: true,
       projectDir: testDir,
-    };
+    } satisfies InitOptions);
 
-    await initCommand(options);
-
-    // Should complete without errors
-    expect(mockConsoleError).not.toHaveBeenCalled();
+    const config = writtenConfig(testDir);
+    expect(config.template?.sections?.memorySystem).toBe(true);
+    expect(existsSync(join(testDir, 'CLAUDE.md'))).toBe(true);
   });
 
   it('should handle --no-memory flag', async () => {
-    const options: InitOptions = {
+    await initCommand({
       platform: ['all'],
       memory: false,
       worktrees: true,
       projectDir: testDir,
-    };
+    } satisfies InitOptions);
 
-    await initCommand(options);
-
-    // Should complete without errors
-    expect(mockConsoleError).not.toHaveBeenCalled();
+    expect(writtenConfig(testDir).template?.sections?.memorySystem).toBe(false);
   });
 
   it('should handle --no-worktrees flag', async () => {
-    const options: InitOptions = {
+    await initCommand({
       platform: ['all'],
       memory: true,
       worktrees: false,
       projectDir: testDir,
-    };
+    } satisfies InitOptions);
 
-    await initCommand(options);
-
-    // Should complete without errors
-    expect(mockConsoleError).not.toHaveBeenCalled();
+    expect(writtenConfig(testDir).template?.sections?.worktreeWorkflow).toBe(false);
   });
 
   it('should handle --force flag', async () => {
-    const options: InitOptions = {
+    await initCommand({
       platform: ['all'],
       memory: true,
       worktrees: true,
       force: true,
       projectDir: testDir,
-    };
+    } satisfies InitOptions);
 
-    await initCommand(options);
-
-    // Should complete without errors
-    expect(mockConsoleError).not.toHaveBeenCalled();
+    expect(writtenConfig(testDir).template?.sections?.memorySystem).toBe(true);
   });
 
   it('should handle project directory override', async () => {
-    const options: InitOptions = {
-      platform: ['all'],
-      memory: true,
-      worktrees: true,
-      projectDir: '/custom/path',
-    };
+    // A real directory, and one that is NOT testDir, so "the override was
+    // honoured" is something the test can actually observe. It used to pass
+    // '/custom/path', which does not exist: the write failed, the command
+    // logged the ENOENT, and the assertion passed anyway because the console
+    // spy had already been restored. The error still reached the terminal on
+    // every run and, when vitest attributed it to a file, failed the suite.
+    const otherDir = mkdtempSync(join(tmpdir(), 'uap-init-override-'));
+    try {
+      await initCommand({
+        platform: ['all'],
+        memory: true,
+        worktrees: true,
+        projectDir: otherDir,
+      } satisfies InitOptions);
 
-    await initCommand(options);
-
-    // Should complete without errors
-    expect(mockConsoleError).not.toHaveBeenCalled();
+      expect(writtenConfig(otherDir).template?.sections?.memorySystem).toBe(true);
+      expect(existsSync(join(testDir, '.uap.json'))).toBe(false);
+    } finally {
+      rmSync(otherDir, { recursive: true, force: true });
+    }
   });
 
   it('should handle pipeline-only flag', async () => {
-    const options: InitOptions = {
+    await initCommand({
       platform: ['all'],
       memory: true,
       worktrees: true,
       pipelineOnly: true,
       projectDir: testDir,
-    };
+    } satisfies InitOptions);
 
-    await initCommand(options);
-
-    // Should complete without errors
-    expect(mockConsoleError).not.toHaveBeenCalled();
+    expect(writtenConfig(testDir).template?.sections?.pipelineOnly).toBe(true);
   });
 });
 

@@ -13,7 +13,7 @@
  * - E6: Coverage thresholds raised
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 
 // ── B1: Schema Diff ──
 
@@ -76,74 +76,75 @@ describe('B3: Decoder-First Gate', () => {
 // ── C1-C3: Module Exports ──
 
 describe('C1-C3: Module Exports from src/index.ts', () => {
+  // Imported once. Every test below used to `await import` it themselves;
+  // the module cache made the first test pay for the entire graph while the
+  // rest measured nothing, so only that one could ever hit its timeout -- and
+  // under full-suite load it did. Paying the cost in setup, with a budget that
+  // reflects what is actually being loaded, keeps the tests about exports.
+  let mod: typeof import('../src/index.js');
+
+  beforeAll(async () => {
+    mod = await import('../src/index.js');
+  }, 120000);
+
   it('should export WebBrowser and createWebBrowser (C1)', async () => {
-    const mod = await import('../src/index.js');
     expect(mod.WebBrowser).toBeDefined();
     expect(typeof mod.createWebBrowser).toBe('function');
-  }, 20000);
+  });
 
   it('should export getDashboardData and startDashboardServer (C2)', async () => {
-    const mod = await import('../src/index.js');
     expect(typeof mod.getDashboardData).toBe('function');
     expect(typeof mod.startDashboardServer).toBe('function');
-  }, 20000);
+  });
 
   it('should export PredictiveMemoryService (C3)', async () => {
-    const mod = await import('../src/index.js');
     expect(mod.PredictiveMemoryService).toBeDefined();
     expect(typeof mod.getPredictiveMemoryService).toBe('function');
-  }, 20000);
+  });
 
   it('should export models extras (PlanValidator, UnifiedRouter, Analytics)', async () => {
-    const mod = await import('../src/index.js');
     expect(mod.PlanValidator).toBeDefined();
     expect(typeof mod.createPlanValidator).toBe('function');
     expect(typeof mod.createUnifiedRouter).toBe('function');
     expect(mod.ModelAnalytics).toBeDefined();
     expect(typeof mod.getModelAnalytics).toBe('function');
-  }, 20000);
+  });
 
   it('should export execution profiles', async () => {
-    const mod = await import('../src/index.js');
     expect(typeof mod.getExecutionProfile).toBe('function');
     expect(typeof mod.detectExecutionProfile).toBe('function');
     expect(typeof mod.listExecutionProfiles).toBe('function');
-  }, 20000);
+  });
 
   it('should export utility modules (AdaptiveCache, RateLimiter, PerformanceMonitor)', async () => {
-    const mod = await import('../src/index.js');
     expect(mod.AdaptiveCache).toBeDefined();
     expect(mod.RateLimiter).toBeDefined();
     expect(mod.PerformanceMonitor).toBeDefined();
     expect(typeof mod.getPerformanceMonitor).toBe('function');
     expect(typeof mod.monitorFunction).toBe('function');
-  }, 20000);
+  });
 
   it('should export concurrency utilities (retry, withTimeout)', async () => {
-    const mod = await import('../src/index.js');
     expect(typeof mod.retry).toBe('function');
     expect(typeof mod.withTimeout).toBe('function');
     expect(typeof mod.parallelWithFallback).toBe('function');
     expect(typeof mod.concurrentMap).toBe('function');
-  }, 20000);
+  });
 
   it('should export KnowledgeGraph', async () => {
-    const mod = await import('../src/index.js');
     expect(mod.KnowledgeGraph).toBeDefined();
-  }, 20000);
+  });
 
   it('should export TaskEventBus', async () => {
-    const mod = await import('../src/index.js');
     expect(mod.TaskEventBus).toBeDefined();
     expect(typeof mod.getTaskEventBus).toBe('function');
-  }, 20000);
+  });
 
   it('should export ContextPruner and ambiguity detector', async () => {
-    const mod = await import('../src/index.js');
     expect(mod.ContextPruner).toBeDefined();
     expect(typeof mod.detectAmbiguity).toBe('function');
     expect(typeof mod.formatAmbiguityForContext).toBe('function');
-  }, 20000);
+  });
 });
 
 // ── A1+D1: Adaptive Cache in Pattern Router ──
