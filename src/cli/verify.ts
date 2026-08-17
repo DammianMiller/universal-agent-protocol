@@ -548,10 +548,13 @@ async function buildAcceptanceExecutor(modelPreset?: string, endpoint?: string):
 export function resolveAcceptanceSpecAuto(dir: string): string | null {
   const read = (rel: string): string | null => {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const p = require('path').join(dir, rel);
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const t = (require('fs').readFileSync(p, 'utf-8') as string).trim();
+      // Static ESM imports, not bare require(): this module ships as ESM, where
+      // `require` is not a binding — it throws ReferenceError, the catch below
+      // swallows it, and every acceptance-spec lookup silently returns null.
+      // Type-checks and passes under vitest either way; only the shipped CLI
+      // breaks. Found by test/no-bare-require-in-esm.test.ts.
+      const p = joinPath(dir, rel);
+      const t = readFileSync(p, 'utf-8').trim();
       return t || null;
     } catch {
       return null;

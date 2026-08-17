@@ -59,14 +59,21 @@ class SchemaDiffGateTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def write_marker(self, iso_timestamp: str, table: str = "memories"):
+    # The literal the CLI records (src/cli/schema-diff.ts). The gate matches it
+    # ANCHORED, so this string is now a contract between the two.
+    MARKER = "schema-diff pass: base HEAD~1 | files: migrations/001_add_table.sql"
+
+    def write_marker(self, iso_timestamp: str, table: str = "memories", content: str | None = None):
         mem = self.root / "agents" / "data" / "memory"
-        mem.mkdir(parents=True)
+        mem.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(mem / "short_term.db")
-        con.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, content TEXT, timestamp TEXT)")
+        con.execute(
+            f"CREATE TABLE IF NOT EXISTS {table} "
+            "(id INTEGER PRIMARY KEY, content TEXT, timestamp TEXT)"
+        )
         con.execute(
             f"INSERT INTO {table} (content, timestamp) VALUES (?, ?)",
-            ("schema-diff pass: verified", iso_timestamp),
+            (self.MARKER if content is None else content, iso_timestamp),
         )
         con.commit()
         con.close()
@@ -110,9 +117,64 @@ class SchemaDiffGateTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertFalse(allowed)
 
+    def test_the_gates_own_refusal_message_does_not_clear_it(self):
+        """A block message that is itself a valid unblock token is self-defeating.
 
-if __name__ == "__main__":
-    unittest.main()
+        The old matcher was LIKE '%schema-diff%pass%', which the gate's own
+        refusal text satisfies ("...require `uap schema-diff` to pass"). Agents
+        here are instructed to store lessons, and blockers are exactly what they
+        store — so recording the refusal unblocked the next commit.
+        """
+        self.write_marker(
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            content=(
+                "Lesson: schema-diff-gate: changes to migrations/001_add_table.sql "
+                "require `uap schema-diff` to pass (within 1h). Run it and re-commit."
+            ),
+        )
+        code, allowed, _ = run_gate("git-commit", {}, self.root)
+        self.assertFalse(allowed, "the gate's own refusal text must not clear the gate")
+        self.assertEqual(code, 2)
+
+    def test_a_marker_from_the_PREVIOUS_cli_release_still_clears_it(self):
+        """Anchoring must not deadlock operators running an older global `uap`.
+
+        The previously-released recorder wrote
+        "schema-diff pass: base <b>, N schema file(s) checked, no breaking
+        changes" — same prefix — so it still matches. If a future format change
+        drops that prefix, the gate must be updated in the same commit or every
+        operator on the old CLI is blocked with no reachable remedy.
+        """
+        self.write_marker(
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            content="schema-diff pass: base HEAD~1, 3 schema file(s) checked, no breaking changes",
+        )
+        _, allowed, _ = run_gate("git-commit", {}, self.root)
+        self.assertTrue(allowed, "a marker from the previous CLI release must still clear the gate")
+
+    def test_a_note_saying_the_diff_FAILED_does_not_clear_it(self):
+        self.write_marker(
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            content="schema-diff FAILED - breaking change, do not pass this to review",
+        )
+        _, allowed, _ = run_gate("git-commit", {}, self.root)
+        self.assertFalse(allowed, "a failure note must not read as a pass")
+
+    def test_a_future_dated_marker_does_not_clear_it(self):
+        """The window was upper-bounded only, so a future timestamp cleared the
+        gate until wall-clock caught up — reachable via an importing writer that
+        supplies its own timestamp, or plain clock skew."""
+        ahead = (datetime.now(timezone.utc) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.write_marker(ahead)
+        _, allowed, _ = run_gate("git-commit", {}, self.root)
+        self.assertFalse(allowed, "a future-dated marker must not clear the gate")
+
+    def test_watched_path_is_listed_once(self):
+        """A file both unstaged and staged appeared twice in the reason line,
+        which reads as two covered files."""
+        (self.root / "migrations" / "001_add_table.sql").write_text("CREATE TABLE t (id bigint);")
+        _, _, reason = run_gate("git-commit", {"command": "git commit"}, self.root)
+        self.assertEqual(reason.count("001_add_table.sql"), 1, reason)
 
 
 class MergeVerbatimTest(unittest.TestCase):
@@ -161,9 +223,40 @@ class MergeVerbatimTest(unittest.TestCase):
 
     def test_merge_edited_migration_still_gates(self):
         # Editing the migration during the merge makes it THIS branch's change.
+        # NB this stages the edit; the UNSTAGED variant below is the one that
+        # was actually exploitable.
         (self.root / "migrations" / "001_add_table.sql").write_text("CREATE TABLE t (id bigint);")
         subprocess.run(["git", "add", "migrations/001_add_table.sql"], cwd=self.root, check=True)
         _, allowed, reason = run_gate("git-commit", {"command": "git commit"}, self.root)
         self.assertFalse(allowed, "a migration edited during the merge must still gate")
         self.assertIn("schema-diff", reason)
+
+    def test_UNSTAGED_merge_edit_still_gates(self):
+        """The exemption compared the INDEX blob, but `git commit -a` commits the
+        WORKING TREE.
+
+        Reproduced against the shipped gate: with the index still matching
+        MERGE_HEAD and an unstaged `DROP TABLE users;` appended, it answered
+        {"allowed": true, "reason": "no watched schema/pool paths in diff"} —
+        not even naming the exemption — while `git commit -am` would have
+        committed the drop. This is also the likely ACCIDENTAL path: a human
+        resolving a conflict, tweaking a migration, running `git commit -am`.
+        """
+        p = self.root / "migrations" / "001_add_table.sql"
+        p.write_text(p.read_text() + "\nDROP TABLE t;\n")  # deliberately NOT staged
+        _, allowed, reason = run_gate("git-commit", {"command": "git commit -am merge"}, self.root)
+        self.assertFalse(
+            allowed,
+            "an unstaged edit during a merge is committed by `commit -a` and must gate: " + reason,
+        )
+
+    def test_a_genuinely_verbatim_merge_is_still_exempt_after_the_fix(self):
+        """The deadlock fix must survive the hardening: with no local edit at
+        all, the incoming migration stays exempt."""
+        _, allowed, reason = run_gate("git-commit", {"command": "git commit -am merge"}, self.root)
+        self.assertTrue(allowed, f"verbatim merge must remain exempt: {reason}")
+
+
+if __name__ == "__main__":
+    unittest.main()
 
