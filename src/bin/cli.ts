@@ -2014,6 +2014,13 @@ program
   .command('schema-diff')
   .description('Detect breaking schema changes between branches')
   .option('-b, --base <branch>', 'Base branch/commit to compare against', 'HEAD~1')
+  // The stub only exists to defer the import; the REAL command owns the flag
+  // set. Without these, commander rejects any flag the stub does not itself
+  // declare ("unknown option '--json'") before the action can swap in the real
+  // one — so every new schema-diff flag would silently 404 for callers,
+  // including the gate. Same reason the `policy` stub below allows them.
+  .allowUnknownOption(true)
+  .allowExcessArguments(true)
   .action(async (_options: { base: string }) => {
     const { registerSchemaDiffCommand } = await import('../cli/schema-diff.js');
     // Remove stub and register real command
