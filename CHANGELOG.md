@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.210.8 (2026-08-17)
+
+- fix(schema-diff): make the gate's evidence mean something
+
+
 ## v1.210.7 (2026-08-17)
 
 - fix(schema-diff): record passes + exempt merge-verbatim files (gate deadlock)
