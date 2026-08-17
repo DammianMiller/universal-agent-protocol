@@ -63,7 +63,10 @@ describe('schema-diff run reporting', () => {
     git('add', '-A');
     const run = await runSchemaDiff('HEAD', repo);
     expect(run.ran).toBe(true);
-    expect(run.examined).toContain('migrations/002.sql');
+    expect(run.examined.map((f) => f.path)).toContain('migrations/002.sql');
+    // Each entry carries the blob SHA of the bytes read — that is what makes a
+    // pass content-scoped rather than merely time-scoped.
+    expect(run.examined.every((f) => /^[0-9a-f]{40}$/.test(f.sha))).toBe(true);
   });
 });
 
@@ -139,12 +142,13 @@ describe('marker handshake with the enforcer', () => {
   }
 
   it('writes a marker the enforcer’s anchored query will match', async () => {
-    await recordSchemaDiffPass('HEAD', ['migrations/001.sql'], repo);
+    await recordSchemaDiffPass('HEAD', [{ path: 'migrations/001.sql', sha: 'abc1234def' }], repo);
     const found = await markers();
     expect(found).toHaveLength(1);
     expect(found[0].startsWith(MARKER_PREFIX)).toBe(true);
-    // The file list is recorded so a human can audit what a pass covered.
-    expect(found[0]).toContain('migrations/001.sql');
+    // `path@sha7` — auditable by a human AND checkable by the enforcer. A bare
+    // path would be read as a legacy marker and skip coverage entirely.
+    expect(found[0]).toContain('migrations/001.sql@abc1234');
   });
 
   it('is accepted by the REAL enforcer, end to end', async () => {
@@ -186,8 +190,22 @@ describe('marker handshake with the enforcer', () => {
     };
 
     expect(allowed()).toBe(false); // watched change staged, no marker yet
-    await recordSchemaDiffPass('HEAD', ['migrations/003.sql'], repo);
+    const scoped = await runSchemaDiff('HEAD', repo);
+    await recordSchemaDiffPass('HEAD', scoped.examined, repo);
     expect(allowed()).toBe(true); // this CLI's marker satisfies that enforcer
+
+    // THE REDESIGN: the pass vouches for BYTES, not for a time window. Editing
+    // the file after the check re-arms the gate — previously one pass cleared
+    // every watched path for an hour regardless of what happened next, so a
+    // reviewed migration could be swapped for an unreviewed one and committed.
+    writeFileSync(join(repo, 'migrations', '003.sql'), 'DROP TABLE u;');
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'ignore' });
+    expect(allowed()).toBe(false);
+
+    // ...and re-running the remedy clears it again, so the block is escapable.
+    const rescoped = await runSchemaDiff('HEAD', repo);
+    await recordSchemaDiffPass('HEAD', rescoped.examined, repo);
+    expect(allowed()).toBe(true);
   });
 
   it('does not match the gate’s own refusal text', async () => {

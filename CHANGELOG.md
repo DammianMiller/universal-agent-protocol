@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.211.0 (2026-08-17)
+
+- feat(schema-diff): run the checker inline instead of trusting a stored marker
+
+
 ## v1.210.8 (2026-08-17)
 
 - fix(schema-diff): make the gate's evidence mean something
