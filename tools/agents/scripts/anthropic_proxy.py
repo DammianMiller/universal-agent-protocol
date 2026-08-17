@@ -396,6 +396,14 @@ PROXY_STUCK_API_THRESHOLD = int(os.environ.get("PROXY_STUCK_API_THRESHOLD", "3")
 # strategy, so this fires on the fingerprint alone, independent of outcome.
 # PROXY_REPEAT_CALL_THRESHOLD=0 disables.
 PROXY_REPEAT_CALL_THRESHOLD = int(os.environ.get("PROXY_REPEAT_CALL_THRESHOLD", "4"))
+# How many CONSECUTIVE wait/poll turns stay exempt from the loop guards before
+# the guards resume. The exemption is call-side and outcome-blind — a poll of a
+# healthy run and a poll of a wedged one are byte-identical from here — so
+# without a cap a dead job polled forever would be bounded only by the client's
+# own timeout. At the 45s follow interval this is ~30 minutes of waiting before
+# the proxy insists on a checkpoint, comfortably longer than a normal build turn
+# and far shorter than a stuck mission. 0 disables the cap.
+PROXY_WAIT_POLL_MAX_STREAK = int(os.environ.get("PROXY_WAIT_POLL_MAX_STREAK", "40"))
 # Marker so the injected directive can address a SUCCEEDING loop correctly
 # rather than telling the model to stop retrying "a failing action".
 _REPEAT_CALL_REASON = "identical tool call"
@@ -729,6 +737,18 @@ _READ_ONLY_TOOL_CLASS = frozenset({
 # open-ended set of tools (Bash, WebFetch, Agent, ...) that cannot be
 # enumerated, but "the agent produced a write" is a small, stable signal.
 # Names are matched case-insensitively (callers lower() before lookup).
+# Every wire name `deliver` arrives under. Tool names reach this proxy verbatim
+# from the client, prefixed with the MCP server's CONFIG KEY — and this repo
+# ships two: `.mcp.json`/`opencode.json` register it as `uap-router`, while
+# `uap setup` (setup-mcp-router.ts, for Claude/Factory/VSCode/Cursor) registers
+# it as `router`. Enumerating only one of them silently exempts half the fleet,
+# which is why this is ONE constant rather than three hand-maintained lists.
+_DELIVER_TOOL_NAMES = frozenset({
+    "deliver",
+    "uap-router_deliver", "uap-router__deliver", "mcp__uap-router__deliver",
+    "router_deliver", "mcp__router__deliver",
+})
+
 _WRITE_TOOL_CLASS = frozenset({
     "write", "edit", "multiedit", "notebookedit",
     "str_replace", "str_replace_editor", "str_replace_based_edit_tool",
@@ -746,7 +766,13 @@ _WRITE_TOOL_CLASS = frozenset({
     # and (b) the recon-convergence restore loop re-injects `deliver` when
     # narrowing dropped it, so a gated "route through deliver" directive is
     # actually satisfiable.
-    "deliver",
+    #
+    # The PREFIXED forms matter as much as the bare one: the wire name is
+    # `uap-router_deliver`, so with only "deliver" here the no-write streak kept
+    # climbing through a healthy delivery and recon-convergence escalated
+    # mid-wait — stripping reads and demanding "write your deliverable now"
+    # while the deliverable was being written by the run it was waiting on.
+    *_DELIVER_TOOL_NAMES,
 })
 
 # Open-ended exploration tools the agent uses to make a DIFFERENT move once a
@@ -762,6 +788,60 @@ _EXPLORATION_ESCAPE_TOOLS = frozenset({
     "webfetch", "web_fetch", "fetch", "websearch", "web_search",
     "agent", "task", "dispatch_agent",
 })
+
+# NEVER strip these either, for the same reason and a sharper one: they BLOCK on
+# a long-running job and return "still running" when their wait budget expires,
+# so the correct agent behaviour is to call them again. That is a WAIT, not a
+# spin — but it is indistinguishable from one by fingerprint, since every poll
+# carries identical arguments.
+#
+# Observed live 2026-08-17: an agent following a healthy `deliver` run (heartbeat
+# 8s old, checkpoint advancing) polled it as designed. The cycle-breaker read the
+# repeats as a loop, excluded the deliver tool, and the agent — now unable to
+# observe the work it was waiting on — fell through to Bash and cycled on THAT
+# instead. Median turn spacing collapsed from the 45s poll interval to 5s. The
+# loop the breaker "found" was the one it created.
+#
+# Stripping the tool cannot help here: unlike a cycling Bash, there is no
+# different argument to vary toward. The job is simply not finished yet.
+_WAIT_POLL_TOOLS = frozenset(
+    n.strip().lower()
+    for n in os.environ.get(
+        "PROXY_WAIT_POLL_TOOLS",
+        ",".join(sorted(_DELIVER_TOOL_NAMES | {"await_run", "wait"})),
+    ).split(",")
+    if n.strip()
+)
+
+
+def _fingerprint_tool_names(fingerprint: str) -> set:
+    """Tool names inside a tool-call fingerprint.
+
+    Fingerprints are "name" or "name:arghash", joined by "|" for a multi-call
+    turn — the same shape the cycle path already unpacks when it builds
+    cycling_tool_names.
+    """
+    names = set()
+    for part in (fingerprint or "").split("|"):
+        part = part.strip()
+        if part:
+            names.add(part.split(":")[0].lower())
+    return names
+
+
+def _spinning_cycling_names(cycling_tool_names) -> list:
+    """The cycling names that are genuinely spinning — wait/poll tools removed."""
+    return [n for n in (cycling_tool_names or []) if str(n).lower() not in _WAIT_POLL_TOOLS]
+
+
+def _is_wait_poll_only(names) -> bool:
+    """True when EVERY name given is a wait/poll tool (and there is at least one).
+
+    Deliberately all-not-any: a turn that calls `deliver` alongside a genuinely
+    spinning tool is still a spin, and must stay breakable.
+    """
+    lowered = {str(n).lower() for n in names if str(n).strip()}
+    return bool(lowered) and lowered <= _WAIT_POLL_TOOLS
 
 
 def _narrow_tools_for_cycle_break(tools, cycling_tool_names, session_banned_tools):
@@ -788,8 +868,10 @@ def _narrow_tools_for_cycle_break(tools, cycling_tool_names, session_banned_tool
         cycling_exclude |= read_only_lower
     # Never let the cycling path narrow away the exploration escape hatch — that
     # is exactly the filesystem-exploration capability the cycle-break is trying
-    # to redirect the agent toward.
+    # to redirect the agent toward. Wait/poll tools are spared for the stronger
+    # reason that their repeats are not a loop at all (see _WAIT_POLL_TOOLS).
     cycling_exclude -= _EXPLORATION_ESCAPE_TOOLS
+    cycling_exclude -= _WAIT_POLL_TOOLS
     exclude_set = cycling_exclude | banned_lower
 
     def _name(t):
@@ -823,6 +905,11 @@ def _should_auto_ban(name, cycle_count, ban_at):
     earlier cycles. Repeated Bash is redirected via the injected cycle hint.
     """
     if name.lower() in _EXPLORATION_ESCAPE_TOOLS:
+        return False
+    # A wait/poll tool accrues cycle counts fastest of all — every poll of a
+    # long job looks identical — so without this it is the FIRST tool banned,
+    # permanently, for doing exactly what it is for.
+    if name.lower() in _WAIT_POLL_TOOLS:
         return False
     return cycle_count >= ban_at
 
@@ -1741,6 +1828,9 @@ class SessionMonitor:
     tool_state_forced_budget_remaining: int = 0
     tool_state_auto_budget_remaining: int = 0
     tool_state_stagnation_streak: int = 0
+    # Consecutive turns whose tool calls were ALL wait/poll tools. Bounds the
+    # loop-guard exemption so a wedged job cannot be polled forever.
+    wait_poll_streak: int = 0
     tool_state_transitions: int = 0
     tool_state_review_cycles: int = 0
     tool_state_unproductive_exhaustion_streak: int = 0
@@ -1931,6 +2021,12 @@ class SessionMonitor:
             and self.coordination_repeat_streak >= PROXY_COORDINATION_EARLY_BAN
         ):
             for n in coord_names:
+                # This path adds to session_banned_tools directly, bypassing
+                # _should_auto_ban — and an explicit ban IS honoured even for
+                # exempt tools, so a wait/poll tool reaching here would be
+                # stripped for the rest of the session.
+                if n.lower() in _WAIT_POLL_TOOLS:
+                    continue
                 if n not in self.session_banned_tools:
                     self.session_banned_tools.add(n)
                     logger.warning(
@@ -2011,6 +2107,20 @@ class SessionMonitor:
         else:
             self.rate_limited_api_streak = 0
 
+    def wait_poll_exempt(self) -> bool:
+        """True when this turn is a bounded wait on a long-running job.
+
+        Bounded: `wait_poll_streak` is capped by PROXY_WAIT_POLL_MAX_STREAK, so
+        a wedged job — indistinguishable from a healthy one at the call site —
+        eventually falls back under the normal guards.
+        """
+        last_fp = self.tool_call_history[-1] if self.tool_call_history else ""
+        if not _is_wait_poll_only(_fingerprint_tool_names(last_fp)):
+            return False
+        if PROXY_WAIT_POLL_MAX_STREAK <= 0:
+            return True
+        return self.wait_poll_streak <= PROXY_WAIT_POLL_MAX_STREAK
+
     def should_force_stuck_break(self) -> tuple[bool, str]:
         """True + reason when a terminal break should be forced this turn."""
         if not PROXY_STUCK_BREAK:
@@ -2026,7 +2136,16 @@ class SessionMonitor:
         if PROXY_REPEAT_CALL_THRESHOLD > 0:
             looping, count = self.detect_tool_loop(window=PROXY_REPEAT_CALL_THRESHOLD)
             if looping and count >= PROXY_REPEAT_CALL_THRESHOLD:
-                return True, f"{_REPEAT_CALL_REASON} x{count}"
+                # ...unless the repeated call is a WAIT. This branch is
+                # outcome-blind by design (see above), which is right for a
+                # `git diff --stat` loop and wrong for a tool that blocks on a
+                # long job and returns "still running": every poll is identical
+                # by construction, so this fires ~4 polls in — earlier than the
+                # cycle path — and tells the agent "you already have that
+                # output, do NOT repeat it" while the job is still running.
+                # The wait is bounded by the job, not by the agent.
+                if not self.wait_poll_exempt():
+                    return True, f"{_REPEAT_CALL_REASON} x{count}"
         return False, ""
 
     def note_deferral_signal(self, text: str, had_tool_call: bool) -> None:
@@ -5371,6 +5490,26 @@ def _update_tool_state_stagnation(
     repeated = latest_tool_fingerprint == monitor.last_tool_fingerprint
     recently_seen = latest_tool_fingerprint in monitor.tool_call_history[-4:-1]
 
+    # THE choke point for the wait/poll exemption. This signal is keyed on
+    # repeats alone — `repeated` above is a fingerprint comparison — and a poll
+    # of a long job repeats by construction, while its "still running" reply is
+    # a tool_result, so the only reset guard never fires either. Left unchecked
+    # the streak climbs one per poll straight through a healthy wait and the
+    # state machine enters review, accrues review cycles, and force-finalizes
+    # with "wrap up ... what is blocking further progress" — mid-build.
+    #
+    # Exempting HERE rather than at each consumer covers the stagnation
+    # finalize, the review-cycle limit and the phase flip in one place.
+    if _is_wait_poll_only(_fingerprint_tool_names(latest_tool_fingerprint)):
+        monitor.wait_poll_streak += 1
+        if PROXY_WAIT_POLL_MAX_STREAK <= 0 or monitor.wait_poll_streak <= PROXY_WAIT_POLL_MAX_STREAK:
+            monitor.last_tool_fingerprint = latest_tool_fingerprint
+            return
+        # Past the cap the guards resume: a wedged job looks exactly like a
+        # healthy one from here, so the exemption must not be unbounded.
+    else:
+        monitor.wait_poll_streak = 0
+
     if repeated or recently_seen:
         monitor.tool_state_stagnation_streak += 1
     else:
@@ -5533,6 +5672,24 @@ def _resolve_state_machine_tool_choice(
         # kept as a strong signal (read target repeated 3+ times). Low-repeat
         # cycles detected by detect_tool_cycle get filtered here.
         cycle_trip = cycle_looping and cycle_repeat >= PROXY_CYCLE_TRIGGER_REPEAT
+        # A cycle made up ENTIRELY of wait/poll calls is a wait, not a spin.
+        # Letting it trip still costs the session even with the tool exempted
+        # from narrowing: entering review increments tool_state_review_cycles,
+        # and at PROXY_TOOL_STATE_REVIEW_CYCLE_LIMIT the machine forces a
+        # finalize turn telling the agent to "wrap up" — mid-wait.
+        #
+        # Judged over the SAME window the detector used: a shorter slice lets an
+        # A/B oscillation between a wait tool and a real one be suppressed
+        # whenever the last turns happen to be waits. And only `cycle_trip` is
+        # cleared, never `cycle_looping` — that flag also carries the
+        # duplicate-read-target signal, which is not fingerprint-derived, and
+        # clearing it flips a downstream branch into counting the turn as
+        # unproductive (arming a different finalize).
+        _cycle_window = max(2, PROXY_TOOL_STATE_CYCLE_WINDOW)
+        if cycle_trip and _is_wait_poll_only(
+            _fingerprint_tool_names("|".join(monitor.tool_call_history[-_cycle_window:]))
+        ):
+            cycle_trip = False
         if cycle_trip or stagnating:
             reason = "cycle_detected" if cycle_looping else "stagnation"
             monitor.set_tool_turn_phase("review", reason=reason)
@@ -5592,7 +5749,15 @@ def _resolve_state_machine_tool_choice(
 
         if monitor.tool_state_forced_budget_remaining <= 0:
             monitor.set_tool_turn_phase("review", reason="forced_budget_exhausted")
-            if cycle_looping or stagnating:
+            if monitor.wait_poll_exempt():
+                # A bounded wait is neither a cycle nor an unproductive burn:
+                # both arms below lead to a forced finalize (review-cycle limit
+                # at 3, unproductive-exhaustion at 2), and reaching either
+                # mid-wait tells the agent to wrap up a job that is still
+                # running. Bounded by PROXY_WAIT_POLL_MAX_STREAK, so a wedged
+                # run falls back into normal accounting.
+                monitor.tool_state_unproductive_exhaustion_streak = 0
+            elif cycle_looping or stagnating:
                 monitor.tool_state_review_cycles += 1
                 monitor.tool_state_unproductive_exhaustion_streak = 0
             else:
@@ -6931,9 +7096,16 @@ def build_openai_request(
             if (
                 monitor.tool_turn_phase == "review"
                 and state_reason in {"cycle_detected", "stagnation"}
-                and monitor.cycling_tool_names
+                # A hint naming ONLY wait/poll tools would read "stop calling
+                # deliver, produce your final answer now" while the job it is
+                # waiting on is still running — an instruction to abandon the
+                # wait and claim a result the agent does not have yet. Hint on
+                # the genuinely-spinning tools, or say nothing.
+                and _spinning_cycling_names(monitor.cycling_tool_names)
             ):
-                cycling_names = ", ".join(monitor.cycling_tool_names)
+                cycling_names = ", ".join(
+                    _spinning_cycling_names(monitor.cycling_tool_names)
+                )
                 cycles = monitor.tool_state_review_cycles
                 if cycles <= 1:
                     cycle_hint = (
@@ -6975,8 +7147,12 @@ def build_openai_request(
                 )
                 if narrowed:
                     openai_body["tools"] = narrowed
-                    # Only log on first activation or phase transitions to reduce noise
-                    if state_reason in {"cycle_detected", "stagnation"}:
+                    # Only log on first activation or phase transitions to reduce noise.
+                    # `len(narrowed) < original_count` keeps an exempt-only cycle
+                    # from logging "narrowed tools from 5 to 5", which reads as a
+                    # cycle-break having happened when nothing was excluded —
+                    # exactly the line that would mislead triage of this incident.
+                    if state_reason in {"cycle_detected", "stagnation"} and len(narrowed) < original_count:
                         logger.warning(
                             "CYCLE BREAK: narrowed tools from %d to %d (excluded %s, read_only_class=%s)",
                             original_count,
