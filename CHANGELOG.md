@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.211.1 (2026-08-17)
+
+- fix(policy-gate): a schema-diff enforcer that cannot run must not read as consent
+- fix(test): run the new enforcer suite in CI
+
+
 ## v1.211.0 (2026-08-17)
 
 - feat(schema-diff): run the checker inline instead of trusting a stored marker

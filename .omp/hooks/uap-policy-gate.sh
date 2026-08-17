@@ -172,7 +172,8 @@ bypass = re.search(
     r"|UAP_SELF_PROTECT_OFF\s*=\s*[\x27\"]?1|UAP_NO_WORKTREE\s*=\s*[\x27\"]?1"
     r"|UAP_WORKDIR_SCOPE_OFF\s*=\s*[\x27\"]?1|UAP_USER_VALIDATION\s*=\s*[\x27\"]?0"
     r"|UAP_DELIVER_NO_LOCK\s*=\s*[\x27\"]?1|UAP_NO_REVIEW\s*=\s*[\x27\"]?1"
-    r"|UAP_INFRA_PROTECT_OFF\s*=\s*[\x27\"]?1|UAP_ALLOW_GATELESS_ROOT\s*=\s*[\x27\"]?1",
+    r"|UAP_INFRA_PROTECT_OFF\s*=\s*[\x27\"]?1|UAP_ALLOW_GATELESS_ROOT\s*=\s*[\x27\"]?1"
+    r"|UAP_SCHEMA_DIFF_INLINE\s*=\s*[\x27\"]?1|UAP_ORACLE_CONSISTENCY\s*=\s*[\x27\"]?0",
     cmd, re.I)
 print("1" if (hit or bypass) else "0")
 ' 2>/dev/null || echo 1)"
@@ -239,8 +240,32 @@ sys.exit(0 if (is_test or trivial) else 1)
   esac
 fi
 
+# $1 = short reason, $2 = the enforcer that could not run.
+# The message has to name the RIGHT enforcer and an override that actually
+# works. Routing schema_diff_gate through the self-protect wording told the
+# operator the wrong thing had failed and pointed at UAP_SELF_PROTECT_OFF=1,
+# which cleared SEC_SENSITIVE and not COMMIT_OP. A refusal that describes the
+# wrong thing and offers no alternative is how a loop survives a guard.
 fail_closed() {
-  echo "[UAP policy gate] FAIL-CLOSED: this operation touches the enforcement control surface but the self-protect enforcer could not run (${1:-machinery unavailable}). Blocked so a broken/absent gate can't become a bypass. (Operator override: UAP_SELF_PROTECT_OFF=1.)" >&2
+  local why="${1:-machinery unavailable}"
+  local who="${2:-enforcement_self_protect}"
+  # Record before exiting. This is the most serious verdict the gate can
+  # reach and it was the one that left no trace: measured, policy_executions
+  # was unchanged across a fail-closed block while ordinary blocks recorded,
+  # so the compliance view showed zero blocks for exactly this failure mode.
+  # Guarded with declare -F because the earliest call sites (policies.db
+  # missing, no sqlite3) fire before record_execution is defined -- and in
+  # those states there is nothing to write to anyway.
+  declare -F record_execution >/dev/null \
+    && record_execution 0 "$who" "FAIL-CLOSED: $why"
+  case "$who" in
+    schema_diff_gate)
+      echo "[UAP policy gate] FAIL-CLOSED: this commit touches watched schema paths but the schema-diff enforcer could not run (${why}). Blocked so a broken/absent gate can't become a bypass. Restore it with: uap policy verify --repair (or uap policy install schema-diff-gate if the manifest is gone; npm run build if dist/ is missing). Operator override: UAP_SELF_PROTECT_OFF=1 in the environment." >&2
+      ;;
+    *)
+      echo "[UAP policy gate] FAIL-CLOSED: this operation touches the enforcement control surface but the self-protect enforcer could not run (${why}). Blocked so a broken/absent gate can't become a bypass. (Operator override: UAP_SELF_PROTECT_OFF=1.)" >&2
+      ;;
+  esac
   exit 2
 }
 
@@ -330,26 +355,88 @@ fi
 # Did the self-protect enforcer actually run and make a decision this call?
 sec_enforcer_ran=0
 
+# Is this a commit or a push? schema_diff_gate is the only control standing
+# between a breaking schema change and history, and like self-protect its
+# failure must not be read as consent -- the loop below otherwise maps an
+# errored or missing enforcer to ALLOW for everything except self-protect.
+# Scoped to commit/push so a broken schema enforcer cannot block every shell
+# command in the session; it mirrors the enforcer's own activation test.
+COMMIT_OP="$(printf '%s' "$ARGS" | python3 -c '
+import json, re, sys
+try: a = json.loads(sys.stdin.read() or "{}")
+except Exception: a = {}
+cmd = str(a.get("command") or "")
+# Quoted text is prose, not an invocation. While the enforcer was broken,
+# echo "next step: git commit" and grep -rn "git push" docs/ were hard blocks.
+# The enforcer over-matches the same way, but when IT over-matches it runs,
+# finds no watched paths and allows -- so the fail-closed net has to be
+# STRICTER than the thing it protects, not looser.
+bare = re.sub(r"\x27[^\x27]*\x27|\"[^\"]*\"", " ", cmd).lower()
+inv = re.search(r"(?:^|[;&|]|\bthen\b|\bdo\b)\s*git\b[^;&|]*\b(?:commit|push)\b", bare)
+# --help and --dry-run store nothing, so refusing them is pure friction. The
+# match itself ends at the verb, so the flags are searched in the rest of the
+# command SEGMENT -- searching inv.group(0) found nothing and blocked them.
+seg = re.split(r"[;&|]", bare[inv.start():])[0] if inv else ""
+inert = inv and re.search(r"--help|--dry-run|(?:^|\s)-h(?:\s|$)", seg)
+print("1" if (inv and not inert) else "0")
+' 2>/dev/null || echo 1)"
+
+# The operator hatch clears the whole net. It already zeroed SEC_SENSITIVE
+# further up; leaving COMMIT_OP armed made the override named in the refusal a
+# no-op for exactly the case that prints it -- so a stale .policy-tools copy
+# refused every commit and push in the session with no working remedy.
+[[ "${UAP_SELF_PROTECT_OFF:-}" == "1" ]] && COMMIT_OP=0
+
+# Which enforcers must fail CLOSED, and when. Called from `if`, never as the
+# left side of `&&`: this script runs under `set -e`, and `if` suspends it for
+# the whole condition.
+must_fail_closed() {
+  case "$1" in
+    enforcement_self_protect) [[ "$SEC_SENSITIVE" == "1" ]] ;;
+    schema_diff_gate)         [[ "$COMMIT_OP" == "1" ]] ;;
+    *)                        false ;;
+  esac
+}
+
+# Bound every enforcer. Without this a hung one stalled the hook until the
+# harness killed the whole process -- and a killed HOOK is not a fail-closed,
+# it is an unbounded stall with the outcome decided elsewhere. On timeout the
+# output is empty, which the parser below already reads as allowed=2, so the
+# existing net decides what that means per enforcer.
+#
+# The layers must nest, innermost shortest: the schema enforcer's own inline
+# checker (10s x up to 2 sources) < this (30s) < the harness hook budget.
+# gtimeout is the macOS spelling; with neither present the call is unbounded,
+# which is the behaviour that shipped.
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+ENFORCER_TIMEOUT="${UAP_ENFORCER_TIMEOUT:-30}"
+
 # Iterate active policies with attached executable tools
 while IFS='|' read -r pid pname tool; do
   [[ -z "$pid" ]] && continue
   enforcer="$MAIN_ROOT/.policy-tools/${pid}_${tool}.py"
   if [[ ! -f "$enforcer" ]]; then
-    # A missing self-protect enforcer on a sensitive op = fail closed.
-    [[ "$SEC_SENSITIVE" == "1" && "$tool" == "enforcement_self_protect" ]] && fail_closed "enforcer file missing"
+    # A missing fail-closed enforcer on an operation it guards = fail closed.
+    if must_fail_closed "$tool"; then fail_closed "enforcer file missing" "$tool"; fi
     continue
   fi
-  out="$(python3 "$enforcer" --operation "$TOOL" --args "$ARGS" 2>/dev/null || true)"
+  if [[ -n "$TIMEOUT_BIN" ]]; then
+    out="$("$TIMEOUT_BIN" "${ENFORCER_TIMEOUT}s" python3 "$enforcer" --operation "$TOOL" --args "$ARGS" 2>/dev/null || true)"
+  else
+    out="$(python3 "$enforcer" --operation "$TOOL" --args "$ARGS" 2>/dev/null || true)"
+  fi
   allowed="$(printf '%s' "$out" | python3 -c 'import json,sys;
 try: d=json.loads(sys.stdin.read()); print("1" if d.get("allowed",True) else "0")
 except: print("2")' 2>/dev/null || echo 2)"
   # allowed=2 => enforcer errored / emitted unparseable output. For a sensitive
   # op via the self-protect enforcer, that error must NOT default to allow.
+  if [[ "$allowed" == "2" ]] && must_fail_closed "$tool"; then
+    fail_closed "enforcer errored" "$tool"
+  fi
   if [[ "$tool" == "enforcement_self_protect" ]]; then
-    [[ "$SEC_SENSITIVE" == "1" && "$allowed" == "2" ]] && fail_closed "enforcer errored"
     sec_enforcer_ran=1
   fi
-  # For all other enforcers, an error still fails open (unchanged behavior).
+  # For every other enforcer, an error still fails open (unchanged behavior).
   [[ "$allowed" == "2" ]] && allowed=1
   if [[ "$allowed" == "0" ]]; then
     # R1: consume the enforcer's route:deliver signal (log intent, opt-in

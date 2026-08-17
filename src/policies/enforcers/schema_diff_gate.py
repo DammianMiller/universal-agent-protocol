@@ -205,8 +205,9 @@ def schema_diff_ok(root: Path) -> list | None:
     freshness window is applied here, per candidate.
 
     Every miss must return None, not False: main() consumes this value, and a
-    stray bool crashed the enforcer -- which the policy hook turns into ALLOW,
-    so a wrong type here opens the gate rather than closing it.
+    stray bool crashed the enforcer. On a commit or push the hook now turns
+    that crash into a refusal rather than an ALLOW, so the cost is a blocked
+    commit instead of a silent bypass -- still a bug, and still worth the type.
     """
     db = root / "agents" / "data" / "memory" / "short_term.db"
     if not db.exists():
@@ -268,10 +269,15 @@ def schema_diff_ok(root: Path) -> list | None:
 
 INLINE_GUARD = "UAP_SCHEMA_DIFF_INLINE"
 # Comfortably inside policy-tools' 30s enforcer budget. At 60s a slow checker
-# meant the ENFORCER was killed first, and a killed enforcer is an ALLOW -- so
-# the timeout meant to produce a safe fallback produced a bypass instead. 400
-# watched files measured at 6.3s, so this leaves ample headroom.
-INLINE_TIMEOUT = 15.0
+# meant the ENFORCER was killed first, which on the TS path is still an ALLOW
+# and on the shell-hook path is now a hard block on the commit -- a bypass or a
+# deadlock depending which caller you are under, and neither is the intended
+# fallback. 400 watched files measured at 6.3s for one source. The layers nest
+# innermost-shortest: this x 2 sources (20s) < the hook's per-enforcer bound
+# (30s, UAP_ENFORCER_TIMEOUT) < the harness hook budget. Raising this without
+# raising those turns a slow check into a killed enforcer, which on a commit is
+# now a refusal.
+INLINE_TIMEOUT = 10.0
 # Verdict shapes this gate knows how to read (SCHEMA_DIFF_CONTRACT in the CLI).
 KNOWN_CONTRACTS = (1,)
 # Passed to the checker. Everything else -- API keys, tokens, proxy secrets --
@@ -690,12 +696,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # A crash must not read as consent. The policy hook turns a non-zero exit
-    # or unparseable output into ALLOW for every enforcer except self-protect
-    # (.claude/hooks/uap-policy-gate.sh), so an unhandled exception anywhere
-    # above is a silent bypass -- and the review found two reachable ones, both
-    # TypeErrors on a malformed verdict. The guards are still in place; this is
-    # the backstop for the ones nobody thought of.
+    # A crash must not read as consent. The hook maps a non-zero exit or
+    # unparseable output to ALLOW for every enforcer except self-protect and,
+    # since the fail-closed net was widened, this one on a commit or push
+    # (.claude/hooks/uap-policy-gate.sh). Two reachable crashes were found by
+    # review, both TypeErrors on a malformed verdict. Emitting a refusal here
+    # is still the right backstop: it keeps the outcome correct on the paths
+    # the hook does NOT cover, and produces a reasoned message rather than a
+    # bare block on the ones it does.
     try:
         main()
     except SystemExit:

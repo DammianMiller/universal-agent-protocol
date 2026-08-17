@@ -83,6 +83,8 @@ Top level: `version`, `project`, `memory`, `worktree`, `costOptimization`,
 | `UAP_DELIVER_SANDBOX` | Deliver sandbox root path | — |
 | `UAP_ACTIVE_RUNS_DIR` | Registry of live deliver runs, used for cross-root (nested-project) single-flight | `~/.uap/active-runs` |
 | `UAP_DELIVER_NO_LOCK` | `1` disables the per-project lock **and** the overlapping-root check; the run also becomes invisible to other runs' checks | enabled |
+| `UAP_SCHEMA_DIFF_INLINE` | Set by the schema-diff gate on its own checker subprocess so a nested gate skips the inline check instead of recursing. Setting it yourself only drops the gate to its marker fallback — it does not disable it — and the **inline** form is refused, like every switch in this group. | set by the gate |
+| `UAP_ENFORCER_TIMEOUT` | Seconds the policy hook allows each enforcer. Must exceed the schema enforcer's own worst case (`INLINE_TIMEOUT` × 2 sources) or a slow healthy check is killed, which on a commit is a refusal. | `30` |
 | `UAP_HALO_TRACE` | `1` enables HALO tracing | off |
 | `UAP_HALO_TRACE_PATH` | HALO trace output file | `.uap/halo/traces.jsonl` |
 | `UAP_HALO_PROJECT_ID` | HALO project id | `uap` |
