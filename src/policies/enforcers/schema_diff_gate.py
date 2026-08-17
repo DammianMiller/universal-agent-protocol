@@ -23,13 +23,37 @@ COMMIT_OPS = {"git-commit", "git commit"}
 RECENT_SEC = 3600
 
 
+def merge_verbatim(root: Path, path: str) -> bool:
+    """During a merge, a staged watched file that is byte-identical to the
+    incoming MERGE_HEAD version was not authored on this branch — it was
+    reviewed and gated on its own branch and arrives verbatim. Gating it here
+    forced a schema-diff re-pass for content the merge cannot change (hit on
+    the 2026-08-16 pay2u #3153 conflict-resolution merge, where migrations
+    from already-merged main blocked the merge commit)."""
+    git_dir = root / ".git"
+    # Worktrees use a .git FILE pointing at the real gitdir.
+    if git_dir.is_file():
+        try:
+            ref = git_dir.read_text().strip()
+            if ref.startswith("gitdir:"):
+                git_dir = Path(ref.split(":", 1)[1].strip())
+        except OSError:
+            return False
+    if not (git_dir / "MERGE_HEAD").exists():
+        return False
+    rc, staged_sha, _ = run(["git", "rev-parse", f":{path}"], cwd=root)
+    rc2, theirs_sha, _ = run(["git", "rev-parse", f"MERGE_HEAD:{path}"], cwd=root)
+    return rc == 0 and rc2 == 0 and staged_sha.strip() == theirs_sha.strip()
+
+
 def touched_watched_paths(root: Path) -> list[str]:
     rc, out, _ = run(["git", "diff", "--name-only", "HEAD"], cwd=root)
     if rc != 0:
         return []
     rc2, staged, _ = run(["git", "diff", "--name-only", "--cached"], cwd=root)
     all_files = (out + "\n" + (staged if rc2 == 0 else "")).splitlines()
-    return [f for f in all_files if f and WATCHED_RE.search(f)]
+    watched = [f for f in all_files if f and WATCHED_RE.search(f)]
+    return [f for f in watched if not merge_verbatim(root, f)]
 
 
 def schema_diff_ok(root: Path) -> bool:

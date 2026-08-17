@@ -113,3 +113,57 @@ class SchemaDiffGateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MergeVerbatimTest(unittest.TestCase):
+    """2026-08-16 pay2u #3153 incident: a conflict-resolution merge staged
+    migration files that arrived VERBATIM from the already-merged base branch,
+    and the gate demanded a schema-diff re-pass for content this branch never
+    authored. merge_verbatim() must exempt staged files whose blob equals the
+    MERGE_HEAD version — and must NOT exempt files the merge actually edited."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="schema-gate-merge-")
+        self.root = Path(self._tmp.name)
+        g = lambda *a: subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *a],
+            cwd=self.root, check=True, capture_output=True,
+        )
+        g("init", "-q", "-b", "main")
+        (self.root / "migrations").mkdir()
+        (self.root / "base.txt").write_text("base")
+        g("add", "-A")
+        g("commit", "-q", "-m", "init")
+        # Feature branch diverges without touching migrations.
+        g("checkout", "-q", "-b", "feature")
+        (self.root / "feature.txt").write_text("feature work")
+        g("add", "-A")
+        g("commit", "-q", "-m", "feature")
+        # Main gains a watched migration (reviewed there).
+        g("checkout", "-q", "main")
+        (self.root / "migrations" / "001_add_table.sql").write_text("CREATE TABLE t (id int);")
+        g("add", "-A")
+        g("commit", "-q", "-m", "migration on main")
+        # Merge main INTO feature: migration arrives verbatim, merge left open
+        # (no commit) so MERGE_HEAD exists and the file is staged.
+        g("checkout", "-q", "feature")
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "merge", "--no-commit", "--no-ff", "main"],
+            cwd=self.root, check=True, capture_output=True,
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_verbatim_incoming_migration_is_exempt(self):
+        _, allowed, reason = run_gate("git-commit", {"command": "git commit"}, self.root)
+        self.assertTrue(allowed, f"verbatim merge-incoming migration should not gate: {reason}")
+
+    def test_merge_edited_migration_still_gates(self):
+        # Editing the migration during the merge makes it THIS branch's change.
+        (self.root / "migrations" / "001_add_table.sql").write_text("CREATE TABLE t (id bigint);")
+        subprocess.run(["git", "add", "migrations/001_add_table.sql"], cwd=self.root, check=True)
+        _, allowed, reason = run_gate("git-commit", {"command": "git commit"}, self.root)
+        self.assertFalse(allowed, "a migration edited during the merge must still gate")
+        self.assertIn("schema-diff", reason)
+

@@ -10,6 +10,9 @@
 
 import { Command } from 'commander';
 import { existsSync, readFileSync } from 'fs';
+import { SQLiteShortTermMemory } from '../memory/short-term/sqlite.js';
+import { shortTermDbPath } from '../memory/paths.js';
+import { loadUapConfig } from '../utils/config-loader.js';
 
 export interface SchemaDiffResult {
   file: string;
@@ -334,6 +337,46 @@ export async function schemaDiffCommand(
   return results;
 }
 
+/**
+ * Record a successful schema-diff run in SHORT-TERM memory.
+ *
+ * The schema-diff-gate enforcer (src/policies/enforcers/schema_diff_gate.py)
+ * clears commits/pushes only when short_term.db carries a memory row LIKE
+ * '%schema-diff%pass%' newer than one hour — but until this function, nothing
+ * ever wrote that row: this CLI printed and exited, and `uap memory store`
+ * REJECTS the marker via the quality write-gate (it scores ~0.05) unless
+ * --force is used. The gate's documented remedy ("run `uap schema-diff` and
+ * re-commit") therefore could not succeed. The check now records its own
+ * result, exactly like a test runner writing its report.
+ *
+ * Written directly through SQLiteShortTermMemory (not the write-gate path):
+ * this is a gate-contract record, deliberately below the memory quality bar.
+ * Best-effort — a recording failure must never fail the diff itself.
+ */
+async function recordSchemaDiffPass(baseBranch: string, filesChecked: number): Promise<void> {
+  try {
+    const cwd = process.cwd();
+    const config = loadUapConfig(cwd);
+    const dbPath = shortTermDbPath(cwd, config?.memory?.shortTerm?.path);
+    const db = new SQLiteShortTermMemory({
+      dbPath,
+      projectId: config?.project?.name ?? 'project',
+      maxEntries: config?.memory?.shortTerm?.maxEntries || 50,
+    });
+    await db.store(
+      'action',
+      `schema-diff pass: base ${baseBranch}, ${filesChecked} schema file(s) checked, no breaking changes`,
+      // High importance so the rolling-window prune (which orders by
+      // importance) does not evict the marker inside its 1h validity window.
+      8
+    );
+    await db.close();
+    console.log('Recorded schema-diff pass for the schema-diff-gate (1h window).');
+  } catch {
+    console.log('Note: could not record the pass marker (schema-diff-gate may still block).');
+  }
+}
+
 export function registerSchemaDiffCommand(program: Command): void {
   program
     .command('schema-diff')
@@ -345,6 +388,8 @@ export function registerSchemaDiffCommand(program: Command): void {
       if (hasBreaking) {
         console.log('\nBreaking changes require explicit approval before proceeding.');
         process.exitCode = 1;
+      } else {
+        await recordSchemaDiffPass(options.base, results.length);
       }
     });
 }

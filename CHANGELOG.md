@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.210.7 (2026-08-17)
+
+- fix(schema-diff): record passes + exempt merge-verbatim files (gate deadlock)
+
+
 ## v1.210.6 (2026-08-17)
 
 - fix(proxy): stop loop-breaking an agent that is waiting on a long job
