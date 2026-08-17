@@ -2043,6 +2043,17 @@ class TestToolTurnControls(unittest.TestCase):
             )
             self.assertIn("enable_thinking", openai)
             self.assertFalse(openai["enable_thinking"])
+            # THE assertion whose absence let the switch be a no-op for months:
+            # a `--jinja` server reads chat_template_kwargs and ignores the
+            # top-level field entirely, so asserting only the line above passes
+            # while the upstream keeps reasoning. Measured on the live server:
+            # top-level only -> 703 chars of reasoning; this key -> 0.
+            self.assertIs(
+                openai.get("chat_template_kwargs", {}).get("enable_thinking"),
+                False,
+                "tool-turn thinking switch must reach chat_template_kwargs, "
+                "or a --jinja upstream ignores it",
+            )
         finally:
             setattr(proxy, "PROXY_DISABLE_THINKING_ON_TOOL_TURNS", old_disable)
 

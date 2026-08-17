@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.210.6 (2026-08-17)
+
+- fix(proxy): stop loop-breaking an agent that is waiting on a long job
+
+
+## v1.210.5 (2026-08-17)
+
+- fix(proxy): make the thinking switches reach the template that reads them
+
+
 ## v1.210.4 (2026-08-17)
 
 - fix(proxy): advertise the context window the proxy actually enforces
