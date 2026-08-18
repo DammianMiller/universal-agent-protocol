@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.212.5 (2026-08-18)
+
+- fix(deliver): put the browser's own error text in the gate verdict
+
+
 ## v1.212.4 (2026-08-18)
 
 - fix(deliver): vm-dom must not judge a WebGL page it cannot run

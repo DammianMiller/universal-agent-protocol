@@ -542,6 +542,55 @@ async function checkCanvasLiveness(browser: BrowserDriver, start: number): Promi
  * loop is dead/frozen/blank, else null (healthy OR no browser available →
  * fail-open, the caller keeps the vm-dom pass).
  */
+/**
+ * Turn a browser's console/page errors into a gate verdict the model can act on.
+ *
+ * The liveness probe answers one question — is the render loop alive — and
+ * everything the browser printed on the way there was thrown away. For a WebGL
+ * page that discarded exactly the information the model needs. Measured on a
+ * stalled run: the page was blank and the browser had said why, precisely:
+ *
+ *     Shader compile error: ERROR: 0:215: 'gl_FragColor' : undeclared identifier
+ *     Shader compile error: ERROR: 0:15: '=' : dimension mismatch
+ *     PAGEERROR: Unexpected identifier 'init'
+ *
+ * `gl_FragColor` is WebGL1 syntax inside a `#version 300 es` shader — a
+ * one-line fix, named with its line number. The model never saw any of it. It
+ * was handed "33% of gates" for nine consecutive turns and rewrote working
+ * code, because a percentage is not a diagnosis.
+ *
+ * Uncaught exceptions and shader failures are unambiguous, so they fail the
+ * gate on their own. Ordinary console noise (a missing favicon, a warning) is
+ * not promoted to a failure — it rides along as detail on a verdict the probe
+ * reached independently.
+ */
+const HARD_ERROR_RE = /shader|pageerror|uncaught|is not (a function|defined)|cannot read propert|failed to (create|link|compile)/i;
+
+function pageErrorFailure(browser: BrowserDriver): { hard: string[]; all: string[] } {
+  let all: string[] = [];
+  try {
+    all = browser.getErrors().map((e) => `${e.kind}: ${e.message}`);
+  } catch {
+    return { hard: [], all: [] };
+  }
+  return { hard: all.filter((m) => HARD_ERROR_RE.test(m)), all };
+}
+
+/** Fold browser errors into a result so the reason reaches the model verbatim. */
+function withBrowserErrors(result: ExecutionResult, errs: string[]): ExecutionResult {
+  if (errs.length === 0) return result;
+  // Verbatim, and capped: the compiler's own text is the actionable part, and
+  // a summary of it would be another percentage.
+  const detail = errs.slice(0, 8).join('\n');
+  return {
+    ...result,
+    failureReason: result.failureReason
+      ? `${result.failureReason}; browser reported ${errs.length} error(s)`
+      : `browser reported ${errs.length} error(s)`,
+    outputTail: [result.outputTail, detail].filter(Boolean).join('\n').slice(-4000),
+  };
+}
+
 async function runCanvasLivenessCheck(
   entryDir: string,
   opts: ExecutionGateOptions,
@@ -553,8 +602,32 @@ async function runCanvasLivenessCheck(
   try {
     server = await startStaticServer(entryDir, entry);
     try {
-      browser = opts.browserFactory ? opts.browserFactory() : await loadWebBrowser();
-      await browser.launch({ headless: true });
+      // For a WebGL page this prefers the driver that actually reports errors.
+      // Measured on the same broken page: the default driver's getErrors()
+      // returned ONE entry (a 404) and silently dropped every console.error and
+      // uncaught exception, including
+      //
+      //   Shader compile error: ERROR: 0:215: 'gl_FragColor' : undeclared identifier
+      //
+      // while playwright returned all five. Since this whole rung exists to
+      // judge a page the stub cannot, a driver that cannot report why it failed
+      // leaves the model with a percentage and no diagnosis — which is what
+      // held one run at 33% for nine consecutive turns.
+      if (!opts.browserFactory && usesWebGl(entryDir, entry)) {
+        const pw = await loadPlaywrightDriver().catch(() => null);
+        if (pw) {
+          try {
+            await pw.launch({ headless: true });
+            browser = pw;
+          } catch {
+            browser = null;
+          }
+        }
+      }
+      if (!browser) {
+        browser = opts.browserFactory ? opts.browserFactory() : await loadWebBrowser();
+        await browser.launch({ headless: true });
+      }
     } catch {
       return null; // no browser — fail-open (vm-dom verdict stands)
     }
@@ -565,7 +638,26 @@ async function runCanvasLivenessCheck(
     await withTimeout(browser.goto(server.url), timeoutMs, 'goto').catch(() => undefined);
     await Promise.race([browser.waitForLoadState('load'), delay(timeoutMs)]).catch(() => undefined);
     await delay(opts.settleMs ?? DEFAULT_SETTLE_MS);
-    return await checkCanvasLiveness(browser, start);
+    const liveness = await checkCanvasLiveness(browser, start);
+    const { hard, all } = pageErrorFailure(browser);
+    if (liveness) return withBrowserErrors(liveness, all);
+    // The loop looked alive, but the page threw. A WebGL app whose shaders did
+    // not compile can still tick requestAnimationFrame while drawing nothing —
+    // which is exactly how a blank page passed a liveness probe.
+    if (hard.length > 0) {
+      return withBrowserErrors(
+        {
+          passed: false,
+          exitCode: null,
+          failureReason: 'page errors in a real browser',
+          outputTail: '',
+          durationMs: Date.now() - start,
+          via: 'browser',
+        },
+        all
+      );
+    }
+    return null;
   } catch {
     return null; // any error → fail-open
   } finally {
