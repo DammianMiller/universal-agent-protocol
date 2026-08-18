@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.212.2 (2026-08-18)
+
+- fix(deliver): give the execution gate a real WebGL2 browser
+
+
 ## v1.212.1 (2026-08-18)
 
 - fix(deliver): stop the respawn loop, the whole-file re-emit, and the garbled write path

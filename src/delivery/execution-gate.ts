@@ -23,6 +23,7 @@ import { fileURLToPath } from 'url';
 import vm from 'vm';
 import type { GateRung } from './verifier-ladder.js';
 import { sanitizedEnv } from './sanitized-env.js';
+import { loadPlaywrightDriver } from './playwright-driver.js';
 
 /**
  * Env for spawned smoke-runs with secret-bearing vars stripped, mirroring
@@ -517,15 +518,37 @@ async function runWeb(entryDir: string, opts: ExecutionGateOptions, entry = 'ind
       browser = opts.browserFactory ? opts.browserFactory() : await loadWebBrowser();
       await browser.launch({ headless: true });
     } catch (e) {
-      // Browser unavailable (e.g. no chromium) — fall back to the vm harness.
       if (browser) {
         try {
           await browser.close();
         } catch {
           /* ignore */
         }
+        browser = null;
       }
-      return runVmDomHarness(entryDir, start, `browser launch failed: ${String(e).slice(0, 120)}`, entry);
+      // Before the stub: try playwright-core. The vm-dom harness has no
+      // graphics implementation, so for a WebGL page it does not report that
+      // it cannot judge — it reports FAILURE, with an empty shader info log.
+      // Measured: 50 identical `Shader compile error: undefined` lines in one
+      // run, which the model cannot act on and cannot converge past. A real
+      // browser is a better oracle than a stub in every case, so this rung
+      // goes first and the stub stays only for a machine with no browser.
+      try {
+        // Only when the caller did NOT inject a driver. An injected
+        // browserFactory means "use THIS browser" — quietly substituting a
+        // different one would make the injection meaningless and would hide a
+        // test's chosen failure behind a real browser that happens to work.
+        const pw = opts.browserFactory ? null : await loadPlaywrightDriver();
+        if (pw) {
+          await pw.launch({ headless: true });
+          browser = pw;
+        }
+      } catch {
+        browser = null;
+      }
+      if (!browser) {
+        return runVmDomHarness(entryDir, start, `browser launch failed: ${String(e).slice(0, 120)}`, entry);
+      }
     }
     try {
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
