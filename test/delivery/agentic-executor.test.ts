@@ -1050,3 +1050,66 @@ describe('whole-file re-emit rail', () => {
     ).toBe(false);
   });
 });
+
+describe('a stripped tool is refused, not executed', () => {
+  // Removing a tool from the offered list is a HINT to the model, not a
+  // control on the harness: runTool dispatches on the name alone, so a model
+  // that calls a stripped tool anyway still gets it executed. That made both
+  // forced-round strips advisory — the read-tool strip that breaks a
+  // read-forever loop, and the write_file strip that stops a 19-minute
+  // whole-file re-emit. Observed live: write_file executed three times on
+  // rounds where it had been stripped.
+  let dir: string;
+  beforeEach(() => {
+    process.env.UAP_DELIVER_WRITE_NUDGE_AFTER = '1';
+    process.env.UAP_DELIVER_FORCE_WRITE_AFTER = '2';
+    dir = mkdtempSync(join(tmpdir(), 'agx-strip-'));
+    // Large enough to arm the whole-file rail.
+    writeFileSync(join(dir, 'big.js'), `// big\n${'const x = 1;\n'.repeat(900)}`);
+  });
+  afterEach(() => {
+    delete process.env.UAP_DELIVER_WRITE_NUDGE_AFTER;
+    delete process.env.UAP_DELIVER_FORCE_WRITE_AFTER;
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  const readBig = {
+    role: 'assistant',
+    content: null,
+    tool_calls: [
+      { id: 'r', type: 'function', function: { name: 'read_file', arguments: '{"path":"big.js"}' } },
+    ],
+  };
+  const wholeFileWrite = {
+    role: 'assistant',
+    content: null,
+    tool_calls: [
+      {
+        id: 'w',
+        type: 'function',
+        function: { name: 'write_file', arguments: '{"path":"big.js","content":"// GUTTED"}' },
+      },
+    ],
+  };
+
+  it('refuses write_file on a forced large-file round instead of running it', async () => {
+    const bodies: string[] = [];
+    let i = 0;
+    const seq = [readBig, readBig, readBig, wholeFileWrite, wholeFileWrite, wholeFileWrite];
+    vi.spyOn(global, 'fetch').mockImplementation(async (_u, init) => {
+      bodies.push(String((init as RequestInit | undefined)?.body ?? ''));
+      const msg = seq[Math.min(i, seq.length - 1)];
+      i++;
+      return { ok: true, json: async () => ({ choices: [{ message: msg }] }) } as unknown as Response;
+    });
+    const exec = createAgenticExecutor(MODEL, { projectRoot: dir, endpoint: 'http://localhost:9/v1' });
+    await exec('shrink it');
+
+    // The refusal must reach the model...
+    expect(bodies.some((b) => b.includes('was not offered this round'))).toBe(true);
+    // ...and the write must NOT have landed. This is the assertion that fails
+    // without the fix: the file would read "// GUTTED".
+    expect(readFileSync(join(dir, 'big.js'), 'utf-8')).not.toContain('GUTTED');
+  });
+});
