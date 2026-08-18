@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.212.0 (2026-08-18)
+
+- feat(policy): rtk-wrap becomes opt-in, and stops corrupting parsed output
+
+
 ## v1.211.2 (2026-08-18)
 
 - test: fix two flaky tests, and the vacuity that hid one of them
