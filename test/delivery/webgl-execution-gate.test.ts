@@ -57,7 +57,15 @@ async function errorsFor(glsl: string): Promise<string[]> {
   const driver = await loadPlaywrightDriver();
   if (!driver) return ['__NO_DRIVER__'];
   try {
-    await driver.launch({ headless: true });
+    // playwright-core ships WITHOUT browser binaries, so the package resolving
+    // is not evidence that a browser exists — CI has the former and not the
+    // latter. A launch failure is exactly the case the gate handles by falling
+    // through to the next rung, so it is a skip here, not a failure.
+    try {
+      await driver.launch({ headless: true });
+    } catch {
+      return ['__NO_DRIVER__'];
+    }
     await driver.goto(`http://127.0.0.1:${port}/`);
     await driver.waitForLoadState('load');
     await new Promise((r) => setTimeout(r, 400));
