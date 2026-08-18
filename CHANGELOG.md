@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.212.4 (2026-08-18)
+
+- fix(deliver): vm-dom must not judge a WebGL page it cannot run
+
+
 ## v1.212.3 (2026-08-18)
 
 - fix(deliver): make a stripped tool actually unavailable, and probe WebGL before trusting the browser
