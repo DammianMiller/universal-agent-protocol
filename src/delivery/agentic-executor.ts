@@ -440,6 +440,70 @@ export function writeOnlyTools(allowBash: boolean): Array<(typeof TOOLS)[number]
   return toolsFor(allowBash).filter((t) => !READ_ONLY_TOOL_NAMES.has(t.function.name));
 }
 
+/**
+ * Bytes above which re-emitting a whole file is treated as too expensive.
+ *
+ * Not a correctness limit — a throughput one. Measured (octopus_invaders_v4,
+ * 2026-08-18): one forced round re-emitted a 40KB fireworks.html and took ~19
+ * MINUTES of continuous decode on a local 35B; the equivalent edit_file patch
+ * lands in seconds. Five turns in the earlier run exceeded 600s each, and the
+ * run hit its 120-minute wall clock without converging.
+ */
+export const WHOLE_FILE_REWRITE_LIMIT_BYTES = (() => {
+  const raw = Number(process.env.UAP_DELIVER_WHOLE_FILE_LIMIT_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? raw : 8192;
+})();
+
+/**
+ * Tools for a forced round whose grounded files are already large: reads AND
+ * write_file removed, leaving the surgical mutators.
+ *
+ * Instruction alone does not work here, and that is measured rather than
+ * assumed. The edit_file description already says "PREFER this over write_file
+ * for existing files — large re-emits truncate", and the forced-round grounding
+ * already ends with "Do not rewrite a whole file when a targeted edit will do".
+ * The model re-emitted 40KB anyway. What reliably changes behaviour in this
+ * loop is removing the capability — the same reason the forced round strips the
+ * read tools rather than asking the model to stop reading.
+ *
+ * The cost cannot be recovered after the fact: those 19 minutes are spent
+ * DECODING, before the tool call ever arrives, so refusing the write on receipt
+ * would waste the time it was meant to save. It has to be prevented at the
+ * point of choice.
+ *
+ * Still bounded the same way: forced rounds never run back-to-back, so the very
+ * next round restores the full tool set and a genuinely-new file can be
+ * created then.
+ */
+export function patchOnlyTools(allowBash: boolean): Array<(typeof TOOLS)[number]> {
+  return writeOnlyTools(allowBash).filter((t) => t.function.name !== 'write_file');
+}
+
+/**
+ * Does the forced round's grounded set contain a large EXISTING file?
+ *
+ * Only then is write_file worth removing: a small file is cheap to re-emit,
+ * and a file that does not exist yet can only be created with write_file.
+ */
+export function hasLargeExistingFile(
+  cache: ReadCache,
+  projectRoot: string,
+  statBytes: (p: string) => number = (p) => statSync(p).size,
+): boolean {
+  for (const [key, meta] of cache.seen.entries()) {
+    if (!key.startsWith('read_file:')) continue;
+    const rel = meta.path ?? key.slice('read_file:'.length);
+    try {
+      if (statBytes(isAbsolute(rel) ? rel : join(projectRoot, rel)) >= WHOLE_FILE_REWRITE_LIMIT_BYTES) {
+        return true;
+      }
+    } catch {
+      continue; // unreadable/deleted — not evidence of anything
+    }
+  }
+  return false;
+}
+
 const TOOLS = [
   {
     type: 'function',
@@ -2057,7 +2121,8 @@ async function _chat(
   messages: ChatMessage[],
   temperature?: number,
   allowBash = true,
-  forceWrite = false
+  forceWrite = false,
+  patchOnly = false
 ): Promise<ChatMessage> {
   const url = `${endpoint.replace(/\/$/, '')}/chat/completions`;
   // This path had NO endpoint check at all while its sibling in
@@ -2084,7 +2149,11 @@ async function _chat(
       // Forced-write round: offer ONLY mutating/terminating tools and require a
       // call, so a model that has looped on reads cannot read again — it must
       // write_file/edit_file or finish. Otherwise the normal auto-choice set.
-      tools: forceWrite ? writeOnlyTools(allowBash) : toolsFor(allowBash),
+      tools: forceWrite
+        ? patchOnly
+          ? patchOnlyTools(allowBash)
+          : writeOnlyTools(allowBash)
+        : toolsFor(allowBash),
       tool_choice: forceWrite ? 'required' : 'auto',
       messages,
       ...(temperature !== undefined ? { temperature } : {}),
@@ -2243,6 +2312,14 @@ export function createAgenticExecutor(
       // read tools (see lastRoundForced) and the model can recover.
       const forceWrite: boolean = roundsWithoutWrite >= FORCE_WRITE_AFTER && !lastRoundForced;
       lastRoundForced = forceWrite;
+      // On a forced round whose grounded files are already large, drop
+      // write_file too. Re-emitting a 40KB file cost ~19 minutes of decode on
+      // the local 35B (measured) and the equivalent patch lands in seconds --
+      // and because that time is spent BEFORE the tool call arrives, no
+      // after-the-fact refusal can recover it. The next round restores
+      // everything (forced rounds never run back-to-back), so a genuinely-new
+      // file can still be created.
+      const patchOnly = forceWrite && hasLargeExistingFile(readCache, opts.projectRoot);
       if (forceWrite) {
         // Ground the forced round rather than blinding it — see
         // buildForcedRoundGrounding. Stripping the read tools stops the loop;
@@ -2253,7 +2330,7 @@ export function createAgenticExecutor(
           round,
           kind: 'error',
           detail:
-            `forced-write round: read tools stripped after ${roundsWithoutWrite} read-only rounds` +
+            `forced-write round: ${patchOnly ? 'read + whole-file-write tools' : 'read tools'} stripped after ${roundsWithoutWrite} read-only rounds` +
             (grounding ? ' (grounded with current file content)' : ''),
         });
       }
@@ -2371,6 +2448,45 @@ export function createAgenticExecutor(
               'Use the write_file tool directly for any further changes, verify with run_bash, ' +
               'then call finish.',
           });
+          continue;
+        }
+        // A turn that mutated NOTHING and then went quiet is not a finished
+        // turn -- it is the same no-op the `finish` branch below refuses, just
+        // arriving without the courtesy of saying so. Refuse it the same way.
+        //
+        // Measured (octopus_invaders_v4, 2026-08-18): 856 agent sessions in one
+        // 100-minute run, 837 of which called `list_dir .` once, produced no
+        // tool call on the next round, and returned here. The orchestrator
+        // respawned each time. 39 writes came out of 967 read-only rounds.
+        //
+        // Every existing rail missed it for the same reason: they count WITHIN
+        // a session. `roundsWithoutWrite` never reached the write-nudge (5) or
+        // force-write (6) threshold because the session ended at round 2;
+        // PROXY_REPEAT_CALL_THRESHOLD (4 identical calls) never reached 2
+        // because each session made exactly ONE call; and EMPTY_FINISH_REFUSALS
+        // guarded only the explicit `finish` tool. The one exit with no
+        // mutation check was the one the model took 837 times.
+        if (mutationsThisTurn === 0 && emptyFinishes < EMPTY_FINISH_REFUSALS) {
+          emptyFinishes += 1;
+          opts.onEvent?.({
+            round,
+            kind: 'error',
+            detail: `silent exit refused (${emptyFinishes}/${EMPTY_FINISH_REFUSALS}) — turn modified no files`,
+          });
+          messages.push({ role: 'assistant', content: msg.content ?? null });
+          messages.push({
+            role: 'user',
+            content:
+              'You stopped without calling a tool and without modifying any file. ' +
+              'That ends the turn with nothing delivered. You already have enough ' +
+              'context. THIS round, CREATE or EDIT the files the task requires ' +
+              '(write_file / edit_file), then call finish. If the work is genuinely ' +
+              'already complete, call finish and say why.',
+          });
+          // Pull the write rails forward: this turn has now demonstrated the
+          // exact behaviour they exist to catch, so it should not have to spend
+          // several more rounds re-earning them.
+          roundsWithoutWrite = Math.max(roundsWithoutWrite, WRITE_NUDGE_AFTER);
           continue;
         }
         opts.onEvent?.({ round, kind: 'final', detail: (msg.content ?? '').slice(0, 200) });

@@ -194,6 +194,48 @@ export function stripRootEcho(projectRoot: string, rel: string, forWrite: boolea
   return null;
 }
 
+/**
+ * Undo a spurious leading dot on a WRITE target.
+ *
+ * The full repairFilename is deliberately read-only: it fuzzy-matches on a
+ * punctuation-squashed basename, and letting that redirect a write would let a
+ * genuinely-new `constants2.js` land on top of an existing `constants.js`.
+ *
+ * This is the narrow case that is safe for writes, because it is an EXACT
+ * match: the proposed file does not exist, and stripping ONE leading dot names
+ * a file that does. Nothing else can trigger it — a new filename that merely
+ * resembles an existing one is untouched.
+ *
+ * Measured (octopus_invaders_v4, 2026-08-18): the local model emitted
+ * `.fireworks.html` 7 times in one run and 30 in another, for a project whose
+ * real file is `fireworks.html`. Reads recovered via repairFilename; writes did
+ * not, so a write_file would have created a phantom dotfile shadowing the real
+ * one — and every later read of the real file would miss those edits, which is
+ * the phantom-tree failure this module already exists to prevent.
+ *
+ * A legitimate dotfile is unaffected: `.uap.json` only repairs if `uap.json`
+ * exists, and it does not.
+ */
+export function repairLeadingDot(abs: string): ContainResult {
+  if (!isAbsolute(abs) || existsSync(abs)) return { path: abs, changed: false };
+  const base = basename(abs);
+  if (!base.startsWith('.') || base.length < 2) return { path: abs, changed: false };
+  const undotted = base.slice(1);
+  if (!undotted || undotted.startsWith('.')) return { path: abs, changed: false };
+  const candidate = join(dirname(abs), undotted);
+  if (!existsSync(candidate)) return { path: abs, changed: false };
+  try {
+    if (!statSync(candidate).isFile()) return { path: abs, changed: false };
+  } catch {
+    return { path: abs, changed: false };
+  }
+  return {
+    path: candidate,
+    changed: true,
+    reason: 'stray leading dot removed — the undotted file is the real one',
+  };
+}
+
 export function normalizeToolPath(
   projectRoot: string,
   proposed: string,
@@ -207,6 +249,10 @@ export function normalizeToolPath(
     if (!opts.forWrite) {
       const repaired = repairFilename(contained.path);
       if (repaired.changed) return { path: repaired.path, changed: true, reason: repaired.reason };
+    } else {
+      // Writes get the exact-match repair only (see repairLeadingDot).
+      const dotted = repairLeadingDot(contained.path);
+      if (dotted.changed) return { path: dotted.path, changed: true, reason: dotted.reason };
     }
     return contained.changed ? contained : { path: trimmed, changed: trimmed !== proposed, reason: 'trimmed' };
   }
@@ -229,6 +275,11 @@ export function normalizeToolPath(
     if (repaired.changed) {
       // Return relative to keep the caller's shape.
       return { path: repaired.path.slice(projectRoot.length).replace(/^\/+/, ''), changed: true, reason: repaired.reason };
+    }
+  } else {
+    const dotted = repairLeadingDot(join(projectRoot, corrected));
+    if (dotted.changed) {
+      return { path: dotted.path.slice(projectRoot.length).replace(/^\/+/, ''), changed: true, reason: dotted.reason };
     }
   }
   return corrected !== trimmed ? { path: corrected, changed: true, reason: 'corrected garbled subdir(s)' } : { path: proposed, changed: false };

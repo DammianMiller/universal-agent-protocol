@@ -10,6 +10,10 @@ import {
   noopApplier,
   createAgenticExecutor,
   isSuspectedGutting,
+  patchOnlyTools,
+  writeOnlyTools,
+  hasLargeExistingFile,
+  WHOLE_FILE_REWRITE_LIMIT_BYTES,
 } from '../../src/delivery/agentic-executor.js';
 
 /** Build a fake /chat/completions response body. */
@@ -847,6 +851,42 @@ describe('createAgenticExecutor — empty-finish refusal', () => {
     expect(existsSync(join(dir, 'b.js'))).toBe(true);
   });
 
+  it('refuses a SILENT exit from a turn that modified nothing', async () => {
+    // The shape that cost 100 minutes (octopus_invaders_v4, 2026-08-18): the
+    // model calls one read-only tool, then returns a message with NO tool call
+    // at all. That is the same no-op the finish branch refuses, arriving
+    // without saying so — and it was the one exit with no mutation check.
+    //
+    // 856 agent sessions in that run; 837 took exactly this path and the
+    // orchestrator respawned each one. 39 writes came out of 967 read-only
+    // rounds.
+    const silent = { role: 'assistant', content: 'Everything looks correct already.' };
+    const { bodies, done } = run([readCall(1), silent, writeCall, finishCall(1)]);
+    await done;
+    expect(bodies.some((b) => b.includes('without modifying any file'))).toBe(true);
+    // The refusal must not end the turn — the write that follows has to land.
+    expect(existsSync(join(dir, 'b.js'))).toBe(true);
+  });
+
+  it('lets a silent exit stand once the turn has written something', async () => {
+    const silent = { role: 'assistant', content: 'Done.' };
+    const { bodies, done } = run([writeCall, silent]);
+    const result = await done;
+    expect(bodies.some((b) => b.includes('without modifying any file'))).toBe(false);
+    expect(result).toBe('Done.');
+  });
+
+  it('bounds silent-exit refusals so a turn cannot deadlock', async () => {
+    // Never writes, never calls a tool. Must still terminate rather than
+    // burning the round budget — the gate ladder decides completion, not this.
+    const silent = { role: 'assistant', content: 'Nothing to do.' };
+    const { bodies, done } = run([silent]);
+    const result = await done;
+    const refusals = bodies.filter((b) => b.includes('without modifying any file')).length;
+    expect(refusals).toBeLessThanOrEqual(3);
+    expect(result).toBe('Nothing to do.');
+  });
+
   it('accepts a finish from a turn that wrote something', async () => {
     const { bodies, done } = run([writeCall, finishCall(1), readCall(9)]);
     const result = await done;
@@ -958,5 +998,55 @@ describe('a no-op edit does not count as a mutation', () => {
       .join('\n');
     expect(sent).not.toMatch(/REFUSED/i);
     expect(readFileSync(join(dir, 'calc.js'), 'utf-8')).toContain('a * b');
+  });
+});
+
+describe('whole-file re-emit rail', () => {
+  // Throughput, not correctness. Measured (octopus_invaders_v4, 2026-08-18):
+  // one forced round re-emitted a 40KB file and spent ~19 MINUTES decoding on
+  // a local 35B; the equivalent patch lands in seconds. That cost is paid
+  // BEFORE the tool call arrives, so refusing the write on receipt cannot
+  // recover it — the capability has to be gone at the point of choice.
+
+  it('drops write_file but keeps the surgical mutators', () => {
+    const names = patchOnlyTools(true).map((t) => t.function.name);
+    expect(names).not.toContain('write_file');
+    expect(names).toContain('edit_file');
+    expect(names).toContain('finish');
+  });
+
+  it('still drops the read tools, like any forced round', () => {
+    const names = patchOnlyTools(true).map((t) => t.function.name);
+    expect(names).not.toContain('read_file');
+    expect(names).not.toContain('list_dir');
+  });
+
+  it('is strictly narrower than the ordinary forced set', () => {
+    // The ordinary forced round MUST keep write_file — a new file can only be
+    // created with it, and forced rounds alternate so the next round restores
+    // everything anyway.
+    expect(writeOnlyTools(true).map((t) => t.function.name)).toContain('write_file');
+  });
+
+  it('fires only when a grounded file is actually large', () => {
+    const cache = { seen: new Map([['read_file:big.js', { round: 1, path: 'big.js' }]]) } as never;
+    const big = () => WHOLE_FILE_REWRITE_LIMIT_BYTES;
+    const small = () => WHOLE_FILE_REWRITE_LIMIT_BYTES - 1;
+    expect(hasLargeExistingFile(cache, '/proj', big)).toBe(true);
+    expect(hasLargeExistingFile(cache, '/proj', small)).toBe(false);
+  });
+
+  it('ignores directories and unreadable paths', () => {
+    // list_dir entries name a directory, not a file — statting one as evidence
+    // of a large file would arm the rail on any project with a big folder.
+    const cache = { seen: new Map([['list_dir:.', { round: 1, path: '.' }]]) } as never;
+    expect(hasLargeExistingFile(cache, '/proj', () => 10_000_000)).toBe(false);
+
+    const missing = { seen: new Map([['read_file:gone.js', { round: 1, path: 'gone.js' }]]) } as never;
+    expect(
+      hasLargeExistingFile(missing, '/proj', () => {
+        throw new Error('ENOENT');
+      })
+    ).toBe(false);
   });
 });
