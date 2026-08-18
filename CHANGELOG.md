@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.212.3 (2026-08-18)
+
+- fix(deliver): make a stripped tool actually unavailable, and probe WebGL before trusting the browser
+- fix(test): skip the WebGL assertions when no browser binary is installed
+
+
 ## v1.212.2 (2026-08-18)
 
 - fix(deliver): give the execution gate a real WebGL2 browser
