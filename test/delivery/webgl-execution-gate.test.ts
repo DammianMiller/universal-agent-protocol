@@ -27,7 +27,7 @@ import { join } from 'path';
 import { createServer, type Server } from 'http';
 
 import { loadPlaywrightDriver } from '../../src/delivery/playwright-driver.js';
-import { runVmDomHarness } from '../../src/delivery/execution-gate.js';
+import { runVmDomHarness, runExecutionGate } from '../../src/delivery/execution-gate.js';
 
 const VALID = '#version 300 es\nin vec2 p; void main(){ gl_Position = vec4(p,0.0,1.0); }';
 // Missing the statement terminator — a genuine GLSL syntax error.
@@ -174,4 +174,64 @@ ctx.fillRect(0, 0, 10, 10);
     );
     expect(r.failureReason ?? '').not.toMatch(/WebGL/i);
   });
+});
+
+describe('browser errors reach the verdict', () => {
+  // The liveness probe answered one question — is the render loop alive — and
+  // discarded everything the browser printed getting there. For a WebGL page
+  // that dropped exactly what the model needed:
+  //
+  //   Shader compile error: ERROR: 0:215: 'gl_FragColor' : undeclared identifier
+  //   pageerror: Identifier 'VS_FULL' has already been declared
+  //
+  // Both one-line fixes, named with line numbers. The model saw none of it: it
+  // was handed "33% of gates" for nine consecutive turns and rewrote working
+  // code, because a percentage is not a diagnosis.
+  let dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs = [];
+  });
+
+  function project(html: string): string {
+    const d = mkdtempSync(join(tmpdir(), 'vmerr-'));
+    dirs.push(d);
+    writeFileSync(join(d, 'index.html'), html);
+    return d;
+  }
+
+  it('fails a WebGL page whose shaders do not compile, and says why', async () => {
+    // A loop that ticks while drawing nothing passes a liveness probe, which is
+    // how a blank page looked healthy.
+    const dir = project(`<html><body><canvas id="c"></canvas><script>
+const gl = document.getElementById('c').getContext('webgl2');
+const s = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(s, '#version 300 es\\nvoid main(){ gl_FragColor = vec4(1.0); }');
+gl.compileShader(s);
+if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error('Shader compile error:', gl.getShaderInfoLog(s));
+requestAnimationFrame(function loop(){ requestAnimationFrame(loop); });
+</script></body></html>`);
+
+    const r = await runExecutionGate(dir, { entry: 'index.html' });
+    if (String(r.failureReason ?? '').includes('WebGL context')) return; // no browser here
+    expect(r.passed).toBe(false);
+    // The compiler's own words, verbatim — a summary would be another percentage.
+    expect(`${r.failureReason} ${r.outputTail}`).toMatch(/gl_FragColor|Shader compile error/i);
+  }, 120_000);
+
+  it('does not fail a healthy WebGL page', async () => {
+    const dir = project(`<html><body><canvas id="c"></canvas><script>
+const gl = document.getElementById('c').getContext('webgl2');
+const s = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(s, '#version 300 es\\nvoid main(){ gl_Position = vec4(0.0,0.0,0.0,1.0); }');
+gl.compileShader(s);
+if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error('Shader compile error:', gl.getShaderInfoLog(s));
+const c = document.getElementById('c');
+const x = c.getContext('webgl2');
+requestAnimationFrame(function loop(){ requestAnimationFrame(loop); });
+</script></body></html>`);
+
+    const r = await runExecutionGate(dir, { entry: 'index.html' });
+    expect(`${r.failureReason ?? ''} ${r.outputTail ?? ''}`).not.toMatch(/Shader compile error/i);
+  }, 120_000);
 });
