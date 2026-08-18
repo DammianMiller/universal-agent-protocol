@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.212.1 (2026-08-18)
+
+- fix(deliver): stop the respawn loop, the whole-file re-emit, and the garbled write path
+
+
 ## v1.212.0 (2026-08-18)
 
 - feat(policy): rtk-wrap becomes opt-in, and stops corrupting parsed output

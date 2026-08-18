@@ -8,6 +8,7 @@ import {
   fuzzyEq,
   containToWorkdir,
   repairFilename,
+  repairLeadingDot,
   normalizeToolPath,
 } from '../../src/delivery/path-normalize.js';
 
@@ -96,5 +97,73 @@ describe('deliver path-normalize', () => {
     const pyOut: string[] = JSON.parse(py.stdout.trim());
     const tsOut = fixtures.map((f) => containToWorkdir(f, wd).path);
     expect(tsOut).toEqual(pyOut);
+  });
+});
+
+describe('stray leading dot on a WRITE target', () => {
+  // The local model emitted `.fireworks.html` 7 times in one run and 30 in
+  // another, for a project whose real file is `fireworks.html`. Reads recovered
+  // through repairFilename; writes did not, because that repair is deliberately
+  // read-only — it fuzzy-matches a punctuation-squashed basename, and letting
+  // THAT redirect a write would drop a new `constants2.js` onto an existing
+  // `constants.js`.
+  //
+  // Left unrepaired, a write_file would have created a dotfile shadowing the
+  // real file, and every later read of the real file would miss those edits —
+  // the phantom-tree failure this module exists to prevent.
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'pn-dot-'));
+    writeFileSync(join(root, 'fireworks.html'), '<html></html>');
+    writeFileSync(join(root, 'constants.js'), 'const a = 1;');
+    writeFileSync(join(root, '.uap.json'), '{}');
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  const write = (p: string) => normalizeToolPath(root, p, { forWrite: true });
+
+  it('repairs a dotted name whose undotted twin exists', () => {
+    expect(write('.fireworks.html').path).toBe('fireworks.html');
+    expect(write('.constants.js').path).toBe('constants.js');
+    expect(write('.fireworks.html').changed).toBe(true);
+  });
+
+  it('leaves a REAL dotfile alone', () => {
+    // .uap.json exists and there is no uap.json — nothing to repair, and
+    // repairing it would corrupt a legitimate config write.
+    const r = write('.uap.json');
+    expect(r.path).toBe('.uap.json');
+    expect(r.changed).toBe(false);
+  });
+
+  it('leaves a NEW dotfile alone', () => {
+    expect(write('.gitignore').changed).toBe(false);
+    expect(write('.env').changed).toBe(false);
+  });
+
+  it('never redirects a genuinely-new file onto a similar existing one', () => {
+    // The reason the fuzzy repair stays read-only. An exact leading-dot strip
+    // cannot do this; a squash-match could.
+    expect(write('constants2.js').changed).toBe(false);
+    expect(write('fireworks.htm').changed).toBe(false);
+  });
+
+  it('does not fire when the dotted file itself exists', () => {
+    writeFileSync(join(root, '.notes.md'), 'x');
+    writeFileSync(join(root, 'notes.md'), 'y');
+    const r = write('.notes.md');
+    expect(r.changed).toBe(false);
+    expect(r.path).toBe('.notes.md');
+  });
+
+  it('will not point a write at a directory', () => {
+    mkdirSync(join(root, 'assets'));
+    const r = write('.assets');
+    expect(r.changed).toBe(false);
+  });
+
+  it('repairLeadingDot ignores relative input', () => {
+    expect(repairLeadingDot('.fireworks.html').changed).toBe(false);
   });
 });
