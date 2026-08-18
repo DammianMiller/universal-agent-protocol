@@ -2320,6 +2320,16 @@ export function createAgenticExecutor(
       // everything (forced rounds never run back-to-back), so a genuinely-new
       // file can still be created.
       const patchOnly = forceWrite && hasLargeExistingFile(readCache, opts.projectRoot);
+      // The exact set sent to the model this round — the same expressions the
+      // request body uses, so the two cannot drift apart.
+      const offeredNames = new Set<string>(
+        (forceWrite
+          ? patchOnly
+            ? patchOnlyTools(allowBash)
+            : writeOnlyTools(allowBash)
+          : toolsFor(allowBash)
+        ).map((t) => t.function.name)
+      );
       if (forceWrite) {
         // Ground the forced round rather than blinding it — see
         // buildForcedRoundGrounding. Stripping the read tools stops the loop;
@@ -2536,6 +2546,34 @@ export function createAgenticExecutor(
           }
           opts.onEvent?.({ round, kind: 'final', tool: 'finish', detail: String(args.summary ?? '') });
           return String(args.summary ?? (summaries.join('; ') || 'done'));
+        }
+        // Removing a tool from the offered list is a HINT, not a control.
+        // runTool dispatches on the name alone, so a model that calls a
+        // stripped tool anyway still gets it executed — which made the
+        // forced-round strips (read tools, and write_file on a large-file
+        // round) advisory rather than enforced. Refuse the call instead, and
+        // say which tool to use, so the round still makes progress.
+        // Only on a FORCED round. Outside one, `toolsFor(allowBash)` omits
+        // run_bash by configuration and that case already has its own, more
+        // specific refusal — overriding it with a generic message loses the
+        // guidance the model actually needs (caught by the run_bash refusal
+        // test). The hole being closed here exists only where a round
+        // deliberately strips a tool.
+        if (forceWrite && !offeredNames.has(call.function.name)) {
+          const alt = call.function.name === 'write_file'
+            ? 'This file is large; use edit_file with a minimal anchor, or replace_lines.'
+            : 'Read tools are unavailable this round — write or finish.';
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: `ERROR: ${call.function.name} was not offered this round. ${alt}`,
+          });
+          opts.onEvent?.({
+            round,
+            kind: 'error',
+            detail: `refused ${call.function.name}: not offered this round`,
+          });
+          continue;
         }
         // A repeated read gets a NUDGE, never a denial — see repeatReadNote.
         const repeat = repeatReadNote(readCache, opts.projectRoot, call.function.name, args, round);

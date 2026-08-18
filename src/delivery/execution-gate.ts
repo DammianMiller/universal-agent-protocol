@@ -77,6 +77,73 @@ export interface BrowserDriver {
   close(): Promise<void>;
 }
 
+/**
+ * Can this browser actually compile a WebGL2 shader?
+ *
+ * The playwright rung was reached only when the primary driver THREW. That
+ * covers "no browser" and misses the case that actually bit: a browser that
+ * launches fine but has no usable WebGL2 behind it. The page then runs, every
+ * shader fails, and the gate reports a real-looking failure — which is
+ * indistinguishable, from the model's side, from the stub reporting
+ * `Shader compile error: undefined` fifty times.
+ *
+ * Probed rather than assumed, because "has a browser" and "has WebGL2" are
+ * different questions and only the second one matters here. Any failure to
+ * answer counts as "no": a driver that cannot run this snippet cannot be
+ * trusted to judge a shader either.
+ */
+async function supportsWebGl2(browser: BrowserDriver): Promise<boolean> {
+  if (typeof browser.evaluate !== 'function') return false;
+  try {
+    return await withTimeout(
+      browser.evaluate<boolean>(`(() => {
+        try {
+          const gl = document.createElement('canvas').getContext('webgl2');
+          if (!gl) return false;
+          const s = gl.createShader(gl.VERTEX_SHADER);
+          gl.shaderSource(s, '#version 300 es\\nvoid main(){ gl_Position = vec4(0.0); }');
+          gl.compileShader(s);
+          return !!gl.getShaderParameter(s, gl.COMPILE_STATUS);
+        } catch { return false; }
+      })()`),
+      WEBGL_PROBE_TIMEOUT_MS,
+      'webgl-probe'
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Budget for the WebGL2 capability probe — one tiny evaluate, not a page load. */
+const WEBGL_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Does the entry point reference WebGL?
+ *
+ * Cheap and deliberately shallow: the probe above costs a browser round-trip,
+ * and there is no reason to pay it for a page that never asks for a GL context.
+ * A false positive costs one probe; a false negative just leaves the primary
+ * driver in place, which is the behaviour that shipped.
+ */
+function usesWebGl(entryDir: string, entry: string): boolean {
+  try {
+    const html = readFileSync(join(entryDir, entry), 'utf-8');
+    if (/webgl2?/i.test(html)) return true;
+    // Inline pages keep their GL in a sibling script (constants.js, main.js).
+    for (const f of readdirSync(entryDir)) {
+      if (!/\.(m?js)$/i.test(f)) continue;
+      try {
+        if (/getContext\(\s*['"`]webgl/i.test(readFileSync(join(entryDir, f), 'utf-8'))) return true;
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    /* unreadable entry — assume not */
+  }
+  return false;
+}
+
 /** Result of the in-page canvas-render probe. */
 interface CanvasRenderProbe {
   hasCanvas: boolean;
@@ -548,6 +615,30 @@ async function runWeb(entryDir: string, opts: ExecutionGateOptions, entry = 'ind
       }
       if (!browser) {
         return runVmDomHarness(entryDir, start, `browser launch failed: ${String(e).slice(0, 120)}`, entry);
+      }
+    }
+    // The primary driver launched. That is not the same as it being able to
+    // judge this page: if the entry uses WebGL and the browser cannot compile
+    // a WebGL2 shader, every shader "fails" and the verdict is noise. Swap to
+    // playwright when it can do better, and only then.
+    if (!opts.browserFactory && usesWebGl(entryDir, entry) && !(await supportsWebGl2(browser))) {
+      try {
+        const pw = await loadPlaywrightDriver();
+        if (pw) {
+          await pw.launch({ headless: true });
+          if (await supportsWebGl2(pw)) {
+            try {
+              await browser.close();
+            } catch {
+              /* ignore */
+            }
+            browser = pw;
+          } else {
+            await pw.close();
+          }
+        }
+      } catch {
+        /* keep the primary driver — a failed upgrade must not lose the rung */
       }
     }
     try {
