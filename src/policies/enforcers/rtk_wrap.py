@@ -27,6 +27,50 @@ PM_BUILTINS = {
 PMS = ("npm", "pnpm", "yarn")
 
 
+# Flags that say "I am going to PARSE this". rtk rewrites output for human
+# reading and does not notice these, so the caller gets prose where it asked
+# for records. Verified against real git in this repo:
+#   worktree list --porcelain  46 entries -> 0 through rtk
+#   branch --format=...        55 refs    -> 142 lines, wrong set
+#   diff --name-only           3 paths    -> 3 paths + a "--- Changes ---" block
+#   status --porcelain         12 lines   -> 11
+# `rtk proxy` runs it unfiltered and is byte-exact on every one.
+MACHINE_FLAGS = (
+    "--porcelain",
+    "--format",
+    "--pretty",
+    "--name-only",
+    "--name-status",
+    "--numstat",
+    "--raw",
+    "-z",
+)
+# NOT --oneline: it is a reading convenience, not a parse signal, and
+# test/rtk-wrap.test.ts contracts it as accepted. Anything meaning to parse log
+# output uses --format or --pretty, which are covered above. rtk does reformat
+# `log --oneline`, so a caller that parses it gets altered text -- a narrow
+# residual, accepted rather than taxing one of the most common human git calls.
+
+# Subcommand forms rtk restructures even without one of those flags. Kept to
+# what was actually measured rather than guessed, because every entry here is
+# friction for a human-readable call that would have been fine.
+MACHINE_FORMS = {
+    "branch": ("-r", "-a", "--merged", "--no-merged"),
+    "worktree": ("list",),
+    "stash": ("list",),
+}
+
+
+def wants_machine_output(tokens: list[str]) -> bool:
+    """Is this git invocation asking for output something will parse?"""
+    args = [t for t in tokens if t != "git"]
+    for tok in args:
+        if tok in MACHINE_FLAGS or tok.split("=")[0] in MACHINE_FLAGS:
+            return True
+    sub_cmd = next((t for t in args if not t.startswith("-")), "")
+    return any(t in MACHINE_FORMS.get(sub_cmd, ()) for t in args)
+
+
 # A command is a sequence of STATEMENTS; each one invokes its own binary.
 _STATEMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|&\n]")
 
@@ -72,15 +116,31 @@ def main() -> None:
             continue
         bin_name, tokens = found
 
-        # A statement led by `rtk` (or anything else outside WRAPPED) is fine:
-        # in `rtk git log` the leading binary is rtk and `git` is its argument.
-        # No separate rtk check is needed - rtk is simply not a wrapped CLI.
-        # Mutation testing flagged the earlier explicit check as equivalent,
-        # i.e. dead.
+        # A statement led by `rtk` is normally fine: in `rtk git log` the
+        # leading binary is rtk and `git` is its argument. One exception --
+        # `rtk git <machine-readable>` is the corrupting combination, and
+        # skipping every rtk-led statement is what let it through the gate.
+        if bin_name == "rtk":
+            rest = [t for t in tokens[1:] if not t.startswith("-")]
+            if rest[:1] == ["git"] and wants_machine_output(tokens[1:]):
+                emit(
+                    False,
+                    "rtk-wrap: rtk reformats output for reading, so a git command "
+                    "that asked for machine-readable output comes back as prose "
+                    "(measured: `worktree list --porcelain` returns 0 entries "
+                    "through rtk, 46 through git). Use: rtk proxy "
+                    + " ".join(tokens[1:]),
+                    bin="rtk",
+                )
+            continue
+
         if bin_name not in WRAPPED:
             continue
 
         wrapper = "rtk"
+        if bin_name == "git" and wants_machine_output(tokens):
+            # Still through rtk, so the call is still tracked -- just unfiltered.
+            wrapper = "rtk proxy"
         if bin_name in PMS:
             sub = ""
             for nxt in tokens[1:]:

@@ -75,8 +75,13 @@ export class PolicyMemoryManager {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       version: existing ? (Number(existing.version) || 1) + 1 : 1,
-      // Preserve an operator's enable/disable choice across re-install; default on.
-      isActive: existing ? existing.isActive === true || existing.isActive === 1 : true,
+      // Preserve an operator's enable/disable choice across re-install. Only
+      // when there is NO prior row does the policy's own `**Default**: off`
+      // apply — so declaring a policy opt-in never silently switches it off
+      // for someone who had deliberately enabled it.
+      isActive: existing
+        ? existing.isActive === true || existing.isActive === 1
+        : (extractedMetadata.defaultActive ?? true),
       priority: metadata.priority ?? 50,
     };
 
@@ -196,12 +201,14 @@ export class PolicyMemoryManager {
     level?: 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL';
     enforcementStage?: 'pre-exec' | 'post-exec' | 'review' | 'always';
     tags?: string[];
+    defaultActive?: boolean;
   } {
     const metadata: {
       category?: string;
       level?: 'REQUIRED' | 'RECOMMENDED' | 'OPTIONAL';
       enforcementStage?: 'pre-exec' | 'post-exec' | 'review' | 'always';
       tags?: string[];
+      defaultActive?: boolean;
     } = {};
 
     // Extract from YAML-style header at the top of the file
@@ -221,6 +228,23 @@ export class PolicyMemoryManager {
       if (['pre-exec', 'post-exec', 'review', 'always'].includes(stage)) {
         metadata.enforcementStage = stage;
       }
+    }
+
+    // `**Default**: off` — the policy ships installed but INACTIVE.
+    //
+    // Without this every policy arrived switched on, so offering one and
+    // imposing it were the same act. Some policies are a genuine trade rather
+    // than a rule: rtk-wrap saves 60–90% of the tokens command output costs,
+    // at the price of routing every git call through a filter that rewrites
+    // machine-readable output (`worktree list --porcelain`: 46 entries
+    // directly, 0 through rtk). Worth offering; not worth defaulting on.
+    //
+    // Only consulted when there is no existing row — see storeRawPolicy. A
+    // default must not undo a choice an operator made deliberately.
+    const defaultMatch = markdown.match(/\*\*Default\*\*:\s*(on|off|enabled|disabled)/i);
+    if (defaultMatch) {
+      const word = defaultMatch[1].toLowerCase();
+      metadata.defaultActive = word === 'on' || word === 'enabled';
     }
 
     // Extract tags from line like: **Tags**: tag1, tag2, tag3
