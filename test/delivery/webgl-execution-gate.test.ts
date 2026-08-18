@@ -21,9 +21,13 @@
  * the REAL compiler message.
  */
 import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { createServer, type Server } from 'http';
 
 import { loadPlaywrightDriver } from '../../src/delivery/playwright-driver.js';
+import { runVmDomHarness } from '../../src/delivery/execution-gate.js';
 
 const VALID = '#version 300 es\nin vec2 p; void main(){ gl_Position = vec4(p,0.0,1.0); }';
 // Missing the statement terminator — a genuine GLSL syntax error.
@@ -101,5 +105,73 @@ describe('WebGL2 in the execution gate', () => {
     // missing must fall through, not take the gate down.
     const driver = await loadPlaywrightDriver();
     expect(driver === null || typeof driver.launch === 'function').toBe(true);
+  });
+});
+
+describe('vm-dom declines to judge a WebGL page', () => {
+  // The canvas stub answers EVERY context type with one 2D-shaped Proxy, so
+  // `getContext('webgl2')` returns an object whose methods all yield undefined:
+  // createShader() undefined, getShaderParameter() falsy ("compile failed"),
+  // getShaderInfoLog() undefined. A correct page then logs exactly what was
+  // measured 50 times in one run and 20 in another:
+  //
+  //     Shader compile error: undefined
+  //
+  // unactionable, and impossible to fix because nothing was broken. The model
+  // rewrote working shaders until the wall clock ended the run.
+  //
+  // vm-dom also runs FIRST and unconditionally for classic-script pages — the
+  // browser is layered after it as a liveness probe — so no amount of work on
+  // the browser rung could have removed this. A gate that cannot judge
+  // something must not report it as failure; ES-module pages already take this
+  // exit for the same reason.
+  let dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs = [];
+  });
+
+  function project(html: string): string {
+    const d = mkdtempSync(join(tmpdir(), 'vmgl-'));
+    dirs.push(d);
+    writeFileSync(join(d, 'index.html'), html);
+    return d;
+  }
+
+  const WEBGL_PAGE = `<html><body><canvas id="c"></canvas><script>
+const gl = document.getElementById('c').getContext('webgl2');
+const s = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(s, '#version 300 es\\nvoid main(){ gl_Position = vec4(0.0); }');
+gl.compileShader(s);
+if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error('Shader compile error:', gl.getShaderInfoLog(s));
+</script></body></html>`;
+
+  it('skips a WebGL page instead of failing it', () => {
+    const r = runVmDomHarness(project(WEBGL_PAGE));
+    expect(r.passed).toBe(true);
+    expect(r.failureReason).toMatch(/WebGL/i);
+  });
+
+  it('says WHY it skipped, so the verdict is not mistaken for a pass', () => {
+    const r = runVmDomHarness(project(WEBGL_PAGE));
+    expect(r.outputTail).toMatch(/no WebGL implementation/i);
+  });
+
+  it('still judges an ordinary page', () => {
+    const r = runVmDomHarness(project('<html><body><script>const a = 1;</script></body></html>'));
+    expect(r.passed).toBe(true);
+    expect(r.failureReason ?? '').not.toMatch(/WebGL/i);
+  });
+
+  it('does not skip a canvas page that never asks for WebGL', () => {
+    // 2D canvas is exactly what the stub CAN judge — skipping it would give up
+    // real coverage to fix a problem it does not have.
+    const r = runVmDomHarness(
+      project(`<html><body><canvas id="c"></canvas><script>
+const ctx = document.getElementById('c').getContext('2d');
+ctx.fillRect(0, 0, 10, 10);
+</script></body></html>`)
+    );
+    expect(r.failureReason ?? '').not.toMatch(/WebGL/i);
   });
 });

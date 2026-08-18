@@ -752,6 +752,37 @@ export function runVmDomHarness(entryDir: string, startedAt?: number, note?: str
       via: 'none',
     };
   }
+  // A WebGL page cannot be judged here, and saying so is the whole point.
+  //
+  // The canvas stub returns one 2D-shaped Proxy for EVERY context type, so
+  // `getContext('webgl2')` yields an object whose every method returns
+  // undefined: createShader() is undefined, getShaderParameter() is falsy —
+  // "compilation failed" — and getShaderInfoLog() is undefined. A correct page
+  // then logs exactly what was measured 50 times in one run and 20 in another:
+  //
+  //     Shader compile error: undefined
+  //
+  // byte-identical, unactionable, and impossible for the model to fix because
+  // nothing was broken. It re-wrote working shaders until the wall clock ended
+  // the run. A gate that cannot judge something must not report it as failure;
+  // ES-module pages above already take exactly this exit for the same reason.
+  //
+  // Passing hands the verdict to the browser rung (see the canvas-liveness
+  // check at the call site), which does have real WebGL2 — verified on both
+  // drivers here: { ctx: true, compiled: true, logType: 'string' }.
+  if (usesWebGl(entryDir, entry)) {
+    return {
+      passed: true,
+      exitCode: 0,
+      failureReason: 'skipped (needs a real WebGL context)',
+      outputTail:
+        'vm-dom has no WebGL implementation — its canvas stub answers every context type with a 2D shim, ' +
+        'so shader calls return undefined and a working shader looks broken. Judged by the browser rung instead.',
+      durationMs: Date.now() - start,
+      via: 'none',
+    };
+  }
+
   // Build the bundle from external <script src> (in order) AND inline <script>
   // bodies, mirroring how the browser concatenates classic scripts into one
   // shared global lexical scope. Missing src files are a real (broken) reference.
