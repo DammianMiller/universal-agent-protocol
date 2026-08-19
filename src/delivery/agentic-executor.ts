@@ -17,6 +17,7 @@
  * for production without re-adding a protected-path guard.
  */
 
+import { resolveWireModel } from '../models/local-model.js';
 import { spawnSync } from 'child_process';
 import { createRequire } from 'node:module';
 import { normalizeToolPath } from './path-normalize.js';
@@ -2125,6 +2126,9 @@ async function _chat(
   patchOnly = false
 ): Promise<ChatMessage> {
   const url = `${endpoint.replace(/\/$/, '')}/chat/completions`;
+  // Resolved against THIS endpoint so a preset that declines to pin a model name
+  // gets the one actually being served; a preset that names one is unchanged.
+  const wireModel = await resolveWireModel(model.apiModel, endpoint.replace(/\/$/, ''));
   // This path had NO endpoint check at all while its sibling in
   // openai-compat-client.ts refused cleartext credentials to non-local hosts. Once
   // PROXY_AUTH_TOKEN became a fallback, that asymmetry was a leak. Both now share
@@ -2145,7 +2149,7 @@ async function _chat(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
     body: JSON.stringify({
-      model: model.apiModel,
+      model: wireModel,
       // Forced-write round: offer ONLY mutating/terminating tools and require a
       // call, so a model that has looped on reads cannot read again — it must
       // write_file/edit_file or finish. Otherwise the normal auto-choice set.

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.213.0 (2026-08-19)
+
+- feat(models): resolve the local model automatically instead of pinning its name
+- fix(deps): better-sqlite3 ^12 for Node 24 — unblocks 294 tests and the version gate
+- feat(models): retarget UAP at qwen3.8-27b on ninfer, and stop 404ing local requests
+
+
 ## v1.212.6 (2026-08-19)
 
 - fix(deliver): the WebGL rung was inert — a probe string playwright never called

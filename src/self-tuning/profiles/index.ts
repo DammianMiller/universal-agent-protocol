@@ -6,13 +6,16 @@
 
 import type { FlagConfig } from '../flags.js';
 import { QWEN36_PROFILE } from './qwen36.js';
+import { QWEN38_PROFILE } from './qwen38.js';
 import { OPUS48_PROFILE } from './opus48.js';
 
 export { QWEN36_PROFILE } from './qwen36.js';
+export { QWEN38_PROFILE } from './qwen38.js';
 export { OPUS48_PROFILE } from './opus48.js';
 
 /** model-family key → bundled config. Keys are matched via normalizeModel. */
 export const BUNDLED_PROFILES: Record<string, FlagConfig> = {
   'qwen36-a3b': QWEN36_PROFILE,
+  'qwen38-27b': QWEN38_PROFILE,
   'opus-4.8': OPUS48_PROFILE,
 };

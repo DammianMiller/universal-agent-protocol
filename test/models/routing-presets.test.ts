@@ -7,9 +7,9 @@ describe('RoutingPresets — named multi-model routing options', () => {
     expect(p).toBeDefined();
     expect(p.roles).toEqual({
       planner: 'fable-5',
-      executor: 'qwen36-a3b',
+      executor: 'qwen38-27b',
       reviewer: 'opus-4.8',
-      fallback: 'qwen36-a3b',
+      fallback: 'qwen38-27b',
     });
   });
 
@@ -20,7 +20,7 @@ describe('RoutingPresets — named multi-model routing options', () => {
       planner: 'fable-5',
       executor: 'haiku-4.5',
       reviewer: 'opus-4.8',
-      fallback: 'qwen36-a3b',
+      fallback: 'qwen38-27b',
     });
   });
 

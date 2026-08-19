@@ -5333,12 +5333,18 @@ class TestModelsEndpoint(unittest.TestCase):
         self.assertIn("claude-sonnet-4-6", ids)
         self.assertIn("claude-sonnet-5-20250514", ids)
 
-        # Local model — what llama-server actually serves. Tracks the
-        # active model: qwen36-35b-a3b-iq4xs as of the 2026-05-17 switch
-        # back to Qwen3.6-35B-A3B MoE from the 27B dense (see
-        # project_active_server memory). Requests for this ID route
-        # locally even with the __local_only__ passthrough sentinel set.
-        self.assertIn("qwen36-35b-a3b-iq4xs", ids)
+        # Local model — what the inference server actually serves. Tracks the
+        # active model: qwen3.8-27b as of 2026-08-19, served by ninfer-serve
+        # (NOT llama.cpp). Requests for this ID route locally even with the
+        # __local_only__ passthrough sentinel set.
+        #
+        # This assertion is about AGREEMENT with the backend, not about naming.
+        # Measured on the day of the switch: the list still advertised
+        # qwen36-35b-a3b-iq4xs, and a request for it came back
+        # HTTP 404 model_not_found — SDKs check /v1/models before sending, so
+        # every client dutifully selected an id nothing would answer to.
+        self.assertIn("qwen3.8-27b", ids)
+        self.assertNotIn("qwen36-35b-a3b-iq4xs", ids)
         self.assertNotIn("qwen36-27b-iq4xs", ids)
         self.assertNotIn("qwen35-a3b-iq4xs", ids)
 

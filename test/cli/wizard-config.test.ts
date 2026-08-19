@@ -131,9 +131,9 @@ describe('applyWizardConfig — routing preset', () => {
     expect(cfg.multiModel.enabled).toBe(true);
     expect(cfg.multiModel.roles).toEqual({
       planner: 'fable-5',
-      executor: 'qwen36-a3b',
+      executor: 'qwen38-27b',
       reviewer: 'opus-4.8',
-      fallback: 'qwen36-a3b',
+      fallback: 'qwen38-27b',
     });
   });
 
@@ -153,8 +153,8 @@ describe('applyWizardConfig — routing preset', () => {
     expect(cfg.multiModel.enabled).toBe(true);
     // cost-tiered runs low/medium free on local, escalates high/critical to Opus.
     expect(cfg.multiModel.routingMatrix).toEqual({
-      low: 'qwen36-a3b',
-      medium: 'qwen36-a3b',
+      low: 'qwen38-27b',
+      medium: 'qwen38-27b',
       high: 'opus-4.8',
       critical: 'opus-4.8',
     });

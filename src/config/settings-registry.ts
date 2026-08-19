@@ -175,7 +175,7 @@ export const SETTINGS: readonly SettingDef[] = [
   },
   {
     key: 'UAP_VISION_MODEL', kind: 'env', type: 'string', default: '', category: 'verification', target: 'proxyEnv',
-    description: 'Model id sent to the vision endpoint for aesthetic review (e.g. qwen36-35b-a3b-iq4xs).',
+    description: 'Model id sent to the vision endpoint for aesthetic review (e.g. qwen3.8-27b).',
     recommendation: 'Set by `uap setup` to your local vision model. Required for blocking vision review under `max` fidelity.',
   },
 

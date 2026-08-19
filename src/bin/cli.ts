@@ -970,7 +970,7 @@ selfHarness
   .option('--traces <path>', 'HALO traces.jsonl (default ~/.uap/halo/traces.jsonl)')
   .option('--unit <name>', 'Proxy journal unit to mine, e.g. uap-anthropic-proxy.service')
   .option('--since <when>', 'journalctl --since window for proxy-log mining (default "24 hours ago")')
-  .option('--model <id>', 'Model family stamp (default qwen36-35b-a3b-iq4xs)')
+  .option('--model <id>', 'Model family stamp (default qwen3.8-27b)')
   .option('--transfer <path>', 'Transfer store to seed proposals from')
   .option('--pending <path>', 'Pending queue path (default ~/.uap/self-harness/pending.json)')
   .option('--json', 'Emit JSON instead of a human-readable report')
@@ -1002,7 +1002,7 @@ selfHarness
 // benchmark-validated, LLM-guided (or GP-BO) closed loop.
 function addTuneOptions(cmd: import('commander').Command): import('commander').Command {
   return cmd
-    .option('--model <id>', 'Executor model family to tune (default qwen36-a3b)')
+    .option('--model <id>', 'Executor model family to tune (default qwen38-27b)')
     .option('--suite <dir>', 'Real-gate task suite (default benchmarks/suites/real-gate)')
     .option('--adapter <name>', 'Agent adapter: mock | opencode | claude | mini | raw | deliver (default mock)')
     .option('--judge <id>', 'Judge/tuner model id (else recipes.judge.model, else GP-only)')
