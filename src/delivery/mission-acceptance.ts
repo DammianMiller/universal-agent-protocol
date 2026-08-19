@@ -24,6 +24,13 @@ import {
   type AcceptanceResult,
 } from './acceptance-judge.js';
 import { runExecutionGate } from './execution-gate.js';
+import {
+  compareCapability,
+  capabilityFeedback,
+  capabilityNote,
+  readCapabilityBaseline,
+  readCapabilityCurrent,
+} from './capability-profile.js';
 import { runVisualGate, visualRuntimeNote, structuralFeedback } from './visual-gate.js';
 import { runInteractionGate } from './interaction-gate.js';
 import type { ProbeMode } from './interaction/types.js';
@@ -74,6 +81,9 @@ export interface MissionAcceptanceDeps {
   note?: (line: string) => void;
   /** Test seams — default to the real gates. */
   executionGate?: typeof runExecutionGate;
+  /** Test seams for the capability baseline/current readings (disk-backed). */
+  capabilityBaseline?: typeof readCapabilityBaseline;
+  capabilityCurrent?: typeof readCapabilityCurrent;
   visualGate?: typeof runVisualGate;
   interactionGate?: typeof runInteractionGate;
   visionReview?: typeof visionAcceptanceFeedback;
@@ -132,6 +142,8 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
   const visualGate = deps.visualGate ?? runVisualGate;
   const interactionGate = deps.interactionGate ?? runInteractionGate;
   const judge = deps.judge ?? runAcceptanceGate;
+  const capBaseline = deps.capabilityBaseline ?? readCapabilityBaseline;
+  const capCurrent = deps.capabilityCurrent ?? readCapabilityCurrent;
   const userPathsNote = deps.userPathsNote ?? buildUserPathsNote;
   // eslint-disable-next-line no-console
   const note = deps.note ?? ((line: string): void => console.log(line));
@@ -155,6 +167,7 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
     // never grade pixels of an app that does not run or misbehaves.
     const fidelity = resolveFidelity(root);
     let visualNote = '';
+    let capabilityAdvisory = '';
     if (deps.primary || fidelity.max) {
       const exec = await executionGate(root);
       if (!exec.passed) {
@@ -185,6 +198,36 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
           if (!interaction.skipped && !interaction.passed && (deps.primary || fidelity.max)) {
             return { passed: false, feedback: interaction.feedback };
           }
+        }
+        if (!behavioralFailing) {
+        // Capability regression: it runs, and it BEHAVES — but does it still
+        // DO as much?
+        //
+        // Placed after the interaction gate on purpose. Both verdicts can fire
+        // on the same turn, and the interaction gate's is strictly more useful:
+        // it names WHICH promised behaviour broke, while this one names a
+        // magnitude. Reporting the magnitude first sends the next turn after a
+        // number instead of a defect — the misdirected-feedback failure this
+        // subsystem exists to prevent. Same reason the visual/vision gates sit
+        // behind it.
+        //
+        // Both readings come off disk, written by the execution gate above as a
+        // byproduct of the browser session it already opened — so this costs no
+        // extra launch, and a profile cannot exist for a build that did not run.
+        // That makes the "never grade the capability of something that does not
+        // run" rule structural rather than a matter of call ordering.
+        //
+        // This is the gap every other rung leaves open: a build can BUY a clean
+        // verdict by doing less. Measured on octopus_invaders_v4 (2026-08-19): a
+        // run took the gate score 0% -> 100% while draw calls went 12 -> 3,
+        // listeners 8 -> 3 and frames-per-7s 419 -> 25. The acceptance judge
+        // scored that 8/9, and --keep-best could not help because it rolls back
+        // on the gate SCORE, which had gone UP.
+        const cmp = compareCapability(capBaseline(root), capCurrent(root));
+        if (cmp.regressed) {
+          return { passed: false, feedback: capabilityFeedback(cmp) };
+        }
+        capabilityAdvisory = capabilityNote(cmp);
         }
         if (!behavioralFailing) {
           // Visual gate: watch the artifact RUN — the observation summary becomes
@@ -269,7 +312,7 @@ export function buildMissionAcceptanceGate(deps: MissionAcceptanceDeps): Accepta
     // The visual observation is real evidence in BOTH modes; discarding it in
     // secondary mode meant paying for a headless browser pass and then throwing
     // the result away.
-    const runtimeNote = [baseNote, deps.primary ? '' : visualNote, uvNote?.note]
+    const runtimeNote = [baseNote, deps.primary ? '' : visualNote, uvNote?.note, capabilityAdvisory]
       .filter(Boolean)
       .join(' ');
     const r = await judge({

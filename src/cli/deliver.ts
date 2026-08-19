@@ -39,6 +39,15 @@ import { authorAcceptanceGate } from '../delivery/self-gate.js';
 import { applyPendingIntents } from '../delivery/pending-intents.js';
 import { runAcceptanceGate } from '../delivery/acceptance-judge.js';
 import { buildMissionAcceptanceGate, resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
+import {
+  compareCapability,
+  invalidateCapabilityBaseline,
+  readCapabilityBaseline,
+  readCapabilityCurrent,
+  writeCapabilityBaseline,
+  fpsOf,
+  drawsPerFrame,
+} from '../delivery/capability-profile.js';
 import { createSpecRegistry } from '../delivery/spec-registry.js';
 import type { AcceptanceGate } from '../delivery/convergence-loop.js';
 import { guardAgainstOwnerExit, resolveOwnerPid } from '../delivery/orphan-guard.js';
@@ -2671,6 +2680,27 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     // gates the loop already ran this turn — no extra gate execution.
     const fastScore = bestKeepFastScore(record.gateResults, bestFastRungIds);
     if (fastScore === null || fastScore <= baselineGateScore) return; // not a new best
+    // VETO on capability. This is the whole reason the capability profile exists,
+    // and without this hook it would not have closed the incident it cites: on
+    // the recorded regression the gate score went 0% -> 100% WHILE the app lost
+    // most of its function. Acceptance now blocks that turn — but acceptance is
+    // not a rung, so its verdict never reaches `record.gateResults`, and this
+    // hook would happily snapshot the gutted tree as the run's new "best" and
+    // DISPOSE the good one. The end-of-run rollback then restores the damage.
+    //
+    // Reads the same two files acceptance does, so the two cannot disagree.
+    const capCmp = compareCapability(readCapabilityBaseline(projectRoot), readCapabilityCurrent(projectRoot));
+    if (capCmp.regressed) {
+      if (!options.dryRun) {
+        console.log(
+          chalk.yellow(
+            `  no-regress: turn scored ${fastScore.toFixed(2)} but LOST capability — refusing to adopt it as best`
+          )
+        );
+        for (const f of capCmp.findings) console.log(chalk.dim(`    ${f}`));
+      }
+      return;
+    }
     const snap = snapshotTree(projectRoot);
     if (!snap.ok) return; // size-cap / failure: keep the previous best
     if (regressSnapshot) disposeSnapshot(regressSnapshot);
@@ -3657,6 +3687,37 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   const keepBest = resolveKeepBest(options.keepBest) && fastRungs.length > 0 && !needsSelfGate;
   let regressSnapshot: string | null = null;
   let baselineGateScore = 0;
+  // Capability baseline: what the deliverable DOES before this run touches it.
+  //
+  // PROMOTED, not measured. The pre-run ladder immediately below already runs
+  // the execution gate, and that gate writes `.uap/capability/current.json` as a
+  // byproduct of the browser session it opens anyway — so pinning a baseline is
+  // a file copy, not a second headless launch. That is the point of having moved
+  // the measurement into the gate.
+  //
+  // Reported when it is ABSENT, too. An unmeasured baseline silently disables
+  // the whole check, and this repo has shipped inert rungs that looked exactly
+  // like healthy ones from the outside.
+  const pinCapabilityBaseline = (): void => {
+    if (options.dryRun) return;
+    const pre = readCapabilityCurrent(projectRoot);
+    if (!pre?.measured) {
+      // Nothing measurable this run, so any baseline still on disk describes a
+      // DIFFERENT tree. Drop it rather than measure against it.
+      invalidateCapabilityBaseline(projectRoot);
+      console.log(
+        chalk.dim(`  capability: no baseline (${pre?.reason ?? 'not measured'}) — regression check inactive`)
+      );
+      return;
+    }
+    writeCapabilityBaseline(projectRoot, pre);
+    console.log(
+      chalk.dim(
+        `  capability baseline: ${fpsOf(pre).toFixed(1)} fps, ${drawsPerFrame(pre).toFixed(2)} draws/frame, ` +
+          `${pre.programsUsed} programs, ${pre.listenerTypes} event types`
+      )
+    );
+  };
   if (keepBest) {
     baselineGateScore = runLadder(fastRungs, projectRoot).score;
     const snapResult = snapshotTree(projectRoot);
@@ -3673,6 +3734,19 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(chalk.yellow(`  no-regress: ${label} — ${snapResult.detail}; rollback disabled for this run`));
     }
   }
+
+  // Pin the capability baseline for EVERY run, not only under --keep-best.
+  //
+  // It used to sit inside that branch, which meant --no-keep-best (or
+  // UAP_DELIVER_KEEP_BEST=0, or a self-gated project) left the PREVIOUS run's
+  // baseline on disk. A later, unrelated run then measured against a days-old
+  // reading of a different app and blocked every turn — with the only documented
+  // escape being a flag that did nothing. A baseline nobody pinned this run is
+  // worse than no baseline.
+  //
+  // When --keep-best did not run a ladder there may be no reading yet; the
+  // helper says so and leaves the check inactive rather than guessing.
+  pinCapabilityBaseline();
 
   // Mark this run (and the gate subprocesses it spawns) as deliver-driven so
   // the delivery-enforcement policy exempts the sanctioned path. Scoped to the
@@ -3913,7 +3987,16 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const endLadder = runLadder(fastRungs, projectRoot);
     const endScore = endLadder.score;
     const endRegressions = baselineRegressions(fastRungs, endLadder.results);
-    if (endScore < baselineGateScore || endRegressions.length > 0) {
+    // A capability regression is a THIRD reason to restore, and without it the veto
+    // above is only half a fix. The incident this feature cites is precisely
+    // "gate score went UP while capability collapsed": the veto correctly refuses
+    // to adopt the gutted turn as best, the run then ENDS on that turn, and this
+    // predicate sees endScore >= baseline with no gate regressions and keeps it —
+    // shipping the damage and disposing the good snapshot. The end-of-run ladder
+    // just re-ran the execution rung, so the reading here is fresh.
+    const endCap = compareCapability(readCapabilityBaseline(projectRoot), readCapabilityCurrent(projectRoot));
+    const endCapabilityLost = endCap.regressed;
+    if (endScore < baselineGateScore || endRegressions.length > 0 || endCapabilityLost) {
       try {
         restoreTree(projectRoot, regressSnapshot);
         console.log(
@@ -3921,7 +4004,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
             endRegressions.length > 0
               ? `  ↩ no-regress: reverted to best — tests that passed at baseline are failing now: ` +
                 `${endRegressions.flatMap((r) => r.tests).slice(0, 5).join(', ')}`
-              : `  ↩ no-regress: reverted to best (end gate score ${endScore.toFixed(2)} < best ${baselineGateScore.toFixed(2)})`
+              : endCapabilityLost
+                ? `  ↩ no-regress: reverted to best — the run ended having LOST capability: ${endCap.findings.join('; ')}`
+                : `  ↩ no-regress: reverted to best (end gate score ${endScore.toFixed(2)} < best ${baselineGateScore.toFixed(2)})`
           )
         );
         disposeSnapshot(regressSnapshot);
