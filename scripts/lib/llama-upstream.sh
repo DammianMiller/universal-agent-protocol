@@ -55,29 +55,68 @@ llama_upstream_alive() {
 # 0 if the base looks like a chat-capable llama.cpp server. Applied to
 # DISCOVERED candidates only — an operator pin is taken at its word.
 llama_upstream_is_chat_server() {
-    local base="${1:-}" root props models
+    local base="${1:-}" root props models chat
     root="$(llama_upstream_root "$base")"
 
-    # /props carries llama-server's generation settings. A bare HTTP server, an
-    # error page, or a still-loading server does not.
+    # PATH 1 — llama.cpp. /props carries llama-server's generation settings. A
+    # bare HTTP server, an error page, or a still-loading server does not.
     props="$(curl -s --max-time "${UAP_LLAMA_PROBE_TIMEOUT:-2}" -- "${root}/props" 2>/dev/null || true)"
     case "$props" in
-        *'"default_generation_settings"'*) ;;
-        *) return 1 ;;
-    esac
-
-    # Reject an embedding-only server (this host runs one). When the build does
-    # not report capabilities at all, accept — older llama.cpp omits the field.
-    models="$(curl -s --max-time "${UAP_LLAMA_PROBE_TIMEOUT:-2}" -- "${root}/v1/models" 2>/dev/null || true)"
-    case "$models" in
-        *'"capabilities"'*)
+        *'"default_generation_settings"'*)
+            # Reject an embedding-only server (this host runs one). When the build
+            # does not report capabilities at all, accept — older llama.cpp omits
+            # the field.
+            models="$(curl -s --max-time "${UAP_LLAMA_PROBE_TIMEOUT:-2}" -- "${root}/v1/models" 2>/dev/null || true)"
             case "$models" in
-                *'"completion"'*) ;;
-                *) return 1 ;;
+                *'"capabilities"'*)
+                    case "$models" in
+                        *'"completion"'*) return 0 ;;
+                        *) return 1 ;;
+                    esac
+                    ;;
+                *) return 0 ;;
             esac
             ;;
     esac
-    return 0
+
+    # PATH 2 — any other OpenAI-compatible engine.
+    #
+    # Requiring /props made this check llama.cpp-SPECIFIC, and it rejected the
+    # engine actually serving this host. Measured 2026-08-19: the box runs
+    # ninfer-serve, which serves /health and /v1/models but NO /props, so the live
+    # server on the documented default port was refused, discovery yielded
+    # nothing, the dead pin stood, and every local completion returned 529.
+    #
+    # The trust model asks for "chat-capable, and not the embedding server". That
+    # is a CAPABILITY question, and the direct way to answer it is to ask for a
+    # chat completion: an embedding-only server has no such route, and a decoy
+    # returning 200 to everything still has to produce a choices array.
+    models="$(curl -s --max-time "${UAP_LLAMA_PROBE_TIMEOUT:-2}" -- "${root}/v1/models" 2>/dev/null || true)"
+    # Extracting an id IS the models-list check: a server that does not advertise
+    # one yields an empty model_id and is refused below. A separate `case` for
+    # '"id"' was redundant — and a redundant guard reads as coverage while being
+    # impossible to fail, which is how a check becomes decoration.
+    #
+    # The probe MUST name a model. Measured: a chat request without one is
+    # refused by this engine with
+    #   400 {"message":"missing required field: model","param":"model"}
+    # which carries no "choices" and so read as "not chat-capable" — the probe
+    # answering a question it never actually asked. Same failure shape bit the
+    # proxy's chat_template_kwargs probe on the same day.
+    local model_id
+    model_id="$(printf '%s' "$models" \
+        | tr ',{}' '\n\n\n' \
+        | grep -m1 '"id"' \
+        | sed -e 's/.*"id"[[:space:]]*:[[:space:]]*"//' -e 's/".*//')"
+    [ -n "$model_id" ] || return 1
+    chat="$(curl -s --max-time "${UAP_LLAMA_CHAT_PROBE_TIMEOUT:-20}" \
+        -H 'Content-Type: application/json' \
+        -d "{\"model\":\"${model_id}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
+        -- "${root}/v1/chat/completions" 2>/dev/null || true)"
+    case "$chat" in
+        *'"choices"'*) return 0 ;;
+    esac
+    return 1
 }
 
 # Print the host:port of every locally listening llama-server, one per line,
@@ -123,7 +162,16 @@ llama_upstream_resolve() {
     fi
 
     local authority candidate
-    for authority in $(llama_upstream_candidate_authorities); do
+    # Process-owned sockets first (an operator-launched llama-server), then the
+    # DOCUMENTED DEFAULT PORT.
+    #
+    # The default is needed because socket enumeration attributes a process only
+    # to sockets this user owns, and a containerised engine's socket is not one:
+    # the live server was invisible to discovery on this host for that reason
+    # alone. Adding one well-known port that the launcher itself already treats
+    # as the default is not a widening of the trust model — every candidate,
+    # however found, still has to PROVE it is chat-capable before it is used.
+    for authority in $(llama_upstream_candidate_authorities) "${UAP_LLAMA_DEFAULT_AUTHORITY:-127.0.0.1:8080}"; do
         candidate="http://${authority}/v1"
         [ "$candidate" = "$preferred" ] && continue
         if llama_upstream_alive "$candidate" && llama_upstream_is_chat_server "$candidate"; then
