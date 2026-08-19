@@ -107,13 +107,13 @@
       "fable-5",
       "haiku-4.5",
       "opus-4.8",
-      "qwen36-a3b"
+      "local-auto"
     ],
     "roles": {
       "planner": "fable-5",
       "executor": "haiku-4.5",
       "reviewer": "opus-4.8",
-      "fallback": "qwen36-a3b"
+      "fallback": "local-auto"
     },
     "routingStrategy": "performance-first"
   },
@@ -140,7 +140,8 @@
   },
   "modelConcurrency": {
     "adaptive": true,
-    "endpoint": "http://localhost:8080/v1"
+    "endpoint": "http://localhost:8080/v1",
+    "slots": 1
   },
   "collaboration": {
     "mode": "always"

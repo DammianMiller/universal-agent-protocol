@@ -6,6 +6,7 @@
  * - Tier 2 (Executor): Concrete implementation following planner specs
  */
 
+import { AUTO_MODEL } from './local-model.js';
 import { z } from 'zod';
 
 // Model provider identifiers
@@ -205,6 +206,53 @@ export const ModelPresets: Record<string, ModelConfig> = {
     // (/v1/context), so this is the fallback when discovery is unreachable.
     modelContextBudget: 130000,
   },
+  'qwen38-27b': {
+    id: 'qwen38-27b',
+    name: 'Qwen 3.8 27B (ninfer, local)',
+    provider: 'custom',
+    apiModel: 'qwen3.8-27b',
+    // Route through the anthropic-proxy (:4000) for the tool/finalize
+    // guardrails, not the inference server's :8080 raw.
+    //
+    // The local engine is ninfer-serve, NOT llama.cpp:
+    //   ninfer-serve models/qwen3_8_27b.ninfer --max-context 131072
+    //     --kv-capacity 131072 --max-concurrency 1 --max-pending-requests 16
+    //     --prefill-chunk 1024 --kv-dtype int8 --spec mtp --draft-tokens 3
+    //     --lm-head-draft
+    // Two consequences UAP has to respect. (1) --max-concurrency 1: there is
+    // ONE rail, so the whole window belongs to a single request and nothing
+    // here is divided by a slot count the way the qwen36 llama.cpp entry was.
+    // (2) reasoning is returned in a separate `reasoning_content` field rather
+    // than inline <think> tags, so it costs completion budget without ever
+    // appearing in the text — see the profile's max_tokens note.
+    endpoint: 'http://127.0.0.1:4000/v1',
+    maxContextTokens: 131072,
+    costPer1MInput: 0,
+    costPer1MOutput: 0,
+    capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
+    // A 1024-token safety margin under the served window, NOT a computed
+    // reserve — nothing in the code derives 131072 - 1024, and this backend
+    // serves none of the llama.cpp endpoints (/props, /slots) the proxy's
+    // window discovery reads, so there is no live figure to defer to here.
+    modelContextBudget: 130048,
+  },
+  'local-auto': {
+    id: 'local-auto',
+    name: 'Local model (auto-detected)',
+    provider: 'custom',
+    // NO PINNED NAME. Resolved from the endpoint at call time — see
+    // src/models/local-model.ts for why a pinned name is a latent outage.
+    apiModel: AUTO_MODEL,
+    endpoint: 'http://127.0.0.1:4000/v1',
+    maxContextTokens: 131072,
+    costPer1MInput: 0,
+    costPer1MOutput: 0,
+    capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
+    // Conservative: whatever is being served locally is assumed to hold at least
+    // this much. The proxy advertises the real window on /v1/models and clients
+    // that read it size themselves to the truth.
+    modelContextBudget: 130048,
+  },
 };
 
 export type ModelPresetId = keyof typeof ModelPresets;
@@ -259,16 +307,16 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
     id: 'fable-local-opus',
     name: 'Fable plan / local execute / Opus review',
     description:
-      'Plan with Claude Fable 5, execute on local Qwen 3.6, review with Claude Opus 4.8, ' +
-      'fall back to local Qwen 3.6. Cloud is used only for planning and review (Max-plan ' +
+      'Plan with Claude Fable 5, execute on local Qwen 3.8, review with Claude Opus 4.8, ' +
+      'fall back to local Qwen 3.8. Cloud is used only for planning and review (Max-plan ' +
       'friendly); execution stays free and local.',
     roles: {
       planner: 'fable-5',
-      executor: 'qwen36-a3b',
+      executor: 'qwen38-27b',
       reviewer: 'opus-4.8',
-      fallback: 'qwen36-a3b',
+      fallback: 'qwen38-27b',
     },
-    models: ['fable-5', 'qwen36-a3b', 'opus-4.8'],
+    models: ['fable-5', 'qwen38-27b', 'opus-4.8'],
     routingStrategy: 'balanced',
   },
   'fable-haiku-opus': {
@@ -276,37 +324,37 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
     name: 'Fable plan / Haiku execute / Opus review',
     description:
       'Plan with Claude Fable 5, execute with Claude Haiku 4.5 (fast cloud), review with ' +
-      'Claude Opus 4.8, fall back to local Qwen 3.6. All-cloud hot path with a free local ' +
+      'Claude Opus 4.8, fall back to local Qwen 3.8. All-cloud hot path with a free local ' +
       'safety net.',
     roles: {
       planner: 'fable-5',
       executor: 'haiku-4.5',
       reviewer: 'opus-4.8',
-      fallback: 'qwen36-a3b',
+      fallback: 'qwen38-27b',
     },
-    models: ['fable-5', 'haiku-4.5', 'opus-4.8', 'qwen36-a3b'],
+    models: ['fable-5', 'haiku-4.5', 'opus-4.8', 'qwen38-27b'],
     routingStrategy: 'performance-first',
   },
   'cost-tiered': {
     id: 'cost-tiered',
     name: 'Cost-tiered (local-first, escalate by complexity)',
     description:
-      'Minimize cost: trivial/low tasks run FREE on local Qwen 3.6; medium adds a fast ' +
+      'Minimize cost: trivial/low tasks run FREE on local Qwen 3.8; medium adds a fast ' +
       'cloud model (Haiku) only when needed; high/critical escalate to Opus 4.8. Plan on ' +
       'Fable, review on Opus. Cheapest capable model per complexity.',
     roles: {
       planner: 'fable-5',
-      executor: 'qwen36-a3b',
+      executor: 'qwen38-27b',
       reviewer: 'opus-4.8',
-      fallback: 'qwen36-a3b',
+      fallback: 'qwen38-27b',
     },
     tiers: {
-      low: 'qwen36-a3b',
-      medium: 'qwen36-a3b',
+      low: 'qwen38-27b',
+      medium: 'qwen38-27b',
       high: 'opus-4.8',
       critical: 'opus-4.8',
     },
-    models: ['fable-5', 'qwen36-a3b', 'haiku-4.5', 'opus-4.8'],
+    models: ['fable-5', 'qwen38-27b', 'haiku-4.5', 'opus-4.8'],
     routingStrategy: 'cost-optimized',
   },
   'speed-tiered': {
@@ -320,7 +368,7 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
       planner: 'fable-5',
       executor: 'haiku-4.5',
       reviewer: 'opus-4.8',
-      fallback: 'qwen36-a3b',
+      fallback: 'qwen38-27b',
     },
     tiers: {
       low: 'haiku-4.5',
@@ -328,7 +376,7 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
       high: 'fable-5',
       critical: 'opus-4.8',
     },
-    models: ['fable-5', 'haiku-4.5', 'opus-4.8', 'qwen36-a3b'],
+    models: ['fable-5', 'haiku-4.5', 'opus-4.8', 'qwen38-27b'],
     routingStrategy: 'performance-first',
   },
   'sonnet-5-tiered': {
@@ -342,7 +390,7 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
       planner: 'sonnet-5',
       executor: 'sonnet-5',
       reviewer: 'opus-4.8',
-      fallback: 'qwen36-a3b',
+      fallback: 'qwen38-27b',
     },
     tiers: {
       low: 'sonnet-5',
@@ -350,7 +398,7 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
       high: 'opus-4.8',
       critical: 'opus-4.8',
     },
-    models: ['sonnet-5', 'opus-4.8', 'qwen36-a3b'],
+    models: ['sonnet-5', 'opus-4.8', 'qwen38-27b'],
     routingStrategy: 'balanced',
   },
   'adaptive-tiered': {
@@ -363,14 +411,14 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
       'fall back to Opus. Requires the per-phase resolvers (resolvePhaseChain).',
     roles: {
       planner: 'sonnet-5',
-      executor: 'qwen36-a3b',
+      executor: 'qwen38-27b',
       reviewer: 'sonnet-5',
       fallback: 'opus-4.8',
     },
     tiers: {
       // trivial folds to low for routing; low omits plan+review → they are
       // skipped (overhead control), execute escalates local→cloud.
-      low: { execute: ['qwen36-a3b', 'sonnet-5'], fallback: ['sonnet-5'] },
+      low: { execute: ['qwen38-27b', 'sonnet-5'], fallback: ['sonnet-5'] },
       medium: {
         plan: ['sonnet-5'],
         execute: ['sonnet-5', 'opus-4.8'],
@@ -395,7 +443,7 @@ export const RoutingPresets: Record<string, RoutingPreset> = {
         fallback: ['opus-4.8'],
       },
     },
-    models: ['fable-5', 'qwen36-a3b', 'haiku-4.5', 'sonnet-5', 'opus-4.8'],
+    models: ['fable-5', 'qwen38-27b', 'haiku-4.5', 'sonnet-5', 'opus-4.8'],
     routingStrategy: 'adaptive',
   },
 };

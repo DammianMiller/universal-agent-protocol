@@ -7,8 +7,8 @@ describe('router selectModel — Q4 canonical preset path', () => {
   it('routes via the preset per-phase chain when routingPreset is set', () => {
     const config: MultiModelConfig = {
       enabled: true,
-      models: ['qwen36-a3b', 'sonnet-5', 'opus-4.8'],
-      roles: { planner: 'sonnet-5', executor: 'qwen36-a3b', reviewer: 'sonnet-5', fallback: 'opus-4.8' },
+      models: ['qwen38-27b', 'sonnet-5', 'opus-4.8'],
+      roles: { planner: 'sonnet-5', executor: 'qwen38-27b', reviewer: 'sonnet-5', fallback: 'opus-4.8' },
       routingStrategy: 'adaptive',
       routingPreset: 'adaptive-tiered',
     };
@@ -17,18 +17,18 @@ describe('router selectModel — Q4 canonical preset path', () => {
     const high = router.selectModel('high', 'coding', []);
     expect(high.model.id).toBe('sonnet-5');
     expect(high.reasoning).toContain('canonical per-phase');
-    // low.execute primary = qwen36-a3b
+    // low.execute primary = qwen38-27b
     const low = router.selectModel('low', 'coding', []);
-    expect(low.model.id).toBe('qwen36-a3b');
+    expect(low.model.id).toBe('qwen38-27b');
   });
 
   it('falls back to the flat routingMatrix when no routingPreset is set (legacy)', () => {
     const config: MultiModelConfig = {
       enabled: true,
-      models: ['qwen36-a3b', 'opus-4.8'],
-      roles: { planner: 'opus-4.8', executor: 'qwen36-a3b', reviewer: 'opus-4.8', fallback: 'qwen36-a3b' },
+      models: ['qwen38-27b', 'opus-4.8'],
+      roles: { planner: 'opus-4.8', executor: 'qwen38-27b', reviewer: 'opus-4.8', fallback: 'qwen38-27b' },
       routingStrategy: 'cost-optimized',
-      routingMatrix: { low: 'qwen36-a3b', high: 'opus-4.8' },
+      routingMatrix: { low: 'qwen38-27b', high: 'opus-4.8' },
     };
     const router = createRouter(config);
     const high = router.selectModel('high', 'coding', []);
@@ -39,8 +39,8 @@ describe('router selectModel — Q4 canonical preset path', () => {
   it('does NOT engage the canonical branch for a TIER-LESS preset (keeps role escalation)', () => {
     const config: MultiModelConfig = {
       enabled: true,
-      models: ['fable-5', 'qwen36-a3b', 'opus-4.8'],
-      roles: { planner: 'fable-5', executor: 'qwen36-a3b', reviewer: 'opus-4.8', fallback: 'qwen36-a3b' },
+      models: ['fable-5', 'qwen38-27b', 'opus-4.8'],
+      roles: { planner: 'fable-5', executor: 'qwen38-27b', reviewer: 'opus-4.8', fallback: 'qwen38-27b' },
       routingStrategy: 'balanced',
       routingPreset: 'fable-local-opus', // tier-less — no per-complexity tiers
     };
@@ -53,8 +53,8 @@ describe('router selectModel — Q4 canonical preset path', () => {
   it('ignores an unknown routingPreset and falls through to the matrix/strategy', () => {
     const config: MultiModelConfig = {
       enabled: true,
-      models: ['qwen36-a3b', 'opus-4.8'],
-      roles: { planner: 'opus-4.8', executor: 'qwen36-a3b', reviewer: 'opus-4.8', fallback: 'qwen36-a3b' },
+      models: ['qwen38-27b', 'opus-4.8'],
+      roles: { planner: 'opus-4.8', executor: 'qwen38-27b', reviewer: 'opus-4.8', fallback: 'qwen38-27b' },
       routingStrategy: 'cost-optimized',
       routingPreset: 'no-such-preset',
       routingMatrix: { high: 'opus-4.8' },

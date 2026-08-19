@@ -46,7 +46,7 @@ describe('resolvePhaseChain — PhaseModels tiers (adaptive-tiered)', () => {
     expect(resolvePhaseChain(adaptive, { complexity: 'low', phase: 'review', allowSkip: true })).toEqual([]);
     // execute is defined at low, so it is never skipped
     expect(resolvePhaseChain(adaptive, { complexity: 'low', phase: 'execute', allowSkip: true })).toEqual([
-      'qwen36-a3b',
+      'qwen38-27b',
       'sonnet-5',
     ]);
   });
@@ -64,7 +64,7 @@ describe('resolvePhaseChain — PhaseModels tiers (adaptive-tiered)', () => {
 describe('resolvePresetModel — primary == chain[0], back-compat', () => {
   it('string tier still returns the tier model for the executor role', () => {
     expect(resolvePresetModel(legacy, { complexity: 'high', role: 'executor' })).toBe('opus-4.8');
-    expect(resolvePresetModel(legacy, { complexity: 'low' })).toBe('qwen36-a3b');
+    expect(resolvePresetModel(legacy, { complexity: 'low' })).toBe('qwen38-27b');
   });
   it('PhaseModels tier returns the primary of the requested phase chain', () => {
     expect(resolvePresetModel(adaptive, { complexity: 'high', phase: 'execute' })).toBe('sonnet-5');
@@ -79,8 +79,8 @@ describe('resolvePresetModel — primary == chain[0], back-compat', () => {
 describe('tiersToRoutingMatrix — both tier forms', () => {
   it('string tiers pass through unchanged', () => {
     expect(tiersToRoutingMatrix(legacy)).toEqual({
-      low: 'qwen36-a3b',
-      medium: 'qwen36-a3b',
+      low: 'qwen38-27b',
+      medium: 'qwen38-27b',
       high: 'opus-4.8',
       critical: 'opus-4.8',
     });
@@ -88,7 +88,7 @@ describe('tiersToRoutingMatrix — both tier forms', () => {
   it('PhaseModels tiers contribute their execute primary (monotonic, no inversion)', () => {
     const m = tiersToRoutingMatrix(adaptive);
     expect(m).toEqual({
-      low: 'qwen36-a3b',
+      low: 'qwen38-27b',
       medium: 'sonnet-5',
       high: 'sonnet-5',
       critical: 'sonnet-5',

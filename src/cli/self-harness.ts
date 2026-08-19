@@ -322,7 +322,7 @@ export async function selfHarnessTransfer(options: SelfHarnessOptions = {}): Pro
 export async function selfHarnessMineProd(options: SelfHarnessOptions = {}): Promise<void> {
   const { mineFromHaloSpans, mineFromProxyLogLines } = await import('../self-harness/trace-mine.js');
   const { PendingQueue } = await import('../self-harness/pending.js');
-  const model = options.model || 'qwen36-35b-a3b-iq4xs';
+  const model = options.model || 'qwen3.8-27b';
   const weaknesses: import('../self-harness/weakness.js').WeaknessReport[] = [];
 
   // Source 1: HALO spans (deliver pipeline).
