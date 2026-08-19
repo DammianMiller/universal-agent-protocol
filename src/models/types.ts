@@ -6,6 +6,7 @@
  * - Tier 2 (Executor): Concrete implementation following planner specs
  */
 
+import { AUTO_MODEL } from './local-model.js';
 import { z } from 'zod';
 
 // Model provider identifiers
@@ -233,6 +234,23 @@ export const ModelPresets: Record<string, ModelConfig> = {
     // reserve — nothing in the code derives 131072 - 1024, and this backend
     // serves none of the llama.cpp endpoints (/props, /slots) the proxy's
     // window discovery reads, so there is no live figure to defer to here.
+    modelContextBudget: 130048,
+  },
+  'local-auto': {
+    id: 'local-auto',
+    name: 'Local model (auto-detected)',
+    provider: 'custom',
+    // NO PINNED NAME. Resolved from the endpoint at call time — see
+    // src/models/local-model.ts for why a pinned name is a latent outage.
+    apiModel: AUTO_MODEL,
+    endpoint: 'http://127.0.0.1:4000/v1',
+    maxContextTokens: 131072,
+    costPer1MInput: 0,
+    costPer1MOutput: 0,
+    capabilities: ['code-generation', 'execution', 'planning', 'simple-tasks'],
+    // Conservative: whatever is being served locally is assumed to hold at least
+    // this much. The proxy advertises the real window on /v1/models and clients
+    // that read it size themselves to the truth.
     modelContextBudget: 130048,
   },
 };

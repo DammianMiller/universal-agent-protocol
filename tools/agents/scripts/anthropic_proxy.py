@@ -13353,13 +13353,39 @@ def _parse_anthropic_sse_to_message(raw: bytes) -> dict | None:
     }
 
 
-ADVERTISED_MODEL_IDS = (
+# The Claude ids are a hand-maintained contract: SDK clients check /v1/models for
+# the id they are about to request, and a discovery miss is a confusing 404 even
+# though this proxy would have served it.
+#
+# The LOCAL id is NOT hand-maintained any more. It was, through three model
+# generations, and each one went stale the moment the served model changed --
+# harmlessly under llama.cpp, which ignores the model field, and then all at once
+# under a backend that validates it. `_advertised_model_ids()` asks the upstream
+# what it serves and falls back to this constant only when it cannot answer.
+ADVERTISED_CLAUDE_MODEL_IDS = (
     "claude-haiku-4-5-20251001",
     "claude-sonnet-4-6",
     "claude-sonnet-5-20250514",
     "claude-fable-5",
-    "qwen3.8-27b",
 )
+# Last-resort local id, used only when the upstream cannot be interrogated.
+FALLBACK_LOCAL_MODEL_ID = "qwen3.8-27b"
+ADVERTISED_MODEL_IDS = ADVERTISED_CLAUDE_MODEL_IDS + (FALLBACK_LOCAL_MODEL_ID,)
+
+
+async def _advertised_model_ids() -> tuple[str, ...]:
+    """The Claude contract ids plus whatever the upstream actually serves.
+
+    Advertising a local id the backend does not answer to is worse than
+    advertising nothing: clients trust the list and select the dead id. Asking
+    the backend removes the only place that answer was previously guessed.
+    """
+    served = await _upstream_model_ids_cached()
+    local = tuple(m for m in (served or ()) if m not in ADVERTISED_CLAUDE_MODEL_IDS)
+    # Served model FIRST. A client that reads the list as "what does this server
+    # run" takes data[0], and with the Claude contract ids in front of it that
+    # answer was a Claude id -- measured against this very proxy.
+    return (local or (FALLBACK_LOCAL_MODEL_ID,)) + ADVERTISED_CLAUDE_MODEL_IDS
 
 # Keys OpenAI-compatible clients probe for a model's context window. There is no
 # standard, so emit the common spellings rather than betting on one: hermes reads
@@ -13427,7 +13453,7 @@ async def models():
     # that only refreshes on /v1/messages means the number a client keeps for
     # the whole session is the one from before any traffic existed.
     await _maybe_recheck_context_window()
-    return {"data": [_model_entry(mid) for mid in ADVERTISED_MODEL_IDS]}
+    return {"data": [_model_entry(mid) for mid in await _advertised_model_ids()]}
 
 
 @app.get("/health")
