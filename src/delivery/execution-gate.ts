@@ -148,6 +148,11 @@ function usesWebGl(entryDir: string, entry: string): boolean {
 interface CanvasRenderProbe {
   hasCanvas: boolean;
   nonUniformPixels?: number;
+  /** Shader-compile / program-link failures recorded by RAF_INSTRUMENT, with
+   *  the driver's own info log. A WebGL canvas cannot be read with
+   *  getImageData (one context per canvas), so this is the reading that exists
+   *  for a page that draws nothing. */
+  glErrors?: string[];
   /** rAF call count sampled across the load window (loop alive on load?). */
   rafLoad0?: number;
   rafLoad1?: number;
@@ -170,6 +175,46 @@ const RAF_INSTRUMENT = `(() => { try {
     window.requestAnimationFrame = function(cb){ n++; return orig.call(window, cb); };
     Object.defineProperty(window, '__uapRafCount', { configurable: true, get: function(){ return n; } });
   }
+  // Ask the GL context whether the shaders it was given actually compiled.
+  //
+  // Reading pixels was the obvious way to catch a page that paints nothing, and
+  // it does not work: a canvas has exactly ONE context, so getImageData on a
+  // WebGL canvas returns null, and reading the default framebuffer in-frame was
+  // measured wrong 10 times out of 12 on a page that demonstrably paints
+  // (headless Chromium has not necessarily backed the buffer yet). A verdict
+  // that false-fails working pages 80% of the time is worse than none.
+  //
+  // Compile and link status are exact, need no timing, and carry the compiler's
+  // own text -- which is the sentence the model actually needs. A page whose
+  // shaders do not compile draws nothing BY CONSTRUCTION.
+  var glErrs = [];
+  var note = function(m){ if (glErrs.length < 8 && glErrs.indexOf(m) === -1) glErrs.push(m); };
+  var patch = function(P){
+    if (!P || !P.prototype) return;
+    var cs = P.prototype.compileShader;
+    if (cs) P.prototype.compileShader = function(sh){
+      var r = cs.call(this, sh);
+      try {
+        if (!this.getShaderParameter(sh, this.COMPILE_STATUS)) {
+          note('shader compile FAILED: ' + String(this.getShaderInfoLog(sh) || '(empty info log)').trim());
+        }
+      } catch (e) {}
+      return r;
+    };
+    var lp = P.prototype.linkProgram;
+    if (lp) P.prototype.linkProgram = function(pr){
+      var r = lp.call(this, pr);
+      try {
+        if (!this.getProgramParameter(pr, this.LINK_STATUS)) {
+          note('program link FAILED: ' + String(this.getProgramInfoLog(pr) || '(empty info log)').trim());
+        }
+      } catch (e) {}
+      return r;
+    };
+  };
+  patch(window.WebGL2RenderingContext);
+  patch(window.WebGLRenderingContext);
+  Object.defineProperty(window, '__uapGlErrors', { configurable: true, get: function(){ return glErrs.slice(); } });
 } catch (e) {} })()`;
 
 /**
@@ -227,7 +272,8 @@ const CANVAS_RENDER_PROBE = `() => new Promise((resolve) => {
     } catch (e) {}
     var rafPostClick0 = raf();
     setTimeout(function () {
-      resolve({ hasCanvas: !!c, nonUniformPixels: nu, rafLoad0: rafLoad0, rafLoad1: rafLoad1, rafPostClick0: rafPostClick0, rafPostClick1: raf() });
+      var ge = Array.isArray(window.__uapGlErrors) ? window.__uapGlErrors : [];
+    resolve({ hasCanvas: !!c, nonUniformPixels: nu, glErrors: ge, rafLoad0: rafLoad0, rafLoad1: rafLoad1, rafPostClick0: rafPostClick0, rafPostClick1: raf() });
     }, 700);
   }, 500);
 })`;
@@ -509,6 +555,9 @@ async function checkCanvasLiveness(browser: BrowserDriver, start: number): Promi
   // legitimately static / draw-on-demand / minimal app and is left alone (avoids
   // false-failing trivial fixtures and static canvases).
   const blank = loopAlive && typeof probe.nonUniformPixels === 'number' && probe.nonUniformPixels === 0;
+  // Shaders that do not compile draw nothing, whether or not a loop is running,
+  // so this does not wait on liveness the way the pixel checks do.
+  const glErrors = probe.glErrors ?? [];
   // Freezes on interaction: the loop WAS continuously animating (l1>l0), then
   // after the primary click it STOPPED — the game renders a menu but dies the
   // moment you start it (octopus_invaders, 2026-07-24: menu rAF 93->135, stuck at
@@ -516,6 +565,19 @@ async function checkCanvasLiveness(browser: BrowserDriver, start: number): Promi
   // Both signals require an ACTIVE loop, so a static / one-shot-draw / minimal
   // canvas is never false-failed (a one-shot rAF draw has l1===l0, not > ).
   const animatedThenFroze = loopAlive && p0 > 0 && p1 === p0;
+  if (glErrors.length > 0) {
+    return {
+      passed: false,
+      exitCode: 1,
+      failureReason: `${glErrors.length} WebGL shader/program failure(s) — the canvas cannot be drawing correctly`,
+      // Verbatim, with the line numbers: this is the whole point. A summary
+      // would be another percentage, and a percentage is what stalled the run
+      // this came from for nine turns.
+      outputTail: `${glErrors.join('\n')}\n\nEvery shader must compile and every program must link before the page can render. Fix these first — they are reported by the GL driver itself, with line numbers into the shader source.`,
+      durationMs: Date.now() - start,
+      via: 'browser',
+    };
+  }
   if (!(blank || animatedThenFroze)) return null;
   const reason = animatedThenFroze
     ? 'the <canvas> render loop FREEZES on the primary interaction (the game does not play)'
@@ -594,7 +656,12 @@ function withBrowserErrors(result: ExecutionResult, errs: string[]): ExecutionRe
 async function runCanvasLivenessCheck(
   entryDir: string,
   opts: ExecutionGateOptions,
-  entry: string
+  entry: string,
+  /** vm-dom declined this page (WebGL), so this rung is the ONLY judgement that
+   *  will be made. Console errors are then not "noise on someone else's
+   *  verdict" -- they are the whole verdict, and dropping them leaves the model
+   *  with a percentage. */
+  soleJudge = false
 ): Promise<ExecutionResult | null> {
   const start = Date.now();
   let server: { url: string; close: () => void } | null = null;
@@ -644,7 +711,12 @@ async function runCanvasLivenessCheck(
     // The loop looked alive, but the page threw. A WebGL app whose shaders did
     // not compile can still tick requestAnimationFrame while drawing nothing —
     // which is exactly how a blank page passed a liveness probe.
-    if (hard.length > 0) {
+    // `hard` is the conservative set (shader/uncaught/pageerror). When this rung
+    // is the only judge, an ordinary console.error is the only thing anyone will
+    // ever say about the page, so it counts too: `FBO incomplete: 36054` matches
+    // nothing in HARD_ERROR_RE and is exactly the sentence the model needed.
+    const failing = soleJudge ? all : hard;
+    if (failing.length > 0) {
       return withBrowserErrors(
         {
           passed: false,
@@ -1439,7 +1511,13 @@ export async function runExecutionGate(
       // vm-dom verdict) when no browser is available.
       const vm = await runVmDomHarness(dir, undefined, undefined, entry);
       if (!vm.passed || !hasCanvas) return vm;
-      const liveness = await runCanvasLivenessCheck(dir, opts, entry);
+      // vm-dom returns a skip-PASS for a WebGL page it cannot execute. That
+      // pass is not a judgement, so if the browser rung then declines as well
+      // the run ends up with no opinion at all reported as success -- which is
+      // how a page that painted 0 pixels scored green while the model was told
+      // only "33% of gates".
+      const declined = vm.via === 'none';
+      const liveness = await runCanvasLivenessCheck(dir, opts, entry, declined);
       return liveness ?? vm;
     }
   }

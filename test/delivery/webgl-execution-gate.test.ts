@@ -43,6 +43,33 @@ if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error('Shader compile 
 </script></body></html>`;
 }
 
+
+/**
+ * Whether this machine can run the browser rung at all.
+ *
+ * The guard here used to be `if (reason.includes('WebGL context')) return`,
+ * which reads the GATE'S OWN VERDICT: the vm-dom skip-pass says exactly that,
+ * so a gate that stopped judging WebGL pages entirely looked identical to a
+ * machine with no browser, and every assertion below became unreachable.
+ * Canaried: with the shader check disabled, all 14 tests still passed.
+ *
+ * playwright-core resolves without browser binaries (CI has the package and not
+ * the browser), so the package existing is not the question -- launching is.
+ */
+let browserOk: boolean | null = null;
+async function haveBrowser(): Promise<boolean> {
+  if (browserOk !== null) return browserOk;
+  const d = await loadPlaywrightDriver().catch(() => null);
+  if (!d) return (browserOk = false);
+  try {
+    await d.launch({ headless: true });
+    await d.close();
+    return (browserOk = true);
+  } catch {
+    return (browserOk = false);
+  }
+}
+
 let server: Server | null = null;
 afterEach(() => {
   server?.close();
@@ -201,6 +228,7 @@ describe('browser errors reach the verdict', () => {
   }
 
   it('fails a WebGL page whose shaders do not compile, and says why', async () => {
+    if (!(await haveBrowser())) return; // no browser on this machine
     // A loop that ticks while drawing nothing passes a liveness probe, which is
     // how a blank page looked healthy.
     const dir = project(`<html><body><canvas id="c"></canvas><script>
@@ -213,7 +241,6 @@ requestAnimationFrame(function loop(){ requestAnimationFrame(loop); });
 </script></body></html>`);
 
     const r = await runExecutionGate(dir, { entry: 'index.html' });
-    if (String(r.failureReason ?? '').includes('WebGL context')) return; // no browser here
     expect(r.passed).toBe(false);
     // The compiler's own words, verbatim — a summary would be another percentage.
     expect(`${r.failureReason} ${r.outputTail}`).toMatch(/gl_FragColor|Shader compile error/i);
@@ -226,12 +253,151 @@ const s = gl.createShader(gl.VERTEX_SHADER);
 gl.shaderSource(s, '#version 300 es\\nvoid main(){ gl_Position = vec4(0.0,0.0,0.0,1.0); }');
 gl.compileShader(s);
 if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error('Shader compile error:', gl.getShaderInfoLog(s));
-const c = document.getElementById('c');
-const x = c.getContext('webgl2');
-requestAnimationFrame(function loop(){ requestAnimationFrame(loop); });
+// Actually PAINTS: a page that only ticks rAF draws nothing, and drawing
+// nothing is the failure this file now also covers.
+gl.enable(gl.SCISSOR_TEST);
+requestAnimationFrame(function loop(){
+  gl.scissor(0, 0, 150, 150); gl.clearColor(1, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.scissor(150, 0, 150, 150); gl.clearColor(0, 0, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  requestAnimationFrame(loop);
+});
 </script></body></html>`);
 
     const r = await runExecutionGate(dir, { entry: 'index.html' });
     expect(`${r.failureReason ?? ''} ${r.outputTail ?? ''}`).not.toMatch(/Shader compile error/i);
+  }, 120_000);
+});
+
+describe('a WebGL page whose shaders do not compile', () => {
+  // A WebGL canvas cannot be read with getImageData -- a canvas has exactly ONE
+  // context, so getContext('2d') on a webgl2 canvas returns null and the pixel
+  // probe reports -1, which means "cannot tell", never "blank". So the existing
+  // blank-canvas reading could not fire on a WebGL page at all, and the one
+  // class of app that most needed judging was the one class exempt from it.
+  //
+  // Reading the default framebuffer in-frame was tried and does not work:
+  // measured 10 false failures in 12 runs on a page that demonstrably paints
+  // (headless Chromium has not necessarily backed the buffer yet). A check that
+  // fails working pages 80% of the time is worse than no check.
+  //
+  // Compile and link status are exact, need no timing, and come with the
+  // driver's own text. A page whose shaders do not compile draws nothing BY
+  // CONSTRUCTION -- and unlike a pixel count, the verdict names the line.
+  let dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs = [];
+  });
+
+  function project(html: string): string {
+    const d = mkdtempSync(join(tmpdir(), 'glcompile-'));
+    dirs.push(d);
+    writeFileSync(join(d, 'index.html'), html);
+    return d;
+  }
+
+  // WebGL1 syntax inside a `#version 300 es` shader: exactly the defect that
+  // held the original run at 33% for nine turns.
+  const SILENT_BAD_SHADER = `<html><body><canvas id="c"></canvas><script>
+const gl = document.getElementById('c').getContext('webgl2');
+const s = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(s, '#version 300 es\\nprecision highp float;\\nvoid main(){ gl_FragColor = vec4(1.0); }');
+gl.compileShader(s);
+requestAnimationFrame(function loop(){ requestAnimationFrame(loop); });
+</script></body></html>`;
+
+  const PAINTS = `<html><body><canvas id="c"></canvas><script>
+const gl = document.getElementById('c').getContext('webgl2');
+const s = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(s, '#version 300 es\\nprecision highp float;\\nout vec4 o;\\nvoid main(){ o = vec4(1.0); }');
+gl.compileShader(s);
+gl.enable(gl.SCISSOR_TEST);
+requestAnimationFrame(function loop(){
+  gl.scissor(0, 0, 150, 150); gl.clearColor(1, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.scissor(150, 0, 150, 150); gl.clearColor(0, 0, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  requestAnimationFrame(loop);
+});
+</script></body></html>`;
+
+  it('fails the page even though it logs nothing at all', async () => {
+    if (!(await haveBrowser())) return; // no browser on this machine
+    // The page never checks COMPILE_STATUS, so there is no console output to
+    // catch -- the previous verdict for this page was a pass.
+    const r = await runExecutionGate(project(SILENT_BAD_SHADER), { entry: 'index.html' } as never);
+    expect(r.passed).toBe(false);
+    expect(r.failureReason).toMatch(/shader|program/i);
+  }, 120_000);
+
+  it("reports the driver's own message, with the line number", async () => {
+    if (!(await haveBrowser())) return; // no browser on this machine
+    const r = await runExecutionGate(project(SILENT_BAD_SHADER), { entry: 'index.html' } as never);
+    expect(r.outputTail).toMatch(/gl_FragColor/);
+    expect(r.outputTail).toMatch(/ERROR:\s*\d+:\d+/);
+    // `undefined` is what the vm-dom stub produced 50 times, and it is
+    // unactionable — the whole reason this rung exists.
+    expect(r.outputTail).not.toMatch(/FAILED:\s*undefined/);
+  }, 120_000);
+
+  it('does NOT fail a WebGL page whose shaders compile', async () => {
+    // The control that keeps this honest. Measured 12/12 clean before shipping;
+    // the pixel-reading version it replaced failed this 10 times in 12.
+    const r = await runExecutionGate(project(PAINTS), { entry: 'index.html' } as never);
+    expect(`${r.failureReason ?? ''} ${r.outputTail ?? ''}`).not.toMatch(/shader compile FAILED|program link FAILED/);
+  }, 120_000);
+});
+
+describe('when the browser rung is the only judge', () => {
+  // vm-dom returns a skip-PASS for a WebGL page it cannot execute. That pass is
+  // not a judgement -- so when the browser rung also declined, a run ended with
+  // NO opinion at all, reported as success. Errors that fall outside the
+  // conservative hard-error set are then the only thing anyone will ever say
+  // about the page. `FBO incomplete: 36054` is GL_FRAMEBUFFER_INCOMPLETE_-
+  // ATTACHMENT, matches nothing in that set, and was printed four times per
+  // load while the gate said "skipped".
+  let dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs = [];
+  });
+
+  function project(html: string): string {
+    const d = mkdtempSync(join(tmpdir(), 'glsole-'));
+    dirs.push(d);
+    writeFileSync(join(d, 'index.html'), html);
+    return d;
+  }
+
+  it('surfaces a console error the hard-error set does not match', async () => {
+    if (!(await haveBrowser())) return; // no browser on this machine
+    const dir = project(`<html><body><canvas id="c"></canvas><script>
+const gl = document.getElementById('c').getContext('webgl2');
+gl.enable(gl.SCISSOR_TEST);
+console.error('FBO incomplete: 36054');
+requestAnimationFrame(function loop(){
+  gl.scissor(0, 0, 150, 150); gl.clearColor(1, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.scissor(150, 0, 150, 150); gl.clearColor(0, 0, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  requestAnimationFrame(loop);
+});
+</script></body></html>`);
+    const r = await runExecutionGate(dir, { entry: 'index.html' });
+    expect(r.passed).toBe(false);
+    // Verbatim: the number is the whole diagnosis.
+    expect(r.outputTail).toContain('FBO incomplete: 36054');
+  }, 120_000);
+
+  it('leaves an ordinary page alone, where vm-dom DID judge it', async () => {
+    // Not a WebGL page, so vm-dom judged it and this rung is not the sole
+    // judge. Promoting stray console noise to a failure there would fail
+    // working apps for logging.
+    const dir = project(`<html><body><canvas id="c"></canvas><script>
+const ctx = document.getElementById('c').getContext('2d');
+console.error('a log line, not a defect');
+requestAnimationFrame(function loop(){
+  ctx.fillStyle = '#c33'; ctx.fillRect(0, 0, 40, 40);
+  requestAnimationFrame(loop);
+});
+</script></body></html>`);
+    const r = await runExecutionGate(dir, { entry: 'index.html' });
+    expect(r.passed).toBe(true);
   }, 120_000);
 });
