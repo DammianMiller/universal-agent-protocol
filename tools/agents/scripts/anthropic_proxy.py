@@ -1162,6 +1162,247 @@ PROXY_DISABLE_THINKING_ON_TOOL_TURNS = os.environ.get(
 PROXY_DISABLE_THINKING_ALWAYS = os.environ.get(
     "PROXY_DISABLE_THINKING_ALWAYS", "off"
 ).lower() not in {"0", "false", "off", "no"}
+# Does the upstream accept `chat_template_kwargs`?
+#
+# It is a llama.cpp `--jinja` concept: the Qwen chat template reads its
+# `enable_thinking` key, and _set_thinking writes it because the top-level flag
+# alone is silently overridden there (see that function). It is NOT part of the
+# OpenAI API, and a backend that never had a jinja template has no reason to
+# accept it. ninfer-serve (the qwen3.8-27b backend, 2026-08-19) REJECTS it:
+#
+#   HTTP 400 {"error":{"code":"chat_template_option_not_supported",
+#     "message":"chat_template_kwargs.enable_thinking is not supported",
+#     "param":"chat_template_kwargs","type":"invalid_request_error"}}
+#
+# which killed every turn that expressed a thinking intent — the operator
+# switches, the tool-turn breakers, the JSON-verdict grammar, the empty-response
+# retry and every assistant prefill/continuation.
+#
+# 'auto' (default) probes the upstream once and remembers; 'on'/'off' pin it for
+# an operator who knows their backend and does not want the probe.
+PROXY_CHAT_TEMPLATE_KWARGS = os.environ.get(
+    "PROXY_CHAT_TEMPLATE_KWARGS", "auto"
+).strip().lower()
+
+# Tri-state: True = accepted, False = rejected, None = not yet known.
+_ctk_supported: bool | None = (
+    True
+    if PROXY_CHAT_TEMPLATE_KWARGS in {"1", "true", "on", "yes"}
+    else False
+    if PROXY_CHAT_TEMPLATE_KWARGS in {"0", "false", "off", "no"}
+    else None
+)
+# 'auto' resolves on first use; a pin is already resolved and must not re-probe.
+_ctk_probed = _ctk_supported is not None
+
+
+def _ctk_allowed() -> bool:
+    """May this request carry `chat_template_kwargs`?
+
+    UNKNOWN COUNTS AS YES. The field is load-bearing on llama.cpp — dropping it
+    there does not fail loudly, it silently restores the template default and
+    every thinking control becomes a no-op again, which is the exact bug
+    _set_thinking was written to fix. A backend that cannot take the field says
+    so with a 400 the probe and the error latch both read, so guessing 'yes' is
+    self-correcting while guessing 'no' is not.
+    """
+    return _ctk_supported is not False
+
+
+def _note_ctk_rejection(error_text: str) -> bool:
+    """Latch 'unsupported' from an upstream error body. Returns True if it did.
+
+    The probe is the primary mechanism; this is the safety net for the case it
+    cannot cover — an upstream swapped underneath a running proxy. Matches the
+    machine-readable error code AND the human message, because only the code is
+    contractual and only the message is guaranteed to survive a proxy in the
+    middle that reshapes the envelope.
+    """
+    global _ctk_supported, _ctk_probed
+    if _ctk_supported is False or PROXY_CHAT_TEMPLATE_KWARGS in {"1", "true", "on", "yes"}:
+        return False
+    blob = (error_text or "").lower()
+    # The contractual error code is the trustworthy signal. The bare parameter
+    # NAME is not: the proxy puts that exact string in its own outbound body, so
+    # any upstream or middlebox that echoes the request in an error envelope
+    # (LiteLLM does, and one sits in front of this) would latch the field off on
+    # an error that says nothing about capability. Demonstrated in review: a
+    # context-overflow error quoting the payload flipped the latch. Require the
+    # name to co-occur with an actual rejection phrase.
+    named = "chat_template_kwargs" in blob and any(
+        phrase in blob for phrase in ("not supported", "unsupported", "unknown field", "unrecognized")
+    )
+    if "chat_template_option_not_supported" not in blob and not named:
+        return False
+    _ctk_supported = False
+    _ctk_probed = True
+    logger.warning(
+        "CHAT_TEMPLATE_KWARGS: upstream rejected the field - disabling it for "
+        "this process (set PROXY_CHAT_TEMPLATE_KWARGS=on to force it back)"
+    )
+    return True
+
+
+# A probe that keeps re-arming on inconclusive answers would add an upstream
+# round-trip to EVERY /v1/messages for the life of the process. Bounded.
+_CTK_PROBE_MAX_ATTEMPTS = 3
+_ctk_probe_attempts = 0
+
+
+async def _probe_chat_template_kwargs() -> None:
+    """Ask the upstream, with the cheapest request that can actually answer.
+
+    A 1-token completion, not a GET: whether the field is accepted is a property
+    of the request parser, and no metadata endpoint reports it. Vendor-sniffing
+    /v1/models `owned_by` is deliberately not used as the ANSWER - it tells you
+    which backend this is, a different question that goes stale every time a new
+    backend appears - but it IS used to learn the model name, because a
+    completion without one never reaches the part of the parser under test:
+
+        {"error":{"code":null,"message":"missing required field: model",
+                  "param":"model","type":"invalid_request_error"}}
+
+    which is a 400 that says nothing about chat_template_kwargs. Measured: the
+    first version of this probe omitted `model`, got exactly that, correctly
+    declined to latch on an unrelated error, and so learned nothing on every
+    attempt while re-arming itself each time.
+
+    Any answer that is NOT the specific rejection leaves the state UNKNOWN, so a
+    probe that could not run (upstream down, timeout, auth) never disables a
+    field llama.cpp needs.
+    """
+    global _ctk_supported, _ctk_probed, _ctk_probe_attempts
+    if _ctk_probed or http_client is None:
+        return
+    _ctk_probe_attempts += 1
+    _ctk_probed = True  # cleared below only if the answer was inconclusive
+    try:
+        model = await _upstream_model_name()
+        if not model:
+            _ctk_probed = _ctk_probe_attempts >= _CTK_PROBE_MAX_ATTEMPTS
+            return
+        resp = await http_client.post(
+            f"{LLAMA_CPP_BASE}/chat/completions",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 1,
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+            timeout=20.0,
+        )
+        if resp.status_code == 200:
+            _ctk_supported = True
+            logger.info("CHAT_TEMPLATE_KWARGS: upstream accepts the field")
+            return
+        if _is_loading_model_503(resp):
+            # The backend is still loading its weights. That is not an attempt
+            # at answering the question -- it is the question not being asked
+            # yet. Counting it is how a proxy started alongside its model server
+            # burns all three tries before the server is even up, then runs the
+            # rest of its life with the answer stuck at "unknown".
+            _ctk_probe_attempts -= 1
+            _ctk_probed = False
+            return
+        if not _note_ctk_rejection(resp.text[:1000]):
+            # Some other error (auth, bad model, overload). It says nothing
+            # about this field. Re-open the question, up to the attempt cap.
+            logger.debug(
+                "CHAT_TEMPLATE_KWARGS probe inconclusive (HTTP %d): %s",
+                resp.status_code,
+                resp.text[:200],
+            )
+            _ctk_probed = _ctk_probe_attempts >= _CTK_PROBE_MAX_ATTEMPTS
+    except Exception as e:  # noqa: BLE001 - a probe must never take the proxy down
+        _ctk_probed = _ctk_probe_attempts >= _CTK_PROBE_MAX_ATTEMPTS
+        logger.debug("CHAT_TEMPLATE_KWARGS probe failed: %s", e)
+
+
+# Model ids the upstream actually answers to, or None when not yet known.
+_upstream_model_ids: list[str] | None = None
+# Ids we have already reported as unservable, so the log says it once per id.
+_rewritten_model_ids: set[str] = set()
+
+
+async def _upstream_model_ids_cached() -> list[str] | None:
+    """The upstream's advertised model ids, fetched at most once per process."""
+    global _upstream_model_ids
+    if _upstream_model_ids is not None:
+        return _upstream_model_ids
+    if http_client is None:
+        return None
+    try:
+        r = await http_client.get(f"{LLAMA_CPP_BASE}/models", timeout=10.0)
+        if r.status_code != 200:
+            return None
+        data = (r.json() or {}).get("data") or []
+        ids = [str(m["id"]) for m in data if isinstance(m, dict) and m.get("id")]
+        if ids:
+            _upstream_model_ids = ids
+        return ids or None
+    except Exception:  # noqa: BLE001 - discovery must never take the proxy down
+        return None
+
+
+async def _reconcile_wire_model(openai_body: dict) -> None:
+    """Point a locally-served request at a model the backend will answer to.
+
+    THE BUG THIS FIXES, measured 2026-08-19. llama.cpp ignores the OpenAI
+    `model` field entirely, so for years the proxy could forward whatever the
+    client asked for. ninfer-serve VALIDATES it. With the local-only sentinel
+    (ANTHROPIC_PASSTHROUGH_MODELS=__local_only__ -- the shipped systemd default)
+    EVERY advertised id is served locally, including the four `claude-*` ones,
+    and every one of them came back:
+
+        HTTP 404 {"code":"model_not_found","message":"model 'claude-sonnet-4-6' not found"}
+
+    So the whole point of advertising those ids for SDK compatibility was
+    defeated by the backend swap, and so was any `.uap.json` still naming a
+    retired local preset (this repo's own `roles.fallback` is one).
+
+    Only rewrites an id the upstream does NOT list, and only when the upstream
+    told us what it serves. A request naming a model the backend knows is left
+    exactly alone, so a genuine multi-model gateway keeps working; a backend we
+    could not interrogate changes nothing. Fails open in both directions.
+    """
+    requested = openai_body.get("model")
+    if not requested:
+        return
+    ids = await _upstream_model_ids_cached()
+    if not ids or requested in ids:
+        return
+    served = ids[0]
+    openai_body["model"] = served
+    if requested not in _rewritten_model_ids:
+        _rewritten_model_ids.add(requested)
+        logger.warning(
+            "MODEL REWRITE: upstream does not serve %r (it serves %s) - sending %r instead. "
+            "Update the advertised/configured id to stop relying on this.",
+            requested, ", ".join(ids[:4]), served,
+        )
+
+
+async def _upstream_model_name() -> str | None:
+    """First model id the upstream advertises, or None.
+
+    Only used to make the capability probe well-formed. Never cached as
+    configuration: the proxy's own advertised list is a separate, deliberate
+    choice (ADVERTISED_MODEL_IDS) and must not silently follow the backend.
+    """
+    if http_client is None:
+        return None
+    try:
+        r = await http_client.get(f"{LLAMA_CPP_BASE}/models", timeout=10.0)
+        if r.status_code != 200:
+            return None
+        data = (r.json() or {}).get("data") or []
+        first = data[0] if data else {}
+        mid = first.get("id") if isinstance(first, dict) else None
+        return str(mid) if mid else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # Force tool_choice='required' on the first turn of a fresh session. Originally
 # Qwen-tuned to break out of cold-start "tries to chat instead of calling a tool"
 # behaviour. Gemma 4 doesn't need this — it routes 'auto' correctly and the
@@ -1576,6 +1817,12 @@ def _set_thinking(body: dict, enabled: bool) -> None:
     # with `dict(openai_body)`, a SHALLOW copy that still shares this dict, so
     # mutating in place would silently disable thinking on the original request
     # too. Copying keeps any other template kwargs the server was launched with.
+    if not _ctk_allowed():
+        # Backend rejects the field (see _ctk_allowed). The top-level flag set
+        # above is all this backend can be told; sending the nested form would
+        # 400 the whole turn rather than merely fail to take effect.
+        body.pop("chat_template_kwargs", None)
+        return
     existing = body.get("chat_template_kwargs")
     ctk = dict(existing) if isinstance(existing, dict) else {}
     ctk["enable_thinking"] = enabled
@@ -7335,10 +7582,18 @@ def build_openai_request(
     # continuation, so disable thinking the way the template actually reads.
     _final_msgs = openai_body.get("messages") or []
     if _final_msgs and isinstance(_final_msgs[-1], dict) and _final_msgs[-1].get("role") == "assistant":
-        ctk = openai_body.setdefault("chat_template_kwargs", {})
-        if isinstance(ctk, dict):
-            ctk["enable_thinking"] = False
-        openai_body.pop("enable_thinking", None)
+        if _ctk_allowed():
+            ctk = openai_body.setdefault("chat_template_kwargs", {})
+            if isinstance(ctk, dict):
+                ctk["enable_thinking"] = False
+            openai_body.pop("enable_thinking", None)
+        else:
+            # No jinja template to instruct, so there is no prefill
+            # incompatibility to work around either — the whole reason this
+            # block sets the nested key. Say it the only way this backend
+            # understands and move on.
+            openai_body.pop("chat_template_kwargs", None)
+            openai_body["enable_thinking"] = False
 
     return openai_body
 
@@ -12100,12 +12355,21 @@ async def messages(request: Request):
                 monitor.tool_state_auto_budget_remaining = 1
                 monitor.reset_completion_recovery()
 
+    # Whether this upstream accepts chat_template_kwargs decides what
+    # _set_thinking is allowed to write, so it must be answered BEFORE the body
+    # is built -- but only here, AFTER the passthrough branch has already
+    # returned. A cloud-only session was otherwise blocking on a capability
+    # probe of a local backend it will never send a token to.
+    await _probe_chat_template_kwargs()
     openai_body = build_openai_request(
         body,
         monitor,
         profile_prompt_suffix=profile_prompt_suffix,
         profile_grammar=profile_grammar,
     )
+    # Only the WIRE body is touched. The Anthropic response still echoes the
+    # model the client asked for, which is what clients check.
+    await _reconcile_wire_model(openai_body)
 
     client = http_client
     if client is None:
@@ -12230,6 +12494,7 @@ async def messages(request: Request):
                     strict_resp.status_code,
                     error_text,
                 )
+                _note_ctk_rejection(error_text)
                 return Response(
                     content=json.dumps(
                         {
@@ -12495,6 +12760,13 @@ async def messages(request: Request):
                 error_text = error_body.decode("utf-8", errors="replace")[:1000]
 
             logger.error("Upstream HTTP %d: %s", resp.status_code, error_text)
+            # Streaming is the DEFAULT client path, and it was the one handler
+            # of three that never latched. Without this, a proxy whose probe
+            # came back inconclusive (upstream still loading during the first
+            # three requests) keeps sending a field the backend rejects, on
+            # every thinking-intent turn, for the life of the process -- the
+            # exact permanent breakage this capability check exists to prevent.
+            _note_ctk_rejection(error_text)
 
             # Parse the error for a user-friendly message
             error_message = f"Upstream server error (HTTP {resp.status_code})"
@@ -12656,6 +12928,7 @@ async def messages(request: Request):
             logger.error(
                 "Upstream HTTP %d (non-stream): %s", resp.status_code, error_text
             )
+            _note_ctk_rejection(error_text)
             return Response(
                 content=json.dumps(
                     {
@@ -13085,7 +13358,7 @@ ADVERTISED_MODEL_IDS = (
     "claude-sonnet-4-6",
     "claude-sonnet-5-20250514",
     "claude-fable-5",
-    "qwen36-35b-a3b-iq4xs",
+    "qwen3.8-27b",
 )
 
 # Keys OpenAI-compatible clients probe for a model's context window. There is no

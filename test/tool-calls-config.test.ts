@@ -23,7 +23,7 @@ describe('Tool call server configuration', () => {
     expect(content).toContain('claude-haiku-4-5-20251001');
     expect(content).toContain('claude-sonnet-4-6');
     expect(content).toContain('claude-opus-4-8');
-    expect(content).toContain('qwen36-35b-a3b-iq4xs');
+    expect(content).toContain('qwen3.8-27b');
   });
 
   it('should show updated model names in dashboard list', () => {

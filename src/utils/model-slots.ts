@@ -72,14 +72,37 @@ export function configuredSlots(cwd?: string): number | undefined {
   return intEnv('UAP_MODEL_SLOTS') ?? cfg(cwd).slots;
 }
 
-/** Probe a llama.cpp `/slots` endpoint; returns the slot count or null. */
+/**
+ * Probe a llama.cpp `/slots` endpoint; returns the slot count or null.
+ *
+ * `/slots` is a llama.cpp endpoint, and a null answer means two very different
+ * things. The caller used to collapse both onto DEFAULT_SLOTS = 2:
+ *
+ *   - the endpoint is unreachable        -> we know nothing; 2 is a fair guess
+ *   - the endpoint answered 404/405      -> this is NOT llama.cpp
+ *
+ * The second case is now the normal one here: the local backend is ninfer-serve
+ * (`--max-concurrency 1`), which serves no `/slots` at all. Guessing 2 against a
+ * server that runs ONE request and queues the rest does not double throughput —
+ * it puts a second request in a queue and then lets the adaptive controller read
+ * the queueing delay as backpressure on a server that was never saturated.
+ *
+ * So a live server that denies knowing about `/slots` reports 1, not "unknown".
+ */
 export async function probeSlots(base: string, timeoutMs = 1500): Promise<number | null> {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await fetch(`${base}/slots`, { signal: ctrl.signal });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        // 404/405/501 = the server is up and has no such endpoint: not
+        // llama.cpp, so it has no `--parallel` rails to divide. Treat it as a
+        // single rail rather than as an absent answer. Any OTHER status (5xx,
+        // 429) is a server that may well be llama.cpp having a bad moment —
+        // that stays "unknown".
+        return res.status === 404 || res.status === 405 || res.status === 501 ? 1 : null;
+      }
       const body = (await res.json()) as unknown;
       if (Array.isArray(body) && body.length > 0) return body.length;
       return null;

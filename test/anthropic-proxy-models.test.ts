@@ -23,9 +23,17 @@ describe('Anthropic proxy model list', () => {
   it('includes the local Qwen model ID for actual routing target', () => {
     // With ANTHROPIC_PASSTHROUGH_MODELS=__local_only__ all advertised IDs
     // (including the Claude ones above) actually round-trip to this local
-    // backend. The qwen36-35b-a3b-iq4xs entry is what the proxy genuinely
-    // serves as of the 2026-05-17 switch back to Qwen3.6-35B-A3B MoE.
-    expect(content).toContain('qwen36-35b-a3b-iq4xs');
+    // backend. The advertised id must be the one the backend ANSWERS to:
+    // measured 2026-08-19, requesting the previous `qwen36-35b-a3b-iq4xs`
+    // returned HTTP 404 model_not_found while the server served
+    // `qwen3.8-27b`, so every client that trusted /v1/models was broken.
+    expect(content).toContain('qwen3.8-27b');
+  });
+
+  it('no longer advertises the superseded qwen36 local id', () => {
+    // Advertising an id the backend 404s is worse than advertising nothing:
+    // SDKs check /v1/models before sending, so they select the dead id.
+    expect(content).not.toContain('"qwen36-35b-a3b-iq4xs"');
   });
 
   it('drops stale upstream model IDs no longer served', () => {
