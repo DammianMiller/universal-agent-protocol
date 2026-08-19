@@ -7,6 +7,7 @@
  * endpoints.
  */
 
+import { resolveWireModel } from './local-model.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -348,6 +349,7 @@ export class OpenAICompatClient implements ModelClient {
     finishReason?: string;
   }> {
     const endpoint = (model.endpoint ?? this.defaultEndpoint).replace(/\/$/, '');
+    const wireModel = await resolveWireModel(model.apiModel, endpoint);
     const timeout = options?.timeout ?? this.timeoutMs;
 
     const url = new URL(`${endpoint}/chat/completions`);
@@ -379,7 +381,10 @@ export class OpenAICompatClient implements ModelClient {
           ...(options?.jsonResponse ? { 'x-uap-json-response': '1' } : {}),
         },
         body: JSON.stringify({
-          model: model.apiModel,
+          // Resolved against THIS endpoint, so a preset that declines to pin a
+          // model name gets the one actually being served. A preset that names a
+          // model is returned unchanged.
+          model: wireModel,
           messages: [{ role: 'user', content: prompt }],
           ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
           ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),

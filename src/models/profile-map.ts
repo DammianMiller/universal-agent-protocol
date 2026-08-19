@@ -32,6 +32,10 @@ export const MODEL_PRESET_PROFILE: Record<string, string> = {
   'qwen35-a3b': 'qwen35',
   'qwen36-a3b': 'qwen36',
   'qwen38-27b': 'qwen38',
+  // Auto-detected: the family is not known until the endpoint answers, and the
+  // caller resolves the profile from the RESOLVED id where it can. This static
+  // entry is the answer for the case where nothing has been resolved yet.
+  'local-auto': GENERIC_PROFILE,
 };
 
 /**
