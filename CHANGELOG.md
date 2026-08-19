@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.212.6 (2026-08-19)
+
+- fix(deliver): the WebGL rung was inert — a probe string playwright never called
+
+
 ## v1.212.5 (2026-08-18)
 
 - fix(deliver): put the browser's own error text in the gate verdict
