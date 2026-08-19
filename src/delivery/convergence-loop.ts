@@ -17,7 +17,7 @@
 
 import { join } from 'node:path';
 import { execSync } from 'child_process';
-import { statSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { ENDPOINT_UNREACHABLE } from '../models/long-fetch.js';
 
 /**
@@ -32,6 +32,7 @@ import {
   resolveBoundVariant,
 } from '../self-tuning/prompt-variants.js';
 import type { GateRung, LadderResult, LadderOptions } from './verifier-ladder.js';
+import { baselinePath } from './capability-profile.js';
 import { mergeRedetectedRungs, detectRungs, runLadder } from './verifier-ladder.js';
 import type { Applier, ApplyOptions, ApplyResult } from './applier.js';
 import { applyFileBlocks, listGateConfigFiles } from './applier.js';
@@ -1203,6 +1204,24 @@ export class ConvergenceLoop {
       } catch {
         /* fail-soft: capture stays as it was */
       }
+    }
+    // The capability BASELINE joins the capture for the same reason as the gate
+    // script and the runner configs: it is a trust anchor that run_bash can
+    // reach. It lived in `.uap/`, which the applier protects but the bash sweep
+    // SKIPS by design (the harness writes there constantly) and this capture did
+    // not cover — so `echo '{}' > .uap/capability/baseline.json`, or simply
+    // deleting it, silently disarmed both the acceptance check AND the keep-best
+    // veto that stops a gutted tree becoming the run's best snapshot.
+    //
+    // `current.json` is deliberately NOT protected: the gate rewrites it every
+    // run, so it is an output, not an anchor.
+    try {
+      const capBaseline = baselinePath(this.config.projectRoot);
+      if (existsSync(capBaseline)) {
+        protectedList = [...new Set([...(protectedList ?? []), capBaseline])];
+      }
+    } catch {
+      /* fail-soft */
     }
     const applyOptions: ApplyOptions | undefined = protectTests
       ? { protectedFiles, protectGateConfigs: true }
