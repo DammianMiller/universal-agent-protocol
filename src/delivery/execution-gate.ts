@@ -20,10 +20,18 @@ import { createServer, type Server } from 'http';
 import { createReadStream, existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { extname, join, relative, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
+import { randomBytes } from 'crypto';
 import vm from 'vm';
 import type { GateRung } from './verifier-ladder.js';
 import { sanitizedEnv } from './sanitized-env.js';
 import { loadPlaywrightDriver } from './playwright-driver.js';
+import {
+  invalidateCapabilityCurrent,
+  sanitizeProfile,
+  unmeasured,
+  writeCapabilityCurrent,
+  type CapabilityProfile,
+} from './capability-profile.js';
 
 /**
  * Env for spawned smoke-runs with secret-bearing vars stripped, mirroring
@@ -169,10 +177,50 @@ interface CanvasRenderProbe {
  * loop (counter keeps climbing) from a DEAD/FROZEN one (climbed, then stopped)
  * from a legitimately STATIC page (never climbed). Fail-soft in the page.
  */
-const RAF_INSTRUMENT = `(() => { try {
-  var n = 0; var orig = window.requestAnimationFrame;
+/**
+ * A per-session random key for the read-back hooks.
+ *
+ * Not paranoia — measured. The hooks used to live on fixed, writable names, and
+ * `addInitScript` guarantees they exist BEFORE the page's own scripts, which
+ * guarantees the page's scripts run AFTER and can replace them. A four-line
+ * empty page reported 1,000,000 frames / 99 programs / 99 listener types and the
+ * gate read it as a capability INCREASE. For a rung whose entire purpose is
+ * catching a model that bought a clean verdict, "the code under test can write
+ * its own score" is disqualifying.
+ *
+ * The key is generated host-side (never project-controlled, so interpolating it
+ * is safe) and the hooks are installed non-writable and non-configurable, so a
+ * page can neither overwrite them nor delete and redefine them. It can still
+ * refuse to render — that is a real regression and gets reported as one.
+ */
+export function capabilityKey(): string {
+  return `__uapCap${randomBytes(9).toString('hex')}`;
+}
+
+const RAF_INSTRUMENT_FOR = (key: string): string => `(() => { try {
+  var KEY = ${JSON.stringify(key)};
+  var n = 0; var executed = 0; var lastT = -1; var orig = window.requestAnimationFrame;
   if (typeof orig === 'function') {
-    window.requestAnimationFrame = function(cb){ n++; return orig.call(window, cb); };
+    // Two counters, deliberately different. \`n\` counts SCHEDULED callbacks and
+    // feeds the existing liveness rung, which asks "is a loop still being
+    // driven". \`executed\` counts callbacks that actually RAN and feeds the
+    // capability profile, which asks "how much is actually happening" — a loop
+    // that schedules a callback which then throws has scheduled a frame it never
+    // drew, and the scheduled count would hide exactly that death.
+    window.requestAnimationFrame = function(cb){
+      n++;
+      return orig.call(window, function(t){
+        var r = cb(t);
+        // Count DISTINCT timestamps, not callbacks. rAF happily runs any number
+        // of callbacks against the same frame, so counting callbacks let a page
+        // scheduling 8000 no-op callbacks per tick report 632,000 frames -- and
+        // frame rate is the metric the liveness floor rests on. Distinct
+        // timestamps is also simply the correct definition: it is what "a frame"
+        // means, and it collapses that forgery to the ~120 real frames drawn.
+        if (t !== lastT) { lastT = t; executed++; }
+        return r;
+      });
+    };
     Object.defineProperty(window, '__uapRafCount', { configurable: true, get: function(){ return n; } });
   }
   // Ask the GL context whether the shaders it was given actually compiled.
@@ -215,6 +263,90 @@ const RAF_INSTRUMENT = `(() => { try {
   patch(window.WebGL2RenderingContext);
   patch(window.WebGLRenderingContext);
   Object.defineProperty(window, '__uapGlErrors', { configurable: true, get: function(){ return glErrs.slice(); } });
+
+  // ---- capability counters -------------------------------------------------
+  // Both graphics APIs are patched. Keying only on WebGL would leave the
+  // capability profile inert for every 2D-canvas deliverable — the same defect
+  // class as the WebGL probe that was never called.
+  var glDraws = 0, ctxDraws = 0, listeners = 0, t0 = 0;
+  var progs = [], types = [];
+  var addUniq = function(arr, v){ if (arr.length < 512 && arr.indexOf(v) === -1) arr.push(v); };
+  var countIn = function(proto, names, bump){
+    if (!proto) return;
+    for (var i = 0; i < names.length; i++) {
+      (function(nm){
+        var o = proto[nm];
+        if (typeof o !== 'function') return;
+        // One parameter declared, so only ONE consumer of \`arguments\` remains —
+        // the forwarding \`apply\` that V8 elides. Passing \`arguments\` to the
+        // bump as well defeated escape analysis and materialised a mapped
+        // arguments object on every draw call.
+        proto[nm] = function(p){ try { bump.call(this, p); } catch (e) {} return o.apply(this, arguments); };
+      })(names[i]);
+    }
+  };
+  var GLD = ['drawArrays','drawElements','drawArraysInstanced','drawElementsInstanced','drawRangeElements'];
+  // clearRect is deliberately ABSENT: it is the canonical ERASE at the top of
+  // every 2D loop, not a paint, and counting it adds a constant +1/frame that a
+  // gutted build coasts on.
+  var CTXD = ['fillRect','strokeRect','drawImage','fillText','strokeText','fill','stroke','putImageData'];
+  countIn(window.WebGL2RenderingContext && window.WebGL2RenderingContext.prototype, GLD, function(){ glDraws++; });
+  countIn(window.WebGLRenderingContext && window.WebGLRenderingContext.prototype, GLD, function(){ glDraws++; });
+  // Programs are counted over the PAGE LIFETIME, not the window: an app that
+  // binds its program once at init and never again would otherwise read 0, and
+  // hoisting a useProgram out of the render loop — a textbook optimisation —
+  // would read as deleting a shader.
+  countIn(window.WebGL2RenderingContext && window.WebGL2RenderingContext.prototype, ['useProgram'], function(p){ if (p) addUniq(progs, p); });
+  countIn(window.WebGLRenderingContext && window.WebGLRenderingContext.prototype, ['useProgram'], function(p){ if (p) addUniq(progs, p); });
+  countIn(window.CanvasRenderingContext2D && window.CanvasRenderingContext2D.prototype, CTXD, function(){ ctxDraws++; });
+  // Guarded like every other global. Unguarded, a throw here reached the outer
+  // catch BEFORE the hooks below were installed, so the whole profile reported
+  // "instrumentation did not install" — inert, with a misleading reason.
+  if (window.EventTarget && window.EventTarget.prototype) {
+    var ael = window.EventTarget.prototype.addEventListener;
+    if (typeof ael === 'function') {
+      window.EventTarget.prototype.addEventListener = function(type){
+        try { listeners++; addUniq(types, String(type)); } catch (e) {}
+        return ael.apply(this, arguments);
+      };
+    }
+  }
+  var seal = function(name, fn){
+    Object.defineProperty(window, name, { value: fn, writable: false, configurable: false, enumerable: false });
+  };
+  // PRISTINE CAPTURES. Taken now, at init time, before the page's own scripts
+  // run — not looked up when Read() is called.
+  //
+  // Measured: overwriting Document.prototype.querySelector with a thrower is
+  // ONE LINE that made Read() throw, which the host reads as "unmeasurable",
+  // which fails open. A gate whose off-switch is a single line in the code under
+  // test is not a gate. performance.now is the same shape: it feeds elapsedMs,
+  // and elapsedMs is the denominator of the fps floor, so owning it means owning
+  // the liveness verdict.
+  var _now = (window.performance && typeof performance.now === 'function')
+    ? performance.now.bind(performance) : function(){ return 0; };
+  var _qs = (window.Document && Document.prototype && Document.prototype.querySelector)
+    ? Document.prototype.querySelector : null;
+  seal(KEY + 'Reset', function(){
+    glDraws = 0; ctxDraws = 0; executed = 0;
+    t0 = _now();
+    return true;
+  });
+  seal(KEY + 'Read', function(){
+    var hasCanvas = false;
+    try { hasCanvas = _qs ? !!_qs.call(document, 'canvas') : false; } catch (e) {}
+    return {
+      measured: true,
+      elapsedMs: Math.max(0, _now() - t0),
+      frames: executed,
+      glDrawCalls: glDraws,
+      ctx2dDrawCalls: ctxDraws,
+      programsUsed: progs.length,
+      listeners: listeners,
+      listenerTypes: types.length,
+      canvas: hasCanvas
+    };
+  });
 } catch (e) {} })()`;
 
 /**
@@ -661,7 +793,9 @@ async function runCanvasLivenessCheck(
    *  will be made. Console errors are then not "noise on someone else's
    *  verdict" -- they are the whole verdict, and dropping them leaves the model
    *  with a percentage. */
-  soleJudge = false
+  soleJudge = false,
+  /** PROJECT root for the capability profile — passed, never inferred. */
+  capabilityRoot?: string
 ): Promise<ExecutionResult | null> {
   const start = Date.now();
   let server: { url: string; close: () => void } | null = null;
@@ -699,8 +833,9 @@ async function runCanvasLivenessCheck(
       return null; // no browser — fail-open (vm-dom verdict stands)
     }
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const capKey = capabilityKey();
     if (typeof browser.addInitScript === 'function') {
-      await browser.addInitScript(RAF_INSTRUMENT).catch(() => undefined);
+      await browser.addInitScript(RAF_INSTRUMENT_FOR(capKey)).catch(() => undefined);
     }
     await withTimeout(browser.goto(server.url), timeoutMs, 'goto').catch(() => undefined);
     await Promise.race([browser.waitForLoadState('load'), delay(timeoutMs)]).catch(() => undefined);
@@ -708,6 +843,7 @@ async function runCanvasLivenessCheck(
     const liveness = await checkCanvasLiveness(browser, start);
     const { hard, all } = pageErrorFailure(browser);
     if (liveness) return withBrowserErrors(liveness, all);
+    if (capabilityRoot) await persistCapability(browser, capKey, capabilityRoot, entry);
     // The loop looked alive, but the page threw. A WebGL app whose shaders did
     // not compile can still tick requestAnimationFrame while drawing nothing —
     // which is exactly how a blank page passed a liveness probe.
@@ -738,7 +874,112 @@ async function runCanvasLivenessCheck(
   }
 }
 
-async function runWeb(entryDir: string, opts: ExecutionGateOptions, entry = 'index.html'): Promise<ExecutionResult> {
+
+/**
+ * Read the capability profile out of the page the liveness probe just drove, and
+ * persist it.
+ *
+ * Runs AFTER checkCanvasLiveness deliberately: that probe has already clicked
+ * the start/play control, so by the time this opens its window the app is in its
+ * PLAYING state. That matters — the regression this profile exists to catch kept
+ * a working menu and gutted the game, so a load-time reading would have read
+ * both builds as equivalent. Reusing the probe's click also means the two rungs
+ * cannot disagree about what "starting the app" means, which a second copy of
+ * the selector list guaranteed they eventually would.
+ *
+ * Every await is bounded. An unbounded evaluate lets a page with `while(1){}` in
+ * a start handler hold a Chromium process and a listening port for the rest of
+ * the run — and the page is code a model just wrote.
+ */
+
+/** Identify the driver so two frame-rate regimes are never compared. */
+function driverName(browser: BrowserDriver): string {
+  const ctor = (browser as { constructor?: { name?: string } })?.constructor?.name;
+  if (ctor && ctor !== 'Object') return ctor;
+  // The playwright driver is a plain object literal, so it has no useful
+  // constructor name; it is the only driver carrying BOTH optional methods.
+  return typeof browser.addInitScript === 'function' && typeof browser.evaluate === 'function'
+    ? 'playwright'
+    : 'unknown';
+}
+
+/** Best-effort: a capability reading must never change an execution verdict. */
+async function persistCapability(
+  browser: BrowserDriver,
+  key: string,
+  root: string,
+  entry: string
+): Promise<void> {
+  try {
+    // The ACTUAL driver identity. The previous label was
+    // `addInitScript ? 'instrumented' : 'plain'`, but a driver without
+    // addInitScript never installs the instrument and therefore never yields a
+    // measured profile — so every measured profile said 'instrumented' and the
+    // mismatch guard in compareCapability could not fire. That guard exists
+    // because the gate genuinely swaps drivers based on a REGEX over
+    // model-written HTML (usesWebGl), which moves the measurement between two
+    // frame-rate regimes mid-run.
+    const driver = driverName(browser);
+    const profile = await readCapability(browser, key, driver, entry, capabilityWindowMs());
+    writeCapabilityCurrent(root, profile);
+  } catch {
+    /* never let the profile break the gate */
+  }
+}
+
+async function readCapability(
+  browser: BrowserDriver,
+  key: string,
+  driver: string,
+  entry: string,
+  windowMs: number
+): Promise<CapabilityProfile> {
+  if (typeof browser.evaluate !== 'function') return unmeasured('no-browser', driver);
+  try {
+    const armed = await withTimeout(
+      browser.evaluate<boolean>(`(() => { try { return typeof window[${JSON.stringify(key)} + 'Reset'] === 'function' ? window[${JSON.stringify(key)} + 'Reset']() : false; } catch (e) { return false; } })`),
+      CAPABILITY_EVAL_TIMEOUT_MS,
+      'cap-reset'
+    );
+    if (armed !== true) return unmeasured('not-installed', driver);
+    await delay(windowMs);
+    const raw = await withTimeout(
+      browser.evaluate<unknown>(`(() => { try { return window[${JSON.stringify(key)} + 'Read'](); } catch (e) { return null; } })`),
+      CAPABILITY_EVAL_TIMEOUT_MS,
+      'cap-read'
+    );
+    const profile = sanitizeProfile(raw);
+    if (!profile) return unmeasured('no-reading', driver);
+    return { ...profile, driver, entry };
+  } catch {
+    return unmeasured('error', driver);
+  }
+}
+
+/** Steady-state window. 2s at 60fps is ~120 frames — far above any floor, and a
+ *  17x separation from the measured gutted case (3.6fps) survives it intact.
+ *  5s was the first guess and cost 2.5s per acceptance turn for no extra
+ *  discriminating power. */
+export const DEFAULT_CAPABILITY_WINDOW_MS = 2_000;
+const CAPABILITY_EVAL_TIMEOUT_MS = 15_000;
+
+export function capabilityWindowMs(): number {
+  const env = Number(process.env.UAP_CAPABILITY_WINDOW_MS);
+  // Upper bound matters: this sleeps once per acceptance turn, and an unbounded
+  // env value would sleep for days.
+  return Number.isFinite(env) && env > 0 ? Math.min(env, 60_000) : DEFAULT_CAPABILITY_WINDOW_MS;
+}
+
+async function runWeb(
+  entryDir: string,
+  opts: ExecutionGateOptions,
+  entry = 'index.html',
+  // The PROJECT root, which is not necessarily the entry dir (findWebEntry
+  // searches one level down). Passed, never inferred: a heuristic here wrote the
+  // baseline to the parent directory, where nothing reads it, and the gate
+  // reported success the whole time.
+  capabilityRoot?: string
+): Promise<ExecutionResult> {
   const start = Date.now();
   const settleMs = opts.settleMs ?? DEFAULT_SETTLE_MS;
   let server: { url: string; close: () => void } | null = null;
@@ -807,11 +1048,12 @@ async function runWeb(entryDir: string, opts: ExecutionGateOptions, entry = 'ind
     }
     try {
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const capKey = capabilityKey();
       // Instrument requestAnimationFrame BEFORE the page loads so a frozen render
       // loop is detectable after load. Best-effort — engines without addInitScript
       // simply skip the frozen-loop half of the canvas check.
       if (typeof browser.addInitScript === 'function') {
-        await browser.addInitScript(RAF_INSTRUMENT).catch(() => undefined);
+        await browser.addInitScript(RAF_INSTRUMENT_FOR(capKey)).catch(() => undefined);
       }
       // Wall-clock guard so a hung goto/load never wedges a direct caller (the
       // spawned-runner path also has the rung-level spawn timeout as a backstop).
@@ -855,6 +1097,10 @@ async function runWeb(entryDir: string, opts: ExecutionGateOptions, entry = 'ind
       // probe error leaves the load/error verdict untouched.
       const livenessFail = await checkCanvasLiveness(browser, start);
       if (livenessFail) return livenessFail;
+      // The page loaded, ran and its loop is alive — so a capability reading is
+      // meaningful and the ordering rule ("never grade the capability of a build
+      // that does not run") is satisfied structurally rather than by convention.
+      if (capabilityRoot) await persistCapability(browser, capKey, capabilityRoot, entry);
       return {
         passed: true,
         exitCode: 0,
@@ -1481,6 +1727,17 @@ export async function runExecutionGate(
   projectRoot: string,
   opts: ExecutionGateOptions = {}
 ): Promise<ExecutionResult> {
+  // Invalidate the capability reading FIRST, so `current.json` can only ever
+  // describe this run. It is written back below by the browser paths that
+  // actually measure.
+  //
+  // Without this it was a stale artifact that no path ever cleared: delete the
+  // entry page and the gate reports "skipped (no detectable artifact)" while
+  // last run's healthy profile stays on disk, so the comparison happily reports
+  // "no regression" for a project with NO PAGE AT ALL. Same for a browser that
+  // failed to launch, or a canvas that was removed. A reading with no way to
+  // expire is not a measurement, it is a memory.
+  invalidateCapabilityCurrent(projectRoot);
   const type = detectArtifactType(projectRoot);
   if (type === 'web') {
     const web = findWebEntry(projectRoot);
@@ -1501,7 +1758,7 @@ export async function runExecutionGate(
       } catch {
         /* missing entry page — runWeb/vm report it */
       }
-      if (opts.browserFactory || isModule) return runWeb(dir, opts, entry);
+      if (opts.browserFactory || isModule) return runWeb(dir, opts, entry, projectRoot);
       // Classic scripts → vm-dom for deterministic JS-crash detection (no browser
       // needed). BUT vm-dom cannot drive requestAnimationFrame, so it passes a
       // <canvas> game whose render loop never runs or FREEZES on Start (the
@@ -1517,7 +1774,7 @@ export async function runExecutionGate(
       // how a page that painted 0 pixels scored green while the model was told
       // only "33% of gates".
       const declined = vm.via === 'none';
-      const liveness = await runCanvasLivenessCheck(dir, opts, entry, declined);
+      const liveness = await runCanvasLivenessCheck(dir, opts, entry, declined, projectRoot);
       return liveness ?? vm;
     }
   }

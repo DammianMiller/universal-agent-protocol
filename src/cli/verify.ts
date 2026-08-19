@@ -23,6 +23,13 @@ import {
 } from '../delivery/user-validation.js';
 import { loadUapConfigRaw } from '../utils/config-loader.js';
 import { compareVisualBaseline, driftSummary, approveVisualBaseline } from '../delivery/visual-baseline.js';
+import {
+  compareCapability,
+  capabilityFeedback,
+  readCapabilityBaseline,
+  readCapabilityCurrent,
+  writeCapabilityBaseline,
+} from '../delivery/capability-profile.js';
 import type { LoopExecutor } from '../delivery/convergence-loop.js';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join as joinPath } from 'node:path';
@@ -96,6 +103,11 @@ export interface VerifyOptions {
   fidelity?: ResolvedFidelity;
   /** Approve the current run's screenshots as the regression baseline (no gating). */
   approveVisual?: boolean;
+  /** Pin the CURRENT capability reading as the new baseline. The escape hatch for
+   *  an intentional simplification — without it the only way past a capability
+   *  block is to re-inflate numbers, which is the behaviour this gate exists to
+   *  discourage. Mirrors --approve-visual. */
+  approveCapability?: boolean;
   /** Run the user-path validation gate (.uap/user-paths.json journeys through
    * the real client). Standalone flag; deliver wires it as the terminal rung. */
   userPaths?: boolean;
@@ -233,6 +245,48 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // notes for a game that had NO render loop at all. It also wastes a headless
   // browser pass plus a vision-model call on every failing turn.
   const ladderGreen = ladder.passed;
+
+  // ── Capability regression ─────────────────────────────────────────────────
+  // "Does it still do as much?" — the one question no other rung here asks, and
+  // the one a build can answer YES to by doing LESS. Reads the profile the
+  // ladder's own execution rung just wrote, so it costs no browser pass.
+  //
+  // Reachable from verify, not only from deliver, on purpose. A deliver-only bar
+  // re-creates the Generator!=Evaluator divergence this codebase records: the
+  // agentic/direct-edit sessions that never enter the convergence loop are
+  // exactly the ones that produced the recorded regression, and `uap verify`
+  // from the Stop hook is the only thing standing behind them.
+  //
+  // Blocks under --strict or max fidelity, advisory otherwise: it is a young
+  // check with a real false-positive surface, and a wrong block wedges a run.
+  let capabilityReportPrefix = '';
+  // Refused mid-run. The executor has run_bash, so without this it can promote
+  // its own gutted reading to the baseline and launder the regression
+  // permanently — the same shape as the self-authored `verify.sh -> exit 0`
+  // this codebase already had to close once. Approving a simplification is an
+  // OPERATOR decision, taken between runs.
+  const approvingInsideARun = Boolean(opts.approveCapability && process.env.UAP_DELIVER_ACTIVE === '1');
+  if (approvingInsideARun) {
+    capabilityReportPrefix =
+      '\n⚠ --approve-capability REFUSED: a delivery run is in progress. Re-pin the baseline outside the run.';
+  } else if (opts.approveCapability) {
+    const cur = readCapabilityCurrent(dir);
+    if (cur?.measured && writeCapabilityBaseline(dir, cur)) {
+      capabilityReportPrefix = '\n✓ capability baseline approved → .uap/capability/baseline.json';
+    } else {
+      capabilityReportPrefix = `\n⚠ capability baseline NOT approved — nothing measurable to pin (${cur?.reason ?? 'no reading'})`;
+    }
+  }
+  const capability =
+    ladderGreen && (!opts.approveCapability || approvingInsideARun)
+      ? compareCapability(readCapabilityBaseline(dir), readCapabilityCurrent(dir))
+      : null;
+  const capabilityBlocks = Boolean(capability?.regressed && (opts.strict || fidelity.max));
+  const capabilityReport =
+    capabilityReportPrefix +
+    (capability?.regressed
+      ? `\n${capabilityFeedback(capability)}${capabilityBlocks ? '' : '\n(advisory — pass --strict or raise fidelity to make this block)'}`
+      : '');
 
   // ── Interaction gate ──────────────────────────────────────────────────────
   // Between "it runs" and "it looks right": does it DO what it promised, under
@@ -438,6 +492,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     visualBlocks && 'visual/behavioral render',
     visionBlocks && 'aesthetic score',
     baselineBlocks && 'visual regression',
+    capabilityBlocks && 'capability regression',
     acceptanceBlocks && 'acceptance criteria',
   ].filter(Boolean) as string[];
   const overallPassed = ladder.passed && blockedBy.length === 0;
@@ -445,6 +500,7 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
     formatReport(ladder, overallPassed, blockedBy) +
     untestedReport +
     interactionReport +
+    capabilityReport +
     visualReport +
     acceptanceReport;
   // Exit-code contract for the Stop hook: 0 = verified, 1 = a REAL gate failure
@@ -467,6 +523,9 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
   // A behavioural failure is a REAL failure — the artifact ran and did not do
   // what it promised — so it gates like broken code rather than failing open.
   if (interactionBlocks && exitCode === 0) exitCode = 1;
+  // A capability regression means the artifact runs and does LESS than the
+  // pinned baseline. That is a real failure, not infra flakiness.
+  if (capabilityBlocks && exitCode === 0) exitCode = 1;
   return {
     passed:
       ladder.passed &&
@@ -474,7 +533,8 @@ export async function runVerify(opts: VerifyOptions = {}): Promise<VerifyResult>
       !interactionBlocks &&
       !visualBlocks &&
       !visionBlocks &&
-      !baselineBlocks,
+      !baselineBlocks &&
+      !capabilityBlocks,
     exitCode,
     empty: false,
     report,
