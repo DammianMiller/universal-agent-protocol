@@ -31,6 +31,7 @@ export const MODEL_PRESET_PROFILE: Record<string, string> = {
   'gpt-5.3-codex': 'gpt-5.3-codex',
   'qwen35-a3b': 'qwen35',
   'qwen36-a3b': 'qwen36',
+  'qwen38-27b': 'qwen38',
 };
 
 /**
@@ -40,8 +41,8 @@ export const MODEL_PRESET_PROFILE: Record<string, string> = {
 export const PROVIDER_DEFAULT_PROFILE: Record<string, string> = {
   anthropic: 'claude-sonnet-5',
   openai: 'gpt-5.4',
-  local: 'qwen36',
-  ollama: 'qwen36',
+  local: 'qwen38',
+  ollama: 'qwen38',
   custom: GENERIC_PROFILE,
 };
 
@@ -66,6 +67,7 @@ export function profileForModelId(modelId: string | null | undefined): string {
   if (/haiku/.test(lower)) return 'claude-haiku-3.5';
   if (/gpt.*codex/.test(lower)) return 'gpt-5.3-codex';
   if (/gpt/.test(lower)) return 'gpt-5.4';
+  if (/qwen.*(3[.\-_]?8|38)/.test(lower)) return 'qwen38';
   if (/qwen.*(3[.\-_]?6|36)/.test(lower)) return 'qwen36';
   if (/qwen/.test(lower)) return 'qwen35';
   return GENERIC_PROFILE;

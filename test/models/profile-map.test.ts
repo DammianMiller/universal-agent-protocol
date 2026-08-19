@@ -33,6 +33,11 @@ describe('profileForModelId', () => {
     expect(profileForModelId('claude-haiku-4-5-20251001')).toBe('claude-haiku-4.5');
     expect(profileForModelId('gpt-5.3-codex')).toBe('gpt-5.3-codex');
     expect(profileForModelId('qwen36-35b-a3b-iq4xs')).toBe('qwen36');
+    // Ordering guard: the 3.8 rule must be tested BEFORE the 3.6 rule and
+    // before the bare /qwen/ fallback, or these land on qwen36 / qwen35.
+    expect(profileForModelId('qwen3.8-27b')).toBe('qwen38');
+    expect(profileForModelId('qwen38-27b')).toBe('qwen38');
+    expect(profileForModelId('Qwen3_8-27B')).toBe('qwen38');
   });
 
   it('falls back to generic for empty / unknown model ids', () => {
@@ -65,7 +70,7 @@ describe('profileForProvider', () => {
   it('maps each provider to its default profile, generic for unknown/empty', () => {
     expect(profileForProvider('anthropic')).toBe('claude-sonnet-5');
     expect(profileForProvider('openai')).toBe('gpt-5.4');
-    expect(profileForProvider('local')).toBe('qwen36');
+    expect(profileForProvider('local')).toBe('qwen38');
     expect(profileForProvider('custom')).toBe(GENERIC_PROFILE);
     expect(profileForProvider('unknown')).toBe(GENERIC_PROFILE);
     expect(profileForProvider(undefined)).toBe(GENERIC_PROFILE);

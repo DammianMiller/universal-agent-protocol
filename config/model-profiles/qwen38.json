@@ -1,0 +1,70 @@
+{
+  "_profile": "qwen38",
+  "_description": "Qwen3.8 27B — local ninfer-serve deployment for agentic tool-calling workloads. Successor to qwen36; the default local executor in UAP routing. Routes through the anthropic-proxy for the tool/finalize guardrails, NOT the inference server directly.",
+  "_engine": "ninfer-serve (NOT llama.cpp). Observed flags: --max-context 131072 --kv-capacity 131072 --max-concurrency 1 --max-pending-requests 16 --prefill-chunk 1024 --kv-dtype int8 --spec mtp --draft-tokens 3 --lm-head-draft. It speaks the OpenAI API and emits native tool_calls, so the proxy needs no format shim, but it is NOT llama.cpp and does not serve /props, /metrics or /slots.",
+  "model": "qwen3.8-27b",
+
+  "max_tokens": 65536,
+  "_max_tokens_comment": "Deliberately generous against a 131072 window. This engine returns chain-of-thought in a SEPARATE reasoning_content field, so reasoning spends completion budget without ever appearing in content. A tight cap therefore does not produce a short answer, it produces an EMPTY one with finish_reason=length — measured previously as ~90% first-turn decode failure that read as bad output format and was really budget truncation.",
+
+  "temperature": 0.3,
+  "top_p": 0.9,
+  "top_k": 20,
+  "min_p": 0.05,
+  "repetition_penalty": 1.0,
+  "_sampling_comment": "Carried over from qwen36 unchanged: these are UAP's tool-call-tuned values, not the vendor's chat defaults, and nothing has been re-measured on 3.8 yet. Re-tune with `uap tune` before changing them.",
+
+  "stop_sequences": ["<|im_end|>"],
+  "timeout_ms": 300000,
+  "context_window": 131072,
+  "optimize_for_tool_calls": true,
+  "mode_switch_buffer_tokens": 500,
+  "enable_thinking": true,
+  "_thinking_comment": "Top-level only. This engine REJECTS chat_template_kwargs outright (HTTP 400 chat_template_option_not_supported) — that key is a llama.cpp --jinja concept and qwen36.json carries it for that reason. The proxy probes the backend once and drops the nested form when it is refused (PROXY_CHAT_TEMPLATE_KWARGS=auto|on|off).",
+
+  "dynamic_temperature": {
+    "enabled": true,
+    "decay": 0.5,
+    "floor": 0.2,
+    "_comment": "On retry, temp = max(floor, base_temp * decay^attempt). Reduces randomness for structured output."
+  },
+
+  "tool_call_batching": {
+    "enabled": true,
+    "system_prompt_suffix": "When multiple tools are needed, call ALL of them in a single response. Do not call one tool and wait - emit all tool calls together.",
+    "_comment": "Reduces round-trips by encouraging multi-tool emission in one turn."
+  },
+
+  "concurrency": {
+    "max_parallel_requests": 1,
+    "_comment": "The server runs --max-concurrency 1 with --max-pending-requests 16: a second request QUEUES, it does not run alongside. Anything that fans out local calls is buying latency, not throughput, so the model-slot lease must treat this as a single rail. Unlike the qwen36 llama.cpp setup there are no --parallel slots and the window is NOT divided.",
+    "kv_capacity_shared": false
+  },
+
+  "server_optimization": {
+    "kv_dtype": "int8",
+    "prefill_chunk": 1024,
+    "max_context": 131072,
+    "kv_capacity": 131072,
+    "speculative_decoding": {
+      "enabled": true,
+      "type": "mtp",
+      "draft_tokens": 3,
+      "lm_head_draft": true,
+      "_comment": "Multi-token-prediction self-speculation built into the engine (--spec mtp --draft-tokens 3 --lm-head-draft). No draft model, no separate weights."
+    },
+    "_comment": "These are the flags the server is actually running under, recorded so a rebuild reproduces the measured behaviour."
+  },
+
+  "measured": {
+    "date": "2026-08-19",
+    "gpu": "NVIDIA GeForce RTX 3090 (24GB, ~23.2GB resident)",
+    "decode_tokens_per_second": 78,
+    "_comment": "3 reps direct to the inference server (76.3/78.8/78.3 tok/s) and 3 through the proxy (77.6/81.8/81.7), greedy, 512-token cap. The proxy adds no measurable overhead — the two sets overlap within run-to-run noise."
+  },
+
+  "routing": {
+    "endpoint": "http://127.0.0.1:4000/v1",
+    "_comment": "Route through the anthropic-proxy, NOT the inference server directly — the proxy applies the tool/finalize guardrails and advertises the context window that clients size their history to."
+  }
+}

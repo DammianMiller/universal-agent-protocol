@@ -18,7 +18,7 @@ describe('resolveTierModel', () => {
     const r = resolveTierModel('cost-tiered', 'fix a typo');
     expect(r).not.toBeNull();
     expect(r!.tier).toBe('low');
-    expect(r!.model).toBe('qwen36-a3b');
+    expect(r!.model).toBe('qwen38-27b');
   });
 
   it('escalates a security-sensitive task to the critical tier (auth keyword)', () => {
@@ -59,6 +59,6 @@ describe('resolveTierModel', () => {
     process.env.UAP_DELIVER_ROUTING = 'cost-tiered';
     const r = resolveTierModel(undefined, 'fix a typo');
     expect(r!.preset).toBe('cost-tiered');
-    expect(r!.model).toBe('qwen36-a3b');
+    expect(r!.model).toBe('qwen38-27b');
   });
 });
