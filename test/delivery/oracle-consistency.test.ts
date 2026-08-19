@@ -47,11 +47,21 @@ test('calc is a function', () => {
 });
 `;
 
+// NOTE the explicit FILE path rather than the `test/` directory. On Node 24
+// `node --test test/` no longer expands the directory — it fails to load it and
+// exits 1 with `MODULE_NOT_FOUND`, before running anything. That broke this
+// fixture in a way that read as a passing suite: the masking test asserts
+// `consistent === false`, which a rung that ALWAYS fails satisfies for entirely
+// the wrong reason, so only the legitimate-append test went red. Measured:
+//   node --test test/              -> exit 1, 0 pass, 1 fail
+//   node --test test/sut.test.js   -> exit 0, 2 pass, 0 fail
+// A glob is not an option: these args are spawned without a shell, so
+// `test/*.test.js` would be passed through literally.
 const testRung: GateRung = {
   id: 'test',
   name: 'node --test',
   command: process.execPath,
-  args: ['--test', 'test/'],
+  args: ['--test', 'test/sut.test.js'],
   required: true,
   timeoutMs: 30_000,
 };
