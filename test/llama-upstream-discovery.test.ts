@@ -29,6 +29,10 @@ interface Env {
   healthyPorts?: number[];
   /** Ports that answer /health but are NOT a chat server (decoy / embeddings). */
   nonChatPorts?: number[];
+  /** Ports serving an OpenAI-compatible engine with NO /props (e.g. ninfer). */
+  openaiPorts?: number[];
+  /** Ports serving /v1/models but no chat route (an embedding-only server). */
+  embedPorts?: number[];
   ss?: string;
   env?: Record<string, string>;
 }
@@ -39,8 +43,15 @@ function run(args: string[], opts: Env = {}): { stdout: string; status: number |
     env: {
       ...process.env,
       PATH: `${stubDir}:${process.env.PATH ?? ''}`,
-      HEALTHY_PORTS: [...(opts.healthyPorts ?? []), ...(opts.nonChatPorts ?? [])].join(' '),
+      HEALTHY_PORTS: [
+        ...(opts.healthyPorts ?? []),
+        ...(opts.nonChatPorts ?? []),
+        ...(opts.openaiPorts ?? []),
+        ...(opts.embedPorts ?? []),
+      ].join(' '),
       CHAT_PORTS: (opts.healthyPorts ?? []).join(' '),
+      OPENAI_PORTS: (opts.openaiPorts ?? []).join(' '),
+      EMBED_PORTS: (opts.embedPorts ?? []).join(' '),
       SS_FIXTURE: opts.ss ?? '',
       ...(opts.env ?? {}),
     },
@@ -74,6 +85,18 @@ case "\$path" in
   */v1/models)
     if in_list "\$port" "\${CHAT_PORTS:-}"; then
       printf '{"data":[{"id":"unsloth/Qwen3.8-27B-GGUF","capabilities":["completion","multimodal"]}]}'
+    elif in_list "\$port" "\${OPENAI_PORTS:-} \${EMBED_PORTS:-}"; then
+      printf '{"data":[{"id":"served-model","object":"model"}]}'
+    fi ;;
+  */v1/chat/completions)
+    # A chat request MUST name a model, exactly as the real engine demands: one
+    # that omits it is refused with a 400 carrying no choices, which is how the
+    # first version of this probe concluded "not chat-capable" about a perfectly
+    # good server.
+    body="\$(for a in "\$@"; do case "\$a" in '{'*) printf '%s' "\$a";; esac; done)"
+    case "\$body" in *'"model"'*) ;; *) printf '{"error":{"message":"missing required field: model"}}'; exit 0;; esac
+    if in_list "\$port" "\${OPENAI_PORTS:-}"; then
+      printf '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
     fi ;;
 esac
 exit 0
@@ -214,6 +237,54 @@ describe('llama_upstream_resolve', () => {
         ss: ssRow('[::1]:59879'),
       }),
     ).toBe('http://[::1]:59879/v1');
+  });
+
+  it('accepts an OpenAI-compatible engine that serves NO /props', () => {
+    // MEASURED 2026-08-19. The capability check required llama.cpp's /props, so
+    // it was vendor-shape detection wearing a capability check's name. The engine
+    // actually serving this host (ninfer-serve) has /health and /v1/models but no
+    // /props, so the live server on the documented default port was REFUSED,
+    // discovery yielded nothing, the dead pin stood, and every local completion
+    // returned 529.
+    expect(
+      resolve('http://127.0.0.1:59879/v1', { openaiPorts: [8080], ss: ssRow('127.0.0.1:8080', 'ninfer-serve') })
+    ).toBe('http://127.0.0.1:8080/v1');
+  });
+
+  it('finds the default port even when NO socket is attributable to this user', () => {
+    // A containerised engine's socket belongs to docker-proxy, not to this user,
+    // so `ss -ltnp` attributes nothing and enumeration returns empty. That alone
+    // made the live server invisible. The documented default port is tried last,
+    // and still has to prove itself.
+    expect(resolve('http://127.0.0.1:59879/v1', { openaiPorts: [8080], ss: '' })).toBe(
+      'http://127.0.0.1:8080/v1'
+    );
+  });
+
+  it('still rejects a server with /v1/models but NO chat route', () => {
+    // The embedding server on this host is exactly this shape, and the trust
+    // model's whole point is not to send prompts to it.
+    expect(resolve('http://127.0.0.1:59879/v1', { embedPorts: [8081], ss: ssRow('127.0.0.1:8081') })).toBe(
+      'http://127.0.0.1:59879/v1'
+    );
+  });
+
+  it('does not override a HEALTHY pin with the default port', () => {
+    // An operator pin that answers is never second-guessed — including by the
+    // default-port fallback this change adds.
+    expect(resolve('http://10.0.0.5:8080/v1', { healthyPorts: [8080], openaiPorts: [8080] })).toBe(
+      'http://10.0.0.5:8080/v1'
+    );
+  });
+
+  it('honours the autodiscover hard-off switch for the default port too', () => {
+    expect(
+      resolve('http://127.0.0.1:59879/v1', {
+        openaiPorts: [8080],
+        ss: '',
+        env: { UAP_LLAMA_UPSTREAM_AUTODISCOVER: 'off' },
+      })
+    ).toBe('http://127.0.0.1:59879/v1');
   });
 
   it('honours UAP_LLAMA_UPSTREAM_AUTODISCOVER=off as a hard pin', () => {
