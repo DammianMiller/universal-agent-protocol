@@ -41,6 +41,21 @@ type PageLike = {
  * Never throws: an absent optional dependency must degrade to the next rung,
  * not take the gate down with it.
  */
+/**
+ * Make a probe string behave the same on both drivers: evaluate the expression,
+ * and CALL it when it turns out to be a function.
+ *
+ * Deciding by pattern-matching the source is where this goes wrong -- `() => 1`
+ * and `(() => 1)()` both start with `(`, and wrapping the second one calls a
+ * number. Letting the page decide handles every form: a plain expression
+ * (`1+1`), a function expression, and one that is already invoked. A returned
+ * promise still resolves, since playwright awaits the outer call.
+ */
+function asCallable(script: string | ((arg: unknown) => unknown)): string | ((arg: unknown) => unknown) {
+  if (typeof script !== 'string') return script;
+  return `(() => { const __uapProbe = (${script}); return typeof __uapProbe === 'function' ? __uapProbe() : __uapProbe; })()`;
+}
+
 export async function loadPlaywrightDriver(): Promise<BrowserDriver | null> {
   let chromium: { launch(opts?: Record<string, unknown>): Promise<unknown> };
   try {
@@ -85,7 +100,18 @@ export async function loadPlaywrightDriver(): Promise<BrowserDriver | null> {
     },
     async evaluate<T>(script: string | ((arg: unknown) => unknown)): Promise<T> {
       if (!page) throw new Error('playwright driver: evaluate before launch');
-      return page.evaluate<T>(script as never);
+      // Playwright evaluates a STRING as an expression and returns its value.
+      // The gate's probes are function SOURCE (`() => new Promise(...)`), so the
+      // value of that expression is a function object, which is not
+      // serialisable: playwright hands back `undefined` without throwing. The
+      // other driver CALLS such a string, so every probe silently returned
+      // undefined here and the whole canvas-liveness rung -- blank canvas,
+      // frozen loop -- was inert for exactly the WebGL pages this driver was
+      // introduced to judge. Only getErrors() still worked, which is why the
+      // rung looked alive.
+      //
+      // Measured: '1+1' -> 2, '() => 1+1' -> undefined, '(() => 1+1)()' -> 2.
+      return page.evaluate<T>(asCallable(script) as never);
     },
     async addInitScript(script: string) {
       await page?.addInitScript(script as never);
