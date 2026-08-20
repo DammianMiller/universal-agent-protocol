@@ -231,6 +231,19 @@ export interface RunRecord {
   /** Seed/epoch index — same value pairs runs across conditions for analysis. */
   seed: number;
   metrics: MetricVector;
+  /**
+   * Per-turn attribution for this cell, when the adapter drove the loop.
+   *
+   * A SIBLING of `metrics`, deliberately not a member of it: `MetricVector` is
+   * the zod-validated numeric vector that `CONTINUOUS_METRICS` drives the
+   * paired-delta analysis from, and a trace array is neither continuous nor
+   * differenceable. Putting it here keeps the statistics untouched while the
+   * record still carries the evidence for why a delta looks the way it does.
+   */
+  attribution?: {
+    turnTrace?: TurnTrace[];
+    stopReason?: StopReason;
+  };
   /** Adapter that produced this run (e.g. 'mock', 'opencode', 'claude'). */
   adapter: string;
   /** Model identifier the adapter ran against. */
@@ -252,6 +265,51 @@ export interface RunRecord {
  * command is applied. `correct` is filled in by the runner from the verify
  * command, so adapters return everything *except* correctness.
  */
+/**
+ * What one turn actually did — the record that makes wasted work ATTRIBUTABLE.
+ *
+ * The raw adapter already computes every field here inside its loop and folds
+ * them into a human log line, then drops the structure at the runner boundary.
+ * That is why an aggregate like "a large share of cells burned the whole turn
+ * budget and solved nothing" could be SEEN but never explained: answering "did
+ * they write files and fail the gate, or never produce a parseable answer at
+ * all?" meant re-reading prose logs by hand, per cell.
+ *
+ * `finishReason` and `truncated` are carried for a specific measured reason: a
+ * run whose completions came back empty was diagnosed as a prompt-format
+ * problem and chased in the wrong direction for a while, when the cause was
+ * `finish_reason=length` — the budget running out mid-reasoning. Those two
+ * fields are what separate "answered badly" from "never answered".
+ */
+export interface TurnTrace {
+  /** 1-based turn number within the run. */
+  turn: number;
+  /** Files the model actually wrote this turn (parsed file blocks applied). */
+  files: number;
+  /** Did the gate pass after this turn? `null` when no gate ran. */
+  gateOk: boolean | null;
+  /** The completion was cut off before it finished answering. */
+  truncated?: boolean;
+  /** Provider-reported finish reason, when there was one. */
+  finishReason?: string;
+}
+
+/**
+ * Why the agent loop stopped — the field that makes futility measurable.
+ *
+ * Without it, "solved on the last turn" and "ran out of turns" are the same row
+ * once the gate result is aggregated away.
+ */
+export type StopReason =
+  /** The gate passed. */
+  | 'solved'
+  /** Ran out of the iteration budget without passing. */
+  | 'budget'
+  /** The completion errored; the loop could not continue. */
+  | 'error'
+  /** No gate was configured, so one turn is the whole run. */
+  | 'no-gate';
+
 export interface AgentRunResult {
   tokens: number | null;
   costUsd: number | null;
@@ -261,6 +319,15 @@ export interface AgentRunResult {
   error: string | null;
   /** Raw stdout/log for debugging and post-hoc audit (HAL-style log inspection). */
   rawLog?: string;
+  /**
+   * Per-turn attribution, when the adapter drives the loop itself and can
+   * therefore see it. Absent for subprocess adapters, which only ever learn an
+   * aggregate turn count from the agent they spawn — absent means "not
+   * observable here", never "nothing happened".
+   */
+  turnTrace?: TurnTrace[];
+  /** Why the loop stopped, when the adapter drives it. */
+  stopReason?: StopReason;
 }
 
 export interface AgentRunContext {

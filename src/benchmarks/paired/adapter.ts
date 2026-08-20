@@ -17,7 +17,7 @@ import { dirname, join, relative, resolve } from 'path';
 
 import { applyScaffolding, scaffoldEnv } from './scaffold.js';
 import { sanitizedEnv } from './suite.js';
-import { AgentAdapter, AgentRunContext, AgentRunResult, isBaseline } from './types.js';
+import { AgentAdapter, AgentRunContext, AgentRunResult, StopReason, TurnTrace, isBaseline } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Subprocess adapter (real agents)
@@ -643,6 +643,11 @@ export class RawCompletionAdapter implements AgentAdapter {
     // confounded by that; the vs-baseline win is unaffected.)
     const maxIters = useGate ? this.maxGateIters : 1;
     let lastGateOut: string | null = null;
+    // Per-turn attribution. Every field below is already computed by this loop
+    // for the human log; keeping the structure is what makes wasted work
+    // attributable after the fact instead of only visible in aggregate.
+    const turnTrace: TurnTrace[] = [];
+    let stopReason: StopReason | undefined;
 
     for (let iter = 0; iter < maxIters; iter++) {
       const bare = lazy && iter === 0;
@@ -658,6 +663,11 @@ export class RawCompletionAdapter implements AgentAdapter {
       totalTokens += chat.tokens;
       if (chat.error) {
         error = chat.error;
+        // Recorded BEFORE the break: a turn that errored still happened, and a
+        // trace that silently omits it makes the turn count disagree with the
+        // trace length for no visible reason.
+        turnTrace.push({ turn: turns, files: 0, gateOk: null, truncated: chat.truncated, finishReason: chat.finishReason ?? undefined });
+        stopReason = 'error';
         break;
       }
       const blocks = parseFileBlocks(chat.content);
@@ -674,7 +684,11 @@ export class RawCompletionAdapter implements AgentAdapter {
           ` finish=${chat.finishReason ?? 'n/a'} ---`
       );
 
-      if (!useGate) break;
+      if (!useGate) {
+        turnTrace.push({ turn: turns, files: blocks.length, gateOk: null, truncated: chat.truncated, finishReason: chat.finishReason ?? undefined });
+        stopReason = 'no-gate';
+        break;
+      }
 
       const gate = spawnSync('bash', ['-lc', ctx.task.gateCmd as string], {
         cwd: ctx.workdir,
@@ -683,8 +697,16 @@ export class RawCompletionAdapter implements AgentAdapter {
         env: sanitizedEnv(),
       });
       gateRuns++;
-      if (gate.status === 0) break;
-      if (iter === maxIters - 1) break; // out of budget
+      const gateOk = gate.status === 0;
+      turnTrace.push({ turn: turns, files: blocks.length, gateOk, truncated: chat.truncated, finishReason: chat.finishReason ?? undefined });
+      if (gateOk) {
+        stopReason = 'solved';
+        break;
+      }
+      if (iter === maxIters - 1) {
+        stopReason = 'budget';
+        break; // out of budget
+      }
       lastGateOut = `${gate.stdout ?? ''}\n${gate.stderr ?? ''}`.slice(-2000);
     }
 
@@ -692,6 +714,8 @@ export class RawCompletionAdapter implements AgentAdapter {
       tokens: totalTokens > 0 ? totalTokens : null,
       costUsd: null,
       turns,
+      turnTrace,
+      stopReason,
       toolCalls: useGate ? gateRuns : 0,
       wellFormed: null,
       error,
