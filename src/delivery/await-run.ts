@@ -41,8 +41,10 @@
  * it turns "is that pid alive" into "is that same holder still there".
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, renameSync, unlinkSync, rmSync } from 'fs';
 import { join, resolve } from 'path';
+import { homedir } from 'os';
+import { createHash } from 'crypto';
 import { isValidRunId, listRuns, type DeliverRunState } from './run-state.js';
 import { heartbeatAgeS, wedgeTimeoutS } from './heartbeat.js';
 
@@ -278,21 +280,57 @@ interface PollJournal {
 }
 
 /**
+ * Where poll journals live: OUTSIDE the project tree, per user.
+ *
+ * WHY NOT IN `.uap/`
+ * The journal's whole job is to tell a follow whether it has already sent the
+ * do-not-kill briefing. Keeping it inside the project put that decision in a
+ * directory the SUPERVISED GENERATOR can write — the one actor with a motive —
+ * and every mitigation was a patch on a fresh vector:
+ *
+ *   - plant the file            -> suppress the briefing on a real first poll
+ *   - symlink the file          -> overwrite an arbitrary file (final path)
+ *   - symlink the temp file     -> same, through the write that precedes rename
+ *   - symlink the DIRECTORY     -> prune became an arbitrary `*.json` deleter
+ *                                  (measured: 39 unrelated files destroyed)
+ *
+ * Three of those were found only by re-testing a fix that looked complete. The
+ * class does not close by patching vectors; it closes by moving the file. Deliver
+ * confines a mission's writes to its project root, so a per-user cache directory
+ * is outside what the generator may write at all — and the same-user processes
+ * that CAN write it are already inside the harness's trust boundary.
+ *
+ * Follows the convention already used for recipe/adaptation signals.
+ * `UAP_FOLLOW_POLL_DIR` overrides the base, for tests.
+ */
+function pollJournalDir(projectRoot: string): string {
+  const base =
+    process.env.UAP_FOLLOW_POLL_DIR || join(homedir(), '.cache', 'uap', 'follow-polls');
+  // Per project, so two checkouts cannot collide on a shared runId. The path is
+  // a hash rather than the root itself: a project path can contain anything.
+  const key = createHash('sha256').update(resolve(projectRoot)).digest('hex').slice(0, 16);
+  return join(base, key);
+}
+
+/**
  * `null` for any runId that must not become a path component.
  *
- * The runId reaching here is the `runId` FIELD of a state.json, not a directory
- * name — repo-resident content the project already treats as untrusted
- * elsewhere ("the run-state file is untrusted (repo content can plant values)").
- * A planted `../../../…` would otherwise steer both the read and the write.
- * Same guard `isStopRequested` applies to the same value for the same reason.
+ * The runId reaching here is the `runId` FIELD of a state.json — repo-resident
+ * content the project already treats as untrusted elsewhere ("the run-state file
+ * is untrusted (repo content can plant values)"). A planted `../../../…` would
+ * otherwise steer both the read and the write. Same guard `isStopRequested`
+ * applies to the same value for the same reason. Retained as depth even though
+ * the directory is no longer generator-writable.
  */
 function pollJournalPath(projectRoot: string, runId: string): string | null {
   if (!isValidRunId(runId)) return null;
-  return join(projectRoot, '.uap', 'follow-polls', `${runId}.json`);
+  return join(pollJournalDir(projectRoot), `${runId}.json`);
 }
 
 /** Prune only once the directory is worth walking. */
 const MAX_POLL_JOURNALS = 32;
+/** Cap on PROJECT directories under the journal base. See prunePollJournalProjects. */
+const MAX_POLL_JOURNAL_PROJECTS = 64;
 
 /** The ONLY shape a phase label may have to be echoed back: "3/7". */
 const PHASE_LABEL_RE = /^\d{1,4}\/\d{1,4}$/;
@@ -343,7 +381,13 @@ function readPollJournal(projectRoot: string, runId: string, runCreatedAt?: stri
     // do-not-kill briefing, and that text is load-bearing — it is what stops a
     // caller killing a healthy run. A journal that does not belong to this run
     // (planted, or left over from a recycled runId) must not be able to skip it.
-    if (runCreatedAt !== undefined && raw?.createdAt !== runCreatedAt) return { count: 0 };
+    // FAIL CLOSED on a run with no identity. `readState` validates instruction,
+    // status, runId, updatedAt and phases but NOT createdAt, so a state file with
+    // createdAt removed still loads as a live run — and an `undefined &&` guard
+    // here skipped the binding entirely for it, restoring the exact suppression
+    // this check exists to prevent (measured: briefing gone on poll 1). No
+    // identity to bind to means the journal is not trusted, full stop.
+    if (raw?.createdAt !== runCreatedAt || runCreatedAt === undefined) return { count: 0 };
     return { count: safeCount(raw?.count, 10_000) ?? 0, last: sanitizeLast(raw?.last) };
   } catch {
     return { count: 0 };
@@ -368,11 +412,29 @@ function writePollJournal(
   try {
     const path = pollJournalPath(projectRoot, runId);
     if (!path) return;
-    mkdirSync(join(projectRoot, '.uap', 'follow-polls'), { recursive: true });
-    const tmp = `${path}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ ...j, createdAt: runCreatedAt }), 'utf-8');
+    mkdirSync(pollJournalDir(projectRoot), { recursive: true });
+    // The TEMP path is attacker-plantable too, and it is the one that gets
+    // written. tmp+rename alone only protects the FINAL path (rename replaces a
+    // symlink rather than following it) — a link planted at `<path>.tmp` still
+    // had writeFileSync follow it and destroy the target. Reproduced: a secret
+    // outside the project root was overwritten with journal JSON.
+    //
+    // `wx` is O_CREAT|O_EXCL, which FAILS on an existing path instead of
+    // following it — a symlink can therefore never be written through. Unlink
+    // first to clear a stale temp (unlink removes the LINK, never its target);
+    // if the attacker re-plants between the two, the open fails and the whole
+    // write is skipped, which costs a verbose reply and nothing else.
+    // pid-suffixed so two concurrent follows do not fight over one temp name.
+    const tmp = `${path}.${process.pid}.tmp`;
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* absent — the normal case */
+    }
+    writeFileSync(tmp, JSON.stringify({ ...j, createdAt: runCreatedAt }), { flag: 'wx', mode: 0o600 });
     renameSync(tmp, path);
     prunePollJournals(projectRoot);
+    prunePollJournalProjects();
   } catch {
     /* read-only tree, races — the reply is still correct, just longer */
   }
@@ -389,7 +451,7 @@ function writePollJournal(
  */
 function prunePollJournals(projectRoot: string): void {
   try {
-    const dir = join(projectRoot, '.uap', 'follow-polls');
+    const dir = pollJournalDir(projectRoot);
     const files = readdirSync(dir);
     if (files.length <= MAX_POLL_JOURNALS) return;
     const live = new Set(listRuns(projectRoot).map((r) => r.runId));
@@ -400,6 +462,45 @@ function prunePollJournals(projectRoot: string): void {
         unlinkSync(join(dir, f));
       } catch {
         /* raced with another follow */
+      }
+    }
+  } catch {
+    /* housekeeping — never let it affect the reply */
+  }
+}
+
+/**
+ * Bound the number of PROJECT directories under the journal base.
+ *
+ * The per-project prune above never removes a directory, so every project ever
+ * followed left one behind forever — and ephemeral roots (CI checkouts, test
+ * fixtures) make that unbounded in the user's home. Measured while building
+ * this: one test-suite run left 129 directories in `~/.cache/uap/follow-polls`.
+ *
+ * A journal is pure optimisation — losing one costs exactly one verbose reply —
+ * so evicting the oldest is safe, and cheaper than tracking which roots still
+ * exist (the directory name is a one-way hash by design).
+ */
+function prunePollJournalProjects(): void {
+  try {
+    const base = process.env.UAP_FOLLOW_POLL_DIR || join(homedir(), '.cache', 'uap', 'follow-polls');
+    const entries = readdirSync(base);
+    if (entries.length <= MAX_POLL_JOURNAL_PROJECTS) return;
+    const byAge = entries
+      .map((name) => {
+        try {
+          return { name, at: statSync(join(base, name)).mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+      .filter((e): e is { name: string; at: number } => e !== null)
+      .sort((a, b) => a.at - b.at);
+    for (const { name } of byAge.slice(0, byAge.length - MAX_POLL_JOURNAL_PROJECTS)) {
+      try {
+        rmSync(join(base, name), { recursive: true, force: true });
+      } catch {
+        /* raced, or in use */
       }
     }
   } catch {

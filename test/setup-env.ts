@@ -16,6 +16,27 @@
  * isolated UAP_COORD_DB) — see test/models/openai-compat-lease.test.ts — so
  * this default costs them nothing.
  */
+import { tmpdir } from 'os';
+import { join } from 'path';
+
 if (process.env.UAP_MODEL_LEASE === undefined) {
   process.env.UAP_MODEL_LEASE = '0';
+}
+
+/**
+ * Follow-poll journals must never land in the DEVELOPER's real cache.
+ *
+ * A timed-out follow journals to `~/.cache/uap/follow-polls/<hash>` so the
+ * do-not-kill briefing is sent once rather than on every poll. Any test that
+ * drives a timed-out follow therefore writes one directory per temp project
+ * root — measured: 129 directories in `~/.cache` after a single suite run, from
+ * test files that never mention journals at all.
+ *
+ * Set here rather than per-file for the same reason UAP_MODEL_LEASE is: the
+ * tests that leak are the ones not thinking about this, so the default has to
+ * cover them. Tests asserting ON journal contents override it with their own
+ * isolated base (see test/delivery/follow-poll-journal.test.ts).
+ */
+if (process.env.UAP_FOLLOW_POLL_DIR === undefined) {
+  process.env.UAP_FOLLOW_POLL_DIR = join(tmpdir(), `uap-test-follow-polls-${process.pid}`);
 }

@@ -12,7 +12,9 @@
  * mission carried on fine (2026-08-20, opencode + qwen3.8-27b).
  */
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, symlinkSync, lstatSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, rmSync, symlinkSync, lstatSync } from 'fs';
+import { createHash } from 'crypto';
+import { resolve } from 'path';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { updateDeliverHeartbeat } from '../../src/delivery/heartbeat.js';
@@ -20,6 +22,12 @@ import { awaitInFlightDeliver, RECOMMENDED_BACKOFF_SEC } from '../../src/deliver
 import { listRuns, isValidRunId } from '../../src/delivery/run-state.js';
 
 const roots: string[] = [];
+/** Journals live OUTSIDE the project tree (see pollJournalDir). Point them at a
+ *  temp base per test so nothing touches the developer's real cache. */
+function journalDir(root: string): string {
+  const key = createHash('sha256').update(resolve(root)).digest('hex').slice(0, 16);
+  return join(process.env.UAP_FOLLOW_POLL_DIR as string, key);
+}
 function project(): string {
   const root = mkdtempSync(join(tmpdir(), 'uap-polljournal-'));
   roots.push(root);
@@ -56,12 +64,19 @@ const noSleep = async (): Promise<void> => undefined;
 const alive = (): boolean => true;
 
 const wedgeEnv = process.env.UAP_DELIVER_WEDGE_TIMEOUT;
+const journalEnv = process.env.UAP_FOLLOW_POLL_DIR;
+let journalBase: string;
 beforeEach(() => {
   delete process.env.UAP_DELIVER_WEDGE_TIMEOUT;
+  journalBase = mkdtempSync(join(tmpdir(), 'uap-journalbase-'));
+  process.env.UAP_FOLLOW_POLL_DIR = journalBase;
 });
 afterEach(() => {
   if (wedgeEnv === undefined) delete process.env.UAP_DELIVER_WEDGE_TIMEOUT;
   else process.env.UAP_DELIVER_WEDGE_TIMEOUT = wedgeEnv;
+  if (journalEnv === undefined) delete process.env.UAP_FOLLOW_POLL_DIR;
+  else process.env.UAP_FOLLOW_POLL_DIR = journalEnv;
+  rmSync(journalBase, { recursive: true, force: true });
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
 });
 
@@ -83,7 +98,7 @@ describe('repeat follows collapse to a diff', () => {
     // The load-bearing text: this is what keeps a caller from killing the run.
     expect(first.reason).toMatch(/STILL RUNNING/);
     expect(first.nextStep).toMatch(/do NOT kill/i);
-    expect(existsSync(join(root, '.uap', 'follow-polls', 'run-1.json'))).toBe(true);
+    expect(existsSync(join(journalDir(root), 'run-1.json'))).toBe(true);
   });
 
   it('gives the SECOND poll a diff and a backoff instead of the briefing again', async () => {
@@ -157,7 +172,7 @@ describe('repeat follows collapse to a diff', () => {
     // A real poll loop is N short-lived `uap deliver --await-run` processes;
     // an in-memory counter would restart at 1 every time and re-send the essay.
     const journal = JSON.parse(
-      readFileSync(join(root, '.uap', 'follow-polls', 'run-1.json'), 'utf-8')
+      readFileSync(join(journalDir(root), 'run-1.json'), 'utf-8')
     ) as { count: number };
     expect(journal.count).toBe(3);
   });
@@ -190,9 +205,9 @@ describe('repeat follows collapse to a diff', () => {
     holdLock(root, process.pid);
     writeRun(root, 'run-1');
     updateDeliverHeartbeat(root);
-    mkdirSync(join(root, '.uap', 'follow-polls'), { recursive: true });
+    mkdirSync(journalDir(root), { recursive: true });
     writeFileSync(
-      join(root, '.uap', 'follow-polls', 'run-1.json'),
+      join(journalDir(root), 'run-1.json'),
       JSON.stringify({ count: 9, createdAt: '1999-01-01T00:00:00.000Z', last: { turn: 1 } })
     );
 
@@ -213,9 +228,9 @@ describe('repeat follows collapse to a diff', () => {
     const born = new Date().toISOString();
     writeRun(root, 'run-1', { createdAt: born, phaseIndex: 2, phases: PHASES(3) });
     updateDeliverHeartbeat(root);
-    mkdirSync(join(root, '.uap', 'follow-polls'), { recursive: true });
+    mkdirSync(journalDir(root), { recursive: true });
     writeFileSync(
-      join(root, '.uap', 'follow-polls', 'run-1.json'),
+      join(journalDir(root), 'run-1.json'),
       JSON.stringify({
         count: 1,
         createdAt: born,
@@ -240,13 +255,124 @@ describe('repeat follows collapse to a diff', () => {
     updateDeliverHeartbeat(root);
     const victim = join(mkdtempSync(join(tmpdir(), 'uap-victim-')), 'secret.txt');
     writeFileSync(victim, 'TOP-SECRET');
-    mkdirSync(join(root, '.uap', 'follow-polls'), { recursive: true });
-    symlinkSync(victim, join(root, '.uap', 'follow-polls', 'run-1.json'));
+    mkdirSync(journalDir(root), { recursive: true });
+    symlinkSync(victim, join(journalDir(root), 'run-1.json'));
 
     await poll(root);
 
     expect(readFileSync(victim, 'utf-8')).toBe('TOP-SECRET');
-    expect(lstatSync(join(root, '.uap', 'follow-polls', 'run-1.json')).isSymbolicLink()).toBe(false);
+    expect(lstatSync(join(journalDir(root), 'run-1.json')).isSymbolicLink()).toBe(false);
+  });
+
+  it('does not follow a symlink planted at the TEMP path either', async () => {
+    // tmp+rename alone protects only the FINAL path (rename replaces a link
+    // rather than following it). The temp path is equally plantable and is the
+    // one actually written — reproduced: a secret outside the project root was
+    // overwritten with journal JSON even after the first fix. The write now
+    // uses O_CREAT|O_EXCL, which fails on an existing path instead of
+    // following it, so a link can never be written through.
+    const root = project();
+    holdLock(root, process.pid);
+    writeRun(root, 'run-1');
+    updateDeliverHeartbeat(root);
+    const victim = join(mkdtempSync(join(tmpdir(), 'uap-victim-tmp-')), 'secret.txt');
+    writeFileSync(victim, 'TOP-SECRET');
+    mkdirSync(journalDir(root), { recursive: true });
+    symlinkSync(victim, join(journalDir(root), `run-1.json.${process.pid}.tmp`));
+
+    await poll(root);
+
+    expect(readFileSync(victim, 'utf-8')).toBe('TOP-SECRET');
+  });
+
+  it('keeps the briefing for a run with NO identity to bind to', async () => {
+    // readState validates instruction/status/runId/updatedAt/phases but NOT
+    // createdAt, so a state file with createdAt removed still loads as a live
+    // run. An `undefined &&` guard skipped the binding entirely for it and the
+    // briefing vanished on poll 1 — the exact suppression the binding exists to
+    // prevent. No identity means the journal is not trusted, full stop.
+    const root = project();
+    holdLock(root, process.pid);
+    const dir = join(root, '.uap', 'deliver-runs', 'run-1');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'state.json'),
+      JSON.stringify({
+        runId: 'run-1',
+        instruction: 'x',
+        presetId: 'p',
+        projectRoot: root,
+        status: 'running',
+        pid: process.pid,
+        updatedAt: new Date().toISOString(),
+        // createdAt deliberately absent
+      })
+    );
+    updateDeliverHeartbeat(root);
+    mkdirSync(journalDir(root), { recursive: true });
+    writeFileSync(
+      join(journalDir(root), 'run-1.json'),
+      JSON.stringify({ count: 9, createdAt: '1999-01-01T00:00:00.000Z', last: { turn: 1 } })
+    );
+
+    const first = await poll(root);
+
+    expect(first.reason).toMatch(/STILL RUNNING/);
+    expect(first.nextStep).toMatch(/do NOT kill/i);
+  });
+
+  it('writes nothing into the project tree', async () => {
+    // The journal lives in a per-user cache directory, NOT under .uap/. Keeping
+    // it in the project put a security decision in the one directory the
+    // supervised generator is authorised to write, and each mitigation there
+    // exposed a fresh vector: plant the file, symlink the file, symlink the
+    // temp file, symlink the DIRECTORY (which turned pruning into an arbitrary
+    // *.json deleter — 39 unrelated files destroyed in the measured PoC).
+    const root = project();
+    holdLock(root, process.pid);
+    writeRun(root, 'run-1');
+    updateDeliverHeartbeat(root);
+
+    await poll(root);
+    await poll(root);
+
+    expect(existsSync(join(root, '.uap', 'follow-polls'))).toBe(false);
+    expect(existsSync(join(journalDir(root), 'run-1.json'))).toBe(true);
+  });
+
+  it('scopes journals per project, so two checkouts cannot collide', async () => {
+    const a = project();
+    const b = project();
+    expect(journalDir(a)).not.toBe(journalDir(b));
+    for (const root of [a, b]) {
+      holdLock(root, process.pid);
+      writeRun(root, 'run-1');
+      updateDeliverHeartbeat(root);
+    }
+    await poll(a);
+    // b's first poll must still be a FIRST poll despite sharing the runId.
+    const bFirst = await poll(b);
+    expect(bFirst.reason).toMatch(/STILL RUNNING/);
+  });
+
+  it('caps how many PROJECT directories accumulate in the cache', async () => {
+    // The per-project prune never removes a DIRECTORY, so every project ever
+    // followed left one behind forever — unbounded in the user's home for
+    // ephemeral roots (CI checkouts, test fixtures). Measured while building
+    // this: 129 directories after a single suite run.
+    for (let i = 0; i < 70; i++) {
+      mkdirSync(join(journalBase, `stale${String(i).padStart(3, '0')}`), { recursive: true });
+    }
+    const root = project();
+    holdLock(root, process.pid);
+    writeRun(root, 'run-1');
+    updateDeliverHeartbeat(root);
+
+    await poll(root);
+
+    // Bounded, and the journal this poll just wrote is not what got evicted.
+    expect(readdirSync(journalBase).length).toBeLessThanOrEqual(65);
+    expect(existsSync(join(journalDir(root), 'run-1.json'))).toBe(true);
   });
 
   it('keys the journal on the VALIDATED identity, not the embedded runId', () => {
