@@ -358,7 +358,7 @@ import { haloTracePath, isHaloTracingEnabled } from '../observability/halo-expor
 import { createRunCoordinator } from '../delivery/run-coordinator.js';
 import type { RunCoordinator } from '../delivery/run-coordinator.js';
 import { readCuratedIdeas } from './ideate.js';
-import { createEscalationController, defaultEscalationLadder } from '../delivery/escalation.js';
+import { createEscalationController, defaultEscalationLadder, DEFAULT_STAGNATION_TURNS } from '../delivery/escalation.js';
 import {
   FilePracticeStore,
   defaultPracticePath,
@@ -1364,6 +1364,94 @@ export async function deliverCommand(instruction: string, options: DeliverOption
     if (err instanceof ExitError) return;
     throw err;
   }
+}
+
+/**
+ * Consecutive flat turns after which an epic attempt yields to a fresh one.
+ *
+ * TWO, from the measurement rather than from taste. In every flat attempt
+ * observed (rust-pg-ext, qwen3.8-27b, 2026-08-20) the score was already pinned
+ * by turn 2 and never moved again through turn 5 — and `↑ turn 3: enable
+ * critic` fired in all four of them without changing anything. Turn 1 can never
+ * trip it: the first score is by definition an improvement on "no score yet".
+ *
+ * Only ever applied when a retry remains, so the cost of being wrong is one
+ * fresh attempt on the same epic — the thing that actually rescued the measured
+ * case (a flat 5-turn attempt, then a pass in 2).
+ */
+/**
+ * Consecutive flat turns after which an epic attempt yields to a fresh one.
+ *
+ * THREE, and the number is measured rather than chosen. Replaying this rail's
+ * exact streak logic over 157 deliver logs — 51 attempts where it would arm —
+ * gives, per threshold: fires / turns cut / in-attempt breakthroughs destroyed
+ *
+ *     K=2   35   101   5      <- the first draft. Destroys five real wins.
+ *     K=3   32    67   3
+ *     K=4   30    35   2
+ *
+ * Moving 2 -> 3 gives up 34 turns of saving and spares two attempts that went
+ * on to PASS from a flat run — `migration-register-rel-record` [75,75,75,PASS]
+ * and `contracts` [100,100,100,PASS]. The first draft's comment asserted that a
+ * turn-4 breakthrough was something "this sample never showed"; the corpus
+ * contains one, and it passed. That claim was wrong and this is the correction.
+ *
+ * The count is a FLOOR, scaled up with the turn budget by the loop (see
+ * `abortOnFlatTurns`): every breakthrough still lost at K=3 is a 6-8 turn
+ * attempt from a maxTurns=20 run, where three flat turns is a far weaker signal
+ * than it is out of five.
+ *
+ * Caveat kept in view: the replay reads gate percentages from logs, so it
+ * cannot see acceptance movement or inconclusive turns — both of which reset
+ * the streak. Every "destroyed" count above is therefore an upper bound.
+ */
+export const EPIC_FLAT_TURN_YIELD = 3;
+
+/**
+ * The threshold, with an operator override: `UAP_EPIC_FLAT_TURN_YIELD`.
+ * `0` or any non-positive value disables the rail entirely.
+ *
+ * Blank is treated as UNSET, not as zero: an exported-but-empty variable is a
+ * common accident, and `Number('')` is 0, which would silently switch the rail
+ * off — the exact inversion of the "a typo must not disable it" intent.
+ */
+export function epicFlatTurnYield(): number | undefined {
+  const raw = process.env.UAP_EPIC_FLAT_TURN_YIELD;
+  if (raw !== undefined && raw.trim() !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n >= 1 ? Math.floor(n) : undefined;
+  }
+  return EPIC_FLAT_TURN_YIELD;
+}
+
+/**
+ * The loop option that yields a FLAT epic attempt to a fresh one — or nothing.
+ *
+ * Extracted so the WIRING is testable, not just the threshold. It carries the
+ * whole safety argument: ending an attempt early is defensible only while a
+ * fresh attempt remains, so on the last attempt (`retriesRemaining` 0 or
+ * absent) this returns `{}` and the attempt plays out exactly as today.
+ *
+ * WHAT THIS DOES AND DOES NOT BUY, stated precisely because the first draft
+ * overclaimed it: no turn budget is transferred. Each attempt gets its own
+ * `maxTurns` either way, so a fresh attempt is not made longer by an earlier
+ * one ending sooner — the epic's TOTAL exploration shrinks. What is saved is
+ * wall clock, on turns whose gate score is provably not moving.
+ */
+export function epicFlatTurnOption(
+  retriesRemaining: number | undefined,
+  escalationLadderReach = 0
+): { abortOnFlatTurns?: number } {
+  if (!((retriesRemaining ?? 0) > 0)) return {};
+  const limit = epicFlatTurnYield();
+  if (limit === undefined) return {};
+  // NEVER yield while this attempt still has an unplayed escalation tier — the
+  // ladder is precisely "what this attempt has left to try", and cutting it is
+  // not reclaiming waste, it is skipping the rescue. Raising the threshold to
+  // the ladder's reach is self-correcting: when the ladder needs the whole turn
+  // budget (a stronger model on a 5-turn attempt), the resulting limit exceeds
+  // the budget and the rail simply never fires.
+  return { abortOnFlatTurns: Math.max(limit, escalationLadderReach) };
 }
 
 async function runDeliver(instruction: string, options: DeliverOptions): Promise<void> {
@@ -2424,6 +2512,32 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           onEscalate: (tier, turn) => console.log(chalk.magenta(`  ↑ turn ${turn}: ${tier.label}`)),
         })
       : undefined;
+
+  /**
+   * The turn on which the LAST escalation tier issues its directive.
+   *
+   * An epic attempt may end early on a plateau, and that must never cut the
+   * ladder short: a tier decided on turn N is consumed by turn N+1, so yielding
+   * at or before the last tier's turn means the tier never runs. Measured
+   * against the real ladder — with a stronger model configured, an attempt that
+   * delivers on turn 6 was abandoned on turn 4 and the stronger model was never
+   * called once.
+   *
+   * 0 when no ladder is active, which is the configuration the plateau
+   * measurement was taken in (those logs show `enable critic` and nothing
+   * above it — no stronger model was configured).
+   */
+  const escalationLadderReach = ((): number => {
+    if (!options.escalate) return 0;
+    const tiers = defaultEscalationLadder({
+      includeExploration: !agentic,
+      candidates,
+      maxTurns: maxTurns ?? 5,
+      escalateExecutor,
+      escalateModelName,
+    }).length;
+    return tiers > 0 ? DEFAULT_STAGNATION_TURNS * tiers + 1 : 0;
+  })();
 
   // Phase 4: learned best-practice cards for similar tasks. Retrieval is
   // semantic (embeddings) by default — better recall than keyword overlap —
@@ -3564,9 +3678,15 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       },
       runOrchestrated: (missionText, plan, parentTaskId) =>
         runOrchestratedMissionCore(buildOrchestratedDeps(missionText, plan, epicParallelTasks, parentTaskId)),
-      runEpicLoop: async (scoped) => {
+      runEpicLoop: async (scoped, opts) => {
         const loop = new ConvergenceLoop(
-          { ...loopConfig, baselineCheck: false, resumeFrom: undefined, onIteration: makeIterationHook() },
+          {
+            ...loopConfig,
+            baselineCheck: false,
+            resumeFrom: undefined,
+            onIteration: makeIterationHook(),
+            ...epicFlatTurnOption(opts?.retriesRemaining, escalationLadderReach),
+          },
           executor,
           seams
         );

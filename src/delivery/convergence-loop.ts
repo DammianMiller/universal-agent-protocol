@@ -430,6 +430,44 @@ export interface ConvergenceConfig {
    */
   untilDelivered?: boolean;
   /**
+   * End this run after N consecutive turns that moved NEITHER the gate score
+   * nor the acceptance score. Off (undefined) unless a caller sets it.
+   *
+   * WHY THIS IS OPT-IN, AND WHY IT IS NOT A SECOND STAGNATION RAIL
+   * A previous attempt at plateau detection lived here unconditionally and was
+   * removed: `untilDelivered` already stops EXTENDING at STAGNATION_LIMIT, and
+   * an always-on rail was measured unreachable (its streak can never exceed
+   * `stagnantTurns`) or redundant. Nothing about that changed.
+   *
+   * What changed is the CALLER. An epic attempt has somewhere better to spend
+   * the time — a fresh attempt on the same epic — and the epic controller is
+   * the only layer that knows whether one is left. So this is set only when a
+   * retry remains, and the decision it encodes is "yield to a fresh attempt",
+   * not "give up on the mission". On the LAST attempt it stays off and the run
+   * plays out exactly as before.
+   *
+   * MEASURED (2026-08-20, rust-pg-ext, qwen3.8-27b), four flat attempts:
+   *   fix-bioband-derive  a1: 5 turns flat @60%  -> a2 PASSED in 2 turns
+   *   fix-slope-arithmetic a1: 5 turns flat @40%, a2: 5 turns flat @40%
+   * At the shipped threshold those three attempts give back 21.2 minutes of
+   * wall clock. What that buys is narrower than it first looks, and the first
+   * draft of this comment overstated it twice:
+   *
+   *   - No turn budget is TRANSFERRED. Every attempt gets its own `maxTurns`
+   *     regardless, so a fresh attempt is not lengthened by an earlier one
+   *     ending sooner; the epic's total exploration shrinks. Wall clock is the
+   *     saving, and the only one.
+   *   - That run did not die on its clock one epic short. All seven epics were
+   *     attempted; `fix-slope-arithmetic` failed on merit after three attempts
+   *     and a re-plan ("epic controller incomplete — failed epic(s): …").
+   *     Reclaiming its minutes would not have changed that outcome.
+   *
+   * The real case is still good: time spent on turns whose score is provably
+   * not moving is time no longer available to the other epics, to the re-plan,
+   * or to the run's wall-clock budget.
+   */
+  abortOnFlatTurns?: number;
+  /**
    * Hard upper bound on turns when untilDelivered is set. Library default 50;
    * the `uap deliver --until-delivered` CLI defaults it to 30 (override with
    * `--ceiling`). Also caps escalation's raiseMaxTurns under untilDelivered.
@@ -1124,6 +1162,27 @@ export class ConvergenceLoop {
     // run must not read as turn-1 movement.
     let lastTurnFingerprint: string | null = null;
     let bestScoreSeen = -1;
+    // Yield-rail state (opt-in; see abortOnFlatTurns). Sanitised once here so
+    // a caller-supplied value cannot be NaN/fractional/negative downstream.
+    const rawFlatLimit = this.config.abortOnFlatTurns;
+    const flatTurnLimit =
+      typeof rawFlatLimit === 'number' && Number.isFinite(rawFlatLimit) && rawFlatLimit >= 1
+        // SCALED to the turn budget, never below what the caller asked for.
+        //
+        // A fixed count is wrong across budgets. Replaying this rail over 157
+        // deliver logs (51 attempts where it would arm), every breakthrough it
+        // still destroys at the default is a LONG attempt — 6 to 8 turns, from
+        // runs whose maxTurns is 20, where three flat turns is a much weaker
+        // signal than it is out of five. Quartering the budget tracks that:
+        // maxTurns 5 -> 3 (the floor), maxTurns 20 -> 5.
+        ? Math.max(Math.floor(rawFlatLimit), Math.ceil(maxTurns / 4))
+        : undefined;
+    let flatTurnStreak = 0;
+    // Acceptance high-water for the yield rail only — NOT bestAcceptance, which
+    // untilDelivered advances in a block ABOVE this one (comparing against it
+    // here is always false) and never advances at all without untilDelivered
+    // (making every judged turn look like progress). Both readings were wrong.
+    let bestAcceptanceSeen = -1;
     let stallReason: string | undefined;
     let executor = this.executor;
     let explorerSettings = this.config.explorer;
@@ -1682,6 +1741,60 @@ export class ConvergenceLoop {
           `is not the defect, or stating a requirement that no edit can satisfy. Re-running as-is will ` +
           `reproduce this result.`;
         break;
+      }
+      // The YIELD rail (opt-in — see abortOnFlatTurns). Deliberately unlike the
+      // rail above: it does NOT require provablyIdle, because the attempts it
+      // exists for wrote real edits on every turn and were invisible to that
+      // check. Acceptance movement counts as progress for the same reason
+      // untilDelivered counts it — an objective-green run pins the gate score
+      // at 1.0 while a multi-criterion spec completes criterion by criterion.
+      //
+      // Escalation does NOT reset it, and that is the one exemption this rail
+      // drops. In all FOUR flat attempts measured, `↑ turn 3: enable critic`
+      // fired and the score did not move once afterwards. Yielding to a fresh
+      // attempt is a bigger change of approach than enabling a critic inside
+      // the attempt that is already failing — and the fresh attempt gets the
+      // escalation ladder too.
+      if (flatTurnLimit !== undefined) {
+        const acceptanceMoved = acceptanceMet !== undefined && acceptanceMet > bestAcceptanceSeen;
+        if (acceptanceMoved) bestAcceptanceSeen = acceptanceMet as number;
+        // A directive that REPLACES THE EXECUTOR is exempt — and only that.
+        //
+        // The first version of this rail exempted no escalation at all, on the
+        // evidence that `↑ turn 3: enable critic` fired in four measured flat
+        // attempts and moved the score in none. That evidence is about the
+        // CRITIC tier and does not reach the tier above it: with a stronger
+        // model configured, `defaultEscalationLadder` appends a `switchExecutor`
+        // tier at turn 5, and `createRepairEscalation` returns one whenever
+        // compile errors are RISING — i.e. on exactly the flat turn this rail
+        // fires. Measured against the real ladder: unexempted, an attempt that
+        // master delivers on turn 6 with the stronger model was abandoned on
+        // turn 3, and the one-shot repair pass never ran once.
+        //
+        // A directive is decided on THIS turn and consumed by the NEXT one, so
+        // breaking here discards it. Give a new executor the single turn it
+        // needs to prove itself; the critic and reseed tiers stay unexempted,
+        // because those are the ones the measurement found worthless.
+        const executorChanged = Boolean(directive.switchExecutor);
+        // `inconclusive` stays exempt: a turn that never reached a model is
+        // missing data, not a flat result, and flaky turns must not burn an
+        // attempt.
+        if (inconclusive || scoreMoved || acceptanceMoved || executorChanged) flatTurnStreak = 0;
+        else flatTurnStreak++;
+        if (flatTurnStreak >= flatTurnLimit) {
+          // SHORT by design. This is prepended to finalFeedback, and
+          // epic-mission slices that to 400 chars to build the next attempt's
+          // `lastFailure` — so every character here evicts a character of real
+          // gate feedback from the retry's steering. The 339-char first draft
+          // left ~58 chars of gate output and cut the actionable line, which
+          // defeated the recovery the rail depends on. Rationale lives above,
+          // not on the wire. Deliberately does NOT claim the tree changed: this
+          // rail never consults `provablyIdle` or `filesApplied`.
+          stallReason =
+            `plateau: ${flatTurnStreak} turns with no gate (best ` +
+            `${(bestScoreSeen * 100).toFixed(0)}%) or acceptance progress — yielding to a fresh attempt.`;
+          break;
+        }
       }
 
       // Phase 3: structured critique of the failed turn (fail-soft). Skipped

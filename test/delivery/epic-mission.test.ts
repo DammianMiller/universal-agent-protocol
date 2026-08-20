@@ -709,3 +709,28 @@ describe('split sub-goal: visual-floor failures get a directed canvas phase (run
     expect(withDirective).toContain('ON THE CANVAS immediately on page load');
   });
 });
+
+describe('retriesRemaining reaches the loop that can act on it', () => {
+  it('forwards the controller\'s retry count to every epic attempt', async () => {
+    // The controller PRODUCES this and the loop CONSUMES it, but the one line
+    // that connects them was asserted in neither direction: every runEpicLoop
+    // double in this file ignores the second argument. Without it the loop
+    // silently receives undefined, which reads as "last attempt" and disables
+    // the plateau yield everywhere.
+    const seen: Array<number | undefined> = [];
+    const res = await runEpicMission(
+      baseDeps({
+        planEpics: async () => [phase('a')],
+        maxAttemptsPerEpic: 3,
+        runEpicLoop: async (_scoped, opts) => {
+          seen.push(opts?.retriesRemaining);
+          return ok({ success: false });
+        },
+      })
+    );
+
+    expect(res.success).toBe(false);
+    // Counts DOWN to zero: the last attempt must be able to tell it is last.
+    expect(seen).toEqual([2, 1, 0]);
+  });
+});
