@@ -48,6 +48,17 @@ class Settings:
     endpoint: str
     api_key: str
     allow_self_judge: bool = False
+    #: Backend width: how many generations the upstream serves CONCURRENTLY.
+    #: None = UNKNOWN, which must change nothing (not every backend can be
+    #: probed -- ninfer serves no /slots endpoint -- so silence is not evidence).
+    #: A FIELD rather than a process-env read at decision time: select_recipe is
+    #: called per request and an ambient UAP_MODEL_SLOTS=1 (which is exactly what
+    #: writeProxyEnv now puts in proxy.env, and what _load_proxy_env_file
+    #: setdefaults into every subprocess) silently rewrote 15 unrelated tests'
+    #: expectations. Resolving once, at construction, keeps the decision a
+    #: function of its inputs.
+    model_slots: "int | None" = None
+    force_multi_call: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -78,6 +89,8 @@ class Settings:
             endpoint=os.environ.get("PROXY_ESCALATE_ENDPOINT", ""),
             api_key=os.environ.get("PROXY_ESCALATE_API_KEY", ""),
             allow_self_judge=flag("PROXY_ALLOW_SELF_JUDGE"),
+            model_slots=resolve_model_slots(),
+            force_multi_call=flag("PROXY_FORCE_MULTI_CALL"),
         )
 
     def backend_configured(self) -> bool:
@@ -287,9 +300,53 @@ def load_adaptation_signal(session_id=None, signal_dir=None, ttl=180.0, now=None
     return None
 
 
+#: Recipes that issue MORE THAN ONE upstream generation per request.
+MULTI_CALL_RECIPES = frozenset({"fusion", "ratings", "remom"})
+
+
+def _int_env(name: str) -> "int | None":
+    try:
+        raw = os.environ.get(name, "")
+        return int(raw) if raw.strip() else None
+    except (ValueError, TypeError):
+        return None
+
+
+def resolve_model_slots() -> "int | None":
+    """Backend width from the environment, or None when it is UNKNOWN.
+
+    Reads ``UAP_MODEL_SLOTS`` -- the same variable the TypeScript model-slot
+    budget resolves and exports -- so both halves of the system agree on the
+    backend's real width without a second probe. ``PROXY_MODEL_SLOTS`` is
+    accepted as a proxy-local alias. Unparseable is UNKNOWN, not 1: a typo must
+    not silently disable fan-out everywhere.
+    """
+    for name in ("UAP_MODEL_SLOTS", "PROXY_MODEL_SLOTS"):
+        slots = _int_env(name)
+        if slots is not None:
+            return slots
+    return None
+
+
 def select_recipe(anthropic_body: dict, settings: Settings, has_tools: bool) -> str:
     if not settings.enabled or has_tools:
         return "single"
+    # SLOT RIGHT-SIZING. A fan-out recipe assumes its N generations overlap. On a
+    # backend serving one request at a time they do not -- they queue, so fusion
+    # N=3 costs 3x the wall clock of a single call for the same answer, and the
+    # deliver run paying it has a fixed wall-clock budget to finish in.
+    #
+    # Measured live (2026-08-20, ninfer --max-concurrency 1, qwen3.8-27b): tool
+    # -carrying turns already bypass recipes via `has_tools` above, but mission
+    # PLANNING carries no tools -- so it ran under fusion N=3 and took ~20 minutes,
+    # 17% of a 120-minute run budget, before turn 1 existed.
+    #
+    # Downgrade to the judge-free single path rather than to `confidence`:
+    # confidence can still escalate into a second call, which is the cost being
+    # avoided. `PROXY_FORCE_MULTI_CALL=1` restores the old behaviour.
+    if settings.model_slots is not None and settings.model_slots <= 1 and not settings.force_multi_call:
+        if settings.recipe == "auto" or settings.recipe in MULTI_CALL_RECIPES:
+            return "single"
     if settings.recipe != "auto":
         return settings.recipe
     pm = (anthropic_body or {}).get("model", "")

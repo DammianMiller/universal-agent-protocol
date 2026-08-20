@@ -404,6 +404,56 @@ export function runBudgetMinutes(projectRoot: string): number {
 }
 
 /**
+ * Did the budget come from an operator (env or `.uap.json`), or is it the default?
+ *
+ * The phase-aware scaler below must never override a number a human chose — an
+ * explicit `maxRunMinutes: 60` means 60, including for a 9-epic mission.
+ */
+export function isRunBudgetExplicit(projectRoot: string): boolean {
+  const env = process.env.UAP_DELIVER_MAX_MINUTES;
+  if (env !== undefined && Number.isFinite(Number(env))) return true;
+  try {
+    const cfg = JSON.parse(readFileSync(join(projectRoot, '.uap.json'), 'utf-8')) as {
+      delivery?: { maxRunMinutes?: unknown };
+    };
+    return Number.isFinite(Number(cfg.delivery?.maxRunMinutes));
+  } catch {
+    return false;
+  }
+}
+
+/** Wall-clock minutes granted per planned phase when scaling the DEFAULT budget. */
+export const PER_PHASE_BUDGET_MINUTES = 20;
+/** Ceiling on the scaled budget, so a runaway decomposition cannot buy forever. */
+export const MAX_SCALED_RUN_BUDGET_MINUTES = 480;
+
+/**
+ * Grow the DEFAULT wall-clock budget with the size of the plan. PURE.
+ *
+ * THE GAP THIS CLOSES
+ * The 120-minute default was calibrated across 61 runs — but on runs that
+ * executed ONE mission. A decomposed run executes N of them in sequence, and
+ * nothing scaled the clock to match, so the budget stopped being "long enough
+ * for a delivery" and became "long enough for the first few epics".
+ *
+ * Measured live (2026-08-20, rust-pg-ext, 7 epics): 16.2 min/epic sustained —
+ * 4 epics done at 65 min, ~114 min needed for all 7 against a 120-minute cap.
+ * That run finishes or dies on a coin flip, and a 9-epic plan at the same rate
+ * (146 min) could not finish at all. The failure is silent and looks exactly
+ * like the model being incapable: partial work, no delivery, budget message.
+ *
+ * A plan of 0 or 1 phase is NOT decomposed and keeps the calibrated default
+ * unchanged — this only grants time a sequence of missions actually needs.
+ * Never SHRINKS a budget, and never overrides an explicit one (see caller).
+ */
+export function phaseAwareRunBudgetMinutes(baseMinutes: number, phaseCount: number): number {
+  if (!(baseMinutes > 0)) return baseMinutes; // 0/negative means OFF — keep it off.
+  if (!Number.isFinite(phaseCount) || phaseCount < 2) return baseMinutes;
+  const scaled = Math.ceil(phaseCount) * PER_PHASE_BUDGET_MINUTES;
+  return Math.min(MAX_SCALED_RUN_BUDGET_MINUTES, Math.max(baseMinutes, scaled));
+}
+
+/**
  * Has this run outlived its budget? PURE.
  *
  * A non-positive budget means OFF, not "expire immediately" — a config typo

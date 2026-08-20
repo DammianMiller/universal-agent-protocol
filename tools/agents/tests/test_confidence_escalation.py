@@ -1,6 +1,7 @@
 """Tests for the serving-layer recipe runtime (Confidence #1/#5, Fusion #3, selector #2)."""
 import asyncio
 import importlib.util
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -24,10 +25,16 @@ spec.loader.exec_module(ce)
 
 
 def S(enabled=True, recipe="auto", signal="heuristic", threshold=0.5, fusion_n=3,
-      auto_chars=600, model="opus", endpoint="http://x/", key="k", remom_quorum=2):
+      auto_chars=600, model="opus", endpoint="http://x/", key="k", remom_quorum=2,
+      model_slots=None, force_multi_call=False):
+    # model_slots defaults to None = UNKNOWN width, which changes nothing. The
+    # selector reads this FIELD, never process env, so an ambient
+    # UAP_MODEL_SLOTS=1 (what proxy.env now carries on a one-slot box) cannot
+    # rewrite the expectations of tests that are not about slot width.
     return ce.Settings(enabled=enabled, recipe=recipe, signal=signal, threshold=threshold,
                        fusion_n=fusion_n, remom_quorum=remom_quorum, auto_fusion_chars=auto_chars,
-                       model=model, endpoint=endpoint, api_key=key)
+                       model=model, endpoint=endpoint, api_key=key,
+                       model_slots=model_slots, force_multi_call=force_multi_call)
 
 
 def resp(text):
@@ -349,6 +356,137 @@ class AdaptationSignalTest(unittest.TestCase):  # LLM-Self-Tuning real-time adap
             ce.select_recipe(body("add a button"), S(recipe="auto", model="qwen"), False),
             "fusion",
         )
+
+
+class SlotRightSizingTest(unittest.TestCase):
+    """A fan-out recipe assumes its N generations OVERLAP.
+
+    On a backend serving one request at a time they do not -- they queue, so
+    fusion N=3 costs 3x the wall clock of a single call for the same answer,
+    and the deliver run paying it has a fixed wall-clock budget to finish in.
+
+    Measured live (2026-08-20, ninfer --max-concurrency 1, qwen3.8-27b):
+    tool-carrying turns already bypass recipes via has_tools, but mission
+    PLANNING carries no tools -- so it ran under fusion N=3 and took ~20
+    minutes, 17% of a 120-minute run budget, before turn 1 existed.
+    """
+
+    def test_unknown_width_changes_nothing(self):
+        # Not every backend can be probed (ninfer serves no /slots), so silence
+        # is not evidence -- unknown width must leave behaviour identical.
+        self.assertEqual(ce.select_recipe(body(), S(recipe="fusion"), False), "fusion")
+
+    def test_single_slot_downgrades_explicit_fusion(self):
+        self.assertEqual(ce.select_recipe(body(), S(recipe="fusion", model_slots=1), False), "single")
+
+    def test_single_slot_downgrades_auto(self):
+        # auto can select fusion on its own; it must not be able to on one slot.
+        self.assertEqual(
+            ce.select_recipe(body("x" * 900), S(recipe="auto", model_slots=1), False), "single"
+        )
+
+    def test_single_slot_downgrades_other_multi_call_recipes(self):
+        for recipe in ("ratings", "remom"):
+            self.assertEqual(
+                ce.select_recipe(body(), S(recipe=recipe, model_slots=1), False), "single", recipe
+            )
+
+    def test_multi_slot_backend_keeps_fan_out(self):
+        # The cost being avoided is serialization. With real parallelism there
+        # is nothing to avoid.
+        self.assertEqual(ce.select_recipe(body(), S(recipe="fusion", model_slots=4), False), "fusion")
+
+    def test_operator_can_force_fan_out_on_one_slot(self):
+        self.assertEqual(
+            ce.select_recipe(body(), S(recipe="fusion", model_slots=1, force_multi_call=True), False),
+            "fusion",
+        )
+
+    def test_single_call_recipe_is_left_alone(self):
+        # `confidence` issues one generation and only escalates conditionally;
+        # downgrading it would remove quality for no latency win.
+        self.assertEqual(
+            ce.select_recipe(body(), S(recipe="confidence", model_slots=1), False), "confidence"
+        )
+
+    def test_zero_slots_counts_as_single(self):
+        self.assertEqual(ce.select_recipe(body(), S(recipe="fusion", model_slots=0), False), "single")
+
+
+class SlotWidthResolutionTest(unittest.TestCase):
+    """Width comes from the environment ONCE, at Settings construction."""
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in ("UAP_MODEL_SLOTS", "PROXY_MODEL_SLOTS")}
+        for k in self._saved:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_absent_is_unknown(self):
+        self.assertIsNone(ce.resolve_model_slots())
+
+    def test_reads_the_shared_variable(self):
+        os.environ["UAP_MODEL_SLOTS"] = "1"
+        self.assertEqual(ce.resolve_model_slots(), 1)
+
+    def test_proxy_local_alias_is_honoured(self):
+        os.environ["PROXY_MODEL_SLOTS"] = "2"
+        self.assertEqual(ce.resolve_model_slots(), 2)
+
+    def test_unparseable_width_is_unknown_not_single(self):
+        # A typo must not silently disable fan-out everywhere.
+        os.environ["UAP_MODEL_SLOTS"] = "lots"
+        self.assertIsNone(ce.resolve_model_slots())
+
+    def test_ambient_one_slot_env_does_not_move_an_explicit_setting(self):
+        # THE isolation property. proxy.env now carries UAP_MODEL_SLOTS on a
+        # one-slot box and the proxy env loader setdefaults it into every
+        # subprocess; when the selector read process env directly, that ambient
+        # value silently failed 15 unrelated tests in this file.
+        os.environ["UAP_MODEL_SLOTS"] = "1"
+        self.assertEqual(ce.select_recipe(body(), S(recipe="fusion"), False), "fusion")
+
+
+class SlotDowngradeSkipsGenerationsTest(unittest.TestCase):
+    """The cost being avoided is upstream GENERATIONS, so assert on the calls."""
+
+    def test_one_slot_backend_issues_no_extra_generations(self):
+        primary = {"content": [{"type": "text", "text": "answer"}]}
+        calls = []
+
+        async def call_primary(**kw):
+            calls.append(kw)
+            return primary
+
+        async def call_judge(**kw):
+            raise AssertionError("judge must not be called on a downgraded turn")
+
+        out = run(
+            ce.apply_recipe(
+                primary, body(), {"model": "qwen"},
+                S(recipe="fusion", model_slots=1),
+                False, call_primary, call_judge,
+            )
+        )
+        self.assertEqual(len(calls), 0)
+        self.assertIs(out, primary)
+
+    def test_off_values_do_not_force_fan_out(self):
+        # The escape hatch is a negative-set membership test; a refactor to
+        # bool(os.environ.get(...)) would invert it and only "1" is otherwise covered.
+        for raw in ("0", "false", "off", "no", ""):
+            with self.subTest(raw=raw):
+                os.environ["PROXY_FORCE_MULTI_CALL"] = raw
+                try:
+                    self.assertFalse(ce.Settings.from_env().force_multi_call)
+                finally:
+                    os.environ.pop("PROXY_FORCE_MULTI_CALL", None)
 
 
 if __name__ == "__main__":

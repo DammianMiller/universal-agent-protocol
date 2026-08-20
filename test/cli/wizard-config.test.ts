@@ -190,6 +190,46 @@ describe('writeProxyEnv', () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
+  describe('UAP_MODEL_SLOTS — backend width for the fan-out downgrade', () => {
+    const saved = process.env.UAP_MODEL_SLOTS;
+    afterEach(() => {
+      if (saved === undefined) delete process.env.UAP_MODEL_SLOTS;
+      else process.env.UAP_MODEL_SLOTS = saved;
+    });
+
+    it('emits a width the wizard collected', () => {
+      delete process.env.UAP_MODEL_SLOTS;
+      const sel = defaultSelections({ concurrency: { enabled: true, slots: 1 } });
+      const env = readFileSync(writeProxyEnv(dir, sel) as string, 'utf-8');
+      expect(env).toContain('UAP_MODEL_SLOTS=1');
+    });
+
+    it('falls back to a width the project already declared', () => {
+      // No wizard path sets concurrency.slots, so without this fallback the
+      // line had no producer at all and the fan-out downgrade sat dormant.
+      delete process.env.UAP_MODEL_SLOTS;
+      writeFileSync(join(dir, '.uap.json'), JSON.stringify({ modelConcurrency: { slots: 1 } }));
+      const env = readFileSync(writeProxyEnv(dir, defaultSelections()) as string, 'utf-8');
+      expect(env).toContain('UAP_MODEL_SLOTS=1');
+    });
+
+    it('omits the line entirely when the width is unknown', () => {
+      // Absent means UNKNOWN, which must change nothing. Asserting the ABSENCE
+      // is what stops a future default of 1 silently disabling fan-out.
+      delete process.env.UAP_MODEL_SLOTS;
+      const env = readFileSync(writeProxyEnv(dir, defaultSelections()) as string, 'utf-8');
+      expect(env).not.toContain('UAP_MODEL_SLOTS');
+    });
+
+    it('normalises a fractional or zero width to a usable slot count', () => {
+      delete process.env.UAP_MODEL_SLOTS;
+      const frac = defaultSelections({ concurrency: { enabled: true, slots: 2.9 } });
+      expect(readFileSync(writeProxyEnv(dir, frac) as string, 'utf-8')).toContain('UAP_MODEL_SLOTS=2');
+      const zero = defaultSelections({ concurrency: { enabled: true, slots: 0 } });
+      expect(readFileSync(writeProxyEnv(dir, zero) as string, 'utf-8')).toContain('UAP_MODEL_SLOTS=1');
+    });
+  });
+
   it('emits PROXY_* + delivery env, including the secret judge key', () => {
     const sel = defaultSelections({
       recipes: {
