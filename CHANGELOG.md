@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.214.1 (2026-08-20)
+
+- fix(deliver): keep the anti-kill advice on the stage that recurs, and make the prune real
+- fix(deliver): move the follow journal out of the tree the generator can write
+
+
 ## v1.214.0 (2026-08-20)
 
 - feat(deliver): stop the follow-poll death spiral; scale the run budget to the plan
