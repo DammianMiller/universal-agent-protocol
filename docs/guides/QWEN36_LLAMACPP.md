@@ -172,43 +172,102 @@ overriding `enable_thinking=true`.
 Do **not** switch a Qwen profile to `embedded` — the model's own baked-in template
 still carries the `'System message must be at the beginning.'` raise.
 
-## Speculative decoding: what is running, and DFlash2
+## Speculative decoding: DFlash2 is the default
 
-Running today: `--spec-type draft-mtp`, reading the MTP head baked into `--model`
-(no drafter file). At `--spec-draft-n-max 2` a verification step accepts at most 3
-tokens; measured draft acceptance is 60-91%.
+`config/llama-profiles/qwen38-27b-dflash2.env` is the default profile as of
+2026-08-20. `qwen38-27b-mtp.env` is kept as the fallback — same model, same
+context, same slot count; only the speculative-decoding config differs.
 
-**DFlash2 exists, fits this card at the current context tier, and is not
-installed.** Measured 2026-08-20 on the RTX 3090, holding `--parallel 2` and
-131072 ctx/slot fixed:
+Measured on this card (RTX 3090, sm_86, temp 0, 4 prompts, 1032 tokens per arm,
+**same binary across arms** so the spec config is the only variable):
 
-| | |
-|---|---|
-| Engine | [llama.cpp#27342](https://github.com/ggml-org/llama.cpp/pull/27342), **open, not merged**. One commit (`5ecbe1ac1`, ~676 LOC). Cherry-picks onto our build commit `f466cfa38` with **zero conflicts** — our tree is 29 commits ahead of the PR base — and builds clean for `sm_86`. |
-| Drafter | [z-lab/Qwen3.8-27B-DFlash2-GGUF](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2-GGUF), built for this exact target. Q4_K_M 1.1 GB / Q8_0 2.0 GB. Published acceptance length 5.39 / 5.13. |
-| Why v1 can't be used instead | The merged `draft-dflash` v1 engine cannot load a v2 checkpoint. Both declare `general.architecture = "dflash"`, so auto-detect selects `draft-dflash` and then fails: the v2 GGUF carries 23 conv/selector tensors and `dflash.conv_*` / `dflash.selector_*` metadata keys v1 has no loader for. A rebuild is mandatory; there is no config-only path. |
+| arm | aggregate tok/s | accept rate | tokens/verify step | |
+|---|---|---|---|---|
+| no speculation, `-np 1` | 41.3 | — | 1.00 | baseline |
+| `draft-mtp` n-max 2, `-np 1` | 59.3 | 93.6% | 2.68 | |
+| **DFlash2 n-max 4, `-np 1`** | **68.7** | 67.4% | 3.68 | **1.16×** |
+| `draft-mtp` n-max 2, `-np 2` | 66.0 | 92.5% | 2.67 | |
+| **DFlash2 n-max 4, `-np 2`** | **89.8** | 66.5% | 3.66 | **1.36×** |
 
-VRAM, the constraint that decides it. The drafter is 5 layers with its **own 2048
-sliding window**, so its KV cache is ~80 MiB at f16 regardless of the target's
-131072 — the cost is essentially just weights:
+The `-np 2` rows are two *genuinely concurrent* requests — the production shape.
+Re-verified end-to-end through `run-llama-server-continuity.sh` with the shipped
+profile: **92.6 tok/s**, tool calls parsing, peak 23459 MiB.
 
-| | measured / computed |
-|---|---|
-| Free VRAM at 131072/slot, `--parallel 2` | ~1.9 GiB (`nvidia-smi`: 22607 / 24576 MiB) |
-| Q4_K_M drafter (weights + KV + buffers) | ~1.25 GiB → **fits**, ~0.7 GiB margin |
-| Q8_0 drafter | ~2.1 GiB → does not fit at this tier |
+**Read `1.36×` as a blend, not a constant.** That run pushed 4 prompts through a
+2-slot pool, so the last prompt always finishes alone and the wall covers two
+different regimes. Decomposing it from the server's own `launch_slot_`/`release`
+timeline:
 
-So it does not require dropping context or slot count. The open question is
-throughput, not memory: the PR's own reviewers report degradation at `-np >= 2`
-— the setting this box runs — and the headline 5.x acceptance figures are
-single-stream on Blackwell / Apple M5, not `sm_86`. The honest test is a paired
-A/B at fixed `-np 2` and 131072/slot against `draft-mtp` as configured today.
-Until that measurement exists, `draft-mtp` stays.
+| regime | `draft-mtp` | DFlash2 n-max 4 | ratio |
+|---|---|---|---|
+| both slots decoding | 76.4 tok/s | 130.3 tok/s | **1.71×** |
+| one request in flight on the 2-slot server | 57.9 tok/s | 60.4 tok/s | **1.04×** |
+| the measured 4-prompt burst (what `1.36×` reports) | 66.0 | 89.8 | 1.36× |
 
-> Note: the VRAM table under *Measured: Qwen3.8-27B* below was recorded from
-> llama.cpp's own buffer accounting (~0.95 GiB free); the ~1.9 GiB here is
-> `nvidia-smi` free memory on the whole card. They measure different things —
-> use the smaller one for headroom decisions.
+So the gain is real but duty-cycle dependent: it is ~1.7× while both slots are
+busy and close to nothing when only one request is in flight. Add prompts to the
+burst and the headline drifts up toward 1.71×; remove them and it drifts down.
+The `-np 1` row above is a `--parallel 1` server, which this service never runs —
+for the single-request case on the real 2-slot server use the 1.04–1.2× range,
+not 1.16×.
+
+Two caveats on the numbers, both unclosed:
+
+* **Every measurement was taken at `temperature 0.0`**, while this profile serves
+  at `LLAMA_TEMP=0.7 / TOP_P=0.8 / TOP_K=20`. Greedy is the most favourable
+  setting for speculative decoding, and it flatters a 4-token block more than a
+  2-token one, so `1.36×` is an upper bound for the sampling that actually runs.
+* **Acceptance is strongly prompt-dependent for DFlash2 and flat for MTP.**
+  Across the six prompts ever run, DFlash2 ranged 0.40–0.95 and `draft-mtp` sat
+  in a 0.91–0.97 band. The two lowest-acceptance prompts (prose explanation) were
+  never run against `draft-mtp`, so the regime where DFlash2 could lose is
+  untested. `n-max 7 < n-max 4` is direct evidence that drafting cost dominates
+  once acceptance falls.
+
+Two results here are worth keeping, because both contradict what the upstream
+material predicts:
+
+* **DFlash2 does not degrade under concurrency on this card — it improves.** The
+  PR thread reports throughput collapsing at `-np >= 2`; here the advantage grows
+  from 1.16× to 1.36× going from one slot to two. Do not carry that assumption to
+  other hardware in either direction; measure it.
+* **`n-max 4` beats `n-max 7`** (76.7 vs 69.8 tok/s), even though n-max 7 accepts
+  a longer block (4.86 vs 3.87 tokens/step). Acceptance falls from 72% to 55% as
+  the block lengthens, so the extra drafting outruns what it buys. The drafter
+  card's published acceptance length of 5.39 is real but is not the throughput
+  optimum.
+
+### The cost, and when to roll back
+
+Peak VRAM in the production shape is **23459 / 24576 MiB — about 1.1 GiB free**.
+There is **no paired measurement of `draft-mtp` taken the same way**, so treat the
+drafter's marginal cost as un-measured rather than as the ~0.8 GiB the weights
+imply: the table above reports ~0.95 GiB free for `draft-mtp` at this same tier,
+which cannot both be true and leave DFlash2 roomier. Re-measure both profiles
+with one harness before relying on either figure. Note also that 23459 was
+sampled with `nvidia-smi` on a 1 s loop over a ~10 s run whose longest prefill
+was 540 tokens — it never exercised a long-context prefill on two slots, which is
+the real peak event at 131072/slot. The drafter's weights (Q4_K_M,
+1.1 GB) are essentially the whole difference: its KV cache stays around 80 MiB
+because it carries its own 2048-token sliding window rather than scaling with the
+target's 131072/slot. That is what lets this fit without cutting context or slots
+— and it is why `LLAMA_DRAFT_CTX_SIZE` must stay unset.
+
+This card has a history of *global* kernel OOM events selecting this service for
+its RSS. The GPU side is now thinner too. **If the server starts failing to load
+or dying, switch `~/.config/uap/llama-server.env` back to `qwen38-27b-mtp.env`
+before changing anything else** — that is what the fallback profile is for.
+
+### The engine is an unmerged PR
+
+[llama.cpp#27342](https://github.com/ggml-org/llama.cpp/pull/27342) is **open**.
+The build is a cherry-pick of `5ecbe1ac1` onto `f466cfa38` (zero conflicts),
+vendored as `config/llama-patches/dflash2-pr27342.patch` so it is reproducible if
+the build worktree is lost. The merged `draft-dflash` **v1** engine cannot
+substitute: a v2 checkpoint declares the same `general.architecture = "dflash"`,
+so auto-detect selects `draft-dflash` and then fails on the 23 conv/selector
+tensors and `dflash.conv_*` / `dflash.selector_*` metadata keys v1 has no loader
+for. Return to plain upstream master once the PR lands.
 
 ## Point UAP at it
 
