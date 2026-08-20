@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.215.1 (2026-08-20)
+
+- fix(deliver): make the planner assign every file exactly one owner
+
+
 ## v1.215.0 (2026-08-20)
 
 - feat(deliver): yield a flat epic attempt to a fresh one

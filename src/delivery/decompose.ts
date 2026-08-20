@@ -355,6 +355,37 @@ function buildDecomposePrompt(
     budgetHint,
     contractsHint,
     scaffoldHint,
+    // FILE OWNERSHIP + DEPENDENCY ORDERING.
+    //
+    // Two planner failures that the phase-sizing rules above cannot prevent,
+    // because they are about the RELATIONSHIPS between phases rather than the
+    // size of any one of them:
+    //
+    //  - A file no phase claims is never written. Observed on a canvas-game
+    //    epic run that stalled at 10 of 11 files: the entry module `js/game.js`
+    //    was named by the mission and owned by nobody, so every phase passed
+    //    its own criteria and the deliverable never ran.
+    //  - A file TWO phases claim gets written twice, the second overwriting the
+    //    first — the same shape from the other side.
+    //
+    // Deliberately says nothing about how many phases there should be or how
+    // large they are: that is `budgetHint`'s job, and it argues for MORE and
+    // SMALLER. Ownership is orthogonal — it holds at any phase count.
+    [
+      '',
+      'FILE OWNERSHIP: every concrete file the mission requires must be CREATED by',
+      'EXACTLY ONE phase. Two phases must never create the same file, and a file no',
+      'phase creates is never delivered. A SCAFFOLD phase creating a file and its',
+      'paired FILL phase later EDITING that same file is ONE owner across the pair,',
+      'not two creators. A contracts/types phase owns only the shared type file(s)',
+      "it declares — never another module's implementation file; the phase that",
+      'scaffolds that module owns it.',
+      '',
+      'DEPENDENCY ORDERING: if a phase\'s file imports, requires, or links (script',
+      'src / link href) a file another phase creates, that phase MUST name the other',
+      'phase in its "deps", so the referenced file exists when it runs. An',
+      'entry-point phase therefore depends on every module it pulls in.',
+    ].join('\n'),
     lifecycleHint,
     '',
     `MISSION: ${instruction}`,
