@@ -276,7 +276,10 @@ interface PollJournal {
   /** How many times a follow has timed out on this run. */
   count: number;
   /** The progress projection reported by the previous timed-out follow. */
-  last?: { turn?: number; phase?: string; runElapsedSec?: number; phasesPlanned?: number };
+  // No runElapsedSec: it was journaled and sanitized but never read by
+  // progressDelta, and the elapsed figure the caller needs is already in the
+  // reply's evidence sentence ("running for Ns, last activity Ms ago").
+  last?: { turn?: number; phase?: string; phasesPlanned?: number };
 }
 
 /**
@@ -303,9 +306,16 @@ interface PollJournal {
  * Follows the convention already used for recipe/adaptation signals.
  * `UAP_FOLLOW_POLL_DIR` overrides the base, for tests.
  */
+/** The journal base. ONE definition — it was duplicated across two functions. */
+function pollJournalBase(): string {
+  return process.env.UAP_FOLLOW_POLL_DIR || join(homedir(), '.cache', 'uap', 'follow-polls');
+}
+
+/** A project key: exactly the 16 hex chars pollJournalDir produces. */
+const PROJECT_KEY_RE = /^[0-9a-f]{16}$/;
+
 function pollJournalDir(projectRoot: string): string {
-  const base =
-    process.env.UAP_FOLLOW_POLL_DIR || join(homedir(), '.cache', 'uap', 'follow-polls');
+  const base = pollJournalBase();
   // Per project, so two checkouts cannot collide on a shared runId. The path is
   // a hash rather than the root itself: a project path can contain anything.
   const key = createHash('sha256').update(resolve(projectRoot)).digest('hex').slice(0, 16);
@@ -366,7 +376,6 @@ function sanitizeLast(raw: unknown): PollJournal['last'] {
   return {
     turn: safeCount(r.turn, 1_000_000),
     phase,
-    runElapsedSec: safeCount(r.runElapsedSec, 100_000_000),
     phasesPlanned: safeCount(r.phasesPlanned, 10_000),
   };
 }
@@ -454,10 +463,27 @@ function prunePollJournals(projectRoot: string): void {
     const dir = pollJournalDir(projectRoot);
     const files = readdirSync(dir);
     if (files.length <= MAX_POLL_JOURNALS) return;
-    const live = new Set(listRuns(projectRoot).map((r) => r.runId));
+    // Retention is by RUN LIVENESS, not by "does a run directory still exist".
+    // `listRuns` returns every run that ever parsed — nothing removes
+    // `deliver-runs/<id>/` — so keying on mere listing reaped nothing: measured
+    // 0 of 40 journals for finished runs, and the doc comment's own premise (a
+    // deliver-runs directory that had reached 26 entries) is exactly why.
+    // A journal is only useful while its run can still be followed.
+    const live = new Set(
+      listRuns(projectRoot)
+        .filter((r) => r.status === 'running')
+        .map((r) => r.runId)
+    );
     for (const f of files) {
-      if (!f.endsWith('.json')) continue;
-      if (live.has(f.slice(0, -'.json'.length))) continue;
+      // Stale temps are reaped too. They are left by a write that died between
+      // create and rename, are skipped by the `.json` filter, and still counted
+      // toward the threshold above — so they accumulated forever AND made the
+      // prune fire earlier and earlier.
+      const isTemp = f.includes('.json.') && f.endsWith('.tmp');
+      if (!isTemp) {
+        if (!f.endsWith('.json')) continue;
+        if (live.has(f.slice(0, -'.json'.length))) continue;
+      }
       try {
         unlinkSync(join(dir, f));
       } catch {
@@ -483,10 +509,16 @@ function prunePollJournals(projectRoot: string): void {
  */
 function prunePollJournalProjects(): void {
   try {
-    const base = process.env.UAP_FOLLOW_POLL_DIR || join(homedir(), '.cache', 'uap', 'follow-polls');
+    const base = pollJournalBase();
     const entries = readdirSync(base);
     if (entries.length <= MAX_POLL_JOURNAL_PROJECTS) return;
     const byAge = entries
+      // ONLY entries this module could have created. `UAP_FOLLOW_POLL_DIR` is
+      // operator-supplied, and this is a RECURSIVE delete: aimed at a directory
+      // holding anything else (`~/.cache/uap` itself holds qdrant_data) an
+      // unconstrained sweep would silently destroy unrelated trees. A project
+      // key is exactly 16 hex characters — nothing else is ours to remove.
+      .filter((name) => PROJECT_KEY_RE.test(name))
       .map((name) => {
         try {
           return { name, at: statSync(join(base, name)).mtimeMs };
@@ -543,9 +575,27 @@ export function progressDelta(prev: PollJournal['last'], now: FollowProgress): s
   if (now.phase && prev.phase && now.phase !== prev.phase && phaseAdvanced(prev.phase, now.phase)) {
     bits.push(`phase ${prev.phase} → ${now.phase}`);
   }
-  // A plan that GROWS (3 → 7 after an epic split) is news too; `!prev` alone
-  // reported only the first appearance and then went quiet forever.
-  if (now.phasesPlanned && now.phasesPlanned > (prev.phasesPlanned ?? 0)) {
+  // Two distinct pieces of plan news, and only these two.
+  //
+  // `phasesPlanned` is published ONLY while no turn exists — a state that
+  // RECURS, because deliver clears the checkpoint after every accepted epic. So
+  // the field oscillates 7 → undefined → 7 through a 7-epic run, and a bare
+  // `> (prev.phasesPlanned ?? 0)` reported the SAME unchanged plan as movement
+  // at every boundary.
+  //
+  //  - APPEARED: the planner finished and there is still no turn anywhere. That
+  //    is the "planning is over" signal, and it is real news exactly once —
+  //    `prev.turn === undefined` is what separates it from an epic boundary,
+  //    where earlier polls have already seen turns.
+  //  - GREW: a plan that got bigger, against a previous poll that actually saw
+  //    one. Needs prev to be known, or "absent" reads as zero.
+  const planAppeared =
+    now.phasesPlanned !== undefined && prev.phasesPlanned === undefined && prev.turn === undefined;
+  const planGrew =
+    now.phasesPlanned !== undefined &&
+    prev.phasesPlanned !== undefined &&
+    now.phasesPlanned > prev.phasesPlanned;
+  if (now.phasesPlanned && (planAppeared || planGrew)) {
     bits.push(`planned ${now.phasesPlanned} phases`);
   }
   return bits.length ? bits.join(', ') : null;
@@ -1002,17 +1052,28 @@ export async function awaitInFlightDeliver(
             last: {
               turn: progress.turn,
               phase: progress.phase,
-              runElapsedSec: progress.runElapsedSec,
               phasesPlanned: progress.phasesPlanned,
             },
           },
           run?.createdAt
         );
       }
-      // A repeat poll on a HEALTHY run gets the diff and nothing else. Wedged
-      // runs are excluded deliberately: that reply carries a warning and a
-      // remedy the caller has not acted on yet, so it is not redundant.
-      if (repeat && progress.health !== 'wedged') {
+      // A repeat poll on a HEALTHY run gets the diff and nothing else.
+      //
+      // Two stages are excluded deliberately, because their replies carry a
+      // warning and a remedy the caller has NOT acted on yet — they are not
+      // redundant however many times they are sent:
+      //
+      //  - wedged:   "it may be stuck", plus what to do about it.
+      //  - planning: "no turn yet" means NOT STARTED, not stuck. This is the
+      //    documented kill window — nine runs SIGKILLed at a median of 59s,
+      //    every one still planning. And the stage RECURS: deliver clears the
+      //    run's checkpoint after every accepted epic, so a 7-epic mission
+      //    re-enters `planning` seven times mid-flight. Without this clause a
+      //    caller got the words "still PLANNING (no turn yet)" with none of the
+      //    advice that exists to stop them acting on it — measured on this
+      //    branch, poll 2 onward at every epic boundary.
+      if (repeat && progress.health !== 'wedged' && progress.stage !== 'planning') {
         return {
           followed: false,
           delivered: false,

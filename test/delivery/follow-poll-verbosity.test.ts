@@ -68,6 +68,15 @@ describe('progressDelta — what a repeat poll is actually asking', () => {
     expect(progressDelta({ phasesPlanned: 3 }, progress({ phasesPlanned: 7 }))).toBe('planned 7 phases');
   });
 
+  it('does NOT re-report an unchanged plan at an epic boundary', () => {
+    // phasesPlanned is published only while no turn exists, and deliver clears
+    // the checkpoint after every accepted epic — so the field oscillates
+    // 7 → undefined → 7 and a naive check re-fired on a plan that never moved.
+    // A previous poll that HAD a turn is what marks this as a boundary rather
+    // than the planner finishing.
+    expect(progressDelta({ turn: 4 }, progress({ phasesPlanned: 7 }))).toBeNull();
+  });
+
   it('has no delta to report on a first poll', () => {
     expect(progressDelta(undefined, progress({ turn: 3 }))).toBeNull();
   });

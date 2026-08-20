@@ -52,6 +52,10 @@ function writeRun(root: string, runId: string, over: Record<string, unknown> = {
       pid: process.pid,
       createdAt: now,
       updatedAt: now,
+      // A run with no checkpoint turn IS the planning stage, and planning
+      // deliberately keeps the full briefing on every poll. Fixtures that mean
+      // "an ordinary running mission" must therefore carry a turn.
+      checkpoint: { turn: 2 },
       ...over,
     })
   );
@@ -116,12 +120,17 @@ describe('repeat follows collapse to a diff', () => {
     expect(second.reason).toMatch(/poll 2/);
     // …and the caller is told to slow down, which nothing used to say.
     expect(second.nextStep).toMatch(new RegExp(String(RECOMMENDED_BACKOFF_SEC)));
-    // The whole point — the repeat costs a fraction of the first. Measured on
-    // this fixture the first reply is ~900 chars and the repeat ~380; in
-    // production the first is ~1.2KB (the planning briefing is longer still).
+    // The whole point — the repeat costs materially less. Measured on this
+    // fixture: 717 -> 378 chars; in production the first reply is ~1.2KB (the
+    // planning briefing is longer again), so the real saving is larger.
     const firstLen = first.reason.length + first.nextStep.length;
     const secondLen = second.reason.length + second.nextStep.length;
-    expect(secondLen).toBeLessThan(firstLen / 2);
+    expect(secondLen).toBeLessThan(firstLen * 0.6);
+    // And the specific cost is gone: the standing-rules enumeration is stated
+    // once and REFERENCED afterwards. Restating it is what drove 20 compactions.
+    expect(first.nextStep).toMatch(/do NOT kill/i);
+    expect(second.nextStep).not.toMatch(/do NOT kill/i);
+    expect(second.nextStep).toMatch(/rules still stand/i);
   });
 
   it('says plainly when nothing moved, rather than repeating itself', async () => {
@@ -361,7 +370,10 @@ describe('repeat follows collapse to a diff', () => {
     // ephemeral roots (CI checkouts, test fixtures). Measured while building
     // this: 129 directories after a single suite run.
     for (let i = 0; i < 70; i++) {
-      mkdirSync(join(journalBase, `stale${String(i).padStart(3, '0')}`), { recursive: true });
+      // 16 hex chars — only entries shaped like a real project key are ours to evict.
+      mkdirSync(join(journalBase, createHash('sha256').update(`stale${i}`).digest('hex').slice(0, 16)), {
+        recursive: true,
+      });
     }
     const root = project();
     holdLock(root, process.pid);
@@ -373,6 +385,105 @@ describe('repeat follows collapse to a diff', () => {
     // Bounded, and the journal this poll just wrote is not what got evicted.
     expect(readdirSync(journalBase).length).toBeLessThanOrEqual(65);
     expect(existsSync(join(journalDir(root), 'run-1.json'))).toBe(true);
+  });
+
+  it('keeps the PLANNING briefing on repeats — the stage recurs every epic', async () => {
+    // `stage: 'planning'` is published whenever no checkpoint turn exists, and
+    // deliver CLEARS the checkpoint after every accepted epic — so a 7-epic
+    // mission re-enters planning seven times mid-flight. This is the documented
+    // kill window (nine runs SIGKILLed at a median of 59s, every one still
+    // planning), so the words "no turn yet" must never arrive without the
+    // advice that stops a caller acting on them.
+    const root = project();
+    holdLock(root, process.pid);
+    const born = new Date().toISOString();
+    // Poll 1: a turn exists, so this is NOT the planning stage.
+    writeRun(root, 'run-1', { createdAt: born, phaseIndex: 1, phases: PHASES(7), checkpoint: { turn: 3 } });
+    updateDeliverHeartbeat(root);
+    await poll(root);
+
+    // An epic is accepted: deliver clears the checkpoint, stage flips back.
+    writeRun(root, 'run-1', {
+      createdAt: born, phaseIndex: 2, phases: PHASES(7), checkpoint: undefined,
+    });
+    updateDeliverHeartbeat(root);
+    const second = await poll(root);
+
+    expect(second.progress?.stage).toBe('planning');
+    expect(second.nextStep).toMatch(/still PLANNING/);
+    expect(second.nextStep).toMatch(/do NOT kill/i);
+  });
+
+  it('does not report an unchanged plan as movement at an epic boundary', async () => {
+    // phasesPlanned is published only while no turn exists, so it oscillates
+    // 7 -> undefined -> 7 across epic boundaries. Treating "absent last time"
+    // as zero re-reported the same 7-phase plan as growth every boundary.
+    const root = project();
+    holdLock(root, process.pid);
+    const born = new Date().toISOString();
+    writeRun(root, 'run-1', {
+      createdAt: born, phaseIndex: 1, phases: PHASES(7), checkpoint: undefined,
+    });
+    updateDeliverHeartbeat(root);
+    await poll(root);
+    writeRun(root, 'run-1', { createdAt: born, phaseIndex: 1, phases: PHASES(7), checkpoint: { turn: 2 } });
+    updateDeliverHeartbeat(root);
+    await poll(root);
+    // Back to planning with the SAME plan.
+    writeRun(root, 'run-1', {
+      createdAt: born, phaseIndex: 2, phases: PHASES(7), checkpoint: undefined,
+    });
+    updateDeliverHeartbeat(root);
+    const third = await poll(root);
+
+    expect(third.reason).not.toMatch(/planned 7 phases/);
+  });
+
+  it('reaps journals for finished runs, and stale temp files', async () => {
+    // listRuns returns every run that ever parsed — nothing removes
+    // deliver-runs/<id>/ — so keying retention on mere listing reaped nothing
+    // (measured: 0 of 40). Liveness is the rule. Stale temps were skipped by
+    // the .json filter yet still counted toward the threshold.
+    const root = project();
+    holdLock(root, process.pid);
+    const born = new Date().toISOString();
+    writeRun(root, 'run-live', { createdAt: born });
+    // pid 1 so runForHolder attributes the lock to run-live, not to one of these.
+    for (let i = 0; i < 40; i++) writeRun(root, `run-done${i}`, { status: 'delivered', pid: 1 });
+    updateDeliverHeartbeat(root);
+    mkdirSync(journalDir(root), { recursive: true });
+    for (let i = 0; i < 40; i++) {
+      writeFileSync(join(journalDir(root), `run-done${i}.json`), JSON.stringify({ count: 1 }));
+    }
+    writeFileSync(join(journalDir(root), 'run-done0.json.999999.tmp'), 'stale');
+
+    await poll(root);
+
+    const left = readdirSync(journalDir(root));
+    expect(left.filter((f) => f.startsWith('run-done') && f.endsWith('.json'))).toHaveLength(0);
+    expect(left.filter((f) => f.endsWith('.tmp'))).toHaveLength(0);
+    expect(left).toContain('run-live.json');
+  });
+
+  it('never recursively evicts anything that is not a project key', async () => {
+    // UAP_FOLLOW_POLL_DIR is operator-supplied and eviction is recursive.
+    // Aimed at a directory holding anything else (~/.cache/uap itself holds
+    // qdrant_data) an unconstrained sweep would destroy unrelated trees.
+    mkdirSync(join(journalBase, 'qdrant_data'), { recursive: true });
+    writeFileSync(join(journalBase, 'qdrant_data', 'precious.bin'), 'DO-NOT-DELETE');
+    for (let i = 0; i < 70; i++) {
+      mkdirSync(join(journalBase, createHash('sha256').update(`k${i}`).digest('hex').slice(0, 16)), {
+        recursive: true,
+      });
+    }
+    const root = project();
+    holdLock(root, process.pid);
+    writeRun(root, 'run-1');
+    updateDeliverHeartbeat(root);
+
+    await poll(root);
+
+    expect(readFileSync(join(journalBase, 'qdrant_data', 'precious.bin'), 'utf-8')).toBe('DO-NOT-DELETE');
   });
 
   it('keys the journal on the VALIDATED identity, not the embedded runId', () => {
