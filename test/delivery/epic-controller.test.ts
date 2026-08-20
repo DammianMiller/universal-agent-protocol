@@ -30,6 +30,59 @@ describe('runEpics', () => {
     expect(attempts).toBe(1); // not 3
   });
 
+  it('tells each attempt how many retries are left after it', async () => {
+    // The ONLY layer that knows this. It is what lets an attempt end a flat run
+    // early and yield its remaining turns to a fresh attempt — safe precisely
+    // because a fresh attempt exists. On the LAST attempt it is 0, and the
+    // attempt plays out in full because there is nowhere better to spend it.
+    const seen: number[] = [];
+    await runEpics({
+      mission: 'm',
+      epics: [{ id: 'a', title: 'A', goal: 'do a' }],
+      runEpic: async (_epic, ctx) => {
+        seen.push(ctx.retriesRemaining);
+        return fail('nope');
+      },
+    });
+    // Default is 3 attempts per epic.
+    expect(seen).toEqual([2, 1, 0]);
+  });
+
+  it('honours a lowered attempt cap when reporting retries left', async () => {
+    const seen: number[] = [];
+    await runEpics({
+      mission: 'm',
+      epics: [{ id: 'a', title: 'A', goal: 'do a' }],
+      maxAttemptsPerEpic: 1,
+      runEpic: async (_epic, ctx) => {
+        seen.push(ctx.retriesRemaining);
+        return fail('nope');
+      },
+    });
+    // A single-attempt epic is ALWAYS the last attempt — never yield.
+    expect(seen).toEqual([0]);
+  });
+
+  it('retries an attempt that ended on a plateau like any other failure', async () => {
+    // A yielded attempt must not read as fatal. It sets neither budgetStopped
+    // nor endpointUnreachable, so the controller retries — and the second
+    // attempt succeeds, which is the measured shape this exists for
+    // (fix-bioband-derive: 5 flat turns, then a pass in 2).
+    let attempts = 0;
+    const res = await runEpics({
+      mission: 'm',
+      epics: [{ id: 'a', title: 'A', goal: 'do a' }],
+      runEpic: async () => {
+        attempts++;
+        if (attempts === 1) return fail('plateau: 2 consecutive turns changed files but moved neither', 3);
+        return { success: true, summary: 'done', turns: 2 };
+      },
+    });
+    expect(res.success).toBe(true);
+    expect(attempts).toBe(2);
+    expect(res.outcomes[0].turns).toBe(5); // 3 yielded + 2 to pass, not 5 + 2
+  });
+
   it('still retries an ordinary epic failure the normal number of times', async () => {
     // The narrowing that keeps the abort from swallowing real retry behaviour.
     let attempts = 0;

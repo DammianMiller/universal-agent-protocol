@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.215.0 (2026-08-20)
+
+- feat(deliver): yield a flat epic attempt to a fresh one
+
+
 ## v1.214.1 (2026-08-20)
 
 - fix(deliver): keep the anti-kill advice on the stage that recurs, and make the prune real

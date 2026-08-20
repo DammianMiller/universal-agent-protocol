@@ -48,7 +48,14 @@ export interface EscalationController {
   tierIndex(): number;
 }
 
-const DEFAULT_STAGNATION_TURNS = 2;
+/**
+ * Turns of stagnation between ladder tiers.
+ *
+ * Exported because a caller that may END an attempt early has to know how long
+ * the ladder needs: yielding before the last tier has played truncates the
+ * escalation this ladder exists to provide.
+ */
+export const DEFAULT_STAGNATION_TURNS = 2;
 const DEFAULT_EPSILON = 0.01;
 
 export interface DefaultLadderOptions {

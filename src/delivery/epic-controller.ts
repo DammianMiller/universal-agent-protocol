@@ -80,7 +80,21 @@ export interface EpicControllerConfig {
    */
   runEpic: (
     epic: Epic,
-    ctx: { attempt: number; priorSummaries: string[]; lastFailure?: string; contract?: string }
+    ctx: {
+      attempt: number;
+      priorSummaries: string[];
+      lastFailure?: string;
+      contract?: string;
+      /**
+       * Fresh attempts left on this epic AFTER this one. Zero on the last.
+       *
+       * The controller is the only layer that knows this, and it is what makes
+       * an early plateau abort safe: ending a flat attempt is only an
+       * improvement when there is somewhere better to spend the remaining
+       * turns. On the last attempt there is not, so the run plays out in full.
+       */
+      retriesRemaining: number;
+    }
   ) => Promise<EpicRunResult>;
   /**
    * Confirm an epic actually meets its acceptance criteria (gate/judge). When
@@ -315,6 +329,7 @@ export async function runEpics(config: EpicControllerConfig): Promise<EpicContro
           priorSummaries: [...priorSummaries],
           lastFailure,
           contract,
+          retriesRemaining: maxAttempts - attempts,
         });
         if (result.changedTree) anyAttemptChanged = true;
         epicTurns += result.turns;

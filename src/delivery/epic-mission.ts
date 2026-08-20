@@ -60,8 +60,14 @@ export interface EpicMissionDeps {
     plan: DeliveryPhase[],
     parentTaskId?: string
   ) => Promise<DeliveryResult>;
-  /** Run one epic as the classic single convergence loop. */
-  runEpicLoop: (scoped: string) => Promise<DeliveryResult>;
+  /**
+   * Run one epic as the classic single convergence loop.
+   *
+   * `retriesRemaining` is threaded through from the controller so the loop can
+   * end a FLAT attempt early and yield its remaining turns to a fresh attempt —
+   * which is only ever an improvement while a fresh attempt is still available.
+   */
+  runEpicLoop: (scoped: string, opts?: { retriesRemaining: number }) => Promise<DeliveryResult>;
   /** Point the judge at this epic's spec and reset breaker evidence. */
   setEpicSpec: (spec: string) => void;
   /**
@@ -504,7 +510,7 @@ export async function runEpicMission(deps: EpicMissionDeps): Promise<DeliveryRes
         }
       }
 
-      const r = await deps.runEpicLoop(scoped);
+      const r = await deps.runEpicLoop(scoped, { retriesRemaining: ctx.retriesRemaining });
       return settle(r);
     },
   });
