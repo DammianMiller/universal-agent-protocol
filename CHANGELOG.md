@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.218.0 (2026-08-20)
+
+- feat(llama): make DFlash2 speculative decoding the default 27B profile
+- chore: bump version to 1.217.0
+- feat(qwen): run every Qwen launch path on the vendored Qwen-Sharp template
+- docs(design): preserve the product-naming analysis (salvaged from #378)
+
+
 ## v1.217.0 (2026-08-20)
 
 - feat(qwen): run every Qwen launch path on the vendored Qwen-Sharp template
