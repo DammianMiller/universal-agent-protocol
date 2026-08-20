@@ -33,7 +33,7 @@ export LLAMA_HYBRID_ROLLBACK_MODE="${LLAMA_HYBRID_ROLLBACK_MODE:-strict}"
 export LLAMA_REPEAT_PENALTY="${LLAMA_REPEAT_PENALTY:-1.05}"
 export LLAMA_CACHE_REUSE="${LLAMA_CACHE_REUSE:-}"
 export LLAMA_LOG_FILE="${LLAMA_LOG_FILE:-llama-server.log}"
-export LLAMA_CHAT_TEMPLATE_FILE="${LLAMA_CHAT_TEMPLATE_FILE:-${ROOT_DIR}/tools/agents/config/chat_template.jinja}"
+export LLAMA_CHAT_TEMPLATE_FILE="${LLAMA_CHAT_TEMPLATE_FILE:-${ROOT_DIR}/tools/agents/config/qwen-sharp.jinja}"
 export LLAMA_EXTRA_ARGS="${LLAMA_EXTRA_ARGS:-}"
 # Slot KV-state save directory. Default ON: the anthropic-proxy's
 # cross-session slot save/restore (UAP PR #179) requires the server to be
@@ -70,8 +70,13 @@ args=(
   --n-predict "${LLAMA_N_PREDICT:-81920}"
   --repeat-penalty "$LLAMA_REPEAT_PENALTY"
   --log-file "$LLAMA_LOG_FILE"
-  --temp 0.3
+  --temp "${LLAMA_TEMP:-0.3}"
 )
+
+# top-p/top-k are optional; llama-server has its own defaults (top-p 0.95,
+# top-k 40) when omitted, so only add the flags when a profile sets them.
+[[ -n "${LLAMA_TOP_P:-}" ]] && args+=(--top-p "$LLAMA_TOP_P")
+[[ -n "${LLAMA_TOP_K:-}" ]] && args+=(--top-k "$LLAMA_TOP_K")
 
 if [[ -n "$LLAMA_CACHE_REUSE" ]]; then
   args+=(--cache-reuse "$LLAMA_CACHE_REUSE")
@@ -138,11 +143,14 @@ fi
 # The mmproj (multimodal vision projector) should track whichever model is
 # actually serving, not a pinned path. Precedence:
 #   1. explicit --mmproj already in LLAMA_EXTRA_ARGS  -> respected (override)
-#   2. LLAMA_MMPROJ set                               -> used verbatim
-#   3. auto-discover a projector alongside LLAMA_MODEL -> vision follows the model
+#   2. LLAMA_MMPROJ=none/disabled                     -> vision off, no auto-detect
+#   3. LLAMA_MMPROJ set to a path                      -> used verbatim
+#   4. auto-discover a projector alongside LLAMA_MODEL -> vision follows the model
 # Swap LLAMA_MODEL and vision re-homes automatically; a model with no companion
-# projector simply serves text-only (no error).
-if [[ " ${args[*]} " != *" --mmproj "* ]]; then
+# projector simply serves text-only (no error). LLAMA_MMPROJ=none/disabled is
+# distinct from LLAMA_MMPROJ being unset/empty: unset still auto-detects, since
+# an empty string is not a reliable "turn it off" signal across profiles.
+if [[ " ${args[*]} " != *" --mmproj "* && "${LLAMA_MMPROJ:-}" != "none" && "${LLAMA_MMPROJ:-}" != "disabled" ]]; then
   mmproj=""
   if [[ -n "${LLAMA_MMPROJ:-}" ]]; then
     mmproj="$LLAMA_MMPROJ"

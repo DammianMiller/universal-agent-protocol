@@ -549,7 +549,7 @@ n-gpu-layers=${config.gpuLayers}
 flash-attn=${config.flashAttn}
 
 [chat]
-chat-template-file=${config.chatTemplatePath || 'tools/agents/config/chat_template.jinja'}
+chat-template-file=${config.chatTemplatePath || 'tools/agents/config/qwen-sharp.jinja'}
 
 [optimization]
 mlock=true
@@ -676,7 +676,7 @@ async function interactiveMode(): Promise<Config> {
     grammarPath: join(PROJECT_ROOT, 'tools/agents/config/tool-call.gbnf'),
     loraPath,
     loraScale,
-    chatTemplatePath: join(PROJECT_ROOT, 'tools/agents/config/chat_template.jinja'),
+    chatTemplatePath: join(PROJECT_ROOT, 'tools/agents/config/qwen-sharp.jinja'),
   };
 
   const vramUsage = calculateVRAMUsage(config);
@@ -772,7 +772,7 @@ async function presetMode(presetName: string): Promise<Config> {
     grammarPath: join(PROJECT_ROOT, 'tools/agents/config/tool-call.gbnf'),
     loraPath: '',
     loraScale: 1.0,
-    chatTemplatePath: join(PROJECT_ROOT, 'tools/agents/config/chat_template.jinja'),
+    chatTemplatePath: join(PROJECT_ROOT, 'tools/agents/config/qwen-sharp.jinja'),
   };
 
   const vramUsage = calculateVRAMUsage(config);

@@ -79,7 +79,7 @@
       "description": "Instance 1: Main LLM (Qwen3.6 35B A3B) — port 8080, fronted by the proxy on :4000",
       "flags": [
         "--model /path/to/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
-        "--chat-template-file chat_template.jinja",
+        "--chat-template-file tools/agents/config/qwen-sharp.jinja",
         "--n-predict 16384",
         "--temp 0.3",
         "--top-p 0.9",

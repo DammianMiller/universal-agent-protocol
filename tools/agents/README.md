@@ -13,9 +13,19 @@ This directory contains tools and configurations for fixing Qwen3.5 tool calling
 
 ## Files
 
+### `config/qwen-sharp.jinja`
+
+The template every Qwen profile runs (Qwen 3.5 / 3.6 / 3.8), vendored verbatim from
+[peculiar-ragdoll/Qwen-Sharp-Chat-Templates](https://huggingface.co/peculiar-ragdoll/Qwen-Sharp-Chat-Templates)
+and sha256-pinned in `test/chat-template-system-message.test.ts`. See
+[docs/guides/QWEN36_LLAMACPP.md](../../docs/guides/QWEN36_LLAMACPP.md#chat-template-qwen-sharpjinja-all-qwen-models)
+for what it changes and what stays wire-compatible.
+
+`uap tool-calls setup` installs it automatically under any `qwen*` profile.
+
 ### `config/chat_template.jinja`
 
-The core fix: a patched Jinja2 template for Qwen3.5 that adds conditional wrappers around tool call argument iteration.
+The generic (non-Qwen) fallback: a patched Jinja2 template for Qwen3.5 that adds conditional wrappers around tool call argument iteration.
 
 **Key Fix (line 138-144):**
 
@@ -142,7 +152,7 @@ cp tools/agents/scripts/*.py tools/agents/scripts/
 ```bash
 ./llama-server \
   --model ~/models/Qwen3.5-35B-Instruct-Q4_K_M.gguf \
-  --chat-template-file tools/agents/config/chat_template.jinja \
+  --chat-template-file tools/agents/config/qwen-sharp.jinja \
   --jinja \
   --port 8080 \
   --ctx-size 262144 \
@@ -161,7 +171,7 @@ cp tools/agents/scripts/*.py tools/agents/scripts/
 
 ```bash
 mkdir -p ~/.opencode/agent
-cp tools/agents/config/chat_template.jinja ~/.opencode/agent/
+cp tools/agents/config/qwen-sharp.jinja ~/.opencode/agent/
 ```
 
 **2. Update `.opencode/config.json`:**

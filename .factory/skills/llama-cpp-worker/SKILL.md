@@ -69,7 +69,7 @@ nohup /home/cogtek/llama.cpp/.worktrees/003-faststate-029/build-cuda/bin/llama-s
   --flash-attn on --batch-size 512 --ubatch-size 512 --parallel 1 \
   --n-predict 32768 --repeat-penalty 1.0 --defrag-thold 0.1 \
   --spec-type ngram-cache --draft-max 12 --draft-min 2 --draft-p-min 0.80 \
-  --jinja --chat-template-file /home/cogtek/dev/miller-tech/universal-agent-protocol/tools/agents/config/chat_template.jinja \
+  --jinja --chat-template-file /home/cogtek/dev/miller-tech/universal-agent-protocol/tools/agents/config/qwen-sharp.jinja \
   --log-file /home/cogtek/llama.cpp/llama-server.log --metrics \
   > /tmp/llama-test-startup.log 2>&1 &
 
