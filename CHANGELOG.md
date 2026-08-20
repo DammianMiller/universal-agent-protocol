@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.216.0 (2026-08-20)
+
+- feat(bench): keep per-turn attribution instead of dropping it at the runner
+
+
 ## v1.215.2 (2026-08-20)
 
 - fix(policies): sed and find are only destructive when a flag makes them write

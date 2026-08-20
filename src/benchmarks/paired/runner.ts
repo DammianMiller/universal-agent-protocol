@@ -13,7 +13,7 @@ import { rmSync } from 'fs';
 import { dirname } from 'path';
 import { concurrentMap } from '../../utils/concurrency-pool.js';
 import { materializeWorkdir, runSetup, runVerify } from './suite.js';
-import { MetricVector, RunRecord, RunnerConfig, TaskSpec, Condition } from './types.js';
+import { MetricVector, RunRecord, RunnerConfig, StopReason, TaskSpec, TurnTrace, Condition } from './types.js';
 
 interface Cell {
   task: TaskSpec;
@@ -143,7 +143,13 @@ async function executeCell(cell: Cell, cfg: RunnerConfig, suiteDir: string): Pro
       wellFormed: agent.wellFormed,
       error: verifyErr,
     };
-    return record(cell, cfg, metrics);
+    // Carry the adapter's per-turn attribution through the runner boundary.
+    // This is exactly where it used to be dropped: the aggregate survived and
+    // the explanation did not.
+    return record(cell, cfg, metrics, {
+      turnTrace: agent.turnTrace,
+      stopReason: agent.stopReason,
+    });
   } finally {
     // The cell is settled — its scratch copy has no further purpose (every
     // return above passes through here). Workdirs live in RAM-backed /tmp on
@@ -156,12 +162,24 @@ async function executeCell(cell: Cell, cfg: RunnerConfig, suiteDir: string): Pro
   }
 }
 
-function record(cell: Cell, cfg: RunnerConfig, metrics: MetricVector): RunRecord {
+function record(
+  cell: Cell,
+  cfg: RunnerConfig,
+  metrics: MetricVector,
+  attribution?: { turnTrace?: TurnTrace[]; stopReason?: StopReason }
+): RunRecord {
+  // Omit the key entirely when the adapter produced nothing, rather than
+  // writing `attribution: {}`. An empty object in every subprocess-adapter
+  // record reads as "the loop reported no turns", when the truth is that this
+  // adapter cannot observe them at all.
+  const hasAttribution =
+    attribution && (attribution.turnTrace?.length || attribution.stopReason);
   return {
     taskId: cell.task.id,
     condition: cell.condition.label,
     seed: cell.seed,
     metrics,
+    ...(hasAttribution ? { attribution } : {}),
     adapter: cfg.adapter.id,
     model: cfg.model,
   };
