@@ -127,6 +127,48 @@ DESTRUCTIVE_VERBS = (
     "dd", "cp", "tee", "install", "sed", "find", "ln",
 )
 
+
+# Verbs from that list that only mutate under a FLAG. Without one they are
+# stdout filters, exactly like `awk` and `grep` -- which this enforcer already
+# allows against a protected path, because READING one is not tampering.
+#
+# Measured on this enforcer (2026-08-20): of six read-only ways to inspect a
+# protected file, five were refused -- `sed -n '1,5p'`, `sed 's/a/b/'`, the same
+# piped to `wc`, `find <dir> -name '*.py'` and `find <dir> -type f` -- while
+# `cat`, `grep`, `head`, `wc` and `awk` were allowed. Those refusals protected
+# nothing and cost real work: in one session they blocked READING this file
+# twice, blocked `cp <protected> /tmp/` (a read FROM a protected path), and
+# blocked a `gh pr close --comment` whose comment text merely quoted a path.
+#
+# Each predicate answers one question -- "does THIS invocation write?" -- and
+# fails CLOSED: an unrecognised short-flag cluster containing `i` counts as a
+# write, and any -exec-family action counts as a write, because what it runs
+# cannot be judged from the flag alone. A verb NOT listed here is unchanged:
+# still unconditionally destructive.
+def _sed_writes(tokens) -> bool:
+    """GNU sed mutates only with -i / --in-place (optionally suffixed)."""
+    for t in tokens:
+        if t.startswith("--"):
+            if t.startswith("--in-place"):
+                return True
+            continue
+        if t.startswith("-") and len(t) > 1:
+            # Short-flag cluster: -i, -i.bak, -ni, -Ei all carry the write.
+            # Anything after the first '.' is the backup suffix, not flags.
+            if "i" in t[1:].split(".", 1)[0]:
+                return True
+    return False
+
+
+def _find_writes(tokens) -> bool:
+    """`find` mutates via -delete, an -exec-family action, or an -f* writer."""
+    mutating = {"-delete", "-exec", "-execdir", "-ok", "-okdir",
+                "-fprint", "-fprint0", "-fprintf", "-fls"}
+    return any(t in mutating for t in tokens)
+
+
+CONDITIONAL_VERBS = {"sed": _sed_writes, "find": _find_writes}
+
 # Paths inside a protected tree that the agent legitimately writes. Without
 # these the enforcer deadlocks the workflows it exists to support: the
 # expert-review gate REQUIRES writing .uap/reviews/<branch>.json, and the visual
@@ -517,6 +559,9 @@ def _direct_destructive(command: str) -> bool:
             if verb not in ("git clean", "git checkout"):
                 continue
         elif verb not in DESTRUCTIVE_VERBS:
+            continue
+        # A conditionally-destructive verb without its write flag is a READ.
+        elif verb in CONDITIONAL_VERBS and not CONDITIONAL_VERBS[verb](tokens[1:]):
             continue
         if cd_into_protected or _mentions_protected(" ".join(tokens[1:])):
             return True
