@@ -58,11 +58,23 @@ const noSleep = async (): Promise<void> => undefined;
 // job) would silently flip these assertions. Clear it before each test and
 // restore the original after, rather than deleting whatever was there.
 const wedgeEnv = process.env.UAP_DELIVER_WEDGE_TIMEOUT;
-beforeEach(() => { delete process.env.UAP_DELIVER_WEDGE_TIMEOUT; });
+// A timed-out follow now journals to a per-user cache dir. Left unset, this
+// suite writes into the DEVELOPER's real ~/.cache — measured: 129 directories
+// after one run. Point it at a temp base and take it with us.
+const journalEnv = process.env.UAP_FOLLOW_POLL_DIR;
+let journalBase: string;
+beforeEach(() => {
+  delete process.env.UAP_DELIVER_WEDGE_TIMEOUT;
+  journalBase = mkdtempSync(join(tmpdir(), 'uap-await-journals-'));
+  process.env.UAP_FOLLOW_POLL_DIR = journalBase;
+});
 
 afterEach(() => {
   if (wedgeEnv === undefined) delete process.env.UAP_DELIVER_WEDGE_TIMEOUT;
   else process.env.UAP_DELIVER_WEDGE_TIMEOUT = wedgeEnv;
+  if (journalEnv === undefined) delete process.env.UAP_FOLLOW_POLL_DIR;
+  else process.env.UAP_FOLLOW_POLL_DIR = journalEnv;
+  rmSync(journalBase, { recursive: true, force: true });
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
 });
 

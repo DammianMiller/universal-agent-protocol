@@ -12,6 +12,7 @@ import { writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { RoutingPresets, passthroughModelsForPreset, tiersToRoutingMatrix } from '../models/index.js';
 import { upsertProxyEnvVars } from './systemd-services.js';
+import { configuredSlots } from '../utils/model-slots.js';
 
 export interface MemoryFeatures {
   shortTermMemory: boolean;
@@ -481,6 +482,24 @@ export function writeProxyEnv(cwd: string, selections: WizardSelections): string
     lines.push(`PROXY_RECIPE=${r.recipe}`);
     lines.push(`PROXY_CONFIDENCE_THRESHOLD=${r.confidenceThreshold}`);
     lines.push(`PROXY_FUSION_N=${r.fusionN}`);
+    // Backend WIDTH, so the proxy can right-size fan-out recipes to hardware it
+    // cannot probe for itself (ninfer serves no /slots endpoint). A one-slot
+    // backend serializes fusion's N generations, turning an N-way sample into
+    // an N-times-slower single answer; the proxy downgrades to `single` when it
+    // sees this, unless PROXY_FORCE_MULTI_CALL=1. Written only when the operator
+    // configured a width — an absent value means UNKNOWN, which changes nothing.
+    // Sourced from the wizard when it offers a width, else from the config the
+    // TS side already reads (`.uap.json` modelConcurrency.slots / the env), so
+    // an operator who has ALREADY declared their width gets it propagated
+    // without re-answering a prompt. Without this fallback the line had no
+    // producer at all — no wizard path sets `concurrency.slots` — and the whole
+    // downgrade sat dormant behind a hand-exported variable.
+    const slots = selections.concurrency.slots ?? configuredSlots(cwd);
+    const slotsLine =
+      typeof slots === 'number' && Number.isFinite(slots)
+        ? String(Math.max(1, Math.floor(slots)))
+        : undefined;
+    if (slotsLine !== undefined) lines.push(`UAP_MODEL_SLOTS=${slotsLine}`);
     if (r.allowSelfJudge) lines.push('PROXY_ALLOW_SELF_JUDGE=1');
     if (r.judgeModel) lines.push(`PROXY_ESCALATE_MODEL=${r.judgeModel}`);
     if (r.judgeEndpoint) lines.push(`PROXY_ESCALATE_ENDPOINT=${r.judgeEndpoint}`);
@@ -517,7 +536,13 @@ export function writeProxyEnv(cwd: string, selections: WizardSelections): string
     // Mirror the passthrough into the systemd EnvironmentFile the running
     // service actually reads (this .uap/proxy.env is only the fallback loader).
     try {
-      upsertProxyEnvVars({ ANTHROPIC_PASSTHROUGH_MODELS: passthrough });
+      // UAP_MODEL_SLOTS rides along: `.uap/proxy.env` is only the fallback
+      // loader (see the comment above), so a systemd-managed proxy would never
+      // see the width and the fan-out downgrade would never engage for it.
+      upsertProxyEnvVars({
+        ANTHROPIC_PASSTHROUGH_MODELS: passthrough,
+        ...(slotsLine !== undefined ? { UAP_MODEL_SLOTS: slotsLine } : {}),
+      });
     } catch {
       /* proxy env sync is best-effort — .uap/proxy.env still written */
     }

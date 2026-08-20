@@ -86,7 +86,7 @@ Route any substantive coding/delivery task here instead of editing by hand when 
 
 Use dryRun:true first to see the complexity classification and plan (fast, no model calls). Then call without dryRun to actually deliver.
 
-Long missions: runs are DURABLE and DETACHED — the mission outlives this tool call. If the call times out mid-mission the run is still going: call again with follow:true to wait for it and get its result. Do NOT use resume for that — resume CONTINUES a run and, on one that is still live, starts a second copy of it. Use resume only to pick up a run that has actually stopped. Leave maxTurns/ceiling unset (epics + until-delivered self-manage turns); pass a larger timeoutSec for platform-scale work.
+Long missions: runs are DURABLE and DETACHED — the mission outlives this tool call. If the call times out mid-mission the run is still going: call again with follow:true to wait for it and get its result. Do NOT use resume for that — resume CONTINUES a run and, on one that is still live, starts a second copy of it. Use resume only to pick up a run that has actually stopped. Leave maxTurns/ceiling unset (epics + until-delivered self-manage turns); pass a larger timeoutSec for platform-scale LAUNCHES (it does not lengthen a follow — see the parameter). Space your follows out: wait a few minutes between them. A follow costs a model turn and, against a single-slot local backend, competes with the mission for the one inference slot, so polling in a tight loop measurably slows the run you are waiting on.
 
 Best for: implement a feature, fix a bug across files, refactor with tests. Not for: trivial one-line edits, pure questions, or non-code docs.`,
   inputSchema: {
@@ -146,7 +146,11 @@ Best for: implement a feature, fix a bug across files, refactor with tests. Not 
         // raises it expecting a longer FOLLOW gets a longer launch instead.
 
         type: 'number',
-        description: 'Hard wall-clock cap in seconds (default 1800)',
+        description:
+          'Hard wall-clock cap in seconds for a LAUNCH (default 1800). Has essentially no effect ' +
+          'with follow:true — a follow is always capped near ' + FOLLOW_CLIENT_POLL_SEC + 's because ' +
+          'this MCP client abandons any tool call at ~60s, so a longer wait cannot return an answer. ' +
+          'Raising it to keep a follow waiting does nothing; poll again instead.',
       },
       acceptance: {
         type: 'boolean',

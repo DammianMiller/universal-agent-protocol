@@ -253,7 +253,7 @@ export function bestKeepFastScore(
 export { resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
 import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
-import { clearProjectStop, clearStop, finalRunStatus, isRunBudgetExpired, isStopRequested, makeStopLatch, requestStop, runBudgetMinutes, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
+import { clearProjectStop, clearStop, finalRunStatus, isRunBudgetExpired, isRunBudgetExplicit, isStopRequested, makeStopLatch, phaseAwareRunBudgetMinutes, requestStop, runBudgetMinutes, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
 import { planDeliveryPhases, shouldDecompose } from '../delivery/decompose.js';
 import { initLedger, markItem } from '../delivery/completion-ledger.js';
@@ -3120,7 +3120,29 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // 2026-08-13 — 651 minutes, still phase 0 of 6, 20% of gates on every turn).
   // Riding the stop latch means expiry behaves exactly like an operator's stop
   // request: the turn finishes, the work is checkpointed, the lock is released.
-  const budgetMinutes = runBudgetMinutes(projectRoot);
+  // The budget is captured BEFORE decomposition, so it starts at the calibrated
+  // single-mission default and is re-derived once the plan's size is known (see
+  // applyPhaseBudget). `let`, because a 7-epic plan needs a different clock than
+  // the one-mission runs the 120-minute default was measured on.
+  const budgetExplicit = isRunBudgetExplicit(projectRoot);
+  let budgetMinutes = runBudgetMinutes(projectRoot);
+  const baseBudgetMinutes = budgetMinutes;
+  /**
+   * Grant the run time proportional to the plan, once the plan exists.
+   * No-op when the operator set the budget themselves, and never shrinks it.
+   */
+  const applyPhaseBudget = (phaseCount: number): void => {
+    if (budgetExplicit) return;
+    const next = phaseAwareRunBudgetMinutes(baseBudgetMinutes, phaseCount);
+    if (next > budgetMinutes) {
+      budgetMinutes = next;
+      console.log(
+        chalk.dim(
+          `  ⏱ run budget ${baseBudgetMinutes} → ${budgetMinutes} min for ${phaseCount} planned phases`
+        )
+      );
+    }
+  };
   const runStartedAtMs = Date.now();
   let stoppedForBudget = false;
   // Captured at OBSERVATION time: isStopRequested consumes the project-level
@@ -3511,6 +3533,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       persistPlan: (plan) => {
         runState.phases = plan;
         saveRunState(runState);
+        // THE epic budget hook. On a fresh epic run — the DEFAULT for every
+        // mission — the outer `phases` is undefined (it is only ever
+        // resumeState.phases; the decompose block is explicitly skipped when
+        // epics are on), so the call site before dispatch never fires and the
+        // whole scaler was dead on the path that motivated it. The plan first
+        // exists HERE. Re-granting on a later re-plan is safe: the grant only
+        // ever raises (see phaseAwareRunBudgetMinutes).
+        applyPhaseBudget(plan.length);
       },
       persistCompleted: ({ summaries, completed }) => {
         runState.phaseSummaries = [...summaries];
@@ -3798,6 +3828,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         console.log(chalk.dim('  lazy attempt did not pass — engaging the full convergence stack'));
       }
     }
+    // Grant the clock the sequence the plan implies, before any runner starts
+    // consuming it. Epics run as N missions back to back, so the single-mission
+    // default expires mid-sequence (measured: 7 epics, ~16 min each, against a
+    // 120-minute cap). This covers the paths where the plan is ALREADY known —
+    // --no-epics decomposed runs, and epic RESUMES (resumeState.phases). A
+    // fresh epic run has no plan yet and is granted in persistPlan instead.
+    if (phases && phases.length >= 2) applyPhaseBudget(phases.length);
+
     // Resume routing: an epic-kind resume re-enters the epic path (fidelity —
     // completed epics carry forward as prior summaries). Everything else takes
     // a cursor-honoring sequential path — phased when a phase plan was

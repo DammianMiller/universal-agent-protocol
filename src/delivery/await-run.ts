@@ -41,9 +41,11 @@
  * it turns "is that pid alive" into "is that same holder still there".
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, renameSync, unlinkSync, rmSync } from 'fs';
 import { join, resolve } from 'path';
-import { listRuns, type DeliverRunState } from './run-state.js';
+import { homedir } from 'os';
+import { createHash } from 'crypto';
+import { isValidRunId, listRuns, type DeliverRunState } from './run-state.js';
 import { heartbeatAgeS, wedgeTimeoutS } from './heartbeat.js';
 
 /** Default poll interval — fast enough to feel immediate, idle enough to ignore. */
@@ -66,6 +68,21 @@ const DEFAULT_POLL_MS = 2000;
  * the first attempt at this fix and it punished the caller that was not broken.
  */
 export const FOLLOW_CLIENT_POLL_SEC = 45;
+
+/**
+ * How long a caller should WAIT between follows, once the first has answered.
+ *
+ * Distinct from FOLLOW_CLIENT_POLL_SEC, which bounds how long one call may
+ * block. Nothing bounded the gap BETWEEN calls, so an LLM caller polled as fast
+ * as it could think — measured live 2026-08-20: 19 follows in 36 minutes, one
+ * roughly every 115s, against a mission whose turns take 220-600s. Most polls
+ * therefore could not have had news, and each cost a model turn.
+ *
+ * Sized against the observed turn floor (~220s): a poll interval below one turn
+ * is guaranteed to return "no change", and on a single-slot backend it also
+ * steals the slot that would have produced the change.
+ */
+export const RECOMMENDED_BACKOFF_SEC = 240;
 
 export interface AwaitOptions {
   /** Give up after this long and say so. */
@@ -232,6 +249,356 @@ export function followTickDetail(progress?: FollowProgress, previousTurn?: numbe
   if (progress.phase) bits.push(`phase ${progress.phase}`);
   if (progress.heartbeatAgeSec !== null) bits.push(`active ${progress.heartbeatAgeSec}s ago`);
   return bits.length ? ` · ${bits.join(', ')}` : '';
+}
+
+/**
+ * What a previous follow already told this caller, persisted across the
+ * SEPARATE PROCESSES a poll loop is made of.
+ *
+ * WHY THIS EXISTS
+ * Every timed-out follow used to return the full ~1.2KB kill-loop briefing —
+ * the planning explanation, the do-NOT-kill list, the where-to-find-the-fields
+ * paragraph. That text is load-bearing the FIRST time (it is what stops a
+ * caller killing a healthy run) and pure cost every time after: the caller has
+ * already read it and cannot act on it twice.
+ *
+ * Measured live (2026-08-20, opencode + qwen3.8-27b): 19 follows on one mission
+ * returned ~23KB of near-identical prose, which drove 20 context compactions in
+ * 80 minutes; the client then degenerated to empty completions and stopped
+ * polling entirely while the mission it had been watching carried on fine. The
+ * briefing meant to keep a caller alive is what killed it.
+ *
+ * So: say it once, then say only what CHANGED. A diff is both smaller and more
+ * informative than a repeated essay — it answers "is it moving?", which is the
+ * only question a repeat poll is actually asking.
+ */
+interface PollJournal {
+  /** How many times a follow has timed out on this run. */
+  count: number;
+  /** The progress projection reported by the previous timed-out follow. */
+  // No runElapsedSec: it was journaled and sanitized but never read by
+  // progressDelta, and the elapsed figure the caller needs is already in the
+  // reply's evidence sentence ("running for Ns, last activity Ms ago").
+  last?: { turn?: number; phase?: string; phasesPlanned?: number };
+}
+
+/**
+ * Where poll journals live: OUTSIDE the project tree, per user.
+ *
+ * WHY NOT IN `.uap/`
+ * The journal's whole job is to tell a follow whether it has already sent the
+ * do-not-kill briefing. Keeping it inside the project put that decision in a
+ * directory the SUPERVISED GENERATOR can write — the one actor with a motive —
+ * and every mitigation was a patch on a fresh vector:
+ *
+ *   - plant the file            -> suppress the briefing on a real first poll
+ *   - symlink the file          -> overwrite an arbitrary file (final path)
+ *   - symlink the temp file     -> same, through the write that precedes rename
+ *   - symlink the DIRECTORY     -> prune became an arbitrary `*.json` deleter
+ *                                  (measured: 39 unrelated files destroyed)
+ *
+ * Three of those were found only by re-testing a fix that looked complete. The
+ * class does not close by patching vectors; it closes by moving the file. Deliver
+ * confines a mission's writes to its project root, so a per-user cache directory
+ * is outside what the generator may write at all — and the same-user processes
+ * that CAN write it are already inside the harness's trust boundary.
+ *
+ * Follows the convention already used for recipe/adaptation signals.
+ * `UAP_FOLLOW_POLL_DIR` overrides the base, for tests.
+ */
+/** The journal base. ONE definition — it was duplicated across two functions. */
+function pollJournalBase(): string {
+  return process.env.UAP_FOLLOW_POLL_DIR || join(homedir(), '.cache', 'uap', 'follow-polls');
+}
+
+/** A project key: exactly the 16 hex chars pollJournalDir produces. */
+const PROJECT_KEY_RE = /^[0-9a-f]{16}$/;
+
+function pollJournalDir(projectRoot: string): string {
+  const base = pollJournalBase();
+  // Per project, so two checkouts cannot collide on a shared runId. The path is
+  // a hash rather than the root itself: a project path can contain anything.
+  const key = createHash('sha256').update(resolve(projectRoot)).digest('hex').slice(0, 16);
+  return join(base, key);
+}
+
+/**
+ * `null` for any runId that must not become a path component.
+ *
+ * The runId reaching here is the `runId` FIELD of a state.json — repo-resident
+ * content the project already treats as untrusted elsewhere ("the run-state file
+ * is untrusted (repo content can plant values)"). A planted `../../../…` would
+ * otherwise steer both the read and the write. Same guard `isStopRequested`
+ * applies to the same value for the same reason. Retained as depth even though
+ * the directory is no longer generator-writable.
+ */
+function pollJournalPath(projectRoot: string, runId: string): string | null {
+  if (!isValidRunId(runId)) return null;
+  return join(pollJournalDir(projectRoot), `${runId}.json`);
+}
+
+/** Prune only once the directory is worth walking. */
+const MAX_POLL_JOURNALS = 32;
+/** Cap on PROJECT directories under the journal base. See prunePollJournalProjects. */
+const MAX_POLL_JOURNAL_PROJECTS = 64;
+
+/** The ONLY shape a phase label may have to be echoed back: "3/7". */
+const PHASE_LABEL_RE = /^\d{1,4}\/\d{1,4}$/;
+
+/** A finite, in-range number, or undefined. Never NaN, never Infinity. */
+function safeCount(v: unknown, max: number): number | undefined {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.min(Math.floor(n), max) : undefined;
+}
+
+/**
+ * Sanitize the previous projection read back off disk.
+ *
+ * `last.phase` is INTERPOLATED into `reason`, which the MCP tool returns
+ * verbatim to the calling model — so this file is an input to a supervising
+ * agent's prompt, and it lives in the tree the supervised generator can write.
+ * Left raw it carried both a prompt-injection channel and an unbounded one:
+ * measured on this branch before the fix, a planted phase produced a 50,217-char
+ * reply containing "IGNORE ALL PREVIOUS INSTRUCTIONS" — from the one function
+ * whose entire purpose is to make the reply SMALLER.
+ *
+ * Same stance the sibling `count` already took, extended to every field.
+ */
+function sanitizeLast(raw: unknown): PollJournal['last'] {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  // SHAPE, not just length. A phase label is "3/7" and nothing else, so match
+  // that and drop anything else outright — a 32-character budget still leaves
+  // 32 attacker-chosen characters in a supervising agent's prompt, and
+  // "IGNORE ALL PREVIOUS INSTRUCTIONS" is exactly 32 characters long.
+  const phase =
+    typeof r.phase === 'string' && PHASE_LABEL_RE.test(r.phase) ? r.phase : undefined;
+  return {
+    turn: safeCount(r.turn, 1_000_000),
+    phase,
+    phasesPlanned: safeCount(r.phasesPlanned, 10_000),
+  };
+}
+
+/** Fail-soft by contract: a journal that cannot be read is a first poll. */
+function readPollJournal(projectRoot: string, runId: string, runCreatedAt?: string): PollJournal {
+  try {
+    const path = pollJournalPath(projectRoot, runId);
+    if (!path) return { count: 0 };
+    const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    // Bind the journal to the RUN. `count > 0` is what suppresses the
+    // do-not-kill briefing, and that text is load-bearing — it is what stops a
+    // caller killing a healthy run. A journal that does not belong to this run
+    // (planted, or left over from a recycled runId) must not be able to skip it.
+    // FAIL CLOSED on a run with no identity. `readState` validates instruction,
+    // status, runId, updatedAt and phases but NOT createdAt, so a state file with
+    // createdAt removed still loads as a live run — and an `undefined &&` guard
+    // here skipped the binding entirely for it, restoring the exact suppression
+    // this check exists to prevent (measured: briefing gone on poll 1). No
+    // identity to bind to means the journal is not trusted, full stop.
+    if (raw?.createdAt !== runCreatedAt || runCreatedAt === undefined) return { count: 0 };
+    return { count: safeCount(raw?.count, 10_000) ?? 0, last: sanitizeLast(raw?.last) };
+  } catch {
+    return { count: 0 };
+  }
+}
+
+/**
+ * Fail-soft: a journal we cannot write costs verbosity, never correctness.
+ *
+ * Writes via tmp + rename, which REPLACES a symlink at the destination rather
+ * than following it — the pattern `saveRunState` already uses, and this was the
+ * only writer in the area that did not. Verified before the fix: a symlink
+ * planted at the journal path let this overwrite an arbitrary file outside the
+ * project root with attacker-shaped JSON, destroying its contents.
+ */
+function writePollJournal(
+  projectRoot: string,
+  runId: string,
+  j: PollJournal,
+  runCreatedAt?: string
+): void {
+  try {
+    const path = pollJournalPath(projectRoot, runId);
+    if (!path) return;
+    mkdirSync(pollJournalDir(projectRoot), { recursive: true });
+    // The TEMP path is attacker-plantable too, and it is the one that gets
+    // written. tmp+rename alone only protects the FINAL path (rename replaces a
+    // symlink rather than following it) — a link planted at `<path>.tmp` still
+    // had writeFileSync follow it and destroy the target. Reproduced: a secret
+    // outside the project root was overwritten with journal JSON.
+    //
+    // `wx` is O_CREAT|O_EXCL, which FAILS on an existing path instead of
+    // following it — a symlink can therefore never be written through. Unlink
+    // first to clear a stale temp (unlink removes the LINK, never its target);
+    // if the attacker re-plants between the two, the open fails and the whole
+    // write is skipped, which costs a verbose reply and nothing else.
+    // pid-suffixed so two concurrent follows do not fight over one temp name.
+    const tmp = `${path}.${process.pid}.tmp`;
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* absent — the normal case */
+    }
+    writeFileSync(tmp, JSON.stringify({ ...j, createdAt: runCreatedAt }), { flag: 'wx', mode: 0o600 });
+    renameSync(tmp, path);
+    prunePollJournals(projectRoot);
+    prunePollJournalProjects();
+  } catch {
+    /* read-only tree, races — the reply is still correct, just longer */
+  }
+}
+
+/**
+ * Drop journals whose run is gone. Fail-soft, bounded, and cheap.
+ *
+ * One tiny file per followed run, written forever, with nothing anywhere
+ * removing them — the sibling `deliver-runs/` directory in the measured project
+ * had already reached 26 entries. A journal outlives its usefulness the moment
+ * its run is no longer listed, so `listRuns` IS the retention rule and no
+ * separate policy is needed.
+ */
+function prunePollJournals(projectRoot: string): void {
+  try {
+    const dir = pollJournalDir(projectRoot);
+    const files = readdirSync(dir);
+    if (files.length <= MAX_POLL_JOURNALS) return;
+    // Retention is by RUN LIVENESS, not by "does a run directory still exist".
+    // `listRuns` returns every run that ever parsed — nothing removes
+    // `deliver-runs/<id>/` — so keying on mere listing reaped nothing: measured
+    // 0 of 40 journals for finished runs, and the doc comment's own premise (a
+    // deliver-runs directory that had reached 26 entries) is exactly why.
+    // A journal is only useful while its run can still be followed.
+    const live = new Set(
+      listRuns(projectRoot)
+        .filter((r) => r.status === 'running')
+        .map((r) => r.runId)
+    );
+    for (const f of files) {
+      // Stale temps are reaped too. They are left by a write that died between
+      // create and rename, are skipped by the `.json` filter, and still counted
+      // toward the threshold above — so they accumulated forever AND made the
+      // prune fire earlier and earlier.
+      const isTemp = f.includes('.json.') && f.endsWith('.tmp');
+      if (!isTemp) {
+        if (!f.endsWith('.json')) continue;
+        if (live.has(f.slice(0, -'.json'.length))) continue;
+      }
+      try {
+        unlinkSync(join(dir, f));
+      } catch {
+        /* raced with another follow */
+      }
+    }
+  } catch {
+    /* housekeeping — never let it affect the reply */
+  }
+}
+
+/**
+ * Bound the number of PROJECT directories under the journal base.
+ *
+ * The per-project prune above never removes a directory, so every project ever
+ * followed left one behind forever — and ephemeral roots (CI checkouts, test
+ * fixtures) make that unbounded in the user's home. Measured while building
+ * this: one test-suite run left 129 directories in `~/.cache/uap/follow-polls`.
+ *
+ * A journal is pure optimisation — losing one costs exactly one verbose reply —
+ * so evicting the oldest is safe, and cheaper than tracking which roots still
+ * exist (the directory name is a one-way hash by design).
+ */
+function prunePollJournalProjects(): void {
+  try {
+    const base = pollJournalBase();
+    const entries = readdirSync(base);
+    if (entries.length <= MAX_POLL_JOURNAL_PROJECTS) return;
+    const byAge = entries
+      // ONLY entries this module could have created. `UAP_FOLLOW_POLL_DIR` is
+      // operator-supplied, and this is a RECURSIVE delete: aimed at a directory
+      // holding anything else (`~/.cache/uap` itself holds qdrant_data) an
+      // unconstrained sweep would silently destroy unrelated trees. A project
+      // key is exactly 16 hex characters — nothing else is ours to remove.
+      .filter((name) => PROJECT_KEY_RE.test(name))
+      .map((name) => {
+        try {
+          return { name, at: statSync(join(base, name)).mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+      .filter((e): e is { name: string; at: number } => e !== null)
+      .sort((a, b) => a.at - b.at);
+    for (const { name } of byAge.slice(0, byAge.length - MAX_POLL_JOURNAL_PROJECTS)) {
+      try {
+        rmSync(join(base, name), { recursive: true, force: true });
+      } catch {
+        /* raced, or in use */
+      }
+    }
+  } catch {
+    /* housekeeping — never let it affect the reply */
+  }
+}
+
+/**
+ * The changed facts between two polls, as a sentence — or null when nothing a
+ * caller could act on moved.
+ *
+ * `null` is itself the answer to "is it stuck?", and is reported as such rather
+ * than hidden: a poll that shows no movement AND a healthy heartbeat is the
+ * signature of a slow turn, which is the case the caller most often misreads.
+ */
+/**
+ * Is `next` further along than `prev`? Both look like "3/7".
+ *
+ * Unparseable either side answers TRUE — an unrecognised label is not evidence
+ * of going backwards, and suppressing a real advance is the worse error.
+ */
+function phaseAdvanced(prev: string, next: string): boolean {
+  const p = Number(prev.split('/')[0]);
+  const n = Number(next.split('/')[0]);
+  if (!Number.isFinite(p) || !Number.isFinite(n)) return true;
+  return n > p;
+}
+
+export function progressDelta(prev: PollJournal['last'], now: FollowProgress): string | null {
+  if (!prev) return null;
+  const bits: string[] = [];
+  if (now.turn !== undefined && prev.turn !== undefined && now.turn > prev.turn) {
+    bits.push(`turn ${prev.turn} → ${now.turn}`);
+  } else if (now.turn !== undefined && prev.turn === undefined) {
+    bits.push(`reached turn ${now.turn}`);
+  }
+  // Forward only, same guard the turn counter gets above and for the same
+  // reason: a reclaimed or handed-over run can re-report a LOWER phase, and
+  // "phase 4/7 → 2/7" is not movement, it is a different mission answering.
+  if (now.phase && prev.phase && now.phase !== prev.phase && phaseAdvanced(prev.phase, now.phase)) {
+    bits.push(`phase ${prev.phase} → ${now.phase}`);
+  }
+  // Two distinct pieces of plan news, and only these two.
+  //
+  // `phasesPlanned` is published ONLY while no turn exists — a state that
+  // RECURS, because deliver clears the checkpoint after every accepted epic. So
+  // the field oscillates 7 → undefined → 7 through a 7-epic run, and a bare
+  // `> (prev.phasesPlanned ?? 0)` reported the SAME unchanged plan as movement
+  // at every boundary.
+  //
+  //  - APPEARED: the planner finished and there is still no turn anywhere. That
+  //    is the "planning is over" signal, and it is real news exactly once —
+  //    `prev.turn === undefined` is what separates it from an epic boundary,
+  //    where earlier polls have already seen turns.
+  //  - GREW: a plan that got bigger, against a previous poll that actually saw
+  //    one. Needs prev to be known, or "absent" reads as zero.
+  const planAppeared =
+    now.phasesPlanned !== undefined && prev.phasesPlanned === undefined && prev.turn === undefined;
+  const planGrew =
+    now.phasesPlanned !== undefined &&
+    prev.phasesPlanned !== undefined &&
+    now.phasesPlanned > prev.phasesPlanned;
+  if (now.phasesPlanned && (planAppeared || planGrew)) {
+    bits.push(`planned ${now.phasesPlanned} phases`);
+  }
+  return bits.length ? bits.join(', ') : null;
 }
 
 function describeProgress(projectRoot: string, run?: DeliverRunState): FollowProgress {
@@ -668,6 +1035,71 @@ export async function awaitInFlightDeliver(
       // wrong precisely when it mattered. Derive it from the heartbeat instead,
       // and hand back the numbers so a caller can watch them move.
       const evidence = progressSentence(progress);
+      // Repeat-poll accounting. Keyed by runId: an unattributed run has no
+      // stable identity to journal against, so it keeps the full briefing —
+      // the conservative direction, since that is also the case where the
+      // caller is most likely looking at the wrong mission.
+      const journalId = attributed ? run?.runId : undefined;
+      const journal = journalId ? readPollJournal(projectRoot, journalId, run?.createdAt) : { count: 0 };
+      const repeat = journal.count > 0;
+      const delta = repeat ? progressDelta(journal.last, progress) : null;
+      if (journalId) {
+        writePollJournal(
+          projectRoot,
+          journalId,
+          {
+            count: journal.count + 1,
+            last: {
+              turn: progress.turn,
+              phase: progress.phase,
+              phasesPlanned: progress.phasesPlanned,
+            },
+          },
+          run?.createdAt
+        );
+      }
+      // A repeat poll on a HEALTHY run gets the diff and nothing else.
+      //
+      // Two stages are excluded deliberately, because their replies carry a
+      // warning and a remedy the caller has NOT acted on yet — they are not
+      // redundant however many times they are sent:
+      //
+      //  - wedged:   "it may be stuck", plus what to do about it.
+      //  - planning: "no turn yet" means NOT STARTED, not stuck. This is the
+      //    documented kill window — nine runs SIGKILLed at a median of 59s,
+      //    every one still planning. And the stage RECURS: deliver clears the
+      //    run's checkpoint after every accepted epic, so a 7-epic mission
+      //    re-enters `planning` seven times mid-flight. Without this clause a
+      //    caller got the words "still PLANNING (no turn yet)" with none of the
+      //    advice that exists to stop them acting on it — measured on this
+      //    branch, poll 2 onward at every epic boundary.
+      if (repeat && progress.health !== 'wedged' && progress.stage !== 'planning') {
+        return {
+          followed: false,
+          delivered: false,
+          timedOut: true,
+          holderPid: holder.pid,
+          runId: attributed ? run?.runId : undefined,
+          status: attributed ? run?.status : undefined,
+          run: run && attributed ? summarize(run) : undefined,
+          attributed,
+          progress,
+          reason:
+            `Still running (poll ${journal.count + 1}) — ${evidence}.` +
+            (delta
+              ? ` Moved since your last poll: ${delta}.`
+              : ' No phase or turn boundary crossed since your last poll; the heartbeat is current,' +
+                ' so a turn is in progress (turns take minutes on a local model).'),
+          nextStep:
+            // The backoff is the point. Each follow is a full model turn for an
+            // LLM caller, and on a single-slot local backend it CONTENDS with
+            // the mission for the one inference slot — polling harder makes the
+            // thing you are waiting for slower. The standing rules are
+            // REFERENCED, not restated: restating them is the cost being cut.
+            `Sleep ${RECOMMENDED_BACKOFF_SEC}s before the next follow — polling faster costs a ` +
+            'model turn and takes the slot the mission needs. First reply\'s rules still stand.',
+        };
+      }
       return {
         followed: false,
         delivered: false,
