@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.217.0 (2026-08-20)
+
+- feat(qwen): run every Qwen launch path on the vendored Qwen-Sharp template
+- docs(design): preserve the product-naming analysis (salvaged from #378)
+
+
 ## v1.216.0 (2026-08-20)
 
 - feat(bench): keep per-turn attribution instead of dropping it at the runner
