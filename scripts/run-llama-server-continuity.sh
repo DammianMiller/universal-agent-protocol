@@ -87,6 +87,22 @@ if [[ "$LLAMA_CHAT_TEMPLATE_FILE" != "embedded" ]]; then
 fi
 
 if [[ "$LLAMA_ENABLE_SPEC_DECODING" == "true" ]]; then
+  # A draft-* spec type that needs a drafter FILE must fail loudly when that file
+  # is missing, not fall through. Without this the else-branch below silently
+  # launches with self-speculation flags the engine then ignores for a dflash
+  # config (common/speculative.cpp only registers DRAFT_DFLASH when a draft
+  # context exists), so the server starts, answers correctly, and runs with
+  # speculation entirely OFF -- measured ~41 tok/s against ~92 with the drafter.
+  # No error, nothing in the log an operator would notice. The drafter lives
+  # outside the repo, so "the file moved" is the likely failure, not a rare one.
+  # draft-mtp is exempt: it reads its head from --model and needs no file.
+  if [[ "${LLAMA_SPEC_TYPE:-}" == draft-* && "${LLAMA_SPEC_TYPE:-}" != "draft-mtp" \
+        && -n "${LLAMA_DRAFT_MODEL:-}" && ! -f "${LLAMA_DRAFT_MODEL}" ]]; then
+    echo "ERROR: LLAMA_SPEC_TYPE=$LLAMA_SPEC_TYPE needs a draft model, but" >&2
+    echo "       LLAMA_DRAFT_MODEL does not exist: $LLAMA_DRAFT_MODEL" >&2
+    echo "       Refusing to start with speculation silently disabled." >&2
+    exit 1
+  fi
   if [[ -n "${LLAMA_DRAFT_MODEL:-}" && -f "${LLAMA_DRAFT_MODEL}" ]]; then
     # Draft model speculation (separate small model for drafting).
     #
