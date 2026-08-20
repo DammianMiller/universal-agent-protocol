@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.215.2 (2026-08-20)
+
+- fix(policies): sed and find are only destructive when a flag makes them write
+
+
 ## v1.215.1 (2026-08-20)
 
 - fix(deliver): make the planner assign every file exactly one owner
