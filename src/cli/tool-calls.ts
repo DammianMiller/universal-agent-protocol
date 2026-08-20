@@ -40,6 +40,24 @@ const PROFILES_DIR = join(UAP_ROOT, 'config', 'model-profiles');
 // Template source is the canonical copy at project root
 const ROOT_TEMPLATE = join(UAP_ROOT, 'chat_template.jinja');
 const CONFIG_TEMPLATE = join(CONFIG_DIR, 'chat_template.jinja');
+const QWEN_TEMPLATE = join(CONFIG_DIR, 'qwen-sharp.jinja');
+
+/**
+ * Which chat template a profile runs on.
+ *
+ * Every Qwen profile uses `qwen-sharp.jinja` (see
+ * `config/llama-profiles/qwen*.env`, which pass the same file to
+ * `--chat-template-file`). Before this was profile-aware, `uap tool-calls
+ * setup` synced and validated the generic `chat_template.jinja` under a Qwen
+ * profile — a template no Qwen launch path loads, and one that emits the JSON
+ * tool-call contract rather than the `<function=…>` XML contract the proxy's
+ * parsers expect. `doctor`/`status` reported on that same wrong file.
+ *
+ * Anything not Qwen keeps the generic template.
+ */
+function templateForProfile(profile: string): string {
+  return profile.startsWith('qwen') && existsSync(QWEN_TEMPLATE) ? QWEN_TEMPLATE : CONFIG_TEMPLATE;
+}
 
 /**
  * Detect the active model profile from config or environment.
@@ -182,7 +200,13 @@ async function setup(opts?: { profile?: string }): Promise<void> {
 
   // Sync templates: root template is the canonical source
   // Copy root -> config dir if root exists and config is missing or older
-  if (existsSync(ROOT_TEMPLATE)) {
+  const activeTemplate = templateForProfile(profile);
+
+  if (activeTemplate === QWEN_TEMPLATE) {
+    // Vendored verbatim from upstream — there is no root copy to sync from, and
+    // overwriting it from ROOT_TEMPLATE would silently swap the Qwen contract.
+    console.log(chalk.green(`Chat template (qwen): ${activeTemplate}`));
+  } else if (existsSync(ROOT_TEMPLATE)) {
     const rootStat = statSync(ROOT_TEMPLATE);
     const shouldCopy =
       !existsSync(CONFIG_TEMPLATE) || statSync(CONFIG_TEMPLATE).mtimeMs < rootStat.mtimeMs;
@@ -242,12 +266,12 @@ async function setup(opts?: { profile?: string }): Promise<void> {
   }
 
   // Validate template with Jinja2 if Python available
-  if (python && existsSync(CONFIG_TEMPLATE)) {
+  if (python && existsSync(activeTemplate)) {
     try {
       const validateCmd = `${python} -c "
 from jinja2 import Environment
 env = Environment()
-with open('${CONFIG_TEMPLATE}') as f:
+with open('${activeTemplate}') as f:
     env.parse(f.read())
 print('OK')
 "`;
@@ -366,6 +390,7 @@ async function status(): Promise<void> {
 
   // Check templates
   for (const [label, path] of [
+    ['Active template', templateForProfile(profile)],
     ['Config template', CONFIG_TEMPLATE],
     ['Root template', ROOT_TEMPLATE],
   ] as const) {

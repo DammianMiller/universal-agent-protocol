@@ -7574,7 +7574,8 @@ def build_openai_request(
 
     _apply_json_response_grammar(openai_body, anthropic_body)
 
-    # qwen3.5-enhanced.jinja (the MTP/130 config template) rejects an assistant
+    # qwen-sharp.jinja (and qwen3.5-enhanced.jinja before it, which this
+    # workaround was written against) rejects an assistant
     # PREFILL (trailing assistant message) unless thinking is disabled VIA
     # chat_template_kwargs — the top-level `enable_thinking` flag is not read by
     # this template, so a prefill otherwise 400s ("Assistant response prefill is

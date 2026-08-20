@@ -82,10 +82,10 @@
 
     "llm_server": {
       "description": "Instance 1: Main LLM (Qwen3.5 35B A3B) — port 8080",
-      "command": "llama-server --model /path/to/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf --chat-template-file chat_template.jinja --port 8080 --host 0.0.0.0 --ctx-size 131072 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q4_0 -fa on --threads 8 --batch-size 512 --ubatch-size 256 --mlock --metrics --n-predict 16384 --temp 0.3 --top-p 0.9 --top-k 20 --min-p 0.05",
+      "command": "llama-server --model /path/to/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf --chat-template-file tools/agents/config/qwen-sharp.jinja --port 8080 --host 0.0.0.0 --ctx-size 131072 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q4_0 -fa on --threads 8 --batch-size 512 --ubatch-size 256 --mlock --metrics --n-predict 16384 --temp 0.3 --top-p 0.9 --top-k 20 --min-p 0.05",
       "flags": [
         "--model /path/to/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf",
-        "--chat-template-file chat_template.jinja",
+        "--chat-template-file tools/agents/config/qwen-sharp.jinja",
         "--n-predict 16384",
         "--temp 0.3",
         "--top-p 0.9",
