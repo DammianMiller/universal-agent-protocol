@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.220.2 (2026-08-21)
+
+- fix(escalation): a red gate with a new failure signature restarts the streak
+
+
 ## v1.220.1 (2026-08-21)
 
 - fix(setup): default and maximum profiles declare the escalate delivery posture

@@ -26,9 +26,9 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe('escalation_tracker', () => {
   it('counts consecutive failures and a pass resets everything', () => {
-    track('fail', '--source', 'verify', '--detail', 'error[E0425]');
+    track('fail', '--source', 'verify', '--detail', 'error[E0425]: cannot find value `x`');
     track('edit', '--file', 'src/a.rs');
-    track('fail', '--source', 'stop', '--detail', 'still broken');
+    track('fail', '--source', 'stop', '--detail', 'error[E0425]: cannot find value `x`');
     let s = state();
     expect(s.failures).toBe(2);
     expect(s.last_failure?.source).toBe('stop');
@@ -38,6 +38,16 @@ describe('escalation_tracker', () => {
     expect(s.failures).toBe(0);
     expect(s.edits_since_green).toEqual({});
     expect(s.last_failure).toBeNull();
+  });
+
+  it('a failure with a NEW signature restarts the streak — moving the problem is progress, not a wall', () => {
+    track('fail', '--detail', 'error[E0425]: cannot find value `x` in src/a.rs:10');
+    track('fail', '--detail', "thread 'hash::tests::t' (2611998) panicked at src/hash.rs:130:26:\nattempt to multiply with overflow");
+    expect(state().failures).toBe(1); // different problem -> streak restarts
+    track('fail', '--detail', "thread 'hash::tests::t' (2612777) panicked at src/hash.rs:130:26:\nattempt to multiply with overflow");
+    expect(state().failures).toBe(2); // same wall (thread id differs, signature does not)
+    track('fail', '--detail', 'test result: FAILED. 1 passed; 1 failed');
+    expect(state().failures).toBe(1);
   });
 
   it('classifies build/test shell output and records only what it can prove', () => {
