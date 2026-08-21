@@ -122,13 +122,63 @@ def save_state(state: dict, root: Path | None = None) -> None:
         pass  # evidence is best-effort; never wedge the hook that records it
 
 
+_SIG_LINE_RE = re.compile(
+    r"(error\[E\d+\]|^error(?:\[|:)|panicked at|^\s*FAIL\b|test result: FAILED|AssertionError|Traceback|"
+    r"\bfailed\b.*\bassert|^E\s{2,}|error TS\d+|\bERROR\b)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def failure_signature(detail: str) -> str:
+    """A stable fingerprint of WHAT failed, so two red runs can be told apart.
+
+    The first diagnostic line (rustc error code, panic site, failing test
+    name, tsc code, traceback) with volatile bits — thread ids, pids,
+    timestamps, hex addresses, durations — stripped. Falls back to the first
+    non-empty line. Same signature twice = the same wall; a different one =
+    the agent moved the problem, which is progress, not a streak."""
+    text = detail or ""
+    line = ""
+    for raw in text.splitlines():
+        if _SIG_LINE_RE.search(raw):
+            line = raw
+            break
+    if not line:
+        for raw in text.splitlines():
+            if raw.strip():
+                line = raw
+                break
+    line = re.sub(r"\(\d+\)", "", line)                      # thread/pid ids
+    line = re.sub(r"0x[0-9a-fA-F]+", "0x", line)               # addresses
+    line = re.sub(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\S*", "", line)
+    line = re.sub(r"\b\d+(?:\.\d+)?\s*(?:ms|s|secs?|seconds?)\b", "", line)
+    line = re.sub(r"\s+", " ", line).strip()
+    return line[:200]
+
+
 def record_fail(source: str, detail: str, root: Path | None = None) -> dict:
+    """Count a red verification toward the escalation threshold.
+
+    CONSECUTIVE means "the same failure keeps coming back". A red run whose
+    signature differs from the previous one is the agent making progress on a
+    different problem (observed live: overflow at hash.rs:130 after fixing a
+    pgrx-gated test, both counted, a one-line fix escalated to a 75-minute
+    deliver loop that did not land). Such a failure restarts the streak at 1
+    instead of extending it."""
     st = load_state(root)
-    st["failures"] = int(st.get("failures") or 0) + 1
+    sig = failure_signature(detail)
+    prev = st.get("last_failure") if isinstance(st.get("last_failure"), dict) else None
+    prev_sig = (prev or {}).get("sig")
+    if prev_sig and sig and sig != prev_sig:
+        st["failures"] = 1
+        st["streak_reset"] = {"ts": int(time.time()), "from": prev_sig[:120], "to": sig[:120]}
+    else:
+        st["failures"] = int(st.get("failures") or 0) + 1
     st["last_failure"] = {
         "ts": int(time.time()),
         "source": source or "unknown",
         "detail": (detail or "")[-DETAIL_MAX:],
+        "sig": sig,
     }
     save_state(st, root)
     return st
