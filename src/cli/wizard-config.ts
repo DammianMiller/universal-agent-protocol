@@ -184,7 +184,7 @@ export function defaultSelections(overrides: Partial<WizardSelections> = {}): Wi
       fusionN: 3,
       allowSelfJudge: false,
     },
-    delivery: { enforcement: 'block', localMode: 'advisory', runtimeVerify: false },
+    delivery: { enforcement: 'escalate', localMode: 'escalate', runtimeVerify: false },
     concurrency: { enabled: true },
     collaboration: { mode: 'auto' },
     design: { enabled: false, tokenGate: false },
@@ -223,7 +223,11 @@ export function maxSelections(ctx: PresetContext): WizardSelections {
     browser: { cloakBrowser: true },
     // fusion + self-judge so recipes give lift without requiring an external judge key.
     recipes: { enabled: true, recipe: 'fusion', confidenceThreshold: 0.5, fusionN: 3, allowSelfJudge: true },
-    delivery: { enforcement: 'block', localMode: 'deliver', runtimeVerify: true },
+    // escalate, not block: direct edits land and deliver is the escalation point
+    // (after repeated red gates / churn / whole-module writes). A profile that
+    // re-applied block/deliver silently reverted projects that had chosen
+    // escalate every time setup ran (observed 2026-08-21).
+    delivery: { enforcement: 'escalate', localMode: 'escalate', runtimeVerify: true },
     concurrency: { enabled: true, ...(ctx.localModel ? { endpoint: ctx.localModel } : {}) },
     collaboration: { mode: 'always' },
     design: { enabled: true, tokenGate: true },

@@ -23,7 +23,7 @@ describe('maxSelections — everything on at max capability', () => {
     expect(s.policy.policyEngine).toBe(true);
     // routing to the local-first preset; delivery in block mode; collab always
     expect(s.model).toMatchObject({ provider: 'local', modelRouting: true, routingPreset: 'fable-local-opus' });
-    expect(s.delivery).toMatchObject({ enforcement: 'block', localMode: 'deliver', runtimeVerify: true });
+    expect(s.delivery).toMatchObject({ enforcement: 'escalate', localMode: 'escalate', runtimeVerify: true });
     expect(s.collaboration.mode).toBe('always');
     // recipes fusion + self-judge; design + reactor; proxy autostart; handsfree aggressive
     expect(s.recipes).toMatchObject({ enabled: true, recipe: 'fusion', allowSelfJudge: true });
@@ -79,7 +79,7 @@ describe('maxSelections completeness contract (guards silent drift)', () => {
     const off = on.filter(([, v]) => v !== true).map(([k]) => k);
     expect(off).toEqual([]);
     // strongest settings
-    expect(s.delivery.enforcement).toBe('block');
+    expect(s.delivery.enforcement).toBe('escalate'); // strongest *useful* posture: deliver as the escalation point
     expect(s.collaboration.mode).toBe('always');
     expect(s.recipes.recipe).toBe('fusion');
   });
@@ -117,7 +117,7 @@ describe('applyWizardConfig persists the Maximum bundle to .uap.json', () => {
     const cfg = JSON.parse(readFileSync(join(dir, '.uap.json'), 'utf8'));
     expect(cfg.handsfree).toMatchObject({ enabled: true, intensity: 'aggressive' });
     expect(cfg.proxy).toMatchObject({ autostart: true });
-    expect(cfg.delivery).toMatchObject({ enforcement: 'block' });
+    expect(cfg.delivery).toMatchObject({ enforcement: 'escalate' });
     expect(cfg.collaboration).toMatchObject({ mode: 'always' });
     expect(cfg.multiModel?.enabled).toBe(true); // routing preset materialized
   });
