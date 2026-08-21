@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.220.1 (2026-08-21)
+
+- fix(setup): default and maximum profiles declare the escalate delivery posture
+
+
 ## v1.220.0 (2026-08-21)
 
 - feat(deliver): trivial-mission guard — refuse one-line missions under the escalate posture
