@@ -50,6 +50,17 @@ describe('escalation_tracker', () => {
     expect(state().failures).toBe(1);
   });
 
+  it('re-observing the same failure with no edit in between does not extend the streak', () => {
+    const red = "thread 'bucket::t' (1) panicked at src/bucket.rs:9:5:\nassertion failed";
+    track('fail', '--source', 'verify', '--detail', red);
+    track('fail', '--source', 'stop', '--detail', red);   // idle pause re-ran verify: same wall, no attempt
+    track('fail', '--source', 'stop', '--detail', red);
+    expect(state().failures).toBe(1);
+    track('edit', '--file', 'src/bucket.rs');             // an attempt happened
+    track('fail', '--source', 'verify', '--detail', red); // and the same wall is still there
+    expect(state().failures).toBe(2);
+  });
+
   it('classifies build/test shell output and records only what it can prove', () => {
     expect(track('classify-bash', '--command', 'ls -la', '--output', 'error: nope')).toBe('none');
     expect(existsSync(join(root, '.uap', 'escalation-state.json'))).toBe(false);
