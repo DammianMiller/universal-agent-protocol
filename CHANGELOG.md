@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.220.3 (2026-08-21)
+
+- test(escalation): signature test models an attempt between two identical reds
+- fix(escalation): treat edits_total=0 as a real value; tests model an attempt between two reds
+- fix(escalation): re-observing the same red gate without an edit in between is not a new failure
+
+
 ## v1.220.2 (2026-08-21)
 
 - fix(escalation): a red gate with a new failure signature restarts the streak
