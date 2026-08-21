@@ -17,6 +17,10 @@ import { join } from 'path';
  * cwd and must not drag the full config loader in.
  */
 export function deliveryPosture(cwd: string = process.cwd()): 'escalate' | 'gated' {
+  // Explicit override (operator or test): the advice must be assertable
+  // independently of whichever posture the checkout's own .uap.json declares.
+  const forced = String(process.env.UAP_DELIVERY_POSTURE ?? '').toLowerCase();
+  if (forced === 'escalate' || forced === 'gated') return forced;
   try {
     // Same anchor as the policy gate: a worktree session reads the MAIN checkout's config.
     const cfg = JSON.parse(readFileSync(join(cwd.split('/.worktrees/')[0], '.uap.json'), 'utf8')) as {
@@ -259,7 +263,15 @@ export function resolve(
       keys.push(stateKey);
     }
     if (deliverInject) {
-      blocks.push(`## Writing code — route through deliver\n${deliverInject}`);
+      // The heading is posture-specific on purpose: the proxy's proactive
+      // "writes are gated" detector keys on the phrase "route through deliver",
+      // and under escalate nothing is gated — carrying it would make the proxy
+      // tell a stuck model its writes are blocked when they are not.
+      const heading =
+        deliveryPosture() === 'escalate'
+          ? '## Writing code — edit directly; deliver is the escalation point'
+          : '## Writing code — route through deliver';
+      blocks.push(`${heading}\n${deliverInject}`);
       keys.push(deliverKey);
     }
     if (collabInject) {

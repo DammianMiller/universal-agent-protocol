@@ -8,7 +8,7 @@
  *   skill    -> `skill:<name>`
  *   pattern  -> `pattern:<abbreviation>`
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   resolve,
   type ReactorContext,
@@ -45,6 +45,11 @@ function stubPatternRouter(defs: Array<Partial<PatternDefinition>>): PatternRout
 }
 
 const baseCtx: ReactorContext = { event: 'user-prompt', promptText: 'do a thing' };
+
+// The deliver advice is posture-dependent and this checkout's own project config
+// may declare either; pin the gated posture so the assertions below are about text.
+beforeEach(() => { process.env.UAP_DELIVERY_POSTURE = 'gated'; });
+afterEach(() => { delete process.env.UAP_DELIVERY_POSTURE; });
 
 describe('reactor.resolve — assist mode', () => {
   it('smoke: composes real routers without throwing and returns a well-formed result', () => {
@@ -361,6 +366,18 @@ describe('reactor.resolve — the deliver advice must match what the gate does',
     expect(t).toContain('deleting or renaming');
     expect(t).toMatch(/docs, tests, scripts/);
     expect(t).toContain('not gated');
+  });
+
+  it('under the escalate posture tells the agent to edit directly and treat deliver as the escalation point', () => {
+    process.env.UAP_DELIVERY_POSTURE = 'escalate';
+    const t = codeTask().inject.toLowerCase();
+    expect(t).toContain('directly');
+    expect(t).toContain('escalation point');
+    expect(t).toMatch(/failed twice in a row/);
+    // the proxy's proactive "writes are gated" detector keys on this phrase;
+    // under escalate nothing is gated, so the advice must never carry it.
+    expect(t).not.toContain('route through deliver');
+    expect(t).not.toContain('will be blocked');
   });
 
   it('warns against handing deliver a task with nothing to author', () => {

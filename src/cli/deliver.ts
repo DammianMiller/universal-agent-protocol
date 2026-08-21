@@ -279,6 +279,7 @@ function cfgRawEarlyForUvFactory(projectRoot: string): () => Record<string, unkn
 }
 import { resolveSessionTokenBudget, sessionWorkingBudget, discoverModelContextWindow } from '../delivery/context-budget.js';
 import { preflightProject, formatPreflightFailure } from '../delivery/project-preflight.js';
+import { shouldRefuseTrivialMission } from '../delivery/trivial-mission.js';
 import { awaitInFlightDeliver, followTickDetail, FOLLOW_CLIENT_POLL_SEC } from '../delivery/await-run.js';
 
 /**
@@ -500,6 +501,8 @@ export interface DeliverOptions {
    * verify with the required gates, and exit (plan D1). */
   pending?: string | boolean;
   dryRun?: boolean;
+  /** `--force`: run even when the trivial-mission guard would refuse (escalate posture). */
+  force?: boolean;
   json?: boolean;
 }
 
@@ -1296,6 +1299,44 @@ export async function deliverCommand(instruction: string, options: DeliverOption
   // subdirectory the overlap check fired first, so the operator got the generic
   // "another run owns an overlapping root" instead of the specific diagnosis.
   if (!refuseGatelessRoot(projectRootForDetach, options)) return;
+
+  // Trivial-mission guard (escalate posture only): deliver is the escalation
+  // point, not a tax on a one-line edit. A mission that reads as a small
+  // single-file change, with no red-gate evidence behind it, is refused with
+  // the instruction to make the edit directly. Observed live: a "remove the
+  // duplicate mod block at line 640" mission burned two runs / 50 minutes on a
+  // local executor and never landed. --force / force:true overrides; a
+  // --resume or --dry-run is never refused (nothing new is being launched).
+  // Sits BEFORE the detach decision for the same reason as the gateless-root
+  // refusal above: a refusal that spawned a detached child printed "mission
+  // detached" and sent the answer to the log file instead of the caller.
+  // --pending replays recorded intents (no model, nothing launched): it is the
+  // sanctioned remedy for a blocked direct edit and must never be refused.
+  const isPendingReplay = options.pending !== undefined && options.pending !== false;
+  if (!options.dryRun && !options.resume && !isPendingReplay) {
+    const guard = shouldRefuseTrivialMission(projectRootForDetach, instruction, { force: options.force });
+    if (guard.refuse) {
+      console.error(chalk.yellow(guard.message));
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            {
+              success: false,
+              trivialMission: true,
+              projectRoot: projectRootForDetach,
+              verdict: guard.verdict,
+              nextStep: guard.message,
+            },
+            null,
+            2
+          )
+        );
+      }
+      process.exitCode = 5;
+      return;
+    }
+  }
+
 
   const decision = shouldDetach({
     alreadyDetached: isDetachedChild(),

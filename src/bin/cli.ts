@@ -666,6 +666,7 @@ program
   .option('--force-self-gate', 'Author a task-specific acceptance gate even when project gates exist')
   .option('--allow-noop', 'Permit delivery without any tree change (disables the anti-no-op acceptance rail for missions that genuinely require none)')
   .option('--pending [file]', 'Deterministically apply the edit intents recorded by the delivery gate (.uap/pending-deliver.jsonl) — exact-anchor replay, no model — then run the required gates once and exit')
+  .option('--force', 'Run even when the trivial-mission guard would refuse: under the escalate delivery posture a mission that reads as a small single-file edit is refused (make it directly) unless two red gates say direct edits are not working')
   .option('--acceptance', 'After objective gates pass, judge spec behavioral completeness (LLM) and feed unmet requirements back so the loop completes the spec')
   .option('--executor <mode>', 'Per-turn executor: blind (one completion), agentic (tool-using read/list/bash/write loop), or auto (agentic when there is repo context/gates to inspect)', 'auto')
   .option('--allow-bash', "Permit the agentic executor's run_bash tool when NOT running under `uap sandbox`. Off by default: an unsandboxed shell is not contained to the workdir. Auto-enabled under `uap sandbox`.")
