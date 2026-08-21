@@ -124,6 +124,8 @@ function copyHookScripts(targetHooksDir: string): void {
     'deliver_autoroute.py',
     // consumed by uap-policy-gate.sh: cumulative-aware trivial-edit fast-path decider
     'fastpath_gate.py',
+    // evidence store for the `escalate` delivery mode (gate failures / churn)
+    'escalation_tracker.py',
     // Writes .uap/read_log.state, the ONLY evidence codebase-read-before-plan
     // accepts. Without it that gate has no writer, its entries age out, and it
     // blocks every plan with a remedy that can never clear.
@@ -607,6 +609,17 @@ export async function installOpencodeHooks(cwd: string): Promise<void> {
     'import type { Plugin } from "@opencode-ai/plugin"',
     '',
     'export const UAPSessionHooks: Plugin = async ({ client, $ }) => {',
+    '  // Evidence for the `escalate` delivery mode: a verification outcome is',
+    '  // recorded so the gate can tell "direct edits are converging" from "two',
+    '  // red gates in a row — escalate to deliver". Best-effort, never throws.',
+    '  const recordEvidence = async (res, source) => {',
+    '    try {',
+    '      if (!res || (res.exitCode !== 0 && res.exitCode !== 1)) return',
+    '      const verdict = res.exitCode === 1 ? "fail" : "pass"',
+    '      const detail = (res.stdout.toString() + res.stderr.toString()).trim().slice(-1200)',
+    '      await $`python3 .opencode/hooks/escalation_tracker.py ${verdict} --source ${source} --detail ${detail}`.quiet().nothrow()',
+    '    } catch { /* evidence is best-effort */ }',
+    '  }',
     '  return {',
     '    event: async ({ event, output }) => {',
     '      if (event.type === "session.created") {',
@@ -673,6 +686,7 @@ export async function installOpencodeHooks(cwd: string): Promise<void> {
     '          const res = tmo',
     '            ? await $`${tmo} 240 uap verify --runtime-only ${uvAuto}`.quiet().nothrow()',
     '            : await $`uap verify --runtime-only ${uvAuto}`.quiet().nothrow()',
+    '          await recordEvidence(res, "verify")',
     '          if (res.exitCode === 1) {',
     '            const msg = (res.stdout.toString() + res.stderr.toString()).trim()',
     '            console.error("[UAP] RUNTIME/USER-PATH GATE FAILED:\\n" + msg)',
@@ -719,6 +733,7 @@ export async function installOpencodeHooks(cwd: string): Promise<void> {
     '              // under max/strict fidelity. This is the DONE claim, so the heavier',
     '              // LLM judge belongs here (not on the per-edit periodic path).',
     '              const res2 = await $`uap verify ${uvAuto} --acceptance-auto`.quiet().nothrow()',
+    '              await recordEvidence(res2, "verify")',
     '              if (res2.exitCode === 1) {',
     '                const msg = (res2.stdout.toString() + res2.stderr.toString()).trim().slice(0, 2500)',
     '                throw new Error("[UAP not done] Validation FAILED — you are NOT done. The outcome does not pass the gates (testing / visual / behavioral). Do NOT mark these todos complete. Fix the failures below, then let validation re-run:\\n" + msg)',
@@ -753,6 +768,7 @@ export async function installOpencodeHooks(cwd: string): Promise<void> {
     '            const uvHelp = await $`uap verify --help`.quiet().nothrow()',
     '            const uvAuto = uvHelp.stdout.toString().indexOf("user-paths-auto") >= 0 ? "--user-paths-auto" : ""',
     '            const res3 = await $`uap verify --runtime-only ${uvAuto}`.quiet().nothrow()',
+    '            await recordEvidence(res3, "verify")',
     '            if (res3.exitCode === 1) {',
     '              const msg = (res3.stdout.toString() + res3.stderr.toString()).trim().slice(0, 2000)',
     '              throw new Error("[UAP not done] Periodic validation FAILED after " + nEvery + " edits — the current build does not pass the runtime gates. Fix these before continuing (validation re-runs automatically):\\n" + msg)',
@@ -765,6 +781,20 @@ export async function installOpencodeHooks(cwd: string): Promise<void> {
     '        if (e instanceof Error && e.message.indexOf("[UAP not done]") === 0) throw e',
     '        /* verify infra / io error → fail OPEN */',
     '      }',
+    '    },',
+    '',
+    '    // ESCALATION EVIDENCE from the shell: a build/test command\'s outcome',
+    '    // (cargo test, npm test, tsc, pytest, go test, ...) is classified by the',
+    '    // tracker. OpenCode exposes the tool output text, not the exit code, so',
+    '    // ambiguous output records nothing — silence is not evidence.',
+    '    "tool.execute.after": async (input, output) => {',
+    '      try {',
+    '        if (String(input && input.tool).toLowerCase() !== "bash") return',
+    '        const cmd = String((input && input.args && input.args.command) || "")',
+    '        if (!cmd) return',
+    '        const text = String((output && output.output) || "").slice(-4000)',
+    '        await $`python3 .opencode/hooks/escalation_tracker.py classify-bash --command ${cmd.slice(0, 500)} --output ${text}`.quiet().nothrow()',
+    '      } catch { /* evidence is best-effort */ }',
     '    },',
     '',
     '    "experimental.session.compacting": async (_input, output) => {',
@@ -1269,6 +1299,8 @@ async function installOmpHooks(cwd: string): Promise<void> {
     'deliver_autoroute.py',
     // consumed by uap-policy-gate.sh: cumulative-aware trivial-edit fast-path decider
     'fastpath_gate.py',
+    // evidence store for the `escalate` delivery mode (gate failures / churn)
+    'escalation_tracker.py',
     'loop-protection.sh',
   ];
   for (const file of preHookFiles) {

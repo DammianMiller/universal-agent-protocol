@@ -88,7 +88,7 @@ Use dryRun:true first to see the complexity classification and plan (fast, no mo
 
 Long missions: runs are DURABLE and DETACHED — the mission outlives this tool call. If the call times out mid-mission the run is still going: call again with follow:true to wait for it and get its result. Do NOT use resume for that — resume CONTINUES a run and, on one that is still live, starts a second copy of it. Use resume only to pick up a run that has actually stopped. Leave maxTurns/ceiling unset (epics + until-delivered self-manage turns); pass a larger timeoutSec for platform-scale LAUNCHES (it does not lengthen a follow — see the parameter). Space your follows out: wait a few minutes between them. A follow costs a model turn and, against a single-slot local backend, competes with the mission for the one inference slot, so polling in a tight loop measurably slows the run you are waiting on.
 
-Best for: implement a feature, fix a bug across files, refactor with tests. Not for: trivial one-line edits, pure questions, or non-code docs.`,
+Best for: implement a feature, fix a bug across files, refactor with tests — and as the ESCALATION point when your direct edits keep failing the project's gates (two red verifications in a row) or a file is being thrashed edit after edit. Not for: small direct edits, deletions/renames, pure questions, or non-code docs — make those directly and run the project's own build/test.`,
   inputSchema: {
     type: 'object' as const,
     properties: {

@@ -435,8 +435,10 @@ export const RecipesSchema = z.object({
 // and are emitted to .uap/proxy.env; runtimeVerify tracks the Stop-hook that runs
 // `uap verify` at session end.
 export const DeliverySchema = z.object({
-  enforcement: z.enum(['block', 'advisory', 'off']).default('block'),
-  localMode: z.enum(['advisory', 'deliver', 'block']).default('advisory'),
+  // `escalate`: direct edits land; deliver is the escalation point (after
+  // repeated gate failures, per-file churn, or a whole-module write).
+  enforcement: z.enum(['block', 'advisory', 'off', 'escalate']).default('block'),
+  localMode: z.enum(['advisory', 'deliver', 'block', 'escalate']).default('advisory'),
   runtimeVerify: z.boolean().default(false),
   // User-path validation gate: the delivered artifact must pass its critical
   // user journeys through the REAL client (headless browser / HTTP / CLI)
@@ -467,6 +469,12 @@ export const DeliverySchema = z.object({
   trivialEditChars: z.number().int().min(0).optional(),
   cumulativeChars: z.number().int().min(0).optional(),
   cumulativeEdits: z.number().int().min(0).optional(),
+  // Escalate-mode budgets (enforcement/localMode = 'escalate'). Optional for
+  // the same reason as the fast-path budgets above: absent means the
+  // enforcer's own defaults (2 failures / 10 edits / 6000 chars).
+  escalateAfterFailures: z.number().int().min(0).optional(),
+  escalateAfterEdits: z.number().int().min(0).optional(),
+  complexEditChars: z.number().int().min(0).optional(),
 });
 
 // DESIGN.md integration (interrogate/lint + reactor design guidance + token gate).

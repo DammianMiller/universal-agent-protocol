@@ -42,24 +42,60 @@ uap config wizard               # interactive expert configurator (also: uap set
 | | |
 |---|---|
 | **Where** | `.uap.json` |
-| **Type** | enum (block \| advisory \| off) |
+| **Type** | enum (block \| advisory \| off \| escalate) |
 | **Default** | `block` |
 
-How the delivery gate treats a direct source edit outside `uap deliver`. `block` refuses it (exit 2), `advisory` warns but allows, `off` disables the gate. (The `UAP_ENFORCE_DELIVERY` env var overrides this at runtime.)
+How the delivery gate treats a direct source edit outside `uap deliver`. `block` refuses it (exit 2) and routes it to deliver; `escalate` lets direct edits land and routes to deliver only as an ESCALATION — after `delivery.escalateAfterFailures` consecutive gate failures, `delivery.escalateAfterEdits` edits to one file with no green gate, or a single change above `delivery.complexEditChars`; `advisory` warns but allows; `off` disables the gate. (The `UAP_ENFORCE_DELIVERY` env var overrides this at runtime.)
 
-**Recommendation:** `block` for hands-free/local-model work so every change is gated and verified; `advisory` when a capable human/Opus is driving and you want warnings without friction.
+**Recommendation:** `escalate` for everyday agent work: small and medium edits go straight to disk and are judged by the project's own build/test + the verify hooks, while deliver is reserved for complex multi-file work and for when direct editing is demonstrably not working. `block` only when EVERY change must pass the convergence loop (unattended hands-free runs); `advisory` when a capable human is driving.
 
 ### `delivery.localMode`
 
 | | |
 |---|---|
 | **Where** | `.uap.json` |
-| **Type** | enum (advisory \| deliver \| block) |
+| **Type** | enum (advisory \| deliver \| block \| escalate) |
 | **Default** | `advisory` |
 
-How local-model sessions are routed through delivery. `deliver` runs builds through the convergence loop; `block` forbids raw edits; `advisory` warns.
+How a local-model session resolves a `block` posture. `escalate` lets direct edits land and escalates to deliver on evidence (failed gates, churn, size); `deliver` routes every substantive edit through the convergence loop; `block` forbids raw edits; `advisory` warns.
 
-**Recommendation:** `deliver` when a local model does the writing (routes it through the verified loop); `advisory` for exploratory work.
+**Recommendation:** `escalate` when a local model does the writing — deliver becomes the escalation point instead of a tax on every small task; `deliver` only for unattended runs where each change must be converged; `advisory` for exploratory work.
+
+### `delivery.escalateAfterFailures`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | number |
+| **Default** | `2` |
+
+Escalate mode: after this many CONSECUTIVE verification failures (uap verify, the stop hook, or a build/test command observed by the hooks) since the last green gate, the next non-trivial direct source edit is refused and routed to `uap deliver` with the failure attached. 0 disables this trigger.
+
+**Recommendation:** Leave at 2: one failure is normal iteration; two in a row with no green in between is the signal that direct editing is not converging.
+
+### `delivery.escalateAfterEdits`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | number |
+| **Default** | `10` |
+
+Escalate mode: when one source file has been edited this many times with no green gate in between, the next edit to it escalates to `uap deliver` (thrashing guard). Any passing verification resets the count. 0 disables this trigger.
+
+**Recommendation:** Leave at 10 — generous enough for honest iteration, low enough to stop a model that is patching the same file line by line.
+
+### `delivery.complexEditChars`
+
+| | |
+|---|---|
+| **Where** | `.uap.json` |
+| **Type** | number |
+| **Default** | `6000` |
+
+Escalate mode: a single edit or whole-file write above this many characters (or a write that guts a substantial file) is treated as complex work and routed through `uap deliver` so it is verified rather than trusted blind. 0 disables this trigger.
+
+**Recommendation:** 6000 characters is roughly a whole module; anything that size deserves the convergence loop. Raise it for generated/vendored code, lower it for a weak executor.
 
 ### `deliver.escalateModel`
 
@@ -78,7 +114,7 @@ Stronger model id for deliver escalation ladders: repair passes, the phase-5 esc
 | | |
 |---|---|
 | **Where** | shell env |
-| **Type** | enum (block \| advisory \| off) |
+| **Type** | enum (block \| advisory \| off \| escalate) |
 | **Default** | `block` |
 
 Runtime override of the delivery gate read by the hooks/enforcers from the shell env. Takes precedence over `delivery.enforcement`.
@@ -217,7 +253,7 @@ Base URL of an OpenAI-compatible, image_url-capable endpoint used for aesthetic 
 | **Type** | string |
 | **Default** | `` |
 
-Model id sent to the vision endpoint for aesthetic review (e.g. qwen36-35b-a3b-iq4xs).
+Model id sent to the vision endpoint for aesthetic review (e.g. qwen3.8-27b).
 
 **Recommendation:** Set by `uap setup` to your local vision model. Required for blocking vision review under `max` fidelity.
 

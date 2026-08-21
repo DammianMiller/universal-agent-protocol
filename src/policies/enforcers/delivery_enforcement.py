@@ -17,6 +17,24 @@ Escape hatches (always honored, even in block mode):
   - UAP_DELIVER_ACTIVE=1   set by the deliver loop for its own subprocesses
   - UAP_DELIVER_BYPASS=1   explicit operator override for a sanctioned manual edit
 
+ESCALATE mode (`delivery.enforcement: escalate`, or `delivery.localMode:
+escalate` for a local-model session under block): deliver is an ESCALATION
+POINT, not the path every edit is forced through. Ordinary source edits go
+straight to disk (the project's own build/test + the verify hooks judge them)
+and the gate routes to `uap deliver` only when the evidence says direct editing
+is not working or the change is too big to land unverified:
+
+  - failures : >= delivery.escalateAfterFailures (default 2) consecutive
+               verification failures since the last green gate
+  - churn    : one file edited >= delivery.escalateAfterEdits (default 10)
+               times with no green gate in between (thrashing)
+  - complex  : a single edit/write above delivery.complexEditChars (default
+               6000) or a whole-file rewrite that guts a substantial file
+
+The evidence lives in .uap/escalation-state.json, written by the
+escalation_tracker.py hook (uap verify / stop hook / build+test shell results)
+and cleared by any green verification or a landed deliver run.
+
 Exempt by construction: non-source files, docs/configs/scripts/policies, test
 files (deliver protects those itself), and tooling dot-dirs.
 """
@@ -277,10 +295,193 @@ def _is_local_model_session() -> bool:
 # Back-compat: UAP_DELIVER_LOCAL_ADVISORY=0 maps to "block".
 def _local_mode() -> str:
     m = os.environ.get("UAP_DELIVER_LOCAL_MODE", "").lower()
-    if m in {"advisory", "deliver", "block"}:
+    if m in {"advisory", "deliver", "block", "escalate"}:
         return m
     adv = os.environ.get("UAP_DELIVER_LOCAL_ADVISORY", "on").lower()
     return "advisory" if adv not in {"0", "off", "false", "no", ""} else "block"
+
+
+def _effective_mode() -> str:
+    """The gate posture for THIS operation: block | advisory | off | escalate.
+
+    `UAP_ENFORCE_DELIVERY` (config-authoritative via the policy gate) wins. A
+    local-model session under `block` is then resolved through
+    `UAP_DELIVER_LOCAL_MODE`: advisory -> advisory, escalate -> escalate,
+    deliver/block -> block (keep the route-through-deliver block).
+    """
+    mode = os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower()
+    if mode == "block" and _is_local_model_session():
+        lm = _local_mode()
+        if lm in {"advisory", "escalate"}:
+            return lm
+    return mode
+
+
+# ── ESCALATE mode: evidence-driven routing ───────────────────────────────────
+ESCALATION_STATE_FILE = ".uap/escalation-state.json"
+
+
+def _delivery_cfg_int(root: Path, key: str, env: str, default: int) -> int:
+    """An integer budget from the environment, else `.uap.json` delivery.<key>."""
+    raw = os.environ.get(env)
+    if raw is not None:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    try:
+        import json as _json
+        cfg_root = Path(os.environ.get("UAP_MAIN_ROOT") or root)
+        cfg = _json.loads((cfg_root / ".uap.json").read_text(encoding="utf-8"))
+        value = (cfg.get("delivery") or {}).get(key)
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, (int, float)):
+            return max(0, int(value))
+    except Exception:
+        pass
+    return default
+
+
+def _escalation_state(root: Path) -> dict:
+    """The tracker's evidence, or an empty record. Evidence older than
+    UAP_DELIVER_ESCALATION_TTL_SEC (default 6h) is ignored: yesterday's red
+    build must not gate today's first edit."""
+    import json as _json
+    import time as _time
+    empty = {"failures": 0, "edits_since_green": {}, "last_failure": None}
+    try:
+        st = _json.loads((root / ESCALATION_STATE_FILE).read_text(encoding="utf-8"))
+        if not isinstance(st, dict):
+            return empty
+    except Exception:
+        return empty
+    try:
+        ttl = int(os.environ.get("UAP_DELIVER_ESCALATION_TTL_SEC", "21600"))
+    except ValueError:
+        ttl = 21600
+    # Age the FAILURE evidence by when it was recorded, not by the last edit:
+    # `updated` moves on every direct edit, which would keep a two-day-old red
+    # gate alive for as long as the agent keeps typing.
+    lf = st.get("last_failure") if isinstance(st.get("last_failure"), dict) else None
+    anchor = int((lf or {}).get("ts") or st.get("updated") or 0)
+    if ttl > 0 and int(_time.time()) - anchor > ttl:
+        return empty
+    st.setdefault("failures", 0)
+    st.setdefault("edits_since_green", {})
+    return st
+
+
+def _record_escalation_edit(root: Path, rel: str) -> None:
+    """Count a direct edit against the file's churn budget (best-effort)."""
+    import json as _json
+    import time as _time
+    path = root / ESCALATION_STATE_FILE
+    try:
+        st = _json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not isinstance(st, dict):
+            st = {}
+    except Exception:
+        st = {}
+    edits = st.get("edits_since_green") if isinstance(st.get("edits_since_green"), dict) else {}
+    edits[rel] = int(edits.get(rel, 0)) + 1
+    st["edits_since_green"] = edits
+    st.setdefault("failures", 0)
+    st["updated"] = int(_time.time())
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(_json.dumps(st, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _escalation_trigger(root: Path, rel: str, changed: "int | None", *, size_known: bool = True):
+    """(kind, human detail) when this edit must escalate to deliver, else None.
+
+    Order matters: a failing build is the strongest evidence, then thrashing on
+    one file, then sheer size. `changed is None` with size_known means a
+    whole-file rewrite the cost model refused (gutting) -> complex."""
+    st = _escalation_state(root)
+    n_fail = int(st.get("failures") or 0)
+    fail_budget = _delivery_cfg_int(root, "escalateAfterFailures", "UAP_DELIVER_ESCALATE_FAILURES", 2)
+    if fail_budget > 0 and n_fail >= fail_budget:
+        lf = st.get("last_failure") or {}
+        detail = str(lf.get("detail") or "").strip().replace("\n", " | ")[:400]
+        src = str(lf.get("source") or "gate")
+        return ("failures", f"{n_fail} consecutive verification failure(s) since the last green gate (last: {src}: {detail or 'no detail'})")
+    edits = st.get("edits_since_green") or {}
+    n_edits = int(edits.get(rel, 0)) if isinstance(edits, dict) else 0
+    churn_budget = _delivery_cfg_int(root, "escalateAfterEdits", "UAP_DELIVER_ESCALATE_EDITS", 10)
+    if churn_budget > 0 and n_edits >= churn_budget:
+        return ("churn", f"'{rel}' has been edited {n_edits} times with no green gate in between")
+    if size_known:
+        big = _delivery_cfg_int(root, "complexEditChars", "UAP_DELIVER_COMPLEX_EDIT_CHARS", 6000)
+        if changed is None:
+            return ("complex", "a whole-file rewrite that replaces most of a substantial file")
+        if big > 0 and changed > big:
+            return ("complex", f"a {changed}-character change (budget {big}) — a whole module's worth")
+    return None
+
+
+def _escalation_block(rel: str, kind: str, detail: str, args: dict) -> None:
+    """Refuse the direct edit and hand the agent the deliver escalation, with
+    the evidence that triggered it. Terse and imperative on purpose (weak local
+    models retry or hallucinate completion on passive prose)."""
+    if kind == "failures":
+        msg = (
+            f"ESCALATE: {detail}. Direct edits are paused: editing '{rel}' again would repeat "
+            "what is not working. Call the `deliver` tool NOW with a one-line task that names the "
+            "failing gate and the fix (or run: uap deliver \"fix: <the failure>\"). Deliver "
+            "converges the change against the real gates; direct edits resume once it lands or "
+            "the gates go green. Do NOT retry this edit."
+        )
+        hint = f"fix the failing verification and make the gates green: {detail[:240]}"
+        intent = None
+    elif kind == "churn":
+        msg = (
+            f"ESCALATE: {detail} — you are thrashing. Stop patching it line by line. Call the "
+            "`deliver` tool with a one-line description of the INTENDED END STATE of this file "
+            "(what it must do, which tests must pass). Direct edits to it resume after a green "
+            "gate. Do NOT retry this edit."
+        )
+        hint = f"bring {rel} to a working state that passes the project gates"
+        intent = None
+    else:
+        msg = (
+            f"ESCALATE: this is {detail}. A change this size must land through the `deliver` "
+            "tool (or: uap deliver \"<one-line description>\") so it is verified against the "
+            "gates, not trusted blind. Your content is recorded as a replayable intent. Do NOT "
+            "retry this edit directly."
+        )
+        hint = f"implement the intended change to {rel}"
+        intent = {
+            k: v
+            for k, v in (
+                ("old_string", args.get("old_string", args.get("oldString"))),
+                ("new_string", args.get("new_string", args.get("newString"))),
+                ("content", args.get("content")),
+            )
+            if isinstance(v, str)
+        } or None
+    emit(False, msg, route="deliver", deliverHint=hint, editIntent=intent, escalation=kind)
+
+
+def _handle_escalate_edit(args: dict, rel: str, root: Path, changed: "int | None") -> None:
+    trig = _escalation_trigger(root, rel, changed)
+    if trig is not None:
+        _escalation_block(rel, trig[0], trig[1], args)
+        return
+    _record_escalation_edit(root, rel)
+    print(
+        f"[delivery-enforcement] escalate mode: direct edit to '{rel}' allowed "
+        f"({'whole-file' if changed is None else changed} chars). Verify with the project's "
+        "build/test; deliver is the escalation point after repeated gate failures or for "
+        "large multi-file work.",
+        file=sys.stderr,
+    )
+    emit(True, "escalate mode: direct edit allowed; deliver is the escalation point")
 
 
 BASH_OPS = {"Bash", "bash", "run_bash", "shell"}
@@ -295,7 +496,7 @@ BASH_OPS = {"Bash", "bash", "run_bash", "shell"}
 # match any destructive verb (or a truncating redirect) against any path under
 # `.uap/` that names deliver state — including the directory itself and globs.
 _DELIVER_STATE_PATH = (
-    r"(?:pending-deliver\.jsonl|deliver\.lock|deliver\.heartbeat"
+    r"(?:pending-deliver\.jsonl|deliver\.lock|deliver\.heartbeat|escalation-state\.json"
     r"|pending-[^\s'\"|;&]*|deliver\.[^\s'\"|;&]*|\*[^\s'\"|;&]*)"
 )
 _DELIVER_STATE_RM_RE = re.compile(
@@ -515,9 +716,17 @@ def _handle_bash(args: dict) -> None:
     m = _BASH_WRITE_RE.search(cmd)
     if m:
         target = m.group(1)
-        mode = os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower()
-        if mode == "block" and _is_local_model_session() and _local_mode() == "advisory":
-            mode = "advisory"
+        mode = _effective_mode()
+        if mode == "escalate":
+            # Size is unknowable for a shell write; failures/churn still decide.
+            root = repo_root()
+            trig = _escalation_trigger(root, target, None, size_known=False)
+            if trig is not None:
+                _escalation_block(target, trig[0], trig[1], {})
+                return
+            _record_escalation_edit(root, target)
+            emit(True, "escalate mode: shell source write allowed; deliver is the escalation point")
+            return
         msg = (
             f"BLOCKED: do not write source via the shell ('{target}'). Writing files with "
             "a redirect/heredoc/sed/tee bypasses the delivery gate. To create or change "
@@ -604,7 +813,7 @@ def main() -> None:
     # testing the same code underneath it — tell it to WAIT. route:wait so the
     # autoroute stands down instead of enqueuing a duplicate.
     holder = _deliver_lock_holder(root)
-    if holder is not None and os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower() == "block":
+    if holder is not None and os.environ.get("UAP_ENFORCE_DELIVERY", "block").lower() in {"block", "escalate"}:
         emit(
             False,
             f"WAIT: a `uap deliver` run (pid {holder}) is ALREADY in progress for this project and is "
@@ -616,6 +825,15 @@ def main() -> None:
             route="wait",
             deliverHint="",
         )
+        return
+
+    # ESCALATE: direct edits land unless the evidence (failed gates, churn,
+    # size) says this change needs the convergence loop.
+    if _effective_mode() == "escalate":
+        changed = _changed_chars(args)
+        if changed is None:
+            changed = _write_cost(args, root)
+        _handle_escalate_edit(args, rel_posix, root, changed)
         return
 
     # #3-F: terse, imperative, model-parseable. Weak local models otherwise
@@ -649,8 +867,8 @@ def main() -> None:
         intent_payload = {
             k: v
             for k, v in (
-                ("old_string", args.get("old_string")),
-                ("new_string", args.get("new_string")),
+                ("old_string", args.get("old_string", args.get("oldString"))),
+                ("new_string", args.get("new_string", args.get("newString"))),
                 ("content", args.get("content")),
             )
             if isinstance(v, str)

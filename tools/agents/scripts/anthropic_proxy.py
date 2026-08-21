@@ -1945,6 +1945,96 @@ def _apply_profile_overrides(
     return updated, prompt_suffix, grammar_text
 
 
+# ── Upstream-safe tool names ────────────────────────────────────────────────
+# llama.cpp's grammar builder cannot parse a tool NAME containing '-' or '.'
+# under tool_choice=required: the request fails with HTTP 400 "Failed to
+# initialize samplers: failed to parse grammar" (measured 2026-08-21 against
+# the live server: `uap-router_deliver` -> 400, the same schema as
+# `uap_router_deliver` -> 200; `auto` passes either way because the lazy
+# grammar path never compiles the name). OpenCode prefixes every MCP tool
+# with "<server>_" and servers are named with hyphens, so the moment a rail
+# forces `required` with such a tool present, the turn dies and the client
+# session wedges (observed: RECON hard tier restored `uap-router_deliver`,
+# forced required, 400, stream error, 10h idle).
+#
+# Names are rewritten to [A-Za-z0-9_] on the way UP (tool definitions, the
+# assistant history's tool_calls, a function-pinned tool_choice) and restored
+# on the way DOWN, so the client never sees the sanitized form. The map is
+# module-level: sanitization is a pure function of the name, so one map serves
+# every session and every response path (stream, strict, non-stream).
+_UPSTREAM_TOOL_NAME_BAD_RE = re.compile(r"[^A-Za-z0-9_]")
+_UPSTREAM_TOOL_NAME_MAP: dict[str, str] = {}  # sanitized -> original
+
+
+def _sanitize_tool_name(name: str) -> str:
+    return _UPSTREAM_TOOL_NAME_BAD_RE.sub("_", name or "")
+
+
+def _sanitize_tool_names_for_upstream(openai_body: dict) -> int:
+    """Rewrite unsafe tool names in-place; returns how many were renamed.
+
+    Idempotent: already-safe names are untouched, so calling it on a retry is
+    harmless. A rename that would collide with another tool's (native or
+    sanitized) name gets a numeric suffix.
+    """
+    tools = openai_body.get("tools") or []
+    originals = {
+        ((t.get("function") or {}).get("name") or "")
+        for t in tools
+        if isinstance(t, dict) and isinstance(t.get("function"), dict)
+    }
+    renamed: dict[str, str] = {}  # original -> safe
+    taken: set[str] = set()
+    for t in tools:
+        fn = t.get("function") if isinstance(t, dict) else None
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name") or ""
+        safe = _sanitize_tool_name(name)
+        if safe == name:
+            taken.add(name)
+            # A tool that NATIVELY owns this spelling must never be restored
+            # to some other client's hyphenated name left in the global map.
+            _UPSTREAM_TOOL_NAME_MAP.pop(name, None)
+            continue
+        base, i = safe, 2
+        while safe in taken or (safe in originals and safe != name):
+            safe = f"{base}_{i}"
+            i += 1
+        fn["name"] = safe
+        taken.add(safe)
+        renamed[name] = safe
+        _UPSTREAM_TOOL_NAME_MAP[safe] = name
+    if not renamed:
+        return 0
+    # The model must see ONE name per tool: history tool_calls that carry the
+    # original spelling are rewritten too, as is a function-pinned tool_choice.
+    for m in openai_body.get("messages") or []:
+        if not isinstance(m, dict):
+            continue
+        for tc in m.get("tool_calls") or []:
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            if isinstance(fn, dict) and fn.get("name") in renamed:
+                fn["name"] = renamed[fn["name"]]
+    choice = openai_body.get("tool_choice")
+    if isinstance(choice, dict):
+        fn = choice.get("function")
+        if isinstance(fn, dict) and fn.get("name") in renamed:
+            fn["name"] = renamed[fn["name"]]
+    logger.info(
+        "TOOL NAMES: sanitized %d upstream-unsafe tool name(s) for llama.cpp grammar: %s",
+        len(renamed), ", ".join(f"{k}->{v}" for k, v in list(renamed.items())[:6]),
+    )
+    return len(renamed)
+
+
+def _restore_tool_name(name: str) -> str:
+    """The client-facing name for a tool the upstream called by sanitized name."""
+    if not name or not _UPSTREAM_TOOL_NAME_MAP:
+        return name
+    return _UPSTREAM_TOOL_NAME_MAP.get(name, name)
+
+
 def _is_grammar_tools_incompatibility(status_code: int, error_text: str) -> bool:
     if status_code != 400:
         return False
@@ -1963,9 +2053,15 @@ def _is_gemma4_peg_parse_failure(status_code: int, error_text: str) -> bool:
     tool_choice='auto' so the model can emit prose or a complete call
     without grammar enforcement triggering this failure mode.
     """
+    text = error_text or ""
+    # Same remedy for the other grammar-compile failure: HTTP 400 "Failed to
+    # initialize samplers: failed to parse grammar" (a tool schema/name the
+    # builder cannot express under `required`). Relaxing to `auto` lets the
+    # turn proceed on the lazy grammar path instead of killing the stream.
+    if status_code == 400 and "failed to parse grammar" in text.lower():
+        return True
     if status_code != 500:
         return False
-    text = error_text or ""
     return (
         "Failed to parse input at pos" in text
         or "<|tool_call>call:" in text
@@ -8844,6 +8940,12 @@ def _tool_schema_map_from_anthropic_body(anthropic_body: dict) -> dict[str, dict
         if isinstance(name, str) and name:
             schema = tool.get("input_schema")
             schema_map[name] = schema if isinstance(schema, dict) else {}
+            # The upstream calls tools by their SANITIZED name (see
+            # _sanitize_tool_names_for_upstream); a guardrail that only knew the
+            # client's spelling would reject every such call as "unknown tool".
+            safe = _sanitize_tool_name(name)
+            if safe != name and safe not in schema_map:
+                schema_map[safe] = schema_map[name]
     return schema_map
 
 
@@ -9317,6 +9419,9 @@ def _anthropic_tools_by_name(anthropic_body: dict) -> dict[str, dict]:
                 else {}
             )
         tool_map[name] = schema or {}
+        safe = _sanitize_tool_name(name)  # upstream spelling, see schema map above
+        if safe != name and safe not in tool_map:
+            tool_map[safe] = tool_map[name]
     return tool_map
 
 
@@ -11202,7 +11307,7 @@ def openai_to_anthropic_response(
             {
                 "type": "tool_use",
                 "id": tool_use_id,
-                "name": fn.get("name", ""),
+                "name": _restore_tool_name(fn.get("name", "")),
                 "input": args,
             }
         )
@@ -11561,7 +11666,7 @@ async def stream_anthropic_response(
                         initial_args = fn.get("arguments", "")
                         tool_calls_by_index[tc_idx] = {
                             "id": tc_id,
-                            "name": fn.get("name", ""),
+                            "name": _restore_tool_name(fn.get("name", "")),
                             "arguments": initial_args,
                             "block_index": tool_block_index,
                         }
@@ -11749,7 +11854,7 @@ async def stream_anthropic_response(
             for idx, xtc in enumerate(xml_extracted, start=1):
                 fn = xtc.get("function", {})
                 tc_id = xtc.get("id", f"toolu_{uuid.uuid4().hex[:12]}")
-                tc_name = fn.get("name", "")
+                tc_name = _restore_tool_name(fn.get("name", ""))
                 tc_args = fn.get("arguments", "{}")
                 tool_calls_by_index[idx] = {
                     "id": tc_id,
@@ -12379,6 +12484,9 @@ async def messages(request: Request):
             status_code=503,
             media_type="application/json",
         )
+
+    # Last step before the wire: names llama.cpp's grammar builder can parse.
+    _sanitize_tool_names_for_upstream(openai_body)
 
     use_guarded_non_stream = _should_use_guarded_non_stream(
         is_stream,
