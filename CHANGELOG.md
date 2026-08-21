@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.219.0 (2026-08-21)
+
+- feat(delivery): escalate mode — deliver as an escalation point; proxy-safe tool names for llama.cpp
+
+
 ## v1.218.0 (2026-08-20)
 
 - feat(llama): make DFlash2 speculative decoding the default 27B profile
