@@ -6,6 +6,30 @@ import { maybeBoardInjection } from './board-inject.js';
 import { maybeCollaborationInjection } from './collaboration-inject.js';
 import { maybeStateInjection } from '../state/reactor-inject.js';
 import { maybePersistenceInjection } from './persistence-inject.js';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+/**
+ * The project's declared delivery posture, for the per-prompt deliver advice.
+ * `escalate` (enforcement or localMode) means direct edits land and deliver is
+ * the escalation point; anything else keeps the route-substantive-work text.
+ * Read straight from .uap.json: the reactor runs per prompt from the project
+ * cwd and must not drag the full config loader in.
+ */
+export function deliveryPosture(cwd: string = process.cwd()): 'escalate' | 'gated' {
+  try {
+    // Same anchor as the policy gate: a worktree session reads the MAIN checkout's config.
+    const cfg = JSON.parse(readFileSync(join(cwd.split('/.worktrees/')[0], '.uap.json'), 'utf8')) as {
+      delivery?: { enforcement?: string; localMode?: string };
+    };
+    const d = cfg.delivery ?? {};
+    const enforcement = String(d.enforcement ?? process.env.UAP_ENFORCE_DELIVERY ?? 'block').toLowerCase();
+    if (enforcement === 'escalate' || String(d.localMode ?? '').toLowerCase() === 'escalate') return 'escalate';
+  } catch {
+    /* no config: gated default */
+  }
+  return 'gated';
+}
 
 export type ReactorEvent = 'session-start' | 'user-prompt' | 'pre-tool' | 'post-tool' | 'stop' | 'session-end';
 
@@ -205,7 +229,15 @@ export function resolve(
   // work. Route by whether the change needs convergence, not by whether it
   // touches code.
   const deliverInject =
-    isCodeTask && !(ctx.surfaced ?? []).includes(deliverKey)
+    isCodeTask && !(ctx.surfaced ?? []).includes(deliverKey) && deliveryPosture() === 'escalate'
+      ? 'Make code changes DIRECTLY and verify them with the project\'s own build/test ' +
+        'command. The `deliver` tool (or `uap deliver "<one-line description>"`) is an ' +
+        'ESCALATION point, not the default path: call it for a large multi-file feature ' +
+        'or a whole module you would otherwise write blind, or after the gates have failed ' +
+        'twice in a row on your direct edits — it converges the change against the real ' +
+        'gates and reports when they pass. Do not hand it small edits, deletions, renames, ' +
+        'docs, tests, or config; those are yours to make and verify.'
+      : isCodeTask && !(ctx.surfaced ?? []).includes(deliverKey)
       ? 'Route SUBSTANTIVE code changes through the `deliver` tool (or ' +
         '`uap deliver "<one-line description>"`): new files, whole-file rewrites, ' +
         'and edits whose outcome you are not already certain of. Deliver writes ' +

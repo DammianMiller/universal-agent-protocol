@@ -4304,6 +4304,25 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     console.log(judgeDistinct ? chalk.dim(line) : chalk.yellow(line));
   }
 
+  // Escalate mode: a finished deliver run CONSUMES the escalation. On success
+  // it is the green gate; on failure the evidence is cleared too, so the agent
+  // gets its direct edits back instead of being frozen behind "call deliver"
+  // for a run that already ran (the MCP tool always passes --json, so this
+  // must sit BEFORE the json/non-json split).
+  try {
+    // Same anchor as the policy gate: the MAIN checkout, not a worktree.
+    const esc = join(projectRoot.split('/.worktrees/')[0], '.uap', 'escalation-state.json');
+    if (existsSync(esc)) {
+      const now = Math.floor(Date.now() / 1000);
+      writeFileSync(
+        esc,
+        JSON.stringify({ failures: 0, edits_since_green: {}, last_failure: null,
+          last_green: result.success ? { ts: now, source: 'deliver' } : null,
+          last_deliver: { ts: now, success: !!result.success }, updated: now }, null, 1)
+      );
+    }
+  } catch { /* best-effort */ }
+
   if (options.json) {
     const { finalOutput, ...rest } = result;
     console.log(

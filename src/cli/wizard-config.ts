@@ -86,8 +86,8 @@ export interface RecipeFeatures {
 }
 
 export interface DeliveryFeatures {
-  enforcement: 'block' | 'advisory' | 'off';
-  localMode: 'advisory' | 'deliver' | 'block';
+  enforcement: 'block' | 'advisory' | 'off' | 'escalate';
+  localMode: 'advisory' | 'deliver' | 'block' | 'escalate';
   runtimeVerify: boolean;
 }
 

@@ -221,6 +221,16 @@ if [ "$CODE_CHANGED" = "true" ] && [ "${UAP_VERIFY_ON_STOP:-1}" != "0" ] && comm
     fi
     VERIFY_OUT="$(cd "$PROJECT_DIR" && $TIMEOUT_WRAP uap verify --runtime-only $UV_AUTO $ACC_AUTO --dir "$PROJECT_DIR" 2>&1)"
     VERIFY_RC=$?
+    # Evidence for the `escalate` delivery mode: a red verify counts toward the
+    # "escalate to deliver" threshold, a green one clears it. Best-effort.
+    TRACKER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/escalation_tracker.py"
+    if [ -f "$TRACKER" ]; then
+      if [ "$VERIFY_RC" = "1" ]; then
+        (cd "$PROJECT_DIR" && UAP_MAIN_ROOT="$PROJECT_DIR" python3 "$TRACKER" fail --source stop --detail "$(printf '%s' "$VERIFY_OUT" | tail -c 1200)" >/dev/null 2>&1) || true
+      elif [ "$VERIFY_RC" = "0" ]; then
+        (cd "$PROJECT_DIR" && UAP_MAIN_ROOT="$PROJECT_DIR" python3 "$TRACKER" pass --source stop >/dev/null 2>&1) || true
+      fi
+    fi
   fi
   set -e
   # RC 1 = a REAL gate failure (code is broken) → block. Everything else fails

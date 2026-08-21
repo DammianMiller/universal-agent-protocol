@@ -343,23 +343,25 @@ export async function runGuidedSetup(options: SetupOptions, injectedUi?: PromptU
   }
 
   // ── Delivery & runtime gates ────────────────────────────────────────
-  const deliverEnforcement = await ui.select<'block' | 'advisory' | 'off'>({
-    message: 'Delivery enforcement (route code edits through `uap deliver` + gates):',
+  const deliverEnforcement = await ui.select<'block' | 'advisory' | 'off' | 'escalate'>({
+    message: 'Delivery enforcement (when code edits must go through `uap deliver` + gates):',
     options: [
-      { label: 'block — direct edits blocked, must use deliver (recommended)', value: 'block' },
+      { label: 'escalate — direct edits land; deliver after 2 red gates / churn / whole-module writes (recommended)', value: 'escalate' },
+      { label: 'block — every substantive edit blocked, must use deliver (unattended runs)', value: 'block' },
       { label: 'advisory — warn but allow direct edits', value: 'advisory' },
       { label: 'off — no delivery enforcement', value: 'off' },
     ],
-    initialValue: 'block',
+    initialValue: 'escalate',
   });
-  const localDeliverMode = await ui.select<'advisory' | 'deliver' | 'block'>({
-    message: 'Local-model deliver mode (how local builds are gated):',
+  const localDeliverMode = await ui.select<'advisory' | 'deliver' | 'block' | 'escalate'>({
+    message: 'Local-model deliver mode (how a local model resolves a block posture):',
     options: [
+      { label: 'escalate — direct edits land; deliver is the escalation point (recommended)', value: 'escalate' },
       { label: 'advisory — record intent only', value: 'advisory' },
-      { label: 'deliver — route local builds through deliver + verify', value: 'deliver' },
+      { label: 'deliver — route every substantive local edit through deliver + verify', value: 'deliver' },
       { label: 'block — block local edits without deliver', value: 'block' },
     ],
-    initialValue: 'advisory',
+    initialValue: 'escalate',
   });
   const runtimeVerify = await ui.confirm({
     message: 'Install the runtime-verify Stop-hook (`uap verify` proves generated code runs at session end)?',

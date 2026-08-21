@@ -71,7 +71,7 @@ export UAP_WORKTREE_ROOT="$CHECKOUT_ROOT"
 #      in .bashrc) can NOT silently downgrade a project configured to `block`
 #      and let the agent bypass deliver. `delivery.localMode` is read the same
 #      authoritative way and selects how a local-model session resolves block
-#      (advisory|deliver|block — see delivery_enforcement.py).
+#      (advisory|deliver|block|escalate — see delivery_enforcement.py).
 #   2. ambient UAP_ENFORCE_DELIVERY (operator/CI per-run override) when the
 #      project declares nothing.
 #   3. default: block.
@@ -83,7 +83,7 @@ import json, sys
 try:
     d = (json.load(open(sys.argv[1])).get("delivery") or {})
     e = str(d.get("enforcement", "")).lower()
-    print("%s|%s" % (e if e in ("block", "advisory", "off") else "", str(d.get("localMode", "")).lower()))
+    print("%s|%s" % (e if e in ("block", "advisory", "off", "escalate") else "", str(d.get("localMode", "")).lower()))
 except Exception:
     print("|")
 ' "$MAIN_ROOT/.uap.json" 2>/dev/null || echo "|")"
@@ -168,7 +168,7 @@ if not hit and cmd:
             if hit:
                 break
 bypass = re.search(
-    r"UAP_DELIVER_BYPASS\s*=\s*[\x27\"]?1|UAP_ENFORCE_DELIVERY\s*=\s*[\x27\"]?(advisory|off|0|false|no)"
+    r"UAP_DELIVER_BYPASS\s*=\s*[\x27\"]?1|UAP_ENFORCE_DELIVERY\s*=\s*[\x27\"]?(advisory|off|escalate|0|false|no)"
     r"|UAP_SELF_PROTECT_OFF\s*=\s*[\x27\"]?1|UAP_NO_WORKTREE\s*=\s*[\x27\"]?1"
     r"|UAP_WORKDIR_SCOPE_OFF\s*=\s*[\x27\"]?1|UAP_USER_VALIDATION\s*=\s*[\x27\"]?0"
     r"|UAP_DELIVER_NO_LOCK\s*=\s*[\x27\"]?1|UAP_NO_REVIEW\s*=\s*[\x27\"]?1"
@@ -293,7 +293,7 @@ record_execution() {
   local esc_args esc_reason
   esc_args="$(printf '%s' "$ARGS" | sed "s/'/''/g")"
   esc_reason="$(printf '%s' "$reason" | sed "s/'/''/g" | cut -c1-500)"
-  sqlite3 "$DB" "INSERT INTO policy_executions
+  sqlite3 -cmd ".timeout 5000" "$DB" "INSERT INTO policy_executions
     (policyId, toolName, operation, args, result, allowed, reason, executedAt)
     VALUES ('$pid', '${TOOL//\'/\'\'}', '${TOOL//\'/\'\'}', '$esc_args',
             '{}', $allowed, '$esc_reason', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
@@ -463,7 +463,7 @@ except: print("")' 2>/dev/null || echo "")"
 # first, and the agent saw the wrong routing message. Honor priority now so
 # the intended policy fires first. (Blocking short-circuits at exit 2, so the
 # highest-priority applicable block wins.) Name is the stable tiebreak.
-done < <(sqlite3 "$DB" "SELECT p.id, p.name, t.toolName FROM policies p JOIN executable_tools t ON t.policyId=p.id WHERE p.isActive=1 ORDER BY p.priority DESC, p.name ASC;")
+done < <(sqlite3 -cmd ".timeout 5000" "$DB" "SELECT p.id, p.name, t.toolName FROM policies p JOIN executable_tools t ON t.policyId=p.id WHERE p.isActive=1 ORDER BY p.priority DESC, p.name ASC;")
 
 # A sensitive op that no self-protect enforcer ever evaluated = the control
 # surface is unguarded (self-protect not registered/active). Fail closed.
