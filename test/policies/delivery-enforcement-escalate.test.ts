@@ -77,6 +77,7 @@ describe('delivery-enforcement: escalate mode', () => {
 
   it('a green gate clears the evidence and direct edits resume', () => {
     track('fail', '--detail', 'boom');
+    track('edit', '--file', 'src/a.rs'); // an attempt between the two reds
     track('fail', '--detail', 'boom');
     expect(run('Edit', editArgs()).allowed).toBe(false);
     track('pass', '--source', 'verify');
@@ -105,6 +106,7 @@ describe('delivery-enforcement: escalate mode', () => {
 
   it('still fast-paths trivial edits and still WAITs on a live deliver run', () => {
     track('fail', '--detail', 'boom');
+    track('edit', '--file', 'src/a.rs'); // an attempt between the two reds
     track('fail', '--detail', 'boom');
     const tiny = run('Edit', { filePath: join(root, 'src/a.rs'), oldString: 'a', newString: 'bb' });
     expect(tiny.allowed).toBe(true);
@@ -125,6 +127,7 @@ describe('delivery-enforcement: escalate mode', () => {
     const cmd = 'cat > src/c.rs <<EOF\nfn main(){}\nEOF';
     expect(run('Bash', { command: cmd }).allowed).toBe(true);
     track('fail', '--detail', 'boom');
+    track('edit', '--file', 'src/a.rs'); // an attempt between the two reds
     track('fail', '--detail', 'boom');
     const r = run('Bash', { command: cmd });
     expect(r.allowed).toBe(false);
@@ -133,6 +136,7 @@ describe('delivery-enforcement: escalate mode', () => {
 
   it('ignores stale evidence (TTL) so yesterday\'s red build does not gate today', () => {
     track('fail', '--detail', 'boom');
+    track('edit', '--file', 'src/a.rs'); // an attempt between the two reds
     track('fail', '--detail', 'boom');
     const p = join(root, '.uap', 'escalation-state.json');
     const st = JSON.parse(readFileSync(p, 'utf8'));
