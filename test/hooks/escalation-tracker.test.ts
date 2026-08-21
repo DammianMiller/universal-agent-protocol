@@ -44,8 +44,9 @@ describe('escalation_tracker', () => {
     track('fail', '--detail', 'error[E0425]: cannot find value `x` in src/a.rs:10');
     track('fail', '--detail', "thread 'hash::tests::t' (2611998) panicked at src/hash.rs:130:26:\nattempt to multiply with overflow");
     expect(state().failures).toBe(1); // different problem -> streak restarts
+    track('edit', '--file', 'src/hash.rs'); // an attempt...
     track('fail', '--detail', "thread 'hash::tests::t' (2612777) panicked at src/hash.rs:130:26:\nattempt to multiply with overflow");
-    expect(state().failures).toBe(2); // same wall (thread id differs, signature does not)
+    expect(state().failures).toBe(2); // ...and the same wall (thread id differs, signature does not)
     track('fail', '--detail', 'test result: FAILED. 1 passed; 1 failed');
     expect(state().failures).toBe(1);
   });
