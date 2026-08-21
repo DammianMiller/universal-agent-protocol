@@ -386,6 +386,7 @@ def _record_escalation_edit(root: Path, rel: str) -> None:
     edits = st.get("edits_since_green") if isinstance(st.get("edits_since_green"), dict) else {}
     edits[rel] = int(edits.get(rel, 0)) + 1
     st["edits_since_green"] = edits
+    st["edits_total"] = int(st.get("edits_total") or 0) + 1  # attempt counter (tracker reads it)
     st.setdefault("failures", 0)
     st["updated"] = int(_time.time())
     try:

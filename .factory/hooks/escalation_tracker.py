@@ -169,9 +169,19 @@ def record_fail(source: str, detail: str, root: Path | None = None) -> dict:
     sig = failure_signature(detail)
     prev = st.get("last_failure") if isinstance(st.get("last_failure"), dict) else None
     prev_sig = (prev or {}).get("sig")
+    edits_total = int(st.get("edits_total") or 0)
+    _ep = (prev or {}).get("edits_total")
+    edits_at_prev = int(_ep) if isinstance(_ep, (int, float)) else -1  # 0 is a real value
     if prev_sig and sig and sig != prev_sig:
         st["failures"] = 1
         st["streak_reset"] = {"ts": int(time.time()), "from": prev_sig[:120], "to": sig[:120]}
+    elif prev_sig and sig == prev_sig and edits_total == edits_at_prev:
+        # The SAME failure observed again with no edit in between (idle/stop
+        # verify hooks re-run the gates every time the session pauses). That is
+        # a re-observation, not another failed attempt — the streak must not
+        # grow while the agent has not tried anything. Observed live: 4 "failures"
+        # from one red user-path test across four idle pauses.
+        st["reobserved"] = int(st.get("reobserved") or 0) + 1
     else:
         st["failures"] = int(st.get("failures") or 0) + 1
     st["last_failure"] = {
@@ -179,6 +189,7 @@ def record_fail(source: str, detail: str, root: Path | None = None) -> dict:
         "source": source or "unknown",
         "detail": (detail or "")[-DETAIL_MAX:],
         "sig": sig,
+        "edits_total": edits_total,
     }
     save_state(st, root)
     return st
@@ -199,6 +210,7 @@ def record_edit(rel: str, root: Path | None = None) -> dict:
     edits = st.get("edits_since_green") or {}
     edits[rel] = int(edits.get(rel, 0)) + 1
     st["edits_since_green"] = edits
+    st["edits_total"] = int(st.get("edits_total") or 0) + 1  # monotonic: "an attempt happened"
     save_state(st, root)
     return st
 
