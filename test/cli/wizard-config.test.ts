@@ -262,6 +262,6 @@ describe('writeProxyEnv', () => {
     const env = readFileSync(p as string, 'utf-8');
     expect(env).toContain('PROXY_CONFIDENCE_ESCALATE=off');
     expect(env).not.toContain('PROXY_ESCALATE_API_KEY');
-    expect(env).toContain('UAP_DELIVER_LOCAL_MODE=advisory');
+    expect(env).toContain('UAP_DELIVER_LOCAL_MODE=escalate');
   });
 });
