@@ -52,6 +52,8 @@ export interface DeliverArgs {
   model?: string;
   /** Only classify complexity + show the plan; do not call the model */
   dryRun?: boolean;
+  /** Run even when deliver would refuse the mission as a trivial direct edit (escalate posture) */
+  force?: boolean;
   /** Hard wall-clock cap in seconds (default 1800) */
   timeoutSec?: number;
   /**
@@ -155,6 +157,11 @@ Best for: implement a feature, fix a bug across files, refactor with tests — a
       acceptance: {
         type: 'boolean',
         description: 'After objective gates pass, judge spec behavioral completeness (LLM) and iterate on unmet requirements (auto-on for moderate/complex tasks)',
+      },
+      force: {
+        type: 'boolean',
+        description:
+          'Under the escalate delivery posture deliver REFUSES a mission that reads as a small single-file edit (remove/rename/typo/line N…) and tells you to make it directly. Pass true only when such a change genuinely needs the convergence loop.',
       },
       evaluatorModel: {
         type: 'string',
@@ -352,6 +359,7 @@ export function buildDeliverCliArgs(
   if (a.hardCap === true && a.maxTurns !== undefined) cliArgs.push('--max-turns', String(a.maxTurns));
   if (a.model) cliArgs.push('--model', a.model);
   if (a.acceptance) cliArgs.push('--acceptance');
+  if (a.force) cliArgs.push('--force');
   if (a.evaluatorModel) cliArgs.push('--evaluator-model', a.evaluatorModel);
   if (a.escalate) cliArgs.push('--escalate');
   if (a.coordinate) cliArgs.push('--coordinate');
@@ -484,9 +492,23 @@ export function handleDeliver(args: DeliverArgs): Promise<DeliverResult> {
           success?: boolean;
           alreadyDelivered?: boolean;
           alreadyRunning?: boolean;
+          trivialMission?: boolean;
           holderPid?: string;
           nextStep?: string;
         };
+        // A refused trivial mission is an ANSWER, not a broken tool: the one
+        // correct next move (edit it yourself) travels in `error` so the caller
+        // reads it first and does not relaunch.
+        if (r.trivialMission === true) {
+          resolvePromise({
+            ok: false,
+            dryRun,
+            exitCode,
+            error: r.nextStep ?? 'deliver refused a trivial mission: make the edit directly (or pass force:true).',
+            result: parsed,
+          });
+          return;
+        }
         // A duplicate launch is NOT a failure of the mission — the mission is
         // running. Saying only `ok:false` invites the caller to retry, which is
         // what produced the observed loop: timeout -> relaunch -> duplicate ->

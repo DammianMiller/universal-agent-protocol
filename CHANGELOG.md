@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.220.0 (2026-08-21)
+
+- feat(deliver): trivial-mission guard — refuse one-line missions under the escalate posture
+- chore(hooks): sync mirrored gate/stop hook copies + ship escalation_tracker.py beside each stop.sh
+
+
 ## v1.219.0 (2026-08-21)
 
 - feat(delivery): escalate mode — deliver as an escalation point; proxy-safe tool names for llama.cpp
