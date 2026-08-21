@@ -120,8 +120,8 @@ def decide(out: dict, tool: str, args: dict, autoroute_on: bool, seen_files: set
     edit_intent = out.get("editIntent") or {
         k: v
         for k, v in (
-            ("old_string", args.get("old_string")),
-            ("new_string", args.get("new_string")),
+            ("old_string", args.get("old_string", args.get("oldString"))),
+            ("new_string", args.get("new_string", args.get("newString"))),
             ("content", args.get("content")),
         )
         if isinstance(v, str)
