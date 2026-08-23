@@ -248,6 +248,38 @@ export function gatherEvidence(
     }
   }
   walk(root, 0);
+  // Suffix-resolution pass: specs routinely name files by a SHORT relative
+  // path ("signal_processing/mod.rs") while the file lives deeper in the tree
+  // ("src/rust-pg-ext/src/signal_processing/mod.rs"). The literal join above
+  // then misses, the file stays at prio 0 among dozens of siblings, and the
+  // judge sees only its 600-char head — reporting implemented code as
+  // "not visible" (observed live 2026-08-23: biquad DC-gain normalization at
+  // signal_processing/mod.rs:42-51 judged MISS because the spec's
+  // "signal_processing/mod.rs" never resolved to the real path). For every
+  // spec-referenced path that did NOT resolve literally, promote any walked
+  // file whose path ENDS WITH that suffix to prio -1.
+  if (spec) {
+    const unresolved = specReferencedPaths(spec).filter((rel) => {
+      if (rel.includes('..')) return false;
+      try {
+        return !lstatSync(join(root, rel)).isFile();
+      } catch {
+        return true;
+      }
+    });
+    if (unresolved.length > 0) {
+      for (const f of files) {
+        if (f.prio < 0) continue; // already promoted
+        const rel = relative(root, f.abs);
+        for (const rel2 of unresolved) {
+          if (rel === rel2 || rel.endsWith('/' + rel2)) {
+            f.prio = -2;
+            break;
+          }
+        }
+      }
+    }
+  }
   // User-validation report: agents/ is in SKIP_DIRS so the walk never reaches
   // it — inject explicitly at prio -2 (beats even spec-referenced files). The
   // report shows the judge what a REAL USER observed (per-step evidence,
