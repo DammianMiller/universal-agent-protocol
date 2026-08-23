@@ -364,6 +364,12 @@ PROXY_CONTEXT_RELEASE_THRESHOLD = float(
 PROXY_STUCK_BREAK = os.environ.get("PROXY_STUCK_BREAK", "on").lower() not in {
     "0", "false", "off", "no",
 }
+# After this many STUCK-BREAK fires in a session the break becomes HARD: the
+# tools are removed from that turn so the only possible reply is prose, which
+# ends the client's agent loop. The advisory break alone (directive + released
+# tool_choice) is ignored by a weak local model: observed 2026-08-23, the same
+# bash call repeated 13+ turns with fires=33 and not one prose reply. 0 = never.
+PROXY_STUCK_BREAK_HARD_FIRES = int(os.environ.get("PROXY_STUCK_BREAK_HARD_FIRES", "3"))
 # Self-reported-stuck phrases (lowercased match). Deliberately narrow.
 _STUCK_PHRASE_RE = re.compile(
     r"stuck in a loop|been stuck|break out of (?:this|the) loop|going in circles|"
@@ -6408,6 +6414,31 @@ def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> N
     else:
         msgs.insert(0, {"role": "system", "content": directive.strip()})
     openai_body["messages"] = msgs  # reattach in case messages was empty/absent
+    # HARD tier: the directive has been ignored PROXY_STUCK_BREAK_HARD_FIRES
+    # times -- stop offering the tool at all. With no tools the model can only
+    # answer in prose; the response-side XML resurrection is suppressed for
+    # this turn so a "<tool_call>" written into the text cannot re-arm the loop
+    # (same mechanism the finalize turn uses). Per-turn: the flag is cleared at
+    # the next request entry and the tools come back with the next user turn.
+    hard = PROXY_STUCK_BREAK_HARD_FIRES > 0 and monitor.stuck_break_fires >= PROXY_STUCK_BREAK_HARD_FIRES
+    if hard:
+        stripped = len(openai_body.get("tools") or [])
+        openai_body.pop("tools", None)
+        openai_body.pop("tool_choice", None)
+        openai_body.pop("grammar", None)
+        monitor.suppress_text_tool_extraction = True
+        if msgs and msgs[0].get("role") == "system":
+            msgs[0]["content"] = (msgs[0].get("content") or "") + (
+                "\n\nTools are NOT available this turn. Reply in plain text only: "
+                "what is done, what the repeated call returned, and the single next "
+                "step or blocking question."
+            )
+        logger.warning(
+            "STUCK-BREAK HARD: tools stripped for this turn (%s, fires=%d, stripped=%d) -- "
+            "the advisory break was ignored; forcing a prose exit",
+            reason, monitor.stuck_break_fires, stripped,
+        )
+        return
     logger.warning("STUCK-BREAK: forced terminal turn (%s, fires=%d)", reason, monitor.stuck_break_fires)
 
 
