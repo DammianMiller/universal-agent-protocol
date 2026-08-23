@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.220.5 (2026-08-23)
+
+- fix(proxy): STUCK-BREAK hard tier — strip tools after repeated ignored breaks
+- chore: bump version to 1.220.4
+- fix(delivery): suffix-resolution pass for spec-referenced paths in evidence
+
+
 ## v1.220.3 (2026-08-21)
 
 - test(escalation): signature test models an attempt between two identical reds
