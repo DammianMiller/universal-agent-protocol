@@ -463,6 +463,11 @@ export interface DeliverOptions {
   /** commander sets this false when --no-protect-tests is passed (default
    * true): refuse model writes to pre-existing test/spec files */
   protectTests?: boolean;
+  /** commander sets this true when --protect-iac is passed (default
+   * false): refuse model writes to deploy/IaC files (Dockerfile, compose,
+   * *.tf, pulumi, serverless). Also settable via .uap.json
+   * `delivery.protectIac`. */
+  protectIac?: boolean;
   /** Path polled each turn for operator guidance — steer a running mission
    * without stopping it by writing to this file. */
   guidanceFile?: string;
@@ -2011,6 +2016,11 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // the DEFAULT path (no --acceptance) silent, which is the more common way to
   // hit this.
   const cfgRawEarlyForUv = cfgRawEarlyForUvFactory(projectRoot);
+  // IaC protection: CLI flag wins, else .uap.json delivery.protectIac, else
+  // permissive default (false).
+  const protectIac =
+    options.protectIac ??
+    ((cfgRawEarlyForUv()?.delivery as Record<string, unknown> | undefined)?.protectIac === true);
   // Baseline-delta gating: a required rung that is ALREADY red cannot be a
   // regression this mission causes, but it makes acceptance unreachable and
   // eats the whole turn budget (two live missions wedged this way). Preflight
@@ -2102,6 +2112,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       deploy: Boolean(options.deploy),
       protectTests: options.protectTests !== false,
       protectedTestFiles: options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles.size : 0,
+      protectIac,
       guidanceFile: options.guidanceFile ? resolve(options.guidanceFile) : null,
       untilDelivered,
       ceiling: untilDelivered ? (maxTurnsCeiling ?? DEFAULT_CLI_CEILING) : null,
@@ -2146,6 +2157,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       console.log(`  Deploy queue on success: ${summary.deploy ? 'on' : 'off'}`);
       console.log(
         `  Test protection: ${summary.protectTests ? `on (${summary.protectedTestFiles} pre-existing test/oracle file(s))` : 'off'}`
+      );
+      console.log(
+        `  IaC protection: ${summary.protectIac ? 'on (Dockerfile/compose/terraform writes blocked)' : 'off (permissive — IaC writes allowed)'}`
       );
       console.log(`  Guidance file: ${summary.guidanceFile ?? 'none (mission runs unattended)'}`);
       console.log(
@@ -2417,6 +2431,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         // Block gate-config / IaC rigging in the agentic path too (it bypasses
         // the file-block applier where this protection otherwise lives).
         protectGateConfigs: options.protectTests !== false,
+        protectIac,
         // run_bash is an uncontained host shell unsandboxed — allow it only
         // under `uap sandbox` (auto-detected) or an explicit opt-in (audit X3).
         allowBash: options.allowBash === true || process.env.UAP_DELIVER_ALLOW_BASH === '1',
@@ -2967,6 +2982,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     criticFactory: (ex) => createModelCritic(agentic ? jsonBlindExecutor : ex),
     practiceProvider,
     protectTests: options.protectTests,
+    protectIac,
     // Runtime-integrity snapshot set beyond the auto-detected tests/oracle:
     //  - the self-authored gate script (X1), and
     //  - existing gate-config + package/lockfiles (X5) — the applier blocks the
@@ -2977,7 +2993,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
       ? {
           extraProtectedPaths: [
             ...(needsSelfGate ? ['.uap-deliver/verify.sh'] : []),
-            ...listGateConfigFiles(projectRoot),
+            ...listGateConfigFiles(projectRoot, 2, 'test'),
           ],
         }
       : {}),
@@ -3400,8 +3416,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const mergeProtected = new Set<string>(
       [
         ...(options.protectTests !== false
-          ? [...snapshotProtection(projectRoot).protectedFiles, ...listGateConfigFiles(projectRoot)]
+          ? [...snapshotProtection(projectRoot).protectedFiles, ...listGateConfigFiles(projectRoot, 2, 'test')]
           : []),
+        ...(protectIac ? listGateConfigFiles(projectRoot, 2, 'iac') : []),
         // Locked contract files are read-only for later epics; the merge
         // boundary re-checks them like the other protected surfaces instead
         // of trusting the in-worktree write_file guard transitively.
@@ -3498,6 +3515,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
                 protectedFiles:
                   options.protectTests !== false ? snapshotProtection(root).protectedFiles : new Set<string>(),
                 protectGateConfigs: options.protectTests !== false,
+                protectIac,
                 allowBash: options.allowBash === true || process.env.UAP_DELIVER_ALLOW_BASH === '1',
                 onEvent: (e) =>
                   console.log(
@@ -3967,6 +3985,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
           redetectRungs: true,
           redetectFilter: loopConfig.redetectFilter,
           protectTests: options.protectTests,
+          protectIac,
           // The acceptance contract is a REQUIREMENT spec, not a convergence aid:
           // carry it into the bare turn so a one-shot build already exposes the
           // journeys/selectors the gate will drive (otherwise the lazy turn builds

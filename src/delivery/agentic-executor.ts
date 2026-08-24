@@ -336,13 +336,20 @@ export interface AgenticExecutorOptions {
    */
   contractFiles?: ReadonlySet<string>;
   /**
-   * Block writes to gate-config / IaC files (tsconfig, vitest/jest config,
-   * docker-compose, Dockerfile, *.tf, serverless, …) and protected segments
-   * (.github, .git, node_modules). Mirrors the applier's protectGateConfigs so
-   * the agentic path cannot rig the (now tiered) gates the file-block applier
-   * already protects. Default true.
+   * Block writes to test-runner/compiler config files (tsconfig, vitest/jest
+   * config, pytest.ini, …) and protected segments (.github, .git,
+   * node_modules). Mirrors the applier's protectGateConfigs so the agentic
+   * path cannot rig the (now tiered) gates the file-block applier already
+   * protects. Default true.
    */
   protectGateConfigs?: boolean;
+  /**
+   * Block writes to deploy/IaC files (Dockerfile, docker-compose, *.tf,
+   * pulumi, serverless). Separate from protectGateConfigs so operators can
+   * keep test-config protection while allowing IaC edits. Default false
+   * (permissive) — IaC writes are allowed unless explicitly protected.
+   */
+  protectIac?: boolean;
   /** Optional sink for a structured trace of what the agent did. */
   onEvent?: (event: AgenticEvent) => void;
   /**
@@ -1441,7 +1448,8 @@ export function runTool(
   // Turn-end substance sweep. runTool is the only place that knows the
   // NORMALIZED path a write landed on and whether it succeeded, so attribution
   // is recorded here rather than reconstructed by the caller.
-  sweep: BashSweep = disabledSweep()
+  sweep: BashSweep = disabledSweep(),
+  protectIac: boolean = false
 ): string {
   let pathNote = '';
   // Contain/repair garbled tool-call paths against the known project root before
@@ -1559,7 +1567,7 @@ export function runTool(
       // applier, so enforce the same blocklist here or the model can rig the
       // (tiered) gates by writing tsconfig/compose/Dockerfile/*.tf/etc.
       const rel = relative(projectRoot, abs).split(/[\\/]/).join('/');
-      const blocked = protectedWritePathReason(rel, protectGateConfigs);
+      const blocked = protectedWritePathReason(rel, protectGateConfigs, protectIac);
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
       }
@@ -1687,7 +1695,7 @@ export function runTool(
       if (protectedTestEdit && !isTestFilePath(rel)) {
         return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
       }
-      const blocked = protectedWritePathReason(rel, protectGateConfigs);
+      const blocked = protectedWritePathReason(rel, protectGateConfigs, protectIac);
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
       }
@@ -1835,7 +1843,7 @@ export function runTool(
       if (protectedTestRange && !isTestFilePath(rel)) {
         return `ERROR: ${String(args.path)} is a protected test/oracle file — refusing to modify it. Change the implementation, not the test.`;
       }
-      const blocked = protectedWritePathReason(rel, protectGateConfigs);
+      const blocked = protectedWritePathReason(rel, protectGateConfigs, protectIac);
       if (blocked) {
         return `ERROR: ${String(args.path)}: ${blocked}. Change the implementation, not the gate.`;
       }
@@ -2195,6 +2203,7 @@ export function createAgenticExecutor(
   // Live reference — the epic controller grows this Set between epics.
   const contractFiles = opts.contractFiles ?? EMPTY_SET;
   const protectGateConfigs = opts.protectGateConfigs ?? true;
+  const protectIac = opts.protectIac ?? false;
   // run_bash executes only when kernel-contained (uap sandbox sets
   // UAP_SANDBOX_ACTIVE=1) or the operator explicitly opts in (audit X3).
   const allowBash =
@@ -2435,7 +2444,8 @@ export function createAgenticExecutor(
               protectGateConfigs,
               allowBash,
               contractFiles,
-              sweep
+              sweep,
+              protectIac
             );
             opts.onEvent?.({
               round,
@@ -2590,7 +2600,8 @@ export function createAgenticExecutor(
           protectGateConfigs,
           allowBash,
           contractFiles,
-          sweep
+          sweep,
+          protectIac
         );
         // #2a: per-tool-call progress — refresh the deliver heartbeat now, not
         // just at turn end, so wedge-detection tracks real intra-turn activity.

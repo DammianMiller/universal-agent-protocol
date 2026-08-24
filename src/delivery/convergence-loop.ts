@@ -383,6 +383,12 @@ export interface ConvergenceConfig {
    */
   protectTests?: boolean;
   /**
+   * Refuse model writes to deploy/IaC files (Dockerfile, compose, *.tf,
+   * pulumi, serverless). Separate from protectTests so operators can keep
+   * test protection while allowing IaC edits. Default false (permissive).
+   */
+  protectIac?: boolean;
+  /**
    * Extra project-relative paths to include in the runtime integrity snapshot
    * beyond the auto-detected tests/oracle — e.g. the self-authored acceptance
    * gate script (`.uap-deliver/verify.sh`), which the model could otherwise
@@ -1258,8 +1264,19 @@ export class ConvergenceLoop {
     // tampering, same as a test-file mutation.
     if (protectTests) {
       try {
-        const cfgs = listGateConfigFiles(this.config.projectRoot);
+        const cfgs = listGateConfigFiles(this.config.projectRoot, 2, 'test');
         if (cfgs.length > 0) protectedList = [...new Set([...(protectedList ?? []), ...cfgs])];
+      } catch {
+        /* fail-soft: capture stays as it was */
+      }
+    }
+    // IaC/deploy configs join the capture only when protectIac is on
+    // (default false = permissive — IaC edits are allowed).
+    const protectIac = this.config.protectIac ?? false;
+    if (protectIac) {
+      try {
+        const iacCfgs = listGateConfigFiles(this.config.projectRoot, 2, 'iac');
+        if (iacCfgs.length > 0) protectedList = [...new Set([...(protectedList ?? []), ...iacCfgs])];
       } catch {
         /* fail-soft: capture stays as it was */
       }
@@ -1282,8 +1299,12 @@ export class ConvergenceLoop {
     } catch {
       /* fail-soft */
     }
-    const applyOptions: ApplyOptions | undefined = protectTests
-      ? { protectedFiles, protectGateConfigs: true }
+    const applyOptions: ApplyOptions | undefined = protectTests || protectIac
+      ? {
+          protectedFiles,
+          protectGateConfigs: protectTests,
+          protectIac,
+        }
       : undefined;
 
     // Runtime tamper guard: the applier filter cannot stop a model-authored
