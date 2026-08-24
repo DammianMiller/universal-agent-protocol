@@ -688,6 +688,7 @@ program
   .option('--optimize', 'Enable every convergence aid: exploration, critic, practices, escalation, ideation, HALO, coordination')
   .option('--no-auto', 'Disable dynamic optimization (by default the task is classified and matching aids enable automatically)')
   .option('--no-protect-tests', 'Allow the model to modify pre-existing test files (protected by default)')
+  .option('--protect-iac', 'Refuse model writes to deploy/IaC files (Dockerfile, compose, *.tf, pulumi, serverless) — permissive by default; also settable via .uap.json delivery.protectIac')
   .option('--guidance-file <path>', 'Poll this file each turn for operator guidance; steer a running mission (write to the file) without stopping it')
   .option('--no-until-delivered', 'Disable loop-until-delivered (ON by default: extends past --max-turns to a ceiling, stopping on stagnation)')
   .option('--ceiling <n>', 'Hard turn ceiling for until-delivered (1-50, default 30)')

@@ -139,6 +139,11 @@ export const SETTINGS: readonly SettingDef[] = [
     description: 'When set to 1 for a single command, exempts that one sanctioned manual edit from the delivery gate.',
     recommendation: 'Use inline (`UAP_DELIVER_BYPASS=1 <cmd>`) for a one-off edit; never export it.',
   },
+  {
+    key: 'delivery.protectIac', kind: 'json', type: 'boolean', default: false, category: 'delivery',
+    description: 'Refuse model writes to deploy/IaC files (Dockerfile, docker-compose, *.tf, *.tfvars, pulumi, serverless) during `uap deliver`. Permissive by default (false) so the model can edit IaC freely; set true to block IaC writes and snapshot/restore them against run_bash tampering. The `--protect-iac` CLI flag overrides this per-run.',
+    recommendation: 'Leave false (permissive) for most projects — IaC edits are legitimate deliverable work. Set true only when the deploy topology is a fixed trust anchor the mission must not alter.',
+  },
 
   // ── Verification gates ────────────────────────────────────────────────────
   {

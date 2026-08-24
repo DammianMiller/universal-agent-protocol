@@ -69,6 +69,13 @@ export interface ApplyOptions {
    * instead of modifying the tests the gates run.
    */
   protectGateConfigs?: boolean;
+  /**
+   * Reject writes to deploy/IaC files (Dockerfile, docker-compose, *.tf,
+   * pulumi, serverless). Separate from protectGateConfigs so operators can
+   * keep test-config protection while allowing IaC edits. Default false
+   * (permissive) — IaC writes are allowed unless explicitly protected.
+   */
+  protectIac?: boolean;
 }
 
 export type Applier = (
@@ -135,14 +142,12 @@ const PROTECTED_BASENAMES = new Set([
 ]);
 
 /**
- * Config files that control what the gates run or how strictly they check.
- * Writing these is gate-rigging by indirection: repointing vitest/jest
- * include globs or relaxing tsconfig defeats spec protection without
- * touching a single test file. The deploy/IaC entries extend the same logic
- * to the deploy-dev and CI tiers: editing what "deploy" means (compose,
- * Dockerfile, terraform, serverless) rigs the deploy gate the same way.
+ * Test-runner/compiler config files that control what the gates run or how
+ * strictly they check. Writing these is gate-rigging by indirection:
+ * repointing vitest/jest include globs or relaxing tsconfig defeats spec
+ * protection without touching a single test file.
  */
-const GATE_CONFIG_RES = [
+const TEST_GATE_CONFIG_RES = [
   /^tsconfig[^/]*\.json$/,
   /^vitest\.(config|workspace)\.[^/]+$/,
   /^jest\.config\.[^/]+$/,
@@ -161,7 +166,14 @@ const GATE_CONFIG_RES = [
   // eslint.config.js (139/157 lines) to dodge a red lint rung.
   /^eslint\.config\.[^/]+$/,
   /^\.eslintrc(\.[^/]+)?$/,
-  // Deploy / IaC gate inputs (deploy-dev + CI tiers).
+];
+
+/**
+ * Deploy / IaC gate inputs (deploy-dev + CI tiers). Editing what "deploy"
+ * means (compose, Dockerfile, terraform, serverless) rigs the deploy gate.
+ * Governed by protectIac (default false = permissive).
+ */
+const IAC_GATE_CONFIG_RES = [
   /^docker-compose(\.[^/]+)?\.ya?ml$/,
   /^compose(\.[^/]+)?\.ya?ml$/,
   /^dockerfile$/,
@@ -172,10 +184,20 @@ const GATE_CONFIG_RES = [
   /^serverless\.ya?ml$/,
 ];
 
+/** All gate-config patterns (test + IaC), for the integrity snapshot. */
+const GATE_CONFIG_RES = [...TEST_GATE_CONFIG_RES, ...IAC_GATE_CONFIG_RES];
+
 /** True when a basename is a test-runner/compiler config (gate input). */
-export function isGateConfigBasename(base: string): boolean {
+export function isGateConfigBasename(base: string, category?: 'test' | 'iac' | 'all'): boolean {
   const lower = base.toLowerCase();
+  if (category === 'test') return TEST_GATE_CONFIG_RES.some((re) => re.test(lower));
+  if (category === 'iac') return IAC_GATE_CONFIG_RES.some((re) => re.test(lower));
   return GATE_CONFIG_RES.some((re) => re.test(lower));
+}
+
+/** True when a basename is a deploy/IaC config (Dockerfile, compose, *.tf…). */
+export function isIacBasename(base: string): boolean {
+  return isGateConfigBasename(base, 'iac');
 }
 
 /** True when a basename is package.json / a lockfile / an npm rc (gate input). */
@@ -195,7 +217,11 @@ export function isProtectedBasename(base: string): boolean {
  * or near the root; a full-tree scan isn't worth the cost. Fail-soft: an
  * unreadable dir contributes nothing.
  */
-export function listGateConfigFiles(projectRoot: string, maxDepth = 2): string[] {
+export function listGateConfigFiles(
+  projectRoot: string,
+  maxDepth = 2,
+  category: 'test' | 'iac' | 'all' = 'all'
+): string[] {
   const out: string[] = [];
   const walk = (dir: string, depth: number): void => {
     if (depth > maxDepth) return;
@@ -209,7 +235,7 @@ export function listGateConfigFiles(projectRoot: string, maxDepth = 2): string[]
       if (e.isDirectory()) {
         if (WALK_SKIP_SEGMENTS.has(e.name) || e.name.startsWith('.')) continue;
         walk(join(dir, e.name), depth + 1);
-      } else if (e.isFile() && (isGateConfigBasename(e.name) || isProtectedBasename(e.name))) {
+      } else if (e.isFile() && (isGateConfigBasename(e.name, category) || isProtectedBasename(e.name))) {
         out.push(relative(projectRoot, join(dir, e.name)).split(sep).join('/'));
       }
     }
@@ -223,11 +249,14 @@ export function listGateConfigFiles(projectRoot: string, maxDepth = 2): string[]
  * when the write is allowed. Single source of truth for the segment / basename /
  * gate-config blocklist so the agentic executor (which bypasses the file-block
  * applier) enforces the SAME protections. `protectGateConfigs` mirrors the
- * applier option — when on, compose/IaC/runner-config writes are gate-rigging.
+ * applier option — when on, test-runner-config writes are gate-rigging.
+ * `protectIac` (default false = permissive) separately governs deploy/IaC
+ * files (Dockerfile, compose, *.tf, pulumi, serverless).
  */
 export function protectedWritePathReason(
   relPath: string,
-  protectGateConfigs = true
+  protectGateConfigs = true,
+  protectIac = false
 ): string | null {
   const segments = relPath.split(/[\\/]/);
   for (const seg of segments) {
@@ -239,8 +268,11 @@ export function protectedWritePathReason(
   if (PROTECTED_BASENAMES.has(base)) {
     return `writes to ${base} are not allowed (would alter executed scripts)`;
   }
-  if (protectGateConfigs && isGateConfigBasename(base)) {
-    return `writes to ${base} are not allowed (gate-config / IaC — rigging the gate by indirection)`;
+  if (protectGateConfigs && isGateConfigBasename(base, 'test')) {
+    return `writes to ${base} are not allowed (test-runner config — rigging the gate by indirection)`;
+  }
+  if (protectIac && isGateConfigBasename(base, 'iac')) {
+    return `writes to ${base} are not allowed (IaC/deploy config — rigging the deploy gate by indirection)`;
   }
   // A REPO-ROOT conftest.py is collection policy, not a fixture: one
   // `collect_ignore_glob` line silently blinds every pytest gate (observed
@@ -553,6 +585,8 @@ const PROTECTED_TEST_REASON =
   'You may APPEND new test cases after the existing content (which must remain byte-identical), or create a new test file';
 const GATE_CONFIG_REASON =
   'test-runner/compiler config files are protected — they control the gates and cannot be changed by the model';
+const IAC_CONFIG_REASON =
+  'IaC/deploy config files are protected — they define the deploy gate and cannot be changed by the model';
 
 /**
  * Is `rel` (sep-separated, relative to root) a protected test file? Checks
@@ -615,8 +649,11 @@ function validatePath(
 
   // Gate integrity: block runner/compiler config writes (gate rigging by
   // indirection) and modification of pre-existing test/spec files.
-  if (options?.protectGateConfigs && isGateConfigBasename(base)) {
+  if (options?.protectGateConfigs && isGateConfigBasename(base, 'test')) {
     return GATE_CONFIG_REASON;
+  }
+  if (options?.protectIac && isGateConfigBasename(base, 'iac')) {
+    return IAC_CONFIG_REASON;
   }
   if (
     options?.protectedFiles &&
