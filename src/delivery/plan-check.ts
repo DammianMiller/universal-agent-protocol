@@ -172,6 +172,9 @@ export function parsePlanVerdict(text: string): PlanReviewVerdict {
       ? parsed.findings
           .filter((f): f is string => typeof f === 'string' && f.trim().length > 0)
           // Model output reaches terminals and prompts — strip control/ANSI bytes.
+          // Matching control characters is the POINT here: this strips them
+          // out of model output before it reaches a terminal or a prompt.
+          // eslint-disable-next-line no-control-regex
           .map((f) => f.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ').trim().slice(0, 300))
           .slice(0, 8)
       : [];

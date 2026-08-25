@@ -19,6 +19,10 @@
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+
+// SECURITY: every spawn below that runs project/model code must use
+// sanitizedEnv() (secret-stripped env) — see ./sanitized-env.ts.
+import { sanitizedEnv } from './sanitized-env.js';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
@@ -334,6 +338,7 @@ function runCliPath(path: UserPath, ctx: RunContext): PathResult {
         const [cmd, ...rest] = step.run.argv;
         const r = spawnSync(cmd, rest, {
           cwd: ctx.projectRoot,
+          env: sanitizedEnv(),
           timeout: Math.min(step.run.timeoutMs ?? ctx.timeoutMs, 120_000),
           input: step.run.stdin,
           encoding: 'utf8',
@@ -392,7 +397,7 @@ async function startManifestServer(srv: UserPathsServer, projectRoot: string): P
   const args = declaredArgs.length === 0 ? parts.slice(1) : declaredArgs;
   const child = spawn(cmd, args, {
     cwd: projectRoot,
-    env: { ...process.env, ...srv.env },
+    env: sanitizedEnv(srv.env),
     stdio: 'ignore',
     detached: false,
   });

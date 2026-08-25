@@ -1,8 +1,14 @@
 # Changelog
 
+## v1.220.8 (2026-08-25)
+
+- fix(ci): run test_repeat_guard in the enforcer suite
+- fix(proxy): abort degenerate runaways mid-stream
+
+
 ## v1.220.7 (2026-08-25)
 
-- fix(proxy): abort degenerate runaways mid-stream
+- fix(delivery): strip secrets from user-validation spawns
 - chore: bump version to 1.220.6 (#766)
 - feat(deliver): separate IaC write protection from test protection (#765)
 
