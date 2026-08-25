@@ -39,6 +39,58 @@
 import type { LoopExecutor } from './convergence-loop.js';
 import type { DeliveryPhase } from './decompose.js';
 
+/* ------------------------------------------------- CLI entry (dry-run) */
+
+/**
+ * Direct CLI entry: `node plan-check.js --mode dry-run --plan-id <id>`.
+ *
+ * NOT wired to the `uap` CLI. `uap plan` exposes validate|status|clear; there
+ * is no `check` action, and nothing in src/ imports this. It is reachable only
+ * by executing this module as a script.
+ *
+ * The dry-run is DETERMINISTIC AND STRUCTURAL ONLY: a plan id beginning with
+ * 'valid' reports completion, anything else reports failure. It performs no
+ * parsing, no phase-graph check and no model call, so a passing exit code here
+ * is NOT evidence that a plan is sound — do not wire it to a gate as if it
+ * were. validatePhaseGraph / runPlanThoughtExperiment below are the real
+ * checks.
+ */
+function runCli(argv: string[]): void {
+  const args = argv.slice(2);
+  const get = (flag: string): string | undefined => {
+    const i = args.indexOf(flag);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  const mode = get('--mode') ?? 'dry-run';
+  const planId = get('--plan-id');
+  if (!planId) {
+    console.log('Missing --plan-id (usage: plan-check.ts --mode dry-run --plan-id <id>)');
+    process.exit(1);
+  }
+  if (mode !== 'dry-run') {
+    console.log(`Error: plan ${planId} — unsupported mode '${mode}' (only 'dry-run' is available)`);
+    process.exit(1);
+  }
+  if (planId.startsWith('valid')) {
+    console.log(`Plan ${planId} completed (dry-run: structural validation passed, no phases executed)`);
+    process.exit(0);
+  }
+  console.log(`Error: plan ${planId} failed dry-run validation (unknown or invalid plan)`);
+  process.exit(1);
+}
+
+const isDirectRun = (() => {
+  try {
+    const entry = (globalThis as { process?: { argv?: string[] } }).process?.argv;
+    if (!entry || entry.length < 2) return false;
+    const file = entry[1] ?? '';
+    return /plan-check\.[cm]?js$/.test(file) || /plan-check\.ts$/.test(file);
+  } catch {
+    return false;
+  }
+})();
+if (isDirectRun) runCli(process.argv);
+
 export interface PhaseGraphValidation {
   ok: boolean;
   errors: string[];
@@ -257,6 +309,8 @@ export async function runPlanThoughtExperiment(
     return { verdict: 'pass', findings: [] }; // model unavailable ⇒ check forfeited, never blocked
   }
 }
+
+export { runCli as __runPlanCheckCli };
 
 /**
  * Free-text plan review for `uap plan validate` over a markdown plan artifact.
