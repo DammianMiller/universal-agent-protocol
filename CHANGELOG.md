@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.221.0 (2026-08-25)
+
+- feat(plan-check): commit the direct-run dry-run CLI entry
+- feature/264 loop runaway guard (#767)
+- feature/265 sanitized env spawn (#768)
+
+
 ## v1.220.8 (2026-08-25)
 
 - fix(ci): run test_repeat_guard in the enforcer suite
