@@ -35,6 +35,22 @@ export LLAMA_CACHE_REUSE="${LLAMA_CACHE_REUSE:-}"
 export LLAMA_LOG_FILE="${LLAMA_LOG_FILE:-llama-server.log}"
 export LLAMA_CHAT_TEMPLATE_FILE="${LLAMA_CHAT_TEMPLATE_FILE:-${ROOT_DIR}/tools/agents/config/qwen-sharp.jinja}"
 export LLAMA_EXTRA_ARGS="${LLAMA_EXTRA_ARGS:-}"
+# Model id advertised to API clients (llama-server --alias, comma-separated).
+#
+# Without it the server advertises the GGUF PATH as its only model id, so every
+# client config that names the model in a human way misses, and the proxy has to
+# rewrite the model on every single request (MODEL REWRITE, 6 in a 3h window on
+# 2026-08-25) while `/v1/models` returns something no config would ever contain.
+# Defaulting to the GGUF basename makes the served id a name rather than a path
+# even when nothing is configured; list extra comma-separated aliases to keep
+# older client configs resolving through a model change.
+# Single-dash expansion, matching LLAMA_SLOT_SAVE_PATH below: unset -> derived
+# default; set-but-empty -> stays empty and the flag is omitted; set -> that
+# value. The opt-out matters because a second --alias does NOT override the
+# first -- llama.cpp UNIONS them -- so LLAMA_EXTRA_ARGS is not an escape hatch
+# for this flag the way it is for --mmproj.
+_llama_model_base="${LLAMA_MODEL##*/}"
+export LLAMA_ALIAS="${LLAMA_ALIAS-${_llama_model_base%.gguf}}"
 # Slot KV-state save directory. Default ON: the anthropic-proxy's
 # cross-session slot save/restore (UAP PR #179) requires the server to be
 # launched with --slot-save-path, otherwise /slots/{id}?action=save|restore
@@ -147,6 +163,10 @@ if [[ -n "$LLAMA_SLOT_SAVE_PATH" ]]; then
   else
     echo "WARNING: cannot create LLAMA_SLOT_SAVE_PATH=$LLAMA_SLOT_SAVE_PATH; --slot-save-path omitted" >&2
   fi
+fi
+
+if [[ -n "$LLAMA_ALIAS" ]]; then
+  args+=( --alias "$LLAMA_ALIAS" )
 fi
 
 if [[ -n "$LLAMA_EXTRA_ARGS" ]]; then

@@ -10,6 +10,9 @@ mkdir -p "$USER_SYSTEMD_DIR" "$UAP_CONFIG_DIR"
 cat >"${UAP_CONFIG_DIR}/llama-server.env" <<EOF
 LLAMA_BIN=${LLAMA_BIN:-/home/cogtek/llama.cpp/.worktrees/001-llama-spec-rollback-fix/build-cuda/bin/llama-server}
 LLAMA_MODEL=${LLAMA_MODEL:-/home/cogtek/Downloads/Qwen3.5-35B-A3B-UD-IQ4_XS.gguf}
+# Advertised model id. Omitted here, the server advertises the GGUF PATH and
+# every client config misses (see config/llama-profiles/*.env).
+LLAMA_ALIAS=${LLAMA_ALIAS:-Qwen3.8-27B}
 
 LLAMA_HOST=${LLAMA_HOST:-0.0.0.0}
 LLAMA_PORT=${LLAMA_PORT:-8080}
