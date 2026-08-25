@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.220.9 (2026-08-25)
+
+- fix(rtk-wrap): route flag-intolerant docker calls through rtk proxy
+
+
 ## v1.220.8 (2026-08-25)
 
 - fix(ci): run test_repeat_guard in the enforcer suite
