@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.220.7 (2026-08-25)
+
+- fix(proxy): abort degenerate runaways mid-stream
+- chore: bump version to 1.220.6 (#766)
+- feat(deliver): separate IaC write protection from test protection (#765)
+
+
 ## v1.220.5 (2026-08-23)
 
 - fix(proxy): STUCK-BREAK hard tier — strip tools after repeated ignored breaks
