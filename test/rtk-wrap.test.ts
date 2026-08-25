@@ -104,3 +104,39 @@ describe('rtk-wrap: a command is a sequence of statements', () => {
     expect(blocked('cd /x && GIT_DIR=/y git log')).toBe(true);
   });
 });
+
+describe('rtk-wrap enforcer: docker forms rtk cannot parse', () => {
+  // rtk's docker handlers only recognise the BARE subcommand. With any flag it
+  // prints "[rtk: parse failed, running raw]" ahead of correct raw output; that
+  // line reads as a tool error and drove a live ERROR-LOOP (2026-08-25,
+  // "same failure x3"). Measured against rtk 0.27.0 -- ps/logs are
+  // flag-intolerant, images/inspect are fine.
+  it('routes flagged ps/logs through rtk proxy', () => {
+    expect(reason('docker ps -a')).toContain('Use: rtk proxy docker ps -a');
+    expect(reason('docker ps --filter name=x')).toContain('Use: rtk proxy docker ps --filter');
+    expect(reason('docker ps --format {{.Names}}')).toContain('Use: rtk proxy docker ps --format');
+    expect(reason('docker logs --tail 5 c1')).toContain('Use: rtk proxy docker logs --tail 5 c1');
+  });
+
+  it('leaves the bare and parseable forms on plain rtk (compression is the point)', () => {
+    expect(reason('docker ps')).toContain('Use: rtk docker ps');
+    expect(reason('docker images')).toContain('Use: rtk docker images');
+    expect(reason('docker inspect c1')).toContain('Use: rtk docker inspect c1');
+  });
+
+  it('refuses an already-wrapped rtk docker call that rtk will not parse', () => {
+    expect(reason('rtk docker ps -a')).toContain('Use: rtk proxy docker ps -a');
+    expect(reason('rtk docker logs --tail 5 c1')).toContain('Use: rtk proxy docker logs');
+  });
+
+  it('accepts the wrapped forms that are already correct', () => {
+    expect(reason('rtk docker ps')).not.toContain('Use:');
+    expect(reason('rtk proxy docker ps -a')).not.toContain('Use:');
+  });
+
+  it('does not disturb git routing', () => {
+    expect(reason('git status')).toContain('Use: rtk git status');
+    expect(reason('git worktree list --porcelain')).toContain('Use: rtk proxy git worktree list');
+  });
+});
+
