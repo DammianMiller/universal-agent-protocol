@@ -60,6 +60,35 @@ MACHINE_FORMS = {
     "stash": ("list",),
 }
 
+# rtk's docker handlers only recognise the BARE subcommand. Any flag on
+# `docker ps` or `docker logs` makes rtk print "[rtk: parse failed, running
+# raw]" ahead of otherwise-correct raw output. The DATA is fine -- but that
+# line reads as a tool error, and a model that cannot act on it retries: it
+# drove a live ERROR-LOOP on 2026-08-25 ("same failure x3,
+# sig='[rtk: parse failed, running raw]'"). `rtk proxy` runs the same command
+# unfiltered with no such line, and is still counted in the savings ledger.
+#
+# Measured against rtk 0.27.0 on 2026-08-25 -- listed rather than guessed,
+# because every entry here is friction for a call that would have been fine:
+#   docker ps                        ok
+#   docker ps -a                     parse failed
+#   docker ps --filter name=uap      parse failed
+#   docker ps --format '{{.Names}}'  parse failed
+#   docker images                    ok
+#   docker logs --tail 1 <id>        parse failed
+#   docker inspect <id>              ok
+# So the trigger is the SUBCOMMAND plus any flag at all, not a specific flag.
+DOCKER_FLAG_INTOLERANT = ("ps", "logs")
+
+
+def docker_wants_proxy(tokens: list[str]) -> bool:
+    """Is this a docker call rtk will fail to parse (bare form only)?"""
+    args = [t for t in tokens if t.split("/")[-1] != "docker"]
+    sub_cmd = next((t for t in args if not t.startswith("-")), "")
+    if sub_cmd not in DOCKER_FLAG_INTOLERANT:
+        return False
+    return any(t.startswith("-") for t in args)
+
 
 def wants_machine_output(tokens: list[str]) -> bool:
     """Is this git invocation asking for output something will parse?"""
@@ -122,6 +151,16 @@ def main() -> None:
         # skipping every rtk-led statement is what let it through the gate.
         if bin_name == "rtk":
             rest = [t for t in tokens[1:] if not t.startswith("-")]
+            if rest[:1] == ["docker"] and docker_wants_proxy(tokens[1:]):
+                emit(
+                    False,
+                    "rtk-wrap: rtk only parses the bare form of this docker "
+                    "subcommand; with any flag it prefixes "
+                    "'[rtk: parse failed, running raw]' to the output, which "
+                    "reads as an error and has driven retry loops. Use: "
+                    "rtk proxy " + " ".join(tokens[1:]),
+                    bin="rtk",
+                )
             if rest[:1] == ["git"] and wants_machine_output(tokens[1:]):
                 emit(
                     False,
@@ -140,6 +179,8 @@ def main() -> None:
         wrapper = "rtk"
         if bin_name == "git" and wants_machine_output(tokens):
             # Still through rtk, so the call is still tracked -- just unfiltered.
+            wrapper = "rtk proxy"
+        elif bin_name == "docker" and docker_wants_proxy(tokens):
             wrapper = "rtk proxy"
         if bin_name in PMS:
             sub = ""
