@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.220.10 (2026-08-25)
+
+- fix(deliver): anchor forced-round grounding on the window the model was reading
+- feature/267 rtk docker proxy (#770)
+
+
 ## v1.220.9 (2026-08-25)
 
 - fix(rtk-wrap): route flag-intolerant docker calls through rtk proxy

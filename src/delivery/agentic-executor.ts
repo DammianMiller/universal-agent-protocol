@@ -1277,13 +1277,154 @@ export interface ReadCache {
    * parsed back out of the key — a key is now lossy (it may carry an offset
    * suffix), and a path recovered by string-slicing a key is how the grounding
    * builder would silently start reading files that do not exist.
+   *
+   * `offset` is the 1-based line the model last read this window from. It is
+   * carried for the same reason `path` is: the key is lossy, and the grounding
+   * builder needs to know WHICH part of a long file the model was working in.
+   * Without it the builder can only clip from byte 0 — see
+   * buildForcedRoundGrounding.
    */
-  seen: Map<string, { mtimeMs: number; round: number; path?: string }>;
+  seen: Map<
+    string,
+    { mtimeMs: number; round: number; path?: string; offset?: number; seq?: number }
+  >;
+  /**
+   * Monotonic counter stamped onto each entry as `seq`.
+   *
+   * `round` cannot order these on its own: one round issues many tool calls
+   * and they all share its number, and an entry updated in place keeps its
+   * original Map position, so insertion order stops being chronological the
+   * first time a window is re-read. Both cases sent the grounding anchor to
+   * the WRONG window — measured, both landed back on the head clip this
+   * whole mechanism exists to avoid.
+   */
+  nextSeq?: number;
 }
 
 /** Bounds for forced-round grounding — see buildForcedRoundGrounding. */
 export const FORCED_GROUNDING_MAX_FILES = 3;
 export const FORCED_GROUNDING_MAX_BYTES = 24_000;
+/**
+ * Below this, a per-file share buys so few lines that the block is noise —
+ * a mid-word fragment carrying a confident line-range label. Skip the file
+ * instead; grounding two files well beats grounding three badly.
+ */
+export const FORCED_GROUNDING_MIN_WINDOW_BYTES = 400;
+
+/** Recency order for read-cache entries — see ReadCache.nextSeq. */
+function readEntryRank(m: { round: number; seq?: number }): [number, number] {
+  return [m.seq ?? 0, m.round];
+}
+
+function isMoreRecent(
+  a: { round: number; seq?: number },
+  b: { round: number; seq?: number },
+): boolean {
+  const [as, ar] = readEntryRank(a);
+  const [bs, br] = readEntryRank(b);
+  // `>=` on the tie-break, not `>`: entries hand-built without a seq (tests,
+  // and any caller that fills the map directly) fall back to round alone, and
+  // within one round the LATER call is the one the model made last.
+  return as !== bs ? as > bs : ar >= br;
+}
+
+/**
+ * Clip `body` to `maxBytes`, keeping the region around `anchorLine` rather than
+ * the head of the file.
+ *
+ * A head-anchored clip is what made the forced round useless on any file longer
+ * than the budget: the model pages toward the region it needs, the read cap
+ * strips its read tools, and the grounding then hands it bytes 0..budget —
+ * which is the one part of the file it had already moved past. Measured
+ * 2026-08-25 on a 952-line, 38 019-byte Rust file: the 24 000-byte head clip
+ * ended at line 615, the region under review was 725-732, and the run reported
+ * "the file is truncated before line 725; I cannot verify" ten times over forty
+ * minutes before giving up.
+ *
+ * Grows forward from the anchor FIRST (the model reads downward), then spends
+ * whatever is left backward toward the head for lead-in context.
+ *
+ * The order is load-bearing. An earlier version reserved the lead-in before
+ * growing forward, which charged the budget for lines above the anchor before
+ * it had paid for the anchor itself: on a tight budget the window stopped
+ * short and the anchor line was not in its own window — 88% of clipped results
+ * in a fuzz sweep. The block then carried a confident "centred on line N"
+ * label for an N it did not contain, which is worse than the bare
+ * "(truncated)" it replaced. Growing from the anchor makes its presence an
+ * invariant whenever any line fits at all.
+ *
+ * `anchor` is the CLAMPED line the window is actually built around. Callers
+ * must label with this, not with the raw request — a past-EOF offset otherwise
+ * renders as "your last read at line 5000" on a 952-line file.
+ */
+export function clipAroundAnchor(
+  body: string,
+  maxBytes: number,
+  anchorLine = 1,
+): {
+  text: string;
+  from: number;
+  to: number;
+  total: number;
+  anchor: number;
+  clipped: boolean;
+  partialLine: boolean;
+} {
+  const lines = body.split('\n');
+  // A newline-terminated file — which is nearly every source file — splits to a
+  // phantom trailing ''. Counting it inflates `total` and lets `to` name a line
+  // that does not exist, desyncing these numbers from the ones read_file shows
+  // the model. The whole point of the label is that the two agree.
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+  const total = lines.length;
+  const requested = Number.isFinite(anchorLine) ? Math.trunc(anchorLine) : 1;
+  const anchorIdx = Math.max(0, Math.min(total - 1, requested - 1));
+  const anchor = anchorIdx + 1;
+  if (body.length <= maxBytes) {
+    return { text: body, from: 1, to: total, total, anchor, clipped: false, partialLine: false };
+  }
+
+  let end = anchorIdx; // exclusive
+  let used = 0;
+  while (end < total) {
+    const cost = lines[end].length + 1;
+    if (used + cost > maxBytes) break;
+    used += cost;
+    end += 1;
+  }
+  // The anchor's own line is wider than the entire budget. Emit its head —
+  // that line, not a neighbour, is the one the model was looking at.
+  if (end === anchorIdx) {
+    return {
+      text: lines[anchorIdx].slice(0, maxBytes),
+      from: anchor,
+      to: anchor,
+      total,
+      anchor,
+      clipped: true,
+      partialLine: true,
+    };
+  }
+
+  let start = anchorIdx;
+  while (start > 0) {
+    const cost = lines[start - 1].length + 1;
+    if (used + cost > maxBytes) break;
+    used += cost;
+    start -= 1;
+  }
+  return {
+    text: lines.slice(start, end).join('\n'),
+    from: start + 1,
+    to: end,
+    total,
+    anchor,
+    // Reaching here means the whole body did not fit, so the window is a clip
+    // by construction — full coverage is unreachable on this path.
+    clipped: true,
+    partialLine: false,
+  };
+}
 
 /**
  * Build the grounding block for a forced-write round.
@@ -1312,33 +1453,62 @@ export function buildForcedRoundGrounding(
   // Cache keys are `${tool}:${path}` (see repeatReadNote). Only read_file
   // entries name an actual file — a list_dir key is a directory and would
   // otherwise be "read" as one, silently yielding nothing.
-  const byPath = new Map<string, { round: number }>();
+  const byPath = new Map<string, { round: number; offset: number; seq?: number }>();
   for (const [key, meta] of cache.seen.entries()) {
     if (!key.startsWith('read_file:')) continue;
     // Entries carry their path; keys may also carry a window offset, and
-    // several windows of one file must ground it ONCE, not three times.
+    // several windows of one file must ground it ONCE, not three times. The
+    // window that wins is the most recent one — that is where the model was
+    // working when its read tools were taken away, so that is where the clip
+    // must be anchored if the file does not fit whole. Recency is `seq`, not
+    // `round`: see ReadCache.nextSeq for why round alone picks the wrong one.
     const rel = meta.path ?? key.slice('read_file:'.length);
     const prior = byPath.get(rel);
-    if (!prior || meta.round > prior.round) byPath.set(rel, { round: meta.round });
+    if (!prior || isMoreRecent(meta, prior)) {
+      byPath.set(rel, { round: meta.round, offset: meta.offset ?? 1, seq: meta.seq });
+    }
   }
   const recent = [...byPath.entries()]
-    .sort((a, b) => b[1].round - a[1].round)
+    .sort((a, b) => (b[1].seq ?? 0) - (a[1].seq ?? 0) || b[1].round - a[1].round)
     .slice(0, FORCED_GROUNDING_MAX_FILES);
   if (recent.length === 0) return undefined;
 
   const blocks: string[] = [];
   let budget = FORCED_GROUNDING_MAX_BYTES;
-  for (const [rel] of recent) {
-    if (budget <= 0) break;
+  let filesLeft = recent.length;
+  for (const [rel, meta] of recent) {
+    // Even share, with whatever earlier files left unspent rolling forward.
+    // A greedy first-come split let file 1 take the whole budget and handed
+    // file 2 a mid-word fragment under a confident line-range label — worse
+    // than omitting it, because the label asserts the fragment is the region
+    // the model needs.
+    const share = Math.floor(budget / filesLeft);
+    filesLeft -= 1;
+    if (share < FORCED_GROUNDING_MIN_WINDOW_BYTES) break;
     let body: string;
     try {
       body = readFile(isAbsolute(rel) ? rel : join(projectRoot, rel));
     } catch {
       continue; // deleted or unreadable since it was read — skip, never throw
     }
-    const clipped = body.length > budget ? `${body.slice(0, budget)}\n… (truncated)` : body;
-    budget -= clipped.length;
-    blocks.push(`--- ${rel} (current content) ---\n${clipped}`);
+    const win = clipAroundAnchor(body, share, meta.offset);
+    budget -= win.text.length;
+    // Naming the exact range is not cosmetic. A block labelled only
+    // "(truncated)" is indistinguishable from a corrupt read, and the model's
+    // response to that was to declare the whole file unverifiable and stop.
+    // Told which lines it holds, it can act on them and name what is missing.
+    // The anchor named is the CLAMPED one the window was actually built on.
+    let label = '(current content)';
+    if (win.partialLine) {
+      label =
+        `(current content, first ${win.text.length} chars of line ${win.anchor} ` +
+        `of ${win.total} — truncated, that line is wider than the budget)`;
+    } else if (win.clipped) {
+      label =
+        `(current content, lines ${win.from}-${win.to} of ${win.total} — truncated, ` +
+        `centred on your last read at line ${win.anchor})`;
+    }
+    blocks.push(`--- ${rel} ${label} ---\n${win.text}`);
   }
   if (blocks.length === 0) return undefined;
 
@@ -1348,7 +1518,10 @@ export function buildForcedRoundGrounding(
     `${blocks.join('\n\n')}\n\n` +
     'Base your edit on exactly this text. For edit_file, copy old_string ' +
     'verbatim from above and make it long enough to be unique. Do not rewrite a ' +
-    'whole file when a targeted edit will do.'
+    'whole file when a targeted edit will do. Where a block is marked truncated ' +
+    'it still shows the region you were last reading: act on what is shown and ' +
+    'state which line range you would need next — do not report the whole file ' +
+    'as unreadable.'
   );
 }
 
@@ -1387,7 +1560,7 @@ export function readCountEnv(name: string, fallback: number): number {
 }
 
 export function newReadCache(): ReadCache {
-  return { seen: new Map() };
+  return { seen: new Map(), nextSeq: 1 };
 }
 
 /** mtime of a path, or null when it does not exist / is unreadable. */
@@ -1418,21 +1591,34 @@ export function repeatReadNote(
   // repeat — same path, same window, unchanged on disk — earns the note.
   // Both windowed tools, not just read_file: list_dir pages too now, and a
   // directory's second page is no more a re-read than a file's.
-  const offsetKey = Number.isFinite(Number(args.offset))
-    ? `@${Math.max(1, Math.trunc(Number(args.offset)))}`
-    : '';
+  const offsetLine = Number.isFinite(Number(args.offset))
+    ? Math.max(1, Math.trunc(Number(args.offset)))
+    : 1;
+  const offsetKey = Number.isFinite(Number(args.offset)) ? `@${offsetLine}` : '';
   const key = `${name}:${args.path}${offsetKey}`;
   const abs = resolve(projectRoot, args.path);
   const mtime = mtimeOf(abs);
   const prior = cache.seen.get(key);
-  if (prior && mtime !== null && prior.mtimeMs === mtime) {
+  const seq = cache.nextSeq ?? 1;
+  cache.nextSeq = seq + 1;
+  const repeated = Boolean(prior && mtime !== null && prior.mtimeMs === mtime);
+  // Record the read BEFORE the repeat check returns. The early return used to
+  // skip this, so a window re-read seven times kept the round of its FIRST
+  // read and lost the recency race to a one-off head read — leaving the
+  // grounding anchored on the head, which is the read-forever profile this
+  // whole mechanism exists to break. A re-read is still a read; it is in fact
+  // the strongest signal of where the model is stuck.
+  const priorRound = prior?.round ?? round;
+  if (mtime !== null) {
+    cache.seen.set(key, { mtimeMs: mtime, round, path: args.path, offset: offsetLine, seq });
+  }
+  if (repeated) {
     return (
-      `[NOTE: unchanged since you read ${args.path} at round ${prior.round}. ` +
+      `[NOTE: unchanged since you read ${args.path} at round ${priorRound}. ` +
       'The content follows anyway — but re-reading it tells you nothing new, so act on it: ' +
       'make the edit, or call finish.]'
     );
   }
-  if (mtime !== null) cache.seen.set(key, { mtimeMs: mtime, round, path: args.path });
   return null;
 }
 
