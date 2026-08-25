@@ -1342,7 +1342,20 @@ async def _upstream_model_ids_cached() -> list[str] | None:
         if r.status_code != 200:
             return None
         data = (r.json() or {}).get("data") or []
-        ids = [str(m["id"]) for m in data if isinstance(m, dict) and m.get("id")]
+        # Aliases count as served ids. llama-server reports ONE primary `id`
+        # (the ASCII-first entry of a std::set) plus an `aliases` array, so a
+        # config naming any other registered alias looked unserved and got
+        # rewritten on every request -- which is most of what --alias was added
+        # to stop. Reading only `id` made the flag half-useless.
+        ids: list[str] = []
+        for m in data:
+            if not isinstance(m, dict):
+                continue
+            if m.get("id"):
+                ids.append(str(m["id"]))
+            for alias in m.get("aliases") or []:
+                if alias and str(alias) not in ids:
+                    ids.append(str(alias))
         if ids:
             _upstream_model_ids = ids
         return ids or None

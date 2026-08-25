@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { afterAll, describe, it, expect } from 'vitest';
 import { execFileSync } from 'child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -68,5 +70,64 @@ describe('run-llama-server-continuity.sh env-driven flags', () => {
     // runScript sets HOME=/tmp, so the unset default resolves there.
     const out = runScript({});
     expect(out).toContain('--slot-save-path /tmp/.cache/uap/llama-slots');
+  });
+
+  // Without --alias, llama-server advertises the GGUF PATH as its only model
+  // id. Every client config names the model in a human way, so every request
+  // missed and the proxy rewrote the model on each one (MODEL REWRITE, 6 in a
+  // 3h window on 2026-08-25) while /v1/models returned a path no config would
+  // ever contain.
+  // The script validates that LLAMA_MODEL exists, so alias-derivation cases
+  // need a real file whose NAME carries the shape under test.
+  // /tmp is RAM-backed on this host, so these get cleaned up rather than left.
+  const tempDirs: string[] = [];
+  afterAll(() => {
+    for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function modelNamed(name: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'llama-alias-'));
+    tempDirs.push(dir);
+    const path = join(dir, name);
+    writeFileSync(path, '');
+    return path;
+  }
+
+  it('advertises a model alias, defaulting to the GGUF basename', () => {
+    const out = runScript({ LLAMA_MODEL: modelNamed('Qwen3.8-27B-UD-IQ4_XS.gguf') });
+    expect(out).toContain('--alias Qwen3.8-27B-UD-IQ4_XS');
+    // a name, not a path — the whole point
+    expect(out).not.toMatch(/--alias \//);
+  });
+
+  it('honours an explicit LLAMA_ALIAS over the derived default', () => {
+    const out = runScript({
+      LLAMA_MODEL: modelNamed('Qwen3.8-27B-UD-IQ4_XS.gguf'),
+      LLAMA_ALIAS: 'Qwen3.8-27B',
+    });
+    // Assert on the alias FLAG, not on the whole argv: IQ4_XS legitimately
+    // appears in --model, so a bare not-toContain would fail on the filename.
+    expect(out).toMatch(/--alias Qwen3\.8-27B\s/);
+    expect(out).not.toMatch(/--alias \S*IQ4_XS/);
+  });
+
+  it('passes a comma-separated alias list through intact', () => {
+    // Aliases are how a client config survives a model swap: list the old id
+    // alongside the new one and both keep resolving.
+    const out = runScript({ LLAMA_ALIAS: 'Qwen3.8-27B,qwen36-35b-a3b-iq4xs' });
+    expect(out).toContain('--alias Qwen3.8-27B,qwen36-35b-a3b-iq4xs');
+  });
+
+  it('omits the flag entirely when LLAMA_ALIAS is set but empty', () => {
+    // Single-dash expansion, matching LLAMA_SLOT_SAVE_PATH. The opt-out matters
+    // because a second --alias does not override the first — llama.cpp unions
+    // them — so LLAMA_EXTRA_ARGS is not an escape hatch for this flag.
+    const out = runScript({ LLAMA_ALIAS: '' });
+    expect(out).not.toContain('--alias');
+  });
+
+  it('strips only a .gguf suffix when deriving the default', () => {
+    const out = runScript({ LLAMA_MODEL: modelNamed('plain-name') });
+    expect(out).toContain('--alias plain-name');
   });
 });
