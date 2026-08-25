@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.220.12 (2026-08-25)
+
+- fix(llama): advertise a model alias, and let the proxy see aliases as served ids
+- fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
+- feature/267 rtk docker proxy (#770)
+
+
 ## v1.220.10 (2026-08-25)
 
 - fix(deliver): anchor forced-round grounding on the window the model was reading
