@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.220.11 (2026-08-25)
+
+- test(proxy): anchor the sanitize-before-split check on the split variable
+- fix(proxy): a tools-stripped turn must actually end in prose
+- fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
+- feature/267 rtk docker proxy (#770)
+
+
 ## v1.220.10 (2026-08-25)
 
 - fix(deliver): anchor forced-round grounding on the window the model was reading

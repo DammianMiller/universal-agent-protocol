@@ -99,14 +99,24 @@ class TestFinalizeSuppressionExtractor(unittest.TestCase):
         self.assertEqual(msg["tool_calls"][0]["function"]["name"], "Bash")
         self.assertEqual(resp["choices"][0]["finish_reason"], "tool_calls")
 
-    def test_suppressed_leaves_prose_as_text(self):
-        """suppress=True: prose stays text -> the client sees a clean end_turn
-        with no action, so the agentic loop terminates."""
+    def test_suppressed_ends_the_turn_in_clean_prose(self):
+        """suppress=True: the client sees a clean end_turn with no action, so
+        the agentic loop terminates.
+
+        This used to assert the markup was still IN the text. That was an
+        incidental detail of the first implementation, not the contract this
+        docstring describes -- and it froze a real defect in place: the raw
+        block was shipped to the client as the assistant's visible reply.
+        Measured live 2026-08-25 (opencode ses_fc7a27ea...), which rendered the
+        markup, logged "exiting loop", and left the operator retyping "go".
+        The contract is: no resurrected call, finish_reason stop, and NO markup.
+        """
         resp = _prose_tool_resp()
         proxy._maybe_extract_text_tool_calls(resp, suppress=True)
         msg = resp["choices"][0]["message"]
         self.assertFalse(msg.get("tool_calls"), "must NOT resurrect tool call on finalize")
-        self.assertIn("<function=Bash>", msg["content"])
+        self.assertNotIn(chr(60) + "function=", msg["content"])
+        self.assertTrue(msg["content"].strip(), "an empty reply is no better than markup")
         self.assertEqual(resp["choices"][0]["finish_reason"], "stop")
 
     def test_conversion_respects_suppression(self):
