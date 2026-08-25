@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.220.8 (2026-08-25)
+
+- fix(ci): run test_repeat_guard in the enforcer suite
+- fix(proxy): abort degenerate runaways mid-stream
+
+
 ## v1.220.7 (2026-08-25)
 
 - fix(delivery): strip secrets from user-validation spawns

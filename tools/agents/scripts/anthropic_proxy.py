@@ -11005,6 +11005,85 @@ def _maybe_extract_text_tool_calls(
     return openai_resp
 
 
+# ---------------------------------------------------------------------------
+# Mid-stream degenerate-repetition guard
+# ---------------------------------------------------------------------------
+# `_detect_and_truncate_degenerate_repetition` (below) is the POST-HOC sibling
+# of this guard: it repairs a finished non-streaming response. It cannot help a
+# STREAMING client, and by the time it runs the GPU time is already spent.
+#
+# Measured 2026-08-25: a rail running --repeat-penalty 1.0 with DRY disabled
+# emitted ONE sentence 640 times (151,628 chars) until it hit the 32,768-token
+# n_predict cap -- ~11 minutes of GPU for a turn that ended reason="length",
+# after which opencode logged "exiting loop" and abandoned the session having
+# done nothing. 130 such generations were in one client's history, 2-5/day for
+# months. Sampler-level control (repeat-penalty >1, --dry-multiplier) is the
+# primary fix; this is the backstop for when it is misconfigured again.
+#
+# Cost is bounded by construction: the check runs at most once per
+# PROXY_REPEAT_GUARD_CHECK_EVERY characters and only ever inspects a
+# PROXY_REPEAT_GUARD_TAIL-sized tail, never the whole accumulated response.
+PROXY_REPEAT_GUARD = os.environ.get("PROXY_REPEAT_GUARD", "1") not in ("0", "false", "False")
+PROXY_REPEAT_GUARD_MIN_CHARS = int(os.environ.get("PROXY_REPEAT_GUARD_MIN_CHARS", "2000"))
+PROXY_REPEAT_GUARD_CHECK_EVERY = int(os.environ.get("PROXY_REPEAT_GUARD_CHECK_EVERY", "1000"))
+PROXY_REPEAT_GUARD_TAIL = int(os.environ.get("PROXY_REPEAT_GUARD_TAIL", "8000"))
+PROXY_REPEAT_GUARD_LINE_REPEATS = int(os.environ.get("PROXY_REPEAT_GUARD_LINE_REPEATS", "8"))
+PROXY_REPEAT_GUARD_BLOCK_REPEATS = int(os.environ.get("PROXY_REPEAT_GUARD_BLOCK_REPEATS", "4"))
+PROXY_REPEAT_GUARD_MIN_UNIT = int(os.environ.get("PROXY_REPEAT_GUARD_MIN_UNIT", "24"))
+PROXY_REPEAT_GUARD_MAX_PERIOD = int(os.environ.get("PROXY_REPEAT_GUARD_MAX_PERIOD", "600"))
+
+
+def _detect_degenerate_repeat(tail: str) -> str | None:
+    """Return the repeated unit if `tail` ENDS in a degenerate loop, else None.
+
+    Both detectors are anchored at the END of the text, so a legitimately
+    repetitive passage earlier in a response (a changelog, a table, a list of
+    similar imports) cannot trip them -- only output that is still repeating
+    at the moment of the check does.
+
+      * line mode  -- the same non-blank line N times in a row. This is the
+        shape real runaways take here: one sentence, "\\n\\n", forever.
+      * block mode -- the same character block N times in a row, for loops
+        that never emit a newline and so are invisible to line mode.
+
+    A unit must be at least MIN_UNIT characters AND contain an alphanumeric
+    character, so horizontal rules ("----"), fence markers, bracket runs and
+    indentation are never flagged. Callers pass a bounded tail; this function
+    does not trim, so its cost is the caller's choice.
+    """
+    if not tail:
+        return None
+
+    # --- line mode ---------------------------------------------------------
+    lines = [ln.strip() for ln in tail.splitlines()]
+    lines = [ln for ln in lines if ln]
+    if len(lines) >= PROXY_REPEAT_GUARD_LINE_REPEATS:
+        last = lines[-1]
+        if len(last) >= PROXY_REPEAT_GUARD_MIN_UNIT and any(c.isalnum() for c in last):
+            run = 1
+            for prev in reversed(lines[:-1]):
+                if prev != last:
+                    break
+                run += 1
+            if run >= PROXY_REPEAT_GUARD_LINE_REPEATS:
+                return last
+
+    # --- block mode --------------------------------------------------------
+    reps = PROXY_REPEAT_GUARD_BLOCK_REPEATS
+    if reps >= 2:
+        max_period = min(PROXY_REPEAT_GUARD_MAX_PERIOD, len(tail) // reps)
+        for period in range(PROXY_REPEAT_GUARD_MIN_UNIT, max_period + 1):
+            unit = tail[-period:]
+            if not any(c.isalnum() for c in unit):
+                continue
+            if all(
+                tail[-period * (k + 1) : -period * k] == unit
+                for k in range(1, reps)
+            ):
+                return unit
+    return None
+
+
 def _detect_and_truncate_degenerate_repetition(
     openai_resp: dict,
 ) -> tuple[dict, bool]:
@@ -11646,6 +11725,14 @@ async def stream_anthropic_response(
     text_chunks: list[str] = []  # accumulate text for logging
     reasoning_chunks: list[str] = []  # accumulate reasoning for fallback
 
+    # Mid-stream repetition guard state. `_rg_tail` is a bounded rolling window
+    # so the check never walks the whole accumulated response.
+    _rg_tail: deque[str] = deque()
+    _rg_tail_len = 0
+    _rg_total = 0
+    _rg_checked_at = 0
+    _rg_tripped = ""
+
     # Real token counts from upstream's final usage chunk (llama-server /
     # OpenAI emit it on the last data frame). The per-delta output_tokens
     # counter is a chunk count that misses tool-call deltas entirely; prefer
@@ -11684,6 +11771,33 @@ async def stream_anthropic_response(
                     f"event: content_block_delta\n"
                     f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': delta['content']}})}\n\n"
                 )
+
+                # Degenerate-repetition guard: stop a runaway while it is still
+                # running instead of paying out the full n-predict budget. The
+                # deltas already forwarded stand; finish_reason below marks the
+                # text untrustworthy, matching the post-hoc detector's contract.
+                if PROXY_REPEAT_GUARD:
+                    _rg_tail.append(delta["content"])
+                    _rg_tail_len += len(delta["content"])
+                    _rg_total += len(delta["content"])
+                    while _rg_tail_len > PROXY_REPEAT_GUARD_TAIL and len(_rg_tail) > 1:
+                        _rg_tail_len -= len(_rg_tail.popleft())
+                    if (
+                        _rg_total >= PROXY_REPEAT_GUARD_MIN_CHARS
+                        and _rg_total - _rg_checked_at >= PROXY_REPEAT_GUARD_CHECK_EVERY
+                    ):
+                        _rg_checked_at = _rg_total
+                        _unit = _detect_degenerate_repeat("".join(_rg_tail))
+                        if _unit:
+                            _rg_tripped = _unit
+                            logger.warning(
+                                "REPEAT GUARD: aborting runaway generation after %d chars "
+                                "— unit of %d chars repeating: %.120r",
+                                _rg_total,
+                                len(_unit),
+                                _unit,
+                            )
+                            break
 
             # Handle tool_calls deltas
             if delta.get("tool_calls"):
@@ -11768,6 +11882,13 @@ async def stream_anthropic_response(
         # when the client disconnected (the common case), leaving the upstream
         # connection un-closed → CLOSE-WAIT leak. Detaching guarantees it runs.
         _detach_aclose(openai_stream)
+
+    # A guard-aborted turn is NOT a complete answer. Report max_tokens so the
+    # client treats the text as truncated (and retries where it supports that)
+    # rather than accepting a wall of repeated text as the final response —
+    # the same contract `_detect_and_truncate_degenerate_repetition` uses.
+    if _rg_tripped:
+        finish_reason = "max_tokens"
 
     # Close any open tool call blocks (skip if XML recovery already emitted them)
     xml_recovered = tool_calls_by_index.pop("_xml_recovered", False)
