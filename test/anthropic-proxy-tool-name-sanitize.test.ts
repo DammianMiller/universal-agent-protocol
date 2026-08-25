@@ -141,8 +141,12 @@ print(json.dumps({"a": sorted(a), "b": sorted(b), "same": a["uap_router_deliver"
   it('is applied once, right before the wire, in the Messages handler', () => {
     const idx = source.indexOf('_sanitize_tool_names_for_upstream(openai_body)');
     expect(idx).toBeGreaterThan(-1);
-    // before the guarded/stream/non-stream split so all three POST paths get it
-    expect(source.indexOf('use_guarded_non_stream = _should_use_guarded_non_stream(', idx)).toBeGreaterThan(idx);
+    // before the guarded/stream/non-stream split so all three POST paths get it.
+    // Anchored on the SPLIT VARIABLE, not on whichever predicate computes it:
+    // the callee changed once already (_should_use_guarded_non_stream ->
+    // _should_buffer_turn, which ORs in the tools-stripped case) and this
+    // assertion silently became indexOf(...) === -1 rather than a real check.
+    expect(source.indexOf('use_guarded_non_stream = ', idx)).toBeGreaterThan(idx);
     // and restored on every tool_use emission path
     expect(source.match(/_restore_tool_name\(fn\.get\("name", ""\)\)/g)?.length).toBeGreaterThanOrEqual(3);
   });

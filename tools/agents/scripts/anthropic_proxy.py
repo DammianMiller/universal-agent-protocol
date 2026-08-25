@@ -4996,6 +4996,33 @@ def _has_tool_definitions(anthropic_body: dict) -> bool:
     return isinstance(tools, list) and len(tools) > 0
 
 
+def _should_buffer_turn(
+    is_stream: bool,
+    body: dict,
+    openai_body: dict,
+    monitor: "SessionMonitor",
+) -> bool:
+    """Whether this turn must be collected in full before anything is sent.
+
+    Wraps _should_use_guarded_non_stream with one extra reason: a turn whose
+    tools were deliberately stripped.
+
+    That turn CANNOT be streamed. The stripping is what makes it terminal, and
+    the sanitiser that scrubs tool-call markup out of the reply only runs on the
+    buffered path -- a streamed turn is already on the wire before anything can
+    inspect it. Worse, the hard tier pops `tool_choice`, which is precisely the
+    key _should_use_guarded_non_stream requires, so stripping the tools was
+    itself enough to route the turn AWAY from the guarded path. Measured
+    2026-08-25: a hard-tier streaming turn delivered the raw markup verbatim to
+    opencode, which rendered it and ended the session -- the incident this rail
+    exists to end. Buffering costs nothing here: the turn is terminal by
+    construction, so there is no long generation for the client to watch.
+    """
+    if monitor.suppress_text_tool_extraction:
+        return True
+    return _should_use_guarded_non_stream(is_stream, body, openai_body)
+
+
 def _should_use_guarded_non_stream(
     is_stream: bool,
     anthropic_body: dict,
@@ -8736,6 +8763,84 @@ def _strip_residual_tool_call_xml(text: str) -> str:
     return cleaned
 
 
+# The prose a suppressed turn falls back to when stripping the markup leaves
+# nothing. An EMPTY assistant message is no better for the client than the raw
+# XML was: opencode ends the turn either way and the operator sees a blank
+# reply, so the breaker must say what it did.
+STUCK_BREAK_PROSE_FALLBACK = (
+    "I repeated the same tool call without making progress, so tools were "
+    "withheld for this turn. I have not run anything further. Tell me which "
+    "different approach to take, or confirm the next step."
+)
+
+
+# Hermes blocks, for DELETION rather than parsing.
+#
+# Deliberately not _HERMES_FUNCTION_RE. That one ends with `(?:</function>|\Z)`
+# so it can salvage a premature-EOS tool call, which is right when parsing and
+# destructive when deleting: a reply that merely MENTIONS a tag loses everything
+# after it. Measured — "The proxy scans for <function=bash> and then deletes
+# everything after it. THIS SHOULD SURVIVE." collapsed to "The proxy scans for".
+# That is not hypothetical here: the hard-tier directive asks the model to say
+# "what the repeated call returned", i.e. it invites naming the call.
+#
+# So a block only counts as markup when it is closed, or when it contains a
+# parameter tag — both of which a prose mention will not have. The name class is
+# also wider than the parser's (`[^>\s]+`): the parser can afford to ignore a
+# dotted or hyphenated name it cannot map to a tool, but leaving that block in
+# the text is the leak.
+_SANITIZE_HERMES_BLOCK_RE = re.compile(
+    r"<function=[^>\s]+>"
+    # Either a properly closed block -- whose body may not contain another
+    # opener, or one malformed block swallows the prose up to the NEXT block's
+    # closing tag (measured: "IMPORTANT PROSE" between two blocks vanished) --
+    r"(?:(?:(?!<function=).)*?</function>"
+    # ...or an unclosed one that at least carries a parameter tag, which is what
+    # separates a real premature-EOS emission from a prose mention.
+    r"|(?:(?!<function=).)*?<parameter=(?:(?!<function=).)*?(?:</function>|\Z))",
+    re.DOTALL,
+)
+# Gemma's DSL, with the premature-EOS arm the parsing regex lacks.
+_SANITIZE_GEMMA_DSL_RE = re.compile(
+    r"<\|tool_call>.*?(?:<tool_call\|>|\Z)",
+    re.DOTALL,
+)
+# Whatever the block patterns left behind: closing tags with no opener, and a
+# LONE opener. The lone opener is stripped as a tag rather than as a block on
+# purpose -- it is inert to every client, and the text around it is far more
+# likely to be the model explaining which call it kept repeating (which the
+# hard-tier directive asks for) than a real emission.
+_SANITIZE_ORPHAN_TAG_RE = re.compile(
+    r"</?parameter(?:=[^>\s]+)?>|</?function(?:=[^>\s]+)?>|</?tool_call>|<tool_call\|>",
+)
+
+
+def _strip_all_tool_call_markup(text: str) -> str:
+    """Remove the tool-call markup forms a model emits INSTEAD of calling a tool.
+
+    `_strip_residual_tool_call_xml` only understands the ``<tool_call>``
+    envelope. A model that emits a BARE Hermes ``<function=…>`` block (no
+    envelope) or Gemma's DSL walks straight through it, which is how raw markup
+    reached a client on a turn whose whole purpose was to end in prose. Applied
+    on the suppressed path only — the normal path promotes this markup to real
+    tool calls instead of deleting it.
+
+    Fenced ```json`` calls are deliberately NOT stripped: the normal path
+    schema-matches them, but here they are indistinguishable from a model
+    legitimately quoting JSON, and destroying real output is the worse error.
+    """
+    cleaned = _strip_residual_tool_call_xml(text)
+    if "<function=" in cleaned:
+        cleaned = _SANITIZE_HERMES_BLOCK_RE.sub("", cleaned)
+    if "<|tool_call>" in cleaned:
+        cleaned = _SANITIZE_GEMMA_DSL_RE.sub("", cleaned)
+    # Orphans left by a block whose closing tag never arrived, or by the
+    # envelope strip above.
+    cleaned = _SANITIZE_ORPHAN_TAG_RE.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
 # Pattern: runaway closing braces like }}}}}
 _GARBLED_RUNAWAY_BRACES_RE = re.compile(r"\}{4,}")
 # Pattern: repetitive digit sequences like 000000 or 398859738398859738
@@ -10965,6 +11070,69 @@ def _maybe_apply_session_contamination_breaker(
 # ===========================================================================
 
 
+# Anything carrying one of these is worth running the stripper over. Kept wider
+# than the shapes the PARSER understands: an orphan closing tag or a lone
+# parameter tag is still markup on the client's screen, and gating the stripper
+# on the parser's markers let those through untouched.
+_SUPPRESSED_MARKUP_MARKERS = (
+    "<tool_call>",
+    "</tool_call>",
+    "<tool_call|>",
+    "<function=",
+    "</function>",
+    "<parameter=",
+    "</parameter>",
+    "<|tool_call>",
+)
+
+
+def _sanitize_suppressed_tool_markup(openai_resp: dict) -> dict:
+    """Scrub tool-call markup from a turn whose tools were deliberately stripped.
+
+    Mutates *openai_resp* in place and returns it. A no-op unless a message
+    is text-only and actually carries markup, so an ordinary prose reply on a
+    suppressed turn passes through byte-for-byte.
+    """
+    for choice in openai_resp.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        # A malformed upstream payload must not turn a degraded turn into a 500.
+        if not isinstance(message, dict) or message.get("tool_calls"):
+            continue
+        # The reasoning sidecar is scrubbed too: when `content` is empty the
+        # EMPTY-OUTPUT GUARD promotes reasoning into the VISIBLE text, so
+        # leaving it alone just relocates the leak.
+        for field in ("content", "reasoning_content", "reasoning"):
+            text = message.get(field)
+            if not isinstance(text, str) or not text:
+                continue
+            if not any(marker in text for marker in _SUPPRESSED_MARKUP_MARKERS):
+                continue
+            cleaned = _strip_all_tool_call_markup(text)
+            if field == "content":
+                # Emptiness is judged on what SURVIVES thinking extraction. A
+                # reply of "<think></think>" is truthy but renders blank, and
+                # blank is the outcome the fallback exists to prevent.
+                _, visible = _extract_thinking_block(cleaned)
+                if not visible.strip():
+                    cleaned = (
+                        f"{cleaned}\n\n{STUCK_BREAK_PROSE_FALLBACK}"
+                        if cleaned.strip()
+                        else STUCK_BREAK_PROSE_FALLBACK
+                    )
+            message[field] = cleaned
+            logger.warning(
+                "SUPPRESSED TOOL MARKUP: scrubbed tool-call markup from %s on a "
+                "tools-stripped turn (%d chars in, %d out) -- the turn now ends "
+                "in prose as intended",
+                field,
+                len(text),
+                len(cleaned),
+            )
+    return openai_resp
+
+
 def _maybe_extract_text_tool_calls(
     openai_resp: dict,
     anthropic_tools: list[dict] | None = None,
@@ -10983,8 +11151,15 @@ def _maybe_extract_text_tool_calls(
     # A hard finalize breaker stripped tools this turn to force a terminal
     # text-only end_turn; do not resurrect prose tool-calls (that would defeat
     # the breaker and continue the loop). Carried per-turn on the SessionMonitor.
+    #
+    # Not resurrecting is only half the job. Returning the response untouched
+    # ships the raw markup to the client as the assistant's visible text --
+    # measured live 2026-08-25 on opencode session ses_fc7a27ea…, which rendered
+    # a <tool_call><function=bash>… block as the reply, logged "exiting loop",
+    # and left the operator retyping "go" into the same loop. A turn forced to
+    # end in prose must actually END IN PROSE.
     if suppress:
-        return openai_resp
+        return _sanitize_suppressed_tool_markup(openai_resp)
     choice = (openai_resp.get("choices") or [{}])[0]
     message = choice.get("message", {})
 
@@ -12653,11 +12828,7 @@ async def messages(request: Request):
     # Last step before the wire: names llama.cpp's grammar builder can parse.
     _sanitize_tool_names_for_upstream(openai_body)
 
-    use_guarded_non_stream = _should_use_guarded_non_stream(
-        is_stream,
-        body,
-        openai_body,
-    )
+    use_guarded_non_stream = _should_buffer_turn(is_stream, body, openai_body, monitor)
     if use_guarded_non_stream:
         async def _produce_guarded():
             strict_body = dict(openai_body)

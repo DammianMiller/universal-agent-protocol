@@ -3,6 +3,12 @@
 ## v1.220.12 (2026-08-25)
 
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids
+
+
+## v1.220.11 (2026-08-25)
+
+- test(proxy): anchor the sanitize-before-split check on the split variable
+- fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
 - feature/267 rtk docker proxy (#770)
 
