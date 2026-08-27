@@ -429,6 +429,15 @@ PROXY_ERROR_LOOP = os.environ.get("PROXY_ERROR_LOOP", "on").lower() not in {
     "0", "off", "false", "no",
 }
 PROXY_ERROR_LOOP_THRESHOLD = int(os.environ.get("PROXY_ERROR_LOOP_THRESHOLD", "3"))
+# Hard stop: after this many injected re-read nudges in ONE sustained streak —
+# the model ignored every directive and the same error STILL recurs — the proxy
+# refuses to forward the request and /v1/messages serves a 400, instead of
+# burning another full-context prefill on a loop directives cannot fix.
+# Observed live (2026-08-27): five nudges ignored, each retry re-prefilling
+# ~85k tokens for ~2.5 min on a single-slot server, starving every other
+# client. A fresh HUMAN user turn re-arms the guard (streak + fires reset).
+# 0 disables the hard stop (nudges keep firing, advisory-only).
+PROXY_ERROR_LOOP_HARD_LIMIT = int(os.environ.get("PROXY_ERROR_LOOP_HARD_LIMIT", "3"))
 
 _ERROR_LINE_RE = re.compile(
     r"^.*(?:Error|Exception|Traceback|FAILED|assert(?:ion)?|SyntaxError|"
@@ -2206,6 +2215,7 @@ class SessionMonitor:
     error_signature_streak: int = 0  # consecutive turns with the SAME tool_result error
     last_error_signature: str = ""  # normalized signature of that recurring error
     error_loop_fires: int = 0  # telemetry: error-loop nudges injected
+    error_loop_blocks: int = 0  # telemetry: error-loop hard stops (400s) served
     empty_maxtokens_recoveries: int = 0  # telemetry: thinking-runaway recoveries
     rate_limited_api_streak: int = 0  # consecutive tool calls hitting a rate-limited API host
     stuck_break_fires: int = 0  # monotonic count of forced stuck-breaks
@@ -6482,6 +6492,35 @@ def _maybe_inject_stuck_break(openai_body: dict, monitor: "SessionMonitor") -> N
     logger.warning("STUCK-BREAK: forced terminal turn (%s, fires=%d)", reason, monitor.stuck_break_fires)
 
 
+class ErrorLoopHardBlock(Exception):
+    """A session kept re-hitting the SAME tool_result error after
+    PROXY_ERROR_LOOP_HARD_LIMIT injected re-read nudges. The /v1/messages
+    handler converts this into a 400 so the loop stops consuming full-context
+    prefills instead of being nudged yet again."""
+
+
+def _has_fresh_user_turn(openai_body: dict) -> bool:
+    """True when the request's LAST message is a human user turn (text), not a
+    tool_result chain. In an unattended tool loop the tail is always a tool
+    result; a trailing user-text message means a human has stepped in — the one
+    signal that re-arms a tripped ERROR-LOOP hard stop."""
+    msgs = openai_body.get("messages")
+    if not isinstance(msgs, list) or not msgs:
+        return False
+    last = msgs[-1]
+    if not isinstance(last, dict) or last.get("role") != "user":
+        return False
+    content = last.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return any(
+            isinstance(b, dict) and b.get("type") == "text" and str(b.get("text", "")).strip()
+            for b in content
+        )
+    return False
+
+
 def _maybe_inject_error_loop_break(openai_body: dict, monitor: "SessionMonitor") -> None:
     """Nudge the model out of a repeated-same-error loop (ERROR-LOOP guardrail).
 
@@ -6489,11 +6528,43 @@ def _maybe_inject_error_loop_break(openai_body: dict, monitor: "SessionMonitor")
     despite the model's (varied) edits, its edits aren't addressing the real
     blocker. Inject a directive to STOP editing and re-read the whole failing
     file/output — the bug is likely somewhere it hasn't looked. Advisory: does
-    NOT release tool_choice (the model should keep acting, just diagnose first)."""
+    NOT release tool_choice (the model should keep acting, just diagnose first).
+    Escalation: once the nudge has fired PROXY_ERROR_LOOP_HARD_LIMIT times in
+    one streak, raise ErrorLoopHardBlock instead — the request is refused with
+    a 400 rather than burning another prefill. A fresh human user turn re-arms
+    the guard."""
     if not PROXY_ERROR_LOOP:
         return
     if monitor.error_signature_streak < PROXY_ERROR_LOOP_THRESHOLD:
         return
+    if (
+        PROXY_ERROR_LOOP_HARD_LIMIT > 0
+        and monitor.error_loop_fires >= PROXY_ERROR_LOOP_HARD_LIMIT
+    ):
+        if _has_fresh_user_turn(openai_body):
+            monitor.error_loop_fires = 0
+            monitor.error_signature_streak = 0
+            monitor.last_error_signature = ""
+            logger.warning(
+                "ERROR-LOOP: human turn after %d hard stop(s) — guard re-armed",
+                monitor.error_loop_blocks,
+            )
+            return
+        monitor.error_loop_blocks += 1
+        raise ErrorLoopHardBlock(
+            "ERROR-LOOP hard stop: the same tool failure has recurred "
+            + str(monitor.error_signature_streak)
+            + " times and "
+            + str(monitor.error_loop_fires)
+            + " injected re-read directives were ignored. The proxy refuses to "
+            "burn another full-context prefill on this loop (operator policy "
+            "PROXY_ERROR_LOOP_HARD_LIMIT="
+            + str(PROXY_ERROR_LOOP_HARD_LIMIT)
+            + "). Redirect the agent or start a fresh session; sending a normal "
+            "user message re-arms the guard. Failing signature: \""
+            + monitor.last_error_signature[:120]
+            + "\""
+        )
     monitor.error_loop_fires += 1
     directive = (
         "\n\nSTOP — the SAME failure has now recurred "
@@ -6506,6 +6577,15 @@ def _maybe_inject_error_loop_break(openai_body: dict, monitor: "SessionMonitor")
         "looked (a duplicate declaration, a wrong import, a different file). "
         "Only after you can name the exact line causing THIS error, fix that."
     )
+    if (
+        PROXY_ERROR_LOOP_HARD_LIMIT > 0
+        and monitor.error_loop_fires >= PROXY_ERROR_LOOP_HARD_LIMIT
+    ):
+        directive += (
+            "\n\nThis is the LAST nudge: if this same failure recurs again, "
+            "the proxy will HARD-FAIL further requests in this session "
+            "(operator policy) and a human will have to intervene."
+        )
     msgs = openai_body.get("messages")
     if not isinstance(msgs, list):
         msgs = []
@@ -12807,12 +12887,27 @@ async def messages(request: Request):
     # returned. A cloud-only session was otherwise blocking on a capability
     # probe of a local backend it will never send a token to.
     await _probe_chat_template_kwargs()
-    openai_body = build_openai_request(
-        body,
-        monitor,
-        profile_prompt_suffix=profile_prompt_suffix,
-        profile_grammar=profile_grammar,
-    )
+    try:
+        openai_body = build_openai_request(
+            body,
+            monitor,
+            profile_prompt_suffix=profile_prompt_suffix,
+            profile_grammar=profile_grammar,
+        )
+    except ErrorLoopHardBlock as exc:
+        logger.error(
+            "ERROR-LOOP hard stop served (blocks=%d): %s",
+            monitor.error_loop_blocks,
+            str(exc)[:160],
+        )
+        return Response(
+            content=json.dumps({
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": str(exc)},
+            }),
+            status_code=400,
+            media_type="application/json",
+        )
     # Only the WIRE body is touched. The Anthropic response still echoes the
     # model the client asked for, which is what clients check.
     await _reconcile_wire_model(openai_body)
