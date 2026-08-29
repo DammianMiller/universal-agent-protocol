@@ -111,13 +111,31 @@ export interface VisualVerdict {
  * pressure instead of a post-hoc opinion. All fields optional; per-page
  * overrides win over file-level values, which win over the built-in floors.
  * Shape: { minDistinctColors, maxDominantRatio, minMotionRatio,
- *          pages: { "<file>.html": { ...same fields } } }
+ *          exclude: ["<file>.html", ...],
+ *          pages: { "<file>.html": { ...same fields, exclude } } }
+ *
+ * `exclude` (top-level list of discovered entry paths, or per-page
+ * `exclude: true`) removes a page from the gate entirely. This is the escape
+ * hatch for entry pages that are not servable raw — e.g. a framework SPA's
+ * source index.html whose module scripts / absolute asset paths only resolve
+ * in the built dist/ (serving it from the project root 404s every asset and
+ * no canvas ever mounts, so the page can NEVER pass no matter how correct the
+ * app is). Prefer pointing the page at its built output; exclude only when
+ * the raw source entry is structurally ungradeable.
  */
 export interface VisualTargets {
   minDistinctColors?: number;
   maxDominantRatio?: number;
   minMotionRatio?: number;
-  pages?: Record<string, { minDistinctColors?: number; maxDominantRatio?: number; minMotionRatio?: number }>;
+  /** Discovered entry-page paths (relative to projectRoot) to skip entirely. */
+  exclude?: string[];
+  pages?: Record<string, { minDistinctColors?: number; maxDominantRatio?: number; minMotionRatio?: number; exclude?: boolean }>;
+}
+
+/** True when the project's visual targets exclude this discovered entry page. */
+export function isPageExcluded(file: string, targets: VisualTargets): boolean {
+  if (targets.exclude?.includes(file)) return true;
+  return targets.pages?.[file]?.exclude === true;
 }
 
 export function readVisualTargets(projectRoot: string): VisualTargets {
@@ -654,16 +672,21 @@ export async function runVisualGate(
   projectRoot: string,
   options: VisualGateOptions = {}
 ): Promise<VisualVerdict> {
-  const files = options.files ?? discoverEntryPages(projectRoot);
+  const discovered = options.files ?? discoverEntryPages(projectRoot);
+  const targetsForFilter = readVisualTargets(projectRoot);
+  const files = discovered.filter((f) => !isPageExcluded(f, targetsForFilter));
   if (files.length === 0) {
-    return { passed: true, skipped: true, structural: false, feedback: 'visual gate: no entry .html pages found', pages: [], screenshotDir: null };
+    const feedback = discovered.length === 0
+      ? 'visual gate: no entry .html pages found'
+      : `visual gate: all ${discovered.length} entry page(s) excluded via .uap/visual-targets.json`;
+    return { passed: true, skipped: true, structural: false, feedback, pages: [], screenshotDir: null };
   }
   const samples = Math.max(2, options.samples ?? DEFAULT_SAMPLES);
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const launchTimeoutMs = options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS;
 
-  const visualTargets = readVisualTargets(projectRoot);
+  const visualTargets = targetsForFilter;
   const screenshotDir = join(projectRoot, '.uap', 'visual');
   try {
     mkdirSync(screenshotDir, { recursive: true });
