@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.222.0 (2026-08-29)
+
+- feat(verify): visual gate grades only servable entry pages
+- feat(verify): page exclusion for the visual gate via .uap/visual-targets.json (#774)
+- fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
+- fix(proxy): a tools-stripped turn must actually end in prose (#772)
+- fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
+- feature/267 rtk docker proxy (#770)
+
+
 ## v1.221.0 (2026-08-29)
 
 - feat(verify): page exclusion for the visual gate via .uap/visual-targets.json

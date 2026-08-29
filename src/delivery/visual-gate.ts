@@ -85,6 +85,19 @@ export interface PageVisualReport {
   screenshots: string[];
   /** Failures for THIS page (empty = visually sound). */
   problems: string[];
+  /**
+   * True when the page was NOT graded because it is not servable raw from the
+   * project root: it failed grading AND at least one failed request was a
+   * same-origin path that does not exist on disk under the served root (e.g. a
+   * framework SPA source entry whose assets only exist in the built dist/, or
+   * whose root-absolute paths assume a different docroot). Grading such a page
+   * measures the serving mismatch, not the app — so the gate only applies to
+   * servable files. External (CDN) failures never trigger this: they keep the
+   * vendor-the-dependency blocking behaviour.
+   */
+  unservable?: boolean;
+  /** The same-origin failed-request paths missing on disk (when unservable). */
+  missingAssets?: string[];
 }
 
 export interface VisualVerdict {
@@ -136,6 +149,37 @@ export interface VisualTargets {
 export function isPageExcluded(file: string, targets: VisualTargets): boolean {
   if (targets.exclude?.includes(file)) return true;
   return targets.pages?.[file]?.exclude === true;
+}
+
+/**
+ * Same-origin failed-request paths that do not exist on disk under the served
+ * root — the servability signal. The gate's static server serves projectRoot,
+ * so a page authored for a different docroot (a framework SPA source entry
+ * whose assets only exist in the built dist/, or whose root-absolute paths
+ * assume the app subdir IS the docroot) fails every such request, and grading
+ * its render measures the serving mismatch, not the app. External URLs (CDN)
+ * are never included — they keep the vendor-the-dependency blocking semantics.
+ * Pure + exported for tests.
+ */
+export function missingLocalAssets(failedRequests: string[], projectRoot: string): string[] {
+  const missing: string[] = [];
+  for (const entry of failedRequests ?? []) {
+    const url = (entry ?? '').split(/\s+/)[0];
+    let pathname: string;
+    try {
+      const u = new URL(url);
+      if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost' && u.hostname !== '[::1]') continue;
+      pathname = decodeURIComponent(u.pathname);
+    } catch {
+      continue; // not a parseable URL — nothing to disk-check
+    }
+    // Strip the leading slash so join() stays under projectRoot, and refuse
+    // traversal outright — a crafted path must never probe outside the root.
+    const rel = pathname.replace(/^\/+/, '');
+    if (!rel || rel.split('/').includes('..')) continue;
+    if (!existsSync(join(projectRoot, rel))) missing.push(pathname);
+  }
+  return missing;
 }
 
 export function readVisualTargets(projectRoot: string): VisualTargets {
@@ -857,7 +901,18 @@ export async function runVisualGate(
         screenshots: menuShot ? [menuShot, ...shots] : shots,
       };
       const pageTargets = { ...visualTargets, ...(visualTargets.pages?.[file] ?? {}) };
-      pages.push({ ...base, problems: judgePage(base, pageTargets) });
+      const problems = judgePage(base, pageTargets);
+      // Servability policy: the gate only applies to files that are servable
+      // from the project root. A page that failed AND has same-origin failed
+      // requests missing on disk is measuring a docroot/build mismatch (its
+      // real artifact lives elsewhere, e.g. a built dist/) — skip it, loudly,
+      // instead of hard-failing on a render the project never ships.
+      const missing = problems.length > 0 ? missingLocalAssets(failedRequests, projectRoot) : [];
+      if (missing.length > 0) {
+        pages.push({ ...base, problems: [], unservable: true, missingAssets: missing });
+      } else {
+        pages.push({ ...base, problems });
+      }
     }
   } catch (e) {
     return {
@@ -877,19 +932,27 @@ export async function runVisualGate(
     await browser?.close().catch(() => undefined);
   }
 
-  const failing = pages.filter((p) => p.problems.length > 0);
+  const graded = pages.filter((p) => !p.unservable);
+  const failing = graded.filter((p) => p.problems.length > 0);
   let passed = failing.length === 0;
   const lines: string[] = [];
   for (const p of pages) {
-    const stat = p.problems.length === 0
-      ? `OK (motion ${(p.motionRatio * 100).toFixed(1)}%, ${p.distinctColors} colors)`
-      : p.problems.join('; ');
+    const missing = p.missingAssets ?? [];
+    const stat = p.unservable
+      ? `SKIPPED — not servable raw from the project root (missing on disk: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ` (+${missing.length - 3} more)` : ''}). ` +
+        'The gate only grades servable files; this page\'s real artifact is served from another root (e.g. a built dist/) — grade that instead, or align its asset paths.'
+      : p.problems.length === 0
+        ? `OK (motion ${(p.motionRatio * 100).toFixed(1)}%, ${p.distinctColors} colors)`
+        : p.problems.join('; ');
     lines.push(`- ${p.file}: ${stat}`);
   }
   if (!passed) {
     lines.unshift('VISUAL/BEHAVIORAL PROBLEMS — the rendered output is wrong even though the code loads:');
+  } else if (graded.length === 0) {
+    lines.unshift(`visual gate: no servable entry pages — all ${pages.length} discovered page(s) are not servable raw from the project root (nothing graded)`);
   } else {
-    lines.unshift(`visual gate: ${pages.length} page(s) render, animate, and run clean`);
+    lines.unshift(`visual gate: ${graded.length} page(s) render, animate, and run clean` +
+      (graded.length < pages.length ? ` (${pages.length - graded.length} not-servable page(s) skipped)` : ''));
   }
   lines.push(`screenshots: ${screenshotDir} (review for design/aesthetic quality)`);
   // Whole-artifact richness (color floor / animation floor) is only satisfiable
@@ -899,7 +962,7 @@ export async function runVisualGate(
   // (run J live, 2026-07-17: scaffold-html-css split twice over "1 distinct
   // color < 3 required" with EVERY other gate green). On non-final epics the
   // verdict downgrades to an advisory pass; the FINAL epic judges for real.
-  const structural = pages.some((p) => structuralProblems(p).length > 0);
+  const structural = pages.some((p) => !p.unservable && structuralProblems(p).length > 0);
   // The non-final allowance stays BLANKET, structural findings included. Scoping
   // it to graded findings was the first design here, and it is wrong for this
   // codebase: a SCAFFOLD epic is instructed to emit `throw new Error("TODO")`
@@ -912,7 +975,11 @@ export async function runVisualGate(
     passed = true;
     lines.unshift('NA: non-final epic — visual findings are judged for real on the FINAL epic (findings below are advisory)');
   }
-  return { passed, skipped: false, structural, feedback: lines.join('\n'), pages, screenshotDir };
+  // skipped=true when nothing was graded because every discovered page is
+  // unservable raw: like the no-browser skip, "we could not observe anything"
+  // must never read as "the visuals are fine" downstream (the marker write and
+  // the vision judge both key off !skipped).
+  return { passed, skipped: graded.length === 0, structural, feedback: lines.join('\n'), pages, screenshotDir };
 }
 
 function safeRead(path: string): string {
@@ -928,7 +995,9 @@ export function visualRuntimeNote(verdict: VisualVerdict): string {
   if (verdict.skipped) return '';
   const parts = verdict.pages.map(
     (p) =>
-      `${p.file}: ${p.problems.length === 0 ? 'renders+animates OK' : p.problems.join('; ')} (motion ${(p.motionRatio * 100).toFixed(1)}%)`
+      p.unservable
+        ? `${p.file}: SKIPPED (not servable raw — missing on disk: ${(p.missingAssets ?? []).slice(0, 2).join(', ')})`
+        : `${p.file}: ${p.problems.length === 0 ? 'renders+animates OK' : p.problems.join('; ')} (motion ${(p.motionRatio * 100).toFixed(1)}%)`
   );
   return `Visual observation of the RUNNING artifact: ${parts.join(' | ')}`;
 }
