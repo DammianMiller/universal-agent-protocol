@@ -1697,10 +1697,12 @@ export class ConvergenceLoop {
       // would make this breaker silently inert on a default bounded run.
       //
       // Deliberately does NOT key off `filesApplied` alone: the agentic
-      // executor writes through its own tools and installs a no-op applier, so
-      // `filesApplied` is ALWAYS empty there (see the `changedTree` doc above).
-      // Using it alone would abort productive agentic runs after two flat-score
-      // turns. The git fingerprint is the signal that survives both executors.
+      // executor writes through its own tools and its applier only reports
+      // what the run write ledger observed (deliver-hardening 2026-07-13 —
+      // before the ledger this was empty BY CONSTRUCTION, which is why the
+      // breaker never trusted it). A ledger gap (shell write with the sweep
+      // disabled, a deletion) would read as idle. The git fingerprint is the
+      // signal that survives every executor and every tracking gap.
       const treeNow = turnFp;
       const treeMoved = treeNow !== null && treeNow !== lastTurnFingerprint;
       if (treeNow !== null) lastTurnFingerprint = treeNow;

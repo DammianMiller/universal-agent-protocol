@@ -13,7 +13,7 @@
 
 import { spawnSync } from 'child_process';
 import { existsSync, readFileSync, readdirSync, lstatSync } from 'fs';
-import { join } from 'path';
+import { join, resolve, sep } from 'path';
 import { synthesizeExecutionRung } from './execution-gate.js';
 
 /**
@@ -109,6 +109,17 @@ export interface GateRung {
    * written marked tests yet.
    */
   passExitCodes?: number[];
+  /**
+   * Working directory for the rung, relative to the project root (B1 declared
+   * gates: `delivery.gates[].cwd`). Absent ⇒ the project root.
+   */
+  cwd?: string;
+  /**
+   * Path globs this gate covers (B1 declared gates: `delivery.gates[].scope`).
+   * Metadata for mission-scoped gate relevance (A3); the ladder itself does
+   * not filter on it yet.
+   */
+  scope?: string[];
   /**
    * Does a failure of this rung stop promotion to later tiers? Default true.
    *
@@ -327,7 +338,94 @@ export function detectRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIM
     if (exec) rungs.push(exec);
   }
 
+  // B1 (deliver-hardening 2026-07-13): project-declared gates from
+  // `.uap.json → delivery.gates[]` merge with — and OUTRANK — the detected
+  // set. Detection is heuristic; a declaration is the project stating its
+  // real contract (pay2u: docker buildx for apps/api/**, gen_openapi --check
+  // for handler files), and a heuristic must never veto it.
+  return mergeDeclaredRungs(rungs, detectDeclaredRungs(projectRoot, timeoutMs));
+}
+
+/**
+ * Split a declared gate command into argv. Declared gates are project-authored
+ * IaC (same trust level as package.json scripts); quotes are honored, pipes
+ * and redirects are NOT — wrap those in `bash -lc '…'` explicitly.
+ */
+function splitDeclaredCommand(cmd: string): string[] {
+  const out: string[] = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmd)) !== null) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+
+const DECLARED_TIERS: ReadonlySet<string> = new Set<GateTier>([
+  'fast',
+  'runtime',
+  'integration',
+  'deploy-dev',
+  'final',
+  'ci',
+  'deploy-staging',
+  'deploy-prod',
+]);
+
+/**
+ * Read `.uap.json → delivery.gates[]` as rungs. Read RAW (JSON.parse, not the
+ * zod loader): this module is imported by hot paths that must not pull in the
+ * config stack, and a malformed file must degrade to "no declared gates",
+ * never break detection. Unknown tiers fall back to 'fast'.
+ */
+export function detectDeclaredRungs(projectRoot: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): GateRung[] {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(join(projectRoot, '.uap.json'), 'utf-8'));
+  } catch {
+    return [];
+  }
+  const gates = (raw as { delivery?: { gates?: unknown } })?.delivery?.gates;
+  if (!Array.isArray(gates)) return [];
+  const rungs: GateRung[] = [];
+  for (const g of gates) {
+    if (!g || typeof g !== 'object') continue;
+    const d = g as Record<string, unknown>;
+    if (typeof d.id !== 'string' || !d.id || typeof d.cmd !== 'string' || !d.cmd.trim()) continue;
+    const argv = splitDeclaredCommand(d.cmd);
+    if (argv.length === 0) continue;
+    rungs.push({
+      id: d.id,
+      name: typeof d.name === 'string' && d.name ? d.name : `${d.id} (${d.cmd})`,
+      command: argv[0],
+      args: argv.slice(1),
+      required: d.required !== false,
+      timeoutMs:
+        typeof d.timeoutSec === 'number' && d.timeoutSec > 0
+          ? Math.round(d.timeoutSec * 1000)
+          : timeoutMs,
+      tier: typeof d.tier === 'string' && DECLARED_TIERS.has(d.tier) ? (d.tier as GateTier) : 'fast',
+      cwd: typeof d.cwd === 'string' && d.cwd ? d.cwd : undefined,
+      scope: Array.isArray(d.scope) ? d.scope.filter((s): s is string => typeof s === 'string') : undefined,
+    });
+  }
   return rungs;
+}
+
+/**
+ * Merge declared rungs over detected ones: a declared rung with a detected
+ * rung's id REPLACES it in place (outrank = same position, declared fields),
+ * and new declared rungs append after the detected set.
+ */
+export function mergeDeclaredRungs(detected: GateRung[], declared: GateRung[]): GateRung[] {
+  if (declared.length === 0) return detected;
+  const byId = new Map(declared.map((r) => [r.id, r]));
+  const replaced = new Set<string>();
+  const merged = detected.map((r) => {
+    const d = byId.get(r.id);
+    if (!d) return r;
+    replaced.add(r.id);
+    return d;
+  });
+  return merged.concat(declared.filter((r) => !replaced.has(r.id)));
 }
 
 /**
@@ -1299,8 +1397,28 @@ export function runRung(
   captureOutcomes = false
 ): RungResult {
   const start = Date.now();
+  // B1 declared gates may carry a sub-directory cwd (a gate that only makes
+  // sense inside apps/api). Declared config is project-authored IaC — same
+  // trust level as a package.json script, which can `cd` anywhere already —
+  // but containment is one line and a `../../` escape would run the gate on a
+  // DIFFERENT project while reporting against this one (review fix).
+  const rootAbs = resolve(projectRoot);
+  const declaredCwd = rung.cwd ? resolve(rootAbs, rung.cwd) : rootAbs;
+  const contained = declaredCwd === rootAbs || declaredCwd.startsWith(rootAbs + sep);
+  if (rung.cwd && !contained) {
+    return {
+      id: rung.id,
+      name: rung.name,
+      passed: false,
+      skipped: false,
+      exitCode: null,
+      failureReason: 'spawn-error',
+      durationMs: 0,
+      outputTail: `declared gate cwd '${rung.cwd}' escapes the project root — refusing to run it`,
+    };
+  }
   const res = spawnSync(rung.command, rung.args, {
-    cwd: projectRoot,
+    cwd: declaredCwd,
     encoding: 'utf-8',
     timeout: rung.timeoutMs,
     maxBuffer: 16 * 1024 * 1024,

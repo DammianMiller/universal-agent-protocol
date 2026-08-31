@@ -42,9 +42,10 @@ import {
   readFileSync,
   writeFileSync,
   lstatSync,
+  realpathSync,
   statSync,
 } from 'fs';
-import { join, basename, isAbsolute, resolve } from 'path';
+import { join, basename, dirname, isAbsolute, resolve } from 'path';
 import { tmpdir, homedir, hostname } from 'os';
 
 const EXCLUDE = new Set([
@@ -409,4 +410,109 @@ export function restoreTree(root: string, snap: string): void {
 /** Remove a snapshot directory. */
 export function disposeSnapshot(snap: string): void {
   rmSync(snap, { recursive: true, force: true });
+}
+
+/**
+ * Restore ONLY the listed files from the snapshot (E2, deliver-hardening
+ * 2026-07-13): keep-best rollback in a SHARED worktree must never revert
+ * another agent's concurrent edits. `files` are the paths the run itself
+ * wrote (relative to root); each is restored from the snapshot when the
+ * snapshot holds it, deleted when it does not (the run created it after the
+ * best point). Everything else in the tree is left byte-identical.
+ *
+ * Paths are resolved against root and rejected when they escape it — a
+ * recorded path is data the run produced, not a trusted operand. Secret-named
+ * files are never touched (same contract as restoreTree). Files the run
+ * DELETED without ever writing are outside the write-set and are not
+ * restored; the end-of-run gate failure that triggered the rollback still
+ * reports them. Returns the number of paths restored/removed.
+ */
+export function restoreTreeScoped(root: string, snap: string, files: string[]): number {
+  const entries = readdirSync(snap); // throws if the snapshot is gone — root untouched
+  if (!entries.includes(META_FILE)) {
+    throw new Error(`refusing to restore from ${snap}: missing ${META_FILE} marker`);
+  }
+  const rootAbs = resolve(root);
+  // The lexical root and its REAL path can differ (a symlinked component on
+  // the way to root, e.g. /var -> /private/var); the symlink-escape check
+  // below compares realpath-to-realpath, never realpath-to-lexical.
+  let rootReal = rootAbs;
+  try {
+    rootReal = realpathSync(rootAbs);
+  } catch {
+    /* root unreadable — every per-file realpath will fail closed below */
+  }
+  let touched = 0;
+  const perFileFailures: string[] = [];
+  for (const f of new Set(files)) {
+    try {
+      if (!f || typeof f !== 'string') continue;
+      const rel = f.replace(/\\/g, '/').replace(/^\/+/, '');
+      const target = resolve(rootAbs, rel);
+      // Containment, with teeth (security review, 2026-07-13): the lexical
+      // resolve+prefix check alone passes a path THROUGH a symlinked
+      // directory inside root (link -> $HOME; "link/.bashrc" resolves inside
+      // root lexically but lands outside it). realpath the parent first. And
+      // reject target === rootAbs: a recorded "." used to reach the else
+      // branch and rmSync the ROOT itself.
+      if (target === rootAbs || !target.startsWith(rootAbs + '/')) continue; // escape attempt
+      if (isSecretName(basename(target))) continue;
+      try {
+        const realParent = realpathSync(dirname(target));
+        if (realParent !== rootReal && !realParent.startsWith(rootReal + '/')) continue;
+      } catch {
+        // Parent does not exist yet: nothing to escape through — the mkdir
+        // below (restore case) creates it under root lexically, and the rm
+        // case has nothing to remove.
+        if (!dirname(target).startsWith(rootAbs + '/')) continue;
+      }
+      const inSnap = join(snap, rel);
+      let snapStat;
+      try {
+        snapStat = lstatSync(inSnap);
+      } catch {
+        snapStat = null;
+      }
+      if (snapStat?.isFile()) {
+        mkdirSync(dirname(target), { recursive: true });
+        cpSync(inSnap, target);
+        touched++;
+      } else {
+        // Not in the snapshot: the run created this file after the best
+        // point — rollback removes exactly it, nothing beside it. lstat, not
+        // existsSync: a broken symlink exists for lstat only, and a directory
+        // (never a run-created FILE) is refused rather than recursed into.
+        let targetStat;
+        try {
+          targetStat = lstatSync(target);
+        } catch {
+          targetStat = null;
+        }
+        if (targetStat && (targetStat.isFile() || targetStat.isSymbolicLink())) {
+          rmSync(target, { force: true });
+          touched++;
+        }
+      }
+    } catch {
+      // One bad path must not abort the whole rollback: a partial revert is
+      // recoverable (the snapshot is preserved below), an aborted one leaves
+      // the tree half-regressed with the failure reported as total.
+      perFileFailures.push(String(f));
+    }
+  }
+  if (perFileFailures.length > 0) {
+    const err = new Error(
+      `scoped restore: ${perFileFailures.length} path(s) failed (${perFileFailures.slice(0, 5).join(', ')})`
+    );
+    try {
+      writeFileSync(
+        join(snap, META_FILE),
+        JSON.stringify({ pid: process.pid, host: hostname(), created: new Date().toISOString(), preserve: true })
+      );
+    } catch {
+      /* marker rewrite is best-effort */
+    }
+    throw err;
+  }
+  return touched;
 }

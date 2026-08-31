@@ -206,13 +206,25 @@ export interface SweepOutcome {
   uncovered: string[];
   /** Paths the sweep decided to act on but could not. */
   failed: string[];
+  /**
+   * EVERY path whose size/mtime moved between baseline and turn end — stub or
+   * not, acted on or not. Purely observational: nothing here was reverted by
+   * virtue of appearing in this list. The agentic executor folds it into the
+   * per-run write ledger (deliver-hardening review, 2026-07-13): the keep-best
+   * scoped restore needs the run's real write-set, and `filesApplied` is empty
+   * by construction on the agentic path (noopApplier), so without this the
+   * rollback silently did nothing on the DEFAULT executor. Deletions are not
+   * observable to a walk of existing files — they stay the documented
+   * known-gap of the scoped restore.
+   */
+  changed: string[];
   /** Model-facing note, '' when there is nothing to say. */
   note: string;
 }
 
 /** Fresh on every call: a shared singleton lets one caller's mutation leak. */
 function emptyOutcome(): SweepOutcome {
-  return { reverted: [], removed: [], uncovered: [], failed: [], note: '' };
+  return { reverted: [], removed: [], uncovered: [], failed: [], changed: [], note: '' };
 }
 
 /** A sweep that never fires — for callers with bash disabled. */
@@ -501,6 +513,7 @@ export function finishBashSweep(sweep: BashSweep): SweepOutcome {
   const removed: string[] = [];
   const uncovered: string[] = [];
   const failed: string[] = [];
+  const changed: string[] = [];
   // Established once, before anything is touched. A backup location that cannot
   // be proven inside the project means no mutation happens at all this turn.
   const backupRoot = resolveBackupRoot(sweep.projectRoot);
@@ -512,6 +525,10 @@ export function finishBashSweep(sweep: BashSweep): SweepOutcome {
     // Unmoved and not written by a guarded tool this turn: nothing to judge, and
     // no reason to pay a full read. This is most of the tree on most turns.
     if (!changedStat && !sweep.authorised.has(rel)) return;
+    // Attribution for the run's write ledger — recorded BEFORE any of the
+    // size/binary/cap early-outs below, which only limit what the sweep can
+    // JUDGE, not what observably moved.
+    if (changedStat) changed.push(rel);
     // The last content this harness authorised: a guarded write this turn, else
     // whatever was there when the first command ran.
     const authorised = sweep.authorised.get(rel) ?? sweep.baseline.get(rel);
@@ -598,6 +615,7 @@ export function finishBashSweep(sweep: BashSweep): SweepOutcome {
     removed,
     uncovered,
     failed,
+    changed,
     note: buildNote({ reverted, removed, uncovered, failed }),
   };
 }

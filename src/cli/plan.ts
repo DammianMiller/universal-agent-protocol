@@ -35,7 +35,7 @@ import {
   statSync,
   writeFileSync,
 } from 'fs';
-import { join, relative, resolve, sep } from 'path';
+import { isAbsolute, join, relative, resolve, sep } from 'path';
 import type { LoopExecutor } from '../delivery/convergence-loop.js';
 import { reviewPlanText, type PlanReviewVerdict } from '../delivery/plan-check.js';
 
@@ -63,7 +63,13 @@ export interface PlanReviewOutcome {
 }
 
 function stateDir(cwd: string): string {
-  return join(cwd, process.env.UAP_STATE_DIR || '.uap');
+  // UAP_STATE_DIR may be ABSOLUTE — the gate hook exports it as
+  // $MAIN_ROOT/.uap (F4, deliver-hardening). path.join would concatenate the
+  // absolute segment onto cwd and disagree with the Python enforcers about
+  // where plan_state.json lives — the "validated here, invisible to the gate"
+  // defect one layer down.
+  const dir = process.env.UAP_STATE_DIR || '.uap';
+  return isAbsolute(dir) ? dir : join(cwd, dir);
 }
 function statePath(cwd: string): string {
   return join(stateDir(cwd), 'plan_state.json');

@@ -282,6 +282,21 @@ if command -v uap >/dev/null 2>&1; then
   ( cd "$PROJECT_DIR" 2>/dev/null && timeout 30 uap proxy ensure --if-enabled --quiet --client "$_uap_pc" --client-pid "$PPID" ) >/dev/null 2>&1 || true
 fi
 
+# F1 (deliver-hardening 2026-07-13): refresh the policy-liveness cache once per
+# session so the gate hook's degrade consult and `uap policy status` judge the
+# CURRENT environment, not a stale one — and surface unhealthy policies loudly:
+# a policy whose compliant path is dead is a catch-22 in waiting. Fail-open
+# and time-boxed, like the rest of this hook.
+if command -v uap >/dev/null 2>&1; then
+  # Run from the MAIN checkout (COORD_ROOT): the liveness writers anchor
+  # there internally too (mainCheckoutRoot), and policies.db lives only in
+  # the main tree — a worktree cwd would otherwise check nothing.
+  _uap_liveness="$( cd "$COORD_ROOT" 2>/dev/null && timeout 20 uap policy liveness --quiet 2>/dev/null || true )"
+  if [ -n "$_uap_liveness" ]; then
+    output+=$'\n'"## Policy Liveness (unhealthy — operator action needed)"$'\n'"$_uap_liveness"$'\n'
+  fi
+fi
+
 if [ -n "$output" ]; then
   echo "$output"
 fi
