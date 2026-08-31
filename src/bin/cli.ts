@@ -49,6 +49,7 @@ const lazy = {
   tune: () => import('../cli/self-tuning.js').then((m) => m.tuneCommand),
   sandbox: () => import('../cli/sandbox.js').then((m) => m.sandboxCommand),
   design: () => import('../cli/design.js').then((m) => m.designCommand),
+  quality: () => import('../cli/quality.js').then((m) => m.qualityCommand),
   principles: () => import('../cli/principles.js').then((m) => m.principlesCommand),
   challenge: () => import('../cli/challenge.js').then((m) => m.challengeCommand),
   fidelity: () => import('../cli/fidelity.js').then((m) => m.fidelityCommand),
@@ -544,6 +545,25 @@ program
     // Allow `uap design lint DESIGN.md` (positional) as well as `--file`.
     if (target && !options.file) options.file = target;
     const cmd = await lazy.design();
+    await cmd(subcommand, options);
+  });
+
+// Quality-metrics gate — complexity/coverage/mutation policing with a ratchet
+program
+  .command('quality')
+  .description('Quality-metrics gate: complexity, coverage, CRAP, mutation, duplication, any-types')
+  .argument('[subcommand]', 'init | check | baseline | report | mutate')
+  .argument('[target]', 'Positional target file (check) — same as --file')
+  .option('-d, --project-dir <path>', 'Project directory (default: cwd)')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('--files <list>', 'Comma-separated relative file list to scan')
+  .option('--staged', 'Scan only files changed vs the upstream base')
+  .option('--changed', 'Scope mutate/check to changed files (default for mutate)')
+  .option('--update', 'Regenerate the ratchet baseline (baseline subcommand)')
+  .option('-f, --file <path>', 'Target file (check)')
+  .action(async (subcommand, target, options) => {
+    if (target && !options.file) options.file = target;
+    const cmd = await lazy.quality();
     await cmd(subcommand, options);
   });
 

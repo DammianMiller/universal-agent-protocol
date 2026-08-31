@@ -133,6 +133,22 @@ from the repo/worktree root after consolidation:
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 SLUG="${BRANCH//%/%25}"; SLUG="${SLUG//\//%2F}"   # feat/foo -> feat%2Ffoo
 HEAD="$(git rev-parse HEAD)"
+
+# Machine quality report (when the quality gate is active): the reviewers
+# adjudicate these numbers, they cannot outvote them — a failing report
+# vetoes the approval at ship time.
+QUALITY_BLOCK="null"
+if [ -f .uap/quality-metrics.json ]; then
+  # Capture ONCE and validate — an empty/failed command substituted into the
+  # heredoc would emit invalid JSON ("pass": ,) and fail the gate opaquely.
+  QJSON="$(node dist/bin/cli.js quality check --json 2>/dev/null)" || QJSON=""
+  QPASS="$(printf '%s' "$QJSON" | jq -r '.pass // empty' 2>/dev/null)"
+  QBLOCK="$(printf '%s' "$QJSON" | jq -r '.blocking | length' 2>/dev/null)"
+  if [ -n "$QPASS" ] && [ -n "$QBLOCK" ]; then
+    QUALITY_BLOCK="{\"pass\": ${QPASS}, \"blocking\": ${QBLOCK}, \"report\": \".uap/quality-report.json\"}"
+  fi
+fi
+
 mkdir -p .uap/reviews
 cat > ".uap/reviews/${SLUG}.json" <<JSON
 {
@@ -145,7 +161,8 @@ cat > ".uap/reviews/${SLUG}.json" <<JSON
     "performance-reviewer",
     "documentation-accuracy-reviewer",
     "test-coverage-reviewer"
-  ]
+  ],
+  "quality": ${QUALITY_BLOCK}
 }
 JSON
 echo "recorded .uap/reviews/${SLUG}.json for ${HEAD:0:8}"
@@ -156,6 +173,12 @@ Notes:
   them and re-run this step so `head` matches the new HEAD (the gate treats a
   review whose `head` ≠ current HEAD as **stale** and re-blocks).
 - The artifact records `branch`, so it cannot be reused on a different branch.
+- **`quality` block:** when `.uap/quality-metrics.json` exists, run
+  `uap quality check --json` and embed `{pass, blocking, report}`. The
+  enforcer rejects the ship when `quality.pass` is false — reviewers interpret
+  the machine report (gaming, waivers, trend), they don't replace it. When the
+  quality gate is inactive, `"quality": null` (or omit the key) and the check
+  fails open.
 - One-off meta-work with no shippable diff can bypass with `UAP_NO_REVIEW=1`
   (inline prefix on the ship command is honored), or a committable
   `policies/waivers/*expert-review*.md` file where env vars are stripped.

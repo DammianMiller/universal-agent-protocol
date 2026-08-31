@@ -71,6 +71,35 @@ parallel; consolidate findings before commit. Skip this only when the change
 is genuinely small (renames, doc tweaks, single-line fixes); document the
 skip in the PR description.
 
+When the quality-metrics gate is active (`.uap/quality-metrics.json`), the
+review artifact (`.uap/reviews/<branch-slug>.json`) must embed a `quality`
+block from `uap quality check --json`; a `quality.pass: false` vetoes the
+ship action. Reviewers adjudicate the machine numbers (gaming, waivers,
+trend) — they cannot outvote them.
+
+## QUALITY METRICS GATE
+
+This project polices software-quality metrics deterministically. When
+`.uap/quality-metrics.json` exists (create with `uap quality init`), the
+gate enforces at edit time (proxy enforcer `quality_metrics_gate.py`) and at
+commit/CI time (`npm run quality`):
+
+- Cyclomatic complexity < 22 and cognitive complexity < 22 per function
+- Halstead difficulty < 80 (with rust-code-analysis installed)
+- LOC < 500 per file
+- Coverage 100% (vitest `coverage/coverage-summary.json`)
+- CRAP < 25 per function (cc²·(1−cov)³ + cc)
+- Surviving mutants 0 — `npm run quality:mutate` (Stryker incremental, changed files)
+- Dead code 0 (knip/vulture when installed), duplicated blocks 0 (jscpd)
+- Explicit `any`/`unknown` types: 0
+
+Existing debt is frozen in `.uap/quality-baseline.json` (`uap quality
+baseline --update`): only NEW or WORSENED violations block. Regenerating the
+baseline is a deliberate act — do it only with reviewer sign-off. External
+tools are optional: missing ones skip their metric with a warning; the
+built-in scanner (LOC, complexity, any-types) always runs. Escape hatch:
+`UAP_QUALITY_GATE_OFF=1`.
+
 ---
 
 ---

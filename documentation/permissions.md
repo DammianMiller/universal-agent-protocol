@@ -151,6 +151,7 @@ Each control below is a live guarantee of the current system.
 5. **Enforcer registry.** Plane A runs the enforcers present in `.policy-tools/` and joined
    in the DB. Additional enforcer sources exist in `src/policies/enforcers/`
    (`adr_guard`, `bearer_lockdown`, `design_token_gate`, `expert_review_required`,
+   `quality_metrics_gate`,
    `iac_plan_destruction_check`, `local_build_before_push`, `ship_loop_gate`,
    `task_required`, and a UUID-prefixed architecture-review) that are not part of the
    `.policy-tools/` DB join and therefore do not run in Plane A.
@@ -170,7 +171,8 @@ Each control below is a live guarantee of the current system.
 8. **Escape hatches are env-gated by design** and the self-protect enforcer prevents a
    model from *persisting* them. Treat all of these as operator-only:
    `UAP_DELIVER_BYPASS=1`, `UAP_ENFORCE_DELIVERY=advisory|off`, `UAP_SELF_PROTECT_OFF=1`,
-   `UAP_NO_WORKTREE`, `UAP_WORKDIR_SCOPE_OFF`, `UAP_SANDBOX_OFF=1`, `UAP_SANDBOX_ALLOW`.
+   `UAP_NO_WORKTREE`, `UAP_WORKDIR_SCOPE_OFF`, `UAP_SANDBOX_OFF=1`, `UAP_SANDBOX_ALLOW`,
+   `UAP_DESIGN_GATE_OFF=1`, `UAP_QUALITY_GATE_OFF=1`.
 
 ## Related documents
 

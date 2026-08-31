@@ -39,7 +39,8 @@ like `feature/foo` and `feature-foo` never collide on one artifact. Recognised
 shape:
 
 ```json
-{ "branch": "<name>", "head": "<sha>", "verdict": "approve", "reviewers": ["code-quality-reviewer", "security-code-reviewer", "..."] }
+{ "branch": "<name>", "head": "<sha>", "verdict": "approve", "reviewers": ["code-quality-reviewer", "security-code-reviewer", "..."],
+  "quality": { "pass": true, "blocking": 0, "report": ".uap/quality-report.json" } }
 ```
 
 If the artifact records a `branch` that differs from the current branch, or a
@@ -47,6 +48,13 @@ If the artifact records a `branch` that differs from the current branch, or a
 stale) and the op is blocked until a fresh review is recorded. Including
 `branch` and `head` is strongly recommended so the artifact unambiguously
 identifies what it covers.
+
+The optional `quality` block fuses the **quality-metrics gate** into the
+review: when the artifact carries `"quality": {"pass": false, ...}` (written
+from `uap quality check --json`), the ship is blocked until the machine
+metrics pass — reviewers adjudicate the numbers, they cannot outvote them.
+An absent or `null` quality block fails open (gate inactive / older
+artifacts).
 
 ## Why
 
