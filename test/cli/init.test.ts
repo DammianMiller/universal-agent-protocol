@@ -91,7 +91,14 @@ vi.mock('../../src/cli/memory.js', () => ({
   isQdrantReachable: vi.fn().mockResolvedValue(true),
 }));
 
-describe('initCommand', () => {
+// initCommand does real work even mocked (memory DB init, git, pattern
+// indexing), and the suite's own comments document it failing "on a loaded
+// machine". Under full-suite parallelism that work exceeds the default 15s
+// test timeout — the failure is wall-clock contention, not behaviour (the
+// file passes in isolation in ~5s, and flaked identically on master).
+// 60s keeps the gate meaningful without making the suite's greenness a
+// function of machine load.
+describe('initCommand', { timeout: 60_000 }, () => {
   // Hermetic: run init against a throwaway dir so policy/MCP/hook writes never
   // touch the repo working tree.
   let testDir: string;
