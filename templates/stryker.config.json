@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stryker-mutator/stryker-js/master/packages/api/schema/stryker-core.json",
+  "_comment": "Template for `uap quality mutate` — incremental mutation testing scoped to changed files. Copy to the target project root after `npm i -D @stryker-mutator/core @stryker-mutator/vitest-runner`. Thresholds enforce the 0-surviving-mutants policy on the mutated (changed) scope.",
+  "testRunner": "vitest",
+  "incremental": true,
+  "incrementalFile": ".stryker-tmp/incremental.json",
+  "mutate": [],
+  "thresholds": { "high": 100, "low": 100, "break": 100 },
+  "coverageAnalysis": "perTest",
+  "reporters": ["progress", "clear-text", "json"],
+  "jsonReporter": { "fileName": ".stryker-tmp/mutation-report.json" },
+  "timeoutMS": 60000,
+  "concurrency": 4
+}

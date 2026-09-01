@@ -62,6 +62,10 @@ BYPASS_PATTERNS = (
     # agent writes its own command strings, so an inline form waives its own
     # review. Refuse it here so the attempt is visible rather than silent.
     re.compile(r"UAP_NO_REVIEW\s*=\s*['\"]?1", re.I),
+    # quality-metrics gate hatch, same operator-only shape: the enforcer reads
+    # the launch env, so the only agent-reachable move is PERSISTING the flag
+    # (rc files, proxy env) — which is exactly what this pattern refuses.
+    re.compile(r"UAP_QUALITY_GATE_OFF\s*=\s*['\"]?1", re.I),
     re.compile(r"UAP_USER_VALIDATION\s*=\s*['\"]?0", re.I),
     # Single-flight is a DATA-SAFETY control, not a policy preference: deliver
     # runs each candidate in a git worktree, and two runs against one repo are

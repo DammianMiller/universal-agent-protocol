@@ -481,6 +481,25 @@ def main() -> None:
             "Override: UAP_NO_REVIEW=1.",
         )
 
+    # Quality-metrics fusion: when the review artifact carries a `quality`
+    # block (written from `uap quality check --json` by the
+    # parallel-expert-review flow), a failing machine report vetoes the
+    # approval — reviewers adjudicate the numbers, they cannot outvote them.
+    # Absent block -> fail-open (repos without .uap/quality-metrics.json and
+    # pre-existing artifacts keep working).
+    quality = data.get("quality") if isinstance(data, dict) else None
+    if isinstance(quality, dict) and quality.get("pass") is False:
+        blocking = quality.get("blocking")
+        detail = f" ({blocking} blocking violation(s))" if isinstance(blocking, int) else ""
+        emit(
+            False,
+            f"expert-review-required: the review's quality gate FAILED{detail}. "
+            "Run `uap quality check`, fix the blocking violations (or regenerate the "
+            "baseline deliberately with `uap quality baseline --update`), refresh the "
+            "artifact's quality block, and re-record the review. "
+            "Override: UAP_NO_REVIEW=1.",
+        )
+
     emit(
         True,
         f"expert-review satisfied (.uap/reviews/{slug}.json"
