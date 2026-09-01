@@ -1,6 +1,6 @@
 # Droids and Skills
 
-> Applies to UAP **v1.163**
+> Applies to UAP **v1.224.0**
 
 > **🏭 Where this fits:** PREP/ROUTING — this is the station where a
 > generalist agent takes the wrong approach on specialist work: reviewing

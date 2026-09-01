@@ -1,6 +1,6 @@
 # UAP Documentation
 
-The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.163) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line.
+The complete documentation for the **Universal Agent Protocol** (`@miller-tech/uap` v1.224.0) — the discipline layer that turns a talented-but-unreliable AI coding agent into a dependable member of your software delivery line. 367 TypeScript modules across 26 subsystems, 459 vitest suites plus a ~1,200-test Python enforcer/proxy suite, 60 CLI command registrations, 32 executable policy enforcers, 9 supported agent harnesses.
 
 > **Reviewing the system?** The reverse-engineered, code-verified reference set lives in
 > [`documentation/`](../documentation/architecture.md): architecture, flows, permissions
@@ -21,7 +21,7 @@ UAP is organized like a delivery line. If you know which part of the pipeline yo
 | **Prep / routing** — right job, right station | Wrong approach or wrong-sized model | [Multi-Model Routing](guides/MULTI_MODEL.md) · [Patterns](reference/PATTERNS.md) · [Droids & Skills](guides/DROIDS_AND_SKILLS.md) |
 | **Isolation** — a bench per job | Editing `main`, clobbering files | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) |
 | **Build** — make the thing | Plausible-but-wrong code, stubs, empty output | [`uap deliver`](guides/DELIVER.md) · [Local Models](guides/LOCAL_MODELS.md) · [Inference Proxy](guides/PROXY.md) |
-| **QC / verify** — prove it runs | "Done" on code that never ran | [`uap deliver`](guides/DELIVER.md) · [Policies](guides/POLICIES.md) |
+| **QC / verify** — prove it runs | "Done" on code that never ran | [`uap deliver`](guides/DELIVER.md) · [Policies](guides/POLICIES.md) · [Quality gate](../CLAUDE.md) (`uap quality check`) |
 | **Coordination** — many workers, one floor | Parallel agents colliding, stale branches overwriting landed work | [Parallel Agents](guides/PARALLEL_AGENTS.md) · [Coordination](guides/COORDINATION.md) · [Deploy Batching](guides/DEPLOY_BATCHING.md) |
 | **Shipping** — out the door safely | Regressions, red CI, skipped bumps | [Worktree Workflow](guides/WORKTREE_WORKFLOW.md) · [Policies](guides/POLICIES.md) |
 | **Feedback** — the floor learns | The same mistake every session | [Memory](guides/MEMORY.md) · [Self-Harness](design/SELF_HARNESS.md) · [Self-Tuning](guides/SELF_TUNING.md) |
@@ -45,6 +45,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 |---|---|
 | [**The Delivery Pipeline**](guides/DELIVERY_PIPELINE.md) | The station-by-station tour — the big-picture map of the whole floor ⭐ |
 | [**What UAP Does Automatically**](guides/AUTOMATIC_FEATURES.md) | Every feature in benefit / when-it-kicks-in terms — install once, it all self-applies ⭐ |
+| [What UAP Does Automatically (compact)](guides/AUTOMATIC.md) | A shorter, trigger-by-trigger telling of the same ground as AUTOMATIC_FEATURES |
 | [**`uap deliver`**](guides/DELIVER.md) | The Build+QC harness — convergence loop to verified completion, tiered gates, CI/deploy feedback loop ⭐ |
 | [**Orchestrator & Hands-Free**](guides/ORCHESTRATOR.md) | The long-task autonomy layer — blackboard orchestrator, epic controller, completion ledger, auto-seed/resume; any model runs a huge build to 100% hands-free ⭐ |
 | [**UAP Across Two Agents & Uplift**](guides/TWO_AGENTS_AND_UPLIFT.md) | The whole line applied seam-by-seam to opencode+Qwen3.6 (local) and Claude Code+Opus 4.8 (cloud), plus the benchmark that measures UAP uplift — diagrams + `benchmarks/suites/swe-bench-pro/` config |
@@ -56,7 +57,7 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 | [**Policy Selection & Recommendations**](guides/POLICY_SELECTION.md) | Which policies to enable for your workflow — a recommended core + tailored sets by scenario; `uap policy recommend` ⭐ |
 | [Pay2U Policy Pack](guides/POLICY_PACK_PAY2U.md) | The pay2u-tailored policy bundle |
 | [Multi-Model Routing](guides/MULTI_MODEL.md) | Plan → route → execute across 7 model profiles |
-| [Droids & Skills](guides/DROIDS_AND_SKILLS.md) | 38 expert droids, 36 skills, the expert router |
+| [Droids & Skills](guides/DROIDS_AND_SKILLS.md) | 38 expert droids, 6 bundled skills (plus per-harness skill surfaces), the expert router |
 | [Deploy Batching](guides/DEPLOY_BATCHING.md) | Conflict-free batched git/deploy actions |
 | [Coordination](guides/COORDINATION.md) | Multi-agent overlap detection |
 | [**Parallel Agents**](guides/PARALLEL_AGENTS.md) | Many agents, one codebase: fresh bases, drift blocking, `uap worktree sync`, the merge queue, ownership lanes ⭐ |
@@ -100,12 +101,33 @@ Full map: **[The UAP Delivery Pipeline](guides/DELIVERY_PIPELINE.md)**.
 
 | Doc | What it covers |
 |---|---|
+| [Benchmarks overview](benchmarks/README.md) | The headline numbers, what to trust, and where the raw runs and task suites live |
 | [**Paired Findings**](benchmarks/PAIRED_FINDINGS.md) | Controlled A/B results: UAP gate value is +20pp vs a non-agentic baseline [CI +8,+32], ~0pp vs an agentic one — with confidence intervals ⭐ |
 | [Paired Harness](benchmarks/PAIRED_HARNESS.md) | The `uap bench paired` controlled-A/B harness: design, adapters (mock/opencode/claude/raw), authoring tasks |
 | [TBench Investigation](benchmarks/TBENCH_INVESTIGATION.md) | Earlier finding: no measurable UAP-context lift (every uncontrolled gain was a confound), methodology lessons |
 | [Validation Results](benchmarks/VALIDATION_RESULTS.md) | Terminal-Bench 2.0 results (−49.7% tokens, +33pp success) |
 | [Token Optimization](benchmarks/TOKEN_OPTIMIZATION.md) | Where the token savings come from |
 | [Accuracy Analysis](benchmarks/ACCURACY_ANALYSIS.md) | Success-rate and error analysis |
+| [Comprehensive Benchmarks](benchmarks/COMPREHENSIVE_BENCHMARKS.md) | Extended measurements |
+
+## Plans & post-mortems
+
+Working documents that explain *why* the code looks the way it does — kept as
+the decision record.
+
+| Doc | What it covers |
+|---|---|
+| [Deliver hardening plan](plans/deliver-hardening-plan-2026-07-13.md) | The 14-defect audit (batches A–D) that became v1.224.0: scoped rollback, declared gates, polyglot execution, config routing, liveness, operator overrides |
+| [Deliver hardening review response](plans/deliver-hardening-review-response-2026-07-13.md) | Parallel-review findings and their dispositions — the rationale behind the root-owned trust model |
+| [Harness engineering uplift](plans/harness-engineering-uplift-2026-07-31.md) | Three-paper analysis of harness variance and what UAP does about it |
+
+## Specs & performance
+
+| Doc | What it covers |
+|---|---|
+| [P0 anti-vacuous spec](specs/p0-anti-vacuous.md) | The verbatim-operations spec behind deliver's anti-stub hardening |
+| [Dashboard uplift spec](DASHBOARD_UPLIFT_SPEC.md) | Replacing the monolithic dashboard with the modular token-locked console |
+| [Performance baseline](performance/baseline-2026-03-27.json) | Machine-recorded perf baseline (heap, query latency) |
 
 ## Contributing
 

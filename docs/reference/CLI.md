@@ -1,7 +1,7 @@
 # UAP CLI Reference
 
 > Complete command reference for the Universal Agent Protocol command-line interface (`uap`).
-> Version v1.93.1.
+> Version v1.224.0.
 
 > **🏭 Where this fits:** Every station — this is the control panel for the whole
 > line. **What it delivers:** one binary that drives each stage of your
@@ -36,6 +36,7 @@ runs, keeping `--help` fast.
 | [`memory`](#memory) | Manage the agent memory system |
 | [`patterns`](#patterns) | Manage pattern RAG (on-demand retrieval via Qdrant) |
 | [`worktree`](#worktree) | Manage git worktrees |
+| [`merge`](#merge) | Serialized landing of concurrent agent PRs |
 | [`sync`](#sync) | Sync configuration between platforms |
 | [`droids`](#droids) | Manage custom droids/agents |
 | [`expert-route`](#expert-route) | Recommend an expert droid chain for a task |
@@ -71,6 +72,20 @@ runs, keeping `--help` fast.
 | [`mcp-setup`](#mcp-setup) | Configure MCP Router for all AI harnesses |
 | [`schema-diff`](#schema-diff) | Detect breaking schema changes between branches |
 | [`policy`](#policy) | UAP policy management |
+| [`quality`](#quality) | Quality-metrics gate: complexity, coverage, CRAP, mutation, duplication, any-types |
+| `plan` | Validate + record plan validation (validate-plan-on-change gate): `uap plan validate [file]` reviews the plan, then stamps |
+| `principles` | Engineering principles: show them, and answer the backward-compatibility stance (`status \| ask \| compat \| maturity \| show`) |
+| `fidelity` | Inspect or set the maximum-fidelity verification mode (raised gates + always-on visual/vision review) |
+| `interaction` | Interaction gate: derive probes from the requirements and play the artifact through them |
+| `harness card` | ETCSOVG harness disclosure card for the current configuration |
+| `harness evidence` | Per-tool-call evidence corpus: failure classes, component attribution, edit-tool health |
+| `ideate ideas` | Print the curated ideas produced for a project |
+| `self-harness mine-prod` | Mine weaknesses from production traces (HALO + proxy log) and enqueue proposals for gated validation (never applies) |
+| `self-harness pending` | List queued proposals awaiting validation + gate (from mine-prod) |
+| `bench paired` | Run the paired A/B over a real-gate suite; reports accuracy + efficiency deltas with CIs |
+| `self-harness prune` | Ablation-prune: drop stale / no-longer-paying-off transfer + pending entries |
+| `self-harness run` | Autonomous loop: mine → propose → validate (real paired bench per Mod) → decide → (with `--apply`) commit + versioned snapshot |
+| `self-harness transfer` | List the cross-model transfer store (accepted/rejected Mods keyed by failure signature) |
 | [`uap-omp`](#uap-omp) | UAP integration commands for oh-my-pi (omp) users |
 
 ---
@@ -1077,6 +1092,39 @@ uap policy install mandatory-testing-deployment
 uap policy check -o "git push" -a '{"branch":"master"}'
 uap policy stage POL-1 -s pre-exec
 ```
+
+---
+
+## `quality`
+
+Quality-metrics gate: deterministic policing of complexity, coverage, CRAP,
+surviving mutants, duplication, dead code, and explicit `any`/`unknown` types.
+Activated by `.uap/quality-metrics.json`; existing debt is frozen in the
+ratchet baseline `.uap/quality-baseline.json` so only NEW or WORSENED
+violations block. The proxy enforcer `quality_metrics_gate.py` mirrors the fast
+path (LOC, complexity, any-types) so agent edits are blocked pre-exec with the
+same thresholds this command enforces at commit/CI time.
+
+| Subcommand | Key flags | Purpose |
+|------------|-----------|---------|
+| `init` | — | Write `.uap/quality-metrics.json` with the default thresholds (activates the gate) |
+| `check` | `--staged`, `--files <list>`, `-f, --file <path>`, `--json` | Scan files for metric violations and ratchet against the baseline; exit 2 on blocking violations |
+| `baseline` | `--update` | Show, or with `--update` regenerate, `.uap/quality-baseline.json` from a fresh scan |
+| `report` | `--files <list>`, `--json` | Verbose report including grandfathered violations, improvements, and skips |
+| `mutate` | `--changed` | Stryker incremental mutation run scoped to files changed vs the upstream base (advisory when Stryker is not installed) |
+
+Global flags: `-d, --project-dir <path>`.
+
+```bash
+uap quality init                  # write the config
+uap quality baseline --update     # freeze current debt (commit the diff — it is the reviewable record)
+uap quality check                 # full scan; fails on new/worsened violations
+uap quality check --staged        # scan only files changed vs upstream
+uap quality check --file src/x.ts # single file (content may come from stdin — enforcer parity path)
+```
+
+Escape hatch for agents: `UAP_QUALITY_GATE_OFF=1`. Regenerating the baseline is
+a deliberate act — do it only with reviewer sign-off.
 
 ---
 

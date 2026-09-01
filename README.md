@@ -6,10 +6,10 @@
 
 [![npm](https://img.shields.io/npm/v/@miller-tech/uap?color=blue&label=npm)](https://www.npmjs.com/package/@miller-tech/uap)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
-[![Tests](https://img.shields.io/badge/tests-170%2B_suites-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-450%2B_suites-brightgreen)](#testing)
 [![License](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 
-`v1.163` · 220+ modules · 200+ test suites · 9 agent harnesses
+`v1.224.0` · 367 TypeScript modules across 26 subsystems · 459 vitest suites (+ a ~1,200-test Python enforcer/proxy suite) · 9 agent harnesses
 
 [Quickstart](#quickstart) · [Why UAP?](#why-uap) · [The delivery pipeline](docs/guides/DELIVERY_PIPELINE.md) · [`uap deliver`](#the-deliver-harness) · [Docs](docs/INDEX.md)
 
@@ -76,6 +76,8 @@ What happens under the hood:
 
 It works with frontier models *and* local models (llama.cpp / Qwen) served over the Anthropic Messages API. See **[docs/guides/DELIVER.md](docs/guides/DELIVER.md)**.
 
+Hardened for shared floors (v1.224): rollback is scoped to the run's own write-set (a shared-worktree rollback can't revert another agent's work), projects can declare extra gates in `delivery.gates[]`, the execution gate is polyglot (Python packages, native binaries), and `delivery.model`/`routing`/`criticality` in `.uap.json` steer model choice — with root-owned, expiring operator overrides for emergencies.
+
 ---
 
 ## The line, station by station
@@ -91,7 +93,7 @@ It works with frontier models *and* local models (llama.cpp / Qwen) served over 
 | **Shipping** | Regressions, red CI, skipped version bumps | Worktree→PR flow, version gates, CI feedback watcher |
 | **Feedback** | The same mistake every session | Memory promotion, pattern learning, session analysis |
 
-Running the whole length of the floor: **policy gates** (24 executable enforcers that *block* non-compliant tool calls — worktree, test, schema-diff, expert-review, delivery-enforcement…) and the **MCP Router** (keeps the context window lean). Full catalog: **[docs/reference/FEATURES.md](docs/reference/FEATURES.md)**.
+Running the whole length of the floor: **policy gates** (32 executable enforcers that *block* non-compliant tool calls — worktree, test, schema-diff, expert-review, delivery-enforcement, quality-metrics, design-token, visual-verification…), the **quality-metrics gate** (deterministic complexity/coverage/mutation budgets with a ratchet baseline, so standards can only tighten), and the **MCP Router** (keeps the context window lean). Full catalog: **[docs/reference/FEATURES.md](docs/reference/FEATURES.md)**.
 
 ---
 
@@ -109,14 +111,16 @@ UAP installs hooks into your agent harness, then mediates every tool call throug
 ┌─────────────────────────────────────────────────────────────┐
 │                       UAP CLI (uap)                         │
 │  setup · memory · deliver · verify · worktree · policy      │
-│  task · coord · droids · model · mcp-router · design …      │
+│  quality · plan · fidelity · interaction · task · coord ·   │
+│  droids · model · mcp-router · proxy · orchestrator ·       │
+│  self-harness · tune · design · principles · bench …        │
 └──┬─────────┬──────────┬──────────┬──────────┬───────────────┘
    ▼         ▼          ▼          ▼          ▼
  Memory   Policy    MCP Router   Delivery   Coordination
- 4 tiers  24 gates  compression  + verify   + deploy batch
+ 4 tiers  32 gates  compression  + verify   + deploy batch
 ```
 
-- **30+ CLI commands** across 18 source subsystems (220+ TypeScript modules).
+- **60 CLI commands** across 26 source subsystems (367 TypeScript modules).
 - Deep dive: **[docs/architecture/OVERVIEW.md](docs/architecture/OVERVIEW.md)** · protocol spec: **[docs/architecture/PROTOCOL.md](docs/architecture/PROTOCOL.md)**.
 
 ---
@@ -187,10 +191,16 @@ Start at the **[documentation index](docs/INDEX.md)**.
 
 ```bash
 npm install
-npm run build      # TypeScript compile
-npm test           # vitest — 170+ suites
-npm run bench      # benchmark suite
+npm run build           # TypeScript compile
+npm test                # vitest — 459 suites (~5,000 tests)
+npm run test:enforcers  # Python policy-enforcer suite (~1,200 tests)
+npm run bench           # benchmark suite
 ```
+
+Every ship is gated: `npm test` and `npm run build` must be green, the change
+must come from a worktree, and the version bump goes through
+`npm run version:patch|minor|major` (no manual edits). Details:
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

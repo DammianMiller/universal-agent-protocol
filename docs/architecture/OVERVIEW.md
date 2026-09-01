@@ -1,6 +1,6 @@
 # UAP Architecture Overview
 
-`v1.124.1` · ~223 TypeScript modules across 18 `src/` subsystems · 200+ test suites
+`v1.224.0` · 367 TypeScript modules across 26 `src/` subsystems · 459 vitest suites (+ a ~1,200-test Python enforcer/proxy suite)
 
 > **Code-verified reference:** this narrative overview is the intent-level floor plan. For
 > the reverse-engineered, implementation-accurate map — including trust boundaries,
@@ -115,23 +115,32 @@ the harness aborts the call). Hook scripts are generated and installed by
 
 ```
 src/
+├── delivery/       `uap deliver` convergence loop (86 modules: ladder, critic,
+│                   judge, applier, snapshot/rollback, orchestrator, CI watcher…)
+├── cli/            60 command modules wired into bin/cli.ts
 ├── memory/         4-tier memory: working, session, semantic (Qdrant), graph
-├── mcp-router/     hierarchical MCP router — tool hiding + FTS5 output compression
-├── policies/       hook-based policy gates + 20 Python enforcers
-├── delivery/       `uap deliver` convergence loop (15 modules)
+├── benchmarks/     paired A/B harness + Terminal-Bench scoring
 ├── coordination/   multi-agent registry, overlap detection, deploy batching
+├── self-tuning/    `uap tune` — LLM/GP-BO search over UAP's flag surface
+├── self-harness/   `uap self-harness` — mine → propose → validate loop
 ├── models/         multi-model routing, planning, execution profiles
+├── mcp-router/     hierarchical MCP router — tool hiding + FTS5 output compression
+├── policies/       hook-based policy gates + 32 Python enforcers
+├── quality/        quality-metrics gate: complexity/CRAP/coverage/mutation budgets
+│                   with a ratchet baseline (`uap quality`)
 ├── tasks/          dependency-aware task tracker (SQLite, DAG)
 ├── dashboard/      live task / agent / memory / policy visualization
-├── observability/  HALO / OpenInference span export for harness analysis
-├── analyzers/      project structure analysis + metadata generation
-├── generators/     CLAUDE.md / config generation
-├── benchmarks/     Terminal-Bench harness + scoring
-├── browser/        cloaked browser automation for agents
+├── principles/     engineering-principles store (`uap principles`)
+├── design/         DESIGN.md interrogation + design-token gate support
 ├── telemetry/      run telemetry
-├── models/…        (see above)
+├── state/          shared run state
+├── config/         configuration loading
+├── browser/        cloaked browser automation for agents
+├── observability/  HALO / OpenInference span export for harness analysis
+├── integrity/      protected-file byte verification
+├── generators/     CLAUDE.md / config generation
+├── analyzers/      project structure analysis + metadata generation
 ├── bin/            CLI entry (cli.ts), policy bin, llama-server-optimize
-├── cli/            ~35 command modules wired into bin/cli.ts
 ├── types/          shared types
 └── utils/          logging and shared helpers
 ```
@@ -231,14 +240,52 @@ Two layers:
   on a REQUIRED violation. Stages: `pre-exec | post-exec | review | always`;
   completion/merge/deploy operations auto-force a `review` stage.
 - **Shell gate + Python enforcers** — `templates/hooks/uap-policy-gate.sh`
-  binds to harness hook events and invokes the ~20 enforcers in
+  binds to harness hook events and invokes the 32 enforcers in
   `src/policies/enforcers/`. A blocked verdict is **exit code 2** (hard block).
 
 Enforcers cover the worktree gate (`worktree_required.py`), task discipline
 (`task_required.py`), delivery routing (`delivery_enforcement.py`), test deltas
 (`test_gate.py`), expert review (`expert_review_required.py`), schema diffs
-(`schema_diff_gate.py`), memory-before-plan, MCP-router-first, RTK wrapping, and
-more. Levels: **REQUIRED** blocks, **RECOMMENDED** logs, **OPTIONAL** informs.
+(`schema_diff_gate.py`), quality metrics (`quality_metrics_gate.py`), design
+tokens (`design_token_gate.py`), visual verification (`visual_verification.py`),
+branch freshness (`branch_freshness.py`), self-protection
+(`enforcement_self_protect.py` — guards the policy DB, hook scripts, and trust
+anchors like `.uap/operator-overrides.json` against tampering, including
+interpreter-mediated writes), memory-before-plan, MCP-router-first, RTK
+wrapping, and more. Levels: **REQUIRED** blocks, **RECOMMENDED** logs,
+**OPTIONAL** informs.
+
+Two trust anchors sit above the policies themselves (v1.224): the
+**operator-overrides file** (`.uap/operator-overrides.json` — temporary,
+expiring bypasses) and the **liveness cache** (`.uap/policy-liveness.json` —
+for policies that declare liveness requirements, a record that their compliant
+path — the PATH commands, agent-writable dirs, resolvable skills they depend
+on — is still satisfiable, so a policy whose sanctioned route has rotted can
+degrade gracefully instead of silently blocking or silently passing). Both are
+honored only when root-owned, symlink-free, not group/world-writable, and (the
+cache) fresh — so a compromised or misbehaving agent running as the same uid
+cannot mint its own bypass.
+
+### Quality gate (`src/quality/`) — QC station, deterministic edition
+
+**The break it prevents:** review-by-eyeball lets complexity and coverage rot
+compound invisibly until the codebase fights every change. This station turns
+ten software-quality metrics into a machine-checked budget that can only
+tighten.
+
+The quality-metrics gate (v1.223) polices cyclomatic/cognitive complexity,
+Halstead difficulty, LOC-per-file, coverage, CRAP, surviving mutants, dead
+code, duplicate blocks, and explicit `any`/`unknown` — deterministically, with
+no LLM in the loop. The built-in scanner (LOC, complexity, any-types) always
+runs; external tools (lizard, jscpd, rust-code-analysis, knip, Stryker) are
+probed and skipped with a warning when absent. Existing debt is frozen in a
+**ratchet baseline** (`.uap/quality-baseline.json`): only *new or worsened*
+violations block, and regenerating the baseline is a deliberate,
+reviewer-signed-off act. Enforcement lands at edit time
+(`quality_metrics_gate.py`) and at commit/CI time (`uap quality check`); when
+active, the parallel-review artifact must embed a `quality` block and
+`quality.pass: false` vetoes the ship — reviewers adjudicate the numbers, they
+can't outvote them.
 
 ### Delivery — `uap deliver` (`src/delivery/`) — Build & QC stations
 
@@ -247,7 +294,7 @@ emits plausible-but-wrong code and declares victory on a red build. The deliver
 loop won't let the work leave the Build/QC stations until the project's *real*
 gates actually pass.
 
-A 15-module convergence loop that drives an underlying model against the
+An 86-module convergence loop that drives an underlying model against the
 project's **real** completion gates until the work actually passes — the
 mechanism behind UAP's "agents stop declaring victory on broken code." See the
 [deliver flow](#how-uap-deliver-orchestrates) below.
@@ -406,9 +453,27 @@ detect gates ──▶ baseline check ──▶ protect files ──▶ ╔═�
 ```
 
 - **Verifier ladder** (`verifier-ladder.ts`) — derives gate rungs from
-  `package.json` scripts (build → typecheck via `tsc --noEmit` → test → lint),
-  runs each as a real command in a secret-stripped env, fails fast on required
-  rungs. "Delivered" means all *required* rungs pass; lint is optional.
+  `package.json` scripts (build → typecheck via `tsc --noEmit` → test → lint)
+  and merges in **project-declared gates** from `delivery.gates[]` in
+  `.uap.json` (each declared `cwd` is contained to the project root), runs each
+  as a real command in a secret-stripped env, fails fast on required rungs.
+  "Delivered" means all *required* rungs pass; lint is optional.
+- **Polyglot execution gate** (`execution-gate.ts`) — beyond Node: Python
+  packages get a venv-aware import smoke test (`.venv/bin/python` is probed
+  before the ambient interpreter), and native binaries are executed with
+  honest verdicts — a signal death fails, while deliberate exit codes,
+  timeouts, and not-executable-here are reported as passes/skips rather than
+  fabricated evidence.
+- **Scoped rollback** (`snapshot.ts`) — keep-best rollbacks restore **only the
+  run's own write-set** (tracked per-tool-write plus a bash sweep of
+  stat-moved paths), never the whole tree, so a rollback in a shared worktree
+  can't silently revert another agent's work. Restore is realpath-contained
+  to the project root; when the write-set is empty but rollback is warranted,
+  the run fails loudly and preserves the snapshot instead of guessing.
+- **Config-driven model routing** — `delivery.model`, `delivery.routing`, and
+  `delivery.criticality` in `.uap.json` steer the deliver model (precedence:
+  CLI flag > config > criticality > env), and the acceptance judge follows the
+  same resolution so the grader matches the builder.
 - **Explorer + ideation** (`explorer.ts`, `ideation.ts`) — best-of-N: generate
   N candidates with distinct strategy seeds, apply/verify/rollback each on the
   same baseline, commit only the winner. A model **judge** (`judge.ts`)

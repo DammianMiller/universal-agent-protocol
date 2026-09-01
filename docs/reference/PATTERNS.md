@@ -1,6 +1,6 @@
 # Pattern Library Reference
 
-> Universal Agent Protocol (UAP) v1.93.1
+> Universal Agent Protocol (UAP) v1.224.0
 
 > **🏭 Where this fits:** Prep / Routing — before your agent starts cutting, it
 > should pick the right technique for the job. **What it delivers:** the right

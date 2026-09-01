@@ -8,7 +8,7 @@ UAP development guidelines.
 
 ```bash
 # Testing
-npm test              # Run all tests (117 suites)
+npm test              # Run all tests (459 vitest test files)
 npm run test:coverage # Coverage report
 
 # Linting & Type Checking
@@ -350,6 +350,13 @@ When modifying authentication-related files, ensure:
 2. CSRF tokens are validated
 3. Rate limiting is configured
 ```
+
+### Quality-Metrics Gate
+
+Among the gates, the quality-metrics gate (`uap quality check`, configured via
+`.uap/quality-metrics.json`) polices complexity, coverage, duplication, and
+explicit `any` types; existing debt is frozen in the ratchet baseline
+`.uap/quality-baseline.json`, and only new or worsened violations block.
 
 ---
 

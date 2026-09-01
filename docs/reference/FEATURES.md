@@ -1,6 +1,6 @@
 # Feature Catalog
 
-> Universal Agent Protocol (UAP) v1.163
+> Universal Agent Protocol (UAP) v1.224.0
 
 > **🏭 Where this fits:** Every station on the line — this catalog is the parts list for the whole factory. **What it delivers:** each feature below is mapped to the stage of your [delivery pipeline](../guides/DELIVERY_PIPELINE.md) it protects, so you can see exactly where your agent's work stops being plausible-looking and starts being genuinely shippable.
 

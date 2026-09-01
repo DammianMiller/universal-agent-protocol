@@ -31,13 +31,15 @@
     "install:web": "bash scripts/setup/install-web.sh",
     "install:desktop": "bash scripts/setup/install-desktop.sh",
     "install:cloakbrowser": "tsx scripts/setup/install-cloakbrowser.ts",
-    "postinstall": "echo '\n✨ Run: npx @miller-tech/uap init --interactive'",
+    "postinstall": "echo '\n\u2728 Run: npx @miller-tech/uap init --interactive'",
     "version:patch": "bash scripts/version-bump.sh patch",
     "version:minor": "bash scripts/version-bump.sh minor",
     "version:major": "bash scripts/version-bump.sh major",
     "update-uap": "bash scripts/maintenance/update-uap-compliance.sh",
     "verify-uap": "bash scripts/maintenance/verify-compliance.sh",
-    "check-claude": "bash scripts/maintenance/verify-compliance.sh"
+    "check-claude": "bash scripts/maintenance/verify-compliance.sh",
+    "quality": "node dist/bin/cli.js quality check",
+    "quality:mutate": "node dist/bin/cli.js quality mutate --changed"
   },
   "keywords": [
     "claude",

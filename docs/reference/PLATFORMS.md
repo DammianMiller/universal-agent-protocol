@@ -1,6 +1,6 @@
 # Platform & Harness Reference
 
-> Universal Agent Protocol (UAP) v1.93.1
+> Universal Agent Protocol (UAP) v1.224.0
 
 > **🏭 Where this fits:** Cross-cutting — the same line, whichever floor you work
 > on. **What it delivers:** every station of your [delivery pipeline](../guides/DELIVERY_PIPELINE.md)

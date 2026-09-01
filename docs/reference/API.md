@@ -1,6 +1,6 @@
 # UAP Programmatic API Reference
 
-> Public API of the `@miller-tech/uap` package. Version v1.93.1.
+> Public API of the `@miller-tech/uap` package. Version v1.224.0.
 
 > **🏭 Where this fits:** Cross-cutting — the machine parts behind the line.
 > **What it delivers:** when the `uap` CLI isn't the right shape for your job,

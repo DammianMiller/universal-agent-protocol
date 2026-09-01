@@ -47,6 +47,14 @@ Query task-relevant patterns before starting work:
 - `uap agent status` - Show agent coordination status
 - `uap dashboard` - Show UAP session dashboard
 
+## Quality Gate
+
+When `.uap/quality-metrics.json` exists, the quality-metrics gate polices
+complexity, coverage, duplication, and explicit `any` types on changed code:
+
+- `uap quality check` - Check for new or worsened metric violations
+- `uap quality baseline --update` - Freeze current debt into `.uap/quality-baseline.json` (reviewer sign-off required)
+
 ## Pre-Compact
 
 Before context compaction, save state:
