@@ -14,6 +14,7 @@
  */
 
 import { lstatSync, readdirSync, readFileSync } from 'fs';
+import { execSync } from 'child_process';
 import { basename, join, relative, dirname } from 'path';
 import type { LoopExecutor } from './convergence-loop.js';
 
@@ -410,11 +411,45 @@ export function gatherEvidence(
   return out.trim();
 }
 
-function buildPrompt(spec: string, evidence: string, runtimeNote?: string): string {
+/**
+ * Change summary for the judge prompt (C1, deliver-hardening 2026-07-13): the
+ * judge used to re-derive the run's scope from a whole-tree evidence walk,
+ * with no idea what the run actually TOUCHED. `git status --porcelain` covers
+ * modified AND untracked files (a brand-new deliverable is untracked until
+ * committed); `git diff HEAD --stat` gives magnitude. Empty when git is
+ * unavailable — the deterministic empty-diff rail lives in the convergence
+ * loop, so a missing note is never the only guard against a no-op.
+ */
+export function gitChangeSummary(projectRoot: string): string {
+  const git = (args: string): string => {
+    try {
+      return execSync(`git ${args}`, {
+        cwd: projectRoot,
+        encoding: 'utf-8',
+        timeout: 10_000,
+        maxBuffer: 4 * 1024 * 1024,
+      }).trim();
+    } catch {
+      return '';
+    }
+  };
+  const files = git('status --porcelain')
+    .split('\n')
+    .map((l) => l.slice(3).trim())
+    .filter(Boolean)
+    .slice(0, 200);
+  if (files.length === 0) return '';
+  const stat = git('diff HEAD --stat').split('\n').slice(-40).join('\n');
+  return [`Changed files (${files.length}):`, ...files.map((f) => `  ${f}`), '', stat]
+    .join('\n')
+    .slice(0, 4_000);
+}
+
+function buildPrompt(spec: string, evidence: string, runtimeNote?: string, changeNote?: string): string {
   return [
     'You are a strict acceptance reviewer. Decide whether the IMPLEMENTATION satisfies',
     'the EXPLICIT, checkable requirements in the SPEC. Judge ONLY from the code shown',
-    '(and the runtime note if given) — do not assume anything not visible.',
+    '(and the runtime/change notes if given) — do not assume anything not visible.',
     '',
     'Extract each concrete, verifiable requirement from the spec (ignore vague aesthetic',
     'wishes). For each, decide if the code clearly implements it. Be conservative: if the',
@@ -430,6 +465,12 @@ function buildPrompt(spec: string, evidence: string, runtimeNote?: string): stri
     spec.slice(0, 6_000),
     '',
     runtimeNote ? `=== RUNTIME OBSERVATION ===\n${runtimeNote}\n` : '',
+    // The diff is against HEAD, not against run start: in a SHARED worktree
+    // (several agents on one tree) it lists other agents' uncommitted work
+    // too, so it is labeled as the tree's current change-set, not "this run's"
+    // — attributing it to the run would steer the judge to grade the spec
+    // against work this run never made (review fix, 2026-07-13).
+    changeNote ? `=== UNCOMMITTED CHANGES IN THIS TREE (git) ===\n${changeNote}\nThis is the tree's current uncommitted change-set — in a shared worktree it may include work by other agents, not only this run's. The spec's requirements should be addressed by these changes — if none of the changed files relate to a requirement, that is strong evidence it is not met.\n` : '',
     '=== IMPLEMENTATION (code) ===',
     evidence.slice(0, 64_000),
     '',
@@ -492,7 +533,7 @@ export async function runAcceptanceGate(opts: AcceptanceOptions): Promise<Accept
 
   let raw: string;
   try {
-    raw = await opts.executor(buildPrompt(opts.spec, evidence, opts.runtimeNote));
+    raw = await opts.executor(buildPrompt(opts.spec, evidence, opts.runtimeNote, gitChangeSummary(opts.projectRoot) || undefined));
   } catch (e) {
     return { passed: true, score: 1, criteria: [], parseError: `executor error: ${String(e).slice(0, 120)}` };
   }

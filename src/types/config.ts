@@ -475,6 +475,40 @@ export const DeliverySchema = z.object({
   escalateAfterFailures: z.number().int().min(0).optional(),
   escalateAfterEdits: z.number().int().min(0).optional(),
   complexEditChars: z.number().int().min(0).optional(),
+  // G1 (deliver-hardening 2026-07-13): model routing is a PROJECT decision,
+  // so it lives in config — authoritative over ambient env (same pattern as
+  // delivery.enforcement): a stale UAP_DELIVER_MODEL/UAP_DELIVER_ROUTING in a
+  // launching shell cannot silently steer a money-critical repo onto the
+  // weakest local model. An explicit CLI flag (--model/--routing) still wins.
+  // `criticality` is the shorthand: money→cost-tiered, normal→sonnet-5-tiered,
+  // sandbox→no tier routing (the local qwen default applies ONLY here).
+  model: z.string().optional(),
+  routing: z.string().optional(),
+  criticality: z.enum(['money', 'normal', 'sandbox']).optional(),
+  // B1 (deliver-hardening 2026-07-13): project-DECLARED completion gates.
+  // Detection (package.json, Cargo.toml, …) is heuristic and npm-centric; a
+  // polyglot repo's real contract (docker buildx for apps/api/**, an OpenAPI
+  // generator --check for handler files) could never be required because no
+  // detector knew it existed. Declared gates merge with and OUTRANK detected
+  // ones (same id replaces). `scope` is metadata for mission-scoped gate
+  // relevance; `cwd` runs the gate in a sub-directory. `cmd` is split on
+  // whitespace with quote handling — use `bash -lc '…'` for pipes/redirects.
+  gates: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        name: z.string().optional(),
+        cmd: z.string().min(1),
+        cwd: z.string().optional(),
+        scope: z.array(z.string()).optional(),
+        required: z.boolean().default(true),
+        tier: z
+          .enum(['fast', 'runtime', 'integration', 'deploy-dev', 'final', 'ci', 'deploy-staging', 'deploy-prod'])
+          .optional(),
+        timeoutSec: z.number().int().positive().optional(),
+      })
+    )
+    .optional(),
 });
 
 // DESIGN.md integration (interrogate/lint + reactor design guidance + token gate).

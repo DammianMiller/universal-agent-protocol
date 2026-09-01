@@ -43,12 +43,57 @@ except Exception:
     print("")
 PYEOF
 )"
+# F4 (deliver-hardening 2026-07-13): a path-carrying op (Edit/Write/Read/…)
+# must be judged by the TARGET file's repo, not by the hook's cwd. Before this,
+# MAIN_ROOT came only from cwd, so a cross-repo edit applied THIS repo's
+# posture and recorded compliance state in the wrong .uap — the target repo's
+# policies never ran at all. Prefer the file_path's git toplevel; the cwd
+# chain below remains the fallback for path-less ops (Bash, Task, …).
+_FP_TARGET="$(UAP_PAYLOAD="$PAYLOAD" python3 - <<'PYEOF'
+import json, os
+try:
+    d = json.loads(os.environ.get("UAP_PAYLOAD") or "{}")
+    ti = d.get("tool_input") or d.get("args") or {}
+    # Same key set as the self-protect extractor below: harnesses differ
+    # (file_path vs filePath vs target/…), and an op whose path key this list
+    # misses anchors on cwd — the exact cross-repo mis-attribution F4 fixes.
+    for k in ("file_path", "path", "filePath", "target", "filename", "file"):
+        v = ti.get(k)
+        if isinstance(v, str) and v:
+            print(v)
+            break
+    else:
+        print("")
+except Exception:
+    print("")
+PYEOF
+)"
 CHECKOUT_ROOT=""
-for _cand in "$_CD_TARGET" "$_PAYLOAD_CWD"; do
-  [[ -z "$_cand" || ! -d "$_cand" ]] && continue
-  _top="$(git -C "$_cand" rev-parse --show-toplevel 2>/dev/null || true)"
-  [[ -n "$_top" ]] && { CHECKOUT_ROOT="$_top"; break; }
-done
+if [[ -n "$_FP_TARGET" ]]; then
+  _fp="$_FP_TARGET"
+  # A relative file_path resolves against the agent's cwd, not the hook's.
+  [[ "$_fp" != /* ]] && _fp="${_PAYLOAD_CWD:-$PWD}/$_fp"
+  # Walk to the nearest EXISTING ancestor: a Write into a not-yet-created
+  # directory (other-repo/newdir/file.ts) fails `[[ -d ]]` at dirname and
+  # would otherwise fall through to the cwd chain — re-introducing the
+  # cross-repo mis-attribution for exactly the "new file in another repo"
+  # case (review fix).
+  _fp_dir="$(dirname -- "$_fp")"
+  while [[ ! -d "$_fp_dir" && "$_fp_dir" != "/" ]]; do
+    _fp_dir="$(dirname -- "$_fp_dir")"
+  done
+  if [[ -d "$_fp_dir" ]]; then
+    _top="$(git -C "$_fp_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    [[ -n "$_top" ]] && CHECKOUT_ROOT="$_top"
+  fi
+fi
+if [[ -z "$CHECKOUT_ROOT" ]]; then
+  for _cand in "$_CD_TARGET" "$_PAYLOAD_CWD"; do
+    [[ -z "$_cand" || ! -d "$_cand" ]] && continue
+    _top="$(git -C "$_cand" rev-parse --show-toplevel 2>/dev/null || true)"
+    [[ -n "$_top" ]] && { CHECKOUT_ROOT="$_top"; break; }
+  done
+fi
 [[ -z "$CHECKOUT_ROOT" ]] && CHECKOUT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -z "$CHECKOUT_ROOT" ]] && CHECKOUT_ROOT="$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd || pwd)"
 MAIN_ROOT="${CHECKOUT_ROOT%%/.worktrees/*}"
@@ -63,6 +108,98 @@ export UAP_REPO_ROOT="$MAIN_ROOT"
 # actual WORKING TREE, not the (possibly bare) MAIN_ROOT. Expose the current checkout
 # so _common.worktree_root() targets the worktree when an op runs from inside one.
 export UAP_WORKTREE_ROOT="$CHECKOUT_ROOT"
+# Enforcer state (.uap) belongs to the TARGET repo this operation anchored to —
+# never a bare relative path that drifts with the caller's cwd (F4: enforcers
+# honor UAP_STATE_DIR; the hook now DERIVES it instead of leaving it ambient).
+export UAP_STATE_DIR="$MAIN_ROOT/.uap"
+
+# F3 (deliver-hardening 2026-07-13): operator overrides via a SIGNED FILE, not
+# env only. Env does not reliably reach hook subprocesses in every harness, so
+# the documented escape hatches were effectively unreachable mid-session. The
+# file is `$MAIN_ROOT/.uap/operator-overrides.json` carrying
+# {deliverBypass, workdirAllow[], selfProtectOff, expiresAt}. Verified before
+# ANY field is honored: regular file (no symlink), owned by ROOT, not
+# group/world-writable, and expiresAt in the future — so an override cannot
+# rot open and a planted one is inert. Root ownership is the load-bearing
+# check (deliver-hardening security review, 2026-07-13): the agent runs as the
+# USER's uid, so any user-owned file is agent-mintable (a uid==euid check is
+# vacuous against a same-uid agent, and an interpreter-mediated write like
+# `python3 -c 'open(...)'` walks past the self-protect text scan). Requiring
+# uid 0 makes the override genuinely out-of-band: the operator plants it with
+# sudo, the agent cannot. (When the agent itself runs as root no local check
+# can help — enforcement is already theater at that point.)
+# Verified fields are exported as the SAME env vars enforcers already honor
+# (and only when unset — an explicit env still wins), so every downstream
+# consumer picks the file up unchanged.
+# Early-out on the common case: no file, no python spawn on the hot path.
+_OVERRIDES=""
+if [[ -e "$MAIN_ROOT/.uap/operator-overrides.json" || -L "$MAIN_ROOT/.uap/operator-overrides.json" ]]; then
+_OVERRIDES="$(python3 - "$MAIN_ROOT" <<'PYEOF'
+import json, os, stat, sys
+from datetime import datetime, timezone
+import errno as errnomod
+path = os.path.join(sys.argv[1], ".uap", "operator-overrides.json")
+try:
+    # O_NOFOLLOW + fstat on the OPENED fd: a lstat-then-open sequence leaves a
+    # swap race (replace the file between check and read); the fd pins the
+    # inode that was verified. O_NOFOLLOW absent on some platforms → 0.
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+except OSError as e:
+    if e.errno == errnomod.ELOOP:
+        print("[UAP policy gate] operator-overrides.json IGNORED: symlink", file=sys.stderr)
+    sys.exit(0)  # no override file (or a refused symlink) — the common case
+try:
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        raise ValueError("not a regular file")
+    # Root-owned ONLY — see the block comment above. A same-uid check cannot
+    # constrain a same-uid agent.
+    if st.st_uid != 0:
+        raise ValueError("not root-owned (agent-mintable — refusing)")
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ValueError("group/world-writable")
+    d = json.load(os.fdopen(fd))
+    exp = d.get("expiresAt")
+    if not exp:
+        raise ValueError("missing expiresAt")
+    exp_dt = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+    if exp_dt.tzinfo is None:
+        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+    if exp_dt <= datetime.now(timezone.utc):
+        raise ValueError("expired")
+    if d.get("deliverBypass") is True:
+        print("UAP_DELIVER_BYPASS=1")
+    wa = d.get("workdirAllow")
+    if isinstance(wa, list) and wa and all(isinstance(x, str) and x for x in wa):
+        # The values are joined with ':' and re-parsed line-wise below, so a
+        # value carrying a newline would INJECT extra KEY=VALUE lines into the
+        # export loop (a "\nUAP_SELF_PROTECT_OFF=1" payload would escalate a
+        # workdirAllow grant into a self-protect kill), and a ':' would corrupt
+        # the list. Reject both outright.
+        if any(("\n" in x or "\r" in x or ":" in x) for x in wa):
+            raise ValueError("workdirAllow contains a newline/colon — refusing")
+        print("UAP_WORKDIR_ALLOW=" + ":".join(wa))
+    if d.get("selfProtectOff") is True:
+        print("UAP_SELF_PROTECT_OFF=1")
+except Exception as e:
+    # An override that fails verification is INERT, never an error that wedges
+    # the gate — but say so loudly; a silently ignored override reads as a
+    # broken gate.
+    print("[UAP policy gate] operator-overrides.json IGNORED: %s" % e, file=sys.stderr)
+PYEOF
+)"
+fi
+if [[ -n "$_OVERRIDES" ]]; then
+  while IFS='=' read -r _okey _oval; do
+    [[ -z "$_okey" ]] && continue
+    case "$_okey" in
+      UAP_DELIVER_BYPASS|UAP_WORKDIR_ALLOW|UAP_SELF_PROTECT_OFF)
+        # Only fill what the environment did not already set explicitly.
+        if [[ -z "${!_okey:-}" ]]; then export "$_okey=$_oval"; fi
+        ;;
+    esac
+  done <<< "$_OVERRIDES"
+fi
 # Delivery enforcement posture. Precedence (highest first):
 #   1. .uap.json `delivery.enforcement` — the project's DECLARED posture is
 #      AUTHORITATIVE (deliberate, reproducible IaC), so a stale ambient
@@ -439,6 +576,51 @@ except: print("2")' 2>/dev/null || echo 2)"
   # For every other enforcer, an error still fails open (unchanged behavior).
   [[ "$allowed" == "2" ]] && allowed=1
   if [[ "$allowed" == "0" ]]; then
+    # F1 (deliver-hardening 2026-07-13): degrade-on-dead-path — OPT-IN and
+    # sabotage-guarded. The liveness cache (uap policy liveness / status /
+    # session-start) marks a policy degradable ONLY when the policy declared
+    # degradeOnDeadPath AND every failed requirement is outside agent-writable
+    # surfaces — so an agent that breaks its own compliant path (deletes a
+    # skill, wedges deliver) earns NOTHING: the policy keeps blocking. A
+    # genuinely dead environmental path downgrades block → loud advisory
+    # instead of wedging the session in a catch-22.
+    # The cache can DOWNGRADE a blocking policy to advisory, so it is trusted
+    # only under the same terms as operator-overrides.json (security review,
+    # 2026-07-13): root-owned — a user-owned cache is agent-mintable and one
+    # printf would otherwise turn any blocking policy advisory — not
+    # group/world-writable, no symlink, and FRESH (checkedAt < 24h, so a fixed
+    # path silently re-tightens). `uap policy liveness` run as the user still
+    # writes the cache for STATUS display; the gate simply never degrades on
+    # it. An operator enabling the degrade path refreshes it with sudo.
+    if [[ -f "$MAIN_ROOT/.uap/policy-liveness.json" ]]; then
+      _degradable="$(python3 -c '
+import json, os, re, stat, sys
+from datetime import datetime, timezone, timedelta
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or (st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+        print("0"); sys.exit(0)
+    d = json.load(os.fdopen(fd))
+    checked = datetime.fromisoformat(str(d.get("checkedAt", "")).replace("Z", "+00:00"))
+    if checked.tzinfo is None:
+        checked = checked.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - checked > timedelta(hours=24):
+        print("0"); sys.exit(0)
+    # DB names may be Title Case ("Delivery Enforcement"); the cache is keyed
+    # by slug (delivery-enforcement). Same slug rule as policyNameSlug.
+    name = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", sys.argv[2].lower())).strip("-")
+    p = (d.get("policies") or {}).get(name) or {}
+    print("1" if (p.get("healthy") is False and p.get("degradable") is True) else "0")
+except Exception:
+    print("0")
+' "$MAIN_ROOT/.uap/policy-liveness.json" "$pname" 2>/dev/null || echo 0)"
+      if [[ "$_degradable" == "1" ]]; then
+        echo "[UAP policy gate] ADVISORY (degraded): '$pname' would block, but its compliant path is dead OUTSIDE agent-writable surfaces (.uap/policy-liveness.json). Allowing this op — fix the path or the policy (uap policy status)." >&2
+        record_execution 1 "$pid" "degraded: dead compliant path ($pname)"
+        continue
+      fi
+    fi
     # R1: consume the enforcer's route:deliver signal (log intent, opt-in
     # background auto-route to `uap deliver`). Falls back to the plain reason if
     # the helper is missing/fails.

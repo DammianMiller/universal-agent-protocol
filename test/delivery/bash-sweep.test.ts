@@ -229,6 +229,25 @@ describe('bash sweep — attribution', () => {
     expect(out.note).toMatch(/too large to check/i);
   });
 
+  it('reports every stat-moved path in `changed`, judged or not', () => {
+    // The run write ledger (deliver-hardening review, 2026-07-13) folds this
+    // set: keep-best's scoped restore needs the run's real write-set, and a
+    // file only listed when it is a stub would miss legitimate shell writes.
+    const dir = tmp();
+    writeFileSync(join(dir, 'touched-real.js'), REAL);
+    writeFileSync(join(dir, 'unmoved.js'), REAL);
+    const sweep = beginBashSweep(dir, true);
+    armSweepForCommand(sweep);
+    writeFileSync(join(dir, 'touched-real.js'), `${REAL}\n// touched\n`); // real edit, not a stub
+    writeFileSync(join(dir, 'fresh.js'), STUB); // created, and a stub
+    const out = finishBashSweep(sweep);
+    expect(out.changed).toContain('touched-real.js'); // left alone, but observed
+    expect(out.changed).toContain('fresh.js'); // acted on, and observed
+    expect(out.changed).not.toContain('unmoved.js');
+    expect(out.reverted).toEqual([]); // the real edit was NOT reverted
+    expect(out.removed).toEqual(['fresh.js']);
+  });
+
   it('does NOT delete files past the baseline file-count cap', () => {
     // The cap must not turn untouched files into deletion candidates: reaching
     // it needs no shell write at all, just a big enough tree.

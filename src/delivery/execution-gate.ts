@@ -45,7 +45,7 @@ function gateEnv(): NodeJS.ProcessEnv {
   return sanitizedEnv();
 }
 
-export type ArtifactType = 'web' | 'node' | 'cli' | 'lib';
+export type ArtifactType = 'web' | 'node' | 'cli' | 'lib' | 'python' | 'native-bin';
 
 export interface ExecutionResult {
   passed: boolean;
@@ -491,6 +491,106 @@ export function findWebEntryDir(projectRoot: string): string | null {
   return findWebEntry(projectRoot)?.dir ?? null;
 }
 
+/**
+ * B2 (deliver-hardening 2026-07-13): detect the importable package of a
+ * pyproject project so a Python artifact gets an execution gate at all. The
+ * gate was npm/web-only, so a pyproject/Cargo/CMake repo's "execution" was
+ * proven by NOTHING — the build/test rungs passed while the artifact crashed
+ * on import. Returns the module name and the sys.path entry its layout needs
+ * ('src' for src-layout, '.' for flat). Minimal TOML reading by regex: enough
+ * for [project] name / [project.scripts], and deliberately conservative —
+ * anything unreadable is "no artifact", never a guess.
+ */
+function detectPythonModule(projectRoot: string): { module: string; pythonpath: string } | null {
+  const pyPath = join(projectRoot, 'pyproject.toml');
+  if (!existsSync(pyPath)) return null;
+  let text: string;
+  try {
+    text = readFileSync(pyPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  const candidates: Array<{ module: string; pythonpath: string }> = [];
+  const projectName = /\[project\][^\[]*?^\s*name\s*=\s*["']([A-Za-z0-9_.-]+)["']/m.exec(text)?.[1];
+  if (projectName) {
+    const mod = projectName.replace(/-/g, '_');
+    candidates.push({ module: mod, pythonpath: 'src' }, { module: mod, pythonpath: '.' });
+  }
+  // [project.scripts] "cmd = pkg.mod:main" — the package before the first dot.
+  const scriptMod = /\[project\.scripts\][^\[]*?=\s*["']([A-Za-z_][A-Za-z0-9_]*)[.:]/m.exec(text)?.[1];
+  if (scriptMod) candidates.push({ module: scriptMod, pythonpath: 'src' }, { module: scriptMod, pythonpath: '.' });
+  // Layout fallback: the first importable package dir under src/ or the root.
+  for (const pp of ['src', '.'] as const) {
+    try {
+      for (const e of readdirSync(join(projectRoot, pp)).sort()) {
+        if (e.startsWith('.')) continue;
+        if (existsSync(join(projectRoot, pp, e, '__init__.py'))) {
+          candidates.push({ module: e, pythonpath: pp });
+          break;
+        }
+      }
+    } catch {
+      /* unreadable — skip */
+    }
+  }
+  return (
+    candidates.find((c) =>
+      existsSync(join(projectRoot, c.pythonpath === 'src' ? 'src' : '.', c.module, '__init__.py'))
+    ) ?? null
+  );
+}
+
+/**
+ * B2: candidate compiled executables for a Cargo or CMake project. The probe
+ * runs whatever the build already produced — when nothing is built yet the
+ * gate skip-passes rather than compiling (compilation is the build rung's
+ * job, and doubling its cost on every ladder run is exactly the hot-path tax
+ * the audit warned about).
+ */
+function detectNativeBins(projectRoot: string): string[] {
+  const bins: string[] = [];
+  const cargoPath = join(projectRoot, 'Cargo.toml');
+  if (existsSync(cargoPath)) {
+    try {
+      const text = readFileSync(cargoPath, 'utf-8');
+      const isBin = existsSync(join(projectRoot, 'src', 'main.rs')) || /\[\[bin\]\]/.test(text);
+      const name = /\[package\][^\[]*?^\s*name\s*=\s*["']([A-Za-z0-9_-]+)["']/m.exec(text)?.[1];
+      if (isBin && name) {
+        const bin = name.replace(/-/g, '_');
+        bins.push(join(projectRoot, 'target', 'debug', bin), join(projectRoot, 'target', 'release', bin));
+      }
+    } catch {
+      /* unreadable — no candidates */
+    }
+  }
+  if (existsSync(join(projectRoot, 'CMakeLists.txt'))) {
+    // Executables anywhere under the conventional build dir, depth ≤ 2.
+    const skipExt = new Set(['.o', '.a', '.so', '.dylib', '.cmake', '.txt', '.ninja', '.make', '.json']);
+    const scan = (dir: string, depth: number): void => {
+      if (depth < 0 || bins.length >= 5) return;
+      let entries: string[];
+      try {
+        entries = readdirSync(dir);
+      } catch {
+        return;
+      }
+      for (const e of entries.sort()) {
+        if (e.startsWith('.') || e === 'CMakeFiles') continue;
+        const p = join(dir, e);
+        try {
+          const st = statSync(p);
+          if (st.isDirectory()) scan(p, depth - 1);
+          else if (st.isFile() && st.mode & 0o111 && !skipExt.has(extname(e))) bins.push(p);
+        } catch {
+          /* skip */
+        }
+      }
+    };
+    scan(join(projectRoot, 'build'), 2);
+  }
+  return bins.filter((p) => existsSync(p)).slice(0, 5);
+}
+
 /** Best-effort classification of what kind of artifact lives in the project. */
 export function detectArtifactType(projectRoot: string): ArtifactType | null {
   if (findWebEntryDir(projectRoot)) return 'web';
@@ -505,14 +605,21 @@ export function detectArtifactType(projectRoot: string): ArtifactType | null {
       };
       if (pkg.bin) return 'cli';
       if (pkg.main || pkg.module || pkg.exports) return 'lib';
-      // A scripts-only / bare package.json has no clear runnable entrypoint; such
-      // projects already carry build/test gates, so don't synthesize a redundant
-      // (and entryless) execution rung. Only declared entrypoints are gated.
-      return null;
+      // A scripts-only / bare package.json has no clear runnable entrypoint.
+      // Fall through to the polyglot checks (B2): an npm-AND-python repo used
+      // to stop here and gate NOTHING below the npm band.
     } catch {
-      return null;
+      /* unreadable package.json — fall through to polyglot checks */
     }
   }
+  if (detectPythonModule(projectRoot)) return 'python';
+  // native-bin only when a built executable EXISTS: a Cargo library or a
+  // CMake project with no build tree has no runnable artifact, and a
+  // skip-pass rung synthesized anyway is pure noise on every ladder run (and
+  // vacuous green is exactly what this gate exists to prevent). detectRungs
+  // re-detects per turn, so the rung materializes the turn after a binary
+  // first links.
+  if (detectNativeBins(projectRoot).length > 0) return 'native-bin';
   return null;
 }
 
@@ -1719,6 +1826,128 @@ function runNodeLike(projectRoot: string, type: ArtifactType, opts: ExecutionGat
 }
 
 /**
+ * B2: python artifact — import the package and fail on a non-zero exit. This
+ * is the python analog of the node lib import: it catches the crash class the
+ * build/test rungs miss (import-time side effects, a syntax error in a module
+ * no test imports, a missing dependency in the module graph).
+ */
+function runPythonImport(projectRoot: string, opts: ExecutionGateOptions): ExecutionResult {
+  const start = Date.now();
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const found = detectPythonModule(projectRoot);
+  if (!found) {
+    return {
+      passed: true,
+      exitCode: 0,
+      failureReason: 'skipped (no importable package found)',
+      outputTail: '',
+      durationMs: Date.now() - start,
+      via: 'none',
+    };
+  }
+  // Prefer the project's own virtualenv: a pyproject project's third-party
+  // deps normally live in .venv, and the ambient python3 then fails the import
+  // on missing deps — hard-failing a repo that is actually fine (review
+  // should-fix, 2026-07-13). Ambient python3 remains the fallback.
+  const venvPy = join(projectRoot, '.venv', 'bin', 'python');
+  const pythonBin = existsSync(venvPy) ? venvPy : 'python3';
+  const r = spawnSync(pythonBin, ['-c', `import ${found.module}`], {
+    cwd: projectRoot,
+    encoding: 'utf-8',
+    timeout: timeoutMs,
+    maxBuffer: 16 * 1024 * 1024,
+    env: {
+      ...gateEnv(),
+      PYTHONPATH: [found.pythonpath, process.env.PYTHONPATH].filter(Boolean).join(':'),
+    },
+  });
+  const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(-4000);
+  const passed = r.status === 0;
+  return {
+    passed,
+    exitCode: r.status ?? 1,
+    failureReason: passed ? undefined : `python import ${found.module} exited ${r.status ?? 'null'}`,
+    outputTail: out || (passed ? `import ${found.module} clean` : 'no output'),
+    durationMs: Date.now() - start,
+    via: 'child-process',
+  };
+}
+
+/**
+ * B2: native artifact — run each already-built executable and fail ONLY on
+ * death-by-signal (SIGSEGV/SIGABRT/…), the crash class this gate exists for.
+ * Exit codes are ignored: arg conventions differ per binary (a CLI awaiting
+ * stdin exits on EOF, a server stays up, a non-clap app may reject --help),
+ * so no exit code is a reliable health signal. A timeout means the process
+ * was still alive — also a pass. Nothing built yet → skip-pass (the build
+ * rung owns "does it compile").
+ */
+function runNativeBin(projectRoot: string, opts: ExecutionGateOptions): ExecutionResult {
+  const start = Date.now();
+  const bins = detectNativeBins(projectRoot);
+  if (bins.length === 0) {
+    return {
+      passed: true,
+      exitCode: 0,
+      failureReason: 'skipped (no built binary found — the build rung produces it)',
+      outputTail: '',
+      durationMs: Date.now() - start,
+      via: 'none',
+    };
+  }
+  const perBinMs = Math.min(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, 8_000);
+  const crashes: string[] = [];
+  const execFailures: string[] = [];
+  let ran = 0;
+  for (const bin of bins) {
+    const r = spawnSync(bin, [], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      timeout: perBinMs,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 1024 * 1024,
+      env: gateEnv(),
+    });
+    const errCode = (r.error as NodeJS.ErrnoException | undefined)?.code;
+    const timedOut = errCode === 'ETIMEDOUT' || (r.error && r.signal === 'SIGTERM');
+    // A spawn error with NO signal and NO timeout means the binary never
+    // executed at all (ENOENT on a bad shebang/interpreter, EACCES, a binary
+    // built for another arch). That is neither crash evidence nor pass
+    // evidence (review fix, 2026-07-13) — count it separately so a project of
+    // cross-built binaries reads as "not measurable here", not as a pass.
+    if (r.error && !r.signal && !timedOut) {
+      execFailures.push(`${bin}: could not exec (${errCode ?? r.error.message})`);
+      continue;
+    }
+    ran++;
+    if (timedOut) continue; // still alive when we stopped watching — a pass
+    if (r.signal) crashes.push(`${bin}: died on ${r.signal}`);
+  }
+  if (ran === 0 && crashes.length === 0 && execFailures.length > 0) {
+    return {
+      passed: true,
+      exitCode: 0,
+      failureReason: `skipped (no built binary could execute here: ${execFailures[0]})`,
+      outputTail: execFailures.join('\n'),
+      durationMs: Date.now() - start,
+      via: 'none',
+    };
+  }
+  const passed = crashes.length === 0;
+  const note = execFailures.length > 0 ? ` (${execFailures.length} not executable here)` : '';
+  return {
+    passed,
+    exitCode: passed ? 0 : 1,
+    failureReason: passed ? undefined : crashes.join('; '),
+    outputTail: passed
+      ? `${ran} built binar${ran === 1 ? 'y' : 'ies'} ran without crashing${note}`
+      : crashes.join('\n'),
+    durationMs: Date.now() - start,
+    via: 'child-process',
+  };
+}
+
+/**
  * Execute the project's artifact and report whether it runs without error.
  * Auto-detects the artifact type; returns a skip-pass when there is nothing
  * runnable (the ladder's fail-closed floor lives in detectRungs, not here).
@@ -1780,6 +2009,12 @@ export async function runExecutionGate(
   }
   if (type === 'node' || type === 'cli' || type === 'lib') {
     return runNodeLike(projectRoot, type, opts);
+  }
+  if (type === 'python') {
+    return runPythonImport(projectRoot, opts);
+  }
+  if (type === 'native-bin') {
+    return runNativeBin(projectRoot, opts);
   }
   return {
     passed: true,

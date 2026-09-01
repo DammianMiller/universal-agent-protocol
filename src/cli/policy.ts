@@ -15,6 +15,13 @@ import { getPolicyGate } from '../policies/policy-gate.js';
 import { getPolicyMemoryManager } from '../policies/policy-memory.js';
 import { getPolicyToolRegistry } from '../policies/policy-tools.js';
 import { convertPolicyToClaude } from '../policies/convert-policy-to-claude.js';
+import {
+  checkPolicyLiveness,
+  enabledPolicySlugs,
+  runDeliverCanary,
+  runLiveness,
+  writeLivenessCache,
+} from '../policies/liveness.js';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -593,6 +600,30 @@ export async function setPolicyActive(
   const listed = matches.map((m) => `${m.name} (${m.id})`).join(', ');
   if (active) {
     console.log(chalk.green(`\n✅ Enabled: ${listed}`));
+    // F1 (deliver-hardening 2026-07-13): enabling a policy whose compliant
+    // path is DEAD creates a catch-22 — the gate blocks and the sanctioned
+    // route cannot complete. Check liveness at enable time and warn loudly.
+    // Advisory only: whether to keep an unhealthy policy blocking is the
+    // operator's call, never the tool's (auto-refusal would make a broken
+    // environment unfixable from inside it).
+    for (const m of matches) {
+      const r = checkPolicyLiveness(process.cwd(), policyNameSlug(m.name));
+      if (r && !r.healthy) {
+        console.log(
+          chalk.red(
+            `\n⚠️  POLICY UNHEALTHY: ${m.name} — its compliant path is broken RIGHT NOW:`
+          )
+        );
+        for (const f of r.failures) console.log(chalk.red(`   - ${f.detail}`));
+        console.log(
+          chalk.dim(
+            '   The policy stays BLOCKING (no auto-degrade — a dead path can be agent sabotage). ' +
+              'Fix the requirement, or disable the policy: uap policy disable ' +
+              m.id
+          )
+        );
+      }
+    }
   } else {
     console.log(chalk.yellow(`\n⚠️  Disabled: ${listed} — no longer enforced.`));
   }
@@ -630,8 +661,30 @@ async function statusCommand(): Promise<void> {
 
   if (enabled.length > 0) {
     console.log(chalk.bold('Active Policies:'));
+    // F1: liveness per policy — an enabled policy whose compliant path is dead
+    // is a catch-22 in waiting, so status must SHOW it, not just count it.
+    // Live-checked here (a few `command -v` probes; cheap) and the cache the
+    // gate hook consults is refreshed as a side effect.
+    const slugs = enabled.map((p) => policyNameSlug(p.name));
+    const results = runLiveness(process.cwd(), slugs);
+    const byName = new Map(results.map((r) => [r.name, r]));
+    try {
+      writeLivenessCache(process.cwd(), results);
+    } catch {
+      /* cache is a convenience; a read-only tree must not break status */
+    }
     for (const policy of enabled) {
-      console.log(`  ${chalk.green('✓')} ${policy.name} (${policy.level}) - ${policy.category}`);
+      const health = byName.get(policyNameSlug(policy.name));
+      const mark =
+        !health || health.healthy
+          ? chalk.green('✓')
+          : health.degradable
+            ? chalk.yellow('⚠ degraded')
+            : chalk.red('✗ UNHEALTHY');
+      console.log(`  ${mark} ${policy.name} (${policy.level}) - ${policy.category}`);
+      if (health && !health.healthy) {
+        for (const f of health.failures) console.log(chalk.dim(`      ${f.detail}`));
+      }
     }
     console.log();
   }
@@ -734,8 +787,75 @@ export function registerPolicyCommands(program: Command): void {
 
   policy
     .command('status')
-    .description('Show detailed policy enforcement status')
+    .description(
+      'Show detailed policy enforcement status (also refreshes .uap/policy-liveness.json as a side effect — ' +
+        'the gate hook reads that cache, so status doubles as the liveness refresh)'
+    )
     .action(statusCommand);
+
+  policy
+    .command('liveness')
+    .description(
+      'F1: check every enabled policy whose compliant path has machine-checkable requirements ' +
+        '(commands on PATH, agent-writable dirs, resolvable skills) and refresh the cache the gate hook consults'
+    )
+    .option('--json', 'emit the raw liveness results')
+    .option('--quiet', 'no output unless something is unhealthy (session-start cadence)')
+    .action(async (opts: { json?: boolean; quiet?: boolean }) => {
+      const root = process.cwd();
+      const slugs = await enabledPolicySlugs(root);
+      const results = runLiveness(root, slugs);
+      let cachePath: string | null = null;
+      try {
+        cachePath = writeLivenessCache(root, results);
+      } catch {
+        /* read-only tree — cache refresh is best-effort */
+      }
+      if (opts.json) {
+        console.log(JSON.stringify({ checkedAt: new Date().toISOString(), cache: cachePath, results }, null, 2));
+        return;
+      }
+      const unhealthy = results.filter((r) => !r.healthy);
+      if (opts.quiet && unhealthy.length === 0) return;
+      if (results.length === 0) {
+        console.log(chalk.dim('No enabled policies declare liveness requirements.'));
+        return;
+      }
+      for (const r of results) {
+        if (r.healthy) {
+          if (!opts.quiet) console.log(`  ${chalk.green('✓')} ${r.name} — compliant path alive`);
+          continue;
+        }
+        console.log(chalk.red(`  ✗ ${r.name} — UNHEALTHY (compliant path dead):`));
+        for (const f of r.failures) console.log(chalk.red(`      ${f.detail} [${f.surface}]`));
+        console.log(
+          chalk.dim(
+            r.degradable
+              ? '      degradeOnDeadPath opted in and breakage is external — the gate downgrades to advisory until fixed.'
+              : '      Policy stays BLOCKING (breakage is on an agent-writable surface, or degradeOnDeadPath is off). Operator decides.'
+          )
+        );
+      }
+      if (unhealthy.length > 0) process.exitCode = 1;
+    });
+
+  policy
+    .command('canary')
+    .description(
+      'F1: liveness probe for deliver itself — run a 1-line mission in a temp repo and verify it produces the diff and passes its gate (makes a real model call; opt-in)'
+    )
+    .option('--timeout <sec>', 'canary budget in seconds', '600')
+    .action(async (opts: { timeout?: string }) => {
+      const cliEntry = join(__dirname, '..', 'bin', 'cli.js');
+      console.log(chalk.cyan('Running deliver canary (real model call, temp repo)…'));
+      const r = await runDeliverCanary({ cliEntry, timeoutMs: Number(opts.timeout ?? '600') * 1000 });
+      if (r.alive) {
+        console.log(chalk.green(`✅ deliver canary ALIVE — ${r.detail}`));
+      } else {
+        console.log(chalk.red(`❌ deliver canary DEAD — the deliver compliant path is broken:\n${r.detail}`));
+        process.exitCode = 1;
+      }
+    });
 
   // ── Commands merged from bin/policy.ts ──────────────────────────────
 

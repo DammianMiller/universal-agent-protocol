@@ -1,14 +1,20 @@
 # Changelog
 
-## v1.223.0 (2026-08-31)
+## v1.224.0 (2026-09-01)
 
-- feat(quality): quality-metrics gate — CLI, enforcer, ratchet baseline, expert-review fusion
+- test(init): raise initCommand suite timeout for loaded machines
+- feat(deliver): harden the delivery pipeline — scoped rollback, declared gates, polyglot execution, config routing, liveness, signed overrides
 - feat(verify): visual gate grades only servable entry pages (#775)
 - feat(verify): page exclusion for the visual gate via .uap/visual-targets.json (#774)
 - fix(llama): advertise a model alias, and let the proxy see aliases as served ids (#773)
 - fix(proxy): a tools-stripped turn must actually end in prose (#772)
 - fix(deliver): anchor forced-round grounding on the window the model was reading (#771)
 - feature/267 rtk docker proxy (#770)
+
+
+## v1.223.0 (2026-08-31)
+
+- feat(quality): quality-metrics gate — CLI, enforcer, ratchet baseline, expert-review fusion
 
 
 ## v1.222.0 (2026-08-29)

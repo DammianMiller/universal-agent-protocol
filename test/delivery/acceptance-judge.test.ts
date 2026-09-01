@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
+import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -101,6 +102,40 @@ describe('runAcceptanceGate', () => {
     expect(r.passed).toBe(true);
     expect(r.parseError).toMatch(/no source evidence/);
     rmSync(empty, { recursive: true, force: true });
+  });
+
+  it('shows the judge what the run CHANGED (C1: git change summary in the prompt)', async () => {
+    // Deliver-hardening defect 5: the judge used to walk the whole tree with
+    // no idea what the run touched. In a git repo with uncommitted changes,
+    // the prompt must carry the changed-file list; on a non-git dir it must
+    // be omitted silently (the deterministic empty-diff rail lives in the
+    // convergence loop, so the note is never the only guard).
+    const repo = mkdtempSync(join(tmpdir(), 'acc-git-'));
+    // Local identity: a machine without global user.email/user.name flakes on
+    // the commit (the hook test fixtures set it the same way).
+    execSync(
+      'git init -q && git config user.email t@example.com && git config user.name t && git commit -q --allow-empty -m init',
+      { cwd: repo }
+    );
+    writeFileSync(join(repo, 'counter.js'), 'exports.increment = (n) => n + 1;');
+    writeFileSync(join(repo, 'untracked-new.js'), 'exports.brandNew = true;');
+    let seen = '';
+    const executor = async (prompt: string) => {
+      seen = prompt;
+      return '{"criteria":[{"requirement":"x","met":true,"reason":"ok"}],"pass":true}';
+    };
+    await runAcceptanceGate({ spec: SPEC, projectRoot: repo, executor });
+    expect(seen).toContain('=== UNCOMMITTED CHANGES IN THIS TREE (git) ===');
+    expect(seen).toContain('counter.js');
+    expect(seen).toContain('untracked-new.js');
+
+    const plain = mkdtempSync(join(tmpdir(), 'acc-nogit-'));
+    writeFileSync(join(plain, 'counter.js'), 'exports.increment = (n) => n + 1;');
+    seen = '';
+    await runAcceptanceGate({ spec: SPEC, projectRoot: plain, executor });
+    expect(seen).not.toContain('=== UNCOMMITTED CHANGES');
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(plain, { recursive: true, force: true });
   });
 });
 

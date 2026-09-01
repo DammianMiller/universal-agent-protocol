@@ -42,6 +42,7 @@ import {
   prependSweepNote,
   recordAuthorisedWrite,
   type BashSweep,
+  type SweepOutcome,
 } from './bash-sweep.js';
 import { detectStub, stubRefusal, stubGuardDisabled } from './stub-detector.js';
 import { resolveEditMatch, applyEditMatch, applyRangeEdit, isIndentSensitive } from './edit-match.js';
@@ -390,6 +391,17 @@ export interface AgenticExecutorOptions {
    */
   runId?: string;
   taskId?: string;
+  /**
+   * Per-RUN ledger of project-relative paths this executor wrote, shared with
+   * the caller (deliver.ts) by reference. Filled from the write_file/edit_file/
+   * edit_range success paths AND from the turn-end bash sweep's `changed` set,
+   * so it covers shell writes the tool handlers never see. Exists because the
+   * agentic path installs a no-op applier — `filesApplied` is empty by
+   * construction — which made keep-best's scoped restore silently inert on the
+   * DEFAULT executor (deliver-hardening review blocker, 2026-07-13). The
+   * caller drains it into ApplyResult.filesWritten once per turn.
+   */
+  writeLedger?: Set<string>;
 }
 
 export interface AgenticEvent {
@@ -1635,7 +1647,11 @@ export function runTool(
   // NORMALIZED path a write landed on and whether it succeeded, so attribution
   // is recorded here rather than reconstructed by the caller.
   sweep: BashSweep = disabledSweep(),
-  protectIac: boolean = false
+  protectIac: boolean = false,
+  // Run-scoped write ledger (see AgenticExecutorOptions.writeLedger). Recorded
+  // at the actual writeFileSync sites — NOT via the sweep's `authorised` map,
+  // which is a no-op when bash is disabled, exactly when the ledger matters.
+  writeLedger?: Set<string>
 ): string {
   let pathNote = '';
   // Contain/repair garbled tool-call paths against the known project root before
@@ -1854,6 +1870,7 @@ export function runTool(
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, String(args.content ?? ''), 'utf-8');
       recordAuthorisedWrite(sweep, rel, String(args.content ?? ''));
+      writeLedger?.add(rel);
       // Per-write compile feedback for Rust: without it, a weak model writes
       // whole turns of code against types it invented, and the turn-end gate
       // reports an avalanche it cannot dig out of (observed live 2026-07-10:
@@ -2009,6 +2026,7 @@ export function runTool(
       if (downgradeEdit) return downgradeEdit;
       writeFileSync(abs, updated, 'utf-8');
       recordAuthorisedWrite(sweep, rel, updated);
+      writeLedger?.add(rel);
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
       const plural = batch.length === 1 ? 'replacement' : 'replacements';
@@ -2076,6 +2094,7 @@ export function runTool(
       }
       writeFileSync(abs, ranged.text, 'utf-8');
       recordAuthorisedWrite(sweep, rel, ranged.text);
+      writeLedger?.add(rel);
       const rustCheckNote = maybeRustWriteCheck(projectRoot, rel);
       const jsCheckNote = maybeJsSyntaxCheck(projectRoot, rel);
       return (
@@ -2631,7 +2650,8 @@ export function createAgenticExecutor(
               allowBash,
               contractFiles,
               sweep,
-              protectIac
+              protectIac,
+              opts.writeLedger
             );
             opts.onEvent?.({
               round,
@@ -2787,7 +2807,8 @@ export function createAgenticExecutor(
           allowBash,
           contractFiles,
           sweep,
-          protectIac
+          protectIac,
+          opts.writeLedger
         );
         // #2a: per-tool-call progress — refresh the deliver heartbeat now, not
         // just at turn end, so wedge-detection tracks real intra-turn activity.
@@ -2858,8 +2879,19 @@ export function createAgenticExecutor(
    */
   return async (prompt: string): Promise<string> => {
     const sweep = beginBashSweep(opts.projectRoot, allowBash);
+    // Fold the sweep's observed changes into the run write ledger: tool writes
+    // are recorded at their writeFileSync sites, but shell writes only become
+    // visible here. Idempotent — the ledger is a Set and finishBashSweep's
+    // second call returns an empty outcome.
+    const foldLedger = (outcome: SweepOutcome): void => {
+      if (!opts.writeLedger) return;
+      for (const rel of outcome.changed) opts.writeLedger.add(rel);
+    };
     try {
-      return prependSweepNote(await runTurn(prompt, sweep), finishBashSweep(sweep));
+      const body = await runTurn(prompt, sweep);
+      const sweptNow = finishBashSweep(sweep);
+      foldLedger(sweptNow);
+      return prependSweepNote(body, sweptNow);
     } finally {
       // `finally` rather than a catch, for two reasons. A throw must still
       // PROPAGATE: the convergence loop routes a thrown executor to its
@@ -2871,7 +2903,7 @@ export function createAgenticExecutor(
       // the time this runs; the second call is a hard no-op via the sweep's own
       // `swept` flag — NOT because the tree happens to be unchanged, which would
       // still pay a full second walk.
-      finishBashSweep(sweep);
+      foldLedger(finishBashSweep(sweep));
     }
   };
 }

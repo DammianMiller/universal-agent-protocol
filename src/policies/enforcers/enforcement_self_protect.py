@@ -39,6 +39,11 @@ PROTECTED_MARKERS = (
     "/.policy-tools/",
     "/src/policies/",
     "/policies/",            # the policy-definition markdown dir
+    # The policies DB the gates read. Compliance artifact paths are carved out
+    # below, so without this the enforcement registry itself was the soft spot:
+    # rewrite the DB and every downstream gate grades a forgery (the pay2u
+    # inversion the operator patch fixed out-of-tree).
+    "/agents/data/memory/policies.db",
     "/.uap.json",
     "/.uap/",
     "anthropic-proxy.env",
@@ -250,8 +255,33 @@ PROTECTED_TARGETS = (
     # (test_gate_evidence), which asserts that exact append stays allowed.
     # Guarding it needs a rule that tells `>>` from `>`; blocking the queue's
     # own writes to protect it is not that rule.
+    #
+    # The policies DB the gates READ. The inversion this closes: compliance
+    # artifact paths (.uap/reviews/) were agent-locked while the DB that
+    # decides what is enforced sat unprotected — an agent could delete or
+    # rewrite the policy registry instead of complying with it (pay2u operator
+    # patch uap-policy-fix-APPLY.sh, upstreamed here). The CLI's own writes go
+    # through the `uap policy` process, not agent Edit/Write tools, so policy
+    # management is unaffected; what this refuses is the agent deleting or
+    # editing the DB directly.
+    "agents/data/memory/policies.db",
     ".uap.json",
     "anthropic-proxy.env",
+    # F3 (deliver-hardening 2026-07-13): the signed operator-override file.
+    # Edit/Write to it is already refused via the "/.uap/" marker, but the
+    # destructive check treats every redirect alike and this directory is
+    # otherwise permissive — `echo '{deliverBypass:true…}' >
+    # .uap/operator-overrides.json` would self-mint the bypass the file exists
+    # to restrict to the operator. Only an out-of-band operator writes it; the
+    # hook additionally verifies uid/mode/expiresAt before honoring it.
+    ".uap/operator-overrides.json",
+    # F1: the liveness cache the gate's degrade consult trusts. A forged entry
+    # ({healthy:false, degradable:true}) would downgrade a BLOCKING policy to
+    # advisory — exactly the sabotage the degrade guard exists to refuse — so
+    # the cache must be as unwritable as the verdicts it carries. Legitimate
+    # writes go through `uap policy liveness`/`status`, whose command text
+    # never names the file (same shape as the policies.db guard).
+    ".uap/policy-liveness.json",
 )
 
 _SEGMENT_SPLIT = re.compile(r"(?:\|\||&&|[;\n|&])")
@@ -529,6 +559,37 @@ def _kills_live_deliver_run(command: str, root) -> str:
     return ""
 
 
+# The two files the gate's TRUST decisions rest on: the signed operator
+# override and the liveness cache the degrade consult reads. They get a rule
+# the rest of the protected surface does not (deliver-hardening security
+# review, 2026-07-13): an INTERPRETER-MEDIATED write —
+#   python3 -c 'import json; json.dump({...}, open(".uap/operator-overrides.json","w"))'
+# carries no destructive verb, no shell redirect and no UAP_* bypass text, so
+# every other scan here walks straight past it — yet a successful write used
+# to mint a full bypass. The hook now also requires these files ROOT-owned
+# before trusting them, which is the load-bearing fix; this rule is the
+# defense-in-depth that stops the write from landing at all. Root ownership
+# is what makes this narrow list sufficient — anything else the agent writes
+# is distrusted on READ, so it need not be write-blocked here.
+_TRUST_ANCHORS = (".uap/operator-overrides.json", ".uap/policy-liveness.json")
+_INTERPRETER_RE = re.compile(r"(?:^|[\s;|&('\"`])(?:python\d*(?:\.\d+)?|perl|ruby|node)(?:\s|$)")
+# A write primitive in interpreter code: open(…, "w"/"a"/"x"/"+"), or a
+# mutating method call. Reads (open without a mode, json.load, print) match
+# neither and stay allowed.
+_INTERPRETER_WRITE_RE = re.compile(
+    r"open\s*\([^)]*[\"'][wax+]|"
+    r"\.\s*(?:write\w*|writelines|dump|rename|replace|unlink|remove|removedirs|"
+    r"chmod|chown|rmtree|move|copy\w*)\s*\(")
+
+
+def _interpreter_write_to_anchor(command: str) -> bool:
+    """True when an interpreter command names a trust anchor with write intent."""
+    lowered = command.lower()
+    if not any(anchor in lowered for anchor in _TRUST_ANCHORS):
+        return False
+    return bool(_INTERPRETER_RE.search(command) and _INTERPRETER_WRITE_RE.search(command))
+
+
 def _direct_destructive(command: str) -> bool:
     """Destructive op naming a protected path, judged per command segment."""
     cd_into_protected = False
@@ -589,6 +650,11 @@ def _bash_destructive(command: str, _depth: int = 0) -> bool:
     if not command:
         return False
     if _direct_destructive(command):
+        return True
+    # Checked at EVERY depth (an interpreter write inside `bash -c "..."` is
+    # still one) and BEFORE the intent gate below — that gate reads shell
+    # verbs, and an interpreter-mediated write to a trust anchor carries none.
+    if _interpreter_write_to_anchor(command):
         return True
     if _depth < 2:                       # bounded: `bash -c "bash -c ..."`
         for inner in _inner_commands(command):

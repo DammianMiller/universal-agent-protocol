@@ -19,6 +19,7 @@ import type {
   DeliveryResult,
   ConvergenceConfig,
 } from '../delivery/convergence-loop.js';
+import type { ApplyResult } from '../delivery/applier.js';
 import { createModelJudge } from '../delivery/judge.js';
 import {
   resolveJudgePlan,
@@ -251,7 +252,7 @@ export function bestKeepFastScore(
 // Legacy export surface: test/cli/acceptance-verdict.test.ts (and any external
 // consumer) imports the verdict fold from deliver.js — keep the re-export.
 export { resolveAcceptanceVerdict } from '../delivery/mission-acceptance.js';
-import { createAgenticExecutor, noopApplier, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
+import { createAgenticExecutor, selectExecutorMode, lockContractFiles } from '../delivery/agentic-executor.js';
 import { createRepairEscalation } from '../delivery/repair-escalation.js';
 import { clearProjectStop, clearStop, finalRunStatus, isRunBudgetExpired, isRunBudgetExplicit, isStopRequested, makeStopLatch, phaseAwareRunBudgetMinutes, requestStop, runBudgetMinutes, loadRunState, newRunId, saveRunState, isEpicResume, MAX_PERSISTED_PHASES } from '../delivery/run-state.js';
 import type { DeliverRunState } from '../delivery/run-state.js';
@@ -371,7 +372,7 @@ import type { GateTier, LadderRunFn, GateRung } from '../delivery/verifier-ladde
 import { runDeployDevLadder } from '../delivery/deploy-dev-gate.js';
 import { commitPushAndWatch } from '../delivery/ci-watcher.js';
 import type { DeployEnvironment } from '../delivery/ci-watcher.js';
-import { snapshotTree, restoreTree, disposeSnapshot } from '../delivery/snapshot.js';
+import { snapshotTree, restoreTreeScoped, disposeSnapshot } from '../delivery/snapshot.js';
 import { snapshotProtection } from '../delivery/spec-imports.js';
 import { listGateConfigFiles } from '../delivery/applier.js';
 import { OpenAICompatClient, setModelCallProgress } from '../models/openai-compat-client.js';
@@ -564,10 +565,65 @@ export function resolveTierModel(
 ): { model: string; tier: TaskComplexity; preset: string } | null {
   const id = routingId ?? process.env.UAP_DELIVER_ROUTING;
   if (!id) return null;
+  return resolveTierModelById(id, instruction);
+}
+
+/**
+ * The tier-model resolution with an EXPLICIT preset id — no env fallback.
+ * Used when the routing id has already been resolved through the G1
+ * precedence chain (CLI > config > criticality > env).
+ */
+export function resolveTierModelById(
+  id: string,
+  instruction: string
+): { model: string; tier: TaskComplexity; preset: string } | null {
   const preset = RoutingPresets[id];
   if (!preset) return null;
   const tier = tierToRouting(classifyComplexity({ instruction }).tier);
   return { model: resolvePresetModel(preset, { complexity: tier, role: 'executor' }), tier, preset: id };
+}
+
+/**
+ * G1 (deliver-hardening 2026-07-13): `criticality` shorthand → routing preset.
+ * money = cost-tiered (local-first, escalate by complexity); normal =
+ * sonnet-5-tiered (balanced); sandbox = NO tier routing — the executor stays
+ * on the free local default, and the declaration SUPPRESSES ambient env
+ * routing (config-authoritative means a declared posture beats a stale shell).
+ */
+export const CRITICALITY_ROUTING: Record<'money' | 'normal' | 'sandbox', string | null> = {
+  money: 'cost-tiered',
+  normal: 'sonnet-5-tiered',
+  sandbox: null,
+};
+
+export type RoutingSource = 'cli' | 'config' | 'criticality' | 'env';
+
+/**
+ * Resolve which routing preset (if any) governs this run, and where the choice
+ * came from. Config-authoritative: a DECLARED routing/criticality beats the
+ * ambient UAP_DELIVER_ROUTING; an explicit --routing beats config. PURE —
+ * unit-tested.
+ */
+export function resolveRoutingId(opts: {
+  cliRouting?: string;
+  cfgRouting?: unknown;
+  cfgCriticality?: unknown;
+  envRouting?: string;
+}): { id: string | null; source: RoutingSource | null } {
+  if (opts.cliRouting) return { id: opts.cliRouting, source: 'cli' };
+  if (typeof opts.cfgRouting === 'string' && opts.cfgRouting) {
+    return { id: opts.cfgRouting, source: 'config' };
+  }
+  // Object.hasOwn, not `in`: a raw (non-zod) config value like
+  // "criticality": "constructor" would otherwise pass the check via the
+  // prototype chain and yield a FUNCTION as the routing id (review nit).
+  if (typeof opts.cfgCriticality === 'string' && Object.hasOwn(CRITICALITY_ROUTING, opts.cfgCriticality)) {
+    const mapped = CRITICALITY_ROUTING[opts.cfgCriticality as keyof typeof CRITICALITY_ROUTING];
+    // sandbox maps to null ON PURPOSE: the declaration suppresses ambient env.
+    return { id: mapped, source: 'criticality' };
+  }
+  if (opts.envRouting) return { id: opts.envRouting, source: 'env' };
+  return { id: null, source: null };
 }
 
 function resolveModel(presetId: string, endpointOverride?: string): ModelConfig {
@@ -1755,26 +1811,56 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     process.env.UAP_HALO_TRACE_PATH = join(projectRoot, '.uap', 'halo', 'traces.jsonl');
   }
 
-  // Complexity-tier routing: when --routing (or UAP_DELIVER_ROUTING) names a
-  // preset and the user did NOT pin --model, execute on the model the preset
-  // assigns to this task's complexity tier. Explicit --model and a resumed
-  // run's preset always win (user intent / mid-flight consistency).
+  // Complexity-tier routing: when a routing preset is named and the user did
+  // NOT pin --model, execute on the model the preset assigns to this task's
+  // complexity tier. Explicit --model and a resumed run's preset always win
+  // (user intent / mid-flight consistency).
+  //
+  // G1 (deliver-hardening 2026-07-13): the routing choice itself is now a
+  // PROJECT decision — `.uap.json → delivery.routing` / `delivery.criticality`
+  // / `delivery.model` are config-authoritative (declared config beats ambient
+  // env; an explicit CLI flag beats config). Before this, routing was CLI/env
+  // only, so the choice left no trace in the repo and a stale
+  // UAP_DELIVER_ROUTING in a launching shell silently steered the run.
+  const cfgDeliveryRouting = (() => {
+    try {
+      const d = (loadUapConfigRaw(projectRoot) as {
+        delivery?: { routing?: unknown; criticality?: unknown; model?: unknown };
+      } | null)?.delivery;
+      return d ?? {};
+    } catch {
+      return {};
+    }
+  })();
+  const routingChoice = resolveRoutingId({
+    cliRouting: options.routing,
+    cfgRouting: cfgDeliveryRouting.routing,
+    cfgCriticality: cfgDeliveryRouting.criticality,
+    envRouting: process.env.UAP_DELIVER_ROUTING,
+  });
   const tierRoute =
-    options.model === undefined && resumeState === null
-      ? resolveTierModel(options.routing, instruction)
+    options.model === undefined && resumeState === null && routingChoice.id
+      ? resolveTierModelById(routingChoice.id, instruction)
       : null;
+  const cfgModel =
+    typeof cfgDeliveryRouting.model === 'string' && cfgDeliveryRouting.model
+      ? cfgDeliveryRouting.model
+      : undefined;
   const presetId =
     options.model ??
     resumeState?.presetId ??
     tierRoute?.model ??
+    cfgModel ??
     process.env.UAP_DELIVER_MODEL ??
     'qwen35-a3b';
   if (tierRoute && !options.dryRun) {
     console.log(
       chalk.cyan(
-        `\u26a1 tier routing: '${tierRoute.preset}' \u2192 ${tierRoute.tier} complexity \u2192 ${tierRoute.model}`
+        `\u26a1 tier routing: '${tierRoute.preset}' (${routingChoice.source}) \u2192 ${tierRoute.tier} complexity \u2192 ${tierRoute.model}`
       )
     );
+  } else if (!tierRoute && cfgModel && options.model === undefined && !options.dryRun) {
+    console.log(chalk.dim(`  model from .uap.json delivery.model: ${cfgModel}`));
   }
 
   let maxTurns: number | undefined;
@@ -2256,7 +2342,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // of the hardcoded haiku default — the preset's designated reviewer IS the
   // Generator≠Evaluator choice. resolveJudgePlan still swaps to the alt judge if
   // this collides with the generator, and only uses it on the auto-distinct path.
-  const routingIdForJudge = options.routing ?? process.env.UAP_DELIVER_ROUTING;
+  // The judge follows the SAME resolved routing choice as the executor (G1) —
+  // a config-declared preset must also pick the reviewer, not just the worker.
+  const routingIdForJudge = routingChoice.id ?? undefined;
   const presetForJudge = routingIdForJudge ? RoutingPresets[routingIdForJudge] : undefined;
   const reviewJudgeId = presetForJudge
     ? resolvePhaseChain(presetForJudge, {
@@ -2417,6 +2505,14 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   // those back would silently drop PascalCase files like Config.ts). P1 reads
   // these for verbatim injection.
   const contractPaths: string[] = [];
+  // Per-RUN write ledger for the agentic executor (deliver-hardening review
+  // blocker, 2026-07-13): the agentic path installs a no-op applier, so
+  // `filesApplied` is empty by construction and keep-best's E2 scoped restore
+  // had an empty write-set on the DEFAULT executor — a regressed run restored
+  // NOTHING and disposed the snapshot. The tool handlers and the turn-end bash
+  // sweep record real written paths here; the applier below drains them into
+  // ApplyResult.filesWritten so history[].filesApplied is truthful again.
+  const agenticWriteLedger = new Set<string>();
   const executor: LoopExecutor = agentic
     ? createAgenticExecutor(model, {
         projectRoot,
@@ -2425,6 +2521,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         temperature,
         contextTokenBudget: sessionBudget,
         contractFiles: contractLock,
+        writeLedger: agenticWriteLedger,
         // Block oracle tampering: protected test files are read-only to the agent.
         protectedFiles:
           options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles : new Set<string>(),
@@ -2452,6 +2549,7 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
         temperature: 0.2,
         contextTokenBudget: sessionBudget,
         contractFiles: contractLock,
+        writeLedger: agenticWriteLedger,
         protectedFiles:
           options.protectTests !== false ? snapshotProtection(projectRoot).protectedFiles : new Set<string>(),
         protectGateConfigs: options.protectTests !== false,
@@ -2827,8 +2925,19 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
   const seams = {
     ladderRunner: tieredRunner,
     // The agentic executor mutates the repo directly, so nothing remains for
-    // the file-block applier to materialize.
-    ...(agentic ? { applier: noopApplier } : {}),
+    // the file-block applier to materialize — but the applier is also where
+    // history[].filesApplied comes from, and keep-best's scoped restore reads
+    // exactly that. Drain the run's write ledger so the rollback write-set is
+    // real instead of empty-by-construction (deliver-hardening review, 2026-07-13).
+    ...(agentic
+      ? {
+          applier: async (): Promise<ApplyResult> => {
+            const filesWritten = [...agenticWriteLedger];
+            agenticWriteLedger.clear();
+            return { filesWritten, rejected: [] };
+          },
+        }
+      : {}),
     ...(acceptanceGate ? { acceptanceGate } : {}),
   };
 
@@ -3512,6 +3621,9 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
                 temperature,
                 contextTokenBudget: sessionBudget,
                 contractFiles: contractLock,
+                // No writeLedger here: an isolated task's paths are relative to
+                // ITS tree, and folding them into the projectRoot-scoped ledger
+                // would mis-target the keep-best scoped restore.
                 protectedFiles:
                   options.protectTests !== false ? snapshotProtection(root).protectedFiles : new Set<string>(),
                 protectGateConfigs: options.protectTests !== false,
@@ -4215,19 +4327,50 @@ async function runDeliver(instruction: string, options: DeliverOptions): Promise
     const endCap = compareCapability(readCapabilityBaseline(projectRoot), readCapabilityCurrent(projectRoot));
     const endCapabilityLost = endCap.regressed;
     if (endScore < baselineGateScore || endRegressions.length > 0 || endCapabilityLost) {
+      // E2 (deliver-hardening 2026-07-13): restore ONLY the files this run
+      // wrote. A whole-tree restore in a SHARED worktree reverts other
+      // agents' concurrent legitimate edits — observed live: a frontend
+      // agent's newly written test file was rolled back by someone else's
+      // deliver run. Files the run created after the best point are removed;
+      // everything else is left byte-identical. Known gap: a file the run
+      // DELETED without ever writing is outside the write-set and stays
+      // deleted — the run's deletions can't be told apart from another
+      // agent's via git state alone, and the safe direction wins.
+      const runFiles = [...new Set((result.history ?? []).flatMap((h) => h.filesApplied ?? []))];
       try {
-        restoreTree(projectRoot, regressSnapshot);
-        console.log(
-          chalk.yellow(
-            endRegressions.length > 0
-              ? `  ↩ no-regress: reverted to best — tests that passed at baseline are failing now: ` +
-                `${endRegressions.flatMap((r) => r.tests).slice(0, 5).join(', ')}`
-              : endCapabilityLost
-                ? `  ↩ no-regress: reverted to best — the run ended having LOST capability: ${endCap.findings.join('; ')}`
-                : `  ↩ no-regress: reverted to best (end gate score ${endScore.toFixed(2)} < best ${baselineGateScore.toFixed(2)})`
-          )
-        );
-        disposeSnapshot(regressSnapshot);
+        if (runFiles.length === 0) {
+          // The write-set is EMPTY but the tree regressed. With the agentic
+          // write ledger this means the writes escaped tracking (a shell write
+          // with the sweep disabled, or a deletion — the documented known-gap).
+          // The old whole-tree restore is the wrong fallback: in a shared
+          // worktree it reverts OTHER agents' work (the incident E2 fixes).
+          // Fail LOUD and keep the snapshot instead of pretending all is well.
+          console.log(
+            chalk.red(
+              '  ↩ no-regress: the run regressed the gates but its write-set is EMPTY — the writes escaped ' +
+                'tracking (shell with the bash sweep disabled, or deletions). NOT restoring blindly: a ' +
+                `whole-tree restore could revert other agents' work. The pre-run snapshot is PRESERVED at ` +
+                `${regressSnapshot} — inspect it and restore by hand if needed.`
+            )
+          );
+          // Do NOT dispose: the snapshot is the only known-good copy.
+        } else {
+          const touched = restoreTreeScoped(projectRoot, regressSnapshot, runFiles);
+          console.log(
+            chalk.yellow(
+              (endRegressions.length > 0
+                ? `  ↩ no-regress: reverted to best — tests that passed at baseline are failing now: ` +
+                  `${endRegressions.flatMap((r) => r.tests).slice(0, 5).join(', ')}`
+                : endCapabilityLost
+                  ? `  ↩ no-regress: reverted to best — the run ended having LOST capability: ${endCap.findings.join('; ')}`
+                  : `  ↩ no-regress: reverted to best (end gate score ${endScore.toFixed(2)} < best ${baselineGateScore.toFixed(2)})`) +
+                ` — ${touched} run-written file(s) restored`
+            )
+          );
+          // The scoped restore succeeded (or preserved-on-failure itself) —
+          // only here is the snapshot safe to dispose.
+          disposeSnapshot(regressSnapshot);
+        }
       } catch (restoreErr) {
         // restoreTree marked the snapshot preserve — do NOT dispose it; it may
         // be the only good copy of the pre-run tree.
