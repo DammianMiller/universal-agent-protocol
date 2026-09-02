@@ -1,4 +1,4 @@
-# Qwen3.8-27B × UAP v1.224.x Re-Test Plan — Paired Harness on the Current Local Stack
+# Qwen3.8-27B — With-UAP vs Without-UAP Comparison Plan (UAP v1.224.x)
 
 **Status:** Proposed (no benchmark runs start without an explicit go)
 **Date:** 2026-09-02
@@ -6,14 +6,20 @@
 
 ## Goal
 
-Re-run the controlled paired experiments on the **current production local
-model, Qwen3.8-27B (dense, UD-IQ4_XS, native draft-mtp)**, driven through the
-**latest UAP (v1.224.x)**, and answer two questions the existing findings
-cannot:
+Run the **same Qwen3.8-27B model, same tasks, same seeds, twice — once with
+UAP, once without** — and quantify the difference. The model under test is the
+current production local stack: **Qwen3.8-27B (dense, UD-IQ4_XS, native
+draft-mtp)** on llama.cpp, and the UAP under test is the **latest (v1.224.x)**.
+
+Every experiment below produces one headline number: the **paired delta
+(UAP-on minus UAP-off)** for accuracy, with the cost side of the ledger
+(tokens, turns, latency) reported alongside it. Two questions the existing
+findings cannot answer:
 
 1. **Replication:** does the decisive non-agentic gate-loop result — **+20pp
-   accuracy [95% CI +8, +32], p=0.008** — hold on a denser, stronger 27B model,
-   or was it partly a property of the older MoE (qwen36-35b-a3b)?
+   accuracy [95% CI +8, +32], p=0.008**, measured on qwen36-35b-a3b — hold on
+   this denser, stronger 27B model, or was it partly a property of the older
+   MoE?
 2. **Regression check:** the findings predate the two biggest recent ships —
    the quality-metrics gate (v1.223.0) and the deliver-pipeline hardening
    (v1.224.0: scoped rollback, declared gates, polyglot execution, config
@@ -55,13 +61,40 @@ cannot:
    queue-confounded (known caveat from the prior findings); we read
    correctness and token deltas, not wall-clock.
 
+## Experimental design — the two arms
+
+Every run pair toggles **only** the UAP surface. Model (`Qwen3.8-27B`),
+serving stack, task fixture, seed, and prompt are identical in both arms.
+
+| | **WITHOUT UAP** (baseline arm) | **WITH UAP** (treatment arm) |
+|---|---|---|
+| Raw (non-agentic) experiments | One raw completion endpoint call; whatever the model writes is final | The UAP gate loop (the `uap deliver` mechanism in miniature): execute → run the visible in-repo gate → feed failures back → regenerate until green |
+| Agentic experiments (opencode adapter) | Bare opencode on the same model and prompt, no UAP files injected | Identical opencode run plus the paired-harness UAP surface: `AGENTS.md` operating protocol, `.uap-bench.json` manifest, `UAP_BENCH_COMPONENTS` env — the inspectable, diffable "treatment" |
+| Deliver-path spot check (E4) | Model without the deliver pipeline | The actual hardened v1.224.0 `uap deliver` surface: scoped rollback, declared gates, liveness |
+
+What "the difference" means, precisely, per run:
+
+- **Accuracy Δ** — UAP-on success rate minus UAP-off success rate, with a
+  bootstrap 95% CI and permutation p-value; McNemar 2×2 ("UAP fixed" vs
+  "UAP regressed") on discordant pairs.
+- **Cost Δ** — paired deltas for tokens, turns, tool-calls, latency. A win is
+  higher accuracy at acceptable cost, or equal accuracy at lower cost.
+- **Ablation (E2)** — the WITH-UAP arm decomposed: leave-one-out per
+  component (gates / worktree / memory / experts / skills / patterns) so we
+  can see which parts of UAP earn their token overhead on this model.
+
+All scoring is deterministic `verifyCmd` (no LLM judge). Artifacts land in
+`benchmark-results/paired-qwen38-*`. Statistics per the established format:
+bootstrap 95% CI (10k seeded resamples) + sign-flip permutation p.
+
 ## Experiments
 
-All runs paired (same tasks, same seeds, toggling only the UAP surface), all
-scored by deterministic `verifyCmd` (no LLM judge), artifacts to
-`benchmark-results/paired-qwen38-*`. Statistics per the established format:
-bootstrap 95% CI (10k seeded resamples) + sign-flip permutation p, McNemar
-2×2 for correctness, metric vector (tokens/turns/tool-calls/latency).
+| # | Question | Suite | Adapter | WITHOUT UAP | WITH UAP |
+|---|---|---|---|---|---|
+| E1 | Does the gate loop still rescue one-shot failures? | `real-gate-gated` × 10 epochs | raw | single-shot | gate loop |
+| E2 | Does UAP cost or add anything on a self-verifying agent? | `real-gate-hard` × 4 epochs | opencode | bare opencode | opencode + UAP surface (+ per-component ablation) |
+| E3 | Is there headroom for UAP lift on harder/held-out tasks? | `real-gate-heldout`, `-power`, `-medium`, `-brutal` | raw + opencode | both baselines | both treatments |
+| E4 | Does the hardened v1.224.0 deliver path converge as well as the miniature? | `real-gate-gated` subset | raw → deliver | no deliver | full deliver surface |
 
 ### E1 — Headline replication (raw adapter, non-agentic gate value)
 
@@ -120,8 +153,10 @@ extension instead of hand-waving it.
 
 ## Analysis plan
 
-- Primary claims are the **per-model paired deltas** (E1–E4), each with CI +
-  p, in the `PAIRED_FINDINGS.md` report format.
+- Primary claims are the **with-UAP vs without-UAP paired deltas** (E1–E4),
+  each with CI + p, in the `PAIRED_FINDINGS.md` report format. The summary
+  table leads with one row per experiment: suite, UAP-off accuracy, UAP-on
+  accuracy, Δ, CI, p, token Δ.
 - Cross-model (qwen36 → qwen38) comparisons are **not paired** — report as
   side-by-side findings with the confound named (model, serving stack, and
   UAP version all moved).
