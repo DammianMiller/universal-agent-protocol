@@ -121,6 +121,7 @@ the decision record.
 | [Deliver hardening plan](plans/deliver-hardening-plan-2026-07-13.md) | The 14-defect audit (batches A–D) that became v1.224.0: scoped rollback, declared gates, polyglot execution, config routing, liveness, operator overrides |
 | [Deliver hardening review response](plans/deliver-hardening-review-response-2026-07-13.md) | Parallel-review findings and their dispositions — the rationale behind the root-owned trust model |
 | [Harness engineering uplift](plans/harness-engineering-uplift-2026-07-31.md) | Three-paper analysis of harness variance and what UAP does about it |
+| [K3 UAP uplift validation](plans/k3-uap-uplift-validation.md) | Plan to measure UAP's paired uplift on Kimi K3 by re-running Terminal-Bench 2.1 with Factory Droid as the harness, UAP on vs off |
 
 ## Specs & performance
 
